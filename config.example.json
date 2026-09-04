@@ -1,0 +1,9 @@
+{
+  "source_language": "Auto Detect",
+  "target_language": "English",
+  "engine_type": "auto",
+  "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
+  "auto_send": false,
+  "badge_x": -1,
+  "badge_y": -1
+}

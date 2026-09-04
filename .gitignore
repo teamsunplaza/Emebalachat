@@ -1,0 +1,53 @@
+# ==============================================================================
+# Emebalachat - Git Ignore Rules
+# ==============================================================================
+
+# Build outputs & binaries
+build/
+bin/
+out/
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.res
+
+# AI Models & weights
+models/
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+
+# Installer outputs
+installer/output/
+*.iss.bak
+
+# Local runtime configs & temporary files
+config.json
+*.tmp
+
+# Python caches & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+.env
+
+# IDE & OS metadata
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+CMakeUserPresets.json
+Thumbs.db
+Desktop.ini
+.DS_Store
