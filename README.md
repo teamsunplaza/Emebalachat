@@ -1,6 +1,9 @@
+[![Gumroad Sponsor](https://img.shields.io/badge/Gumroad-Sponsor-FF90A0?style=for-the-badge&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
+
 # Emebalachat — Ultra-Fast Native Real-Time Translation for Windows
 
 [![Release](https://img.shields.io/badge/Release-v0.10.0-blue.svg?style=flat-square)](https://github.com/teamsunplaza/Emebalachat/releases)
+[![Sponsor](https://img.shields.io/badge/Sponsor-Gumroad-FF90A0.svg?style=flat-square&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
 [![Standard](https://img.shields.io/badge/C%2B%2B-20-00599C.svg?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/20)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-0078D6.svg?style=flat-square&logo=windows)](https://microsoft.com/windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
@@ -44,6 +47,7 @@
 - [Installer Generation (Inno Setup)](#-installer-generation-inno-setup)
 - [Configuration Reference (`config.json`)](#-configuration-reference-configjson)
 - [Security & Privacy Guarantee](#-security--privacy-guarantee)
+- [Support & Sponsorship](#-support--sponsorship)
 - [Credits & Acknowledgments](#-credits--acknowledgments)
 - [License](#-license)
 
@@ -388,6 +392,16 @@ On first launch, Emebalachat generates `config.json` next to the executable. An 
 - **No Remote Telemetry**: Emebalachat contains zero tracking, zero telemetry, and zero third-party analytics.
 - **Offline Capable**: In `local` engine mode with `Hy-MT2-1.8B`, all translation runs strictly offline on your local CPU/GPU. No text leaves your machine.
 - **Clipboard Isolation**: Temporary text placed on the clipboard is explicitly flagged with Windows privacy exclusions (`CanIncludeInClipboardHistory = 0`), preventing your sensitive messages from appearing in Windows Cloud Clipboard or <kbd>Win</kbd>+<kbd>V</kbd> history.
+
+---
+
+## 💖 Support & Sponsorship
+
+If **Emebalachat** enhances your daily workflow, saves you from manual copy-pasting, or helps you communicate seamlessly across languages, consider supporting ongoing development:
+
+[![Gumroad Sponsor](https://img.shields.io/badge/Gumroad-Sponsor%20Emebala-FF90A0?style=for-the-badge&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
+
+Your support directly fuels local AI model performance tuning, new language features, and multi-platform expansion. Thank you!
 
 ---
 
