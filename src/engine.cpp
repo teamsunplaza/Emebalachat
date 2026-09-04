@@ -31,6 +31,14 @@ constexpr int kPenaltyLastN = 64;
 // directly; a wrong value now fails the build instead of drifting silently).
 static_assert(kPenaltyLastN == 64, "Hy-MT2 lab spec: repetition penalty last-N window is 64 tokens");
 
+// REQ-R01 proof: the llama context budget must agree with the values EnsureLoaded
+// configures and the arithmetic the unit tests rely on. Wrong values fail the build.
+static_assert(kLlamaNCtx == 2048, "REQ-R01: n_ctx is 2048 (EnsureLoaded must configure the same)");
+static_assert(kLlamaGenReserve == 512, "REQ-R01: generation reserve equals max_gen_tokens");
+static_assert(kLlamaPromptTokenBudget == kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin,
+              "REQ-R01: prompt budget = n_ctx - gen reserve - safety margin");
+static_assert(kLlamaPromptTokenBudget == 1520, "REQ-R01: prompt token budget is 1520");
+
 // Lower-case ASCII characters for case-insensitive path comparisons (Windows
 // paths are case-insensitive; this project targets Windows only).
 std::string LowerAscii(std::string s) {
@@ -43,6 +51,50 @@ std::string LowerAscii(std::string s) {
 }
 
 } // namespace
+
+// REQ-R01 (Batch D1): pure, model-independent head+tail sliding-window truncation.
+// Keeps the first and last `keep_per_side` UTF-16 code units joined by "\n...\n"
+// (U+2026 ellipsis). Cut points are adjusted so a UTF-16 surrogate pair is never
+// split - a lone surrogate would corrupt the UTF-8 conversion and the tokenizer.
+// Returns the text unchanged when it already fits (text.size() <= 2*keep_per_side).
+// Unit-testable without any model; the llama path drives it with a bounded
+// proportional shrink loop (see LlamaEngine::Translate) so llama_decode NEVER
+// receives a prompt larger than the context window (audit §2.1 root cause).
+std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side) {
+    if (text.empty()) {
+        return {};
+    }
+    if (text.size() <= 2 * keep_per_side) {
+        return std::wstring(text);
+    }
+
+    // UTF-16 surrogate ranges (wchar_t is UTF-16 on Windows).
+    auto is_high_surrogate = [](wchar_t c) { return c >= 0xD800 && c <= 0xDBFF; };
+    auto is_low_surrogate = [](wchar_t c) { return c >= 0xDC00 && c <= 0xDFFF; };
+
+    size_t head = keep_per_side;
+    // If the last retained head unit is a HIGH surrogate, its low partner falls
+    // into the cut region - drop the high surrogate instead of emitting a lone one.
+    if (head > 0 && is_high_surrogate(text[head - 1])) {
+        --head;
+    }
+
+    size_t tail_start = text.size() - keep_per_side;
+    // If the first retained tail unit is a LOW surrogate, its high partner was
+    // cut away - shift the tail start inward past the orphaned low surrogate.
+    // keep_per_side == 0 (degenerate: both sides empty) must not index text[size()].
+    if (keep_per_side > 0 && is_low_surrogate(text[tail_start])) {
+        ++tail_start;
+    }
+
+    static const std::wstring kEllipsisMarker = L"\n\u2026\n";
+    std::wstring out;
+    out.reserve(head + kEllipsisMarker.size() + (text.size() - tail_start));
+    out.append(text, 0, head);
+    out.append(kEllipsisMarker);
+    out.append(text, tail_start, text.size() - tail_start);
+    return out;
+}
 
 // M3 (security): fail-closed validation of a GGUF model path before it is handed
 // to the llama.cpp loader. Rejections log an ENGINE/IsValidModelPath/NNN code to
@@ -181,8 +233,8 @@ struct TranslationManager::LlamaEngine {
         vocab = llama_model_get_vocab(model);
 
         llama_context_params cparams = llama_context_default_params();
-        cparams.n_ctx = 2048;
-        cparams.n_batch = 2048;
+        cparams.n_ctx = kLlamaNCtx;             // REQ-R01: budget constants shared with Translate()
+        cparams.n_batch = kLlamaNCtx;
         cparams.n_ubatch = 512;
         unsigned int hw_threads = std::thread::hardware_concurrency();
         cparams.n_threads = hw_threads > 0 ? static_cast<int32_t>(hw_threads) : 4;
@@ -218,47 +270,116 @@ struct TranslationManager::LlamaEngine {
             return {};
         }
 
-        std::string src_u8 = ToUtf8(text);
-        if (src_u8.empty()) {
-            return {};
-        }
-
-        // Tencent Hy-MT2 instruction format
-        std::string prompt = BuildPrompt(src_u8, tgt_name);
-
-        // Check if model GGUF provides a custom chat template
-        const char* tmpl = llama_model_chat_template(model, nullptr);
-        if (tmpl) {
-            llama_chat_message msg{"user", prompt.c_str()};
-            int32_t needed = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
-            if (needed > 0) {
-                std::vector<char> formatted(needed + 1);
-                int32_t written = llama_chat_apply_template(tmpl, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
-                if (written > 0) {
-                    prompt.assign(formatted.data(), written);
+        // Tencent Hy-MT2 instruction format + optional GGUF chat template. Both are
+        // rebuilt inside the REQ-R01 shrink loop, so they live in one lambda.
+        const char* chat_tmpl = llama_model_chat_template(model, nullptr);
+        auto build_final_prompt = [&](std::wstring_view s) -> std::string {
+            std::string u8 = ToUtf8(s);
+            if (u8.empty()) {
+                return {};
+            }
+            std::string p = BuildPrompt(u8, tgt_name);
+            if (chat_tmpl) {
+                llama_chat_message msg{"user", p.c_str()};
+                int32_t needed = llama_chat_apply_template(chat_tmpl, &msg, 1, true, nullptr, 0);
+                if (needed > 0) {
+                    std::vector<char> formatted(needed + 1);
+                    int32_t written = llama_chat_apply_template(chat_tmpl, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
+                    if (written > 0) {
+                        p.assign(formatted.data(), written);
+                    }
                 }
             }
-        }
+            return p;
+        };
 
-        // Tokenize prompt
-        int32_t n_tokens_alloc = -llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0, true, true);
-        if (n_tokens_alloc <= 0) {
-            n_tokens_alloc = static_cast<int32_t>(prompt.size()) + 16;
-        }
-        std::vector<llama_token> prompt_tokens(n_tokens_alloc);
-        int32_t n_prompt_tokens = llama_tokenize(
-            vocab,
-            prompt.c_str(),
-            static_cast<int32_t>(prompt.size()),
-            prompt_tokens.data(),
-            static_cast<int32_t>(prompt_tokens.size()),
-            true,
-            true
-        );
-        if (n_prompt_tokens <= 0) {
+        // Tokenize helper (REQ-R01): fills `out` and returns the token count, or -1
+        // on tokenizer failure. Allocation mirrors the original probe-then-size.
+        auto tokenize_prompt = [&](const std::string& p, std::vector<llama_token>& out) -> int32_t {
+            if (p.empty()) {
+                return -1;
+            }
+            int32_t n_alloc = -llama_tokenize(vocab, p.c_str(), static_cast<int32_t>(p.size()), nullptr, 0, true, true);
+            if (n_alloc <= 0) {
+                n_alloc = static_cast<int32_t>(p.size()) + kLlamaTokenSafetyMargin;
+            }
+            out.resize(static_cast<size_t>(n_alloc) + static_cast<size_t>(kLlamaTokenSafetyMargin));
+            int32_t n = llama_tokenize(
+                vocab,
+                p.c_str(),
+                static_cast<int32_t>(p.size()),
+                out.data(),
+                static_cast<int32_t>(out.size()),
+                true,
+                true
+            );
+            if (n <= 0) {
+                return -1;
+            }
+            out.resize(static_cast<size_t>(n));
+            return n;
+        };
+
+        std::wstring src_w(text);
+        std::string prompt = build_final_prompt(src_w);
+        std::vector<llama_token> prompt_tokens;
+        int32_t n_prompt_tokens = tokenize_prompt(prompt, prompt_tokens);
+        if (n_prompt_tokens < 0) {
             return {};
         }
-        prompt_tokens.resize(n_prompt_tokens);
+
+        // REQ-R01 (audit §2.1): count prompt tokens BEFORE llama_decode. When they
+        // exceed the budget (n_ctx - generation reserve - safety margin), shrink
+        // the SOURCE text with a head+tail sliding window and re-tokenize. Each
+        // iteration targets a proportional size minus 25% headroom, so the loop
+        // makes geometric progress and terminates quickly even when the character
+        // -> token compression ratio differs between iterations.
+        if (n_prompt_tokens > kLlamaPromptTokenBudget) {
+            const int32_t overflow_n = n_prompt_tokens;
+            int shrink_iters = 0;
+            while (n_prompt_tokens > kLlamaPromptTokenBudget && shrink_iters < 16 && src_w.size() > 64) {
+                const double ratio = static_cast<double>(kLlamaPromptTokenBudget) / static_cast<double>(n_prompt_tokens);
+                size_t target_len = static_cast<size_t>(static_cast<double>(src_w.size()) * ratio * 0.75);
+                if (target_len < 64) {
+                    target_len = 64;
+                }
+                if (target_len >= src_w.size()) {
+                    target_len = src_w.size() - 1; // shrink at least one unit per iteration
+                }
+                src_w = TruncateHeadTailWindow(src_w, target_len / 2);
+                prompt = build_final_prompt(src_w);
+                const int32_t n2 = tokenize_prompt(prompt, prompt_tokens);
+                if (n2 < 0) {
+                    fprintf(stderr, "ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
+                    return {};
+                }
+                n_prompt_tokens = n2;
+                ++shrink_iters;
+            }
+            fprintf(stderr, "ENGINE/Translate/010: prompt tokens %d exceeded budget %d; source truncated to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
+                    overflow_n, kLlamaPromptTokenBudget, src_w.size(), n_prompt_tokens, shrink_iters);
+        }
+
+        // Last-resort hard cap: if the shrink loop still could not reach the budget
+        // (pathological template overhead or iteration cap), clip the TOKEN vector
+        // head+tail so llama_decode can never fail on length. Preserves the BOS +
+        // instruction prefix (head) and the sentence-final tokens (tail).
+        if (n_prompt_tokens > kLlamaPromptTokenBudget) {
+            const size_t head_n = static_cast<size_t>(kLlamaPromptTokenBudget) / 2;
+            const size_t tail_n = static_cast<size_t>(kLlamaPromptTokenBudget) - head_n;
+            std::vector<llama_token> kept;
+            kept.reserve(prompt_tokens.size());
+            kept.insert(kept.end(), prompt_tokens.begin(), prompt_tokens.begin() + head_n);
+            kept.insert(kept.end(), prompt_tokens.end() - tail_n, prompt_tokens.end());
+            prompt_tokens.swap(kept);
+            n_prompt_tokens = static_cast<int32_t>(prompt_tokens.size());
+            fprintf(stderr, "ENGINE/Translate/012: hard token-window cap applied, prompt clipped to %d tokens\n", n_prompt_tokens);
+        }
+
+        // The post-generation quote-strip heuristic below compares against the
+        // ORIGINAL source quoting; recompute UTF-8 from the (possibly truncated)
+        // working copy so the comparison reflects what was actually sent.
+        std::string src_u8 = ToUtf8(src_w);
 
         // Clear KV memory for clean inference sequence
         llama_memory_clear(llama_get_memory(ctx), true);
@@ -266,6 +387,8 @@ struct TranslationManager::LlamaEngine {
         // Process prompt tokens
         llama_batch batch = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
         if (llama_decode(ctx, batch) != 0) {
+            fprintf(stderr, "ENGINE/Translate/011: llama_decode failed (%d prompt tokens, budget %d)\n",
+                    n_prompt_tokens, kLlamaPromptTokenBudget);
             return {};
         }
 
@@ -293,11 +416,12 @@ struct TranslationManager::LlamaEngine {
         }
 
         std::string output_u8;
-        constexpr int max_gen_tokens = 512;
+        constexpr int max_gen_tokens = kLlamaGenReserve; // REQ-R01: reserve mirrored from the budget constant
 
         for (int i = 0; i < max_gen_tokens; ++i) {
-            // Guard against context overflow
-            if (static_cast<int>(prompt_tokens.size()) + i + 1 >= 2048) {
+            // Guard against context overflow (REQ-R01: constant now shared with the
+            // budget computed before decode, instead of a second hardcoded 2048).
+            if (static_cast<int>(prompt_tokens.size()) + i + 1 >= kLlamaNCtx) {
                 break;
             }
 
@@ -510,14 +634,47 @@ void TranslationManager::RefreshActiveEngine() {
     }
 }
 
+// 3-arg compatibility form for existing callers (main.cpp tooltip/drag paths).
+// Discards the REQ-R02 status; callers that must react to failure use the
+// status-aware overload below.
 std::wstring TranslationManager::Translate(
     std::wstring_view text,
     std::string_view src_code_or_name,
     std::string_view tgt_code_or_name
 ) {
+    return Translate(text, src_code_or_name, tgt_code_or_name, nullptr);
+}
+
+// REQ-R02 (Batch D1, audit §2.1 / §5-C4): the silent bare-{} failure is gone.
+// Every path that produces no translation now reports a TranslationStatus the
+// worker can react to (error tone / tooltip), and the Auto policy is restored
+// to its documented semantics.
+//
+// What Auto means NOW (documented per task directive):
+//   engine_type=auto = "use the local Hy-MT2 model when available; seamlessly
+//   fall back to Google Translate when the model is absent OR a local inference
+//   attempt fails". Selecting auto in config IS the user's consent to that
+//   documented cloud fallback, so cloud_fallback_enabled_ does NOT gate the
+//   Auto->cloud paths (it never did per the original EngineType::Auto contract;
+//   H2 had over-tightened it into a silent-failure regression).
+//   engine_type=local stays strictly on-device: after a local failure the cloud
+//   is used only when the user explicitly enabled cloud_fallback_enabled_.
+std::wstring TranslationManager::Translate(
+    std::wstring_view text,
+    std::string_view src_code_or_name,
+    std::string_view tgt_code_or_name,
+    TranslationStatus* out_status
+) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    auto set_status = [&](TranslationStatus s) {
+        if (out_status) {
+            *out_status = s;
+        }
+    };
+
     if (text.empty()) {
+        set_status(TranslationStatus::InputEmpty);
         return {};
     }
 
@@ -525,31 +682,52 @@ std::wstring TranslationManager::Translate(
     const auto* pTgt = FindLanguageByCode(norm_tgt);
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
 
+    // Single cloud seam: records EngineFailed when the request itself produced
+    // nothing (network error, 403, malformed response), Ok otherwise.
+    auto cloud_call = [&]() -> std::wstring {
+        std::wstring res = GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+        set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
+        return res;
+    };
+
     if (active_type_ == EngineType::LocalLlama && llama_engine_) {
         std::wstring res = llama_engine_->Translate(
             text, tgt_name, model_path_,
             temperature_, top_p_, top_k_, repetition_penalty_
         );
         if (!res.empty()) {
+            set_status(TranslationStatus::Ok);
             return res;
         }
-        // H2 gate: only fall back to the Google cloud when the user has explicitly
-        // consented via cloud_fallback_enabled. Otherwise return empty (the worker
-        // handles empty gracefully) so typed text never leaks off-device silently.
-        if (cloud_fallback_enabled_) {
-            return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+        // Local inference failed (load/decode/tokenizer/empty output).
+        // Auto: seamless cloud fallback - this is the consented contract above.
+        if (preferred_type_ == EngineType::Auto) {
+            fprintf(stderr, "ENGINE/Translate/020: local inference failed, Auto policy falling back to cloud\n");
+            return cloud_call();
         }
+        // Explicit local: H2 privacy gate still decides.
+        if (cloud_fallback_enabled_) {
+            fprintf(stderr, "ENGINE/Translate/021: local inference failed, explicit cloud fallback consent granted\n");
+            return cloud_call();
+        }
+        fprintf(stderr, "ENGINE/Translate/022: local inference failed and cloud fallback consent disabled; surfacing failure to caller\n");
+        set_status(TranslationStatus::CloudConsentBlocked);
         return {};
     }
 
-    // Non-local active engine. Distinguish two cases:
-    //  - preferred_type_ == GoogleTranslate: the user DELIBERATELY chose the cloud
-    //    engine (explicit consent) -> always allow.
-    //  - otherwise (auto/local with no local model available): this is an implicit
-    //    cloud path -> respect the H2 consent gate; return empty when disabled.
-    if (preferred_type_ == EngineType::GoogleTranslate || cloud_fallback_enabled_) {
-        return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+    // Non-local active engine. Cloud paths in order of consent strength:
+    //  - preferred_type_ == GoogleTranslate: deliberate choice -> always allow.
+    //  - preferred_type_ == Auto: zero-install or model-not-found path -> the
+    //    Auto contract above makes this consented (REQ-R02 policy).
+    //  - preferred_type_ == LocalLlama with no local model: implicit cloud path ->
+    //    respect the H2 gate; empty+CloudConsentBlocked when disabled (strict
+    //    on-device semantics: text must never leave the device silently).
+    if (preferred_type_ == EngineType::GoogleTranslate ||
+        preferred_type_ == EngineType::Auto ||
+        cloud_fallback_enabled_) {
+        return cloud_call();
     }
+    set_status(TranslationStatus::CloudConsentBlocked);
     return {};
 }
 

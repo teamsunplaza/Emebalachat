@@ -17,6 +17,20 @@ struct PipelineTask {
     HWND target_hwnd = nullptr;
 };
 
+// REQ-R03 (Batch D1) path-matrix predicate - single source of truth, shared by
+// worker.cpp (pinned there with static_assert at each call decision) and the
+// unit tests. ExecuteTask attempts a paste only when the translation is
+// non-empty and differs from the source; therefore every no-paste outcome -
+// translated empty (engine failure / consent block), translated == source, or
+// paste cancelled by the H1 foreground guard - collapses to paste_succeeded
+// == false and MUST release the block selection exactly once (VK_RIGHT),
+// otherwise the user's next keystroke destroys the whole highlighted message
+// (audit §2.2 text evaporation). The ONLY path that skips the release is a
+// successful paste, where Ctrl+V consumed the selection itself.
+constexpr bool SelectionReleaseRequired(bool paste_succeeded) {
+    return !paste_succeeded;
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);

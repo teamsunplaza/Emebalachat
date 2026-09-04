@@ -11,6 +11,8 @@
 #include "../src/ui/tooltip.hpp"
 #include "../src/ui/asset_loader.hpp"
 #include "../src/mouse_hook.hpp"
+#include "../src/hook.hpp"
+#include "../src/worker.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -460,6 +462,124 @@ void TestWin32InputModule() {
     std::cout << "[PASS] Win32 Input & Clipboard Safety tests completed." << std::endl;
 }
 
+// ---- REQ-R04: clipboard sequence-number copy-settle polling ----
+// The Electron IPC delay bug (audit 2.3): BackupClipboard never calls
+// EmptyClipboard, so the old fixed Sleep(35) could read the PREVIOUS clipboard
+// text whenever the target app commits its copy late; smart bypass then saw
+// stale target-language text and skipped translation. The fix replaces the
+// sleep with GetClipboardSequenceNumber() polling. ClipboardCopyWatcher is the
+// pure, time-parameterized state machine behind the real driver, so the whole
+// timeline matrix (including the two-step EmptyClipboard -> SetClipboardData
+// gap) is testable headlessly with synthetic timestamps.
+void TestClipboardSequencePolling() {
+    std::cout << "[RUN] Testing REQ-R04 Clipboard Sequence Polling..." << std::endl;
+
+    // 1. Compile-time constant wiring per the delegation: total change budget
+    //    ~150-200 ms, poll cadence 5-10 ms, hard deadline = change + stable.
+    static_assert(kClipboardChangeTimeoutMs >= 150 && kClipboardChangeTimeoutMs <= 200,
+                  "REQ-R04: change timeout must stay in the 150-200 ms band");
+    static_assert(kClipboardPollIntervalMs >= 5 && kClipboardPollIntervalMs <= 10,
+                  "REQ-R04: poll interval must stay in the 5-10 ms band");
+    static_assert(kClipboardCopyDeadlineMs ==
+                      static_cast<uint64_t>(kClipboardChangeTimeoutMs) + kClipboardStableWindowMs,
+                  "REQ-R04: hard deadline = change timeout + stable window");
+    static_assert(kClipboardChangeTimeoutMs == 180 && kClipboardPollIntervalMs == 8 &&
+                      kClipboardStableWindowMs == 16 && kClipboardCopyDeadlineMs == 196,
+                  "REQ-R04: constants are 180 ms change cap / 8 ms poll / 16 ms stable / 196 ms deadline");
+
+    // 2. REQ-R13 (audit 5 latent item 1): OpenClipboard exponential backoff.
+    static_assert(kClipboardOpenMaxAttempts == 5, "REQ-R13: five bounded tries");
+    static_assert(ClipboardOpenBackoffDelayMs(0) == 0 && ClipboardOpenBackoffDelayMs(5) == 0 &&
+                      ClipboardOpenBackoffDelayMs(6) == 0,
+                  "REQ-R13: attempts outside 1..4 schedule no sleep (loop terminates)");
+    TEST_CHECK(ClipboardOpenBackoffDelayMs(1) == 5 && ClipboardOpenBackoffDelayMs(2) == 10 &&
+                   ClipboardOpenBackoffDelayMs(3) == 20 && ClipboardOpenBackoffDelayMs(4) == 40,
+               "REQ-R13: exponential 5/10/20/40 ms retry delays");
+    TEST_CHECK(ClipboardOpenBackoffDelayMs(1) + ClipboardOpenBackoffDelayMs(2) +
+                   ClipboardOpenBackoffDelayMs(3) + ClipboardOpenBackoffDelayMs(4) <= 100,
+               "REQ-R13: total retry sleep stays within the ~100 ms budget");
+
+    // 3. Late Electron commit: change lands 40 ms after Ctrl+C (beyond the old
+    //    35 ms sleep that caused the stale read) -> must settle Confirmed.
+    {
+        ClipboardCopyWatcher w(100, 0);
+        bool premature = false;
+        for (uint64_t t = 8; t <= 32; t += 8) {
+            if (w.Update(100, t) != ClipboardCopyOutcome::Pending) {
+                premature = true;
+            }
+        }
+        TEST_CHECK(!premature, "R04: unchanged sequence never confirms early");
+        TEST_CHECK(w.Update(101, 40) == ClipboardCopyOutcome::Pending,
+                   "R04: single bump inside the stable window stays pending");
+        TEST_CHECK(w.Update(101, 56) == ClipboardCopyOutcome::Confirmed,
+                   "R04: change stable for kClipboardStableWindowMs -> Confirmed");
+    }
+
+    // 4. Two-step write race (EmptyClipboard bumps, SetClipboardData bumps):
+    //    confirming on the first bump would read an EMPTY clipboard mid-write.
+    {
+        ClipboardCopyWatcher w(100, 0);
+        TEST_CHECK(w.Update(100, 10) == ClipboardCopyOutcome::Pending, "R04: pre-change poll pending");
+        TEST_CHECK(w.Update(101, 20) == ClipboardCopyOutcome::Pending,
+                   "R04: EmptyClipboard bump alone must not confirm");
+        TEST_CHECK(w.Update(101, 30) == ClipboardCopyOutcome::Pending, "R04: 10 ms < 16 ms stable window");
+        TEST_CHECK(w.Update(102, 30) == ClipboardCopyOutcome::Pending,
+                   "R04: SetClipboardData bump restarts the stable window");
+        TEST_CHECK(w.Update(102, 45) == ClipboardCopyOutcome::Pending, "R04: 15 ms < 16 ms stable window");
+        TEST_CHECK(w.Update(102, 46) == ClipboardCopyOutcome::Confirmed,
+                   "R04: settled payload after second bump -> Confirmed");
+    }
+
+    // 5. Copy failure contract: sequence never leaves the pre-Ctrl+C baseline
+    //    (app ignored Ctrl+C) -> Failed, and FAILED IS TERMINAL: a later change
+    //    must not re-open it (caller already took the empty-result path).
+    {
+        ClipboardCopyWatcher w(100, 0);
+        TEST_CHECK(w.Update(100, kClipboardChangeTimeoutMs - 1) == ClipboardCopyOutcome::Pending,
+                   "R04: pending until the change timeout expires");
+        TEST_CHECK(w.Update(100, kClipboardChangeTimeoutMs) == ClipboardCopyOutcome::Failed,
+                   "R04: no change by timeout -> Failed (stale read refused)");
+        TEST_CHECK(w.Update(101, kClipboardCopyDeadlineMs + 50) == ClipboardCopyOutcome::Failed,
+                   "R04: Failed is terminal, never re-opens");
+    }
+
+    // 6. Deadline branch: a handler that is STILL writing when the hard
+    //    wall-clock deadline hits (no 16 ms stable window) but has demonstrably
+    //    advanced past the baseline resolves to Confirmed - the clipboard
+    //    provably holds post-Ctrl+C content, unlike the never-changed case.
+    {
+        ClipboardCopyWatcher w(100, 0);
+        TEST_CHECK(w.Update(101, kClipboardCopyDeadlineMs - 1) == ClipboardCopyOutcome::Pending,
+                   "R04: change one tick before the deadline is not yet stable -> pending");
+        TEST_CHECK(w.Update(102, kClipboardCopyDeadlineMs) == ClipboardCopyOutcome::Confirmed,
+                   "R04: advanced-but-flapping at deadline resolves to Confirmed via deadline branch");
+    }
+
+    // 7. Real-clipboard sanity: the OS mechanism the driver depends on.
+    {
+        ClipboardBackup sanity_backup;
+        const bool sanity_backed_up = BackupClipboard(sanity_backup);
+        const DWORD seq_before = ::GetClipboardSequenceNumber();
+        TEST_CHECK(SetClipboardText(L"R04 sequence sanity payload"),
+                   "R04: SetClipboardText succeeds for real sequence check");
+        const DWORD seq_after = ::GetClipboardSequenceNumber();
+        TEST_CHECK(seq_after != seq_before,
+                   "R04: a real clipboard write bumps GetClipboardSequenceNumber");
+        ClipboardCopyWatcher live(static_cast<uint32_t>(seq_before), 0);
+        TEST_CHECK(live.Update(static_cast<uint32_t>(seq_after), 0) == ClipboardCopyOutcome::Pending,
+                   "R04: real bump is observed before settling");
+        TEST_CHECK(live.Update(static_cast<uint32_t>(seq_after), kClipboardStableWindowMs) == ClipboardCopyOutcome::Confirmed,
+                   "R04: watcher confirms a real settled clipboard write");
+        if (sanity_backed_up) {
+            TEST_CHECK(RestoreClipboard(sanity_backup),
+                       "R04: sanity payload cleaned up (original clipboard restored)");
+        }
+    }
+
+    std::cout << "[PASS] REQ-R04 Clipboard Sequence Polling tests completed." << std::endl;
+}
+
 void TestGoogleTranslateModule() {
     std::cout << "[RUN] Testing Google Translate Engine..." << std::endl;
 
@@ -508,6 +628,109 @@ void TestGoogleTranslateModule() {
     std::cout << "[PASS] Google Translate Engine tests completed." << std::endl;
 }
 
+// ---- REQ-R05: per-endpoint HTTP profile (Chrome UA + 8 s budget) ----
+// HttpGet selects its (UA, timeouts) pair and the Chrome header set from the
+// request path via the pure constexpr GoogleTranslate::RequestProfileForPath /
+// IsDictChromeExEndpoint functions, so the exact production wiring is pinned
+// headlessly: compile-time for the budget, runtime for string content.
+void TestGoogleHttpProfile() {
+    std::cout << "[RUN] Testing REQ-R05 Google HTTP Profile..." << std::endl;
+
+    constexpr std::wstring_view kChromePath =
+        L"/translate_a/t?client=dict-chrome-ex&sl=ko&tl=en&q=test";
+    constexpr std::wstring_view kGtxPath =
+        L"/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&q=test";
+
+    // 1. Compile-time pins of the production wiring (same constexpr functions
+    //    HttpGet calls at runtime; cannot regress without failing the build).
+    static_assert(GoogleTranslate::IsDictChromeExEndpoint(kChromePath),
+                  "REQ-R05: Translate()'s primary path must be detected as dict-chrome-ex");
+    static_assert(!GoogleTranslate::IsDictChromeExEndpoint(kGtxPath),
+                  "REQ-R05: gtx fallback path must NOT take the Chrome profile");
+    static_assert(GoogleTranslate::RequestProfileForPath(kChromePath).resolve_ms
+                      + GoogleTranslate::RequestProfileForPath(kChromePath).connect_ms
+                      + GoogleTranslate::RequestProfileForPath(kChromePath).send_ms
+                      + GoogleTranslate::RequestProfileForPath(kChromePath).receive_ms
+                      <= 8000,
+                  "REQ-R05: Chrome profile budget must never exceed 8 s (anti 16 s lockup)");
+    static_assert(GoogleTranslate::RequestProfileForPath(kChromePath).user_agent == kChromeUserAgent,
+                  "REQ-R05: Chrome profile must send the Chrome UA");
+    static_assert(GoogleTranslate::RequestProfileForPath(kGtxPath).user_agent == kProductUserAgent,
+                  "REQ-R05: gtx profile keeps the truthful product UA (L4 honesty)");
+
+    // 2. UA string correctness: standard Chrome desktop token, NUL-terminated,
+    //    and NOT the Emebalachat token on the Chrome endpoint.
+    {
+        const std::wstring_view ua = GoogleTranslate::ChromeUserAgent();
+        TEST_CHECK(ua ==
+                       L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       L"(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                   "REQ-R05: Chrome UA matches the pinned stable-desktop string");
+        TEST_CHECK(ua.find(L"Chrome/128.0.0.0") != std::wstring_view::npos,
+                   "REQ-R05: UA carries the Chrome/<major> token gatekeepers check");
+        TEST_CHECK(ua.find(L"Emebalachat") == std::wstring_view::npos,
+                   "REQ-R05: dict-chrome-ex profile never advertises the blocked product UA");
+        TEST_CHECK(ua.data()[ua.size()] == L'\0',
+                   "REQ-R05: UA view is NUL-terminated (WinHttpOpen takes wchar_t*)");
+    }
+
+    // 3. Chrome-typical header construction: WinHttpSendRequest format.
+    {
+        const std::wstring headers = GoogleTranslate::ChromeAdditionalHeaders();
+        TEST_CHECK(headers.find(L"Accept: */*\r\n") != std::wstring::npos,
+                   "REQ-R05: Accept header present with CRLF terminator");
+        TEST_CHECK(headers.find(L"Accept-Language: en-US,en;q=0.9\r\n") != std::wstring::npos,
+                   "REQ-R05: Chrome-typical Accept-Language present");
+        TEST_CHECK(headers.size() >= 2 && headers[headers.size() - 2] == L'\r' && headers[headers.size() - 1] == L'\n',
+                   "REQ-R05: header block is CRLF-terminated (WinHTTP contract)");
+        // WinHTTP rejects line breaks that are not part of a CRLF pair; check
+        // every LF is immediately preceded by a CR (the real no-bare-LF rule).
+        bool no_bare_lf = true;
+        for (size_t nl = headers.find(L'\n'); nl != std::wstring::npos; nl = headers.find(L'\n', nl + 1)) {
+            if (nl == 0 || headers[nl - 1] != L'\r') {
+                no_bare_lf = false;
+                break;
+            }
+        }
+        TEST_CHECK(no_bare_lf, "REQ-R05: every LF belongs to a CRLF pair (no bare LF)");
+        // No leading junk: the block must begin with a header field name.
+        TEST_CHECK(!headers.empty() && headers[0] != L' ' && headers[0] != L'\r' && headers[0] != L'\n',
+                   "REQ-R05: header block starts with a field name (no leading CRLF/space)");
+        TEST_CHECK(headers.find(L"Accept-Encoding") == std::wstring::npos,
+                   "REQ-R05: no Accept-Encoding claim (WinHTTP cannot inflate gzip)");
+    }
+
+    // 4. Runtime endpoint detection incl. negative/adversarial inputs.
+    {
+        TEST_CHECK(GoogleTranslate::IsDictChromeExEndpoint(kChromePath),
+                   "REQ-R05: runtime detection of the primary endpoint");
+        TEST_CHECK(!GoogleTranslate::IsDictChromeExEndpoint(L"/translate_a/t?client=gtx&sl=ko&tl=en&q=x"),
+                   "REQ-R05: same path prefix with gtx client is not Chrome");
+        TEST_CHECK(!GoogleTranslate::IsDictChromeExEndpoint(L""),
+                   "REQ-R05: empty path is not Chrome");
+        TEST_CHECK(!GoogleTranslate::IsDictChromeExEndpoint(L"client=dict-chrome"),
+                   "REQ-R05: truncated token must not match");
+
+        const GoogleHttpProfile chrome = GoogleTranslate::RequestProfileForPath(kChromePath);
+        TEST_CHECK(chrome.resolve_ms == 1500 && chrome.connect_ms == 2000 &&
+                       chrome.send_ms == 2000 && chrome.receive_ms == 2500,
+                   "REQ-R05: Chrome phase split is 1500/2000/2000/2500 ms");
+        TEST_CHECK(chrome.resolve_ms + chrome.connect_ms + chrome.send_ms + chrome.receive_ms == 8000,
+                   "REQ-R05: Chrome total budget is exactly 8 s (was 16 s, audit 2.4)");
+        TEST_CHECK(chrome.user_agent == GoogleTranslate::ChromeUserAgent(),
+                   "REQ-R05: Chrome profile UA wiring equals ChromeUserAgent()");
+
+        const GoogleHttpProfile gtx = GoogleTranslate::RequestProfileForPath(kGtxPath);
+        TEST_CHECK(gtx.resolve_ms == 3000 && gtx.connect_ms == 3000 &&
+                       gtx.send_ms == 5000 && gtx.receive_ms == 5000,
+                   "REQ-R05: gtx profile keeps the previous 3/3/5/5 s split");
+        TEST_CHECK(gtx.user_agent.find(L"Emebalachat/") == 0,
+                   "REQ-R05: gtx profile sends the honest product UA");
+    }
+
+    std::cout << "[PASS] REQ-R05 Google HTTP Profile tests completed." << std::endl;
+}
+
 void TestEngineModule() {
     std::cout << "[RUN] Testing Translation Manager..." << std::endl;
 
@@ -517,13 +740,44 @@ void TestEngineModule() {
     TEST_CHECK(mgr.GetActiveEngineName().find("Google Translate") != std::string::npos,
                "Active engine automatically falls back to Google Translate");
 
-    // H2 gate: cloud_fallback_enabled defaults to FALSE, so the silent auto->cloud
-    // path must NOT transmit; Translate returns empty instead of leaking text.
+    // REQ-R02 (Batch D1) POLICY UPDATE supersedes the old H2 assertion that an
+    // auto->cloud path returns empty when the consent gate is disabled: the audit
+    // (AUDIT-260905-001 §2.1) identified that silent-empty as a root cause of the
+    // chat translation interruption. engine_type=auto now carries its ORIGINAL
+    // documented contract ("seamless Google Translate fallback") - selecting auto
+    // IS the consent - so the same call must translate via cloud and report Ok.
     TEST_CHECK(!mgr.IsCloudFallbackEnabled(), "Cloud fallback gate defaults to disabled (H2)");
-    std::wstring gated_res = mgr.Translate(L"감사합니다", "KO", "EN");
-    TEST_CHECK(gated_res.empty(), "H2: auto->cloud returns empty when consent gate is disabled (no silent leak)");
+    TranslationStatus auto_status = TranslationStatus::EngineFailed;
+    std::wstring gated_res = mgr.Translate(L"감사합니다", "KO", "EN", &auto_status);
+    TEST_CHECK(!gated_res.empty(), "REQ-R02: auto->cloud fallback restored when no local model (no silent empty)");
+    TEST_CHECK(auto_status == TranslationStatus::Ok, "REQ-R02: auto->cloud success reports Ok status");
 
-    // Enable the gate -> the same auto->cloud fallback now performs the live call.
+    // Strict explicit-local semantics: with gate off, no cloud - but the failure
+    // is SURFACED as CloudConsentBlocked instead of a bare {} (REQ-R02).
+    {
+        TranslationManager strict_local(EngineType::LocalLlama, "D:\\non_existent_model.gguf");
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res = strict_local.Translate(L"안녕하세요", "KO", "EN", &st);
+        TEST_CHECK(res.empty(), "REQ-R02: explicit local without consent still keeps text on-device (empty)");
+        TEST_CHECK(st == TranslationStatus::CloudConsentBlocked, "REQ-R02: privacy-block surfaced as CloudConsentBlocked, not silent");
+
+        // Explicit local WITH consent -> cloud fallback now allowed and Ok.
+        strict_local.SetCloudFallbackEnabled(true);
+        TranslationStatus st2 = TranslationStatus::InputEmpty;
+        std::wstring res2 = strict_local.Translate(L"안녕하세요", "KO", "EN", &st2);
+        TEST_CHECK(!res2.empty(), "REQ-R02: explicit local with consent falls back to cloud");
+        TEST_CHECK(st2 == TranslationStatus::Ok, "REQ-R02: consented cloud fallback reports Ok");
+    }
+
+    // Empty input is a neutral outcome, not a failure.
+    {
+        TranslationStatus st = TranslationStatus::EngineFailed;
+        std::wstring res = mgr.Translate(L"", "KO", "EN", &st);
+        TEST_CHECK(res.empty(), "REQ-R02: empty input returns empty");
+        TEST_CHECK(st == TranslationStatus::InputEmpty, "REQ-R02: empty input reports InputEmpty status");
+    }
+
+    // Gate toggling remains functional (used by explicit-local consent above).
     mgr.SetCloudFallbackEnabled(true);
     TEST_CHECK(mgr.IsCloudFallbackEnabled(), "Cloud fallback gate can be enabled via setter");
     std::wstring translated = mgr.Translate(L"감사합니다", "KO", "EN");
@@ -579,6 +833,31 @@ void TestEngineModule() {
         auto ms2 = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
         std::cout << "  [CACHED LLAMA RESULT in " << ms2 << " ms]: '오늘 날씨가 아주 좋습니다.' -> '" << ToUtf8(second_res) << "'" << std::endl;
         TEST_CHECK(!second_res.empty(), "Second local LLM call produced non-empty result");
+
+        // REQ-R01 (audit §2.1): text long enough to exceed the 2048-token context
+        // must be safely truncated (head+tail window) and STILL produce a
+        // non-empty translation - no decode crash, no silent {}. ~8000 Korean
+        // UTF-16 units tokenize to well beyond kLlamaPromptTokenBudget (1520).
+        {
+            std::wstring filler;
+            filler.reserve(9000);
+            while (filler.size() < 8000) {
+                filler += L"안녕하세요, 만나서 반갑습니다. 오늘 날씨가 아주 좋습니다. 번역 테스트를 위한 긴 문장을 반복해서 채웁니다. ";
+            }
+            auto t4 = std::chrono::steady_clock::now();
+            TranslationStatus ovf_st = TranslationStatus::EngineFailed;
+            std::wstring ovf_res = local_mgr.Translate(filler, "KO", "English", &ovf_st);
+            auto t5 = std::chrono::steady_clock::now();
+            auto ms_ovf = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
+            std::cout << "  [R01 OVERFLOW in " << ms_ovf << " ms]: src " << filler.size()
+                      << " UTF-16 units -> result " << ovf_res.size() << " units, status "
+                      << static_cast<int>(ovf_st) << std::endl;
+            TEST_CHECK(!ovf_res.empty(), "REQ-R01: >2048-token input still returns a non-empty translation (no crash, no silent empty)");
+            TEST_CHECK(ovf_st == TranslationStatus::Ok, "REQ-R01: overflow truncation path reports Ok status");
+            // The engine must remain usable after an overflow request (KV state sane).
+            std::wstring after_ovf = local_mgr.Translate(L"고맙습니다.", "KO", "English");
+            TEST_CHECK(!after_ovf.empty(), "REQ-R01: engine still translates normally after an overflow request");
+        }
     } else {
         std::cout << "  [LOCAL LLM SKIP] Model fixture absent ("
                   << (local_model_path.empty()
@@ -677,6 +956,152 @@ void TestModelPathValidation() {
     std::filesystem::remove_all(root, ec);
 
     std::cout << "[PASS] M3 Model Path Validation tests completed." << std::endl;
+}
+
+// REQ-R01 (Batch D1): pure-logic tests for the head+tail sliding-window
+// truncation that guards llama_decode against >n_ctx prompts. No model needed;
+// asserts the geometric contract (fit-through, head/tail preservation, marker
+// insertion) and UTF-16 surrogate-pair safety at both cut points.
+void TestTokenTruncation() {
+    std::cout << "[RUN] Testing REQ-R01 Head/Tail Token Truncation..." << std::endl;
+
+    // Budget constants shared with the engine. Compile-time pinned per the
+    // task's "static-assertion-style checks where feasible" directive (and it
+    // avoids MSVC C4127 constant-condition warnings that runtime asserts on
+    // constexpr values would emit under /W4).
+    static_assert(kLlamaNCtx == 2048, "test build: n_ctx 2048");
+    static_assert(kLlamaPromptTokenBudget == 2048 - 512 - 16, "test build: budget 1520");
+    static_assert(kLlamaPromptTokenBudget == 1520, "REQ-R01: prompt token budget is 1520");
+    static_assert(kLlamaNCtx > kLlamaPromptTokenBudget, "REQ-R01: budget leaves generation reserve");
+
+    // Helper: true if s contains ANY unpaired (lone) UTF-16 surrogate.
+    auto has_lone_surrogate = [](std::wstring_view s) {
+        for (size_t i = 0; i < s.size(); ++i) {
+            wchar_t c = s[i];
+            if (c >= 0xD800 && c <= 0xDBFF) { // high surrogate must pair with next
+                if (i + 1 >= s.size() || s[i + 1] < 0xDC00 || s[i + 1] > 0xDFFF) {
+                    return true;
+                }
+                ++i;
+            } else if (c >= 0xDC00 && c <= 0xDFFF) { // low surrogate without preceding high
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // 1. Empty input -> empty output.
+    TEST_CHECK(TruncateHeadTailWindow(L"", 10).empty(), "R01: empty text returns empty");
+
+    // 2. Text that fits (size <= 2*keep) is returned byte-identical.
+    {
+        std::wstring fits = L"short text";
+        TEST_CHECK(TruncateHeadTailWindow(fits, 32) == fits, "R01: fitting text unchanged");
+        std::wstring exact = std::wstring(20, L'A');
+        TEST_CHECK(TruncateHeadTailWindow(exact, 10) == exact, "R01: size == 2*keep boundary unchanged");
+    }
+
+    // 3. One over the boundary -> truncation kicks in, head+tail+marker present.
+    {
+        std::wstring src(21, L'X');
+        std::wstring out = TruncateHeadTailWindow(src, 10);
+        TEST_CHECK(out != src, "R01: size 2*keep+1 is truncated");
+        TEST_CHECK(out.size() < src.size() + 3, "R01: truncated output is not longer than src+marker");
+        TEST_CHECK(out.find(L"\n\u2026\n") != std::wstring::npos, "R01: ellipsis marker inserted");
+        TEST_CHECK(out.rfind(L"XXXXXXXXXX", 0) == 0, "R01: head preserved (first keep units)");
+        TEST_CHECK(out.size() >= 10 && out.compare(out.size() - 10, 10, L"XXXXXXXXXX") == 0,
+                   "R01: tail preserved (last keep units)");
+        TEST_CHECK(!has_lone_surrogate(out), "R01: plain-text truncation keeps valid UTF-16");
+    }
+
+    // 4. Surrogate PAIR straddling the head cut: the pair (high at index keep-1,
+    //    low at index keep) is the last head unit + first cut unit. The engine
+    //    must DROP the orphaned high surrogate instead of emitting a lone one.
+    {
+        // 9 A's + high(0xD83D)+low(0xDE80) pair at 9..10 + 11 B's -> size 22
+        std::wstring src = std::wstring(9, L'A') + wchar_t(0xD83D) + wchar_t(0xDE80) + std::wstring(11, L'B');
+        std::wstring out = TruncateHeadTailWindow(src, 10);
+        TEST_CHECK(!has_lone_surrogate(out), "R01: head cut never emits a lone HIGH surrogate");
+        TEST_CHECK(out.find(L"\n\u2026\n") != std::wstring::npos, "R01: marker present after adjusted head");
+        TEST_CHECK(out.compare(0, 9, std::wstring(9, L'A')) == 0, "R01: head keeps only the 9 clean A's");
+        TEST_CHECK(out.compare(out.size() - 10, 10, std::wstring(10, L'B')) == 0,
+                   "R01: tail still ends with the last 10 units");
+    }
+
+    // 5. Surrogate PAIR straddling the tail cut: high half lands in the cut
+    //    region, low half is exactly at tail_start. The engine must shift the
+    //    tail start inward past the orphaned low surrogate.
+    {
+        // 10 A's + high(0xD83D at idx 10, cut away)+low(0xDE80 at idx 11) + 9 B's -> size 21
+        std::wstring src = std::wstring(10, L'A') + wchar_t(0xD83D) + wchar_t(0xDE80) + std::wstring(9, L'B');
+        std::wstring out = TruncateHeadTailWindow(src, 10);
+        TEST_CHECK(!has_lone_surrogate(out), "R01: tail cut never emits a lone LOW surrogate");
+        TEST_CHECK(out.compare(0, 10, std::wstring(10, L'A')) == 0, "R01: head of 10 A's kept intact");
+        TEST_CHECK(out.compare(out.size() - 9, 9, std::wstring(9, L'B')) == 0,
+                   "R01: tail preserves the trailing run after skipping orphan low surrogate");
+    }
+
+    // 6. Degenerate keep=0: both sides empty, output is just the marker; valid UTF-16.
+    {
+        std::wstring src(50, L'C');
+        std::wstring out = TruncateHeadTailWindow(src, 0);
+        TEST_CHECK(out == std::wstring(L"\n\u2026\n"), "R01: keep=0 yields marker only (no OOB read)");
+    }
+
+    // 7. Roundtrip safety: truncated result must survive UTF-8 conversion with no
+    //    replacement-character corruption (the engine tokenizes the UTF-8 bytes).
+    {
+        std::wstring src;
+        for (int i = 0; i < 400; ++i) {
+            src += L"안녕 🚀 ";
+        }
+        std::wstring out = TruncateHeadTailWindow(src, 100);
+        std::string u8 = ToUtf8(out);
+        std::wstring back = ToUtf16(u8);
+        TEST_CHECK(back == out, "R01: truncated text round-trips UTF-8/UTF-16 losslessly");
+        TEST_CHECK(u8.find("\xEF\xBF\xBD") == std::string::npos, "R01: no U+FFFD produced by truncation");
+    }
+
+    std::cout << "[PASS] REQ-R01 Head/Tail Token Truncation tests completed." << std::endl;
+}
+
+// REQ-R03 (Batch D1): path matrix for the selection-release guarantee. The
+// constexpr predicate (shared with worker.cpp via src/worker.hpp) encodes the
+// full outcome matrix; compile-time asserts pin it, runtime checks exercise it.
+void TestSelectionReleaseMatrix() {
+    std::cout << "[RUN] Testing REQ-R03 Selection Release Path Matrix..." << std::endl;
+
+    // Compile-time pinning: paste success is the ONLY no-release path.
+    static_assert(SelectionReleaseRequired(true) == false, "R03: success must not release");
+    static_assert(SelectionReleaseRequired(false) == true, "R03: failure must release");
+
+    // Runtime sweep of the four audited outcomes (audit §2.2):
+    //   a) translated empty -> paste never attempted -> pasted=false -> release
+    //   b) translated == line -> paste never attempted -> pasted=false -> release
+    //   c) H1 guard cancelled paste -> PasteAndRestore returned false -> release
+    //   d) successful paste -> selection consumed by Ctrl+V -> NO release
+    struct Case { const wchar_t* name; bool paste_attempted; bool paste_succeeded; };
+    const Case cases[] = {
+        { L"translated_empty",     false, false },
+        { L"translated_same",      false, false },
+        { L"paste_h1_cancelled",   true,  false },
+        { L"paste_success",        true,  true  },
+    };
+    for (const auto& c : cases) {
+        bool release = SelectionReleaseRequired(c.paste_succeeded);
+        bool expect_release = !c.paste_succeeded;
+        TEST_CHECK(release == expect_release, "R03: release decision matches matrix");
+        // A paste attempt that failed (H1 cancel) MUST still release - the whole
+        // point of the fix; the old code skipped unsel whenever translated was
+        // non-empty (audit §2.2 step 4).
+        if (c.paste_attempted && !c.paste_succeeded) {
+            TEST_CHECK(release, "R03: H1-cancelled paste releases selection (was the silent-evaporation bug)");
+        }
+    }
+    TEST_CHECK(cases[3].paste_succeeded && !SelectionReleaseRequired(cases[3].paste_succeeded),
+               "R03: successful paste is the sole skipped path");
+
+    std::cout << "[PASS] REQ-R03 Selection Release Path Matrix tests completed." << std::endl;
 }
 
 void TestBadgeDynamicSizing() {
@@ -903,6 +1328,365 @@ void TestTtsVoiceSelectionModule() {
     std::cout << "[PASS] Multi-Language Native TTS Voice Selection tests completed." << std::endl;
 }
 
+// ===========================================================================
+// Batch D3: hook sync, F9 hotkey, mouse-hook debounce, D2D marshaling
+// (REQ-R06, REQ-R07, REQ-R08, REQ-R09, REQ-R10)
+// ===========================================================================
+
+namespace {
+// Waits (bounded) until pred() is true. Returns true if it became true.
+template <typename Pred>
+bool WaitUntilMs(Pred pred, uint32_t timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return pred();
+}
+
+// Pump every currently-queued message of THIS thread exactly once (the test
+// main thread owns the message windows used for the marshal tests).
+void PumpThreadMessagesOnce() {
+    MSG m = {};
+    while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+        ::TranslateMessage(&m);
+        ::DispatchMessageW(&m);
+    }
+}
+} // namespace
+
+// REQ-R08 (audit §3.2): pure hotkey parsing + exact-match predicate matrix.
+void TestHotkeyParsing() {
+    std::cout << "[RUN] Testing Hotkey Parsing (REQ-R08)..." << std::endl;
+
+    using HK = KeyboardHook;
+
+    // Compile-time pins: the default toggle combo is Win+F9 (never bare F9).
+    static_assert(HK::kDefaultToggleHotkey.vk == VK_F9 &&
+                      HK::kDefaultToggleHotkey.win && !HK::kDefaultToggleHotkey.ctrl &&
+                      !HK::kDefaultToggleHotkey.shift && !HK::kDefaultToggleHotkey.alt &&
+                      HK::kDefaultToggleHotkey.valid,
+                  "REQ-R08: default toggle must be exactly Win+F9");
+    static_assert(HK::IsWinKey(VK_LWIN) && HK::IsWinKey(VK_RWIN) && !HK::IsWinKey(VK_F9),
+                  "REQ-R08: IsWinKey covers both Win keys only");
+
+    // 1. ParseHotkey matrix.
+    TEST_CHECK(HK::ParseHotkey("Win+F9") == HK::kDefaultToggleHotkey, "Parse Win+F9 == default");
+    TEST_CHECK(HK::ParseHotkey(" win + f9 ") == HK::kDefaultToggleHotkey, "Parse is case/space insensitive");
+    TEST_CHECK(HK::ParseHotkey("Windows+F9") == HK::kDefaultToggleHotkey, "Parse 'Windows' synonym");
+    TEST_CHECK(HK::ParseHotkey("Super+F9") == HK::kDefaultToggleHotkey, "Parse 'Super' synonym");
+    TEST_CHECK(HK::ParseHotkey("F9") == HK::MakePressSpec(VK_F9, false, false, false, false),
+               "Parse bare F9 (valid spec, legacy combo)");
+    TEST_CHECK(HK::ParseHotkey("Ctrl+F9") == HK::MakePressSpec(VK_F9, true, false, false, false),
+               "Parse Ctrl+F9");
+    const HK::HotkeySpec mode = HK::ParseHotkey("Ctrl+Shift+Enter");
+    TEST_CHECK(mode.valid && mode.vk == VK_RETURN && mode.ctrl && mode.shift && !mode.alt && !mode.win,
+               "Parse Ctrl+Shift+Enter");
+    TEST_CHECK(HK::ParseHotkey("Ctrl+Shift+Alt+Win+A") ==
+                   HK::MakePressSpec('A', true, true, true, true), "Parse all four modifiers");
+    TEST_CHECK(HK::ParseHotkey("Escape").vk == VK_ESCAPE && HK::ParseHotkey("Esc").vk == VK_ESCAPE,
+               "Parse Escape/ESC aliases");
+    TEST_CHECK(HK::ParseHotkey("PrintScreen").valid == false, "Unknown key token is invalid");
+    TEST_CHECK(HK::ParseHotkey("").valid == false, "Empty spec is invalid");
+    TEST_CHECK(HK::ParseHotkey("Win+").valid == false, "Trailing + is invalid");
+    TEST_CHECK(HK::ParseHotkey("+F9").valid == false, "Leading + is invalid");
+    TEST_CHECK(HK::ParseHotkey("Ctrl++").valid == false, "Empty token is invalid");
+    TEST_CHECK(HK::ParseHotkey("F9+F9").valid == false, "Two main keys is invalid");
+    TEST_CHECK(HK::ParseHotkey("Ctrl+F99").valid == false, "Unknown f-key is invalid");
+    TEST_CHECK(HK::ParseHotkey("f24").vk == VK_F24 && HK::ParseHotkey("f10").vk == VK_F10,
+               "f10/f24 two-digit parse");
+    TEST_CHECK(HK::ParseHotkey("Space").vk == VK_SPACE && HK::ParseHotkey("Home").vk == VK_HOME,
+               "named-key parse");
+
+    // 2. Exact-match predicate (the hook swallows ONLY the full combo).
+    const HK::HotkeySpec winf9 = HK::kDefaultToggleHotkey;
+    TEST_CHECK(HK::HotkeyMatches(winf9, VK_F9, false, false, false, true), "Win+F9 matches");
+    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, false, false, false, false),
+               "REQ-R08 core: bare F9 does NOT toggle (VS/Excel collision fix)");
+    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, true, false, false, true), "Ctrl+Win+F9 does not match");
+    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, false, true, false, true), "Shift+Win+F9 does not match");
+    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F10, false, false, false, true), "Win+F10 does not match");
+    TEST_CHECK(!HK::HotkeyMatches(HK::HotkeySpec{}, VK_F9, false, false, false, true),
+               "Invalid spec never matches");
+    const HK::HotkeySpec ctrlf9 = HK::ParseHotkey("Ctrl+F9");
+    TEST_CHECK(HK::HotkeyMatches(ctrlf9, VK_F9, true, false, false, false), "Ctrl+F9 matches lang-cycle");
+    TEST_CHECK(!HK::HotkeyMatches(ctrlf9, VK_F9, true, false, false, true),
+               "Win+Ctrl+F9 does not match Ctrl+F9 (win must be absent)");
+
+    // 3. Config migration seam: legacy/invalid strings -> Win+F9; valid combos honored.
+    TEST_CHECK(HK::ResolveToggleFromConfig("F9") == HK::kDefaultToggleHotkey,
+               "Legacy 'F9' migrates to Win+F9 (no config.cpp change needed)");
+    TEST_CHECK(HK::ResolveToggleFromConfig("") == HK::kDefaultToggleHotkey, "Empty migrates to default");
+    TEST_CHECK(HK::ResolveToggleFromConfig("nonsense") == HK::kDefaultToggleHotkey, "Invalid migrates");
+    TEST_CHECK(HK::ResolveToggleFromConfig("Ctrl+Alt+D") == HK::ParseHotkey("Ctrl+Alt+D"),
+               "Explicit valid combo honored as-is");
+
+    std::cout << "[PASS] Hotkey Parsing tests completed." << std::endl;
+}
+
+// REQ-R07 (audit §3.1): active-change callback fires 1:1 with SetActive, and
+// REQ-R06 (audit §2.5): the double-Ctrl+C job runs OFF the caller thread with
+// a non-blocking dispatch seam (measured).
+void TestKeyboardHookStateSyncAndDispatch() {
+    std::cout << "[RUN] Testing KeyboardHook state sync + async dispatch (REQ-R06/R07)..." << std::endl;
+
+    SetSoundEnabled(false); // keep the test suite quiet; re-enabled at the end
+
+    AppConfig cfg;   // defaults, no disk load (no LoadFromFile call)
+    cfg.hotkey_toggle = "F9"; // legacy default string exercises the migration path
+    TranslationManager engine(EngineType::GoogleTranslate, ""); // no model load in ctor
+    FloatingBadge badge;      // not Create()d: all badge methods no-op headless
+    SystemTray tray;          // not Create()d: UpdateStatus is Shell-API-only
+    PipelineWorker worker(cfg, engine, badge); // not Start()ed
+    KeyboardHook hook(cfg, worker, badge, tray);
+
+    const DWORD main_tid = ::GetCurrentThreadId();
+
+    // ---- REQ-R07: 1:1 state-change observation (simulates the main.cpp wiring) ----
+    MouseHook mouse_hook;
+    std::atomic<int> cb_count{0};
+    std::atomic<int> cb_last_state{-1};
+    hook.SetActiveChangeCallback([&](bool active) {
+        cb_count.fetch_add(1, std::memory_order_relaxed);
+        cb_last_state.store(active ? 1 : 0, std::memory_order_relaxed);
+        mouse_hook.SetEnabled(active); // THE sync edge from main.cpp
+    });
+
+    hook.SetActive(true);  // already active -> NO change
+    TEST_CHECK(cb_count.load() == 0, "R07: SetActive(true) while active fires no callback");
+
+    hook.SetActive(false);
+    TEST_CHECK(cb_count.load() == 1, "R07: disabling fires callback exactly once");
+    TEST_CHECK(cb_last_state.load() == 0, "R07: callback reports the new state (inactive)");
+    TEST_CHECK(!mouse_hook.IsEnabled(), "R07: mouse hook follows keyboard hook OFF");
+
+    hook.SetActive(false); // idempotent
+    TEST_CHECK(cb_count.load() == 1, "R07: redundant SetActive(false) fires nothing");
+
+    hook.ToggleActive();
+    TEST_CHECK(cb_count.load() == 2 && cb_last_state.load() == 1, "R07: ToggleActive fires with active=true");
+    TEST_CHECK(mouse_hook.IsEnabled(), "R07: mouse hook follows keyboard hook back ON (the F9-fix)");
+
+    // ---- REQ-R06: async double-Ctrl+C dispatch ----
+    std::atomic<int> ctrlc_runs{0};
+    std::atomic<DWORD> ctrlc_tid{0};
+    hook.SetDoubleCtrlCCallback([&]() {
+        ctrlc_tid.store(::GetCurrentThreadId(), std::memory_order_relaxed);
+        ctrlc_runs.fetch_add(1, std::memory_order_relaxed);
+        ::Sleep(150); // simulate slow clipboard settle + inference
+    });
+
+    TEST_CHECK(hook.Start(), "R06/R07 fixture: KeyboardHook::Start installs the hook");
+    TEST_CHECK(hook.ToggleHotkey() == KeyboardHook::kDefaultToggleHotkey,
+               "R08: compiled toggle spec migrates legacy 'F9' config to Win+F9 at Start()");
+
+    const ULONGLONG t0 = ::GetTickCount64();
+    KeyboardHook::DispatchDoubleCtrlC();
+    const ULONGLONG dispatch_us = (::GetTickCount64() - t0) * 1000ULL; // conservative ms->us
+    TEST_CHECK(dispatch_us < 20000ULL,
+               "R06: dispatch call returns in <20 ms measured (actually microseconds; hook thread must not block)");
+
+    TEST_CHECK(WaitUntilMs([&]() { return ctrlc_runs.load() >= 1; }, 2000),
+               "R06: dispatched callback executes on the worker within 2 s");
+    TEST_CHECK(ctrlc_tid.load() != 0 && ctrlc_tid.load() != main_tid,
+               "R06: callback ran on a worker thread, NOT the caller/hook thread");
+    TEST_CHECK(KeyboardHook::IsDoubleCtrlCBusy(), "R06: busy flag set while body sleeps");
+
+    // Second dispatch WHILE the first body runs: must not block the caller and
+    // must queue a re-run after the first completes.
+    const ULONGLONG t1 = ::GetTickCount64();
+    KeyboardHook::DispatchDoubleCtrlC();
+    const ULONGLONG dispatch2_ms = ::GetTickCount64() - t1;
+    TEST_CHECK(dispatch2_ms < 5, "R06: re-dispatch while busy returns instantly (<5 ms)");
+    TEST_CHECK(WaitUntilMs([&]() { return ctrlc_runs.load() >= 2; }, 3000),
+               "R06: queued second event runs after the first body completes");
+
+    const ULONGLONG stop_t = ::GetTickCount64();
+    hook.Stop();
+    const ULONGLONG stop_ms = ::GetTickCount64() - stop_t;
+    TEST_CHECK(stop_ms < 500, "R06: Stop() joins the worker deterministically (bounded)");
+    TEST_CHECK(!KeyboardHook::IsDoubleCtrlCBusy(), "R06: busy flag cleared after Stop()");
+
+    // Dispatch after Stop(): worker not live -> event dropped with a trace, no crash.
+    KeyboardHook::DispatchDoubleCtrlC();
+    TEST_CHECK(ctrlc_runs.load() == 2, "R06: post-Stop dispatch is dropped, not executed");
+
+    SetSoundEnabled(true);
+    std::cout << "[PASS] KeyboardHook state sync + async dispatch tests completed." << std::endl;
+}
+
+// REQ-R09 (audit §3.3): join-free click_seq_ invalidation debounce, exercised
+// through the same seams the LL mouse callback uses (no real mouse input).
+void TestMouseHookDebounce() {
+    std::cout << "[RUN] Testing MouseHook click_seq_ debounce (REQ-R09)..." << std::endl;
+
+    // Compile-time pins of the pure predicate (mirrors the C2-regression fix):
+    static_assert(MouseHook::kMultiClickDebounceMs == 60, "R09: settle window stays 60 ms");
+    static_assert(MouseHook::kDelayedClickPollMs == 16, "R09: invalidation notice stays <=16 ms");
+    static_assert(MouseHook::MultiClickDeadlineMs(1000) == 1060, "R09: deadline = arm + window");
+    static_assert(MouseHook::ShouldFireDelayedClick(5, 5, true, 1060, 1060), "R09: due + current + running -> fire");
+    static_assert(!MouseHook::ShouldFireDelayedClick(5, 6, true, 9999, 1060), "R09: stale seq NEVER fires (no-ops)");
+    static_assert(!MouseHook::ShouldFireDelayedClick(5, 5, false, 9999, 1060), "R09: stopped hook never fires");
+    static_assert(!MouseHook::ShouldFireDelayedClick(5, 5, true, 1059, 1060), "R09: settle window still open");
+
+    // Runtime: real hook lifecycle + worker-side invalidation.
+    MouseHook mouse_hook;
+    std::atomic<int> fires{0};
+    std::atomic<DWORD> fire_tid{0};
+    std::atomic<LONG> last_x{0};
+    std::atomic<LONG> last_y{0};
+    mouse_hook.SetDragReleaseCallback([&](int x, int y) {
+        fire_tid.store(::GetCurrentThreadId(), std::memory_order_relaxed);
+        last_x.store(x, std::memory_order_relaxed);
+        last_y.store(y, std::memory_order_relaxed);
+        fires.fetch_add(1, std::memory_order_relaxed);
+    });
+
+    TEST_CHECK(mouse_hook.Start(), "R09 fixture: MouseHook::Start installs the hook");
+    const DWORD main_tid = ::GetCurrentThreadId();
+    // Hermeticity: the real LL mouse proc early-returns while disabled, so a
+    // physical user click cannot bump click_seq_ mid-test and invalidate the
+    // synthetic jobs below. The worker's fire predicate checks running_, not
+    // enabled_, so the debounce path itself stays fully exercised.
+    mouse_hook.SetEnabled(false);
+    TEST_CHECK(!mouse_hook.IsEnabled(), "R09 fixture: hook input disabled for synthetic-seq isolation");
+
+    // (a) A fresh job fires once, after the settle window, OFF the hook thread.
+    const uint64_t seq1 = mouse_hook.BumpClickSeqForTest();
+    mouse_hook.ArmDelayedClickForTest(seq1, POINT{111, 222});
+    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 1; }, 2000), "R09: armed job fires within settle window");
+    TEST_CHECK(fires.load() == 1, "R09: fires exactly once");
+    TEST_CHECK(last_x.load() == 111 && last_y.load() == 222, "R09: click coordinates survive to the callback");
+    TEST_CHECK(fire_tid.load() != main_tid, "R09: callback ran on the delayed-click worker, not the caller thread");
+
+    // (b) Newer physical click (seq bump) + re-arm: the stale job must NO-OP
+    // and only the latest click fires - the join-free debounce replacing the
+    // C2 join(). Coordinates prove WHICH job fired.
+    const uint64_t seqA = mouse_hook.BumpClickSeqForTest();
+    mouse_hook.ArmDelayedClickForTest(seqA, POINT{10, 10});
+    ::Sleep(5); // mid-settle window, before the 60 ms deadline
+    const uint64_t seqB = mouse_hook.BumpClickSeqForTest();
+    mouse_hook.ArmDelayedClickForTest(seqB, POINT{20, 20});
+    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 2; }, 2000), "R09: latest job fires after invalidation");
+    TEST_CHECK(seqB == seqA + 1, "R09: sequence counter advances per click (invalidation token)");
+    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 2; }, 200) &&
+                   (last_x.load() == 20 && last_y.load() == 20),
+               "R09: only the NEWEST click fires; stale job dropped its callback");
+    ::Sleep(120); // give any wrong job more than two settle windows
+    TEST_CHECK(fires.load() == 2, "R09: stale job never double-fires after its successor ran");
+
+    // (c) Stop() with a pending job: cooperative stop wins, nothing fires, and
+    // Stop() returns promptly (bounded by one poll step).
+    const uint64_t seqC = mouse_hook.BumpClickSeqForTest();
+    mouse_hook.ArmDelayedClickForTest(seqC, POINT{30, 30});
+    const ULONGLONG stop_t = ::GetTickCount64();
+    mouse_hook.Stop();
+    const ULONGLONG stop_ms = ::GetTickCount64() - stop_t;
+    TEST_CHECK(stop_ms < 250, "R09: Stop() is bounded (<= settle window) and never waits on the hook thread");
+    ::Sleep(150);
+    TEST_CHECK(fires.load() == 2, "R09: pending job was stopped, did not fire post-Stop");
+
+    std::cout << "[PASS] MouseHook click_seq_ debounce tests completed." << std::endl;
+}
+
+// REQ-R10 (audit §3.4): the WM_APP marshal protocol - packing helpers,
+// message routing, and WndProc payload ownership. Runs the real WndProc on the
+// test main thread (which owns the created windows' queues).
+void TestUIMarshaling() {
+    std::cout << "[RUN] Testing D2D thread-marshal helpers (REQ-R10)..." << std::endl;
+
+    // 1. Coordinate packing is a lossless int round-trip (the documented
+    //    reason MAKELPARAM was rejected: 16-bit truncation on multi-monitor
+    //    negative virtual coordinates).
+    static_assert(DragIconWindow::ShowAtXFromWParam(DragIconWindow::PackShowAtX(-32000)) == -32000,
+                  "R10: WParam round-trips 16-bit-negative coords");
+    static_assert(DragIconWindow::ShowAtYFromLParam(DragIconWindow::PackShowAtY(INT_MIN)) == INT_MIN,
+                  "R10: LParam round-trips full int range");
+    static_assert(DragIconWindow::kShowAtMessage != DragIconWindow::kHideMessage &&
+                      DragIconWindow::kShowAtMessage != TooltipWindow::kShowTranslationMessage &&
+                      TooltipWindow::kShowMessageMessage != TooltipWindow::kDismissMessage,
+                  "R10: marshaled message IDs are distinct");
+    const int probes[] = { 0, 1, -1, 1024, -54321, 123456, INT_MAX, INT_MIN };
+    bool pack_ok = true;
+    for (const int v : probes) {
+        if (DragIconWindow::ShowAtXFromWParam(DragIconWindow::PackShowAtX(v)) != v ||
+            DragIconWindow::ShowAtYFromLParam(DragIconWindow::PackShowAtY(v)) != v) {
+            pack_ok = false;
+        }
+    }
+    TEST_CHECK(pack_ok, "R10: WParam/LParam int round-trip across full range incl. multi-monitor negatives");
+    TEST_CHECK(!DragIconWindow::RequestShowAt(nullptr, 10, 20), "R10: RequestShowAt(null hwnd) fails cleanly");
+
+    // 2. Real DragIconWindow::WndProc consumes kShowAtMessage and shows the
+    //    icon via the packed coordinates (same-thread direct execution).
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    DragIconWindow drag_icon;
+    TEST_CHECK(drag_icon.Create(hInst), "R10 fixture: DragIconWindow created");
+
+    TEST_CHECK(DragIconWindow::RequestShowAt(drag_icon.GetHwnd(), -200, -300), "R10: RequestShowAt posts");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(drag_icon.IsVisible(), "R10: posted show message executed ShowAt on the owner thread");
+    RECT r = {};
+    ::GetWindowRect(drag_icon.GetHwnd(), &r);
+    // Negative coordinates get clamped on-screen by ShowAt's monitor logic;
+    // the assert that matters: the marshaled values reached ShowAt (visible)
+    // and a positive in-bounds request lands exactly.
+    DragIconWindow::RequestShowAt(drag_icon.GetHwnd(), 320, 240);
+    PumpThreadMessagesOnce();
+    ::GetWindowRect(drag_icon.GetHwnd(), &r);
+    TEST_CHECK(r.left == 320 && r.top == 240, "R10: coords survive WParam/LParam through WndProc intact");
+    ::PostMessageW(drag_icon.GetHwnd(), DragIconWindow::kHideMessage, 0, 0);
+    PumpThreadMessagesOnce();
+    TEST_CHECK(!drag_icon.IsVisible(), "R10: marshaled kHideMessage hides the icon");
+    drag_icon.Destroy();
+
+    // 3. Real TooltipWindow::WndProc takes heap-payload ownership via LPARAM:
+    //    unique_ptr semantics (WndProc deletes exactly once; the posting seam
+    //    deletes on PostMessage failure). Message mode shows header/body.
+    TooltipWindow tooltip;
+    TEST_CHECK(tooltip.Create(hInst), "R10 fixture: TooltipWindow created");
+    tooltip.ShowMessage(100, 100, L"Win+F9", L"Emebalachat Active (Win+F9)");
+    TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode(), "R08 feedback: message-mode bubble shows");
+    TEST_CHECK(tooltip.GetMessageHeader() == L"Win+F9", "R08 feedback: header text intact");
+    tooltip.Dismiss();
+    TEST_CHECK(!tooltip.IsVisible(), "R10: Dismiss hides the bubble");
+
+    auto* msg_payload = new TooltipWindow::MessagePayload();
+    msg_payload->x = 150;
+    msg_payload->y = 160;
+    msg_payload->header = L"Win+F9";
+    msg_payload->body = L"Paused";
+    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowMessageMessage, msg_payload),
+               "R10: heap payload posted via LPARAM");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode() && tooltip.GetMessageHeader() == L"Win+F9",
+               "R10: WndProc consumed payload and rendered message mode");
+
+    auto* tr_payload = new TooltipWindow::TranslationPayload();
+    tr_payload->x = 120;
+    tr_payload->y = 130;
+    tr_payload->source_text = L"source";
+    tr_payload->source_lang_code = "KO";
+    tr_payload->target_lang = "English";
+    tr_payload->translated_text = L"translated";
+    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowTranslationMessage, tr_payload),
+               "R10: translation payload posted");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(!tooltip.IsMessageMode() && tooltip.GetSourceText() == L"source" &&
+                   tooltip.GetTranslatedText() == L"translated",
+               "R10: WndProc consumed translation payload (leaves message mode)");
+
+    // Thread-safe seams called ON the owner thread run inline (no deadlock).
+    tooltip.ShowTranslationThreadSafe(200, 210, L"s2", "EN", "Korean", L"t2");
+    TEST_CHECK(tooltip.IsVisible() && tooltip.GetSourceText() == L"s2", "R10: ThreadSafe seam runs inline on owner thread");
+    tooltip.Destroy();
+
+    std::cout << "[PASS] D2D thread-marshal tests completed." << std::endl;
+}
+
 int main() {
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -915,13 +1699,21 @@ int main() {
     TestSmartBypassModule();
     TestSoundModule();
     TestWin32InputModule();
+    TestClipboardSequencePolling();
     TestGoogleTranslateModule();
+    TestGoogleHttpProfile();
     TestEngineModule();
     TestModelPathValidation();
+    TestTokenTruncation();
+    TestSelectionReleaseMatrix();
     TestBadgeDynamicSizing();
     TestI18nModule();
     TestDragToTranslateComponents();
     TestTtsVoiceSelectionModule();
+    TestHotkeyParsing();
+    TestKeyboardHookStateSyncAndDispatch();
+    TestMouseHookDebounce();
+    TestUIMarshaling();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

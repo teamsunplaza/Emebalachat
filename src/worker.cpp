@@ -3,7 +3,36 @@
 #include "sound.hpp"
 #include "win32_input.hpp"
 
+#include <cstdio>
+
 namespace emebalachat {
+
+namespace {
+
+// REQ-R03: the single selection-release primitive (VK_RIGHT key-down/key-up pair,
+// marked synthetic via EXTRA_INFO_MARKER so our own keyboard hook ignores it).
+// Every non-paste pipeline outcome routes through this exactly once.
+void ReleaseSelectionOnce() {
+    INPUT unsel[2] = {};
+    unsel[0].type = INPUT_KEYBOARD;
+    unsel[0].ki.wVk = VK_RIGHT;
+    unsel[0].ki.dwExtraInfo = EXTRA_INFO_MARKER;
+    unsel[1] = unsel[0];
+    unsel[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    ::SendInput(2, unsel, sizeof(INPUT));
+    ::Sleep(10);
+}
+
+// REQ-R03 path matrix, compile-time proven against the shared header predicate
+// (src/worker.hpp) so worker.cpp and the unit tests assert on ONE definition:
+//   (a) translated empty (engine failure / consent block)      -> release,
+//   (b) translated == line (unchanged text)                    -> release,
+//   (c) paste cancelled by the H1 guard (pasted == false)      -> release,
+//   (d) successful paste (restorer.active=false, Ctrl+V ate the selection) -> no release.
+static_assert(SelectionReleaseRequired(true) == false, "REQ-R03: successful paste must NOT re-release (Ctrl+V already consumed selection)");
+static_assert(SelectionReleaseRequired(false) == true, "REQ-R03: every non-paste path MUST release the block selection");
+
+} // namespace
 
 PipelineWorker::PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge)
     : config_(config), engine_(engine), badge_(badge) {}
@@ -104,15 +133,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     // Check if line is empty or smart bypass says no translation needed
     if (line.empty() || !ShouldTranslate(line, snap.target_language, snap.source_language)) {
-        // Clear text selection with right arrow
-        INPUT unsel[2] = {};
-        unsel[0].type = INPUT_KEYBOARD;
-        unsel[0].ki.wVk = VK_RIGHT;
-        unsel[0].ki.dwExtraInfo = EXTRA_INFO_MARKER;
-        unsel[1] = unsel[0];
-        unsel[1].ki.dwFlags = KEYEVENTF_KEYUP;
-        ::SendInput(2, unsel, sizeof(INPUT));
-
+        // No paste will happen on this path: release the block selection before
+        // Enter so the (about to be sent) text cannot be clobbered (REQ-R03).
+        ReleaseSelectionOnce();
         SendEnterKey(task.is_shift_enter);
         return;
     }
@@ -120,8 +143,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // Indicate translating state on UI pill
     badge_.SetStatus(BadgeStatus::Translating);
 
-    // Perform translation via active engine
-    std::wstring translated = engine_.Translate(line, snap.source_language, snap.target_language);
+    // REQ-R02: capture the explicit engine status. An empty result is no longer
+    // silent - the status below distinguishes privacy-block from engine failure.
+    TranslationStatus status = TranslationStatus::Ok;
+    std::wstring translated = engine_.Translate(line, snap.source_language, snap.target_language, &status);
 
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
@@ -135,20 +160,29 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // Clipboard swap consumed the backup; RAII restorer must not overwrite.
             restorer.active = false;
         }
-        // If !pasted (focus shifted): clipboard untouched, nothing leaked, the
-        // user's original text selection is still active in the (new) foreground
-        // window — do NOT send unselect or Enter into the wrong window.
-    } else {
-        // Translation failed or text was unchanged: clear text selection with right arrow
-        // to prevent SendEnterKey from deleting or overwriting the user's original text!
-        INPUT unsel[2] = {};
-        unsel[0].type = INPUT_KEYBOARD;
-        unsel[0].ki.wVk = VK_RIGHT;
-        unsel[0].ki.dwExtraInfo = EXTRA_INFO_MARKER;
-        unsel[1] = unsel[0];
-        unsel[1].ki.dwFlags = KEYEVENTF_KEYUP;
-        ::SendInput(2, unsel, sizeof(INPUT));
-        ::Sleep(10);
+        // If !pasted (focus shifted): clipboard untouched, nothing leaked. The
+        // block selection is still live and MUST be released - a VK_RIGHT into a
+        // possibly different foreground window is a benign cursor move, while
+        // leaving it selected destroys the user's whole message on their next
+        // keystroke (audit §2.2 / §5-3, REQ-R03). Enter remains H1-gated below.
+    }
+
+    // REQ-R03: exactly-once selection release on every non-paste outcome. The
+    // single call site below is the guarantee; the constexpr matrix above pins
+    // it at compile time.
+    if (SelectionReleaseRequired(pasted)) {
+        ReleaseSelectionOnce();
+    }
+
+    // REQ-R02: failure is user-visible, not silent. When the engine produced no
+    // translation (privacy-consent block or engine error), dispatch the low
+    // failure tone via the existing sound facility before the (possibly) Enter
+    // sends the untranslated original.
+    if (!pasted && translated.empty() &&
+        (status == TranslationStatus::EngineFailed || status == TranslationStatus::CloudConsentBlocked)) {
+        fprintf(stderr, "WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
+                static_cast<int>(status));
+        PlaySoundAsync(SoundType::Disable);
     }
 
     // Auto-Send or Shift+Enter immediate send dispatch
