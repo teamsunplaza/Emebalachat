@@ -7,6 +7,19 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-b6099-orange.svg?style=flat-square)](https://github.com/ggerganov/llama.cpp)
 [![Rendering](https://img.shields.io/badge/GUI-Direct2D%20%2F%20DirectWrite-purple.svg?style=flat-square)](#floating-pill-badge-ui)
 
+> ### **"Never copy-paste again. Type in your language, and let Emebalachat translate and replace your text in real-time anywhere."**
+>
+> **Type in your language. It replaces your text with the translation in real-time.**  
+> *No more copy-paste context switching (복붙 없는 번역).*
+
+### ⚡ The 3-Step Magic: Type ➔ Translate ➔ Replace & Send
+
+- ⌨️ **Type** — Type naturally in your native language (Discord, Slack, in-game chat, browser, Excel, anywhere).
+- ⚡ **Translate** — Offline local AI (**Hy-MT2-1.8B** via llama.cpp) or cloud engine translates in sub-100ms.
+- 🚀 **Replace & Send** — Your original keystrokes are automatically erased and replaced with the translated text, right where your cursor is.
+
+---
+
 **Emebalachat** (에메발라챗) is an ultra-fast, zero-latency native Windows translation tool engineered in pure modern C++20 and Win32 APIs. It seamlessly intercepts input text across any Windows application (Discord, Slack, KakaoTalk, browsers, terminal, IDEs, games), translates it instantly via local LLM or cloud fallback, and places the translated text into the active input field with zero clipboard pollution.
 
 ---
