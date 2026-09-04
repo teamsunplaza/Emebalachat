@@ -226,7 +226,7 @@ Emebalachat supports full bidirectional translation across **38 language entries
 ## 📂 Project Structure
 
 ```
-D:\OneDrive\Projects\Emebalachat\
+C:\path\to\Emebalachat\
 ├── CMakeLists.txt              # Primary CMake build specification (C++20, llama.cpp FetchContent)
 ├── LICENSE                     # MIT Permissive Open-Source License
 ├── README.md                   # This documentation
@@ -273,7 +273,7 @@ Open **x64 Native Tools Command Prompt for VS 2022** and execute:
 
 ```powershell
 # Navigate to project repository
-cd D:\OneDrive\Projects\Emebalachat
+cd C:\path\to\Emebalachat
 
 # Configure CMake with Release optimization and Ninja generator
 cmake -B build -G Ninja `
