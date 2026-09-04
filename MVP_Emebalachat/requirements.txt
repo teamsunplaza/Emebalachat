@@ -1,4 +1,0 @@
-llama-cpp-python
-pystray
-Pillow
-pytest
