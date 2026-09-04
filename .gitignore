@@ -4,6 +4,8 @@
 
 # Build outputs & binaries
 build/
+build-r18/
+build-*/
 bin/
 out/
 [Dd]ebug/

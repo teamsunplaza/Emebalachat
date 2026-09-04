@@ -36,6 +36,45 @@ if (ENABLE_LLAMA_FETCH)
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(llama_cpp)
+
+    # R18 (Zero-Tolerance) — third-party warning isolation for llama.cpp.
+    # On full recompiles the fetched llama.cpp (b6099) surfaces third-party
+    # advisories only: nvcc cudafe "#177-D" (variable declared but never
+    # referenced) from ggml-cuda sources/headers (e.g. fattn-mma-f16.cuh), and
+    # MSVC narrowing advisories C4244/C4267 (observed via llama-graph.cpp
+    # llama-graph.h template instantiation into <memory>/<type_traits>, and
+    # llama-quant.cpp into <thread>/<vector>). None originate in project code,
+    # so the standard isolation is applied, all PRIVATE (project TUs in src/
+    # and tests/ keep /W4 untouched):
+    #   (1) nvcc: --diag-suppress=177 scoped to the CUDA language only.
+    #   (2) MSVC host compilation of the third-party targets: /W0 blanket
+    #       suppression plus explicit /wd4244 /wd4267. The /wd form is
+    #       required in addition to /W0 because these two narrowings are
+    #       re-enabled by in-source #pragma warnings in the toolchain/STL
+    #       headers, and per MSVC semantics a command-line /wd override beats
+    #       in-source pragmas while /W0 does not (verified empirically with
+    #       cl.exe 14.44 against the exact ninja command line). /wd4244 and
+    #       /wd4267 also mirror upstream's own intent: llama.cpp disables
+    #       exactly these two codes in src/llama.cpp for the same narrowing
+    #       pattern.
+    #   (3) their INTERFACE includes are re-marked SYSTEM so llama.cpp/ggml
+    #       header warnings cannot surface through consumer compilation
+    #       either.
+    # No third-party sources are modified; no versions are bumped; project
+    # warning flags are unchanged.
+    foreach(_r18_tp_target IN ITEMS llama ggml ggml-base ggml-cpu ggml-cuda common)
+        if (TARGET ${_r18_tp_target})
+            get_target_property(_r18_tp_inc ${_r18_tp_target} INTERFACE_INCLUDE_DIRECTORIES)
+            if (_r18_tp_inc)
+                set_target_properties(${_r18_tp_target} PROPERTIES
+                    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_r18_tp_inc}")
+            endif()
+            target_compile_options(${_r18_tp_target} PRIVATE
+                $<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=177>
+                $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/W0 /wd4244 /wd4267>
+                $<$<AND:$<COMPILE_LANGUAGE:C>,$<CXX_COMPILER_ID:MSVC>>:/W0 /wd4244 /wd4267>)
+        endif()
+    endforeach()
 endif()
 
 # Core static library for Emebalachat modules
