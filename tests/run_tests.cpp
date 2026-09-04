@@ -35,6 +35,39 @@ static int g_failed_count = 0;
         } \
     } while (0)
 
+// L1 portability helper: resolve a repo-relative fixture (e.g. "assets\\logo.svg")
+// by probing exe-directory and CWD-relative locations up to 2 levels up, mirroring
+// FindLogoPath() in src/ui/asset_loader.cpp. Returns empty when not found.
+// Never hardcode personal absolute paths in tests again.
+static std::filesystem::path ResolveRepoFile(const std::wstring& rel) {
+    std::vector<std::filesystem::path> bases;
+
+    wchar_t exe_path[MAX_PATH] = {0};
+    if (::GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
+        std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
+        bases.push_back(dir);
+        bases.push_back(dir / L"..");
+        bases.push_back(dir / L".." / L"..");
+    }
+
+    std::error_code ec;
+    std::filesystem::path cwd = std::filesystem::current_path(ec);
+    if (!ec) {
+        bases.push_back(cwd);
+        bases.push_back(cwd / L"..");
+        bases.push_back(cwd / L".." / L"..");
+    }
+
+    for (const auto& base : bases) {
+        std::error_code fec;
+        std::filesystem::path cand = base / rel;
+        if (std::filesystem::exists(cand, fec)) {
+            return cand;
+        }
+    }
+    return {};
+}
+
 void TestConfigModule() {
     std::cout << "[RUN] Testing Config & Languages..." << std::endl;
 
@@ -511,8 +544,20 @@ void TestEngineModule() {
     TEST_CHECK(mgr.GetTopK() == 20, "Tencent tuned top_k 20");
     TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.05f) < 0.001f, "Tencent tuned repetition_penalty 1.05");
 
-    const std::string local_model_path = "D:\\OneDrive\\Documents\\models\\tsmodel\\Hy-MT2-1.8B-Q8_0.gguf";
-    if (std::filesystem::exists(local_model_path)) {
+    // Portable large-fixture resolution (L1): optional EMEBALA_MODEL_PATH env
+    // override for models kept outside the repo, else the repo-relative default
+    // matching AppConfig::model_path. Skips cleanly when absent — no personal
+    // absolute paths committed.
+    std::string local_model_path;
+    char env_model[4096] = {0};
+    DWORD env_len = ::GetEnvironmentVariableA(
+        "EMEBALA_MODEL_PATH", env_model, static_cast<DWORD>(sizeof(env_model)) - 1);
+    if (env_len > 0 && env_len < static_cast<DWORD>(sizeof(env_model)) - 1) {
+        local_model_path = env_model;
+    } else {
+        local_model_path = ResolveRepoFile(L"models\\Hy-MT2-1.8B-Q8_0.gguf").string();
+    }
+    if (!local_model_path.empty() && std::filesystem::exists(local_model_path)) {
         std::cout << "  [LOCAL LLM TEST] Loading Hy-MT2-1.8B-Q8_0.gguf for real offline translation..." << std::endl;
         TranslationManager local_mgr(EngineType::LocalLlama, local_model_path);
         TEST_CHECK(local_mgr.IsLocalModelAvailable(), "Local model exists");
@@ -535,7 +580,11 @@ void TestEngineModule() {
         std::cout << "  [CACHED LLAMA RESULT in " << ms2 << " ms]: '오늘 날씨가 아주 좋습니다.' -> '" << ToUtf8(second_res) << "'" << std::endl;
         TEST_CHECK(!second_res.empty(), "Second local LLM call produced non-empty result");
     } else {
-        std::cout << "  [LOCAL LLM SKIP] Model file not present at: " << local_model_path << std::endl;
+        std::cout << "  [LOCAL LLM SKIP] Model fixture absent ("
+                  << (local_model_path.empty()
+                          ? "set EMEBALA_MODEL_PATH or add models/Hy-MT2-1.8B-Q8_0.gguf"
+                          : local_model_path)
+                  << ")" << std::endl;
     }
 
     // H2 explicit-choice exception: a user who deliberately selects engine_type=google
@@ -765,8 +814,9 @@ void TestDragToTranslateComponents() {
     std::wstring resolvedLogo = FindLogoPath();
     TEST_CHECK(!resolvedLogo.empty(), "FindLogoPath resolves logo.png successfully");
     TEST_CHECK(std::filesystem::exists(resolvedLogo), "Resolved logo.png exists on disk");
-    TEST_CHECK(std::filesystem::exists("D:\\OneDrive\\Projects\\Emebalachat\\assets\\logo.svg"), "Emebalachat assets/logo.svg exists");
-    TEST_CHECK(std::filesystem::exists("D:\\OneDrive\\Projects\\Emebala\\assets\\logo.svg"), "Emebala assets/logo.svg exists");
+    std::filesystem::path resolvedLogoSvg = ResolveRepoFile(L"assets\\logo.svg");
+    TEST_CHECK(!resolvedLogoSvg.empty(), "assets/logo.svg resolves via exe/CWD-relative candidates (portable)");
+    TEST_CHECK(std::filesystem::exists(resolvedLogoSvg), "Resolved assets/logo.svg exists on disk");
 
     std::cout << "[PASS] Drag-to-Translate Components tests completed." << std::endl;
 }

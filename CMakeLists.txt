@@ -101,6 +101,15 @@ target_link_libraries(Emebalachat PRIVATE
 if (MSVC)
     target_compile_options(Emebalachat PRIVATE /W4 /utf-8 /permissive-)
     if (TARGET llama)
+        # L3 (security, LOW): CUDA DLLs are delay-loaded, so they resolve through
+        # the standard search order at first use. Hardening applied: main.cpp calls
+        # SetDllDirectoryW(nullptr) at startup, removing the CWD hijack vector while
+        # keeping application-dir + PATH resolution intact (the installer ships no
+        # CUDA DLLs; GPU machines resolve them via PATH). SetDefaultDllDirectories
+        # is intentionally NOT used: it would drop PATH from the search and break
+        # the CUDA load chain on toolkit-installed machines (CPU fallback would
+        # silently replace GPU inference). Revisit if the installer ever bundles
+        # the CUDA DLLs into {app}, at which point PATH restriction becomes safe.
         target_link_options(Emebalachat PRIVATE
             "/DELAYLOAD:cublas64_13.dll"
             "/DELAYLOAD:cublasLt64_13.dll"
