@@ -132,9 +132,52 @@ const
   MODEL_FILENAME = 'Hy-MT2-1.8B-Q8_0.gguf';
   MIN_DISK_SPACE_MB = 3072; // 3 GB in MB
 
+  // M2 (security): Pinned SHA-256 of the model file above. Empty string =
+  // verification skipped (development builds). RELEASE PROCEDURE: before
+  // shipping, compute the hash of the exact file hosted at MODEL_URL and
+  // paste it here (hex only, no separators), e.g. on Windows:
+  //   certutil -hashfile "Hy-MT2-1.8B-Q8_0.gguf" SHA256
+  //   (or PowerShell: (Get-FileHash model.gguf -Algorithm SHA256).Hash)
+  // When non-empty, the download page fails the download on mismatch and
+  // VerifyDownloadedModel() re-checks the temp file before it is copied to
+  // the models directory, so an attacker-influenced GGUF is never handed
+  // to the llama.cpp parser.
+  EXPECTED_MODEL_SHA256 = '';
+
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
+
+// ------------------------------------------------------------------------
+// VerifyDownloadedModel - M2 integrity check of the downloaded temp file
+// against EXPECTED_MODEL_SHA256. Returns True when no hash is pinned
+// (empty constant = skip, documented above). GetSHA256OfFile is only part
+// of the [Code] API on Inno Setup 6.3+, so on older compilers this defers
+// to the RequiredSHA256OfFile check enforced natively by
+// TDownloadWizardPage.Add below (supported since 6.0). May raise on file
+// read errors - callers must wrap in try/except and treat it as failure.
+// ------------------------------------------------------------------------
+function VerifyDownloadedModel(const FilePath: String): Boolean;
+var
+  ActualHash: String;
+begin
+  Result := True;
+  if EXPECTED_MODEL_SHA256 = '' then
+  begin
+    Log('EXPECTED_MODEL_SHA256 is empty - model integrity verification skipped (dev build).');
+    Exit;
+  end;
+#if VER >= 0x06030000
+  ActualHash := GetSHA256OfFile(FilePath);
+  Result := SameText(ActualHash, EXPECTED_MODEL_SHA256);
+  if Result then
+    Log('Model SHA-256 verified: ' + ActualHash)
+  else
+    Log('MODEL SHA-256 MISMATCH - expected ' + EXPECTED_MODEL_SHA256 + ', got ' + ActualHash);
+#else
+  Log('Explicit post-download hash re-check not available on this Inno Setup version; relying on the download page RequiredSHA256OfFile verification.');
+#endif
+end;
 
 // ------------------------------------------------------------------------
 // Download progress callback - logs progress to the installer log
@@ -197,6 +240,7 @@ var
   ModelDestPath: String;
   ModelTmpPath: String;
   DownloadSuccess: Boolean;
+  HashOk: Boolean;
   UserChoice: Integer;
 begin
   ModelDestDir := ExpandConstant('{app}\models');
@@ -207,6 +251,15 @@ begin
   if FileExists(ModelDestPath) then
   begin
     Log('Model already exists at: ' + ModelDestPath);
+    // M2: log-only hash check for pre-existing files. User data is never
+    // deleted by the installer; a mismatch is surfaced in the setup log so
+    // the user can re-download or manually verify (certutil -hashfile).
+    try
+      if not VerifyDownloadedModel(ModelDestPath) then
+        Log('WARNING: pre-existing model file does not match EXPECTED_MODEL_SHA256. It was NOT touched by this installer.');
+    except
+      Log('WARNING: could not hash pre-existing model file: ' + GetExceptionMessage());
+    end;
     MsgBox(CustomMessage('ModelAlreadyExists'), mbInformation, MB_OK);
     Exit;
   end;
@@ -220,7 +273,9 @@ begin
   while not DownloadSuccess do
   begin
     DownloadPage.Clear();
-    DownloadPage.Add(MODEL_URL, MODEL_FILENAME, '');
+    // M2: pass the pinned SHA-256 as RequiredSHA256OfFile - the download page
+    // aborts with an exception when the downloaded bytes do not match.
+    DownloadPage.Add(MODEL_URL, MODEL_FILENAME, EXPECTED_MODEL_SHA256);
     DownloadPage.Show();
     try
       DownloadPage.Download();
@@ -231,6 +286,24 @@ begin
       DownloadSuccess := False;
     end;
     DownloadPage.Hide();
+
+    if DownloadSuccess then
+    begin
+      // M2: defense-in-depth re-verification of the temp file BEFORE copying
+      // it into {app}\models. A mismatch deletes the temp file and re-enters
+      // the retry/skip/cancel flow, so an unverified model is never installed.
+      try
+        HashOk := VerifyDownloadedModel(ModelTmpPath);
+      except
+        Log('Model hash verification error: ' + GetExceptionMessage());
+        HashOk := False;
+      end;
+      if not HashOk then
+      begin
+        DeleteFile(ModelTmpPath);
+        DownloadSuccess := False;
+      end;
+    end;
 
     if DownloadSuccess then
     begin

@@ -50,6 +50,7 @@ void TestConfigModule() {
     TEST_CHECK(cfg.hotkey_mode == "Ctrl+Shift+Enter", "Default hotkey_mode is Ctrl+Shift+Enter");
     TEST_CHECK(cfg.drag_to_translate == true, "Default drag_to_translate is true");
     TEST_CHECK(cfg.drag_hotkey == "double_ctrl_c", "Default drag_hotkey is double_ctrl_c");
+    TEST_CHECK(cfg.cloud_fallback_enabled == false, "Default cloud_fallback_enabled is false (privacy-first, H2)");
     TEST_CHECK(std::abs(cfg.temperature - 0.7f) < 0.001f, "Default temperature is 0.7f");
     TEST_CHECK(std::abs(cfg.top_p - 0.6f) < 0.001f, "Default top_p is 0.6f");
     TEST_CHECK(cfg.top_k == 20, "Default top_k is 20");
@@ -119,17 +120,30 @@ void TestConfigModule() {
     TEST_CHECK(loaded_cfg.drag_to_translate == false, "Persisted drag_to_translate matches");
     TEST_CHECK(loaded_cfg.drag_hotkey == "custom_hotkey", "Persisted drag_hotkey matches");
     TEST_CHECK(loaded_cfg.model_path == "D:\\custom\\model.gguf", "Persisted model_path matches");
+    TEST_CHECK(loaded_cfg.cloud_fallback_enabled == false, "Persisted cloud_fallback_enabled defaults false when absent from JSON");
     TEST_CHECK(std::abs(loaded_cfg.temperature - 0.85f) < 0.001f, "Persisted temperature matches");
     TEST_CHECK(std::abs(loaded_cfg.top_p - 0.9f) < 0.001f, "Persisted top_p matches");
     TEST_CHECK(loaded_cfg.top_k == 40, "Persisted top_k matches");
     TEST_CHECK(std::abs(loaded_cfg.repetition_penalty - 1.15f) < 0.001f, "Persisted repetition_penalty matches");
     TEST_CHECK(loaded_cfg.badge_x == 450 && loaded_cfg.badge_y == 600, "Persisted badge_x and badge_y match");
 
+    // 5b. cloud_fallback_enabled explicit roundtrip (set true -> serialize -> parse -> true)
+    AppConfig cloud_cfg;
+    cloud_cfg.cloud_fallback_enabled = true;
+    std::string cloud_json = cloud_cfg.ToJsonString();
+    TEST_CHECK(cloud_json.find("\"cloud_fallback_enabled\": true") != std::string::npos,
+               "ToJsonString emits cloud_fallback_enabled: true when enabled");
+    AppConfig cloud_loaded;
+    bool cloud_parsed = cloud_loaded.FromJsonString(cloud_json);
+    TEST_CHECK(cloud_parsed, "cloud_fallback JSON parses");
+    TEST_CHECK(cloud_loaded.cloud_fallback_enabled == true, "cloud_fallback_enabled true survives roundtrip");
+
     // 6. Graceful recovery on malformed JSON
     AppConfig fallback_cfg;
     bool bad_parse = fallback_cfg.FromJsonString("{ invalid json: ...");
     TEST_CHECK(!bad_parse, "Corrupted JSON reports parse failure");
     TEST_CHECK(fallback_cfg.target_language == "English", "Corrupted JSON retains default values");
+    TEST_CHECK(fallback_cfg.cloud_fallback_enabled == false, "Corrupted JSON retains cloud_fallback_enabled default false");
 
     std::cout << "[PASS] Config & Languages tests completed." << std::endl;
 }
@@ -332,6 +346,25 @@ void TestWin32InputModule() {
     bool restore_ok = RestoreClipboard(backup);
     TEST_CHECK(restore_ok, "RestoreClipboard succeeds");
 
+    // 5. H1 wrong-window injection guard (pure-logic, no real window needed)
+    // Fake HWNDs are opaque invalid handles; GetAncestor() on them returns NULL
+    // deterministically, so the equality / null branches are exercised exactly.
+    HWND fake_a = reinterpret_cast<HWND>(static_cast<intptr_t>(0x1000));
+    HWND fake_b = reinterpret_cast<HWND>(static_cast<intptr_t>(0x2000));
+
+    // No captured target -> always allow (CopySelectedLine path has no HWND).
+    TEST_CHECK(IsSameWindowForInjection(nullptr, nullptr), "Guard allows when no target captured");
+    TEST_CHECK(IsSameWindowForInjection(nullptr, fake_a), "Guard allows when target null regardless of foreground");
+
+    // Target captured but foreground lost -> refuse to inject.
+    TEST_CHECK(!IsSameWindowForInjection(fake_a, nullptr), "Guard refuses when target captured but foreground null");
+
+    // Identical handle -> allow.
+    TEST_CHECK(IsSameWindowForInjection(fake_a, fake_a), "Guard allows identical foreground/target handle");
+
+    // Different window roots -> refuse (focus moved to another application).
+    TEST_CHECK(!IsSameWindowForInjection(fake_a, fake_b), "Guard refuses different foreground window root");
+
     std::cout << "[PASS] Win32 Input & Clipboard Safety tests completed." << std::endl;
 }
 
@@ -392,8 +425,17 @@ void TestEngineModule() {
     TEST_CHECK(mgr.GetActiveEngineName().find("Google Translate") != std::string::npos,
                "Active engine automatically falls back to Google Translate");
 
+    // H2 gate: cloud_fallback_enabled defaults to FALSE, so the silent auto->cloud
+    // path must NOT transmit; Translate returns empty instead of leaking text.
+    TEST_CHECK(!mgr.IsCloudFallbackEnabled(), "Cloud fallback gate defaults to disabled (H2)");
+    std::wstring gated_res = mgr.Translate(L"감사합니다", "KO", "EN");
+    TEST_CHECK(gated_res.empty(), "H2: auto->cloud returns empty when consent gate is disabled (no silent leak)");
+
+    // Enable the gate -> the same auto->cloud fallback now performs the live call.
+    mgr.SetCloudFallbackEnabled(true);
+    TEST_CHECK(mgr.IsCloudFallbackEnabled(), "Cloud fallback gate can be enabled via setter");
     std::wstring translated = mgr.Translate(L"감사합니다", "KO", "EN");
-    TEST_CHECK(!translated.empty(), "Manager Translate succeeds via auto fallback");
+    TEST_CHECK(!translated.empty(), "Manager Translate succeeds via auto fallback when gate enabled");
     std::wcout << L"  [LIVE MGR RESULT]: '감사합니다' -> '" << translated << L"'" << std::endl;
 
     // Sampling parameter modification and verification
@@ -437,7 +479,96 @@ void TestEngineModule() {
         std::cout << "  [LOCAL LLM SKIP] Model file not present at: " << local_model_path << std::endl;
     }
 
+    // H2 explicit-choice exception: a user who deliberately selects engine_type=google
+    // has explicitly consented to the cloud, so Translate works even with the gate off.
+    TranslationManager google_mgr(EngineType::GoogleTranslate, "");
+    TEST_CHECK(!google_mgr.IsCloudFallbackEnabled(), "Explicit-google manager also defaults gate off");
+    std::wstring google_res = google_mgr.Translate(L"안녕하세요", "KO", "EN");
+    TEST_CHECK(!google_res.empty(), "H2: explicit engine_type=google bypasses gate (deliberate consent)");
+    std::cout << "  [EXPLICIT GOOGLE RESULT]: '안녕하세요' -> '" << ToUtf8(google_res) << "'" << std::endl;
+
     std::cout << "[PASS] Translation Manager tests completed." << std::endl;
+}
+
+// M3 (security): pure-logic validation of IsValidModelPath - no real GGUF model
+// is loaded; fixtures are tiny temp files created/cleaned here.
+void TestModelPathValidation() {
+    std::cout << "[RUN] Testing M3 Model Path Validation..." << std::endl;
+
+    // Fixture: <temp>/emebala_m3_test/models/fake.gguf (valid), plus a
+    // directory named trick.gguf and a sibling outside the base dir.
+    std::error_code ec;
+    std::filesystem::path root = std::filesystem::temp_directory_path(ec) / "emebala_m3_test";
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "models", ec);
+    TEST_CHECK(!ec, "M3 fixture: temp dirs created");
+
+    std::filesystem::path valid = root / "models" / "fake.gguf";
+    {
+        std::ofstream of(valid, std::ios::binary);
+        of << "GGUF-fixture";
+    }
+    std::filesystem::path upper = root / "models" / "FAKE2.GGUF";
+    {
+        std::ofstream of(upper, std::ios::binary);
+        of << "GGUF-fixture";
+    }
+    std::filesystem::path wrong_ext = root / "models" / "payload.exe";
+    {
+        std::ofstream of(wrong_ext, std::ios::binary);
+        of << "MZ";
+    }
+    std::filesystem::path dir_as_gguf = root / "models" / "trick.gguf";
+    std::filesystem::create_directories(dir_as_gguf, ec);
+    std::filesystem::path outside = root / "outside.gguf";
+    {
+        std::ofstream of(outside, std::ios::binary);
+        of << "GGUF-outside-base";
+    }
+
+    // 1. Valid absolute .gguf regular file -> accepted.
+    TEST_CHECK(IsValidModelPath(valid.string()), "M3: valid absolute .gguf file accepted");
+
+    // 2. Case-insensitive extension (.GGUF) -> accepted.
+    TEST_CHECK(IsValidModelPath(upper.string()), "M3: uppercase .GGUF extension accepted");
+
+    // 3. Empty path -> rejected.
+    TEST_CHECK(!IsValidModelPath(""), "M3: empty path rejected");
+
+    // 4. Wrong extension -> rejected even though the file exists.
+    TEST_CHECK(!IsValidModelPath(wrong_ext.string()), "M3: non-.gguf extension rejected");
+
+    // 5. Path with no extension -> rejected.
+    TEST_CHECK(!IsValidModelPath((root / "models" / "noext").string()), "M3: extensionless path rejected");
+
+    // 6. Non-existent .gguf path -> rejected.
+    TEST_CHECK(!IsValidModelPath((root / "models" / "missing.gguf").string()), "M3: missing file rejected");
+
+    // 7. Directory named *.gguf -> rejected (must be a REGULAR file).
+    TEST_CHECK(!IsValidModelPath(dir_as_gguf.string()), "M3: directory with .gguf name rejected");
+
+    // 8. Relative path inside base_dir -> accepted (resolved against base).
+    TEST_CHECK(IsValidModelPath("fake.gguf", (root / "models").string()),
+               "M3: relative in-base path accepted");
+
+    // 9. Relative path with '..' escaping base_dir -> rejected (traversal).
+    TEST_CHECK(!IsValidModelPath("../outside.gguf", (root / "models").string()),
+               "M3: '../' traversal out of base dir rejected");
+
+    // 10. Deeper escape that re-enters the base dir name -> still rejected
+    // (resolves to root/models/../outside.gguf collapsing OUT of base).
+    TEST_CHECK(!IsValidModelPath("sub/../../outside.gguf", (root / "models").string()),
+               "M3: multi-step traversal escape rejected");
+
+    // 11. Legitimate relative path that resolves inside base after collapsing
+    // ('./sub/../fake.gguf') -> accepted (containment compares resolved forms).
+    TEST_CHECK(IsValidModelPath("./sub/../fake.gguf", (root / "models").string()),
+               "M3: relative path that collapses back inside base accepted");
+
+    // Clean up fixtures (best-effort; temp dir, safe to force-remove).
+    std::filesystem::remove_all(root, ec);
+
+    std::cout << "[PASS] M3 Model Path Validation tests completed." << std::endl;
 }
 
 void TestBadgeDynamicSizing() {
@@ -677,6 +808,7 @@ int main() {
     TestWin32InputModule();
     TestGoogleTranslateModule();
     TestEngineModule();
+    TestModelPathValidation();
     TestBadgeDynamicSizing();
     TestI18nModule();
     TestDragToTranslateComponents();

@@ -7,6 +7,18 @@
 
 namespace emebalachat {
 
+// M3 (security): Validates a GGUF model file path before it reaches the llama.cpp
+// loader. Fail-closed: returns false and logs a traceable
+// ENGINE/IsValidModelPath/NNN message to stderr when:
+//   001 path is empty
+//   002 path does not exist as a regular file
+//   003 extension is not ".gguf" (case-insensitive)
+//   004 relative path resolves (via '..' components) OUTSIDE base_dir
+// base_dir defaults to the current working directory when empty. Absolute paths
+// are not subject to the containment rule (they define their own location).
+// Pure filesystem logic - unit-testable without loading any model.
+bool IsValidModelPath(std::string_view path, std::string_view base_dir = {});
+
 enum class EngineType {
     Auto,           // Auto-detect: Local llama if model exists on disk, otherwise seamless Google Translate fallback
     GoogleTranslate,// 100% Free, zero-install, zero-API-key Google Translate via native WinHTTP

@@ -53,9 +53,37 @@ The installer compiles successfully even without these files — they are option
 1. Installs `Emebalachat.exe` to `Program Files\Emebalachat`
 2. Creates Start Menu shortcuts and (optionally) a desktop shortcut
 3. Optionally registers the app for auto-start with Windows
-4. Downloads the AI translation model (~1.8 GB) from Hugging Face
+4. Downloads the AI translation model (~1.8 GB) from Hugging Face, verifying its
+   SHA-256 against the `EXPECTED_MODEL_SHA256` constant in `setup.iss`
 5. Generates a `config.json` configuration file
 6. If the model download is skipped, the config defaults to Google Translate mode
+
+## Model Integrity Verification (release procedure)
+
+The downloaded model's SHA-256 is checked against the `EXPECTED_MODEL_SHA256`
+constant in `setup.iss`:
+
+- **Non-empty** → the download page aborts on any hash mismatch, the temp file is
+  deleted, and the user is offered Retry / Skip / Cancel. The hash is re-checked
+  (Inno Setup 6.3+) before the file is copied to `{app}\models`.
+- **Empty string (default)** → verification is skipped. This is intentional for
+  development builds.
+
+Before shipping a release, compute the hash of the exact file hosted at `MODEL_URL`
+and paste it (hex only, no separators) into `EXPECTED_MODEL_SHA256`:
+
+```powershell
+# PowerShell
+(Get-FileHash .\Hy-MT2-1.8B-Q8_0.gguf -Algorithm SHA256).Hash
+```
+
+```cmd
+:: or certutil
+certutil -hashfile "Hy-MT2-1.8B-Q8_0.gguf" SHA256
+```
+
+Pre-existing model files left by earlier installs are hash-checked too, but only
+logged on mismatch (the installer never deletes user data).
 
 ## Supported Languages
 

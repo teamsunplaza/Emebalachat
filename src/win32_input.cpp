@@ -217,6 +217,19 @@ static const UINT g_cfExcludeClipboardProcessing = ::RegisterClipboardFormatW(L"
 static const UINT g_cfCanIncludeInHistory = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
 static const UINT g_cfCanUploadToCloud = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
 
+// M1 (security): Clipboard observation window.
+// Between SetClipboardText() and RestoreClipboard() inside PasteAndRestore(), the
+// translated text is observable by any process polling GetClipboardData (third-party
+// clipboard managers are not bound by the advisory exclusion formats above). The only
+// shrinkable part of that window is the artificial "settle" wait after Ctrl+V: the
+// target app must finish reading the clipboard (Electron/Slate.js read it asynchronously
+// via IPC) before we EmptyClipboard, so it cannot be zero.
+// 120 ms is the field-proven value shipped in v0.10.0 (commit f32d724); the 180 ms
+// value added 60 ms of pure exposure with no measured benefit (raised defensively in
+// d8f6a46). Keep this as small as real-world pastes allow; raise it back ONLY with a
+// manual paste test against Discord/Slack/Teams, not by default.
+constexpr DWORD kPasteSettleDelayMs = 120;
+
 bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
     size_t byte_len = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, byte_len);
@@ -472,7 +485,7 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
     bool ok = SetClipboardText(text);
     if (ok) {
         PasteSelection();
-        ::Sleep(180); // 180ms paste settle delay (Electron/Slate.js IPC stability)
+        ::Sleep(kPasteSettleDelayMs); // M1: minimal paste settle (Electron/Slate.js IPC stability)
     }
 
     // Always restore original clipboard state without leak

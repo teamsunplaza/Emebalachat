@@ -4,6 +4,7 @@
 #include "unicode_utils.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -17,6 +18,92 @@
 #endif
 
 namespace emebalachat {
+
+namespace {
+
+// Lower-case ASCII characters for case-insensitive path comparisons (Windows
+// paths are case-insensitive; this project targets Windows only).
+std::string LowerAscii(std::string s) {
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return s;
+}
+
+} // namespace
+
+// M3 (security): fail-closed validation of a GGUF model path before it is handed
+// to the llama.cpp loader. Rejections log an ENGINE/IsValidModelPath/NNN code to
+// stderr (never to a persisted log). The check is purely lexical + regular-file
+// based, so it is unit-testable without loading any model.
+bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
+    if (path.empty()) {
+        fprintf(stderr, "ENGINE/IsValidModelPath/001: empty model path rejected\n");
+        return false;
+    }
+
+    const std::filesystem::path p{std::string(path)};
+
+    // Extension must be exactly ".gguf" (case-insensitive) so the GGUF parser
+    // never touches arbitrary files chosen via a tampered config.json.
+    if (LowerAscii(p.extension().string()) != ".gguf") {
+        fprintf(stderr, "ENGINE/IsValidModelPath/003: non-.gguf model path rejected: %s\n",
+                std::string(path).c_str());
+        return false;
+    }
+
+    // For relative paths, resolve against base_dir (default: current working
+    // directory) and collapse '.'/'..' components BEFORE any filesystem access,
+    // then verify the resolved target stayed inside base_dir (path-traversal
+    // check). Absolute paths define their own location; containment does not
+    // apply to them. Existence is checked on the resolved target so the loader
+    // (which resolves against the process cwd, i.e. the default base_dir) and
+    // this validation agree on which file is being loaded.
+    std::filesystem::path target = p;
+    if (p.is_relative()) {
+        std::error_code ec;
+        std::filesystem::path base;
+        if (base_dir.empty()) {
+            base = std::filesystem::current_path(ec);
+            if (ec) {
+                fprintf(stderr, "ENGINE/IsValidModelPath/004: cannot resolve base directory; relative model path rejected: %s\n",
+                        std::string(path).c_str());
+                return false;
+            }
+        } else {
+            base = std::filesystem::path{std::string(base_dir)};
+        }
+
+        std::filesystem::path joined = (base / p).lexically_normal();
+        std::filesystem::path norm_base = base.lexically_normal();
+        std::string j = LowerAscii(joined.generic_string());
+        std::string b = LowerAscii(norm_base.generic_string());
+        while (!b.empty() && b.back() == '/') {
+            b.pop_back();
+        }
+        const bool contained =
+            (j == b) ||
+            (j.size() > b.size() && j.compare(0, b.size(), b) == 0 && j[b.size()] == '/');
+        if (!contained) {
+            fprintf(stderr, "ENGINE/IsValidModelPath/004: relative model path escapes base directory via '..' (path traversal) rejected: %s\n",
+                    std::string(path).c_str());
+            return false;
+        }
+        target = joined;
+    }
+
+    // Must exist as a regular file (not a directory, device, or missing entry).
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(target, ec) || ec) {
+        fprintf(stderr, "ENGINE/IsValidModelPath/002: model file does not exist or is not a regular file: %s\n",
+                std::string(path).c_str());
+        return false;
+    }
+
+    return true;
+}
 
 #ifdef HAVE_LLAMA_CPP
 
@@ -60,12 +147,11 @@ struct TranslationManager::LlamaEngine {
 
         Unload();
 
-        if (path.empty()) {
-            return false;
-        }
-
-        std::error_code ec;
-        if (!std::filesystem::exists(path, ec)) {
+        // M3 (security): validate the path (non-empty, regular file, .gguf
+        // extension, no '..' traversal for relative paths) BEFORE passing it to
+        // the GGUF loader. Fail-closed with an ENGINE/IsValidModelPath/NNN code
+        // on stderr; the worker treats a false return like any load failure.
+        if (!IsValidModelPath(path)) {
             return false;
         }
 

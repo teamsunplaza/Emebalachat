@@ -64,7 +64,9 @@ std::wstring CopySelectedText(HWND hwnd);
 std::wstring CopySelectedLine();
 
 // High-level pipeline helper:
-// Sets translated text to clipboard, sends Ctrl+V, sleeps 180ms paste settle delay, restores original clipboard.
+// Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle
+// delay (kPasteSettleDelayMs, currently 120ms - see M1 note in win32_input.cpp),
+// then restores the original clipboard as soon as the target app has read it.
 // If expected_target is non-null, re-verifies the foreground window immediately before
 // injecting Ctrl+V and aborts (returns false, no paste) when focus has shifted to a
 // different window root. Prevents translated text leaking into the wrong application.
