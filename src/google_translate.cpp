@@ -3,6 +3,7 @@
 #include "unicode_utils.hpp"
 
 #include <cctype>
+#include <cstdio>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -101,14 +102,35 @@ void SkipWhitespace(std::string_view src, size_t& pos) {
     }
 }
 
-// Executes an HTTPS GET request using WinHTTP and returns response string
+// Build-pinned REQ-R05 budget: the dict-chrome-ex profile total must never
+// exceed the 8 s directive, so a 403/429/hung socket cannot wedge the pipeline
+// for the 16 s the audit measured (3+3+5+5 s on both call paths). These assert
+// the SAME values RequestProfileForPath returns for each endpoint, i.e. the
+// real HttpGet wiring, not a copy of the constants.
+static_assert(GoogleTranslate::RequestProfileForPath(L"/translate_a/t?client=dict-chrome-ex&sl=ko&tl=en&q=x").resolve_ms
+              + GoogleTranslate::RequestProfileForPath(L"/translate_a/t?client=dict-chrome-ex&sl=ko&tl=en&q=x").connect_ms
+              + GoogleTranslate::RequestProfileForPath(L"/translate_a/t?client=dict-chrome-ex&sl=ko&tl=en&q=x").send_ms
+              + GoogleTranslate::RequestProfileForPath(L"/translate_a/t?client=dict-chrome-ex&sl=ko&tl=en&q=x").receive_ms
+              <= 8000,
+              "REQ-R05: dict-chrome-ex profile must stay within the 8 s total budget");
+static_assert(GoogleTranslate::RequestProfileForPath(L"/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&q=x").resolve_ms == 3000
+              && GoogleTranslate::RequestProfileForPath(L"/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&q=x").connect_ms == 3000
+              && GoogleTranslate::RequestProfileForPath(L"/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&q=x").send_ms == 5000
+              && GoogleTranslate::RequestProfileForPath(L"/translate_a/single?client=gtx&sl=ko&tl=en&dt=t&q=x").receive_ms == 5000,
+              "REQ-R05: gtx profile keeps the previous honest-UA phase split");
+
+// Executes an HTTPS GET request using WinHTTP and returns response string.
+// REQ-R05: request profile (UA + timeouts) is selected by RequestProfileForPath.
+// The dict-chrome-ex path (clients5.google.com) is Chrome-extension-only and
+// must present a Chrome UA plus Chrome-typical headers, on the trimmed <= 8 s
+// timeout budget. The gtx fallback endpoint is a public API and keeps the
+// truthful product UA and the previous split.
 bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& response_body) {
-    // L4 fix: truthful product User-Agent instead of a spoofed Chrome browser
-    // string. The endpoint only requires a non-empty UA header; everything else
-    // in the request (scheme, host, path, query, headers) is byte-identical to
-    // the previously working Chrome-UA flow.
+    const GoogleHttpProfile profile = GoogleTranslate::RequestProfileForPath(path);
+    const bool chrome_endpoint = GoogleTranslate::IsDictChromeExEndpoint(path);
+
     ScopedHInternet hSession(::WinHttpOpen(
-        L"Emebalachat/0.10 (+https://github.com/teamsunplaza/Emebalachat)",
+        profile.user_agent.data(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -116,8 +138,8 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     ));
     if (!hSession) return false;
 
-    // Set reasonable timeouts: 3s resolve, 3s connect, 5s send, 5s receive
-    ::WinHttpSetTimeouts(hSession.get(), 3000, 3000, 5000, 5000);
+    ::WinHttpSetTimeouts(hSession.get(), profile.resolve_ms, profile.connect_ms,
+                         profile.send_ms, profile.receive_ms);
 
     ScopedHInternet hConnect(::WinHttpConnect(
         hSession.get(),
@@ -138,16 +160,27 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     ));
     if (!hRequest) return false;
 
+    // REQ-R05: Chrome-typical headers ride on the dict-chrome-ex profile only.
+    std::wstring extra_headers;
+    if (chrome_endpoint) {
+        extra_headers = std::wstring(GoogleTranslate::ChromeAdditionalHeaders());
+    }
+
     BOOL send_ok = ::WinHttpSendRequest(
         hRequest.get(),
-        WINHTTP_NO_ADDITIONAL_HEADERS,
-        0,
+        extra_headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : extra_headers.c_str(),
+        static_cast<DWORD>(extra_headers.size()),
         WINHTTP_NO_REQUEST_DATA,
         0,
         0,
         0
     );
-    if (!send_ok) return false;
+    if (!send_ok) {
+        fwprintf(stderr,
+                 L"GOOGLE_T/HttpGet/001: WinHttpSendRequest failed (err=%lu, chrome_profile=%s, host=%ls)\n",
+                 ::GetLastError(), chrome_endpoint ? L"true" : L"false", host.c_str());
+        return false;
+    }
 
     BOOL recv_ok = ::WinHttpReceiveResponse(hRequest.get(), nullptr);
     if (!recv_ok) return false;
@@ -182,6 +215,19 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
 }
 
 } // namespace
+
+// REQ-R05: Chrome-typical headers for the dict-chrome-ex profile. Format
+// follows the WinHttpSendRequest contract: "Header: value\r\n" per line,
+// CRLF-terminated, no leading/trailing junk. NOTE: intentionally NO
+// Accept-Encoding - WinHTTP here does not decompress gzip responses, and
+// claiming gzip support without a handler would corrupt ParseResponseJson
+// input (silent failure worse than 403). UA strings and the endpoint->profile
+// selection are constexpr in the header so both static_asserts (below) and
+// the test suite can pin them without a live socket.
+std::wstring GoogleTranslate::ChromeAdditionalHeaders() {
+    return L"Accept: */*\r\n"
+           L"Accept-Language: en-US,en;q=0.9\r\n";
+}
 
 std::string GoogleTranslate::MapLanguageCode(std::string_view code) {
     std::string norm = NormalizeLanguageCode(code);

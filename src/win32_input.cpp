@@ -1,6 +1,7 @@
 #include "win32_input.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <cwctype>
 #include <thread>
 #include <windows.h>
@@ -36,21 +37,38 @@ inline INPUT CreateKeyInput(WORD vk, bool is_up, DWORD extra_info = EXTRA_INFO_M
     return input;
 }
 
+// REQ-R13 (audit §5 latent item 1): OpenClipboard contention with another
+// process holding the clipboard. Bounded exponential backoff: up to
+// kClipboardOpenMaxAttempts tries with 5/10/20/40 ms sleeps (75 ms total,
+// inside the ~100 ms budget) - replaces the old fixed-5 ms retry spin. The
+// caller-supplied timeout_ms stays a hard wall-clock cap so tight budgets win.
 bool OpenClipboardWithRetry(HWND hwnd, DWORD timeout_ms = 100) {
-    auto start = std::chrono::steady_clock::now();
-    while (true) {
+    const auto start = std::chrono::steady_clock::now();
+    for (int attempt = 1; attempt <= kClipboardOpenMaxAttempts; ++attempt) {
         if (::OpenClipboard(hwnd)) {
             return true;
         }
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const DWORD backoff = ClipboardOpenBackoffDelayMs(attempt);
+        if (backoff == 0) {
+            break; // final scheduled attempt failed
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start
         ).count();
-        if (elapsed >= timeout_ms) {
+        if (static_cast<DWORD>(elapsed) >= timeout_ms) {
             break;
         }
-        ::Sleep(5);
+        ::Sleep(backoff);
     }
     return false;
+}
+
+// REQ-R04 driver clock: milliseconds in the same epoch ClipboardCopyWatcher
+// expects (steady_clock, monotonic, unaffected by wall-clock adjustments).
+uint64_t SteadyNowMs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count());
 }
 
 // L2 fix: build the per-process synthetic-input sentinel.
@@ -216,6 +234,76 @@ bool CopySelection() {
         CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER)
     };
     return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+}
+
+// REQ-R04: pure state machine (declared in win32_input.hpp). No Win32 calls -
+// the caller feeds sequence numbers and timestamps so the full timeline matrix
+// is unit-testable headlessly (TestClipboardSequencePolling).
+//
+// Invariants:
+//  - Pending until either a post-baseline change settles (Confirmed) or the
+//    bounded budget expires (Failed). Terminal states never re-open.
+//  - Confirmed requires the sequence to have left pre_seq_ at least once AND
+//    to have held stable for kClipboardStableWindowMs, so handlers that write
+//    EmptyClipboard() (seq+1) then SetClipboardData() (seq+2) cannot be
+//    observed in their empty gap.
+//  - A change that is still flapping when the hard deadline hits is Confirmed:
+//    the clipboard demonstrably holds a committed post-Ctrl+C payload.
+//  - No change by kClipboardChangeTimeoutMs is Failed: reading now would
+//    return PRE-CopySelectedText content (the audit §2.3 stale-read bug).
+ClipboardCopyOutcome ClipboardCopyWatcher::Update(uint32_t current_seq, uint64_t now_ms) {
+    if (outcome_ != ClipboardCopyOutcome::Pending) {
+        return outcome_;
+    }
+
+    if (current_seq != last_seq_) {
+        last_seq_ = current_seq;
+        last_change_ms_ = now_ms;
+        if (current_seq != pre_seq_) {
+            advanced_ = true;
+        }
+    }
+
+    const uint64_t elapsed = (now_ms > start_ms_) ? (now_ms - start_ms_) : 0;
+
+    if (advanced_ && (now_ms - last_change_ms_) >= kClipboardStableWindowMs) {
+        outcome_ = ClipboardCopyOutcome::Confirmed;
+    } else if (advanced_ && elapsed >= kClipboardCopyDeadlineMs) {
+        outcome_ = ClipboardCopyOutcome::Confirmed;
+    } else if (!advanced_ && elapsed >= kClipboardChangeTimeoutMs) {
+        outcome_ = ClipboardCopyOutcome::Failed;
+    }
+    return outcome_;
+}
+
+bool CopySelectionWithSequenceWait() {
+    // Baseline captured IMMEDIATELY before the keystroke: any sequence jump
+    // from the worker's earlier BackupClipboard()/RestoreClipboard() writes is
+    // already absorbed here (REQ-R04 directive: re-read after backup/restore).
+    const uint32_t pre_seq = ::GetClipboardSequenceNumber();
+
+    if (!CopySelection()) {
+        fprintf(stderr, "WIN32_INPUT/CopySelectionWithSequenceWait/001: SendInput(Ctrl+C) failed\n");
+        return false;
+    }
+
+    const uint64_t start = SteadyNowMs();
+    ClipboardCopyWatcher watcher(pre_seq, start);
+
+    while (true) {
+        const ClipboardCopyOutcome outcome = watcher.Update(::GetClipboardSequenceNumber(), SteadyNowMs());
+        if (outcome == ClipboardCopyOutcome::Confirmed) {
+            return true;
+        }
+        if (outcome == ClipboardCopyOutcome::Failed) {
+            fprintf(stderr,
+                    "WIN32_INPUT/CopySelectionWithSequenceWait/002: clipboard sequence %lu unchanged %ums after Ctrl+C; "
+                    "refusing stale read (copy treated as failure)\n",
+                    static_cast<unsigned long>(pre_seq), kClipboardChangeTimeoutMs);
+            return false;
+        }
+        ::Sleep(kClipboardPollIntervalMs);
+    }
 }
 
 bool PasteSelection() {
@@ -487,8 +575,13 @@ std::wstring CopySelectedText(HWND hwnd) {
     SelectTextForTranslation(hwnd);
     ::Sleep(10);
 
-    CopySelection();
-    ::Sleep(35); // 35ms copy settle delay
+    // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
+    // On timeout the clipboard provably still holds pre-copy content, so we
+    // return empty (copy failure) instead of reading stale text. The worker
+    // treats empty as "nothing to translate" and releases the selection.
+    if (!CopySelectionWithSequenceWait()) {
+        return {};
+    }
 
     return GetClipboardText();
 }

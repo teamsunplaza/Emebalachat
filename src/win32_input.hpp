@@ -64,12 +64,87 @@ bool SelectAll();
 // Process-aware text selection: Ctrl+A for chat apps, Shift+Home for document editors.
 bool SelectTextForTranslation(HWND hwnd);
 
+// ---- REQ-R04: clipboard copy-settle polling (Electron IPC robustness) ----
+//
+// Replaces the old fixed Sleep(35) after Ctrl+C. BackupClipboard() never calls
+// EmptyClipboard(), so reading the clipboard before the target app's copy
+// handler has written returns STALE text (audit 2.3: smart bypass then treats
+// the stale English text as "already in target language" and skips
+// translation - Electron apps like Discord/Slack commit the clipboard over IPC
+// with unbounded latency). GetClipboardSequenceNumber() is a per-desktop
+// counter incremented on every clipboard write (EmptyClipboard/SetClipboardData),
+// so we wait until the number provably leaves its pre-Ctrl+C baseline and then
+// until it holds stable. The stability window is required because handlers that
+// write EmptyClipboard() first and SetClipboardData() second bump the sequence
+// twice; reading on the first bump would observe an EMPTY clipboard.
+
+// Max wait for the sequence number to move off the pre-Ctrl+C baseline.
+inline constexpr uint32_t kClipboardChangeTimeoutMs = 180;
+// The sequence must hold this long after the last observed change before reading.
+inline constexpr uint32_t kClipboardStableWindowMs = 16;
+// Poll cadence for the real-clipboard driver (delegation: 5-10 ms).
+inline constexpr uint32_t kClipboardPollIntervalMs = 8;
+// Hard wall-clock deadline for the whole wait (change detection + settling).
+inline constexpr uint64_t kClipboardCopyDeadlineMs =
+    kClipboardChangeTimeoutMs + kClipboardStableWindowMs;
+
+enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
+
+// Pure, time-parameterized state machine behind CopySelectionWithSequenceWait().
+// Deliberately free of Win32 calls so the complete timeline matrix (including
+// the two-step EmptyClipboard->SetClipboardData race) is unit-testable
+// headlessly with synthetic timestamps; see TestClipboardSequencePolling().
+class ClipboardCopyWatcher {
+public:
+    ClipboardCopyWatcher(uint32_t pre_copy_seq, uint64_t start_ms)
+        : pre_seq_(pre_copy_seq), start_ms_(start_ms), last_seq_(pre_copy_seq) {}
+
+    // Feed the clipboard sequence number observed at now_ms (same clock epoch
+    // as start_ms; now_ms must be monotonically non-decreasing).
+    ClipboardCopyOutcome Update(uint32_t current_seq, uint64_t now_ms);
+
+    ClipboardCopyOutcome Outcome() const { return outcome_; }
+
+private:
+    uint32_t pre_seq_;
+    uint64_t start_ms_;
+    uint32_t last_seq_;
+    uint64_t last_change_ms_ = 0;
+    bool advanced_ = false;
+    ClipboardCopyOutcome outcome_ = ClipboardCopyOutcome::Pending;
+};
+
+// Sends Ctrl+C via CopySelection() and waits for the clipboard write using
+// GetClipboardSequenceNumber() polling with the constants above. The baseline
+// sequence number is captured IMMEDIATELY before the keystroke, so sequence
+// jumps caused by the worker's earlier BackupClipboard()/RestoreClipboard()
+// writes are absorbed by this fresh read (REQ-R04 directive).
+// Returns true only when the clipboard provably changed (fresh data is safe to
+// read). Returns false on SendInput failure or timeout: callers MUST NOT read
+// the clipboard afterwards - it would still hold stale content.
+bool CopySelectionWithSequenceWait();
+
+// ---- REQ-R13 (overlaps this batch): OpenClipboard contention backoff ----
+inline constexpr int kClipboardOpenMaxAttempts = 5;
+inline constexpr uint32_t kClipboardOpenBaseDelayMs = 5;
+// Exponential retry schedule: attempts 1..4 yield 5, 10, 20, 40 ms sleeps
+// (total 75 ms, inside the ~100 ms budget); 0 means "stop retrying".
+constexpr uint32_t ClipboardOpenBackoffDelayMs(int attempt) {
+    if (attempt < 1 || attempt >= kClipboardOpenMaxAttempts) {
+        return 0;
+    }
+    return kClipboardOpenBaseDelayMs << (attempt - 1);
+}
+
 // High-level pipeline helper:
-// Selects text via SelectTextForTranslation(hwnd), sends Ctrl+C, sleeps 35ms, retrieves clipboard text.
+// Selects text via SelectTextForTranslation(hwnd), then runs the REQ-R04
+// sequence-number copy-settle wait and retrieves clipboard text.
+// Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);
 
 // High-level pipeline helper:
-// Selects line (Shift+Home), sends Ctrl+C, sleeps 35ms copy settle delay, retrieves clipboard text.
+// Selects line (Shift+Home) and runs the same REQ-R04 copy-settle as
+// CopySelectedText.
 std::wstring CopySelectedLine();
 
 // High-level pipeline helper:
