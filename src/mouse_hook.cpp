@@ -52,6 +52,15 @@ void MouseHook::Stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
+
+    // Deterministically wait for any in-flight delayed click callback to finish
+    // touching member state BEFORE the destructor proceeds to teardown. This is
+    // the root-cause fix for the use-after-free: previously the thread was
+    // detached and could outlive the MouseHook, dereferencing a raw s_instance
+    // pointer after destruction.
+    if (delayed_click_thread_.joinable()) {
+        delayed_click_thread_.join();
+    }
 }
 
 void MouseHook::SetDragReleaseCallback(DragReleaseCallback cb) {
@@ -157,15 +166,29 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
                 // 60ms delay lets target app complete text selection highlight
                 uint64_t current_seq = ++s_instance->click_seq_;
                 POINT pt = ms->pt;
-                std::thread([this_inst = s_instance, cb = s_instance->drag_cb_, pt, current_seq]() {
-                    ::Sleep(60);
-                    if (this_inst && this_inst->running_.load(std::memory_order_relaxed) &&
-                        this_inst->click_seq_.load() == current_seq) {
-                        if (cb) {
-                            cb(pt.x, pt.y);
+                MouseHook* this_inst = s_instance;
+                DragReleaseCallback cb = s_instance->drag_cb_;
+
+                // The hook callback runs single-threaded on the hook thread, so a
+                // previously spawned delayed thread (if any) is safe to join here
+                // before being replaced. Joining guarantees no stale thread holds
+                // a reference while we overwrite the member.
+                if (this_inst->delayed_click_thread_.joinable()) {
+                    this_inst->delayed_click_thread_.join();
+                }
+
+                // Store as a member (NOT detached) so Stop()/~MouseHook() can
+                // deterministically join it before member teardown.
+                this_inst->delayed_click_thread_ = std::thread(
+                    [this_inst, cb, pt, current_seq]() {
+                        ::Sleep(60);
+                        if (this_inst->running_.load(std::memory_order_relaxed) &&
+                            this_inst->click_seq_.load() == current_seq) {
+                            if (cb) {
+                                cb(pt.x, pt.y);
+                            }
                         }
-                    }
-                }).detach();
+                    });
             }
         }
     }

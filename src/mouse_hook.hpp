@@ -38,6 +38,10 @@ private:
     HHOOK hHook_ = nullptr;
     HANDLE hReadyEvent_ = nullptr;
     std::thread thread_;
+    // Delayed double/triple-click callback thread. Joined in Stop() before
+    // member teardown so it can never touch freed memory (fixes UAF where a
+    // detached thread captured raw s_instance and dereferenced it post-destroy).
+    std::thread delayed_click_thread_;
 
     // Drag and multi-click detection state
     bool is_lbutton_down_ = false;
