@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,14 +40,28 @@ std::string CycleTargetLanguage(std::string_view current_code_or_name);
 std::string BuildPrompt(std::string_view source_text, std::string_view target_lang);
 
 // Application configuration backed by JSON with zero external dependencies.
+//
+// I4 (data-race fix): this object is shared by reference between the UI (main)
+// thread, the keyboard/mouse hook thread and the pipeline worker thread.
+// Concurrency discipline, from smallest mechanism outward:
+//   * bool toggles mutated at runtime from more than one thread
+//     (auto_send, sound_enabled) are std::atomic.
+//   * shared std::string fields (engine_type, source_language, target_language)
+//     and the badge coordinates are guarded by mutex_ and must be read via
+//     GetSnapshot() / written via the Set*() mutators once threads are running.
+//   * SaveToFile serializes on the same mutex: previously two threads saving
+//     concurrently clobbered each other's shared "config.json.tmp".
+//   * drag_to_translate / cloud_fallback_enabled / model_path / hotkey_* are
+//     only written at startup (before any thread exists) and read-only after,
+//     so they need no locking.
 struct AppConfig {
     std::string ui_language = "auto";
     std::string engine_type = "auto";
     std::string model_path = "models/Hy-MT2-1.8B-Q8_0.gguf";
     std::string source_language = "Auto Detect";
     std::string target_language = "English";
-    bool auto_send = false;
-    bool sound_enabled = true;
+    std::atomic<bool> auto_send{false};
+    std::atomic<bool> sound_enabled{true};
     bool drag_to_translate = true;
     // Privacy-first consent gate (H2 fix): when false, typed text is NEVER sent to
     // the Google Translate cloud — neither as a fallback after a local-LLM failure
@@ -63,7 +79,28 @@ struct AppConfig {
     int top_k = 20;
     float repetition_penalty = 1.05f;
 
+    // I4: point-in-time, thread-safe copy of the fields read by hook/worker threads.
+    struct Snapshot {
+        std::string engine_type;
+        std::string source_language;
+        std::string target_language;
+        bool auto_send = false;
+        bool sound_enabled = true;
+        bool drag_to_translate = true;
+    };
+
+    // I4: thread-safe snapshot of shared fields (takes mutex_).
+    Snapshot GetSnapshot() const;
+
     void SetBadgePosition(int x, int y);
+
+    // I4: locked mutators for the shared string fields. Direct assignment is
+    // only permitted at startup before worker/hook threads exist (unit tests,
+    // wWinMain initialization) - runtime code must go through these.
+    void SetEngineTypeName(std::string value);
+    void SetSourceLanguage(std::string value);
+    void SetTargetLanguage(std::string value);
+    void SetLanguages(std::string source, std::string target);
 
     // Returns standard default config path: config.json next to executable or working dir.
     static std::filesystem::path GetDefaultConfigPath();
@@ -72,17 +109,25 @@ struct AppConfig {
     // If JSON is invalid, retains existing defaults without throwing.
     bool LoadFromFile(const std::filesystem::path& path = "");
 
-    // Saves current configuration to JSON file.
+    // Saves current configuration to JSON file. Thread-safe: serialized under mutex_.
     bool SaveToFile(const std::filesystem::path& path = "") const;
 
-    // Serializes config to a formatted JSON string.
+    // Serializes config to a formatted JSON string. Thread-safe (takes mutex_).
     std::string ToJsonString() const;
 
-    // Deserializes config from a JSON string.
+    // Deserializes config from a JSON string. Thread-safe (takes mutex_).
     bool FromJsonString(std::string_view json);
 
     // Advances target_language to the next supported language and updates state.
     std::string CycleLanguage();
+
+private:
+    // Guards engine_type/source_language/target_language/badge_x/badge_y and
+    // serializes file writes. Non-recursive: the *Locked helpers below assume
+    // the lock is ALREADY held and must never be called through public wrappers.
+    mutable std::mutex mutex_;
+    std::string ToJsonStringLocked() const;
+    bool SaveToFileLocked(const std::filesystem::path& target_path) const;
 };
 
 } // namespace emebalachat

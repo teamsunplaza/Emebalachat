@@ -135,7 +135,7 @@ flowchart TB
 
 ### 1. Zero-Latency Keyboard Hook & Anti-Reentrancy
 - Installs an asynchronous low-level keyboard hook (`WH_KEYBOARD_LL`) running on a dedicated message-pump thread.
-- **Re-entrancy Protection**: All synthetic key events emitted by Emebalachat embed the proprietary signature marker `EXTRA_INFO_MARKER = 0x1337BEEF` into `KBDLLHOOKSTRUCT::dwExtraInfo`. The hook instantly ignores all flagged synthetic events, preventing recursive keystroke loops.
+- **Re-entrancy Protection**: All synthetic key events emitted by Emebalachat embed a per-process randomized signature marker `EXTRA_INFO_MARKER` (chosen at startup from QPC + PID + ASLR entropy, never a compile-time constant) into `KBDLLHOOKSTRUCT::dwExtraInfo`. The hook instantly ignores all flagged synthetic events, preventing recursive keystroke loops, while third-party processes cannot predict the value to spoof bypassed input.
 - **IME Composition Flushing**: Simulates a synthetic right-arrow advance before selection to force Windows CJK/Korean IME composition buffers into committed strings.
 - **Pass-through Safety**: Transparently lets <kbd>Alt</kbd>+<kbd>Enter</kbd> (Excel newline / full screen) and <kbd>Win</kbd> combinations pass through unhindered.
 

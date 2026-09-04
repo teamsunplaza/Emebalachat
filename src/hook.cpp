@@ -59,13 +59,16 @@ void KeyboardHook::Stop() {
 void KeyboardHook::SetActive(bool active) {
     if (is_active_.exchange(active) != active) {
         badge_.SetStatus(active ? BadgeStatus::Active : BadgeStatus::Disabled);
+        // I4: this runs on the hook thread; read shared fields via a locked
+        // snapshot instead of touching std::string members unsynchronized.
+        const AppConfig::Snapshot snap = config_.GetSnapshot();
         tray_.UpdateStatus(
             active,
-            config_.engine_type == "auto" ? "Google Translate (Auto)" : config_.engine_type,
-            config_.source_language,
-            config_.target_language,
-            config_.auto_send,
-            config_.sound_enabled,
+            snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge_.IsVisible()
         );
         if (active) {
@@ -81,30 +84,35 @@ void KeyboardHook::ToggleActive() {
 }
 
 void KeyboardHook::CycleTargetLanguage() {
-    std::string next_tgt = config_.CycleLanguage();
-    badge_.SetLanguages(ToUtf16(config_.source_language), ToUtf16(next_tgt));
+    std::string next_tgt = config_.CycleLanguage(); // locked mutator + save inside
+    const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
+    badge_.SetLanguages(ToUtf16(snap.source_language), ToUtf16(next_tgt));
     tray_.UpdateStatus(
         is_active_.load(),
-        config_.engine_type == "auto" ? "Google Translate (Auto)" : config_.engine_type,
-        config_.source_language,
+        snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+        snap.source_language,
         next_tgt,
-        config_.auto_send,
-        config_.sound_enabled,
+        snap.auto_send,
+        snap.sound_enabled,
         badge_.IsVisible()
     );
     PlayLangChange();
 }
 
 void KeyboardHook::ToggleAutoSend() {
-    config_.auto_send = !config_.auto_send;
+    // I4: auto_send is std::atomic; this read-modify-write happens on the hook
+    // thread while the worker thread reads it per task.
+    const bool next = !config_.auto_send.load(std::memory_order_relaxed);
+    config_.auto_send.store(next, std::memory_order_relaxed);
     config_.SaveToFile();
+    const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
     tray_.UpdateStatus(
         is_active_.load(),
-        config_.engine_type == "auto" ? "Google Translate (Auto)" : config_.engine_type,
-        config_.source_language,
-        config_.target_language,
-        config_.auto_send,
-        config_.sound_enabled,
+        snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+        snap.source_language,
+        snap.target_language,
+        next,
+        snap.sound_enabled,
         badge_.IsVisible()
     );
     PlayModeChange();

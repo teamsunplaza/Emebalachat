@@ -194,23 +194,64 @@ private:
                     case 'r':  out += '\r'; break;
                     case 't':  out += '\t'; break;
                     case 'u': {
-                        if (pos_ + 4 > src_.size()) return false;
-                        std::string hex(src_.substr(pos_, 4));
-                        pos_ += 4;
-                        try {
-                            uint32_t code = std::stoul(hex, nullptr, 16);
-                            if (code < 0x80) {
-                                out += static_cast<char>(code);
-                            } else if (code < 0x800) {
-                                out += static_cast<char>(0xC0 | (code >> 6));
-                                out += static_cast<char>(0x80 | (code & 0x3F));
-                            } else {
-                                out += static_cast<char>(0xE0 | (code >> 12));
-                                out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-                                out += static_cast<char>(0x80 | (code & 0x3F));
+                        // Reads the next 4 hex digits into out_code; false on
+                        // truncation or non-hex input.
+                        auto read_hex4 = [this](uint32_t& out_code) -> bool {
+                            if (pos_ + 4 > src_.size()) return false;
+                            const std::string hex(src_.substr(pos_, 4));
+                            pos_ += 4;
+                            try {
+                                out_code = std::stoul(hex, nullptr, 16);
+                            } catch (...) {
+                                return false;
                             }
-                        } catch (...) {
-                            return false;
+                            return true;
+                        };
+
+                        uint32_t code = 0;
+                        if (!read_hex4(code)) return false;
+
+                        // I2 fix: decode UTF-16 surrogate pairs (high D800-DBFF
+                        // followed by low DC00-DFFF) into the real code point,
+                        // matching google_translate.cpp. A LONE surrogate is not
+                        // valid scalar Unicode; encoding it would emit corrupt
+                        // WTF-8 bytes. Replace lone surrogates with U+FFFD so the
+                        // output is always well-formed UTF-8.
+                        if (code >= 0xD800 && code <= 0xDBFF) {
+                            bool paired = false;
+                            if (pos_ + 6 <= src_.size() && src_[pos_] == '\\' && src_[pos_ + 1] == 'u') {
+                                const size_t save_pos = pos_;
+                                pos_ += 2; // step over "\u"
+                                uint32_t low = 0;
+                                if (read_hex4(low) && low >= 0xDC00 && low <= 0xDFFF) {
+                                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                    paired = true;
+                                } else {
+                                    pos_ = save_pos; // not a valid pair; re-parse next escape normally
+                                }
+                            }
+                            if (!paired) {
+                                code = 0xFFFD;
+                            }
+                        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                            code = 0xFFFD; // lone low surrogate
+                        }
+
+                        if (code < 0x80) {
+                            out += static_cast<char>(code);
+                        } else if (code < 0x800) {
+                            out += static_cast<char>(0xC0 | (code >> 6));
+                            out += static_cast<char>(0x80 | (code & 0x3F));
+                        } else if (code < 0x10000) {
+                            out += static_cast<char>(0xE0 | (code >> 12));
+                            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (code & 0x3F));
+                        } else {
+                            // 4-byte UTF-8 for supplementary-plane code points
+                            out += static_cast<char>(0xF0 | (code >> 18));
+                            out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+                            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (code & 0x3F));
                         }
                         break;
                     }
@@ -368,7 +409,13 @@ bool AppConfig::LoadFromFile(const std::filesystem::path& path) {
 
 bool AppConfig::SaveToFile(const std::filesystem::path& path) const {
     std::filesystem::path target_path = path.empty() ? GetDefaultConfigPath() : path;
+    std::lock_guard<std::mutex> lock(mutex_); // I4: serialize saves + field reads
+    return SaveToFileLocked(target_path);
+}
 
+bool AppConfig::SaveToFileLocked(const std::filesystem::path& target_path) const {
+    // Caller MUST hold mutex_ (SaveToFile). Serializing under the lock also fixes
+    // the old race where two concurrent saves wrote the same shared ".tmp" file.
     try {
         if (target_path.has_parent_path()) {
             std::filesystem::create_directories(target_path.parent_path());
@@ -383,7 +430,7 @@ bool AppConfig::SaveToFile(const std::filesystem::path& path) const {
                 return false;
             }
 
-            std::string json_data = ToJsonString();
+            std::string json_data = ToJsonStringLocked();
             file.write(json_data.data(), json_data.size());
             file.flush();
             if (!file.good()) {
@@ -405,7 +452,48 @@ bool AppConfig::SaveToFile(const std::filesystem::path& path) const {
     }
 }
 
+// I4: thread-safe snapshot of the fields shared across UI/hook/worker threads.
+AppConfig::Snapshot AppConfig::GetSnapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Snapshot s;
+    s.engine_type = engine_type;
+    s.source_language = source_language;
+    s.target_language = target_language;
+    s.auto_send = auto_send.load(std::memory_order_relaxed);
+    s.sound_enabled = sound_enabled.load(std::memory_order_relaxed);
+    s.drag_to_translate = drag_to_translate;
+    return s;
+}
+
+// I4: locked mutators for shared strings.
+void AppConfig::SetEngineTypeName(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    engine_type = std::move(value);
+}
+
+void AppConfig::SetSourceLanguage(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    source_language = std::move(value);
+}
+
+void AppConfig::SetTargetLanguage(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    target_language = std::move(value);
+}
+
+void AppConfig::SetLanguages(std::string source, std::string target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    source_language = std::move(source);
+    target_language = std::move(target);
+}
+
 std::string AppConfig::ToJsonString() const {
+    std::lock_guard<std::mutex> lock(mutex_); // I4
+    return ToJsonStringLocked();
+}
+
+std::string AppConfig::ToJsonStringLocked() const {
+    // Caller MUST hold mutex_ (ToJsonString / SaveToFileLocked).
     std::ostringstream ss;
     ss << "{\n";
     ss << "  \"ui_language\": \"" << EscapeJsonString(ui_language) << "\",\n";
@@ -413,8 +501,8 @@ std::string AppConfig::ToJsonString() const {
     ss << "  \"model_path\": \"" << EscapeJsonString(model_path) << "\",\n";
     ss << "  \"source_language\": \"" << EscapeJsonString(source_language) << "\",\n";
     ss << "  \"target_language\": \"" << EscapeJsonString(target_language) << "\",\n";
-    ss << "  \"auto_send\": " << (auto_send ? "true" : "false") << ",\n";
-    ss << "  \"sound_enabled\": " << (sound_enabled ? "true" : "false") << ",\n";
+    ss << "  \"auto_send\": " << (auto_send.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
+    ss << "  \"sound_enabled\": " << (sound_enabled.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
     ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
     ss << "  \"drag_hotkey\": \"" << EscapeJsonString(drag_hotkey) << "\",\n";
@@ -438,6 +526,7 @@ bool AppConfig::FromJsonString(std::string_view json) {
         return false; // Retain defaults on parse failure
     }
 
+    const std::lock_guard<std::mutex> lock(mutex_); // I4: writes are visible to all reader threads
     for (const auto& [k, v] : pairs) {
         if (k == "ui_language") {
             ui_language = v;
@@ -450,9 +539,9 @@ bool AppConfig::FromJsonString(std::string_view json) {
         } else if (k == "target_language") {
             target_language = v;
         } else if (k == "auto_send") {
-            auto_send = (v == "true");
+            auto_send.store(v == "true", std::memory_order_relaxed);
         } else if (k == "sound_enabled") {
-            sound_enabled = (v == "true");
+            sound_enabled.store(v == "true", std::memory_order_relaxed);
         } else if (k == "drag_to_translate") {
             drag_to_translate = (v == "true");
         } else if (k == "cloud_fallback_enabled") {
@@ -483,14 +572,20 @@ bool AppConfig::FromJsonString(std::string_view json) {
 }
 
 void AppConfig::SetBadgePosition(int x, int y) {
+    std::lock_guard<std::mutex> lock(mutex_); // I4: read by badge Create on other paths
     badge_x = x;
     badge_y = y;
 }
 
 std::string AppConfig::CycleLanguage() {
-    target_language = CycleTargetLanguage(target_language);
-    SaveToFile();
-    return target_language;
+    std::string next;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        next = CycleTargetLanguage(target_language);
+        target_language = next;
+    }
+    SaveToFile(); // SaveToFile takes the lock itself; do not hold it across (non-recursive mutex)
+    return next;
 }
 
 } // namespace emebalachat

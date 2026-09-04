@@ -53,7 +53,52 @@ bool OpenClipboardWithRetry(HWND hwnd, DWORD timeout_ms = 100) {
     return false;
 }
 
+// L2 fix: build the per-process synthetic-input sentinel.
+//
+// The old value was the compile-time constant 0x1337BEEF, which any local
+// process could hardcode in SendInput dwExtraInfo to make our keyboard and
+// mouse hooks silently ignore its events (bypass of text interception).
+// The replacement is randomized per process from entropy that an external
+// process cannot read: the high-resolution performance counter value and the
+// ASLR-randomized address of a stack variable, mixed with the usual cheap
+// identifiers through a splitmix64 finalizer.
+//
+// Deliberately dependency-free (no bcrypt.lib / advapi32 additions). This is
+// an anti-spoofing hint, not a cryptographic secret; see the header note.
+DWORD MakeSyntheticMarker() {
+    auto splitmix64 = [](uint64_t x) {
+        x += 0x9E3779B97F4A7C15ULL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        return x ^ (x >> 31);
+    };
+
+    LARGE_INTEGER qpc = {};
+    ::QueryPerformanceCounter(&qpc);
+    volatile int stack_probe = 0;
+
+    uint64_t seed = static_cast<uint64_t>(qpc.QuadPart) ^
+                    (static_cast<uint64_t>(::GetCurrentProcessId()) << 16) ^
+                    static_cast<uint64_t>(::GetCurrentThreadId()) ^
+                    static_cast<uint64_t>(::GetTickCount64()) ^
+                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&stack_probe));
+
+    seed = splitmix64(seed);
+    DWORD marker = static_cast<DWORD>(seed >> 32);
+    if (marker == 0) {
+        // Never 0: 0 is the dwExtraInfo of ordinary real user input, so a zero
+        // sentinel would make the hooks ignore genuine keystrokes/clicks.
+        marker = static_cast<DWORD>(seed) | 1u;
+    }
+    return marker;
+}
+
 } // namespace
+
+// Defined here (declared `extern const` in the header) so the producers in this
+// file and the consumers in hook.cpp / mouse_hook.cpp / worker.cpp all compare
+// against the exact same value chosen once at process start.
+const DWORD EXTRA_INFO_MARKER = MakeSyntheticMarker();
 
 bool IsGdiClipboardFormat(UINT format) {
     switch (format) {

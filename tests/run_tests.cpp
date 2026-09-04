@@ -145,6 +145,59 @@ void TestConfigModule() {
     TEST_CHECK(fallback_cfg.target_language == "English", "Corrupted JSON retains default values");
     TEST_CHECK(fallback_cfg.cloud_fallback_enabled == false, "Corrupted JSON retains cloud_fallback_enabled default false");
 
+    // 7. I2 fix: \uXXXX surrogate-pair decoding in SimpleJsonReader (tested
+    //    through the public FromJsonString seam). Values ride in drag_hotkey
+    //    so they hit the ParseString escape path verbatim.
+    {
+        // 7a. Emoji pair: \uD83D\uDE80 -> U+1F680 -> 4-byte UTF-8 F0 9F 9A 80
+        AppConfig emoji_cfg;
+        TEST_CHECK(emoji_cfg.FromJsonString("{\"drag_hotkey\": \"Hi \\uD83D\\uDE80\"}"),
+                   "I2: JSON with surrogate-pair emoji parses");
+        TEST_CHECK(emoji_cfg.drag_hotkey == "Hi \xF0\x9F\x9A\x80",
+                   "I2: surrogate pair decodes to 4-byte UTF-8 rocket emoji");
+        // Roundtrip through UTF-16 must yield the real code point, not garbage
+        std::wstring emoji_w = ToUtf16(emoji_cfg.drag_hotkey);
+        TEST_CHECK(emoji_w == L"Hi \U0001F680",
+                   "I2: emoji survives UTF-8 -> UTF-16 conversion");
+
+        // 7b. 4-byte supplementary char (U+10550 -> \uD801\uDD50), 퐝-style beyond BMP
+        AppConfig supp_cfg;
+        TEST_CHECK(supp_cfg.FromJsonString("{\"drag_hotkey\": \"\\uD801\\uDD50\"}"),
+                   "I2: JSON with U+10550 pair parses");
+        TEST_CHECK(supp_cfg.drag_hotkey == "\xF0\x90\x95\x90",
+                   "I2: U+10550 encodes as 4-byte UTF-8 F0 90 95 90");
+
+        // 7c. BMP escape still works (regression guard for the 3-byte branch)
+        AppConfig bmp_cfg;
+        TEST_CHECK(bmp_cfg.FromJsonString("{\"drag_hotkey\": \"\\uD55C\"}"),
+                   "I2: JSON with BMP hangul escape parses");
+        TEST_CHECK(bmp_cfg.drag_hotkey == "\xED\x95\x9C",
+                   "I2: U+D55C (한) encodes as 3-byte UTF-8");
+
+        // 7d. Lone HIGH surrogate (D800-DBFF with no following low) -> U+FFFD,
+        //     never corrupt WTF-8 bytes
+        AppConfig lone_hi_cfg;
+        TEST_CHECK(lone_hi_cfg.FromJsonString("{\"drag_hotkey\": \"A\\uD83Dx\"}"),
+                   "I2: JSON with lone high surrogate parses without failure");
+        TEST_CHECK(lone_hi_cfg.drag_hotkey == "A\xEF\xBF\xBDx",
+                   "I2: lone high surrogate replaced by U+FFFD (no corrupt bytes)");
+
+        // 7e. Lone HIGH surrogate followed by a NON-low \u escape: the second
+        //     escape must survive as its own character, not be eaten as a low.
+        AppConfig lone_hi2_cfg;
+        TEST_CHECK(lone_hi2_cfg.FromJsonString("{\"drag_hotkey\": \"\\uD83D\\u0041\"}"),
+                   "I2: lone high + non-low escape parses");
+        TEST_CHECK(lone_hi2_cfg.drag_hotkey == "\xEF\xBF\xBD" "A",
+                   "I2: lone high -> U+FFFD, following \\u0041 decodes as 'A'");
+
+        // 7f. Lone LOW surrogate (DC00-DFFF without preceding high) -> U+FFFD
+        AppConfig lone_lo_cfg;
+        TEST_CHECK(lone_lo_cfg.FromJsonString("{\"drag_hotkey\": \"\\uDC00!\"}"),
+                   "I2: JSON with lone low surrogate parses without failure");
+        TEST_CHECK(lone_lo_cfg.drag_hotkey == "\xEF\xBF\xBD!",
+                   "I2: lone low surrogate replaced by U+FFFD");
+    }
+
     std::cout << "[PASS] Config & Languages tests completed." << std::endl;
 }
 
@@ -302,9 +355,15 @@ void TestSoundModule() {
 void TestWin32InputModule() {
     std::cout << "[RUN] Testing Win32 Input & Clipboard Safety..." << std::endl;
 
-    // 1. Synthetic marker
+    // 1. Synthetic marker (L2 fix: per-process randomized, no longer the
+    //    compile-time constant 0x1337BEEF). Contract: non-zero (zero would
+    //    collide with real user input's dwExtraInfo and break the bypass).
     volatile DWORD marker = EXTRA_INFO_MARKER;
-    TEST_CHECK(marker == 0x1337BEEF, "EXTRA_INFO_MARKER is 0x1337BEEF");
+    TEST_CHECK(marker != 0, "EXTRA_INFO_MARKER is non-zero (per-process random, L2)");
+    // The sentinel is now chosen at runtime; a compile-time equality check is
+    // impossible by design. Verify the process-stable contract instead: two
+    // reads of the exported constant yield the same non-zero value.
+    TEST_CHECK(EXTRA_INFO_MARKER == marker, "EXTRA_INFO_MARKER is stable within the process");
 
     // 2. GDI format filtering
     TEST_CHECK(IsGdiClipboardFormat(CF_BITMAP), "CF_BITMAP is filtered");

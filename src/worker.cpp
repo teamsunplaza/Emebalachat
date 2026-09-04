@@ -96,10 +96,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     FlushIme();
 
+    // I4: this runs on the pipeline worker thread while the UI/hook threads may
+    // mutate the shared string fields; take one consistent locked snapshot.
+    const AppConfig::Snapshot snap = config_.GetSnapshot();
+
     std::wstring line = CopySelectedText(task.target_hwnd);
 
     // Check if line is empty or smart bypass says no translation needed
-    if (line.empty() || !ShouldTranslate(line, config_.target_language, config_.source_language)) {
+    if (line.empty() || !ShouldTranslate(line, snap.target_language, snap.source_language)) {
         // Clear text selection with right arrow
         INPUT unsel[2] = {};
         unsel[0].type = INPUT_KEYBOARD;
@@ -117,7 +121,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     badge_.SetStatus(BadgeStatus::Translating);
 
     // Perform translation via active engine
-    std::wstring translated = engine_.Translate(line, config_.source_language, config_.target_language);
+    std::wstring translated = engine_.Translate(line, snap.source_language, snap.target_language);
 
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
@@ -148,7 +152,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     }
 
     // Auto-Send or Shift+Enter immediate send dispatch
-    if (task.is_shift_enter || config_.auto_send) {
+    // (auto_send is std::atomic; implicit load is safe from this thread - I4)
+    if (task.is_shift_enter || config_.auto_send.load(std::memory_order_relaxed)) {
         // H1 guard: Enter is a synthetic keystroke delivered to the CURRENT focus.
         // Re-verify before dispatch so a focus race cannot send Enter to the
         // wrong application (e.g. confirming a dialog, submitting a form).

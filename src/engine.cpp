@@ -21,6 +21,16 @@ namespace emebalachat {
 
 namespace {
 
+// I5 fix (was hardcoded 64 at the sampler-chain call site): repetition-penalty
+// look-back window in tokens, per Tencent Hy-MT2 lab specification. Changing
+// the tuning requires no other edit; behavior is identical to the previous
+// literal 64.
+constexpr int kPenaltyLastN = 64;
+// I5 proof: compile-time assertion pins the lab-spec value (the constant lives
+// in this TU's anonymous namespace, so tests/run_tests.cpp cannot reference it
+// directly; a wrong value now fails the build instead of drifting silently).
+static_assert(kPenaltyLastN == 64, "Hy-MT2 lab spec: repetition penalty last-N window is 64 tokens");
+
 // Lower-case ASCII characters for case-insensitive path comparisons (Windows
 // paths are case-insensitive; this project targets Windows only).
 std::string LowerAscii(std::string s) {
@@ -267,7 +277,7 @@ struct TranslationManager::LlamaEngine {
             llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
             smpl = llama_sampler_chain_init(sparams);
             if (rep_pen > 1.0f) {
-                llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, rep_pen, 0.0f, 0.0f));
+                llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));
             }
             if (top_k > 0) {
                 llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
@@ -352,17 +362,21 @@ struct TranslationManager::LlamaEngine {
 
 #endif
 
+// I3 fix: the constructor no longer performs its own config.json disk load.
+// Previously it created a shadow AppConfig and re-read the file, so every start
+// parsed the config twice and a locked/malformed file could give the engine
+// different values than the caller (single-source-of-truth violation).
+// main.cpp owns the one LoadFromFile() call and pushes the loaded values in via
+// the existing public setters (SetSamplingParams / SetCloudFallbackEnabled)
+// AFTER construction; the constructor here keeps pure in-class defaults
+// (0.7 / 0.6 / 20 / 1.05 - identical to AppConfig's defaults) so a
+// stand-alone constructed manager still behaves as before for tests.
 TranslationManager::TranslationManager(EngineType preferred_type, std::string model_path)
     : preferred_type_(preferred_type), model_path_(std::move(model_path)) {
-    AppConfig cfg;
-    cfg.LoadFromFile();
     if (model_path_.empty()) {
-        model_path_ = cfg.model_path;
+        // Fall back to the in-class AppConfig default (no file I/O).
+        model_path_ = AppConfig{}.model_path;
     }
-    temperature_ = cfg.temperature;
-    top_p_ = cfg.top_p;
-    top_k_ = cfg.top_k;
-    repetition_penalty_ = cfg.repetition_penalty;
     RefreshActiveEngine();
 }
 

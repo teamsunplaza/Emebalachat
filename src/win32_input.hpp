@@ -9,8 +9,17 @@
 
 namespace emebalachat {
 
-// Synthetic input marker placed in dwExtraInfo to prevent recursive hook re-entry
-constexpr DWORD EXTRA_INFO_MARKER = 0x1337BEEF;
+// Synthetic input marker placed in dwExtraInfo to prevent recursive hook
+// re-entry. L2 fix: this is now a per-process random value chosen at process
+// startup instead of the old compile-time constant 0x1337BEEF, which any local
+// process could hardcode to make our hooks silently ignore spoofed synthetic
+// events. Note (accepted-risk documentation): dwExtraInfo filtering remains a
+// heuristic dedupe hint, NOT an integrity boundary - a determined local
+// attacker with read access to this process's memory can still observe the
+// value. Raising the bar from "trivially guessable constant" to "per-process
+// secret" closes the casual-spoofing path with zero behavior change, because
+// every producer and consumer resolves the same symbol within this process.
+extern const DWORD EXTRA_INFO_MARKER;
 
 // Snapshot of clipboard state across translation swaps
 struct ClipboardBackup {

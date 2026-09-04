@@ -16,6 +16,8 @@
 #include <windows.h>
 #include <objbase.h>
 
+#include <cstdio>
+
 namespace emebalachat {
 
 namespace {
@@ -62,6 +64,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     (void)pCmdLine;
     (void)nCmdShow;
 
+    // 0. L3 (DLL search-path hardening, behavior-preserving part): remove the
+    // current working directory from the default DLL search order so a later
+    // delay-load of cublas/cublasLt/cudart (CMakeLists /DELAYLOAD) can never be
+    // hijacked by an attacker-writable CWD (e.g. explorer "start in" on a temp
+    // folder). PATH and the application directory remain searched, so CUDA
+    // resolution via installed toolkit/driver directories is unaffected.
+    // SetDefaultDllDirectories(...) is deliberately NOT called here: it would
+    // drop PATH, and the installer ships no CUDA DLLs, so GPU acceleration on
+    // toolkit machines resolves through PATH - restricting it breaks the CUDA
+    // load chain (deferred; documented in CMakeLists.txt).
+    ::SetDllDirectoryW(nullptr);
+
     // 1. Single Instance Mutex
     HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Global\\Emebalachat_SingleInstance");
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -77,9 +91,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return 0;
     }
 
-    // 2. Initialize COM for Direct2D & DirectWrite
-    HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    (void)hr;
+    // 2. Initialize COM for Direct2D & DirectWrite (I1 fix: check the result).
+    // RPC_E_CHANGED_MODE means another component already initialized a different
+    // apartment model on this thread; COM is still usable, so it is tolerated.
+    // Any other failure means the COM-dependent visual layer (Direct2D badge /
+    // DirectWrite / WIC logo / SAPI TTS) cannot work: log a traceable code and
+    // warn the user once, then continue running the non-COM core (tray icon,
+    // keyboard/mouse hooks, translation pipeline, Beep sounds) rather than
+    // crashing or failing silently with an invisible UI.
+    const HRESULT hrCom = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool com_available = SUCCEEDED(hrCom) || (hrCom == RPC_E_CHANGED_MODE);
+    if (!com_available) {
+        fprintf(stderr, "MAIN/WinMain/001: CoInitializeEx failed 0x%08lX; D2D badge, logo bitmaps and TTS are disabled\n",
+                static_cast<unsigned long>(hrCom));
+        ::MessageBoxW(
+            nullptr,
+            L"COM initialization failed.\nThe floating badge and text-to-speech will be unavailable,\nbut translation, hotkeys, tray and sounds still work.",
+            L"Emebalachat",
+            MB_OK | MB_ICONWARNING
+        );
+    }
 
     // 3. Load or create AppConfig
     emebalachat::AppConfig config;
@@ -102,6 +133,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         engine_type = emebalachat::EngineType::LocalLlama;
     }
     emebalachat::TranslationManager engine(engine_type, config.model_path);
+    // I3: this is the single source of truth - main.cpp loaded config.json once
+    // and pushes every value into the engine explicitly (the engine constructor
+    // no longer performs its own disk load).
     engine.SetSamplingParams(config.temperature, config.top_p, config.top_k, config.repetition_penalty);
     // H2 consent gate: propagate the privacy-first cloud_fallback_enabled flag so
     // the engine never silently transmits typed text to Google without consent.
@@ -127,13 +161,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 7. Initialize Direct2D Floating Badge (restoring saved position if present)
     emebalachat::FloatingBadge badge;
     emebalachat::g_pBadge = &badge;
-    badge.Create(
-        hInstance,
-        emebalachat::ToUtf16(config.source_language),
-        emebalachat::ToUtf16(config.target_language),
-        config.badge_x,
-        config.badge_y
-    );
+    // Create() fails cleanly (returns false) when COM/D2D are unavailable; the
+    // badge's public methods all no-op with a null hwnd_, so the rest of the
+    // app keeps running without the visual pill (I1 graceful degradation).
+    if (!badge.Create(
+            hInstance,
+            emebalachat::ToUtf16(config.source_language),
+            emebalachat::ToUtf16(config.target_language),
+            config.badge_x,
+            config.badge_y
+        )) {
+        fprintf(stderr, "MAIN/WinMain/002: FloatingBadge::Create failed; running without the badge UI\n");
+    }
 
     // Persist badge desktop coordinates whenever dragged by the user
     badge.SetPositionCallback([&](int x, int y) {
@@ -173,58 +212,64 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
 
     trayCallbacks.on_select_engine = [&](int engine_idx) {
+        // I4: runtime mutations go through the locked setters because the hook
+        // and worker threads read these fields concurrently.
         if (engine_idx == 0) {
             engine.SetEngineType(emebalachat::EngineType::GoogleTranslate);
-            config.engine_type = "google";
+            config.SetEngineTypeName("google");
         } else {
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
-            config.engine_type = "local";
+            config.SetEngineTypeName("local");
         }
         config.SaveToFile();
+        const auto snap = config.GetSnapshot();
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge.IsVisible()
         );
     };
 
     trayCallbacks.on_select_source_lang = [&](std::string_view code) {
-        config.source_language = std::string(code);
+        config.SetSourceLanguage(std::string(code)); // I4: locked setter
         config.SaveToFile();
-        badge.SetLanguages(emebalachat::ToUtf16(config.source_language), emebalachat::ToUtf16(config.target_language));
+        const auto snap = config.GetSnapshot();
+        badge.SetLanguages(emebalachat::ToUtf16(snap.source_language), emebalachat::ToUtf16(snap.target_language));
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge.IsVisible()
         );
     };
 
     trayCallbacks.on_select_target_lang = [&](std::string_view name) {
-        config.target_language = std::string(name);
+        config.SetTargetLanguage(std::string(name)); // I4: locked setter
         config.SaveToFile();
-        badge.SetLanguages(emebalachat::ToUtf16(config.source_language), emebalachat::ToUtf16(config.target_language));
+        const auto snap = config.GetSnapshot();
+        badge.SetLanguages(emebalachat::ToUtf16(snap.source_language), emebalachat::ToUtf16(snap.target_language));
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge.IsVisible()
         );
     };
 
     trayCallbacks.on_swap_languages = [&]() {
-        std::string current_src_norm = emebalachat::NormalizeLanguageCode(config.source_language);
-        std::string current_tgt_norm = emebalachat::NormalizeLanguageCode(config.target_language);
+        const auto snap_in = config.GetSnapshot(); // I4: consistent read for the swap logic
+        std::string current_src_norm = emebalachat::NormalizeLanguageCode(snap_in.source_language);
+        std::string current_tgt_norm = emebalachat::NormalizeLanguageCode(snap_in.target_language);
 
         std::string new_src;
         std::string new_tgt;
@@ -233,7 +278,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // When source is Auto Detect (e.g. Auto Detect -> English)
             // new source becomes current target (English)
             const auto* pTgtInfo = emebalachat::FindLanguageByCode(current_tgt_norm);
-            new_src = pTgtInfo ? pTgtInfo->name_en : config.target_language;
+            new_src = pTgtInfo ? pTgtInfo->name_en : snap_in.target_language;
 
             // new target becomes user's OS native language (or English if native is English)
             std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
@@ -248,22 +293,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
         } else {
             // Direct swap between two concrete languages (e.g. Korean <-> English)
-            new_src = config.target_language;
-            new_tgt = config.source_language;
+            new_src = snap_in.target_language;
+            new_tgt = snap_in.source_language;
         }
 
-        config.source_language = new_src;
-        config.target_language = new_tgt;
+        config.SetLanguages(std::move(new_src), std::move(new_tgt)); // I4: single locked write
         config.SaveToFile();
 
-        badge.SetLanguages(emebalachat::ToUtf16(config.source_language), emebalachat::ToUtf16(config.target_language));
+        const auto snap = config.GetSnapshot();
+        badge.SetLanguages(emebalachat::ToUtf16(snap.source_language), emebalachat::ToUtf16(snap.target_language));
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge.IsVisible()
         );
         emebalachat::PlayLangChange();
@@ -274,16 +319,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
 
     trayCallbacks.on_toggle_sound = [&]() {
-        config.sound_enabled = !config.sound_enabled;
+        // I4: sound_enabled is std::atomic (read by hook thread for beep gating).
+        const bool next = !config.sound_enabled.load(std::memory_order_relaxed);
+        config.sound_enabled.store(next, std::memory_order_relaxed);
         config.SaveToFile();
-        emebalachat::SetSoundEnabled(config.sound_enabled);
+        emebalachat::SetSoundEnabled(next);
+        const auto snap = config.GetSnapshot();
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            next,
             badge.IsVisible()
         );
     };
@@ -372,7 +420,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(selected);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.target_language;
+        std::string tgt_lang = config.GetSnapshot().target_language; // I4: runs on hook thread
         std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
         if (tgt_code == src_code) {
@@ -407,7 +455,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(copied);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.target_language;
+        std::string tgt_lang = config.GetSnapshot().target_language; // I4: runs on hook thread
         std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
         if (tgt_code == src_code) {

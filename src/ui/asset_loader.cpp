@@ -23,12 +23,16 @@ std::wstring FindLogoPath() {
         std::filesystem::path cwd = std::filesystem::current_path();
         candidates.push_back(cwd / "assets" / "logo.png");
         candidates.push_back(cwd / ".." / "assets" / "logo.png");
+        candidates.push_back(cwd / ".." / ".." / "assets" / "logo.png");
     } catch (...) {}
 
-    // 3. Known project repository root paths
-    candidates.push_back(L"D:\\OneDrive\\Projects\\Emebalachat\\assets\\logo.png");
-    candidates.push_back(L"D:\\OneDrive\\Projects\\Emebala\\assets\\logo.png");
-
+    // L1 fix: removed the hardcoded developer-machine absolute paths
+    // (D:\\OneDrive\\Projects\\...). They leaked the author's directory layout
+    // and could load an unintended logo on machines where such paths exist.
+    // The exe-relative (up to 2 levels) and CWD-relative (up to 2 levels)
+    // candidates above cover every shipped layout: installed {app}\\assets,
+    // build/Release + repo-root dev runs, and repo-root CWD launches.
+    // Never add personal absolute paths here again.
     for (const auto& c : candidates) {
         std::error_code ec;
         if (std::filesystem::exists(c, ec)) {

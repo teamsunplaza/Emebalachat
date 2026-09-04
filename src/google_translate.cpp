@@ -103,8 +103,12 @@ void SkipWhitespace(std::string_view src, size_t& pos) {
 
 // Executes an HTTPS GET request using WinHTTP and returns response string
 bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& response_body) {
+    // L4 fix: truthful product User-Agent instead of a spoofed Chrome browser
+    // string. The endpoint only requires a non-empty UA header; everything else
+    // in the request (scheme, host, path, query, headers) is byte-identical to
+    // the previously working Chrome-UA flow.
     ScopedHInternet hSession(::WinHttpOpen(
-        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        L"Emebalachat/0.10 (+https://github.com/teamsunplaza/Emebalachat)",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
