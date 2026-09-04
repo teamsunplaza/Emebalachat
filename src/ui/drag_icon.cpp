@@ -17,6 +17,12 @@ DragIconWindow::~DragIconWindow() {
 
 bool DragIconWindow::Create(HINSTANCE hInstance) {
     hInstance_ = hInstance;
+    // REQ-R10 (audit §3.4): capture the owning GUI thread. Create() runs on the
+    // main thread in wWinMain (and the test main thread in run_tests). ShowAt /
+    // Hide called from any other thread (mouse hook, delayed-click worker) are
+    // marshaled to WndProc via PostMessageW instead of touching the
+    // single-threaded D2D render target cross-thread (D2DERR_WRONG_THREAD).
+    gui_thread_id_ = ::GetCurrentThreadId();
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -120,6 +126,16 @@ void DragIconWindow::Destroy() {
 void DragIconWindow::ShowAt(int x, int y) {
     if (!hwnd_) return;
 
+    // REQ-R10 (audit §3.4) thread-affinity guard: off the owning GUI thread,
+    // marshal through the icon's own window queue (PostMessage, non-blocking for
+    // the hook/worker caller). WndProc re-enters this method on the GUI thread,
+    // where GetCurrentThreadId()==gui_thread_id_, so the draw runs inline with
+    // no recursion.
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        RequestShowAt(hwnd_, x, y);
+        return;
+    }
+
     // Multi-monitor aware bounds clamping
     POINT pt = { x, y };
     HMONITOR hMon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -136,7 +152,7 @@ void DragIconWindow::ShowAt(int x, int y) {
     alpha_ = 230;
 
     ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, kSize, kSize, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    visible_ = true;
+    visible_.store(true, std::memory_order_release);
 
     Render();
     UpdateLayered();
@@ -144,9 +160,17 @@ void DragIconWindow::ShowAt(int x, int y) {
 }
 
 void DragIconWindow::Hide() {
-    if (!hwnd_ || !visible_) return;
+    if (!hwnd_) return;
+    // Same marshal rule as ShowAt: the ESC/outside-click dismiss paths call this
+    // from the keyboard/mouse hook threads. SetWindowPos/ShowWindow/D2D must run
+    // on the GUI thread. WndProc re-enters on the GUI thread (no recursion).
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ::PostMessageW(hwnd_, kHideMessage, 0, 0);
+        return;
+    }
+    if (!visible_.load(std::memory_order_acquire)) return;
     StopFadeoutTimer();
-    visible_ = false;
+    visible_.store(false, std::memory_order_release);
     is_hovered_ = false;
     ::ShowWindow(hwnd_, SW_HIDE);
 }
@@ -265,6 +289,22 @@ LRESULT CALLBACK DragIconWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     }
 
     switch (msg) {
+        // REQ-R10 (audit §3.4): ShowAt marshaled from the mouse-hook thread via
+        // RequestShowAt()/PostMessageW. This case runs on the GUI thread that
+        // owns the single-threaded D2D render target, curing D2DERR_WRONG_THREAD.
+        // Unpack with the lossless int round-trip documented in drag_icon.hpp.
+        case DragIconWindow::kShowAtMessage: {
+            const int x = DragIconWindow::ShowAtXFromWParam(wParam);
+            const int y = DragIconWindow::ShowAtYFromLParam(lParam);
+            pThis->ShowAt(x, y);
+            return 0;
+        }
+
+        case DragIconWindow::kHideMessage: {
+            pThis->Hide(); // already on the GUI thread here
+            return 0;
+        }
+
         case WM_SETCURSOR:
             ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
             return TRUE;

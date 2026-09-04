@@ -3,6 +3,10 @@
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
 
+#include <cctype>
+#include <chrono>
+#include <cstdio>
+
 namespace emebalachat {
 
 KeyboardHook* KeyboardHook::s_instance = nullptr;
@@ -24,10 +28,135 @@ KeyboardHook::~KeyboardHook() {
     }
 }
 
+void KeyboardHook::SetDoubleCtrlCCallback(std::function<void()> cb) {
+    // Contract: callbacks are registered at startup BEFORE Start(), identical to
+    // SetEscCallback's existing contract. The worker thread reads
+    // double_ctrl_c_cb_ only while running (i.e. after Start()), so no lock is
+    // needed; runtime re-registration is not a supported use anywhere in the app.
+    double_ctrl_c_cb_ = std::move(cb);
+}
+
+// ---- REQ-R06 (audit §2.5): double-Ctrl+C async dispatch worker ----
+//
+// The LowLevelKeyboardProc must never execute the user callback (clipboard read,
+// engine.Translate, tooltip show): local LLM inference runs 1-2 s and exceeding
+// the OS LowLevelHooksTimeout makes Windows SILENTLY unhook WH_KEYBOARD_LL.
+// The callback is handed to this persistent worker thread instead. The worker is
+// owned for the whole KeyboardHook lifetime: spawned in Start(), then
+// request_stop()+joined deterministically in Stop() (and therefore ~KeyboardHook)
+// on the main thread, so it can never outlive the hook object (same
+// deterministic-lifetime rule the MouseHook delayed jobs follow - no detach).
+
+void KeyboardHook::StartAsyncWorker() {
+    bool expected = false;
+    if (!double_ctrl_c_worker_live_.compare_exchange_strong(expected, true)) {
+        return; // already live
+    }
+    double_ctrl_c_worker_ = std::jthread([this](std::stop_token st) {
+        DoubleCtrlCWorkerLoop(st);
+    });
+}
+
+void KeyboardHook::StopAsyncWorker() {
+    // Idempotent. Main-thread only (Start failure path, Stop(), destructor).
+    if (double_ctrl_c_worker_.joinable()) {
+        double_ctrl_c_pending_.store(false, std::memory_order_release); // drop queued event
+        // Move-assignment from an empty jthread performs request_stop() + join()
+        // on the current thread (std::jthread has no join()). This is the ONLY
+        // join of the worker, and it runs on the main thread, never in a hook.
+        // The join waits at most the worker loop's 50 ms cv backstop.
+        double_ctrl_c_worker_ = std::jthread{};
+    }
+    double_ctrl_c_worker_live_.store(false, std::memory_order_release);
+}
+
+void KeyboardHook::DoubleCtrlCWorkerLoop(std::stop_token st) {
+    std::unique_lock<std::mutex> lk(double_ctrl_c_mutex_);
+    while (true) {
+        // wait_for (not wait): DispatchDoubleCtrlC() posts its event and calls
+        // notify_one() WITHOUT holding double_ctrl_c_mutex_ - the hook thread
+        // must never take a lock that the worker could be holding across a
+        // multi-second translation. Lock-free notifies can theoretically be
+        // lost between the worker's predicate check and its registration to
+        // sleep, so the 50 ms timeout is the backstop that bounds the worst
+        // case. A 50 ms extra delay before an LLM translation the user already
+        // waits 1-2 s for is imperceptible; blocking the hook thread instead
+        // would get WH_KEYBOARD_LL removed by the OS.
+        double_ctrl_c_cv_.wait_for(lk, std::chrono::milliseconds(50), [this, &st]() {
+            return double_ctrl_c_pending_.load(std::memory_order_acquire) || st.stop_requested();
+        });
+        if (st.stop_requested()) {
+            break;
+        }
+        // exchange() consumes the slot; `continue` on a spurious wake keeps the
+        // worker idle without ever clearing a busy flag a dispatch just set.
+        if (!double_ctrl_c_pending_.exchange(false, std::memory_order_acq_rel)) {
+            continue;
+        }
+        lk.unlock(); // mutex NEVER held across the callback (hook stays free)
+        RunDoubleCtrlCBody();
+        lk.lock();
+        // Re-arm check BEFORE clearing busy: a double-Ctrl+C that arrived while
+        // this body ran set pending again (accepted, because pending was false
+        // for the whole body) - busy must stay true across the queued re-run.
+        if (!double_ctrl_c_pending_.load(std::memory_order_acquire)) {
+            double_ctrl_c_busy_.store(false, std::memory_order_release);
+        }
+    }
+    // Exit path: a stop requested while pending/running must still clear the
+    // busy flag so IsDoubleCtrlCBusy() reports honestly after Stop() joins.
+    double_ctrl_c_busy_.store(false, std::memory_order_release);
+}
+
+void KeyboardHook::DispatchDoubleCtrlC() {
+    KeyboardHook* self = s_instance;
+    if (!self) {
+        return;
+    }
+    if (!self->double_ctrl_c_worker_live_.load(std::memory_order_acquire)) {
+        fprintf(stderr, "HOOK/DispatchDoubleCtrlC/002: worker not live (Start() failed?), event dropped\n");
+        return;
+    }
+    // REQ-R06 non-blocking handoff, ZERO locks on the hook thread:
+    //   - one acquire load (worker live)
+    //   - one acq_rel exchange on the single-slot pending flag (~20 ns; if an
+    //     event is already queued the new one coalesces into it - a double
+    //     Ctrl+C pressed twice while a translation runs must not queue a second)
+    //   - one release store (busy) + notify_one() WITHOUT the mutex (see the
+    //     worker loop: the 50 ms cv backstop bounds a theoretically lost notify)
+    // No Sleep, no join, no blocking lock, no allocation.
+    const bool already_queued = self->double_ctrl_c_pending_.exchange(true, std::memory_order_acq_rel);
+    self->double_ctrl_c_busy_.store(true, std::memory_order_release);
+    if (!already_queued) {
+        self->double_ctrl_c_cv_.notify_one();
+    }
+}
+
+void KeyboardHook::RunDoubleCtrlCBody() {
+    // Runs on double_ctrl_c_worker_ ONLY (see SetDoubleCtrlCCallback contract).
+    if (!double_ctrl_c_cb_) {
+        return;
+    }
+    try {
+        double_ctrl_c_cb_();
+    } catch (const std::exception& e) {
+        fprintf(stderr, "HOOK/RunDoubleCtrlCBody/001: callback threw: %s\n", e.what());
+    } catch (...) {
+        fprintf(stderr, "HOOK/RunDoubleCtrlCBody/002: callback threw unknown exception\n");
+    }
+}
+
 bool KeyboardHook::Start() {
     if (running_.exchange(true)) {
         return true;
     }
+
+    // Compile the toggle hotkey once, before the hook proc can run (config
+    // fields are startup-written/read-only after, see config.hpp I4 notes).
+    toggle_spec_ = ResolvedToggleHotkey();
+
+    // REQ-R06: the async worker must exist before the hook proc can dispatch.
+    StartAsyncWorker();
 
     if (hReadyEvent_) {
         ::ResetEvent(hReadyEvent_);
@@ -39,11 +168,26 @@ bool KeyboardHook::Start() {
         ::WaitForSingleObject(hReadyEvent_, 2000);
     }
 
-    return hHook_ != nullptr;
+    if (!hHook_) {
+        // Hook install failed: HookThreadProc already returned without pumping,
+        // so join the finished thread here (a joinable std::thread destroyed
+        // without join calls std::terminate). Then tear the async worker back
+        // down so the object stays in a clean, restartable state.
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        StopAsyncWorker();
+        running_.store(false);
+        return false;
+    }
+    return true;
 }
 
 void KeyboardHook::Stop() {
     if (!running_.exchange(false)) {
+        // Hook thread was never running; still guarantee the REQ-R06 worker is
+        // joined (covers destructor without Start(), and the double-Stop case).
+        StopAsyncWorker();
         return;
     }
 
@@ -54,6 +198,115 @@ void KeyboardHook::Stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
+
+    // Join the async worker AFTER the hook thread is down: a double-Ctrl+C
+    // detected microseconds before WM_QUIT could otherwise race the join.
+    StopAsyncWorker();
+}
+
+// ---- REQ-R08 (audit §3.2): pure, unit-testable hotkey parsing ----
+
+namespace {
+
+// Trim ASCII whitespace and lowercase one in-place token.
+void NormalizeToken(std::string& s) {
+    size_t b = 0;
+    size_t e = s.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    s = s.substr(b, e - b);
+    for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+}
+
+// Maps a normalized key token to a virtual key code, 0 when unknown.
+UINT VkFromKeyToken(const std::string& tok) {
+    if (tok.empty()) return 0;
+
+    // f1..f24: token starts with 'f' followed by only digits.
+    if (tok[0] == 'f' && tok.size() >= 2) {
+        int n = 0;
+        for (size_t i = 1; i < tok.size(); ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(tok[i]))) return 0;
+            n = n * 10 + (tok[i] - '0');
+        }
+        if (n >= 1 && n <= 24) return VK_F1 + static_cast<UINT>(n - 1);
+        return 0; // f0, f25+ are not function keys
+    }
+
+    if (tok == "enter" || tok == "return") return VK_RETURN;
+    if (tok == "esc" || tok == "escape") return VK_ESCAPE;
+    if (tok == "tab") return VK_TAB;
+    if (tok == "space") return VK_SPACE;
+    if (tok == "insert" || tok == "ins") return VK_INSERT;
+    if (tok == "delete" || tok == "del") return VK_DELETE;
+    if (tok == "home") return VK_HOME;
+    if (tok == "end") return VK_END;
+    if (tok == "pgup" || tok == "prior") return VK_PRIOR;
+    if (tok == "pgdn" || tok == "next") return VK_NEXT;
+    if (tok == "up") return VK_UP;
+    if (tok == "down") return VK_DOWN;
+    if (tok == "left") return VK_LEFT;
+    if (tok == "right") return VK_RIGHT;
+
+    if (tok.size() == 1) {
+        const char c = tok[0];
+        if (c >= 'a' && c <= 'z') return static_cast<UINT>('A' + (c - 'a'));
+        if (c >= '0' && c <= '9') return static_cast<UINT>(c);
+    }
+    return 0;
+}
+
+} // namespace
+
+KeyboardHook::HotkeySpec KeyboardHook::ParseHotkey(std::string_view spec) {
+    HotkeySpec out;
+    bool vk_seen = false;
+
+    size_t start = 0;
+    while (start <= spec.size()) {
+        const size_t plus = spec.find('+', start);
+        std::string tok(spec.substr(start, plus == std::string_view::npos ? std::string_view::npos : plus - start));
+        NormalizeToken(tok);
+
+        if (tok.empty()) {
+            // Empty token ("Win+", "Ctrl++", trailing '+'): invalid syntax.
+            return HotkeySpec{};
+        }
+
+        if (tok == "ctrl" || tok == "control") {
+            out.ctrl = true;
+        } else if (tok == "shift") {
+            out.shift = true;
+        } else if (tok == "alt" || tok == "menu" || tok == "option") {
+            out.alt = true;
+        } else if (tok == "win" || tok == "windows" || tok == "super") {
+            out.win = true;
+        } else {
+            const UINT vk = VkFromKeyToken(tok);
+            if (vk == 0 || vk_seen) {
+                // Unknown key token, or a second main key ("Ctrl+Alt+F9+Enter").
+                return HotkeySpec{};
+            }
+            out.vk = vk;
+            vk_seen = true;
+        }
+
+        if (plus == std::string_view::npos) {
+            break;
+        }
+        start = plus + 1;
+    }
+
+    out.valid = vk_seen;
+    return out;
+}
+
+KeyboardHook::HotkeySpec KeyboardHook::ResolvedToggleHotkey() const {
+    // Delegates to the shared pure seam (hook.hpp) so Start() and the unit
+    // tests assert on ONE definition of the legacy-"F9"->Win+F9 migration.
+    return ResolveToggleFromConfig(config_.hotkey_toggle);
 }
 
 void KeyboardHook::SetActive(bool active) {
@@ -71,10 +324,19 @@ void KeyboardHook::SetActive(bool active) {
             snap.sound_enabled,
             badge_.IsVisible()
         );
+        // REQ-R08 visual feedback: the floating badge above IS the visual
+        // state indicator (green=active/gray=disabled, and it renders even
+        // when the tray tooltip is not hovered), plus the audible chime below.
         if (active) {
             PlayToggleOn();
         } else {
             PlayToggleOff();
+        }
+        // REQ-R07: single choke point for external state observers. Fires on
+        // EVERY real change, including the F9/Win+F9 path inside the hook, so
+        // main.cpp keeps mouse_hook.SetEnabled() 1:1 in sync with is_active_.
+        if (active_change_cb_) {
+            active_change_cb_(active);
         }
     }
 }
@@ -162,11 +424,41 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
 
+    // REQ-R08: after a Win+<combo> swallow, Explorer would otherwise open the
+    // Start menu on the Win key release (the shell sees the Win press without
+    // its normal key-up pair). Consume exactly one Win key-up after each
+    // consumed Win combo. One relaxed atomic CAS; no allocation, no blocking.
+    if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+        if (IsWinKey(kbd->vkCode)) {
+            bool expected = true;
+            if (s_instance->suppress_win_keyup_.compare_exchange_strong(
+                    expected, false, std::memory_order_relaxed)) {
+                return 1;
+            }
+        }
+        return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }
+
     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
         bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         bool win = ((::GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((::GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+
+        // REQ-R08: the configured toggle combo (default Win+F9) is matched
+        // FIRST - before the blanket Alt/Win passthrough below - and it only
+        // swallows when the FULL modifier set matches toggle_spec_ exactly
+        // (HotkeyMatches: vk + ctrl + shift + alt + win, pinned by unit tests).
+        // Everything else containing Alt or Win still passes through untouched
+        // (Excel Alt+Enter, game Alt+Enter, native Win shortcuts). Bare F9 is
+        // no longer a toggle by default (audit §3.2), so VS/Excel keep it.
+        if (KeyboardHook::HotkeyMatches(s_instance->toggle_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
+            s_instance->ToggleActive();
+            if (win) {
+                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
+            }
+            return 1; // Consumed: state change (audio+visual feedback in SetActive)
+        }
 
         // Always let Alt or Win key combinations pass through immediately
         // (preserves Excel newline Alt+Enter, game fullscreen Alt+Enter, Win shortcuts, etc.)
@@ -186,21 +478,25 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             DWORD now = ::GetTickCount();
             if (s_instance->last_ctrl_c_time_ != 0 && (now - s_instance->last_ctrl_c_time_ <= 400) && (now - s_instance->last_ctrl_c_time_ >= 20)) {
                 s_instance->last_ctrl_c_time_ = 0;
-                if (s_instance->double_ctrl_c_cb_) {
-                    s_instance->double_ctrl_c_cb_();
-                }
+                // REQ-R06 (audit §2.5): hand the whole job to the async worker
+                // and return. The callback (clipboard settle + engine.Translate,
+                // up to seconds) must NEVER run on this thread: exceeding
+                // LowLevelHooksTimeout makes Windows silently remove
+                // WH_KEYBOARD_LL. DispatchDoubleCtrlC() is a non-blocking
+                // atomic exchange + flag store + notify_one (no sleep, no join,
+                // no lock, no allocation).
+                KeyboardHook::DispatchDoubleCtrlC();
             } else {
                 s_instance->last_ctrl_c_time_ = now;
             }
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
-        // F9 hotkeys
+        // Ctrl+F9: cycle target language. (The toggle combo itself matched
+        // above; with toggle=Win+F9 this branch no longer collides with the
+        // VS/VS Code breakpoint key, and Alt/Win combos never reach here.)
         if (kbd->vkCode == VK_F9) {
-            if (!ctrl && !shift) {
-                s_instance->ToggleActive();
-                return 1;
-            } else if (ctrl && !shift) {
+            if (ctrl && !shift) {
                 s_instance->CycleTargetLanguage();
                 return 1;
             }

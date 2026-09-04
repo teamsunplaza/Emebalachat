@@ -22,6 +22,12 @@ namespace emebalachat {
 
 namespace {
 const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
+// REQ-R08: user-facing label of the default toggle combo. The compiled spec in
+// KeyboardHook (parsed from config_.hotkey_toggle with the legacy "F9" default
+// migrated to Win+F9) is the runtime source of truth; this string keeps the
+// tooltip bubble text honest. A custom Win-free combo from config.json shows
+// the generic label instead of lying about the keys.
+const wchar_t kToggleHotkeyLabel[] = L"Win+F9";
 HWND g_hControllerWnd = nullptr;
 SystemTray* g_pTray = nullptr;
 KeyboardHook* g_pHook = nullptr;
@@ -207,8 +213,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     emebalachat::SystemTray::Callbacks trayCallbacks;
     trayCallbacks.on_toggle_active = [&]() {
+        // REQ-R07: SetActive() fires active_change_cb_ on every real state
+        // change, so the MouseHook sync happens there exactly once. No manual
+        // SetEnabled call here anymore - it double-toggled nothing before only
+        // because SetEnabled is idempotent; keeping it would risk drift.
         hook.ToggleActive();
-        mouse_hook.SetEnabled(hook.IsActive());
     };
 
     trayCallbacks.on_select_engine = [&](int engine_idx) {
@@ -377,12 +386,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         badge.IsVisible()
     );
 
-    // Drag release threshold callback (> 15px)
+    // Drag release threshold callback (> 15px). Runs on the mouse-hook thread
+    // (drag) or the delayed-click worker thread (multi-click settle) - never on
+    // the GUI thread, so every D2D touch below MUST be marshaled.
     mouse_hook.SetDragReleaseCallback([&](int x, int y) {
         if (!config.drag_to_translate || !hook.IsActive() || tooltip.IsVisible()) {
             return;
         }
-        drag_icon.ShowAt(x + 12, y + 12);
+        // REQ-R10 (audit §3.4): the single-threaded D2D render target belongs
+        // to the main GUI thread. Call ShowAt directly here produced
+        // D2DERR_WRONG_THREAD and an invisible icon. PostMessage to the icon's
+        // own window: non-blocking for the hook thread, WndProc renders on the
+        // GUI thread.
+        emebalachat::DragIconWindow::RequestShowAt(drag_icon.GetHwnd(), x + 12, y + 12);
     });
 
     // Outside-click dismissal for DragIconWindow and TooltipWindow
@@ -404,13 +420,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
     });
 
-    // Click on DragIconWindow triggers translation of active selection
+    // Click on DragIconWindow triggers translation of active selection.
+    // Invoked from DragIconWindow::WndProc => runs ON THE MAIN GUI THREAD.
     drag_icon.SetClickCallback([&](int click_x, int click_y) {
         emebalachat::ClipboardBackup backup;
         emebalachat::BackupClipboard(backup);
 
-        emebalachat::CopySelection();
-        ::Sleep(35);
+        // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
+        // pattern had the same stale-read race as audit §2.3 for slow (Electron
+        // IPC) targets. The D2 public seam confirms the copy via
+        // GetClipboardSequenceNumber() polling and returns false instead of
+        // exposing stale clipboard text.
+        if (!emebalachat::CopySelectionWithSequenceWait()) {
+            emebalachat::RestoreClipboard(backup);
+            return;
+        }
         std::wstring selected = emebalachat::GetClipboardText();
         emebalachat::RestoreClipboard(backup);
 
@@ -420,7 +444,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(selected);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.GetSnapshot().target_language; // I4: runs on hook thread
+        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (this runs on the GUI thread)
         std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
         if (tgt_code == src_code) {
@@ -438,15 +462,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::wstring translated = engine.Translate(selected, detected, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
+        // Copy path is main-thread; direct D2D call is correct here.
         tooltip.ShowTranslation(click_x, click_y, selected, src_code, tgt_lang, translated);
     });
 
-    // Double Ctrl+C Hotkey Detection (< 400ms)
+    // Double Ctrl+C Hotkey Detection (< 400ms).
+    // REQ-R06 (audit §2.5): KeyboardHook dispatches this callback onto its own
+    // persistent worker thread, NOT the LowLevelKeyboardProc thread - engine
+    // inference below can run seconds and would get WH_KEYBOARD_LL silently
+    // unhooked by the OS once past LowLevelHooksTimeout. Worker-thread rules:
+    //  - clipboard reads and PostMessage-based badge updates are fine here;
+    //  - NEVER call TooltipWindow/DragIconWindow render paths directly (their
+    //    single-threaded D2D targets belong to the main GUI thread,
+    //    D2DERR_WRONG_THREAD). tooltip.ShowTranslationThreadSafe() marshals.
     hook.SetDoubleCtrlCCallback([&]() {
         if (!config.drag_to_translate || !hook.IsActive()) {
             return;
         }
 
+        // Settle for the target app's Ctrl+C clipboard write (same 40 ms the
+        // old code used - now off the hook thread, so it is harmless).
         ::Sleep(40);
         std::wstring copied = emebalachat::GetClipboardText();
         if (copied.empty() || copied.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
@@ -455,7 +490,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(copied);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.GetSnapshot().target_language; // I4: runs on hook thread
+        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (REQ-R06: runs on the hook's async worker thread)
         std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
         if (tgt_code == src_code) {
@@ -476,7 +511,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::wstring translated = engine.Translate(copied, detected, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
-        tooltip.ShowTranslation(cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated);
+        // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI
+        // thread instead of calling ShowTranslation() directly (audit §3.4).
+        tooltip.ShowTranslationThreadSafe(
+            cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated);
     });
 
     // ESC Key Dismissal
@@ -508,11 +546,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tooltip.ShowTranslation(r.left, r.top, src, src_code, new_tgt, translated);
     });
 
+    // REQ-R08 visual feedback: localized state-change bubble at the cursor,
+    // audio chime comes from SetActive() itself. Runs on the hook thread
+    // (Win+F9 path) or the main thread (badge/tray paths) - the thread-safe
+    // tooltip seam marshals to the GUI thread either way.
+    hook.SetActiveChangeCallback([&](bool active) {
+        // REQ-R07 (audit §3.1): 1:1 sync. This lambda is the ONLY place that
+        // touches mouse_hook.SetEnabled for activation state, and it fires on
+        // every real SetActive() change - including the Win+F9 hotkey path that
+        // previously left the mouse hook permanently disabled.
+        mouse_hook.SetEnabled(active);
+
+        POINT cursor = {};
+        ::GetCursorPos(&cursor);
+        const std::wstring body = std::wstring(active
+                ? emebalachat::I18n::Get(emebalachat::StringId::BadgeActive)
+                : emebalachat::I18n::Get(emebalachat::StringId::BadgePaused))
+            + L" (" + emebalachat::kToggleHotkeyLabel + L")";
+        tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
+                                       emebalachat::kToggleHotkeyLabel, body);
+    });
+
     // Badge Mouse Controls:
     // Single Click: Toggle Active / Paused
     badge.SetClickCallback([&]() {
+        // Badge callbacks run on the GUI thread (badge WndProc). ToggleActive()
+        // now syncs MouseHook through the REQ-R07 callback; the manual
+        // SetEnabled(hook.IsActive()) that used to sit here read the flag
+        // BEFORE the toggle completed and could re-disable an enabled hook.
         hook.ToggleActive();
-        mouse_hook.SetEnabled(hook.IsActive());
     });
 
     // Double Click: Swap Source ⇄ Target

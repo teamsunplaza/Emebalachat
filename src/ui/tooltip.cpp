@@ -198,6 +198,11 @@ TooltipWindow::~TooltipWindow() {
 
 bool TooltipWindow::Create(HINSTANCE hInstance) {
     hInstance_ = hInstance;
+    // REQ-R10 (audit §3.4): remember the thread that owns the single-threaded
+    // D2D factory/render target. Create() runs on the main GUI thread in
+    // wWinMain (and on the test main thread in run_tests); direct render calls
+    // from any other thread are marshaled to WndProc via PostMessageW.
+    gui_thread_id_ = ::GetCurrentThreadId();
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -328,6 +333,7 @@ void TooltipWindow::Destroy() {
 
     if (hwnd_) {
         ::KillTimer(hwnd_, kTimerCopiedFeedback);
+        ::KillTimer(hwnd_, kTimerMessageAutohide);
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -565,6 +571,18 @@ void TooltipWindow::ShowTranslation(
 ) {
     if (!hwnd_) return;
 
+    // REQ-R10 (audit §3.4): thread affinity guard. Hook/worker threads are
+    // marshaled to the owning GUI thread instead of touching D2D cross-thread
+    // (D2DERR_WRONG_THREAD -> invisible tooltip). Same-thread callers (badge
+    // click copy path, tests, the WndProc-marshaled re-entry) run directly.
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ShowTranslationThreadSafe(x, y, source_text, source_lang_code, target_lang, translated_text);
+        return;
+    }
+
+    is_message_mode_ = false;
+    ::KillTimer(hwnd_, kTimerMessageAutohide);
+
     source_text_ = source_text;
     source_lang_code_ = source_lang_code;
     target_lang_ = target_lang;
@@ -618,12 +636,122 @@ void TooltipWindow::ShowTranslation(
     UpdateLayered();
 }
 
+void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ShowMessageThreadSafe(x, y, header, body);
+        return;
+    }
+
+    // REQ-R08 (audit §3.2): transient state-change notice. Compact fixed-size
+    // card; translated_text_ carries the body line, message_header_ the title.
+    is_message_mode_ = true;
+    message_header_ = header;
+    translated_text_ = body;
+    source_text_.clear();
+    source_lang_code_.clear();
+    target_lang_.clear();
+    copied_feedback_ = false;
+    hovered_btn_ = 0;
+
+    current_width_ = 320;
+    current_height_ = 84;
+    ReallocateBuffer(current_width_, current_height_);
+
+    // Multi-monitor aware bounds clamping (same policy as ShowTranslation).
+    POINT pt = { x, y };
+    HMONITOR hMon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (::GetMonitorInfoW(hMon, &mi)) {
+        if (x + current_width_ > mi.rcWork.right) x = mi.rcWork.right - current_width_ - 10;
+        if (y + current_height_ > mi.rcWork.bottom) y = mi.rcWork.bottom - current_height_ - 10;
+        if (x < mi.rcWork.left) x = mi.rcWork.left + 10;
+        if (y < mi.rcWork.top) y = mi.rcWork.top + 10;
+    }
+
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, current_width_, current_height_, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    visible_ = true;
+
+    Render();
+    UpdateLayered();
+
+    ::KillTimer(hwnd_, kTimerMessageAutohide);
+    ::SetTimer(hwnd_, kTimerMessageAutohide, kMessageAutohideMs, nullptr);
+}
+
+void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() == gui_thread_id_) {
+        ShowMessage(x, y, header, body);
+        return;
+    }
+    // Heap payload, ownership transferred to WndProc through LPARAM
+    // (documented in tooltip.hpp). Post failure deletes locally: the payload
+    // can never leak in either branch.
+    auto payload = std::make_unique<MessagePayload>();
+    payload->x = x;
+    payload->y = y;
+    payload->header = header;
+    payload->body = body;
+    const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
+    if (::PostMessageW(hwnd_, kShowMessageMessage, 0, lparam) == FALSE) {
+        delete reinterpret_cast<MessagePayload*>(lparam);
+    }
+}
+
+void TooltipWindow::ShowTranslationThreadSafe(
+    int x, int y,
+    std::wstring_view source_text,
+    std::string_view source_lang_code,
+    std::string_view target_lang,
+    std::wstring_view translated_text
+) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() == gui_thread_id_) {
+        ShowTranslation(x, y, source_text, source_lang_code, target_lang, translated_text);
+        return;
+    }
+    auto payload = std::make_unique<TranslationPayload>();
+    payload->x = x;
+    payload->y = y;
+    payload->source_text = source_text;
+    payload->source_lang_code = source_lang_code;
+    payload->target_lang = target_lang;
+    payload->translated_text = translated_text;
+    const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
+    if (::PostMessageW(hwnd_, kShowTranslationMessage, 0, lparam) == FALSE) {
+        delete reinterpret_cast<TranslationPayload*>(lparam);
+    }
+}
+
+void TooltipWindow::DismissThreadSafe() {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() == gui_thread_id_) {
+        Dismiss();
+        return;
+    }
+    ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
+}
+
 void TooltipWindow::Dismiss() {
-    if (!hwnd_ || !visible_) return;
+    if (!hwnd_) return;
+    // REQ-R10 companion: the ESC (keyboard hook) and outside-click (mouse hook)
+    // dismissal paths call Dismiss() off the GUI thread. ShowWindow/SAPI on
+    // another thread's window can block until that pump is free (e.g. mid
+    // translation), which would stall LowLevelHooksTimeout. Marshal instead.
+    // WndProc re-enters on the GUI thread, so this guard never recurses.
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
+        return;
+    }
+    if (!visible_.load(std::memory_order_relaxed)) return;
     StopTTS();
+    ::KillTimer(hwnd_, kTimerMessageAutohide);
     visible_ = false;
     hovered_btn_ = 0;
     copied_feedback_ = false;
+    is_message_mode_ = false;
     ::ShowWindow(hwnd_, SW_HIDE);
 }
 
@@ -685,6 +813,31 @@ void TooltipWindow::Render() {
 
     if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
     if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
+
+    // --- REQ-R08 message mode: compact header + body notice, no action buttons ---
+    if (is_message_mode_) {
+        D2D1_RECT_F msgHeaderRect = D2D1::RectF(14.0f, 10.0f, static_cast<float>(current_width_) - 14.0f, 36.0f);
+        if (header_format_ && textBrush) {
+            dc_render_target_->DrawText(
+                message_header_.c_str(), static_cast<UINT32>(message_header_.size()),
+                header_format_, msgHeaderRect, textBrush);
+        }
+        D2D1_RECT_F msgBodyRect = D2D1::RectF(14.0f, 38.0f, static_cast<float>(current_width_) - 14.0f,
+                                              static_cast<float>(current_height_) - 10.0f);
+        if (small_format_ && subTextBrush) {
+            dc_render_target_->DrawText(
+                translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),
+                small_format_, msgBodyRect, subTextBrush);
+        }
+        if (accentBrush) accentBrush->Release();
+        if (dividerBrush) dividerBrush->Release();
+        if (subTextBrush) subTextBrush->Release();
+        if (textBrush) textBrush->Release();
+        if (borderBrush) borderBrush->Release();
+        if (bgBrush) bgBrush->Release();
+        dc_render_target_->EndDraw();
+        return;
+    }
 
     // --- Header Area ---
     // 1. Emebala Brand Logo (Far Left)
@@ -926,12 +1079,45 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
 
     switch (msg) {
+        // ---- REQ-R10 (audit §3.4) marshaled render requests ----
+        // These run on the GUI thread that owns the D2D target. The unique_ptr
+        // claims the heap payload posted via LPARAM; unconsumed payloads were
+        // already freed by the posting seam when PostMessage failed.
+        case kShowTranslationMessage: {
+            const std::unique_ptr<TranslationPayload> p(
+                reinterpret_cast<TranslationPayload*>(lParam));
+            if (p) {
+                pThis->ShowTranslation(p->x, p->y, p->source_text,
+                                       p->source_lang_code, p->target_lang, p->translated_text);
+            }
+            return 0;
+        }
+
+        case kShowMessageMessage: {
+            const std::unique_ptr<MessagePayload> p(
+                reinterpret_cast<MessagePayload*>(lParam));
+            if (p) {
+                pThis->ShowMessage(p->x, p->y, p->header, p->body);
+            }
+            return 0;
+        }
+
+        case kDismissMessage: {
+            pThis->Dismiss();
+            return 0;
+        }
+
         case WM_SETCURSOR: {
             POINT pt = {};
             ::GetCursorPos(&pt);
             ::ScreenToClient(hwnd, &pt);
             float x = static_cast<float>(pt.x);
             float y = static_cast<float>(pt.y);
+
+            if (pThis->is_message_mode_) {
+                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
+                return TRUE;
+            }
 
             if (IsPointInRect(pThis->copy_btn_rect_, x, y) ||
                 IsPointInRect(pThis->tts_btn_rect_, x, y) ||
@@ -978,6 +1164,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_LBUTTONUP: {
+            // Message-mode notice has no action buttons: any click dismisses.
+            if (pThis->is_message_mode_) {
+                pThis->Dismiss();
+                return 0;
+            }
+
             float x = static_cast<float>((short)LOWORD(lParam));
             float y = static_cast<float>((short)HIWORD(lParam));
 
@@ -1034,6 +1226,10 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 pThis->copied_feedback_ = false;
                 pThis->Render();
                 pThis->UpdateLayered();
+                return 0;
+            }
+            if (wParam == kTimerMessageAutohide) {
+                pThis->Dismiss();
                 return 0;
             }
             break;

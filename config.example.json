@@ -9,7 +9,7 @@
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
   "drag_hotkey": "double_ctrl_c",
-  "hotkey_toggle": "F9",
+  "hotkey_toggle": "Win+F9",
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
   "temperature": 0.7,

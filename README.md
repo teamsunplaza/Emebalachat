@@ -211,7 +211,7 @@ Emebalachat supports full bidirectional translation across **38 language entries
 
 | Trigger | Action | Description |
 |:--------|:-------|:------------|
-| <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime |
+| <kbd>Win</kbd> + <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime + on-screen notice (bare F9 is left free for VS/Excel) |
 | <kbd>Ctrl</kbd> + <kbd>F9</kbd> | **Cycle Target Language** | Cycles forward through the 37 target languages |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Toggle Auto-Send Mode** | Toggles whether <kbd>Enter</kbd> is automatically sent after translation |
 | <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Instant Translate & Send** | Translates input line and sends <kbd>Enter</kbd> immediately |
@@ -365,7 +365,7 @@ On first launch, Emebalachat generates `config.json` next to the executable. An 
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
   "auto_send": false,
   "sound_enabled": true,
-  "hotkey_toggle": "F9",
+  "hotkey_toggle": "Win+F9",
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
   "badge_x": -1,
