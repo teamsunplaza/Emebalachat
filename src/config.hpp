@@ -39,6 +39,30 @@ std::string CycleTargetLanguage(std::string_view current_code_or_name);
 // Formats translation prompt for Hy-MT2 model.
 std::string BuildPrompt(std::string_view source_text, std::string_view target_lang);
 
+// REQ-R11 (audit §4 M3): Directory containing the running executable
+// (GetModuleFileNameW → parent_path). Falls back to the current path only if
+// the module-path query itself fails, so callers never get an empty surprise.
+std::filesystem::path GetExecutableDir();
+
+// REQ-R11 (audit §4 M3): Resolve a possibly-relative model path against the
+// EXECUTABLE directory instead of the current working directory. Run-registry
+// autostart launches with CWD=C:\Windows\System32, where a CWD-relative
+// "models/...gguf" can never exist: IsValidModelPath's regular-file check and
+// llama_model_load_from_file (src/engine.cpp) both resolved relative paths
+// against the CWD and the model never loaded. Contract:
+//   * raw_path / base_dir are UTF-8 (the encoding config.json stores and the
+//     encoding TranslationManager/llama.cpp expects); the return value is
+//     UTF-8 too, so callers can never reintroduce a lossy ANSI conversion.
+//   * empty raw_path -> empty string; absolute raw_path is returned lexically
+//     normalised with base_dir ignored; relative raw_path is joined to
+//     base_dir (default: GetExecutableDir()) and lexically normalised.
+// Pure path arithmetic - no disk access - and base_dir is injectable, so it is
+// unit-testable headlessly. main.cpp applies it at the single config→engine
+// handoff, so BOTH validation time (IsValidModelPath sees an absolute path)
+// and load time (llama gets an absolute path) become CWD-independent.
+std::string ResolveModelPath(std::string_view raw_path,
+                             std::string_view base_dir = {});
+
 // Application configuration backed by JSON with zero external dependencies.
 //
 // I4 (data-race fix): this object is shared by reference between the UI (main)

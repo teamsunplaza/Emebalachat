@@ -1,5 +1,7 @@
 #include "config.hpp"
 
+#include "unicode_utils.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -379,11 +381,103 @@ std::string BuildPrompt(std::string_view source_text, std::string_view target_la
     return prompt;
 }
 
-std::filesystem::path AppConfig::GetDefaultConfigPath() {
+namespace {
+
+// Lowercase an ASCII-only byte sequence for path-containment comparison
+// (mirrors LowerAscii in src/engine.cpp; non-ASCII bytes are passed through so
+// UTF-8 stays byte-compatible for the prefix test).
+std::string LowerPathAscii(std::string s) {
+    for (char& c : s) {
+        if (static_cast<unsigned char>(c) < 0x80) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    return s;
+}
+
+// True when `joined` (already lexically normalised) stays inside `base`
+// (already normalised). Same containment rule IsValidModelPath applies at
+// validation time, so absolutizing a relative path here cannot silently widen
+// the path-traversal guard that commit 46ff978 (M3 security) introduced.
+bool PathInsideBase(const std::filesystem::path& joined,
+                    const std::filesystem::path& base) {
+    std::string j = LowerPathAscii(joined.generic_string());
+    std::string b = LowerPathAscii(base.generic_string());
+    while (!b.empty() && b.back() == '/') {
+        b.pop_back();
+    }
+    return (j == b) ||
+           (j.size() > b.size() && j.compare(0, b.size(), b) == 0 && j[b.size()] == '/');
+}
+
+} // namespace
+
+// REQ-R11 (audit §4 M3): directory of the running executable. Shared seam for
+// GetDefaultConfigPath() and ResolveModelPath(): anything launched with a CWD
+// that is NOT the install directory (Run-registry autostart uses
+// C:\Windows\System32) must anchor relative paths here, never at the CWD.
+std::filesystem::path GetExecutableDir() {
     wchar_t exe_path[MAX_PATH] = {0};
-    if (::GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
-        std::filesystem::path path(exe_path);
-        return path.parent_path() / "config.json";
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
+        if (!dir.empty()) {
+            return dir;
+        }
+    }
+    // Fallback only when the module-path query itself fails (or truncates):
+    // the previous CWD-based behavior. current_path() can also fail; return an
+    // empty path rather than throwing so callers can detect "no anchor".
+    std::error_code ec;
+    std::filesystem::path cwd = std::filesystem::current_path(ec);
+    return ec ? std::filesystem::path{} : cwd;
+}
+
+// REQ-R11 (audit §4 M3): pure path arithmetic, no disk access (see header doc).
+// UTF-8 in, UTF-8 out: the raw strings are widened via the repo's CP_UTF8
+// ToUtf16 seam, joined in the wide domain (where the exe directory is already
+// lossless from GetModuleFileNameW), and folded back with ToUtf8. This matches
+// how TranslationManager/llama.cpp consume the path (UTF-8 std::string) and
+// never reintroduces a lossy ANSI-code-page conversion.
+std::string ResolveModelPath(std::string_view raw_path,
+                             std::string_view base_dir) {
+    if (raw_path.empty()) {
+        return {};
+    }
+
+    const std::filesystem::path raw{ToUtf16(raw_path)};
+    if (raw.is_absolute()) {
+        // Absolute paths define their own location; only collapse '.'/'..'.
+        return ToUtf8(raw.lexically_normal().native());
+    }
+
+    std::filesystem::path base;
+    if (!base_dir.empty()) {
+        base = std::filesystem::path{ToUtf16(base_dir)}.lexically_normal();
+    } else {
+        base = GetExecutableDir().lexically_normal();
+    }
+    if (base.empty()) {
+        // No anchor available (module path AND CWD both unresolvable): keep the
+        // legacy CWD-relative meaning instead of inventing a wrong directory.
+        return ToUtf8(raw.lexically_normal().native());
+    }
+
+    const std::filesystem::path joined = (base / raw).lexically_normal();
+    if (!PathInsideBase(joined, base)) {
+        // '..' escape: DO NOT hand back an absolute path outside the install
+        // directory (that would launder a traversal past IsValidModelPath's
+        // containment rule). Return the collapsed relative path so validation
+        // still sees a relative path and rejects it fail-closed.
+        return ToUtf8(raw.lexically_normal().native());
+    }
+    return ToUtf8(joined.native());
+}
+
+std::filesystem::path AppConfig::GetDefaultConfigPath() {
+    const std::filesystem::path exe_dir = GetExecutableDir();
+    if (!exe_dir.empty()) {
+        return exe_dir / "config.json";
     }
     return std::filesystem::current_path() / "config.json";
 }

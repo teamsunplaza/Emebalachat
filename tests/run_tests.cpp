@@ -14,6 +14,7 @@
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -958,6 +959,174 @@ void TestModelPathValidation() {
     std::cout << "[PASS] M3 Model Path Validation tests completed." << std::endl;
 }
 
+// REQ-R11 (audit §4 M3): ResolveModelPath / GetExecutableDir - relative model
+// paths must anchor at the EXECUTABLE directory, not the CWD, so Run-registry
+// autostart (CWD=C:\Windows\System32) keeps loading the model. base_dir is
+// injectable, so the whole suite runs headlessly against temp fixtures.
+void TestModelPathNormalization() {
+    std::cout << "[RUN] Testing REQ-R11 Model Path Normalization..." << std::endl;
+
+    std::error_code ec;
+    std::filesystem::path root = std::filesystem::temp_directory_path(ec) / "emebala_r11_test";
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "models", ec);
+    TEST_CHECK(!ec, "R11 fixture: temp dirs created");
+
+    std::filesystem::path model = root / "models" / "fake.gguf";
+    {
+        std::ofstream of(model, std::ios::binary);
+        of << "GGUF-fixture";
+    }
+    std::filesystem::path other = root / "other";
+    std::filesystem::create_directories(other, ec);
+    std::filesystem::path outside = root / "outside.gguf";
+    {
+        std::ofstream of(outside, std::ios::binary);
+        of << "GGUF-outside-base";
+    }
+
+    // --- GetExecutableDir: absolute anchor next to the running exe ---
+    const std::filesystem::path exe_dir = GetExecutableDir();
+    TEST_CHECK(!exe_dir.empty(), "R11: GetExecutableDir non-empty");
+    TEST_CHECK(exe_dir.is_absolute(), "R11: GetExecutableDir is absolute");
+    {
+        std::error_code fec;
+        TEST_CHECK(std::filesystem::exists(exe_dir, fec), "R11: GetExecutableDir exists on disk");
+    }
+    {
+        wchar_t exe_path[MAX_PATH] = {0};
+        const DWORD n = ::GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        TEST_CHECK(n > 0 && n < MAX_PATH, "R11: GetModuleFileNameW succeeds in test exe");
+        TEST_CHECK(std::filesystem::path(exe_path).parent_path() == exe_dir,
+                   "R11: GetExecutableDir matches module path parent");
+    }
+
+    // --- ResolveModelPath contract (header doc) ---
+    TEST_CHECK(ResolveModelPath("").empty(), "R11: empty raw path resolves to empty");
+
+    // Absolute input containing '..': collapses via "other/.." back to
+    // root/models/fake.gguf, and the injected base ("other") must be ignored.
+    const std::string abs_in = (root / "other" / ".." / "models" / "fake.gguf").string();
+    const std::string abs_out = ResolveModelPath(abs_in, other.string());
+    TEST_CHECK(std::filesystem::path(abs_out) == model,
+               "R11: absolute path lexically normalized, base_dir ignored");
+
+    const std::string rel = ResolveModelPath("models/fake.gguf", root.string());
+    TEST_CHECK(!rel.empty() && std::filesystem::path(rel).is_absolute(),
+               "R11: relative path against injected base becomes absolute");
+    TEST_CHECK(std::filesystem::path(rel) == model,
+               "R11: relative resolution joins base exactly");
+    {
+        std::error_code fec;
+        TEST_CHECK(std::filesystem::exists(std::filesystem::path(rel), fec),
+                   "R11: resolved relative path exists on disk");
+    }
+
+    // Mixed forward/back separators normalize to the same target.
+    TEST_CHECK(ResolveModelPath("models\\fake.gguf", root.string()) == rel,
+               "R11: forward-slash and backslash spellings resolve identically");
+
+    // Full chain: resolved path must satisfy the security validator too.
+    TEST_CHECK(IsValidModelPath(rel),
+               "R11: resolved path passes IsValidModelPath (absolutized => CWD-free)");
+
+    // '..' escape must NOT be laundered into an absolute outside path:
+    // result stays relative so IsValidModelPath still rejects it fail-closed.
+    const std::string escaped = ResolveModelPath("../outside.gguf", (root / "models").string());
+    TEST_CHECK(!escaped.empty() && !std::filesystem::path(escaped).is_absolute(),
+               "R11: traversal escape is not absolutized (stays relative)");
+    TEST_CHECK(!IsValidModelPath(escaped, (root / "models").string()),
+               "R11: escaped path still rejected by IsValidModelPath (fail-closed kept)");
+
+    // Default base (no injection) anchors at the exe directory, not the CWD.
+    const std::string defaulted = ResolveModelPath("zyx_nonexistent.gguf");
+    TEST_CHECK(std::filesystem::path(defaulted).is_absolute(),
+               "R11: default-base resolution is absolute");
+    TEST_CHECK(std::filesystem::path(defaulted).parent_path() == exe_dir,
+               "R11: default base is GetExecutableDir()");
+
+    // --- System32 reproduction (audit §4 M3) ---
+    // Simulate Run-registry autostart: process CWD is somewhere that does NOT
+    // contain models/fake.gguf (stands in for C:\Windows\System32). The bare
+    // relative path fails validation against the CWD (the old bug), while the
+    // exe/base-normalized path loads (the fix).
+    std::filesystem::path cwd_backup = std::filesystem::current_path(ec);
+    std::filesystem::path fake_system32 = root / "cwd_like_system32";
+    std::filesystem::create_directories(fake_system32, ec);
+    std::filesystem::current_path(fake_system32, ec);
+    TEST_CHECK(!ec, "R11 fixture: CWD switched to System32 stand-in");
+
+    TEST_CHECK(!IsValidModelPath("models/fake.gguf"),
+               "R11 repro: bare relative path FAILS against foreign CWD (old M3 bug)");
+    const std::string normalized = ResolveModelPath("models/fake.gguf", root.string());
+    TEST_CHECK(IsValidModelPath(normalized),
+               "R11 fix: exe-dir-normalized path loads regardless of CWD");
+
+    std::filesystem::current_path(cwd_backup, ec);
+    TEST_CHECK(!ec, "R11 fixture: CWD restored");
+
+    std::filesystem::remove_all(root, ec);
+    std::cout << "[PASS] REQ-R11 Model Path Normalization tests completed." << std::endl;
+}
+
+// REQ-R12 (audit §4 I4): GetSnapshot() is the thread-safe read seam that
+// main.cpp callbacks must use while hook/worker threads mutate the shared
+// std::string fields under mutex_ (the on_toggle_badge pattern). Headless
+// stress: a writer thread alternates two long distinct values through the
+// locked setter while a reader takes snapshots; a torn (non-mutex) read of a
+// std::string under concurrent write yields a value matching NEITHER string
+// (heap buffer reuse) or crashes outright.
+void TestConfigSnapshotThreadSafety() {
+    std::cout << "[RUN] Testing REQ-R12 Config Snapshot Thread Safety..." << std::endl;
+
+    AppConfig cfg;
+    const auto initial = cfg.GetSnapshot();
+    TEST_CHECK(initial.source_language == "Auto Detect" &&
+               initial.target_language == "English",
+               "R12: snapshot returns coherent defaults");
+
+    // Snapshot is a value copy: mutating it must not feed back into config.
+    AppConfig::Snapshot copy = cfg.GetSnapshot();
+    copy.source_language = "TAMPERED";
+    TEST_CHECK(cfg.GetSnapshot().source_language == "Auto Detect",
+               "R12: snapshot is an independent copy (no aliasing)");
+
+    static const std::string kA(256, 'A'); // long enough to force a heap buffer
+    static const std::string kB(256, 'B');
+
+    std::atomic<bool> stop{false};
+    std::atomic<long long> torn_reads{0};
+    std::atomic<long long> total_reads{0};
+
+    std::thread writer([&cfg, &stop]() {
+        for (int i = 0; i < 20000 && !stop.load(std::memory_order_relaxed); ++i) {
+            cfg.SetSourceLanguage((i & 1) ? kB : kA);
+        }
+    });
+    std::thread reader([&cfg, &stop, &torn_reads, &total_reads]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            const auto snap = cfg.GetSnapshot();
+            total_reads.fetch_add(1, std::memory_order_relaxed);
+            if (snap.source_language != kA && snap.source_language != kB) {
+                torn_reads.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+    writer.join();
+    stop.store(true, std::memory_order_relaxed);
+    reader.join();
+
+    TEST_CHECK(total_reads.load() > 0, "R12: snapshot reader actually ran");
+    TEST_CHECK(torn_reads.load() == 0, "R12: zero torn reads under concurrent SetSourceLanguage");
+
+    // Last write wins and is visible through the snapshot.
+    cfg.SetSourceLanguage("Korean");
+    TEST_CHECK(cfg.GetSnapshot().source_language == "Korean",
+               "R12: snapshot reflects the latest locked write");
+
+    std::cout << "[PASS] REQ-R12 Config Snapshot Thread Safety tests completed." << std::endl;
+}
+
 // REQ-R01 (Batch D1): pure-logic tests for the head+tail sliding-window
 // truncation that guards llama_decode against >n_ctx prompts. No model needed;
 // asserts the geometric contract (fit-through, head/tail preservation, marker
@@ -1704,6 +1873,8 @@ int main() {
     TestGoogleHttpProfile();
     TestEngineModule();
     TestModelPathValidation();
+    TestModelPathNormalization();
+    TestConfigSnapshotThreadSafety();
     TestTokenTruncation();
     TestSelectionReleaseMatrix();
     TestBadgeDynamicSizing();

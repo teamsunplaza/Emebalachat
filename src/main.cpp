@@ -138,7 +138,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     } else if (config.engine_type == "local") {
         engine_type = emebalachat::EngineType::LocalLlama;
     }
-    emebalachat::TranslationManager engine(engine_type, config.model_path);
+    // REQ-R11 (audit §4 M3): normalize a relative model_path against the
+    // EXECUTABLE directory, not the CWD. Run-registry autostart launches with
+    // CWD=C:\Windows\System32, where the CWD-relative "models/...gguf" never
+    // resolves and model loading failed. Resolving HERE - at the single
+    // config->engine handoff - makes the path absolute BEFORE it reaches both
+    // validation time (IsValidModelPath, src/engine.cpp) and load time
+    // (llama_model_load_from_file), so the two can never disagree. The
+    // persisted config.json value stays untouched (relative = portable across
+    // install locations). An explicitly emptied config.model_path is restored
+    // to the AppConfig default before resolution so the engine's internal
+    // CWD-relative fallback (engine.cpp ctor) is never reached in the app flow.
+    std::string model_path_raw = config.model_path;
+    if (model_path_raw.empty()) {
+        model_path_raw = emebalachat::AppConfig{}.model_path;
+    }
+    const std::string resolved_model_path =
+        emebalachat::ResolveModelPath(model_path_raw);
+    emebalachat::TranslationManager engine(engine_type, resolved_model_path);
     // I3: this is the single source of truth - main.cpp loaded config.json once
     // and pushes every value into the engine explicitly (the engine constructor
     // no longer performs its own disk load).
@@ -347,13 +364,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     trayCallbacks.on_toggle_badge = [&]() {
         badge.SetVisible(!badge.IsVisible());
+        // REQ-R12 (audit §4 I4, main.cpp:344): the tray callback runs on the
+        // GUI thread while the hook thread's Ctrl+F9 cycle writes
+        // target_language under mutex_ (hook.cpp CycleLanguage). Reading
+        // config.source_language/target_language directly here was the
+        // remaining data race. GetSnapshot() is the thread-safe accessor the
+        // other tray callbacks already use.
+        const auto snap = config.GetSnapshot();
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            config.source_language,
-            config.target_language,
-            config.auto_send,
-            config.sound_enabled,
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
             badge.IsVisible()
         );
     };
@@ -376,21 +400,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
 
     tray.Create(hController, hInstance, trayCallbacks);
-    tray.UpdateStatus(
-        true,
-        engine.GetActiveEngineName(),
-        config.source_language,
-        config.target_language,
-        config.auto_send,
-        config.sound_enabled,
-        badge.IsVisible()
-    );
+    // REQ-R12 (I4 sweep): startup-only call (hook/worker threads start in
+    // section 9, so direct field reads were already safe under config.hpp's
+    // I4 contract), converted to GetSnapshot() for uniform accessor
+    // discipline across every UpdateStatus call site.
+    {
+        const auto snap = config.GetSnapshot();
+        tray.UpdateStatus(
+            true,
+            engine.GetActiveEngineName(),
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
+            badge.IsVisible()
+        );
+    }
 
     // Drag release threshold callback (> 15px). Runs on the mouse-hook thread
     // (drag) or the delayed-click worker thread (multi-click settle) - never on
     // the GUI thread, so every D2D touch below MUST be marshaled.
     mouse_hook.SetDragReleaseCallback([&](int x, int y) {
-        if (!config.drag_to_translate || !hook.IsActive() || tooltip.IsVisible()) {
+        // REQ-R12 (I4 sweep): this lambda runs on the mouse-hook thread.
+        // drag_to_translate is startup-written/immutable per config.hpp's I4
+        // contract, but it is also part of Snapshot, so reading it through
+        // GetSnapshot() future-proofs against live config reload and matches
+        // the accessor discipline every other cross-thread callback uses.
+        // Uncontended mutex_ (~µs) - acceptable on the hook thread (D3 audit).
+        const auto snap = config.GetSnapshot();
+        if (!snap.drag_to_translate || !hook.IsActive() || tooltip.IsVisible()) {
             return;
         }
         // REQ-R10 (audit §3.4): the single-threaded D2D render target belongs
@@ -476,7 +514,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //    single-threaded D2D targets belong to the main GUI thread,
     //    D2DERR_WRONG_THREAD). tooltip.ShowTranslationThreadSafe() marshals.
     hook.SetDoubleCtrlCCallback([&]() {
-        if (!config.drag_to_translate || !hook.IsActive()) {
+        // REQ-R12 (I4 sweep): REQ-R06 worker thread -> snapshot read instead of
+        // the direct config.drag_to_translate field access (see the drag
+        // callback above for the same-pattern rationale).
+        if (!config.GetSnapshot().drag_to_translate || !hook.IsActive()) {
             return;
         }
 
