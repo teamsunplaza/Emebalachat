@@ -166,5 +166,17 @@ bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground);
 // Sends synthetic Enter key event with modifier release and 35ms hold time.
 void SendEnterKey(bool release_shift = false);
 
+// ---- REQ-R17 (audit §5 latent item 5): IME composition state probe ----
+//
+// True when the CURRENT foreground window has an active, non-empty IME
+// composition (Korean jamo being assembled, Japanese conversion candidate
+// open). ImmGetContext() SendMessage's the target window's thread, so this
+// is WORKER-THREAD / UI-THREAD ONLY: calling it from a low-level hook would
+// reintroduce the REQ-R06 LowLevelHooksTimeout stall class (the hook uses the
+// O(1) local mirror in hook.hpp instead). Fails closed to false when there
+// is no window / no IME / the query cannot tell. ExecuteTask consults it as
+// the race-window backstop before touching the clipboard pipeline.
+bool ForegroundImeComposing();
+
 } // namespace emebalachat
 

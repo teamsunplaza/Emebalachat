@@ -50,6 +50,7 @@ add_library(Emebalachat_core STATIC
     src/i18n.cpp
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
+    src/ui/dpi.cpp
     src/ui/tray.cpp
     src/ui/drag_icon.cpp
     src/ui/tooltip.cpp
@@ -74,6 +75,7 @@ target_link_libraries(Emebalachat_core PUBLIC
     imm32
     winmm
     winhttp
+    wtsapi32
     d2d1
     dwrite
     dxgi

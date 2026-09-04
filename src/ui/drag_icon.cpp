@@ -1,5 +1,6 @@
 #include "drag_icon.hpp"
 #include "asset_loader.hpp"
+#include "dpi.hpp"
 
 #include <cmath>
 
@@ -46,21 +47,9 @@ bool DragIconWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
-    // Allocate 32-bit DIB Section & Memory DC
-    HDC hScreenDC = ::GetDC(nullptr);
-    hMemDC_ = ::CreateCompatibleDC(hScreenDC);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = kSize;
-    bmi.bmiHeader.biHeight = -kSize; // Top-down DIB
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    hBitmap_ = ::CreateDIBSection(hMemDC_, &bmi, DIB_RGB_COLORS, &pBits_, nullptr, 0);
-    hOldBitmap_ = static_cast<HBITMAP>(::SelectObject(hMemDC_, hBitmap_));
-    ::ReleaseDC(nullptr, hScreenDC);
+    // REQ-R15: initial DIB + render-target binding at the default (96 dpi)
+    // geometry; ShowAt() re-scales to the monitor the icon actually lands on.
+    EnsureBuffer(dpi_, phys_size_);
 
     // Initialize Direct2D
     if (FAILED(::D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d_factory_))) {
@@ -76,12 +65,64 @@ bool DragIconWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
-    RECT rc = { 0, 0, kSize, kSize };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    RebindRenderTarget();
 
     LoadLogoBitmap();
 
     return true;
+}
+
+// REQ-R15: (re)allocate the 32-bit top-down DIB for `phys_edge` physical
+// pixels and remember the monitor DPI so Render() can set the matching D2D
+// DPI transform. Cheap no-op while geometry is unchanged (the common case:
+// rapid ShowAt moves on one monitor).
+void DragIconWindow::EnsureBuffer(UINT dpi, int phys_edge) {
+    if (hBitmap_ && dpi == dpi_ && phys_edge == phys_size_) {
+        return;
+    }
+    dpi_ = dpi;
+    phys_size_ = phys_edge;
+
+    if (hMemDC_) {
+        if (hOldBitmap_) {
+            ::SelectObject(hMemDC_, hOldBitmap_);
+            hOldBitmap_ = nullptr;
+        }
+        if (hBitmap_) {
+            ::DeleteObject(hBitmap_);
+            hBitmap_ = nullptr;
+        }
+        ::DeleteDC(hMemDC_);
+        hMemDC_ = nullptr;
+    }
+
+    HDC hScreenDC = ::GetDC(nullptr);
+    hMemDC_ = ::CreateCompatibleDC(hScreenDC);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = phys_size_;
+    bmi.bmiHeader.biHeight = -phys_size_; // Top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    hBitmap_ = ::CreateDIBSection(hMemDC_, &bmi, DIB_RGB_COLORS, &pBits_, nullptr, 0);
+    hOldBitmap_ = static_cast<HBITMAP>(::SelectObject(hMemDC_, hBitmap_));
+    ::ReleaseDC(nullptr, hScreenDC);
+
+    RebindRenderTarget();
+}
+
+void DragIconWindow::RebindRenderTarget() {
+    if (!dc_render_target_ || !hMemDC_) {
+        return;
+    }
+    const RECT rc = { 0, 0, phys_size_, phys_size_ };
+    dc_render_target_->BindDC(hMemDC_, &rc);
+    // Render target DPI = monitor DPI: all DIP-authored geometry in Render()
+    // then rasterizes 1:1 into the physical-pixel DIB (crisp at 150%/200%).
+    dc_render_target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
 }
 
 void DragIconWindow::LoadLogoBitmap() {
@@ -136,22 +177,34 @@ void DragIconWindow::ShowAt(int x, int y) {
         return;
     }
 
-    // Multi-monitor aware bounds clamping
+    // REQ-R15 (audit §5 latent item 3): the LL mouse coordinates arriving here
+    // are PHYSICAL pixels of the monitor under the cursor. Query that
+    // monitor's effective DPI, scale the 32-DIP logical pill to its physical
+    // size, resize the DIB + D2D target DPI accordingly (no-op while the icon
+    // stays on one monitor), and clamp in the SAME physical units - the old
+    // code mixed a DIP-sized constant (kSize) with physical monitor rects,
+    // which offsets the icon by (scale-1)*size/2 on 150%/200% secondary
+    // monitors and renders it blurry (DWM stretch) on unaware processes.
+    const POINT pt_cursor = { x, y };
+    const UINT dpi = emebalachat::ui::MonitorDpiAtPoint(pt_cursor);
+    const int phys = emebalachat::ui::ScaleDipsToPixels(kSize, dpi);
+    EnsureBuffer(dpi, phys);
+
+    // Multi-monitor aware bounds clamping (physical px vs physical work area)
     POINT pt = { x, y };
     HMONITOR hMon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {};
     mi.cbSize = sizeof(MONITORINFO);
     if (::GetMonitorInfoW(hMon, &mi)) {
-        if (x + kSize > mi.rcWork.right) x = mi.rcWork.right - kSize - 4;
-        if (y + kSize > mi.rcWork.bottom) y = mi.rcWork.bottom - kSize - 4;
-        if (x < mi.rcWork.left) x = mi.rcWork.left + 4;
-        if (y < mi.rcWork.top) y = mi.rcWork.top + 4;
+        const POINT clamped = emebalachat::ui::ClampWindowOrigin(x, y, phys_size_, phys_size_, 4, mi.rcWork);
+        x = clamped.x;
+        y = clamped.y;
     }
 
     is_hovered_ = false;
     alpha_ = 230;
 
-    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, kSize, kSize, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, phys_size_, phys_size_, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     visible_.store(true, std::memory_order_release);
 
     Render();
@@ -191,7 +244,10 @@ void DragIconWindow::StopFadeoutTimer() {
 void DragIconWindow::Render() {
     if (!dc_render_target_) return;
 
-    RECT rc = { 0, 0, kSize, kSize };
+    // REQ-R15: geometry stays authored in DIPs (kSize = 32 logical); the
+    // render target DPI (set in EnsureBuffer/RebindRenderTarget) maps DIP ->
+    // physical px. BindDC's rect must match the physical buffer.
+    RECT rc = { 0, 0, phys_size_, phys_size_ };
     dc_render_target_->BindDC(hMemDC_, &rc);
 
     dc_render_target_->BeginDraw();
@@ -246,7 +302,8 @@ void DragIconWindow::UpdateLayered() {
     if (!hwnd_ || !hMemDC_) return;
 
     POINT ptSrc = { 0, 0 };
-    SIZE sz = { kSize, kSize };
+    // REQ-R15: blit the PHYSICAL buffer size (matches the DIB and window).
+    SIZE sz = { phys_size_, phys_size_ };
     POINT ptDst = {};
     RECT rcWindow = {};
     ::GetWindowRect(hwnd_, &rcWindow);

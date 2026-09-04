@@ -30,6 +30,12 @@ public:
     HWND GetHwnd() const { return hwnd_; }
     void SetClickCallback(ClickCallback cb) { click_cb_ = std::move(cb); }
 
+    // REQ-R15 (audit §5 latent item 3): logical pill size in DIPs. The window,
+    // the DIB buffer, and UpdateLayeredWindow are sized in PHYSICAL pixels of
+    // the monitor the icon is shown on: phys_size_ = ScaleDipsToPixels(kSize,
+    // dpi_) with dpi_ from ui::MonitorDpiAtPoint at ShowAt time, and the D2D
+    // render target DPI is set to dpi_ so all DIP-authored geometry below
+    // (rounded pill, logo rect) rasterizes crisply at 1:1 physical scale.
     static constexpr int kSize = 32;
 
     // ---- REQ-R10 (audit §3.4): D2D thread marshal for ShowAt ----
@@ -85,6 +91,10 @@ private:
     void StartFadeoutTimer();
     void StopFadeoutTimer();
     void LoadLogoBitmap();
+    // REQ-R15: (re)allocate the DIB + bind the DC render target at the given
+    // physical edge size / DPI. No-op while geometry is unchanged.
+    void EnsureBuffer(UINT dpi, int phys_edge);
+    void RebindRenderTarget();
 
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
@@ -97,6 +107,10 @@ private:
     HBITMAP hBitmap_ = nullptr;
     HBITMAP hOldBitmap_ = nullptr;
     void* pBits_ = nullptr;
+
+    // REQ-R15: physical buffer geometry for the monitor the icon last showed on.
+    UINT dpi_ = 96;
+    int phys_size_ = kSize; // physical px edge length of window/DIB
 
     ID2D1Factory* d2d_factory_ = nullptr;
     ID2D1DCRenderTarget* dc_render_target_ = nullptr;

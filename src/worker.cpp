@@ -125,6 +125,26 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     FlushIme();
 
+    // REQ-R17 (audit §5 latent item 5): worker-side backstop for the race
+    // window between the hook's mirror check and this point (the user can
+    // open a FRESH composition while the task queues, and FlushIme's VK_RIGHT
+    // only flushes what was open at flush time). Re-probing the foreground
+    // window's IME context here is safe: this is the pipeline worker thread,
+    // not the LL hook (ImmGetContext cross-thread SendMessage cannot cause a
+    // LowLevelHooksTimeout unhook on this thread). Still composing -> take
+    // the same fail-safe bypass the empty-copy path uses: release any block
+    // selection and hand Enter to the app, whose IME commits + sends exactly
+    // as it would have without us. Copying/pasting mid-composition is the
+    // corruption the audit describes ("마지막 글자 중복 복사") and must never
+    // happen against a live GCS_COMPSTR.
+    if (ForegroundImeComposing()) {
+        fprintf(stderr, "WORKER/ExecuteTask/033: IME composition detected at task start; "
+                        "bypassing translation (Enter handed to the app's IME)\n");
+        ReleaseSelectionOnce();
+        SendEnterKey(task.is_shift_enter);
+        return;
+    }
+
     // I4: this runs on the pipeline worker thread while the UI/hook threads may
     // mutate the shared string fields; take one consistent locked snapshot.
     const AppConfig::Snapshot snap = config_.GetSnapshot();

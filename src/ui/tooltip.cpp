@@ -1,5 +1,6 @@
 #include "tooltip.hpp"
 #include "asset_loader.hpp"
+#include "dpi.hpp"
 #include "../config.hpp"
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
@@ -218,15 +219,13 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         kTooltipClassName,
         L"Emebalachat Translation Tooltip",
         WS_POPUP,
-        -1000, -1000, current_width_, current_height_,
+        -1000, -1000, PhysW(), PhysH(),
         nullptr, nullptr, hInstance_, this
     );
 
     if (!hwnd_) {
         return false;
     }
-
-    ReallocateBuffer(current_width_, current_height_);
 
     // Direct2D & DirectWrite Factories
     if (FAILED(::D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d_factory_))) {
@@ -238,12 +237,10 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
     );
 
-    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
-        return false;
-    }
-
-    RECT rc = { 0, 0, current_width_, current_height_ };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    // REQ-R15: single buffer allocation AFTER the render target exists so the
+    // D2D DPI transform is set in the same step (ReallocateBuffer no-ops its
+    // bind when the target is null).
+    ReallocateBuffer(PhysW(), PhysH());
 
     LoadLogoBitmap();
 
@@ -527,6 +524,22 @@ bool TooltipWindow::SelectVoiceForLanguage(std::string_view target_lang_name_or_
     return false;
 }
 
+int TooltipWindow::PhysW() const {
+    return emebalachat::ui::ScaleDipsToPixels(current_width_, dpi_);
+}
+
+int TooltipWindow::PhysH() const {
+    return emebalachat::ui::ScaleDipsToPixels(current_height_, dpi_);
+}
+
+void TooltipWindow::RebindRenderTarget() {
+    if (!dc_render_target_ || !hMemDC_) {
+        return;
+    }
+    const RECT rc = { 0, 0, PhysW(), PhysH() };
+    dc_render_target_->BindDC(hMemDC_, &rc);
+}
+
 void TooltipWindow::ReallocateBuffer(int width, int height) {
     if (hMemDC_) {
         if (hOldBitmap_) {
@@ -557,6 +570,8 @@ void TooltipWindow::ReallocateBuffer(int width, int height) {
     ::ReleaseDC(nullptr, hScreenDC);
 
     if (dc_render_target_) {
+        // REQ-R15: D2D DPI tracks the monitor so DIP layout rasterizes 1:1.
+        dc_render_target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
         RECT rc = { 0, 0, width, height };
         dc_render_target_->BindDC(hMemDC_, &rc);
     }
@@ -612,10 +627,15 @@ void TooltipWindow::ShowTranslation(
     }
 
     // Calculate dynamic window height: header (38) + pad (12) + body + pad (16) + footer (36)
+    // (DIP layout units - the DirectWrite metrics above are DPI-independent)
     int calculated_height = static_cast<int>(std::ceil(38.0f + 12.0f + text_height + 16.0f + 36.0f));
     current_height_ = (std::max)(140, (std::min)(calculated_height, 480));
 
-    ReallocateBuffer(current_width_, current_height_);
+    // REQ-R15 (audit §5 latent item 3): capture the target monitor's DPI from
+    // the (physical) cursor coordinates the caller passed, then allocate the
+    // physical buffer and clamp in the same physical units.
+    dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ x, y });
+    ReallocateBuffer(PhysW(), PhysH());
 
     // Multi-monitor aware bounds clamping
     POINT pt = { x, y };
@@ -623,13 +643,12 @@ void TooltipWindow::ShowTranslation(
     MONITORINFO mi = {};
     mi.cbSize = sizeof(MONITORINFO);
     if (::GetMonitorInfoW(hMon, &mi)) {
-        if (x + current_width_ > mi.rcWork.right) x = mi.rcWork.right - current_width_ - 10;
-        if (y + current_height_ > mi.rcWork.bottom) y = mi.rcWork.bottom - current_height_ - 10;
-        if (x < mi.rcWork.left) x = mi.rcWork.left + 10;
-        if (y < mi.rcWork.top) y = mi.rcWork.top + 10;
+        const POINT clamped = emebalachat::ui::ClampWindowOrigin(x, y, PhysW(), PhysH(), 10, mi.rcWork);
+        x = clamped.x;
+        y = clamped.y;
     }
 
-    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, current_width_, current_height_, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_SHOWWINDOW);
     visible_ = true;
 
     Render();
@@ -656,7 +675,9 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
 
     current_width_ = 320;
     current_height_ = 84;
-    ReallocateBuffer(current_width_, current_height_);
+    // REQ-R15: same physical-buffer policy as ShowTranslation (see there).
+    dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ x, y });
+    ReallocateBuffer(PhysW(), PhysH());
 
     // Multi-monitor aware bounds clamping (same policy as ShowTranslation).
     POINT pt = { x, y };
@@ -664,13 +685,12 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     MONITORINFO mi = {};
     mi.cbSize = sizeof(MONITORINFO);
     if (::GetMonitorInfoW(hMon, &mi)) {
-        if (x + current_width_ > mi.rcWork.right) x = mi.rcWork.right - current_width_ - 10;
-        if (y + current_height_ > mi.rcWork.bottom) y = mi.rcWork.bottom - current_height_ - 10;
-        if (x < mi.rcWork.left) x = mi.rcWork.left + 10;
-        if (y < mi.rcWork.top) y = mi.rcWork.top + 10;
+        const POINT clamped = emebalachat::ui::ClampWindowOrigin(x, y, PhysW(), PhysH(), 10, mi.rcWork);
+        x = clamped.x;
+        y = clamped.y;
     }
 
-    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, current_width_, current_height_, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_SHOWWINDOW);
     visible_ = true;
 
     Render();
@@ -784,8 +804,8 @@ void TooltipWindow::CopyToClipboard() {
 void TooltipWindow::Render() {
     if (!dc_render_target_) return;
 
-    RECT rc = { 0, 0, current_width_, current_height_ };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    // REQ-R15: DIP layout authored below; BindDC rect is the physical buffer.
+    RebindRenderTarget();
 
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
@@ -1036,7 +1056,7 @@ void TooltipWindow::UpdateLayered() {
     if (!hwnd_ || !hMemDC_) return;
 
     POINT ptSrc = { 0, 0 };
-    SIZE sz = { current_width_, current_height_ };
+    SIZE sz = { PhysW(), PhysH() }; // REQ-R15: physical blit size
     POINT ptDst = {};
     RECT rcWindow = {};
     ::GetWindowRect(hwnd_, &rcWindow);
@@ -1111,6 +1131,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             POINT pt = {};
             ::GetCursorPos(&pt);
             ::ScreenToClient(hwnd, &pt);
+            // REQ-R15: client coordinates are PHYSICAL px; the button rects
+            // are DIP layout. Convert before hit-testing, or on 150%/200%
+            // monitors the hover/click zones sit left/above the painted
+            // buttons (the audited "coordinate offset" symptom).
+            pt.x = emebalachat::ui::ScalePixelsToDips(pt.x, pThis->dpi_);
+            pt.y = emebalachat::ui::ScalePixelsToDips(pt.y, pThis->dpi_);
             float x = static_cast<float>(pt.x);
             float y = static_cast<float>(pt.y);
 
@@ -1131,8 +1157,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_MOUSEMOVE: {
-            float x = static_cast<float>((short)LOWORD(lParam));
-            float y = static_cast<float>((short)HIWORD(lParam));
+            // REQ-R15: lParam client coords are physical px -> DIP for the
+            // hit-test (same conversion + rationale as WM_SETCURSOR).
+            float x = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
+            float y = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
 
             int new_hover = 0;
             if (IsPointInRect(pThis->copy_btn_rect_, x, y)) new_hover = 1;
@@ -1170,8 +1200,11 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
 
-            float x = static_cast<float>((short)LOWORD(lParam));
-            float y = static_cast<float>((short)HIWORD(lParam));
+            // REQ-R15: physical client px -> DIP (see WM_MOUSEMOVE note).
+            float x = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
+            float y = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
 
             if (IsPointInRect(pThis->copy_btn_rect_, x, y)) {
                 pThis->CopyToClipboard();
@@ -1201,7 +1234,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     ::AppendMenuW(hMenu, flags, static_cast<UINT_PTR>(i + 1), item.c_str());
                 }
 
-                POINT pt = { static_cast<int>(pThis->lang_btn_rect_.left), static_cast<int>(pThis->lang_btn_rect_.bottom) };
+                // REQ-R15: the dropdown anchor is DIP layout coords; the
+                // window-to-screen conversion works in physical px.
+                POINT pt = {
+                    emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->lang_btn_rect_.left), pThis->dpi_),
+                    emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->lang_btn_rect_.bottom), pThis->dpi_)
+                };
                 ::ClientToScreen(hwnd, &pt);
                 ::SetForegroundWindow(hwnd);
 

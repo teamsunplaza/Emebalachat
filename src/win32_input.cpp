@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cwctype>
+#include <imm.h> // ImmGetContext/ImmGetCompositionStringW (imm32.lib already linked)
 #include <thread>
 #include <windows.h>
 
@@ -662,6 +663,24 @@ void SendEnterKey(bool release_shift) {
     INPUT enter_up = enter_down;
     enter_up.ki.dwFlags = KEYEVENTF_KEYUP;
     ::SendInput(1, &enter_up, sizeof(INPUT));
+}
+
+// REQ-R17 (audit §5 latent item 5): non-empty GCS_COMPSTR on the foreground
+// window's IME context == a composition is still open. Passing (LPVOID)0/0
+// queries the required buffer size; > 0 means a live composition string.
+// See the header contract: NEVER call from a low-level hook callback.
+bool ForegroundImeComposing() {
+    HWND hwnd = ::GetForegroundWindow();
+    if (!hwnd) {
+        return false;
+    }
+    HIMC himc = ::ImmGetContext(hwnd);
+    if (!himc) {
+        return false; // window has no IME context -> nothing composing
+    }
+    const LONG comp_size = ::ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
+    ::ImmReleaseContext(hwnd, himc);
+    return comp_size > 0;
 }
 
 } // namespace emebalachat

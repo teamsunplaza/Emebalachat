@@ -1,5 +1,6 @@
 #include "badge.hpp"
 #include "../i18n.hpp"
+#include "dpi.hpp"
 
 #include <cmath>
 
@@ -40,27 +41,34 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
     int posX = 0;
     int posY = 0;
 
+    // REQ-R15 (audit §5 latent item 3): the badge is sized in DIPs by Render()
+    // (DirectWrite metrics are DPI-independent), but the window, the DIB and
+    // UpdateLayeredWindow must live in PHYSICAL pixels of the monitor it sits
+    // on. The persisted position and the LL-hook coordinates are physical, so
+    // all comparisons below convert the DIP extents via the target DPI.
     if (initial_x >= 0 && initial_y >= 0) {
         posX = initial_x;
         posY = initial_y;
         // Multi-monitor aware bounds clamping: find the nearest active monitor
         POINT pt = { posX, posY };
+        dpi_ = emebalachat::ui::MonitorDpiAtPoint(pt);
         HMONITOR hMon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi = {};
         mi.cbSize = sizeof(MONITORINFO);
+        const int pw = PhysW();
+        const int ph = PhysH();
         if (::GetMonitorInfoW(hMon, &mi)) {
-            const RECT& monWork = mi.rcWork;
-            if (posX < monWork.left) posX = monWork.left;
-            if (posY < monWork.top) posY = monWork.top;
-            if (posX + current_width_ > monWork.right) posX = monWork.right - current_width_;
-            if (posY + kHeight > monWork.bottom) posY = monWork.bottom - kHeight;
+            const POINT clamped = emebalachat::ui::ClampWindowOrigin(posX, posY, pw, ph, 0, mi.rcWork);
+            posX = clamped.x;
+            posY = clamped.y;
         }
     } else {
         RECT workArea = {};
         ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+        dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ workArea.left + 1, workArea.top + 1 });
         // Initial default position: bottom right of primary monitor, above taskbar
-        posX = workArea.right - current_width_ - 30;
-        posY = workArea.bottom - kHeight - 30;
+        posX = workArea.right - PhysW() - 30;
+        posY = workArea.bottom - PhysH() - 30;
     }
 
     // Create layered, topmost, toolwindow (no taskbar button)
@@ -69,7 +77,7 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
         kWindowClassName,
         L"Emebalachat Badge",
         WS_POPUP,
-        posX, posY, current_width_, kHeight,
+        posX, posY, PhysW(), PhysH(),
         nullptr, nullptr, hInstance_, this
     );
 
@@ -77,10 +85,9 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
         return false;
     }
 
-    // Initialize DIB section and memory DC for UpdateLayeredWindow
-    ReallocateBuffer(current_width_, kHeight);
-
-    // Initialize Direct2D & DirectWrite
+    // Initialize Direct2D & DirectWrite (REQ-R15: the DIB + render-target
+    // binding happens once, after the target exists, below - ReallocateBuffer
+    // both allocates the physical-pixel buffer and binds + DPI-sets the target)
     if (FAILED(::D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d_factory_))) {
         return false;
     }
@@ -94,8 +101,10 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
         return false;
     }
 
-    RECT rc = { 0, 0, current_width_, kHeight };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    // REQ-R15: render-target DPI maps the DIP-authored layout onto the
+    // physical-pixel buffer (crisp text at 125%/150%/200%); ReallocateBuffer
+    // above ran before the target existed, so rebind + set DPI now.
+    ReallocateBuffer(PhysW(), PhysH());
 
     if (FAILED(::DWriteCreateFactory(
         DWRITE_FACTORY_TYPE_SHARED,
@@ -218,8 +227,25 @@ bool FloatingBadge::IsVisible() const {
 
 void FloatingBadge::SetPosition(int x, int y) {
     if (hwnd_) {
-        ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, current_width_, kHeight, SWP_NOACTIVATE | SWP_NOSIZE);
+        ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_NOSIZE);
     }
+}
+
+// REQ-R15: physical window size helpers. current_width_/kHeight stay DIP.
+int FloatingBadge::PhysW() const {
+    return emebalachat::ui::ScaleDipsToPixels(current_width_, dpi_);
+}
+
+int FloatingBadge::PhysH() const {
+    return emebalachat::ui::ScaleDipsToPixels(kHeight, dpi_);
+}
+
+void FloatingBadge::RebindRenderTarget() {
+    if (!dc_render_target_ || !hMemDC_) {
+        return;
+    }
+    const RECT rc = { 0, 0, PhysW(), PhysH() };
+    dc_render_target_->BindDC(hMemDC_, &rc);
 }
 
 void FloatingBadge::SetClickCallback(ActionCallback cb) {
@@ -275,6 +301,10 @@ void FloatingBadge::ReallocateBuffer(int width, int height) {
     ::ReleaseDC(nullptr, hScreenDC);
 
     if (dc_render_target_) {
+        // REQ-R15: keep the D2D DPI transform in sync with the monitor DPI
+        // whenever the physical buffer is re-allocated (initial create and
+        // cross-DPI drags both land here).
+        dc_render_target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
         RECT rc = { 0, 0, width, height };
         dc_render_target_->BindDC(hMemDC_, &rc);
     }
@@ -285,7 +315,7 @@ void FloatingBadge::UpdateAlpha(BYTE alpha) {
     if (!hwnd_ || !hMemDC_) return;
 
     POINT ptSrc = { 0, 0 };
-    SIZE sz = { current_width_, kHeight };
+    SIZE sz = { PhysW(), PhysH() }; // REQ-R15: physical buffer size
     POINT ptDst = {};
     RECT rcWindow = {};
     ::GetWindowRect(hwnd_, &rcWindow);
@@ -391,9 +421,10 @@ void FloatingBadge::Render() {
     // If width changed or buffer unallocated, reallocate buffer and resize window
     if (dynamic_width != current_width_ || !hBitmap_) {
         current_width_ = dynamic_width;
-        ReallocateBuffer(current_width_, kHeight);
+        // REQ-R15: DIP layout width -> physical buffer & window width.
+        ReallocateBuffer(PhysW(), PhysH());
         if (hwnd_) {
-            ::SetWindowPos(hwnd_, nullptr, 0, 0, current_width_, kHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            ::SetWindowPos(hwnd_, nullptr, 0, 0, PhysW(), PhysH(), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 
@@ -410,6 +441,11 @@ void FloatingBadge::Render() {
 
     float textX = startX + haloDiameter + gap;
 
+    // REQ-R15 note: everything above is authored in DIPs; the render target
+    // DPI converts to physical at rasterization. The DirectWrite layout was
+    // measured against the same DIP coordinate space, so centering math is
+    // scale-correct on any monitor.
+
     // ROOT CAUSE FIX:
     // text_format_ has SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).
     // When textLayout is created with maxHeight = kHeight (38.0f), DirectWrite
@@ -418,8 +454,7 @@ void FloatingBadge::Render() {
     // the text downward). Drawing at Y = 0.0f guarantees 100% dead-center alignment!
     float textY = 0.0f;
 
-    RECT rc = { 0, 0, current_width_, kHeight };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    RebindRenderTarget();
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
@@ -627,20 +662,28 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     int newX = self->drag_start_window_.x + dx;
                     int newY = self->drag_start_window_.y + dy;
 
-                    // Multi-monitor aware bounds clamping: find nearest monitor to badge center
-                    POINT ptCenter = { newX + self->current_width_ / 2, newY + kHeight / 2 };
+                    // Multi-monitor aware bounds clamping: find nearest monitor to badge center.
+                    // REQ-R15: cursor deltas and monitor rects are PHYSICAL px; the badge
+                    // extents must be converted from DIP before they mix. Re-check the
+                    // monitor DPI each move so a drag onto a differently-scaled monitor
+                    // keeps the pill visually the same physical footprint once it lands.
+                    POINT ptCenter = { newX + self->PhysW() / 2, newY + self->PhysH() / 2 };
+                    const UINT targetDpi = emebalachat::ui::MonitorDpiAtPoint(ptCenter);
+                    if (targetDpi != self->dpi_) {
+                        self->dpi_ = targetDpi;
+                        self->ReallocateBuffer(self->PhysW(), self->PhysH());
+                    }
                     HMONITOR hMon = ::MonitorFromPoint(ptCenter, MONITOR_DEFAULTTONEAREST);
                     MONITORINFO mi = {};
                     mi.cbSize = sizeof(MONITORINFO);
                     if (::GetMonitorInfoW(hMon, &mi)) {
-                        const RECT& monWork = mi.rcWork;
-                        if (newX < monWork.left) newX = monWork.left;
-                        if (newY < monWork.top) newY = monWork.top;
-                        if (newX + self->current_width_ > monWork.right) newX = monWork.right - self->current_width_;
-                        if (newY + kHeight > monWork.bottom) newY = monWork.bottom - kHeight;
+                        const POINT clamped = emebalachat::ui::ClampWindowOrigin(
+                            newX, newY, self->PhysW(), self->PhysH(), 0, mi.rcWork);
+                        newX = clamped.x;
+                        newY = clamped.y;
                     }
 
-                    ::SetWindowPos(hwnd, HWND_TOPMOST, newX, newY, self->current_width_, kHeight, SWP_NOSIZE | SWP_NOACTIVATE);
+                    ::SetWindowPos(hwnd, HWND_TOPMOST, newX, newY, self->PhysW(), self->PhysH(), SWP_NOSIZE | SWP_NOACTIVATE);
                 }
             } else {
                 if (!self->is_hovered_) {

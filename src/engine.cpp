@@ -4,6 +4,7 @@
 #include "unicode_utils.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -169,11 +170,47 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
 
 #ifdef HAVE_LLAMA_CPP
 
+namespace {
+
+// REQ-R16 (audit §5 latent item 4): llama.cpp abort callback. ggml calls this
+// between tensor-evaluation chunks of an in-flight llama_decode(); returning
+// true aborts the compute. user_data is the TranslationManager's
+// cancel_requested_ atomic (registered once at engine creation, lives as long
+// as the manager which owns this engine). Documented llama.cpp limitation:
+// CPU execution only - the per-token stop check in the decode loop below
+// covers the GPU path (one forward pass per token, milliseconds each).
+bool LlamaAbortIfCanceled(void* user_data) {
+    if (!user_data) {
+        return false;
+    }
+    const auto* flag = static_cast<const std::atomic<bool>*>(user_data);
+    return flag->load(std::memory_order_acquire);
+}
+
+// REQ-R16: model-load cancellation. llama_progress_callback returns TRUE to
+// CONTINUE loading; returning false aborts llama_model_load_from_file(). This
+// unwinds the startup warmup thread (PreloadLocalModel) during app exit
+// instead of the shutdown path waiting out a multi-second VRAM load - the
+// other half of the "no zombie thread at exit" requirement.
+bool LlamaLoadProgress(float /*progress*/, void* user_data) {
+    return !LlamaAbortIfCanceled(user_data);
+}
+
+} // namespace
+
 struct TranslationManager::LlamaEngine {
     llama_model* model = nullptr;
     llama_context* ctx = nullptr;
     const llama_vocab* vocab = nullptr;
     std::string loaded_path;
+    // REQ-R16: cancellation flag owned by TranslationManager (null when the
+    // engine was created without a manager, e.g. in isolation tests - then
+    // cancellation is simply unavailable and behavior is the old full-run).
+    const std::atomic<bool>* cancel_flag = nullptr;
+
+    bool CancelRequested() const {
+        return cancel_flag && cancel_flag->load(std::memory_order_acquire);
+    }
 
     LlamaEngine() {
         llama_log_set([](ggml_log_level level, const char* text, void* /*user_data*/) {
@@ -217,11 +254,28 @@ struct TranslationManager::LlamaEngine {
             return false;
         }
 
+        // REQ-R16: if a shutdown cancellation was requested while we were
+        // queued behind mutex_, do not even start a model load.
+        if (CancelRequested()) {
+            fprintf(stderr, "ENGINE/EnsureLoaded/030: load skipped, shutdown cancellation pending\n");
+            return false;
+        }
+
         llama_model_params mparams = llama_model_default_params();
         mparams.n_gpu_layers = 99; // Offload layers to RTX 2070 Turing GPU (sm_75)
+        // REQ-R16: abort an in-progress model load when shutdown is requested.
+        mparams.progress_callback = LlamaLoadProgress;
+        mparams.progress_callback_user_data =
+            const_cast<void*>(static_cast<const void*>(cancel_flag));
 
         model = llama_model_load_from_file(path.c_str(), mparams);
         if (!model) {
+            // REQ-R16: a cancel-aborted load is not a CUDA failure; do not
+            // spend another full load attempt on the CPU path afterwards.
+            if (CancelRequested()) {
+                fprintf(stderr, "ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
+                return false;
+            }
             // Fallback to CPU-only load if CUDA load encounters an issue
             mparams.n_gpu_layers = 0;
             model = llama_model_load_from_file(path.c_str(), mparams);
@@ -240,6 +294,10 @@ struct TranslationManager::LlamaEngine {
         cparams.n_threads = hw_threads > 0 ? static_cast<int32_t>(hw_threads) : 4;
         cparams.n_threads_batch = cparams.n_threads;
         cparams.flash_attn = true;
+        // REQ-R16: per-chunk abort inside llama_decode (CPU execution path).
+        cparams.abort_callback = LlamaAbortIfCanceled;
+        cparams.abort_callback_data =
+            const_cast<void*>(static_cast<const void*>(cancel_flag));
 
         ctx = llama_init_from_model(model, cparams);
         if (!ctx && cparams.flash_attn) {
@@ -266,6 +324,10 @@ struct TranslationManager::LlamaEngine {
         int top_k = 20,
         float rep_pen = 1.05f
     ) {
+        // REQ-R16: a canceled manager short-circuits before touching llama.
+        if (CancelRequested()) {
+            return {};
+        }
         if (!EnsureLoaded(path)) {
             return {};
         }
@@ -419,6 +481,17 @@ struct TranslationManager::LlamaEngine {
         constexpr int max_gen_tokens = kLlamaGenReserve; // REQ-R01: reserve mirrored from the budget constant
 
         for (int i = 0; i < max_gen_tokens; ++i) {
+            // REQ-R16: cancellation check BETWEEN DECODE STEPS - the token
+            // loop is the app-level seam: shutdown posts the flag, and at
+            // most one more sampled token (+ its batched decode, the
+            // abort_callback unwinds that from inside) runs before we exit
+            // the loop with the partial output discarded as empty.
+            if (CancelRequested()) {
+                fprintf(stderr, "ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
+                llama_sampler_free(smpl);
+                return {};
+            }
+
             // Guard against context overflow (REQ-R01: constant now shared with the
             // budget computed before decode, instead of a second hardcoded 2048).
             if (static_cast<int>(prompt_tokens.size()) + i + 1 >= kLlamaNCtx) {
@@ -479,6 +552,8 @@ struct TranslationManager::LlamaEngine {
 #else
 
 struct TranslationManager::LlamaEngine {
+    const std::atomic<bool>* cancel_flag = nullptr;
+    bool CancelRequested() const { return false; }
     bool EnsureLoaded(const std::string&) { return false; }
     void Unload() {}
     std::wstring Translate(std::wstring_view, std::string_view, const std::string&, float = 0.7f, float = 0.6f, int = 20, float = 1.05f) { return {}; }
@@ -498,8 +573,20 @@ struct TranslationManager::LlamaEngine {
 TranslationManager::TranslationManager(EngineType preferred_type, std::string model_path)
     : preferred_type_(preferred_type), model_path_(std::move(model_path)) {
     if (model_path_.empty()) {
-        // Fall back to the in-class AppConfig default (no file I/O).
-        model_path_ = AppConfig{}.model_path;
+        // D5 item F (hardens the D4-flagged issue 1): the in-class AppConfig
+        // default "models/Hy-MT2-1.8B-Q8_0.gguf" is RELATIVE, and the old
+        // fallback left it resolved against the process CWD by downstream
+        // checks (std::filesystem::exists here, IsValidModelPath's default
+        // base, and llama_model_load_from_file inside the engine) - so a
+        // direct-construct caller (tests, future embedding) under a foreign
+        // CWD (Run-registry autostart -> System32) silently lost the local
+        // model. ResolveModelPath anchors the default to the EXECUTABLE
+        // directory: pure path arithmetic, still no file I/O in this
+        // constructor, and identical semantics to the main.cpp REQ-R11
+        // handoff. Explicit absolute model_path arguments keep their
+        // pass-through behavior (ResolveModelPath ignores base for them,
+        // but we only touch the empty-default branch anyway).
+        model_path_ = ResolveModelPath(AppConfig{}.model_path);
     }
     RefreshActiveEngine();
 }
@@ -578,10 +665,43 @@ bool TranslationManager::IsCloudFallbackEnabled() const {
 
 bool TranslationManager::PreloadLocalModel() {
     std::lock_guard<std::mutex> lock(mutex_);
+    EnsureLlamaEngineLocked();
+    return llama_engine_->EnsureLoaded(model_path_);
+}
+
+// REQ-R16: single creation point wiring the cancellation flag into the llama
+// engine (caller holds mutex_). The engine reads cancel_requested_ lock-free
+// between decode steps and llama.cpp reads it from the abort callback.
+void TranslationManager::EnsureLlamaEngineLocked() {
     if (!llama_engine_) {
         llama_engine_ = std::make_unique<LlamaEngine>();
+        llama_engine_->cancel_flag = &cancel_requested_;
     }
-    return llama_engine_->EnsureLoaded(model_path_);
+}
+
+void TranslationManager::RequestCancel() {
+    // Deliberately NOT taking mutex_: the inference thread holds it across the
+    // whole decode; the atomic store is the signal that thread observes.
+    cancel_requested_.store(true, std::memory_order_release);
+}
+
+bool TranslationManager::IsCancelRequested() {
+    return cancel_requested_.load(std::memory_order_acquire);
+}
+
+// REQ-R16 bounded drain: Translate() (and the Auto->cloud fallback) hold mutex_
+// for their whole duration, so acquiring it proves no inference is in flight.
+// try_lock polling gives a wall-clock-bounded wait for the shutdown sequence.
+bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::unique_lock<std::mutex> probe(mutex_, std::try_to_lock);
+        if (probe.owns_lock()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
 }
 
 void TranslationManager::UnloadLocalModel() {
@@ -604,7 +724,7 @@ void TranslationManager::RefreshActiveEngine() {
             active_type_ = EngineType::LocalLlama;
             active_name_ = "Hy-MT2-1.8B (Local)";
             if (!llama_engine_) {
-                llama_engine_ = std::make_unique<LlamaEngine>();
+                EnsureLlamaEngineLocked();
             }
 #else
             active_type_ = EngineType::GoogleTranslate;
@@ -621,7 +741,7 @@ void TranslationManager::RefreshActiveEngine() {
             active_type_ = EngineType::LocalLlama;
             active_name_ = "Hy-MT2-1.8B (CUDA/CPU)";
             if (!llama_engine_) {
-                llama_engine_ = std::make_unique<LlamaEngine>();
+                EnsureLlamaEngineLocked();
             }
 #else
             active_type_ = EngineType::GoogleTranslate;
@@ -691,6 +811,12 @@ std::wstring TranslationManager::Translate(
     };
 
     if (active_type_ == EngineType::LocalLlama && llama_engine_) {
+        // REQ-R16: cancellation short-circuit BEFORE llama is touched (a
+        // shutdown posted RequestCancel() while this call queued on mutex_).
+        if (cancel_requested_.load(std::memory_order_acquire)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
         std::wstring res = llama_engine_->Translate(
             text, tgt_name, model_path_,
             temperature_, top_p_, top_k_, repetition_penalty_
@@ -698,6 +824,14 @@ std::wstring TranslationManager::Translate(
         if (!res.empty()) {
             set_status(TranslationStatus::Ok);
             return res;
+        }
+        // REQ-R16: an empty result right after a cancel request is the
+        // shutdown unwind, NOT an engine failure. It must not fall through to
+        // the cloud (would transmit user text mid-exit) and must not surface
+        // a spurious error tone.
+        if (cancel_requested_.load(std::memory_order_acquire)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
         }
         // Local inference failed (load/decode/tokenizer/empty output).
         // Auto: seamless cloud fallback - this is the consented contract above.
@@ -715,7 +849,15 @@ std::wstring TranslationManager::Translate(
         return {};
     }
 
-    // Non-local active engine. Cloud paths in order of consent strength:
+    // Non-local active engine. REQ-R16: shutdown cancellation also latches
+    // the pure cloud path - the caller already decided the process is
+    // exiting; starting a WinHTTP request now could never deliver its
+    // result and would transmit user text after an exit intent.
+    if (cancel_requested_.load(std::memory_order_acquire)) {
+        set_status(TranslationStatus::Canceled);
+        return {};
+    }
+    // Cloud paths in order of consent strength:
     //  - preferred_type_ == GoogleTranslate: deliberate choice -> always allow.
     //  - preferred_type_ == Auto: zero-install or model-not-found path -> the
     //    Auto contract above makes this consented (REQ-R02 policy).

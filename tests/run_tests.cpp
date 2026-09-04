@@ -8,6 +8,7 @@
 #include "../src/i18n.hpp"
 #include "../src/ui/badge.hpp"
 #include "../src/ui/drag_icon.hpp"
+#include "../src/ui/dpi.hpp"
 #include "../src/ui/tooltip.hpp"
 #include "../src/ui/asset_loader.hpp"
 #include "../src/mouse_hook.hpp"
@@ -16,6 +17,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -1856,7 +1858,402 @@ void TestUIMarshaling() {
     std::cout << "[PASS] D2D thread-marshal tests completed." << std::endl;
 }
 
+// REQ-R15 (audit §5 latent item 3): mixed-DPI coordinate/scale math. The pure
+// conversions + clamping are fully headless; the runtime half asserts the
+// process actually ends up DPI-aware and windows report sane per-monitor DPI.
+void TestDpiMixedScaling() {
+    std::cout << "[RUN] Testing REQ-R15 Mixed-DPI Scaling Math..." << std::endl;
+
+    using emebalachat::ui::ClampWindowOrigin;
+    using emebalachat::ui::ScaleDipsToPixels;
+    using emebalachat::ui::ScalePixelsToDips;
+
+    // 1. Compile-time pins of the scaling contract (MulDiv round-to-nearest).
+    static_assert(ScaleDipsToPixels(32, 96) == 32, "R15: 100% identity");
+    static_assert(ScaleDipsToPixels(32, 120) == 40, "R15: 32 DIP @125% -> 40 px");
+    static_assert(ScaleDipsToPixels(32, 144) == 48, "R15: 32 DIP @150% -> 48 px");
+    static_assert(ScaleDipsToPixels(32, 192) == 64, "R15: 32 DIP @200% -> 64 px");
+    static_assert(ScaleDipsToPixels(240, 144) == 360, "R15: badge 240 DIP @150% -> 360 px");
+    static_assert(ScaleDipsToPixels(1, 144) == 2, "R15: MulDiv rounding (1*144+48)/96 = 2, floor would give 1");
+    static_assert(ScaleDipsToPixels(0, 144) == 0, "R15: zero stays zero");
+    static_assert(ScaleDipsToPixels(32, 0) == 32, "R15: failed DPI query clamps to 96, never divides by 0");
+    static_assert(ScaleDipsToPixels(32, 48) == 32, "R15: absurd low DPI clamps to base (no UI shrink)");
+    static_assert(ScalePixelsToDips(48, 144) == 32, "R15: physical->DIP inverse");
+    static_assert(ScalePixelsToDips(40, 120) == 32, "R15: inverse @125%");
+    static_assert(ScalePixelsToDips(32, 96) == 32, "R15: inverse identity");
+    static_assert(ScalePixelsToDips(48, 0) == 48, "R15: inverse guards dpi 0");
+
+    // 2. Clamp policy in PHYSICAL virtual-screen units. Primary 0..1920/0..1080,
+    //    right-hand 150% secondary starting at x=1920, LEFT-hand negative-offset
+    //    secondary (the mixed-DPI multi-monitor case the audit asked about).
+    constexpr RECT kPrimary = { 0, 0, 1920, 1040 };
+    constexpr RECT kLeftMon = { -2560, -400, -100, 680 };   // secondary at negative x
+    constexpr RECT kRightMon = { 1920, 0, 3840, 1040 };
+
+    // A 48px (150%) icon dragged past the right edge lands fully inside, 4px margin.
+    {
+        constexpr POINT p = ClampWindowOrigin(1900, 1030, 48, 48, 4, kPrimary);
+        static_assert(p.x + 48 <= kPrimary.right, "R15: right overflow clamped inside work area");
+        static_assert(p.y + 48 <= kPrimary.bottom, "R15: bottom overflow clamped inside work area");
+        static_assert(p.x == 1920 - 48 - 4 && p.y == 1040 - 48 - 4, "R15: exact margin math");
+    }
+    // Negative-coordinate secondary monitor: a window left of the secondary's
+    // left edge gets pulled to left+margin, x stays NEGATIVE (virtual coords).
+    {
+        constexpr POINT p = ClampWindowOrigin(-3000, -500, 64, 64, 10, kLeftMon);
+        static_assert(p.x == -2560 + 10, "R15: negative-x clamp keeps virtual-screen semantics");
+        static_assert(p.y == -400 + 10, "R15: negative-y clamp top edge");
+    }
+    // Already inside -> untouched (no jitter on ordinary moves).
+    {
+        constexpr POINT p = ClampWindowOrigin(1930, 50, 48, 48, 4, kRightMon);
+        static_assert(p.x == 1930 && p.y == 50, "R15: in-bounds origin passes through unchanged");
+    }
+    TEST_CHECK(true, "R15: clamp policy compile-time matrix (inside/outside/negative monitors)");
+
+    // 3. Runtime: process awareness + per-monitor DPI queries return sane values.
+    // (SetProcessDpiAwareness* can only succeed once per process; run_tests may
+    // already have a context from a prior batch call - either way the effective
+    // DPI query must be >= 96 and the awareness flag must end up true on this
+    // Windows 11 host.)
+    const bool aware = emebalachat::ui::EnsurePerMonitorV2ProcessDpiAwareness();
+    TEST_CHECK(aware, "R15: process is per-monitor DPI aware after init");
+    const UINT dpi_primary = emebalachat::ui::MonitorDpiAtPoint(POINT{ 10, 10 });
+    TEST_CHECK(dpi_primary >= 96 && dpi_primary <= 480, "R15: primary monitor DPI query in sane range");
+    TEST_CHECK(emebalachat::ui::MonitorDpiAtPoint(POINT{ -999999, -999999 }) >= 96,
+               "R15: far off-screen point still yields a valid nearest-monitor DPI");
+
+    // 4. Real windows report their monitor DPI through WindowDpi().
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    DragIconWindow icon;
+    TEST_CHECK(icon.Create(hInst), "R15 fixture: DragIconWindow created");
+    icon.ShowAt(120, 120);
+    TEST_CHECK(icon.IsVisible(), "R15: icon shows");
+    RECT rc = {};
+    ::GetWindowRect(icon.GetHwnd(), &rc);
+    const int w = rc.right - rc.left;
+    const int expected = ScaleDipsToPixels(32, dpi_primary);
+    TEST_CHECK(w == expected, "R15: shown icon window is 32-DIP scaled to the monitor's physical px");
+    icon.Destroy();
+
+    FloatingBadge badge;
+    TEST_CHECK(badge.Create(hInst, L"KO", L"EN", 100, 100), "R15 fixture: badge created");
+    RECT brc = {};
+    ::GetWindowRect(badge.GetHwnd(), &brc);
+    const int bh = brc.bottom - brc.top;
+    TEST_CHECK(bh == ScaleDipsToPixels(38, dpi_primary), "R15: badge height 38-DIP scaled to physical px");
+    badge.Destroy();
+
+    std::cout << "[PASS] REQ-R15 Mixed-DPI scaling tests completed." << std::endl;
+}
+
+// REQ-R14 (audit §5 latent item 2): hook lifecycle event policy + the verify-
+// and-reinstall seam, exercised on a REAL installed hook (Start/Stop/Reinstall
+// without synthetic user input).
+void TestHookLifecyclePolicy() {
+    std::cout << "[RUN] Testing REQ-R14 hook lifecycle policy..." << std::endl;
+
+    // 1. Pure message-classifier matrix (compile-time pinned, mirrors the
+    //    ControllerWndProc policy - the ONLY trigger set is resume + unlock).
+    static_assert(ShouldReinstallHooksOnEvent(WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC),
+                  "R14: resume from sleep reinstalls hooks");
+    static_assert(ShouldReinstallHooksOnEvent(WM_POWERBROADCAST, PBT_APMRESUMESUSPEND),
+                  "R14: user-visible resume reinstalls hooks");
+    static_assert(!ShouldReinstallHooksOnEvent(WM_POWERBROADCAST, PBT_APMSUSPEND),
+                  "R14: entering sleep must NOT reinstall (hook thread should idle, not churn)");
+    static_assert(!ShouldReinstallHooksOnEvent(WM_POWERBROADCAST, PBT_APMPOWERSTATUSCHANGE),
+                  "R14: unrelated power broadcast ignored");
+    static_assert(ShouldReinstallHooksOnEvent(WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK),
+                  "R14: Win+L unlock reinstalls hooks");
+    static_assert(!ShouldReinstallHooksOnEvent(WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK),
+                  "R14: lock itself ignored (unlock follows; reinstall into a locked desktop is pointless)");
+    static_assert(!ShouldReinstallHooksOnEvent(WM_WTSSESSION_CHANGE, WTS_SESSION_LOGON),
+                  "R14: logon ignored");
+    static_assert(!ShouldReinstallHooksOnEvent(WM_TIMER, 0), "R14: random messages ignored");
+    static_assert(kHookReinstallDebounceMs >= 500 && kHookReinstallDebounceMs <= 3000,
+                  "R14: debounce window coalesces resume bursts without delaying recovery");
+    static_assert(kHookHealthWatchdogMs >= 10000, "R14: watchdog cadence bounds silent-unhook window");
+
+    // 2. Runtime: the WTS registration API is reachable (wtsapi32 linked) and
+    //    a real notification window can register/unregister cleanly - the
+    //    exact sequence wWinMain performs.
+    {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = ::DefWindowProcW;
+        wc.hInstance = ::GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"Emebalachat_R14TestSink";
+        ::RegisterClassExW(&wc);
+        HWND sink = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"r14", WS_POPUP,
+                                      -100, -100, 0, 0, nullptr, nullptr, wc.hInstance, nullptr);
+        TEST_CHECK(sink != nullptr, "R14: lifecycle sink window creates");
+        const bool reg = ::WTSRegisterSessionNotification(sink, NOTIFY_FOR_THIS_SESSION) == TRUE;
+        TEST_CHECK(reg, "R14: WTSRegisterSessionNotification succeeds on an interactive session");
+        if (reg) {
+            TEST_CHECK(::WTSUnRegisterSessionNotification(sink) == TRUE, "R14: unregister succeeds");
+        }
+        if (sink) {
+            ::DestroyWindow(sink);
+        }
+    }
+
+    // 3. Real KeyboardHook lifecycle through the Reinstall() seam: start ->
+    //    healthy -> reinstall keeps running with a fresh hook -> stop ->
+    //    reinstall refuses to resurrect.
+    SetSoundEnabled(false);
+    AppConfig cfg;
+    cfg.hotkey_toggle = "Win+F9";
+    TranslationManager engine(EngineType::GoogleTranslate, "");
+    FloatingBadge badge;
+    SystemTray tray;
+    PipelineWorker worker(cfg, engine, badge);
+    KeyboardHook hook(cfg, worker, badge, tray);
+
+    TEST_CHECK(!hook.IsRunning() && !hook.IsHealthy(), "R14: fresh hook is neither running nor healthy");
+    TEST_CHECK(!hook.Reinstall(), "R14: Reinstall on a never-started hook is a no-op returning false");
+
+    TEST_CHECK(hook.Start(), "R14 fixture: keyboard hook starts");
+    TEST_CHECK(hook.IsRunning(), "R14: running after Start");
+    TEST_CHECK(hook.IsHealthy(), "R14: healthy after successful install");
+    const DWORD tid_before = hook.HookThreadIdForTest();
+    TEST_CHECK(tid_before != 0, "R14: hook thread id captured");
+
+    TEST_CHECK(hook.Reinstall(), "R14: Reinstall returns true while running");
+    TEST_CHECK(hook.IsRunning() && hook.IsHealthy(), "R14: hook healthy again after reinstall");
+    const DWORD tid_after = hook.HookThreadIdForTest();
+    TEST_CHECK(tid_after != 0 && tid_after != tid_before,
+               "R14: reinstall actually spawned a NEW hook thread (old one joined)");
+
+    hook.Stop();
+    TEST_CHECK(!hook.IsRunning() && !hook.IsHealthy(), "R14: stopped hook reports unhealthy");
+    TEST_CHECK(!hook.Reinstall(), "R14: stopped hook never resurrects (user/shutdown intent honored)");
+
+    // Same contract for the MouseHook side.
+    MouseHook mouse_hook;
+    TEST_CHECK(!mouse_hook.Reinstall(), "R14: MouseHook Reinstall no-op before Start");
+    TEST_CHECK(mouse_hook.Start(), "R14 fixture: mouse hook starts");
+    TEST_CHECK(mouse_hook.IsHealthy(), "R14: mouse hook healthy after install");
+    TEST_CHECK(mouse_hook.Reinstall(), "R14: MouseHook Reinstall true while running");
+    TEST_CHECK(mouse_hook.IsRunning() && mouse_hook.IsHealthy(), "R14: mouse hook healthy after reinstall");
+    mouse_hook.Stop();
+    SetSoundEnabled(true);
+
+    std::cout << "[PASS] REQ-R14 hook lifecycle tests completed." << std::endl;
+}
+
+// REQ-R17 (audit §5 latent item 5): IME composition safety predicate.
+void TestImeCompositionGate() {
+    std::cout << "[RUN] Testing REQ-R17 IME composition gate..." << std::endl;
+
+    // 1. Compile-time gate matrix. vk_is_return=false models the OS behavior
+    //    for IME-processed keys: LowLevelKeyboardProc receives VK_PROCESSKEY
+    //    (0xE7), NOT VK_RETURN, so composition keystrokes never reach the
+    //    Enter branch; the extra GCS_COMPSTR probe covers the case where the
+    //    Korean IME lets Enter through as VK_RETURN while composing.
+    static_assert(VK_PROCESSKEY == 0xE5, "R17: IME-processed keys are delivered as VK_PROCESSKEY (0xE5)");
+
+    // Hook-local composition mirror (ImeMirrorNext): set by intercepted jamo
+    // keys, cleared by plain editing keys; VK_RETURN KEEPS the flag so the
+    // Enter branch (which reads the mirror before deciding, and clears it
+    // only when a task was accepted) still gates the Korean-IME pass-through
+    // Enter that arrives as VK_RETURN mid-composition.
+    static_assert(ImeMirrorNext(false, VK_PROCESSKEY), "R17: intercepted key opens composition");
+    static_assert(ImeMirrorNext(true, VK_PROCESSKEY), "R17: repeated jamo keeps composition");
+    static_assert(!ImeMirrorNext(true, VK_ESCAPE), "R17: plain Esc reaching the hook -> IME not intercepting -> clear");
+    static_assert(!ImeMirrorNext(true, VK_BACK), "R17: plain Backspace clears composition");
+    static_assert(!ImeMirrorNext(true, VK_LEFT), "R17: plain arrow clears composition");
+    static_assert(ImeMirrorNext(true, VK_RETURN), "R17: Enter does NOT pre-clear (branch owns the decision)");
+    static_assert(!ImeMirrorNext(false, VK_RETURN), "R17: Enter while idle stays idle (state kept, not fabricated)");
+    static_assert(ImeMirrorNext(true, 'A'), "R17: character keys keep composition state");
+    static_assert(!ImeMirrorNext(false, 'A'), "R17: unknown vk never fabricates a composition");
+
+    // Enter gate matrix (mirror value feeds ime_composing):
+    static_assert(EnterTranslationAllowed(true, true, false, false), "R17: plain Enter while idle -> fire");
+    static_assert(!EnterTranslationAllowed(true, true, false, true), "R17: composing -> NEVER fire");
+    static_assert(!EnterTranslationAllowed(true, true, true, false), "R17: busy worker -> pass through");
+    static_assert(!EnterTranslationAllowed(true, false, false, false), "R17: inactive hook -> pass through");
+    static_assert(!EnterTranslationAllowed(false, true, false, true), "R17: VK_PROCESSKEY Enter -> pass through");
+    static_assert(!EnterTranslationAllowed(false, true, false, false), "R17: non-Enter vk -> gate closed");
+
+    // 2. Runtime IMM probe stability (win32_input seam - worker-thread-safe):
+    //    callable from the test thread, idempotent, never crashes regardless
+    //    of what the user's foreground window is.
+    const bool first = ForegroundImeComposing();
+    const bool second = ForegroundImeComposing();
+    TEST_CHECK(first == second, "R17: composition probe is stable across immediate re-queries");
+    std::cout << "  [R17 INFO] foreground composing = " << (first ? "true" : "false") << std::endl;
+
+    // 3. Probe semantics with NO foreground window we can force: create our
+    //    own window and query ITS context directly through the same API pair
+    //    the probe uses - a freshly created window never has a composition
+    //    (GCS_COMPSTR size is 0), which pins the 'fail closed to false' half.
+    {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = ::DefWindowProcW;
+        wc.hInstance = ::GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"Emebalachat_R17TestWnd";
+        ::RegisterClassExW(&wc);
+        HWND w = ::CreateWindowExW(0, wc.lpszClassName, L"r17", WS_OVERLAPPED,
+                                   -200, -200, 50, 50, nullptr, nullptr, wc.hInstance, nullptr);
+        TEST_CHECK(w != nullptr, "R17 fixture: plain window created");
+        HIMC himc = ::ImmGetContext(w);
+        if (himc) {
+            const LONG comp = ::ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
+            ::ImmReleaseContext(w, himc);
+            TEST_CHECK(comp <= 0, "R17: fresh window has no composition string (probe predicate false)");
+        } else {
+            TEST_CHECK(true, "R17: ImmGetContext returned null (no IME -> probe false by contract)");
+        }
+        ::DestroyWindow(w);
+    }
+
+    std::cout << "[PASS] REQ-R17 IME composition gate tests completed." << std::endl;
+}
+
+// REQ-R16 (audit §5 latent item 4): llama.cpp shutdown cancellation seam.
+void TestEngineShutdownCancellation() {
+    std::cout << "[RUN] Testing REQ-R16 engine shutdown cancellation..." << std::endl;
+
+    // 1. Fresh manager: cancel is off, idle immediately.
+    TranslationManager mgr(EngineType::GoogleTranslate, "");
+    TEST_CHECK(!mgr.IsCancelRequested(), "R16: fresh manager has no pending cancellation");
+    TEST_CHECK(mgr.WaitInferenceIdle(100), "R16: idle manager reports idle within 100 ms");
+
+    // 2. RequestCancel latches and short-circuits every subsequent call -
+    //    including the CLOUD path (shutdown must not fire a WinHTTP request
+    //    that could transmit user text after an exit intent).
+    mgr.RequestCancel();
+    TEST_CHECK(mgr.IsCancelRequested(), "R16: cancellation request latches");
+    TranslationStatus st = TranslationStatus::Ok;
+    std::wstring res = mgr.Translate(L"안녕하세요", "KO", "EN", &st);
+    TEST_CHECK(res.empty(), "R16: canceled manager returns empty (no cloud call after exit intent)");
+    TEST_CHECK(st == TranslationStatus::Canceled, "R16: canceled Translate reports Canceled, not EngineFailed");
+    TEST_CHECK(mgr.WaitInferenceIdle(100), "R16: manager idle after short-circuited call");
+
+    // 3. Strict-local manager: cancel short-circuit precedes the H2 consent
+    //    decision (a canceled exit is not a privacy block either).
+    TranslationManager local(EngineType::LocalLlama, "D:\\non_existent_model.gguf");
+    local.RequestCancel();
+    TranslationStatus lst = TranslationStatus::Ok;
+    std::wstring lres = local.Translate(L"테스트", "KO", "EN", &lst);
+    TEST_CHECK(lres.empty() && lst == TranslationStatus::Canceled,
+               "R16: explicit-local canceled call reports Canceled");
+
+    // 4. Live model (when the fixture exists): start a long generation on a
+    //    worker thread, request cancellation mid-flight, and assert the
+    //    BOUNDED drain that main.cpp's shutdown sequence relies on: the
+    //    engine must report idle within 15 s of RequestCancel().
+    std::string local_model_path;
+    char env_model[4096] = {0};
+    DWORD env_len = ::GetEnvironmentVariableA(
+        "EMEBALA_MODEL_PATH", env_model, static_cast<DWORD>(sizeof(env_model)) - 1);
+    if (env_len > 0 && env_len < static_cast<DWORD>(sizeof(env_model)) - 1) {
+        local_model_path = env_model;
+    }
+    if (!local_model_path.empty() && std::filesystem::exists(local_model_path)) {
+        std::cout << "  [R16 LIVE] cancel-in-flight drain against Hy-MT2 model..." << std::endl;
+        TranslationManager live(EngineType::LocalLlama, local_model_path);
+        std::wstring filler;
+        filler.reserve(9000);
+        while (filler.size() < 8000) {
+            filler += L"안녕하세요, 만나서 반갑습니다. 오늘 날씨가 아주 좋습니다. 번역 테스트를 위한 긴 문장을 반복해서 채웁니다. ";
+        }
+        std::atomic<TranslationStatus> live_st{TranslationStatus::Ok};
+        std::atomic<bool> done{false};
+        std::jthread inference([&]() {
+            TranslationStatus s = TranslationStatus::Ok;
+            live.Translate(filler, "KO", "English", &s);
+            live_st.store(s, std::memory_order_release);
+            done.store(true, std::memory_order_release);
+        });
+
+        // Give the worker time to pass EnsureLoaded's fast path and enter the
+        // decode loop; then flip the shutdown latch exactly like wWinMain does.
+        ::Sleep(150);
+        const auto cancel_t = std::chrono::steady_clock::now();
+        live.RequestCancel();
+        const bool drained = live.WaitInferenceIdle(15000);
+        const auto drain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - cancel_t).count();
+        TEST_CHECK(drained, "R16: in-flight decode unwinds after RequestCancel (bounded drain)");
+        TEST_CHECK(WaitUntilMs([&]() { return done.load(std::memory_order_acquire); }, 5000),
+                   "R16: inference thread finishes after cancellation");
+        std::cout << "  [R16 LIVE] drain to idle in " << drain_ms << " ms, status "
+                  << static_cast<int>(live_st.load()) << std::endl;
+        // Either the generation completed before the latch (Ok with a result)
+        // or cancellation won (Canceled) - it must NEVER be reported as an
+        // EngineFailed privacy/network failure, and the drain is time-bounded.
+        TEST_CHECK(live_st.load() == TranslationStatus::Canceled ||
+                       live_st.load() == TranslationStatus::Ok,
+                   "R16: canceled-or-completed only; never a spurious failure status");
+        TEST_CHECK(drain_ms < 15000, "R16: shutdown drain stays bounded (no zombie inference)");
+    } else {
+        std::cout << "  [R16 LIVE SKIP] set EMEBALA_MODEL_PATH to exercise cancel-in-flight" << std::endl;
+    }
+
+    std::cout << "[PASS] REQ-R16 engine shutdown cancellation tests completed." << std::endl;
+}
+
+// D5 item F: engine.cpp's ctor relative-model fallback is exe-dir anchored
+// (D4-flagged issue 1). A direct-construct manager with an EMPTY model path
+// resolves to <exe dir>/models/... regardless of the process CWD.
+void TestEngineFallbackExeDirAnchoring() {
+    std::cout << "[RUN] Testing D5-F engine fallback exe-dir anchoring..." << std::endl;
+
+    const std::string exe_dir = GetExecutableDir().string();
+    TEST_CHECK(!exe_dir.empty(), "D5-F: GetExecutableDir resolves for the test binary");
+
+    TranslationManager mgr(EngineType::Auto, ""); // empty -> internal fallback
+    const std::string path = mgr.GetModelPath();
+    TEST_CHECK(!path.empty(), "D5-F: fallback produced a non-empty model path");
+    // Absolute (exe-anchored), not the raw CWD-relative default:
+    TEST_CHECK(std::filesystem::path(path).is_absolute(),
+               "D5-F: internal fallback path is absolute (CWD-independent)");
+    // And it lives under the executable directory:
+    std::string lower_path = path;
+    for (char& c : lower_path) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string lower_exe = exe_dir;
+    for (char& c : lower_exe) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    while (!lower_exe.empty() && (lower_exe.back() == '\\' || lower_exe.back() == '/')) {
+        lower_exe.pop_back();
+    }
+    TEST_CHECK(lower_exe.size() >= 2 && lower_path.rfind(lower_exe, 0) == 0,
+               "D5-F: fallback resolves under the executable directory");
+
+    // CWD-independence proof: move the process CWD to a directory that
+    // definitely has no models\ subdir (System32 - the exact Run-registry
+    // autostart condition from audit M3); a NEW direct-construct manager must
+    // still produce the SAME exe-anchored path.
+    {
+        std::error_code ec;
+        const auto old_cwd = std::filesystem::current_path(ec);
+        if (!ec) {
+            namespace fs = std::filesystem;
+            const fs::path foreign = L"C:\\Windows\\System32";
+            if (fs::exists(foreign)) {
+                fs::current_path(foreign, ec);
+                if (!ec) {
+                    TranslationManager mgr2(EngineType::Auto, "");
+                    TEST_CHECK(mgr2.GetModelPath() == path,
+                               "D5-F: fallback path is CWD-independent (System32-CWD reproduction)");
+                    fs::current_path(old_cwd, ec);
+                }
+            }
+        }
+    }
+    std::cout << "[PASS] D5-F engine fallback anchoring tests completed." << std::endl;
+}
+
 int main() {
+    // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
+    // awareness BEFORE any window or DC is created in this process. The
+    // runtime scaling assertions in TestDpiMixedScaling (physical window
+    // sizes via GetWindowRect) are only meaningful under a DPI-aware
+    // process; created-while-unaware windows also get DWM-bitmap-stretched
+    // in the suite exactly like the shipped app did before this batch.
+    emebalachat::ui::EnsurePerMonitorV2ProcessDpiAwareness();
+
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     std::cout << "========================================" << std::endl;
@@ -1885,6 +2282,11 @@ int main() {
     TestKeyboardHookStateSyncAndDispatch();
     TestMouseHookDebounce();
     TestUIMarshaling();
+    TestDpiMixedScaling();
+    TestHookLifecyclePolicy();
+    TestImeCompositionGate();
+    TestEngineShutdownCancellation();
+    TestEngineFallbackExeDirAnchoring();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

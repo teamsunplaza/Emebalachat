@@ -123,7 +123,13 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void Render();
     void UpdateLayered();
-    void ReallocateBuffer(int width, int height);
+    void ReallocateBuffer(int width, int height); // physical px buffer
+    // REQ-R15 (audit §5 latent item 3): current_width_/current_height_ are
+    // DIP layout extents; the window/DIB are physical px of the target
+    // monitor. PhysW/PhysH convert with the DPI captured at show time.
+    int PhysW() const;
+    int PhysH() const;
+    void RebindRenderTarget();
     void LoadLogoBitmap();
     void InitSapi();
     void CleanupSapi();
@@ -140,8 +146,9 @@ private:
     std::string target_lang_;
     std::wstring translated_text_;
 
-    int current_width_ = 360;
-    int current_height_ = 160;
+    int current_width_ = 360;  // DIP
+    int current_height_ = 160; // DIP
+    UINT dpi_ = 96;            // REQ-R15: DPI of the monitor showing the tooltip
 
     // GDI Memory DC & DIB Section
     HDC hMemDC_ = nullptr;

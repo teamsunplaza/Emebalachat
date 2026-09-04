@@ -66,6 +66,29 @@ public:
     bool Start();
     void Stop();
 
+    // ---- REQ-R14 (audit §5 latent item 2): hook lifecycle resilience ----
+    // True while the hook thread was started and not stopped.
+    bool IsRunning() const { return running_.load(std::memory_order_acquire); }
+    // Health check for the main-thread resume watchdog (see hook.hpp: the
+    // handle-validity check is a fast-path guard; the OS can silently remove
+    // WH_MOUSE_LL past LowLevelHooksTimeout WITHOUT invalidating our local
+    // HHOOK, so the resume/unlock policy is always verify-and-reinstall).
+    bool IsHealthy() const {
+        return running_.load(std::memory_order_acquire) &&
+               hHook_ != nullptr;
+    }
+    // Verify-and-reinstall after Sleep/Resume, Win+L unlock, or secure-desktop
+    // transitions. Refuses to resurrect a hook that was never started / was
+    // stopped (returns false, no side effects). MUST run on the main thread
+    // (same contract as Start/Stop - it joins the hook thread).
+    bool Reinstall() {
+        if (!running_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        Stop();
+        return Start();
+    }
+
     void SetDragReleaseCallback(DragReleaseCallback cb);
     void SetMouseDownCallback(MouseDownCallback cb);
 

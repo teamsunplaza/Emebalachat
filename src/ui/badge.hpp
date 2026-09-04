@@ -63,7 +63,14 @@ private:
     void Render();
     void UpdateAlpha(BYTE alpha);
     void ResetIdleTimer();
-    void ReallocateBuffer(int width, int height);
+    void ReallocateBuffer(int width, int height); // physical px buffer
+    // REQ-R15 (audit §5 latent item 3): the layout (current_width_, kHeight)
+    // is authored in DIPs; the window, DIB buffer, and UpdateLayeredWindow
+    // live in PHYSICAL pixels of the monitor the badge sits on. PhysW/PhysH
+    // perform the conversion with the current dpi_.
+    int PhysW() const;
+    int PhysH() const;
+    void RebindRenderTarget();
 
     mutable std::mutex data_mutex_;
     mutable std::mutex render_mutex_;
@@ -76,7 +83,8 @@ private:
     bool visible_ = true;
     BYTE current_alpha_ = 217; // 85% opacity default
     bool is_hovered_ = false;
-    int current_width_ = 240;
+    int current_width_ = 240; // DIP layout width (recomputed by Render())
+    UINT dpi_ = 96;           // REQ-R15: DPI of the monitor hosting the badge
 
     // GDI DIB & Memory DC
     HDC hMemDC_ = nullptr;

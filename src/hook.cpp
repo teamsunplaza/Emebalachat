@@ -440,6 +440,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
     }
 
     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+        // REQ-R17 (audit §5 latent item 5): O(1) hook-local IME mirror update
+        // (pure ImeMirrorNext, no cross-thread calls). Must run BEFORE the
+        // Enter branch reads the flag; VK_RETURN keeps the state so an Enter
+        // pressed mid-composition sees the composing=true set by the jamo
+        // keys that preceded it.
+        s_instance->ime_composing_.store(
+            ImeMirrorNext(s_instance->ime_composing_.load(std::memory_order_relaxed),
+                          kbd->vkCode),
+            std::memory_order_relaxed);
+
         bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
@@ -502,7 +512,24 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             }
         }
 
-        // Enter keystroke interception
+        // Enter keystroke interception.
+        //
+        // REQ-R17 (audit §5 latent item 5): TWO gates, zero hook-thread
+        // cross-thread calls. (1) Keys consumed by the IME arrive as
+        // VK_PROCESSKEY (0xE5) and never reach this branch at all. (2) The
+        // Korean IME lets Enter through as VK_RETURN mid-composition (chat
+        // apps rely on "commit + send"); the hook-local ImeMirrorNext flag
+        // (updated above from the intercepted jamo keys) refuses the hijack
+        // while a composition is open. That pass-through Enter IS the IME's
+        // commit keystroke, so the mirror is cleared here: the composition
+        // this flag described is over the moment the app receives the Enter
+        // (a NEW composition re-sets it via its own VK_PROCESSKEY keys, so
+        // the flag can never go stale-true and silently kill the NEXT
+        // translation - the stuck-flag failure mode this ordering prevents).
+        // The hijack path below runs only when the flag is already false, so
+        // it needs no clear of its own. A race-window backstop remains
+        // worker-side (ExecuteTask re-probes GCS_COMPSTR via IMM before
+        // touching the clipboard).
         if (kbd->vkCode == VK_RETURN) {
             if (ctrl && shift) {
                 // Ctrl+Shift+Enter toggles Auto-Send mode
@@ -515,22 +542,27 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
-            // Regular Enter or Shift+Enter
-            if (!s_instance->IsActive()) {
+            // Composition open: the Enter belongs to the IME commit cycle.
+            // Hand it through untouched and retire the mirror flag.
+            if (s_instance->ime_composing_.load(std::memory_order_relaxed)) {
+                s_instance->ime_composing_.store(false, std::memory_order_relaxed);
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
-            if (s_instance->worker_.IsBusy()) {
-                // Worker is currently performing translation, let Enter pass through
-                return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
-            }
+            // Regular Enter or Shift+Enter: shared predicate decides
+            // interception (mirror just cleared -> composing input is false).
+            if (EnterTranslationAllowed(
+                    /*vk_is_return*/ true,
+                    s_instance->IsActive(),
+                    s_instance->worker_.IsBusy(),
+                    /*ime_composing*/ false)) {
+                // Capture target window HWND at interception time for process-aware selection
+                HWND target_hwnd = ::GetForegroundWindow();
 
-            // Capture target window HWND at interception time for process-aware selection
-            HWND target_hwnd = ::GetForegroundWindow();
-
-            // Post task to worker and intercept Enter from reaching target control
-            if (s_instance->worker_.PostTask(shift, target_hwnd)) {
-                return 1; // Intercepted immediately (< 1ms)!
+                // Post task to worker and intercept Enter from reaching target control
+                if (s_instance->worker_.PostTask(shift, target_hwnd)) {
+                    return 1; // Intercepted immediately (< 1ms)!
+                }
             }
         }
     }

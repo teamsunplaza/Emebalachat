@@ -1,9 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <windows.h> // DWORD for WaitInferenceIdle
 
 namespace emebalachat {
 
@@ -47,6 +49,12 @@ enum class TranslationStatus {
                          // refused the cloud path (explicit engine_type=local, no consent)
     EngineFailed,        // selected engine (local without fallback, or cloud) returned
                          // empty after all allowed attempts (network/decode failure)
+    // REQ-R16: local inference unwound because RequestCancel() was called
+    // (app shutdown draining an in-flight decode). Distinct from
+    // EngineFailed so callers do not surface a spurious error tone and,
+    // critically, so the Auto policy does NOT fall through to a cloud
+    // request that would transmit the user's text mid-exit.
+    Canceled,
 };
 
 enum class EngineType {
@@ -119,6 +127,32 @@ public:
     // Releases local model from memory/VRAM.
     void UnloadLocalModel();
 
+    // ---- REQ-R16 (audit §5 latent item 4): llama.cpp shutdown safety ----
+    //
+    // Requests cancellation of any in-flight local inference. The decode loop
+    // checks the stop flag between every generated token, llama.cpp's own
+    // abort_callback fires between CPU tensor-evaluation chunks, and the
+    // model-load progress_callback unwinds a loading warmup, so an ongoing
+    // llama_decode/llama_model_load sequence returns within milliseconds
+    // instead of running to the full generation cap while app shutdown waits.
+    // Safe to call at any time from any thread; a no-op when llama.cpp is not
+    // linked. SHUTDOWN LATCH SEMANTICS: once requested, every subsequent
+    // local Translate() also short-circuits (the flag is only cleared when a
+    // NEW manager is constructed) - this is deliberate: the seam exists to
+    // drain inference before process exit, not to pause/resume translation.
+    void RequestCancel();
+
+    // True while a cancellation request is pending for the local engine.
+    // Exposed for the shutdown watchdog and the headless seam tests.
+    bool IsCancelRequested();
+
+    // REQ-R16 watchdog helper: returns true once the engine mutex is free
+    // again, i.e. every in-flight Translate() has observed the cancellation
+    // and unwound (the mutex is held across the whole decode). Call after
+    // RequestCancel() to get a BOUNDED, observable confirmation that no
+    // inference thread is still inside llama.cpp before the process exits.
+    bool WaitInferenceIdle(DWORD timeout_ms);
+
     // Sets sampling parameters for local LLM generation
     void SetSamplingParams(float temp, float top_p, int top_k, float rep_pen);
     float GetTemperature() const;
@@ -128,6 +162,9 @@ public:
 
 private:
     void RefreshActiveEngine();
+    // REQ-R16: single creation point for the llama engine so the cancellation
+    // flag pointer is wired exactly once per instance (caller holds mutex_).
+    void EnsureLlamaEngineLocked();
 
     mutable std::mutex mutex_;
     EngineType preferred_type_ = EngineType::Auto;
@@ -144,6 +181,13 @@ private:
 
     struct LlamaEngine;
     std::unique_ptr<LlamaEngine> llama_engine_;
+
+    // REQ-R16: cancellation flag shared with the LlamaEngine decode loop and
+    // llama.cpp's abort/progress callbacks. Written via RequestCancel()
+    // without taking mutex_ (the point is to signal a thread that IS holding
+    // mutex_ inside a decode), read from the inference thread and from the
+    // abort callback - std::atomic keeps all sides race-free.
+    std::atomic<bool> cancel_requested_{false};
 };
 
 } // namespace emebalachat

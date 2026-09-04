@@ -9,12 +9,14 @@
 #include "win32_input.hpp"
 #include "ui/badge.hpp"
 #include "ui/drag_icon.hpp"
+#include "ui/dpi.hpp"
 #include "ui/tooltip.hpp"
 #include "ui/tray.hpp"
 #include "worker.hpp"
 
 #include <windows.h>
 #include <objbase.h>
+#include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
 #include <cstdio>
 
@@ -22,6 +24,12 @@ namespace emebalachat {
 
 namespace {
 const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
+// REQ-R14: WM_POWERBROADCAST is sent ONLY to top-level windows - a
+// message-only window never receives power broadcasts. This tiny hidden
+// top-level window (WS_EX_TOOLWINDOW, zero-size, off-screen) exists purely
+// so the same ControllerWndProc sees resume events; WTS session
+// notifications are registered on it as well.
+const wchar_t kPowerSinkClassName[] = L"Emebalachat_PowerSinkWindowClass";
 // REQ-R08: user-facing label of the default toggle combo. The compiled spec in
 // KeyboardHook (parsed from config_.hotkey_toggle with the legacy "F9" default
 // migrated to Win+F9) is the runtime source of truth; this string keeps the
@@ -29,11 +37,84 @@ const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
 // the generic label instead of lying about the keys.
 const wchar_t kToggleHotkeyLabel[] = L"Win+F9";
 HWND g_hControllerWnd = nullptr;
+HWND g_hPowerWnd = nullptr; // REQ-R14 top-level sink for WM_POWERBROADCAST
 SystemTray* g_pTray = nullptr;
 KeyboardHook* g_pHook = nullptr;
 FloatingBadge* g_pBadge = nullptr;
+MouseHook* g_pMouseHook = nullptr; // REQ-R14 resume/unlock re-registration
+
+// ---- REQ-R14 (audit §5 latent item 2): hook lifecycle timers ----
+// kTimerHookReinstall: debounced (coalesced) reinstall triggered by
+// resume/unlock messages. kTimerHookHealth: periodic watchdog that catches
+// the transitions with no message of their own (UAC secure-desktop trips).
+constexpr UINT_PTR kTimerHookReinstall = 5001;
+constexpr UINT_PTR kTimerHookHealth = 5002;
+
+// Re-register whichever LL hooks are installed, on the GUI thread (the only
+// threads allowed to Start/Stop the hooks). Always reinstall on the event
+// path: an OS silent-removal (LowLevelHooksTimeout during a desktop switch)
+// leaves our HHOOK handle looking valid while the hook is dead, so the
+// handle check is only the fast filter, never the decision. Reinstall()
+// returns false (no-op) for hooks that are not running by design.
+void ReinstallHooksAfterLifecycleEvent(const char* reason, HWND debounce_wnd) {
+    // KeyboardHook::Stop() joins the REQ-R06 async worker; if a double-Ctrl+C
+    // translation is mid-flight (seconds), re-installing right now would
+    // stall the GUI thread for its remainder. Defer: re-arm the debounce
+    // timer once and retry after the body completes (bounded by the
+    // inference itself - the worker is never stuck indefinitely).
+    if (g_pHook && KeyboardHook::IsDoubleCtrlCBusy()) {
+        ::SetTimer(debounce_wnd, kTimerHookReinstall, kHookReinstallDebounceMs, nullptr);
+        return;
+    }
+    if (g_pHook) {
+        if (!g_pHook->Reinstall()) {
+            fprintf(stderr, "MAIN/HookLifecycle/001: keyboard hook re-install failed after %s\n", reason);
+        }
+    }
+    if (g_pMouseHook) {
+        if (!g_pMouseHook->Reinstall()) {
+            fprintf(stderr, "MAIN/HookLifecycle/002: mouse hook re-install failed after %s\n", reason);
+        }
+    }
+}
 
 LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // ---- REQ-R14: Sleep/Resume + Win+L session lifecycle ----
+    if (ShouldReinstallHooksOnEvent(msg, wParam)) {
+        // Coalesce bursts (RESUMEAUTOMATIC+RESUMESUSPEND, power+manual unlock):
+        // one pending timer per window, refreshed by each event, fires ONE
+        // reinstall. The debounce window is registered against the window that
+        // saw the event so the reinstall (which also re-arms via that window on
+        // a busy-worker deferral) uses the same timer owner.
+        ::SetTimer(hwnd, kTimerHookReinstall, kHookReinstallDebounceMs, nullptr);
+        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    if (msg == WM_TIMER) {
+        if (wParam == kTimerHookReinstall) {
+            ::KillTimer(hwnd, kTimerHookReinstall);
+            ReinstallHooksAfterLifecycleEvent("resume/unlock", hwnd);
+            return 0;
+        }
+        if (wParam == kTimerHookHealth) {
+            // Watchdog: thread-death detection (a dead hook thread leaves
+            // IsHealthy false; a live-but-silently-removed hook cannot be
+            // detected from user mode, hence the event-driven full reinstall).
+            bool unhealthy = false;
+            if (g_pHook && g_pHook->IsRunning() && !g_pHook->IsHealthy()) {
+                unhealthy = true;
+            }
+            if (g_pMouseHook && g_pMouseHook->IsRunning() && !g_pMouseHook->IsHealthy()) {
+                unhealthy = true;
+            }
+            if (unhealthy) {
+                fprintf(stderr, "MAIN/HookLifecycle/003: health watchdog detected dead hook thread; reinstalling\n");
+                ReinstallHooksAfterLifecycleEvent("health check", hwnd);
+            }
+            return 0;
+        }
+    }
+
     if (msg == SystemTray::WM_TRAYICON) {
         if (lParam == WM_RBUTTONUP) {
             if (g_pTray) {
@@ -54,6 +135,8 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     if (msg == WM_DESTROY) {
+        ::KillTimer(hwnd, kTimerHookReinstall);
+        ::KillTimer(hwnd, kTimerHookHealth);
         ::PostQuitMessage(0);
         return 0;
     }
@@ -69,6 +152,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     (void)hPrevInstance;
     (void)pCmdLine;
     (void)nCmdShow;
+
+    // -1. REQ-R15 (audit §5 latent item 3): declare Per-Monitor-V2 DPI
+    // awareness BEFORE any window or DC is created. Until this call the
+    // process ran DPI-UNAWARE (no manifest, no API call anywhere): on mixed
+    // 100%/150%/200% multi-monitor setups Windows bitmap-stretched the badge,
+    // drag icon and tooltip (blurry, wrong physical size) while the LL mouse
+    // hooks delivered raw per-monitor physical coordinates - the exact
+    // offset/scale mismatch the audit asked about. All UI surfaces below
+    // re-scale their DIB buffers with ui::MonitorDpiAtPoint/WindowDpi per
+    // monitor they land on.
+    if (!emebalachat::ui::EnsurePerMonitorV2ProcessDpiAwareness()) {
+        fprintf(stderr, "MAIN/WinMain/000: per-monitor-v2 DPI awareness unavailable; UI may be bitmap-scaled\n");
+    }
 
     // 0. L3 (DLL search-path hardening, behavior-preserving part): remove the
     // current working directory from the default DLL search order so a later
@@ -181,6 +277,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     );
     emebalachat::g_hControllerWnd = hController;
 
+    // REQ-R14 (audit §5 latent item 2): lifecycle event sink for the hook
+    // re-registration policy. WM_POWERBROADCAST (Sleep/Resume) is delivered
+    // ONLY to top-level windows - the message-only controller above can never
+    // receive it - so create a hidden zero-size tool window with the same
+    // WndProc. WTS_SESSION_LOCK/UNLOCK (Win+L, Ctrl+Alt+Del, RDP reconnect)
+    // are registered on it too (NOTIFY_FOR_THIS_SESSION: no SYSTEM_SERVICE_
+    // RIGHTS needed for a normal interactive session). The UAC secure-desktop
+    // trip itself delivers no message at all; ControllerWndProc's periodic
+    // health-check watchdog (armed in section 9) is the belt-and-braces for
+    // silent OS unhook around desktop switches.
+    {
+        WNDCLASSEXW wc_ps = {};
+        wc_ps.cbSize = sizeof(WNDCLASSEXW);
+        wc_ps.lpfnWndProc = emebalachat::ControllerWndProc;
+        wc_ps.hInstance = hInstance;
+        wc_ps.lpszClassName = emebalachat::kPowerSinkClassName;
+        ::RegisterClassExW(&wc_ps);
+
+        HWND hPower = ::CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            emebalachat::kPowerSinkClassName,
+            L"Emebalachat Power Sink",
+            WS_POPUP,
+            -1000, -1000, 0, 0,
+            nullptr, nullptr, hInstance, nullptr
+        );
+        emebalachat::g_hPowerWnd = hPower;
+        if (!hPower) {
+            fprintf(stderr, "MAIN/WinMain/005: power sink window creation failed (GLE %lu); Sleep/Resume hook reinstall degraded to watchdog-only\n",
+                    ::GetLastError());
+        } else if (!::WTSRegisterSessionNotification(hPower, NOTIFY_FOR_THIS_SESSION)) {
+            fprintf(stderr, "MAIN/WinMain/006: WTSRegisterSessionNotification failed (GLE %lu); Win+L hook reinstall degraded to watchdog-only\n",
+                    ::GetLastError());
+        }
+    }
+
     // 7. Initialize Direct2D Floating Badge (restoring saved position if present)
     emebalachat::FloatingBadge badge;
     emebalachat::g_pBadge = &badge;
@@ -227,6 +359,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     tooltip.Create(hInstance);
 
     emebalachat::MouseHook mouse_hook;
+    emebalachat::g_pMouseHook = &mouse_hook; // REQ-R14 resume/unlock re-registration
 
     emebalachat::SystemTray::Callbacks trayCallbacks;
     trayCallbacks.on_toggle_active = [&]() {
@@ -633,6 +766,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     hook.Start();
     mouse_hook.Start();
 
+    // REQ-R14 watchdog: re-verify hook thread liveness every 30 s (covers the
+    // UAC secure-desktop trip and any silent OS removal path that emitted no
+    // resume/unlock message to this session).
+    ::SetTimer(hController, emebalachat::kTimerHookHealth,
+               emebalachat::kHookHealthWatchdogMs, nullptr);
+
     // 10. Startup sound
     emebalachat::PlayToggleOn();
 
@@ -644,9 +783,38 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
 
     // 12. Clean Shutdown
+    //
+    // REQ-R16 (audit §5 latent item 4): deterministic, cancellation-first
+    // teardown. Order matters:
+    //  a) engine.RequestCancel() latches the llama.cpp stop flag. An in-flight
+    //     decode unwinds at the next token boundary (the decode loop checks
+    //     between steps; the CPU path also aborts mid-batch via
+    //     llama_context_params.abort_callback), and an in-progress model-load
+    //     on the WARMUP thread unwinds via llama_model_params.progress_callback.
+    //     Without this latch, hook.Stop()/worker.Stop() below could block for
+    //     seconds inside a 512-token generation, and the process could exit
+    //     while the warmup thread still held llama.cpp state (zombie thread ->
+    //     leaked CUDA context at process teardown).
+    //  b) The old code NEVER joined warmup_thread: a still-loading thread
+    //     destroyed as joinable std::thread called std::terminate. It is now
+    //     bounded-joined after the cancel latch.
+    //  c) WaitInferenceIdle gives the bounded (2 s) confirmation that no
+    //     llama.cpp call is still on any thread before the backend is freed
+    //     by ~TranslationManager (llama_free/llama_model_free/
+    //     llama_backend_free ordering: ctx before model, both before backend).
+    engine.RequestCancel();
     mouse_hook.Stop();
     hook.Stop();
     worker.Stop();
+    if (warmup_thread.joinable()) {
+        warmup_thread.join(); // bounded: load aborts via progress_callback
+    }
+    if (!engine.WaitInferenceIdle(2000)) {
+        fprintf(stderr, "MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (decode loop may still be winding down)\n");
+    }
+    if (emebalachat::g_hPowerWnd) {
+        ::WTSUnRegisterSessionNotification(emebalachat::g_hPowerWnd);
+    }
     tray.Destroy();
     badge.Destroy();
     tooltip.Destroy();
@@ -655,6 +823,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (hController) {
         ::DestroyWindow(hController);
     }
+    if (emebalachat::g_hPowerWnd) {
+        ::DestroyWindow(emebalachat::g_hPowerWnd);
+        emebalachat::g_hPowerWnd = nullptr;
+    }
+    emebalachat::g_pMouseHook = nullptr;
+    emebalachat::g_pHook = nullptr;
+    emebalachat::g_pBadge = nullptr;
+    emebalachat::g_pTray = nullptr;
+    emebalachat::g_hControllerWnd = nullptr;
 
     config.SaveToFile();
     ::CoUninitialize();

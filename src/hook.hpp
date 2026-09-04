@@ -14,8 +14,101 @@
 #include <string_view>
 #include <thread>
 #include <windows.h>
+#include <wtsapi32.h> // WM_WTSSESSION_CHANGE / WTS_SESSION_* / registration APIs
 
 namespace emebalachat {
+
+// ---- REQ-R17 (audit §5 latent item 5): IME composition gating ----
+//
+// The cross-thread IMM probe ForegroundImeComposing() lives in win32_input.hpp
+// (worker-thread-only: ImmGetContext SendMessage's the target thread and must
+// NEVER run inside the LL hook - that is the REQ-R06 LowLevelHooksTimeout
+// hazard class). Inside the hook, composition is tracked by the pure
+// ImeMirrorNext state machine below.
+
+// Pure gate for the Enter interception: a keydown reaching the hook's Enter
+// branch must be VK_RETURN (IME-processing keys already arrive as
+// VK_PROCESSKEY 0xE5 and never reach the branch), the hook active, the
+// pipeline worker idle, and NO composition in progress per the hook-local
+// VK_PROCESSKEY mirror. Shared by LowLevelKeyboardProc and the unit tests -
+// one definition.
+constexpr bool EnterTranslationAllowed(bool vk_is_return, bool active, bool worker_busy,
+                                       bool ime_composing) {
+    return vk_is_return && active && !worker_busy && !ime_composing;
+}
+
+// Hook-local IME composition mirror, updated on every REAL (non-synthetic)
+// keydown with O(1) relaxed-atomic traffic and ZERO cross-thread messaging.
+//
+// Ground truth (documented LL-hook behavior): any key the active IME
+// intercepts is delivered to LowLevelKeyboardProc with vkCode VK_PROCESSKEY
+// (0xE5). The Korean IME assembles jamo through such intercepted keys, but it
+// LETS ENTER THROUGH as VK_RETURN even mid-composition (chat apps rely on it
+// to "commit + send") - which is exactly the key our Enter branch hijacks, so
+// the vkCode alone cannot detect that case. The mirror does:
+//   intercepted key (VK_PROCESSKEY)      -> composition active
+//   plain editing key reaching us        -> the IME is NOT intercepting it, so
+//     (Esc/Tab/Back/Delete/arrows/Home/End) no composition can be alive against
+//                                          it; clear the flag
+//   anything else (incl. VK_RETURN)      -> keep state: the Enter branch reads
+//                                          the mirror BEFORE deciding and owns
+//                                          clearing it afterwards, so an
+//                                          Enter that finalises a composition
+//                                          is still gated on THIS press.
+// Fail-open bias: a stale true costs ONE missed translation (Enter passes
+// through and the app commits+sends normally); a false negative degrades to
+// the audited pre-R17 behavior.
+constexpr bool ImeMirrorNext(bool composing, UINT vk_code) {
+    if (vk_code == VK_PROCESSKEY) {
+        return true;
+    }
+    switch (vk_code) {
+        case VK_ESCAPE:
+        case VK_TAB:
+        case VK_BACK:
+        case VK_DELETE:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_HOME:
+        case VK_END:
+            return false;
+        default:
+            return composing;
+    }
+}
+
+// ---- REQ-R14 (audit §5 latent item 2): hook lifecycle events policy ----
+//
+// Pure classifier for the controller-window messages that mark a desktop
+// lifecycle transition after which the low-level hooks must be verified and
+// (cheaply, deterministically) re-registered:
+//   - WM_POWERBROADCAST + PBT_APMRESUMEAUTOMATIC / PBT_APMRESUMESUSPEND:
+//     system came back from Sleep/Standby.
+//   - WM_WTSSESSION_CHANGE + WTS_SESSION_UNLOCK: session unlocked (Win+L,
+//     Ctrl+Alt+Del). The secure-desktop (UAC consent) trip itself has no
+//     message; the periodic health-check watchdog timer covers its edge cases.
+// Everything else (including PBT_APMSUSPEND, SESSION_LOCK - reinstalling INTO
+// a locked desktop buys nothing and the unlock event follows anyway) returns
+// false and must not touch the hooks.
+constexpr bool ShouldReinstallHooksOnEvent(UINT msg, WPARAM wparam) {
+    if (msg == WM_POWERBROADCAST) {
+        return wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND;
+    }
+    if (msg == WM_WTSSESSION_CHANGE) {
+        return wparam == WTS_SESSION_UNLOCK;
+    }
+    return false;
+}
+
+// Coalescing window for the re-registration: resume/unlock fires several
+// related messages in quick succession (e.g. RESUMEAUTOMATIC then
+// RESUMESUSPEND, or a power event plus a manual unlock). One pending timer
+// refreshed by each trigger keeps the reinstall to ONE Stop()+Start() pair.
+inline constexpr UINT kHookReinstallDebounceMs = 1200;
+// Watchdog cadence: the handle-validity + thread-liveness check behind the
+// event-driven path. Bounds the worst-case silent-unhook window (UAC secure
+// desktop trips have no unlock message when the session was never locked).
+inline constexpr UINT kHookHealthWatchdogMs = 30000;
 
 class KeyboardHook {
 public:
@@ -24,6 +117,32 @@ public:
 
     bool Start();
     void Stop();
+
+    // ---- REQ-R14 (audit §5 latent item 2): hook lifecycle resilience ----
+    // True while the hook thread was started and has not stopped (does NOT
+    // verify the OS-side hook is still alive - see IsHealthy()).
+    bool IsRunning() const { return running_.load(std::memory_order_acquire); }
+    // Health check for the main-thread watchdog: true only while the hook
+    // thread is running AND a hook handle was successfully installed.
+    bool IsHealthy() const {
+        return running_.load(std::memory_order_acquire) &&
+               hHook_ != nullptr;
+    }
+    // Verify-and-reinstall seam used after Sleep/Resume, Win+L unlock, and
+    // secure-desktop transitions. LL hooks normally survive these, but the
+    // OS can silently drop WH_KEYBOARD_LL (LowLevelHooksTimeout) exactly
+    // around desktop switches; re-registration is a few-millisecond
+    // deterministic insurance policy. Refuses to resurrect a hook the user
+    // (or shutdown) stopped: returns false without side effects when not
+    // running. MUST be called on the main thread (same contract as
+    // Start/Stop - it joins the hook thread).
+    bool Reinstall() {
+        if (!running_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        Stop();
+        return Start();
+    }
 
     void SetActive(bool active);
     bool IsActive() const { return is_active_.load(std::memory_order_relaxed); }
@@ -119,6 +238,10 @@ public:
     // Read-only accessor of the compiled toggle combo (set in Start()).
     HotkeySpec ToggleHotkey() const { return toggle_spec_; }
 
+    // REQ-R14 test seam: the OS thread id of the running hook thread (0 when
+    // not started). Tests prove Reinstall() actually replaced the thread.
+    DWORD HookThreadIdForTest() const { return hook_thread_id_; }
+
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
     void HookThreadProc();
@@ -126,6 +249,10 @@ private:
     // Effective toggle combo: config_.hotkey_toggle parsed via ParseHotkey,
     // migrated to kDefaultToggleHotkey when unset/invalid or legacy bare "F9".
     HotkeySpec ResolvedToggleHotkey() const;
+
+    // REQ-R17: hook-local IME composition mirror (see ImeMirrorNext). Owned by
+    // the hook thread; relaxed atomics because no other thread reads it.
+    std::atomic<bool> ime_composing_{false};
 
     // REQ-R06 persistent-worker lifecycle. Start() spawns the loop, Stop() (and
     // therefore ~KeyboardHook) request_stop()+joins it deterministically so the
