@@ -46,11 +46,17 @@ struct AppConfig {
     std::string target_language = "English";
     bool auto_send = false;
     bool sound_enabled = true;
+    bool drag_to_translate = true;
+    std::string drag_hotkey = "double_ctrl_c";
     int badge_x = -1;
     int badge_y = -1;
     std::string hotkey_toggle = "F9";
     std::string hotkey_lang = "Ctrl+F9";
     std::string hotkey_mode = "Ctrl+Shift+Enter";
+    float temperature = 0.7f;
+    float top_p = 0.6f;
+    int top_k = 20;
+    float repetition_penalty = 1.05f;
 
     void SetBadgePosition(int x, int y);
 

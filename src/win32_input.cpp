@@ -1,6 +1,7 @@
 #include "win32_input.hpp"
 
 #include <chrono>
+#include <cwctype>
 #include <thread>
 #include <windows.h>
 
@@ -83,6 +84,83 @@ bool SelectCurrentLine() {
         CreateKeyInput(VK_SHIFT, true, EXTRA_INFO_MARKER)
     };
     return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+}
+
+bool SelectAll() {
+    INPUT inputs[4] = {
+        CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),
+        CreateKeyInput('A', false, EXTRA_INFO_MARKER),
+        CreateKeyInput('A', true, EXTRA_INFO_MARKER),
+        CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER)
+    };
+    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+}
+
+bool IsChatApplicationWindow(HWND hwnd) {
+    if (!hwnd || !::IsWindow(hwnd)) {
+        return false;
+    }
+
+    DWORD pid = 0;
+    ::GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0) {
+        return false;
+    }
+
+    HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProc) {
+        return false;
+    }
+
+    wchar_t image_path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    BOOL ok = ::QueryFullProcessImageNameW(hProc, 0, image_path, &size);
+    ::CloseHandle(hProc);
+
+    if (!ok || size == 0) {
+        return false;
+    }
+
+    std::wstring_view path_view(image_path, size);
+    auto last_slash = path_view.find_last_of(L"\\/");
+    std::wstring_view filename = (last_slash != std::wstring_view::npos)
+        ? path_view.substr(last_slash + 1)
+        : path_view;
+
+    auto equals_case_insensitive = [](std::wstring_view a, std::wstring_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (::towlower(a[i]) != ::towlower(b[i])) return false;
+        }
+        return true;
+    };
+
+    const std::wstring_view chat_apps[] = {
+        L"KakaoTalk.exe",
+        L"Discord.exe",
+        L"Slack.exe",
+        L"Telegram.exe",
+        L"Teams.exe",
+        L"ms-teams.exe",
+        L"Line.exe",
+        L"WeChat.exe"
+    };
+
+    for (const auto& app : chat_apps) {
+        if (equals_case_insensitive(filename, app)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SelectTextForTranslation(HWND hwnd) {
+    if (IsChatApplicationWindow(hwnd)) {
+        return SelectAll();
+    } else {
+        return SelectCurrentLine();
+    }
 }
 
 bool CopySelection() {
@@ -347,8 +425,8 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
     return true;
 }
 
-std::wstring CopySelectedLine() {
-    SelectCurrentLine();
+std::wstring CopySelectedText(HWND hwnd) {
+    SelectTextForTranslation(hwnd);
     ::Sleep(10);
 
     CopySelection();
@@ -357,11 +435,15 @@ std::wstring CopySelectedLine() {
     return GetClipboardText();
 }
 
+std::wstring CopySelectedLine() {
+    return CopySelectedText(nullptr);
+}
+
 bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup) {
     bool ok = SetClipboardText(text);
     if (ok) {
         PasteSelection();
-        ::Sleep(120); // 120ms paste settle delay
+        ::Sleep(180); // 180ms paste settle delay (Electron/Slate.js IPC stability)
     }
 
     // Always restore original clipboard state without leak
@@ -370,28 +452,36 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup) {
 }
 
 void SendEnterKey(bool release_shift) {
-    bool shift_was_down = false;
-    if (release_shift) {
-        shift_was_down = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        if (shift_was_down) {
-            INPUT up = CreateKeyInput(VK_SHIFT, true, EXTRA_INFO_MARKER);
-            ::SendInput(1, &up, sizeof(INPUT));
-            ::Sleep(5);
-        }
-    }
-
-    INPUT enter[2] = {
-        CreateKeyInput(VK_RETURN, false, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_RETURN, true, EXTRA_INFO_MARKER)
+    (void)release_shift;
+    // Explicitly release all modifier keys to prevent Shift+Enter / Ctrl+Enter misinterpretation
+    const WORD mods[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+        VK_LMENU, VK_RMENU, VK_MENU
     };
-    ::SendInput(2, enter, sizeof(INPUT));
-
-    if (release_shift && shift_was_down) {
-        if ((::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
-            INPUT down = CreateKeyInput(VK_SHIFT, false, EXTRA_INFO_MARKER);
-            ::SendInput(1, &down, sizeof(INPUT));
+    for (WORD m : mods) {
+        if ((::GetAsyncKeyState(m) & 0x8000) != 0) {
+            INPUT up = CreateKeyInput(m, true, EXTRA_INFO_MARKER);
+            ::SendInput(1, &up, sizeof(INPUT));
         }
     }
+    ::Sleep(10);
+
+    // Hardware scancode 0x1C for Enter key with 35ms hold duration
+    INPUT enter_down = {};
+    enter_down.type = INPUT_KEYBOARD;
+    enter_down.ki.wVk = VK_RETURN;
+    enter_down.ki.wScan = 0x1C;
+    enter_down.ki.dwFlags = 0;
+    enter_down.ki.time = 0;
+    enter_down.ki.dwExtraInfo = EXTRA_INFO_MARKER;
+
+    ::SendInput(1, &enter_down, sizeof(INPUT));
+    ::Sleep(35); // 35ms hold duration
+
+    INPUT enter_up = enter_down;
+    enter_up.ki.dwFlags = KEYEVENTF_KEYUP;
+    ::SendInput(1, &enter_up, sizeof(INPUT));
 }
 
 } // namespace emebalachat

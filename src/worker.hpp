@@ -14,6 +14,7 @@ namespace emebalachat {
 
 struct PipelineTask {
     bool is_shift_enter = false;
+    HWND target_hwnd = nullptr;
 };
 
 class PipelineWorker {
@@ -26,7 +27,7 @@ public:
 
     // Enqueues a translation pipeline task if not already busy.
     // Returns true if task was accepted, false if currently busy.
-    bool PostTask(bool is_shift_enter);
+    bool PostTask(bool is_shift_enter, HWND target_hwnd = nullptr);
 
     // Returns true if the worker is actively executing a task.
     bool IsBusy() const { return is_busy_.load(std::memory_order_relaxed); }

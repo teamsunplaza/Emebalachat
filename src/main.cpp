@@ -2,9 +2,14 @@
 #include "engine.hpp"
 #include "hook.hpp"
 #include "i18n.hpp"
+#include "mouse_hook.hpp"
+#include "smart_bypass.hpp"
 #include "sound.hpp"
 #include "unicode_utils.hpp"
+#include "win32_input.hpp"
 #include "ui/badge.hpp"
+#include "ui/drag_icon.hpp"
+#include "ui/tooltip.hpp"
 #include "ui/tray.hpp"
 #include "worker.hpp"
 
@@ -97,6 +102,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         engine_type = emebalachat::EngineType::LocalLlama;
     }
     emebalachat::TranslationManager engine(engine_type, config.model_path);
+    engine.SetSamplingParams(config.temperature, config.top_p, config.top_k, config.repetition_penalty);
 
     // 6. Create Hidden Controller Window for Tray & Message Pump
     WNDCLASSEXW wc = {};
@@ -148,9 +154,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::KeyboardHook hook(config, worker, badge, tray);
     emebalachat::g_pHook = &hook;
 
+    // 8.5. Initialize Drag-to-Translate Components
+    emebalachat::DragIconWindow drag_icon;
+    drag_icon.Create(hInstance);
+
+    emebalachat::TooltipWindow tooltip;
+    tooltip.Create(hInstance);
+
+    emebalachat::MouseHook mouse_hook;
+
     emebalachat::SystemTray::Callbacks trayCallbacks;
     trayCallbacks.on_toggle_active = [&]() {
         hook.ToggleActive();
+        mouse_hook.SetEnabled(hook.IsActive());
     };
 
     trayCallbacks.on_select_engine = [&](int engine_idx) {
@@ -310,10 +326,142 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         badge.IsVisible()
     );
 
+    // Drag release threshold callback (> 15px)
+    mouse_hook.SetDragReleaseCallback([&](int x, int y) {
+        if (!config.drag_to_translate || !hook.IsActive() || tooltip.IsVisible()) {
+            return;
+        }
+        drag_icon.ShowAt(x + 12, y + 12);
+    });
+
+    // Outside-click dismissal for DragIconWindow and TooltipWindow
+    mouse_hook.SetMouseDownCallback([&](int x, int y) {
+        POINT pt = { x, y };
+        if (drag_icon.IsVisible()) {
+            RECT r = {};
+            ::GetWindowRect(drag_icon.GetHwnd(), &r);
+            if (!::PtInRect(&r, pt)) {
+                drag_icon.Hide();
+            }
+        }
+        if (tooltip.IsVisible()) {
+            RECT r = {};
+            ::GetWindowRect(tooltip.GetHwnd(), &r);
+            if (!::PtInRect(&r, pt)) {
+                tooltip.Dismiss();
+            }
+        }
+    });
+
+    // Click on DragIconWindow triggers translation of active selection
+    drag_icon.SetClickCallback([&](int click_x, int click_y) {
+        emebalachat::ClipboardBackup backup;
+        emebalachat::BackupClipboard(backup);
+
+        emebalachat::CopySelection();
+        ::Sleep(35);
+        std::wstring selected = emebalachat::GetClipboardText();
+        emebalachat::RestoreClipboard(backup);
+
+        if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+            return;
+        }
+
+        std::string detected = emebalachat::DetectLanguage(selected);
+        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
+        std::string tgt_lang = config.target_language;
+        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
+
+        if (tgt_code == src_code) {
+            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
+            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
+            if (sys_code == src_code || sys_code.empty()) {
+                tgt_lang = (src_code == "EN") ? "Korean" : "English";
+            } else {
+                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
+                tgt_lang = pInfo ? pInfo->name_en : "Korean";
+            }
+        }
+
+        badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        std::wstring translated = engine.Translate(selected, detected, tgt_lang);
+        badge.SetStatus(emebalachat::BadgeStatus::Active);
+
+        tooltip.ShowTranslation(click_x, click_y, selected, src_code, tgt_lang, translated);
+    });
+
+    // Double Ctrl+C Hotkey Detection (< 400ms)
+    hook.SetDoubleCtrlCCallback([&]() {
+        if (!config.drag_to_translate || !hook.IsActive()) {
+            return;
+        }
+
+        ::Sleep(40);
+        std::wstring copied = emebalachat::GetClipboardText();
+        if (copied.empty() || copied.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+            return;
+        }
+
+        std::string detected = emebalachat::DetectLanguage(copied);
+        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
+        std::string tgt_lang = config.target_language;
+        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
+
+        if (tgt_code == src_code) {
+            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
+            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
+            if (sys_code == src_code || sys_code.empty()) {
+                tgt_lang = (src_code == "EN") ? "Korean" : "English";
+            } else {
+                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
+                tgt_lang = pInfo ? pInfo->name_en : "Korean";
+            }
+        }
+
+        POINT cursor = {};
+        ::GetCursorPos(&cursor);
+
+        badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        std::wstring translated = engine.Translate(copied, detected, tgt_lang);
+        badge.SetStatus(emebalachat::BadgeStatus::Active);
+
+        tooltip.ShowTranslation(cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated);
+    });
+
+    // ESC Key Dismissal
+    hook.SetEscCallback([&]() -> bool {
+        if (tooltip.IsVisible()) {
+            tooltip.Dismiss();
+            return true;
+        }
+        if (drag_icon.IsVisible()) {
+            drag_icon.Hide();
+            return true;
+        }
+        return false;
+    });
+
+    // Tooltip language switcher re-translation
+    tooltip.SetLanguageChangeCallback([&](std::string_view new_target_lang) {
+        std::wstring src = tooltip.GetSourceText();
+        std::string src_code = tooltip.GetSourceLangCode();
+        std::string new_tgt = std::string(new_target_lang);
+
+        RECT r = {};
+        ::GetWindowRect(tooltip.GetHwnd(), &r);
+
+        badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        std::wstring translated = engine.Translate(src, src_code, new_tgt);
+        badge.SetStatus(emebalachat::BadgeStatus::Active);
+
+        tooltip.ShowTranslation(r.left, r.top, src, src_code, new_tgt, translated);
+    });
+
     // Badge Mouse Controls:
     // Single Click: Toggle Active / Paused
     badge.SetClickCallback([&]() {
         hook.ToggleActive();
+        mouse_hook.SetEnabled(hook.IsActive());
     });
 
     // Double Click: Swap Source ⇄ Target
@@ -326,9 +474,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tray.ShowContextMenu();
     });
 
-    // 9. Start Pipeline Worker and Keyboard Hook
+    // 9. Start Pipeline Worker, Keyboard Hook, and Mouse Hook
     worker.Start();
     hook.Start();
+    mouse_hook.Start();
 
     // 10. Startup sound
     emebalachat::PlayToggleOn();
@@ -341,10 +490,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
 
     // 12. Clean Shutdown
+    mouse_hook.Stop();
     hook.Stop();
     worker.Stop();
     tray.Destroy();
     badge.Destroy();
+    tooltip.Destroy();
+    drag_icon.Destroy();
 
     if (hController) {
         ::DestroyWindow(hController);

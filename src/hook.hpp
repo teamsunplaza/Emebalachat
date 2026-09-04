@@ -6,6 +6,7 @@
 #include "worker.hpp"
 
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <windows.h>
 
@@ -25,6 +26,9 @@ public:
     void CycleTargetLanguage();
     void ToggleAutoSend();
 
+    void SetDoubleCtrlCCallback(std::function<void()> cb) { double_ctrl_c_cb_ = std::move(cb); }
+    void SetEscCallback(std::function<bool()> cb) { esc_cb_ = std::move(cb); }
+
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
     void HookThreadProc();
@@ -40,6 +44,10 @@ private:
     HHOOK hHook_ = nullptr;
     HANDLE hReadyEvent_ = nullptr;
     std::thread thread_;
+
+    DWORD last_ctrl_c_time_ = 0;
+    std::function<void()> double_ctrl_c_cb_;
+    std::function<bool()> esc_cb_;
 
     static KeyboardHook* s_instance;
 };

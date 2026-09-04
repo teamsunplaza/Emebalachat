@@ -33,13 +33,13 @@ void PipelineWorker::Stop() {
     }
 }
 
-bool PipelineWorker::PostTask(bool is_shift_enter) {
+bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd) {
     if (is_busy_.exchange(true, std::memory_order_acquire)) {
         return false; // Busy with existing translation task
     }
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        queue_.push(PipelineTask{is_shift_enter});
+        queue_.push(PipelineTask{is_shift_enter, target_hwnd});
     }
     cv_.notify_one();
     return true;
@@ -96,7 +96,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     FlushIme();
 
-    std::wstring line = CopySelectedLine();
+    std::wstring line = CopySelectedText(task.target_hwnd);
 
     // Check if line is empty or smart bypass says no translation needed
     if (line.empty() || !ShouldTranslate(line, config_.target_language, config_.source_language)) {

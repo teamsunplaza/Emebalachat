@@ -46,15 +46,29 @@ std::wstring GetClipboardText(DWORD timeout_ms = 100);
 // Places Unicode text onto Windows clipboard as CF_UNICODETEXT.
 bool SetClipboardText(std::wstring_view text, DWORD timeout_ms = 100);
 
+// Returns true if process owning hwnd is a known chat application (KakaoTalk, Discord, Slack, etc.)
+bool IsChatApplicationWindow(HWND hwnd);
+
+// Sends Ctrl+A to select all text in the active control.
+bool SelectAll();
+
+// Process-aware text selection: Ctrl+A for chat apps, Shift+Home for document editors.
+bool SelectTextForTranslation(HWND hwnd);
+
+// High-level pipeline helper:
+// Selects text via SelectTextForTranslation(hwnd), sends Ctrl+C, sleeps 35ms, retrieves clipboard text.
+std::wstring CopySelectedText(HWND hwnd);
+
 // High-level pipeline helper:
 // Selects line (Shift+Home), sends Ctrl+C, sleeps 35ms copy settle delay, retrieves clipboard text.
 std::wstring CopySelectedLine();
 
 // High-level pipeline helper:
-// Sets translated text to clipboard, sends Ctrl+V, sleeps 120ms paste settle delay, restores original clipboard.
+// Sets translated text to clipboard, sends Ctrl+V, sleeps 180ms paste settle delay, restores original clipboard.
 bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup);
 
-// Sends synthetic Enter key event with optional Shift key release handling.
+// Sends synthetic Enter key event with modifier release and 35ms hold time.
 void SendEnterKey(bool release_shift = false);
 
 } // namespace emebalachat
+

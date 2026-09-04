@@ -166,6 +166,27 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
+        // ESC hotkey dismissal
+        if (kbd->vkCode == VK_ESCAPE) {
+            if (s_instance->esc_cb_ && s_instance->esc_cb_()) {
+                return 1; // Consumed: dismissed overlay UI
+            }
+        }
+
+        // Double Ctrl+C hotkey detection (< 400ms)
+        if (kbd->vkCode == 'C' && ctrl && !shift && !alt && !win) {
+            DWORD now = ::GetTickCount();
+            if (s_instance->last_ctrl_c_time_ != 0 && (now - s_instance->last_ctrl_c_time_ <= 400) && (now - s_instance->last_ctrl_c_time_ >= 20)) {
+                s_instance->last_ctrl_c_time_ = 0;
+                if (s_instance->double_ctrl_c_cb_) {
+                    s_instance->double_ctrl_c_cb_();
+                }
+            } else {
+                s_instance->last_ctrl_c_time_ = now;
+            }
+            return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }
+
         // F9 hotkeys
         if (kbd->vkCode == VK_F9) {
             if (!ctrl && !shift) {
@@ -200,8 +221,11 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
+            // Capture target window HWND at interception time for process-aware selection
+            HWND target_hwnd = ::GetForegroundWindow();
+
             // Post task to worker and intercept Enter from reaching target control
-            if (s_instance->worker_.PostTask(shift)) {
+            if (s_instance->worker_.PostTask(shift, target_hwnd)) {
                 return 1; // Intercepted immediately (< 1ms)!
             }
         }

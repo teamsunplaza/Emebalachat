@@ -109,7 +109,15 @@ struct TranslationManager::LlamaEngine {
         return true;
     }
 
-    std::wstring Translate(std::wstring_view text, std::string_view tgt_name, const std::string& path) {
+    std::wstring Translate(
+        std::wstring_view text,
+        std::string_view tgt_name,
+        const std::string& path,
+        float temperature = 0.7f,
+        float top_p = 0.6f,
+        int top_k = 20,
+        float rep_pen = 1.05f
+    ) {
         if (!EnsureLoaded(path)) {
             return {};
         }
@@ -165,8 +173,25 @@ struct TranslationManager::LlamaEngine {
             return {};
         }
 
-        // Initialize greedy sampler
-        llama_sampler* smpl = llama_sampler_init_greedy();
+        // Initialize sampler according to Tencent Hy-MT2 official specifications
+        llama_sampler* smpl = nullptr;
+        if (temperature <= 0.001f) {
+            smpl = llama_sampler_init_greedy();
+        } else {
+            llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+            smpl = llama_sampler_chain_init(sparams);
+            if (rep_pen > 1.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, rep_pen, 0.0f, 0.0f));
+            }
+            if (top_k > 0) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+            }
+            if (top_p > 0.0f && top_p < 1.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+            }
+            llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+            llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+        }
         if (!smpl) {
             return {};
         }
@@ -236,18 +261,22 @@ struct TranslationManager::LlamaEngine {
 struct TranslationManager::LlamaEngine {
     bool EnsureLoaded(const std::string&) { return false; }
     void Unload() {}
-    std::wstring Translate(std::wstring_view, std::string_view, const std::string&) { return {}; }
+    std::wstring Translate(std::wstring_view, std::string_view, const std::string&, float = 0.7f, float = 0.6f, int = 20, float = 1.05f) { return {}; }
 };
 
 #endif
 
 TranslationManager::TranslationManager(EngineType preferred_type, std::string model_path)
     : preferred_type_(preferred_type), model_path_(std::move(model_path)) {
+    AppConfig cfg;
+    cfg.LoadFromFile();
     if (model_path_.empty()) {
-        AppConfig cfg;
-        cfg.LoadFromFile();
         model_path_ = cfg.model_path;
     }
+    temperature_ = cfg.temperature;
+    top_p_ = cfg.top_p;
+    top_k_ = cfg.top_k;
+    repetition_penalty_ = cfg.repetition_penalty;
     RefreshActiveEngine();
 }
 
@@ -273,6 +302,34 @@ void TranslationManager::SetModelPath(std::string_view path) {
 std::string TranslationManager::GetModelPath() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return model_path_;
+}
+
+void TranslationManager::SetSamplingParams(float temp, float top_p, int top_k, float rep_pen) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    temperature_ = temp;
+    top_p_ = top_p;
+    top_k_ = top_k;
+    repetition_penalty_ = rep_pen;
+}
+
+float TranslationManager::GetTemperature() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return temperature_;
+}
+
+float TranslationManager::GetTopP() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return top_p_;
+}
+
+int TranslationManager::GetTopK() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return top_k_;
+}
+
+float TranslationManager::GetRepetitionPenalty() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return repetition_penalty_;
 }
 
 std::string TranslationManager::GetActiveEngineName() const {
@@ -359,7 +416,10 @@ std::wstring TranslationManager::Translate(
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
 
     if (active_type_ == EngineType::LocalLlama && llama_engine_) {
-        std::wstring res = llama_engine_->Translate(text, tgt_name, model_path_);
+        std::wstring res = llama_engine_->Translate(
+            text, tgt_name, model_path_,
+            temperature_, top_p_, top_k_, repetition_penalty_
+        );
         if (!res.empty()) {
             return res;
         }

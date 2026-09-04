@@ -302,10 +302,38 @@ std::string CycleTargetLanguage(std::string_view current_code_or_name) {
     return targets[next_idx].name_en;
 }
 
+namespace {
+bool IsChineseLanguage(std::string_view lang) {
+    if (EqualsIgnoreCase(lang, "ZH") || EqualsIgnoreCase(lang, "ZH-CN") || EqualsIgnoreCase(lang, "ZH-TW")) {
+        return true;
+    }
+    std::string lower;
+    lower.reserve(lang.size());
+    for (char c : lang) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (lower.find("chinese") != std::string::npos || lower.rfind("zh", 0) == 0) {
+        return true;
+    }
+    if (lang.find("中文") != std::string_view::npos) {
+        return true;
+    }
+    return false;
+}
+} // namespace
+
 std::string BuildPrompt(std::string_view source_text, std::string_view target_lang) {
+    if (IsChineseLanguage(target_lang)) {
+        std::string prompt = "将以下文本翻译为";
+        prompt.append(target_lang);
+        prompt.append("，注意只需要输出翻译后的结果，不要额外解释：\n\n");
+        prompt.append(source_text);
+        return prompt;
+    }
+
     std::string prompt = "Translate the following segment into ";
     prompt.append(target_lang);
-    prompt.append(", without additional explanation. ");
+    prompt.append(", without additional explanation.\n\n");
     prompt.append(source_text);
     return prompt;
 }
@@ -387,9 +415,15 @@ std::string AppConfig::ToJsonString() const {
     ss << "  \"target_language\": \"" << EscapeJsonString(target_language) << "\",\n";
     ss << "  \"auto_send\": " << (auto_send ? "true" : "false") << ",\n";
     ss << "  \"sound_enabled\": " << (sound_enabled ? "true" : "false") << ",\n";
+    ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
+    ss << "  \"drag_hotkey\": \"" << EscapeJsonString(drag_hotkey) << "\",\n";
     ss << "  \"hotkey_toggle\": \"" << EscapeJsonString(hotkey_toggle) << "\",\n";
     ss << "  \"hotkey_lang\": \"" << EscapeJsonString(hotkey_lang) << "\",\n";
     ss << "  \"hotkey_mode\": \"" << EscapeJsonString(hotkey_mode) << "\",\n";
+    ss << "  \"temperature\": " << temperature << ",\n";
+    ss << "  \"top_p\": " << top_p << ",\n";
+    ss << "  \"top_k\": " << top_k << ",\n";
+    ss << "  \"repetition_penalty\": " << repetition_penalty << ",\n";
     ss << "  \"badge_x\": " << badge_x << ",\n";
     ss << "  \"badge_y\": " << badge_y << "\n";
     ss << "}\n";
@@ -418,6 +452,10 @@ bool AppConfig::FromJsonString(std::string_view json) {
             auto_send = (v == "true");
         } else if (k == "sound_enabled") {
             sound_enabled = (v == "true");
+        } else if (k == "drag_to_translate") {
+            drag_to_translate = (v == "true");
+        } else if (k == "drag_hotkey") {
+            drag_hotkey = v;
         } else if (k == "badge_x") {
             try { badge_x = std::stoi(v); } catch (...) {}
         } else if (k == "badge_y") {
@@ -428,6 +466,14 @@ bool AppConfig::FromJsonString(std::string_view json) {
             hotkey_lang = v;
         } else if (k == "hotkey_mode") {
             hotkey_mode = v;
+        } else if (k == "temperature") {
+            try { temperature = std::stof(v); } catch (...) {}
+        } else if (k == "top_p") {
+            try { top_p = std::stof(v); } catch (...) {}
+        } else if (k == "top_k") {
+            try { top_k = std::stoi(v); } catch (...) {}
+        } else if (k == "repetition_penalty") {
+            try { repetition_penalty = std::stof(v); } catch (...) {}
         }
     }
     return true;

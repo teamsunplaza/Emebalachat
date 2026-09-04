@@ -7,6 +7,10 @@
 #include "../src/engine.hpp"
 #include "../src/i18n.hpp"
 #include "../src/ui/badge.hpp"
+#include "../src/ui/drag_icon.hpp"
+#include "../src/ui/tooltip.hpp"
+#include "../src/ui/asset_loader.hpp"
+#include "../src/mouse_hook.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -44,6 +48,12 @@ void TestConfigModule() {
     TEST_CHECK(cfg.hotkey_toggle == "F9", "Default hotkey_toggle is F9");
     TEST_CHECK(cfg.hotkey_lang == "Ctrl+F9", "Default hotkey_lang is Ctrl+F9");
     TEST_CHECK(cfg.hotkey_mode == "Ctrl+Shift+Enter", "Default hotkey_mode is Ctrl+Shift+Enter");
+    TEST_CHECK(cfg.drag_to_translate == true, "Default drag_to_translate is true");
+    TEST_CHECK(cfg.drag_hotkey == "double_ctrl_c", "Default drag_hotkey is double_ctrl_c");
+    TEST_CHECK(std::abs(cfg.temperature - 0.7f) < 0.001f, "Default temperature is 0.7f");
+    TEST_CHECK(std::abs(cfg.top_p - 0.6f) < 0.001f, "Default top_p is 0.6f");
+    TEST_CHECK(cfg.top_k == 20, "Default top_k is 20");
+    TEST_CHECK(std::abs(cfg.repetition_penalty - 1.05f) < 0.001f, "Default repetition_penalty is 1.05f");
 
     // 2. Language table coverage
     const auto& all_langs = GetSupportedLanguages();
@@ -73,16 +83,30 @@ void TestConfigModule() {
     }
     TEST_CHECK(curr == target_langs[0].name_en, "Full language cycle wraps around");
 
-    // 4. Prompt Builder
-    std::string prompt = BuildPrompt("안녕하세요", "English");
-    TEST_CHECK(prompt == "Translate the following segment into English, without additional explanation. 안녕하세요",
-               "Prompt formatting matches specification");
+    // 4. Prompt Builder (Tencent Hy-MT2 format: \n\n paragraph break and Chinese branch)
+    std::string prompt_en = BuildPrompt("안녕하세요", "English");
+    TEST_CHECK(prompt_en == "Translate the following segment into English, without additional explanation.\n\n안녕하세요",
+               "Prompt formatting matches specification (English default)");
+
+    std::string prompt_zh = BuildPrompt("안녕하세요", "Chinese");
+    TEST_CHECK(prompt_zh == "将以下文本翻译为Chinese，注意只需要输出翻译后的结果，不要额外解释：\n\n안녕하세요",
+               "Prompt formatting matches specification (Chinese branch)");
+
+    std::string prompt_zh_cn = BuildPrompt("Hello", "ZH-CN");
+    TEST_CHECK(prompt_zh_cn == "将以下文本翻译为ZH-CN，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
+               "Prompt formatting matches specification (ZH-CN branch)");
 
     // 5. JSON serialization & parsing roundtrip
     cfg.target_language = "Japanese";
     cfg.auto_send = true;
     cfg.sound_enabled = false;
+    cfg.drag_to_translate = false;
+    cfg.drag_hotkey = "custom_hotkey";
     cfg.model_path = "D:\\custom\\model.gguf";
+    cfg.temperature = 0.85f;
+    cfg.top_p = 0.9f;
+    cfg.top_k = 40;
+    cfg.repetition_penalty = 1.15f;
     cfg.SetBadgePosition(450, 600);
 
     std::string json_str = cfg.ToJsonString();
@@ -92,7 +116,13 @@ void TestConfigModule() {
     TEST_CHECK(loaded_cfg.target_language == "Japanese", "Persisted target_language matches");
     TEST_CHECK(loaded_cfg.auto_send == true, "Persisted auto_send matches");
     TEST_CHECK(loaded_cfg.sound_enabled == false, "Persisted sound_enabled matches");
+    TEST_CHECK(loaded_cfg.drag_to_translate == false, "Persisted drag_to_translate matches");
+    TEST_CHECK(loaded_cfg.drag_hotkey == "custom_hotkey", "Persisted drag_hotkey matches");
     TEST_CHECK(loaded_cfg.model_path == "D:\\custom\\model.gguf", "Persisted model_path matches");
+    TEST_CHECK(std::abs(loaded_cfg.temperature - 0.85f) < 0.001f, "Persisted temperature matches");
+    TEST_CHECK(std::abs(loaded_cfg.top_p - 0.9f) < 0.001f, "Persisted top_p matches");
+    TEST_CHECK(loaded_cfg.top_k == 40, "Persisted top_k matches");
+    TEST_CHECK(std::abs(loaded_cfg.repetition_penalty - 1.15f) < 0.001f, "Persisted repetition_penalty matches");
     TEST_CHECK(loaded_cfg.badge_x == 450 && loaded_cfg.badge_y == 600, "Persisted badge_x and badge_y match");
 
     // 6. Graceful recovery on malformed JSON
@@ -366,6 +396,20 @@ void TestEngineModule() {
     TEST_CHECK(!translated.empty(), "Manager Translate succeeds via auto fallback");
     std::wcout << L"  [LIVE MGR RESULT]: '감사합니다' -> '" << translated << L"'" << std::endl;
 
+    // Sampling parameter modification and verification
+    mgr.SetSamplingParams(0.5f, 0.8f, 30, 1.1f);
+    TEST_CHECK(std::abs(mgr.GetTemperature() - 0.5f) < 0.001f, "SetSamplingParams temperature");
+    TEST_CHECK(std::abs(mgr.GetTopP() - 0.8f) < 0.001f, "SetSamplingParams top_p");
+    TEST_CHECK(mgr.GetTopK() == 30, "SetSamplingParams top_k");
+    TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.1f) < 0.001f, "SetSamplingParams repetition_penalty");
+
+    // Reset back to Tencent Hunyuan Lab official parameters (0.7, 0.6, 20, 1.05)
+    mgr.SetSamplingParams(0.7f, 0.6f, 20, 1.05f);
+    TEST_CHECK(std::abs(mgr.GetTemperature() - 0.7f) < 0.001f, "Tencent tuned temperature 0.7");
+    TEST_CHECK(std::abs(mgr.GetTopP() - 0.6f) < 0.001f, "Tencent tuned top_p 0.6");
+    TEST_CHECK(mgr.GetTopK() == 20, "Tencent tuned top_k 20");
+    TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.05f) < 0.001f, "Tencent tuned repetition_penalty 1.05");
+
     const std::string local_model_path = "D:\\OneDrive\\Documents\\models\\tsmodel\\Hy-MT2-1.8B-Q8_0.gguf";
     if (std::filesystem::exists(local_model_path)) {
         std::cout << "  [LOCAL LLM TEST] Loading Hy-MT2-1.8B-Q8_0.gguf for real offline translation..." << std::endl;
@@ -476,7 +520,152 @@ void TestI18nModule() {
     std::cout << "[PASS] Universal i18n Localization tests completed." << std::endl;
 }
 
+void TestDragToTranslateComponents() {
+    std::cout << "[RUN] Testing Drag-to-Translate Components..." << std::endl;
+
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+
+    // 1. DragIconWindow creation, display toggle, and destruction
+    DragIconWindow drag_icon;
+    bool icon_created = drag_icon.Create(hInst);
+    TEST_CHECK(icon_created, "DragIconWindow created successfully");
+    TEST_CHECK(!drag_icon.IsVisible(), "DragIconWindow starts hidden");
+
+    drag_icon.ShowAt(100, 100);
+    TEST_CHECK(drag_icon.IsVisible(), "DragIconWindow is visible after ShowAt");
+
+    drag_icon.Hide();
+    TEST_CHECK(!drag_icon.IsVisible(), "DragIconWindow is hidden after Hide");
+    drag_icon.Destroy();
+
+    // 2. TooltipWindow creation, presentation, and destruction
+    TooltipWindow tooltip;
+    bool tooltip_created = tooltip.Create(hInst);
+    TEST_CHECK(tooltip_created, "TooltipWindow created successfully");
+    TEST_CHECK(!tooltip.IsVisible(), "TooltipWindow starts hidden");
+
+    tooltip.ShowTranslation(200, 200, L"안녕하세요", "KO", "English", L"Hello");
+    TEST_CHECK(tooltip.IsVisible(), "TooltipWindow is visible after ShowTranslation");
+    TEST_CHECK(tooltip.GetSourceText() == L"안녕하세요", "TooltipWindow records source text");
+    TEST_CHECK(tooltip.GetSourceLangCode() == "KO", "TooltipWindow records source language code");
+    TEST_CHECK(tooltip.GetTargetLang() == "English", "TooltipWindow records target language");
+
+    tooltip.Dismiss();
+    TEST_CHECK(!tooltip.IsVisible(), "TooltipWindow is hidden after Dismiss");
+    tooltip.Destroy();
+
+    // 3. MouseHook lifecycle and multi-click state
+    MouseHook mouse_hook;
+    TEST_CHECK(mouse_hook.IsEnabled(), "MouseHook starts enabled");
+    mouse_hook.SetEnabled(false);
+    TEST_CHECK(!mouse_hook.IsEnabled(), "MouseHook can be disabled");
+    mouse_hook.SetEnabled(true);
+    TEST_CHECK(mouse_hook.GetClickCount() == 0, "MouseHook starts with 0 click count");
+
+    bool hook_started = mouse_hook.Start();
+    TEST_CHECK(hook_started, "MouseHook started successfully");
+    mouse_hook.Stop();
+
+    // 4. Process-aware input helper
+    TEST_CHECK(!IsChatApplicationWindow(nullptr), "IsChatApplicationWindow returns false for null HWND");
+
+    // 5. Emebala Tablet Relief Assets & 32x32 Pill Specifications
+    int icon_size = DragIconWindow::kSize;
+    TEST_CHECK(icon_size == 32, "DragIconWindow size is 32px rounded icon pill");
+    std::wstring resolvedLogo = FindLogoPath();
+    TEST_CHECK(!resolvedLogo.empty(), "FindLogoPath resolves logo.png successfully");
+    TEST_CHECK(std::filesystem::exists(resolvedLogo), "Resolved logo.png exists on disk");
+    TEST_CHECK(std::filesystem::exists("D:\\OneDrive\\Projects\\Emebalachat\\assets\\logo.svg"), "Emebalachat assets/logo.svg exists");
+    TEST_CHECK(std::filesystem::exists("D:\\OneDrive\\Projects\\Emebala\\assets\\logo.svg"), "Emebala assets/logo.svg exists");
+
+    std::cout << "[PASS] Drag-to-Translate Components tests completed." << std::endl;
+}
+
+void TestTtsVoiceSelectionModule() {
+    std::cout << "[RUN] Testing Multi-Language Native TTS Voice Selection..." << std::endl;
+
+    // 1. Language LCID Mapping Coverage
+    TEST_CHECK(GetLcidForLanguage("English") == 0x0409, "LCID English by name");
+    TEST_CHECK(GetLcidForLanguage("EN") == 0x0409, "LCID EN by code");
+    TEST_CHECK(GetLcidForLanguage("en") == 0x0409, "LCID en lowercase");
+    TEST_CHECK(GetLcidForLanguage("Korean") == 0x0412, "LCID Korean by name");
+    TEST_CHECK(GetLcidForLanguage("KO") == 0x0412, "LCID KO by code");
+    TEST_CHECK(GetLcidForLanguage("한국어") == 0x0412, "LCID 한국어 native name");
+    TEST_CHECK(GetLcidForLanguage("Japanese") == 0x0411, "LCID Japanese by name");
+    TEST_CHECK(GetLcidForLanguage("JA") == 0x0411, "LCID JA by code");
+    TEST_CHECK(GetLcidForLanguage("日本語") == 0x0411, "LCID 日本語 native name");
+    TEST_CHECK(GetLcidForLanguage("Chinese Simplified") == 0x0804, "LCID Chinese Simplified");
+    TEST_CHECK(GetLcidForLanguage("ZH-CN") == 0x0804, "LCID ZH-CN by code");
+    TEST_CHECK(GetLcidForLanguage("ZH-TW") == 0x0404, "LCID ZH-TW by code");
+    TEST_CHECK(GetLcidForLanguage("Spanish") == 0x040A, "LCID Spanish by name");
+    TEST_CHECK(GetLcidForLanguage("ES") == 0x040A, "LCID ES by code");
+    TEST_CHECK(GetLcidForLanguage("French") == 0x040C, "LCID French by name");
+    TEST_CHECK(GetLcidForLanguage("German") == 0x0407, "LCID German by name");
+    TEST_CHECK(GetLcidForLanguage("Russian") == 0x0419, "LCID Russian by name");
+    TEST_CHECK(GetLcidForLanguage("Vietnamese") == 0x042A, "LCID Vietnamese by name");
+    TEST_CHECK(GetLcidForLanguage("Portuguese") == 0x0416, "LCID Portuguese by name");
+    TEST_CHECK(GetLcidForLanguage("Italian") == 0x0410, "LCID Italian by name");
+    TEST_CHECK(GetLcidForLanguage("Thai") == 0x041E, "LCID Thai by name");
+    TEST_CHECK(GetLcidForLanguage("Arabic") == 0x0401, "LCID Arabic by name");
+
+    // Hex and BCP-47 variant parsing
+    TEST_CHECK(GetLcidForLanguage("0x409") == 0x0409, "LCID 0x409 hex");
+    TEST_CHECK(GetLcidForLanguage("409") == 0x0409, "LCID 409 hex string");
+    TEST_CHECK(GetLcidForLanguage("0x412") == 0x0412, "LCID 0x412 hex");
+    TEST_CHECK(GetLcidForLanguage("412") == 0x0412, "LCID 412 hex string");
+    TEST_CHECK(GetLcidForLanguage("en-US") == 0x0409, "LCID en-US regional tag");
+    TEST_CHECK(GetLcidForLanguage("ko-KR") == 0x0412, "LCID ko-KR regional tag");
+    TEST_CHECK(GetLcidForLanguage("NonExistentLanguage999") == 0, "Unknown language returns 0");
+    TEST_CHECK(GetLcidForLanguage("") == 0, "Empty language returns 0");
+
+    // 2. Active SAPI Voice Selection
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    TooltipWindow tooltip;
+    bool created = tooltip.Create(hInst);
+    TEST_CHECK(created, "TooltipWindow created for TTS testing");
+
+    // Switch to English voice (e.g. Microsoft Zira Desktop / David)
+    bool en_selected = tooltip.SelectVoiceForLanguage("English");
+    std::cout << "  [TTS EN VOICE]: Selected=" << (en_selected ? "true" : "false")
+              << " Name='" << tooltip.GetCurrentVoiceName()
+              << "' Lang='" << tooltip.GetCurrentVoiceLanguage() << "'" << std::endl;
+    TEST_CHECK(en_selected, "English voice selected successfully on Windows");
+    TEST_CHECK(tooltip.GetCurrentVoiceLanguage().find("409") != std::string::npos,
+               "Selected English voice has 409 LCID");
+    TEST_CHECK(!tooltip.GetCurrentVoiceName().empty(), "Selected English voice has non-empty name");
+
+    // Switch to Korean voice (e.g. Microsoft Heami Desktop)
+    bool ko_selected = tooltip.SelectVoiceForLanguage("Korean");
+    std::cout << "  [TTS KO VOICE]: Selected=" << (ko_selected ? "true" : "false")
+              << " Name='" << tooltip.GetCurrentVoiceName()
+              << "' Lang='" << tooltip.GetCurrentVoiceLanguage() << "'" << std::endl;
+    TEST_CHECK(ko_selected, "Korean voice selected successfully on Windows");
+    TEST_CHECK(tooltip.GetCurrentVoiceLanguage().find("412") != std::string::npos,
+               "Selected Korean voice has 412 LCID");
+
+    // Switch back to English to verify dynamic bidirectional switching
+    bool en_reselected = tooltip.SelectVoiceForLanguage("EN");
+    TEST_CHECK(en_reselected, "Switched back to English voice via 'EN' code");
+    TEST_CHECK(tooltip.GetCurrentVoiceLanguage().find("409") != std::string::npos,
+               "Switched back to 409 LCID");
+
+    // Safe fallback on unsupported / uninstalled voice
+    bool fallback_selected = tooltip.SelectVoiceForLanguage("NonExistentVoiceLanguage");
+    TEST_CHECK(!fallback_selected, "Unsupported language reports voice not found");
+    TEST_CHECK(!tooltip.GetCurrentVoiceName().empty(), "Fallback voice retains a valid active voice");
+
+    // Speak and Stop TTS safety
+    tooltip.ShowTranslation(100, 100, L"안녕하세요", "KO", "English", L"Hello world");
+    tooltip.SpeakCurrentText(); // Should switch to English voice and speak asynchronously
+    tooltip.StopTTS();          // Purge TTS safely
+
+    tooltip.Destroy();
+    std::cout << "[PASS] Multi-Language Native TTS Voice Selection tests completed." << std::endl;
+}
+
 int main() {
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     std::cout << "========================================" << std::endl;
     std::cout << "  Emebalachat C++20 Core Test Suite     " << std::endl;
     std::cout << "========================================" << std::endl;
@@ -490,11 +679,15 @@ int main() {
     TestEngineModule();
     TestBadgeDynamicSizing();
     TestI18nModule();
+    TestDragToTranslateComponents();
+    TestTtsVoiceSelectionModule();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
     std::cout << "Failures:     " << g_failed_count << std::endl;
     std::cout << "========================================" << std::endl;
+
+    ::CoUninitialize();
 
     if (g_failed_count == 0) {
         std::cout << ">>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<" << std::endl;

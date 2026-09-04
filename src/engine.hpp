@@ -49,6 +49,13 @@ public:
     // Releases local model from memory/VRAM.
     void UnloadLocalModel();
 
+    // Sets sampling parameters for local LLM generation
+    void SetSamplingParams(float temp, float top_p, int top_k, float rep_pen);
+    float GetTemperature() const;
+    float GetTopP() const;
+    int GetTopK() const;
+    float GetRepetitionPenalty() const;
+
 private:
     void RefreshActiveEngine();
 
@@ -58,6 +65,11 @@ private:
     EngineType active_type_ = EngineType::GoogleTranslate;
     std::string active_name_ = "Google Translate";
     bool local_model_available_ = false;
+
+    float temperature_ = 0.7f;
+    float top_p_ = 0.6f;
+    int top_k_ = 20;
+    float repetition_penalty_ = 1.05f;
 
     struct LlamaEngine;
     std::unique_ptr<LlamaEngine> llama_engine_;

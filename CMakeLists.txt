@@ -48,8 +48,12 @@ add_library(Emebalachat_core STATIC
     src/google_translate.cpp
     src/engine.cpp
     src/i18n.cpp
+    src/ui/asset_loader.cpp
     src/ui/badge.cpp
     src/ui/tray.cpp
+    src/ui/drag_icon.cpp
+    src/ui/tooltip.cpp
+    src/mouse_hook.cpp
     src/worker.cpp
     src/hook.cpp
 )
@@ -75,6 +79,9 @@ target_link_libraries(Emebalachat_core PUBLIC
     dxgi
     normaliz
     delayimp
+    ole32
+    oleaut32
+    windowscodecs
 )
 
 if (TARGET llama)

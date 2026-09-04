@@ -1,9 +1,20 @@
 {
-  "source_language": "Auto Detect",
-  "target_language": "English",
+  "ui_language": "auto",
   "engine_type": "auto",
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
+  "source_language": "Auto Detect",
+  "target_language": "English",
   "auto_send": false,
+  "sound_enabled": true,
+  "drag_to_translate": true,
+  "drag_hotkey": "double_ctrl_c",
+  "hotkey_toggle": "F9",
+  "hotkey_lang": "Ctrl+F9",
+  "hotkey_mode": "Ctrl+Shift+Enter",
+  "temperature": 0.7,
+  "top_p": 0.6,
+  "top_k": 20,
+  "repetition_penalty": 1.05,
   "badge_x": -1,
   "badge_y": -1
 }
