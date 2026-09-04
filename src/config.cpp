@@ -416,6 +416,7 @@ std::string AppConfig::ToJsonString() const {
     ss << "  \"auto_send\": " << (auto_send ? "true" : "false") << ",\n";
     ss << "  \"sound_enabled\": " << (sound_enabled ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
+    ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
     ss << "  \"drag_hotkey\": \"" << EscapeJsonString(drag_hotkey) << "\",\n";
     ss << "  \"hotkey_toggle\": \"" << EscapeJsonString(hotkey_toggle) << "\",\n";
     ss << "  \"hotkey_lang\": \"" << EscapeJsonString(hotkey_lang) << "\",\n";
@@ -454,6 +455,8 @@ bool AppConfig::FromJsonString(std::string_view json) {
             sound_enabled = (v == "true");
         } else if (k == "drag_to_translate") {
             drag_to_translate = (v == "true");
+        } else if (k == "cloud_fallback_enabled") {
+            cloud_fallback_enabled = (v == "true");
         } else if (k == "drag_hotkey") {
             drag_hotkey = v;
         } else if (k == "badge_x") {

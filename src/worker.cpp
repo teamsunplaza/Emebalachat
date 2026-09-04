@@ -122,9 +122,18 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
 
+    bool pasted = false;
     if (!translated.empty() && translated != line) {
-        restorer.active = false;
-        PasteAndRestore(translated, backup);
+        // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
+        // foreground window immediately before Ctrl+V and aborts on mismatch.
+        pasted = PasteAndRestore(translated, backup, task.target_hwnd);
+        if (pasted) {
+            // Clipboard swap consumed the backup; RAII restorer must not overwrite.
+            restorer.active = false;
+        }
+        // If !pasted (focus shifted): clipboard untouched, nothing leaked, the
+        // user's original text selection is still active in the (new) foreground
+        // window — do NOT send unselect or Enter into the wrong window.
     } else {
         // Translation failed or text was unchanged: clear text selection with right arrow
         // to prevent SendEnterKey from deleting or overwriting the user's original text!
@@ -140,7 +149,12 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     // Auto-Send or Shift+Enter immediate send dispatch
     if (task.is_shift_enter || config_.auto_send) {
-        SendEnterKey(task.is_shift_enter);
+        // H1 guard: Enter is a synthetic keystroke delivered to the CURRENT focus.
+        // Re-verify before dispatch so a focus race cannot send Enter to the
+        // wrong application (e.g. confirming a dialog, submitting a form).
+        if (IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow())) {
+            SendEnterKey(task.is_shift_enter);
+        }
     }
 }
 

@@ -65,7 +65,17 @@ std::wstring CopySelectedLine();
 
 // High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps 180ms paste settle delay, restores original clipboard.
-bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup);
+// If expected_target is non-null, re-verifies the foreground window immediately before
+// injecting Ctrl+V and aborts (returns false, no paste) when focus has shifted to a
+// different window root. Prevents translated text leaking into the wrong application.
+bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target = nullptr);
+
+// Pure foreground-equivalence check for injection gating (H1 wrong-window fix).
+// - expected_target == nullptr  -> always true (no target captured, e.g. CopySelectedLine path)
+// - current_foreground == nullptr -> false (cannot verify -> refuse to inject)
+// - true when handles are equal OR share the same GA_ROOTOWNER (survives re-nested
+//   child-window focus within the same top-level window).
+bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground);
 
 // Sends synthetic Enter key event with modifier release and 35ms hold time.
 void SendEnterKey(bool release_shift = false);

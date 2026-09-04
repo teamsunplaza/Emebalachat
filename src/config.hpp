@@ -47,6 +47,11 @@ struct AppConfig {
     bool auto_send = false;
     bool sound_enabled = true;
     bool drag_to_translate = true;
+    // Privacy-first consent gate (H2 fix): when false, typed text is NEVER sent to
+    // the Google Translate cloud — neither as a fallback after a local-LLM failure
+    // nor as the auto engine when no local model is installed. Translation returns
+    // empty instead (the worker already handles empty gracefully). Default false.
+    bool cloud_fallback_enabled = false;
     std::string drag_hotkey = "double_ctrl_c";
     int badge_x = -1;
     int badge_y = -1;

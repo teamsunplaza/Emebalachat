@@ -439,7 +439,36 @@ std::wstring CopySelectedLine() {
     return CopySelectedText(nullptr);
 }
 
-bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup) {
+bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground) {
+    // No captured target (e.g. CopySelectedLine path): nothing to verify against.
+    if (!expected_target) {
+        return true;
+    }
+    // A target was captured but no foreground window exists now: refuse to inject.
+    if (!current_foreground) {
+        return false;
+    }
+    if (current_foreground == expected_target) {
+        return true;
+    }
+    // Tolerate focus moving to a child/re-nested window within the same top-level
+    // window (e.g. an embedded input control). GA_ROOTOWNER walks the owner chain.
+    HWND expected_root = ::GetAncestor(expected_target, GA_ROOTOWNER);
+    HWND current_root = ::GetAncestor(current_foreground, GA_ROOTOWNER);
+    return expected_root && (expected_root == current_root);
+}
+
+bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target) {
+    // H1 guard: re-verify the foreground window IMMEDIATELY before the injection
+    // sequence. The translation network call above can take seconds; if the user
+    // Alt-Tabbed or focus shifted, pasting here would leak translated text into
+    // (and send synthetic input to) the wrong application.
+    if (!IsSameWindowForInjection(expected_target, ::GetForegroundWindow())) {
+        // Abort: clipboard untouched, nothing pasted. Original clipboard is
+        // preserved by the caller's RAII restorer (backup was never overwritten).
+        return false;
+    }
+
     bool ok = SetClipboardText(text);
     if (ok) {
         PasteSelection();

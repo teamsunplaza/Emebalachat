@@ -342,6 +342,16 @@ bool TranslationManager::IsLocalModelAvailable() const {
     return local_model_available_;
 }
 
+void TranslationManager::SetCloudFallbackEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cloud_fallback_enabled_ = enabled;
+}
+
+bool TranslationManager::IsCloudFallbackEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cloud_fallback_enabled_;
+}
+
 bool TranslationManager::PreloadLocalModel() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!llama_engine_) {
@@ -423,11 +433,24 @@ std::wstring TranslationManager::Translate(
         if (!res.empty()) {
             return res;
         }
-        // Seamless fallback to Google Translate if local LLM fails
-        return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+        // H2 gate: only fall back to the Google cloud when the user has explicitly
+        // consented via cloud_fallback_enabled. Otherwise return empty (the worker
+        // handles empty gracefully) so typed text never leaks off-device silently.
+        if (cloud_fallback_enabled_) {
+            return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+        }
+        return {};
     }
 
-    return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+    // Non-local active engine. Distinguish two cases:
+    //  - preferred_type_ == GoogleTranslate: the user DELIBERATELY chose the cloud
+    //    engine (explicit consent) -> always allow.
+    //  - otherwise (auto/local with no local model available): this is an implicit
+    //    cloud path -> respect the H2 consent gate; return empty when disabled.
+    if (preferred_type_ == EngineType::GoogleTranslate || cloud_fallback_enabled_) {
+        return GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+    }
+    return {};
 }
 
 } // namespace emebalachat

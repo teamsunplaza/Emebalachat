@@ -35,6 +35,13 @@ public:
     // Returns true if local GGUF model file exists on disk
     bool IsLocalModelAvailable() const;
 
+    // Privacy consent gate (H2 fix): when false, no text is transmitted to the
+    // Google Translate cloud — neither as a post-local-failure fallback nor as
+    // the auto engine when no local model exists; Translate() returns empty.
+    // An explicit engine_type=google choice still uses the cloud (deliberate).
+    void SetCloudFallbackEnabled(bool enabled);
+    bool IsCloudFallbackEnabled() const;
+
     // Translates input text from source language to target language.
     // Thread-safe: internal mutex guards concurrent requests.
     std::wstring Translate(
@@ -65,6 +72,7 @@ private:
     EngineType active_type_ = EngineType::GoogleTranslate;
     std::string active_name_ = "Google Translate";
     bool local_model_available_ = false;
+    bool cloud_fallback_enabled_ = false;
 
     float temperature_ = 0.7f;
     float top_p_ = 0.6f;

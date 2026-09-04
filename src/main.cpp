@@ -103,6 +103,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
     emebalachat::TranslationManager engine(engine_type, config.model_path);
     engine.SetSamplingParams(config.temperature, config.top_p, config.top_k, config.repetition_penalty);
+    // H2 consent gate: propagate the privacy-first cloud_fallback_enabled flag so
+    // the engine never silently transmits typed text to Google without consent.
+    engine.SetCloudFallbackEnabled(config.cloud_fallback_enabled);
 
     // 6. Create Hidden Controller Window for Tray & Message Pump
     WNDCLASSEXW wc = {};

@@ -7,6 +7,7 @@
   "auto_send": false,
   "sound_enabled": true,
   "drag_to_translate": true,
+  "cloud_fallback_enabled": false,
   "drag_hotkey": "double_ctrl_c",
   "hotkey_toggle": "F9",
   "hotkey_lang": "Ctrl+F9",
