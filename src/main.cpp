@@ -973,17 +973,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::string detected = emebalachat::DetectLanguage(selected);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
         std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (worker thread)
-        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
-        if (tgt_code == src_code) {
-            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
-            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
-            if (sys_code == src_code || sys_code.empty()) {
-                tgt_lang = (src_code == "EN") ? "Korean" : "English";
-            } else {
-                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
-                tgt_lang = pInfo ? pInfo->name_en : "Korean";
-            }
+        if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
+            tgt_lang = *effective;
             // R6 Phase 1 (B3): the src==tgt substitution was previously
             // EPHEMERAL - only this tooltip used it while config/badge/tray
             // kept the (now meaningless) old target. Post it to the GUI-
@@ -1094,17 +1086,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::string detected = emebalachat::DetectLanguage(copied);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
         std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (REQ-R06: runs on the hook's async worker thread)
-        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
 
-        if (tgt_code == src_code) {
-            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
-            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
-            if (sys_code == src_code || sys_code.empty()) {
-                tgt_lang = (src_code == "EN") ? "Korean" : "English";
-            } else {
-                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
-                tgt_lang = pInfo ? pInfo->name_en : "Korean";
-            }
+        if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
+            tgt_lang = *effective;
             // R6 Phase 1 (B3): same coordinator routing as the drag path above
             // (this body runs on the hook's REQ-R06 async worker thread).
             emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
