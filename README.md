@@ -252,7 +252,7 @@ C:\path\to\Emebalachat\
 │       ├── badge.hpp/.cpp      # Direct2D / DirectWrite floating pill badge
 │       └── tray.hpp/.cpp       # Shell_NotifyIconW system tray integration
 ├── tests\                      # Native unit test suite
-│   └── run_tests.cpp           # 186 unit tests covering all core modules
+│   └── run_tests.cpp           # 557 unit tests covering all core modules
 └── MVP_Emebalachat\            # Python MVP reference prototype
 ```
 
@@ -290,7 +290,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite verifying all 186 subsystem assertions:
+Emebala Chat includes a self-contained unit test suite verifying all 557 subsystem assertions:
 
 ```powershell
 .\build\run_tests.exe
@@ -320,7 +320,7 @@ Expected output:
 [RUN] Testing Universal i18n Localization...
 [PASS] Universal i18n Localization tests completed.
 ========================================
-Total Checks: 186
+Total Checks: 557
 Failures:     0
 ========================================
 >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<
