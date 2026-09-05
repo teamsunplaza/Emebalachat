@@ -70,6 +70,32 @@ enum class EngineType {
     LocalLlama      // Local GGUF model via llama.cpp (CUDA 13.3 / CPU fallback)
 };
 
+// R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam for
+// TranslationManager::Translate, unit-testable headlessly
+// (TestR6P4LanguageRouting). PRECONDITION: the local Hy-MT2 engine is ACTIVE
+// (model loaded) - engine availability itself stays in RefreshActiveEngine.
+// Given the request pair and the user's configuration, returns the engine that
+// will ACTUALLY serve the request:
+//   * engine_type GoogleTranslate            -> GoogleTranslate (deliberate pick).
+//   * LocalPairReliable(src, tgt)            -> LocalLlama (supported pair;
+//                                                explicit pins are honored).
+//   * unsupported pair, engine_type Auto     -> GoogleTranslate. Selecting
+//                                                Auto is the REQ-R02 consent to
+//                                                the documented cloud fallback,
+//                                                so google_consent does not gate
+//                                                this case (same rule as the
+//                                                post-inference Auto fallback).
+//   * unsupported pair, explicit LocalLlama  -> GoogleTranslate ONLY when the
+//                                                user granted cloud consent
+//                                                (google_consent); without it
+//                                                the pin is respected and the
+//                                                request stays local (caller
+//                                                logs a routing warning).
+EngineType PlanTranslationRouting(std::string_view src_code,
+                                  std::string_view tgt_code,
+                                  EngineType engine_type,
+                                  bool google_consent);
+
 class TranslationManager {
 public:
     explicit TranslationManager(

@@ -38,6 +38,23 @@ static_assert(kLlamaNCtx == 2048, "REQ-R01: n_ctx is 2048 (EnsureLoaded must con
 static_assert(kLlamaGenReserve == 512, "REQ-R01: generation reserve equals max_gen_tokens");
 static_assert(kLlamaPromptTokenBudget == kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin,
               "REQ-R01: prompt budget = n_ctx - gen reserve - safety margin");
+
+// R6 Phase 4 (B2, architect plan §4.2(b)): opt-in local-prompt observability.
+// The user-machine JA->ZH confirmation needs proof of the EXACT prompt sent to
+// Hy-MT2 (the 040 line only names the routed target). Launch Emebala_chat.exe
+// with EMEBALA_DEBUG_PROMPT=1 in the environment to log every built local
+// prompt (first 240 bytes) to stderr. Off by default: the prompt embeds user
+// text, so capture is strictly user-initiated and stays on local stderr.
+// Cached in a function-local static (thread-safe init since C++11): read once,
+// never races with SetEnvironmentVariable mid-run.
+bool DebugPromptEnabled() {
+    static const bool enabled = [] {
+        wchar_t buf[8] = {0};
+        const DWORD n = ::GetEnvironmentVariableW(L"EMEBALA_DEBUG_PROMPT", buf, 8);
+        return n > 0 && n < 8;
+    }();
+    return enabled;
+}
 static_assert(kLlamaPromptTokenBudget == 1520, "REQ-R01: prompt token budget is 1520");
 
 // Lower-case ASCII characters for case-insensitive path comparisons (Windows
@@ -315,9 +332,12 @@ struct TranslationManager::LlamaEngine {
         return true;
     }
 
+    // R6 Phase 4 (B2, plan §4.1 item 2): src_name is the resolved SOURCE token
+    // for the prompt hint (""/AUTO = no hint, historical behavior).
     std::wstring Translate(
         std::wstring_view text,
         std::string_view tgt_name,
+        std::string_view src_name,
         const std::string& path,
         float temperature = 0.7f,
         float top_p = 0.6f,
@@ -340,7 +360,7 @@ struct TranslationManager::LlamaEngine {
             if (u8.empty()) {
                 return {};
             }
-            std::string p = BuildPrompt(u8, tgt_name);
+            std::string p = BuildPrompt(u8, tgt_name, src_name);
             if (chat_tmpl) {
                 llama_chat_message msg{"user", p.c_str()};
                 int32_t needed = llama_chat_apply_template(chat_tmpl, &msg, 1, true, nullptr, 0);
@@ -351,6 +371,13 @@ struct TranslationManager::LlamaEngine {
                         p.assign(formatted.data(), written);
                     }
                 }
+            }
+            if (DebugPromptEnabled()) {
+                fprintf(stderr,
+                        "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
+                        static_cast<int>(tgt_name.size()), tgt_name.data(),
+                        static_cast<int>(src_name.size()), src_name.data(),
+                        p.size(), p.c_str());
             }
             return p;
         };
@@ -754,6 +781,33 @@ void TranslationManager::RefreshActiveEngine() {
     }
 }
 
+// R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam - the header
+// (src/engine.hpp) carries the full contract. No state, no I/O: the whole
+// (source x target x engine x consent) matrix is pinned headlessly by
+// TestR6P4LanguageRouting, so the shipped decision can never drift from the
+// tested one.
+EngineType PlanTranslationRouting(std::string_view src_code,
+                                  std::string_view tgt_code,
+                                  EngineType engine_type,
+                                  bool google_consent) {
+    if (engine_type == EngineType::GoogleTranslate) {
+        return EngineType::GoogleTranslate; // deliberate cloud pick always wins
+    }
+    if (LocalPairReliable(src_code, tgt_code)) {
+        return EngineType::LocalLlama; // supported pair: the pin is honored
+    }
+    // Unsupported pair for Hy-MT2 (user bug: JA -> ZH-CN degraded to English).
+    if (engine_type == EngineType::Auto) {
+        // REQ-R02 Auto contract: choosing auto IS the consent to the seamless
+        // cloud fallback, so google_consent does not gate this path (plan §4.1).
+        return EngineType::GoogleTranslate;
+    }
+    // Explicit LocalLlama pin + unsupported pair: route to cloud ONLY with the
+    // user's explicit cloud consent; without it the strict on-device semantics
+    // win and the request stays local (Translate logs the degradation warning).
+    return google_consent ? EngineType::GoogleTranslate : EngineType::LocalLlama;
+}
+
 // 3-arg compatibility form for existing callers (main.cpp tooltip/drag paths).
 // Discards the REQ-R02 status; callers that must react to failure use the
 // status-aware overload below.
@@ -801,14 +855,28 @@ std::wstring TranslationManager::Translate(
     std::string norm_tgt = NormalizeLanguageCode(tgt_code_or_name);
     const auto* pTgt = FindLanguageByCode(norm_tgt);
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
+    const std::string norm_src = NormalizeLanguageCode(src_code_or_name);
 
-    // R5 observability: log the routed target language so a "didn't translate
-    // to the switched target" can be attributed (engine routing vs upstream).
+    // R6 Phase 4 (B2, plan §4.1 item 3): pair routing, decided HERE (before the
+    // 040 line) so the observability log reports the engine that will ACTUALLY
+    // serve the request. Meaningful only while the local engine is active;
+    // model availability itself stays RefreshActiveEngine's job.
+    EngineType served_engine = active_type_;
+    if (active_type_ == EngineType::LocalLlama) {
+        served_engine = PlanTranslationRouting(src_code_or_name, tgt_code_or_name,
+                                               preferred_type_, cloud_fallback_enabled_);
+    }
+
+    // R5 observability (R6-p4: now also names the resolved source and reflects
+    // the pair-routing decision) so a "didn't translate to the switched target"
+    // can be attributed (engine routing vs upstream).
     fprintf(stderr,
-            "ENGINE/Translate/040: target routed (input=\"%.*s\" -> norm=%s name=%s, engine=%s)\n",
+            "ENGINE/Translate/040: target routed (src=\"%.*s\" -> norm=%s, input=\"%.*s\" -> norm=%s name=%s, engine=%s)\n",
+            static_cast<int>(src_code_or_name.size()), src_code_or_name.data(),
+            norm_src.c_str(),
             static_cast<int>(tgt_code_or_name.size()), tgt_code_or_name.data(),
             norm_tgt.c_str(), tgt_name.c_str(),
-            active_type_ == EngineType::LocalLlama ? "local" : "cloud");
+            served_engine == EngineType::LocalLlama ? "local" : "cloud");
 
     // Single cloud seam: records EngineFailed when the request itself produced
     // nothing (network error, 403, malformed response), Ok otherwise.
@@ -825,8 +893,28 @@ std::wstring TranslationManager::Translate(
             set_status(TranslationStatus::Canceled);
             return {};
         }
+        // R6 Phase 4 (B2, plan §4.1 item 3): unsupported pair policy BEFORE
+        // llama. An outside-the-reliable-set pair never wastes an inference
+        // that degrades to English output; under the Auto consent (or an
+        // explicit cloud fallback consent) it goes straight to Google.
+        if (served_engine != EngineType::LocalLlama) {
+            fprintf(stderr,
+                    "ENGINE/Translate/041: pair (%s -> %s) outside the Hy-MT2 reliable set; routed to cloud (engine_type=%s, cloud_consent=%d)\n",
+                    norm_src.c_str(), norm_tgt.c_str(),
+                    preferred_type_ == EngineType::Auto ? "auto" : "local",
+                    cloud_fallback_enabled_ ? 1 : 0);
+            return cloud_call();
+        }
+        if (preferred_type_ == EngineType::LocalLlama &&
+            !LocalPairReliable(src_code_or_name, tgt_code_or_name)) {
+            // Plan §4.1: explicit local pin + no cloud consent keeps the
+            // request on-device; warn that the output language may degrade.
+            fprintf(stderr,
+                    "ENGINE/Translate/042: pair (%s -> %s) outside the Hy-MT2 reliable set but strict-local pin without cloud consent; staying local (output may degrade)\n",
+                    norm_src.c_str(), norm_tgt.c_str());
+        }
         std::wstring res = llama_engine_->Translate(
-            text, tgt_name, model_path_,
+            text, tgt_name, src_code_or_name, model_path_,
             temperature_, top_p_, top_k_, repetition_penalty_
         );
         if (!res.empty()) {

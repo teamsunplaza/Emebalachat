@@ -136,9 +136,13 @@ void TestConfigModule() {
     TEST_CHECK(prompt_zh == "将以下文本翻译为Chinese，注意只需要输出翻译后的结果，不要额外解释：\n\n안녕하세요",
                "Prompt formatting matches specification (Chinese branch)");
 
+    // R6 Phase 4 (B2, plan §4.1 item 1): resolvable target tokens now inject
+    // the NATIVE name (简体中文), not the code/English name. The bare word
+    // "Chinese" above is NOT a table entry, so it keeps the historical raw
+    // injection (backward-compatibility pin).
     std::string prompt_zh_cn = BuildPrompt("Hello", "ZH-CN");
-    TEST_CHECK(prompt_zh_cn == "将以下文本翻译为ZH-CN，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
-               "Prompt formatting matches specification (ZH-CN branch)");
+    TEST_CHECK(prompt_zh_cn == "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
+               "Prompt formatting matches specification (ZH-CN branch injects native name)");
 
     // 5. JSON serialization & parsing roundtrip
     cfg.target_language = "Japanese";
@@ -2864,10 +2868,16 @@ void TestLanguageSwitchingMatrix() {
 
     // BuildPrompt target injection: the local LLM prompt must name the SWITCHED
     // target (this is what steers Hy-MT2 to emit Chinese vs English).
+    // R6 Phase 4 (B2) intended behavior change: the name injected for a
+    // resolvable token is the NATIVE form (plan §4.1 item 1). "Chinese
+    // Simplified" (name_en) in the instruction was the out-of-distribution form
+    // behind the JA->ZH-degrades-to-English bug; the prompt now carries 简体
+    // 中文 (name_native) instead.
     const std::string p_en = BuildPrompt("hello", "English");
     const std::string p_zh = BuildPrompt("hello", "Chinese Simplified");
     TEST_CHECK(p_en.find("English") != std::string::npos, "R5: BuildPrompt injects 'English' as target");
-    TEST_CHECK(p_zh.find("Chinese Simplified") != std::string::npos, "R5: BuildPrompt injects 'Chinese Simplified' as target");
+    TEST_CHECK(p_zh.find("简体中文") != std::string::npos, "R5/R6p4: BuildPrompt injects native '简体中文' for 'Chinese Simplified'");
+    TEST_CHECK(p_zh.find("Chinese Simplified") == std::string::npos, "R6p4: English target name must NOT appear in the local prompt");
     TEST_CHECK(p_en != p_zh, "R5: switching target changes the local prompt (not cached/static)");
 
     // ---- 6) Cycling across the whole target list must yield a translatable
@@ -2883,6 +2893,215 @@ void TestLanguageSwitchingMatrix() {
     }
 
     std::cout << "[PASS] R5 target-language switching matrix tests completed." << std::endl;
+}
+
+// ===========================================================================
+// R6 Phase 4 (B2, architect plan §4): language routing. Pins the three pure
+// seams headlessly:
+//   (1) BuildPrompt injects the NATIVE target name (简体中文, not "Chinese
+//       Simplified") and a native source hint only for a known non-AUTO source
+//       (AUTO/empty/unresolvable -> byte-identical historical prompt).
+//   (2) NormalizeLanguageCode / GoogleTranslate::MapLanguageCode round-trip
+//       over the full plan §4.2(b) matrix (no mapping gap for any pair).
+//   (3) LocalPairReliable + PlanTranslationRouting verdicts over sources
+//       (Auto/JA/KO/EN/ZH-CN/DE/ES/VI) x targets (EN/KO/ZH-CN/ZH-TW/JA/DE/ES/VI)
+//       x engines (Hy-MT2 local via Auto/LocalLlama pin, Google), including the
+//       exact user scenario JA -> ZH-CN.
+// ===========================================================================
+namespace {
+std::string R6P4Msg(const std::string& what, std::string_view src, std::string_view tgt) {
+    return "R6p4: " + what + " [" + std::string(src) + "->" + std::string(tgt) + "]";
+}
+
+const char* R6P4EngineName(EngineType e) {
+    switch (e) {
+        case EngineType::Auto: return "auto";
+        case EngineType::GoogleTranslate: return "google";
+        case EngineType::LocalLlama: return "local";
+    }
+    return "?";
+}
+} // namespace
+
+void TestR6P4LanguageRouting() {
+    std::cout << "[RUN] Testing R6 Phase 4 language routing (B2 prompt + pair matrix)..." << std::endl;
+
+    // ---- 1) Target native-name injection, plan §4.2(a) row 1. -------------
+    // The ZH-CN user bug: "将以下文本翻译为Chinese Simplified" (English name
+    // inside the Chinese instruction) is out-of-distribution for Hy-MT2 and
+    // degraded JA->ZH output to English. The seam now injects name_native.
+    TEST_CHECK(BuildPrompt("hello", "ZH-CN") ==
+                   "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+               "R6p4: ZH-CN target prompt carries native 简体中文 (exact form)");
+    TEST_CHECK(BuildPrompt("hello", "ZH-TW") ==
+                   "将以下文本翻译为繁體中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+               "R6p4: ZH-TW target prompt carries native 繁體中文 (exact form)");
+    TEST_CHECK(BuildPrompt("hello", "English") ==
+                   "Translate the following segment into English, without additional explanation.\n\nhello",
+               "R6p4: EN target instruction unchanged (native name == English)");
+
+    // Matrix targets (plan §4.2(b)): EN/KO/ZH-CN/ZH-TW/JA/DE/ES/VI.
+    struct R6P4Target { const char* code; const char* name_en; const char* name_native; };
+    const R6P4Target targets[] = {
+        { "EN",    "English",             "English" },
+        { "KO",    "Korean",              "한국어" },
+        { "ZH-CN", "Chinese Simplified",  "简体中文" },
+        { "ZH-TW", "Chinese Traditional", "繁體中文" },
+        { "JA",    "Japanese",            "日本語" },
+        { "DE",    "German",              "Deutsch" },
+        { "ES",    "Spanish",             "Español" },
+        { "VI",    "Vietnamese",          "Tiếng Việt" },
+    };
+    for (const auto& t : targets) {
+        const std::string by_code = BuildPrompt("hello", t.code);
+        const std::string by_name = BuildPrompt("hello", t.name_en);
+        TEST_CHECK(by_code.find(t.name_native) != std::string::npos,
+                   R6P4Msg(std::string("target prompt contains native '") + t.name_native + "'", "-", t.code));
+        TEST_CHECK(by_code == by_name,
+                   R6P4Msg("code-form and name-form prompts are identical", "-", t.code));
+        if (std::string(t.name_en) != std::string(t.name_native)) {
+            TEST_CHECK(by_code.find(t.name_en) == std::string::npos,
+                       R6P4Msg(std::string("English name '") + t.name_en + "' must NOT appear", "-", t.code));
+        }
+    }
+
+    // ---- 2) Source hint injection, plan §4.2(a) row 2. --------------------
+    // Known non-AUTO source -> native source name is named in the instruction.
+    TEST_CHECK(BuildPrompt("hello", "ZH-CN", "JA") ==
+                   "将以下日本語文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+               "R6p4: JA source + ZH target injects 日本語 source hint");
+    TEST_CHECK(BuildPrompt("hello", "English", "Japanese") ==
+                   "Translate the following 日本語 segment into English, without additional explanation.\n\nhello",
+               "R6p4: known source injects native source name into English branch");
+    // AUTO / empty / unresolvable source -> NO source token (backward compat:
+    // byte-identical to the historical two-argument prompts).
+    {
+        const std::string base = BuildPrompt("hello", "ZH-CN");
+        TEST_CHECK(BuildPrompt("hello", "ZH-CN", "AUTO") == base,
+                   "R6p4: AUTO source adds no token (code form, byte-identical)");
+        TEST_CHECK(BuildPrompt("hello", "ZH-CN", "Auto Detect") == base,
+                   "R6p4: 'Auto Detect' source adds no token (name form)");
+        TEST_CHECK(BuildPrompt("hello", "ZH-CN", "자동 감지") == base,
+                   "R6p4: native '자동 감지' source adds no token");
+        TEST_CHECK(BuildPrompt("hello", "ZH-CN", "") == base,
+                   "R6p4: empty source adds no token");
+        TEST_CHECK(BuildPrompt("hello", "ZH-CN", "Klingon") == base,
+                   "R6p4: unresolvable source adds no token (garbage cannot poison prompt)");
+        const std::string base_en = BuildPrompt("hello", "English");
+        TEST_CHECK(BuildPrompt("hello", "English", "AUTO") == base_en,
+                   "R6p4: AUTO source keeps the English branch byte-identical");
+    }
+
+    // ---- 3) EXACT user scenario: JA -> ZH-CN. -----------------------------
+    // The reported bug: source Japanese, target Chinese Simplified produced an
+    // English-flavored result. The prompt must now be Chinese-targeted with the
+    // native name AND the source named; it must NOT be an English-target prompt.
+    {
+        const std::string user_prompt = BuildPrompt("今日はいい天気ですね。", "Chinese Simplified", "Japanese");
+        TEST_CHECK(user_prompt.find("简体中文") != std::string::npos,
+                   "R6p4: user scenario JA->ZH-CN prompt contains 简体中文");
+        TEST_CHECK(user_prompt.find("日本語") != std::string::npos,
+                   "R6p4: user scenario prompt names the JA source");
+        TEST_CHECK(user_prompt.find("Chinese Simplified") == std::string::npos,
+                   "R6p4: user scenario prompt has no English target name");
+        TEST_CHECK(user_prompt.find("Translate") == std::string::npos,
+                   "R6p4: user scenario prompt is NOT the English-target instruction");
+        TEST_CHECK(user_prompt.rfind("今日はいい天気ですね。") == user_prompt.size() - std::string("今日はいい天気ですね。").size(),
+                   "R6p4: user scenario prompt ends with the source text");
+    }
+
+    // ---- 4) Code round-trip across the full matrix (plan §4.2(a) row 3). --
+    // Every matrix token must normalize to its canonical code and map to the
+    // exact Google BCP-47 form (proves no MapLanguageCode/Normalize gap for
+    // any pair, B2-H3 sweep).
+    struct R6P4Lang { const char* code; const char* name_en; const char* google; };
+    const R6P4Lang langs[] = {
+        { "AUTO",  "Auto Detect",         "auto" },
+        { "EN",    "English",             "en" },
+        { "KO",    "Korean",              "ko" },
+        { "ZH-CN", "Chinese Simplified",  "zh-CN" },
+        { "ZH-TW", "Chinese Traditional", "zh-TW" },
+        { "JA",    "Japanese",            "ja" },
+        { "DE",    "German",              "de" },
+        { "ES",    "Spanish",             "es" },
+        { "VI",    "Vietnamese",          "vi" },
+    };
+    for (const auto& l : langs) {
+        TEST_CHECK(NormalizeLanguageCode(l.code) == l.code, R6P4Msg("code normalizes to itself", l.code, "-"));
+        TEST_CHECK(NormalizeLanguageCode(l.name_en) == l.code, R6P4Msg("name_en normalizes to code", l.code, "-"));
+        TEST_CHECK(GoogleTranslate::MapLanguageCode(l.code) == l.google, R6P4Msg("google map of code", l.code, "-"));
+        TEST_CHECK(GoogleTranslate::MapLanguageCode(l.name_en) == l.google, R6P4Msg("google map of name_en", l.code, "-"));
+    }
+
+    // ---- 5) LocalPairReliable verdicts (plan §4.1 item 3 conservative set).
+    // Default supported set: every pair involving English (en<->*, auto->en).
+    // zh<->ja (the user bug pair) and other non-EN pairs are OUTSIDE the set
+    // pending VP confirmation (plan §9 open decision).
+    {
+        TEST_CHECK(LocalPairReliable("AUTO", "EN"),
+                   "R6p4: AUTO->EN (the user's working scenario) is reliable");
+        TEST_CHECK(LocalPairReliable("EN", "KO"), "R6p4: EN->KO reliable (source EN)");
+        TEST_CHECK(LocalPairReliable("KO", "EN"), "R6p4: KO->EN reliable (target EN)");
+        TEST_CHECK(LocalPairReliable("ja", "english"), "R6p4: verdicts are case/name-insensitive");
+        TEST_CHECK(!LocalPairReliable("JA", "ZH-CN"),
+                   "R6p4: the user bug pair JA->ZH-CN is NOT reliable locally");
+        TEST_CHECK(!LocalPairReliable("KO", "JA"), "R6p4: KO->JA not in conservative set");
+        TEST_CHECK(!LocalPairReliable("DE", "VI"), "R6p4: DE->VI not in conservative set");
+        TEST_CHECK(LocalPairReliable("ZH-CN", "EN"), "R6p4: ZH-CN->EN reliable (target EN)");
+        TEST_CHECK(!LocalPairReliable("KO", "AUTO"), "R6p4: AUTO target is never reliable");
+        TEST_CHECK(!LocalPairReliable("KO", "KO"), "R6p4: same-language pin (src==tgt) keeps EN-equality semantics");
+    }
+
+    // ---- 6) Full routing matrix: sources x targets x engines x consent. ---
+    // expected policy (architect plan §4.1 item 3, REQ-R02 consent model):
+    //   Google pin                    -> Google
+    //   reliable pair                 -> Local (user pin honored)
+    //   unreliable + Auto             -> Google (Auto selection IS the consent)
+    //   unreliable + Local pin        -> Google only WITH explicit cloud consent,
+    //                                    otherwise stays Local (strict on-device)
+    const char* sources[] = { "AUTO", "JA", "KO", "EN", "ZH-CN", "DE", "ES", "VI" };
+    for (const char* src : sources) {
+        for (const auto& t : targets) {
+            const bool reliable = LocalPairReliable(src, t.code);
+            const EngineType engines[] = { EngineType::Auto, EngineType::LocalLlama, EngineType::GoogleTranslate };
+            for (const EngineType eng : engines) {
+                for (const bool consent : { false, true }) {
+                    EngineType expected;
+                    if (eng == EngineType::GoogleTranslate) {
+                        expected = EngineType::GoogleTranslate;
+                    } else if (reliable) {
+                        expected = EngineType::LocalLlama;
+                    } else if (eng == EngineType::Auto) {
+                        expected = EngineType::GoogleTranslate;
+                    } else {
+                        expected = consent ? EngineType::GoogleTranslate : EngineType::LocalLlama;
+                    }
+                    const EngineType got = PlanTranslationRouting(src, t.code, eng, consent);
+                    TEST_CHECK(got == expected,
+                               (R6P4Msg(std::string("routing ") + R6P4EngineName(eng) +
+                                        " consent=" + (consent ? "1" : "0") +
+                                        " reliable=" + (reliable ? "1" : "0"),
+                                        src, t.code) +
+                                " (got " + R6P4EngineName(got) + ")").c_str());
+                }
+            }
+        }
+    }
+
+    // ---- 7) Pin the decisive user-scenario verdicts explicitly (readable   -
+    // regression anchor independent of the loop above).
+    TEST_CHECK(PlanTranslationRouting("JA", "ZH-CN", EngineType::Auto, false) == EngineType::GoogleTranslate,
+               "R6p4: JA->ZH-CN under Auto routes to Google even without extra consent (user bug fixed)");
+    TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::LocalLlama, true) == EngineType::GoogleTranslate,
+               "R6p4: JA->ZH-CN explicit-local WITH cloud consent routes to Google");
+    TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+               "R6p4: JA->ZH-CN explicit-local WITHOUT consent stays on device");
+    TEST_CHECK(PlanTranslationRouting("AUTO", "English", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+               "R6p4: AUTO->EN stays local under every pin (works today per user report)");
+    TEST_CHECK(PlanTranslationRouting("KO", "EN", EngineType::Auto, false) == EngineType::LocalLlama,
+               "R6p4: KO->EN stays local (reliable pair, offline capability preserved)");
+
+    std::cout << "[PASS] R6 Phase 4 language routing tests completed." << std::endl;
 }
 
 // ===========================================================================
@@ -3539,6 +3758,7 @@ int main() {
     TestB3LanguageSync();
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
+    TestR6P4LanguageRouting();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

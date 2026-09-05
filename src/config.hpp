@@ -79,8 +79,36 @@ LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
                                   std::string_view new_source,
                                   std::string_view new_target);
 
-// Formats translation prompt for Hy-MT2 model.
-std::string BuildPrompt(std::string_view source_text, std::string_view target_lang);
+// R6 Phase 4 (B2, architect plan §4.1 item 1+2): Formats translation prompt for
+// the Hy-MT2 model.
+//
+// target_lang / source_lang accept ANY form (ISO code, English name, or native
+// name). The language name INJECTED into the instruction is the native name
+// (LanguageInfo::name_native, e.g. 简体中文), NOT the English name: injecting
+// "Chinese Simplified" into the Chinese instruction put the prompt
+// out-of-distribution for non-EN targets (plan B2-H1: JA→ZH degraded to
+// English output). Unresolvable tokens (e.g. the bare word "Chinese", which is
+// not a table entry) are injected raw, preserving the historical behavior.
+//
+// source_lang (optional): when it resolves to a real language (non-AUTO), the
+// prompt names it (Chinese branch: 将以下日本語文本翻译为简体中文…; English
+// branch: "Translate the following 日本語 segment into …"). AUTO / empty /
+// unresolvable sources add NO source token, producing byte-identical prompts
+// to the historical behavior (plan §4.2 backward-compatibility requirement).
+std::string BuildPrompt(std::string_view source_text,
+                        std::string_view target_lang,
+                        std::string_view source_lang = {});
+
+// R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy default
+// list for the LOCAL Hy-MT2 engine. True only for pairs the model handles
+// reliably without degrading to English. Conservative default per the plan:
+// every pair involving English on either side (en↔*), which includes the
+// user-confirmed-working AUTO→EN case (English output is the model's strongest
+// behavior). zh↔ja was left open in the plan ("zh↔ja?") and Option A routes
+// JA→ZH to Google, so it is EXCLUDED pending VP/user confirmation. src/tgt
+// accept any form (code or name). AUTO is never a reliable TARGET. Pure
+// function: the whole pair matrix is unit-tested (TestR6P4LanguageRouting).
+bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code);
 
 // REQ-R11 (audit §4 M3): Directory containing the running executable
 // (GetModuleFileNameW → parent_path). Falls back to the current path only if

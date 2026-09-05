@@ -433,22 +433,98 @@ bool IsChineseLanguage(std::string_view lang) {
     }
     return false;
 }
+
+// R6 Phase 4 (B2, architect plan §4.1 item 1): resolve a language token (ISO
+// code / English name / native name) to the name form the Hy-MT2 instruction
+// carries. The plan pins name_native (e.g. 简体中文) instead of name_en: the
+// English name inside a localized instruction is out-of-distribution for the
+// model and degrades non-EN target pairs to English output (B2-H1(a)).
+// Unresolvable tokens are returned RAW with an empty out_code so historical
+// prompts (e.g. the bare word "Chinese") stay byte-identical.
+std::string PromptLanguageName(std::string_view token, std::string& out_code) {
+    if (const auto* info = FindLanguageByCode(token)) {
+        out_code = info->code;
+        return info->name_native;
+    }
+    if (const auto* info = FindLanguageByName(token)) {
+        out_code = info->code;
+        return info->name_native;
+    }
+    out_code.clear();
+    return std::string(token);
+}
 } // namespace
 
-std::string BuildPrompt(std::string_view source_text, std::string_view target_lang) {
-    if (IsChineseLanguage(target_lang)) {
-        std::string prompt = "将以下文本翻译为";
-        prompt.append(target_lang);
+std::string BuildPrompt(std::string_view source_text,
+                        std::string_view target_lang,
+                        std::string_view source_lang) {
+    std::string tgt_code;
+    std::string tgt_name = PromptLanguageName(target_lang, tgt_code);
+    if (tgt_code == "AUTO") {
+        // AUTO is never a translation target; keep the historical raw
+        // injection for this degenerate input instead of the native "자동 감지".
+        tgt_code.clear();
+        tgt_name = std::string(target_lang);
+    }
+
+    // R6 Phase 4 (B2-H2, plan §4.1 item 2): explicit source hint ONLY when the
+    // token resolves to a real (non-AUTO) language. Empty / AUTO / unresolvable
+    // sources add no token, so the AUTO prompt stays byte-identical to the
+    // historical form (plan §4.2 backward-compatibility requirement).
+    std::string src_code;
+    std::string src_name;
+    if (!source_lang.empty()) {
+        src_name = PromptLanguageName(source_lang, src_code);
+        if (src_code.empty() || src_code == "AUTO") {
+            src_name.clear();
+        }
+    }
+
+    // Chinese-target instruction branch: canonical codes when the token
+    // resolved, else the legacy raw-token sniff keeps historical forms (e.g.
+    // BuildPrompt(text, "Chinese") -> untranslated "Chinese" injection).
+    const bool zh_instruction =
+        (tgt_code == "ZH-CN" || tgt_code == "ZH-TW") ||
+        (tgt_code.empty() && IsChineseLanguage(tgt_name));
+
+    if (zh_instruction) {
+        // Plan §4.1 template: 将以下[<source>文本]翻译为<target-native>，…
+        std::string prompt = "将以下";
+        if (!src_name.empty()) {
+            prompt.append(src_name);
+        }
+        prompt.append("文本翻译为");
+        prompt.append(tgt_name);
         prompt.append("，注意只需要输出翻译后的结果，不要额外解释：\n\n");
         prompt.append(source_text);
         return prompt;
     }
 
-    std::string prompt = "Translate the following segment into ";
-    prompt.append(target_lang);
+    std::string prompt = "Translate the following ";
+    if (!src_name.empty()) {
+        prompt.append(src_name);
+        prompt.push_back(' ');
+    }
+    prompt.append("segment into ");
+    prompt.append(tgt_name);
     prompt.append(", without additional explanation.\n\n");
     prompt.append(source_text);
     return prompt;
+}
+
+// R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
+// LOCAL Hy-MT2 engine (see config.hpp doc). Conservative default: English on
+// either side, which includes the user-confirmed-working AUTO -> EN case.
+// zh<->ja and every other non-EN pair are EXCLUDED pending VP/user
+// confirmation (plan §9 open decision); TranslationManager routes those to
+// Google per PlanTranslationRouting (src/engine.hpp).
+bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
+    const std::string src = NormalizeLanguageCode(src_code);
+    const std::string tgt = NormalizeLanguageCode(tgt_code);
+    if (tgt.empty() || tgt == "AUTO") {
+        return false; // auto-detect is never a translation target
+    }
+    return tgt == "EN" || src == "EN";
 }
 
 namespace {
