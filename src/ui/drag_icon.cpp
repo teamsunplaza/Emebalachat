@@ -37,7 +37,7 @@ bool DragIconWindow::Create(HINSTANCE hInstance) {
     hwnd_ = ::CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kDragIconClassName,
-        L"Emebalachat Drag Icon",
+        L"Emebala Chat Drag Icon",
         WS_POPUP,
         -100, -100, kSize, kSize,
         nullptr, nullptr, hInstance_, this

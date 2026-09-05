@@ -1,6 +1,6 @@
 [![Gumroad Sponsor](https://img.shields.io/badge/Gumroad-Sponsor-FF90A0?style=for-the-badge&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
 
-# Emebalachat — Ultra-Fast Native Real-Time Translation for Windows
+# Emebala Chat — Ultra-Fast Native Real-Time Translation for Windows
 
 [![Release](https://img.shields.io/badge/Release-v0.10.0-blue.svg?style=flat-square)](https://github.com/teamsunplaza/Emebalachat/releases)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Gumroad-FF90A0.svg?style=flat-square&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
@@ -10,7 +10,7 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-b6099-orange.svg?style=flat-square)](https://github.com/ggerganov/llama.cpp)
 [![Rendering](https://img.shields.io/badge/GUI-Direct2D%20%2F%20DirectWrite-purple.svg?style=flat-square)](#floating-pill-badge-ui)
 
-> ### **"Never copy-paste again. Type in your language, and let Emebalachat translate and replace your text in real-time anywhere."**
+> ### **"Never copy-paste again. Type in your language, and let Emebala Chat translate and replace your text in real-time anywhere."**
 >
 > **Type in your language. It replaces your text with the translation in real-time.**  
 > *No more copy-paste context switching (복붙 없는 번역).*
@@ -23,7 +23,7 @@
 
 ---
 
-**Emebalachat** (에메발라챗) is an ultra-fast, zero-latency native Windows translation tool engineered in pure modern C++20 and Win32 APIs. It seamlessly intercepts input text across any Windows application (Discord, Slack, KakaoTalk, browsers, terminal, IDEs, games), translates it instantly via local LLM or cloud fallback, and places the translated text into the active input field with zero clipboard pollution.
+**Emebala Chat** (에메발라챗) is an ultra-fast, zero-latency native Windows translation tool engineered in pure modern C++20 and Win32 APIs. It seamlessly intercepts input text across any Windows application (Discord, Slack, KakaoTalk, browsers, terminal, IDEs, games), translates it instantly via local LLM or cloud fallback, and places the translated text into the active input field with zero clipboard pollution.
 
 ---
 
@@ -57,7 +57,7 @@
 
 Traditional desktop translation utilities suffer from clunky Electron wrappers, slow response times (> 500ms), privacy leaks into Windows Clipboard History (`Win+V`), or awkward copy-paste manual workflows.
 
-**Emebalachat** eliminates all of these pain points:
+**Emebala Chat** eliminates all of these pain points:
 - **Instantaneous Native Performance**: Built in pure C++20 with MSVC static runtime (`/MT`), linking directly against Win32, Direct2D, DirectWrite, and WinHTTP.
 - **Dual-Engine Flexibility**:
   - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's state-of-the-art **Hy-MT2-1.8B** (Q8_0 quantized model). Utilizes full 33-layer GPU acceleration (CUDA sm_75+) with sub-100ms cached inference, falling back seamlessly to CPU multi-threading if GPU is unavailable.
@@ -78,7 +78,7 @@ flowchart TB
         CLIP[Windows System Clipboard]
     end
 
-    subgraph Core_Pipeline ["Emebalachat C++20 Pipeline Worker"]
+    subgraph Core_Pipeline ["Emebala Chat C++20 Pipeline Worker"]
         FILTER{"Synthetic Event?\n(dwExtraInfo == 0x1337BEEF)"}
         DISPATCH{"Alt / Win Pressed\nor Disabled?"}
         TASK[Pipeline Task Queue & Worker Thread]
@@ -135,7 +135,7 @@ flowchart TB
 
 ### 1. Zero-Latency Keyboard Hook & Anti-Reentrancy
 - Installs an asynchronous low-level keyboard hook (`WH_KEYBOARD_LL`) running on a dedicated message-pump thread.
-- **Re-entrancy Protection**: All synthetic key events emitted by Emebalachat embed a per-process randomized signature marker `EXTRA_INFO_MARKER` (chosen at startup from QPC + PID + ASLR entropy, never a compile-time constant) into `KBDLLHOOKSTRUCT::dwExtraInfo`. The hook instantly ignores all flagged synthetic events, preventing recursive keystroke loops, while third-party processes cannot predict the value to spoof bypassed input.
+- **Re-entrancy Protection**: All synthetic key events emitted by Emebala Chat embed a per-process randomized signature marker `EXTRA_INFO_MARKER` (chosen at startup from QPC + PID + ASLR entropy, never a compile-time constant) into `KBDLLHOOKSTRUCT::dwExtraInfo`. The hook instantly ignores all flagged synthetic events, preventing recursive keystroke loops, while third-party processes cannot predict the value to spoof bypassed input.
 - **IME Composition Flushing**: Simulates a synthetic right-arrow advance before selection to force Windows CJK/Korean IME composition buffers into committed strings.
 - **Pass-through Safety**: Transparently lets <kbd>Alt</kbd>+<kbd>Enter</kbd> (Excel newline / full screen) and <kbd>Win</kbd> combinations pass through unhindered.
 
@@ -165,7 +165,7 @@ flowchart TB
 
 ### 4. Zero-Leak Clipboard Safety & Privacy
 - Standard translation tools overwrite the user's clipboard and expose sensitive text to Windows 10/11 Clipboard History.
-- Emebalachat implements comprehensive privacy protections:
+- Emebala Chat implements comprehensive privacy protections:
   - Registers Windows Clipboard Monitor exclusion format tags:
     - `ExcludeClipboardContentFromMonitorProcessing`
     - `CanIncludeInClipboardHistory` (explicitly set to 0)
@@ -181,7 +181,7 @@ Avoids wasting compute or generating corrupted translations on non-translatable 
 
 ### 6. Supported Languages (38 Languages)
 
-Emebalachat supports full bidirectional translation across **38 language entries** with full native and localized name recognition:
+Emebala Chat supports full bidirectional translation across **38 language entries** with full native and localized name recognition:
 
 | Code | English Name | Native Name | Code | English Name | Native Name |
 |:----:|:-------------|:------------|:----:|:-------------|:------------|
@@ -290,7 +290,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebalachat includes a self-contained unit test suite verifying all 186 subsystem assertions:
+Emebala Chat includes a self-contained unit test suite verifying all 186 subsystem assertions:
 
 ```powershell
 .\build\run_tests.exe
@@ -330,7 +330,7 @@ Failures:     0
 
 ## 📦 Installer Generation (Inno Setup)
 
-To package Emebalachat into a single, self-extracting Windows installer:
+To package Emebala Chat into a single, self-extracting Windows installer:
 
 1. Download and install [Inno Setup 6.1+](https://jrsoftware.org/isinfo.php).
 2. Ensure `build\Emebalachat.exe` has been compiled.
@@ -355,7 +355,7 @@ The installer offers:
 
 ## ⚙ Configuration Reference (`config.json`)
 
-On first launch, Emebalachat generates `config.json` next to the executable. An example template is provided in `config.example.json`:
+On first launch, Emebala Chat generates `config.json` next to the executable. An example template is provided in `config.example.json`:
 
 ```json
 {
@@ -389,7 +389,7 @@ On first launch, Emebalachat generates `config.json` next to the executable. An 
 
 ## 🔒 Security & Privacy Guarantee
 
-- **No Remote Telemetry**: Emebalachat contains zero tracking, zero telemetry, and zero third-party analytics.
+- **No Remote Telemetry**: Emebala Chat contains zero tracking, zero telemetry, and zero third-party analytics.
 - **Offline Capable**: In `local` engine mode with `Hy-MT2-1.8B`, all translation runs strictly offline on your local CPU/GPU. No text leaves your machine.
 - **Clipboard Isolation**: Temporary text placed on the clipboard is explicitly flagged with Windows privacy exclusions (`CanIncludeInClipboardHistory = 0`), preventing your sensitive messages from appearing in Windows Cloud Clipboard or <kbd>Win</kbd>+<kbd>V</kbd> history.
 
@@ -397,7 +397,7 @@ On first launch, Emebalachat generates `config.json` next to the executable. An 
 
 ## 💖 Support & Sponsorship
 
-If **Emebalachat** enhances your daily workflow, saves you from manual copy-pasting, or helps you communicate seamlessly across languages, consider supporting ongoing development:
+If **Emebala Chat** enhances your daily workflow, saves you from manual copy-pasting, or helps you communicate seamlessly across languages, consider supporting ongoing development:
 
 [![Gumroad Sponsor](https://img.shields.io/badge/Gumroad-Sponsor%20Emebala-FF90A0?style=for-the-badge&logo=gumroad&logoColor=white)](https://teamsunplaza.gumroad.com/l/emebala)
 

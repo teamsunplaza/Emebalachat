@@ -36,10 +36,14 @@ enum class StringId {
     MenuStartWithWindows,
     MenuCheatSheet,
     MenuExit,
+    MenuAbout,
 
     // Cheat Sheet Dialog
     CheatSheetTitle,
     CheatSheetBody,
+
+    // About Window
+    AboutTitle,
 
     // Badge Status Words
     BadgeActive,

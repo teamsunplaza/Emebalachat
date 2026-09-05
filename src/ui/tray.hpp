@@ -21,6 +21,7 @@ public:
         std::function<void()> on_toggle_badge;
         std::function<void()> on_toggle_start_with_windows;
         std::function<void()> on_show_cheat_sheet;
+        std::function<void()> on_show_about; // Opens the About window (wired in main.cpp)
         std::function<void()> on_exit;
     };
 

@@ -13,6 +13,9 @@ namespace {
 UiLocale s_current_locale = UiLocale::English;
 
 const wchar_t kRunRegistryKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+// Compat token: intentionally NOT rebranded to "Emebala Chat". Installed 0.9.x
+// builds wrote this exact value name under HKCU\...\Run; renaming it would
+// orphan (duplicate) existing auto-start entries on upgrade. Not user-visible.
 const wchar_t kRunValueName[] = L"Emebalachat";
 
 struct LocalizedStrings {
@@ -30,9 +33,11 @@ struct LocalizedStrings {
     const wchar_t* menu_start_with_windows;
     const wchar_t* menu_cheatsheet;
     const wchar_t* menu_exit;
+    const wchar_t* menu_about;
 
     const wchar_t* cheatsheet_title;
     const wchar_t* cheatsheet_body;
+    const wchar_t* about_title;
 
     const wchar_t* badge_active;
     const wchar_t* badge_translating;
@@ -57,10 +62,11 @@ const LocalizedStrings kStringsKorean = {
     L"화면 플로팅 뱃지 표시",
     L"Windows 시작 시 자동 실행",
     L"단축키 안내 및 사용법 (도움말)...",
-    L"Emebalachat 종료",
+    L"Emebala Chat 종료",
+    L"Emebala Chat 소개…",
 
-    L"Emebalachat 단축키 및 사용 안내",
-    L"Emebalachat 단축키 및 간편 사용법:\n\n"
+    L"Emebala Chat 단축키 및 사용 안내",
+    L"Emebala Chat 단축키 및 간편 사용법:\n\n"
     L"  • F9 : 활성화 / 일시 정지 토글 (마우스 클릭으로도 가능)\n"
     L"  • Ctrl + F9 : 도착어(번역 대상 언어) 순환 변경\n"
     L"  • Ctrl + Shift + Enter : 자동 전송 모드 토글\n"
@@ -72,12 +78,13 @@ const LocalizedStrings kStringsKorean = {
     L"동작 모드:\n"
     L"  • 일반 모드 (자동 전송 꺼짐): 번역문으로 문장을 치환 후 확인하고 엔터 전송.\n"
     L"  • 자동 전송 모드 (자동 전송 켜짐): 번역문으로 치환 후 즉시 자동 전송.",
+    L"Emebala Chat 소개",
 
     L"활성",
     L"번역 중...",
     L"일시 정지",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"자동 감지"
 };
 
@@ -96,10 +103,11 @@ const LocalizedStrings kStringsJapanese = {
     L"フローティングバッジを表示",
     L"Windows 起動時に自動実行",
     L"ショートカット案内とヘルプ...",
-    L"Emebalachat を終了",
+    L"Emebala Chat を終了",
+    L"Emebala Chat について…",
 
-    L"Emebalachat ショートカットと使用案内",
-    L"Emebalachat ショートカットと使用案内:\n\n"
+    L"Emebala Chat ショートカットと使用案内",
+    L"Emebala Chat ショートカットと使用案内:\n\n"
     L"  • F9 : 有効 / 一時停止の切り替え\n"
     L"  • Ctrl + F9 : 翻訳先言語を切り替える\n"
     L"  • Ctrl + Shift + Enter : 自動送信モードの切り替え\n"
@@ -111,12 +119,13 @@ const LocalizedStrings kStringsJapanese = {
     L"動作モード:\n"
     L"  • 置換のみ (自動送信OFF): 入力行を翻訳文に置き換え、確認後にEnterで送信できます。\n"
     L"  • 自動送信 (自動送信ON): 翻訳文に置き換えた直後、自動的にEnterを送信します。",
+    L"Emebala Chat について",
 
     L"有効",
     L"翻訳中...",
     L"一時停止",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"自動検出"
 };
 
@@ -135,10 +144,11 @@ const LocalizedStrings kStringsChineseSimp = {
     L"显示桌面悬浮徽章",
     L"开机自动启动 (Start with Windows)",
     L"快捷键与使用说明 (帮助)...",
-    L"退出 Emebalachat",
+    L"退出 Emebala Chat",
+    L"关于 Emebala Chat…",
 
-    L"Emebalachat 快捷键与使用说明",
-    L"Emebalachat 快捷键与使用说明:\n\n"
+    L"Emebala Chat 快捷键与使用说明",
+    L"Emebala Chat 快捷键与使用说明:\n\n"
     L"  • F9 : 启用 / 暂停 切换 (或点击悬浮徽章)\n"
     L"  • Ctrl + F9 : 循环切换目标语言\n"
     L"  • Ctrl + Shift + Enter : 切换自动发送模式\n"
@@ -150,12 +160,13 @@ const LocalizedStrings kStringsChineseSimp = {
     L"工作模式:\n"
     L"  • 仅替换模式 (自动发送关闭): 替换为译文并保留光标，方便发送前检查。\n"
     L"  • 自动发送模式 (自动发送开启): 替换为译文后自动模拟按下 Enter 发送。",
+    L"关于 Emebala Chat",
 
     L"运行中",
     L"翻译中...",
     L"已暂停",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"自动检测"
 };
 
@@ -174,10 +185,11 @@ const LocalizedStrings kStringsChineseTrad = {
     L"顯示桌面懸浮徽章",
     L"開機時自動啟動",
     L"快捷鍵與使用說明 (說明)...",
-    L"結束 Emebalachat",
+    L"結束 Emebala Chat",
+    L"關於 Emebala Chat…",
 
-    L"Emebalachat 快捷鍵與使用說明",
-    L"Emebalachat 快捷鍵與使用說明:\n\n"
+    L"Emebala Chat 快捷鍵與使用說明",
+    L"Emebala Chat 快捷鍵與使用說明:\n\n"
     L"  • F9 : 啟用 / 暫停 切換\n"
     L"  • Ctrl + F9 : 循環切換目標語言\n"
     L"  • Ctrl + Shift + Enter : 切換自動發送模式\n"
@@ -189,12 +201,13 @@ const LocalizedStrings kStringsChineseTrad = {
     L"工作模式:\n"
     L"  • 僅替換模式 (自動發送關閉): 替換為譯文供確認後發送。\n"
     L"  • 自動發送模式 (自動發送開啟): 替換為譯文後自動發送。",
+    L"關於 Emebala Chat",
 
     L"運行中",
     L"翻譯中...",
     L"已暫停",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"自動檢測"
 };
 
@@ -213,10 +226,11 @@ const LocalizedStrings kStringsVietnamese = {
     L"Hiển thị huy hiệu nổi",
     L"Khởi động cùng Windows",
     L"Hướng dẫn phím tắt (Trợ giúp)...",
-    L"Thoát Emebalachat",
+    L"Thoát Emebala Chat",
+    L"Giới thiệu Emebala Chat…",
 
-    L"Hướng dẫn sử dụng Emebalachat",
-    L"Phím tắt & Hướng dẫn sử dụng Emebalachat:\n\n"
+    L"Hướng dẫn sử dụng Emebala Chat",
+    L"Phím tắt & Hướng dẫn sử dụng Emebala Chat:\n\n"
     L"  • F9 : Bật / Tạm dừng dịch\n"
     L"  • Ctrl + F9 : Đổi ngôn ngữ đích kế tiếp\n"
     L"  • Ctrl + Shift + Enter : Bật/Tắt chế độ tự động gửi\n"
@@ -228,12 +242,13 @@ const LocalizedStrings kStringsVietnamese = {
     L"Chế độ:\n"
     L"  • Chỉ thay thế (Tắt tự động gửi): Thay văn bản dịch để bạn kiểm tra trước khi gửi.\n"
     L"  • Tự động gửi (Bật tự động gửi): Tự động nhấn Enter gửi tin nhắn sau khi dịch.",
+    L"Giới thiệu Emebala Chat",
 
     L"Đang bật",
     L"Đang dịch...",
     L"Tạm dừng",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"Tự động phát hiện"
 };
 
@@ -252,10 +267,11 @@ const LocalizedStrings kStringsSpanish = {
     L"Mostrar insignia flotante",
     L"Iniciar con Windows",
     L"Guía de atajos de teclado...",
-    L"Salir de Emebalachat",
+    L"Salir de Emebala Chat",
+    L"Acerca de Emebala Chat…",
 
-    L"Guía de atajos de Emebalachat",
-    L"Guía de uso y atajos de Emebalachat:\n\n"
+    L"Guía de atajos de Emebala Chat",
+    L"Guía de uso y atajos de Emebala Chat:\n\n"
     L"  • F9 : Activar / Pausar\n"
     L"  • Ctrl + F9 : Cambiar idioma de destino\n"
     L"  • Ctrl + Shift + Enter : Alternar envío automático\n"
@@ -264,12 +280,13 @@ const LocalizedStrings kStringsSpanish = {
     L"  • Clic izquierdo : Activar / Pausar\n"
     L"  • Doble clic : Intercambiar origen ⇄ destino\n"
     L"  • Clic derecho : Abrir menú de opciones",
+    L"Acerca de Emebala Chat",
 
     L"Activo",
     L"Traduciendo...",
     L"Pausado",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"Detectar automáticamente"
 };
 
@@ -288,10 +305,11 @@ const LocalizedStrings kStringsEnglish = {
     L"Floating Badge Visible",
     L"Start with Windows",
     L"Hotkey Cheat Sheet & Help...",
-    L"Exit Emebalachat",
+    L"Exit Emebala Chat",
+    L"About Emebala Chat…",
 
-    L"Emebalachat Hotkeys & Usage Guide",
-    L"Emebalachat Hotkeys & Usage Guide:\n\n"
+    L"Emebala Chat Hotkeys & Usage Guide",
+    L"Emebala Chat Hotkeys & Usage Guide:\n\n"
     L"  • F9 : Toggle Active / Paused\n"
     L"  • Ctrl + F9 : Cycle Target Language\n"
     L"  • Ctrl + Shift + Enter : Toggle Auto-Send Mode\n"
@@ -303,12 +321,13 @@ const LocalizedStrings kStringsEnglish = {
     L"Translation Modes:\n"
     L"  • Replace-Only (Auto-Send OFF): Replaces line with translation for review.\n"
     L"  • Auto-Send (Auto-Send ON): Replaces line and immediately presses Enter.",
+    L"About Emebala Chat",
 
     L"Active",
     L"Translating...",
     L"Paused",
 
-    L"Emebalachat",
+    L"Emebala Chat",
     L"Auto Detect"
 };
 
@@ -384,9 +403,11 @@ std::wstring I18n::Get(StringId id) {
         case StringId::MenuStartWithWindows: return s.menu_start_with_windows;
         case StringId::MenuCheatSheet: return s.menu_cheatsheet;
         case StringId::MenuExit: return s.menu_exit;
+        case StringId::MenuAbout: return s.menu_about;
 
         case StringId::CheatSheetTitle: return s.cheatsheet_title;
         case StringId::CheatSheetBody: return s.cheatsheet_body;
+        case StringId::AboutTitle: return s.about_title;
 
         case StringId::BadgeActive: return s.badge_active;
         case StringId::BadgeTranslating: return s.badge_translating;

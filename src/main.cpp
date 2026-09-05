@@ -179,8 +179,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
         ::MessageBoxW(
             nullptr,
-            L"Emebalachat is already running in the background.\nCheck the system notification tray.",
-            L"Emebalachat",
+            L"Emebala Chat is already running in the background.\nCheck the system notification tray.",
+            L"Emebala Chat",
             MB_OK | MB_ICONINFORMATION
         );
         if (hMutex) {
@@ -205,7 +205,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         ::MessageBoxW(
             nullptr,
             L"COM initialization failed.\nThe floating badge and text-to-speech will be unavailable,\nbut translation, hotkeys, tray and sounds still work.",
-            L"Emebalachat",
+            L"Emebala Chat",
             MB_OK | MB_ICONWARNING
         );
     }
@@ -267,7 +267,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     HWND hController = ::CreateWindowExW(
         0,
         emebalachat::kControllerClassName,
-        L"Emebalachat Controller",
+        L"Emebala Chat Controller",
         0, 0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInstance, nullptr
     );
@@ -294,7 +294,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         HWND hPower = ::CreateWindowExW(
             WS_EX_TOOLWINDOW,
             emebalachat::kPowerSinkClassName,
-            L"Emebalachat Power Sink",
+            L"Emebala Chat Power Sink",
             WS_POPUP,
             -1000, -1000, 0, 0,
             nullptr, nullptr, hInstance, nullptr

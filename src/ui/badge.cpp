@@ -76,7 +76,7 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
     hwnd_ = ::CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kWindowClassName,
-        L"Emebalachat Badge",
+        L"Emebala Chat Badge",
         WS_POPUP,
         posX, posY, PhysW(), PhysH(),
         nullptr, nullptr, hInstance_, this

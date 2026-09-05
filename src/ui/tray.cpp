@@ -22,6 +22,7 @@ enum TrayMenuId : UINT {
     ID_TRAY_BADGE = 2050,
     ID_TRAY_START_WITH_WINDOWS = 2055,
     ID_TRAY_CHEATSHEET = 2060,
+    ID_TRAY_ABOUT = 2065,
     ID_TRAY_EXIT = 2070,
     ID_TRAY_SRC_BASE = 2100, // 2100..2137
     ID_TRAY_TGT_BASE = 2200  // 2200..2236
@@ -188,7 +189,7 @@ bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callb
     nid_.uCallbackMessage = WM_TRAYICON;
     nid_.hIcon = hCurrentIcon_;
 
-    std::wstring tip = L"Emebalachat (Active) - KO -> EN";
+    std::wstring tip = L"Emebala Chat (Active) - KO -> EN";
     wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
 
     return ::Shell_NotifyIconW(NIM_ADD, &nid_) == TRUE;
@@ -290,7 +291,8 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_STRING | (startWithWin ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_START_WITH_WINDOWS, I18n::Get(StringId::MenuStartWithWindows).c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 8. Cheat Sheet and Exit
+    // 8. About, Cheat Sheet and Exit
+    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, I18n::Get(StringId::MenuAbout).c_str());
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_CHEATSHEET, I18n::Get(StringId::MenuCheatSheet).c_str());
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, I18n::Get(StringId::MenuExit).c_str());
 
@@ -323,6 +325,8 @@ void SystemTray::ShowContextMenu() {
         }
     } else if (cmd == ID_TRAY_CHEATSHEET && callbacks_.on_show_cheat_sheet) {
         callbacks_.on_show_cheat_sheet();
+    } else if (cmd == ID_TRAY_ABOUT && callbacks_.on_show_about) {
+        callbacks_.on_show_about();
     } else if (cmd == ID_TRAY_EXIT && callbacks_.on_exit) {
         callbacks_.on_exit();
     } else if (cmd >= ID_TRAY_SRC_BASE && cmd < ID_TRAY_SRC_BASE + allLangs.size()) {

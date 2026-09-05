@@ -1,6 +1,6 @@
-# Emebalachat Installer
+# Emebala Chat Installer
 
-This directory contains the Inno Setup script and assets for building the Emebalachat Windows installer.
+This directory contains the Inno Setup script and assets for building the Emebala Chat Windows installer.
 
 ## Prerequisites
 

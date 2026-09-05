@@ -15,7 +15,9 @@
 ; ------------------------------------------------------------------------
 [Setup]
 AppId={{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}
-AppName=Emebalachat
+; Display name rebranded; DefaultDirName/DefaultGroupName intentionally keep
+; "Emebalachat" for upgrade-path continuity with existing installs (architect plan row #18).
+AppName=Emebala Chat
 AppVersion=0.10.0
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
@@ -54,8 +56,8 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 ; [CustomMessages] - Localized strings for download and disk space logic
 ; ------------------------------------------------------------------------
 [CustomMessages]
-english.TaskAutoStart=Launch Emebalachat automatically when Windows starts
-korean.TaskAutoStart=Windows 시작 시 Emebalachat 자동 실행
+english.TaskAutoStart=Launch Emebala Chat automatically when Windows starts
+korean.TaskAutoStart=Windows 시작 시 Emebala Chat 자동 실행
 
 english.TaskDesktopIcon=Create a desktop shortcut
 korean.TaskDesktopIcon=바탕화면에 바로가기 만들기
@@ -99,9 +101,9 @@ Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoe
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
 [Icons]
-Name: "{group}\Emebalachat"; Filename: "{app}\Emebalachat.exe"
+Name: "{group}\Emebala Chat"; Filename: "{app}\Emebalachat.exe"
 Name: "{group}\Uninstall"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Emebalachat"; Filename: "{app}\Emebalachat.exe"; Tasks: desktopicon
+Name: "{autodesktop}\Emebala Chat"; Filename: "{app}\Emebalachat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
 ; [Registry] - Auto-start entry (only if autostart task selected)
@@ -120,7 +122,7 @@ Type: files; Name: "{app}\config.json"
 ; [Run] - Post-install launch option
 ; ------------------------------------------------------------------------
 [Run]
-Filename: "{app}\Emebalachat.exe"; Description: "{cm:LaunchProgram,Emebalachat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Emebalachat.exe"; Description: "{cm:LaunchProgram,Emebala Chat}"; Flags: nowait postinstall skipifsilent
 
 ; ========================================================================
 ; [Code] - Pascal Script for custom installer logic
