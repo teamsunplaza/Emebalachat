@@ -2383,6 +2383,37 @@ void TestBatch2VersionScrollAbout() {
     const UINT adpi = emebalachat::ui::WindowDpi(about.GetHwnd());
     TEST_CHECK(aw == emebalachat::ui::ScaleDipsToPixels(440, adpi),
                "REQ-005/R15: About width 440 DIP scales to the monitor DPI");
+
+    // D1 (debug report T3): WM_DPICHANGED handler smoke. No real DPI change
+    // is injectable here, so the message is sent directly to the GUI-thread
+    // WndProc (same-thread synchronous, matching REQ-R10 affinity). Pins the
+    // observable contract: handler consumes the message, repositions to the
+    // suggested rect origin, and keeps the physical window extents equal to
+    // the DIP layout scaled by the window's live DPI - i.e. the DIB and the
+    // window stay 1:1 so the layered blit is never rescaled (the blur). The
+    // tooltip carries the identical handler; one smoke pins the pattern.
+    {
+        RECT cur = {};
+        ::GetWindowRect(about.GetHwnd(), &cur);
+        RECT suggested = { cur.left + 3, cur.top + 5,
+                           cur.right + 3, cur.bottom + 5 };
+        const UINT cur_dpi = emebalachat::ui::WindowDpi(about.GetHwnd());
+        const LRESULT d1_ret = ::SendMessageW(
+            about.GetHwnd(), WM_DPICHANGED, MAKEWPARAM(cur_dpi, cur_dpi),
+            reinterpret_cast<LPARAM>(&suggested));
+        TEST_CHECK(d1_ret == 0, "D1: About WndProc consumes WM_DPICHANGED");
+        RECT after = {};
+        ::GetWindowRect(about.GetHwnd(), &after);
+        TEST_CHECK(after.left == suggested.left && after.top == suggested.top,
+                   "D1: About repositions to the suggested rect origin");
+        TEST_CHECK(after.right - after.left ==
+                       emebalachat::ui::ScaleDipsToPixels(440, cur_dpi) &&
+                       after.bottom - after.top ==
+                       emebalachat::ui::ScaleDipsToPixels(560, cur_dpi),
+                   "D1: About keeps DIP-scaled physical extents after the change");
+        TEST_CHECK(about.IsVisible(), "D1: About stays visible across the DPI change");
+    }
+
     about.Dismiss();
     TEST_CHECK(!about.IsVisible(), "REQ-005: Dismiss hides the About window");
 

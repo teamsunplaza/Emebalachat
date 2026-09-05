@@ -1481,6 +1481,29 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // D1 (debug report T3): live per-monitor DPI change while visible.
+        // Without this handler the physical DIB captured at show time (see
+        // ShowTranslation's MonitorDpiAtPoint) goes stale and the compositor
+        // scales the UpdateLayeredWindow blit - a soft tooltip until the next
+        // show. Mirrors badge.cpp's cross-DPI re-allocation discipline: update
+        // dpi_ through the ui/dpi helper, resize/reposition to the new scale,
+        // reallocate the physical buffer (which re-binds SetDpi + BindDC),
+        // then re-render the DIP layout at the correct scale.
+        case WM_DPICHANGED: {
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            pThis->dpi_ = emebalachat::ui::WindowDpi(hwnd);
+            // Keep our own PhysW()/PhysH() extents (ScaleDipsToPixels rounding)
+            // instead of the suggested size: DIB and window rect must match
+            // exactly or the blit is rescaled - the very defect being fixed.
+            ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                           pThis->PhysW(), pThis->PhysH(),
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            pThis->ReallocateBuffer(pThis->PhysW(), pThis->PhysH());
+            pThis->Render();
+            pThis->UpdateLayered();
+            return 0;
+        }
+
         case WM_TIMER: {
             if (wParam == kTimerCopiedFeedback) {
                 ::KillTimer(hwnd, kTimerCopiedFeedback);

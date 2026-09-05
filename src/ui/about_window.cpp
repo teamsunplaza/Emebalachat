@@ -675,6 +675,28 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             return 0;
         }
 
+        // D1 (debug report T3): live per-monitor DPI change while visible.
+        // DPI is otherwise captured only in ShowAt (MonitorDpiAtPoint), so a
+        // scaling change on the showing monitor left a stale physical DIB and
+        // a blurry blit until the next open. Same re-allocation discipline as
+        // badge.cpp / the tooltip: update dpi_ through the ui/dpi helper,
+        // reposition + resize at the new scale, ReallocateBuffer (re-binds
+        // SetDpi + BindDC), re-render the fixed DIP layout, re-blit.
+        case WM_DPICHANGED: {
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            pThis->dpi_ = emebalachat::ui::WindowDpi(hwnd);
+            // Keep our own PhysW()/PhysH() extents (ScaleDipsToPixels
+            // rounding): DIB and window rect must match exactly or the blit
+            // is rescaled - the very defect being fixed.
+            ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                           pThis->PhysW(), pThis->PhysH(),
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            pThis->ReallocateBuffer(pThis->PhysW(), pThis->PhysH());
+            pThis->Render();
+            pThis->UpdateLayered();
+            return 0;
+        }
+
         case WM_DESTROY:
             return 0;
     }

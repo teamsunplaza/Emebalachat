@@ -255,6 +255,24 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
 
+    // D2 (debug report A10): outside-click dismissal moves in front of the
+    // enabled_ translation gate, mirroring the wheel branch's deliberate
+    // Batch-2 pre-gate placement above. Dismissing an already-visible
+    // tooltip / About / drag icon is unrelated to the translation-active
+    // state, so a click outside must dismiss those popups while paused. The
+    // event is still NEVER swallowed (CallNextHookEx at the bottom keeps the
+    // LowLevelHooksTimeout budget and target-app input intact) and the
+    // WM_LBUTTONDOWN tracking below (double-click count, drag origin,
+    // click_seq_ invalidation) stays gated - pausing keeps suspending every
+    // translation trigger path exactly as before. Note the hermeticity claim
+    // in TestMouseHookDebounce ("proc early-returns while disabled") still
+    // holds for THAT fixture: it registers no mouse-down callback, so this
+    // branch is a null-cb no-op there and physical clicks cannot touch the
+    // debounce state, which lives behind the gate.
+    if (wParam == WM_LBUTTONDOWN && s_instance->mouse_down_cb_) {
+        s_instance->mouse_down_cb_(ms->pt.x, ms->pt.y);
+    }
+
     if (!s_instance->enabled_.load(std::memory_order_relaxed)) {
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
@@ -283,10 +301,8 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
 
         s_instance->is_lbutton_down_.store(true, std::memory_order_relaxed);
         s_instance->lbutton_down_pt_ = ms->pt;
-
-        if (s_instance->mouse_down_cb_) {
-            s_instance->mouse_down_cb_(ms->pt.x, ms->pt.y);
-        }
+        // D2: mouse_down_cb_ moved to the pre-gate dispatch above (dismissal
+        // must work while paused). No second invocation here.
     } else if (wParam == WM_MOUSEMOVE) {
         // O(1) performance guarantee: do no heavy computation during mouse movement
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
