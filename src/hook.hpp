@@ -84,6 +84,9 @@ constexpr bool ImeMirrorNext(bool composing, UINT vk_code) {
         return true;
     }
     switch (vk_code) {
+        // Composition-finalising editing keys: when one of these reaches the
+        // hook as a REAL vk (not VK_PROCESSKEY), the IME demonstrably did NOT
+        // consume it, so no composition can be alive against it. Clear.
         case VK_ESCAPE:
         case VK_TAB:
         case VK_BACK:
@@ -92,6 +95,17 @@ constexpr bool ImeMirrorNext(bool composing, UINT vk_code) {
         case VK_RIGHT:
         case VK_HOME:
         case VK_END:
+        // S2/R5 hardening: the vertical / page navigation keys. A composition
+        // cannot survive these either (the IME would have intercepted them as
+        // VK_PROCESSKEY if it were live). The previous "keep state" default
+        // for these meant a composition that ended without a tracked clear key
+        // (e.g. the user clicked away, or the app/Electron swallowed the
+        // commit) could leave the mirror stuck true and silently gate out the
+        // NEXT bare Enter - the exact "typed text never translates" failure.
+        case VK_UP:
+        case VK_DOWN:
+        case VK_PRIOR: // Page Up
+        case VK_NEXT:  // Page Down
             return false;
         default:
             return composing;

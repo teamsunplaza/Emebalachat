@@ -2335,6 +2335,38 @@ void TestImeCompositionGate() {
     static_assert(ImeMirrorNext(true, 'A'), "R17: character keys keep composition state");
     static_assert(!ImeMirrorNext(false, 'A'), "R17: unknown vk never fabricates a composition");
 
+    // R5 hardening: vertical / page navigation keys reaching the hook as real
+    // vk codes prove the IME did not intercept them -> no composition can be
+    // alive -> the mirror must clear. Previously these fell into "keep state",
+    // so a composition that ended without a tracked clear key (click-away, an
+    // Electron-swallowed commit) could leave the mirror stuck true and silently
+    // gate out the next bare Enter ("typed text never translates").
+    static_assert(!ImeMirrorNext(true, VK_UP), "R5: plain Up clears composition");
+    static_assert(!ImeMirrorNext(true, VK_DOWN), "R5: plain Down clears composition");
+    static_assert(!ImeMirrorNext(true, VK_PRIOR), "R5: Page Up clears composition");
+    static_assert(!ImeMirrorNext(true, VK_NEXT), "R5: Page Down clears composition");
+    static_assert(!ImeMirrorNext(false, VK_UP), "R5: Up while idle stays idle");
+    static_assert(!ImeMirrorNext(false, VK_NEXT), "R5: Page Down while idle stays idle");
+    // Composing is still preserved for keys that do not finalise a composition.
+    static_assert(ImeMirrorNext(true, 'A'), "R5: typing keeps composition (unchanged)");
+
+    // R5 (Debug-Surgical) Enter-path empty-capture verdict, pinned on the
+    // shared predicate (src/worker.hpp EmptyCaptureNeedsHold) so worker.cpp
+    // and the tests assert on ONE definition:
+    //   - empty capture, NOT a smart bypass  -> HOLD the send + tooltip
+    //     (the reported "Enter sent my text untranslated with no tooltip")
+    //   - smart bypass (text already in target) -> NOT a failure: the
+    //     historical send-through is the product contract; no hold
+    //   - successful capture -> normal pipeline; no hold
+    static_assert(EmptyCaptureNeedsHold(true, false),
+                  "R5: empty capture (not bypassed) must hold the send + notice");
+    static_assert(!EmptyCaptureNeedsHold(true, true),
+                  "R5: smart-bypassed text must NOT be held (send-through contract)");
+    static_assert(!EmptyCaptureNeedsHold(false, false),
+                  "R5: successful capture must NOT be held (normal pipeline)");
+    static_assert(!EmptyCaptureNeedsHold(false, true),
+                  "R5: non-empty capture cannot be smart-bypassed and held simultaneously (vacuous guard)");
+
     // Enter gate matrix (mirror value feeds ime_composing):
     static_assert(EnterTranslationAllowed(true, true, false, false), "R17: plain Enter while idle -> fire");
     static_assert(!EnterTranslationAllowed(true, true, false, true), "R17: composing -> NEVER fire");
@@ -2760,6 +2792,96 @@ void TestBatch2VersionScrollAbout() {
     std::cout << "[PASS] Batch 2 version/scroll/about tests completed." << std::endl;
 }
 
+// R5 (user report): switching the TARGET language mid-session must take effect
+// for every source/target combination (A->B, then A->C, B->C, ...). The user
+// reported: after translating Korean->English, switching the target to Chinese
+// did NOT translate into Chinese. This pins the full switching matrix on the
+// pure seams that decide (a) whether to translate at all (ShouldTranslate) and
+// (b) which target the engines are told to produce (BuildPrompt / MapLanguageCode /
+// NormalizeLanguageCode), so a language-switch regression can never silently ship.
+void TestLanguageSwitchingMatrix() {
+    std::cout << "[RUN] Testing R5 target-language switching matrix..." << std::endl;
+
+    // Representative source samples in distinct scripts.
+    const std::wstring ko = L"안녕하세요, 오늘 회의 자료를 별도로 본문에 삽입해줘.";
+    const std::wstring en = L"Please review the attached document before the meeting.";
+    const std::wstring zh = L"请在会议之前查看附件中的文件。";
+
+    // ---- 1) Every distinct target the user can switch TO must translate a
+    //         source that is NOT already that target. This is the A->B, A->C,
+    //         A->D ... matrix the user demanded work in every case.
+    const char* targets[] = {
+        "Korean", "English", "Vietnamese", "Chinese Simplified", "Chinese Traditional",
+        "Japanese", "Spanish", "French", "German", "Russian"
+    };
+    for (const char* tgt : targets) {
+        // Korean source -> any non-Korean target must translate.
+        if (std::string(tgt) != "Korean") {
+            TEST_CHECK(ShouldTranslate(ko, tgt),
+                       (std::string("R5: Korean source must translate to ") + tgt).c_str());
+        }
+        // English source -> any non-English target must translate.
+        if (std::string(tgt) != "English") {
+            TEST_CHECK(ShouldTranslate(en, tgt),
+                       (std::string("R5: English source must translate to ") + tgt).c_str());
+        }
+    }
+
+    // ---- 2) The reported switch sequence: KO->EN first, then switch target to
+    //         Chinese Simplified and re-translate the SAME Korean source. The
+    //         decision must flip to "translate" for the new target (it must not
+    //         stay bypassed as if the target were still English, and must not be
+    //         bypassed by any stale/Chinese-variant rule).
+    TEST_CHECK(ShouldTranslate(ko, "English"), "R5: step 1 KO -> EN translates");
+    TEST_CHECK(ShouldTranslate(ko, "Chinese Simplified"), "R5: step 2 KO -> ZH-CN (switched) still translates");
+    TEST_CHECK(ShouldTranslate(ko, "ZH-CN"), "R5: KO -> ZH-CN by code translates");
+    TEST_CHECK(ShouldTranslate(ko, "Chinese Traditional"), "R5: KO -> ZH-TW translates");
+
+    // ---- 3) B->C: after translating English->Korean, switch target to Chinese.
+    TEST_CHECK(ShouldTranslate(en, "Korean"), "R5: step 1 EN -> KO translates");
+    TEST_CHECK(ShouldTranslate(en, "Chinese Simplified"), "R5: step 2 EN -> ZH-CN (switched) still translates");
+
+    // ---- 4) Chinese variant discrimination: a ZH-CN source must NOT be bypassed
+    //         when the target is ZH-TW (they are different scripts), and vice versa.
+    TEST_CHECK(ShouldTranslate(zh, "Chinese Traditional"),
+               "R5: ZH-CN source -> ZH-TW target must translate (different script, not bypassed)");
+    TEST_CHECK(ShouldTranslate(zh, "Korean"), "R5: ZH-CN source -> KO target translates");
+    // ...but a ZH-CN source targeting ZH-CN IS bypassed (already in target).
+    TEST_CHECK(!ShouldTranslate(zh, "Chinese Simplified"),
+               "R5: ZH-CN source -> ZH-CN target bypassed (already in target)");
+
+    // ---- 5) Target resolution + prompt construction: the engine must be told to
+    //         produce the SWITCHED target. NormalizeLanguageCode resolves both
+    //         display names and codes; BuildPrompt must inject the target name.
+    TEST_CHECK(NormalizeLanguageCode("Chinese Simplified") == "ZH-CN", "R5: 'Chinese Simplified' normalizes to ZH-CN");
+    TEST_CHECK(NormalizeLanguageCode("Chinese Traditional") == "ZH-TW", "R5: 'Chinese Traditional' normalizes to ZH-TW");
+    TEST_CHECK(NormalizeLanguageCode("Korean") == "KO", "R5: 'Korean' normalizes to KO");
+    TEST_CHECK(GoogleTranslate::MapLanguageCode("Chinese Simplified") == "zh-CN", "R5: Google maps ZH-CN correctly");
+    TEST_CHECK(GoogleTranslate::MapLanguageCode("Chinese Traditional") == "zh-TW", "R5: Google maps ZH-TW correctly");
+
+    // BuildPrompt target injection: the local LLM prompt must name the SWITCHED
+    // target (this is what steers Hy-MT2 to emit Chinese vs English).
+    const std::string p_en = BuildPrompt("hello", "English");
+    const std::string p_zh = BuildPrompt("hello", "Chinese Simplified");
+    TEST_CHECK(p_en.find("English") != std::string::npos, "R5: BuildPrompt injects 'English' as target");
+    TEST_CHECK(p_zh.find("Chinese Simplified") != std::string::npos, "R5: BuildPrompt injects 'Chinese Simplified' as target");
+    TEST_CHECK(p_en != p_zh, "R5: switching target changes the local prompt (not cached/static)");
+
+    // ---- 6) Cycling across the whole target list must yield a translatable
+    //         (source, target) pair at every step for a fixed non-target source.
+    std::string cur = "Korean";
+    for (int i = 0; i < 40; ++i) {
+        cur = CycleTargetLanguage(cur);
+        const std::string cur_norm = NormalizeLanguageCode(cur);
+        if (cur_norm != "KO") {
+            TEST_CHECK(ShouldTranslate(ko, cur),
+                       (std::string("R5: cycled target '") + cur + "' must translate Korean source").c_str());
+        }
+    }
+
+    std::cout << "[PASS] R5 target-language switching matrix tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -2804,6 +2926,7 @@ int main() {
     TestHookLifecyclePolicy();
     TestImeCompositionGate();
     TestShiftEnterGate();
+    TestLanguageSwitchingMatrix();
     TestEngineShutdownCancellation();
     TestEngineFallbackExeDirAnchoring();
     TestBatch2VersionScrollAbout();

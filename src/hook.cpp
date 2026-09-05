@@ -568,10 +568,14 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // above). The shared S2 predicate decides interception (mirror just
             // cleared -> composing input is false; shift is false by now). One
             // definition pinned by the unit tests.
+            // R5 observability: log the gate inputs so a silent "Enter sent
+            // untranslated" can be attributed to the exact failing gate.
+            const bool gate_active = s_instance->IsActive();
+            const bool gate_busy = s_instance->worker_.IsBusy();
             if (EnterSendReplaceAllowed(
                     /*vk_is_return*/ true,
-                    s_instance->IsActive(),
-                    s_instance->worker_.IsBusy(),
+                    gate_active,
+                    gate_busy,
                     /*ime_composing*/ false,
                     /*shift*/ shift)) {
                 // Capture target window HWND at interception time for process-aware selection
@@ -579,8 +583,19 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
                 // Post task to worker and intercept Enter from reaching target control
                 if (s_instance->worker_.PostTask(shift, target_hwnd)) {
+                    fprintf(stderr, "HOOK/Enter/001: bare Enter intercepted -> pipeline task posted (hwnd=%p)\n",
+                            reinterpret_cast<void*>(target_hwnd));
                     return 1; // Intercepted immediately (< 1ms)!
                 }
+            } else if (gate_active && !gate_busy) {
+                // Log only the meaningfully-gated case. When !active or busy
+                // the user has the feature off / a task in flight: passing
+                // through is expected, not a failure, and logging EVERY
+                // such Enter would spam stderr at typing speed (and the log
+                // would carry no diagnostic information beyond what
+                // HOOK/Enter/001's absence already proves).
+                fprintf(stderr, "HOOK/Enter/002: bare Enter PASSED THROUGH untranslated while active=!1 busy=0 "
+                                "(ime mirror race or unspecified gate; see HOOK/Enter/001 absence)\n");
             }
         }
     }

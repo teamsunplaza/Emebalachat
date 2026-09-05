@@ -152,8 +152,43 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
 
+    // R5 observability: log the capture/bypass decision so a silent
+    // "nothing translated" can be attributed to the exact failing gate
+    // (lengths/booleans only; never the captured content itself).
+    const bool was_smart_bypassed =
+        !line.empty() && !ShouldTranslate(line, snap.target_language, snap.source_language);
+    const bool should_translate = !line.empty() && !was_smart_bypassed;
+    fprintf(stderr, "WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
+            line.size(), should_translate ? 1 : 0);
+
+    // R5 (Debug-Surgical): the bare-Enter path's empty capture is no longer
+    // silent. Gate-11 evidence (R5 report section 2.2): CopySelectedText
+    // returned empty, so the user's original text is still sitting in the
+    // target app. Passing the Enter through here would SUBMIT it untranslated
+    // with no feedback - exactly the reported failure ("Enter sent my text
+    // untranslated, no tooltip"). Per the R1 mandate (a tooltip must always
+    // land), hold the send in this exact case and surface the existing
+    // localized TooltipNoSelection notice via the thread-safe marshal path
+    // (SetEmptyCaptureCallback / ShowMessageThreadSafe). The Enter keypress
+    // is NOT re-sent: the user's next bare Enter retries the full pipeline.
+    // A SMART BYPASS (already-in-target) is a positive product decision, not
+    // a failure: it keeps the historical ReleaseSelectionOnce + send-through
+    // behavior and must NOT trigger the hold (pinned by EmptyCaptureNeedsHold).
+    // The hold applies ONLY when a notice can actually land (empty_capture_cb_
+    // registered at startup); without the seam this degrades to the legacy
+    // send-through below rather than creating a new silent-swallow path.
+    if (EmptyCaptureNeedsHold(line.empty(), was_smart_bypassed) && empty_capture_cb_) {
+        fprintf(stderr,
+                "WORKER/ExecuteTask/035: empty capture on bare-Enter path; holding send, "
+                "showing no-selection notice (smart_bypass=%d)\n",
+                was_smart_bypassed ? 1 : 0);
+        ReleaseSelectionOnce();
+        empty_capture_cb_();
+        return;
+    }
+
     // Check if line is empty or smart bypass says no translation needed
-    if (line.empty() || !ShouldTranslate(line, snap.target_language, snap.source_language)) {
+    if (line.empty() || !should_translate) {
         // No paste will happen on this path: release the block selection before
         // Enter so the (about to be sent) text cannot be clobbered (REQ-R03).
         ReleaseSelectionOnce();

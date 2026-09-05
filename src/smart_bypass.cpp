@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cwctype>
 #include <vector>
 #include <windows.h>
@@ -344,10 +345,18 @@ bool ShouldTranslate(
     if (detected != "Unknown") {
         if (CaseInsensitiveEqual(detected, target_name) ||
             CaseInsensitiveEqual(NormalizeLanguageCode(detected), target_code)) {
+            // R5 observability: pin the exact bypass so "didn't translate after
+            // a language switch" is attributable at runtime.
+            fprintf(stderr,
+                    "SMART_BYPASS/ShouldTranslate/001: already-target bypass (detected=%s, target=%s/%s)\n",
+                    detected.c_str(), target_name.c_str(), target_code.c_str());
             return false;
         }
         if (target_code.starts_with("ZH") && detected.find("Chinese") != std::string::npos) {
             if (CaseInsensitiveEqual(detected, target_name)) {
+                fprintf(stderr,
+                        "SMART_BYPASS/ShouldTranslate/002: Chinese-variant bypass (detected=%s, target=%s/%s)\n",
+                        detected.c_str(), target_name.c_str(), target_code.c_str());
                 return false;
             }
         }

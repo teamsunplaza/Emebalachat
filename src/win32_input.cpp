@@ -607,7 +607,8 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
 }
 
 std::wstring CopySelectedText(HWND hwnd) {
-    SelectTextForTranslation(hwnd);
+    const bool is_chat = IsChatApplicationWindow(hwnd);
+    const bool sel_ok = SelectTextForTranslation(hwnd);
     ::Sleep(10);
 
     // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
@@ -615,10 +616,23 @@ std::wstring CopySelectedText(HWND hwnd) {
     // return empty (copy failure) instead of reading stale text. The worker
     // treats empty as "nothing to translate" and releases the selection.
     if (!CopySelectionWithSequenceWait()) {
+        fprintf(stderr,
+                "WIN32_INPUT/CopySelectedText/001: copy not confirmed (hwnd=%p chat=%d sel_send=%d); returning empty\n",
+                reinterpret_cast<void*>(hwnd), is_chat ? 1 : 0, sel_ok ? 1 : 0);
         return {};
     }
 
-    return GetClipboardText();
+    std::wstring text = GetClipboardText();
+    // R5 observability: log capture SHAPE ONLY (length / newline count /
+    // flags). The captured text is user message content - it must never be
+    // printed (PII / chat-content leakage into diagnostics). Length and
+    // newline count still discriminate empty vs non-empty vs multi-line,
+    // which is exactly the gate-11 diagnosis.
+    size_t nl = 0;
+    for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
+    fprintf(stderr, "WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, chat=%d)\n",
+            text.size(), nl, is_chat ? 1 : 0);
+    return text;
 }
 
 std::wstring CopySelectedLine() {

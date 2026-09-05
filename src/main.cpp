@@ -356,6 +356,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::TooltipWindow tooltip;
     tooltip.Create(hInstance);
 
+    // R5 (Debug-Surgical): surface the Enter-path empty-capture failure that
+    // was previously silent. Same contract as the drag-path failure notice
+    // (REQ-R1(b)): the callback runs on the PIPELINE WORKER thread, and
+    // TooltipWindow::ShowMessageThreadSafe is the existing REQ-R10 thread-
+    // safe seam that marshals the D2D render onto the GUI thread. Registered
+    // once at startup BEFORE worker.Start() (read-only afterwards, same
+    // discipline as every other SetXxxCallback).
+    worker.SetEmptyCaptureCallback([&tooltip]() {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                       L"Emebala Chat",
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
+    });
+
     // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;
     // Create failures degrade to a no-op About menu item (all public methods
     // guard hwnd_), mirroring the badge's graceful-degradation contract.

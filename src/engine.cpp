@@ -802,6 +802,14 @@ std::wstring TranslationManager::Translate(
     const auto* pTgt = FindLanguageByCode(norm_tgt);
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
 
+    // R5 observability: log the routed target language so a "didn't translate
+    // to the switched target" can be attributed (engine routing vs upstream).
+    fprintf(stderr,
+            "ENGINE/Translate/040: target routed (input=\"%.*s\" -> norm=%s name=%s, engine=%s)\n",
+            static_cast<int>(tgt_code_or_name.size()), tgt_code_or_name.data(),
+            norm_tgt.c_str(), tgt_name.c_str(),
+            active_type_ == EngineType::LocalLlama ? "local" : "cloud");
+
     // Single cloud seam: records EngineFailed when the request itself produced
     // nothing (network error, 403, malformed response), Ok otherwise.
     auto cloud_call = [&]() -> std::wstring {
