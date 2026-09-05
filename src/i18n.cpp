@@ -44,6 +44,9 @@ struct LocalizedStrings {
     const wchar_t* badge_paused;
 
     const wchar_t* tooltip_title;
+    // REQ-R1 (session 260905_0001): drag-icon click failure notices.
+    const wchar_t* tooltip_copy_failed;
+    const wchar_t* tooltip_no_selection;
     const wchar_t* auto_detect;
 };
 
@@ -85,6 +88,8 @@ const LocalizedStrings kStringsKorean = {
     L"일시 정지",
 
     L"Emebala Chat",
+    L"선택한 텍스트를 복사하지 못했습니다. 대상 앱을 확인하고 다시 시도하세요.",
+    L"번역할 텍스트가 선택되어 있지 않습니다.",
     L"자동 감지"
 };
 
@@ -126,6 +131,8 @@ const LocalizedStrings kStringsJapanese = {
     L"一時停止",
 
     L"Emebala Chat",
+    L"選択したテキストをコピーできませんでした。対象アプリを確認して再試行してください。",
+    L"翻訳するテキストが選択されていません。",
     L"自動検出"
 };
 
@@ -167,6 +174,8 @@ const LocalizedStrings kStringsChineseSimp = {
     L"已暂停",
 
     L"Emebala Chat",
+    L"无法复制所选文本。请检查目标应用后重试。",
+    L"未选择要翻译的文本。",
     L"自动检测"
 };
 
@@ -208,6 +217,8 @@ const LocalizedStrings kStringsChineseTrad = {
     L"已暫停",
 
     L"Emebala Chat",
+    L"無法複製所選文字。請檢查目標應用程式後重試。",
+    L"尚未選取要翻譯的文字。",
     L"自動檢測"
 };
 
@@ -249,6 +260,8 @@ const LocalizedStrings kStringsVietnamese = {
     L"Tạm dừng",
 
     L"Emebala Chat",
+    L"Không thể sao chép văn bản đã chọn. Hãy kiểm tra ứng dụng đích rồi thử lại.",
+    L"Chưa chọn văn bản nào để dịch.",
     L"Tự động phát hiện"
 };
 
@@ -287,6 +300,8 @@ const LocalizedStrings kStringsSpanish = {
     L"Pausado",
 
     L"Emebala Chat",
+    L"No se pudo copiar el texto seleccionado. Revisa la aplicación de destino e inténtalo de nuevo.",
+    L"No hay texto seleccionado para traducir.",
     L"Detectar automáticamente"
 };
 
@@ -328,6 +343,8 @@ const LocalizedStrings kStringsEnglish = {
     L"Paused",
 
     L"Emebala Chat",
+    L"Could not copy the selected text. Check the target app and try again.",
+    L"No text is selected to translate.",
     L"Auto Detect"
 };
 
@@ -414,6 +431,8 @@ std::wstring I18n::Get(StringId id) {
         case StringId::BadgePaused: return s.badge_paused;
 
         case StringId::TooltipTitle: return s.tooltip_title;
+        case StringId::TooltipCopyFailed: return s.tooltip_copy_failed;
+        case StringId::TooltipNoSelection: return s.tooltip_no_selection;
         case StringId::AutoDetect: return s.auto_detect;
         default: return L"";
     }

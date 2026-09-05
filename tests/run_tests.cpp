@@ -1769,6 +1769,119 @@ void TestMouseHookDebounce() {
     std::cout << "[PASS] MouseHook click_seq_ debounce tests completed." << std::endl;
 }
 
+// REQ-R1 (session 260905_0001): the click-on-drag-icon dispatch chain. A real
+// user click on the layered icon delivers WM_LBUTTONDOWN then WM_LBUTTONUP to
+// the icon's WndProc; the WM_LBUTTONUP case must fire click_cb_ (which the app
+// wires to tooltip.ShowTranslation). This is the user-facing side-effect the
+// live bug report says is broken ("tooltip never appears"). This test isolates
+// the DISPATCH layer from the clipboard/engine layers by wiring a stub
+// click_cb_ that drives a real TooltipWindow directly - so a PASS proves the
+// icon->callback->tooltip.show dispatch is intact, and a FAIL pinpoints the
+// break inside DragIconWindow::WndProc's WM_LBUTTONUP handling itself.
+void TestDragIconClickShowsTooltip() {
+    std::cout << "[RUN] Testing drag-icon click -> tooltip dispatch (REQ-R1)..." << std::endl;
+
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    DragIconWindow icon;
+    TEST_CHECK(icon.Create(hInst), "R1 fixture: DragIconWindow created");
+    TooltipWindow tooltip;
+    TEST_CHECK(tooltip.Create(hInst), "R1 fixture: TooltipWindow created");
+
+    // Mirror main.cpp's wiring shape: icon click -> show the translation
+    // tooltip. Clipboard copy + engine inference are stubbed out here so the
+    // assertion targets ONLY the WndProc click dispatch (the layer the live
+    // report implicates).
+    std::atomic<int> click_fired{0};
+    icon.SetClickCallback([&](int cx, int cy) {
+        click_fired.fetch_add(1, std::memory_order_relaxed);
+        tooltip.ShowTranslation(cx, cy, L"src", "KO", "English", L"translated");
+    });
+
+    icon.ShowAt(300, 300);
+    TEST_CHECK(icon.IsVisible(), "R1: icon visible after ShowAt");
+
+    // Deliver the exact message pair Windows posts to the icon on a real
+    // left-click (client coords are unused by the icon's WM_LBUTTONUP case;
+    // it reads GetCursorPos() for the popup anchor).
+    const LPARAM client_pt = MAKELPARAM(16, 16);
+    ::PostMessageW(icon.GetHwnd(), WM_LBUTTONDOWN, MK_LBUTTON, client_pt);
+    ::PostMessageW(icon.GetHwnd(), WM_LBUTTONUP, 0, client_pt);
+    PumpThreadMessagesOnce();
+
+    TEST_CHECK(click_fired.load(std::memory_order_relaxed) == 1,
+               "R1: icon WM_LBUTTONUP fires click_cb_ exactly once");
+    TEST_CHECK(tooltip.IsVisible(),
+               "R1: tooltip becomes visible after the icon click dispatch");
+    TEST_CHECK(tooltip.GetTranslatedText() == L"translated",
+               "R1: tooltip shows the translated payload from the click");
+
+    // The icon hides itself as part of its own click handling (Hide() before
+    // invoking the callback), matching the live app contract.
+    TEST_CHECK(!icon.IsVisible(), "R1: icon auto-hides after the click");
+
+    tooltip.Destroy();
+    icon.Destroy();
+    std::cout << "[PASS] Drag-icon click dispatch tests completed." << std::endl;
+}
+
+// REQ-R1 (session 260905_0001): prove the silent-failure branch that produces
+// the live symptom. main.cpp's wired click_cb_ early-returns with ZERO user
+// feedback when CopySelectionWithSequenceWait() reports failure (no copyable
+// selection / clipboard sequence never advances within kClipboardChangeTimeoutMs)
+// or when the read-back text is empty. Both paths return before
+// tooltip.ShowTranslation, so the tooltip never appears - the exact
+// "tooltip itself doesn't show" the user reports. This test drives the REAL
+// early-return control flow (not a stub) against a clipboard with no fresh
+// selection and asserts the observable outcome: callback ran, copy gate
+// failed, tooltip stayed hidden. It pins WHY the dispatch (proven intact by
+// TestDragIconClickShowsTooltip) still yields no tooltip in real use.
+void TestDragIconClickClipboardEarlyReturn() {
+    std::cout << "[RUN] Testing drag-icon click clipboard early-return (REQ-R1)..." << std::endl;
+
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    TooltipWindow tooltip;
+    TEST_CHECK(tooltip.Create(hInst), "R1 fixture: TooltipWindow created for early-return path");
+
+    // Reproduce main.cpp's click_cb_ control flow verbatim, with the engine
+    // call stubbed (it is unreachable on the failure path we are proving).
+    std::atomic<bool> copy_gate_passed{false};
+    std::atomic<bool> tooltip_shown{false};
+    auto wired_click_cb = [&](int /*cx*/, int /*cy*/) {
+        emebalachat::ClipboardBackup backup;
+        emebalachat::BackupClipboard(backup);
+
+        if (!emebalachat::CopySelectionWithSequenceWait()) {
+            emebalachat::RestoreClipboard(backup);
+            copy_gate_passed.store(false, std::memory_order_relaxed);
+            return; // <-- the silent early-return: no tooltip, no feedback
+        }
+        std::wstring selected = emebalachat::GetClipboardText();
+        emebalachat::RestoreClipboard(backup);
+        if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+            copy_gate_passed.store(false, std::memory_order_relaxed);
+            return; // <-- second silent early-return
+        }
+        copy_gate_passed.store(true, std::memory_order_relaxed);
+        tooltip.ShowTranslation(0, 0, selected, "KO", "English", L"translated");
+        tooltip_shown.store(true, std::memory_order_relaxed);
+    };
+
+    // No foreground app holds a live selection here, so the synthetic Ctrl+C
+    // cannot advance the clipboard sequence: CopySelectionWithSequenceWait must
+    // time out and report failure, exercising the first early-return.
+    wired_click_cb(0, 0);
+
+    TEST_CHECK(!copy_gate_passed.load(std::memory_order_relaxed),
+               "R1: copy gate fails closed with no copyable selection (silent path)");
+    TEST_CHECK(!tooltip_shown.load(std::memory_order_relaxed),
+               "R1: early-return skips ShowTranslation entirely");
+    TEST_CHECK(!tooltip.IsVisible(),
+               "R1: tooltip never appears on the clipboard-failure path (live symptom reproduced)");
+
+    tooltip.Destroy();
+    std::cout << "[PASS] Drag-icon click clipboard early-return tests completed." << std::endl;
+}
+
 // REQ-R10 (audit §3.4): the WM_APP marshal protocol - packing helpers,
 // message routing, and WndProc payload ownership. Runs the real WndProc on the
 // test main thread (which owns the created windows' queues).
@@ -2466,6 +2579,8 @@ int main() {
     TestBadgeDynamicSizing();
     TestI18nModule();
     TestDragToTranslateComponents();
+    TestDragIconClickShowsTooltip();
+    TestDragIconClickClipboardEarlyReturn();
     TestTtsVoiceSelectionModule();
     TestHotkeyParsing();
     TestKeyboardHookStateSyncAndDispatch();

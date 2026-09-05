@@ -20,6 +20,7 @@
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
 #include <cstdio>
+#include <thread> // REQ-R1: drag-icon click worker (copy+translate off the GUI thread)
 
 namespace emebalachat {
 
@@ -644,48 +645,83 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // Click on DragIconWindow triggers translation of active selection.
     // Invoked from DragIconWindow::WndProc => runs ON THE MAIN GUI THREAD.
+    //
+    // REQ-R1 (session 260905_0001) root-cause fix. Two coupled defects made the
+    // tooltip "never appear" for the user:
+    //   (a) The blocking clipboard-sequence wait (CopySelectionWithSequenceWait
+    //       polls with Sleep up to ~200 ms) and the synchronous engine.Translate
+    //       (seconds for the local LLM, a network RTT for Google) BOTH ran here
+    //       on the GUI thread, freezing the message pump mid-click.
+    //   (b) Every failure branch (copy gate false, empty text) returned SILENTLY
+    //       - no tooltip, no message - so a slow/again-empty target produced
+    //       exactly the reported "I click the floating button and nothing
+    //       happens" with zero feedback.
+    // Fix (minimal, root-cause): hand the entire copy+translate to a short-lived
+    // worker thread and ALWAYS land a tooltip - the translation on success, a
+    // clear notice on failure - via the existing REQ-R10 thread-safe marshal
+    // seams (ShowTranslationThreadSafe / ShowMessageThreadSafe), never touching
+    // the single-threaded D2D target off the GUI thread.
     drag_icon.SetClickCallback([&](int click_x, int click_y) {
-        emebalachat::ClipboardBackup backup;
-        emebalachat::BackupClipboard(backup);
+        // Capture by value what the worker needs; config/engine/badge/tooltip
+        // are wWinMain stack objects that outlive the message loop, so the
+        // references stay valid for the worker's short, bounded lifetime. The
+        // badge status setters and both tooltip show seams are already
+        // thread-safe / marshaling (REQ-R10); the raw D2D render never runs
+        // off the GUI thread.
+        std::thread([click_x, click_y, &config, &engine, &badge, &tooltip]() {
+            emebalachat::ClipboardBackup backup;
+            emebalachat::BackupClipboard(backup);
 
-        // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
-        // pattern had the same stale-read race as audit §2.3 for slow (Electron
-        // IPC) targets. The D2 public seam confirms the copy via
-        // GetClipboardSequenceNumber() polling and returns false instead of
-        // exposing stale clipboard text.
-        if (!emebalachat::CopySelectionWithSequenceWait()) {
-            emebalachat::RestoreClipboard(backup);
-            return;
-        }
-        std::wstring selected = emebalachat::GetClipboardText();
-        emebalachat::RestoreClipboard(backup);
-
-        if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
-            return;
-        }
-
-        std::string detected = emebalachat::DetectLanguage(selected);
-        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (this runs on the GUI thread)
-        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
-
-        if (tgt_code == src_code) {
-            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
-            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
-            if (sys_code == src_code || sys_code.empty()) {
-                tgt_lang = (src_code == "EN") ? "Korean" : "English";
-            } else {
-                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
-                tgt_lang = pInfo ? pInfo->name_en : "Korean";
+            // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
+            // pattern had the same stale-read race as audit §2.3 for slow
+            // (Electron IPC) targets. The D2 public seam confirms the copy via
+            // GetClipboardSequenceNumber() polling and returns false instead of
+            // exposing stale clipboard text. On the worker thread now, its
+            // Sleep-polling no longer freezes the GUI pump.
+            if (!emebalachat::CopySelectionWithSequenceWait()) {
+                emebalachat::RestoreClipboard(backup);
+                fprintf(stderr, "MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
+                // REQ-R1(b): failure is now user-visible, not silent.
+                tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                              L"Emebala Chat",
+                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed));
+                return;
             }
-        }
+            std::wstring selected = emebalachat::GetClipboardText();
+            emebalachat::RestoreClipboard(backup);
 
-        badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(selected, detected, tgt_lang);
-        badge.SetStatus(emebalachat::BadgeStatus::Active);
+            if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+                fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
+                tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                              L"Emebala Chat",
+                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
+                return;
+            }
 
-        // Copy path is main-thread; direct D2D call is correct here.
-        tooltip.ShowTranslation(click_x, click_y, selected, src_code, tgt_lang, translated);
+            std::string detected = emebalachat::DetectLanguage(selected);
+            std::string src_code = emebalachat::NormalizeLanguageCode(detected);
+            std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (worker thread)
+            std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
+
+            if (tgt_code == src_code) {
+                std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
+                std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
+                if (sys_code == src_code || sys_code.empty()) {
+                    tgt_lang = (src_code == "EN") ? "Korean" : "English";
+                } else {
+                    const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
+                    tgt_lang = pInfo ? pInfo->name_en : "Korean";
+                }
+            }
+
+            badge.SetStatus(emebalachat::BadgeStatus::Translating);
+            std::wstring translated = engine.Translate(selected, detected, tgt_lang);
+            badge.SetStatus(emebalachat::BadgeStatus::Active);
+
+            // Worker thread, so marshal the D2D render to the GUI thread via the
+            // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
+            tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated);
+        }).detach();
     });
 
     // Double Ctrl+C Hotkey Detection (< 400ms).

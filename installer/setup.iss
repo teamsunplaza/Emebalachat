@@ -94,22 +94,22 @@ Name: "autostart"; Description: "{cm:TaskAutoStart}"
 ; [Files] - Files to install
 ; ------------------------------------------------------------------------
 [Files]
-Source: "..\build\Emebalachat.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; ------------------------------------------------------------------------
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
 [Icons]
-Name: "{group}\Emebala Chat"; Filename: "{app}\Emebalachat.exe"
+Name: "{group}\Emebala Chat"; Filename: "{app}\Emebala_chat.exe"
 Name: "{group}\Uninstall"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Emebala Chat"; Filename: "{app}\Emebalachat.exe"; Tasks: desktopicon
+Name: "{autodesktop}\Emebala Chat"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
 ; [Registry] - Auto-start entry (only if autostart task selected)
 ; ------------------------------------------------------------------------
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Emebalachat"; ValueData: """{app}\Emebalachat.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Emebalachat"; ValueData: """{app}\Emebala_chat.exe"""; Tasks: autostart; Flags: uninsdeletevalue
 
 ; ------------------------------------------------------------------------
 ; [UninstallDelete] - Clean up extra files on uninstall
@@ -122,7 +122,7 @@ Type: files; Name: "{app}\config.json"
 ; [Run] - Post-install launch option
 ; ------------------------------------------------------------------------
 [Run]
-Filename: "{app}\Emebalachat.exe"; Description: "{cm:LaunchProgram,Emebala Chat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,Emebala Chat}"; Flags: nowait postinstall skipifsilent
 
 ; ========================================================================
 ; [Code] - Pascal Script for custom installer logic

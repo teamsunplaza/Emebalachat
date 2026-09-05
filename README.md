@@ -285,7 +285,7 @@ cmake --build build --config Release
 ```
 
 The output binaries will be placed in `build\`:
-- `build\Emebalachat.exe` (Win32 GUI application)
+- `build\Emebala_chat.exe` (Win32 GUI application)
 - `build\run_tests.exe` (Unit test console runner)
 
 ### Running Unit Tests
@@ -333,7 +333,7 @@ Failures:     0
 To package Emebala Chat into a single, self-extracting Windows installer:
 
 1. Download and install [Inno Setup 6.1+](https://jrsoftware.org/isinfo.php).
-2. Ensure `build\Emebalachat.exe` has been compiled.
+2. Ensure `build\Emebala_chat.exe` has been compiled.
 3. Run the Inno Setup compiler:
 
 ```powershell

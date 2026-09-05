@@ -7,8 +7,8 @@ This directory contains the Inno Setup script and assets for building the Emebal
 1. **Inno Setup 6.1 or later**
    Download and install from: https://jrsoftware.org/isinfo.php
 
-2. **Build Emebalachat.exe first**
-   Use CMake to build the application before compiling the installer. The installer expects the built executable at `../build/Emebalachat.exe` (relative to this directory).
+2. **Build Emebala_chat.exe first**
+   Use CMake to build the application before compiling the installer. The installer expects the built executable at `../build/Emebala_chat.exe` (relative to this directory).
 
 ## How to Compile
 
@@ -50,7 +50,7 @@ The installer compiles successfully even without these files — they are option
 
 ## What the Installer Does
 
-1. Installs `Emebalachat.exe` to `Program Files\Emebalachat`
+1. Installs `Emebala_chat.exe` to `Program Files\Emebalachat`
 2. Creates Start Menu shortcuts and (optionally) a desktop shortcut
 3. Optionally registers the app for auto-start with Windows
 4. Downloads the AI translation model (~1.8 GB) from Hugging Face, verifying its

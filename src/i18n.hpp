@@ -53,6 +53,11 @@ enum class StringId {
     // Tray Tooltip
     TooltipTitle,
 
+    // Drag-icon click feedback (REQ-R1, session 260905_0001): transient
+    // notice bodies shown when the click cannot produce a translation.
+    TooltipCopyFailed,  // clipboard copy could not be confirmed (slow/lost selection)
+    TooltipNoSelection, // copy confirmed but the captured text was empty/whitespace
+
     // Common
     AutoDetect
 };

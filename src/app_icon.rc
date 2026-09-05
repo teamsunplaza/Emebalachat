@@ -1,0 +1,12 @@
+// REQ-R2 (session 260905_0001): application icon resource.
+// Embeds the Emebala Chat app icon (multi-size .ico generated from
+// assets/Emebala_Chat_Appicon_small.png) into the executable so Explorer,
+// the taskbar, Alt+Tab, and the tray use the branded icon instead of the
+// default generic Win32 application icon.
+//
+// Path is relative to THIS .rc file (src/), so ../assets/... resolves to the
+// repo's assets directory. IDI_ICON1 is the conventional primary app icon id;
+// Windows uses the lowest-numbered ICON resource as the file's icon.
+#include <windows.h>
+
+IDI_ICON1 ICON "..\\assets\\Emebala_Chat_Appicon.ico"

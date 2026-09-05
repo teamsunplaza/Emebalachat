@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Emebalachat VERSION 0.10.0 LANGUAGES C CXX)
+project(Emebalachat VERSION 0.10.0 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -139,9 +139,16 @@ if (TARGET llama)
 endif()
 
 # Target 1: Emebalachat (WIN32 executable)
+# REQ-R2 (session 260905_0001): the internal target name stays "Emebalachat"
+# (minimal-risk: no downstream target references change), but the produced
+# binary is renamed via OUTPUT_NAME to the user-facing "Emebala_chat.exe".
+# src/app_icon.rc embeds the branded multi-size app icon (see that file).
 add_executable(Emebalachat WIN32
     src/main.cpp
+    src/app_icon.rc
 )
+
+set_target_properties(Emebalachat PROPERTIES OUTPUT_NAME "Emebala_chat")
 
 target_link_libraries(Emebalachat PRIVATE
     Emebalachat_core
