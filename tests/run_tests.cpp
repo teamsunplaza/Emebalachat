@@ -2379,6 +2379,70 @@ void TestImeCompositionGate() {
     std::cout << "[PASS] REQ-R17 IME composition gate tests completed." << std::endl;
 }
 
+// S2 (R4): Shift+Enter newline vs bare-Enter send-and-replace modifier gate.
+//
+// Root cause pinned here: the R3-era VK_RETURN branch in LowLevelKeyboardProc
+// checked Ctrl (Ctrl+Shift+Enter = auto-send toggle, Ctrl+Enter = passthrough)
+// but NEVER tested the Shift modifier, so with the hook active ANY Enter
+// (bare OR Shift-held) was swallowed into the pipeline. Result: the user could
+// not insert a newline via Shift+Enter while F9 send-and-replace was active -
+// the hook ate the keystroke and the worker re-sent a plain Enter. The fix
+// passes Shift+Enter through untouched and reserves interception for a BARE
+// Enter. This test pins the full modifier matrix on the shared pure predicate
+// (src/hook.hpp) so the discrimination can never silently regress.
+void TestShiftEnterGate() {
+    std::cout << "[RUN] Testing S2 Shift+Enter / bare-Enter gate..." << std::endl;
+
+    // ---- Compile-time modifier matrix on EnterSendReplaceAllowed ----
+    // Baseline: a bare Enter, hook active, worker idle, no composition, no
+    // Shift -> INTERCEPT (send-and-replace fires). This is the primary path.
+    static_assert(EnterSendReplaceAllowed(true, true, false, false, false),
+                  "S2: bare Enter while idle+active -> intercept (send-and-replace)");
+
+    // The S2 fix: SAME conditions but Shift held -> PASS THROUGH (newline).
+    static_assert(!EnterSendReplaceAllowed(true, true, false, false, true),
+                  "S2: Shift+Enter while idle+active -> pass through (newline, not swallowed)");
+
+    // Shift must NOT override the other gates: each base-gate failure still
+    // passes through regardless of Shift state.
+    static_assert(!EnterSendReplaceAllowed(true, false, false, false, false),
+                  "S2: bare Enter, hook INACTIVE -> pass through (no interception)");
+    static_assert(!EnterSendReplaceAllowed(true, false, false, false, true),
+                  "S2: Shift+Enter, hook INACTIVE -> pass through");
+    static_assert(!EnterSendReplaceAllowed(true, true, true, false, false),
+                  "S2: bare Enter, worker BUSY -> pass through (re-entrancy guard)");
+    static_assert(!EnterSendReplaceAllowed(true, true, true, false, true),
+                  "S2: Shift+Enter, worker BUSY -> pass through");
+    static_assert(!EnterSendReplaceAllowed(true, true, false, true, false),
+                  "S2: bare Enter mid-IME-composition -> pass through (IME commit)");
+    static_assert(!EnterSendReplaceAllowed(true, true, false, true, true),
+                  "S2: Shift+Enter mid-IME-composition -> pass through");
+
+    // Non-Enter vk never intercepts (gate stays closed on the vk axis).
+    static_assert(!EnterSendReplaceAllowed(false, true, false, false, false),
+                  "S2: non-Enter vk -> gate closed");
+    static_assert(!EnterSendReplaceAllowed(false, true, false, false, true),
+                  "S2: non-Enter vk with Shift -> gate closed");
+
+    // ---- Runtime sanity: predicate agrees with the base gate on the Shift
+    // discrimination (the only new axis). The base EnterTranslationAllowed
+    // ignores Shift entirely (it predates the fix); the S2 wrapper must equal
+    // the base gate when Shift is false and be FALSE when Shift is true.
+    for (bool active : {false, true}) {
+        for (bool busy : {false, true}) {
+            for (bool composing : {false, true}) {
+                const bool base = EnterTranslationAllowed(true, active, busy, composing);
+                TEST_CHECK(EnterSendReplaceAllowed(true, active, busy, composing, false) == base,
+                           "S2: with Shift released, S2 gate == base Enter gate");
+                TEST_CHECK(EnterSendReplaceAllowed(true, active, busy, composing, true) == false,
+                           "S2: with Shift held, S2 gate always passes through (newline)");
+            }
+        }
+    }
+
+    std::cout << "[PASS] S2 Shift+Enter / bare-Enter gate tests completed." << std::endl;
+}
+
 // REQ-R16 (audit §5 latent item 4): llama.cpp shutdown cancellation seam.
 void TestEngineShutdownCancellation() {
     std::cout << "[RUN] Testing REQ-R16 engine shutdown cancellation..." << std::endl;
@@ -2739,6 +2803,7 @@ int main() {
     TestDpiMixedScaling();
     TestHookLifecyclePolicy();
     TestImeCompositionGate();
+    TestShiftEnterGate();
     TestEngineShutdownCancellation();
     TestEngineFallbackExeDirAnchoring();
     TestBatch2VersionScrollAbout();

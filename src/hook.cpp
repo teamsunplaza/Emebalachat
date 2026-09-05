@@ -542,6 +542,21 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
+            // S2 fix (Shift+Enter newline): Shift+Enter must pass through
+            // UNTOUCHED so the target app inserts a newline (universal chat-app
+            // convention). The R3-era code never tested the Shift modifier here,
+            // so with the hook active ANY Enter (bare or Shift-held) was
+            // swallowed into the send-and-replace pipeline and Shift+Enter could
+            // never produce a newline. Gate it BEFORE the interception below:
+            // only a BARE Enter may be hijacked. (Ctrl+Shift+Enter already
+            // returned above as the auto-send toggle; this branch sees only
+            // plain Shift+Enter.) The IME mirror intentionally KEEPS its state
+            // for a VK_RETURN (ImeMirrorNext), and we are returning without
+            // touching the pipeline, so no mirror clear is needed here either.
+            if (shift) {
+                return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+            }
+
             // Composition open: the Enter belongs to the IME commit cycle.
             // Hand it through untouched and retire the mirror flag.
             if (s_instance->ime_composing_.load(std::memory_order_relaxed)) {
@@ -549,13 +564,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
-            // Regular Enter or Shift+Enter: shared predicate decides
-            // interception (mirror just cleared -> composing input is false).
-            if (EnterTranslationAllowed(
+            // Only a BARE Enter reaches here (Shift and Ctrl already returned
+            // above). The shared S2 predicate decides interception (mirror just
+            // cleared -> composing input is false; shift is false by now). One
+            // definition pinned by the unit tests.
+            if (EnterSendReplaceAllowed(
                     /*vk_is_return*/ true,
                     s_instance->IsActive(),
                     s_instance->worker_.IsBusy(),
-                    /*ime_composing*/ false)) {
+                    /*ime_composing*/ false,
+                    /*shift*/ shift)) {
                 // Capture target window HWND at interception time for process-aware selection
                 HWND target_hwnd = ::GetForegroundWindow();
 

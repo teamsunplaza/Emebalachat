@@ -37,6 +37,27 @@ constexpr bool EnterTranslationAllowed(bool vk_is_return, bool active, bool work
     return vk_is_return && active && !worker_busy && !ime_composing;
 }
 
+// ---- S2 (Shift+Enter newline) gate: bare Enter vs Shift+Enter ----
+//
+// Product semantics (VP directive, R4): a BARE Enter triggers send-and-replace,
+// while Shift+Enter must pass through UNTOUCHED so the target app inserts a
+// newline (chat-app convention). The R3-era code never checked the Shift
+// modifier in the VK_RETURN branch: with the hook active, ANY Enter (bare or
+// Shift-held) was swallowed into the pipeline, so Shift+Enter could never
+// produce a newline. This pure predicate is the single source of truth for the
+// modifier discrimination, shared by LowLevelKeyboardProc and the unit tests.
+//
+// Returns true only when the Enter may be intercepted for send-and-replace:
+// the base EnterTranslationAllowed conditions hold AND Shift is NOT held.
+// Ctrl and Alt/Win are already handled upstream in the hook (Ctrl+Shift+Enter
+// toggles auto-send, Ctrl+Enter passes through, Alt/Win combos pass through),
+// so this seam only needs to discriminate the Shift case on top of the base
+// gate. Keeping it pure lets the full modifier matrix be pinned headlessly.
+constexpr bool EnterSendReplaceAllowed(bool vk_is_return, bool active, bool worker_busy,
+                                       bool ime_composing, bool shift) {
+    return EnterTranslationAllowed(vk_is_return, active, worker_busy, ime_composing) && !shift;
+}
+
 // Hook-local IME composition mirror, updated on every REAL (non-synthetic)
 // keydown with O(1) relaxed-atomic traffic and ZERO cross-thread messaging.
 //
