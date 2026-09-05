@@ -33,6 +33,20 @@ const LanguageInfo* FindLanguageByName(std::string_view name);
 // Resolves a code or name into a canonical uppercase language code (e.g. "korean" -> "KO").
 std::string NormalizeLanguageCode(std::string_view code_or_name);
 
+// Resolves the effective target language when the detected source equals the
+// configured target (src==tgt is meaningless for translation output).
+// Policy (identical to the two former inline copies in main.cpp):
+//   1. Query the OS system language; if it differs from src, translate to it.
+//   2. If the OS language equals src (or is unknown), fall back to the EN<->KO
+//      pivot: Korean when src is English, English otherwise.
+//   3. If the OS language code is not a supported language, fall back to Korean.
+// Returns std::nullopt when no substitution is needed (src != tgt), so callers
+// skip the language-sync notification entirely.
+// Pure: no Win32 message traffic, no config mutation. I18n::GetSystemLanguageCode
+// is a read-only locale query, safe from any thread.
+std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
+                                                   std::string_view current_tgt);
+
 // Cycles to the next target language given current code or name, wrapping around.
 std::string CycleTargetLanguage(std::string_view current_code_or_name);
 

@@ -3357,6 +3357,54 @@ void TestB3LanguageSync() {
     std::cout << "[PASS] R6-B3 language sync coordinator seam tests completed." << std::endl;
 }
 
+// SC-01 (Phase 1 batch 3): pure src==tgt fallback resolver extracted from the
+// two inline copies in main.cpp. Host-OS-locale independent: expectations are
+// derived from the same primitives the function uses.
+void TestResolveEffectiveTarget() {
+    std::cout << "[RUN] Testing SC-01 ResolveEffectiveTarget..." << std::endl;
+
+    // 1. src != tgt -> no substitution (nullopt), callers skip sync.
+    auto none = emebalachat::ResolveEffectiveTarget("Korean", "English");
+    TEST_CHECK(!none.has_value(), "src != tgt returns nullopt (no-op)");
+
+    // 2. src == tgt, OS system language differs -> translate to OS language.
+    //    The test host runs a real OS locale; derive expectations from the
+    //    same primitives the function uses so the check is host-independent.
+    const std::string sys_code =
+        emebalachat::NormalizeLanguageCode(emebalachat::I18n::GetSystemLanguageCode());
+
+    auto en_en = emebalachat::ResolveEffectiveTarget("English", "English");
+    TEST_CHECK(en_en.has_value(), "src == tgt == EN requires substitution");
+    if (sys_code == "EN" || sys_code.empty()) {
+        TEST_CHECK(en_en.value() == "Korean", "EN->EN with EN/unknown OS pivots to Korean");
+    } else if (const auto* info = emebalachat::FindLanguageByCode(sys_code)) {
+        TEST_CHECK(en_en.value() == info->name_en, "EN->EN uses OS language name_en");
+    } else {
+        TEST_CHECK(en_en.value() == "Korean", "EN->EN with unsupported OS falls back to Korean");
+    }
+
+    // 3. Pivot direction: src == tgt == KO with KO OS -> English.
+    auto ko_ko = emebalachat::ResolveEffectiveTarget("Korean", "Korean");
+    TEST_CHECK(ko_ko.has_value(), "src == tgt == KO requires substitution");
+    if (sys_code == "KO" || sys_code.empty()) {
+        TEST_CHECK(ko_ko.value() == "English", "KO->KO with KO/unknown OS pivots to English");
+    } else if (const auto* info = emebalachat::FindLanguageByCode(sys_code)) {
+        TEST_CHECK(ko_ko.value() == info->name_en, "KO->KO uses OS language name_en");
+    }
+
+    // 4. Alias normalization: lowercase code input behaves like the full name.
+    auto alias = emebalachat::ResolveEffectiveTarget("en", "english");
+    TEST_CHECK(alias.has_value() == (emebalachat::NormalizeLanguageCode("en") ==
+                                     emebalachat::NormalizeLanguageCode("english")),
+               "case/alias inputs normalize before comparison");
+
+    // 5. Unrecognized source ("AUTO" fallback) vs concrete target -> nullopt.
+    auto auto_src = emebalachat::ResolveEffectiveTarget("not-a-language", "English");
+    TEST_CHECK(!auto_src.has_value(), "unrecognized src (AUTO) never collides with concrete tgt");
+
+    std::cout << "[PASS] SC-01 ResolveEffectiveTarget tests completed." << std::endl;
+}
+
 // R6 Phase 2 (B1, plan §1 B1-H1/H2 + §Phase 2): intermittent stale tooltip.
 // Two concurrent translate producers (detached drag threads, the REQ-R06
 // double-Ctrl+C worker) used to last-writer-wins on the tooltip model, so a
@@ -4111,6 +4159,7 @@ int main() {
     TestEngineFallbackExeDirAnchoring();
     TestBatch2VersionScrollAbout();
     TestB3LanguageSync();
+    TestResolveEffectiveTarget();
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();

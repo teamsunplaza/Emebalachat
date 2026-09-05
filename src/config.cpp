@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include "i18n.hpp"
 #include "unicode_utils.hpp"
 
 #include <algorithm>
@@ -323,6 +324,22 @@ std::string NormalizeLanguageCode(std::string_view code_or_name) {
         return by_name->code;
     }
     return "AUTO";
+}
+
+std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
+                                                   std::string_view current_tgt) {
+    const std::string src_code = NormalizeLanguageCode(detected_src);
+    const std::string tgt_code = NormalizeLanguageCode(current_tgt);
+    if (tgt_code != src_code) {
+        return std::nullopt;
+    }
+    const std::string sys_code =
+        NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    if (sys_code == src_code || sys_code.empty()) {
+        return std::string(src_code == "EN" ? "Korean" : "English");
+    }
+    const LanguageInfo* info = FindLanguageByCode(sys_code);
+    return std::string(info ? info->name_en : "Korean");
 }
 
 std::string CycleTargetLanguage(std::string_view current_code_or_name) {
