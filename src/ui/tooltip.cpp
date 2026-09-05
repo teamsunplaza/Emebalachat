@@ -811,6 +811,38 @@ void TooltipWindow::DismissThreadSafe() {
     ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
 }
 
+// R6 Phase 1 (B3, plan §2.4 step 6/7 companion): view-only sync of the target
+// language label after ANY surface mutated the persisted pair (tray menu,
+// swap, Ctrl+F9 cycle, config reload). Best-effort by design: hidden or
+// message-mode notices have no language button to update, so those cases
+// no-op. When visible in translation mode, the button label (Render reads
+// target_lang_) is refreshed WITHOUT re-translating - the body stays as shown
+// until the next request, per the plan's "view sync, not content churn".
+// Cross-thread calls marshal through kRefreshTargetLangMessage (REQ-R10):
+// heap payload ownership transfers to the WndProc, deleted locally on post
+// failure, same contract as the Show*ThreadSafe seams above.
+void TooltipWindow::RefreshTargetLanguageFromConfig(std::string_view new_target) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        auto payload = std::make_unique<TargetLangPayload>();
+        payload->target_lang = new_target;
+        const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
+        if (::PostMessageW(hwnd_, kRefreshTargetLangMessage, 0, lparam) == FALSE) {
+            delete reinterpret_cast<TargetLangPayload*>(lparam);
+        }
+        return;
+    }
+    if (!visible_.load(std::memory_order_relaxed) || is_message_mode_) {
+        return;
+    }
+    if (target_lang_ == new_target) {
+        return; // already in sync (tooltip-initiated change re-shows below)
+    }
+    target_lang_ = new_target;
+    Render();
+    UpdateLayered();
+}
+
 void TooltipWindow::Dismiss() {
     if (!hwnd_) return;
     // REQ-R10 companion: the ESC (keyboard hook) and outside-click (mouse hook)
@@ -1257,6 +1289,18 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
         case kDismissMessage: {
             pThis->Dismiss();
+            return 0;
+        }
+
+        // R6 Phase 1 (B3): marshaled target-language view refresh. The unique_ptr
+        // claims the heap payload posted by RefreshTargetLanguageFromConfig() from
+        // a non-GUI thread; unconsumed payloads were freed by the posting seam.
+        case kRefreshTargetLangMessage: {
+            const std::unique_ptr<TargetLangPayload> p(
+                reinterpret_cast<TargetLangPayload*>(lParam));
+            if (p) {
+                pThis->RefreshTargetLanguageFromConfig(p->target_lang);
+            }
             return 0;
         }
 

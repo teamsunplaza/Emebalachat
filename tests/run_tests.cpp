@@ -26,7 +26,9 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <type_traits> // R6 B3: static_assert pins on accessor signatures
 #include <vector>
+#include <memory> // R6 B3: unique_ptr payloads in marshal tests
 
 using namespace emebalachat;
 
@@ -2882,6 +2884,258 @@ void TestLanguageSwitchingMatrix() {
     std::cout << "[PASS] R5 target-language switching matrix tests completed." << std::endl;
 }
 
+// ===========================================================================
+// R6 Phase 1 (B3): single-source-of-truth language sync. Pure planner seam
+// (PlanLanguageSync) + persistence (INV-1/3) + tooltip view refresh + hook
+// cycle-delegate routing. Mirrors the coordinator flow in src/main.cpp
+// (ApplyLanguageChange) headlessly - the plan IS the tested unit, so the GUI
+// wiring can never silently diverge from the pinned sync contract.
+// ===========================================================================
+namespace {
+// Compact surface-list rendering for failure messages (planner order is part
+// of the contract: Badge -> Tray -> Tooltip).
+std::string B3SurfaceList(const LanguageSyncPlan& p) {
+    std::string s;
+    for (const LanguageSurface surface : p.surface_updates) {
+        switch (surface) {
+            case LanguageSurface::Badge: s += "B"; break;
+            case LanguageSurface::Tray: s += "T"; break;
+            case LanguageSurface::Tooltip: s += "P"; break;
+            default: s += "?"; break;
+        }
+    }
+    return s;
+}
+
+std::string B3PlanMsg(const char* what, const LanguageSyncPlan& p) {
+    return std::string("B3: ") + what + " (src='" + p.source_language +
+           "', tgt='" + p.target_language + "', valid=" + (p.valid ? "1" : "0") +
+           ", changed=" + (p.changed ? "1" : "0") + ", surfaces=" + B3SurfaceList(p) + ")";
+}
+} // namespace
+
+void TestB3LanguageSync() {
+    std::cout << "[RUN] Testing R6-B3 language sync coordinator seams..." << std::endl;
+
+    // Compile-time pin: GetSnapshot stays a const locked reader - the only
+    // sanctioned cross-thread language read (INV-4).
+    static_assert(std::is_same<decltype(&AppConfig::GetSnapshot),
+                               AppConfig::Snapshot (AppConfig::*)() const>::value,
+                  "GetSnapshot must remain the const snapshot accessor (INV-4)");
+
+    SetSoundEnabled(false); // CycleLanguage's fallback chime must stay quiet
+
+    // ---- 1) THE reported bug: tooltip-initiated target change plans the
+    //         full Badge+Tray+Tooltip refresh and keeps the source (INV-1).
+    {
+        const auto p = PlanLanguageSync("Auto Detect", "English", "", "Japanese");
+        TEST_CHECK(p.valid && p.changed, B3PlanMsg("tooltip target change is a real mutation", p).c_str());
+        TEST_CHECK(p.source_language == "Auto Detect", B3PlanMsg("source untouched by target change", p).c_str());
+        TEST_CHECK(p.target_language == "Japanese", B3PlanMsg("target becomes the picked language", p).c_str());
+        TEST_CHECK(B3SurfaceList(p) == "BTP", B3PlanMsg("all three surfaces refresh, badge->tray->tooltip", p).c_str());
+    }
+
+    // ---- 2) Token normalization on BOTH fields: ISO code / name_en /
+    //         name_native all resolve to the canonical name_en stored form.
+    {
+        const char* tokens[] = { "JA", "ja", "Japanese", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E" }; // 日本語 (UTF-8)
+        for (const char* tok : tokens) {
+            const auto p = PlanLanguageSync("Auto Detect", "English", "", tok);
+            TEST_CHECK(p.valid && p.target_language == "Japanese",
+                       B3PlanMsg("target token normalizes to name_en", p).c_str());
+        }
+        const auto ps = PlanLanguageSync("Auto Detect", "English", "ko", "");
+        TEST_CHECK(ps.valid && ps.source_language == "Korean",
+                   B3PlanMsg("source code token normalizes", ps).c_str());
+        const auto psw = PlanLanguageSync("Auto Detect", "English", "\xED\x95\x9C\xEA\xB5\xAD\xEC\x96\xB4", ""); // 한국어
+        TEST_CHECK(psw.valid && psw.source_language == "Korean",
+                   B3PlanMsg("source native name normalizes", psw).c_str());
+    }
+
+    // ---- 3) AUTO is source-only: a target request resolving to AUTO is
+    //         refused (both by name and by code).
+    {
+        const auto a = PlanLanguageSync("Auto Detect", "English", "", "Auto Detect");
+        TEST_CHECK(!a.valid, B3PlanMsg("AUTO rejected as target (name)", a).c_str());
+        const auto b = PlanLanguageSync("Auto Detect", "English", "", "AUTO");
+        TEST_CHECK(!b.valid, B3PlanMsg("AUTO rejected as target (code)", b).c_str());
+        const auto c = PlanLanguageSync("English", "Korean", "AUTO", "");
+        TEST_CHECK(c.valid && c.changed && c.source_language == "Auto Detect",
+                   B3PlanMsg("AUTO accepted as source", c).c_str());
+    }
+
+    // ---- 4) Unresolvable request => refuse WITHOUT mutation; the current
+    //         raw pair is echoed back unchanged (INV-1 guard: surfaces stay
+    //         consistent with config, no half-applied swap).
+    {
+        const auto a = PlanLanguageSync("Korean", "English", "", "Klingon");
+        TEST_CHECK(!a.valid && a.surface_updates.empty(),
+                   B3PlanMsg("garbage target refused, no surfaces", a).c_str());
+        TEST_CHECK(a.source_language == "Korean" && a.target_language == "English",
+                   B3PlanMsg("refusal echoes current pair", a).c_str());
+        // All-or-nothing: an invalid source vetoes an otherwise-valid target.
+        const auto b = PlanLanguageSync("Korean", "English", "Klingon", "Japanese");
+        TEST_CHECK(!b.valid && b.source_language == "Korean" && b.target_language == "English",
+                   B3PlanMsg("half-valid mutation refused wholesale", b).c_str());
+    }
+
+    // ---- 5) No-op re-pick: valid, changed=false (persist skipped), but all
+    //         surfaces still listed (view self-heal on every request).
+    {
+        const auto p = PlanLanguageSync("Auto Detect", "English", "", "English");
+        TEST_CHECK(p.valid && !p.changed, B3PlanMsg("same-target re-pick is unchanged", p).c_str());
+        TEST_CHECK(B3SurfaceList(p) == "BTP", B3PlanMsg("unchanged request still refreshes views", p).c_str());
+        const auto p2 = PlanLanguageSync("Auto Detect", "English", "", "EN");
+        TEST_CHECK(p2.valid && !p2.changed, B3PlanMsg("code form of current target is unchanged too", p2).c_str());
+    }
+
+    // ---- 6) Startup-alignment shape (empty request): valid + unchanged +
+    //         refresh-all; also canonicalizes legacy raw values (changed=1).
+    {
+        const auto p = PlanLanguageSync("Auto Detect", "English", "", "");
+        TEST_CHECK(p.valid && !p.changed && B3SurfaceList(p) == "BTP",
+                   B3PlanMsg("empty request is the refresh-only startup shape", p).c_str());
+        const auto c = PlanLanguageSync("EN", "English", "", "");
+        TEST_CHECK(c.valid && c.changed && c.source_language == "English",
+                   B3PlanMsg("legacy raw code canonicalized to name_en", c).c_str());
+    }
+
+    // ---- 7) Cycle seam composes with the planner exactly as the coordinator
+    //         does for Ctrl+F9 (English -> Korean per the table order).
+    {
+        const std::string next = CycleTargetLanguage("English");
+        const auto p = PlanLanguageSync("Auto Detect", "English", "", next);
+        TEST_CHECK(p.valid && p.changed && p.target_language == "Korean",
+                   B3PlanMsg("cycle(English) plans Korean target", p).c_str());
+    }
+
+    // ---- 8) INV-1/INV-3 end-to-end on the authority: locked write via the
+    //         planner's output, snapshot + disk must both reflect it.
+    {
+        AppConfig cfg; // defaults: Auto Detect -> English, no disk load
+        const auto p = PlanLanguageSync(cfg.GetSnapshot().source_language,
+                                        cfg.GetSnapshot().target_language,
+                                        "", "Chinese Simplified");
+        TEST_CHECK(p.valid && p.changed, B3PlanMsg("ZH-CN plan valid", p).c_str());
+        cfg.SetLanguages(p.source_language, p.target_language);
+        const auto snap = cfg.GetSnapshot();
+        TEST_CHECK(snap.source_language == "Auto Detect" && snap.target_language == "Chinese Simplified",
+                   "B3: snapshot equals the planned pair (single authority)");
+
+        std::error_code ec;
+        const auto tmp = std::filesystem::temp_directory_path(ec) / "emebalachat_b3_sync_test.json";
+        TEST_CHECK(!ec, "B3 fixture: temp path available");
+        ec.clear();
+        std::filesystem::remove(tmp, ec); // stale leftovers must not mask a save failure
+        TEST_CHECK(cfg.SaveToFile(tmp), "B3: SaveToFile succeeds after coordinator write");
+        {
+            std::ifstream in(tmp);
+            std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            TEST_CHECK(content.find("\"target_language\": \"Chinese Simplified\"") != std::string::npos,
+                       "B3: config.json on disk carries the new target (INV-3, synchronous persist)");
+            TEST_CHECK(content.find("\"source_language\": \"Auto Detect\"") != std::string::npos,
+                       "B3: config.json keeps the untouched source");
+        }
+        AppConfig reloaded;
+        TEST_CHECK(reloaded.LoadFromFile(tmp), "B3: persisted config reloads");
+        TEST_CHECK(reloaded.GetSnapshot().target_language == "Chinese Simplified",
+                   "B3: reloaded target matches (persistence roundtrip)");
+        std::filesystem::remove(tmp, ec); // cleanup (best-effort)
+    }
+
+    // ---- 9) Tooltip view seam (RefreshTargetLanguageFromConfig): the
+    //         best-effort sync the coordinator drives for a visible tooltip.
+    {
+        HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+        TooltipWindow tooltip;
+        TEST_CHECK(tooltip.Create(hInst), "B3 fixture: TooltipWindow created");
+
+        // Hidden: refresh is a no-op (plan §2.4 best-effort rule).
+        tooltip.RefreshTargetLanguageFromConfig("Korean");
+        TEST_CHECK(tooltip.GetTargetLang().empty(), "B3: hidden tooltip ignores refresh");
+
+        // Visible translation mode: label follows config, body preserved.
+        tooltip.ShowTranslation(200, 200, L"source", "KO", "English", L"translation body");
+        TEST_CHECK(tooltip.GetTargetLang() == "English", "B3: tooltip starts at the shown target");
+        tooltip.RefreshTargetLanguageFromConfig("Japanese");
+        TEST_CHECK(tooltip.GetTargetLang() == "Japanese", "B3: visible tooltip re-labels to the config target");
+        TEST_CHECK(tooltip.GetTranslatedText() == L"translation body", "B3: view sync never churns the body");
+        // Same-value refresh short-circuits (no needless re-render).
+        tooltip.RefreshTargetLanguageFromConfig("Japanese");
+        TEST_CHECK(tooltip.GetTargetLang() == "Japanese", "B3: idempotent refresh keeps the label");
+
+        // Message mode (REQ-R08 notice card has no language button): no-op.
+        tooltip.ShowMessage(200, 200, L"F9", L"notice");
+        TEST_CHECK(tooltip.IsMessageMode() && tooltip.GetTargetLang().empty(),
+                   "B3: message mode clears the label (ShowMessage contract)");
+        tooltip.RefreshTargetLanguageFromConfig("Korean");
+        TEST_CHECK(tooltip.GetTargetLang().empty(), "B3: message-mode tooltip ignores refresh");
+        tooltip.Dismiss();
+
+        // Cross-thread call marshals through kRefreshTargetLangMessage (the
+        // REQ-R10 seam contract the hook/worker coordinators rely on).
+        tooltip.ShowTranslation(200, 200, L"src2", "KO", "English", L"body2");
+        std::thread poster([&tooltip]() {
+            tooltip.RefreshTargetLanguageFromConfig("Vietnamese");
+        });
+        poster.join();
+        PumpThreadMessagesOnce();
+        TEST_CHECK(tooltip.GetTargetLang() == "Vietnamese",
+                   "B3: off-thread refresh marshals to the GUI thread and applies");
+        tooltip.Destroy();
+    }
+
+    // ---- 10) Hook cycle-delegate routing: with the coordinator seam wired,
+    //          KeyboardHook::CycleTargetLanguage performs NO inline mutation
+    //          (the GUI-thread coordinator owns the write - INV-2).
+    {
+        AppConfig cfg;
+        TranslationManager engine(EngineType::GoogleTranslate, "");
+        FloatingBadge badge;   // not Create()d: no-op headless
+        SystemTray tray;       // not Create()d: UpdateStatus is Shell-API-only
+        PipelineWorker worker(cfg, engine, badge);
+        KeyboardHook hook(cfg, worker, badge, tray);
+
+        std::atomic<int> cycle_requests{0};
+        hook.SetLanguageCycleCallback([&cycle_requests]() {
+            cycle_requests.fetch_add(1, std::memory_order_relaxed);
+        });
+        hook.CycleTargetLanguage();
+        TEST_CHECK(cycle_requests.load() == 1,
+                   "B3: Ctrl+F9 cycle delegates to the marshal seam exactly once");
+        TEST_CHECK(cfg.GetSnapshot().target_language == "English",
+                   "B3: wired cycle leaves the inline mutation path untouched (config unchanged)");
+
+        // Unwired fallback (unit/standalone use): inline legacy behavior still
+        // advances the config through the locked setter. CycleLanguage() also
+        // persists to the DEFAULT config path as a side effect - snapshot and
+        // restore that file around the call so the test can never clobber a
+        // developer's real build/config.json.
+        std::error_code ec;
+        const auto default_cfg_path = AppConfig::GetDefaultConfigPath();
+        std::string backup_bytes;
+        const bool existed = std::filesystem::exists(default_cfg_path, ec) && !ec;
+        if (existed) {
+            std::ifstream in(default_cfg_path, std::ios::binary);
+            backup_bytes.assign((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+        }
+        KeyboardHook hook2(cfg, worker, badge, tray);
+        hook2.CycleTargetLanguage(); // unwired: mutates cfg (English -> Korean)
+        TEST_CHECK(cfg.GetSnapshot().target_language == "Korean",
+                   "B3: unwired fallback keeps the legacy inline cycle (English->Korean)");
+        if (existed) {
+            std::ofstream out(default_cfg_path, std::ios::binary | std::ios::trunc);
+            out.write(backup_bytes.data(), static_cast<std::streamsize>(backup_bytes.size()));
+        } else {
+            std::filesystem::remove(default_cfg_path, ec); // only removes OUR artifact
+        }
+        SetSoundEnabled(true);
+    }
+
+    std::cout << "[PASS] R6-B3 language sync coordinator seam tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -2930,6 +3184,7 @@ int main() {
     TestEngineShutdownCancellation();
     TestEngineFallbackExeDirAnchoring();
     TestBatch2VersionScrollAbout();
+    TestB3LanguageSync();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

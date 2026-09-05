@@ -83,6 +83,9 @@ public:
     // (REQ-R10 marshaling discipline; the tooltip is WS_EX_NOACTIVATE so the
     // OS routes real WM_MOUSEWHEEL to the focused window, never to it).
     static constexpr UINT kScrollMessage          = WM_APP + 0x204;
+    // R6 Phase 1 (B3): marshaled target-language view refresh posted by
+    // RefreshTargetLanguageFromConfig() when called off the GUI thread.
+    static constexpr UINT kRefreshTargetLangMessage = WM_APP + 0x205;
 
     // ---- REQ-002 scrollable tooltip (architect plan §2.1) ----
     // GUI-thread entry for kScrollMessage (and direct WM_MOUSEWHEEL). Converts
@@ -171,6 +174,11 @@ public:
         std::wstring header;
         std::wstring body;
     };
+    // R6 B3: marshaled RefreshTargetLanguageFromConfig payload (heap pointer
+    // in LPARAM, same ownership-transfer contract as the seams above).
+    struct TargetLangPayload {
+        std::string target_lang;
+    };
     // Test/inspection seam: same PostMessage path the hook threads use, with a
     // caller-provided payload pointer (the WndProc takes ownership on success).
     static bool PostPayloadForTest(HWND hwnd, UINT msg, void* payload) {
@@ -178,6 +186,18 @@ public:
     }
 
     void SetLanguageChangeCallback(LanguageChangeCallback cb) { lang_change_cb_ = std::move(cb); }
+
+    // ---- R6 Phase 1 (B3): single-source-of-truth language sync (plan §2.4) ----
+    // View-refresh seam called by the main.cpp ApplyLanguageChange coordinator
+    // whenever ANY surface (tray menu, swap, cycle, config load) mutates the
+    // persisted target language. Best-effort by design: a no-op while hidden
+    // or in REQ-R08 message mode (the compact notice has no language button);
+    // otherwise it re-labels the target button and re-renders WITHOUT touching
+    // the translated body (re-translation on external change is out of scope -
+    // the plan calls for view sync, not content churn). Thread-safe: posts to
+    // the GUI-thread WndProc through kRefreshTargetLangMessage like the other
+    // REQ-R10 seams, so hook/worker-thread coordinators can call it directly.
+    void RefreshTargetLanguageFromConfig(std::string_view new_target);
 
     // Audio & Clipboard actions
     void SpeakCurrentText();

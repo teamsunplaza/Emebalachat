@@ -185,6 +185,17 @@ public:
     void CycleTargetLanguage();
     void ToggleAutoSend();
 
+    // R6 Phase 1 (B3, plan §2.3): language-cycle marshal seam. main.cpp wires
+    // this at startup to a request toward the GUI-thread ApplyLanguageChange
+    // coordinator (PostMessage to the controller window), so the Ctrl+F9 cycle
+    // mutates config and refreshes badge/tray/tooltip through the SAME single
+    // authority as every other surface instead of hand-rolling the sync here
+    // on the hook thread. When unwired (unit tests, standalone use) the
+    // original inline body remains as fallback. Set once at startup BEFORE
+    // Start(); read-only inside the hook thread afterwards (same contract as
+    // active_change_cb_).
+    void SetLanguageCycleCallback(std::function<void()> cb) { lang_cycle_cb_ = std::move(cb); }
+
     void SetDoubleCtrlCCallback(std::function<void()> cb);
     void SetEscCallback(std::function<bool()> cb) { esc_cb_ = std::move(cb); }
 
@@ -313,6 +324,7 @@ private:
     std::function<void()> double_ctrl_c_cb_;
     std::function<bool()> esc_cb_;
     std::function<void(bool)> active_change_cb_;
+    std::function<void()> lang_cycle_cb_; // R6 B3: see SetLanguageCycleCallback
 
     // REQ-R06 worker state. double_ctrl_c_pending_ is a single-slot flag owned
     // by the worker loop; double_ctrl_c_busy_ is a relaxed atomic read by the

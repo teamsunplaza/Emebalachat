@@ -346,6 +346,16 @@ void KeyboardHook::ToggleActive() {
 }
 
 void KeyboardHook::CycleTargetLanguage() {
+    // R6 Phase 1 (B3, plan §2.3): when main.cpp wired the coordinator seam,
+    // the ENTIRE cycle (next-target computation + locked persist + badge/tray/
+    // tooltip refresh) runs on the GUI thread through the single
+    // ApplyLanguageChange authority, like every other surface. This hook-
+    // thread path only posts a non-blocking request. The inline implementation
+    // below stays as the standalone/unit-test fallback when unwired.
+    if (lang_cycle_cb_) {
+        lang_cycle_cb_();
+        return;
+    }
     std::string next_tgt = config_.CycleLanguage(); // locked mutator + save inside
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
     badge_.SetLanguages(ToUtf16(snap.source_language), ToUtf16(next_tgt));

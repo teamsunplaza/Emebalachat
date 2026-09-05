@@ -36,6 +36,49 @@ std::string NormalizeLanguageCode(std::string_view code_or_name);
 // Cycles to the next target language given current code or name, wrapping around.
 std::string CycleTargetLanguage(std::string_view current_code_or_name);
 
+// ---- R6 Phase 1 (B3): pure language-sync planner (architect plan §2.4/§2.5) ----
+// The ApplyLanguageChange coordinator in src/main.cpp is the single authority
+// for every language mutation (tooltip language menu, tray source/target
+// submenus, tray Swap / badge double-click, startup config load). All of its
+// decision logic lives HERE so it is unit-testable headlessly
+// (TestB3LanguageSync); the coordinator consumes the plan verbatim.
+//
+// Given the currently persisted pair and a mutation request, the planner
+// resolves the request (ISO code OR English OR native name, case-insensitive),
+// canonicalizes it to the stored form (LanguageInfo::name_en), and reports
+// which views the coordinator must refresh afterwards. AUTO resolves only for
+// the SOURCE field: a target language is never auto-detect.
+enum class LanguageSurface : unsigned char {
+    Badge,    // FloatingBadge::SetLanguages (language label)
+    Tray,     // SystemTray::UpdateStatus (icon tip + menu check marks)
+    Tooltip,  // TooltipWindow::RefreshTargetLanguageFromConfig (best-effort)
+};
+
+struct LanguageSyncPlan {
+    std::string source_language;  // canonical pair the coordinator persists via the I4 setters
+    std::string target_language;
+    // False = unresolvable request: the current pair is returned untouched and
+    // the coordinator must mutate NOTHING and refresh no surfaces (INV-1 guard).
+    bool valid = false;
+    // False = the resolved pair already equals the persisted state: skip the
+    // locked write and SaveToFile (no-op language re-pick must not churn disk),
+    // but the view refreshes still run (self-heal against external drift).
+    bool changed = false;
+    // View refresh order after the (conditional) persist step: badge -> tray ->
+    // tooltip. Empty unless valid. The calling surface re-renders its own
+    // content afterwards (the coordinator cannot know its payload).
+    std::vector<LanguageSurface> surface_updates;
+};
+
+// Empty new_* arguments mean "keep the current value". A no-request call
+// (both empty) is the startup-alignment path: valid, unchanged, refresh-only.
+// All-or-nothing: if either requested field fails to resolve, the whole
+// mutation is rejected (a half-applied swap is worse than a refused one).
+LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
+                                  std::string_view cur_target,
+                                  std::string_view new_source,
+                                  std::string_view new_target);
+
 // Formats translation prompt for Hy-MT2 model.
 std::string BuildPrompt(std::string_view source_text, std::string_view target_lang);
 

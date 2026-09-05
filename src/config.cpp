@@ -345,6 +345,76 @@ std::string CycleTargetLanguage(std::string_view current_code_or_name) {
     return targets[next_idx].name_en;
 }
 
+// ---- R6 Phase 1 (B3): pure language-sync planner (architect plan §2.4/§2.5) ----
+namespace {
+// Resolve a language token exactly the way the config layer already does for
+// CycleTargetLanguage: canonical code first (case-insensitive), then English
+// or native name. nullptr when the token matches nothing.
+const LanguageInfo* ResolveLanguageInfo(std::string_view token) {
+    if (const auto* by_code = FindLanguageByCode(token)) {
+        return by_code;
+    }
+    return FindLanguageByName(token);
+}
+} // namespace
+
+LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
+                                  std::string_view cur_target,
+                                  std::string_view new_source,
+                                  std::string_view new_target) {
+    LanguageSyncPlan plan; // valid=false, changed=false, no surfaces
+
+    // Canonicalize the CURRENT pair. An unresolvable persisted value (e.g. a
+    // hand-edited garbage config) is carried through RAW instead of poisoning
+    // the whole mutation - the surfaces normalize for display via
+    // NormalizeLanguageCode() anyway, and a later valid write self-heals it.
+    const LanguageInfo* cur_src_info = ResolveLanguageInfo(cur_source);
+    const LanguageInfo* cur_tgt_info = ResolveLanguageInfo(cur_target);
+    std::string canon_src = cur_src_info ? cur_src_info->name_en : std::string(cur_source);
+    std::string canon_tgt = cur_tgt_info ? cur_tgt_info->name_en : std::string(cur_target);
+
+    // Empty request = keep the (canonicalized) current value. A non-empty
+    // request MUST resolve: all-or-nothing, so a half-applied swap or a typo'd
+    // menu name can never leave config and views disagreeing (INV-1 guard).
+    // On refusal the CURRENT pair is echoed back untouched (valid=false tells
+    // the coordinator to persist nothing and refresh nothing).
+    if (!new_source.empty()) {
+        const LanguageInfo* req = ResolveLanguageInfo(new_source);
+        if (!req) {
+            plan.source_language = std::string(cur_source);
+            plan.target_language = std::string(cur_target);
+            return plan; // invalid: persist nothing, refresh nothing
+        }
+        canon_src = req->name_en; // source accepts AUTO ("Auto Detect")
+    }
+    if (!new_target.empty()) {
+        const LanguageInfo* req = ResolveLanguageInfo(new_target);
+        if (!req || req->code == "AUTO") {
+            // AUTO is never a translation TARGET (the tooltip/tray menus only
+            // offer GetTargetLanguages()); refuse instead of storing a no-op.
+            plan.source_language = std::string(cur_source);
+            plan.target_language = std::string(cur_target);
+            return plan;
+        }
+        canon_tgt = req->name_en;
+    }
+
+    plan.source_language = std::move(canon_src);
+    plan.target_language = std::move(canon_tgt);
+    plan.valid = true;
+    // changed compares the canonical result against the RAW persisted strings,
+    // so a persisted "EN"/"korean"-style value is rewritten into the canonical
+    // name_en form the rest of the app stores (CycleTargetLanguage precedent).
+    plan.changed = (plan.source_language != std::string(cur_source) ||
+                    plan.target_language != std::string(cur_target));
+    // Every valid mutation refreshes all three views (plan §2.4): the tooltip
+    // seam itself no-ops when hidden, so listing it unconditionally is safe
+    // and keeps the sync path single (no caller-side branching to drift).
+    plan.surface_updates = { LanguageSurface::Badge, LanguageSurface::Tray,
+                             LanguageSurface::Tooltip };
+    return plan;
+}
+
 namespace {
 bool IsChineseLanguage(std::string_view lang) {
     if (EqualsIgnoreCase(lang, "ZH") || EqualsIgnoreCase(lang, "ZH-CN") || EqualsIgnoreCase(lang, "ZH-TW")) {
