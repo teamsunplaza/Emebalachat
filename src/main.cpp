@@ -1203,6 +1203,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 10. Startup sound
     emebalachat::PlayToggleOn();
 
+    // 10.5. REQ-021 startup reminder (user decision 260905 21:26 item 4):
+    // show a 3-second Korean notice at every launch so the pre-release
+    // removal of diagnostic PII content logging is never forgotten.
+    // TODO(REQ-021): REMOVE this popup before the first release tag — it is a
+    // temporary reminder, not a product feature. The PII logging removal
+    // itself (hook.cpp/worker.cpp DIAG_LOG content= lines) is deferred to
+    // release time per the same user decision.
+    {
+        // Center of the primary monitor work area, nudged up-left by half the
+        // card size (320x84 DIP) so the notice lands mid-screen. ShowMessage
+        // re-clamps to the actual monitor under the point, so multi-monitor
+        // and per-monitor DPI are handled inside the tooltip.
+        HMONITOR hMon = ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        int cx = 0, cy = 0;
+        if (::GetMonitorInfoW(hMon, &mi)) {
+            cx = (mi.rcWork.left + mi.rcWork.right) / 2;
+            cy = (mi.rcWork.top + mi.rcWork.bottom) / 2;
+        }
+        tooltip.ShowMessage(
+            cx, cy,
+            L"⚠️ 배포 전 필수 확인",
+            L"진단 로그에 타이핑 내용·번역문이 기록됩니다. 배포 시 반드시 제거하세요."
+        );
+    }
+
     // 11. Main Message Loop
     MSG msg = {};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

@@ -375,7 +375,7 @@ private:
 
     static constexpr UINT_PTR kTimerCopiedFeedback = 4001;
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;
-    static constexpr DWORD kMessageAutohideMs = 1800;
+    static constexpr DWORD kMessageAutohideMs = 3000; // REQ-021: 3s startup reminder (also lengthens F-17/R5 notices)
 };
 
 } // namespace emebalachat
