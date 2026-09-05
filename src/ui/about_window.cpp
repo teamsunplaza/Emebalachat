@@ -18,36 +18,23 @@ namespace emebalachat {
 namespace {
 const wchar_t kAboutClassName[] = L"Emebalachat_AboutClass";
 
-// ---- REQ-005 content constants (architect plan §2.2, verbatim copy) ----
-// Body content stays English (marketing copy) per the plan's deliberate i18n
-// decision; only the menu label and window title are localized (Batch 1).
-constexpr wchar_t kTagline[] =
-    L"Never copy-paste again. Type naturally in your native tongue \u2014 "
-    L"translations replace your keystrokes in real time inside any Windows application.";
+// ---- R6 Phase 5 (plan §5.2, user decision "About 다국어화"): the About body
+// is now fully localized. The former hardcoded English constants (tagline,
+// 3 features, etymology, link labels, contact lines) moved into the i18n
+// LocalizedStrings tables (StringId::AboutTagline .. AboutContactLead) and
+// are read through I18n::Get on every Render, so a live locale switch
+// repaints in the new language. The English locale keeps the original REQ-005
+// copy verbatim. ----
 
-constexpr wchar_t kFeature0[] =
-    L"\u26A1 Drag-to-Translate \u2014 select text in any app, the floating icon translates instantly.";
-constexpr wchar_t kFeature1[] =
-    L"\U0001F50A Neural TTS \u2014 KO/EN/JA/DE pronunciation.";
-constexpr wchar_t kFeature2[] =
-    L"\U0001F512 100% on-device & private \u2014 active only while the shortcut is held; clipboard untouched.";
-
-constexpr wchar_t kEtymology[] =
-    L"In 2000 BCE, Mesopotamian scribes called \u201CEme-bala\u201D \u2014 those who turn language to bridge worlds.";
-
-const wchar_t* const kLinkLabels[AboutWindow::kNumLinks] = { L"Website", L"Contact", L"Download" };
+// Link URLs are factual brand data, never translated. Slot order matches the
+// label StringIds (Website / Contact / Reddit). R6 Phase 5 (user decision):
+// slot 2 replaced the GitHub-releases Download link with the public Reddit
+// community; both emebala.org links are kept.
 const wchar_t* const kLinkUrls[AboutWindow::kNumLinks] = {
     L"https://www.emebala.org/emebalachat",
     L"https://www.emebala.org/contact",
-    L"https://github.com/teamsunplaza/Emebalachat/releases/latest",
+    L"https://www.reddit.com/r/emebala/",
 };
-
-constexpr wchar_t kContact0[] =
-    L"Team Sunplaza \u00B7 Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)";
-constexpr wchar_t kContact1[] =
-    L"+82 2 575 0414 \u00B7 Office hours 10:00\u201319:00 KST";
-constexpr wchar_t kContact2[] =
-    L"Lead Architect: Yongtai Kim";
 
 // Hover index encoding for hovered_link_ (link slots 0..2, close = 3).
 constexpr int kHoverClose = 3;
@@ -352,6 +339,41 @@ void AboutWindow::Dismiss() {
     ::ShowWindow(hwnd_, SW_HIDE);
 }
 
+// R6 Phase 6 (plan §5.2/§5.4): UI-language switch. Marshal like Dismiss (no
+// heap payload). Re-apply the localized caption; repaint the body only while
+// visible (a hidden window reads fresh strings on its next ShowAt -> Render).
+void AboutWindow::RequestLocaleRefresh() {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ::PostMessageW(hwnd_, kLocaleRefreshMessage, 0, 0);
+        return;
+    }
+    ::SetWindowTextW(hwnd_, I18n::Get(StringId::AboutTitle).c_str());
+    if (visible_.load(std::memory_order_relaxed)) {
+        Render();
+        UpdateLayered();
+    }
+}
+
+// R6 Phase 5 pure seam (plan §7.2): every text the card paints, resolved for
+// the CURRENT locale. Render() and the unit tests share this single source.
+AboutWindow::LocalizedContent AboutWindow::BuildLocalizedContent() {
+    LocalizedContent c;
+    c.title = I18n::Get(StringId::AboutTitle);
+    c.tagline = I18n::Get(StringId::AboutTagline);
+    c.features[0] = I18n::Get(StringId::AboutFeature0);
+    c.features[1] = I18n::Get(StringId::AboutFeature1);
+    c.features[2] = I18n::Get(StringId::AboutFeature2);
+    c.etymology = I18n::Get(StringId::AboutEtymology);
+    c.link_labels[0] = I18n::Get(StringId::AboutLinkWebsite);
+    c.link_labels[1] = I18n::Get(StringId::AboutLinkContact);
+    c.link_labels[2] = I18n::Get(StringId::AboutLinkReddit);
+    c.contacts[0] = I18n::Get(StringId::AboutContactOrg);
+    c.contacts[1] = I18n::Get(StringId::AboutContactPhone);
+    c.contacts[2] = I18n::Get(StringId::AboutContactLead);
+    return c;
+}
+
 void AboutWindow::OpenLink(int index) {
     if (index < 0 || index >= kNumLinks) return;
     HINSTANCE hRes = ::ShellExecuteW(hwnd_, L"open", kLinkUrls[index], nullptr, nullptr, SW_SHOWNORMAL);
@@ -434,9 +456,13 @@ void AboutWindow::Render() {
                                     version_format_, D2D1::RectF(24.0f, 134.0f, w - 24.0f, 152.0f), subTextBrush);
     }
 
+    // R6 Phase 5: resolve every body string for the CURRENT locale once per
+    // Render (the pure seam the unit tests assert against).
+    const LocalizedContent content = BuildLocalizedContent();
+
     // 3. Tagline (body 12, wrap, centered).
     if (tagline_format_ && textBrush) {
-        dc_render_target_->DrawText(kTagline, static_cast<UINT32>(std::size(kTagline) - 1),
+        dc_render_target_->DrawText(content.tagline.c_str(), static_cast<UINT32>(content.tagline.size()),
                                     tagline_format_, D2D1::RectF(24.0f, 162.0f, w - 24.0f, 208.0f), textBrush);
     }
 
@@ -447,12 +473,11 @@ void AboutWindow::Render() {
     }
 
     // 4. Features: 3 blocks of 42 DIP, wrapped leading text.
-    const wchar_t* const features[3] = { kFeature0, kFeature1, kFeature2 };
     if (body_format_ && textBrush) {
         for (int i = 0; i < 3; ++i) {
             const float top = 230.0f + static_cast<float>(i) * 42.0f;
-            dc_render_target_->DrawText(features[i],
-                                        static_cast<UINT32>(std::wcslen(features[i])),
+            dc_render_target_->DrawText(content.features[i].c_str(),
+                                        static_cast<UINT32>(content.features[i].size()),
                                         body_format_,
                                         D2D1::RectF(28.0f, top, w - 28.0f, top + 40.0f),
                                         textBrush);
@@ -461,7 +486,7 @@ void AboutWindow::Render() {
 
     // 5. Etymology (italic 11, subtext).
     if (etymology_format_ && subTextBrush) {
-        dc_render_target_->DrawText(kEtymology, static_cast<UINT32>(std::size(kEtymology) - 1),
+        dc_render_target_->DrawText(content.etymology.c_str(), static_cast<UINT32>(content.etymology.size()),
                                     etymology_format_, D2D1::RectF(24.0f, 362.0f, w - 24.0f, 402.0f), subTextBrush);
     }
 
@@ -471,7 +496,7 @@ void AboutWindow::Render() {
                                     dividerBrush, 1.0f);
     }
 
-    // 6. Links row: 3 pill buttons centered (Website / Contact / Download).
+    // 6. Links row: 3 pill buttons centered (Website / Contact / Reddit).
     const float pill_w = 100.0f;
     const float pill_gap = 10.0f;
     const float pills_total = pill_w * kNumLinks + pill_gap * (kNumLinks - 1);
@@ -492,19 +517,18 @@ void AboutWindow::Render() {
             dc_render_target_->DrawRoundedRectangle(pill, accentBrush, hover ? 1.4f : 1.0f);
         }
         if (link_format_ && textBrush) {
-            dc_render_target_->DrawText(kLinkLabels[i],
-                                        static_cast<UINT32>(std::wcslen(kLinkLabels[i])),
+            dc_render_target_->DrawText(content.link_labels[i].c_str(),
+                                        static_cast<UINT32>(content.link_labels[i].size()),
                                         link_format_, link_rects_[i], textBrush);
         }
     }
 
     // 7. Contact block (small 10.5, subtext, centered).
-    const wchar_t* const contacts[3] = { kContact0, kContact1, kContact2 };
     if (small_format_ && subTextBrush) {
         for (int i = 0; i < 3; ++i) {
             const float top = 472.0f + static_cast<float>(i) * 22.0f;
-            dc_render_target_->DrawText(contacts[i],
-                                        static_cast<UINT32>(std::wcslen(contacts[i])),
+            dc_render_target_->DrawText(content.contacts[i].c_str(),
+                                        static_cast<UINT32>(content.contacts[i].size()),
                                         small_format_,
                                         D2D1::RectF(24.0f, top, w - 24.0f, top + 20.0f),
                                         subTextBrush);
@@ -626,6 +650,12 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         case kDismissMessage: {
             pThis->Dismiss();
+            return 0;
+        }
+
+        // R6 Phase 6: marshaled locale-refresh request (no heap payload).
+        case kLocaleRefreshMessage: {
+            pThis->RequestLocaleRefresh();
             return 0;
         }
 

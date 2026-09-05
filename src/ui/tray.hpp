@@ -23,6 +23,10 @@ public:
         std::function<void()> on_show_cheat_sheet;
         std::function<void()> on_show_about; // Opens the About window (wired in main.cpp)
         std::function<void()> on_exit;
+        // R6 Phase 6 (plan §5.4): UI-language selector submenu. Argument is the
+        // canonical locale code ("auto", "ko", "ja", "zh-CN", "zh-TW", "vi",
+        // "es", "en"); main.cpp validates/persists via PlanUiLocaleChange.
+        std::function<void(std::string_view code)> on_select_ui_language;
     };
 
     SystemTray();
@@ -45,6 +49,12 @@ public:
         bool badge_visible
     );
 
+    // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
+    // locale code) for the UI-language submenu check mark. Called by main.cpp
+    // at startup and from RefreshAllUiForLocaleChange (menu itself rebuilds
+    // lazily on every ShowContextMenu, so no explicit rebuild nudge is needed).
+    void SetUiLanguage(std::string_view persisted_code);
+
     // Displays popup context menu at current cursor coordinates
     void ShowContextMenu();
 
@@ -66,6 +76,7 @@ private:
     bool auto_send_ = false;
     bool sound_enabled_ = true;
     bool badge_visible_ = true;
+    std::string ui_language_ = "auto"; // R6 Phase 6: submenu check state
 };
 
 } // namespace emebalachat

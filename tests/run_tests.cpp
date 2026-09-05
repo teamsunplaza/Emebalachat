@@ -3707,6 +3707,169 @@ void TestR6P3MemoryLifecycle() {
     std::cout << "[PASS] R6-P3 memory/lifecycle audit guard tests completed." << std::endl;
 }
 
+// R6 Phases 5+6 (architect plan §5/§6/§7.2): i18n completeness + About body
+// localization + UI-language selector planner + removed-locale refusal +
+// config ui_language persistence. All pure seams (no window/D2D required);
+// global locale state is restored at the end so later tests are unaffected.
+void TestR6P5P6I18n() {
+    std::cout << "[RUN] Testing R6 P5/P6 i18n coverage, About localization, UI-language selector..." << std::endl;
+
+    const UiLocale kCompleteLocales[] = {
+        UiLocale::Korean, UiLocale::Japanese, UiLocale::ChineseSimplified,
+        UiLocale::ChineseTraditional, UiLocale::Vietnamese, UiLocale::Spanish,
+        UiLocale::English
+    };
+
+    // ---- 1) Table completeness (VP scope item 6): every StringId in [0,
+    //         EnumCount) must resolve NON-EMPTY in all 7 complete locales.
+    //         Guards the 18 new Phase-5/6 strings and the existing ones
+    //         against any future table drift (a missing initializer would
+    //         compile as nullptr and crash Render - this pins it headlessly).
+    int empty_count = 0;
+    for (const UiLocale loc : kCompleteLocales) {
+        I18n::SetLocale(loc);
+        for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
+            if (I18n::Get(static_cast<StringId>(id)).empty()) {
+                ++empty_count;
+            }
+        }
+    }
+    TEST_CHECK(empty_count == 0, "P5/P6: every StringId non-empty in all 7 locales");
+
+    // ---- 2) Removed FR/DE/RU (user decision "미완성 로케일 제거") ----------
+    // The enum values are gone; StringToLocale must map the old codes to
+    // English (startup fallback), and the selector planner must REFUSE them
+    // so they can never be (re-)persisted as half-wired locales.
+    TEST_CHECK(I18n::StringToLocale("fr") == UiLocale::English, "P6: 'fr' falls back to English");
+    TEST_CHECK(I18n::StringToLocale("de") == UiLocale::English, "P6: 'de' falls back to English");
+    TEST_CHECK(I18n::StringToLocale("ru") == UiLocale::English, "P6: 'ru' falls back to English");
+    {
+        const UiLocaleChangePlan frPlan = PlanUiLocaleChange("en", "fr");
+        TEST_CHECK(!frPlan.valid, "P6: selector refuses removed locale 'fr'");
+        TEST_CHECK(!PlanUiLocaleChange("en", "de").valid, "P6: selector refuses removed locale 'de'");
+        TEST_CHECK(!PlanUiLocaleChange("en", "ru").valid, "P6: selector refuses removed locale 'ru'");
+        TEST_CHECK(!PlanUiLocaleChange("en", "klingon").valid, "P6: selector refuses unknown code");
+        TEST_CHECK(!PlanUiLocaleChange("en", "").valid, "P6: selector refuses empty code");
+        I18n::Initialize("fr");
+        TEST_CHECK(I18n::GetCurrentLocale() == UiLocale::English,
+                   "P6: startup Initialize('fr') resolves to English fallback");
+    }
+
+    // ---- 3) Selector data + planner ----------------------------------------
+    {
+        const auto& entries = GetSupportedUiLocales();
+        TEST_CHECK(entries.size() == 7, "P6: selector lists exactly the 7 complete locales");
+        TEST_CHECK(entries[0].locale == UiLocale::Korean && entries[6].locale == UiLocale::English,
+                   "P6: selector order KO-first, EN-last (plan §5.4)");
+        bool all_named = true;
+        for (const auto& e : entries) {
+            if (e.native_name == nullptr || e.native_name[0] == L'\0') all_named = false;
+        }
+        TEST_CHECK(all_named, "P6: every selector entry carries a non-empty endonym");
+
+        const UiLocaleChangePlan autoPlan = PlanUiLocaleChange("ko", "auto");
+        TEST_CHECK(autoPlan.valid, "P6: 'auto' is a valid selection");
+        TEST_CHECK(autoPlan.applied == UiLocale::Auto, "P6: 'auto' defers resolution to apply time");
+        TEST_CHECK(autoPlan.persisted_value == "auto", "P6: 'auto' persists verbatim");
+        TEST_CHECK(autoPlan.changed, "P6: ko -> auto is a change");
+        TEST_CHECK(autoPlan.surfaces.size() == 4 &&
+                       autoPlan.surfaces[0] == LocaleSurface::Tray &&
+                       autoPlan.surfaces[1] == LocaleSurface::Badge &&
+                       autoPlan.surfaces[2] == LocaleSurface::Tooltip &&
+                       autoPlan.surfaces[3] == LocaleSurface::About,
+                   "P6: refresh order tray -> badge -> tooltip -> About (plan §5.4)");
+
+        // Case-insensitive acceptance + canonical spelling in the write value.
+        const UiLocaleChangePlan zh = PlanUiLocaleChange("auto", "ZH-cn");
+        TEST_CHECK(zh.valid && zh.persisted_value == "zh-CN", "P6: 'ZH-cn' accepted, canonicalized to 'zh-CN'");
+        // No-op re-pick: valid, unchanged, still refreshes (self-heal per B3).
+        const UiLocaleChangePlan noop = PlanUiLocaleChange("ko", "KO");
+        TEST_CHECK(noop.valid && !noop.changed && noop.surfaces.size() == 4,
+                   "P6: same-value re-pick skips persist but refreshes views");
+        // Refused plans carry no side effects the coordinator could apply.
+        const UiLocaleChangePlan bad = PlanUiLocaleChange("ko", "xx");
+        TEST_CHECK(!bad.valid && bad.surfaces.empty(), "P6: refused plan mutates nothing");
+    }
+
+    // ---- 4) About body localized (plan §5.2, VP minimum KO+EN+JA) ----------
+    {
+        I18n::SetLocale(UiLocale::Korean);
+        const auto koAbout = AboutWindow::BuildLocalizedContent();
+        I18n::SetLocale(UiLocale::Japanese);
+        const auto jaAbout = AboutWindow::BuildLocalizedContent();
+        I18n::SetLocale(UiLocale::English);
+        const auto enAbout = AboutWindow::BuildLocalizedContent();
+
+        TEST_CHECK(koAbout.tagline.find(L"복사") != std::wstring::npos, "P5: KO tagline localized");
+        TEST_CHECK(jaAbout.tagline.find(L"コピー") != std::wstring::npos, "P5: JA tagline localized");
+        TEST_CHECK(enAbout.tagline == L"Never copy-paste again. Type naturally in your native tongue \u2014 "
+                                      L"translations replace your keystrokes in real time inside any Windows application.",
+                   "P5: EN tagline byte-identical to the original REQ-005 copy");
+        TEST_CHECK(koAbout.features[0] != enAbout.features[0] &&
+                       jaAbout.features[1] != enAbout.features[1],
+                   "P5: feature lines differ per locale (routed through i18n, not constants)");
+        TEST_CHECK(!koAbout.etymology.empty() && koAbout.etymology != enAbout.etymology,
+                   "P5: etymology line localized");
+        TEST_CHECK(enAbout.link_labels[2] == L"Reddit" && koAbout.link_labels[2] == L"Reddit",
+                   "P5: link-3 label is 'Reddit' (brand token) in KO + EN");
+        TEST_CHECK(enAbout.link_labels[0] == L"Website" && enAbout.link_labels[1] == L"Contact",
+                   "P5: EN link labels unchanged");
+        // Contact lines: universal factual data (phone/address/person) stays
+        // in every locale; the LABELS translate (plan §5.2 decision).
+        TEST_CHECK(koAbout.contacts[2].find(L"Yongtai Kim") != std::wstring::npos &&
+                       koAbout.contacts[2] != enAbout.contacts[2],
+                   "P5: KO contact-lead line keeps the name, localizes the label");
+        TEST_CHECK(enAbout.contacts[1].find(L"+82 2 575 0414") != std::wstring::npos,
+                   "P5: EN contact-phone line carries the universal number");
+        TEST_CHECK(!koAbout.contacts[0].empty() && !jaAbout.contacts[0].empty(),
+                   "P5: KO/JA contact-org lines non-empty");
+    }
+
+    // ---- 5) Brand token fixed (user decision) ------------------------------
+    // TooltipTitle (the notice header + tray tip prefix) stays "Emebala Chat"
+    // in every complete locale; only surrounding sentences translate.
+    {
+        bool brand_fixed = true;
+        for (const UiLocale loc : kCompleteLocales) {
+            I18n::SetLocale(loc);
+            if (I18n::Get(StringId::TooltipTitle) != L"Emebala Chat") brand_fixed = false;
+        }
+        TEST_CHECK(brand_fixed, "P5: brand token 'Emebala Chat' untranslated in all 7 locales");
+    }
+
+    // ---- 6) Runtime locale switch changes Get output (atomic path) ---------
+    {
+        I18n::SetLocale(UiLocale::English);
+        const std::wstring enActive = I18n::Get(StringId::BadgeActive);
+        I18n::SetLocale(UiLocale::Korean);
+        const std::wstring koActive = I18n::Get(StringId::BadgeActive);
+        TEST_CHECK(enActive == L"Active" && koActive == L"활성",
+                   "P6: SetLocale flips I18n::Get immediately (selector re-render contract)");
+    }
+
+    // ---- 7) config ui_language persistence (I4 pattern, new field) ---------
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.GetSnapshot().ui_language == "auto", "P6: default ui_language is 'auto'");
+        cfg.SetUiLanguage("ja");
+        TEST_CHECK(cfg.GetSnapshot().ui_language == "ja", "P6: SetUiLanguage writes the locked field");
+        const std::string json = cfg.ToJsonString();
+        TEST_CHECK(json.find("\"ui_language\": \"ja\"") != std::string::npos,
+                   "P6: ui_language serialized to JSON");
+        AppConfig reloaded;
+        TEST_CHECK(reloaded.FromJsonString(json), "P6: config JSON re-parses");
+        TEST_CHECK(reloaded.GetSnapshot().ui_language == "ja", "P6: ui_language round-trips");
+        // I18n::Initialize consumes the persisted code exactly like startup.
+        I18n::Initialize(reloaded.GetSnapshot().ui_language);
+        TEST_CHECK(I18n::GetCurrentLocale() == UiLocale::Japanese,
+                   "P6: persisted 'ja' resolves to the Japanese locale at (re)init");
+    }
+
+    // Restore OS-derived locale for any later test functions.
+    I18n::Initialize("auto");
+    std::cout << "[PASS] R6 P5/P6 i18n tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -3759,6 +3922,7 @@ int main() {
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
+    TestR6P5P6I18n();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

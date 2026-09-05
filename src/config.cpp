@@ -699,6 +699,7 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
     s.engine_type = engine_type;
     s.source_language = source_language;
     s.target_language = target_language;
+    s.ui_language = ui_language; // R6 Phase 6: selector read-back
     s.auto_send = auto_send.load(std::memory_order_relaxed);
     s.sound_enabled = sound_enabled.load(std::memory_order_relaxed);
     s.drag_to_translate = drag_to_translate;
@@ -709,6 +710,13 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
 void AppConfig::SetEngineTypeName(std::string value) {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_type = std::move(value);
+}
+
+// R6 Phase 6: ui_language is runtime-mutable via the tray selector; same I4
+// locking discipline as the engine/language setters above.
+void AppConfig::SetUiLanguage(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ui_language = std::move(value);
 }
 
 void AppConfig::SetSourceLanguage(std::string value) {

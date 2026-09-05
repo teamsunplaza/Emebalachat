@@ -150,6 +150,10 @@ std::string ResolveModelPath(std::string_view raw_path,
 //     only written at startup (before any thread exists) and read-only after,
 //     so they need no locking.
 struct AppConfig {
+    // R6 Phase 6: ui_language becomes runtime-mutable (tray UI-language
+    // selector). Like the other shared strings it must be written via
+    // SetUiLanguage() and read via GetSnapshot().ui_language once threads
+    // exist; direct field access is startup-only (before any thread exists).
     std::string ui_language = "auto";
     std::string engine_type = "auto";
     std::string model_path = "models/Hy-MT2-1.8B-Q8_0.gguf";
@@ -179,6 +183,7 @@ struct AppConfig {
         std::string engine_type;
         std::string source_language;
         std::string target_language;
+        std::string ui_language; // R6 Phase 6: selector read-back (test seam)
         bool auto_send = false;
         bool sound_enabled = true;
         bool drag_to_translate = true;
@@ -196,6 +201,9 @@ struct AppConfig {
     void SetSourceLanguage(std::string value);
     void SetTargetLanguage(std::string value);
     void SetLanguages(std::string source, std::string target);
+    // R6 Phase 6: locked mutator for the tray UI-language selector (same
+    // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
+    void SetUiLanguage(std::string value);
 
     // Returns standard default config path: config.json next to executable or working dir.
     static std::filesystem::path GetDefaultConfigPath();

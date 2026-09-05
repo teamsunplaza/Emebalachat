@@ -2,6 +2,7 @@
 #include "engine.hpp"
 #include "hook.hpp"
 #include "i18n.hpp"
+#include "version.hpp"
 #include "mouse_hook.hpp"
 #include "smart_bypass.hpp"
 #include "sound.hpp"
@@ -245,12 +246,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     ::SetDllDirectoryW(nullptr);
 
     // 1. Single Instance Mutex
+    // NOTE (R6 Phase 5 sweep): the two startup MessageBox texts below are now
+    // routed through i18n (StringId::AppAlreadyRunning / AppComFailed). They
+    // run BEFORE I18n::Initialize (config not loaded yet on the second
+    // instance), so they render the English table - behaviorally identical to
+    // the old hardcoded literals, but the strings live in exactly one place.
     HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Global\\Emebalachat_SingleInstance");
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
         ::MessageBoxW(
             nullptr,
-            L"Emebala Chat is already running in the background.\nCheck the system notification tray.",
-            L"Emebala Chat",
+            emebalachat::I18n::Get(emebalachat::StringId::AppAlreadyRunning).c_str(),
+            emebalachat::kAppNameW.data(),
             MB_OK | MB_ICONINFORMATION
         );
         if (hMutex) {
@@ -274,8 +280,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 static_cast<unsigned long>(hrCom));
         ::MessageBoxW(
             nullptr,
-            L"COM initialization failed.\nThe floating badge and text-to-speech will be unavailable,\nbut translation, hotkeys, tray and sounds still work.",
-            L"Emebala Chat",
+            emebalachat::I18n::Get(emebalachat::StringId::AppComFailed).c_str(),
+            emebalachat::kAppNameW.data(),
             MB_OK | MB_ICONWARNING
         );
     }
@@ -436,8 +442,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (!::GetCursorPos(&cur)) {
             cur = { 0, 0 };
         }
+        // R6 Phase 5 (plan §5.3): notice header literal -> localized
+        // StringId::TooltipTitle (was the hardcoded L"Emebala Chat" header).
         tooltip.ShowMessageThreadSafe(cur.x, cur.y,
-                                       L"Emebala Chat",
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
     });
 
@@ -528,6 +536,38 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
     // Publish for the controller WndProc (hook/worker-thread marshal target).
     emebalachat::g_apply_language_change = ApplyLanguageChange;
+
+    // R6 Phase 6 (plan §5.4): locale-change propagation coordinator, mirroring
+    // the ApplyLanguageChange pattern above. After I18n::SetLocale, re-render
+    // every surface in the plan's order (tray -> badge -> tooltip -> About).
+    // GUI-thread-only: called from the tray selector callback (its
+    // TrackPopupMenuEx runs on this thread). Surfaces that cache localized
+    // strings outside Render() are handled explicitly:
+    //   * tray: menu rebuilds lazily on every ShowContextMenu (fresh I18n::Get
+    //     each build); UpdateStatus refreshes the localized icon tip.
+    //   * badge: SetLanguages nudge forces a repaint of the localized parts.
+    //   * tooltip: RefreshTargetLanguageFromConfig repaints while visible (the
+    //     same value is fine - it is a view-refresh nudge); hidden tooltips
+    //     pick up new strings on the next Show (plan: acceptable).
+    //   * About: RequestLocaleRefresh re-applies the caption and repaints the
+    //     localized body while visible.
+    auto RefreshAllUiForLocaleChange = [&]() {
+        const auto snap = config.GetSnapshot(); // I4: consistent read
+        tray.SetUiLanguage(snap.ui_language);   // submenu check-mark mirror
+        tray.UpdateStatus(
+            hook.IsActive(),
+            engine.GetActiveEngineName(),
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
+            badge.IsVisible()
+        );
+        badge.SetLanguages(emebalachat::ToUtf16(snap.source_language),
+                           emebalachat::ToUtf16(snap.target_language));
+        tooltip.RefreshTargetLanguageFromConfig(snap.target_language);
+        about_window.RequestLocaleRefresh();
+    };
     // R6 Phase 1 (B3): Ctrl+F9 cycle now routes through the SAME coordinator.
     // Fires on the hook thread -> RequestLanguageSync posts to the controller
     // window (GUI thread). Set before hook.Start(); read-only afterwards
@@ -679,6 +719,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         about_window.Show(cursor.x, cursor.y);
     };
 
+    // R6 Phase 6 (plan §5.4): tray UI-language selector. Runs on the GUI
+    // thread (tray callback). Validation + canonicalization + refusal of
+    // unknown/removed codes (fr/de/ru) live in the pure PlanUiLocaleChange
+    // seam (i18n.hpp), pinned by TestR6P5P6I18n. Persistence follows the I4
+    // pattern: locked SetUiLanguage + synchronous SaveToFile (same contract
+    // as the language coordinator's INV-3). A no-op re-pick skips the write
+    // but still refreshes the views (self-heal). "auto" resolves to the
+    // DETECTED system locale at apply time; the persisted value stays "auto"
+    // so a later OS-language change is honored on next start.
+    trayCallbacks.on_select_ui_language = [&](std::string_view code) {
+        const auto snap = config.GetSnapshot(); // I4: consistent read
+        const emebalachat::UiLocaleChangePlan plan =
+            emebalachat::PlanUiLocaleChange(snap.ui_language, code);
+        if (!plan.valid) {
+            fprintf(stderr, "MAIN/UiLocale/001: refused unknown UI-language code '%s'\n",
+                    std::string(code).c_str());
+            return;
+        }
+        if (plan.changed) {
+            config.SetUiLanguage(plan.persisted_value); // I4: locked write
+            config.SaveToFile();
+        }
+        const emebalachat::UiLocale applied =
+            (plan.applied == emebalachat::UiLocale::Auto)
+                ? emebalachat::I18n::DetectSystemLocale()
+                : plan.applied;
+        emebalachat::I18n::SetLocale(applied);
+        RefreshAllUiForLocaleChange();
+    };
+
     trayCallbacks.on_show_cheat_sheet = [&]() {
         ::MessageBoxW(
             nullptr,
@@ -693,6 +763,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
 
     tray.Create(hController, hInstance, trayCallbacks);
+    // R6 Phase 6: mirror the persisted ui_language into the tray's selector
+    // check state (snapshot read; the warmup thread already exists here).
+    tray.SetUiLanguage(config.GetSnapshot().ui_language);
     // R6 Phase 1 (B3, plan §2.4 "config reload at startup"): initial surface
     // alignment runs through the SAME coordinator as every runtime mutation
     // (empty request = refresh-only: valid, unchanged, no persist). This is
@@ -840,7 +913,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // R6 B1-H1: carries this request's generation - a superseded
             // drag must not stamp a notice over a newer result either.
             tooltip.ShowMessageThreadSafe(click_x, click_y,
-                                          L"Emebala Chat",
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed),
                                           gen);
             return;
@@ -851,7 +924,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
             fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
             tooltip.ShowMessageThreadSafe(click_x, click_y,
-                                          L"Emebala Chat",
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
                                           gen);
             return;

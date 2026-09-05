@@ -4,13 +4,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic> // R6 Phase 6 (plan §5.4): race-free runtime locale switching
+#include <cctype>
 #include <unordered_map>
 
 namespace emebalachat {
 
 namespace {
 
-UiLocale s_current_locale = UiLocale::English;
+// R6 Phase 6 (plan §5.4): the UI-language selector mutates the active locale at
+// RUNTIME while the hook thread may concurrently read I18n::Get for its
+// toggle bubble. A plain global was a data race; the enum-sized atomic is
+// lock-free on MSVC x64.
+std::atomic<UiLocale> s_current_locale{UiLocale::English};
 
 const wchar_t kRunRegistryKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 // Compat token: intentionally NOT rebranded to "Emebala Chat". Installed 0.9.x
@@ -48,6 +54,28 @@ struct LocalizedStrings {
     const wchar_t* tooltip_copy_failed;
     const wchar_t* tooltip_no_selection;
     const wchar_t* auto_detect;
+
+    // ---- R6 Phase 5/6 (plan §5.2-§5.4): About body, migrated literals,
+    // UI-language selector. Field order below MUST match the Get() switch and
+    // every locale table (aggregate initialization). ----
+    const wchar_t* app_already_running;
+    const wchar_t* app_com_failed;
+    const wchar_t* about_tagline;
+    const wchar_t* about_feature0;
+    const wchar_t* about_feature1;
+    const wchar_t* about_feature2;
+    const wchar_t* about_etymology;
+    const wchar_t* about_link_website;
+    const wchar_t* about_link_contact;
+    const wchar_t* about_link_reddit;
+    const wchar_t* about_contact_org;
+    const wchar_t* about_contact_phone;
+    const wchar_t* about_contact_lead;
+    const wchar_t* tooltip_copied;
+    const wchar_t* tooltip_button_copy;
+    const wchar_t* tooltip_button_tts;
+    const wchar_t* menu_ui_language;
+    const wchar_t* menu_ui_language_auto;
 };
 
 // 1. Korean (ko)
@@ -90,7 +118,26 @@ const LocalizedStrings kStringsKorean = {
     L"Emebala Chat",
     L"선택한 텍스트를 복사하지 못했습니다. 대상 앱을 확인하고 다시 시도하세요.",
     L"번역할 텍스트가 선택되어 있지 않습니다.",
-    L"자동 감지"
+    L"자동 감지",
+
+    L"Emebala Chat이 백그라운드에서 이미 실행 중입니다.\n시스템 알림 트레이를 확인하세요.",
+    L"COM 초기화에 실패했습니다.\n플로팅 배지와 음성 읽기(TTS)는 사용할 수 없지만,\n번역, 단축키, 트레이, 알림음은 계속 동작합니다.",
+    L"복사·붙여넣기는 이제 그만. 모국어로 자연스럽게 입력하면 어떤 Windows 앱에서든 실시간으로 번역문이 타이핑을 대체합니다.",
+    L"⚡ 드래그 번역 — 어떤 앱에서든 텍스트를 선택하면 플로팅 아이콘이 즉시 번역합니다.",
+    L"🔊 뉴럴 TTS — KO/EN/JA/DE 발음 지원.",
+    L"🔒 100% 온디바이스·프라이빗 — 단축키를 누르는 동안만 작동하며 클립보드는 건드리지 않습니다.",
+    L"기원전 2000년, 메소포타미아 서기들은 언어로 세계를 잇는 자들을 '에메-발라(Eme-bala)'라 불렀습니다.",
+    L"웹사이트",
+    L"문의",
+    L"Reddit",
+    L"Team Sunplaza · 서울 영등포 (영중로 65, 219호)",
+    L"+82 2 575 0414 · 업무시간 10:00–19:00 KST",
+    L"총괄 아키텍트: Yongtai Kim",
+    L"✓ 복사됨!",
+    L"📋 복사",
+    L"🔊 음성",
+    L"인터페이스 언어",
+    L"자동 (시스템 언어)"
 };
 
 // 2. Japanese (ja)
@@ -133,7 +180,26 @@ const LocalizedStrings kStringsJapanese = {
     L"Emebala Chat",
     L"選択したテキストをコピーできませんでした。対象アプリを確認して再試行してください。",
     L"翻訳するテキストが選択されていません。",
-    L"自動検出"
+    L"自動検出",
+
+    L"Emebala Chat はすでにバックグラウンドで実行中です。\nシステムトレイを確認してください。",
+    L"COM の初期化に失敗しました。\nフローティングバッジと音声読み上げは利用できませんが、\n翻訳・ショートカット・トレイ・効果音は引き続き動作します。",
+    L"コピー＆ペーストはもう不要。母語で自然に入力すると、あらゆる Windows アプリの中で打鍵がリアルタイムに翻訳へ置きわります。",
+    L"⚡ ドラッグ翻訳 — 任意のアプリでテキストを選択すると、フローティングアイコンが即座に翻訳。",
+    L"🔊 ニューラルTTS — KO/EN/JA/DE の発音。",
+    L"🔒 100% ローカル・プライバシー — ショートカットを押している間だけ作動し、クリップボードは使いません。",
+    L"紀元前2000年、メソポタミアの書記たちは「エメ＝バラ」——言語で世界を結ぶ者——と呼びました。",
+    L"ウェブサイト",
+    L"お問い合わせ",
+    L"Reddit",
+    L"Team Sunplaza · Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 · 営業時間 10:00–19:00 KST",
+    L"リードアーキテクト: Yongtai Kim",
+    L"✓ コピーしました!",
+    L"📋 コピー",
+    L"🔊 読み上げ",
+    L"表示言語",
+    L"自動 (システム言語)"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -176,7 +242,26 @@ const LocalizedStrings kStringsChineseSimp = {
     L"Emebala Chat",
     L"无法复制所选文本。请检查目标应用后重试。",
     L"未选择要翻译的文本。",
-    L"自动检测"
+    L"自动检测",
+
+    L"Emebala Chat 已在后台运行。\n请查看系统通知托盘。",
+    L"COM 初始化失败。\n悬浮徽章和语音朗读将不可用，\n但翻译、快捷键、托盘和提示音仍可正常使用。",
+    L"告别复制粘贴。用母语自然输入，译文会在任何 Windows 应用中实时替换你的键入。",
+    L"⚡ 拖拽翻译 — 在任意应用中选中文本，悬浮图标即刻翻译。",
+    L"🔊 神经 TTS — 支持 KO/EN/JA/DE 发音。",
+    L"🔒 100% 本地运行且私密 — 仅在按住快捷键时生效，不触碰剪贴板。",
+    L"公元前 2000 年，美索不达米亚的书吏称那些以语言连通世界的人为 Eme-bala。",
+    L"官网",
+    L"联系",
+    L"Reddit",
+    L"Team Sunplaza · Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 · 办公时间 10:00–19:00 KST",
+    L"首席架构师：Yongtai Kim",
+    L"✓ 已复制！",
+    L"📋 复制",
+    L"🔊 朗读",
+    L"界面语言",
+    L"自动（系统语言）"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -219,7 +304,26 @@ const LocalizedStrings kStringsChineseTrad = {
     L"Emebala Chat",
     L"無法複製所選文字。請檢查目標應用程式後重試。",
     L"尚未選取要翻譯的文字。",
-    L"自動檢測"
+    L"自動檢測",
+
+    L"Emebala Chat 已在背景執行。\n請檢視系統通知列。",
+    L"COM 初始化失敗。\n懸浮徽章與語音朗讀將不可用，\n但翻譯、快捷鍵、系統匣與提示音仍可正常使用。",
+    L"告別複製貼上。用母語自然輸入，譯文會在任何 Windows 應用程式中即時取代你的鍵入。",
+    L"⚡ 拖曳翻譯 — 在任何應用程式中選取文字，懸浮圖示立即翻譯。",
+    L"🔊 神經 TTS — 支援 KO/EN/JA/DE 發音。",
+    L"🔒 100% 本機執行且私密 — 僅在按住快捷鍵時生效，不觸碰剪貼簿。",
+    L"西元前 2000 年，美索不達米亞的書吏稱那些以語言連結世界的人為 Eme-bala。",
+    L"官網",
+    L"聯絡",
+    L"Reddit",
+    L"Team Sunplaza · Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 · 辦公時間 10:00–19:00 KST",
+    L"首席架構師：Yongtai Kim",
+    L"✓ 已複製！",
+    L"📋 複製",
+    L"🔊 朗讀",
+    L"介面語言",
+    L"自動（系統語言）"
 };
 
 // 5. Vietnamese (vi)
@@ -262,7 +366,26 @@ const LocalizedStrings kStringsVietnamese = {
     L"Emebala Chat",
     L"Không thể sao chép văn bản đã chọn. Hãy kiểm tra ứng dụng đích rồi thử lại.",
     L"Chưa chọn văn bản nào để dịch.",
-    L"Tự động phát hiện"
+    L"Tự động phát hiện",
+
+    L"Emebala Chat đang chạy ngầm.\nHãy kiểm tra khay thông báo hệ thống.",
+    L"Khởi tạo COM thất bại.\nHuy hiệu nổi và đọc văn bản sẽ không khả dụng,\nnhưng dịch, phím tắt, khay hệ thống và âm thanh vẫn hoạt động.",
+    L"Không còn copy-paste. Gõ tự nhiên bằng tiếng mẹ đẻ — bản dịch thay thế ngay câu bạn gõ trong mọi ứng dụng Windows.",
+    L"⚡ Kéo để dịch — chọn văn bản trong bất kỳ ứng dụng nào, biểu tượng nổi dịch ngay lập tức.",
+    L"🔊 TTS thần kinh — phát âm KO/EN/JA/DE.",
+    L"🔒 100% trên máy & riêng tư — chỉ hoạt động khi giữ phím tắt; không đụng tới clipboard.",
+    L"Năm 2000 TCN, các thư lại Lưỡng Hà gọi 'Eme-bala' — những người dùng ngôn ngữ bắc nhịp nối các thế giới.",
+    L"Website",
+    L"Liên hệ",
+    L"Reddit",
+    L"Team Sunplaza · Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 · Giờ làm việc 10:00–19:00 KST",
+    L"Kiến trúc sư chính: Yongtai Kim",
+    L"✓ Đã sao chép!",
+    L"📋 Sao chép",
+    L"🔊 Đọc",
+    L"Ngôn ngữ giao diện",
+    L"Tự động (ngôn ngữ hệ thống)"
 };
 
 // 6. Spanish (es)
@@ -302,7 +425,26 @@ const LocalizedStrings kStringsSpanish = {
     L"Emebala Chat",
     L"No se pudo copiar el texto seleccionado. Revisa la aplicación de destino e inténtalo de nuevo.",
     L"No hay texto seleccionado para traducir.",
-    L"Detectar automáticamente"
+    L"Detectar automáticamente",
+
+    L"Emebala Chat ya se está ejecutando en segundo plano.\nRevisa la bandeja de notificaciones.",
+    L"Error al iniciar COM.\nLa insignia flotante y la voz no estarán disponibles,\npero la traducción, los atajos, la bandeja y los sonidos siguen funcionando.",
+    L"Nunca más copiar y pegar. Escribe con naturalidad en tu idioma: la traducción reemplaza tu texto en tiempo real en cualquier aplicación de Windows.",
+    L"⚡ Arrastrar y traducir — selecciona texto en cualquier app y el icono flotante lo traduce al instante.",
+    L"🔊 TTS neuronal — pronunciación KO/EN/JA/DE.",
+    L"🔒 100% local y privado — solo activo mientras mantienes el atajo; sin tocar el portapapeles.",
+    L"En el 2000 a. C., los escribas mesopotámicos llamaban «Eme-bala» a quienes convierten el lenguaje en un puente entre mundos.",
+    L"Sitio web",
+    L"Contacto",
+    L"Reddit",
+    L"Team Sunplaza · Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 · Horario 10:00–19:00 KST",
+    L"Arquitecto principal: Yongtai Kim",
+    L"✓ ¡Copiado!",
+    L"📋 Copiar",
+    L"🔊 Voz",
+    L"Idioma de la interfaz",
+    L"Automático (idioma del sistema)"
 };
 
 // 7. English (en) - Default Fallback
@@ -345,7 +487,27 @@ const LocalizedStrings kStringsEnglish = {
     L"Emebala Chat",
     L"Could not copy the selected text. Check the target app and try again.",
     L"No text is selected to translate.",
-    L"Auto Detect"
+    L"Auto Detect",
+
+    L"Emebala Chat is already running in the background.\nCheck the system notification tray.",
+    L"COM initialization failed.\nThe floating badge and text-to-speech will be unavailable,\nbut translation, hotkeys, tray and sounds still work.",
+    L"Never copy-paste again. Type naturally in your native tongue \u2014 "
+    L"translations replace your keystrokes in real time inside any Windows application.",
+    L"\u26A1 Drag-to-Translate \u2014 select text in any app, the floating icon translates instantly.",
+    L"\U0001F50A Neural TTS \u2014 KO/EN/JA/DE pronunciation.",
+    L"\U0001F512 100% on-device & private \u2014 active only while the shortcut is held; clipboard untouched.",
+    L"In 2000 BCE, Mesopotamian scribes called \u201CEme-bala\u201D \u2014 those who turn language to bridge worlds.",
+    L"Website",
+    L"Contact",
+    L"Reddit",
+    L"Team Sunplaza \u00B7 Seoul Yeongdeungpo (Room 219, 65 Yeongjung-ro)",
+    L"+82 2 575 0414 \u00B7 Office hours 10:00\u201319:00 KST",
+    L"Lead Architect: Yongtai Kim",
+    L"\u2713 Copied!",
+    L"\U0001F4CB Copy",
+    L"\U0001F50A TTS",
+    L"Interface Language",
+    L"Auto (system language)"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -370,41 +532,54 @@ const LocalizedStrings& GetStrings(UiLocale loc) {
 
 } // namespace
 
+namespace {
+// ASCII, case-insensitive equality for config locale codes ("zh-CN" == "zh_cn"
+// handled explicitly by StringToLocale's alias list).
+bool IEqualsAscii(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
 void I18n::Initialize(std::string_view config_ui_lang) {
     if (config_ui_lang == "auto" || config_ui_lang.empty()) {
-        s_current_locale = DetectSystemLocale();
+        s_current_locale.store(DetectSystemLocale(), std::memory_order_relaxed);
     } else {
-        s_current_locale = StringToLocale(config_ui_lang);
+        s_current_locale.store(StringToLocale(config_ui_lang), std::memory_order_relaxed);
     }
 }
 
 void I18n::SetLocale(UiLocale locale) {
-    s_current_locale = locale;
+    s_current_locale.store(locale, std::memory_order_relaxed);
 }
 
 UiLocale I18n::GetCurrentLocale() {
-    return s_current_locale;
+    return s_current_locale.load(std::memory_order_relaxed);
 }
 
 std::string_view I18n::GetLocaleCode() {
-    switch (s_current_locale) {
+    switch (GetCurrentLocale()) {
         case UiLocale::Korean: return "ko";
         case UiLocale::Japanese: return "ja";
         case UiLocale::ChineseSimplified: return "zh-CN";
         case UiLocale::ChineseTraditional: return "zh-TW";
         case UiLocale::Vietnamese: return "vi";
         case UiLocale::Spanish: return "es";
-        case UiLocale::French: return "fr";
-        case UiLocale::German: return "de";
-        case UiLocale::Russian: return "ru";
         case UiLocale::English:
+        case UiLocale::Auto: // never resolved (Initialize maps Auto -> Detect); en fallback
         default:
             return "en";
     }
 }
 
 std::wstring I18n::Get(StringId id) {
-    const auto& s = GetStrings(s_current_locale);
+    const auto& s = GetStrings(GetCurrentLocale());
     switch (id) {
         case StringId::MenuStatusActive: return s.menu_status_active;
         case StringId::MenuStatusPaused: return s.menu_status_paused;
@@ -434,7 +609,28 @@ std::wstring I18n::Get(StringId id) {
         case StringId::TooltipCopyFailed: return s.tooltip_copy_failed;
         case StringId::TooltipNoSelection: return s.tooltip_no_selection;
         case StringId::AutoDetect: return s.auto_detect;
-        default: return L"";
+
+        case StringId::AppAlreadyRunning: return s.app_already_running;
+        case StringId::AppComFailed: return s.app_com_failed;
+        case StringId::AboutTagline: return s.about_tagline;
+        case StringId::AboutFeature0: return s.about_feature0;
+        case StringId::AboutFeature1: return s.about_feature1;
+        case StringId::AboutFeature2: return s.about_feature2;
+        case StringId::AboutEtymology: return s.about_etymology;
+        case StringId::AboutLinkWebsite: return s.about_link_website;
+        case StringId::AboutLinkContact: return s.about_link_contact;
+        case StringId::AboutLinkReddit: return s.about_link_reddit;
+        case StringId::AboutContactOrg: return s.about_contact_org;
+        case StringId::AboutContactPhone: return s.about_contact_phone;
+        case StringId::AboutContactLead: return s.about_contact_lead;
+        case StringId::TooltipCopied: return s.tooltip_copied;
+        case StringId::TooltipButtonCopy: return s.tooltip_button_copy;
+        case StringId::TooltipButtonTts: return s.tooltip_button_tts;
+        case StringId::MenuUiLanguage: return s.menu_ui_language;
+        case StringId::MenuUiLanguageAuto: return s.menu_ui_language_auto;
+
+        case StringId::EnumCount:
+        default: return L""; // empty by design - the completeness test skips it
     }
 }
 
@@ -448,11 +644,11 @@ std::wstring I18n::GetLanguageDisplayName(std::string_view lang_code) {
         if (lang.code == lang_code || lang.name_en == lang_code) {
             // Form display name: Native Name (English Name)
             // e.g. "한국어 (Korean)", "日本語 (Japanese)", "Tiếng Việt (Vietnamese)"
-            if (s_current_locale == UiLocale::Korean) {
+            if (GetCurrentLocale() == UiLocale::Korean) {
                 return ToUtf16(lang.name_native) + L" (" + ToUtf16(lang.name_en) + L")";
-            } else if (s_current_locale == UiLocale::Japanese) {
+            } else if (GetCurrentLocale() == UiLocale::Japanese) {
                 return ToUtf16(lang.name_native) + L" (" + ToUtf16(lang.name_en) + L")";
-            } else if (s_current_locale == UiLocale::ChineseSimplified || s_current_locale == UiLocale::ChineseTraditional) {
+            } else if (GetCurrentLocale() == UiLocale::ChineseSimplified || GetCurrentLocale() == UiLocale::ChineseTraditional) {
                 return ToUtf16(lang.name_native) + L" (" + ToUtf16(lang.name_en) + L")";
             } else {
                 return ToUtf16(lang.name_en) + L" (" + ToUtf16(lang.name_native) + L")";
@@ -473,9 +669,9 @@ UiLocale I18n::DetectSystemLocale() {
         if (loc == L"zh-TW" || loc == L"zh-Hant" || loc == L"zh-HK" || loc == L"zh-MO") return UiLocale::ChineseTraditional;
         if (loc.rfind(L"vi", 0) == 0) return UiLocale::Vietnamese;
         if (loc.rfind(L"es", 0) == 0) return UiLocale::Spanish;
-        if (loc.rfind(L"fr", 0) == 0) return UiLocale::French;
-        if (loc.rfind(L"de", 0) == 0) return UiLocale::German;
-        if (loc.rfind(L"ru", 0) == 0) return UiLocale::Russian;
+        // R6 Phase 6: fr/de/ru OS languages intentionally fall through to the
+        // LANGID switch below and then to English - no translation tables
+        // exist for them (half-wired locales removed per plan §5.5).
     }
 
     LANGID langId = ::GetUserDefaultUILanguage();
@@ -493,9 +689,6 @@ UiLocale I18n::DetectSystemLocale() {
             }
         case LANG_VIETNAMESE: return UiLocale::Vietnamese;
         case LANG_SPANISH: return UiLocale::Spanish;
-        case LANG_FRENCH: return UiLocale::French;
-        case LANG_GERMAN: return UiLocale::German;
-        case LANG_RUSSIAN: return UiLocale::Russian;
         default: return UiLocale::English;
     }
 }
@@ -520,15 +713,16 @@ std::string I18n::GetDefaultTargetLanguage(UiLocale locale) {
 }
 
 UiLocale I18n::StringToLocale(std::string_view str) {
-    if (str == "ko") return UiLocale::Korean;
-    if (str == "ja") return UiLocale::Japanese;
-    if (str == "zh-CN" || str == "zh_cn" || str == "zh") return UiLocale::ChineseSimplified;
-    if (str == "zh-TW" || str == "zh_tw") return UiLocale::ChineseTraditional;
-    if (str == "vi") return UiLocale::Vietnamese;
-    if (str == "es") return UiLocale::Spanish;
-    if (str == "fr") return UiLocale::French;
-    if (str == "de") return UiLocale::German;
-    if (str == "ru") return UiLocale::Russian;
+    if (IEqualsAscii(str, "ko")) return UiLocale::Korean;
+    if (IEqualsAscii(str, "ja")) return UiLocale::Japanese;
+    if (IEqualsAscii(str, "zh-CN") || IEqualsAscii(str, "zh_cn") || IEqualsAscii(str, "zh")) return UiLocale::ChineseSimplified;
+    if (IEqualsAscii(str, "zh-TW") || IEqualsAscii(str, "zh_tw")) return UiLocale::ChineseTraditional;
+    if (IEqualsAscii(str, "vi")) return UiLocale::Vietnamese;
+    if (IEqualsAscii(str, "es")) return UiLocale::Spanish;
+    if (IEqualsAscii(str, "auto")) return UiLocale::Auto;
+    // R6 Phase 6: "fr"/"de"/"ru" (and any unknown value) resolve to English.
+    // The old half-wired mapping is gone; PlanUiLocaleChange REFUSES those
+    // codes at the selector so they can never be (re-)persisted.
     return UiLocale::English;
 }
 
@@ -540,13 +734,64 @@ std::string I18n::LocaleToString(UiLocale locale) {
         case UiLocale::ChineseTraditional: return "zh-TW";
         case UiLocale::Vietnamese: return "vi";
         case UiLocale::Spanish: return "es";
-        case UiLocale::French: return "fr";
-        case UiLocale::German: return "de";
-        case UiLocale::Russian: return "ru";
+        case UiLocale::Auto: return "auto";
         case UiLocale::English:
         default:
             return "en";
     }
+}
+
+const std::vector<UiLocaleEntry>& GetSupportedUiLocales() {
+    // Endonyms (each language written in its own script) - the universal
+    // convention for language pickers, so these are NOT routed through the
+    // locale tables. Selector display order (plan §5.4): KO, JA, zh-CN,
+    // zh-TW, VI, ES, EN.
+    static const std::vector<UiLocaleEntry> kEntries = {
+        { UiLocale::Korean, L"한국어" },
+        { UiLocale::Japanese, L"日本語" },
+        { UiLocale::ChineseSimplified, L"简体中文" },
+        { UiLocale::ChineseTraditional, L"繁體中文" },
+        { UiLocale::Vietnamese, L"Tiếng Việt" },
+        { UiLocale::Spanish, L"Español" },
+        { UiLocale::English, L"English" },
+    };
+    return kEntries;
+}
+
+UiLocaleChangePlan PlanUiLocaleChange(std::string_view current_persisted,
+                                      std::string_view requested) {
+    UiLocaleChangePlan plan;
+    const std::string req(requested);
+
+    // Reject at the selector boundary: "auto" or an exact populated-locale
+    // code (any ASCII case - normalized to the canonical table spelling).
+    std::string canonical;
+    if (IEqualsAscii(req, "auto")) {
+        canonical = "auto";
+    } else {
+        for (const auto& entry : GetSupportedUiLocales()) {
+            const std::string code = I18n::LocaleToString(entry.locale);
+            if (IEqualsAscii(req, code)) {
+                canonical = code;
+                break;
+            }
+        }
+    }
+    if (canonical.empty()) {
+        plan.valid = false; // unknown/removed locale: apply NOTHING (half-wired guard)
+        return plan;
+    }
+
+    plan.applied = IEqualsAscii(canonical, "auto")
+                       ? UiLocale::Auto
+                       : I18n::StringToLocale(canonical);
+    plan.valid = true;
+    plan.changed = !IEqualsAscii(current_persisted, canonical);
+    plan.persisted_value = std::move(canonical);
+    // Plan §5.4 propagation order: tray -> badge -> tooltip -> About.
+    plan.surfaces = { LocaleSurface::Tray, LocaleSurface::Badge,
+                      LocaleSurface::Tooltip, LocaleSurface::About };
+    return plan;
 }
 
 bool I18n::IsStartWithWindowsEnabled() {

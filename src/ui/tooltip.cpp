@@ -1074,8 +1074,11 @@ void TooltipWindow::Render() {
     if (logoBgBrush) logoBgBrush->Release();
 
     // 2. Source language badge (clean layout following 1:1 logo frame)
+    // R6 Phase 5 (plan §5.3): the empty-code fallback was a hardcoded L"Auto";
+    // it now uses the localized AutoDetect string.
     float src_tag_x = 44.0f;
-    std::wstring src_tag = source_lang_code_.empty() ? L"Auto" : ToUtf16(source_lang_code_);
+    std::wstring src_tag = source_lang_code_.empty() ? I18n::Get(StringId::AutoDetect)
+                                                     : ToUtf16(source_lang_code_);
     float src_tag_width = 44.0f;
     D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f), 4.0f, 4.0f);
     dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &btnBgBrush);
@@ -1096,7 +1099,10 @@ void TooltipWindow::Render() {
     }
 
     // 4. Target language switcher dropdown button
-    std::wstring tgt_name = target_lang_.empty() ? L"English" : ToUtf16(target_lang_);
+    // R6 Phase 5 (plan §5.3): the empty-target fallback was a hardcoded
+    // L"English"; it now resolves through the localized language registry.
+    std::wstring tgt_name = target_lang_.empty() ? I18n::GetLanguageDisplayName("English")
+                                                 : ToUtf16(target_lang_);
     std::wstring tgt_label = tgt_name + L" ▾";
     float tgt_btn_x = src_tag_x + src_tag_width + 28.0f;
     float tgt_btn_width = 90.0f;
@@ -1233,7 +1239,8 @@ void TooltipWindow::Render() {
             ID2D1SolidColorBrush* feedbackBrush = nullptr;
             dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x34D399, 1.0f), &feedbackBrush);
             if (feedbackBrush) {
-                std::wstring feedback = L"✓ Copied!";
+                // R6 Phase 5 (plan §5.3): L"✓ Copied!" literal -> StringId.
+                const std::wstring feedback = I18n::Get(StringId::TooltipCopied);
                 dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copy_btn_rect_, feedbackBrush);
                 feedbackBrush->Release();
             }
@@ -1250,7 +1257,8 @@ void TooltipWindow::Render() {
             btnBgBrush = nullptr;
         }
         if (button_format_ && textBrush) {
-            std::wstring label = L"📋 Copy";
+            // R6 Phase 5 (plan §5.3): footer button labels -> StringIds.
+            const std::wstring label = I18n::Get(StringId::TooltipButtonCopy);
             dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, copy_btn_rect_, textBrush);
         }
     }
@@ -1270,7 +1278,8 @@ void TooltipWindow::Render() {
         btnBgBrush = nullptr;
     }
     if (button_format_ && textBrush) {
-        std::wstring label = L"🔊 TTS";
+        // R6 Phase 5 (plan §5.3): TTS button label -> StringId.
+        const std::wstring label = I18n::Get(StringId::TooltipButtonTts);
         dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, tts_btn_rect_, textBrush);
     }
 

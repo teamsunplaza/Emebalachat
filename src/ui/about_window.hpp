@@ -41,18 +41,42 @@ public:
     bool IsVisible() const { return visible_.load(std::memory_order_relaxed); }
     HWND GetHwnd() const { return hwnd_; }
 
-    // Number of link buttons (Website / Contact / Download).
+    // Number of link buttons (Website / Contact / Reddit - R6 Phase 5 replaced
+    // the GitHub-releases Download link with the public Reddit community per
+    // the user's decision; URLs live in about_window.cpp).
     static constexpr int kNumLinks = 3;
 
     // Marshaled message IDs — WM_APP+0x300 block: distinct from the tooltip's
     // 0x200 block and the drag icon's 0x100 block (see tooltip.hpp comments).
     static constexpr UINT kShowMessage   = WM_APP + 0x301;
     static constexpr UINT kDismissMessage = WM_APP + 0x302;
+    // R6 Phase 6 (plan §5.2): locale-change re-render request (no heap payload,
+    // same ownership contract as kDismissMessage).
+    static constexpr UINT kLocaleRefreshMessage = WM_APP + 0x303;
+
+    // R6 Phase 6: refresh caption + localized body after a UI-language switch.
+    // Thread-safe (marshals like Show/Dismiss). Re-renders only while visible;
+    // a hidden window picks the new strings up on its next Show (Render reads
+    // I18n::Get fresh every time — nothing is cached at Create).
+    void RequestLocaleRefresh();
 
     struct ShowPayload {
         int x;
         int y;
     };
+
+    // R6 Phase 5 (plan §5.2): pure localized-content snapshot resolved from the
+    // i18n tables for the CURRENT locale. Headless test seam (TestR6P5AboutI18n
+    // asserts KO/EN/JA rendering); Render() consumes the same I18n::Get ids.
+    struct LocalizedContent {
+        std::wstring title;
+        std::wstring tagline;
+        std::wstring features[3];
+        std::wstring etymology;
+        std::wstring link_labels[kNumLinks];
+        std::wstring contacts[3];
+    };
+    static LocalizedContent BuildLocalizedContent();
 
     // R6 Phase 3 (audit item 8): drains THIS window's marshal queue before
     // DestroyWindow, freeing every still-queued heap ShowPayload (the OS queue
@@ -76,7 +100,7 @@ private:
     // permanently blank.
     void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
-    void OpenLink(int index); // 0=website 1=contact 2=download (ShellExecuteW)
+    void OpenLink(int index); // 0=website 1=contact 2=reddit (ShellExecuteW)
 
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;

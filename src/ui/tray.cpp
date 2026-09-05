@@ -25,7 +25,10 @@ enum TrayMenuId : UINT {
     ID_TRAY_ABOUT = 2065,
     ID_TRAY_EXIT = 2070,
     ID_TRAY_SRC_BASE = 2100, // 2100..2137
-    ID_TRAY_TGT_BASE = 2200  // 2200..2236
+    ID_TRAY_TGT_BASE = 2200, // 2200..2236
+    // R6 Phase 6 (plan §5.4): UI-language selector submenu (Auto + 7 locales)
+    ID_TRAY_UILANG_AUTO = 2300,
+    ID_TRAY_UILANG_BASE = 2301 // 2301..2307
 };
 
 } // namespace
@@ -189,10 +192,23 @@ bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callb
     nid_.uCallbackMessage = WM_TRAYICON;
     nid_.hIcon = hCurrentIcon_;
 
-    std::wstring tip = L"Emebala Chat (Active) - KO -> EN";
+    // R6 Phase 5 sweep (plan §5.3): the initial tip was a hardcoded English
+    // literal ("Emebala Chat (Active) - KO -> EN"). Build it from the same
+    // localized pieces UpdateStatus uses, against the initial state members,
+    // so the very first hover already honors the active UI locale. (Create()
+    // runs after I18n::Initialize in wWinMain.)
+    std::wstring tip = I18n::Get(StringId::TooltipTitle) + L" (" + I18n::Get(StringId::BadgeActive) + L") - "
+        + I18n::GetLanguageDisplayName(src_code_) + L" -> " + I18n::GetLanguageDisplayName(tgt_code_);
     wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
 
     return ::Shell_NotifyIconW(NIM_ADD, &nid_) == TRUE;
+}
+
+// R6 Phase 6: mirror of the persisted config.ui_language for the submenu
+// check mark. The context menu itself rebuilds on every ShowContextMenu, so
+// no invalidation is required here.
+void SystemTray::SetUiLanguage(std::string_view persisted_code) {
+    ui_language_ = persisted_code;
 }
 
 void SystemTray::Destroy() {
@@ -254,6 +270,27 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hEngineMenu, MF_STRING | (isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (!isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
+
+    // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
+    // Engine submenu. Entries show ENDONYMS (each language in its own script)
+    // plus a localized Auto entry. Check mark tracks the PERSISTED config
+    // value (ui_language_), not the resolved locale, so "auto" stays visibly
+    // selected while it follows the OS language.
+    HMENU hUiLangMenu = ::CreatePopupMenu();
+    {
+        const bool autoChecked = (ui_language_ == "auto" || ui_language_.empty());
+        ::AppendMenuW(hUiLangMenu, MF_STRING | (autoChecked ? MF_CHECKED : MF_UNCHECKED),
+                      ID_TRAY_UILANG_AUTO, I18n::Get(StringId::MenuUiLanguageAuto).c_str());
+        ::AppendMenuW(hUiLangMenu, MF_SEPARATOR, 0, nullptr);
+        const auto& uiLocales = GetSupportedUiLocales();
+        for (size_t i = 0; i < uiLocales.size(); ++i) {
+            const std::string code = I18n::LocaleToString(uiLocales[i].locale);
+            const bool checked = (!autoChecked && ui_language_ == code);
+            ::AppendMenuW(hUiLangMenu, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED),
+                          ID_TRAY_UILANG_BASE + static_cast<UINT>(i), uiLocales[i].native_name);
+        }
+    }
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), I18n::Get(StringId::MenuUiLanguage).c_str());
 
     // 3. Source language submenu (AUTO + 37 languages)
     HMENU hSrcMenu = ::CreatePopupMenu();
@@ -339,6 +376,13 @@ void SystemTray::ShowContextMenu() {
         if (callbacks_.on_select_target_lang) {
             callbacks_.on_select_target_lang(tgtLangs[idx].name_en);
         }
+    } else if (cmd == ID_TRAY_UILANG_AUTO && callbacks_.on_select_ui_language) {
+        callbacks_.on_select_ui_language("auto");
+    } else if (cmd >= ID_TRAY_UILANG_BASE &&
+               cmd < ID_TRAY_UILANG_BASE + static_cast<UINT>(GetSupportedUiLocales().size()) &&
+               callbacks_.on_select_ui_language) {
+        size_t idx = cmd - ID_TRAY_UILANG_BASE;
+        callbacks_.on_select_ui_language(I18n::LocaleToString(GetSupportedUiLocales()[idx].locale));
     }
 
     ::DestroyMenu(hMenu);
