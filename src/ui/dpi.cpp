@@ -1,8 +1,6 @@
 #include "dpi.hpp"
 #include "diag_logger.hpp"
 
-#include <cstdio>
-
 // The newer DPI exports (SetProcessDpiAwarenessContext, GetDpiForWindow,
 // shcore GetDpiForMonitor/SetProcessDpiAwareness) are resolved through
 // GetProcAddress at runtime so the binary still loads on older Windows 10

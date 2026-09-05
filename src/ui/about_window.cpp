@@ -5,11 +5,6 @@
 #include "../i18n.hpp"
 #include "../version.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <cwchar>
-#include <iterator>
 #include <memory>
 #include <shellapi.h>
 #include <string>

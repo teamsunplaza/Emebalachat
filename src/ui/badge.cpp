@@ -6,7 +6,6 @@
 #include "dpi.hpp"
 
 #include <cmath>
-#include <cstdio>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")

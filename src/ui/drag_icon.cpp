@@ -3,9 +3,6 @@
 #include "asset_loader.hpp"
 #include "dpi.hpp"
 
-#include <cmath>
-#include <cstdio>
-
 namespace emebalachat {
 
 namespace {

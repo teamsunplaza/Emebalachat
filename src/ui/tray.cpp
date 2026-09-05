@@ -5,7 +5,6 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
-#include <cmath>
 #include <vector>
 #include <wincodec.h>
 
