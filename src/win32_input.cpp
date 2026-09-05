@@ -168,16 +168,6 @@ void FlushIme() {
     ::Sleep(10);
 }
 
-bool SelectCurrentLine() {
-    INPUT inputs[4] = {
-        CreateKeyInput(VK_SHIFT, false, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_HOME, false, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_HOME, true, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_SHIFT, true, EXTRA_INFO_MARKER)
-    };
-    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
-}
-
 bool SelectMessageBlock() {
     // Multi-line block fix: two-stage selection that captures ALL lines from the
     // start of text to the cursor, not just the current physical line.
@@ -671,12 +661,8 @@ std::wstring CopySelectedText(HWND hwnd) {
     return text;
 }
 
-std::wstring CopySelectedLine() {
-    return CopySelectedText(nullptr);
-}
-
 bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground) {
-    // No captured target (e.g. CopySelectedLine path): nothing to verify against.
+    // No captured target (e.g. drag path with a null hwnd): nothing to verify against.
     if (!expected_target) {
         return true;
     }

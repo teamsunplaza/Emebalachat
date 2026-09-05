@@ -34,9 +34,6 @@ bool IsGdiClipboardFormat(UINT format);
 // Flushes Korean/CJK IME composition buffer by sending synthetic VK_RIGHT with EXTRA_INFO_MARKER + 10ms delay.
 void FlushIme();
 
-// Selects the current line from cursor back to beginning of line (Shift+Home).
-bool SelectCurrentLine();
-
 // Multi-line block fix: selects the message block from the start of the text
 // flow to the cursor (Shift+Home then Ctrl+Shift+Home, extending the selection
 // from line start back to the beginning of the input's text). Replaces the old
@@ -153,11 +150,6 @@ constexpr uint32_t ClipboardOpenBackoffDelayMs(int attempt) {
 std::wstring CopySelectedText(HWND hwnd);
 
 // High-level pipeline helper:
-// Selects line (Shift+Home) and runs the same REQ-R04 copy-settle as
-// CopySelectedText.
-std::wstring CopySelectedLine();
-
-// High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle
 // delay (kPasteSettleDelayMs, currently 120ms - see M1 note in win32_input.cpp),
 // then restores the original clipboard as soon as the target app has read it.
@@ -167,7 +159,7 @@ std::wstring CopySelectedLine();
 bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target = nullptr);
 
 // Pure foreground-equivalence check for injection gating (H1 wrong-window fix).
-// - expected_target == nullptr  -> always true (no target captured, e.g. CopySelectedLine path)
+// - expected_target == nullptr  -> always true (no target captured; PasteAndRestore default)
 // - current_foreground == nullptr -> false (cannot verify -> refuse to inject)
 // - true when handles are equal OR share the same GA_ROOTOWNER (survives re-nested
 //   child-window focus within the same top-level window).

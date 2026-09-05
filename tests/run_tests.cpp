@@ -459,7 +459,7 @@ void TestWin32InputModule() {
     HWND fake_a = reinterpret_cast<HWND>(static_cast<intptr_t>(0x1000));
     HWND fake_b = reinterpret_cast<HWND>(static_cast<intptr_t>(0x2000));
 
-    // No captured target -> always allow (CopySelectedLine path has no HWND).
+    // No captured target -> always allow (default PasteAndRestore target is null).
     TEST_CHECK(IsSameWindowForInjection(nullptr, nullptr), "Guard allows when no target captured");
     TEST_CHECK(IsSameWindowForInjection(nullptr, fake_a), "Guard allows when target null regardless of foreground");
 
