@@ -1,4 +1,5 @@
 #include "hook.hpp"
+#include "diag_logger.hpp"
 #include "sound.hpp"
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
@@ -8,6 +9,125 @@
 #include <cstdio>
 
 namespace emebalachat {
+
+namespace {
+
+// ---- 260905 diagnostics: foreground-window info cache (hook-thread safe) ----
+// GetWindowTextW on ANOTHER process's window SendMessage's WM_GETTEXT to that
+// window's thread, so an uncached lookup per keystroke at typing speed is both
+// wasteful and a stall vector. Cache keyed by HWND with a ~200 ms TTL per the
+// VP directive; GetClassNameW is local (no cross-thread send). The cache is
+// only ever touched from the hook thread (LowLevelKeyboardProc), which is a
+// single-threaded context for WH_KEYBOARD_LL delivery.
+struct ForegroundWindowCache {
+    HWND hwnd = nullptr;
+    DWORD next_refresh_ms = 0; // GetTickCount64() low-32 semantics
+    wchar_t title[120] = L"";
+    wchar_t cls[120] = L"";
+};
+ForegroundWindowCache g_fg_cache;
+
+// UTF-8 copies of the cached title/class for the current foreground window,
+// refreshed at most every kFgCacheTtlMs while the HWND stays the same (an HWND
+// change refreshes immediately: the window switch itself is the interesting
+// diagnostic event and costs one lookup).
+inline constexpr DWORD kFgCacheTtlMs = 200;
+HWND RefreshForegroundWindowInfo(std::string& out_title_utf8, std::string& out_cls_utf8) {
+    HWND hwnd = ::GetForegroundWindow();
+    const ULONGLONG now = ::GetTickCount64();
+    bool stale = true;
+    if (hwnd == g_fg_cache.hwnd && hwnd != nullptr) {
+        stale = (now >= static_cast<ULONGLONG>(g_fg_cache.next_refresh_ms));
+    }
+    if (stale && hwnd) {
+        g_fg_cache.hwnd = hwnd;
+        g_fg_cache.next_refresh_ms = static_cast<DWORD>(now + kFgCacheTtlMs);
+        ::GetWindowTextW(hwnd, g_fg_cache.title, 120);
+        ::GetClassNameW(hwnd, g_fg_cache.cls, 120);
+    }
+    out_title_utf8 = emebalachat::ToUtf8(g_fg_cache.title);
+    out_cls_utf8 = emebalachat::ToUtf8(g_fg_cache.cls);
+    return hwnd;
+}
+
+// Resulting character for a keydown, per the VP directive (ToUnicode with a
+// MapVirtualKey fallback). ToUnicodeEx consults the FOREGROUND window's
+// layout; Microsoft documents an internal SendMessageTimeout for dead-key
+// resolution, a residual REQ-R06 latency vector - accepted deliberately for
+// this user-authorized diagnostic build (the bugs under investigation include
+// stalls the user cannot otherwise see) and noted in the r7 report. VK_-level
+// non-printable keys (arrows, F-keys) skip ToUnicode entirely: they have no
+// char and MapVirtualKey yields none. IME-composing keys arrive as
+// VK_PROCESSKEY and are marked ime=1 with char='?' instead (no meaningful
+// per-key char exists for them).
+char KeyChar(UINT vk, UINT scan, bool ctrl, bool shift, bool alt) {
+    // ToUnicodeEx is only interesting for character-producing vks; every other
+    // key would return 0/-1 anyway and the negative return touches the
+    // dead-key state machine, so the allowlist IS the correctness filter.
+    // Letters/digits have vk == ASCII code. The 0xBA..0xC0 / 0xDB..0xDE / 0xE2
+    // literals are the OEM punctuation keys (VK_OEM_* names are gated by SDK
+    // WINVER settings and cannot be relied on here - VK_MUTE already proved
+    // that). Numpad digits/operators are included (NumLock state feeds the
+    // synthesized key state below).
+    const bool char_candidate =
+        vk == VK_SPACE ||
+        (vk >= '0' && vk <= '9') ||
+        (vk >= 'A' && vk <= 'Z') ||
+        (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) ||
+        vk == VK_ADD || vk == VK_SUBTRACT || vk == VK_MULTIPLY ||
+        vk == VK_DIVIDE || vk == VK_DECIMAL || vk == VK_SEPARATOR ||
+        (vk >= 0xBA && vk <= 0xC0) ||
+        (vk >= 0xDB && vk <= 0xDE) ||
+        vk == 0xE2;
+    if (char_candidate && !ctrl && !alt) {
+        // Build the key state from ASYNC reads: the hook thread pumps no
+        // keyboard messages, so its GetKeyboardState thread state is stale —
+        // GetAsyncKeyState reflects the real global state per modifier.
+        BYTE ks[256] = {};
+        if (shift) ks[VK_SHIFT] = 0x80;
+        if (ctrl) ks[VK_CONTROL] = 0x80;
+        if (alt) ks[VK_MENU] = 0x80;
+        if ((::GetAsyncKeyState(VK_CAPITAL) & 1) != 0) ks[VK_CAPITAL] = 1;
+        wchar_t buf[4] = {};
+        const int n = ::ToUnicodeEx(vk, scan, ks, buf, 3, 0, nullptr);
+        if (n >= 1 && buf[0] >= 0x20 && buf[0] < 0x7F) {
+            return static_cast<char>(buf[0]);
+        }
+        if (n >= 1 && buf[0] >= 0x7F) {
+            return static_cast<char>(0x7F); // non-ASCII char present (Hangul
+                                            // jamo direct output etc.): mark
+                                            // with a sentinel the KEY line
+                                            // renders as '<uni>'
+        }
+        // n <= 0 (no mapping or dead key): fall through to MapVirtualKey.
+    }
+    UINT c = ::MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR);
+    c &= 0x7FFFu; // bit 15 marks dead keys; treat as no char
+    if (c == 0) {
+        return 0;
+    }
+    if (c >= L'A' && c <= L'Z' && !shift) {
+        c += (L'a' - L'A');
+    }
+    return (c < 0x7F) ? static_cast<char>(c) : 0x7F;
+}
+
+// Printable token for the mapped char: literal char, '_' for space,
+// '<uni>' for a non-ASCII result, '?' when the key has no char mapping.
+const char* KeyCharToken(char c, char (&buf)[8]) {
+    if (c == 0) {
+        buf[0] = '?'; buf[1] = 0;
+    } else if (c == ' ') {
+        buf[0] = '_'; buf[1] = 0;
+    } else if (c == 0x7F) {
+        buf[0] = '<'; buf[1] = 'u'; buf[2] = 'n'; buf[3] = 'i'; buf[4] = '>'; buf[5] = 0;
+    } else {
+        buf[0] = c; buf[1] = 0;
+    }
+    return buf;
+}
+
+} // namespace
 
 KeyboardHook* KeyboardHook::s_instance = nullptr;
 
@@ -114,9 +234,10 @@ void KeyboardHook::DispatchDoubleCtrlC() {
         return;
     }
     if (!self->double_ctrl_c_worker_live_.load(std::memory_order_acquire)) {
-        fprintf(stderr, "HOOK/DispatchDoubleCtrlC/002: worker not live (Start() failed?), event dropped\n");
+        DIAG_F("HOOK/DispatchDoubleCtrlC/002: worker not live (Start() failed?), event dropped\n");
         return;
     }
+    DIAG_LOG("PIPELINE", "double_ctrl_c detected -> dispatched to async worker");
     // REQ-R06 non-blocking handoff, ZERO locks on the hook thread:
     //   - one acquire load (worker live)
     //   - one acq_rel exchange on the single-slot pending flag (~20 ns; if an
@@ -140,9 +261,9 @@ void KeyboardHook::RunDoubleCtrlCBody() {
     try {
         double_ctrl_c_cb_();
     } catch (const std::exception& e) {
-        fprintf(stderr, "HOOK/RunDoubleCtrlCBody/001: callback threw: %s\n", e.what());
+        DIAG_F("HOOK/RunDoubleCtrlCBody/001: callback threw: %s\n", e.what());
     } catch (...) {
-        fprintf(stderr, "HOOK/RunDoubleCtrlCBody/002: callback threw unknown exception\n");
+        DIAG_F("HOOK/RunDoubleCtrlCBody/002: callback threw unknown exception\n");
     }
 }
 
@@ -311,6 +432,8 @@ KeyboardHook::HotkeySpec KeyboardHook::ResolvedToggleHotkey() const {
 
 void KeyboardHook::SetActive(bool active) {
     if (is_active_.exchange(active) != active) {
+        DIAG_LOG("STATE", "active %d -> %d (badge/tray/sound/observers refresh)",
+                 active ? 0 : 1, active ? 1 : 0);
         badge_.SetStatus(active ? BadgeStatus::Active : BadgeStatus::Disabled);
         // I4: this runs on the hook thread; read shared fields via a locked
         // snapshot instead of touching std::string members unsynchronized.
@@ -346,6 +469,7 @@ void KeyboardHook::ToggleActive() {
 }
 
 void KeyboardHook::CycleTargetLanguage() {
+    DIAG_LOG("HOTKEY", "Ctrl+F9 language cycle requested");
     // R6 Phase 1 (B3, plan §2.3): when main.cpp wired the coordinator seam,
     // the ENTIRE cycle (next-target computation + locked persist + badge/tray/
     // tooltip refresh) runs on the GUI thread through the single
@@ -375,6 +499,8 @@ void KeyboardHook::ToggleAutoSend() {
     // I4: auto_send is std::atomic; this read-modify-write happens on the hook
     // thread while the worker thread reads it per task.
     const bool next = !config_.auto_send.load(std::memory_order_relaxed);
+    DIAG_LOG("STATE", "auto_send %d -> %d (Ctrl+Shift+Enter / toggle path)",
+             !next ? 1 : 0, next ? 1 : 0);
     config_.auto_send.store(next, std::memory_order_relaxed);
     config_.SaveToFile();
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
@@ -465,6 +591,30 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         bool win = ((::GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((::GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
 
+        // ---- 260905 diagnostics (user-authorized keystroke CONTENT logging) ----
+        // EVERY real (non-synthetic) keydown is recorded: vk, scan, modifier
+        // states, the resulting char, the IME-composing flag, and the target
+        // foreground window title+class (cached ~200 ms, see
+        // RefreshForegroundWindowInfo). Enqueue-only: this whole block formats
+        // a string and hands it to the diag queue; file I/O happens on the
+        // logger's own thread. vk==VK_PROCESSKEY (IME-intercepted key) is
+        // marked ime=1 and carries char '?'.
+        {
+            std::string fg_title;
+            std::string fg_cls;
+            const HWND fg = RefreshForegroundWindowInfo(fg_title, fg_cls);
+            const bool ime_key = (kbd->vkCode == VK_PROCESSKEY);
+            const char ch = ime_key ? 0 : KeyChar(kbd->vkCode, kbd->scanCode, ctrl, shift, alt);
+            char chtok[8];
+            KeyCharToken(ch, chtok);
+            const bool composing = s_instance->ime_composing_.load(std::memory_order_relaxed);
+            DIAG_LOG("KEY", "vk=0x%02X scan=0x%02X %s%s%s%s char=%s ime=%d composing=%d fg=%p class=%s title=%s",
+                     kbd->vkCode, kbd->scanCode,
+                     shift ? "S" : "-", ctrl ? "C" : "-", alt ? "A" : "-", win ? "W" : "-",
+                     chtok, ime_key ? 1 : 0, composing ? 1 : 0,
+                     reinterpret_cast<void*>(fg), fg_cls.c_str(), fg_title.c_str());
+        }
+
         // REQ-R08: the configured toggle combo (default Win+F9) is matched
         // FIRST - before the blanket Alt/Win passthrough below - and it only
         // swallows when the FULL modifier set matches toggle_spec_ exactly
@@ -473,6 +623,8 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // (Excel Alt+Enter, game Alt+Enter, native Win shortcuts). Bare F9 is
         // no longer a toggle by default (audit §3.2), so VS/Excel keep it.
         if (KeyboardHook::HotkeyMatches(s_instance->toggle_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
+            DIAG_LOG("HOTKEY", "toggle combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleActive",
+                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
             s_instance->ToggleActive();
             if (win) {
                 s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
@@ -540,14 +692,34 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // it needs no clear of its own. A race-window backstop remains
         // worker-side (ExecuteTask re-probes GCS_COMPSTR via IMM before
         // touching the clipboard).
+        // ---- 260905 diagnostics: Enter-path decision trace. EVERY gate
+        // evaluation in this branch is logged with its input values and the
+        // outcome + reason, so a later bug report reads as a complete
+        // decision record of "what happened when Enter was pressed and why".
+        // Enter/Shift+Enter get the explicit KEY-line form the VP requested;
+        // the per-branch ENTER_GATE lines carry the pipeline gate snapshot. ----
         if (kbd->vkCode == VK_RETURN) {
+            DIAG_LOG("KEY", "Enter (shift=%d) - pipeline candidate", shift ? 1 : 0);
+            const bool dbg_composing =
+                s_instance->ime_composing_.load(std::memory_order_relaxed);
             if (ctrl && shift) {
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=auto_send_toggle reason=ctrl+shift active=%d busy=%d "
+                         "ime_composing=%d shift=1 auto_send_new=%d",
+                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
+                         dbg_composing ? 1 : 0,
+                         (!s_instance->config_.auto_send.load(std::memory_order_relaxed)) ? 1 : 0);
                 // Ctrl+Shift+Enter toggles Auto-Send mode
                 s_instance->ToggleAutoSend();
                 return 1;
             }
 
             if (ctrl) {
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
+                         "ime_composing=%d shift=%d",
+                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
+                         dbg_composing ? 1 : 0, shift ? 1 : 0);
                 // Ctrl+Enter is normal pass-through
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
@@ -564,12 +736,21 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // for a VK_RETURN (ImeMirrorNext), and we are returning without
             // touching the pipeline, so no mirror clear is needed here either.
             if (shift) {
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=pass_through reason=shift_enter_newline active=%d busy=%d "
+                         "ime_composing=%d shift=1",
+                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
+                         dbg_composing ? 1 : 0);
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
             // Composition open: the Enter belongs to the IME commit cycle.
             // Hand it through untouched and retire the mirror flag.
-            if (s_instance->ime_composing_.load(std::memory_order_relaxed)) {
+            if (dbg_composing) {
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
+                         "ime_composing=1 shift=0 (mirror cleared)",
+                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0);
                 s_instance->ime_composing_.store(false, std::memory_order_relaxed);
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
@@ -582,21 +763,40 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // untranslated" can be attributed to the exact failing gate.
             const bool gate_active = s_instance->IsActive();
             const bool gate_busy = s_instance->worker_.IsBusy();
-            if (EnterSendReplaceAllowed(
-                    /*vk_is_return*/ true,
-                    gate_active,
-                    gate_busy,
-                    /*ime_composing*/ false,
-                    /*shift*/ shift)) {
+            const bool gate_allowed = EnterSendReplaceAllowed(
+                /*vk_is_return*/ true,
+                gate_active,
+                gate_busy,
+                /*ime_composing*/ false,
+                /*shift*/ shift);
+            // Full decision record EVERY time (file sink; the stderr sites
+            // below keep their historical spam discipline unchanged):
+            // active, busy, ime_composing (just cleared -> 0 by here), shift,
+            // and the predicate verdict with the reason it produced.
+            DIAG_LOG("ENTER_GATE",
+                     "bare_enter evaluated active=%d worker_busy=%d ime_composing=0 shift=%d "
+                     "verdict=%s reason=%s",
+                     gate_active ? 1 : 0, gate_busy ? 1 : 0, shift ? 1 : 0,
+                     gate_allowed ? "INTERCEPT" : "PASS_THROUGH",
+                     gate_allowed ? "all_gates_open"
+                                  : (gate_busy ? "worker_busy" : (gate_active ? "gate_denied_unspecified" : "hook_inactive")));
+            if (gate_allowed) {
                 // Capture target window HWND at interception time for process-aware selection
                 HWND target_hwnd = ::GetForegroundWindow();
 
                 // Post task to worker and intercept Enter from reaching target control
                 if (s_instance->worker_.PostTask(shift, target_hwnd)) {
-                    fprintf(stderr, "HOOK/Enter/001: bare Enter intercepted -> pipeline task posted (hwnd=%p)\n",
-                            reinterpret_cast<void*>(target_hwnd));
+                    DIAG_F("HOOK/Enter/001: bare Enter intercepted -> pipeline task posted (hwnd=%p)\n",
+                           reinterpret_cast<void*>(target_hwnd));
+                    DIAG_LOG("ENTER_GATE", "outcome=task_posted hwnd=%p",
+                             reinterpret_cast<void*>(target_hwnd));
                     return 1; // Intercepted immediately (< 1ms)!
                 }
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=pass_through reason=posttask_refused_race (gate allowed but "
+                         "worker accepted no task: busy flipped between IsBusy() and PostTask) "
+                         "hwnd=%p",
+                         reinterpret_cast<void*>(target_hwnd));
             } else if (gate_active && !gate_busy) {
                 // Log only the meaningfully-gated case. When !active or busy
                 // the user has the feature off / a task in flight: passing
@@ -604,8 +804,8 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // such Enter would spam stderr at typing speed (and the log
                 // would carry no diagnostic information beyond what
                 // HOOK/Enter/001's absence already proves).
-                fprintf(stderr, "HOOK/Enter/002: bare Enter PASSED THROUGH untranslated while active=!1 busy=0 "
-                                "(ime mirror race or unspecified gate; see HOOK/Enter/001 absence)\n");
+                DIAG_F("HOOK/Enter/002: bare Enter PASSED THROUGH untranslated while active=!1 busy=0 "
+                       "(ime mirror race or unspecified gate; see HOOK/Enter/001 absence)\n");
             }
         }
     }

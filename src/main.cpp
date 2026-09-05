@@ -1,4 +1,5 @@
 #include "config.hpp"
+#include "diag_logger.hpp"
 #include "engine.hpp"
 #include "hook.hpp"
 #include "i18n.hpp"
@@ -58,7 +59,7 @@ std::function<bool(std::string_view, std::string_view, bool, bool)> g_apply_lang
 void RequestLanguageSync(HWND hController, std::string source, std::string target,
                          bool cycle, bool play_chime) {
     if (!hController) {
-        fprintf(stderr, "MAIN/LangSync/000: no controller window; language sync request dropped\n");
+        DIAG_F("MAIN/LangSync/000: no controller window; language sync request dropped\n");
         return;
     }
     const DWORD gui_tid = ::GetWindowThreadProcessId(hController, nullptr);
@@ -73,7 +74,7 @@ void RequestLanguageSync(HWND hController, std::string source, std::string targe
     const LPARAM lp = reinterpret_cast<LPARAM>(p.release());
     if (::PostMessageW(hController, kMsgApplyLanguageSync, cycle ? 1 : 0, lp) == FALSE) {
         delete reinterpret_cast<LanguageSyncRequest*>(lp);
-        fprintf(stderr, "MAIN/LangSync/002: PostMessage language sync failed (GLE %lu)\n", ::GetLastError());
+        DIAG_F("MAIN/LangSync/002: PostMessage language sync failed (GLE %lu)\n", ::GetLastError());
     }
 }
 const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
@@ -117,12 +118,12 @@ void ReinstallHooksAfterLifecycleEvent(const char* reason, HWND debounce_wnd) {
     }
     if (g_pHook) {
         if (!g_pHook->Reinstall()) {
-            fprintf(stderr, "MAIN/HookLifecycle/001: keyboard hook re-install failed after %s\n", reason);
+            DIAG_F("MAIN/HookLifecycle/001: keyboard hook re-install failed after %s\n", reason);
         }
     }
     if (g_pMouseHook) {
         if (!g_pMouseHook->Reinstall()) {
-            fprintf(stderr, "MAIN/HookLifecycle/002: mouse hook re-install failed after %s\n", reason);
+            DIAG_F("MAIN/HookLifecycle/002: mouse hook re-install failed after %s\n", reason);
         }
     }
 }
@@ -175,7 +176,7 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 unhealthy = true;
             }
             if (unhealthy) {
-                fprintf(stderr, "MAIN/HookLifecycle/003: health watchdog detected dead hook thread; reinstalling\n");
+                DIAG_F("MAIN/HookLifecycle/003: health watchdog detected dead hook thread; reinstalling\n");
                 ReinstallHooksAfterLifecycleEvent("health check", hwnd);
             }
             return 0;
@@ -230,7 +231,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // re-scale their DIB buffers with ui::MonitorDpiAtPoint/WindowDpi per
     // monitor they land on.
     if (!emebalachat::ui::EnsurePerMonitorV2ProcessDpiAwareness()) {
-        fprintf(stderr, "MAIN/WinMain/000: per-monitor-v2 DPI awareness unavailable; UI may be bitmap-scaled\n");
+        DIAG_F("MAIN/WinMain/000: per-monitor-v2 DPI awareness unavailable; UI may be bitmap-scaled\n");
     }
 
     // 0. L3 (DLL search-path hardening, behavior-preserving part): remove the
@@ -244,6 +245,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // toolkit machines resolves through PATH - restricting it breaks the CUDA
     // load chain (deferred; documented in CMakeLists.txt).
     ::SetDllDirectoryW(nullptr);
+
+    // 260905 diagnostics: initialize the file logger as early as safely
+    // possible (after the DLL hardening, before anything that can fail). The
+    // single-instance early-exit below then still lands its "second instance"
+    // record in this run's own file. Init failure = graceful disable (never
+    // blocks or crashes the app).
+    const bool diag_ok = diag::Init();
+    if (!diag_ok) {
+        DIAG_F("MAIN/Diag/001: diag logger init failed (no LOCALAPPDATA and no "
+               "exe-dir logs fallback?); file diagnostics disabled this run\n");
+    }
 
     // 1. Single Instance Mutex
     // NOTE (R6 Phase 5 sweep): the two startup MessageBox texts below are now
@@ -262,6 +274,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (hMutex) {
             ::CloseHandle(hMutex);
         }
+        DIAG_LOG("SESSION", "second instance detected; exiting");
+        diag::Shutdown(); // bounded drain so the record survives the early exit
         return 0;
     }
 
@@ -276,7 +290,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     const HRESULT hrCom = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     const bool com_available = SUCCEEDED(hrCom) || (hrCom == RPC_E_CHANGED_MODE);
     if (!com_available) {
-        fprintf(stderr, "MAIN/WinMain/001: CoInitializeEx failed 0x%08lX; D2D badge, logo bitmaps and TTS are disabled\n",
+        DIAG_F("MAIN/WinMain/001: CoInitializeEx failed 0x%08lX; D2D badge, logo bitmaps and TTS are disabled\n",
                 static_cast<unsigned long>(hrCom));
         ::MessageBoxW(
             nullptr,
@@ -288,7 +302,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // 3. Load or create AppConfig
     emebalachat::AppConfig config;
-    config.LoadFromFile();
+    const bool config_ok = config.LoadFromFile();
+
+    // 260905 diagnostics: config snapshot summary. Full config values are
+    // logged per the VP/user authorization for this diagnostic build
+    // ("possible config dump"); model_path, language pair, engine, toggles.
+    {
+        const emebalachat::AppConfig::Snapshot snap = config.GetSnapshot();
+        DIAG_LOG("SESSION", "config loaded=%d ui_language=%s engine=%s model_path=%s "
+                            "src=%s tgt=%s auto_send=%d sound=%d drag_to_translate=%d "
+                            "cloud_fallback=%d hotkey_toggle=%s hotkey_lang=%s hotkey_mode=%s "
+                            "temp=%.2f top_p=%.2f top_k=%d rep_pen=%.2f",
+                 config_ok ? 1 : 0, config.ui_language.c_str(), snap.engine_type.c_str(),
+                 config.model_path.c_str(), snap.source_language.c_str(),
+                 snap.target_language.c_str(), snap.auto_send ? 1 : 0,
+                 snap.sound_enabled ? 1 : 0, config.drag_to_translate ? 1 : 0,
+                 config.cloud_fallback_enabled ? 1 : 0, config.hotkey_toggle.c_str(),
+                 config.hotkey_lang.c_str(), config.hotkey_mode.c_str(),
+                 config.temperature, config.top_p, config.top_k, config.repetition_penalty);
+    }
 
     // 4. Initialize Universal i18n
     emebalachat::I18n::Initialize(config.ui_language);
@@ -377,10 +409,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         );
         emebalachat::g_hPowerWnd = hPower;
         if (!hPower) {
-            fprintf(stderr, "MAIN/WinMain/005: power sink window creation failed (GLE %lu); Sleep/Resume hook reinstall degraded to watchdog-only\n",
+            DIAG_F("MAIN/WinMain/005: power sink window creation failed (GLE %lu); Sleep/Resume hook reinstall degraded to watchdog-only\n",
                     ::GetLastError());
         } else if (!::WTSRegisterSessionNotification(hPower, NOTIFY_FOR_THIS_SESSION)) {
-            fprintf(stderr, "MAIN/WinMain/006: WTSRegisterSessionNotification failed (GLE %lu); Win+L hook reinstall degraded to watchdog-only\n",
+            DIAG_F("MAIN/WinMain/006: WTSRegisterSessionNotification failed (GLE %lu); Win+L hook reinstall degraded to watchdog-only\n",
                     ::GetLastError());
         }
     }
@@ -398,7 +430,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config.badge_x,
             config.badge_y
         )) {
-        fprintf(stderr, "MAIN/WinMain/002: FloatingBadge::Create failed; running without the badge UI\n");
+        DIAG_F("MAIN/WinMain/002: FloatingBadge::Create failed; running without the badge UI\n");
     }
 
     // Persist badge desktop coordinates whenever dragged by the user
@@ -454,7 +486,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // guard hwnd_), mirroring the badge's graceful-degradation contract.
     emebalachat::AboutWindow about_window;
     if (!about_window.Create(hInstance)) {
-        fprintf(stderr, "MAIN/WinMain/007: AboutWindow::Create failed; About menu item disabled\n");
+        DIAG_F("MAIN/WinMain/007: AboutWindow::Create failed; About menu item disabled\n");
     }
 
     emebalachat::MouseHook mouse_hook;
@@ -492,10 +524,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         const emebalachat::LanguageSyncPlan plan = emebalachat::PlanLanguageSync(
             snap.source_language, snap.target_language, req_src, req_tgt);
         if (!plan.valid) {
-            fprintf(stderr, "MAIN/LangSync/001: refused unresolvable language request (src='%s', tgt='%s')\n",
+            DIAG_F("MAIN/LangSync/001: refused unresolvable language request (src='%s', tgt='%s')\n",
                     std::string(new_source).c_str(), std::string(new_target).c_str());
             return false;
         }
+        // 260905 diagnostics: the language-change record (old -> new) at the
+        // single authority every surface now routes through.
+        DIAG_LOG("STATE", "lang_sync valid=%d changed=%d pair %s/%s -> %s/%s (req %s/%s)",
+                 plan.valid ? 1 : 0, plan.changed ? 1 : 0,
+                 snap.source_language.c_str(), snap.target_language.c_str(),
+                 plan.source_language.c_str(), plan.target_language.c_str(),
+                 req_src.empty() ? "-" : req_src.c_str(),
+                 req_tgt.empty() ? "-" : req_tgt.c_str());
         // INV-3: persistence is synchronous inside this call. A no-op re-pick
         // of the already-active language skips the locked write and the disk
         // churn, but the view refreshes below still run (self-heal against
@@ -733,7 +773,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         const emebalachat::UiLocaleChangePlan plan =
             emebalachat::PlanUiLocaleChange(snap.ui_language, code);
         if (!plan.valid) {
-            fprintf(stderr, "MAIN/UiLocale/001: refused unknown UI-language code '%s'\n",
+            DIAG_F("MAIN/UiLocale/001: refused unknown UI-language code '%s'\n",
                     std::string(code).c_str());
             return;
         }
@@ -908,7 +948,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Sleep-polling never freezes the GUI pump.
         if (!emebalachat::CopySelectionWithSequenceWait()) {
             emebalachat::RestoreClipboard(backup);
-            fprintf(stderr, "MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
+            DIAG_F("MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
             // REQ-R1(b): failure is now user-visible, not silent.
             // R6 B1-H1: carries this request's generation - a superseded
             // drag must not stamp a notice over a newer result either.
@@ -922,7 +962,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         emebalachat::RestoreClipboard(backup);
 
         if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
-            fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
+            DIAG_F("MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
             tooltip.ShowMessageThreadSafe(click_x, click_y,
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
@@ -1043,7 +1083,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // sequence provably move and settle, otherwise nothing is read (never
         // a stale value).
         if (!emebalachat::CopySelectionWithSequenceWait()) {
-            fprintf(stderr, "MAIN/DoubleCtrlC/001: clipboard copy not confirmed; refusing stale read\n");
+            DIAG_F("MAIN/DoubleCtrlC/001: clipboard copy not confirmed; refusing stale read\n");
             return;
         }
         std::wstring copied = emebalachat::GetClipboardText();
@@ -1181,8 +1221,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // 9. Start Pipeline Worker, Keyboard Hook, and Mouse Hook
     worker.Start();
-    hook.Start();
-    mouse_hook.Start();
+    const bool hook_started = hook.Start();
+    const bool mouse_started = mouse_hook.Start();
+    // 260905 diagnostics: subsystem startup state recorded right after the
+    // hooks are (or are not) installed — a dead hook is the first thing to
+    // rule out for "nothing translates" reports.
+    DIAG_LOG("SESSION", "subsystems started worker=1 hook=%s mouse=%s active=%d toggle_vk=0x%02X",
+             hook_started ? "ok" : "FAILED",
+             mouse_started ? "ok" : "FAILED",
+             hook.IsActive() ? 1 : 0,
+             hook.ToggleHotkey().vk);
 
     // REQ-R14 watchdog: re-verify hook thread liveness every 30 s (covers the
     // UAC secure-desktop trip and any silent OS removal path that emitted no
@@ -1263,7 +1311,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         warmup_thread.join(); // bounded: load aborts via progress_callback
     }
     if (!engine.WaitInferenceIdle(2000)) {
-        fprintf(stderr, "MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (decode loop may still be winding down)\n");
+        DIAG_F("MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (decode loop may still be winding down)\n");
     }
     if (emebalachat::g_hPowerWnd) {
         ::WTSUnRegisterSessionNotification(emebalachat::g_hPowerWnd);
@@ -1294,6 +1342,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         ::ReleaseMutex(hMutex);
         ::CloseHandle(hMutex);
     }
+
+    // 260905 diagnostics: session end bookkeeping + deterministic drain of the
+    // queue (Shutdown joins the flush thread after writing everything still
+    // enqueued — the last lines of every run are "session end" + drop count).
+    DIAG_LOG("SESSION", "session end (dropped=%llu)",
+             static_cast<unsigned long long>(diag::DroppedCount()));
+    diag::Shutdown();
 
     return 0;
 }

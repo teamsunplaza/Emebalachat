@@ -79,6 +79,7 @@ endif()
 
 # Core static library for Emebalachat modules
 add_library(Emebalachat_core STATIC
+    src/diag_logger.cpp
     src/config.cpp
     src/unicode_utils.cpp
     src/smart_bypass.cpp

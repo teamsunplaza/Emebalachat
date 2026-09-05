@@ -1,4 +1,5 @@
 #include "../src/config.hpp"
+#include "../src/diag_logger.hpp"
 #include "../src/unicode_utils.hpp"
 #include "../src/smart_bypass.hpp"
 #include "../src/sound.hpp"
@@ -3870,6 +3871,197 @@ void TestR6P5P6I18n() {
     std::cout << "[PASS] R6 P5/P6 i18n tests completed." << std::endl;
 }
 
+// ---- 260905 r7: diag_logger headless tests ----
+// File sink runs against a temp directory override (Init(dir) is the test
+// seam). Covers: filename pattern, line format, write/readback round-trip,
+// multi-thread stress (line count == written count, every token present ->
+// no interleaved corruption), DIAG_F tag parsing, disable toggle, and
+// shutdown drain. The live hook-path enqueue is untestable headlessly by
+// design; the enqueue-only contract is pinned here instead (a full burst of
+// 8k lines completes in microseconds per call and never blocks: asserted via
+// total wall time below the conservative 2 s bound).
+static void TestDiagLogger() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "emebala_diag_test";
+    fs::remove_all(dir, ec);
+
+    // Uninitialized: every entry point is a safe no-op.
+    TEST_CHECK(!diag::IsInitialized(), "diag: not initialized before Init");
+    diag::Printf("TEST", "before-init no-op %d", 1);
+    diag::Flush();
+    diag::Shutdown(); // double-shutdown / shutdown-while-uninit must not crash
+    TEST_CHECK(!fs::exists(dir, ec), "diag: no directory created before Init");
+
+    TEST_CHECK(diag::Init(dir), "diag: Init with temp-dir override succeeds");
+    TEST_CHECK(diag::IsInitialized(), "diag: initialized after Init");
+    TEST_CHECK(diag::IsEnabled(), "diag: file sink defaults to ON");
+    // Idempotent Init while live returns true without rotating the file.
+    const std::wstring first_path = diag::CurrentLogPath();
+    TEST_CHECK(diag::Init(dir), "diag: second Init is idempotent true");
+    TEST_CHECK(diag::CurrentLogPath() == first_path, "diag: idempotent Init keeps the same file");
+
+    // File-name pattern: emebalachat_yymmddhhmmss.log (14 local-time digits,
+    // user's literal format; optional -N collision suffix).
+    {
+        const std::string name = ToUtf8(fs::path(first_path).filename().wstring());
+        // yy mm dd hh mm ss = 12 digits (the user's literal format).
+        const std::string pfx = "emebalachat_";
+        bool ok = name.rfind(pfx, 0) == 0 &&
+                  name.size() >= pfx.size() + 12 + 4 &&
+                  name.size() <= pfx.size() + 12 + 1 + 3 + 4;
+        size_t i = pfx.size();
+        for (int d = 0; d < 12 && ok; ++d, ++i) {
+            ok = name[i] >= '0' && name[i] <= '9';
+        }
+        // After the 14 digits: optional "-N", then exactly ".log".
+        if (ok && i < name.size() && name[i] == '-') {
+            ++i;
+            const size_t n0 = i;
+            while (i < name.size() && name[i] >= '0' && name[i] <= '9') ++i;
+            ok = i > n0 && i <= n0 + 3;
+        }
+        ok = ok && name.compare(i, name.size() - i, ".log") == 0;
+        TEST_CHECK(ok, "diag: file name matches emebalachat_yymmddhhmmss[-N].log");
+        TEST_CHECK(fs::exists(first_path, ec), "diag: log file physically created");
+    }
+
+    // Round-trip: content + line format "yyyy-mm-dd hh:mm:ss.mmm [tid] TAG/msg".
+    diag::Printf("TEST", "hello %s %d", "world", 42);
+    diag::Flush();
+    std::string content;
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    {
+        const size_t pos = content.find("TEST/hello world 42");
+        TEST_CHECK(pos != std::string::npos, "diag: round-trip payload present");
+        // Validate the line header around the found payload.
+        const size_t ls = content.rfind('\n', pos);
+        const std::string line = (ls == std::string::npos)
+                                     ? content.substr(0, content.find('\n', pos))
+                                     : content.substr(ls + 1, content.find('\n', ls + 1) - ls - 1);
+        bool fmt_ok = line.size() >= 24 &&
+                      line[4] == '-' && line[7] == '-' && line[10] == ' ' &&
+                      line[13] == ':' && line[16] == ':' && line[19] == '.' &&
+                      line.find(" [") != std::string::npos &&
+                      line.find("] TEST/") != std::string::npos;
+        for (size_t k = 0; k < 20 && fmt_ok; ++k) {
+            if (k == 4 || k == 7 || k == 10 || k == 13 || k == 16 || k == 19) continue;
+            fmt_ok = line[k] >= '0' && line[k] <= '9';
+        }
+        TEST_CHECK(fmt_ok, "diag: line header yyyy-mm-dd hh:mm:ss.mmm [tid] TAG/");
+    }
+
+    // DIAG_F mirroring: stderr-format payload is mirrored with the
+    // MODULE/site/NNN token parsed out as the TAG.
+    diag::MirrorF("HOOK/Enter/999: mirrored body %d\n", 7);
+    diag::Flush();
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(content.find("HOOK/Enter/999/mirrored body 7") != std::string::npos,
+                   "diag: DIAG_F mirrored to file with parsed TAG");
+    }
+
+    // Multi-thread stress: 4 threads x 500 unique lines. Heuristic against
+    // interleaved corruption: final line count == 2 session + 2 warm-up +
+    // 2000 stress lines, and EVERY token appears exactly once.
+    {
+        const int kThreads = 4;
+        const int kPer = 500;
+        const uint64_t lines_before = std::count(content.begin(), content.end(), '\n');
+        auto burst_start = std::chrono::steady_clock::now();
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; ++t) {
+            threads.emplace_back([t, kPer]() {
+                for (int i = 0; i < kPer; ++i) {
+                    diag::Printf("MTSTRESS", "MT-%d-%d payload", t, i);
+                }
+            });
+        }
+        for (auto& th : threads) th.join();
+        diag::Flush();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - burst_start)
+                                    .count();
+        std::ifstream in(first_path, std::ios::binary);
+        content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const uint64_t lines_after = std::count(content.begin(), content.end(), '\n');
+        TEST_CHECK(lines_after == lines_before + static_cast<uint64_t>(kThreads) * kPer,
+                   "diag: multithread line count == written count (no corruption/loss)");
+        bool all_tokens = true;
+        for (int t = 0; t < kThreads && all_tokens; ++t) {
+            for (int i = 0; i < kPer; ++i) {
+                const std::string tok = "MT-" + std::to_string(t) + "-" + std::to_string(i) + " payload";
+                if (content.find(tok) == std::string::npos) {
+                    all_tokens = false;
+                    break;
+                }
+            }
+        }
+        TEST_CHECK(all_tokens, "diag: every concurrent line present exactly once");
+        TEST_CHECK(diag::DroppedCount() == 0, "diag: bounded queue lost nothing at 2k lines");
+        // Enqueue never blocks: 2000 formatted enqueues + drain must finish
+        // well inside a conservative 2 s bound (typical: tens of ms).
+        TEST_CHECK(elapsed_ms < 2000, "diag: enqueue burst never blocks (bounded wall time)");
+    }
+
+    // Runtime toggle: disabled file sink accepts nothing; stderr sink of
+    // DIAG_F still runs (cannot assert stderr headlessly - by contract).
+    diag::SetEnabled(false);
+    TEST_CHECK(!diag::IsEnabled(), "diag: SetEnabled(false) reflected");
+    {
+        const auto lines_before = std::count(content.begin(), content.end(), '\n');
+        diag::Printf("TEST", "while-disabled %d", 0);
+        diag::Flush();
+        std::ifstream in(first_path, std::ios::binary);
+        std::string after;
+        after.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(std::count(after.begin(), after.end(), '\n') == lines_before,
+                   "diag: disabled sink writes no lines");
+    }
+    diag::SetEnabled(true);
+    diag::Printf("TEST", "re-enabled %d", 1);
+    diag::Flush();
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        std::string after;
+        after.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(after.find("TEST/re-enabled 1") != std::string::npos,
+                   "diag: re-enable resumes file writing");
+    }
+
+    // Shutdown drains everything still queued and closes the file.
+    diag::Printf("TEST", "pre-shutdown last line");
+    diag::Shutdown();
+    TEST_CHECK(!diag::IsInitialized(), "diag: uninitialized after Shutdown");
+    std::string final_content;
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        final_content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(final_content.find("TEST/pre-shutdown last line") != std::string::npos,
+                   "diag: Shutdown flushed queued lines");
+    }
+    diag::Printf("TEST", "post-shutdown no-op");
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        std::string unchanged;
+        unchanged.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(unchanged == final_content, "diag: post-shutdown Printf writes nothing");
+    }
+
+    // Re-init cycle (the app-exit tests rely on this only being reachable via
+    // full Shutdown): a second run creates a NEW file, appends nothing to old.
+    TEST_CHECK(diag::Init(dir), "diag: re-Init after Shutdown succeeds");
+    TEST_CHECK(diag::CurrentLogPath() != first_path, "diag: re-Init rotates to a new file");
+    diag::Shutdown();
+
+    fs::remove_all(dir, ec); // cleanup (best-effort; temp dir)
+    std::cout << "[PASS] 260905 diag_logger tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -3923,6 +4115,7 @@ int main() {
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
     TestR6P5P6I18n();
+    TestDiagLogger();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

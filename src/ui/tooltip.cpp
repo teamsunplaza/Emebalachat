@@ -1,4 +1,5 @@
 #include "tooltip.hpp"
+#include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
 #include "../config.hpp"
@@ -624,8 +625,15 @@ void TooltipWindow::ShowTranslation(
     if (!ShouldRenderForGeneration(latest_request_gen_.load(std::memory_order_relaxed),
                                    generation)) {
         ++dropped_stale_shows_;
+        DIAG_LOG("UI", "tooltip_marshal_drop kind=translation gen=%llu latest=%llu total_drops=%llu",
+                 static_cast<unsigned long long>(generation),
+                 static_cast<unsigned long long>(latest_request_gen_.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(dropped_stale_shows_));
         return;
     }
+    DIAG_LOG("UI", "tooltip_show kind=translation gen=%llu x=%d y=%d src_len=%zu out_len=%zu",
+             static_cast<unsigned long long>(generation), x, y,
+             source_text.size(), translated_text.size());
 
     is_message_mode_ = false;
     ::KillTimer(hwnd_, kTimerMessageAutohide);
@@ -743,8 +751,14 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     if (!ShouldRenderForGeneration(latest_request_gen_.load(std::memory_order_relaxed),
                                    generation)) {
         ++dropped_stale_shows_;
+        DIAG_LOG("UI", "tooltip_marshal_drop kind=message gen=%llu latest=%llu total_drops=%llu",
+                 static_cast<unsigned long long>(generation),
+                 static_cast<unsigned long long>(latest_request_gen_.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(dropped_stale_shows_));
         return;
     }
+    DIAG_LOG("UI", "tooltip_show kind=message gen=%llu x=%d y=%d",
+             static_cast<unsigned long long>(generation), x, y);
 
     // REQ-R08 (audit §3.2): transient state-change notice. Compact fixed-size
     // card; translated_text_ carries the body line, message_header_ the title.
@@ -847,7 +861,9 @@ void TooltipWindow::ShowTranslationThreadSafe(
 // Callable from ANY thread (atomic) - trigger sites live on the GUI thread
 // (drag-icon click), the REQ-R06 double-Ctrl+C worker, and hook threads.
 uint64_t TooltipWindow::BeginTranslationRequest() {
-    return latest_request_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint64_t gen = latest_request_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
+    DIAG_LOG("UI", "tooltip_request_begin gen=%llu", static_cast<unsigned long long>(gen));
+    return gen;
 }
 
 void TooltipWindow::DismissThreadSafe() {
@@ -899,10 +915,13 @@ void TooltipWindow::Dismiss() {
     // translation), which would stall LowLevelHooksTimeout. Marshal instead.
     // WndProc re-enters on the GUI thread, so this guard never recurses.
     if (::GetCurrentThreadId() != gui_thread_id_) {
+        DIAG_LOG("UI", "tooltip_dismiss requested off-thread (marshaled)");
         ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
         return;
     }
     if (!visible_.load(std::memory_order_relaxed)) return;
+    DIAG_LOG("UI", "tooltip_dismiss executed gen=%llu",
+             static_cast<unsigned long long>(latest_request_gen_.load(std::memory_order_relaxed)));
     StopTTS();
     ::KillTimer(hwnd_, kTimerMessageAutohide);
     visible_ = false;
@@ -1306,7 +1325,7 @@ void TooltipWindow::Render() {
 // the next natural repaint (Show*, scroll, hover) draws on the new target,
 // so the recovery is app-safe degradation, not a silent-permanent-blank.
 void TooltipWindow::RecreateAfterDeviceLost() {
-    fprintf(stderr, "TOOLTIP/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    DIAG_F("TOOLTIP/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
     if (dc_render_target_) {
         dc_render_target_->Release();
         dc_render_target_ = nullptr;
@@ -1320,7 +1339,7 @@ void TooltipWindow::RecreateAfterDeviceLost() {
     );
     if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
         dc_render_target_ = nullptr;
-        fprintf(stderr, "TOOLTIP/DeviceLost/002: render-target recreation failed; tooltip stays blank until next Create()\n");
+        DIAG_F("TOOLTIP/DeviceLost/002: render-target recreation failed; tooltip stays blank until next Create()\n");
         return;
     }
     // ReallocateBuffer re-binds SetDpi + BindDC on the fresh target; the logo

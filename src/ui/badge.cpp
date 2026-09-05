@@ -1,6 +1,8 @@
 #include "badge.hpp"
+#include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "../i18n.hpp"
+#include "../unicode_utils.hpp"
 #include "dpi.hpp"
 
 #include <cmath>
@@ -186,6 +188,13 @@ void FloatingBadge::Destroy() {
 
 void FloatingBadge::SetStatus(BadgeStatus status) {
     if (!hwnd_) return;
+    // 260905 diagnostics: badge pill state transitions (recorded BEFORE the
+    // marshal decision so the log shows both the request and its routing).
+    DIAG_LOG("UI", "badge_status -> %s",
+             status == BadgeStatus::Active      ? "Active"
+             : status == BadgeStatus::Disabled  ? "Disabled"
+             : status == BadgeStatus::Translating ? "Translating"
+                                                 : "Unknown");
     DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
     if (::GetCurrentThreadId() == winThreadId) {
         {
@@ -202,6 +211,9 @@ void FloatingBadge::SetStatus(BadgeStatus status) {
 
 void FloatingBadge::SetLanguages(std::wstring_view src_code, std::wstring_view tgt_code) {
     if (!hwnd_) return;
+    // 260905 diagnostics: language label change (old→new visible across
+    // successive lines; wstrings here are short ASCII-ish codes).
+    DIAG_LOG("UI", "badge_langs \"%s\" -> \"%s\"", ToUtf8(src_code).c_str(), ToUtf8(tgt_code).c_str());
     DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
@@ -674,7 +686,7 @@ void FloatingBadge::Render() {
 // after a device-lost. ReallocateBuffer re-binds SetDpi + BindDC on the fresh
 // target; the logo bitmap was created on the lost device and must be rebuilt.
 void FloatingBadge::RecreateAfterDeviceLost() {
-    fprintf(stderr, "BADGE/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    DIAG_F("BADGE/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
     if (dc_render_target_) {
         dc_render_target_->Release();
         dc_render_target_ = nullptr;
@@ -688,7 +700,7 @@ void FloatingBadge::RecreateAfterDeviceLost() {
     );
     if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
         dc_render_target_ = nullptr;
-        fprintf(stderr, "BADGE/DeviceLost/002: render-target recreation failed; badge stays stale until next Create()\n");
+        DIAG_F("BADGE/DeviceLost/002: render-target recreation failed; badge stays stale until next Create()\n");
         return;
     }
     ReallocateBuffer(PhysW(), PhysH());

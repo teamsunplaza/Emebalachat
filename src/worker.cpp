@@ -1,4 +1,5 @@
 #include "worker.hpp"
+#include "diag_logger.hpp"
 #include "smart_bypass.hpp"
 #include "sound.hpp"
 #include "unicode_utils.hpp"
@@ -101,8 +102,19 @@ void PipelineWorker::WorkerLoop(std::stop_token stop_token) {
 }
 
 void PipelineWorker::ExecuteTask(const PipelineTask& task) {
+    // ---- 260905 diagnostics: full pipeline trace (task #c). Every stage is
+    // recorded with content and durations so "what happened in the backend
+    // when Enter was pressed, and why" is answerable from the log alone.
+    // Keystroke/translation CONTENT logging is user-authorized for this
+    // diagnostic build (VP directive), overriding the old shape-only rule. ----
+    const ULONGLONG t_task_start = ::GetTickCount64();
+    DIAG_LOG("PIPELINE", "task_received source=enter_pipeline target_hwnd=%p shift_enter=%d",
+             reinterpret_cast<const void*>(task.target_hwnd), task.is_shift_enter ? 1 : 0);
+
     ClipboardBackup backup;
-    BackupClipboard(backup);
+    const bool clip_backup_ok = BackupClipboard(backup);
+    DIAG_LOG("PIPELINE", "clipboard_backup ok=%d has_text=%d extra_formats=%zu",
+             clip_backup_ok ? 1 : 0, backup.text.has_value() ? 1 : 0, backup.formats.size());
 
     // RAII guard ensuring the user's original clipboard is always restored
     // upon any early return, error, or unexpected exception
@@ -139,18 +151,32 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // corruption the audit describes ("마지막 글자 중복 복사") and must never
     // happen against a live GCS_COMPSTR.
     if (ForegroundImeComposing()) {
-        fprintf(stderr, "WORKER/ExecuteTask/033: IME composition detected at task start; "
+        DIAG_F("WORKER/ExecuteTask/033: IME composition detected at task start; "
                         "bypassing translation (Enter handed to the app's IME)\n");
+        DIAG_LOG("PIPELINE", "stage=ime_backstop decision=bypass reason=foreground_composing "
+                             "duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
         ReleaseSelectionOnce();
         SendEnterKey(task.is_shift_enter);
+        DIAG_LOG("PIPELINE", "stage=send_enter action=synthetic(reason=ime_backstop) shift=%d",
+                 task.is_shift_enter ? 1 : 0);
         return;
     }
 
     // I4: this runs on the pipeline worker thread while the UI/hook threads may
     // mutate the shared string fields; take one consistent locked snapshot.
     const AppConfig::Snapshot snap = config_.GetSnapshot();
+    DIAG_LOG("PIPELINE", "stage=lang_pair src=\"%s\" tgt=\"%s\" engine=%s auto_send=%d",
+             snap.source_language.c_str(), snap.target_language.c_str(),
+             snap.engine_type.c_str(), snap.auto_send ? 1 : 0);
 
+    const ULONGLONG t_capture_start = ::GetTickCount64();
+    DIAG_LOG("PIPELINE", "stage=capture begin target_hwnd=%p",
+             reinterpret_cast<const void*>(task.target_hwnd));
     std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
+    DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu content=\"%s\"",
+             line.size(), ::GetTickCount64() - t_capture_start,
+             ToUtf8(line).c_str());
 
     // R5 observability: log the capture/bypass decision so a silent
     // "nothing translated" can be attributed to the exact failing gate
@@ -158,8 +184,11 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const bool was_smart_bypassed =
         !line.empty() && !ShouldTranslate(line, snap.target_language, snap.source_language);
     const bool should_translate = !line.empty() && !was_smart_bypassed;
-    fprintf(stderr, "WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
+    DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
+    DIAG_LOG("PIPELINE", "stage=bypass_decision smart_bypass=%d should_translate=%d reason=%s",
+             was_smart_bypassed ? 1 : 0, should_translate ? 1 : 0,
+             line.empty() ? "capture_empty" : (was_smart_bypassed ? "already_target_language" : "translate"));
 
     // R5 (Debug-Surgical): the bare-Enter path's empty capture is no longer
     // silent. Gate-11 evidence (R5 report section 2.2): CopySelectedText
@@ -178,10 +207,13 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // registered at startup); without the seam this degrades to the legacy
     // send-through below rather than creating a new silent-swallow path.
     if (EmptyCaptureNeedsHold(line.empty(), was_smart_bypassed) && empty_capture_cb_) {
-        fprintf(stderr,
+        DIAG_F(
                 "WORKER/ExecuteTask/035: empty capture on bare-Enter path; holding send, "
                 "showing no-selection notice (smart_bypass=%d)\n",
                 was_smart_bypassed ? 1 : 0);
+        DIAG_LOG("PIPELINE", "stage=empty_capture decision=hold_send action=no_selection_notice "
+                             "duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
         ReleaseSelectionOnce();
         empty_capture_cb_();
         return;
@@ -189,6 +221,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     // Check if line is empty or smart bypass says no translation needed
     if (line.empty() || !should_translate) {
+        DIAG_LOG("PIPELINE", "stage=send_through decision=bypass_pipeline reason=%s "
+                             "duration_ms=%llu",
+                 line.empty() ? "empty_capture_no_notice" : "smart_bypass",
+                 ::GetTickCount64() - t_task_start);
         // No paste will happen on this path: release the block selection before
         // Enter so the (about to be sent) text cannot be clobbered (REQ-R03).
         ReleaseSelectionOnce();
@@ -198,12 +234,20 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     // Indicate translating state on UI pill
     badge_.SetStatus(BadgeStatus::Translating);
+    DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu",
+             engine_.GetActiveEngineName().c_str(), line.size());
 
     // REQ-R02: capture the explicit engine status. An empty result is no longer
     // silent - the status below distinguishes privacy-block from engine failure.
     TranslationStatus status = TranslationStatus::Ok;
+    const ULONGLONG t_translate_start = ::GetTickCount64();
     std::wstring translated =
         NormalizeNewlinesToCRLF(engine_.Translate(line, snap.source_language, snap.target_language, &status));
+    DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
+                         "out_len=%zu out=\"%s\"",
+             static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
+             ::GetTickCount64() - t_translate_start, translated.size(),
+             ToUtf8(translated).c_str());
 
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
@@ -212,16 +256,24 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     if (!translated.empty() && translated != line) {
         // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
         // foreground window immediately before Ctrl+V and aborts on mismatch.
+        const ULONGLONG t_paste_start = ::GetTickCount64();
         pasted = PasteAndRestore(translated, backup, task.target_hwnd);
-        if (pasted) {
-            // Clipboard swap consumed the backup; RAII restorer must not overwrite.
-            restorer.active = false;
-        }
+        DIAG_LOG("PIPELINE", "stage=paste result=%d target_hwnd=%p duration_ms=%llu "
+                             "clipboard_restored=%d",
+                 pasted ? 1 : 0, reinterpret_cast<const void*>(task.target_hwnd),
+                 ::GetTickCount64() - t_paste_start, pasted ? 0 : 1);
         // If !pasted (focus shifted): clipboard untouched, nothing leaked. The
         // block selection is still live and MUST be released - a VK_RIGHT into a
         // possibly different foreground window is a benign cursor move, while
         // leaving it selected destroys the user's whole message on their next
         // keystroke (audit §2.2 / §5-3, REQ-R03). Enter remains H1-gated below.
+        if (pasted) {
+            // Clipboard swap consumed the backup; RAII restorer must not overwrite.
+            restorer.active = false;
+        }
+    } else {
+        DIAG_LOG("PIPELINE", "stage=paste skipped reason=%s",
+                 translated.empty() ? "translation_empty" : "translation_equals_source");
     }
 
     // REQ-R03: exactly-once selection release on every non-paste outcome. The
@@ -237,21 +289,28 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // sends the untranslated original.
     if (!pasted && translated.empty() &&
         (status == TranslationStatus::EngineFailed || status == TranslationStatus::CloudConsentBlocked)) {
-        fprintf(stderr, "WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
+        DIAG_F("WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
                 static_cast<int>(status));
         PlaySoundAsync(SoundType::Disable);
     }
 
     // Auto-Send or Shift+Enter immediate send dispatch
     // (auto_send is std::atomic; implicit load is safe from this thread - I4)
-    if (task.is_shift_enter || config_.auto_send.load(std::memory_order_relaxed)) {
-        // H1 guard: Enter is a synthetic keystroke delivered to the CURRENT focus.
-        // Re-verify before dispatch so a focus race cannot send Enter to the
-        // wrong application (e.g. confirming a dialog, submitting a form).
-        if (IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow())) {
+    const bool want_send = task.is_shift_enter || config_.auto_send.load(std::memory_order_relaxed);
+    const bool h1_ok = IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow());
+    if (want_send) {
+        if (h1_ok) {
             SendEnterKey(task.is_shift_enter);
+            DIAG_LOG("PIPELINE", "stage=send_enter action=synthetic shift=%d auto_send=%d",
+                     task.is_shift_enter ? 1 : 0,
+                     config_.auto_send.load(std::memory_order_relaxed) ? 1 : 0);
+        } else {
+            DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=h1_foreground_mismatch target=%p",
+                     reinterpret_cast<const void*>(task.target_hwnd));
         }
     }
+    DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",
+             pasted ? 1 : 0, ::GetTickCount64() - t_task_start);
 }
 
 } // namespace emebalachat

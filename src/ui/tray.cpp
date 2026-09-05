@@ -1,4 +1,5 @@
 #include "tray.hpp"
+#include "../diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "../config.hpp"
 #include "../i18n.hpp"
@@ -253,6 +254,12 @@ void SystemTray::UpdateStatus(
     wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
 
     ::Shell_NotifyIconW(NIM_MODIFY, &nid_);
+    // 260905 diagnostics: every tray status refresh (language changes old→new
+    // are visible through successive lines of this tag).
+    DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s auto_send=%d icon_changed=%d",
+             active ? 1 : 0, std::string(active_engine).c_str(),
+             std::string(src_code).c_str(), std::string(tgt_code).c_str(),
+             auto_send ? 1 : 0, iconChanged ? 1 : 0);
 }
 
 void SystemTray::ShowContextMenu() {
