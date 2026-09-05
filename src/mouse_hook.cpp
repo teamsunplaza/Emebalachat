@@ -106,6 +106,12 @@ void MouseHook::SetMouseDownCallback(MouseDownCallback cb) {
     mouse_down_cb_ = std::move(cb);
 }
 
+void MouseHook::SetMouseWheelCallback(MouseWheelCallback cb) {
+    // Same registration contract as the callbacks above (startup, before
+    // Start(); read on the hook thread only).
+    mouse_wheel_cb_ = std::move(cb);
+}
+
 void MouseHook::HookThreadProc() {
     hook_thread_id_ = ::GetCurrentThreadId();
     HINSTANCE hInst = ::GetModuleHandleW(nullptr);
@@ -231,6 +237,21 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
 
     // Bypass synthetic input events
     if (ms->dwExtraInfo == EXTRA_INFO_MARKER) {
+        return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }
+
+    // REQ-002: wheel forwarding for the WS_EX_NOACTIVATE tooltip happens
+    // BEFORE the enabled_ gate: reading an already-shown tooltip is unrelated
+    // to the translation-active state, so scrolling must work while paused.
+    // FORWARD-ONLY (plan §2.1 risk 1): we always CallNextHookEx and never
+    // swallow the event, protecting both the LowLevelHooksTimeout budget and
+    // the underlying app's own wheel handling. The callback contract is
+    // PostMessage-cheap (see main.cpp wiring).
+    if (wParam == WM_MOUSEWHEEL) {
+        if (s_instance->mouse_wheel_cb_) {
+            s_instance->mouse_wheel_cb_(ms->pt.x, ms->pt.y,
+                                        static_cast<int>(GET_WHEEL_DELTA_WPARAM(wParam)));
+        }
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
 

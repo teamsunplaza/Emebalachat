@@ -217,7 +217,7 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
     hwnd_ = ::CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kTooltipClassName,
-        L"Emebalachat Translation Tooltip",
+        L"Emebala Chat Translation Tooltip",
         WS_POPUP,
         -1000, -1000, PhysW(), PhysH(),
         nullptr, nullptr, hInstance_, this
@@ -236,6 +236,15 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
     );
+    // Discovered defect fix (Batch 2, reported): the DC render target creation
+    // call was missing here (badge.cpp/drag_icon.cpp both have it), leaving
+    // dc_render_target_ null forever -> Render() early-returns and every
+    // UpdateLayeredWindow blit pushed an empty DIB: the invisible-tooltip
+    // symptom of REQ-001 (trigger logic untouched; this is D2D init). Without
+    // it no Batch 2 rendering (scrolling included) could ever be verified.
+    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+        return false;
+    }
 
     // REQ-R15: single buffer allocation AFTER the render target exists so the
     // D2D DPI transform is set in the same step (ReallocateBuffer no-ops its
@@ -605,31 +614,73 @@ void TooltipWindow::ShowTranslation(
     copied_feedback_ = false;
     hovered_btn_ = 0;
 
-    // Measure body text layout height
-    float max_text_width = static_cast<float>(current_width_ - 32);
-    IDWriteTextLayout* layout = nullptr;
+    // Measure body text layout height (DIP; DirectWrite metrics are DPI
+    // independent). Layout width matches the painted body rect exactly
+    // (w - 28 when not scrollable) so measurement cannot disagree with render.
     float text_height = 40.0f;
+    UINT32 text_line_count = 0;
     if (dwrite_factory_ && body_format_) {
-        dwrite_factory_->CreateTextLayout(
-            translated_text_.c_str(),
-            static_cast<UINT32>(translated_text_.size()),
-            body_format_,
-            max_text_width,
-            1000.0f,
-            &layout
-        );
-        if (layout) {
+        IDWriteTextLayout* layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                translated_text_.c_str(),
+                static_cast<UINT32>(translated_text_.size()),
+                body_format_,
+                static_cast<float>(current_width_ - 28),
+                100000.0f,
+                &layout)) && layout) {
             DWRITE_TEXT_METRICS m = {};
             layout->GetMetrics(&m);
             text_height = (std::max)(36.0f, m.height);
+            text_line_count = m.lineCount;
             layout->Release();
         }
     }
 
     // Calculate dynamic window height: header (38) + pad (12) + body + pad (16) + footer (36)
-    // (DIP layout units - the DirectWrite metrics above are DPI-independent)
+    // (DIP layout units - the DirectWrite metrics above are DPI-independent).
+    // REQ-002 (plan §2.1): the 480 cap becomes 520; content taller than the
+    // capped body viewport scrolls instead of being clipped.
     int calculated_height = static_cast<int>(std::ceil(38.0f + 12.0f + text_height + 16.0f + 36.0f));
-    current_height_ = (std::max)(140, (std::min)(calculated_height, 480));
+    current_height_ = (std::max)(140, (std::min)(calculated_height, kMaxWindowHeightDip));
+
+    // REQ-002: a fresh translation always starts unscrolled (plan edge case 4).
+    scroll_offset_dip_ = 0.0f;
+    dragging_thumb_ = false;
+    thumb_hover_ = false;
+    content_height_dip_ = text_height;
+    line_height_dip_ = (text_line_count > 0)
+        ? text_height / static_cast<float>(text_line_count)
+        : 18.0f;
+    scrollable_ = false;
+    const float viewport_h = BodyViewportHeightDip(current_height_);
+    // Strict comparison: content exactly equal to the viewport fits without
+    // clipping (plan §2.1 edge case 1); 1 DIP more must scroll, not clip.
+    if (text_height > viewport_h) {
+        scrollable_ = true;
+        // Re-measure with the extra 4 DIP gutter the renderer reserves for
+        // the custom scrollbar (width w - 32): a narrower wrap can only grow
+        // the content extent, so adopt the larger measurement when it differs.
+        if (dwrite_factory_ && body_format_) {
+            IDWriteTextLayout* gutter_layout = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    translated_text_.c_str(),
+                    static_cast<UINT32>(translated_text_.size()),
+                    body_format_,
+                    static_cast<float>(current_width_ - 32),
+                    100000.0f,
+                    &gutter_layout)) && gutter_layout) {
+                DWRITE_TEXT_METRICS m2 = {};
+                gutter_layout->GetMetrics(&m2);
+                if (m2.height > content_height_dip_) {
+                    content_height_dip_ = m2.height;
+                    if (m2.lineCount > 0) {
+                        line_height_dip_ = m2.height / static_cast<float>(m2.lineCount);
+                    }
+                }
+                gutter_layout->Release();
+            }
+        }
+    }
 
     // REQ-R15 (audit §5 latent item 3): capture the target monitor's DPI from
     // the (physical) cursor coordinates the caller passed, then allocate the
@@ -672,6 +723,12 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     target_lang_.clear();
     copied_feedback_ = false;
     hovered_btn_ = 0;
+    // REQ-002: the compact notice card is fixed-height and never scrolls.
+    scroll_offset_dip_ = 0.0f;
+    scrollable_ = false;
+    content_height_dip_ = 0.0f;
+    dragging_thumb_ = false;
+    thumb_hover_ = false;
 
     current_width_ = 320;
     current_height_ = 84;
@@ -772,7 +829,35 @@ void TooltipWindow::Dismiss() {
     hovered_btn_ = 0;
     copied_feedback_ = false;
     is_message_mode_ = false;
+    // REQ-002 (plan §2.1): scroll state resets on every dismissal.
+    scroll_offset_dip_ = 0.0f;
+    scrollable_ = false;
+    content_height_dip_ = 0.0f;
+    dragging_thumb_ = false;
+    thumb_hover_ = false;
     ::ShowWindow(hwnd_, SW_HIDE);
+}
+
+void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
+    if (!hwnd_) return;
+    // Message mode (REQ-R08 compact notice) never scrolls; neither does a body
+    // that fits its viewport (short text keeps today's exact look, REQ-003).
+    if (is_message_mode_ || !scrollable_) return;
+    // REQ-R10: the LL mouse hook callback runs on the hook thread. Marshal the
+    // wheel event instead of touching the GUI-thread D2D target directly.
+    // WndProc re-enters here already on the GUI thread, so no recursion.
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ::PostMessageW(hwnd_, kScrollMessage, 0, static_cast<LPARAM>(wheel_delta));
+        return;
+    }
+    const float step = WheelDeltaToOffsetStepDip(wheel_delta, line_height_dip_);
+    if (step == 0.0f) return;
+    const float viewport_h = BodyViewportHeightDip(current_height_);
+    const float next = ClampScrollOffset(scroll_offset_dip_ + step, content_height_dip_, viewport_h);
+    if (next == scroll_offset_dip_) return; // clamped at an edge: no repaint jitter
+    scroll_offset_dip_ = next;
+    Render();
+    UpdateLayered();
 }
 
 void TooltipWindow::SpeakCurrentText() {
@@ -957,13 +1042,26 @@ void TooltipWindow::Render() {
         );
     }
 
-    // --- Body Area: Translated Text ---
-    float body_y = 48.0f;
-    float max_body_width = static_cast<float>(current_width_ - 28);
+    // --- Body Area: Translated Text (REQ-002: scrollable viewport) ---
+    float body_y = kBodyTopDip;
+    // When scrolling, reserve an 8 DIP track + 4 DIP gutter at the right edge.
+    float max_body_width = static_cast<float>(current_width_ - (scrollable_ ? 32 : 28));
     float body_height = static_cast<float>(current_height_ - 44) - body_y;
+    if (body_height < 0.0f) body_height = 0.0f;
+
+    body_viewport_rect_ = D2D1::RectF(14.0f, body_y, 14.0f + max_body_width, body_y + body_height);
 
     if (!translated_text_.empty() && body_format_ && textBrush) {
-        D2D1_RECT_F bodyRect = D2D1::RectF(14.0f, body_y, 14.0f + max_body_width, body_y + body_height);
+        // Clip to the viewport and draw the FULL layout (huge layout extent,
+        // never trimmed) shifted up by the scroll offset: overflow becomes
+        // reachable via scrolling instead of silently clipped (static
+        // re-check: replaces the pre-Batch-2 truncating behavior).
+        dc_render_target_->PushAxisAlignedClip(body_viewport_rect_, D2D1_ANTIALIAS_MODE_ALIASED);
+        D2D1_RECT_F bodyRect = D2D1::RectF(
+            14.0f,
+            body_y - scroll_offset_dip_,
+            14.0f + max_body_width,
+            body_y - scroll_offset_dip_ + (std::max)(content_height_dip_, body_height) + body_height);
         dc_render_target_->DrawText(
             translated_text_.c_str(),
             static_cast<UINT32>(translated_text_.size()),
@@ -971,6 +1069,41 @@ void TooltipWindow::Render() {
             bodyRect,
             textBrush
         );
+        dc_render_target_->PopAxisAlignedClip();
+    }
+
+    // --- Custom D2D scrollbar (plan §2.1 Option A-lite: native WS_VSCROLL is
+    // incompatible with UpdateLayeredWindow; 8 DIP track at the body's right
+    // edge, proportional thumb, min 24 DIP) ---
+    if (scrollable_) {
+        const float track_left = static_cast<float>(current_width_) - 12.0f;
+        scrollbar_track_rect_ = D2D1::RectF(track_left, body_y, track_left + 8.0f, body_y + body_height);
+
+        const float thumb_h = ScrollbarThumbHeightDip(body_height, body_height, content_height_dip_);
+        const float thumb_top = ScrollbarThumbTopDip(
+            body_y, body_height, thumb_h, scroll_offset_dip_, content_height_dip_, body_height);
+        scrollbar_thumb_rect_ = D2D1::RectF(track_left, thumb_top, track_left + 8.0f, thumb_top + thumb_h);
+
+        ID2D1SolidColorBrush* trackBrush = nullptr;
+        ID2D1SolidColorBrush* thumbBrush = nullptr;
+        const bool thumb_active = thumb_hover_ || dragging_thumb_;
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.7f), &trackBrush);
+        dc_render_target_->CreateSolidColorBrush(
+            thumb_active ? D2D1::ColorF(0xF8FAFC, 1.0f) : D2D1::ColorF(0x94A3B8, 1.0f),
+            &thumbBrush);
+        if (trackBrush) {
+            dc_render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), trackBrush);
+            trackBrush->Release();
+        }
+        if (thumbBrush) {
+            dc_render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), thumbBrush);
+            thumbBrush->Release();
+        }
+    } else {
+        scrollbar_track_rect_ = {};
+        scrollbar_thumb_rect_ = {};
     }
 
     // Footer divider line
@@ -1127,6 +1260,22 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // ---- REQ-002 scroll input ----
+        // Primary path: kScrollMessage posted by the LL mouse hook callback
+        // (WS_EX_NOACTIVATE popups never receive routed WM_MOUSEWHEEL because
+        // Windows sends the wheel to the FOCUSED window, not the hovered one).
+        case kScrollMessage: {
+            pThis->ScrollByDipWheel(static_cast<int>(lParam));
+            return 0;
+        }
+
+        // Defensive secondary path: if the OS ever routes a real wheel message
+        // here (e.g. focus quirks), honor it instead of dropping it.
+        case WM_MOUSEWHEEL: {
+            pThis->ScrollByDipWheel(static_cast<int>(GET_WHEEL_DELTA_WPARAM(wParam)));
+            return 0;
+        }
+
         case WM_SETCURSOR: {
             POINT pt = {};
             ::GetCursorPos(&pt);
@@ -1148,7 +1297,8 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (IsPointInRect(pThis->copy_btn_rect_, x, y) ||
                 IsPointInRect(pThis->tts_btn_rect_, x, y) ||
                 IsPointInRect(pThis->lang_btn_rect_, x, y) ||
-                IsPointInRect(pThis->close_btn_rect_, x, y)) {
+                IsPointInRect(pThis->close_btn_rect_, x, y) ||
+                (pThis->scrollable_ && IsPointInRect(pThis->scrollbar_thumb_rect_, x, y))) {
                 ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
                 return TRUE;
             }
@@ -1164,17 +1314,52 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             float y = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
                 static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
 
+            bool repaint = false;
+
+            // REQ-002: thumb drag (SetCapture held since WM_LBUTTONDOWN).
+            // Relative mapping keeps the grab point under the cursor:
+            // pointer travel across the track scales to the scroll range
+            // (plan §2.1; overshoot clamps, no jitter, edge cases 2/3).
+            if (pThis->dragging_thumb_) {
+                const float track_h = pThis->scrollbar_track_rect_.bottom - pThis->scrollbar_track_rect_.top;
+                const float thumb_h = pThis->scrollbar_thumb_rect_.bottom - pThis->scrollbar_thumb_rect_.top;
+                const float viewport_h = TooltipWindow::BodyViewportHeightDip(pThis->current_height_);
+                const float range = track_h - thumb_h;
+                const float scroll_range = pThis->content_height_dip_ - viewport_h;
+                if (range > 0.0f && scroll_range > 0.0f) {
+                    const float dy = y - pThis->drag_start_y_dip_;
+                    const float next = TooltipWindow::ClampScrollOffset(
+                        pThis->drag_start_offset_dip_ + dy * scroll_range / range,
+                        pThis->content_height_dip_, viewport_h);
+                    if (next != pThis->scroll_offset_dip_) {
+                        pThis->scroll_offset_dip_ = next;
+                        repaint = true;
+                    }
+                }
+            }
+
             int new_hover = 0;
             if (IsPointInRect(pThis->copy_btn_rect_, x, y)) new_hover = 1;
             else if (IsPointInRect(pThis->tts_btn_rect_, x, y)) new_hover = 2;
             else if (IsPointInRect(pThis->lang_btn_rect_, x, y)) new_hover = 3;
             else if (IsPointInRect(pThis->close_btn_rect_, x, y)) new_hover = 4;
 
-            if (new_hover != pThis->hovered_btn_) {
+            const bool new_thumb_hover =
+                pThis->scrollable_ && !pThis->dragging_thumb_ &&
+                IsPointInRect(pThis->scrollbar_thumb_rect_, x, y);
+
+            if (new_hover != pThis->hovered_btn_ || new_thumb_hover != pThis->thumb_hover_) {
                 pThis->hovered_btn_ = new_hover;
+                pThis->thumb_hover_ = new_thumb_hover;
+                repaint = true;
+            }
+
+            if (repaint) {
                 pThis->Render();
                 pThis->UpdateLayered();
+            }
 
+            if (new_hover != 0 || new_thumb_hover) {
                 TRACKMOUSEEVENT tme = {};
                 tme.cbSize = sizeof(TRACKMOUSEEVENT);
                 tme.dwFlags = TME_LEAVE;
@@ -1185,15 +1370,53 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_MOUSELEAVE: {
-            if (pThis->hovered_btn_ != 0) {
+            // During a thumb drag the capture keeps mouse events coming even
+            // when the pointer leaves; ignore leave until the drag ends.
+            if (pThis->dragging_thumb_) {
+                return 0;
+            }
+            if (pThis->hovered_btn_ != 0 || pThis->thumb_hover_) {
                 pThis->hovered_btn_ = 0;
+                pThis->thumb_hover_ = false;
                 pThis->Render();
                 pThis->UpdateLayered();
             }
             return 0;
         }
 
+        case WM_LBUTTONDOWN: {
+            // REQ-002: begin a scrollbar thumb drag (plan §2.1). SetCapture so
+            // moves outside the layered popup keep feeding the drag math.
+            if (!pThis->is_message_mode_ && pThis->scrollable_ &&
+                IsPointInRect(pThis->scrollbar_thumb_rect_,
+                              static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                                  static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_)),
+                              static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                                  static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_)))) {
+                pThis->dragging_thumb_ = true;
+                pThis->thumb_hover_ = true;
+                pThis->drag_start_offset_dip_ = pThis->scroll_offset_dip_;
+                pThis->drag_start_y_dip_ = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                    static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
+                ::SetCapture(hwnd);
+                pThis->Render();
+                pThis->UpdateLayered();
+                return 0;
+            }
+            break;
+        }
+
         case WM_LBUTTONUP: {
+            // REQ-002: end a thumb drag first; swallow the release so a drag
+            // that ends over a footer button does not also fire its action.
+            if (pThis->dragging_thumb_) {
+                pThis->dragging_thumb_ = false;
+                ::ReleaseCapture();
+                pThis->Render();
+                pThis->UpdateLayered();
+                return 0;
+            }
+
             // Message-mode notice has no action buttons: any click dismisses.
             if (pThis->is_message_mode_) {
                 pThis->Dismiss();

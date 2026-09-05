@@ -10,7 +10,9 @@
 #include "../src/ui/drag_icon.hpp"
 #include "../src/ui/dpi.hpp"
 #include "../src/ui/tooltip.hpp"
+#include "../src/ui/about_window.hpp"
 #include "../src/ui/asset_loader.hpp"
+#include "../src/version.hpp"
 #include "../src/mouse_hook.hpp"
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
@@ -2249,6 +2251,158 @@ void TestEngineFallbackExeDirAnchoring() {
     std::cout << "[PASS] D5-F engine fallback anchoring tests completed." << std::endl;
 }
 
+// ---------------------------------------------------------------------------
+// Batch 2 (session 260905_0001): REQ-006 version single source of truth,
+// REQ-002 scrollable tooltip (pure math + runtime), REQ-005 About window
+// smoke. Follows the plan's test-mapping table (§3 Batch 2 verification).
+// ---------------------------------------------------------------------------
+void TestBatch2VersionScrollAbout() {
+    std::cout << "[RUN] Testing Batch 2 version + tooltip scroll + about window..." << std::endl;
+
+    // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
+    TEST_CHECK(kAppVersionW == L"0.10.0", "REQ-006: kAppVersionW is 0.10.0 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.0", "REQ-006: ASCII version is 0.10.0");
+    TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
+
+    // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----
+    using TT = TooltipWindow;
+    static_assert(TT::kMaxWindowHeightDip == 520, "plan §2.1: window cap raised 480 -> 520");
+    static_assert(TT::BodyViewportHeightDip(520) == 520.0f - 48.0f - 44.0f,
+                  "viewport = window height - body top - footer reserve");
+    static_assert(TT::BodyViewportHeightDip(40) == 0.0f, "degenerate height clamps to 0, never negative");
+    // Offset clamping: fits -> 0; top/bottom clamps; mid passthrough.
+    static_assert(TT::ClampScrollOffset(50.0f, 100.0f, 400.0f) == 0.0f, "content fits viewport -> pinned 0");
+    static_assert(TT::ClampScrollOffset(-10.0f, 1000.0f, 400.0f) == 0.0f, "wheel past top clamps to 0");
+    static_assert(TT::ClampScrollOffset(700.0f, 1000.0f, 400.0f) == 600.0f, "wheel past bottom clamps to content-viewport");
+    static_assert(TT::ClampScrollOffset(128.0f, 1000.0f, 400.0f) == 128.0f, "in-range offset passes through");
+    // Wheel delta: one notch = 3 body lines; sign: positive delta (wheel up)
+    // decreases the offset. Binary-exact line heights chosen to avoid fp wobble.
+    static_assert(TT::WheelDeltaToOffsetStepDip(120, 16.0f) == -48.0f, "notch-up scrolls 3 lines toward top");
+    static_assert(TT::WheelDeltaToOffsetStepDip(-120, 16.0f) == 48.0f, "notch-down scrolls 3 lines downward");
+    static_assert(TT::WheelDeltaToOffsetStepDip(0, 16.0f) == 0.0f, "zero delta is zero step");
+    static_assert(TT::WheelDeltaToOffsetStepDip(-60, 16.0f) == 24.0f, "half-notch scales proportionally");
+    // Thumb extent: proportional, min 24, never taller than track.
+    static_assert(TT::ScrollbarThumbHeightDip(512.0f, 256.0f, 1024.0f) == 128.0f, "thumb = track * viewport/content");
+    static_assert(TT::ScrollbarThumbHeightDip(512.0f, 256.0f, 16384.0f) == 24.0f, "thumb min height 24 DIP");
+    static_assert(TT::ScrollbarThumbHeightDip(512.0f, 512.0f, 512.0f) == 512.0f, "content fits -> full track");
+    // Thumb position: linear map of offset, boundary pinning (no jitter).
+    static_assert(TT::ScrollbarThumbTopDip(48.0f, 512.0f, 256.0f, 0.0f, 800.0f, 400.0f) == 48.0f, "offset 0 -> track top");
+    static_assert(TT::ScrollbarThumbTopDip(48.0f, 512.0f, 256.0f, 200.0f, 800.0f, 400.0f) == 176.0f, "midpoint maps to mid travel");
+    static_assert(TT::ScrollbarThumbTopDip(48.0f, 512.0f, 256.0f, 400.0f, 800.0f, 400.0f) == 304.0f, "max offset -> track bottom");
+    static_assert(TT::ScrollbarThumbTopDip(48.0f, 512.0f, 256.0f, 999.0f, 800.0f, 400.0f) == 304.0f, "overshoot clamps");
+    static_assert(TT::ScrollbarThumbTopDip(48.0f, 512.0f, 512.0f, 100.0f, 800.0f, 400.0f) == 48.0f, "thumb fills track -> pinned top");
+    TEST_CHECK(true, "REQ-002: scroll-math compile-time matrix (clamp/wheel/thumb geometry)");
+
+    // Marshaled message IDs must be distinct across the blocks in use.
+    static_assert(TT::kScrollMessage != TT::kShowTranslationMessage &&
+                      TT::kScrollMessage != TT::kShowMessageMessage &&
+                      TT::kScrollMessage != TT::kDismissMessage &&
+                      AboutWindow::kShowMessage != TT::kScrollMessage &&
+                      AboutWindow::kDismissMessage != AboutWindow::kShowMessage,
+                  "REQ-002: kScrollMessage and About IDs distinct from all marshaled IDs");
+
+    // ---- 3. REQ-002 runtime: long text becomes scrollable, wheel scrolls ----
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    TooltipWindow tooltip;
+    TEST_CHECK(tooltip.Create(hInst), "REQ-002 fixture: TooltipWindow created");
+
+    // Long body (4000 chars of repeated words -> wraps to many lines).
+    std::wstring long_text;
+    long_text.reserve(4000);
+    for (int i = 0; i < 400; ++i) {
+        long_text += L"scrollable translation segment alpha bravo charlie delta ";
+    }
+    tooltip.ShowTranslation(200, 200, L"source", "KO", "English", long_text);
+    TEST_CHECK(tooltip.IsVisible(), "REQ-002: long translation shows");
+    TEST_CHECK(tooltip.IsScrollableForTest(), "REQ-002: overflowing content enables scroll");
+    TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f, "REQ-002: fresh show starts unscrolled");
+    TEST_CHECK(tooltip.ContentHeightForTest() > TT::BodyViewportHeightDip(TT::kMaxWindowHeightDip),
+               "REQ-002: measured content exceeds the 520-DIP viewport");
+
+    // Direct same-thread wheel step: moves down and clamps at the bottom.
+    tooltip.ScrollByDipWheel(-120);
+    const float after_one_notch = tooltip.ScrollOffsetForTest();
+    TEST_CHECK(after_one_notch > 0.0f, "REQ-002: wheel-down advances the offset");
+    for (int i = 0; i < 200; ++i) {
+        tooltip.ScrollByDipWheel(-120); // many notches down -> clamp at bottom
+    }
+    const float bottom = tooltip.ScrollOffsetForTest();
+    const float viewport_h = TT::BodyViewportHeightDip(520);
+    TEST_CHECK(bottom == TT::ClampScrollOffset(1e9f, tooltip.ContentHeightForTest(), viewport_h),
+               "REQ-002: repeated wheel-down clamps exactly at content-viewport");
+    for (int i = 0; i < 400; ++i) {
+        tooltip.ScrollByDipWheel(120); // wheel up past the top -> clamp at 0
+    }
+    TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f, "REQ-002: repeated wheel-up clamps at 0 (no jitter)");
+
+    // kScrollMessage marshaling path (what the LL hook posts): pump and assert.
+    tooltip.ScrollByDipWheel(-120);
+    const float before_post = tooltip.ScrollOffsetForTest();
+    TEST_CHECK(::PostMessageW(tooltip.GetHwnd(), TT::kScrollMessage, 0,
+                              static_cast<LPARAM>(-2 * WHEEL_DELTA)) == TRUE,
+               "REQ-002: kScrollMessage posts");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(tooltip.ScrollOffsetForTest() > before_post,
+               "REQ-002: WndProc consumed kScrollMessage and scrolled further");
+
+    // New ShowTranslation resets the offset (plan edge case 4).
+    tooltip.ShowTranslation(200, 200, L"source", "KO", "English", long_text);
+    TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f, "REQ-002: re-show resets scroll offset");
+
+    // Dismiss resets scroll state (plan §2.1: reset on Dismiss).
+    tooltip.Dismiss();
+    TEST_CHECK(!tooltip.IsVisible() && !tooltip.IsScrollableForTest(),
+               "REQ-002: Dismiss hides and clears scroll state");
+
+    // Short text: identical to today, no scrollbar (plan §2.1 edge case 1).
+    tooltip.ShowTranslation(200, 200, L"src", "KO", "English", L"short");
+    TEST_CHECK(!tooltip.IsScrollableForTest(), "REQ-003: short text keeps non-scroll UI");
+    tooltip.ScrollByDipWheel(-120);
+    TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f, "REQ-002: wheel on non-overflowing body is a no-op");
+
+    // Message mode never scrolls (plan §2.1 edge case 6).
+    tooltip.ShowMessage(200, 200, L"F9", L"notice body");
+    TEST_CHECK(tooltip.IsMessageMode() && !tooltip.IsScrollableForTest(), "R08 card reports not scrollable");
+    tooltip.ScrollByDipWheel(-120);
+    TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f, "REQ-002: message mode ignores wheel");
+    tooltip.Dismiss();
+    tooltip.Destroy();
+
+    // ---- 4. REQ-005: AboutWindow smoke (create/show/dismiss/marshal) ----
+    static_assert(AboutWindow::kNumLinks == 3, "plan §2.2: Website/Contact/Download links");
+    AboutWindow about;
+    TEST_CHECK(about.Create(hInst), "REQ-005 fixture: AboutWindow created");
+    TEST_CHECK(about.GetHwnd() != nullptr, "REQ-005: About window handle exists");
+    TEST_CHECK(!about.IsVisible(), "REQ-005: starts hidden");
+
+    about.Show(640, 480);
+    TEST_CHECK(about.IsVisible(), "REQ-005: Show makes it visible");
+    RECT ar = {};
+    ::GetWindowRect(about.GetHwnd(), &ar);
+    const int aw = ar.right - ar.left;
+    const UINT adpi = emebalachat::ui::WindowDpi(about.GetHwnd());
+    TEST_CHECK(aw == emebalachat::ui::ScaleDipsToPixels(440, adpi),
+               "REQ-005/R15: About width 440 DIP scales to the monitor DPI");
+    about.Dismiss();
+    TEST_CHECK(!about.IsVisible(), "REQ-005: Dismiss hides the About window");
+
+    auto* show_payload = new AboutWindow::ShowPayload{ 300, 300 };
+    const bool show_posted = ::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage, 0,
+                                            reinterpret_cast<LPARAM>(show_payload)) == TRUE;
+    if (!show_posted) {
+        delete show_payload; // WndProc never took ownership
+    }
+    TEST_CHECK(show_posted, "REQ-005: marshaled show payload posts");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(about.IsVisible(), "REQ-005: WndProc consumed show payload");
+    ::PostMessageW(about.GetHwnd(), AboutWindow::kDismissMessage, 0, 0);
+    PumpThreadMessagesOnce();
+    TEST_CHECK(!about.IsVisible(), "REQ-005: marshaled dismiss message hides it");
+    about.Destroy();
+
+    std::cout << "[PASS] Batch 2 version/scroll/about tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -2291,6 +2445,7 @@ int main() {
     TestImeCompositionGate();
     TestEngineShutdownCancellation();
     TestEngineFallbackExeDirAnchoring();
+    TestBatch2VersionScrollAbout();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

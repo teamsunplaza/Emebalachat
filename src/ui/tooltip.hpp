@@ -76,6 +76,84 @@ public:
     static constexpr UINT kShowTranslationMessage = WM_APP + 0x201;
     static constexpr UINT kShowMessageMessage     = WM_APP + 0x202;
     static constexpr UINT kDismissMessage         = WM_APP + 0x203;
+    // REQ-002 (plan §2.1): wheel-forwarded scroll request. WPARAM unused,
+    // LPARAM = raw WM_MOUSEWHEEL delta as signed int (WHEEL_DELTA multiples,
+    // possibly fractional-notch values from precision touchpads). Posted from
+    // the LL mouse hook callback (hook thread) — consumed on the GUI thread
+    // (REQ-R10 marshaling discipline; the tooltip is WS_EX_NOACTIVATE so the
+    // OS routes real WM_MOUSEWHEEL to the focused window, never to it).
+    static constexpr UINT kScrollMessage          = WM_APP + 0x204;
+
+    // ---- REQ-002 scrollable tooltip (architect plan §2.1) ----
+    // GUI-thread entry for kScrollMessage (and direct WM_MOUSEWHEEL). Converts
+    // the raw wheel delta to a DIP offset step, clamps against the
+    // content/viewport extents, and re-renders only when the offset actually
+    // moved. Marshals via PostMessageW off-thread (REQ-R10). No-op in message
+    // mode (fixed-height REQ-R08 card) and when the body fits (not scrollable_).
+    void ScrollByDipWheel(int wheel_delta);
+
+    // ---- pure, headless-testable scroll math (all DIP, plan REQ-002/REQ-R15) ----
+    // Max tooltip window height after this batch (was 480; body viewport is
+    // kMaxWindowHeightDip - header - footer reserves, see ShowTranslation).
+    static constexpr int kMaxWindowHeightDip = 520;
+    // Body viewport top / footer reserve matching the Render layout constants
+    // (body text rect ends at current_height_ - 44, see tooltip.cpp Render).
+    static constexpr float kBodyTopDip = 48.0f;
+    static constexpr float kFooterReserveDip = 44.0f;
+
+    // Viewport height available for body text at a given window height (DIP).
+    static constexpr float BodyViewportHeightDip(int window_height_dip) {
+        const float vh = static_cast<float>(window_height_dip) - kBodyTopDip - kFooterReserveDip;
+        return vh > 0.0f ? vh : 0.0f;
+    }
+
+    // Clamping scroll-offset rule: nothing to scroll (content fits the
+    // viewport) pins the offset at 0; otherwise clamp into [0, content-viewport].
+    static constexpr float ClampScrollOffset(float offset, float content_h, float viewport_h) {
+        if (content_h <= viewport_h) return 0.0f;
+        if (offset < 0.0f) return 0.0f;
+        const float max_offset = content_h - viewport_h;
+        return offset > max_offset ? max_offset : offset;
+    }
+
+    // Wheel delta -> offset step in DIP. One full notch (WHEEL_DELTA=120)
+    // scrolls 3 body lines (Windows SPI_GETWHEELSCROLLLINES default); negative
+    // for wheel-down (offset grows downward). Fractional deltas from precision
+    // touchpads scale proportionally.
+    static constexpr float WheelDeltaToOffsetStepDip(int wheel_delta, float line_height_dip) {
+        return -static_cast<float>(wheel_delta) * (3.0f * line_height_dip / static_cast<float>(WHEEL_DELTA));
+    }
+
+    // Scrollbar thumb extent: viewport/content proportional, min 24 DIP,
+    // never taller than the track.
+    static constexpr float ScrollbarThumbHeightDip(float track_h, float viewport_h, float content_h) {
+        if (content_h <= 0.0f || viewport_h <= 0.0f) return track_h;
+        if (viewport_h >= content_h) return track_h;
+        float h = track_h * viewport_h / content_h;
+        if (h < 24.0f) h = 24.0f;
+        return h > track_h ? track_h : h;
+    }
+
+    // Scrollbar thumb top: linear map of offset in [0, content-viewport] to
+    // [track_top, track_top + track_h - thumb_h]. Degenerate ranges pin to the
+    // track top (no jitter at the boundaries, plan §2.1 edge case 2).
+    static constexpr float ScrollbarThumbTopDip(float track_top, float track_h, float thumb_h,
+                                                float offset, float content_h, float viewport_h) {
+        const float range = track_h - thumb_h;
+        if (range <= 0.0f) return track_top;
+        const float scroll_range = content_h - viewport_h;
+        if (scroll_range <= 0.0f) return track_top;
+        float frac = offset / scroll_range;
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        return track_top + frac * range;
+    }
+
+    // Test/inspection seams for the REQ-002 scroll state (values are written
+    // only on the GUI thread; tests pump messages on the owning thread).
+    bool IsScrollableForTest() const { return scrollable_; }
+    float ScrollOffsetForTest() const { return scroll_offset_dip_; }
+    float ContentHeightForTest() const { return content_height_dip_; }
 
     // Payloads travel as heap pointers in LPARAM; WndProc wraps them in a
     // unique_ptr on arrival (single-owner semantics, documented in the seam).
@@ -171,6 +249,19 @@ private:
     D2D1_RECT_F tts_btn_rect_ = {};
     D2D1_RECT_F lang_btn_rect_ = {};
     D2D1_RECT_F close_btn_rect_ = {};
+
+    // ---- REQ-002 scroll state (DIP layout space, plan §1.3) ----
+    float scroll_offset_dip_ = 0.0f;    // current scroll position (>= 0)
+    float content_height_dip_ = 0.0f;   // measured body text height
+    float line_height_dip_ = 18.0f;     // measured line spacing (wheel step unit)
+    bool scrollable_ = false;           // content overflows the viewport
+    bool dragging_thumb_ = false;       // L-button capture held on the thumb
+    bool thumb_hover_ = false;          // brighter thumb while pointer is over it
+    float drag_start_offset_dip_ = 0.0f;
+    float drag_start_y_dip_ = 0.0f;
+    D2D1_RECT_F body_viewport_rect_ = {};
+    D2D1_RECT_F scrollbar_track_rect_ = {};
+    D2D1_RECT_F scrollbar_thumb_rect_ = {};
 
     int hovered_btn_ = 0; // 0=none, 1=copy, 2=tts, 3=lang, 4=close
     bool copied_feedback_ = false;

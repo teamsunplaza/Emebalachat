@@ -87,6 +87,7 @@ add_library(Emebalachat_core STATIC
     src/google_translate.cpp
     src/engine.cpp
     src/i18n.cpp
+    src/ui/about_window.cpp
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
     src/ui/dpi.cpp
@@ -105,6 +106,13 @@ target_include_directories(Emebalachat_core PUBLIC
 if (MSVC)
     target_compile_options(Emebalachat_core PRIVATE /W4 /utf-8 /permissive-)
 endif()
+
+# REQ-006 (plan §2.4): single source of truth for the runtime version string.
+# src/version.hpp stringizes this token (EMBALA_VERSION_STR two-level macro),
+# so the value MUST be passed UNQUOTED: quoting it here would double-stringize
+# into "\"0.10.0\"" at preprocessing. PUBLIC: every consumer of the core lib
+# (Emebalachat exe, run_tests) sees the same value.
+target_compile_definitions(Emebalachat_core PUBLIC EMEBALACHAT_VERSION_STR=${PROJECT_VERSION})
 
 # Win32 system dependencies
 target_link_libraries(Emebalachat_core PUBLIC

@@ -20,6 +20,13 @@ public:
     // Callback invoked on mouse button down (used for outside-click dismissals)
     using MouseDownCallback = std::function<void(int x, int y)>;
 
+    // REQ-002 (architect plan §2.1): callback invoked on WM_MOUSEWHEEL with the
+    // screen point and the signed wheel delta (GET_WHEEL_DELTA_WPARAM). Used to
+    // forward wheel input to the WS_EX_NOACTIVATE tooltip, which can never
+    // receive routed WM_MOUSEWHEEL (Windows sends the wheel to the FOCUSED
+    // window, not the hovered one).
+    using MouseWheelCallback = std::function<void(int x, int y, int delta)>;
+
     // Multi-click settle window: how long a double/triple-click waits before
     // the drag-release callback fires, so the target app can finish its text
     // selection highlight. 60 ms matches the pre-REQ-R09 delayed-thread window.
@@ -91,6 +98,12 @@ public:
 
     void SetDragReleaseCallback(DragReleaseCallback cb);
     void SetMouseDownCallback(MouseDownCallback cb);
+    // Registration contract is identical to the callbacks above: set at startup
+    // before Start(); invoked on the hook thread. FORWARD-ONLY by design (plan
+    // §2.1 risk 1): the LL proc always calls CallNextHookEx - never swallows
+    // wheel events - to protect the LowLevelHooksTimeout budget and the target
+    // app's own scrolling. The callback must be cheap (PostMessage only).
+    void SetMouseWheelCallback(MouseWheelCallback cb);
 
     void SetEnabled(bool enabled) { enabled_.store(enabled, std::memory_order_relaxed); }
     bool IsEnabled() const { return enabled_.load(std::memory_order_relaxed); }
@@ -170,6 +183,7 @@ private:
 
     DragReleaseCallback drag_cb_;
     MouseDownCallback mouse_down_cb_;
+    MouseWheelCallback mouse_wheel_cb_;
 
     static MouseHook* s_instance;
 };

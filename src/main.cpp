@@ -7,6 +7,7 @@
 #include "sound.hpp"
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
+#include "ui/about_window.hpp"
 #include "ui/badge.hpp"
 #include "ui/drag_icon.hpp"
 #include "ui/dpi.hpp"
@@ -354,6 +355,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::TooltipWindow tooltip;
     tooltip.Create(hInstance);
 
+    // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;
+    // Create failures degrade to a no-op About menu item (all public methods
+    // guard hwnd_), mirroring the badge's graceful-degradation contract.
+    emebalachat::AboutWindow about_window;
+    if (!about_window.Create(hInstance)) {
+        fprintf(stderr, "MAIN/WinMain/007: AboutWindow::Create failed; About menu item disabled\n");
+    }
+
     emebalachat::MouseHook mouse_hook;
     emebalachat::g_pMouseHook = &mouse_hook; // REQ-R14 resume/unlock re-registration
 
@@ -515,6 +524,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // State toggled inside tray menu
     };
 
+    // REQ-005: tray menu "About Emebala Chat…" (Batch 1's guarded hook, now
+    // wired). Tray callbacks run on the GUI thread; AboutWindow::Show centers
+    // on the monitor under the current cursor position.
+    trayCallbacks.on_show_about = [&]() {
+        POINT cursor = {};
+        ::GetCursorPos(&cursor);
+        about_window.Show(cursor.x, cursor.y);
+    };
+
     trayCallbacks.on_show_cheat_sheet = [&]() {
         ::MessageBoxW(
             nullptr,
@@ -585,6 +603,43 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 tooltip.Dismiss();
             }
         }
+        // REQ-005 (plan §2.2): click-outside dismissal for the About popup.
+        // AboutWindow::Dismiss marshals internally when called off-thread.
+        if (about_window.IsVisible()) {
+            RECT r = {};
+            ::GetWindowRect(about_window.GetHwnd(), &r);
+            if (!::PtInRect(&r, pt)) {
+                about_window.Dismiss();
+            }
+        }
+    });
+
+    // REQ-002 (plan §2.1): forward wheel input to the tooltip. The LL hook
+    // callback runs on the hook thread; Windows routes WM_MOUSEWHEEL to the
+    // FOCUSED window only, and the tooltip is WS_EX_NOACTIVATE (never focused),
+    // so the hook is the sole delivery path. Gate: tooltip visible + cursor
+    // inside its rect (physical px, same units as the hook's ms->pt). Post a
+    // kScrollMessage (REQ-R10 marshaling) and return: FORWARD-ONLY - the hook
+    // proc always passes the event to CallNextHookEx afterwards (see
+    // mouse_hook.cpp), so underlying apps keep their own wheel behavior and
+    // the LowLevelHooksTimeout budget sees only an IsWindowVisible +
+    // GetWindowRect + PostMessage-cheap callback.
+    mouse_hook.SetMouseWheelCallback([&](int x, int y, int delta) {
+        // Only atomics + thread-safe Win32 here (I4 discipline): is_message_mode_
+        // is a plain bool owned by the GUI thread, so the message-mode gate lives
+        // in ScrollByDipWheel (runs on the GUI thread after the post), not here.
+        if (!tooltip.IsVisible()) {
+            return;
+        }
+        RECT r = {};
+        if (!::GetWindowRect(tooltip.GetHwnd(), &r)) {
+            return;
+        }
+        if (!::PtInRect(&r, POINT{ x, y })) {
+            return;
+        }
+        ::PostMessageW(tooltip.GetHwnd(), emebalachat::TooltipWindow::kScrollMessage, 0,
+                       static_cast<LPARAM>(delta));
     });
 
     // Click on DragIconWindow triggers translation of active selection.
@@ -695,6 +750,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         if (drag_icon.IsVisible()) {
             drag_icon.Hide();
+            return true;
+        }
+        if (about_window.IsVisible()) {
+            about_window.Dismiss();
             return true;
         }
         return false;
@@ -815,6 +874,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     badge.Destroy();
     tooltip.Destroy();
     drag_icon.Destroy();
+    about_window.Destroy();
 
     if (hController) {
         ::DestroyWindow(hController);
