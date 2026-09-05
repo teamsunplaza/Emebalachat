@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include <cctype>
 
@@ -338,6 +339,14 @@ void TooltipWindow::Destroy() {
     CleanupSapi();
 
     if (hwnd_) {
+        // R6 Phase 3 (audit items 6+8): free marshal payloads still sitting in
+        // the thread queue. DestroyWindow purges the queue WITHOUT running any
+        // destructor for LPARAM heap pointers, so a shutdown with posted-but-
+        // undelivered Show/Refresh requests leaked each TranslationPayload /
+        // MessagePayload / TargetLangPayload. GUI-thread-only (queue scope).
+        if (::GetCurrentThreadId() == gui_thread_id_) {
+            DrainMarshalQueue();
+        }
         ::KillTimer(hwnd_, kTimerCopiedFeedback);
         ::KillTimer(hwnd_, kTimerMessageAutohide);
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
@@ -1022,7 +1031,15 @@ void TooltipWindow::Render() {
         if (textBrush) textBrush->Release();
         if (borderBrush) borderBrush->Release();
         if (bgBrush) bgBrush->Release();
-        dc_render_target_->EndDraw();
+        // R6 Phase 3 (audit item 4, plan §3.1 A3): the unchecked EndDraw was a
+        // latent device-lost gap - after a GPU driver reset D2DERR_RECREATE_TARGET
+        // made every later BeginDraw/EndDraw silently fail and the tooltip stayed
+        // permanently blank (reads as "stale/empty tooltip"). Recreate the
+        // render target + device-dependent logo bitmap so the NEXT show repaints.
+        const HRESULT hr_message = dc_render_target_->EndDraw();
+        if (IsRecoverableDeviceLost(hr_message)) {
+            RecreateAfterDeviceLost();
+        }
         return;
     }
 
@@ -1264,7 +1281,73 @@ void TooltipWindow::Render() {
     if (borderBrush) borderBrush->Release();
     if (bgBrush) bgBrush->Release();
 
-    dc_render_target_->EndDraw();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): see the message-mode note above
+    // - identical device-lost recovery on the normal render path.
+    const HRESULT hr_normal = dc_render_target_->EndDraw();
+    if (IsRecoverableDeviceLost(hr_normal)) {
+        RecreateAfterDeviceLost();
+    }
+}
+
+// R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. A DC render
+// target survives BindDC churn, but D2DERR_RECREATE_TARGET means the D2D
+// device is gone (driver reset, desktop transition): the target AND any
+// bitmap created from it must be re-created. Deliberately does NOT re-run
+// Render() here (a failing second EndDraw would risk unbounded recursion);
+// the next natural repaint (Show*, scroll, hover) draws on the new target,
+// so the recovery is app-safe degradation, not a silent-permanent-blank.
+void TooltipWindow::RecreateAfterDeviceLost() {
+    fprintf(stderr, "TOOLTIP/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    if (dc_render_target_) {
+        dc_render_target_->Release();
+        dc_render_target_ = nullptr;
+    }
+    if (!d2d_factory_) {
+        return; // nothing to rebuild from; all render paths null-guard already
+    }
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+        dc_render_target_ = nullptr;
+        fprintf(stderr, "TOOLTIP/DeviceLost/002: render-target recreation failed; tooltip stays blank until next Create()\n");
+        return;
+    }
+    // ReallocateBuffer re-binds SetDpi + BindDC on the fresh target; the logo
+    // bitmap was created on the lost device and must be rebuilt too.
+    ReallocateBuffer(PhysW(), PhysH());
+    LoadLogoBitmap();
+}
+
+// R6 Phase 3 (audit items 6+8): free every heap payload still queued for this
+// window. PeekMessageW's [min,max] filter removes ONLY the three payload-
+// carrying marshal messages; everything else (kDismissMessage, kScrollMessage
+// - no heap, timers, input) is left untouched for the normal teardown path.
+int TooltipWindow::DrainMarshalQueue() {
+    if (!hwnd_) return 0;
+    int drained = 0;
+    const UINT ids[] = { kShowTranslationMessage, kShowMessageMessage, kRefreshTargetLangMessage };
+    for (const UINT id : ids) {
+        MSG m = {};
+        while (::PeekMessageW(&m, hwnd_, id, id, PM_REMOVE)) {
+            switch (id) {
+                case kShowTranslationMessage:
+                    delete reinterpret_cast<TranslationPayload*>(m.lParam);
+                    break;
+                case kShowMessageMessage:
+                    delete reinterpret_cast<MessagePayload*>(m.lParam);
+                    break;
+                case kRefreshTargetLangMessage:
+                    delete reinterpret_cast<TargetLangPayload*>(m.lParam);
+                    break;
+                default:
+                    break;
+            }
+            ++drained;
+        }
+    }
+    return drained;
 }
 
 void TooltipWindow::UpdateLayered() {

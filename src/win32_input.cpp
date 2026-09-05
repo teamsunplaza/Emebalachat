@@ -64,6 +64,33 @@ bool OpenClipboardWithRetry(HWND hwnd, DWORD timeout_ms = 100) {
     return false;
 }
 
+// R6 Phase 3 (audit item 5): RAII clipboard scope. The audit confirmed every
+// OpenClipboard/CloseClipboard pair below is already balanced on ALL normal
+// and failure branches (no early return between open and close). The residual
+// gap is exception safety: BackupClipboard allocates std::vector/std::wstring
+// while the clipboard is OPEN, and a throw (std::bad_alloc on a huge format
+// blob) would unwind past the explicit CloseClipboard - a clipboard left open
+// for this process wedges it for EVERY other process on the desktop until we
+// exit. Scoping the close in a destructor removes that entire class. Behavior
+// on the non-throwing path is identical (CloseClipboard ran exactly once
+// before; it still runs exactly once now).
+class ScopedClipboard {
+public:
+    explicit ScopedClipboard(HWND owner, DWORD timeout_ms = 100)
+        : opened_(OpenClipboardWithRetry(owner, timeout_ms)) {}
+    ~ScopedClipboard() {
+        if (opened_) {
+            ::CloseClipboard();
+        }
+    }
+    ScopedClipboard(const ScopedClipboard&) = delete;
+    ScopedClipboard& operator=(const ScopedClipboard&) = delete;
+    explicit operator bool() const { return opened_; }
+
+private:
+    bool opened_;
+};
+
 // REQ-R04 driver clock: milliseconds in the same epoch ClipboardCopyWatcher
 // expects (steady_clock, monotonic, unaffected by wall-clock adjustments).
 uint64_t SteadyNowMs() {
@@ -352,7 +379,9 @@ bool PasteSelection() {
 }
 
 std::wstring GetClipboardText(DWORD timeout_ms) {
-    if (!OpenClipboardWithRetry(nullptr, timeout_ms)) {
+    // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note.
+    ScopedClipboard clip(nullptr, timeout_ms);
+    if (!clip) {
         return {};
     }
 
@@ -376,7 +405,6 @@ std::wstring GetClipboardText(DWORD timeout_ms) {
         }
     }
 
-    ::CloseClipboard();
     return result;
 }
 
@@ -415,7 +443,13 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
     static_cast<wchar_t*>(ptr)[text.size()] = L'\0';
     ::GlobalUnlock(hMem);
 
-    if (!OpenClipboardWithRetry(nullptr, timeout_ms)) {
+    // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note. On
+    // SetClipboardData SUCCESS the hMem ownership transfers to the clipboard
+    // (Windows destroys it with the next EmptyClipboard); on failure it stays
+    // ours and is freed locally - both unchanged, only the explicit close
+    // moved into the guard.
+    ScopedClipboard clip(nullptr, timeout_ms);
+    if (!clip) {
         ::GlobalFree(hMem);
         return false;
     }
@@ -424,7 +458,6 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
     HANDLE hRes = ::SetClipboardData(CF_UNICODETEXT, hMem);
     if (!hRes) {
         ::GlobalFree(hMem);
-        ::CloseClipboard();
         return false;
     }
 
@@ -476,7 +509,6 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
         }
     }
 
-    ::CloseClipboard();
     return true;
 }
 
@@ -484,7 +516,10 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     out.text.reset();
     out.formats.clear();
 
-    if (!OpenClipboardWithRetry(nullptr, timeout_ms)) {
+    // R6 Phase 3 (audit item 5): RAII scope - this is the function the
+    // exception-safety note above is about (std::vector allocations inside).
+    ScopedClipboard clip(nullptr, timeout_ms);
+    if (!clip) {
         return false;
     }
 
@@ -532,12 +567,13 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
         }
     }
 
-    ::CloseClipboard();
     return true;
 }
 
 bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
-    if (!OpenClipboardWithRetry(nullptr, timeout_ms)) {
+    // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note.
+    ScopedClipboard clip(nullptr, timeout_ms);
+    if (!clip) {
         return false;
     }
 
@@ -602,7 +638,6 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
         }
     }
 
-    ::CloseClipboard();
     return true;
 }
 

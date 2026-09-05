@@ -19,9 +19,11 @@
 #include <objbase.h>
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
+#include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
 #include <cstdio>
 #include <functional> // R6 Phase 1 (B3): language-sync coordinator std::function
 #include <memory>     // R6 Phase 1 (B3): payload ownership in the sync marshal
+#include <mutex>      // R6 Phase 3 (audit item 7): drag job slot guard
 #include <string_view>
 #include <thread> // REQ-R1: drag-icon click worker (copy+translate off the GUI thread)
 
@@ -790,102 +792,151 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //       - no tooltip, no message - so a slow/again-empty target produced
     //       exactly the reported "I click the floating button and nothing
     //       happens" with zero feedback.
-    // Fix (minimal, root-cause): hand the entire copy+translate to a short-lived
+    // Fix (minimal, root-cause): hand the entire copy+translate to a dedicated
     // worker thread and ALWAYS land a tooltip - the translation on success, a
     // clear notice on failure - via the existing REQ-R10 thread-safe marshal
     // seams (ShowTranslationThreadSafe / ShowMessageThreadSafe), never touching
     // the single-threaded D2D target off the GUI thread.
-    drag_icon.SetClickCallback([&](int click_x, int click_y) {
-        // R6 Phase 2 (B1-H1, plan §1): stamp the request generation AT TRIGGER
-        // TIME on the GUI thread, before the worker spawns. Every delivery
-        // this request makes (success payload OR failure notice) carries the
-        // id; a newer click bumps latest_request_gen_ and the tooltip drops
-        // this thread's late result instead of last-writer-wins (the reported
-        // intermittent stale tooltip). Detached-thread pattern is kept per
-        // plan §Phase 2 ("detached-with-guard consistent with codebase
-        // patterns"): std::thread().detach() can never std::terminate (the
-        // warmup-join precedent at shutdown only applies to joinable owners),
-        // the thread's work is bounded (clipboard settle <= ~200 ms + one
-        // translate), and its only outward effect after being superseded is a
-        // dropped post.
-        const uint64_t gen = tooltip.BeginTranslationRequest();
-        // Capture by value what the worker needs; config/engine/badge/tooltip
-        // are wWinMain stack objects that outlive the message loop, so the
-        // references stay valid for the worker's short, bounded lifetime. The
-        // badge status setters and both tooltip show seams are already
-        // thread-safe / marshaling (REQ-R10); the raw D2D render never runs
-        // off the GUI thread.
-        std::thread([click_x, click_y, gen, &config, &engine, &badge, &tooltip]() {
-            emebalachat::ClipboardBackup backup;
-            emebalachat::BackupClipboard(backup);
+    // ---- R6 Phase 3 (audit item 7): bounded, JOINABLE drag-translate worker ----
+    // Replaces the per-click std::thread(...).detach(). The detached variant
+    // had NO happens-before with shutdown: config/engine/badge/tooltip are
+    // wWinMain stack objects, and a detached thread still inside
+    // engine.Translate (seconds on the local LLM) could outlive their scope ->
+    // the use-after-free class plan §3.5 A9 asked about. The shutdown
+    // WaitInferenceIdle(2000) only WARNS on timeout; it cannot join a detached
+    // thread. Pattern: the proven REQ-R06 double-Ctrl+C worker (src/hook.cpp
+    // L50-109) - one persistent std::jthread, single pending slot,
+    // deterministic join in the shutdown sequence. Latest-wins coalescing
+    // matches the B1-H1 generation guard, and a superseded job that never
+    // starts is now also never COMPUTED (Phase 2 Issue #1's wasted-work item).
+    struct DragTranslateJob {
+        int x = 0;
+        int y = 0;
+        uint64_t gen = emebalachat::TooltipWindow::kGenNone;
+    };
+    std::mutex drag_job_mutex;
+    std::condition_variable drag_job_cv;
+    bool drag_job_pending = false;
+    DragTranslateJob drag_job;
 
-            // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
-            // pattern had the same stale-read race as audit §2.3 for slow
-            // (Electron IPC) targets. The D2 public seam confirms the copy via
-            // GetClipboardSequenceNumber() polling and returns false instead of
-            // exposing stale clipboard text. On the worker thread now, its
-            // Sleep-polling no longer freezes the GUI pump.
-            if (!emebalachat::CopySelectionWithSequenceWait()) {
-                emebalachat::RestoreClipboard(backup);
-                fprintf(stderr, "MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
-                // REQ-R1(b): failure is now user-visible, not silent.
-                // R6 B1-H1: carries this request's generation - a superseded
-                // drag must not stamp a notice over a newer result either.
-                tooltip.ShowMessageThreadSafe(click_x, click_y,
-                                              L"Emebala Chat",
-                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed),
-                                              gen);
-                return;
-            }
-            std::wstring selected = emebalachat::GetClipboardText();
+    // The copy + translate body, verbatim from the old detached thread. Runs
+    // on drag_translate_worker below; the config/engine/badge/tooltip
+    // references are now provably safe - the worker is joined BEFORE those
+    // objects can leave scope, and before the surfaces' Destroy() runs.
+    auto run_drag_translate = [&](int click_x, int click_y, uint64_t gen) {
+        emebalachat::ClipboardBackup backup;
+        emebalachat::BackupClipboard(backup);
+
+        // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
+        // pattern had the same stale-read race as audit §2.3 for slow
+        // (Electron IPC) targets. The D2 public seam confirms the copy via
+        // GetClipboardSequenceNumber() polling and returns false instead of
+        // exposing stale clipboard text. On the worker thread, its
+        // Sleep-polling never freezes the GUI pump.
+        if (!emebalachat::CopySelectionWithSequenceWait()) {
             emebalachat::RestoreClipboard(backup);
+            fprintf(stderr, "MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
+            // REQ-R1(b): failure is now user-visible, not silent.
+            // R6 B1-H1: carries this request's generation - a superseded
+            // drag must not stamp a notice over a newer result either.
+            tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                          L"Emebala Chat",
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed),
+                                          gen);
+            return;
+        }
+        std::wstring selected = emebalachat::GetClipboardText();
+        emebalachat::RestoreClipboard(backup);
 
-            if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
-                fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
-                tooltip.ShowMessageThreadSafe(click_x, click_y,
-                                              L"Emebala Chat",
-                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
-                                              gen);
-                return;
+        if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+            fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
+            tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                          L"Emebala Chat",
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
+                                          gen);
+            return;
+        }
+
+        std::string detected = emebalachat::DetectLanguage(selected);
+        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
+        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (worker thread)
+        std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
+
+        if (tgt_code == src_code) {
+            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
+            std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
+            if (sys_code == src_code || sys_code.empty()) {
+                tgt_lang = (src_code == "EN") ? "Korean" : "English";
+            } else {
+                const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
+                tgt_lang = pInfo ? pInfo->name_en : "Korean";
             }
+            // R6 Phase 1 (B3): the src==tgt substitution was previously
+            // EPHEMERAL - only this tooltip used it while config/badge/tray
+            // kept the (now meaningless) old target. Post it to the GUI-
+            // thread coordinator (fire-and-forget PostMessage; this worker
+            // thread must never touch the surfaces directly - plan §2.3),
+            // so every surface follows the language actually translated to.
+            emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
+                                             std::string{}, tgt_lang, false, false);
+        }
 
-            std::string detected = emebalachat::DetectLanguage(selected);
-            std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-            std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (worker thread)
-            std::string tgt_code = emebalachat::NormalizeLanguageCode(tgt_lang);
+        badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        std::wstring translated = engine.Translate(selected, detected, tgt_lang);
+        badge.SetStatus(emebalachat::BadgeStatus::Active);
 
-            if (tgt_code == src_code) {
-                std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
-                std::string sys_code = emebalachat::NormalizeLanguageCode(sys_lang);
-                if (sys_code == src_code || sys_code.empty()) {
-                    tgt_lang = (src_code == "EN") ? "Korean" : "English";
-                } else {
-                    const auto* pInfo = emebalachat::FindLanguageByCode(sys_code);
-                    tgt_lang = pInfo ? pInfo->name_en : "Korean";
+        // Worker thread, so marshal the D2D render to the GUI thread via the
+        // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
+        // R6 B1-H1: if a newer request was stamped while this thread was
+        // inside engine.Translate (local LLM takes seconds), the tooltip
+        // drops this stale payload instead of showing the previous
+        // translation (the reported intermittent bug).
+        tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated,
+                                          gen);
+    };
+
+    std::jthread drag_translate_worker(
+        [&drag_job_mutex, &drag_job_cv, &drag_job_pending, &drag_job,
+         &run_drag_translate](std::stop_token st) {
+            for (;;) {
+                DragTranslateJob job;
+                {
+                    std::unique_lock<std::mutex> lk(drag_job_mutex);
+                    // The GUI-thread producer sets pending UNDER this mutex,
+                    // so the textbook cv protocol holds with no lost wakeup
+                    // (no time backstop needed - unlike the hook-thread
+                    // producer in hook.cpp, which must stay lock-free).
+                    drag_job_cv.wait(lk, [&st, &drag_job_pending]() {
+                        return st.stop_requested() || drag_job_pending;
+                    });
+                    if (st.stop_requested()) {
+                        break; // a pending job is superseded anyway (guard drops it)
+                    }
+                    job = drag_job;
+                    drag_job_pending = false;
                 }
-                // R6 Phase 1 (B3): the src==tgt substitution was previously
-                // EPHEMERAL - only this tooltip used it while config/badge/tray
-                // kept the (now meaningless) old target. Post it to the GUI-
-                // thread coordinator (fire-and-forget PostMessage; this worker
-                // thread must never touch the surfaces directly - plan §2.3),
-                // so every surface follows the language actually translated to.
-                emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
-                                                 std::string{}, tgt_lang, false, false);
+                // Mutex NOT held across clipboard work / engine.Translate
+                // (same rule as KeyboardHook::DoubleCtrlCWorkerLoop).
+                run_drag_translate(job.x, job.y, job.gen);
             }
+        });
 
-            badge.SetStatus(emebalachat::BadgeStatus::Translating);
-            std::wstring translated = engine.Translate(selected, detected, tgt_lang);
-            badge.SetStatus(emebalachat::BadgeStatus::Active);
-
-            // Worker thread, so marshal the D2D render to the GUI thread via the
-            // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
-            // R6 B1-H1: if a newer request was stamped while this thread was
-            // inside engine.Translate (local LLM takes seconds), the tooltip
-            // drops this stale payload instead of showing the previous
-            // translation (the reported intermittent bug).
-            tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated,
-                                              gen);
-        }).detach();
+    // Click on DragIconWindow: runs ON THE MAIN GUI THREAD (its WndProc).
+    // Stamp the generation at trigger time (R6 Phase 2 B1-H1), hand the job
+    // to the worker, return immediately - the message pump is never blocked
+    // by clipboard settle or inference.
+    drag_icon.SetClickCallback([&](int click_x, int click_y) {
+        const uint64_t gen = tooltip.BeginTranslationRequest();
+        {
+            std::lock_guard<std::mutex> lk(drag_job_mutex);
+            // Latest-wins overwrite: a job the worker has NOT popped yet is
+            // replaced (its render would be dropped by the generation guard
+            // anyway). A job already popped runs to completion and is guarded
+            // at render time - unchanged Phase 2 semantics.
+            drag_job = DragTranslateJob{ click_x, click_y, gen };
+            drag_job_pending = true;
+        }
+        drag_job_cv.notify_one();
     });
 
     // Double Ctrl+C Hotkey Detection (< 400ms).
@@ -1100,6 +1151,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     mouse_hook.Stop();
     hook.Stop();
     worker.Stop();
+    // R6 Phase 3 (audit item 7): join the drag-translate worker here, BEFORE
+    // the language-sync queue drain below (no producer can post a
+    // kMsgApplyLanguageSync payload after this point) and before any surface
+    // Destroy(). Bounded: engine.RequestCancel() makes an in-flight decode
+    // unwind at the next token boundary (REQ-R16), and a clipboard settle is
+    // <= ~200 ms. Warmup-thread join precedent ~30 lines below.
+    drag_translate_worker.request_stop();
+    drag_job_cv.notify_all();
+    if (drag_translate_worker.joinable()) {
+        drag_translate_worker.join();
+    }
     // R6 Phase 1 (B3): drain any language-sync requests still queued before
     // the coordinator is retired, so a cycle posted a moment before shutdown
     // still persists instead of being silently dropped. Peek-only sweep: other
@@ -1118,8 +1180,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
     }
     // Retire the coordinator BEFORE the surfaces it writes to are destroyed.
-    // Detached drag threads may post a sync request at any time until process
-    // exit; once unset, ControllerWndProc frees the payload without touching
+    // The double-Ctrl+C worker (joined by hook.Stop() above) and the drag
+    // worker (joined immediately before this block, R6 Phase 3) can no longer
+    // post sync requests; the hook thread itself is down. Once unset,
+    // ControllerWndProc frees any still-queued payload without touching
     // config/engine/badge/tray/tooltip.
     emebalachat::g_apply_language_change = nullptr;
     if (warmup_thread.joinable()) {

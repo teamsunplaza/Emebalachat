@@ -239,6 +239,15 @@ public:
         return hwnd && ::PostMessageW(hwnd, msg, 0, reinterpret_cast<LPARAM>(payload)) == TRUE;
     }
 
+    // R6 Phase 3 (audit items 6+8): drains THIS window's marshal queue before
+    // DestroyWindow, freeing every still-queued heap payload (Translation/
+    // Message/TargetLang). Without it, a shutdown with posted-but-undelivered
+    // payloads leaks them: the OS queue purge drops the LPARAM pointers
+    // without running any destructor. Must run on the owning GUI thread
+    // (message queues are thread-scoped). Returns the number of payloads
+    // freed (test seam for the drain invariant).
+    int DrainMarshalQueue();
+
     void SetLanguageChangeCallback(LanguageChangeCallback cb) { lang_change_cb_ = std::move(cb); }
 
     // ---- R6 Phase 1 (B3): single-source-of-truth language sync (plan §2.4) ----
@@ -282,6 +291,11 @@ private:
     int PhysW() const;
     int PhysH() const;
     void RebindRenderTarget();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. Called
+    // when EndDraw returns D2DERR_RECREATE_TARGET; recreates the single-
+    // threaded DC render target + the device-dependent logo bitmap on the new
+    // target. Without it a driver reset leaves the surface permanently blank.
+    void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
     void InitSapi();
     void CleanupSapi();

@@ -3347,6 +3347,147 @@ void TestB1TooltipStaleness() {
     std::cout << "[PASS] R6-B1 tooltip staleness generation guard tests completed." << std::endl;
 }
 
+// R6 Phase 3 (B1 memory/lifecycle audit, architect plan §3): regression guards
+// for the items this phase FIXED - the device-lost recovery predicate (item 4),
+// the marshal-queue payload drain on teardown (items 6+8), and the clipboard
+// open/close pairing + GDI/DIB re-allocation balance (items 3+5). All checks
+// are pure seams or non-flaky runtime probes (bounded handle-count deltas);
+// nothing depends on wall-clock timing or GPU state.
+void TestR6P3MemoryLifecycle() {
+    std::cout << "[RUN] Testing R6-P3 memory/lifecycle audit guards..." << std::endl;
+
+    using TT = TooltipWindow;
+
+    // ---- 1) Device-lost predicate (item 4): compile-time classification ----
+    // Only D2DERR_RECREATE_TARGET may trigger target recreation; every other
+    // failure (wrong-thread, uninitialized, DXGI misc) must NOT tear the
+    // target down (a wrong classification would destroy a healthy target).
+    static_assert(IsRecoverableDeviceLost(D2DERR_RECREATE_TARGET),
+                  "P3: RECREATE_TARGET must be classified recoverable");
+    static_assert(!IsRecoverableDeviceLost(S_OK), "P3: success must not trigger recreation");
+    static_assert(!IsRecoverableDeviceLost(D2DERR_WRONG_STATE),
+                  "P3: wrong-state must not trigger recreation (logic bug, not device loss)");
+    static_assert(!IsRecoverableDeviceLost(D2DERR_UNSUPPORTED_OPERATION),
+                  "P3: unrelated D2D errors must not trigger recreation");
+    TEST_CHECK(IsRecoverableDeviceLost(D2DERR_RECREATE_TARGET), "P3: runtime recoverable classification");
+    TEST_CHECK(!IsRecoverableDeviceLost(E_FAIL), "P3: runtime non-recoverable classification");
+
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+
+    // ---- 2) Tooltip marshal-queue drain (items 6+8) ----
+    // Heap payloads posted but NEVER pumped must be freed by the Destroy()
+    // teardown path (DrainMarshalQueue), not left to the OS queue purge (the
+    // confirmed shutdown leak: LPARAM pointers have no destructor attached).
+    // Observable contract: after an explicit drain the messages are gone from
+    // the queue - a following pump renders NOTHING (model stays pristine).
+    {
+        TT tooltip;
+        TEST_CHECK(tooltip.Create(hInst), "P3 fixture: TooltipWindow created");
+
+        auto* p1 = new TT::TranslationPayload();
+        p1->x = 200; p1->y = 200;
+        p1->source_text = L"p3 drain src"; p1->source_lang_code = "KO";
+        p1->target_lang = "English"; p1->translated_text = L"P3 DRAINED";
+        auto* p2 = new TT::MessagePayload();
+        p2->x = 200; p2->y = 200;
+        p2->header = L"P3"; p2->body = L"P3 notice";
+        auto* p3 = new TT::TargetLangPayload();
+        p3->target_lang = "Korean";
+
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, p1),
+                   "P3: translation payload posted (unpumped)");
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowMessageMessage, p2),
+                   "P3: message payload posted (unpumped)");
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kRefreshTargetLangMessage, p3),
+                   "P3: target-lang payload posted (unpumped)");
+
+        const int drained = tooltip.DrainMarshalQueue();
+        TEST_CHECK(drained == 3, "P3: DrainMarshalQueue consumed exactly the 3 queued payloads");
+        TEST_CHECK(tooltip.DrainMarshalQueue() == 0, "P3: second drain is a no-op (queue already empty)");
+
+        PumpThreadMessagesOnce();
+        TEST_CHECK(!tooltip.IsVisible(), "P3: drained payloads do not render after removal");
+        TEST_CHECK(tooltip.GetTranslatedText().empty(), "P3: drained translation left no model state");
+
+        // Mixed queue sanity: a non-payload message (kScrollMessage, lParam is
+        // a raw delta, no heap) interleaved with a payload must NOT be counted
+        // or consumed by the drain, and the drained payload must not render.
+        tooltip.ShowTranslation(200, 200, L"inline", "EN", "Korean", L"INLINE MODEL");
+        auto* p4 = new TT::TranslationPayload();
+        p4->x = 200; p4->y = 200;
+        p4->source_text = L"gone"; p4->source_lang_code = "EN";
+        p4->target_lang = "Korean"; p4->translated_text = L"DRAINED AWAY";
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, p4),
+                   "P3: payload posted before drain");
+        TEST_CHECK(::PostMessageW(tooltip.GetHwnd(), TT::kScrollMessage, 0, static_cast<LPARAM>(-120)) == TRUE,
+                   "P3: non-payload message posted alongside");
+        TEST_CHECK(tooltip.DrainMarshalQueue() == 1,
+                   "P3: drain counts only the payload-carrying message (scroll survives untouched)");
+        PumpThreadMessagesOnce();
+        TEST_CHECK(tooltip.GetTranslatedText() == L"INLINE MODEL",
+                   "P3: drained payload never reaches the model");
+        TEST_CHECK(tooltip.ScrollOffsetForTest() == 0.0f,
+                   "P3: drained tooltip stays non-scrollable (short inline body)");
+        tooltip.Destroy();
+    }
+
+    // ---- 3) About window marshal-queue drain (item 8) ----
+    {
+        AboutWindow about;
+        TEST_CHECK(about.Create(hInst), "P3 fixture: AboutWindow created");
+        auto* payload = new AboutWindow::ShowPayload{ 200, 200 };
+        TEST_CHECK(::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage, 0,
+                                  reinterpret_cast<LPARAM>(payload)) == TRUE,
+                   "P3: About ShowPayload posted (unpumped)");
+        TEST_CHECK(about.DrainMarshalQueue() == 1, "P3: About drain freed the queued ShowPayload");
+        TEST_CHECK(about.DrainMarshalQueue() == 0, "P3: About second drain is a no-op");
+        PumpThreadMessagesOnce();
+        TEST_CHECK(!about.IsVisible(), "P3: drained About show does not render after removal");
+        about.Destroy();
+    }
+
+    // ---- 4) Clipboard open/close pairing (item 5) ----
+    // RAII ScopedClipboard keeps behavior identical on the happy path; this
+    // loop pins that pairing: a leaked CloseClipboard would make the NEXT
+    // OpenClipboard fail for OUR process too (clipboard is per-thread
+    // exclusive), so 3 consecutive full backup/restore rounds succeeding IS
+    // the pairing proof.
+    for (int round = 0; round < 3; ++round) {
+        ClipboardBackup backup;
+        const bool backed = BackupClipboard(backup);
+        TEST_CHECK(backed, "P3: clipboard backup round succeeded (scope closed previous open)");
+        const bool restored = RestoreClipboard(backup);
+        TEST_CHECK(restored, "P3: clipboard restore round succeeded (scope closed its open)");
+    }
+    // GetClipboardText between rounds must also succeed -> its scope closed.
+    (void)GetClipboardText();
+    ClipboardBackup tail_backup;
+    TEST_CHECK(BackupClipboard(tail_backup), "P3: GetClipboardText left the clipboard openable (pairing holds)");
+    RestoreClipboard(tail_backup);
+
+    // ---- 5) GDI buffer balance across re-allocations (item 3) ----
+    // ShowTranslation runs ReallocateBuffer every time (delete old DC+DIB,
+    // create new). A leaked pair per show would grow the process GDI object
+    // count linearly; the audit verdict was "balanced", and this probe pins
+    // it: 200 shows must cost ~0 net GDI objects (allow +4 for unrelated
+    // churn; the leak shape under test would add ~+400).
+    {
+        TT tooltip;
+        TEST_CHECK(tooltip.Create(hInst), "P3 GDI fixture: TooltipWindow created");
+        const UINT gdi_before = ::GetGuiResources(::GetCurrentProcess(), GR_GDIOBJECTS);
+        for (int i = 0; i < 200; ++i) {
+            tooltip.ShowTranslation(200, 200, L"src", "KO", "English", L"p3 balance probe");
+        }
+        const UINT gdi_after = ::GetGuiResources(::GetCurrentProcess(), GR_GDIOBJECTS);
+        TEST_CHECK(gdi_after <= gdi_before + 4,
+                   "P3: 200 ReallocateBuffer cycles leak no GDI objects (DC/DIB balance)");
+        tooltip.Dismiss();
+        tooltip.Destroy();
+    }
+
+    std::cout << "[PASS] R6-P3 memory/lifecycle audit guard tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -3397,6 +3538,7 @@ int main() {
     TestBatch2VersionScrollAbout();
     TestB3LanguageSync();
     TestB1TooltipStaleness();
+    TestR6P3MemoryLifecycle();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

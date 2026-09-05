@@ -71,6 +71,11 @@ private:
     int PhysW() const;
     int PhysH() const;
     void RebindRenderTarget();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): recreate the DC render target
+    // (+ device-dependent logo bitmap) after EndDraw returns
+    // D2DERR_RECREATE_TARGET, so a driver reset cannot leave the badge a
+    // permanently blank pill.
+    void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
 
     mutable std::mutex data_mutex_;

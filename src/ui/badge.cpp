@@ -4,6 +4,7 @@
 #include "dpi.hpp"
 
 #include <cmath>
+#include <cstdio>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -560,7 +561,11 @@ void FloatingBadge::Render() {
     // 3. Logo medallion with status glow ring (18x18 mini circular medallion)
     // Ambient status glow halo
     ID2D1SolidColorBrush* haloBrush = nullptr;
-    float haloAlpha = (status_ == BadgeStatus::Disabled) ? 0.15f : 0.28f;
+    // R6 Phase 3 (audit item 7): use the locked local snapshot taken at the
+    // top of Render() instead of reading status_ directly. status_ is written
+    // under data_mutex_ by SetStatus/WM_BADGE_SET_STATUS (possibly another
+    // thread); every other read here already uses the snapshot.
+    float haloAlpha = (status == BadgeStatus::Disabled) ? 0.15f : 0.28f;
     dc_render_target_->CreateSolidColorBrush(
         D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, haloAlpha),
         &haloBrush
@@ -652,10 +657,42 @@ void FloatingBadge::Render() {
     if (statusTextBrush) statusTextBrush->Release();
     if (textLayout) textLayout->Release();
 
-    dc_render_target_->EndDraw();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. A driver
+    // reset fails EndDraw with D2DERR_RECREATE_TARGET; without recreation the
+    // badge stays a permanently blank pill. Next Render draws on the new
+    // target (app-safe degradation, no recursion risk here either way).
+    const HRESULT hr = dc_render_target_->EndDraw();
+    if (IsRecoverableDeviceLost(hr)) {
+        RecreateAfterDeviceLost();
+    }
 
     // Commit pixels to layered window
     UpdateAlpha(current_alpha_);
+}
+
+// R6 Phase 3 (audit item 4): recreate the single-threaded DC render target
+// after a device-lost. ReallocateBuffer re-binds SetDpi + BindDC on the fresh
+// target; the logo bitmap was created on the lost device and must be rebuilt.
+void FloatingBadge::RecreateAfterDeviceLost() {
+    fprintf(stderr, "BADGE/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    if (dc_render_target_) {
+        dc_render_target_->Release();
+        dc_render_target_ = nullptr;
+    }
+    if (!d2d_factory_) {
+        return; // Create() never finished; all render paths null-guard already
+    }
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+        dc_render_target_ = nullptr;
+        fprintf(stderr, "BADGE/DeviceLost/002: render-target recreation failed; badge stays stale until next Create()\n");
+        return;
+    }
+    ReallocateBuffer(PhysW(), PhysH());
+    LoadLogoBitmap();
 }
 
 LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

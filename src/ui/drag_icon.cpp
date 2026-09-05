@@ -3,6 +3,7 @@
 #include "dpi.hpp"
 
 #include <cmath>
+#include <cstdio>
 
 namespace emebalachat {
 
@@ -297,7 +298,40 @@ void DragIconWindow::Render() {
     if (borderBrush) borderBrush->Release();
     if (bgBrush) bgBrush->Release();
 
-    dc_render_target_->EndDraw();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery - an
+    // unrecreated target after D2DERR_RECREATE_TARGET would keep EndDraw
+    // failing and leave the drag icon permanently invisible after a driver
+    // reset (the next ShowAt repaints on the recreated target).
+    const HRESULT hr = dc_render_target_->EndDraw();
+    if (IsRecoverableDeviceLost(hr)) {
+        RecreateAfterDeviceLost();
+    }
+}
+
+// R6 Phase 3 (audit item 4): recreate the single-threaded DC render target
+// after a device-lost. RebindRenderTarget re-binds the existing DIB + DPI on
+// the fresh target; the logo bitmap was created on the lost device and must
+// be rebuilt.
+void DragIconWindow::RecreateAfterDeviceLost() {
+    fprintf(stderr, "DRAG_ICON/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    if (dc_render_target_) {
+        dc_render_target_->Release();
+        dc_render_target_ = nullptr;
+    }
+    if (!d2d_factory_) {
+        return; // Create() never finished; all render paths null-guard already
+    }
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+        dc_render_target_ = nullptr;
+        fprintf(stderr, "DRAG_ICON/DeviceLost/002: render-target recreation failed; icon stays stale until next Create()\n");
+        return;
+    }
+    RebindRenderTarget();
+    LoadLogoBitmap();
 }
 
 void DragIconWindow::UpdateLayered() {

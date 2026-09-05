@@ -54,6 +54,13 @@ public:
         int y;
     };
 
+    // R6 Phase 3 (audit item 8): drains THIS window's marshal queue before
+    // DestroyWindow, freeing every still-queued heap ShowPayload (the OS queue
+    // purge at window destruction would otherwise drop the LPARAM pointers
+    // without running any destructor). GUI-thread-only (PeekMessage is
+    // thread-queue scoped). Returns the number of payloads freed (test seam).
+    int DrainMarshalQueue();
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void ShowAt(int x, int y); // real show path, GUI thread only
@@ -63,6 +70,11 @@ private:
     int PhysW() const;
     int PhysH() const;
     void RebindRenderTarget();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): recreate the DC render target
+    // (+ device-dependent logo bitmap) after EndDraw returns
+    // D2DERR_RECREATE_TARGET, so a driver reset cannot leave the About card
+    // permanently blank.
+    void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
     void OpenLink(int index); // 0=website 1=contact 2=download (ShellExecuteW)
 

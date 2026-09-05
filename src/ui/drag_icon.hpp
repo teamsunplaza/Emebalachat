@@ -91,6 +91,11 @@ private:
     void StartFadeoutTimer();
     void StopFadeoutTimer();
     void LoadLogoBitmap();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): recreate the DC render target
+    // (+ device-dependent logo bitmap) after EndDraw returns
+    // D2DERR_RECREATE_TARGET, so a driver reset cannot leave the icon a
+    // permanently invisible pill.
+    void RecreateAfterDeviceLost();
     // REQ-R15: (re)allocate the DIB + bind the DC render target at the given
     // physical edge size / DPI. No-op while geometry is unchanged.
     void EnsureBuffer(UINT dpi, int phys_edge);

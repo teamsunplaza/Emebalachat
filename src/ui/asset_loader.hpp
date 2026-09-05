@@ -27,4 +27,15 @@ void DrawTabletLogoVector(
     bool hovered
 );
 
+// R6 Phase 3 (audit item 4 / plan §3.1 A3): the single device-lost decision
+// seam shared by every D2D surface (tooltip, badge, drag icon, about). A DC
+// render target survives BindDC churn, but a GPU driver reset / desktop
+// transition can fail EndDraw with D2DERR_RECREATE_TARGET; without recovery
+// the surface renders permanently blank (reads as a "stale/empty tooltip").
+// Pure + constexpr so tests/run_tests.cpp pins the classification without a
+// GUI (the recreation itself is runtime-only).
+constexpr bool IsRecoverableDeviceLost(HRESULT hr) {
+    return hr == D2DERR_RECREATE_TARGET;
+}
+
 } // namespace emebalachat

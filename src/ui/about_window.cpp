@@ -178,6 +178,11 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
 
 void AboutWindow::Destroy() {
     if (hwnd_) {
+        // R6 Phase 3 (audit item 8): free ShowPayloads still queued on this
+        // thread's message queue (see DrainMarshalQueue note in the header).
+        if (::GetCurrentThreadId() == gui_thread_id_) {
+            DrainMarshalQueue();
+        }
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -270,6 +275,19 @@ void AboutWindow::RebindRenderTarget() {
     }
     const RECT rc = { 0, 0, PhysW(), PhysH() };
     dc_render_target_->BindDC(hMemDC_, &rc);
+}
+
+// R6 Phase 3 (audit item 8): see header note. kDismissMessage carries no heap
+// payload (LParam 0), so only kShowMessage needs ownership handling.
+int AboutWindow::DrainMarshalQueue() {
+    if (!hwnd_) return 0;
+    int drained = 0;
+    MSG m = {};
+    while (::PeekMessageW(&m, hwnd_, kShowMessage, kShowMessage, PM_REMOVE)) {
+        delete reinterpret_cast<ShowPayload*>(m.lParam);
+        ++drained;
+    }
+    return drained;
 }
 
 void AboutWindow::Show(int x, int y) {
@@ -516,7 +534,38 @@ void AboutWindow::Render() {
     if (borderBrush) borderBrush->Release();
     if (bgBrush) bgBrush->Release();
 
-    dc_render_target_->EndDraw();
+    // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. Without
+    // it a driver reset makes every later EndDraw fail and the About card
+    // stays permanently blank while the window is shown.
+    const HRESULT hr = dc_render_target_->EndDraw();
+    if (IsRecoverableDeviceLost(hr)) {
+        RecreateAfterDeviceLost();
+    }
+}
+
+// R6 Phase 3 (audit item 4): recreate the single-threaded DC render target
+// after a device-lost. ReallocateBuffer re-binds SetDpi + BindDC on the fresh
+// target; the logo bitmap was created on the lost device and must be rebuilt.
+void AboutWindow::RecreateAfterDeviceLost() {
+    fprintf(stderr, "ABOUT/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    if (dc_render_target_) {
+        dc_render_target_->Release();
+        dc_render_target_ = nullptr;
+    }
+    if (!d2d_factory_) {
+        return; // Create() never finished; all render paths null-guard already
+    }
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+        dc_render_target_ = nullptr;
+        fprintf(stderr, "ABOUT/DeviceLost/002: render-target recreation failed; About stays stale until next Create()\n");
+        return;
+    }
+    ReallocateBuffer(PhysW(), PhysH());
+    LoadLogoBitmap();
 }
 
 void AboutWindow::UpdateLayered() {
