@@ -166,6 +166,10 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
 bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground);
 
 // Sends synthetic Enter key event with modifier release and 35ms hold time.
+// release_shift is accepted for call-site clarity (workers pass
+// task.is_shift_enter) but intentionally unused: all modifiers are probed
+// via GetAsyncKeyState and released unconditionally. Reserved for the
+// Phase 5 editor-mode redesign (REQ-023 newline injection).
 void SendEnterKey(bool release_shift = false);
 
 // ---- REQ-R17 (audit §5 latent item 5): IME composition state probe ----
