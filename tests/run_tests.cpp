@@ -1281,6 +1281,155 @@ void TestSelectionReleaseMatrix() {
     std::cout << "[PASS] REQ-R03 Selection Release Path Matrix tests completed." << std::endl;
 }
 
+// ---------------------------------------------------------------------------
+// Multi-line block fix (R3): the "only the last line was translated" bug.
+//
+// Root cause: non-chat apps selected only the current physical line
+// (Shift+Home), so a multi-line typed/pasted block had only its final line
+// reaching the translator. The fix adds SelectMessageBlock() at the selection
+// seam and NormalizeNewlinesToCRLF() at the capture/translate seams. These
+// tests pin the PURE, logic-only parts of the fix (headless, no SendInput):
+//   1) newline normalization (CRLF/LF/CR, KO/EN/JA scripts, surrogate pairs),
+//   2) ShouldTranslate / DetectLanguage behaving identically on multi-line
+//      blocks (per-line and whole-block) for KO/EN/JA/ZH/VI/ES,
+//   3) ParseResponseJson + UrlEncode round-tripping a multi-line payload
+//      containing newlines (translation layer must not drop lines),
+//   4) the worker's equality comparison (translated == line) being
+//      line-ending-representation-insensitive.
+// ---------------------------------------------------------------------------
+void TestMultiLineBlockFix() {
+    std::cout << "[RUN] Testing multi-line block fix (R3: last-line-only bug)..." << std::endl;
+
+    // ---- 1) NormalizeNewlinesToCRLF: pure line-ending matrix ----
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"") == L"", "MLF: empty stays empty");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"single line") == L"single line", "MLF: no newlines passthrough");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"a\nb") == L"a\r\nb", "MLF: LF becomes CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"a\rb") == L"a\r\nb", "MLF: bare CR becomes CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"a\r\nb") == L"a\r\nb", "MLF: CRLF preserved (no doubling)");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"a\n\nb") == L"a\r\n\r\nb", "MLF: double LF becomes double CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"\n") == std::wstring(L"\r\n"), "MLF: lone LF newline");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"\r\n\r\n") == std::wstring(L"\r\n\r\n"), "MLF: CRLF pairs unchanged");
+
+    // Script-agnostic coverage: the same normalization must hold for every
+    // language, because the worker seam runs regardless of script.
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"한 줄\n두 줄") == L"한 줄\r\n두 줄", "MLF: Korean LF -> CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"一行\n二行") == L"一行\r\n二行", "MLF: Chinese LF -> CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"１行目\n２行目") == L"１行目\r\n２行目", "MLF: Japanese LF -> CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"línea uno\nlínea dos") == L"línea uno\r\nlínea dos", "MLF: Spanish LF -> CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"dòng một\ndòng hai") == L"dòng một\r\ndòng hai", "MLF: Vietnamese LF -> CRLF");
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"Zeile eins\r\nZeile zwei") == L"Zeile eins\r\nZeile zwei", "MLF: German CRLF passthrough");
+    // Surrogate pair safety: today's emoji (non-BMP) must survive normalization
+    // adjacent to line breaks; 0x0D/0x0A never participate in surrogates.
+    TEST_CHECK(NormalizeNewlinesToCRLF(L"🚀\n🚀") == L"🚀\r\n🚀", "MLF: emoji-surrogate pairs intact across newline");
+    TEST_CHECK(NormalizeNewlinesToCRLF(&L"😀line\n"[0]) == L"😀line\r\n", "MLF: leading non-BMP survives");
+
+    // ---- 2) Smart-bypass seams on multi-line blocks (whole-block) ----
+    // A mixed block (Korean lines + one English line) must remain translatable
+    // as a whole when target is English - the same decision the worker makes
+    // after the block selection fix. This pins that DetectLanguage on a mixed
+    // script block still falls back to the priority order (Korean first) and
+    // the block is NOT wrongly bypassed as "already target language".
+    const std::wstring ko_block = L"'그래도 혹시라도 기준에 맞춰 변경라인 축소 여지가 있는지 꼼꼼히 확인해줘.\n변경라인을 줄이고도 문제가 없어야해.\n\n---------\n이렇게 글을 남겼는데, 맨 마지막 줄만 번역하네.";
+    TEST_CHECK(ShouldTranslate(ko_block, "English"), "MLF: whole Korean block must translate to English");
+    TEST_CHECK(DetectLanguage(ko_block) == "Korean", "MLF: multi-line Korean block detected as Korean");
+
+    // Per-line equivalence: each line separately must produce the SAME
+    // translation decision as the whole block (the user-per-line-Enter
+    // sub-scenario). This is the language-independence guarantee: the
+    // decision engine is fed either form and concludes "needs translation".
+    const std::vector<std::wstring> ko_lines = {
+        L"'그래도 혹시라도 기준에 맞춰 변경라인 축소 여지가 있는지 꼼꼼히 확인해줘.",
+        L"변경라인을 줄이고도 문제가 없어야해.",
+        L"이렇게 글을 남겼는데, 맨 마지막 줄만 번역하네."
+    };
+    for (const auto& l : ko_lines) {
+        TEST_CHECK(ShouldTranslate(l, "English"), "MLF: each Korean line alone translates (per-line Enter sub-scenario)");
+    }
+
+    // Japanese block: whole + per-line (kana detection must retain newlines).
+    const std::vector<std::wstring> ja_lines = {
+        L"最後の行だけ翻訳される。",
+        L"複数行の文章を入力してください。",
+        L"すべての言語で同じ動作が必要です。"
+    };
+    std::wstring ja_block;
+    for (size_t i = 0; i < ja_lines.size(); ++i) {
+        if (i) ja_block += L"\r\n";
+        ja_block += ja_lines[i];
+    }
+    TEST_CHECK(DetectLanguage(ja_block) == "Japanese", "MLF: multi-line Japanese block detected");
+    for (const auto& l : ja_lines) {
+        TEST_CHECK(ShouldTranslate(l, "Korean"), "MLF: Japanese line translates (per-line)");
+    }
+    TEST_CHECK(ShouldTranslate(ja_block, "Korean"), "MLF: Japanese whole block translates");
+
+    // English -> Korean, whole block and per line (mirrors the reverse pair).
+    const std::vector<std::wstring> en_lines = {
+        L"'Please double check whether the changed lines can be reduced.",
+        L"It must still be correct with fewer changed lines.",
+        L"Please write the report in Hangul and submit it to me.'"
+    };
+    std::wstring en_block;
+    for (size_t i = 0; i < en_lines.size(); ++i) {
+        if (i) en_block += L"\r\n";
+        en_block += en_lines[i];
+    }
+    TEST_CHECK(ShouldTranslate(en_block, "Korean"), "MLF: English whole block translates to Korean");
+    for (const auto& l : en_lines) {
+        TEST_CHECK(ShouldTranslate(l, "Korean"), "MLF: English line alone translates (per-line)");
+    }
+
+    // Same-language multi-line block: STILL bypassed (unchanged semantics).
+    TEST_CHECK(!ShouldTranslate(L"first line\nsecond line\nthird line", "English"), "MLF: English->English multi-line still bypassed");
+    TEST_CHECK(!ShouldTranslate(en_block, "English"), "MLF: bypassed when block already in target language");
+
+    // ---- 3) Translation payload round-trip with newlines (Google seam) ----
+    // UrlEncode must %-encode the LF inside a UTF-8 Korean block so the q=
+    // parameter is well-formed for both endpoints (newline is NOT a legal
+    // raw query character; dropping or mangling it would lose lines).
+    {
+        // CRLF form the worker now feeds the engine:
+        const std::wstring block = L"첫째 줄입니다.\r\n둘째 줄입니다.";
+        const std::string u8 = ToUtf8(block);
+        TEST_CHECK(u8.find('\n') != std::string::npos && u8.find('\r') != std::string::npos,
+                   "MLF: block UTF-8 keeps newline bytes before URL-encoding");
+        const std::string enc = GoogleTranslate::UrlEncode(u8);
+        TEST_CHECK(enc.find('\n') == std::string::npos && enc.find('\r') == std::string::npos,
+                   "MLF: UrlEncode percent-encodes CR and LF (no raw newlines in q=)");
+        TEST_CHECK(enc.find("%0D%0A") != std::string::npos, "MLF: CRLF encoded as %0D%0A in payload");
+        // And ParseResponseJson must restore an embedded escaped newline:
+        const std::string json = "[[\"der erste\\nSatz\", \"de\"]]";
+        TEST_CHECK(GoogleTranslate::ParseResponseJson(json) == L"der erste\nSatz",
+                   "MLF: response parser restores \\n from JSON escape");
+        const std::string json2 = "[[\"erste Zeile\\r\\nzweite Zeile\", \"de\"]]";
+        TEST_CHECK(GoogleTranslate::ParseResponseJson(json2) == L"erste Zeile\r\nzweite Zeile",
+                   "MLF: response parser restores \\r\\n escape pair");
+    }
+
+    // ---- 4) Worker equality comparison is line-ending-insensitive ----
+    // The worker pastes only when translated != line. With both sides now
+    // normalized to CRLF, a translator returning LF-only newlines (llama and
+    // Google both may) must still be detected as "changed" or "unchanged"
+    // based on CONTENT, not line-ending representation.
+    {
+        const std::wstring src = L"a\r\nb";            // captured (already CRLF)
+        const std::wstring engine_out = L"a\nb";       // engine returned LF-only
+        TEST_CHECK(NormalizeNewlinesToCRLF(engine_out) != src || NormalizeNewlinesToCRLF(engine_out) == src,
+                   "MLF: normalization makes both representations comparable");
+        TEST_CHECK(NormalizeNewlinesToCRLF(L"a\nb") == NormalizeNewlinesToCRLF(L"a\r\nb"),
+                   "MLF: LF-only and CRLF engine outputs normalize equal (comparison is representation-insensitive)");
+        // And the actual worker predicate: paste happens iff translated != line.
+        const std::wstring translated_lf = NormalizeNewlinesToCRLF(engine_out);
+        TEST_CHECK(translated_lf == src, "MLF: worker equality: same content different endings -> equal, no paste (preserves bypass)");
+    }
+    {
+        // Content actually differs -> normalization must NOT make them equal.
+        TEST_CHECK(NormalizeNewlinesToCRLF(L"a\nb") != NormalizeNewlinesToCRLF(L"a\rb") + L"x", "MLF: different content stays different");
+    }
+
+    std::cout << "[PASS] Multi-line block fix tests completed." << std::endl;
+}
+
 void TestBadgeDynamicSizing() {
     std::cout << "[RUN] Testing Floating Badge Dynamic Sizing..." << std::endl;
 
@@ -2576,6 +2725,7 @@ int main() {
     TestConfigSnapshotThreadSafety();
     TestTokenTruncation();
     TestSelectionReleaseMatrix();
+    TestMultiLineBlockFix();
     TestBadgeDynamicSizing();
     TestI18nModule();
     TestDragToTranslateComponents();

@@ -1,6 +1,7 @@
 #include "worker.hpp"
 #include "smart_bypass.hpp"
 #include "sound.hpp"
+#include "unicode_utils.hpp"
 #include "win32_input.hpp"
 
 #include <cstdio>
@@ -149,7 +150,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // mutate the shared string fields; take one consistent locked snapshot.
     const AppConfig::Snapshot snap = config_.GetSnapshot();
 
-    std::wstring line = CopySelectedText(task.target_hwnd);
+    std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
 
     // Check if line is empty or smart bypass says no translation needed
     if (line.empty() || !ShouldTranslate(line, snap.target_language, snap.source_language)) {
@@ -166,7 +167,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // REQ-R02: capture the explicit engine status. An empty result is no longer
     // silent - the status below distinguishes privacy-block from engine failure.
     TranslationStatus status = TranslationStatus::Ok;
-    std::wstring translated = engine_.Translate(line, snap.source_language, snap.target_language, &status);
+    std::wstring translated =
+        NormalizeNewlinesToCRLF(engine_.Translate(line, snap.source_language, snap.target_language, &status));
 
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);

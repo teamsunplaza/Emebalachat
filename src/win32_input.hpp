@@ -37,6 +37,16 @@ void FlushIme();
 // Selects the current line from cursor back to beginning of line (Shift+Home).
 bool SelectCurrentLine();
 
+// Multi-line block fix: selects the message block from the start of the text
+// flow to the cursor (Shift+Home then Ctrl+Shift+Home, extending the selection
+// from line start back to the beginning of the input's text). Replaces the old
+// line-only boundary, which captured ONLY the last physical line of a multi-line
+// typed/pasted block, so Enter-translate replaced just that last line in every
+// non-whitelisted app (browser chat boxes, editors) and left the preceding
+// lines untranslated. Works identically for every script/language because the
+// selection primitive is pure keyboard geometry, not text inspection.
+bool SelectMessageBlock();
+
 // Sends Ctrl+C to copy current selection to clipboard.
 bool CopySelection();
 

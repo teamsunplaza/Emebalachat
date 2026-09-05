@@ -150,6 +150,33 @@ bool SelectCurrentLine() {
     return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
 }
 
+bool SelectMessageBlock() {
+    // Multi-line block fix: two-stage selection that captures ALL lines from the
+    // start of text to the cursor, not just the current physical line.
+    //   Stage 1 (Shift+Home)  : extends the selection to the start of the CURRENT
+    //                           line — the old, line-bounded behavior.
+    //   Stage 2 (Ctrl+Shift+Home): with the modifier already held, extends the
+    //                           selection to the START OF TEXT, sweeping every
+    //                           preceding line. Standard edit-control navigation
+    //                           (works in RichEdit/EDIT, browsers, Electron,
+    //                           Notepad, Word, etc.).
+    // This is the same successful paste mechanics of Quick Translator et al.
+    // Both stages keep the synthetic EXTRA_INFO_MARKER so our keyboard hook
+    // ignores its own injection, and the resulting selection spans the full
+    // multi-line block, allowing Ctrl+C to capture it verbatim.
+    INPUT inputs[8] = {
+        CreateKeyInput(VK_SHIFT, false, EXTRA_INFO_MARKER),    // Shift down
+        CreateKeyInput(VK_HOME, false, EXTRA_INFO_MARKER),     // Home -> line start
+        CreateKeyInput(VK_HOME, true, EXTRA_INFO_MARKER),      // Home up
+        CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),  // Ctrl down (Shift held)
+        CreateKeyInput(VK_HOME, false, EXTRA_INFO_MARKER),     // Home -> text start
+        CreateKeyInput(VK_HOME, true, EXTRA_INFO_MARKER),      // Home up
+        CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER),   // Ctrl up
+        CreateKeyInput(VK_SHIFT, true, EXTRA_INFO_MARKER)      // Shift up
+    };
+    return ::SendInput(8, inputs, sizeof(INPUT)) == 8;
+}
+
 bool SelectAll() {
     INPUT inputs[4] = {
         CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),
@@ -223,7 +250,14 @@ bool SelectTextForTranslation(HWND hwnd) {
     if (IsChatApplicationWindow(hwnd)) {
         return SelectAll();
     } else {
-        return SelectCurrentLine();
+        // Multi-line block fix: non-chat apps previously captured only the
+        // current physical line (Shift+Home), so a multi-line message typed
+        // with Shift+Enter (or pasted with newlines) had ONLY its last line
+        // translated when Enter fired. SelectMessageBlock() extends the
+        // selection from the cursor to the start of the whole text flow, so
+        // the full block reaches the translator. Identical for every
+        // language/script: it is pure keyboard geometry.
+        return SelectMessageBlock();
     }
 }
 

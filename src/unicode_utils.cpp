@@ -41,6 +41,33 @@ std::wstring NormalizeNFC(std::wstring_view input) {
     return result;
 }
 
+std::wstring NormalizeNewlinesToCRLF(std::wstring_view input) {
+    // Multi-line block fix. Pure single pass over UTF-16 units; 0x0D/0x0A never
+    // participate in surrogate pairs, so per-unit scanning is surrogate-safe
+    // for every script (KO/EN/JA/ZH/VI/ES, emoji included).
+    if (input.find_first_of(L"\r\n") == std::wstring_view::npos) {
+        return std::wstring(input);
+    }
+    std::wstring out;
+    out.reserve(input.size() + 8);
+    for (size_t i = 0; i < input.size(); ++i) {
+        const wchar_t c = input[i];
+        if (c == L'\r') {
+            out += L"\r\n";
+            // Collapse a following '\n' of an existing CRLF pair so CRLF never
+            // doubles ("\r\n" stays "\r\n", not "\r\r\n").
+            if (i + 1 < input.size() && input[i + 1] == L'\n') {
+                ++i;
+            }
+        } else if (c == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 std::string ToUtf8(std::wstring_view wstr) {
     if (wstr.empty()) {
         return {};
