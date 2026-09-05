@@ -1,4 +1,5 @@
 #include "about_window.hpp"
+#include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
 #include "../i18n.hpp"
@@ -379,7 +380,7 @@ void AboutWindow::OpenLink(int index) {
     HINSTANCE hRes = ::ShellExecuteW(hwnd_, L"open", kLinkUrls[index], nullptr, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(hRes) <= 32) {
         // Traceable error code per project convention; the URL was not opened.
-        fprintf(stderr, "ABOUT/OpenLink/001: ShellExecuteW failed (INT_PTR %lld) for %ls\n",
+        DIAG_F("ABOUT/OpenLink/001: ShellExecuteW failed (INT_PTR %lld) for %ls\n",
                 static_cast<long long>(reinterpret_cast<INT_PTR>(hRes)), kLinkUrls[index]);
     }
 }
@@ -571,7 +572,7 @@ void AboutWindow::Render() {
 // after a device-lost. ReallocateBuffer re-binds SetDpi + BindDC on the fresh
 // target; the logo bitmap was created on the lost device and must be rebuilt.
 void AboutWindow::RecreateAfterDeviceLost() {
-    fprintf(stderr, "ABOUT/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    DIAG_F("ABOUT/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
     if (dc_render_target_) {
         dc_render_target_->Release();
         dc_render_target_ = nullptr;
@@ -585,7 +586,7 @@ void AboutWindow::RecreateAfterDeviceLost() {
     );
     if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
         dc_render_target_ = nullptr;
-        fprintf(stderr, "ABOUT/DeviceLost/002: render-target recreation failed; About stays stale until next Create()\n");
+        DIAG_F("ABOUT/DeviceLost/002: render-target recreation failed; About stays stale until next Create()\n");
         return;
     }
     ReallocateBuffer(PhysW(), PhysH());

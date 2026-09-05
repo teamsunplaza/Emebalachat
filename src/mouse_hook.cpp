@@ -1,4 +1,5 @@
 #include "mouse_hook.hpp"
+#include "diag_logger.hpp"
 #include "win32_input.hpp"
 
 #include <chrono>
@@ -152,7 +153,7 @@ void MouseHook::ArmDelayedClick(uint64_t seq, POINT pt) {
         // Last-resort synchronous handoff: bounded because the R10-marshaled
         // main.cpp handler only does a PostMessage here. Losing the double-click
         // event silently would be worse.
-        fprintf(stderr, "MOUSE_HOOK/ArmDelayedClick/001: worker not live; firing inline\n");
+        DIAG_F("MOUSE_HOOK/ArmDelayedClick/001: worker not live; firing inline\n");
         if (drag_cb_) {
             drag_cb_(pt.x, pt.y);
         }
@@ -177,7 +178,7 @@ void MouseHook::ArmDelayedClick(uint64_t seq, POINT pt) {
         ::SwitchToThread(); // user-mode yield only; never Sleep on a hook thread
     }
 
-    fprintf(stderr, "MOUSE_HOOK/ArmDelayedClick/002: job mutex contended 4x; firing inline\n");
+    DIAG_F("MOUSE_HOOK/ArmDelayedClick/002: job mutex contended 4x; firing inline\n");
     if (drag_cb_) {
         drag_cb_(pt.x, pt.y);
     }

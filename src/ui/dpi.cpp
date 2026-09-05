@@ -1,4 +1,5 @@
 #include "dpi.hpp"
+#include "diag_logger.hpp"
 
 #include <cstdio>
 
@@ -82,13 +83,13 @@ bool EnsurePerMonitorV2ProcessDpiAwareness() {
         int awareness = 0;
         // 0=unaware,1=system,2=per-monitor(V1),3=per-monitorV2(undocumented)
         if (SUCCEEDED(get_aware(nullptr, &awareness)) && awareness >= 1) {
-            fprintf(stderr, "UI/DPI/001: awareness locked at pre-set value %d (manifest or earlier call)\n",
+            DIAG_F("UI/DPI/001: awareness locked at pre-set value %d (manifest or earlier call)\n",
                     awareness);
             return awareness >= 2;
         }
     }
     ::SetProcessDPIAware();
-    fprintf(stderr, "UI/DPI/002: per-monitor awareness unavailable; degraded to system-aware\n");
+    DIAG_F("UI/DPI/002: per-monitor awareness unavailable; degraded to system-aware\n");
     return false;
 }
 

@@ -1,4 +1,5 @@
 #include "win32_input.hpp"
+#include "diag_logger.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -345,7 +346,7 @@ bool CopySelectionWithSequenceWait() {
     const uint32_t pre_seq = ::GetClipboardSequenceNumber();
 
     if (!CopySelection()) {
-        fprintf(stderr, "WIN32_INPUT/CopySelectionWithSequenceWait/001: SendInput(Ctrl+C) failed\n");
+        DIAG_F("WIN32_INPUT/CopySelectionWithSequenceWait/001: SendInput(Ctrl+C) failed\n");
         return false;
     }
 
@@ -358,7 +359,7 @@ bool CopySelectionWithSequenceWait() {
             return true;
         }
         if (outcome == ClipboardCopyOutcome::Failed) {
-            fprintf(stderr,
+            DIAG_F(
                     "WIN32_INPUT/CopySelectionWithSequenceWait/002: clipboard sequence %lu unchanged %ums after Ctrl+C; "
                     "refusing stale read (copy treated as failure)\n",
                     static_cast<unsigned long>(pre_seq), kClipboardChangeTimeoutMs);
@@ -651,7 +652,7 @@ std::wstring CopySelectedText(HWND hwnd) {
     // return empty (copy failure) instead of reading stale text. The worker
     // treats empty as "nothing to translate" and releases the selection.
     if (!CopySelectionWithSequenceWait()) {
-        fprintf(stderr,
+        DIAG_F(
                 "WIN32_INPUT/CopySelectedText/001: copy not confirmed (hwnd=%p chat=%d sel_send=%d); returning empty\n",
                 reinterpret_cast<void*>(hwnd), is_chat ? 1 : 0, sel_ok ? 1 : 0);
         return {};
@@ -665,7 +666,7 @@ std::wstring CopySelectedText(HWND hwnd) {
     // which is exactly the gate-11 diagnosis.
     size_t nl = 0;
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
-    fprintf(stderr, "WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, chat=%d)\n",
+    DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, chat=%d)\n",
             text.size(), nl, is_chat ? 1 : 0);
     return text;
 }

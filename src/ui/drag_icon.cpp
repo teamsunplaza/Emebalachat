@@ -1,4 +1,5 @@
 #include "drag_icon.hpp"
+#include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
 
@@ -313,7 +314,7 @@ void DragIconWindow::Render() {
 // the fresh target; the logo bitmap was created on the lost device and must
 // be rebuilt.
 void DragIconWindow::RecreateAfterDeviceLost() {
-    fprintf(stderr, "DRAG_ICON/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    DIAG_F("DRAG_ICON/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
     if (dc_render_target_) {
         dc_render_target_->Release();
         dc_render_target_ = nullptr;
@@ -327,7 +328,7 @@ void DragIconWindow::RecreateAfterDeviceLost() {
     );
     if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
         dc_render_target_ = nullptr;
-        fprintf(stderr, "DRAG_ICON/DeviceLost/002: render-target recreation failed; icon stays stale until next Create()\n");
+        DIAG_F("DRAG_ICON/DeviceLost/002: render-target recreation failed; icon stays stale until next Create()\n");
         return;
     }
     RebindRenderTarget();

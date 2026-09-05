@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "diag_logger.hpp"
 #include "config.hpp"
 #include "google_translate.hpp"
 #include "unicode_utils.hpp"
@@ -120,7 +121,7 @@ std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side
 // based, so it is unit-testable without loading any model.
 bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
     if (path.empty()) {
-        fprintf(stderr, "ENGINE/IsValidModelPath/001: empty model path rejected\n");
+        DIAG_F("ENGINE/IsValidModelPath/001: empty model path rejected\n");
         return false;
     }
 
@@ -129,7 +130,7 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
     // Extension must be exactly ".gguf" (case-insensitive) so the GGUF parser
     // never touches arbitrary files chosen via a tampered config.json.
     if (LowerAscii(p.extension().string()) != ".gguf") {
-        fprintf(stderr, "ENGINE/IsValidModelPath/003: non-.gguf model path rejected: %s\n",
+        DIAG_F("ENGINE/IsValidModelPath/003: non-.gguf model path rejected: %s\n",
                 std::string(path).c_str());
         return false;
     }
@@ -148,7 +149,7 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
         if (base_dir.empty()) {
             base = std::filesystem::current_path(ec);
             if (ec) {
-                fprintf(stderr, "ENGINE/IsValidModelPath/004: cannot resolve base directory; relative model path rejected: %s\n",
+                DIAG_F("ENGINE/IsValidModelPath/004: cannot resolve base directory; relative model path rejected: %s\n",
                         std::string(path).c_str());
                 return false;
             }
@@ -167,7 +168,7 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
             (j == b) ||
             (j.size() > b.size() && j.compare(0, b.size(), b) == 0 && j[b.size()] == '/');
         if (!contained) {
-            fprintf(stderr, "ENGINE/IsValidModelPath/004: relative model path escapes base directory via '..' (path traversal) rejected: %s\n",
+            DIAG_F("ENGINE/IsValidModelPath/004: relative model path escapes base directory via '..' (path traversal) rejected: %s\n",
                     std::string(path).c_str());
             return false;
         }
@@ -177,7 +178,7 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
     // Must exist as a regular file (not a directory, device, or missing entry).
     std::error_code ec;
     if (!std::filesystem::is_regular_file(target, ec) || ec) {
-        fprintf(stderr, "ENGINE/IsValidModelPath/002: model file does not exist or is not a regular file: %s\n",
+        DIAG_F("ENGINE/IsValidModelPath/002: model file does not exist or is not a regular file: %s\n",
                 std::string(path).c_str());
         return false;
     }
@@ -232,7 +233,7 @@ struct TranslationManager::LlamaEngine {
     LlamaEngine() {
         llama_log_set([](ggml_log_level level, const char* text, void* /*user_data*/) {
             if (level >= GGML_LOG_LEVEL_WARN) {
-                fprintf(stderr, "%s", text);
+                DIAG_F("%s", text);
             }
         }, nullptr);
         llama_backend_init();
@@ -274,7 +275,7 @@ struct TranslationManager::LlamaEngine {
         // REQ-R16: if a shutdown cancellation was requested while we were
         // queued behind mutex_, do not even start a model load.
         if (CancelRequested()) {
-            fprintf(stderr, "ENGINE/EnsureLoaded/030: load skipped, shutdown cancellation pending\n");
+            DIAG_F("ENGINE/EnsureLoaded/030: load skipped, shutdown cancellation pending\n");
             return false;
         }
 
@@ -290,7 +291,7 @@ struct TranslationManager::LlamaEngine {
             // REQ-R16: a cancel-aborted load is not a CUDA failure; do not
             // spend another full load attempt on the CPU path afterwards.
             if (CancelRequested()) {
-                fprintf(stderr, "ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
+                DIAG_F("ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
                 return false;
             }
             // Fallback to CPU-only load if CUDA load encounters an issue
@@ -373,7 +374,7 @@ struct TranslationManager::LlamaEngine {
                 }
             }
             if (DebugPromptEnabled()) {
-                fprintf(stderr,
+                DIAG_F(
                         "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
                         static_cast<int>(tgt_name.size()), tgt_name.data(),
                         static_cast<int>(src_name.size()), src_name.data(),
@@ -439,13 +440,13 @@ struct TranslationManager::LlamaEngine {
                 prompt = build_final_prompt(src_w);
                 const int32_t n2 = tokenize_prompt(prompt, prompt_tokens);
                 if (n2 < 0) {
-                    fprintf(stderr, "ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
+                    DIAG_F("ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
                     return {};
                 }
                 n_prompt_tokens = n2;
                 ++shrink_iters;
             }
-            fprintf(stderr, "ENGINE/Translate/010: prompt tokens %d exceeded budget %d; source truncated to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
+            DIAG_F("ENGINE/Translate/010: prompt tokens %d exceeded budget %d; source truncated to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
                     overflow_n, kLlamaPromptTokenBudget, src_w.size(), n_prompt_tokens, shrink_iters);
         }
 
@@ -462,7 +463,7 @@ struct TranslationManager::LlamaEngine {
             kept.insert(kept.end(), prompt_tokens.end() - tail_n, prompt_tokens.end());
             prompt_tokens.swap(kept);
             n_prompt_tokens = static_cast<int32_t>(prompt_tokens.size());
-            fprintf(stderr, "ENGINE/Translate/012: hard token-window cap applied, prompt clipped to %d tokens\n", n_prompt_tokens);
+            DIAG_F("ENGINE/Translate/012: hard token-window cap applied, prompt clipped to %d tokens\n", n_prompt_tokens);
         }
 
         // The post-generation quote-strip heuristic below compares against the
@@ -476,7 +477,7 @@ struct TranslationManager::LlamaEngine {
         // Process prompt tokens
         llama_batch batch = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
         if (llama_decode(ctx, batch) != 0) {
-            fprintf(stderr, "ENGINE/Translate/011: llama_decode failed (%d prompt tokens, budget %d)\n",
+            DIAG_F("ENGINE/Translate/011: llama_decode failed (%d prompt tokens, budget %d)\n",
                     n_prompt_tokens, kLlamaPromptTokenBudget);
             return {};
         }
@@ -514,7 +515,7 @@ struct TranslationManager::LlamaEngine {
             // abort_callback unwinds that from inside) runs before we exit
             // the loop with the partial output discarded as empty.
             if (CancelRequested()) {
-                fprintf(stderr, "ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
+                DIAG_F("ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
                 llama_sampler_free(smpl);
                 return {};
             }
@@ -870,7 +871,7 @@ std::wstring TranslationManager::Translate(
     // R5 observability (R6-p4: now also names the resolved source and reflects
     // the pair-routing decision) so a "didn't translate to the switched target"
     // can be attributed (engine routing vs upstream).
-    fprintf(stderr,
+    DIAG_F(
             "ENGINE/Translate/040: target routed (src=\"%.*s\" -> norm=%s, input=\"%.*s\" -> norm=%s name=%s, engine=%s)\n",
             static_cast<int>(src_code_or_name.size()), src_code_or_name.data(),
             norm_src.c_str(),
@@ -898,7 +899,7 @@ std::wstring TranslationManager::Translate(
         // that degrades to English output; under the Auto consent (or an
         // explicit cloud fallback consent) it goes straight to Google.
         if (served_engine != EngineType::LocalLlama) {
-            fprintf(stderr,
+            DIAG_F(
                     "ENGINE/Translate/041: pair (%s -> %s) outside the Hy-MT2 reliable set; routed to cloud (engine_type=%s, cloud_consent=%d)\n",
                     norm_src.c_str(), norm_tgt.c_str(),
                     preferred_type_ == EngineType::Auto ? "auto" : "local",
@@ -909,7 +910,7 @@ std::wstring TranslationManager::Translate(
             !LocalPairReliable(src_code_or_name, tgt_code_or_name)) {
             // Plan §4.1: explicit local pin + no cloud consent keeps the
             // request on-device; warn that the output language may degrade.
-            fprintf(stderr,
+            DIAG_F(
                     "ENGINE/Translate/042: pair (%s -> %s) outside the Hy-MT2 reliable set but strict-local pin without cloud consent; staying local (output may degrade)\n",
                     norm_src.c_str(), norm_tgt.c_str());
         }
@@ -932,15 +933,15 @@ std::wstring TranslationManager::Translate(
         // Local inference failed (load/decode/tokenizer/empty output).
         // Auto: seamless cloud fallback - this is the consented contract above.
         if (preferred_type_ == EngineType::Auto) {
-            fprintf(stderr, "ENGINE/Translate/020: local inference failed, Auto policy falling back to cloud\n");
+            DIAG_F("ENGINE/Translate/020: local inference failed, Auto policy falling back to cloud\n");
             return cloud_call();
         }
         // Explicit local: H2 privacy gate still decides.
         if (cloud_fallback_enabled_) {
-            fprintf(stderr, "ENGINE/Translate/021: local inference failed, explicit cloud fallback consent granted\n");
+            DIAG_F("ENGINE/Translate/021: local inference failed, explicit cloud fallback consent granted\n");
             return cloud_call();
         }
-        fprintf(stderr, "ENGINE/Translate/022: local inference failed and cloud fallback consent disabled; surfacing failure to caller\n");
+        DIAG_F("ENGINE/Translate/022: local inference failed and cloud fallback consent disabled; surfacing failure to caller\n");
         set_status(TranslationStatus::CloudConsentBlocked);
         return {};
     }
