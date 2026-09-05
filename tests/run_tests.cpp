@@ -17,6 +17,7 @@
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
 
+#include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
 #include <cassert>
 #include <cctype>
@@ -3136,6 +3137,216 @@ void TestB3LanguageSync() {
     std::cout << "[PASS] R6-B3 language sync coordinator seam tests completed." << std::endl;
 }
 
+// R6 Phase 2 (B1, plan §1 B1-H1/H2 + §Phase 2): intermittent stale tooltip.
+// Two concurrent translate producers (detached drag threads, the REQ-R06
+// double-Ctrl+C worker) used to last-writer-wins on the tooltip model, so a
+// slow OLD request could paint the PREVIOUS translation for a NEW selection.
+// Pinned invariants: the pure show/drop planner, monotonic stamping under
+// concurrency, newest-wins INDEPENDENT of marshal order, stale notices
+// dropped, unmanaged (legacy) shows unchanged, and Dismiss clearing every
+// content buffer (B1-H2 - WM_DPICHANGED re-renders the current model, so
+// leftovers must not survive a dismissal).
+void TestB1TooltipStaleness() {
+    std::cout << "[RUN] Testing R6-B1 tooltip staleness generation guard..." << std::endl;
+
+    using TT = TooltipWindow;
+
+    // ---- 1) Pure staleness planner (headless matrix, plan §7.2) ----
+    static_assert(TT::kGenNone == 0, "B1: unmanaged-show sentinel must stay 0");
+    static_assert(TT::ShouldRenderForGeneration(5, 4) == false, "B1: older gen than latest -> drop");
+    static_assert(TT::ShouldRenderForGeneration(5, 5) == true, "B1: newest gen -> show");
+    static_assert(TT::ShouldRenderForGeneration(5, 6) == true, "B1: newer-than-known gen -> show");
+    static_assert(TT::ShouldRenderForGeneration(0, 3) == true, "B1: nothing stamped yet -> show");
+    static_assert(TT::ShouldRenderForGeneration(3, 0) == true, "B1: unmanaged show always renders");
+    static_assert(TT::ShouldRenderForGeneration(0, 0) == true, "B1: initial state renders");
+    TEST_CHECK(!TT::ShouldRenderForGeneration(1000, 999), "B1: runtime stale drop (N-1 vs N)");
+    TEST_CHECK(TT::ShouldRenderForGeneration(1000, 1001), "B1: runtime fresh show (N+1 vs N)");
+    TEST_CHECK(!TT::ShouldRenderForGeneration(2, 1), "B1: superseded request dropped");
+
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    TT tooltip;
+    TEST_CHECK(tooltip.Create(hInst), "B1 fixture: TooltipWindow created");
+    TEST_CHECK(tooltip.LatestRequestGenerationForTest() == TT::kGenNone,
+               "B1: fresh tooltip has no stamped requests");
+
+    // ---- 2) BeginTranslationRequest: monotonic, sentinel-free, race-safe ----
+    const uint64_t g1 = tooltip.BeginTranslationRequest();
+    const uint64_t g2 = tooltip.BeginTranslationRequest();
+    TEST_CHECK(g1 != TT::kGenNone && g2 != TT::kGenNone,
+               "B1: stamps never return the unmanaged sentinel");
+    TEST_CHECK(g2 == g1 + 1, "B1: generations are strictly monotonic");
+    TEST_CHECK(tooltip.LatestRequestGenerationForTest() == g2, "B1: latest tracks the newest stamp");
+
+    // Trigger sites live on GUI + hook + worker threads; concurrent stamps
+    // must yield unique ids (no duplicate generation can ever render).
+    constexpr int kStamperThreads = 8;
+    std::vector<uint64_t> ids(kStamperThreads, 0);
+    {
+        std::vector<std::thread> stampers;
+        stampers.reserve(kStamperThreads);
+        for (int i = 0; i < kStamperThreads; ++i) {
+            stampers.emplace_back([&tooltip, &ids, i]() {
+                ids[static_cast<size_t>(i)] = tooltip.BeginTranslationRequest();
+            });
+        }
+        for (auto& t : stampers) {
+            t.join();
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    TEST_CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end(),
+               "B1: concurrent stamps return unique generations (atomic fetch_add)");
+    TEST_CHECK(ids.front() != TT::kGenNone, "B1: concurrent stamps never return the sentinel");
+    TEST_CHECK(tooltip.LatestRequestGenerationForTest() == g2 + kStamperThreads,
+               "B1: latest equals the total number of stamps");
+
+    uint64_t expected_drops = tooltip.DroppedStaleShowsForTest();
+
+    // ---- 3) Marshal queue out-of-order: newest FIRST, stale overtakes ----
+    // The exact bug shape: the OLD thread posts LAST. Without the guard the
+    // stale payload repaints the tooltip with the previous translation.
+    const uint64_t gA = tooltip.BeginTranslationRequest(); // superseded request
+    const uint64_t gB = tooltip.BeginTranslationRequest(); // newest request
+
+    auto* pB = new TT::TranslationPayload();
+    pB->x = 200;
+    pB->y = 200;
+    pB->source_text = L"new selection";
+    pB->source_lang_code = "JA";
+    pB->target_lang = "English";
+    pB->translated_text = L"NEW RESULT";
+    pB->generation = gB;
+    auto* pA = new TT::TranslationPayload();
+    pA->x = 200;
+    pA->y = 200;
+    pA->source_text = L"old selection";
+    pA->source_lang_code = "KO";
+    pA->target_lang = "English";
+    pA->translated_text = L"OLD RESULT"; // what the user saw: the previous translation
+    pA->generation = gA;
+
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pB),
+               "B1: newest payload posted");
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pA),
+               "B1: stale payload posted AFTER the newest one");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(tooltip.IsVisible() && tooltip.GetTranslatedText() == L"NEW RESULT",
+               "B1: stale delivery arriving last cannot overwrite the newest result");
+    TEST_CHECK(tooltip.GetSourceText() == L"new selection", "B1: model keeps the newest request's source");
+    TEST_CHECK(tooltip.DroppedStaleShowsForTest() == expected_drops + 1,
+               "B1: exactly one stale show dropped");
+    TEST_CHECK(!tooltip.IsMessageMode(), "B1: dropped stale show does not switch modes");
+    ++expected_drops;
+
+    // ---- 4) FIFO order (stale FIRST, then newest): stale dropped on arrival ----
+    const uint64_t gC = tooltip.BeginTranslationRequest();
+    auto* pStale = new TT::TranslationPayload();
+    pStale->x = 200;
+    pStale->y = 200;
+    pStale->source_text = L"ancient";
+    pStale->source_lang_code = "KO";
+    pStale->target_lang = "English";
+    pStale->translated_text = L"ANCIENT RESULT";
+    pStale->generation = gA; // oldest stamp so far
+    auto* pFresh = new TT::TranslationPayload();
+    pFresh->x = 200;
+    pFresh->y = 200;
+    pFresh->source_text = L"third";
+    pFresh->source_lang_code = "EN";
+    pFresh->target_lang = "Korean";
+    pFresh->translated_text = L"FRESH AGAIN";
+    pFresh->generation = gC;
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pStale),
+               "B1: stale payload posted first");
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pFresh),
+               "B1: newest payload posted after");
+    PumpThreadMessagesOnce();
+    TEST_CHECK(tooltip.GetTranslatedText() == L"FRESH AGAIN",
+               "B1: stale-first queue order still ends on the newest result");
+    TEST_CHECK(tooltip.DroppedStaleShowsForTest() == expected_drops + 1, "B1: second stale drop counted");
+    ++expected_drops;
+
+    // ---- 5) Off-thread producer race (detached-thread simulation) ----
+    // The superseded thread posts its own stale result through the REAL seam
+    // while the newest request lands inline first.
+    const uint64_t gD = tooltip.BeginTranslationRequest();
+    std::thread stale_producer([&tooltip, gA]() {
+        tooltip.ShowTranslationThreadSafe(200, 200, L"late old", "KO", "English",
+                                          L"STALE THREAD RESULT", gA);
+    });
+    tooltip.ShowTranslation(200, 200, L"current", "EN", "Korean", L"FRESH RESULT", gD);
+    stale_producer.join();
+    PumpThreadMessagesOnce();
+    TEST_CHECK(tooltip.GetTranslatedText() == L"FRESH RESULT",
+               "B1: off-thread stale delivery dropped (producer-side race closed)");
+    TEST_CHECK(tooltip.DroppedStaleShowsForTest() == expected_drops + 1, "B1: off-thread stale drop counted");
+    ++expected_drops;
+
+    // ---- 6) Notices share the guard; unmanaged (legacy) shows unaffected ----
+    const uint64_t gS = tooltip.BeginTranslationRequest();
+    const uint64_t gT = tooltip.BeginTranslationRequest();
+    tooltip.ShowMessage(200, 200, L"Emebala Chat", L"stale failure notice", gS);
+    TEST_CHECK(tooltip.GetTranslatedText() == L"FRESH RESULT",
+               "B1: stale notice does not replace the newest translation");
+    TEST_CHECK(tooltip.DroppedStaleShowsForTest() == expected_drops + 1, "B1: stale notice drop counted");
+    ++expected_drops;
+    tooltip.ShowMessage(200, 200, L"Emebala Chat", L"newest notice", gT);
+    TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode() &&
+                   tooltip.GetTranslatedText() == L"newest notice",
+               "B1: newest notice renders normally");
+    // Default-gen (kGenNone) show: every legacy call site (REQ-R08 toggle
+    // bubble, worker empty-capture notice, tests) must keep rendering.
+    tooltip.ShowMessage(200, 200, L"H", L"unmanaged legacy notice");
+    TEST_CHECK(tooltip.IsMessageMode() && tooltip.GetTranslatedText() == L"unmanaged legacy notice",
+               "B1: unmanaged (sentinel) shows are never dropped - full backward compatibility");
+
+    // ---- 7) B1-H2: Dismiss clears every content buffer ----
+    const uint64_t gU = tooltip.BeginTranslationRequest();
+    tooltip.ShowTranslation(200, 200, L"dismiss me", "KO", "English", L"body-to-clear", gU);
+    TEST_CHECK(tooltip.IsVisible() && !tooltip.GetTranslatedText().empty(),
+               "B1-H2 fixture: translation-mode tooltip shows before dismissal");
+    tooltip.Dismiss();
+    TEST_CHECK(!tooltip.IsVisible(), "B1-H2: hidden after Dismiss");
+    TEST_CHECK(tooltip.GetSourceText().empty(), "B1-H2: Dismiss clears source_text_");
+    TEST_CHECK(tooltip.GetSourceLangCode().empty(), "B1-H2: Dismiss clears source_lang_code_");
+    TEST_CHECK(tooltip.GetTargetLang().empty(), "B1-H2: Dismiss clears target_lang_");
+    TEST_CHECK(tooltip.GetTranslatedText().empty(), "B1-H2: Dismiss clears translated_text_");
+    TEST_CHECK(tooltip.GetMessageHeader().empty(), "B1-H2: Dismiss clears message_header_");
+    TEST_CHECK(!tooltip.IsMessageMode(), "B1-H2: Dismiss exits message mode");
+
+    // Dismiss-then-show: no leftovers can leak into the next render.
+    const uint64_t gE = tooltip.BeginTranslationRequest();
+    tooltip.ShowTranslation(200, 200, L"after dismiss", "JA", "English", L"clean show", gE);
+    TEST_CHECK(tooltip.IsVisible() && tooltip.GetTranslatedText() == L"clean show",
+               "B1-H2: show after dismiss renders the fresh model");
+    TEST_CHECK(tooltip.GetSourceText() == L"after dismiss" && tooltip.GetSourceLangCode() == "JA" &&
+                   tooltip.GetTargetLang() == "English",
+               "B1-H2: no leftover source/lang fields after re-show");
+
+    // Message-mode dismissal clears the notice body/header too.
+    tooltip.ShowMessage(200, 200, L"Notice H", L"Notice B");
+    TEST_CHECK(tooltip.IsMessageMode() && tooltip.GetMessageHeader() == L"Notice H",
+               "B1-H2 fixture: notice shows before dismissal");
+    tooltip.Dismiss();
+    TEST_CHECK(tooltip.GetTranslatedText().empty() && tooltip.GetMessageHeader().empty(),
+               "B1-H2: Dismiss clears notice buffers");
+
+    // ---- 8) Marshaled (hook-thread) Dismiss clears on the GUI thread ----
+    const uint64_t gF = tooltip.BeginTranslationRequest();
+    tooltip.ShowTranslation(200, 200, L"x", "KO", "English", L"to clear off-thread", gF);
+    std::thread dismisser([&tooltip]() {
+        tooltip.DismissThreadSafe();
+    });
+    dismisser.join();
+    PumpThreadMessagesOnce();
+    TEST_CHECK(!tooltip.IsVisible() && tooltip.GetTranslatedText().empty() &&
+                   tooltip.GetSourceText().empty(),
+               "B1-H2: off-thread DismissThreadSafe clears buffers via the WndProc path");
+
+    tooltip.Destroy();
+    std::cout << "[PASS] R6-B1 tooltip staleness generation guard tests completed." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -3185,6 +3396,7 @@ int main() {
     TestEngineFallbackExeDirAnchoring();
     TestBatch2VersionScrollAbout();
     TestB3LanguageSync();
+    TestB1TooltipStaleness();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -796,13 +796,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // seams (ShowTranslationThreadSafe / ShowMessageThreadSafe), never touching
     // the single-threaded D2D target off the GUI thread.
     drag_icon.SetClickCallback([&](int click_x, int click_y) {
+        // R6 Phase 2 (B1-H1, plan §1): stamp the request generation AT TRIGGER
+        // TIME on the GUI thread, before the worker spawns. Every delivery
+        // this request makes (success payload OR failure notice) carries the
+        // id; a newer click bumps latest_request_gen_ and the tooltip drops
+        // this thread's late result instead of last-writer-wins (the reported
+        // intermittent stale tooltip). Detached-thread pattern is kept per
+        // plan §Phase 2 ("detached-with-guard consistent with codebase
+        // patterns"): std::thread().detach() can never std::terminate (the
+        // warmup-join precedent at shutdown only applies to joinable owners),
+        // the thread's work is bounded (clipboard settle <= ~200 ms + one
+        // translate), and its only outward effect after being superseded is a
+        // dropped post.
+        const uint64_t gen = tooltip.BeginTranslationRequest();
         // Capture by value what the worker needs; config/engine/badge/tooltip
         // are wWinMain stack objects that outlive the message loop, so the
         // references stay valid for the worker's short, bounded lifetime. The
         // badge status setters and both tooltip show seams are already
         // thread-safe / marshaling (REQ-R10); the raw D2D render never runs
         // off the GUI thread.
-        std::thread([click_x, click_y, &config, &engine, &badge, &tooltip]() {
+        std::thread([click_x, click_y, gen, &config, &engine, &badge, &tooltip]() {
             emebalachat::ClipboardBackup backup;
             emebalachat::BackupClipboard(backup);
 
@@ -816,9 +829,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 emebalachat::RestoreClipboard(backup);
                 fprintf(stderr, "MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
                 // REQ-R1(b): failure is now user-visible, not silent.
+                // R6 B1-H1: carries this request's generation - a superseded
+                // drag must not stamp a notice over a newer result either.
                 tooltip.ShowMessageThreadSafe(click_x, click_y,
                                               L"Emebala Chat",
-                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed));
+                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed),
+                                              gen);
                 return;
             }
             std::wstring selected = emebalachat::GetClipboardText();
@@ -828,7 +844,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 fprintf(stderr, "MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
                 tooltip.ShowMessageThreadSafe(click_x, click_y,
                                               L"Emebala Chat",
-                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
+                                              emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
+                                              gen);
                 return;
             }
 
@@ -862,7 +879,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
             // Worker thread, so marshal the D2D render to the GUI thread via the
             // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
-            tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated);
+            // R6 B1-H1: if a newer request was stamped while this thread was
+            // inside engine.Translate (local LLM takes seconds), the tooltip
+            // drops this stale payload instead of showing the previous
+            // translation (the reported intermittent bug).
+            tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated,
+                                              gen);
         }).detach();
     });
 
@@ -883,9 +905,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             return;
         }
 
-        // Settle for the target app's Ctrl+C clipboard write (same 40 ms the
-        // old code used - now off the hook thread, so it is harmless).
-        ::Sleep(40);
+        // R6 Phase 2 (B1-H1): stamp the generation at trigger time on this
+        // (REQ-R06 worker) thread; every show below carries it.
+        const uint64_t gen = tooltip.BeginTranslationRequest();
+
+        // R6 Phase 2 (B1-H3, plan §1): the old code did a fixed ::Sleep(40)
+        // and read the clipboard unconditionally. On slow (Electron IPC)
+        // targets the app's copy handler may not have committed within 40 ms,
+        // so the read returned the PREVIOUS clipboard content -> the stale
+        // translation the user reported. Now the capture goes through the
+        // REQ-R04-proven confirmed-capture seam (GetClipboardSequenceNumber
+        // polling, same as the drag path): the re-issued Ctrl+C must make the
+        // sequence provably move and settle, otherwise nothing is read (never
+        // a stale value).
+        if (!emebalachat::CopySelectionWithSequenceWait()) {
+            fprintf(stderr, "MAIN/DoubleCtrlC/001: clipboard copy not confirmed; refusing stale read\n");
+            return;
+        }
         std::wstring copied = emebalachat::GetClipboardText();
         if (copied.empty() || copied.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
             return;
@@ -920,8 +956,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI
         // thread instead of calling ShowTranslation() directly (audit §3.4).
+        // R6 B1-H1: generation-guarded (a drag request stamped meanwhile makes
+        // this result the stale one, and the tooltip drops it instead).
         tooltip.ShowTranslationThreadSafe(
-            cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated);
+            cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated, gen);
     });
 
     // ESC Key Dismissal
@@ -949,6 +987,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // re-translation with the NEW target passed explicitly (INV-5), then the
     // content re-show at the current position.
     tooltip.SetLanguageChangeCallback([&](std::string_view new_target_lang) {
+        // R6 Phase 2 (B1-H1): the language change is itself a NEW translate
+        // request - stamp it so an in-flight older drag result cannot
+        // overwrite the re-translation when it lands.
+        const uint64_t gen = tooltip.BeginTranslationRequest();
+
         std::wstring src = tooltip.GetSourceText();
         std::string src_code = tooltip.GetSourceLangCode();
         std::string new_tgt = std::string(new_target_lang);
@@ -966,7 +1009,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::wstring translated = engine.Translate(src, src_code, new_tgt);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
-        tooltip.ShowTranslation(r.left, r.top, src, src_code, new_tgt, translated);
+        // Runs on the GUI thread: the fresh generation this callback just
+        // stamped makes the guard accept it unconditionally (>= latest).
+        tooltip.ShowTranslation(r.left, r.top, src, src_code, new_tgt, translated, gen);
     });
 
     // REQ-R08 visual feedback: localized state-change bubble at the cursor,

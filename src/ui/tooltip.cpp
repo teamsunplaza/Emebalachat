@@ -591,7 +591,8 @@ void TooltipWindow::ShowTranslation(
     std::wstring_view source_text,
     std::string_view source_lang_code,
     std::string_view target_lang,
-    std::wstring_view translated_text
+    std::wstring_view translated_text,
+    uint64_t generation
 ) {
     if (!hwnd_) return;
 
@@ -600,7 +601,20 @@ void TooltipWindow::ShowTranslation(
     // (D2DERR_WRONG_THREAD -> invisible tooltip). Same-thread callers (badge
     // click copy path, tests, the WndProc-marshaled re-entry) run directly.
     if (::GetCurrentThreadId() != gui_thread_id_) {
-        ShowTranslationThreadSafe(x, y, source_text, source_lang_code, target_lang, translated_text);
+        ShowTranslationThreadSafe(x, y, source_text, source_lang_code, target_lang, translated_text,
+                                  generation);
+        return;
+    }
+
+    // R6 Phase 2 (B1-H1): generation guard, evaluated on the GUI thread AFTER
+    // any marshal reordering. A translate result whose request generation is
+    // older than the latest-REQUESTED generation is a superseded (stale)
+    // delivery - the user already triggered a newer selection - and must not
+    // touch the model or repaint. Newest-wins regardless of which thread
+    // finished first or in which order the payloads were dequeued.
+    if (!ShouldRenderForGeneration(latest_request_gen_.load(std::memory_order_relaxed),
+                                   generation)) {
+        ++dropped_stale_shows_;
         return;
     }
 
@@ -706,10 +720,20 @@ void TooltipWindow::ShowTranslation(
     UpdateLayered();
 }
 
-void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body) {
+void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body,
+                                uint64_t generation) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() != gui_thread_id_) {
-        ShowMessageThreadSafe(x, y, header, body);
+        ShowMessageThreadSafe(x, y, header, body, generation);
+        return;
+    }
+
+    // R6 Phase 2 (B1-H1): a failure notice from a superseded translate request
+    // (e.g. the older drag thread's "copy failed") must not replace a newer
+    // result either. Same pure drop rule as ShowTranslation.
+    if (!ShouldRenderForGeneration(latest_request_gen_.load(std::memory_order_relaxed),
+                                   generation)) {
+        ++dropped_stale_shows_;
         return;
     }
 
@@ -757,10 +781,11 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     ::SetTimer(hwnd_, kTimerMessageAutohide, kMessageAutohideMs, nullptr);
 }
 
-void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body) {
+void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body,
+                                          uint64_t generation) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() == gui_thread_id_) {
-        ShowMessage(x, y, header, body);
+        ShowMessage(x, y, header, body, generation);
         return;
     }
     // Heap payload, ownership transferred to WndProc through LPARAM
@@ -771,6 +796,7 @@ void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header
     payload->y = y;
     payload->header = header;
     payload->body = body;
+    payload->generation = generation; // R6 B1-H1: travels INSIDE the payload
     const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
     if (::PostMessageW(hwnd_, kShowMessageMessage, 0, lparam) == FALSE) {
         delete reinterpret_cast<MessagePayload*>(lparam);
@@ -782,11 +808,13 @@ void TooltipWindow::ShowTranslationThreadSafe(
     std::wstring_view source_text,
     std::string_view source_lang_code,
     std::string_view target_lang,
-    std::wstring_view translated_text
+    std::wstring_view translated_text,
+    uint64_t generation
 ) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() == gui_thread_id_) {
-        ShowTranslation(x, y, source_text, source_lang_code, target_lang, translated_text);
+        ShowTranslation(x, y, source_text, source_lang_code, target_lang, translated_text,
+                        generation);
         return;
     }
     auto payload = std::make_unique<TranslationPayload>();
@@ -796,10 +824,21 @@ void TooltipWindow::ShowTranslationThreadSafe(
     payload->source_lang_code = source_lang_code;
     payload->target_lang = target_lang;
     payload->translated_text = translated_text;
+    payload->generation = generation; // R6 B1-H1
     const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
     if (::PostMessageW(hwnd_, kShowTranslationMessage, 0, lparam) == FALSE) {
         delete reinterpret_cast<TranslationPayload*>(lparam);
     }
+}
+
+// R6 Phase 2 (B1-H1): stamps a new translate request and hands back its
+// monotonic generation id. Plain fetch_add on a 64-bit counter: wraps only
+// after ~2^64 requests (never, in practice), and the >= comparison in
+// ShouldRenderForGeneration stays correct for any realistic in-flight window.
+// Callable from ANY thread (atomic) - trigger sites live on the GUI thread
+// (drag-icon click), the REQ-R06 double-Ctrl+C worker, and hook threads.
+uint64_t TooltipWindow::BeginTranslationRequest() {
+    return latest_request_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 void TooltipWindow::DismissThreadSafe() {
@@ -861,6 +900,17 @@ void TooltipWindow::Dismiss() {
     hovered_btn_ = 0;
     copied_feedback_ = false;
     is_message_mode_ = false;
+    // R6 Phase 2 (B1-H2, plan §1 B1-H2 fix direction): clear the content
+    // buffers on dismissal. WM_DPICHANGED re-renders the CURRENT model while
+    // visible, and any future re-show path that skips a fresh ShowTranslation
+    // would otherwise repaint cycle N-1's leftovers. Clearing here removes the
+    // stale-repaint vector entirely (the generation guard above stays the
+    // primary protection for the producer-side race).
+    source_text_.clear();
+    source_lang_code_.clear();
+    target_lang_.clear();
+    translated_text_.clear();
+    message_header_.clear();
     // REQ-002 (plan §2.1): scroll state resets on every dismissal.
     scroll_offset_dip_ = 0.0f;
     scrollable_ = false;
@@ -1272,8 +1322,11 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             const std::unique_ptr<TranslationPayload> p(
                 reinterpret_cast<TranslationPayload*>(lParam));
             if (p) {
+                // R6 B1-H1: the payload carries the originating generation;
+                // ShowTranslation drops it on the GUI thread if superseded.
                 pThis->ShowTranslation(p->x, p->y, p->source_text,
-                                       p->source_lang_code, p->target_lang, p->translated_text);
+                                       p->source_lang_code, p->target_lang, p->translated_text,
+                                       p->generation);
             }
             return 0;
         }
@@ -1282,7 +1335,7 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             const std::unique_ptr<MessagePayload> p(
                 reinterpret_cast<MessagePayload*>(lParam));
             if (p) {
-                pThis->ShowMessage(p->x, p->y, p->header, p->body);
+                pThis->ShowMessage(p->x, p->y, p->header, p->body, p->generation);
             }
             return 0;
         }

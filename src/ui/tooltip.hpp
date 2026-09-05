@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint> // R6 Phase 2 (B1-H1): uint64_t generation ids
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -31,12 +32,21 @@ public:
     // MAIN GUI THREAD ONLY: it drives the single-threaded D2D render target
     // (audit §3.4 / REQ-R10). Use ShowTranslationThreadSafe() from any other
     // thread (keyboard/mouse hook threads, the REQ-R06 double-Ctrl+C worker).
+    //
+    // R6 Phase 2 (B1-H1): `generation` carries the request sequence id stamped
+    // by BeginTranslationRequest() at trigger time. A payload whose generation
+    // is older than the latest-requested generation is DROPPED (never rendered)
+    // so a slow, superseded translate thread can no longer overwrite a newer
+    // result (the last-writer-wins stale-tooltip race). kGenNone (0) means
+    // "unmanaged show" (synchronous GUI-thread callers, notices, tests): always
+    // renders, keeping every pre-existing call site behaviorally unchanged.
     void ShowTranslation(
         int x, int y,
         std::wstring_view source_text,
         std::string_view source_lang_code,
         std::string_view target_lang,
-        std::wstring_view translated_text
+        std::wstring_view translated_text,
+        uint64_t generation = kGenNone
     );
 
     void Dismiss();
@@ -48,7 +58,10 @@ public:
     // compact D2D card with a header line and a body line; no copy/TTS/language
     // buttons. Auto-hides after kMessageAutohideMs unless dismissed sooner.
     // Same thread affinity as ShowTranslation (GUI thread only).
-    void ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body);
+    // R6 Phase 2 (B1-H1): same generation guard as ShowTranslation - a failure
+    // notice from a superseded translate request must not replace newer content.
+    void ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body,
+                     uint64_t generation = kGenNone);
 
     // ---- REQ-R10 companions: thread-safe marshaling seams ----
     // Cross-thread ShowWindow()/D2D calls are unsafe from hook threads
@@ -58,15 +71,51 @@ public:
     // the caller. Heap payload + LPARAM ownership transfer: the GUI-thread
     // WndProc consumes (deletes) the payload; if posting fails the payload is
     // freed locally, so nothing can leak.
-    void ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body);
+    // R6 Phase 2 (B1-H1): the generation travels INSIDE the payload; the drop
+    // decision runs on the GUI thread in ShowTranslation/ShowMessage against
+    // latest_request_gen_, so it is immune to both producer-thread races and
+    // marshal-queue reordering (a stale payload that overtakes a fresh one is
+    // still dropped on arrival).
+    void ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body,
+                               uint64_t generation = kGenNone);
     void ShowTranslationThreadSafe(
         int x, int y,
         std::wstring_view source_text,
         std::string_view source_lang_code,
         std::string_view target_lang,
-        std::wstring_view translated_text
+        std::wstring_view translated_text,
+        uint64_t generation = kGenNone
     );
     void DismissThreadSafe();
+
+    // ---- R6 Phase 2 (B1-H1): translation-request generation guard ----
+    // Sentinel 0 = "generation-unmanaged show" (renders unconditionally).
+    static constexpr uint64_t kGenNone = 0;
+
+    // Stamp a NEW translate request and return its monotonic generation id.
+    // Call at TRIGGER time (before any thread spawn / clipboard work) on the
+    // thread that observed the user action, then pass the returned id to the
+    // Show*ThreadSafe seam when the result lands. Thread-safe (atomic); never
+    // returns kGenNone.
+    uint64_t BeginTranslationRequest();
+
+    // Pure staleness decision (headless-testable planner per plan §7.2):
+    // render only when the payload is the newest request (or unmanaged).
+    // newest-wins: payload_gen >= latest_requested -> show; older -> drop.
+    static constexpr bool ShouldRenderForGeneration(uint64_t latest_requested,
+                                                    uint64_t payload_gen) {
+        if (payload_gen == kGenNone || latest_requested == kGenNone) {
+            return true; // unmanaged show always renders
+        }
+        return payload_gen >= latest_requested;
+    }
+
+    // Test/inspection seams (GUI-thread-written values; the marshal tests pump
+    // messages on the owning thread before reading).
+    uint64_t LatestRequestGenerationForTest() const {
+        return latest_request_gen_.load(std::memory_order_relaxed);
+    }
+    uint64_t DroppedStaleShowsForTest() const { return dropped_stale_shows_; }
 
     bool IsMessageMode() const { return is_message_mode_; }
     const std::wstring& GetMessageHeader() const { return message_header_; }
@@ -160,6 +209,9 @@ public:
 
     // Payloads travel as heap pointers in LPARAM; WndProc wraps them in a
     // unique_ptr on arrival (single-owner semantics, documented in the seam).
+    // R6 Phase 2 (B1-H1): both carry the originating request generation
+    // (kGenNone default = unmanaged, always renders - existing producers and
+    // test payloads that never set it keep their exact behavior).
     struct TranslationPayload {
         int x;
         int y;
@@ -167,12 +219,14 @@ public:
         std::string source_lang_code;
         std::string target_lang;
         std::wstring translated_text;
+        uint64_t generation = kGenNone;
     };
     struct MessagePayload {
         int x;
         int y;
         std::wstring header;
         std::wstring body;
+        uint64_t generation = kGenNone;
     };
     // R6 B3: marshaled RefreshTargetLanguageFromConfig payload (heap pointer
     // in LPARAM, same ownership-transfer contract as the seams above).
@@ -243,6 +297,15 @@ private:
     std::string source_lang_code_;
     std::string target_lang_;
     std::wstring translated_text_;
+
+    // ---- R6 Phase 2 (B1-H1): generation-guard state ----
+    // latest_request_gen_: bumped by BeginTranslationRequest() on ANY thread
+    // (trigger sites run on the GUI thread, the REQ-R06 double-Ctrl+C worker,
+    // and the detached drag threads). Read ONLY inside the GUI-thread
+    // ShowTranslation/ShowMessage bodies to drop superseded deliveries.
+    // dropped_stale_shows_: GUI-thread-only diagnostic counter (test seam).
+    std::atomic<uint64_t> latest_request_gen_{kGenNone};
+    uint64_t dropped_stale_shows_ = 0;
 
     int current_width_ = 360;  // DIP
     int current_height_ = 160; // DIP
