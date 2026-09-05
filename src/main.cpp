@@ -492,6 +492,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::MouseHook mouse_hook;
     emebalachat::g_pMouseHook = &mouse_hook; // REQ-R14 resume/unlock re-registration
 
+    // SC-02: single writer for the tray status refresh. Every GUI-thread site
+    // that used to spell out the 7-argument UpdateStatus call now funnels
+    // through this lambda so the argument list lives in exactly one place.
+    // Snapshot read inside keeps the I4 contract (consistent, locked read).
+    // GUI-thread only (all call sites are tray callbacks / coordinators).
+    // Declared ahead of ApplyLanguageChange because that coordinator's Tray
+    // case references it (name lookup in a lambda body binds at definition).
+    auto refresh_tray = [&]() {
+        const auto snap = config.GetSnapshot();
+        tray.UpdateStatus(
+            hook.IsActive(),
+            engine.GetActiveEngineName(),
+            snap.source_language,
+            snap.target_language,
+            snap.auto_send,
+            snap.sound_enabled,
+            badge.IsVisible()
+        );
+    };
+
     // R6 Phase 1 (B3, architect plan §2.3/§2.4 Option A): the single-source-of-
     // truth language coordinator. AppConfig is the ONE authority; every language
     // mutation - from ANY surface (tooltip language menu, tray source/target
@@ -553,15 +573,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                        emebalachat::ToUtf16(snap.target_language));
                     break;
                 case emebalachat::LanguageSurface::Tray:
-                    tray.UpdateStatus(
-                        hook.IsActive(),
-                        engine.GetActiveEngineName(),
-                        snap.source_language,
-                        snap.target_language,
-                        snap.auto_send,
-                        snap.sound_enabled,
-                        badge.IsVisible()
-                    );
+                    refresh_tray();
                     break;
                 case emebalachat::LanguageSurface::Tooltip:
                     // Best-effort view sync: no-op while hidden/message-mode.
@@ -594,15 +606,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     auto RefreshAllUiForLocaleChange = [&]() {
         const auto snap = config.GetSnapshot(); // I4: consistent read
         tray.SetUiLanguage(snap.ui_language);   // submenu check-mark mirror
-        tray.UpdateStatus(
-            hook.IsActive(),
-            engine.GetActiveEngineName(),
-            snap.source_language,
-            snap.target_language,
-            snap.auto_send,
-            snap.sound_enabled,
-            badge.IsVisible()
-        );
+        refresh_tray();
         badge.SetLanguages(emebalachat::ToUtf16(snap.source_language),
                            emebalachat::ToUtf16(snap.target_language));
         tooltip.RefreshTargetLanguageFromConfig(snap.target_language);
@@ -637,16 +641,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config.SetEngineTypeName("local");
         }
         config.SaveToFile();
-        const auto snap = config.GetSnapshot();
-        tray.UpdateStatus(
-            hook.IsActive(),
-            engine.GetActiveEngineName(),
-            snap.source_language,
-            snap.target_language,
-            snap.auto_send,
-            snap.sound_enabled,
-            badge.IsVisible()
-        );
+        refresh_tray();
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the
@@ -714,16 +709,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         config.sound_enabled.store(next, std::memory_order_relaxed);
         config.SaveToFile();
         emebalachat::SetSoundEnabled(next);
-        const auto snap = config.GetSnapshot();
-        tray.UpdateStatus(
-            hook.IsActive(),
-            engine.GetActiveEngineName(),
-            snap.source_language,
-            snap.target_language,
-            snap.auto_send,
-            next,
-            badge.IsVisible()
-        );
+        refresh_tray();
     };
 
     trayCallbacks.on_toggle_badge = [&]() {
@@ -734,16 +720,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // config.source_language/target_language directly here was the
         // remaining data race. GetSnapshot() is the thread-safe accessor the
         // other tray callbacks already use.
-        const auto snap = config.GetSnapshot();
-        tray.UpdateStatus(
-            hook.IsActive(),
-            engine.GetActiveEngineName(),
-            snap.source_language,
-            snap.target_language,
-            snap.auto_send,
-            snap.sound_enabled,
-            badge.IsVisible()
-        );
+        // SC-02: the refresh itself now lives in refresh_tray() (same locked snapshot inside).
+        refresh_tray();
     };
 
     trayCallbacks.on_toggle_start_with_windows = [&]() {
