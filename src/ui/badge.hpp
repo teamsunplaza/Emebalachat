@@ -71,6 +71,7 @@ private:
     int PhysW() const;
     int PhysH() const;
     void RebindRenderTarget();
+    void LoadLogoBitmap();
 
     mutable std::mutex data_mutex_;
     mutable std::mutex render_mutex_;
@@ -95,6 +96,7 @@ private:
     // Direct2D & DirectWrite COM pointers
     ID2D1Factory* d2d_factory_ = nullptr;
     ID2D1DCRenderTarget* dc_render_target_ = nullptr;
+    ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* text_format_ = nullptr;
     IDWriteTextFormat* code_format_ = nullptr;

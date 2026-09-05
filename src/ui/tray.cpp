@@ -1,9 +1,12 @@
 #include "tray.hpp"
+#include "asset_loader.hpp"
 #include "../config.hpp"
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <cmath>
 #include <vector>
+#include <wincodec.h>
 
 namespace emebalachat {
 
@@ -52,26 +55,100 @@ HICON SystemTray::CreateStatusIcon(bool active) {
     // Clear transparent
     memset(pixels, 0, size * size * sizeof(uint32_t));
 
-    // Colors
-    // Active: Emerald #10B981, Inactive: Gray #6B7280
-    uint32_t ringColor = active ? 0xFF10B981 : 0xFF6B7280;
-    uint32_t innerColor = 0xFF1E2025;
+    bool loaded_icon = false;
+    std::wstring iconPath = FindAppIconPath();
+    if (!iconPath.empty()) {
+        IWICImagingFactory* pFactory = nullptr;
+        if (SUCCEEDED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory))) && pFactory) {
+            IWICBitmapDecoder* pDecoder = nullptr;
+            if (SUCCEEDED(pFactory->CreateDecoderFromFilename(iconPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &pDecoder)) && pDecoder) {
+                IWICBitmapFrameDecode* pFrame = nullptr;
+                if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame)) && pFrame) {
+                    IWICBitmapScaler* pScaler = nullptr;
+                    if (SUCCEEDED(pFactory->CreateBitmapScaler(&pScaler)) && pScaler) {
+                        if (SUCCEEDED(pScaler->Initialize(pFrame, size, size, WICBitmapInterpolationModeHighQualityCubic))) {
+                            IWICFormatConverter* pConverter = nullptr;
+                            if (SUCCEEDED(pFactory->CreateFormatConverter(&pConverter)) && pConverter) {
+                                if (SUCCEEDED(pConverter->Initialize(pScaler, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut))) {
+                                    const UINT stride = size * sizeof(uint32_t);
+                                    const UINT bufferSize = stride * size;
+                                    if (SUCCEEDED(pConverter->CopyPixels(nullptr, stride, bufferSize, reinterpret_cast<BYTE*>(pixels)))) {
+                                        loaded_icon = true;
+                                    }
+                                }
+                                pConverter->Release();
+                            }
+                        }
+                        pScaler->Release();
+                    }
+                    pFrame->Release();
+                }
+                pDecoder->Release();
+            }
+            pFactory->Release();
+        }
+    }
 
-    float cx = (size - 1) / 2.0f;
-    float cy = (size - 1) / 2.0f;
-    float outerR = 13.0f;
-    float innerR = 8.5f;
+    if (loaded_icon) {
+        // If inactive, desaturate / dim icon slightly so paused state is immediately clear
+        if (!active) {
+            for (int i = 0; i < size * size; ++i) {
+                uint32_t px = pixels[i];
+                uint32_t a = (px >> 24) & 0xFF;
+                if (a == 0) continue;
+                uint32_t r = (px >> 16) & 0xFF;
+                uint32_t g = (px >> 8) & 0xFF;
+                uint32_t b = px & 0xFF;
+                uint32_t gray = (r * 299 + g * 587 + b * 114) / 1000;
+                uint32_t out_r = (r + gray * 2) / 3;
+                uint32_t out_g = (g + gray * 2) / 3;
+                uint32_t out_b = (b + gray * 2) / 3;
+                uint32_t out_a = (a * 190) / 255;
+                pixels[i] = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
+            }
+        }
 
-    for (int y = 0; y < size; ++y) {
-        for (int x = 0; x < size; ++x) {
-            float dx = x - cx;
-            float dy = y - cy;
-            float dist = sqrtf(dx * dx + dy * dy);
+        // Status badge overlay at bottom-right corner
+        const float dot_cx = 24.5f;
+        const float dot_cy = 24.5f;
+        const float outer_r = 5.5f;
+        const float inner_r = 4.0f;
+        const uint32_t status_color = active ? 0xFF10B981 : 0xFF64748B; // Active Emerald vs Inactive Slate Gray
+        const uint32_t border_color = 0xFF0F172A; // Dark contrast rim
 
-            if (dist <= outerR && dist >= innerR) {
-                pixels[y * size + x] = ringColor;
-            } else if (dist < innerR) {
-                pixels[y * size + x] = innerColor;
+        for (int y = 18; y < size; ++y) {
+            for (int x = 18; x < size; ++x) {
+                float dx = x - dot_cx;
+                float dy = y - dot_cy;
+                float d = sqrtf(dx * dx + dy * dy);
+                if (d <= inner_r) {
+                    pixels[y * size + x] = status_color;
+                } else if (d <= outer_r) {
+                    pixels[y * size + x] = border_color;
+                }
+            }
+        }
+    } else {
+        // Fallback: geometric status ring if app icon asset cannot be found
+        uint32_t ringColor = active ? 0xFF10B981 : 0xFF6B7280;
+        uint32_t innerColor = 0xFF1E2025;
+
+        float cx = (size - 1) / 2.0f;
+        float cy = (size - 1) / 2.0f;
+        float outerR = 13.0f;
+        float innerR = 8.5f;
+
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                float dx = x - cx;
+                float dy = y - cy;
+                float dist = sqrtf(dx * dx + dy * dy);
+
+                if (dist <= outerR && dist >= innerR) {
+                    pixels[y * size + x] = ringColor;
+                } else if (dist < innerR) {
+                    pixels[y * size + x] = innerColor;
+                }
             }
         }
     }

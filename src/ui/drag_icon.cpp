@@ -132,9 +132,12 @@ void DragIconWindow::LoadLogoBitmap() {
         logo_bitmap_ = nullptr;
     }
 
-    std::wstring logoPath = FindLogoPath();
-    if (!logoPath.empty()) {
-        LoadWicBitmap(dc_render_target_, logoPath, &logo_bitmap_);
+    std::wstring iconPath = FindAppIconPath();
+    if (iconPath.empty()) {
+        iconPath = FindLogoPath();
+    }
+    if (!iconPath.empty()) {
+        LoadWicBitmap(dc_render_target_, iconPath, &logo_bitmap_);
     }
 }
 
@@ -277,9 +280,8 @@ void DragIconWindow::Render() {
         dc_render_target_->DrawRoundedRectangle(pill, borderBrush, is_hovered_ ? 1.8f : 1.2f);
     }
 
-    // Centered Emebala Logo inside 32x32 pill
-    // Aspect ratio 427:271 (~1.576). Target size: 24 x 15.2
-    D2D1_RECT_F logoRect = D2D1::RectF(4.0f, 8.4f, 28.0f, 23.6f);
+    // Centered 1:1 squircle appicon (24x24 DIP centered in 32x32 container)
+    D2D1_RECT_F logoRect = D2D1::RectF(4.0f, 4.0f, 28.0f, 28.0f);
 
     if (logo_bitmap_) {
         dc_render_target_->DrawBitmap(
@@ -361,6 +363,11 @@ LRESULT CALLBACK DragIconWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             pThis->Hide(); // already on the GUI thread here
             return 0;
         }
+
+        case WM_MOUSEACTIVATE:
+            // Return MA_NOACTIVATE so clicking the drag icon does not take focus
+            // from the target window where text is currently selected.
+            return MA_NOACTIVATE;
 
         case WM_SETCURSOR:
             ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));

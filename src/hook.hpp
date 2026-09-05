@@ -201,21 +201,15 @@ public:
     // does not open the Start menu on release (AutoHotkey-style suppression).
     static constexpr bool IsWinKey(UINT vk) { return vk == VK_LWIN || vk == VK_RWIN; }
 
-    // The compiled-in default toggle combo (Win+F9). Bare F9 is intentionally
-    // NOT offered as a default anymore: it collides with the VS/VS Code
-    // breakpoint and Excel recalculate global hotkeys (audit §3.2). config.hpp's
-    // legacy default string "F9" is also migrated to this value by
-    // ResolvedToggleHotkey() - hotkey_toggle is parsed here (not in config.cpp),
-    // so this batch needs no config.cpp changes.
-    static constexpr HotkeySpec kDefaultToggleHotkey{ VK_F9, /*ctrl*/false, /*shift*/false, /*alt*/false, /*win*/true, /*valid*/true };
+    // The compiled-in default toggle combo (bare F9).
+    static constexpr HotkeySpec kDefaultToggleHotkey{ VK_F9, /*ctrl*/false, /*shift*/false, /*alt*/false, /*win*/false, /*valid*/true };
 
-    // REQ-R08: pure resolution seam shared by Start() and the tests: a legacy
-    // or invalid raw config string (default "F9", empty, unknown syntax)
-    // migrates to kDefaultToggleHotkey; any other valid combo is honored as-is.
-    // No new config keys: config_.hotkey_toggle is the existing field.
+    // Pure resolution seam shared by Start() and the tests: valid combos are
+    // honored as-is (including bare "F9"); invalid or empty raw config strings
+    // fall back to kDefaultToggleHotkey.
     static HotkeySpec ResolveToggleFromConfig(std::string_view raw_toggle) {
         const HotkeySpec parsed = ParseHotkey(raw_toggle);
-        if (!parsed.valid || parsed == MakePressSpec(VK_F9, false, false, false, false)) {
+        if (!parsed.valid) {
             return kDefaultToggleHotkey;
         }
         return parsed;

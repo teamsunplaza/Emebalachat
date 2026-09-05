@@ -44,8 +44,8 @@ struct LocalizedStrings {
 
 // 1. Korean (ko)
 const LocalizedStrings kStringsKorean = {
-    L"상태: 활성 (Win+F9: 일시 정지)",
-    L"상태: 일시 정지 (Win+F9: 활성화)",
+    L"상태: 활성 (F9: 일시 정지)",
+    L"상태: 일시 정지 (F9: 활성화)",
     L"번역 엔진 선택",
     L"Google 번역 (무료 / 무설치 / 실시간)",
     L"로컬 LLM (Hy-MT2-1.8B 오프라인 모델)",
@@ -61,7 +61,7 @@ const LocalizedStrings kStringsKorean = {
 
     L"Emebalachat 단축키 및 사용 안내",
     L"Emebalachat 단축키 및 간편 사용법:\n\n"
-    L"  • Win + F9 : 활성화 / 일시 정지 토글 (마우스 클릭으로도 가능)\n"
+    L"  • F9 : 활성화 / 일시 정지 토글 (마우스 클릭으로도 가능)\n"
     L"  • Ctrl + F9 : 도착어(번역 대상 언어) 순환 변경\n"
     L"  • Ctrl + Shift + Enter : 자동 전송 모드 토글\n"
     L"  • Shift + Enter : 번역 후 엔터 즉시 전송\n\n"
@@ -83,8 +83,8 @@ const LocalizedStrings kStringsKorean = {
 
 // 2. Japanese (ja)
 const LocalizedStrings kStringsJapanese = {
-    L"状態: 有効 (Win+F9: 一時停止)",
-    L"状態: 一時停止 (Win+F9: 再開)",
+    L"状態: 有効 (F9: 一時停止)",
+    L"状態: 一時停止 (F9: 再開)",
     L"翻訳エンジンの選択",
     L"Google 翻訳 (無料 / インストール不要)",
     L"ローカル LLM (Hy-MT2-1.8B オフライン)",
@@ -100,7 +100,7 @@ const LocalizedStrings kStringsJapanese = {
 
     L"Emebalachat ショートカットと使用案内",
     L"Emebalachat ショートカットと使用案内:\n\n"
-    L"  • Win + F9 : 有効 / 一時停止の切り替え\n"
+    L"  • F9 : 有効 / 一時停止の切り替え\n"
     L"  • Ctrl + F9 : 翻訳先言語を切り替える\n"
     L"  • Ctrl + Shift + Enter : 自動送信モードの切り替え\n"
     L"  • Shift + Enter : 翻訳後、直ちに送信 (Enter)\n\n"
@@ -122,8 +122,8 @@ const LocalizedStrings kStringsJapanese = {
 
 // 3. Chinese Simplified (zh-CN)
 const LocalizedStrings kStringsChineseSimp = {
-    L"状态: 运行中 (Win+F9: 暂停)",
-    L"状态: 已暂停 (Win+F9: 启用)",
+    L"状态: 运行中 (F9: 暂停)",
+    L"状态: 已暂停 (F9: 启用)",
     L"选择翻译引擎",
     L"Google 翻译 (免费 / 免安装 / 极速)",
     L"本地 LLM (Hy-MT2-1.8B 离线模型)",
@@ -139,7 +139,7 @@ const LocalizedStrings kStringsChineseSimp = {
 
     L"Emebalachat 快捷键与使用说明",
     L"Emebalachat 快捷键与使用说明:\n\n"
-    L"  • Win + F9 : 启用 / 暂停 切换 (或点击悬浮徽章)\n"
+    L"  • F9 : 启用 / 暂停 切换 (或点击悬浮徽章)\n"
     L"  • Ctrl + F9 : 循环切换目标语言\n"
     L"  • Ctrl + Shift + Enter : 切换自动发送模式\n"
     L"  • Shift + Enter : 翻译并立即发送 (Enter)\n\n"
@@ -161,8 +161,8 @@ const LocalizedStrings kStringsChineseSimp = {
 
 // 4. Chinese Traditional (zh-TW)
 const LocalizedStrings kStringsChineseTrad = {
-    L"狀態: 運行中 (Win+F9: 暫停)",
-    L"狀態: 已暫停 (Win+F9: 啟用)",
+    L"狀態: 運行中 (F9: 暫停)",
+    L"狀態: 已暫停 (F9: 啟用)",
     L"選擇翻譯引擎",
     L"Google 翻譯 (免費 / 免安裝 / 線上)",
     L"本地 LLM (Hy-MT2-1.8B 離線模型)",
@@ -178,7 +178,7 @@ const LocalizedStrings kStringsChineseTrad = {
 
     L"Emebalachat 快捷鍵與使用說明",
     L"Emebalachat 快捷鍵與使用說明:\n\n"
-    L"  • Win + F9 : 啟用 / 暫停 切換\n"
+    L"  • F9 : 啟用 / 暫停 切換\n"
     L"  • Ctrl + F9 : 循環切換目標語言\n"
     L"  • Ctrl + Shift + Enter : 切換自動發送模式\n"
     L"  • Shift + Enter : 翻譯並立即發送 (Enter)\n\n"
@@ -200,8 +200,8 @@ const LocalizedStrings kStringsChineseTrad = {
 
 // 5. Vietnamese (vi)
 const LocalizedStrings kStringsVietnamese = {
-    L"Trạng thái: Đang bật (Win+F9: Tạm dừng)",
-    L"Trạng thái: Tạm dừng (Win+F9: Bật lại)",
+    L"Trạng thái: Đang bật (F9: Tạm dừng)",
+    L"Trạng thái: Tạm dừng (F9: Bật lại)",
     L"Chọn công cụ dịch",
     L"Google Dịch (Miễn phí / Trực tuyến)",
     L"Mô hình cục bộ LLM (Hy-MT2-1.8B)",
@@ -217,7 +217,7 @@ const LocalizedStrings kStringsVietnamese = {
 
     L"Hướng dẫn sử dụng Emebalachat",
     L"Phím tắt & Hướng dẫn sử dụng Emebalachat:\n\n"
-    L"  • Win + F9 : Bật / Tạm dừng dịch\n"
+    L"  • F9 : Bật / Tạm dừng dịch\n"
     L"  • Ctrl + F9 : Đổi ngôn ngữ đích kế tiếp\n"
     L"  • Ctrl + Shift + Enter : Bật/Tắt chế độ tự động gửi\n"
     L"  • Shift + Enter : Dịch và gửi ngay lập tức\n\n"
@@ -239,8 +239,8 @@ const LocalizedStrings kStringsVietnamese = {
 
 // 6. Spanish (es)
 const LocalizedStrings kStringsSpanish = {
-    L"Estado: Activo (Win+F9: Pausar)",
-    L"Estado: Pausado (Win+F9: Activar)",
+    L"Estado: Activo (F9: Pausar)",
+    L"Estado: Pausado (F9: Activar)",
     L"Motor de traducción",
     L"Google Translate (Gratuito / En línea)",
     L"LLM Local (Hy-MT2-1.8B Offline)",
@@ -256,7 +256,7 @@ const LocalizedStrings kStringsSpanish = {
 
     L"Guía de atajos de Emebalachat",
     L"Guía de uso y atajos de Emebalachat:\n\n"
-    L"  • Win + F9 : Activar / Pausar\n"
+    L"  • F9 : Activar / Pausar\n"
     L"  • Ctrl + F9 : Cambiar idioma de destino\n"
     L"  • Ctrl + Shift + Enter : Alternar envío automático\n"
     L"  • Shift + Enter : Traducir y enviar de inmediato\n\n"
@@ -275,8 +275,8 @@ const LocalizedStrings kStringsSpanish = {
 
 // 7. English (en) - Default Fallback
 const LocalizedStrings kStringsEnglish = {
-    L"Status: Active (Win+F9: Pause)",
-    L"Status: Paused (Win+F9: Resume)",
+    L"Status: Active (F9: Pause)",
+    L"Status: Paused (F9: Resume)",
     L"Translation Engine",
     L"Google Translate (Free / Zero-Install)",
     L"Local LLM (Hy-MT2-1.8B GGUF Offline)",
@@ -292,7 +292,7 @@ const LocalizedStrings kStringsEnglish = {
 
     L"Emebalachat Hotkeys & Usage Guide",
     L"Emebalachat Hotkeys & Usage Guide:\n\n"
-    L"  • Win + F9 : Toggle Active / Paused\n"
+    L"  • F9 : Toggle Active / Paused\n"
     L"  • Ctrl + F9 : Cycle Target Language\n"
     L"  • Ctrl + Shift + Enter : Toggle Auto-Send Mode\n"
     L"  • Shift + Enter : Immediate Translate & Send\n\n"

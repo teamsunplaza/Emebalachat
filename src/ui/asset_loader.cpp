@@ -5,42 +5,50 @@
 
 namespace emebalachat {
 
-std::wstring FindLogoPath() {
-    std::vector<std::filesystem::path> candidates;
+namespace {
+
+std::wstring FindAssetPath(const std::vector<std::string>& filenames) {
+    std::vector<std::filesystem::path> baseDirs;
 
     // 1. Check relative to current executable module
     wchar_t exePath[MAX_PATH] = {0};
     if (::GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
         std::filesystem::path p(exePath);
         std::filesystem::path dir = p.parent_path();
-        candidates.push_back(dir / "assets" / "logo.png");
-        candidates.push_back(dir / ".." / "assets" / "logo.png");
-        candidates.push_back(dir / ".." / ".." / "assets" / "logo.png");
+        baseDirs.push_back(dir / "assets");
+        baseDirs.push_back(dir / ".." / "assets");
+        baseDirs.push_back(dir / ".." / ".." / "assets");
     }
 
     // 2. Check current working directory
     try {
         std::filesystem::path cwd = std::filesystem::current_path();
-        candidates.push_back(cwd / "assets" / "logo.png");
-        candidates.push_back(cwd / ".." / "assets" / "logo.png");
-        candidates.push_back(cwd / ".." / ".." / "assets" / "logo.png");
+        baseDirs.push_back(cwd / "assets");
+        baseDirs.push_back(cwd / ".." / "assets");
+        baseDirs.push_back(cwd / ".." / ".." / "assets");
     } catch (...) {}
 
-    // L1 fix: removed the hardcoded developer-machine absolute paths
-    // (D:\\OneDrive\\Projects\\...). They leaked the author's directory layout
-    // and could load an unintended logo on machines where such paths exist.
-    // The exe-relative (up to 2 levels) and CWD-relative (up to 2 levels)
-    // candidates above cover every shipped layout: installed {app}\\assets,
-    // build/Release + repo-root dev runs, and repo-root CWD launches.
-    // Never add personal absolute paths here again.
-    for (const auto& c : candidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(c, ec)) {
-            return c.wstring();
+    for (const auto& fn : filenames) {
+        for (const auto& base : baseDirs) {
+            std::filesystem::path candidate = base / fn;
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec)) {
+                return candidate.wstring();
+            }
         }
     }
 
     return L"";
+}
+
+} // namespace
+
+std::wstring FindLogoPath() {
+    return FindAssetPath({ "Emebala_Chat_Logo_small.png", "logo.png" });
+}
+
+std::wstring FindAppIconPath() {
+    return FindAssetPath({ "Emebala_Chat_Appicon_small.png", "Emebala_Chat_Appicon.png", "Emebala_Chat_Logo_small.png", "logo.png" });
 }
 
 HRESULT LoadWicBitmap(

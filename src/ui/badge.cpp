@@ -1,4 +1,5 @@
 #include "badge.hpp"
+#include "asset_loader.hpp"
 #include "../i18n.hpp"
 #include "dpi.hpp"
 
@@ -143,6 +144,8 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
         text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
+    LoadLogoBitmap();
+
     // Initial render and show
     Render();
     ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
@@ -160,6 +163,7 @@ void FloatingBadge::Destroy() {
         hwnd_ = nullptr;
     }
 
+    if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
     if (text_format_) { text_format_->Release(); text_format_ = nullptr; }
     if (dwrite_factory_) { dwrite_factory_->Release(); dwrite_factory_ = nullptr; }
     if (dc_render_target_) { dc_render_target_->Release(); dc_render_target_ = nullptr; }
@@ -310,6 +314,22 @@ void FloatingBadge::ReallocateBuffer(int width, int height) {
     }
 }
 
+void FloatingBadge::LoadLogoBitmap() {
+    if (!dc_render_target_) return;
+    if (logo_bitmap_) {
+        logo_bitmap_->Release();
+        logo_bitmap_ = nullptr;
+    }
+
+    std::wstring iconPath = FindAppIconPath();
+    if (iconPath.empty()) {
+        iconPath = FindLogoPath();
+    }
+    if (!iconPath.empty()) {
+        LoadWicBitmap(dc_render_target_, iconPath, &logo_bitmap_);
+    }
+}
+
 void FloatingBadge::UpdateAlpha(BYTE alpha) {
     current_alpha_ = alpha;
     if (!hwnd_ || !hMemDC_) return;
@@ -405,15 +425,13 @@ void FloatingBadge::Render() {
     }
 
     // Mathematical symmetrical centering calculation:
-    // Outer ambient glow halo radius: 6.0f (diameter: 12.0f)
-    // Inner vibrant status dot radius: 3.5f (diameter: 7.0f)
-    float haloRadius = 6.0f;
-    float haloDiameter = haloRadius * 2.0f;
-    float dotRadius = 3.5f;
+    // 18x18 mini circular medallion with status glow ring
+    float medallionSize = 18.0f;
+    float medallionRadius = medallionSize * 0.5f; // 9.0f
     float gap = 8.5f;
     float textWidth = metrics.widthIncludingTrailingWhitespace;
-    float totalContentWidth = haloDiameter + gap + textWidth;
-    float sidePadding = 20.0f; // pill curvature breathing room on each side
+    float totalContentWidth = medallionSize + gap + textWidth;
+    float sidePadding = 18.0f; // pill curvature breathing room on each side
 
     int needed_width = static_cast<int>(std::ceil(totalContentWidth + (sidePadding * 2.0f)));
     int dynamic_width = (std::max)(180, needed_width);
@@ -434,12 +452,12 @@ void FloatingBadge::Render() {
     }
 
     // Exact horizontal and vertical dead-center coordinates
-    // Mathematical symmetry: Left margin to halo == Right margin from text end to pill edge
+    // Mathematical symmetry: Left margin to medallion == Right margin from text end to pill edge
     float startX = (static_cast<float>(current_width_) - totalContentWidth) / 2.0f;
-    float dotCenterX = startX + haloRadius;
+    float dotCenterX = startX + medallionRadius;
     float dotCenterY = static_cast<float>(kHeight) / 2.0f;
 
-    float textX = startX + haloDiameter + gap;
+    float textX = startX + medallionSize + gap;
 
     // REQ-R15 note: everything above is authored in DIPs; the render target
     // DPI converts to physical at rasterization. The DirectWrite layout was
@@ -539,27 +557,55 @@ void FloatingBadge::Render() {
         }
     }
 
-    // 3. Glowing status indicator (ambient halo + vibrant core)
-    // Ambient glow halo (22% opacity)
+    // 3. Logo medallion with status glow ring (18x18 mini circular medallion)
+    // Ambient status glow halo
     ID2D1SolidColorBrush* haloBrush = nullptr;
-    float haloAlpha = (status_ == BadgeStatus::Disabled) ? 0.15f : 0.24f;
+    float haloAlpha = (status_ == BadgeStatus::Disabled) ? 0.15f : 0.28f;
     dc_render_target_->CreateSolidColorBrush(
         D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, haloAlpha),
         &haloBrush
     );
     if (haloBrush) {
-        D2D1_ELLIPSE halo = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), haloRadius, haloRadius);
-        dc_render_target_->FillEllipse(&halo, haloBrush);
+        D2D1_ELLIPSE glow = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), 11.5f, 11.5f);
+        dc_render_target_->FillEllipse(&glow, haloBrush);
         haloBrush->Release();
     }
 
-    // Vibrant core dot (100% opacity)
-    ID2D1SolidColorBrush* coreBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(statusColor, &coreBrush);
-    if (coreBrush) {
-        D2D1_ELLIPSE core = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), dotRadius, dotRadius);
-        dc_render_target_->FillEllipse(&core, coreBrush);
-        coreBrush->Release();
+    // Medallion base (circular dark background)
+    ID2D1SolidColorBrush* medalBgBrush = nullptr;
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x181A20, 0.95f), &medalBgBrush);
+    D2D1_ELLIPSE medalCircle = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), medallionRadius, medallionRadius);
+    if (medalBgBrush) {
+        dc_render_target_->FillEllipse(&medalCircle, medalBgBrush);
+        medalBgBrush->Release();
+    }
+
+    // Medallion icon / logo content (centered 13x13 within the 18x18 medallion)
+    if (logo_bitmap_) {
+        D2D1_RECT_F logoRect = D2D1::RectF(dotCenterX - 6.5f, dotCenterY - 6.5f, dotCenterX + 6.5f, dotCenterY + 6.5f);
+        dc_render_target_->DrawBitmap(
+            logo_bitmap_,
+            logoRect,
+            1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
+        );
+    } else {
+        // Fallback: core status dot if no bitmap is loaded
+        ID2D1SolidColorBrush* coreBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(statusColor, &coreBrush);
+        if (coreBrush) {
+            D2D1_ELLIPSE core = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), 4.0f, 4.0f);
+            dc_render_target_->FillEllipse(&core, coreBrush);
+            coreBrush->Release();
+        }
+    }
+
+    // Status ring stroke around the medallion
+    ID2D1SolidColorBrush* statusRingBrush = nullptr;
+    dc_render_target_->CreateSolidColorBrush(statusColor, &statusRingBrush);
+    if (statusRingBrush) {
+        dc_render_target_->DrawEllipse(&medalCircle, statusRingBrush, 1.2f);
+        statusRingBrush->Release();
     }
 
     // 4. Label text (multi-tone typography & mathematically centered)

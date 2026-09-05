@@ -1096,6 +1096,10 @@ void TestConfigSnapshotThreadSafety() {
     static const std::string kA(256, 'A'); // long enough to force a heap buffer
     static const std::string kB(256, 'B');
 
+    // Prime the config with kA so a reader spinning before writer iteration 0
+    // observes a valid test string instead of the initial "Auto Detect" default.
+    cfg.SetSourceLanguage(kA);
+
     std::atomic<bool> stop{false};
     std::atomic<long long> torn_reads{0};
     std::atomic<long long> total_reads{0};
@@ -1535,22 +1539,21 @@ void TestHotkeyParsing() {
 
     using HK = KeyboardHook;
 
-    // Compile-time pins: the default toggle combo is Win+F9 (never bare F9).
+    // Compile-time pins: the default toggle combo is bare F9.
     static_assert(HK::kDefaultToggleHotkey.vk == VK_F9 &&
-                      HK::kDefaultToggleHotkey.win && !HK::kDefaultToggleHotkey.ctrl &&
+                      !HK::kDefaultToggleHotkey.win && !HK::kDefaultToggleHotkey.ctrl &&
                       !HK::kDefaultToggleHotkey.shift && !HK::kDefaultToggleHotkey.alt &&
                       HK::kDefaultToggleHotkey.valid,
-                  "REQ-R08: default toggle must be exactly Win+F9");
+                  "Default toggle must be bare F9");
     static_assert(HK::IsWinKey(VK_LWIN) && HK::IsWinKey(VK_RWIN) && !HK::IsWinKey(VK_F9),
-                  "REQ-R08: IsWinKey covers both Win keys only");
+                  "IsWinKey covers both Win keys only");
 
     // 1. ParseHotkey matrix.
-    TEST_CHECK(HK::ParseHotkey("Win+F9") == HK::kDefaultToggleHotkey, "Parse Win+F9 == default");
-    TEST_CHECK(HK::ParseHotkey(" win + f9 ") == HK::kDefaultToggleHotkey, "Parse is case/space insensitive");
-    TEST_CHECK(HK::ParseHotkey("Windows+F9") == HK::kDefaultToggleHotkey, "Parse 'Windows' synonym");
-    TEST_CHECK(HK::ParseHotkey("Super+F9") == HK::kDefaultToggleHotkey, "Parse 'Super' synonym");
-    TEST_CHECK(HK::ParseHotkey("F9") == HK::MakePressSpec(VK_F9, false, false, false, false),
-               "Parse bare F9 (valid spec, legacy combo)");
+    TEST_CHECK(HK::ParseHotkey("F9") == HK::kDefaultToggleHotkey, "Parse F9 == default");
+    TEST_CHECK(HK::ParseHotkey(" f9 ") == HK::kDefaultToggleHotkey, "Parse is case/space insensitive");
+    TEST_CHECK(HK::ParseHotkey("Win+F9") == HK::MakePressSpec(VK_F9, false, false, false, true), "Parse Win+F9");
+    TEST_CHECK(HK::ParseHotkey("Windows+F9") == HK::MakePressSpec(VK_F9, false, false, false, true), "Parse 'Windows' synonym");
+    TEST_CHECK(HK::ParseHotkey("Super+F9") == HK::MakePressSpec(VK_F9, false, false, false, true), "Parse 'Super' synonym");
     TEST_CHECK(HK::ParseHotkey("Ctrl+F9") == HK::MakePressSpec(VK_F9, true, false, false, false),
                "Parse Ctrl+F9");
     const HK::HotkeySpec mode = HK::ParseHotkey("Ctrl+Shift+Enter");
@@ -1573,25 +1576,26 @@ void TestHotkeyParsing() {
                "named-key parse");
 
     // 2. Exact-match predicate (the hook swallows ONLY the full combo).
-    const HK::HotkeySpec winf9 = HK::kDefaultToggleHotkey;
-    TEST_CHECK(HK::HotkeyMatches(winf9, VK_F9, false, false, false, true), "Win+F9 matches");
-    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, false, false, false, false),
-               "REQ-R08 core: bare F9 does NOT toggle (VS/Excel collision fix)");
-    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, true, false, false, true), "Ctrl+Win+F9 does not match");
-    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F9, false, true, false, true), "Shift+Win+F9 does not match");
-    TEST_CHECK(!HK::HotkeyMatches(winf9, VK_F10, false, false, false, true), "Win+F10 does not match");
-    TEST_CHECK(!HK::HotkeyMatches(HK::HotkeySpec{}, VK_F9, false, false, false, true),
+    const HK::HotkeySpec f9 = HK::kDefaultToggleHotkey;
+    TEST_CHECK(HK::HotkeyMatches(f9, VK_F9, false, false, false, false), "Bare F9 matches toggle");
+    TEST_CHECK(!HK::HotkeyMatches(f9, VK_F9, false, false, false, true), "Win+F9 does not match bare F9 toggle");
+    TEST_CHECK(!HK::HotkeyMatches(f9, VK_F9, true, false, false, false), "Ctrl+F9 does not match bare F9 toggle");
+    TEST_CHECK(!HK::HotkeyMatches(f9, VK_F9, false, true, false, false), "Shift+F9 does not match bare F9 toggle");
+    TEST_CHECK(!HK::HotkeyMatches(f9, VK_F10, false, false, false, false), "F10 does not match");
+    TEST_CHECK(!HK::HotkeyMatches(HK::HotkeySpec{}, VK_F9, false, false, false, false),
                "Invalid spec never matches");
     const HK::HotkeySpec ctrlf9 = HK::ParseHotkey("Ctrl+F9");
     TEST_CHECK(HK::HotkeyMatches(ctrlf9, VK_F9, true, false, false, false), "Ctrl+F9 matches lang-cycle");
     TEST_CHECK(!HK::HotkeyMatches(ctrlf9, VK_F9, true, false, false, true),
                "Win+Ctrl+F9 does not match Ctrl+F9 (win must be absent)");
 
-    // 3. Config migration seam: legacy/invalid strings -> Win+F9; valid combos honored.
+    // 3. Config resolution: "F9" resolves to bare F9 default; empty/invalid -> default; custom valid combos honored.
     TEST_CHECK(HK::ResolveToggleFromConfig("F9") == HK::kDefaultToggleHotkey,
-               "Legacy 'F9' migrates to Win+F9 (no config.cpp change needed)");
-    TEST_CHECK(HK::ResolveToggleFromConfig("") == HK::kDefaultToggleHotkey, "Empty migrates to default");
-    TEST_CHECK(HK::ResolveToggleFromConfig("nonsense") == HK::kDefaultToggleHotkey, "Invalid migrates");
+               "Config 'F9' resolves to bare F9 default");
+    TEST_CHECK(HK::ResolveToggleFromConfig("") == HK::kDefaultToggleHotkey, "Empty resolves to default");
+    TEST_CHECK(HK::ResolveToggleFromConfig("nonsense") == HK::kDefaultToggleHotkey, "Invalid resolves to default");
+    TEST_CHECK(HK::ResolveToggleFromConfig("Win+F9") == HK::ParseHotkey("Win+F9"),
+               "Explicit Win+F9 combo honored as-is");
     TEST_CHECK(HK::ResolveToggleFromConfig("Ctrl+Alt+D") == HK::ParseHotkey("Ctrl+Alt+D"),
                "Explicit valid combo honored as-is");
 
@@ -1607,7 +1611,7 @@ void TestKeyboardHookStateSyncAndDispatch() {
     SetSoundEnabled(false); // keep the test suite quiet; re-enabled at the end
 
     AppConfig cfg;   // defaults, no disk load (no LoadFromFile call)
-    cfg.hotkey_toggle = "F9"; // legacy default string exercises the migration path
+    cfg.hotkey_toggle = "F9"; // default string exercises bare F9
     TranslationManager engine(EngineType::GoogleTranslate, ""); // no model load in ctor
     FloatingBadge badge;      // not Create()d: all badge methods no-op headless
     SystemTray tray;          // not Create()d: UpdateStatus is Shell-API-only
@@ -1652,7 +1656,7 @@ void TestKeyboardHookStateSyncAndDispatch() {
 
     TEST_CHECK(hook.Start(), "R06/R07 fixture: KeyboardHook::Start installs the hook");
     TEST_CHECK(hook.ToggleHotkey() == KeyboardHook::kDefaultToggleHotkey,
-               "R08: compiled toggle spec migrates legacy 'F9' config to Win+F9 at Start()");
+               "Compiled toggle spec honors 'F9' config as bare F9 at Start()");
 
     const ULONGLONG t0 = ::GetTickCount64();
     KeyboardHook::DispatchDoubleCtrlC();
@@ -1819,21 +1823,21 @@ void TestUIMarshaling() {
     //    deletes on PostMessage failure). Message mode shows header/body.
     TooltipWindow tooltip;
     TEST_CHECK(tooltip.Create(hInst), "R10 fixture: TooltipWindow created");
-    tooltip.ShowMessage(100, 100, L"Win+F9", L"Emebalachat Active (Win+F9)");
+    tooltip.ShowMessage(100, 100, L"F9", L"Emebalachat Active (F9)");
     TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode(), "R08 feedback: message-mode bubble shows");
-    TEST_CHECK(tooltip.GetMessageHeader() == L"Win+F9", "R08 feedback: header text intact");
+    TEST_CHECK(tooltip.GetMessageHeader() == L"F9", "R08 feedback: header text intact");
     tooltip.Dismiss();
     TEST_CHECK(!tooltip.IsVisible(), "R10: Dismiss hides the bubble");
 
     auto* msg_payload = new TooltipWindow::MessagePayload();
     msg_payload->x = 150;
     msg_payload->y = 160;
-    msg_payload->header = L"Win+F9";
+    msg_payload->header = L"F9";
     msg_payload->body = L"Paused";
     TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowMessageMessage, msg_payload),
                "R10: heap payload posted via LPARAM");
     PumpThreadMessagesOnce();
-    TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode() && tooltip.GetMessageHeader() == L"Win+F9",
+    TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode() && tooltip.GetMessageHeader() == L"F9",
                "R10: WndProc consumed payload and rendered message mode");
 
     auto* tr_payload = new TooltipWindow::TranslationPayload();
@@ -2002,7 +2006,7 @@ void TestHookLifecyclePolicy() {
     //    reinstall refuses to resurrect.
     SetSoundEnabled(false);
     AppConfig cfg;
-    cfg.hotkey_toggle = "Win+F9";
+    cfg.hotkey_toggle = "F9";
     TranslationManager engine(EngineType::GoogleTranslate, "");
     FloatingBadge badge;
     SystemTray tray;

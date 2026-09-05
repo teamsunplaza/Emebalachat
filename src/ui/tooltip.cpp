@@ -860,8 +860,8 @@ void TooltipWindow::Render() {
     }
 
     // --- Header Area ---
-    // 1. Emebala Brand Logo (Far Left)
-    D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 44.0f, 30.0f), 4.0f, 4.0f);
+    // 1. Emebala Brand Logo (Far Left, 1:1 round/squircle frame without horizontal stretching)
+    D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 36.0f, 30.0f), 6.0f, 6.0f);
     ID2D1SolidColorBrush* logoBgBrush = nullptr;
     ID2D1SolidColorBrush* goldBorderBrush = nullptr;
     dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &logoBgBrush);
@@ -874,7 +874,7 @@ void TooltipWindow::Render() {
         dc_render_target_->DrawRoundedRectangle(logoFrame, goldBorderBrush, 1.0f);
     }
 
-    D2D1_RECT_F logoRect = D2D1::RectF(16.0f, 10.75f, 42.0f, 27.25f);
+    D2D1_RECT_F logoRect = D2D1::RectF(16.0f, 10.0f, 34.0f, 28.0f);
     if (logo_bitmap_) {
         dc_render_target_->DrawBitmap(
             logo_bitmap_,
@@ -889,8 +889,8 @@ void TooltipWindow::Render() {
     if (goldBorderBrush) goldBorderBrush->Release();
     if (logoBgBrush) logoBgBrush->Release();
 
-    // 2. Source language badge (shifted to accommodate logo)
-    float src_tag_x = 52.0f;
+    // 2. Source language badge (clean layout following 1:1 logo frame)
+    float src_tag_x = 44.0f;
     std::wstring src_tag = source_lang_code_.empty() ? L"Auto" : ToUtf16(source_lang_code_);
     float src_tag_width = 44.0f;
     D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f), 4.0f, 4.0f);

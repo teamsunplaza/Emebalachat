@@ -30,12 +30,8 @@ const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
 // so the same ControllerWndProc sees resume events; WTS session
 // notifications are registered on it as well.
 const wchar_t kPowerSinkClassName[] = L"Emebalachat_PowerSinkWindowClass";
-// REQ-R08: user-facing label of the default toggle combo. The compiled spec in
-// KeyboardHook (parsed from config_.hotkey_toggle with the legacy "F9" default
-// migrated to Win+F9) is the runtime source of truth; this string keeps the
-// tooltip bubble text honest. A custom Win-free combo from config.json shows
-// the generic label instead of lying about the keys.
-const wchar_t kToggleHotkeyLabel[] = L"Win+F9";
+// User-facing label of the default toggle combo (F9).
+const wchar_t kToggleHotkeyLabel[] = L"F9";
 HWND g_hControllerWnd = nullptr;
 HWND g_hPowerWnd = nullptr; // REQ-R14 top-level sink for WM_POWERBROADCAST
 SystemTray* g_pTray = nullptr;
