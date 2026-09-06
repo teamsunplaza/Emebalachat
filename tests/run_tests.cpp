@@ -2560,6 +2560,82 @@ void TestImeCompositionGate() {
     // Composing is still preserved for keys that do not finalise a composition.
     static_assert(ImeMirrorNext(true, 'A'), "R5: typing keeps composition (unchanged)");
 
+    // Phase 7 Batch 1 (REQ-013/014 report §7.2): VK_PROCESSKEY sequence matrix.
+    // The mirror is the LANGUAGE-AGNOSTIC composition signal (works for
+    // Korean IMM32 AND TSF IMEs that route keys via VK_PROCESSKEY). These
+    // asserts pin the contract as a folded sequence: ImeMirrorNext chains
+    // its own output back in as `composing`, exactly how hook.cpp updates
+    // ime_composing_ on every real keydown (src/hook.cpp:632-635).
+    {
+        constexpr bool s0 = false; // idle: no composition observed yet
+
+        // (1) VK_PROCESSKEY opens composition from idle - the language-agnostic
+        //     entry edge (any IME kind routing keys via VK_PROCESSKEY).
+        static_assert(ImeMirrorNext(s0, VK_PROCESSKEY), "P7: idle + VK_PROCESSKEY -> composing");
+        // (2) Sustained interception (repeated candidate-window keys, e.g. a
+        //     Japanese kana run or Chinese pinyin run) keeps composing true.
+        constexpr bool s1 = ImeMirrorNext(s0, VK_PROCESSKEY);
+        static_assert(ImeMirrorNext(s1, VK_PROCESSKEY), "P7: repeated VK_PROCESSKEY keeps composing");
+        // (3) Ordinary printable keys during composition keep state (the IME
+        //     lets letters through as real vks in some TSF paths).
+        static_assert(ImeMirrorNext(s1, 'A'), "P7: letter mid-composition keeps composing");
+        // (4) Composition-clearing editing keys reaching the hook as REAL vks
+        //     (not previously asserted set: Delete/Right/Home/End/Tab):
+        static_assert(!ImeMirrorNext(true, VK_DELETE), "P7: plain Delete clears composition");
+        static_assert(!ImeMirrorNext(true, VK_RIGHT), "P7: plain Right clears composition");
+        static_assert(!ImeMirrorNext(true, VK_HOME), "P7: plain Home clears composition");
+        static_assert(!ImeMirrorNext(true, VK_END), "P7: plain End clears composition");
+        static_assert(!ImeMirrorNext(true, VK_TAB), "P7: plain Tab clears composition");
+        // (5) Full commit+send sequence (canonical Korean IME, report §4.2):
+        //     jamo interception -> composing; Enter arrives as VK_RETURN and
+        //     the mirror KEEPS state (the Enter branch owns the decision and
+        //     clears the flag after accepting a task); the next keydown after
+        //     the branch cleared the flag sees idle again - i.e. a fresh bare
+        //     Enter with composing=false re-arms the pipeline.
+        constexpr bool s2 = ImeMirrorNext(s0, VK_PROCESSKEY); // jamo intercepted
+        static_assert(ImeMirrorNext(s2, VK_RETURN), "P7: commit Enter mid-composition keeps mirror (branch clears)");
+        constexpr bool s3 = ImeMirrorNext(s2, VK_RETURN); // mirror value at branch decision time
+        static_assert(!EnterTranslationAllowed(true, true, false, s3), "P7: composing Enter is gated, not fired");
+        //     Branch accepted the task and cleared the flag -> the next keydown
+        //     observes the cleared state; a subsequent bare Enter can fire.
+        constexpr bool s4 = false; // post-branch clear performed by hook.cpp
+        static_assert(EnterTranslationAllowed(true, true, false, ImeMirrorNext(s4, VK_RETURN)),
+                      "P7: bare Enter after branch-cleared mirror re-arms pipeline");
+        // (6) Esc-cleared composition followed by bare Enter also re-arms:
+        constexpr bool s5 = ImeMirrorNext(s2, VK_ESCAPE); // user cancelled composition
+        static_assert(!s5, "P7: Esc-clear folds mirror to idle");
+        static_assert(EnterTranslationAllowed(true, true, false, ImeMirrorNext(s5, VK_RETURN)),
+                      "P7: bare Enter after Esc-cleared composition fires");
+        // (7) VK_PROCESSKEY stream after a clear re-opens composition (TSF
+        //     candidate navigation then fresh kana input).
+        constexpr bool s6 = ImeMirrorNext(s5, VK_PROCESSKEY);
+        static_assert(s6, "P7: VK_PROCESSKEY after clear re-opens composition");
+        static_assert(ImeMirrorNext(s6, VK_UP) == false, "P7: candidate-window Up after reopen clears (real vk passed)");
+    }
+
+    // Runtime fold of the same Phase 7 sequence matrix (static asserts are
+    // compile-time only and do not increment Total Checks; the R17 pattern
+    // pairs the static matrix with a runtime pass so the coverage is visible
+    // in the test summary). Each fold mirrors hook.cpp's ime_composing_ update.
+    {
+        bool m = ImeMirrorNext(false, VK_PROCESSKEY); // idle -> composing
+        TEST_CHECK(m, "P7 runtime: VK_PROCESSKEY opens composition");
+        m = ImeMirrorNext(m, 'A');                    // letter mid-composition
+        TEST_CHECK(m, "P7 runtime: letter mid-composition keeps composing");
+        m = ImeMirrorNext(m, VK_RETURN);              // commit Enter keeps mirror
+        TEST_CHECK(m, "P7 runtime: commit Enter keeps mirror (branch owns clear)");
+        TEST_CHECK(!EnterTranslationAllowed(true, true, false, m),
+                   "P7 runtime: composing Enter is gated, not fired");
+        m = ImeMirrorNext(m, VK_ESCAPE);              // Esc clears composition
+        TEST_CHECK(!m, "P7 runtime: Esc-clear folds mirror to idle");
+        m = ImeMirrorNext(m, VK_PROCESSKEY);          // fresh interception re-opens
+        TEST_CHECK(m, "P7 runtime: VK_PROCESSKEY after clear re-opens composition");
+        m = ImeMirrorNext(m, VK_DELETE);              // real Delete reaching hook clears
+        TEST_CHECK(!m, "P7 runtime: plain Delete clears reopened composition");
+        TEST_CHECK(EnterTranslationAllowed(true, true, false, ImeMirrorNext(m, VK_RETURN)),
+                   "P7 runtime: bare Enter after clear re-arms pipeline");
+    }
+
     // R5 (Debug-Surgical) Enter-path empty-capture verdict, pinned on the
     // shared predicate (src/worker.hpp EmptyCaptureNeedsHold) so worker.cpp
     // and the tests assert on ONE definition:
