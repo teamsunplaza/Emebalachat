@@ -166,8 +166,12 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // I4: this runs on the pipeline worker thread while the UI/hook threads may
     // mutate the shared string fields; take one consistent locked snapshot.
     const AppConfig::Snapshot snap = config_.GetSnapshot();
-    DIAG_LOG("PIPELINE", "stage=lang_pair src=\"%s\" tgt=\"%s\" engine=%s auto_send=%d",
-             snap.source_language.c_str(), snap.target_language.c_str(),
+    // Phase 3 Batch 2 (plan §1.3/§3-Batch2, REQ-015/016): the Enter pipeline is
+    // the TYPING context and uses the type pair. The legacy
+    // source_language/target_language fields are migration-only and must never
+    // be read here again (plan §1.2).
+    DIAG_LOG("PIPELINE", "stage=lang_pair ctx=type src=\"%s\" tgt=\"%s\" engine=%s auto_send=%d",
+             snap.type_source_language.c_str(), snap.type_target_language.c_str(),
              snap.engine_type.c_str(), snap.auto_send ? 1 : 0);
 
     const ULONGLONG t_capture_start = ::GetTickCount64();
@@ -182,7 +186,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // "nothing translated" can be attributed to the exact failing gate
     // (lengths/booleans only; never the captured content itself).
     const bool was_smart_bypassed =
-        !line.empty() && !ShouldTranslate(line, snap.target_language, snap.source_language);
+        !line.empty() && !ShouldTranslate(line, snap.type_target_language, snap.type_source_language);
     const bool should_translate = !line.empty() && !was_smart_bypassed;
     DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
@@ -242,7 +246,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     TranslationStatus status = TranslationStatus::Ok;
     const ULONGLONG t_translate_start = ::GetTickCount64();
     std::wstring translated =
-        NormalizeNewlinesToCRLF(engine_.Translate(line, snap.source_language, snap.target_language, &status));
+        NormalizeNewlinesToCRLF(engine_.Translate(line, snap.type_source_language, snap.type_target_language, &status));
     DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
                          "out_len=%zu out=\"%s\"",
              static_cast<int>(status), engine_.GetActiveEngineName().c_str(),

@@ -3481,11 +3481,16 @@ void TestB3LanguageSync() {
         TEST_CHECK(cfg.GetSnapshot().target_language == "English",
                    "B3: wired cycle leaves the inline mutation path untouched (config unchanged)");
 
-        // Unwired fallback (unit/standalone use): inline legacy behavior still
-        // advances the config through the locked setter. CycleLanguage() also
-        // persists to the DEFAULT config path as a side effect - snapshot and
-        // restore that file around the call so the test can never clobber a
-        // developer's real build/config.json.
+        // Unwired fallback (unit/standalone use): Phase 3 Batch 2 (plan
+        // §3-Batch2-3, §5 item 4 + Batch 1 handoff) switched this path from
+        // the legacy AppConfig::CycleLanguage() to cycling the TYPE pair
+        // through the SetTypeLanguages seam - an INTENDED behavior change, so
+        // the assertion below moved from the legacy target_language to
+        // type_target_language, and the legacy field is now pinned UNTOUCHED
+        // (context isolation, REQ-006..009/015/016). SetTypeLanguages +
+        // SaveToFile still persists to the DEFAULT config path as a side
+        // effect - snapshot and restore that file around the call so the test
+        // can never clobber a developer's real build/config.json.
         std::error_code ec;
         const auto default_cfg_path = AppConfig::GetDefaultConfigPath();
         std::string backup_bytes;
@@ -3496,9 +3501,12 @@ void TestB3LanguageSync() {
                                 std::istreambuf_iterator<char>());
         }
         KeyboardHook hook2(cfg, worker, badge, tray);
-        hook2.CycleTargetLanguage(); // unwired: mutates cfg (English -> Korean)
-        TEST_CHECK(cfg.GetSnapshot().target_language == "Korean",
-                   "B3: unwired fallback keeps the legacy inline cycle (English->Korean)");
+        hook2.CycleTargetLanguage(); // unwired: cycles the TYPE pair (English -> Korean)
+        const AppConfig::Snapshot after_cycle = cfg.GetSnapshot();
+        TEST_CHECK(after_cycle.type_target_language == "Korean",
+                   "P3-B2: unwired fallback cycles the type pair (English->Korean)");
+        TEST_CHECK(after_cycle.target_language == "English",
+                   "P3-B2: unwired fallback leaves the legacy pair untouched");
         if (existed) {
             std::ofstream out(default_cfg_path, std::ios::binary | std::ios::trunc);
             out.write(backup_bytes.data(), static_cast<std::streamsize>(backup_bytes.size()));

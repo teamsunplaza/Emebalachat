@@ -437,12 +437,13 @@ void KeyboardHook::SetActive(bool active) {
         badge_.SetStatus(active ? BadgeStatus::Active : BadgeStatus::Disabled);
         // I4: this runs on the hook thread; read shared fields via a locked
         // snapshot instead of touching std::string members unsynchronized.
+        // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
         const AppConfig::Snapshot snap = config_.GetSnapshot();
         tray_.UpdateStatus(
             active,
             snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
-            snap.source_language,
-            snap.target_language,
+            snap.type_source_language,
+            snap.type_target_language,
             snap.auto_send,
             snap.sound_enabled,
             badge_.IsVisible()
@@ -480,14 +481,31 @@ void KeyboardHook::CycleTargetLanguage() {
         lang_cycle_cb_();
         return;
     }
-    std::string next_tgt = config_.CycleLanguage(); // locked mutator + save inside
-    const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
-    badge_.SetLanguages(ToUtf16(snap.source_language), ToUtf16(next_tgt));
+    // Phase 3 Batch 2 (plan §3-Batch2-3, §5 item 4; Batch 1 handoff): the
+    // unwired fallback must cycle the TYPE pair, not the legacy
+    // target_language (AppConfig::CycleLanguage stays legacy-only for
+    // backward compat). Implemented on the SetTypeLanguages seam (the plan's
+    // sanctioned alternative to adding CycleTypeLanguage to config -
+    // config.cpp is a Batch 1 file, off-limits in this batch): compute the
+    // next target with the SAME pure helper the coordinator uses, then commit
+    // the pair atomically under mutex_ and persist (CycleLanguage's locked-
+    // mutator + SaveToFile pattern).
+    const AppConfig::Snapshot snap_pre = config_.GetSnapshot(); // I4: hook-thread read
+    // Namespace-qualified: inside this member, unqualified lookup would find
+    // KeyboardHook::CycleTargetLanguage() (this very method) and hide the pure
+    // free function emebalachat::CycleTargetLanguage(std::string_view).
+    const std::string next_tgt =
+        emebalachat::CycleTargetLanguage(snap_pre.type_target_language);
+    config_.SetTypeLanguages(snap_pre.type_source_language, next_tgt); // I4: single locked write
+    config_.SaveToFile(); // save takes the lock itself; never held across (non-recursive)
+    const AppConfig::Snapshot snap = config_.GetSnapshot(); // authoritative post-write state
+    // Badge and tray display the TYPE pair (plan §2.4).
+    badge_.SetLanguages(ToUtf16(snap.type_source_language), ToUtf16(snap.type_target_language));
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
-        snap.source_language,
-        next_tgt,
+        snap.type_source_language,
+        snap.type_target_language,
         snap.auto_send,
         snap.sound_enabled,
         badge_.IsVisible()
@@ -504,11 +522,12 @@ void KeyboardHook::ToggleAutoSend() {
     config_.auto_send.store(next, std::memory_order_relaxed);
     config_.SaveToFile();
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
+    // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
-        snap.source_language,
-        snap.target_language,
+        snap.type_source_language,
+        snap.type_target_language,
         next,
         snap.sound_enabled,
         badge_.IsVisible()

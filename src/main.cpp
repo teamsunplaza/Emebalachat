@@ -33,15 +33,19 @@ namespace emebalachat {
 
 namespace {
 // ---- R6 Phase 1 (B3): cross-thread language-sync marshal ----
+// Phase 3 Batch 2 (plan §2.4): the request now also carries WHICH language
+// pair (LanguageContext) the mutation applies to. wParam contract:
+//   bit0 = cycle request (Ctrl+F9), bit1 = context (0=Type, 1=Drag).
 // Posted to the controller window (GUI thread) by any NON-GUI thread that
 // needs a language mutation applied: the keyboard hook thread's Ctrl+F9
-// cycle (wParam=1, cycle semantics) and the drag / double-Ctrl+C worker
-// threads when their src==tgt fallback substitutes a new target (wParam=0,
-// payload carries the request). LPARAM is a heap LanguageSyncRequest whose
-// ownership transfers to ControllerWndProc (deleted locally on post failure
-// - the same REQ-R10 payload contract the tooltip seams use).
+// cycle (Type context, cycle semantics) and the drag / double-Ctrl+C worker
+// threads when their src==tgt fallback substitutes a new target (Drag
+// context, payload carries the request). LPARAM is a heap LanguageSyncRequest
+// whose ownership transfers to ControllerWndProc (deleted locally on post
+// failure - the same REQ-R10 payload contract the tooltip seams use).
 constexpr UINT kMsgApplyLanguageSync = WM_APP + 0x300;
 struct LanguageSyncRequest {
+    LanguageContext context = LanguageContext::Type; // Phase 3: which pair to mutate
     std::string source;      // empty = keep current
     std::string target;      // empty = keep current
     bool play_chime = false;
@@ -49,14 +53,15 @@ struct LanguageSyncRequest {
 // Set once at startup to the wWinMain ApplyLanguageChange coordinator; invoked
 // on the GUI thread from ControllerWndProc. Cleared after hook/mouse stop at
 // shutdown so a late posted message can never call into destroyed state.
-std::function<bool(std::string_view, std::string_view, bool, bool)> g_apply_language_change;
+std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bool)> g_apply_language_change;
 // Posts a sync request; never blocks (PostMessageW). Safe from hook threads.
 // When the CALLER already is the controller window's GUI thread (e.g. a test
 // invoking KeyboardHook::CycleTargetLanguage directly, or any future same-
 // thread wiring), posting would defer behind the rest of the queue, so the
 // coordinator runs inline instead - it is documented GUI-thread-only and
 // re-entrant here (its config writes are locked, its view seams marshal).
-void RequestLanguageSync(HWND hController, std::string source, std::string target,
+void RequestLanguageSync(HWND hController, LanguageContext ctx,
+                         std::string source, std::string target,
                          bool cycle, bool play_chime) {
     if (!hController) {
         DIAG_F("MAIN/LangSync/000: no controller window; language sync request dropped\n");
@@ -64,15 +69,19 @@ void RequestLanguageSync(HWND hController, std::string source, std::string targe
     }
     const DWORD gui_tid = ::GetWindowThreadProcessId(hController, nullptr);
     if (g_apply_language_change && gui_tid == ::GetCurrentThreadId()) {
-        g_apply_language_change(source, target, cycle, play_chime);
+        g_apply_language_change(ctx, source, target, cycle, play_chime);
         return;
     }
     auto p = std::make_unique<LanguageSyncRequest>();
+    p->context = ctx;
     p->source = std::move(source);
     p->target = std::move(target);
     p->play_chime = play_chime;
     const LPARAM lp = reinterpret_cast<LPARAM>(p.release());
-    if (::PostMessageW(hController, kMsgApplyLanguageSync, cycle ? 1 : 0, lp) == FALSE) {
+    // Phase 3 (plan §2.4): bit1 = context, bit0 = cycle flag.
+    const WPARAM wp = static_cast<WPARAM>(
+        (ctx == LanguageContext::Drag ? 2u : 0u) | (cycle ? 1u : 0u));
+    if (::PostMessageW(hController, kMsgApplyLanguageSync, wp, lp) == FALSE) {
         delete reinterpret_cast<LanguageSyncRequest*>(lp);
         DIAG_F("MAIN/LangSync/002: PostMessage language sync failed (GLE %lu)\n", ::GetLastError());
     }
@@ -143,16 +152,19 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     if (msg == kMsgApplyLanguageSync) {
         // R6 Phase 1 (B3, plan §2.3): hook/worker-thread language mutations
         // marshal here so they run on the GUI thread through the same
-        // ApplyLanguageChange coordinator as every other surface. wParam=1
-        // requests a target-language cycle (payload strings ignored);
-        // wParam=0 applies the payload's (source,target) request.
+        // ApplyLanguageChange coordinator as every other surface. Phase 3
+        // (plan §2.4) wParam encoding: bit0 = target-language cycle request
+        // (payload strings ignored), bit1 = language context (0=Type, 1=Drag).
         const std::unique_ptr<LanguageSyncRequest> p(
             reinterpret_cast<LanguageSyncRequest*>(lParam));
         if (g_apply_language_change) {
+            const LanguageContext ctx =
+                (wParam & 2u) ? LanguageContext::Drag : LanguageContext::Type;
             g_apply_language_change(
+                ctx,
                 p ? std::string_view{ p->source } : std::string_view{},
                 p ? std::string_view{ p->target } : std::string_view{},
-                wParam != 0,
+                (wParam & 1u) != 0,
                 p ? p->play_chime : true);
         }
         return 0;
@@ -309,13 +321,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // ("possible config dump"); model_path, language pair, engine, toggles.
     {
         const emebalachat::AppConfig::Snapshot snap = config.GetSnapshot();
+        // Phase 3 Batch 2: the legacy single pair is gone from the runtime;
+        // log the two context pairs actually driving the pipelines (user
+        // authorized config dumps for this diagnostic build, 260905).
         DIAG_LOG("SESSION", "config loaded=%d ui_language=%s engine=%s model_path=%s "
-                            "src=%s tgt=%s auto_send=%d sound=%d drag_to_translate=%d "
+                            "drag=%s/%s type=%s/%s auto_send=%d sound=%d drag_to_translate=%d "
                             "cloud_fallback=%d hotkey_toggle=%s hotkey_lang=%s hotkey_mode=%s "
                             "temp=%.2f top_p=%.2f top_k=%d rep_pen=%.2f",
                  config_ok ? 1 : 0, config.ui_language.c_str(), snap.engine_type.c_str(),
-                 config.model_path.c_str(), snap.source_language.c_str(),
-                 snap.target_language.c_str(), snap.auto_send ? 1 : 0,
+                 config.model_path.c_str(),
+                 snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
+                 snap.type_source_language.c_str(), snap.type_target_language.c_str(),
+                 snap.auto_send ? 1 : 0,
                  snap.sound_enabled ? 1 : 0, config.drag_to_translate ? 1 : 0,
                  config.cloud_fallback_enabled ? 1 : 0, config.hotkey_toggle.c_str(),
                  config.hotkey_lang.c_str(), config.hotkey_mode.c_str(),
@@ -324,9 +341,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // 4. Initialize Universal i18n
     emebalachat::I18n::Initialize(config.ui_language);
-    if (config.target_language.empty()) {
-        config.target_language = emebalachat::I18n::GetDefaultTargetLanguage(emebalachat::I18n::GetCurrentLocale());
-    }
+    // Phase 3 Batch 2 (plan §5 item 3, Batch 1 handoff): the old startup
+    // backfill of config.target_language is deleted. Default-target resolution
+    // now happens inside AppConfig::LoadFromFile (Batch 1 migration: absent
+    // new-schema keys => drag=(Auto/OS-lang), type=(Auto/English), REQ-006/007/
+    // 015/016), so a startup patch on the legacy field would only create a
+    // drag/type-vs-legacy inconsistency.
 
     // 5. Initialize Sound State
     emebalachat::SetSoundEnabled(config.sound_enabled);
@@ -425,8 +445,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // app keeps running without the visual pill (I1 graceful degradation).
     if (!badge.Create(
             hInstance,
-            emebalachat::ToUtf16(config.source_language),
-            emebalachat::ToUtf16(config.target_language),
+            // Phase 3 Batch 2 (plan §2.4): the badge displays the TYPE pair.
+            // Startup direct field access is I4-legal (no worker/hook thread
+            // exists yet at this point).
+            emebalachat::ToUtf16(config.type_source_language),
+            emebalachat::ToUtf16(config.type_target_language),
             config.badge_x,
             config.badge_y
         )) {
@@ -501,11 +524,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // case references it (name lookup in a lambda body binds at definition).
     auto refresh_tray = [&]() {
         const auto snap = config.GetSnapshot();
+        // Phase 3 Batch 2 (plan §2.4): the tray tip/checkmarks display the
+        // TYPE pair (badge rationale: one displayed pair, the main pipeline).
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
-            snap.source_language,
-            snap.target_language,
+            snap.type_source_language,
+            snap.type_target_language,
             snap.auto_send,
             snap.sound_enabled,
             badge.IsVisible()
@@ -521,6 +546,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // (the reported B3 desync bug). All decision logic lives in the pure
     // PlanLanguageSync seam (config.hpp), pinned by TestB3LanguageSync.
     //
+    // Phase 3 Batch 2 (plan §2.4): the coordinator takes the LanguageContext of
+    // the mutation as its first argument and owns the SURFACE FILTERING. Drag
+    // mutations (tooltip language menu, drag / double-Ctrl+C src==tgt fallback)
+    // rewrite only the drag pair and refresh only the tooltip; Type mutations
+    // (Ctrl+F9 cycle, tray submenus, swap) rewrite the type pair and refresh
+    // badge -> tray -> tooltip (badge and tray DISPLAY the type pair).
+    //
     // Thread contract (plan §2.3): must run on the GUI thread. Every tray/menu/
     // tooltip callback already does; the hook thread's Ctrl+F9 cycle and the
     // drag / double-Ctrl+C worker threads marshal through RequestLanguageSync
@@ -532,27 +564,40 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // (unresolvable) requests are refused WITHOUT any write - config and all
     // surfaces keep the previous consistent state (INV-1 guard).
     auto ApplyLanguageChange =
-        [&](std::string_view new_source, std::string_view new_target,
+        [&](emebalachat::LanguageContext ctx,
+            std::string_view new_source, std::string_view new_target,
             bool cycle_target, bool play_chime) -> bool {
         auto snap = config.GetSnapshot(); // I4: consistent read
+        const bool drag = (ctx == emebalachat::LanguageContext::Drag);
+        // Phase 3: read the CURRENT pair of the context being mutated. The
+        // legacy source_language/target_language fields are migration-only
+        // (plan §1.2) and no longer participate in any runtime path.
+        const std::string cur_src = drag ? snap.drag_source_language
+                                         : snap.type_source_language;
+        const std::string cur_tgt = drag ? snap.drag_target_language
+                                         : snap.type_target_language;
         std::string req_src(new_source);
         std::string req_tgt(new_target);
         if (cycle_target) {
-            // Ctrl+F9 cycle: next target from the CURRENT persisted target.
-            req_tgt = emebalachat::CycleTargetLanguage(snap.target_language);
+            // Ctrl+F9 cycle (Type context): next target from the CURRENT
+            // persisted target of the mutated context.
+            req_tgt = emebalachat::CycleTargetLanguage(cur_tgt);
         }
         const emebalachat::LanguageSyncPlan plan = emebalachat::PlanLanguageSync(
-            snap.source_language, snap.target_language, req_src, req_tgt);
+            ctx, cur_src, cur_tgt, req_src, req_tgt);
         if (!plan.valid) {
-            DIAG_F("MAIN/LangSync/001: refused unresolvable language request (src='%s', tgt='%s')\n",
+            DIAG_F("MAIN/LangSync/001: refused unresolvable language request (ctx=%s, src='%s', tgt='%s')\n",
+                    drag ? "drag" : "type",
                     std::string(new_source).c_str(), std::string(new_target).c_str());
             return false;
         }
         // 260905 diagnostics: the language-change record (old -> new) at the
-        // single authority every surface now routes through.
-        DIAG_LOG("STATE", "lang_sync valid=%d changed=%d pair %s/%s -> %s/%s (req %s/%s)",
+        // single authority every surface now routes through. The ctx field is
+        // the Phase 3 addition: which pair the record mutated.
+        DIAG_LOG("STATE", "lang_sync ctx=%s valid=%d changed=%d pair %s/%s -> %s/%s (req %s/%s)",
+                 drag ? "drag" : "type",
                  plan.valid ? 1 : 0, plan.changed ? 1 : 0,
-                 snap.source_language.c_str(), snap.target_language.c_str(),
+                 cur_src.c_str(), cur_tgt.c_str(),
                  plan.source_language.c_str(), plan.target_language.c_str(),
                  req_src.empty() ? "-" : req_src.c_str(),
                  req_tgt.empty() ? "-" : req_tgt.c_str());
@@ -561,23 +606,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // churn, but the view refreshes below still run (self-heal against
         // any external drift).
         if (plan.changed) {
-            config.SetLanguages(plan.source_language, plan.target_language); // I4: single locked write
+            // Phase 3 (plan §2.3): the pair's two fields update atomically
+            // under mutex_ - the single locked write for this context.
+            if (drag) {
+                config.SetDragLanguages(plan.source_language, plan.target_language);
+            } else {
+                config.SetTypeLanguages(plan.source_language, plan.target_language);
+            }
             config.SaveToFile();
             snap = config.GetSnapshot(); // read the authoritative post-write state
         }
         // plan.surface_updates order (planner): Badge -> Tray -> Tooltip.
+        // Phase 3 surface filtering (plan §2.4): the planner stays pair-
+        // agnostic and lists all three; the coordinator drops Badge/Tray for
+        // Drag-context changes because those surfaces display the TYPE pair
+        // and are unaffected by a drag-pair mutation.
         for (const emebalachat::LanguageSurface surface : plan.surface_updates) {
             switch (surface) {
                 case emebalachat::LanguageSurface::Badge:
-                    badge.SetLanguages(emebalachat::ToUtf16(snap.source_language),
-                                       emebalachat::ToUtf16(snap.target_language));
+                    if (!drag) {
+                        badge.SetLanguages(emebalachat::ToUtf16(snap.type_source_language),
+                                           emebalachat::ToUtf16(snap.type_target_language));
+                    }
                     break;
                 case emebalachat::LanguageSurface::Tray:
-                    refresh_tray();
+                    if (!drag) {
+                        refresh_tray();
+                    }
                     break;
                 case emebalachat::LanguageSurface::Tooltip:
                     // Best-effort view sync: no-op while hidden/message-mode.
-                    tooltip.RefreshTargetLanguageFromConfig(snap.target_language);
+                    // Phase 3: the tooltip is exclusively the drag-result
+                    // window, so its label ALWAYS reflects the drag target -
+                    // on Type-context changes this refresh is just the legacy
+                    // self-heal nudge and must not relabel the tooltip with a
+                    // type value the shown content was not translated to.
+                    tooltip.RefreshTargetLanguageFromConfig(snap.drag_target_language);
                     break;
             }
         }
@@ -606,10 +670,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     auto RefreshAllUiForLocaleChange = [&]() {
         const auto snap = config.GetSnapshot(); // I4: consistent read
         tray.SetUiLanguage(snap.ui_language);   // submenu check-mark mirror
-        refresh_tray();
-        badge.SetLanguages(emebalachat::ToUtf16(snap.source_language),
-                           emebalachat::ToUtf16(snap.target_language));
-        tooltip.RefreshTargetLanguageFromConfig(snap.target_language);
+        refresh_tray(); // Phase 3: refresh_tray already reads the type pair
+        // Phase 3 Batch 2 (plan §2.4): badge displays the type pair; the
+        // tooltip label follows the drag pair it was last shown with.
+        badge.SetLanguages(emebalachat::ToUtf16(snap.type_source_language),
+                           emebalachat::ToUtf16(snap.type_target_language));
+        tooltip.RefreshTargetLanguageFromConfig(snap.drag_target_language);
         about_window.RequestLocaleRefresh();
     };
     // R6 Phase 1 (B3): Ctrl+F9 cycle now routes through the SAME coordinator.
@@ -617,7 +683,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // window (GUI thread). Set before hook.Start(); read-only afterwards
     // (active_change_cb_ contract).
     hook.SetLanguageCycleCallback([]() {
+        // Phase 3 Batch 2 (plan §2.4): Ctrl+F9 cycles the TYPE target pair.
         emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
+                                         emebalachat::LanguageContext::Type,
                                          std::string{}, std::string{}, true, true);
     });
 
@@ -649,11 +717,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // badge + tray sequences are deleted - the coordinator is now the only
     // writer (INV-2), and it additionally syncs a visible tooltip.
     trayCallbacks.on_select_source_lang = [&](std::string_view code) {
-        ApplyLanguageChange(code, std::string_view{}, false, false);
+        // Phase 3 Batch 2 (plan §2.4): tray source/target submenus drive the
+        // TYPE pair (global settings entry point of the main pipeline).
+        ApplyLanguageChange(emebalachat::LanguageContext::Type, code,
+                            std::string_view{}, false, false);
     };
 
     trayCallbacks.on_select_target_lang = [&](std::string_view name) {
-        ApplyLanguageChange(std::string_view{}, name, false, false);
+        ApplyLanguageChange(emebalachat::LanguageContext::Type, std::string_view{},
+                            name, false, false);
     };
 
     trayCallbacks.on_swap_languages = [&]() {
@@ -662,9 +734,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // pairs swap directly) is unchanged; only the APPLY step moved into
         // the coordinator, which persists + refreshes badge/tray/tooltip in
         // one place instead of this hand-maintained sequence.
+        // Phase 3 Batch 2 (plan §2.4): tray Swap / badge double-click swap the
+        // TYPE pair, so the swap INPUT read is the type pair as well.
         const auto snap_in = config.GetSnapshot(); // I4: consistent read for the swap logic
-        std::string current_src_norm = emebalachat::NormalizeLanguageCode(snap_in.source_language);
-        std::string current_tgt_norm = emebalachat::NormalizeLanguageCode(snap_in.target_language);
+        std::string current_src_norm = emebalachat::NormalizeLanguageCode(snap_in.type_source_language);
+        std::string current_tgt_norm = emebalachat::NormalizeLanguageCode(snap_in.type_target_language);
 
         std::string new_src;
         std::string new_tgt;
@@ -673,7 +747,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // When source is Auto Detect (e.g. Auto Detect -> English)
             // new source becomes current target (English)
             const auto* pTgtInfo = emebalachat::FindLanguageByCode(current_tgt_norm);
-            new_src = pTgtInfo ? pTgtInfo->name_en : snap_in.target_language;
+            new_src = pTgtInfo ? pTgtInfo->name_en : snap_in.type_target_language;
 
             // new target becomes user's OS native language (or English if native is English)
             std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
@@ -688,15 +762,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
         } else {
             // Direct swap between two concrete languages (e.g. Korean <-> English)
-            new_src = snap_in.target_language;
-            new_tgt = snap_in.source_language;
+            new_src = snap_in.type_target_language;
+            new_tgt = snap_in.type_source_language;
         }
 
         // Coordinator is the ONLY writer from here (INV-2): canonicalizes,
         // persists synchronously (INV-3), refreshes badge -> tray -> tooltip.
         // The chime plays only on an actual change (same semantics as before,
         // which always played; a swap can never be a no-op except K<->K).
-        ApplyLanguageChange(new_src, new_tgt, false, true);
+        ApplyLanguageChange(emebalachat::LanguageContext::Type, new_src, new_tgt,
+                            false, true);
     };
 
     trayCallbacks.on_toggle_auto_send = [&]() {
@@ -790,7 +865,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // why the badge is re-pushed here even though Create() already received
     // the loaded values: one code path, so a startup-only special case can
     // never drift from the runtime one again.
-    ApplyLanguageChange(std::string_view{}, std::string_view{}, false, false);
+    // Phase 3 Batch 2 (plan §3-Batch2): align BOTH contexts once - Type first
+    // (badge/tray ordering), then Drag (the tooltip is hidden at startup so
+    // its refresh is a no-op, but the call keeps the code path uniform).
+    ApplyLanguageChange(emebalachat::LanguageContext::Type, std::string_view{},
+                        std::string_view{}, false, false);
+    ApplyLanguageChange(emebalachat::LanguageContext::Drag, std::string_view{},
+                        std::string_view{}, false, false);
 
     // Drag release threshold callback (> 15px). Runs on the mouse-hook thread
     // (drag) or the delayed-click worker thread (multi-click settle) - never on
@@ -950,7 +1031,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(selected);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (worker thread)
+        // Phase 3 Batch 2 (plan §2.5, REQ-007): the drag path uses the DRAG
+        // pair. I4: snapshot read (worker thread).
+        std::string tgt_lang = config.GetSnapshot().drag_target_language;
 
         if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
             tgt_lang = *effective;
@@ -959,8 +1042,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // kept the (now meaningless) old target. Post it to the GUI-
             // thread coordinator (fire-and-forget PostMessage; this worker
             // thread must never touch the surfaces directly - plan §2.3),
-            // so every surface follows the language actually translated to.
+            // so the tooltip follows the language actually translated to.
+            // Phase 3: DRAG context - only the drag pair (and the tooltip
+            // label) move; badge/tray keep showing the type pair (plan §2.4).
             emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
+                                             emebalachat::LanguageContext::Drag,
                                              std::string{}, tgt_lang, false, false);
         }
 
@@ -1063,13 +1149,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::string detected = emebalachat::DetectLanguage(copied);
         std::string src_code = emebalachat::NormalizeLanguageCode(detected);
-        std::string tgt_lang = config.GetSnapshot().target_language; // I4: snapshot read (REQ-R06: runs on the hook's async worker thread)
+        // Phase 3 Batch 2 (plan §2.5, REQ-007): double-Ctrl+C is a DRAG-context
+        // translation (tooltip surface) - it uses the drag pair.
+        // I4: snapshot read (REQ-R06: runs on the hook's async worker thread).
+        std::string tgt_lang = config.GetSnapshot().drag_target_language;
 
         if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
             tgt_lang = *effective;
             // R6 Phase 1 (B3): same coordinator routing as the drag path above
             // (this body runs on the hook's REQ-R06 async worker thread).
+            // Phase 3: DRAG context (see the drag path above).
             emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
+                                             emebalachat::LanguageContext::Drag,
                                              std::string{}, tgt_lang, false, false);
         }
 
@@ -1129,7 +1220,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // required thread per plan §2.3. If the request is refused (invalid
         // name), everything stays consistent at the OLD pair; the re-show
         // below just re-renders the current state.
-        ApplyLanguageChange(std::string_view{}, new_tgt, false, false);
+        // Phase 3 Batch 2 (plan §2.4, REQ-008/009): the tooltip language menu
+        // belongs to the drag-result window, so it mutates the DRAG pair and
+        // refreshes only the tooltip (sticky per-plan §2.2 model).
+        ApplyLanguageChange(emebalachat::LanguageContext::Drag, std::string_view{},
+                            new_tgt, false, false);
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         std::wstring translated = engine.Translate(src, src_code, new_tgt);
@@ -1284,8 +1379,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             const std::unique_ptr<emebalachat::LanguageSyncRequest> p(
                 reinterpret_cast<emebalachat::LanguageSyncRequest*>(m.lParam));
             if (p && emebalachat::g_apply_language_change) {
-                emebalachat::g_apply_language_change(p->source, p->target,
-                                                     m.wParam != 0, p->play_chime);
+                // Same Phase 3 wParam decode as ControllerWndProc (bit1 =
+                // context, bit0 = cycle) so a drained request mutates the
+                // pair it was posted for.
+                const emebalachat::LanguageContext ctx =
+                    (m.wParam & 2u) ? emebalachat::LanguageContext::Drag
+                                    : emebalachat::LanguageContext::Type;
+                emebalachat::g_apply_language_change(
+                    ctx, std::string_view{ p->source }, std::string_view{ p->target },
+                    (m.wParam & 1u) != 0, p->play_chime);
             }
         }
     }
