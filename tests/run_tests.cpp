@@ -4661,6 +4661,50 @@ static void TestDiagLogger() {
     }
 }
 
+// Phase 5 (REQ-011, plan §5.2): headless unit tests for the app classifier.
+// The classifier resolves the real process image name (QueryFullProcessImageNameW),
+// so only two layers are verifiable headlessly: (1) fail-open on null/invalid
+// HWNDs — classification failure always lands on the editor path (CategoryB),
+// and (2) self-process classification — run_tests.exe is not in the CategoryA
+// exe table, so its own console window must classify as CategoryB. Full exe-table
+// matching (17 rows) needs real processes and is covered by the manual matrix
+// (plan §5.3). The null-HWND case at line 1654 is the Batch 1 one-line refresh
+// of the legacy IsChatApplicationWindow(false) assertion; these are the new,
+// non-duplicating checks.
+void TestPhase5AppClassifier() {
+    std::cout << "[RUN] Testing Phase 5 app classifier (REQ-011 fail-open + self-process)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Layer 1a: null HWND fails open to the editor path (CategoryB).
+    TEST_CHECK(ClassifyAppWindow(nullptr) == AppCategory::CategoryB,
+               "ClassifyAppWindow fails open to CategoryB for null HWND");
+
+    // Layer 1b: a syntactically non-null but non-existent HWND must also fail
+    // open (IsWindow is false -> CategoryB), not crash or return CategoryA.
+    const HWND bogus_hwnd = reinterpret_cast<HWND>(static_cast<intptr_t>(0x1));
+    TEST_CHECK(!::IsWindow(bogus_hwnd), "Bogus HWND 0x1 is not a real window in this environment");
+    TEST_CHECK(ClassifyAppWindow(bogus_hwnd) == AppCategory::CategoryB,
+               "ClassifyAppWindow fails open to CategoryB for invalid HWND 0x1");
+
+    // Layer 2: self-process classification. run_tests.exe is a console app, so
+    // GetConsoleWindow() normally returns a valid hwnd owned by this process.
+    // Its exe name is not in the CategoryA table -> CategoryB. Skip (no check)
+    // when no console is attached, per plan §5.2.
+    const HWND console_hwnd = ::GetConsoleWindow();
+    if (console_hwnd != nullptr && ::IsWindow(console_hwnd)) {
+        TEST_CHECK(ClassifyAppWindow(console_hwnd) == AppCategory::CategoryB,
+                   "ClassifyAppWindow classifies own console window (run_tests.exe, not in table) as CategoryB");
+    } else {
+        std::cout << "[SKIP] No console window attached; self-process classification check skipped." << std::endl;
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Phase 5 app classifier tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Phase 5 app classifier tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -4718,6 +4762,7 @@ int main() {
     TestR6P4LanguageRouting();
     TestR6P5P6I18n();
     TestDiagLogger();
+    TestPhase5AppClassifier();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
