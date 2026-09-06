@@ -221,6 +221,8 @@ Emebala Chat supports full bidirectional translation across **38 language entrie
 | **Badge Right-Click** | **Context Menu** | Opens popup settings, engine selection, and language menu |
 | **Badge Left-Drag** | **Reposition Window** | Moves badge across monitors; saves position persistently |
 
+**Customizing hotkeys via `config.json`** — edit `hotkey_toggle`, `hotkey_lang`, and `hotkey_mode` (values accept `Mod+Key`: Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, arrows, A-Z, 0-9); invalid values fall back to defaults. `drag_hotkey` supports only `"double_ctrl_c"`. When combos overlap, one action fires in order: toggle > lang > mode. Restart the app to apply changes.
+
 ---
 
 ## 📂 Project Structure

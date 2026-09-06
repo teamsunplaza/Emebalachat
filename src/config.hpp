@@ -234,14 +234,14 @@ struct AppConfig {
     // nor as the auto engine when no local model is installed. Translation returns
     // empty instead (the worker already handles empty gracefully). Default false.
     bool cloud_fallback_enabled = false;
-    // Reserved — will be wired to real hotkey handling in Phase 6 (REQ-022).
+    // REQ-022 (Phase 6): gesture-pattern selector. Only "double_ctrl_c" is supported; other values fall back with a DIAG warning (hook.cpp Start()).
     std::string drag_hotkey = "double_ctrl_c";
     int badge_x = -1;
     int badge_y = -1;
     std::string hotkey_toggle = "F9";
-    // Reserved — will be wired to real hotkey handling in Phase 6 (REQ-022).
+    // REQ-022 (Phase 6): wired to the language-cycle trigger (F-18) via ResolveLangFromConfig at hook Start().
     std::string hotkey_lang = "Ctrl+F9";
-    // Reserved — will be wired to real hotkey handling in Phase 6 (REQ-022).
+    // REQ-022 (Phase 6): wired to the auto-send-toggle trigger (F-04) via ResolveModeFromConfig at hook Start().
     std::string hotkey_mode = "Ctrl+Shift+Enter";
     float temperature = 0.7f;
     float top_p = 0.6f;
