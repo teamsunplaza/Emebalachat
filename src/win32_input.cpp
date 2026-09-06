@@ -893,11 +893,18 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
     return true;
 }
 
-// §2.6.A2 step 4: after a successful replacement, advance the stored
-// "previous translation end" offset. Real-caret-first: requery EM_GETSEL and
-// use its end position; only on requery failure fall back to the
-// last+pasted_cch estimate (DP-5). !pasted never updates (stale last stays,
-// and the next Enter's clamp guards it - design §1.3.4 offset rule (b)).
+// §2.6.A2 step 4 + B-6a call-timing contract (design 210000 §2.2 option (a)):
+// after a successful replacement, advance the stored "previous translation
+// end" offset. The stored value is the START of the next Enter's EM_SETSEL
+// range (TrySelectNewText above), so on paths where a newline is injected the
+// caller MUST invoke this AFTER SendEnterKey + the settle poll - the REQ-023
+// post-newline caret is the next block's start. Saving pre-newline stored the
+// CRLF position and the following selection swallowed + merged the line break
+// (ISSUE-1; E2E example1/consecutive gates). Internal logic is unchanged by
+// B-6a: real-caret-first requery EM_GETSEL and use its end position; only on
+// requery failure fall back to the last+pasted_cch estimate (DP-5). !pasted
+// never updates (stale last stays, and the next Enter's clamp guards it -
+// design §1.3.4 offset rule (b)).
 void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cch) {
     if (!pasted) {
         return; // design §2.6.A2: failed/H1-aborted paste leaves the offset untouched
@@ -926,6 +933,12 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
         return;
     }
     // Requery failed: estimate from the stored start plus the pasted length.
+    // NOTE (B-6a, design §4.1-1): the estimate does NOT include the injected
+    // newline (pasted_cch is the translated text only), so a call made
+    // pre-newline would merge lines again. The post-newline call site makes
+    // the estimate the conservative low bound (caret is >= last+pasted_cch);
+    // the /005 counter below lets E2E/QA observe how often this path is taken
+    // before any compensation is considered (measure first, 192100 §2.4).
     DWORD last = 0;
     const auto it = edit_caret::g_map.find(key);
     if (it != edit_caret::g_map.end()) {
@@ -937,6 +950,51 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
     DIAG_F("WIN32_INPUT/EditCaretTracker/005: EM_GETSEL requery failed (hwnd=%p gle=%lu); stored estimate %lu = last %lu + pasted %zu (requery_failures=%llu)\n",
            reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError(), est, last, pasted_cch,
            static_cast<unsigned long long>(fails));
+}
+
+// REQ-027 B-6a: read-only caret (selection-end) probe. Same gates as
+// TrySelectNewText/NotifyReplacement - focus candidate resolution, standard
+// EDIT/RichEdit class, EM_GETSEL inside the 100 ms deadlock budget (§2.5.A2) -
+// but it never touches the state map. kEditCaretUnknown on any gate failure.
+DWORD EditCaretTracker_SampleCaret(HWND hwnd) {
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key) ||
+        !edit_caret::IsStandardEditClass(key.focus_hwnd)) {
+        return kEditCaretUnknown;
+    }
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        return kEditCaretUnknown;
+    }
+    return HIWORD(static_cast<DWORD>(em_result));
+}
+
+// REQ-027 B-6a settle (design §2.2 mandatory companion): SendEnterKey injects
+// Enter asynchronously (down + 35 ms hold + up), so the target may not have
+// written the CRLF by the time the worker re-samples the caret. Tier 1: fixed
+// kNewlineSettleMs wait (same pattern as kPasteSettleDelayMs). Tier 2: poll
+// the caret visibility kNewlineSettlePollMax times at kNewlineSettlePollMs
+// intervals; stop as soon as it moved off the pre-newline baseline. Exhaustion
+// only logs /008 and proceeds WITHOUT +2 compensation (rejected variant (b) -
+// single-LF controls would be over-stored); the next Enter's clamp (EditCaretTracker/004)
+// remains the last safety net ("settle failure allowed", design §2.2).
+void EditCaretTracker_SettleNewlineVisible(HWND hwnd, DWORD pre_newline_caret) {
+    ::Sleep(kNewlineSettleMs);
+    if (pre_newline_caret == kEditCaretUnknown) {
+        return; // no baseline (untracked/non-EM control): fixed wait only
+    }
+    for (int poll = 0; poll < kNewlineSettlePollMax; ++poll) {
+        const DWORD now = EditCaretTracker_SampleCaret(hwnd);
+        if (now == kEditCaretUnknown) {
+            return; // EM path went away; NotifyReplacement decides on its own
+        }
+        if (now != pre_newline_caret) {
+            return; // newline visible to EM_GETSEL - proceed to save
+        }
+        ::Sleep(kNewlineSettlePollMs);
+    }
+    DIAG_F("WIN32_INPUT/EditCaretTracker/008: injected newline not visible after settle (hwnd=%p caret=%lu unchanged); proceeding without compensation\n",
+           reinterpret_cast<void*>(hwnd), pre_newline_caret);
 }
 
 std::wstring CopySelectedText(HWND hwnd) {

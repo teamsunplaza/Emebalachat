@@ -270,6 +270,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     badge_.SetStatus(BadgeStatus::Active);
 
     bool pasted = false;
+    // B-6a: set when NotifyReplacement still owes its post-newline call (see
+    // branch comment at the paste site and the injection block below).
+    bool pending_notify = false;
     if (!translated.empty() && translated != line) {
         // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
         // foreground window immediately before Ctrl+V and aborts on mismatch.
@@ -288,12 +291,20 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // Clipboard swap consumed the backup; RAII restorer must not overwrite.
             restorer.active = false;
         }
-        // REQ-027 (Phase A §2.9.A2): advance the EditCaretTracker offset AFTER
-        // the replacement but BEFORE SendEnterKey below - the caret position
-        // must be sampled pre-newline so the next Enter selects only the text
-        // typed on the new line. No-op unless pasted==true and the target is a
-        // tracked standard EDIT/RichEdit (design §2.6.A2 step 4).
-        EditCaretTracker_NotifyReplacement(task.target_hwnd, pasted, translated.size());
+        // REQ-027 B-6a (design 210000_architect §2.2 option (a)): the offset
+        // saved here becomes the START of the NEXT Enter's EM_SETSEL range, so
+        // WHEN a newline is injected (REQ-023 CategoryB / send gate below) the
+        // save must happen AFTER SendEnterKey - the post-newline caret is the
+        // next block's start. The old pre-newline save stored the caret at the
+        // CRLF position, the next selection swallowed the preceding "\r\n"
+        // (2 UTF-16 units) and the replacement deleted it: ISSUE-1 line-merge
+        // ("엔터 치면 번역되고 줄바꿈이 안 됨"). Proven by the E2E harness
+        // (054000_code-report: example1 newlines 1/6, consecutive merge;
+        // e2e-run-consecutive-output.log L28/L38). No-op unless pasted==true
+        // and the target is a tracked standard EDIT/RichEdit (design §2.6.A2
+        // step 4). Branch flag below picks the call site; both sites pass
+        // identical args, so exactly one call runs per task.
+        pending_notify = pasted;
     } else {
         DIAG_LOG("PIPELINE", "stage=paste skipped reason=%s",
                  translated.empty() ? "translation_empty" : "translation_equals_source");
@@ -331,7 +342,23 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                        config_.auto_send.load(std::memory_order_relaxed);
     }
     if (inject_enter && h1_ok) {
+        // B-6a settle baseline: caret right BEFORE the newline injection (the
+        // post-paste position). kEditCaretUnknown on any EM-gate failure - the
+        // settle then degrades to its fixed 50 ms wait (design §2.2).
+        const DWORD pre_newline_caret =
+            pending_notify ? EditCaretTracker_SampleCaret(task.target_hwnd)
+                           : kEditCaretUnknown;
         SendEnterKey(task.is_shift_enter);
+        if (pending_notify) {
+            // Wait (bounded: 50 ms fixed + max 4×25 ms visibility poll) until
+            // the app has visibly processed the injected Enter, THEN save the
+            // offset = post-newline caret = next block's start. REQ-023
+            // alignment: CategoryB always injects the newline, so this is the
+            // normal editor path the E2E example1/consecutive gates cover.
+            EditCaretTracker_SettleNewlineVisible(task.target_hwnd, pre_newline_caret);
+            EditCaretTracker_NotifyReplacement(task.target_hwnd, pasted, translated.size());
+            pending_notify = false;
+        }
         // Phase 5: Category B newline vs Category A send are distinguished in
         // the DIAG log (plan §2.3) - same SendEnterKey primitive, different app
         // semantics (editor Enter = "\n", chat Enter = "send").
@@ -340,6 +367,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  task.is_shift_enter ? 1 : 0,
                  config_.auto_send.load(std::memory_order_relaxed) ? 1 : 0);
     } else {
+        // No newline was injected (CategoryA send gate or H1 foreground
+        // mismatch): the caret is still at the replacement end, so save the
+        // offset here - pre-injection position is correct for this branch
+        // (design §2.5 row 2: two call sites, one per outcome).
+        if (pending_notify) {
+            EditCaretTracker_NotifyReplacement(task.target_hwnd, pasted, translated.size());
+            pending_notify = false;
+        }
         DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=%s target=%p",
                  h1_ok ? "category_a_send_gate" : "h1_foreground_mismatch",
                  reinterpret_cast<const void*>(task.target_hwnd));

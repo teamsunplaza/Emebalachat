@@ -190,7 +190,45 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd);
 // 치환 성공 후 호출 — 직전 번역 지점 오프셋을 갱신한다.
 // pasted=true이고 hwnd가 추적 중이면 EM_GETSEL 재조회 우선, 실패 시
 // last + pasted_cch 추정치로 갱신. pasted=false면 갱신하지 않는다.
+//
+// B-6a 호출 시점 계약 (design 210000_architect §2.2 수정안 (a)): 개행이 주입되는
+// 경로(CategoryB/inject_enter && h1_ok)에서는 반드시 SendEnterKey + 아래 settle
+// 폴 이후에 호출해야 한다. 저장되는 오프셋은 다음 Enter의 EM_SETSEL 시작점이라,
+// 개행 전 캐럿을 저장하면 선행 CRLF(UTF-16 2유닛)가 선택에 흡수되고 치환으로
+// 소멸한다(ISSUE-1 줄병합). 개행 미주입 경로는 치환 직후 호출이 정확하다(캐럿이
+// 이미 치환 끝).
 void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cch);
+
+// ---- REQ-027 B-6a: post-newline settle (ISSUE-1 line-merge fix) -----------
+// SendEnterKey is an async SendInput (down + 35ms hold + up); the target may
+// not have written the newline when the worker re-samples the caret. Spec
+// (design §2.2 mandatory companion): fixed kNewlineSettleMs wait, then an
+// EM_GETSEL visibility poll at kNewlineSettlePollMs intervals, max
+// kNewlineSettlePollMax times (poll budget stays inside the §2.5.A2 deadlock
+// bound). Exhaustion only logs EditCaretTracker/008 and proceeds: NO +2
+// compensation (that is rejected variant (b) - single-LF controls would be
+// over-stored); the next Enter's clamp (EditCaretTracker/004) is the last
+// safety net ("settle failure allowed", design §2.2).
+inline constexpr uint32_t kNewlineSettleMs = 50;
+inline constexpr uint32_t kNewlineSettlePollMs = 25;
+inline constexpr int kNewlineSettlePollMax = 4;
+
+// Sentinel for a caret sample that could not be taken. EM_GETSEL saturates at
+// 65535 (WORD packing), so UINT32_MAX can never collide with a real offset.
+inline constexpr DWORD kEditCaretUnknown = UINT32_MAX;
+
+// Read-only caret (selection-end) probe through the same gates as
+// NotifyReplacement: focus candidate resolution + standard EDIT/RichEdit
+// class + EM_GETSEL within the 100ms deadlock budget. Returns
+// kEditCaretUnknown when any gate fails. Used by the worker to capture the
+// pre-newline caret for the settle comparison below.
+DWORD EditCaretTracker_SampleCaret(HWND hwnd);
+
+// Block (bounded) until the caret on hwnd moves off pre_newline_caret - proof
+// the injected newline is visible to EM_GETSEL - or the settle budget is
+// spent. No-op besides the fixed wait when pre_newline_caret is
+// kEditCaretUnknown. Call between SendEnterKey and NotifyReplacement.
+void EditCaretTracker_SettleNewlineVisible(HWND hwnd, DWORD pre_newline_caret);
 
 // REQ-027 headless test seam (design §3 B-4 item 4): the pure part of the
 // NotifyReplacement offset-update rule - the EM_GETSEL-requery-failure
