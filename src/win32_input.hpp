@@ -174,9 +174,39 @@ constexpr uint32_t ClipboardOpenBackoffDelayMs(int attempt) {
     return kClipboardOpenBaseDelayMs << (attempt - 1);
 }
 
+// ---- REQ-027 (Phase A §A-2): editor caret-offset tracker ----
+//
+// REQ-027 (Phase A §A-2): 표준 EDIT/RichEdit 컨트롤 한정 "직전 번역 지점
+// 오프셋" 추적기. CategoryB 에디터에서 Enter 시 SelectMessageBlock(전체~캐럿)
+// 대신 EM_SETSEL(last_offset, caret)로 새로 입력한 부분만 선택한다.
+// 비표준 컨트롤(브라우저/Electron/WinUI/VSCode)은 EM_* 미처리이므로 false를
+// 반환하고 호출자가 SelectMessageBlock으로 폴백한다.
+
+// hwnd: 포그라운드 최상위 창 (hook이 캡처한 target_hwnd).
+// 반환: true = 오프셋 선택 성공(EM_SETSEL 적용됨, 이후 Ctrl+C 진행),
+//       false = 폴백 필요(비표준/교착/실패).
+bool EditCaretTracker_TrySelectNewText(HWND hwnd);
+
+// 치환 성공 후 호출 — 직전 번역 지점 오프셋을 갱신한다.
+// pasted=true이고 hwnd가 추적 중이면 EM_GETSEL 재조회 우선, 실패 시
+// last + pasted_cch 추정치로 갱신. pasted=false면 갱신하지 않는다.
+void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cch);
+
+// REQ-027 headless test seam (design §3 B-4 item 4): the pure part of the
+// NotifyReplacement offset-update rule - the EM_GETSEL-requery-failure
+// estimate "last + pasted_cch", saturating at UINT32_MAX (the state map
+// stores UTF-16 code-unit offsets in a DWORD). No Win32 contact, so the
+// arithmetic is unit-testable without a live editor (TestReq027CaretTracker).
+inline constexpr uint32_t EditCaretTracker_EstimateNextOffset(uint32_t last, size_t pasted_cch) {
+    const uint64_t sum = static_cast<uint64_t>(last) + pasted_cch;
+    return sum > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(sum);
+}
+
 // High-level pipeline helper:
 // Classifies the window via ClassifyAppWindow(hwnd) and selects text with
-// SelectAll() (CategoryA) or SelectMessageBlock() (CategoryB), then runs the REQ-R04
+// SelectAll() (CategoryA), the REQ-027 EditCaretTracker EM_SETSEL path
+// (CategoryB + standard EDIT/RichEdit classes only), or SelectMessageBlock()
+// (CategoryB fallback for everything else), then runs the REQ-R04
 // sequence-number copy-settle wait and retrieves clipboard text.
 // Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);

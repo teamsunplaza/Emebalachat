@@ -4925,6 +4925,144 @@ void TestPhase8ConsoleGate() {
     }
 }
 
+// REQ-027 (Batch B-4, plan §3 B-4 item 4): EditCaretTracker headless suite.
+// Contract points pinned here:
+//  (a) null / invalid hwnd -> TrySelectNewText false (caller keeps the
+//      SelectMessageBlock fallback; the tracker never claims success).
+//  (b) NotifyReplacement on untracked / null / garbage hwnds is a safe no-op.
+//  (c) the pure estimate path (requery-failure fallback last + pasted_cch,
+//      saturating at UINT32_MAX) is asserted through the header's constexpr
+//      EditCaretTracker_EstimateNextOffset seam - no Win32 contact needed.
+//  (d) CREATIVE VERIFICATION beyond the plan minimum: a full positive EM
+//      sequence against a REAL in-process EDIT control (same technique the
+//      Phase 8 suite uses with synthetic windows). The assertion is the
+//      observable side effect - the control's actual selection state after
+//      each TrySelectNewText/NotifyReplacement - proving "only the text typed
+//      since the last replacement gets selected", the clamp reset, and the
+//      pasted=false no-update rule, without any keyboard injection.
+void TestReq027CaretTracker() {
+    std::cout << "[TEST] REQ-027 EditCaretTracker (caret offset tracking)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) unusable hwnds must never report an EM selection.
+    TEST_CHECK(!EditCaretTracker_TrySelectNewText(nullptr),
+               "REQ-027: null hwnd -> TrySelectNewText false (fallback path)");
+    const HWND garbage = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x1u));
+    TEST_CHECK(!EditCaretTracker_TrySelectNewText(garbage),
+               "REQ-027: invalid non-window hwnd -> TrySelectNewText false");
+
+    // (b) no-op notify on untracked targets must not crash (execution reaching
+    // the next TEST_CHECK is the proof).
+    EditCaretTracker_NotifyReplacement(nullptr, true, 10);
+    EditCaretTracker_NotifyReplacement(nullptr, false, 0);
+    EditCaretTracker_NotifyReplacement(garbage, true, 10);
+    TEST_CHECK(true, "REQ-027: NotifyReplacement no-op on null/garbage hwnds survived");
+
+    // (c) pure estimate arithmetic (design §2.6.A2 requery-failure fallback).
+    TEST_CHECK(EditCaretTracker_EstimateNextOffset(0u, 0u) == 0u,
+               "REQ-027: estimate base case 0 + 0 = 0");
+    TEST_CHECK(EditCaretTracker_EstimateNextOffset(120u, 40u) == 160u,
+               "REQ-027: estimate normal case last + pasted_cch");
+    TEST_CHECK(EditCaretTracker_EstimateNextOffset(UINT32_MAX, 5u) == UINT32_MAX,
+               "REQ-027: estimate saturates at UINT32_MAX (stored offset is a DWORD)");
+    TEST_CHECK(EditCaretTracker_EstimateNextOffset(0xFFFFFFF0u, 100u) == UINT32_MAX,
+               "REQ-027: estimate saturates on wrap-around");
+
+    // (d) positive end-to-end against a real standard EDIT control.
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req027Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req027", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"line1\nabc",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-027: in-process EDIT control created");
+    // SetFocus requires a visible window: show the off-screen host without
+    // activating it, then verify the focus chain really landed on the EDIT
+    // control (SetFocus returns the PREVIOUS focus window, so the new focus
+    // state must be probed via GetGUIThreadInfo, not the return value). If
+    // the headless environment denies focus, the positive EM sequence is
+    // skipped explicitly rather than passing/failing by luck (the resolution
+    // would then depend on whatever hwndFocus holds).
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; positive EM sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // Caret collapsed at offset 6 (right after "line1\n").
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(6), static_cast<LPARAM>(6));
+
+        // Pass 1: untracked -> last=0 -> select from text start to caret.
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027: standard Edit class enters EM path (true)");
+        DWORD sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 6u,
+                   "REQ-027: first pass selects [0..caret) (whole new input, no history yet)");
+
+        // pasted=false must NOT advance the offset (DP-4(b) stale-last rule):
+        // stored start stays 0... then simulate the real replacement with
+        // pasted=true and verify advancement via the next selection bounds.
+        EditCaretTracker_NotifyReplacement(edit, false, 50);
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(9), static_cast<LPARAM>(9));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027: second pass enters EM path");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        // Stored start after pass 1 was 0 (clamped history start); the false
+        // notify must have left it at 0, so the selection spans [0..9).
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 9u,
+                   "REQ-027: pasted=false kept the old offset (selection starts at 0, not 50)");
+
+        // Successful replacement: requery-EM_GETSEL-priority stores caret end 9.
+        EditCaretTracker_NotifyReplacement(edit, true, 3);
+        // User types "def" on the next line: caret 9 -> 12 via a doc append.
+        ::SetWindowTextW(edit, L"line1\nabcdef");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(12), static_cast<LPARAM>(12));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027: third pass enters EM path");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        // THE core REQ-027 assertion: only "def" (9..12) is selected, not the
+        // whole flow from 0 (which is what SelectMessageBlock would do).
+        TEST_CHECK(LOWORD(sel) == 9u && HIWORD(sel) == 12u,
+                   "REQ-027: third pass selects ONLY newly typed text [9..12)");
+
+        // Clamp rule (§2.3.A2 (b)): document shrank below the tracked offset ->
+        // reset to 0 (full-from-start), next pass selects [0..2).
+        ::SetWindowTextW(edit, L"li");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(2), static_cast<LPARAM>(2));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027: clamped pass still enters EM path (safe full-selection, not fallback)");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 2u,
+                   "REQ-027: stale offset > caret clamps to 0");
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-027 EditCaretTracker tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-027 EditCaretTracker tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -4985,6 +5123,7 @@ int main() {
     TestDiagLogger();
     TestPhase5AppClassifier();
     TestPhase8ConsoleGate();
+    TestReq027CaretTracker();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

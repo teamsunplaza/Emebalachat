@@ -1,11 +1,14 @@
 #include "win32_input.hpp"
 #include "diag_logger.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cwctype>
 #include <imm.h> // ImmGetContext/ImmGetCompositionStringW (imm32.lib already linked)
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <windows.h>
 
 namespace emebalachat {
@@ -656,6 +659,276 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
     return true;
 }
 
+// ---- REQ-027 (Phase A §A-2): EditCaretTracker --------------------------------
+//
+// "Translate from the previous translation point up to the caret" offset
+// tracking, gated to standard EDIT/RichEdit controls on the CategoryB path.
+// Public contract and design references: win32_input.hpp §REQ-027 block and
+// docs/260907_0001 §A-2 (§2.2.A2 contract, §2.3.A2 state, §2.4.A2 HWND
+// resolution, §2.5.A2 deadlock guard, §2.6.A2 selection sequence, §2.9.A2
+// REQ-017/023 alignment). All state is file-local and mutex-guarded: the map
+// is worker-thread-only today, but the mutex documents safety across
+// jthread stop/restart boundaries (I4 pattern, design §2.3.A2).
+namespace edit_caret {
+
+struct Key {
+    HWND focus_hwnd = nullptr;
+    DWORD pid = 0;
+    bool operator==(const Key& o) const {
+        return focus_hwnd == o.focus_hwnd && pid == o.pid;
+    }
+};
+
+struct KeyHash {
+    size_t operator()(const Key& k) const {
+        // HWND values differ mostly in the low bits; mix once before xoring
+        // the pid so distinct (hwnd,pid) pairs do not collide trivially.
+        auto h = static_cast<size_t>(reinterpret_cast<uintptr_t>(k.focus_hwnd));
+        h = (h >> 4) ^ (h << 8);
+        return h ^ (static_cast<size_t>(k.pid) * 0x9E3779B9u);
+    }
+};
+
+struct Entry {
+    DWORD offset = 0;          // UTF-16 code-unit index of the last replacement end
+    uint64_t last_used_ms = 0; // LRU stamp (GetTickCount64)
+};
+
+// §2.3.A2 memory upper bound: 64 entries max, oldest used-time evicted.
+constexpr size_t kMaxEntries = 64;
+// §2.5.A2 deadlock guard: no EM_* call may block the worker past 100 ms.
+constexpr DWORD kEmTimeoutMs = 100;
+
+std::mutex g_mutex;
+std::unordered_map<Key, Entry, KeyHash> g_map;
+
+// DP-5: EM_GETSEL requery failures in NotifyReplacement that fell back to the
+// last+pasted_cch estimate. The running counter is logged with every /005
+// line so a diag trace can observe estimate drift across a session.
+std::atomic<uint64_t> g_requery_failures{0};
+
+// §2.4.A2: resolve the focus-control candidate for the captured top-level
+// target hwnd. GetGUIThreadInfo is callable from this (worker) thread for a
+// foreign thread and never blocks. A null hwndFocus falls back to the
+// top-level hwnd itself (some apps ARE their control); a candidate that is
+// not a live window or belongs to nothing resolvable returns false (DP-4(d)
+// fail-open: caller falls back to SelectMessageBlock).
+bool ResolveFocusCandidate(HWND target, Key& out) {
+    if (!target || !::IsWindow(target)) {
+        return false;
+    }
+    DWORD pid = 0;
+    const DWORD tid = ::GetWindowThreadProcessId(target, &pid);
+    if (tid == 0 || pid == 0) {
+        return false;
+    }
+    HWND focus = nullptr;
+    GUITHREADINFO gti = {};
+    gti.cbSize = sizeof(gti);
+    if (::GetGUIThreadInfo(tid, &gti)) {
+        focus = gti.hwndFocus;
+    }
+    if (!focus) {
+        focus = target;
+    }
+    if (!::IsWindow(focus)) {
+        return false;
+    }
+    out.focus_hwnd = focus;
+    out.pid = pid;
+    return true;
+}
+
+// §2.4.A2 whitelist (case-insensitive, per the design table). Literal class
+// names only - richedit.h is deliberately not included: RICHEDIT_CLASS here
+// is the literal "RICHEDIT_CLASS" window class registered by legacy
+// riched32, not the SDK macro. VSCode/Chrome/Electron surfaces
+// (Chrome_WidgetWin_1 etc.) are NOT in the list, structurally blocking the
+// EM path even if a Chromium exe were ever reclassified to CategoryB
+// (design §2.7.A2 double gate: exe category table + window class).
+bool IsStandardEditClass(HWND hwnd) {
+    static const wchar_t* const kAllowedClasses[] = {
+        L"Edit", L"RichEdit20W", L"RichEdit20A", L"RichEdit50W", L"RICHEDIT_CLASS"
+    };
+    wchar_t cls[64] = {};
+    if (::GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) {
+        return false;
+    }
+    for (const wchar_t* name : kAllowedClasses) {
+        if (::lstrcmpiW(cls, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// §2.5.A2: EVERY cross-process EM_* call goes through this wrapper so a hung
+// or message-pump-busy target can never stall the worker beyond
+// kEmTimeoutMs. Returns false on any failure or timeout. result is the
+// DWORD_PTR out-parameter (EM_GETSEL packs its reply into the low 32 bits).
+bool SendEm(HWND hwnd, UINT msg, WPARAM w, LPARAM l, ULONG_PTR& result) {
+    result = 0;
+    return ::SendMessageTimeoutW(hwnd, msg, w, l,
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, kEmTimeoutMs,
+                                 &result) != 0;
+}
+
+// §2.3.A2 lifecycle (a): drop entries whose focus window was destroyed.
+// Callers hold g_mutex and the map is bounded to kMaxEntries, so the sweep
+// is O(64) worst case on an Enter path that already did SendMessage round
+// trips.
+void PurgeDeadEntriesLocked() {
+    for (auto it = g_map.begin(); it != g_map.end();) {
+        if (!::IsWindow(it->first.focus_hwnd)) {
+            it = g_map.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Inserts or refreshes key's entry and refreshes its LRU stamp. Caller must
+// hold g_mutex. Enforces the kMaxEntries upper bound by evicting the entry
+// with the oldest last_used_ms (§2.3.A2 lifecycle (c)).
+void StoreLocked(const Key& key, DWORD offset) {
+    const uint64_t now = ::GetTickCount64();
+    auto it = g_map.find(key);
+    if (it != g_map.end()) {
+        it->second.offset = offset;
+        it->second.last_used_ms = now;
+        return;
+    }
+    if (g_map.size() >= kMaxEntries) {
+        auto oldest = g_map.begin();
+        for (auto i = g_map.begin(); i != g_map.end(); ++i) {
+            if (i->second.last_used_ms < oldest->second.last_used_ms) {
+                oldest = i;
+            }
+        }
+        g_map.erase(oldest);
+    }
+    g_map.emplace(key, Entry{offset, now});
+}
+
+} // namespace edit_caret
+
+// §2.6.A2 step 1: EM_GETSEL(last-known .. caret) selection. See header for
+// the true/false contract. Any failure leaves the map untouched or returns
+// false so the caller's SelectMessageBlock fallback reproduces the exact
+// pre-REQ-027 behavior (regression-safe by construction).
+bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key)) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/002: focus candidate unresolved (hwnd=%p); fallback to SelectMessageBlock\n",
+               reinterpret_cast<void*>(hwnd));
+        return false;
+    }
+    if (!edit_caret::IsStandardEditClass(key.focus_hwnd)) {
+        // Non-standard control (browser/Electron/WinUI/VSCode): EM_* is not
+        // implemented there, so this is the documented §2.8.A2 limitation
+        // path. Logged per Enter for QA attribution (class is app metadata,
+        // never user content).
+        wchar_t cls[64] = {};
+        ::GetClassNameW(key.focus_hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0])));
+        char cls_u8[128] = {};
+        ::WideCharToMultiByte(CP_UTF8, 0, cls, -1, cls_u8, static_cast<int>(sizeof(cls_u8)), nullptr, nullptr);
+        DIAG_F("WIN32_INPUT/EditCaretTracker/002: non-standard class '%s' (hwnd=%p); fallback to SelectMessageBlock\n",
+               cls_u8, reinterpret_cast<void*>(key.focus_hwnd));
+        return false;
+    }
+
+    // EM_GETSEL with NULL pointer params: the selection comes back in the
+    // return value (LOWORD start, HIWORD end), so no cross-process pointer
+    // marshalling is needed. NOTE: the documented EM_GETSEL return is
+    // WORD-scaled (>65535 saturates) - acceptable for message-sized editor
+    // blocks, and both read and write paths below use the same encoding, so
+    // a saturated offset stays self-consistent.
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/001: EM_GETSEL failed/timed out (hwnd=%p gle=%lu); fallback\n",
+               reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError());
+        return false;
+    }
+    const DWORD get_sel = static_cast<DWORD>(em_result);
+    const DWORD sel_end = HIWORD(get_sel);
+
+    std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+    edit_caret::PurgeDeadEntriesLocked();
+    DWORD last = 0;
+    const auto it = edit_caret::g_map.find(key);
+    if (it != edit_caret::g_map.end()) {
+        last = it->second.offset;
+    }
+    // §2.3.A2 lifecycle (b): the document shrank below the stored point
+    // (user deleted text during the translation network delay - DP-4(b)).
+    // Reset to 0 = select from text start (safe, pre-REQ-027 geometry).
+    if (last > sel_end) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/004: stored offset %lu > caret %lu (hwnd=%p); clamped to 0\n",
+               last, sel_end, reinterpret_cast<void*>(key.focus_hwnd));
+        last = 0;
+    }
+
+    ULONG_PTR set_sel_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_SETSEL, static_cast<WPARAM>(last),
+                            static_cast<LPARAM>(sel_end), set_sel_result)) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/003: EM_SETSEL(%lu,%lu) failed/timed out (hwnd=%p gle=%lu); fallback\n",
+               last, sel_end, reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError());
+        return false;
+    }
+    // Remember the start point used for this Enter so a later NotifyReplacement
+    // can compute the estimate (last + pasted_cch) even without a focus hwnd.
+    edit_caret::StoreLocked(key, last);
+    DIAG_LOG("EditCaretTracker", "em_setselect hwnd=%p last=%lu caret=%lu",
+             reinterpret_cast<const void*>(key.focus_hwnd), last, sel_end);
+    return true;
+}
+
+// §2.6.A2 step 4: after a successful replacement, advance the stored
+// "previous translation end" offset. Real-caret-first: requery EM_GETSEL and
+// use its end position; only on requery failure fall back to the
+// last+pasted_cch estimate (DP-5). !pasted never updates (stale last stays,
+// and the next Enter's clamp guards it - design §1.3.4 offset rule (b)).
+void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cch) {
+    if (!pasted) {
+        return; // design §2.6.A2: failed/H1-aborted paste leaves the offset untouched
+    }
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key) ||
+        !edit_caret::IsStandardEditClass(key.focus_hwnd)) {
+        return; // no EM session was possible for this window: nothing to advance
+    }
+
+    DWORD caret = 0;
+    bool have_caret = false;
+    ULONG_PTR em_result = 0;
+    if (edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        caret = HIWORD(static_cast<DWORD>(em_result));
+        have_caret = true;
+    }
+
+    std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+    edit_caret::PurgeDeadEntriesLocked();
+    if (have_caret) {
+        // If the caret somehow precedes the stored start (deletion during
+        // paste), the next Enter's clamp (§2.3.A2 lifecycle (b)) repairs it;
+        // storing the real caret directly is the design's priority rule.
+        edit_caret::StoreLocked(key, caret);
+        return;
+    }
+    // Requery failed: estimate from the stored start plus the pasted length.
+    DWORD last = 0;
+    const auto it = edit_caret::g_map.find(key);
+    if (it != edit_caret::g_map.end()) {
+        last = it->second.offset;
+    }
+    const uint64_t fails = edit_caret::g_requery_failures.fetch_add(1) + 1;
+    const DWORD est = EditCaretTracker_EstimateNextOffset(last, pasted_cch);
+    edit_caret::StoreLocked(key, est);
+    DIAG_F("WIN32_INPUT/EditCaretTracker/005: EM_GETSEL requery failed (hwnd=%p gle=%lu); stored estimate %lu = last %lu + pasted %zu (requery_failures=%llu)\n",
+           reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError(), est, last, pasted_cch,
+           static_cast<unsigned long long>(fails));
+}
+
 std::wstring CopySelectedText(HWND hwnd) {
     // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
     // here. ClassifyAppWindow is consulted once and its category picks the
@@ -668,8 +941,24 @@ std::wstring CopySelectedText(HWND hwnd) {
     // from the cursor to the start of the whole text flow, so the full block
     // reaches the translator. Identical for every language/script: it is pure
     // keyboard geometry.
+    //
+    // REQ-027 (Phase A §3 B-4): inside CategoryB, the EditCaretTracker EM path
+    // gets first shot at a standard EDIT/RichEdit focus control - it performs
+    // EM_SETSEL(previous translation end .. caret) IN-PROCESS on the target,
+    // selecting ONLY the newly typed text instead of the whole flow. On false
+    // (non-standard class, hung target, EM failure) the untouched
+    // SelectMessageBlock fallback reproduces the exact pre-REQ-027 behavior;
+    // the fallback is encapsulated here so worker.cpp needs no selection
+    // wiring. CategoryA is untouched by construction.
     const AppCategory category = ClassifyAppWindow(hwnd);
-    const bool sel_ok = (category == AppCategory::CategoryA) ? SelectAll() : SelectMessageBlock();
+    bool sel_ok = false;
+    if (category == AppCategory::CategoryA) {
+        sel_ok = SelectAll();
+    } else if (EditCaretTracker_TrySelectNewText(hwnd)) {
+        sel_ok = true; // selection already set by EM_SETSEL - skip keyboard geometry
+    } else {
+        sel_ok = SelectMessageBlock();
+    }
     ::Sleep(10);
 
     // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.

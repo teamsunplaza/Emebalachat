@@ -288,6 +288,12 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // Clipboard swap consumed the backup; RAII restorer must not overwrite.
             restorer.active = false;
         }
+        // REQ-027 (Phase A §2.9.A2): advance the EditCaretTracker offset AFTER
+        // the replacement but BEFORE SendEnterKey below - the caret position
+        // must be sampled pre-newline so the next Enter selects only the text
+        // typed on the new line. No-op unless pasted==true and the target is a
+        // tracked standard EDIT/RichEdit (design §2.6.A2 step 4).
+        EditCaretTracker_NotifyReplacement(task.target_hwnd, pasted, translated.size());
     } else {
         DIAG_LOG("PIPELINE", "stage=paste skipped reason=%s",
                  translated.empty() ? "translation_empty" : "translation_equals_source");
