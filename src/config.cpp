@@ -365,6 +365,22 @@ std::string ResolveDragDefaultTarget() {
     return info->name_en;
 }
 
+// Phase 4 (REQ-020, plan §1.4): the four system-default language values, as a
+// pure function of the OS locale. Reuses ResolveDragDefaultTarget (Phase 3
+// §2.1: the drag default lives in exactly one place) plus the fixed defaults
+// of REQ-006/015/016. The About-window reset coordinator (main.cpp, Batch 3)
+// rewrites the config fields with this result; the reset NEVER deletes keys
+// (Phase 3 §2.3 contract: ToJsonStringLocked always writes the four keys, so
+// a reset must be a re-record, not an erase).
+SystemDefaultLanguages ComputeSystemDefaultLanguages() {
+    SystemDefaultLanguages defs;
+    defs.drag_source = "Auto Detect";            // REQ-006
+    defs.drag_target = ResolveDragDefaultTarget(); // REQ-007 (OS lang)
+    defs.type_source = "Auto Detect";            // REQ-015
+    defs.type_target = "English";                // REQ-016
+    return defs;
+}
+
 std::string CycleTargetLanguage(std::string_view current_code_or_name) {
     const auto& targets = GetTargetLanguages();
     size_t current_idx = 0;

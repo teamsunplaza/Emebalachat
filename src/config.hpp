@@ -55,6 +55,21 @@ std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
 // §2.6). Pure: read-only locale query, safe from any thread.
 std::string ResolveDragDefaultTarget();
 
+// Phase 4 (REQ-020, plan §1.2/§1.4): the four system-default language values,
+// computed as a pure function of the OS locale. Used by the About-window
+// "Reset to system defaults" button (main.cpp coordinator, Batch 3).
+// drag_target comes from ResolveDragDefaultTarget() (REQ-007); the other three
+// are the fixed defaults from REQ-006/015/016. Pure: read-only locale query,
+// no config mutation, safe from any thread. Unit-tested headlessly
+// (TestPhase4SystemDefaults).
+struct SystemDefaultLanguages {
+    std::string drag_source;  // "Auto Detect" (REQ-006)
+    std::string drag_target;  // ResolveDragDefaultTarget() (REQ-007)
+    std::string type_source;  // "Auto Detect" (REQ-015)
+    std::string type_target;  // "English" (REQ-016)
+};
+SystemDefaultLanguages ComputeSystemDefaultLanguages();
+
 // Cycles to the next target language given current code or name, wrapping around.
 std::string CycleTargetLanguage(std::string_view current_code_or_name);
 

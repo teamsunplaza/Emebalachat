@@ -32,7 +32,8 @@ const wchar_t* const kLinkUrls[AboutWindow::kNumLinks] = {
     L"https://www.reddit.com/r/emebala/",
 };
 
-// Hover index encoding for hovered_link_ (link slots 0..2, close = 3).
+// Hover index encoding for hovered_link_ (link slots 0..2, close = 3,
+// reset = kHoverReset in the class header - Phase 4, REQ-020).
 constexpr int kHoverClose = 3;
 
 bool IsPointInRect(const D2D1_RECT_F& r, float x, float y) {
@@ -166,6 +167,12 @@ void AboutWindow::Destroy() {
         if (::GetCurrentThreadId() == gui_thread_id_) {
             DrainMarshalQueue();
         }
+        // Phase 4 (REQ-020, plan §2.6): explicit reset-feedback timer teardown
+        // before the window goes away. DestroyWindow would drop hwnd-scoped
+        // timers anyway, but killing it here keeps the cleanup contract local
+        // and auditable (Debug review focus point: no timer leak).
+        ::KillTimer(hwnd_, kResetFeedbackTimerId);
+        reset_feedback_until_ = 0;
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -330,6 +337,12 @@ void AboutWindow::Dismiss() {
         return;
     }
     if (!visible_.load(std::memory_order_relaxed)) return;
+    // Phase 4 (REQ-020, plan §2.6): a reset-click "done" label must not leak
+    // into the next Show. Kill the feedback timer (idempotent no-op when the
+    // label is not counting down) BEFORE hiding, so a WM_TIMER can never race
+    // in after this point. The next ShowAt renders the resting label.
+    ::KillTimer(hwnd_, kResetFeedbackTimerId);
+    reset_feedback_until_ = 0;
     visible_ = false;
     hovered_link_ = -1;
     ::ShowWindow(hwnd_, SW_HIDE);
@@ -367,6 +380,9 @@ AboutWindow::LocalizedContent AboutWindow::BuildLocalizedContent() {
     c.contacts[0] = I18n::Get(StringId::AboutContactOrg);
     c.contacts[1] = I18n::Get(StringId::AboutContactPhone);
     c.contacts[2] = I18n::Get(StringId::AboutContactLead);
+    // Phase 4 (REQ-020, plan §2.5): resting label of the reset button. The
+    // transient "done" label is a momentary state, read directly by Render.
+    c.reset_label = I18n::Get(StringId::AboutResetButton);
     return c;
 }
 
@@ -531,6 +547,36 @@ void AboutWindow::Render() {
         }
     }
 
+    // 7b. "Reset to system defaults" action button (Phase 4, REQ-020, plan
+    // §2.2): full card width minus the 24 DIP insets, y 546..578, made
+    // possible by the 560 -> 596 DIP card extension. Same pill palette as
+    // the link buttons (pillBg / pillBgHover / accent border, 4 DIP radius,
+    // link_format_ centered text) but wide, visually marking it as an
+    // action. During the 1.6 s post-click feedback window the label reads
+    // StringId::AboutResetDone instead of the localized resting label.
+    reset_rect_ = D2D1::RectF(24.0f, 546.0f, w - 24.0f, 578.0f);
+    {
+        const bool hover = (hovered_link_ == kHoverReset);
+        const bool feedback = (reset_feedback_until_ != 0 &&
+                               ::GetTickCount64() < reset_feedback_until_);
+        const std::wstring reset_text =
+            feedback ? I18n::Get(StringId::AboutResetDone) : content.reset_label;
+        const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(reset_rect_, 4.0f, 4.0f);
+        if (hover && pillBgHoverBrush) {
+            dc_render_target_->FillRoundedRectangle(btn, pillBgHoverBrush);
+        } else if (pillBgBrush) {
+            dc_render_target_->FillRoundedRectangle(btn, pillBgBrush);
+        }
+        if (accentBrush) {
+            dc_render_target_->DrawRoundedRectangle(btn, accentBrush, hover ? 1.4f : 1.0f);
+        }
+        if (link_format_ && textBrush) {
+            dc_render_target_->DrawText(reset_text.c_str(),
+                                        static_cast<UINT32>(reset_text.size()),
+                                        link_format_, reset_rect_, textBrush);
+        }
+    }
+
     // 8. Close button top-right (same rect math as the tooltip's).
     close_btn_rect_ = D2D1::RectF(w - 32.0f, 12.0f, w - 12.0f, 32.0f);
     if (header_format_) {
@@ -669,6 +715,8 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             for (int i = 0; !interactive && i < kNumLinks; ++i) {
                 interactive = IsPointInRect(pThis->link_rects_[i], x, y);
             }
+            // Phase 4 (REQ-020): the reset button is interactive too.
+            interactive = interactive || IsPointInRect(pThis->reset_rect_, x, y);
             ::SetCursor(::LoadCursorW(nullptr,
                 interactive ? MAKEINTRESOURCEW(32649) /* hand */ : MAKEINTRESOURCEW(32512) /* arrow */));
             return TRUE;
@@ -690,6 +738,10 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             }
             if (hover < 0 && IsPointInRect(pThis->close_btn_rect_, x, y)) {
                 hover = kHoverClose;
+            }
+            // Phase 4 (REQ-020): kHoverReset extends the hover encoding.
+            if (hover < 0 && IsPointInRect(pThis->reset_rect_, x, y)) {
+                hover = kHoverReset;
             }
 
             if (hover != pThis->hovered_link_) {
@@ -725,6 +777,25 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 pThis->Dismiss();
                 return 0;
             }
+            // Phase 4 (REQ-020, plan §1.3): reset button click. The window is
+            // a pure view - it invokes the coordinator callback (main.cpp,
+            // GUI thread, runs the 4-field default rewrite + save + surface
+            // refresh synchronously here), then shows the optimistic 1.6 s
+            // "done" feedback regardless of the outcome. No confirm dialog
+            // (plan §2.2: non-destructive operation).
+            if (IsPointInRect(pThis->reset_rect_, x, y)) {
+                if (pThis->reset_callback_) {
+                    pThis->reset_callback_();
+                }
+                // Re-arm (not just start): a second click inside the feedback
+                // window extends it; SetTimer with the same id replaces the
+                // existing timer, so exactly one timer is ever active.
+                pThis->reset_feedback_until_ = ::GetTickCount64() + kResetFeedbackMs;
+                ::SetTimer(hwnd, kResetFeedbackTimerId, kResetFeedbackMs, nullptr);
+                pThis->Render();
+                pThis->UpdateLayered();
+                return 0;
+            }
             for (int i = 0; i < kNumLinks; ++i) {
                 if (IsPointInRect(pThis->link_rects_[i], x, y)) {
                     pThis->OpenLink(i);
@@ -738,6 +809,22 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         case WM_KEYDOWN: {
             if (wParam == VK_ESCAPE) {
                 pThis->Dismiss();
+                return 0;
+            }
+            break;
+        }
+
+        // Phase 4 (REQ-020, plan §2.2): the "done" label window expired -
+        // revert to the resting label and tear the timer down. KillTimer
+        // first so a re-entrant render path can never leave it running.
+        case WM_TIMER: {
+            if (wParam == kResetFeedbackTimerId) {
+                ::KillTimer(hwnd, kResetFeedbackTimerId);
+                pThis->reset_feedback_until_ = 0;
+                if (pThis->visible_.load(std::memory_order_relaxed)) {
+                    pThis->Render();
+                    pThis->UpdateLayered();
+                }
                 return 0;
             }
             break;

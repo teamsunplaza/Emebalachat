@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <windows.h>
@@ -60,6 +61,15 @@ public:
     // I18n::Get fresh every time — nothing is cached at Create).
     void RequestLocaleRefresh();
 
+    // Phase 4 (REQ-020, plan §1.4): wires the "Reset to system defaults"
+    // button. The window stays a pure view: it owns NO config knowledge; on
+    // click it invokes this callback (GUI thread — the WndProc runs there) and
+    // shows the brief "done" feedback regardless (optimistic: the
+    // coordinator's Set*+SaveToFile cannot fail softly; a SaveToFile failure
+    // is already DIAG-logged inside config). Set once from main.cpp after
+    // construction (same wiring pattern as the tooltip's language callback).
+    void SetResetCallback(std::function<void()> cb) { reset_callback_ = std::move(cb); }
+
     struct ShowPayload {
         int x;
         int y;
@@ -75,6 +85,11 @@ public:
         std::wstring etymology;
         std::wstring link_labels[kNumLinks];
         std::wstring contacts[3];
+        // Phase 4 (REQ-020, plan §2.5): the reset button's resting label. The
+        // transient post-click "done" label is NOT part of this snapshot —
+        // content is the static string set at Show/Render time; Render reads
+        // StringId::AboutResetDone directly while the feedback window is open.
+        std::wstring reset_label;
     };
     static LocalizedContent BuildLocalizedContent();
 
@@ -108,7 +123,11 @@ private:
     std::atomic<bool> visible_{false};
 
     int current_width_ = 440;  // DIP (plan §2.2 fixed size)
-    int current_height_ = 560; // DIP
+    // Phase 4 (REQ-020, plan §2.2): 560 -> 596 DIP. The contact block ends at
+    // y=536 and the card had no room left, so the reset button (y 546..578)
+    // required the +36 DIP expansion. ClampWindowOrigin in ShowAt already
+    // keeps the taller card inside the work area.
+    int current_height_ = 596; // DIP
     UINT dpi_ = 96;            // REQ-R15: DPI of the monitor showing the window
 
     // GDI Memory DC & DIB Section
@@ -134,7 +153,17 @@ private:
     // Interactive rectangles, DIP window coords (recomputed every Render).
     D2D1_RECT_F close_btn_rect_ = {};
     D2D1_RECT_F link_rects_[kNumLinks] = {};
-    int hovered_link_ = -1; // 0..2 link, 3 = close, -1 none
+    int hovered_link_ = -1; // 0..2 link, 3 = close, 4 = reset, -1 none
+
+    // Phase 4 (REQ-020, plan §2.2): the full-width "Reset to system defaults"
+    // action button under the contact block, its transient feedback deadline
+    // (GetTickCount64 ms; 0 = inactive), and the coordinator callback.
+    static constexpr int kHoverReset = 4;
+    static constexpr UINT_PTR kResetFeedbackTimerId = 0xB1B1; // unique on this hwnd
+    static constexpr UINT kResetFeedbackMs = 1600;            // plan §2.2: 1.6 s
+    D2D1_RECT_F reset_rect_ = {};
+    ULONGLONG reset_feedback_until_ = 0;
+    std::function<void()> reset_callback_;
 };
 
 } // namespace emebalachat

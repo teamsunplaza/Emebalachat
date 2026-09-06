@@ -2897,6 +2897,9 @@ void TestBatch2VersionScrollAbout() {
     // the DIP layout scaled by the window's live DPI - i.e. the DIB and the
     // window stay 1:1 so the layered blit is never rescaled (the blur). The
     // tooltip carries the identical handler; one smoke pins the pattern.
+    // NOTE (Phase 4, REQ-020, plan §2.2): the About card grew 560 -> 596 DIP
+    // to make room for the full-width reset button under the contact block;
+    // the height expectation below tracks that constant (width stays 440).
     {
         RECT cur = {};
         ::GetWindowRect(about.GetHwnd(), &cur);
@@ -2914,7 +2917,7 @@ void TestBatch2VersionScrollAbout() {
         TEST_CHECK(after.right - after.left ==
                        emebalachat::ui::ScaleDipsToPixels(440, cur_dpi) &&
                        after.bottom - after.top ==
-                       emebalachat::ui::ScaleDipsToPixels(560, cur_dpi),
+                       emebalachat::ui::ScaleDipsToPixels(596, cur_dpi),
                    "D1: About keeps DIP-scaled physical extents after the change");
         TEST_CHECK(about.IsVisible(), "D1: About stays visible across the DPI change");
     }
@@ -3800,6 +3803,125 @@ void TestPhase3LanguageContexts() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4 Batch 2 (plan §4.2): ComputeSystemDefaultLanguages pure mapping +
+// config-level reset simulation + sticky-release roundtrip. The About-window
+// button (about_window.cpp) is a pure view; this pins the data contract the
+// Batch 3 coordinator (main.cpp apply_system_defaults) will execute. Like the
+// Phase 3 tests it is host-OS-locale independent: the expected drag default is
+// derived from the same primitives the code under test uses (plan §2.6
+// mapping), never by calling the function under test.
+void TestPhase4SystemDefaults() {
+    std::cout << "[RUN] Testing Phase 4 system-default languages (REQ-020 reset)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Independent expectation for the drag default (same derivation pattern as
+    // TestPhase3LanguageContexts: unsupported/unknown -> English, EN ->
+    // Korean pivot, supported language -> its name_en).
+    const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
+    std::string expected_drag_default;
+    if (!sys_info || sys_info->code == "AUTO") {
+        expected_drag_default = "English";
+    } else if (sys_info->code == "EN") {
+        expected_drag_default = "Korean";
+    } else {
+        expected_drag_default = sys_info->name_en;
+    }
+
+    // ---- 1) Pure mapping: the four defaults + equality with the single
+    //         source of truth (ResolveDragDefaultTarget) + purity.
+    {
+        const auto defs = ComputeSystemDefaultLanguages();
+        TEST_CHECK(defs.drag_source == "Auto Detect",
+                   "P4: drag source default is Auto Detect (REQ-006)");
+        TEST_CHECK(defs.drag_target == expected_drag_default,
+                   "P4: drag target default follows the plan §2.6 OS mapping (REQ-007)");
+        TEST_CHECK(defs.drag_target == ResolveDragDefaultTarget(),
+                   "P4: drag target default reuses ResolveDragDefaultTarget, no second policy copy");
+        TEST_CHECK(defs.type_source == "Auto Detect",
+                   "P4: type source default is Auto Detect (REQ-015)");
+        TEST_CHECK(defs.type_target == "English",
+                   "P4: type target default is English (REQ-016)");
+        const LanguageInfo* dt = FindLanguageByName(defs.drag_target);
+        TEST_CHECK(dt != nullptr && dt->code != "AUTO",
+                   "P4: reset drag target is always a concrete supported language");
+        const auto again = ComputeSystemDefaultLanguages();
+        TEST_CHECK(defs.drag_source == again.drag_source &&
+                       defs.drag_target == again.drag_target &&
+                       defs.type_source == again.type_source &&
+                       defs.type_target == again.type_target,
+                   "P4: ComputeSystemDefaultLanguages is pure (same inputs -> same outputs)");
+    }
+
+    // ---- 2) Reset simulation at the config level: sticky values -> re-record
+    //         with the computed defaults (plan §2.1: REWRITE, never key
+    //         deletion) -> snapshot holds the defaults; legacy pair untouched.
+    {
+        AppConfig cfg; // in-memory defaults, no disk
+        cfg.SetDragLanguages("Auto Detect", "Vietnamese");   // sticky drag (user tooltip pick)
+        cfg.SetTypeLanguages("Korean", "Japanese");          // sticky type pair
+        const auto pre = cfg.GetSnapshot();
+        TEST_CHECK(pre.drag_target_language == "Vietnamese" &&
+                       pre.type_source_language == "Korean" &&
+                       pre.type_target_language == "Japanese",
+                   "P4: sticky fixture applied before reset");
+
+        const auto defs = ComputeSystemDefaultLanguages();
+        cfg.SetDragLanguages(defs.drag_source, defs.drag_target); // exactly the
+        cfg.SetTypeLanguages(defs.type_source, defs.type_target); // Batch 3 coordinator calls
+        const auto post = cfg.GetSnapshot();
+        TEST_CHECK(post.drag_source_language == "Auto Detect",
+                   "P4: reset restores drag source to Auto Detect (sticky released)");
+        TEST_CHECK(post.drag_target_language == expected_drag_default,
+                   "P4: reset restores drag target to the OS default (sticky Vietnamese erased)");
+        TEST_CHECK(post.type_source_language == "Auto Detect",
+                   "P4: reset restores type source to Auto Detect");
+        TEST_CHECK(post.type_target_language == "English",
+                   "P4: reset restores type target to English (sticky Japanese erased)");
+        TEST_CHECK(post.source_language == "Auto Detect" && post.target_language == "English",
+                   "P4: legacy pair untouched by the reset (scope: 4 context fields only)");
+    }
+
+    // ---- 3) Sticky-release roundtrip: the reset survives a restart because
+    //         ToJsonStringLocked ALWAYS writes the four keys (Phase 3 §2.3
+    //         contract: reset = re-record, not erase). Reload must therefore
+    //         land on the has_new_schema path (no migration) and keep the
+    //         re-recorded defaults verbatim.
+    {
+        AppConfig cfg;
+        cfg.SetDragLanguages("English", "Korean");
+        cfg.SetTypeLanguages("Japanese", "Vietnamese");
+        const auto defs = ComputeSystemDefaultLanguages();
+        cfg.SetDragLanguages(defs.drag_source, defs.drag_target);
+        cfg.SetTypeLanguages(defs.type_source, defs.type_target);
+
+        const std::string json = cfg.ToJsonString();
+        TEST_CHECK(json.find("\"drag_source_language\"") != std::string::npos &&
+                       json.find("\"drag_target_language\"") != std::string::npos &&
+                       json.find("\"type_source_language\"") != std::string::npos &&
+                       json.find("\"type_target_language\"") != std::string::npos,
+                   "P4: reset keeps all four keys in the JSON (re-record, never key deletion)");
+        TEST_CHECK(json.find("\"drag_source_language\": \"Auto Detect\"") != std::string::npos &&
+                       json.find("\"type_target_language\": \"English\"") != std::string::npos,
+                   "P4: serialized values are the re-recorded defaults");
+        AppConfig restarted;
+        TEST_CHECK(restarted.FromJsonString(json), "P4: restarted config parses the reset JSON");
+        const auto snap = restarted.GetSnapshot();
+        TEST_CHECK(snap.drag_source_language == "Auto Detect" &&
+                       snap.drag_target_language == expected_drag_default &&
+                       snap.type_source_language == "Auto Detect" &&
+                       snap.type_target_language == "English",
+                   "P4: reset survives restart (REQ-020 '재시작 유지'), sticky release is durable");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Phase 4 system-default tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Phase 4 system-default tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // R6 Phase 2 (B1, plan §1 B1-H1/H2 + §Phase 2): intermittent stale tooltip.
 // Two concurrent translate producers (detached drag threads, the REQ-R06
 // double-Ctrl+C worker) used to last-writer-wins on the tooltip model, so a
@@ -4278,6 +4400,18 @@ void TestR6P5P6I18n() {
                    "P5: EN contact-phone line carries the universal number");
         TEST_CHECK(!koAbout.contacts[0].empty() && !jaAbout.contacts[0].empty(),
                    "P5: KO/JA contact-org lines non-empty");
+        // Phase 4 (REQ-020, plan §4.2 item 4): the reset button's resting
+        // label rides the same localized-content seam and must differ per
+        // locale (i18n-routed, not a constant). Completeness check 1) above
+        // already pins AboutResetButton/AboutResetDone non-empty in ALL 7
+        // locales; this pins that the resolved label actually changes.
+        TEST_CHECK(!koAbout.reset_label.empty() && !jaAbout.reset_label.empty() &&
+                       !enAbout.reset_label.empty(),
+                   "P4: reset_label non-empty in KO/JA/EN");
+        TEST_CHECK(koAbout.reset_label != enAbout.reset_label &&
+                       jaAbout.reset_label != enAbout.reset_label &&
+                       koAbout.reset_label != jaAbout.reset_label,
+                   "P4: reset_label localized per locale (KO/JA/EN all differ)");
     }
 
     // ---- 5) Brand token fixed (user decision) ------------------------------
@@ -4576,6 +4710,7 @@ int main() {
     TestB3LanguageSync();
     TestResolveEffectiveTarget();
     TestPhase3LanguageContexts();
+    TestPhase4SystemDefaults();
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
