@@ -82,6 +82,23 @@ enum class AppCategory : unsigned char { CategoryA, CategoryB };
 // never sends the message on the user's behalf beyond a newline.
 AppCategory ClassifyAppWindow(HWND hwnd);
 
+// Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): true when hwnd belongs to
+// a console/terminal surface where a SYNTHETIC Ctrl+C is interpreted as
+// SIGINT (process interrupt) instead of "copy selection". Detection is by
+// window class name - ConsoleWindowClass (conhost), CASCADIA_HOSTING_WINDOW_CLASS
+// (Windows Terminal hosting frame), PseudoConsoleWindow (OpenConsole/pseudo
+// console, also what GetConsoleWindow() returns under WT) - checked on the
+// window itself AND its GA_ROOT ancestor, because the foreground hwnd may be
+// the top-level frame or a nested console child. Class-name matching is more
+// precise than exe-name matching: the selected-text hwnd in a terminal tab is
+// owned by conhost/WT, not by the shell exe running inside it.
+// Fails OPEN (returns false = keep existing behavior) on null/invalid hwnd
+// or any class-query failure, so every non-terminal app retains the exact
+// pre-Phase-8 clipboard capture path (regression blocker by construction).
+// This gate is for the DRAG CAPTURE path only (run_drag_translate); the
+// double-Ctrl+C path is deliberately not gated (user-initiated keystrokes).
+bool IsConsoleCaptureUnsafe(HWND hwnd);
+
 // Sends Ctrl+A to select all text in the active control.
 bool SelectAll();
 

@@ -4862,6 +4862,69 @@ void TestPhase5AppClassifier() {
     }
 }
 
+// Phase 8 Batch 1 (REQ-005, plan 225900 §4.1): headless unit tests for the
+// console-capture gate. Only the fail-open contract and the non-console
+// negative case are verifiable without a real desktop terminal: (1) null and
+// invalid HWNDs must return false so the existing clipboard path is preserved
+// on any query failure, (2) a plain (non-console) window of this process must
+// return false, and (3) when the test process HAS a console attached, its
+// console window (ConsoleWindowClass or PseudoConsoleWindow root) must be
+// detected as unsafe — proving the positive path on a real console hwnd.
+// Detection under Windows Terminal tabs and the full class table is covered
+// by the manual matrix (plan §4.2), as in Phase 5's classifier precedent.
+void TestPhase8ConsoleGate() {
+    std::cout << "[RUN] Testing Phase 8 console capture gate (REQ-005 fail-open + detection)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Layer 1a: null HWND fails open (existing behavior kept on any failure).
+    TEST_CHECK(!IsConsoleCaptureUnsafe(nullptr),
+               "IsConsoleCaptureUnsafe fails open (false) for null HWND");
+
+    // Layer 1b: a non-null but invalid HWND must also fail open, not crash.
+    const HWND bogus_hwnd = reinterpret_cast<HWND>(static_cast<intptr_t>(0x1));
+    TEST_CHECK(!::IsWindow(bogus_hwnd), "Bogus HWND 0x1 is not a real window in this environment");
+    TEST_CHECK(!IsConsoleCaptureUnsafe(bogus_hwnd),
+               "IsConsoleCaptureUnsafe fails open (false) for invalid HWND 0x1");
+
+    // Layer 2: a plain non-console window owned by this process must be false
+    // (the regression-protection contract: normal apps keep the clipboard path).
+    {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = ::DefWindowProcW;
+        wc.hInstance = ::GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"Emebalachat_Ph8TestPlain";
+        ::RegisterClassExW(&wc);
+        HWND plain = ::CreateWindowExW(0, wc.lpszClassName, L"ph8", WS_OVERLAPPED,
+                                       -300, -300, 50, 50, nullptr, nullptr, wc.hInstance, nullptr);
+        TEST_CHECK(plain != nullptr, "Phase 8 fixture: plain (non-console) window creates");
+        if (plain) {
+            TEST_CHECK(!IsConsoleCaptureUnsafe(plain),
+                       "IsConsoleCaptureUnsafe is false for a plain non-console window");
+            ::DestroyWindow(plain);
+        }
+    }
+
+    // Layer 3: positive detection on this process's own console window when a
+    // console is attached (run_tests.exe is a console app; the hwnd class is
+    // ConsoleWindowClass under conhost, or resolves through GA_ROOT to the
+    // terminal hosting frame under Windows Terminal). Skip without a check
+    // when no console is attached, per plan §4.1 (headless limitation).
+    const HWND console_hwnd = ::GetConsoleWindow();
+    if (console_hwnd != nullptr && ::IsWindow(console_hwnd)) {
+        TEST_CHECK(IsConsoleCaptureUnsafe(console_hwnd),
+                   "IsConsoleCaptureUnsafe is true for own console window (conhost/WT root)");
+    } else {
+        std::cout << "[SKIP] No console window attached; positive console detection check skipped." << std::endl;
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Phase 8 console capture gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Phase 8 console capture gate tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -4921,6 +4984,7 @@ int main() {
     TestR6P5P6I18n();
     TestDiagLogger();
     TestPhase5AppClassifier();
+    TestPhase8ConsoleGate();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

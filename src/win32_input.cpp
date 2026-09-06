@@ -255,6 +255,54 @@ AppCategory ClassifyAppWindow(HWND hwnd) {
     return AppCategory::CategoryB;
 }
 
+// Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): console/terminal detection
+// for the drag-capture SIGINT guard. See win32_input.hpp for the contract.
+// Class-name based (not exe-name): the hwnd holding a terminal selection is
+// owned by conhost/WindowsTerminal, never by the shell process running inside.
+// Checked on the window itself AND its GA_ROOT ancestor because the capture
+// target may be the top-level frame (ConsoleWindowClass / CASCADIA_HOSTING...)
+// or a nested child (PseudoConsoleWindow under Windows Terminal). Fail-open:
+// any query failure returns false so non-terminal apps keep the exact
+// pre-Phase-8 clipboard path (regression blocker by construction).
+bool IsConsoleCaptureUnsafe(HWND hwnd) {
+    if (!hwnd || !::IsWindow(hwnd)) {
+        return false; // fail-open: invalid handle keeps existing behavior
+    }
+    static const wchar_t* const kConsoleWindowClasses[] = {
+        L"ConsoleWindowClass",            // conhost (classic console host)
+        L"CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal hosting frame
+        L"PseudoConsoleWindow"            // OpenConsole / pseudo-console surface
+    };
+    // No capture needed: kConsoleWindowClasses has static storage duration.
+    auto class_is_console = [](HWND w) -> bool {
+        wchar_t cls[64] = {};
+        // Local, no cross-thread send (same cost profile as the hook-thread
+        // class-name cache in hook.cpp). len == 0 means query failed -> not
+        // console (fail-open).
+        if (::GetClassNameW(w, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) {
+            return false;
+        }
+        for (const auto* name : kConsoleWindowClasses) {
+            if (::lstrcmpiW(cls, name) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (class_is_console(hwnd)) {
+        return true;
+    }
+    // Promote to the top-level frame: a child hwnd under a terminal root is
+    // still a terminal capture target (GetAncestor failure returns nullptr ->
+    // the extra check is simply skipped, fail-open preserved).
+    const HWND root = ::GetAncestor(hwnd, GA_ROOT);
+    if (root && root != hwnd && class_is_console(root)) {
+        return true;
+    }
+    return false;
+}
+
 bool CopySelection() {
     INPUT inputs[4] = {
         CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),

@@ -1025,6 +1025,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // references are now provably safe - the worker is joined BEFORE those
     // objects can leave scope, and before the surfaces' Destroy() runs.
     auto run_drag_translate = [&](int click_x, int click_y, uint64_t gen) {
+        // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): console/terminal
+        // SIGINT guard. In conhost/Windows Terminal a synthetic Ctrl+C is a
+        // process interrupt (SIGINT), not "copy selection", so the drag
+        // capture must never reach those windows. The DragIconWindow is
+        // WS_EX_NOACTIVATE and returns MA_NOACTIVATE on WM_MOUSEACTIVATE, so
+        // the foreground window at click time is still the text source that
+        // would receive the keystroke - it is the correct gate subject.
+        // Checked BEFORE BackupClipboard so the terminal path performs zero
+        // clipboard access, per plan. Reuses TooltipNoSelection (existing
+        // StringId) to keep i18n untouched; Fail-open by construction: any
+        // query failure inside IsConsoleCaptureUnsafe (including a null
+        // foreground hwnd) returns false and the existing path runs unchanged.
+        if (emebalachat::IsConsoleCaptureUnsafe(::GetForegroundWindow())) {
+            DIAG_F("MAIN/DragIconClick/003: console/terminal foreground; skipping synthetic Ctrl+C capture (SIGINT hazard, REQ-005)\n");
+            tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
+                                          gen);
+            return;
+        }
+
         emebalachat::ClipboardBackup backup;
         emebalachat::BackupClipboard(backup);
 
@@ -1167,6 +1188,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // polling, same as the drag path): the re-issued Ctrl+C must make the
         // sequence provably move and settle, otherwise nothing is read (never
         // a stale value).
+        //
+        // Phase 8 Batch 1 (REQ-005) decision: NO console gate here, unlike
+        // run_drag_translate above. This path fires only because the USER
+        // physically pressed Ctrl+C twice; the re-issued synthetic Ctrl+C
+        // duplicates a keystroke the user already sent voluntarily, so any
+        // resulting SIGINT is user-initiated, not an AI-side hazard the
+        // product is introducing. Gating would also be unreliable: focus may
+        // legitimately have moved between the two keypresses and the click.
         if (!emebalachat::CopySelectionWithSequenceWait()) {
             DIAG_F("MAIN/DoubleCtrlC/001: clipboard copy not confirmed; refusing stale read\n");
             return;
