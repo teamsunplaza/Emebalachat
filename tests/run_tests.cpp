@@ -5190,6 +5190,171 @@ void TestReq027OffsetAfterNewline() {
     }
 }
 
+// REQ-027 B-6b (design 192100 §2.3 + §3 B-5b file 3, VP ruling 260907 21:55):
+// capability-based EM detection suite. Contract points pinned here:
+//  (a) unusable hwnds still fall back through the public API (ProbeEmCapability
+//      itself is file-local by design - §2.6 "external exposure not required" -
+//      so its null-handle verdict is asserted through TrySelectNewText/002).
+//  (b) the pure decision core ClassifyEmProbe over the full ambiguity matrix,
+//      including the VP-approved DefWindowProc hardening: an unhandled message
+//      answered 0 "succeeds" through SendMessageTimeoutW, so an empty generic
+//      window must classify NotCapable (pre-hardening §2.3 pseudocode said
+//      Capable - the false positive closed here). static_assert pins the
+//      verdicts at compile time; runtime TEST_CHECKs mirror the same matrix.
+//  (c) NotifyReplacement on untracked hwnds remains a safe no-op (execution
+//      reaching the next TEST_CHECK is the proof).
+//  (d) CREATIVE VERIFICATION on live in-process windows: a real EMPTY multiline
+//      EDIT (caret (0,0), EM_GETLINECOUNT==1) must ENTER the EM path through
+//      the real probe (positive-evidence branch), while a plain DefWindowProc
+//      popup (EM_* unhandled, all replies 0/DefWindowProc, the structural
+//      stand-in for Chrome_WidgetWin_1/VSCode surfaces) must fall back - the
+//      probe decides by observed capability, never by class name.
+void TestReq027CapabilityProbe() {
+    std::cout << "[TEST] REQ-027 B-6b capability probe (class whitelist retired)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) public fallback contract on unusable hwnds (probe runs nowhere).
+    TEST_CHECK(!EditCaretTracker_TrySelectNewText(nullptr),
+               "REQ-027 B-6b: null hwnd -> TrySelectNewText false (fallback path)");
+    const HWND garbage = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x1u));
+    TEST_CHECK(!EditCaretTracker_TrySelectNewText(garbage),
+               "REQ-027 B-6b: invalid non-window hwnd -> TrySelectNewText false");
+
+    // (b) pure decision matrix. Meaningful selection short-circuits to Capable.
+    {
+        constexpr EmProbeSignals silent{};
+        static_assert(ClassifyEmProbe(silent) == EmCapability::NotCapable,
+                      "B-6b: EM_GETSEL silent -> NotCapable");
+        TEST_CHECK(ClassifyEmProbe(silent) == EmCapability::NotCapable,
+                   "REQ-027 B-6b: EM_GETSEL silent/timeout -> NotCapable");
+        constexpr EmProbeSignals meaningful{.getsel_handled = true, .sel_start = 4, .sel_end = 9};
+        static_assert(ClassifyEmProbe(meaningful) == EmCapability::Capable,
+                      "B-6b: meaningful selection -> Capable");
+        TEST_CHECK(ClassifyEmProbe(meaningful) == EmCapability::Capable,
+                   "REQ-027 B-6b: meaningful (4,9) selection -> Capable");
+    }
+    // (0,0) in a non-empty document: needs EM line-model consistency.
+    {
+        constexpr EmProbeSignals consistent{
+            .getsel_handled = true, .len_ok = true, .textlen = 12,
+            .count_ok = true, .linecount = 2, .linefromchar_ok = true};
+        static_assert(ClassifyEmProbe(consistent) == EmCapability::Capable,
+                      "B-6b: non-empty + consistent EM family -> Capable");
+        TEST_CHECK(ClassifyEmProbe(consistent) == EmCapability::Capable,
+                   "REQ-027 B-6b: (0,0) non-empty consistent family -> Capable");
+        EmProbeSignals partial = consistent;
+        partial.linefromchar_ok = false; // GETSEL+LEN answered, LINEFROMCHAR silent
+        TEST_CHECK(ClassifyEmProbe(partial) == EmCapability::Unknown,
+                   "REQ-027 B-6b: non-empty + LINEFROMCHAR silent -> Unknown (conservative)");
+        EmProbeSignals no_lines = consistent;
+        no_lines.count_ok = false; // DefWindowProc never answers EM_GETLINECOUNT
+        TEST_CHECK(ClassifyEmProbe(no_lines) == EmCapability::Unknown,
+                   "REQ-027 B-6b: non-empty + linecount silent -> Unknown (conservative)");
+    }
+    // (0,0) in an empty document: linecount >= 1 is the positive evidence.
+    {
+        constexpr EmProbeSignals editor{
+            .getsel_handled = true, .len_ok = true, .count_ok = true, .linecount = 1};
+        static_assert(ClassifyEmProbe(editor) == EmCapability::Capable,
+                      "B-6b: empty doc + linecount 1 (real editor) -> Capable");
+        TEST_CHECK(ClassifyEmProbe(editor) == EmCapability::Capable,
+                   "REQ-027 B-6b: empty doc + linecount>=1 -> Capable");
+        // DefWindowProc default reply (linecount 0): THE false positive the
+        // 21:55 ruling closed (pre-hardening §2.3 said Capable here).
+        constexpr EmProbeSignals defproc{
+            .getsel_handled = true, .len_ok = true, .count_ok = true};
+        static_assert(ClassifyEmProbe(defproc) == EmCapability::NotCapable,
+                      "B-6b: empty doc + linecount 0 (DefWindowProc) -> NotCapable");
+        TEST_CHECK(ClassifyEmProbe(defproc) == EmCapability::NotCapable,
+                   "REQ-027 B-6b: empty doc + linecount 0 (DefWindowProc) -> NotCapable (hardened)");
+    }
+    // Length query silent: limit/linecount evidence -> Unknown, nothing -> NotCapable.
+    {
+        constexpr EmProbeSignals limit_only{.getsel_handled = true, .limit_ok = true};
+        static_assert(ClassifyEmProbe(limit_only) == EmCapability::Unknown,
+                      "B-6b: length silent + limit answered -> Unknown");
+        TEST_CHECK(ClassifyEmProbe(limit_only) == EmCapability::Unknown,
+                   "REQ-027 B-6b: (0,0) length silent + limit answered -> Unknown");
+        constexpr EmProbeSignals bare{.getsel_handled = true};
+        static_assert(ClassifyEmProbe(bare) == EmCapability::NotCapable,
+                      "B-6b: length silent + no other evidence -> NotCapable");
+        TEST_CHECK(ClassifyEmProbe(bare) == EmCapability::NotCapable,
+                   "REQ-027 B-6b: (0,0) all cross-queries silent -> NotCapable");
+    }
+
+    // (c) no-op notify on untracked targets must not crash.
+    EditCaretTracker_NotifyReplacement(nullptr, true, 10);
+    EditCaretTracker_NotifyReplacement(nullptr, false, 0);
+    EditCaretTracker_NotifyReplacement(garbage, true, 10);
+    TEST_CHECK(true, "REQ-027 B-6b: NotifyReplacement no-op on null/garbage hwnds survived");
+
+    // (d) live-window probe behavior on real HWNDs (see suite header).
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req027B6bHost";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req027b6b", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    TEST_CHECK(host != nullptr, "REQ-027 B-6b: popup host window created");
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-027 B-6b: in-process EMPTY EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus unavailable; B-6b live probe sequence skipped." << std::endl;
+    }
+    if (host && edit && focus_ok) {
+        // Real editor, empty document, caret (0,0): the probe must find the
+        // positive EM_GETLINECOUNT evidence and let the EM path proceed.
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(0), static_cast<LPARAM>(0));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027 B-6b: live empty EDIT (caret 0,0) -> probe Capable (EM path)");
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        bool host_focus_ok = false;
+        ::SetFocus(host);
+        GUITHREADINFO gti2 = {};
+        gti2.cbSize = sizeof(gti2);
+        host_focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti2) && gti2.hwndFocus == host;
+        if (host_focus_ok) {
+            // Generic DefWindowProc window: EM_GETSEL "succeeds" with (0,0) via
+            // the default reply, WM_GETTEXTLENGTH returns 0, EM_GETLINECOUNT 0.
+            // Pre-B-6b the empty-doc branch would have called this Capable and
+            // injected an EM_SETSEL into a non-editor; the hardened probe must
+            // refuse -> /007 fallback. This is the Chrome_WidgetWin_1 structure.
+            TEST_CHECK(!EditCaretTracker_TrySelectNewText(host),
+                       "REQ-027 B-6b: live DefWindowProc window -> probe NotCapable (fallback kept)");
+            TEST_CHECK(EditCaretTracker_SampleCaret(host) == kEditCaretUnknown,
+                       "REQ-027 B-6b: SampleCaret on generic window -> kEditCaretUnknown");
+            ::SetFocus(nullptr);
+        } else {
+            std::cout << "[SKIP] SetFocus on popup host unavailable; generic-window probe skipped." << std::endl;
+        }
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-027 B-6b capability probe tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-027 B-6b capability probe tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5252,6 +5417,7 @@ int main() {
     TestPhase8ConsoleGate();
     TestReq027CaretTracker();
     TestReq027OffsetAfterNewline();
+    TestReq027CapabilityProbe();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
