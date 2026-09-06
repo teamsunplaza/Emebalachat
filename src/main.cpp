@@ -951,6 +951,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Outside-click dismissal for DragIconWindow and TooltipWindow
     mouse_hook.SetMouseDownCallback([&](int x, int y) {
         POINT pt = { x, y };
+        // REQ-026 (Phase A §3 B-3, attributed failure mode (a) callback-never-
+        // fires): a physical click landing on OUR OWN transient popup menu
+        // (Win32 class "#32768" - the tooltip language menu tracked from the
+        // tooltip WndProc, the tray submenus, any in-process TrackPopupMenu)
+        // is not a "clicked outside" event and must not dismiss anything.
+        // Without this guard the dismissal sequence was: mouse-down over the
+        // menu -> this callback posts kDismissMessage to the GUI thread ->
+        // the modal menu loop dispatches it mid-tracking (probe-verified on
+        // this machine: same-thread posted messages ARE dispatched inside
+        // TrackPopupMenuEx) -> TooltipWindow::Dismiss() hides the menu's
+        // owner window and clears source_text_ (B1-H2) before the pick can
+        // reach lang_change_cb_ -> the F-11 re-translate never fires. This
+        // is why 0 user logs ever contain the tooltip-menu lang_sync pair
+        // despite repeated attempts (B-3 report 260907 §1). WindowFromPoint/
+        // GetClassNameW/GetWindowThreadProcessId are all thread-safe here;
+        // the pid check keeps foreign context menus (right-click on another
+        // app) dismissing the tooltip as before.
+        HWND under = ::WindowFromPoint(pt);
+        if (under) {
+            wchar_t menu_class[16] = {};
+            if (::GetClassNameW(under, menu_class, 16) > 0 &&
+                ::lstrcmpW(menu_class, L"#32768") == 0) {
+                DWORD pid = 0;
+                ::GetWindowThreadProcessId(under, &pid);
+                if (pid == ::GetCurrentProcessId()) {
+                    DIAG_LOG("UI", "mouse_down exempted over own popup menu (no dismissal)");
+                    return;
+                }
+            }
+        }
         if (drag_icon.IsVisible()) {
             RECT r = {};
             ::GetWindowRect(drag_icon.GetHwnd(), &r);
