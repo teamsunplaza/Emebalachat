@@ -1583,9 +1583,9 @@ void TestI18nModule() {
     TEST_CHECK(I18n::Get(StringId::MenuStatusActive).find(L"Active") != std::wstring::npos, "English status text");
     TEST_CHECK(I18n::Get(StringId::BadgeActive) == L"Active", "English badge active word");
 
-    // 6. Default target pairing
-    TEST_CHECK(I18n::GetDefaultTargetLanguage(UiLocale::Korean) == "English", "Korean defaults to English target");
-    TEST_CHECK(I18n::GetDefaultTargetLanguage(UiLocale::English) == "Korean", "English defaults to Korean target");
+    // Phase 4 batch 1 (REQ-001, plan §2.4): former "6. Default target pairing"
+    // assertions removed together with the dead GetDefaultTargetLanguage API
+    // (0 runtime callers; reset logic uses ResolveDragDefaultTarget instead).
 
     // 7. Autostart registry status inspection without throwing
     bool autostart = I18n::IsStartWithWindowsEnabled();

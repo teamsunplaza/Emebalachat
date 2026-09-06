@@ -76,6 +76,13 @@ struct LocalizedStrings {
     const wchar_t* tooltip_button_tts;
     const wchar_t* menu_ui_language;
     const wchar_t* menu_ui_language_auto;
+
+    // Phase 4 (REQ-020, plan §1.4/§2.5): About-window "Reset to system
+    // defaults" button label + its transient post-click confirmation label.
+    // Appended at the end so every aggregate table below only gains trailing
+    // initializers (field order MUST keep matching table order).
+    const wchar_t* about_reset_button;
+    const wchar_t* about_reset_done;
 };
 
 // 1. Korean (ko)
@@ -137,7 +144,9 @@ const LocalizedStrings kStringsKorean = {
     L"📋 복사",
     L"🔊 음성",
     L"인터페이스 언어",
-    L"자동 (시스템 언어)"
+    L"자동 (시스템 언어)",
+    L"시스템 기본값으로 리셋",
+    L"기본값으로 복원됨"
 };
 
 // 2. Japanese (ja)
@@ -199,7 +208,9 @@ const LocalizedStrings kStringsJapanese = {
     L"📋 コピー",
     L"🔊 読み上げ",
     L"表示言語",
-    L"自動 (システム言語)"
+    L"自動 (システム言語)",
+    L"システム既定値にリセット",
+    L"既定値に復元しました"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -261,7 +272,9 @@ const LocalizedStrings kStringsChineseSimp = {
     L"📋 复制",
     L"🔊 朗读",
     L"界面语言",
-    L"自动（系统语言）"
+    L"自动（系统语言）",
+    L"重置为系统默认值",
+    L"已恢复默认值"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -323,7 +336,9 @@ const LocalizedStrings kStringsChineseTrad = {
     L"📋 複製",
     L"🔊 朗讀",
     L"介面語言",
-    L"自動（系統語言）"
+    L"自動（系統語言）",
+    L"重設為系統預設值",
+    L"已還原預設值"
 };
 
 // 5. Vietnamese (vi)
@@ -385,7 +400,9 @@ const LocalizedStrings kStringsVietnamese = {
     L"📋 Sao chép",
     L"🔊 Đọc",
     L"Ngôn ngữ giao diện",
-    L"Tự động (ngôn ngữ hệ thống)"
+    L"Tự động (ngôn ngữ hệ thống)",
+    L"Đặt lại về mặc định hệ thống",
+    L"Đã khôi phục mặc định"
 };
 
 // 6. Spanish (es)
@@ -444,7 +461,9 @@ const LocalizedStrings kStringsSpanish = {
     L"📋 Copiar",
     L"🔊 Voz",
     L"Idioma de la interfaz",
-    L"Automático (idioma del sistema)"
+    L"Automático (idioma del sistema)",
+    L"Restablecer valores predeterminados",
+    L"Valores restaurados"
 };
 
 // 7. English (en) - Default Fallback
@@ -507,7 +526,9 @@ const LocalizedStrings kStringsEnglish = {
     L"\U0001F4CB Copy",
     L"\U0001F50A TTS",
     L"Interface Language",
-    L"Auto (system language)"
+    L"Auto (system language)",
+    L"Reset to system defaults",
+    L"Defaults restored"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -628,6 +649,8 @@ std::wstring I18n::Get(StringId id) {
         case StringId::TooltipButtonTts: return s.tooltip_button_tts;
         case StringId::MenuUiLanguage: return s.menu_ui_language;
         case StringId::MenuUiLanguageAuto: return s.menu_ui_language_auto;
+        case StringId::AboutResetButton: return s.about_reset_button;
+        case StringId::AboutResetDone: return s.about_reset_done;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it
@@ -690,25 +713,6 @@ UiLocale I18n::DetectSystemLocale() {
         case LANG_VIETNAMESE: return UiLocale::Vietnamese;
         case LANG_SPANISH: return UiLocale::Spanish;
         default: return UiLocale::English;
-    }
-}
-
-std::string I18n::GetDefaultTargetLanguage(UiLocale locale) {
-    switch (locale) {
-        case UiLocale::Korean:
-            return "English";
-        case UiLocale::Japanese:
-            return "English";
-        case UiLocale::ChineseSimplified:
-        case UiLocale::ChineseTraditional:
-            return "English";
-        case UiLocale::Vietnamese:
-            return "English";
-        case UiLocale::Spanish:
-            return "English";
-        case UiLocale::English:
-        default:
-            return "Korean";
     }
 }
 

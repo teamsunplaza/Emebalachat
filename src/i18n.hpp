@@ -83,6 +83,11 @@ enum class StringId {
     AboutContactPhone,
     AboutContactLead,
 
+    // Phase 4 (REQ-020): About-window "Reset to system defaults" button label
+    // and its transient post-click confirmation label (plan §1.4/§2.5).
+    AboutResetButton,
+    AboutResetDone,
+
     // Tooltip footer buttons + copy feedback (plan §5.3 sweep).
     TooltipCopied,
     TooltipButtonCopy,
@@ -162,9 +167,6 @@ public:
 
     // Detects Windows system UI language via GetUserDefaultLocaleName() / GetUserDefaultUILanguage()
     static UiLocale DetectSystemLocale();
-
-    // Returns recommended default target language for a given OS locale
-    static std::string GetDefaultTargetLanguage(UiLocale locale);
 
     // Conversion helpers
     static UiLocale StringToLocale(std::string_view str);
