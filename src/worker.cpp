@@ -298,20 +298,32 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         PlaySoundAsync(SoundType::Disable);
     }
 
-    // Auto-Send or Shift+Enter immediate send dispatch
+    // Phase 5 (REQ-023): Category B always injects a newline after replacement,
+    // regardless of auto_send. Category A keeps the legacy send gate
+    // (shift_enter || auto_send). Both still pass the H1 foreground guard.
     // (auto_send is std::atomic; implicit load is safe from this thread - I4)
-    const bool want_send = task.is_shift_enter || config_.auto_send.load(std::memory_order_relaxed);
+    const AppCategory category = ClassifyAppWindow(task.target_hwnd);
     const bool h1_ok = IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow());
-    if (want_send) {
-        if (h1_ok) {
-            SendEnterKey(task.is_shift_enter);
-            DIAG_LOG("PIPELINE", "stage=send_enter action=synthetic shift=%d auto_send=%d",
-                     task.is_shift_enter ? 1 : 0,
-                     config_.auto_send.load(std::memory_order_relaxed) ? 1 : 0);
-        } else {
-            DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=h1_foreground_mismatch target=%p",
-                     reinterpret_cast<const void*>(task.target_hwnd));
-        }
+    bool inject_enter = false;
+    if (category == AppCategory::CategoryB) {
+        inject_enter = true;                       // REQ-023: 항상 개행
+    } else {
+        inject_enter = task.is_shift_enter ||      // Category A: 기존 전송 게이트
+                       config_.auto_send.load(std::memory_order_relaxed);
+    }
+    if (inject_enter && h1_ok) {
+        SendEnterKey(task.is_shift_enter);
+        // Phase 5: Category B newline vs Category A send are distinguished in
+        // the DIAG log (plan §2.3) - same SendEnterKey primitive, different app
+        // semantics (editor Enter = "\n", chat Enter = "send").
+        DIAG_LOG("PIPELINE", "stage=send_enter action=%s shift=%d auto_send=%d",
+                 category == AppCategory::CategoryB ? "synthetic_newline" : "synthetic_send",
+                 task.is_shift_enter ? 1 : 0,
+                 config_.auto_send.load(std::memory_order_relaxed) ? 1 : 0);
+    } else {
+        DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=%s target=%p",
+                 h1_ok ? "category_a_send_gate" : "h1_foreground_mismatch",
+                 reinterpret_cast<const void*>(task.target_hwnd));
     }
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",
              pasted ? 1 : 0, ::GetTickCount64() - t_task_start);
