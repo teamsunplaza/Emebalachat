@@ -261,6 +261,22 @@ public:
         return parsed;
     }
 
+    // REQ-022 (Phase 6): compiled-in defaults for the language-cycle and
+    // auto-send-toggle combos, identical to the historical hardcoded triggers.
+    static constexpr HotkeySpec kDefaultLangHotkey{ VK_F9, /*ctrl*/true, /*shift*/false, /*alt*/false, /*win*/false, /*valid*/true };
+    static constexpr HotkeySpec kDefaultModeHotkey{ VK_RETURN, /*ctrl*/true, /*shift*/true, /*alt*/false, /*win*/false, /*valid*/true };
+
+    // REQ-022: invalid/empty raw config strings fall back to the historical
+    // hardcoded triggers, exactly like ResolveToggleFromConfig (C1/C3).
+    static HotkeySpec ResolveLangFromConfig(std::string_view raw) {
+        const HotkeySpec parsed = ParseHotkey(raw);
+        return parsed.valid ? parsed : kDefaultLangHotkey;
+    }
+    static HotkeySpec ResolveModeFromConfig(std::string_view raw) {
+        const HotkeySpec parsed = ParseHotkey(raw);
+        return parsed.valid ? parsed : kDefaultModeHotkey;
+    }
+
     // ---- REQ-R06 (audit §2.5): async double-Ctrl+C dispatch ----
     // DispatchDoubleCtrlC() is the ONLY thing the LowLevelKeyboardProc does when
     // a double-Ctrl+C is detected. It performs a non-blocking handoff (try_lock
@@ -290,6 +306,12 @@ private:
     // migrated to kDefaultToggleHotkey when unset/invalid or legacy bare "F9".
     HotkeySpec ResolvedToggleHotkey() const;
 
+    // REQ-022 (Phase 6): effective language-cycle / auto-send-toggle combos,
+    // config_.hotkey_lang / config_.hotkey_mode parsed via the shared pure
+    // resolvers (hook.hpp), falling back to the historical hardcoded triggers.
+    HotkeySpec ResolvedLangHotkey() const;
+    HotkeySpec ResolvedModeHotkey() const;
+
     // REQ-R17: hook-local IME composition mirror (see ImeMirrorNext). Owned by
     // the hook thread; relaxed atomics because no other thread reads it.
     std::atomic<bool> ime_composing_{false};
@@ -317,7 +339,13 @@ private:
     HANDLE hReadyEvent_ = nullptr;
     std::thread thread_;
 
+    // REQ-022: lang/mode specs follow the exact toggle_spec_ contract -
+    // compiled once in Start() before the hook thread exists, read-only in
+    // LowLevelKeyboardProc afterwards (no lock; config hotkey fields are
+    // startup-written/read-only-after per config.hpp I4 notes).
     HotkeySpec toggle_spec_{};
+    HotkeySpec lang_spec_{};
+    HotkeySpec mode_spec_{};
     std::atomic<bool> suppress_win_keyup_{false};
 
     DWORD last_ctrl_c_time_ = 0;

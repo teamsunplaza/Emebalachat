@@ -275,6 +275,25 @@ bool KeyboardHook::Start() {
     // Compile the toggle hotkey once, before the hook proc can run (config
     // fields are startup-written/read-only after, see config.hpp I4 notes).
     toggle_spec_ = ResolvedToggleHotkey();
+    // REQ-022 (Phase 6): same one-time compile for the language-cycle and
+    // auto-send-toggle combos; read-only inside LowLevelKeyboardProc after this.
+    lang_spec_ = ResolvedLangHotkey();
+    mode_spec_ = ResolvedModeHotkey();
+
+    // REQ-022: drag_hotkey is a gesture-pattern selector, not a ParseHotkey combo
+    // (plan §2.3). Only "double_ctrl_c" is supported; anything else falls back to
+    // the historical double-Ctrl+C behavior with a one-time DIAG warning. The
+    // detection state machine itself is intentionally untouched (C1/F-07).
+    {
+        std::string v = config_.drag_hotkey;
+        for (char& c : v) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (v != "double_ctrl_c") {
+            DIAG_F("HOOK/Config/001: unsupported drag_hotkey '%s' -> using double_ctrl_c\n",
+                   config_.drag_hotkey.c_str());
+        }
+    }
 
     // REQ-R06: the async worker must exist before the hook proc can dispatch.
     StartAsyncWorker();
@@ -428,6 +447,16 @@ KeyboardHook::HotkeySpec KeyboardHook::ResolvedToggleHotkey() const {
     // Delegates to the shared pure seam (hook.hpp) so Start() and the unit
     // tests assert on ONE definition of the legacy-"F9"->Win+F9 migration.
     return ResolveToggleFromConfig(config_.hotkey_toggle);
+}
+
+KeyboardHook::HotkeySpec KeyboardHook::ResolvedLangHotkey() const {
+    // REQ-022: same shared pure seam as the toggle (C1/C3 fallback pinned there).
+    return ResolveLangFromConfig(config_.hotkey_lang);
+}
+
+KeyboardHook::HotkeySpec KeyboardHook::ResolvedModeHotkey() const {
+    // REQ-022: same shared pure seam as the toggle (C1/C3 fallback pinned there).
+    return ResolveModeFromConfig(config_.hotkey_mode);
 }
 
 void KeyboardHook::SetActive(bool active) {
@@ -651,6 +680,42 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             return 1; // Consumed: state change (audio+visual feedback in SetActive)
         }
 
+        // REQ-022 (Phase 6, plan §3.2(c)/§3.3): the configured language-cycle
+        // combo (default Ctrl+F9, compiled in Start()) is matched right after
+        // the toggle and BEFORE the blanket Alt/Win passthrough below, so
+        // Alt/Win-bearing lang combos can fire (plan §2.4). Conflict priority
+        // toggle > lang > mode holds because a keydown matching both is
+        // consumed by the earlier block. HotkeyMatches is the exact-match
+        // predicate pinned by REQ-R08: default Ctrl+F9 reproduces the old
+        // hardcoded VK_F9 + ctrl && !shift branch 1:1 (C1).
+        if (KeyboardHook::HotkeyMatches(s_instance->lang_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
+            DIAG_LOG("HOTKEY", "lang combo matched (vk=0x%02X modifiers=%s%s%s%s) -> CycleTargetLanguage",
+                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+            s_instance->CycleTargetLanguage();
+            if (win) {
+                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
+            }
+            return 1; // Consumed
+        }
+
+        // REQ-022 (Phase 6, plan §3.2(d)/§3.3): the configured auto-send-toggle
+        // combo (default Ctrl+Shift+Enter) is matched independently of the
+        // VK_RETURN branch below, so non-Enter mode combos (e.g. Ctrl+F10)
+        // also fire (plan §2.4). Evaluated right after lang and before the
+        // Enter branch; with the default spec the firing condition
+        // (VK_RETURN + ctrl + shift, alt/win excluded by the spec) is
+        // identical to the old `ctrl && shift` block inside the VK_RETURN
+        // branch it replaces (C1).
+        if (KeyboardHook::HotkeyMatches(s_instance->mode_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
+            DIAG_LOG("HOTKEY", "mode combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleAutoSend",
+                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+            s_instance->ToggleAutoSend();
+            if (win) {
+                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
+            }
+            return 1; // Consumed
+        }
+
         // Always let Alt or Win key combinations pass through immediately
         // (preserves Excel newline Alt+Enter, game fullscreen Alt+Enter, Win shortcuts, etc.)
         if (alt || win) {
@@ -683,17 +748,10 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
-        // Ctrl+F9: cycle target language. (The toggle combo itself matched
-        // above; with toggle=Win+F9 this branch no longer collides with the
-        // VS/VS Code breakpoint key, and Alt/Win combos never reach here.)
-        if (kbd->vkCode == VK_F9) {
-            if (ctrl && !shift) {
-                s_instance->CycleTargetLanguage();
-                return 1;
-            }
-        }
-
-        // Enter keystroke interception.
+        // Enter keystroke interception. (REQ-022: the former hardcoded
+        // Ctrl+F9 branch here is replaced by the lang_spec_ match above the
+        // Alt/Win passthrough; the double-Ctrl+C gesture block above is the
+        // drag_hotkey pattern selector and stays intentionally unchanged.)
         //
         // REQ-R17 (audit §5 latent item 5): TWO gates, zero hook-thread
         // cross-thread calls. (1) Keys consumed by the IME arrive as
@@ -721,18 +779,11 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             DIAG_LOG("KEY", "Enter (shift=%d) - pipeline candidate", shift ? 1 : 0);
             const bool dbg_composing =
                 s_instance->ime_composing_.load(std::memory_order_relaxed);
-            if (ctrl && shift) {
-                DIAG_LOG("ENTER_GATE",
-                         "outcome=auto_send_toggle reason=ctrl+shift active=%d busy=%d "
-                         "ime_composing=%d shift=1 auto_send_new=%d",
-                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
-                         dbg_composing ? 1 : 0,
-                         (!s_instance->config_.auto_send.load(std::memory_order_relaxed)) ? 1 : 0);
-                // Ctrl+Shift+Enter toggles Auto-Send mode
-                s_instance->ToggleAutoSend();
-                return 1;
-            }
-
+            // REQ-022 (Phase 6): the former `ctrl && shift` auto-send-toggle
+            // block lived here; the mode_spec_ match above the Alt/Win
+            // passthrough replaces it (identical firing condition for the
+            // default Ctrl+Shift+Enter combo, C1). Only Ctrl+Enter,
+            // Shift+Enter (S2 newline), and the IME/bare-Enter gates follow.
             if (ctrl) {
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
