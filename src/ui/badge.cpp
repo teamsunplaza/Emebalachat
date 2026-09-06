@@ -587,9 +587,12 @@ void FloatingBadge::Render() {
         haloBrush->Release();
     }
 
-    // Medallion base (circular dark background)
+    // Medallion base (REQ-024: circular background tinted with the status
+    // color — Active=emerald, Translating=amber, Disabled=slate — instead of
+    // the previous fixed dark fill. statusColor is already computed by the
+    // switch above; halo/ring/text/alpha logic untouched, same 0.95f alpha.)
     ID2D1SolidColorBrush* medalBgBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x181A20, 0.95f), &medalBgBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.95f), &medalBgBrush);
     D2D1_ELLIPSE medalCircle = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), medallionRadius, medallionRadius);
     if (medalBgBrush) {
         dc_render_target_->FillEllipse(&medalCircle, medalBgBrush);

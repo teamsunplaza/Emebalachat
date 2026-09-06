@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <vector>
 
+#include "../diag_logger.hpp"
+
 namespace emebalachat {
 
 namespace {
@@ -47,8 +49,14 @@ std::wstring FindLogoPath() {
     return FindAssetPath({ "Emebala_Chat_Logo_small.png", "logo.png" });
 }
 
+// REQ-024: Emebala_Chat_Appicon.ico is now the primary candidate so the
+// floating bar medallion and tray icon render the branded .ico asset.
+// WIC's built-in ICO codec decodes it through the existing
+// CreateDecoderFromFilename pipeline (LoadWicBitmap), which selects the
+// largest frame of multi-frame containers (DP-1 fix, see LoadWicBitmap).
+// All previous candidates are kept as fallbacks (no removals).
 std::wstring FindAppIconPath() {
-    return FindAssetPath({ "Emebala_Chat_Appicon_small.png", "Emebala_Chat_Appicon.png", "Emebala_Chat_Logo_small.png", "logo.png" });
+    return FindAssetPath({ "Emebala_Chat_Appicon.ico", "Emebala_Chat_Appicon_small.png", "Emebala_Chat_Appicon.png", "Emebala_Chat_Logo_small.png", "logo.png" });
 }
 
 HRESULT LoadWicBitmap(
@@ -83,7 +91,47 @@ HRESULT LoadWicBitmap(
 
     IWICBitmapFrameDecode* pSource = nullptr;
     if (SUCCEEDED(hr)) {
-        hr = pDecoder->GetFrame(0, &pSource);
+        // DP-1 fix (REQ-024 follow-up): the WIC ICO codec exposes frames in
+        // directory order, so GetFrame(0) of Emebala_Chat_Appicon.ico is the
+        // 16x16 LOWEST frame, not the highest resolution (B-1 probe: 7 frames
+        // 16/24/32/48/64/128/256). For multi-frame containers pick the frame
+        // with the largest pixel area; single-frame formats (PNG etc.) keep
+        // the original GetFrame(0) path. Frame-enumeration failures degrade
+        // to index 0 and the decode contract is unchanged: any final
+        // failure still returns a null bitmap to the existing callers'
+        // fallback logic.
+        UINT selectedIndex = 0;
+        UINT frameCount = 0;
+        if (SUCCEEDED(pDecoder->GetFrameCount(&frameCount)) && frameCount > 1) {
+            UINT64 bestArea = 0;
+            UINT bestWidth = 0;
+            UINT bestHeight = 0;
+            for (UINT i = 0; i < frameCount; ++i) {
+                IWICBitmapFrameDecode* pProbe = nullptr;
+                if (FAILED(pDecoder->GetFrame(i, &pProbe))) {
+                    continue; // unreadable frame: skip, keep best-so-far
+                }
+                UINT w = 0;
+                UINT h = 0;
+                const HRESULT hrSize = pProbe->GetSize(&w, &h);
+                pProbe->Release();
+                if (FAILED(hrSize)) {
+                    continue;
+                }
+                const UINT64 area = static_cast<UINT64>(w) * h;
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestWidth = w;
+                    bestHeight = h;
+                    selectedIndex = i;
+                }
+            }
+            DIAG_LOG("ASSET_LOADER",
+                     "ASSET_LOADER/LoadWicBitmap/001 multi-frame container: frames=%u "
+                     "selected_idx=%u selected=%ux%u",
+                     frameCount, selectedIndex, bestWidth, bestHeight);
+        }
+        hr = pDecoder->GetFrame(selectedIndex, &pSource);
     }
 
     IWICFormatConverter* pConverter = nullptr;

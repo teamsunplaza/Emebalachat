@@ -10,7 +10,7 @@ namespace emebalachat {
 // Searches filesystem for logo in known candidate paths (prioritizes Emebala_Chat_Logo_small.png)
 std::wstring FindLogoPath();
 
-// Searches filesystem for app icon in known candidate paths (prioritizes Emebala_Chat_Appicon_small.png)
+// Searches filesystem for app icon in known candidate paths (prioritizes Emebala_Chat_Appicon.ico — REQ-024)
 std::wstring FindAppIconPath();
 
 // Loads a bitmap from file using WIC and creates an ID2D1Bitmap matching the render target format
