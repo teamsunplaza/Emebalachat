@@ -205,78 +205,54 @@ bool SelectAll() {
     return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
 }
 
-bool IsChatApplicationWindow(HWND hwnd) {
+AppCategory ClassifyAppWindow(HWND hwnd) {
     if (!hwnd || !::IsWindow(hwnd)) {
-        return false;
+        return AppCategory::CategoryB; // fail-open to editor path
     }
-
     DWORD pid = 0;
     ::GetWindowThreadProcessId(hwnd, &pid);
     if (pid == 0) {
-        return false;
+        return AppCategory::CategoryB;
     }
-
     HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!hProc) {
-        return false;
+        return AppCategory::CategoryB;
     }
-
     wchar_t image_path[MAX_PATH] = {};
     DWORD size = MAX_PATH;
     BOOL ok = ::QueryFullProcessImageNameW(hProc, 0, image_path, &size);
     ::CloseHandle(hProc);
-
     if (!ok || size == 0) {
-        return false;
+        return AppCategory::CategoryB;
     }
-
     std::wstring_view path_view(image_path, size);
     auto last_slash = path_view.find_last_of(L"\\/");
     std::wstring_view filename = (last_slash != std::wstring_view::npos)
-        ? path_view.substr(last_slash + 1)
-        : path_view;
-
-    auto equals_case_insensitive = [](std::wstring_view a, std::wstring_view b) {
+        ? path_view.substr(last_slash + 1) : path_view;
+    auto equals_ci = [](std::wstring_view a, std::wstring_view b) {
         if (a.size() != b.size()) return false;
         for (size_t i = 0; i < a.size(); ++i) {
             if (::towlower(a[i]) != ::towlower(b[i])) return false;
         }
         return true;
     };
-
-    const std::wstring_view chat_apps[] = {
-        L"KakaoTalk.exe",
-        L"Discord.exe",
-        L"Slack.exe",
-        L"Telegram.exe",
-        L"Teams.exe",
-        L"ms-teams.exe",
-        L"Line.exe",
-        L"WeChat.exe"
+    // Phase 5 (REQ-011): Category A = chat/command apps (Enter = send/execute).
+    // Static exe-name table, lowercase-insensitive (plan §2.2). Everything not
+    // listed is Category B (editor-type). Terminals are deliberately NOT listed
+    // (plan §2.2: synthetic Ctrl+C = SIGINT hazard, Phase 0 §5.2).
+    static const std::wstring_view kCategoryAApps[] = {
+        L"KakaoTalk.exe", L"Discord.exe", L"Slack.exe", L"Telegram.exe",
+        L"Teams.exe", L"ms-teams.exe", L"Line.exe", L"WeChat.exe",
+        L"WhatsApp.exe",
+        L"Code.exe", L"Code - Insiders.exe", L"Cursor.exe", L"Windsurf.exe",
+        L"VSCodium.exe", L"opencode.exe", L"claude.exe", L"codex.exe"
     };
-
-    for (const auto& app : chat_apps) {
-        if (equals_case_insensitive(filename, app)) {
-            return true;
+    for (const auto& app : kCategoryAApps) {
+        if (equals_ci(filename, app)) {
+            return AppCategory::CategoryA;
         }
     }
-
-    return false;
-}
-
-bool SelectTextForTranslation(HWND hwnd) {
-    if (IsChatApplicationWindow(hwnd)) {
-        return SelectAll();
-    } else {
-        // Multi-line block fix: non-chat apps previously captured only the
-        // current physical line (Shift+Home), so a multi-line message typed
-        // with Shift+Enter (or pasted with newlines) had ONLY its last line
-        // translated when Enter fired. SelectMessageBlock() extends the
-        // selection from the cursor to the start of the whole text flow, so
-        // the full block reaches the translator. Identical for every
-        // language/script: it is pure keyboard geometry.
-        return SelectMessageBlock();
-    }
+    return AppCategory::CategoryB;
 }
 
 bool CopySelection() {
@@ -633,8 +609,19 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
 }
 
 std::wstring CopySelectedText(HWND hwnd) {
-    const bool is_chat = IsChatApplicationWindow(hwnd);
-    const bool sel_ok = SelectTextForTranslation(hwnd);
+    // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
+    // here. ClassifyAppWindow is consulted once and its category picks the
+    // selection primitive directly.
+    //
+    // Multi-line block fix (CategoryB path): non-chat apps previously captured
+    // only the current physical line (Shift+Home), so a multi-line message
+    // typed with Shift+Enter (or pasted with newlines) had ONLY its last line
+    // translated when Enter fired. SelectMessageBlock() extends the selection
+    // from the cursor to the start of the whole text flow, so the full block
+    // reaches the translator. Identical for every language/script: it is pure
+    // keyboard geometry.
+    const AppCategory category = ClassifyAppWindow(hwnd);
+    const bool sel_ok = (category == AppCategory::CategoryA) ? SelectAll() : SelectMessageBlock();
     ::Sleep(10);
 
     // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
@@ -643,8 +630,8 @@ std::wstring CopySelectedText(HWND hwnd) {
     // treats empty as "nothing to translate" and releases the selection.
     if (!CopySelectionWithSequenceWait()) {
         DIAG_F(
-                "WIN32_INPUT/CopySelectedText/001: copy not confirmed (hwnd=%p chat=%d sel_send=%d); returning empty\n",
-                reinterpret_cast<void*>(hwnd), is_chat ? 1 : 0, sel_ok ? 1 : 0);
+                "WIN32_INPUT/CopySelectedText/001: copy not confirmed (hwnd=%p category=%d sel_send=%d); returning empty\n",
+                reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
         return {};
     }
 
@@ -656,8 +643,8 @@ std::wstring CopySelectedText(HWND hwnd) {
     // which is exactly the gate-11 diagnosis.
     size_t nl = 0;
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
-    DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, chat=%d)\n",
-            text.size(), nl, is_chat ? 1 : 0);
+    DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, category=%d)\n",
+            text.size(), nl, static_cast<int>(category));
     return text;
 }
 

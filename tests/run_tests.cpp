@@ -1649,7 +1649,9 @@ void TestDragToTranslateComponents() {
     mouse_hook.Stop();
 
     // 4. Process-aware input helper
-    TEST_CHECK(!IsChatApplicationWindow(nullptr), "IsChatApplicationWindow returns false for null HWND");
+    // Phase 5 (REQ-011): classification fails open to CategoryB (editor path)
+    // for a null HWND, matching the old IsChatApplicationWindow(false) contract.
+    TEST_CHECK(ClassifyAppWindow(nullptr) == AppCategory::CategoryB, "ClassifyAppWindow returns CategoryB for null HWND");
 
     // 5. Emebala Tablet Relief Assets & 32x32 Pill Specifications
     int icon_size = DragIconWindow::kSize;

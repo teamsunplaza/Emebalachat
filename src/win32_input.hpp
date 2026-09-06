@@ -62,14 +62,28 @@ std::wstring GetClipboardText(DWORD timeout_ms = 100);
 // Places Unicode text onto Windows clipboard as CF_UNICODETEXT.
 bool SetClipboardText(std::wstring_view text, DWORD timeout_ms = 100);
 
-// Returns true if process owning hwnd is a known chat application (KakaoTalk, Discord, Slack, etc.)
-bool IsChatApplicationWindow(HWND hwnd);
+// Phase 5 (REQ-011): keyboard-pipeline app category. CategoryA = chat/command
+// apps where Enter means "send/execute" (KakaoTalk, Slack, Discord, VSCode,
+// terminals-as-command-pipelines, etc.): the whole input is selected (Ctrl+A),
+// replaced, and the synthetic Enter sends it. CategoryB = editor-type apps
+// (Notepad, IDE text editors, browser text areas) where the caret-line/block
+// context is replaced and a real newline is always injected afterwards
+// (REQ-012/023). Classification is a pure static exe-name table lookup;
+// anything not in the CategoryA table is CategoryB (fail-open to the editor
+// path, which is the pre-Phase-5 default for all non-chat apps).
+enum class AppCategory : unsigned char { CategoryA, CategoryB };
+
+// Phase 5 (REQ-011): classifies the process owning hwnd into the keyboard
+// pipeline category. Same process-name resolution as the old
+// IsChatApplicationWindow (QueryFullProcessImageNameW -> basename ->
+// case-insensitive compare), but returns the category instead of a bool.
+// Fails closed to CategoryB on any resolution failure (null hwnd, bad pid,
+// OpenProcess/Query failure): the editor path is the safe default because it
+// never sends the message on the user's behalf beyond a newline.
+AppCategory ClassifyAppWindow(HWND hwnd);
 
 // Sends Ctrl+A to select all text in the active control.
 bool SelectAll();
-
-// Process-aware text selection: Ctrl+A for chat apps, Shift+Home for document editors.
-bool SelectTextForTranslation(HWND hwnd);
 
 // ---- REQ-R04: clipboard copy-settle polling (Electron IPC robustness) ----
 //
@@ -144,7 +158,8 @@ constexpr uint32_t ClipboardOpenBackoffDelayMs(int attempt) {
 }
 
 // High-level pipeline helper:
-// Selects text via SelectTextForTranslation(hwnd), then runs the REQ-R04
+// Classifies the window via ClassifyAppWindow(hwnd) and selects text with
+// SelectAll() (CategoryA) or SelectMessageBlock() (CategoryB), then runs the REQ-R04
 // sequence-number copy-settle wait and retrieves clipboard text.
 // Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);
