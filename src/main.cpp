@@ -678,6 +678,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tooltip.RefreshTargetLanguageFromConfig(snap.drag_target_language);
         about_window.RequestLocaleRefresh();
     };
+
+    // Phase 4 (REQ-020): About-window "Reset to system defaults" coordinator.
+    // GUI-thread only (invoked from AboutWindow::WndProc via the callback).
+    // Rewrites BOTH context pairs to the system defaults (plan §1.2), persists
+    // atomically, refreshes all three surfaces (both pairs changed), and plays
+    // the language-change chime as audible feedback. NOT routed through
+    // ApplyLanguageChange/PlanLanguageSync: a reset is a direct 4-field write,
+    // not a request-resolve cycle (plan §2.3).
+    auto apply_system_defaults = [&]() {
+        const auto defs = emebalachat::ComputeSystemDefaultLanguages(); // pure
+        config.SetDragLanguages(defs.drag_source, defs.drag_target);     // I4 locked
+        config.SetTypeLanguages(defs.type_source, defs.type_target);     // I4 locked
+        config.SaveToFile();                                             // atomic swap
+        const auto snap = config.GetSnapshot();
+        DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s (REQ-020)",
+                 snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
+                 snap.type_source_language.c_str(), snap.type_target_language.c_str());
+        badge.SetLanguages(emebalachat::ToUtf16(snap.type_source_language),
+                           emebalachat::ToUtf16(snap.type_target_language));
+        refresh_tray();
+        tooltip.RefreshTargetLanguageFromConfig(snap.drag_target_language);
+        emebalachat::PlayLangChange();
+    };
     // R6 Phase 1 (B3): Ctrl+F9 cycle now routes through the SAME coordinator.
     // Fires on the hook thread -> RequestLanguageSync posts to the controller
     // window (GUI thread). Set before hook.Start(); read-only afterwards
@@ -811,6 +834,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         ::GetCursorPos(&cursor);
         about_window.Show(cursor.x, cursor.y);
     };
+
+    // Phase 4 (REQ-020, plan §1.3): wire the About-window reset button to the
+    // apply_system_defaults coordinator defined above. AboutWindow stays a
+    // pure view - this callback is its only config-side seam. Safe even when
+    // Create failed: the callback is stored regardless of hwnd_ state.
+    about_window.SetResetCallback(apply_system_defaults);
 
     // R6 Phase 6 (plan §5.4): tray UI-language selector. Runs on the GUI
     // thread (tray callback). Validation + canonicalization + refusal of
