@@ -5063,6 +5063,133 @@ void TestReq027CaretTracker() {
     }
 }
 
+// REQ-027 B-6a (ISSUE-1 line-merge fix, design 210000 §3 B-6a file 4): the
+// stored "previous translation end" offset MUST be the POST-newline caret -
+// the value becomes the START of the next Enter's EM_SETSEL range, so saving
+// it before SendEnterKey injects the REQ-023 CRLF made the following
+// selection swallow the line break (2 UTF-16 units) and the replacement
+// deleted it. Headless proof on a real in-process EDIT control: replacement
+// -> CRLF append (+2 caret) -> settle -> NotifyReplacement (the new worker
+// call order) -> next TrySelectNewText starts AFTER the CRLF. A causal
+// control on a second control pins the OLD order's behavior (start == the
+// pre-newline caret, CRLF inside the selection), documenting the mechanism.
+void TestReq027OffsetAfterNewline() {
+    std::cout << "[TEST] REQ-027 B-6a offset saved after injected newline (ISSUE-1)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req027B6aHost";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req027b6a", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-027 B-6a: in-process EDIT control created");
+    // Same focus-verification discipline as TestReq027CaretTracker: SetFocus
+    // can be denied in a headless session; skip the positive EM sequence
+    // explicitly rather than passing/failing by luck.
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; B-6a positive sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // Task N: paste-replacement live (10 UTF-16 units), caret at 10.
+        ::SetWindowTextW(edit, L"translated");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(10), static_cast<LPARAM>(10));
+
+        // Worker B-6a baseline sample (pre-newline caret).
+        const DWORD pre = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(pre == 10u, "REQ-027 B-6a: SampleCaret reads the live pre-newline caret");
+
+        // REQ-023 newline injection (what SendEnterKey does in Notepad/RichEdit):
+        // document grows by CRLF (2 units), caret 10 -> 12.
+        ::SetWindowTextW(edit, L"translated\r\n");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(12), static_cast<LPARAM>(12));
+
+        // Settle poll sees the caret moved (newline visible) -> returns early;
+        // THEN the offset is saved, post-newline (the fixed call order).
+        EditCaretTracker_SettleNewlineVisible(edit, pre);
+        EditCaretTracker_NotifyReplacement(edit, true, 10);
+
+        // Next block: user types "abc" on the new line, caret 12 -> 15.
+        ::SetWindowTextW(edit, L"translated\r\nabc");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(15), static_cast<LPARAM>(15));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-027 B-6a: next Enter enters the EM path");
+        const DWORD sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        // THE ISSUE-1 assertion: [12..15) - the CRLF at 10..11 is NOT in the
+        // selection, so the next replacement can no longer delete it.
+        TEST_CHECK(LOWORD(sel) == 12u && HIWORD(sel) == 15u,
+                   "REQ-027 B-6a: selection starts AFTER the injected CRLF (line break preserved)");
+
+        // Causal control on a fresh control: the OLD order (save BEFORE the
+        // newline) stores 10, and the next EM_SETSEL covers the CRLF - the
+        // exact mechanism that merged lines pre-B-6a.
+        HWND edit2 = nullptr;
+        if (host) {
+            edit2 = ::CreateWindowExW(0, L"EDIT", L"",
+                                      WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                      0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+        }
+        bool focus_ok2 = false;
+        if (edit2) {
+            ::SetFocus(edit2);
+            GUITHREADINFO gti2 = {};
+            gti2.cbSize = sizeof(gti2);
+            focus_ok2 = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti2) && gti2.hwndFocus == edit2;
+        }
+        if (focus_ok2) {
+            ::SetWindowTextW(edit2, L"translated");
+            ::SendMessageW(edit2, EM_SETSEL, static_cast<WPARAM>(10), static_cast<LPARAM>(10));
+            EditCaretTracker_NotifyReplacement(edit2, true, 10); // OLD order: pre-newline save
+            ::SetWindowTextW(edit2, L"translated\r\n");
+            ::SendMessageW(edit2, EM_SETSEL, static_cast<WPARAM>(12), static_cast<LPARAM>(12));
+            ::SetWindowTextW(edit2, L"translated\r\nabc");
+            ::SendMessageW(edit2, EM_SETSEL, static_cast<WPARAM>(15), static_cast<LPARAM>(15));
+            TEST_CHECK(EditCaretTracker_TrySelectNewText(edit2),
+                       "REQ-027 B-6a: causal control enters the EM path");
+            const DWORD sel2 = static_cast<DWORD>(::SendMessageW(edit2, EM_GETSEL, 0, 0));
+            TEST_CHECK(LOWORD(sel2) == 10u && HIWORD(sel2) == 15u,
+                       "REQ-027 B-6a: causal control - pre-newline save selects the CRLF (documented defect mechanism)");
+        }
+        if (edit2) {
+            ::DestroyWindow(edit2);
+        }
+
+        // Degradation safety: unusable hwnd samples Unknown, settle no-ops.
+        TEST_CHECK(EditCaretTracker_SampleCaret(nullptr) == kEditCaretUnknown,
+                   "REQ-027 B-6a: SampleCaret(null) -> kEditCaretUnknown");
+        EditCaretTracker_SettleNewlineVisible(nullptr, kEditCaretUnknown);
+        TEST_CHECK(true, "REQ-027 B-6a: SettleNewlineVisible on unusable hwnd survived");
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-027 B-6a offset-after-newline tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-027 B-6a offset-after-newline tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5124,6 +5251,7 @@ int main() {
     TestPhase5AppClassifier();
     TestPhase8ConsoleGate();
     TestReq027CaretTracker();
+    TestReq027OffsetAfterNewline();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
