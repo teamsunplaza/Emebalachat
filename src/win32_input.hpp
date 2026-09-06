@@ -176,15 +176,78 @@ constexpr uint32_t ClipboardOpenBackoffDelayMs(int attempt) {
 
 // ---- REQ-027 (Phase A §A-2): editor caret-offset tracker ----
 //
-// REQ-027 (Phase A §A-2): 표준 EDIT/RichEdit 컨트롤 한정 "직전 번역 지점
+// REQ-027 (Phase A §A-2): EM_*를 실제 처리하는 컨트롤 한정 "직전 번역 지점
 // 오프셋" 추적기. CategoryB 에디터에서 Enter 시 SelectMessageBlock(전체~캐럿)
 // 대신 EM_SETSEL(last_offset, caret)로 새로 입력한 부분만 선택한다.
-// 비표준 컨트롤(브라우저/Electron/WinUI/VSCode)은 EM_* 미처리이므로 false를
-// 반환하고 호출자가 SelectMessageBlock으로 폴백한다.
+// B-6b (design 192100 §2.3): 진입 판정은 클래스명 화이트리스트가 아니라
+// 능력 프로브(ProbeEmCapability/ClassifyEmProbe)다. EM_*를 처리하지 않는
+// 컨트롤(브라우저/Electron/WinUI/VSCode)은 false를 반환하고 호출자가
+// SelectMessageBlock으로 폴백한다. 클래스명은 DIAG 속성 로그로만 기록되며
+// 판정에는 절대 사용되지 않는다(미래의 신형 EM 처리 컨트롤 자동 포용).
+
+// ---- REQ-027 B-6b: capability-based EM detection (design 192100 §2.3) ----
+//
+// PROBE CONTRACT: ProbeEmCapability is READ-ONLY (EM_GETSEL / EM_GETLIMITTEXT /
+// WM_GETTEXTLENGTH / EM_GETLINECOUNT / EM_LINEFROMCHAR only - EM_SETSEL is used
+// exclusively by the real selection step, never the probe) and its verdict is
+// decided WITHOUT window class names. Every message goes through the SendEm
+// wrapper (SendMessageTimeoutW, 100 ms cap, SMTO_ABORTIFHUNG) so a hung target
+// cannot stall the worker (design §2.5.A2 deadlock budget).
+enum class EmCapability { Capable, NotCapable, Unknown };
+
+// Raw observations of one ProbeEmCapability run. Plain data so the decision
+// core below is pure (zero Win32 contact) and unit-testable headlessly -
+// the same seam pattern as EditCaretTracker_EstimateNextOffset.
+struct EmProbeSignals {
+    bool getsel_handled = false; // EM_GETSEL answered within the timeout
+    DWORD sel_start = 0;         // LOWORD of the EM_GETSEL reply
+    DWORD sel_end = 0;           // HIWORD of the EM_GETSEL reply
+    bool limit_ok = false;       // EM_GETLIMITTEXT answered
+    ULONG_PTR limittext = 0;
+    bool len_ok = false;         // WM_GETTEXTLENGTH answered
+    ULONG_PTR textlen = 0;
+    bool count_ok = false;       // EM_GETLINECOUNT answered
+    ULONG_PTR linecount = 0;
+    bool linefromchar_ok = false; // EM_LINEFROMCHAR(-1) answered
+};
+
+// Pure decision core behind ProbeEmCapability: design 192100 §2.3 skeleton +
+// VP-approved DefWindowProc false-positive hardening (ruling 260907 21:55).
+// SendMessageTimeoutW reports SUCCESS even when DefWindowProc answers 0 to an
+// UNHANDLED message, so call success alone is not evidence of EM_* handling.
+// In the ambiguous (0,0) EM_GETSEL case, Capable requires positive evidence
+// from the EM line model: a real EDIT/RichEdit reports linecount >= 1 even
+// for an empty document, while a generic window leaves EM_GETLINECOUNT to
+// DefWindowProc (reply 0) and is structurally NotCapable. Unknown = partial
+// or inconclusive evidence; both Unknown and NotCapable make callers fall
+// back to SelectMessageBlock (only the DIAG code differs: /006 vs /007).
+constexpr EmCapability ClassifyEmProbe(const EmProbeSignals& s) {
+    if (!s.getsel_handled) {
+        return EmCapability::NotCapable; // EM_GETSEL timed out: EM path unusable
+    }
+    if (s.sel_start != 0 || s.sel_end != 0) {
+        return EmCapability::Capable;    // meaningful selection/caret: EM_GETSEL handled
+    }
+    const bool em_line_model = s.count_ok && s.linecount >= 1;
+    if (s.len_ok && s.textlen > 0) {
+        // Caret at document start in a NON-empty document (e.g. Home pressed):
+        // proceed only when the rest of the EM family answers consistently.
+        return (em_line_model && s.linefromchar_ok) ? EmCapability::Capable
+                                                    : EmCapability::Unknown;
+    }
+    if (s.len_ok) {
+        // Empty document: (0,0) is the only valid caret. A real empty editor
+        // has linecount >= 1; a generic text-less window answers 0/DefWindowProc
+        // -> the false positive the 21:55 ruling closed (was Capable in §2.3).
+        return em_line_model ? EmCapability::Capable : EmCapability::NotCapable;
+    }
+    // Length query itself silent: at most partial evidence -> conservative fallback.
+    return (em_line_model || s.limit_ok) ? EmCapability::Unknown : EmCapability::NotCapable;
+}
 
 // hwnd: 포그라운드 최상위 창 (hook이 캡처한 target_hwnd).
 // 반환: true = 오프셋 선택 성공(EM_SETSEL 적용됨, 이후 Ctrl+C 진행),
-//       false = 폴백 필요(비표준/교착/실패).
+//       false = 폴백 필요(능력 없음 Unknown/NotCapable·교착/실패).
 bool EditCaretTracker_TrySelectNewText(HWND hwnd);
 
 // 치환 성공 후 호출 — 직전 번역 지점 오프셋을 갱신한다.
@@ -218,10 +281,11 @@ inline constexpr int kNewlineSettlePollMax = 4;
 inline constexpr DWORD kEditCaretUnknown = UINT32_MAX;
 
 // Read-only caret (selection-end) probe through the same gates as
-// NotifyReplacement: focus candidate resolution + standard EDIT/RichEdit
-// class + EM_GETSEL within the 100ms deadlock budget. Returns
-// kEditCaretUnknown when any gate fails. Used by the worker to capture the
-// pre-newline caret for the settle comparison below.
+// NotifyReplacement: focus candidate resolution + EM_* capability probe
+// (B-6b: ClassifyEmProbe verdict, class name irrelevant) + EM_GETSEL within
+// the 100ms deadlock budget. Returns kEditCaretUnknown when any gate fails.
+// Used by the worker to capture the pre-newline caret for the settle
+// comparison below.
 DWORD EditCaretTracker_SampleCaret(HWND hwnd);
 
 // Block (bounded) until the caret on hwnd moves off pre_newline_caret - proof

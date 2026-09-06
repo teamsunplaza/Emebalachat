@@ -662,7 +662,8 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
 // ---- REQ-027 (Phase A §A-2): EditCaretTracker --------------------------------
 //
 // "Translate from the previous translation point up to the caret" offset
-// tracking, gated to standard EDIT/RichEdit controls on the CategoryB path.
+// tracking, gated by the B-6b EM_* capability probe (ProbeEmCapability) on
+// the CategoryB path - window class names never feed the verdict.
 // Public contract and design references: win32_input.hpp §REQ-027 block and
 // docs/260907_0001 §A-2 (§2.2.A2 contract, §2.3.A2 state, §2.4.A2 HWND
 // resolution, §2.5.A2 deadlock guard, §2.6.A2 selection sequence, §2.9.A2
@@ -739,37 +740,24 @@ bool ResolveFocusCandidate(HWND target, Key& out) {
     return true;
 }
 
-// §2.4.A2 whitelist (case-insensitive, per the design table). Literal class
-// names only - richedit.h is deliberately not included: RICHEDIT_CLASS here
-// is the literal "RICHEDIT_CLASS" window class registered by legacy
-// riched32, not the SDK macro. VSCode/Chrome/Electron surfaces
-// (Chrome_WidgetWin_1 etc.) are NOT in the list, structurally blocking the
-// EM path even if a Chromium exe were ever reclassified to CategoryB
-// (design §2.7.A2 double gate: exe category table + window class).
-bool IsStandardEditClass(HWND hwnd) {
-    static const wchar_t* const kAllowedClasses[] = {
-        L"Edit", L"RichEdit20W", L"RichEdit20A", L"RichEdit50W", L"RICHEDIT_CLASS",
-        // REQ-027 B-5a: Windows 11 Notepad (22H2+) hosts its editor in the
-        // RichEditD2DPT class - a Microsoft 365 RichEdit derivative that
-        // renders via Direct2D/DirectWrite yet still services the EM_*
-        // family (redesign report 192100_architect-report-req027-
-        // richeditd2dpt-redesign.md §2.1 verdict 3). Evidence: user logs
-        // emebalachat_260907040407.log L200 (fallback signature) and
-        // emebalachat_260907041018.log L190+L328 (consecutive skips).
-        // RichEditD2D is the same family's non-PT variant, added
-        // defensively. Comparison stays case-insensitive via lstrcmpiW.
-        L"RichEditD2DPT", L"RichEditD2D"
-    };
+// B-6b (design 192100 §2.3, VP ruling 260907 21:55): the §2.4.A2 class-name
+// whitelist IsStandardEditClass is RETIRED (deleted, zero references kept).
+// Entry into the EM path is decided by ProbeEmCapability below - how the
+// control actually answers the EM_* family - so future EM-capable controls
+// are adopted automatically and the whitelist's false negatives cannot
+// recur. The class name survives ONLY as QA attribution in DIAG logs.
+
+// Best-effort UTF-8 rendering of the window class name for DIAG attribution
+// (never consulted for a verdict). out is always NUL-terminated; the string
+// is empty when the class query itself fails.
+void ClassNameUtf8(HWND hwnd, char (&out)[128]) {
+    out[0] = '\0';
     wchar_t cls[64] = {};
     if (::GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) {
-        return false;
+        return;
     }
-    for (const wchar_t* name : kAllowedClasses) {
-        if (::lstrcmpiW(cls, name) == 0) {
-            return true;
-        }
-    }
-    return false;
+    ::WideCharToMultiByte(CP_UTF8, 0, cls, -1, out, static_cast<int>(sizeof(out)),
+                          nullptr, nullptr);
 }
 
 // §2.5.A2: EVERY cross-process EM_* call goes through this wrapper so a hung
@@ -781,6 +769,41 @@ bool SendEm(HWND hwnd, UINT msg, WPARAM w, LPARAM l, ULONG_PTR& result) {
     return ::SendMessageTimeoutW(hwnd, msg, w, l,
                                  SMTO_ABORTIFHUNG | SMTO_BLOCK, kEmTimeoutMs,
                                  &result) != 0;
+}
+
+// §2.3.B-6b: read-only EM_* capability probe. Every message goes through
+// SendEm (SendMessageTimeoutW, 100 ms cap, SMTO_ABORTIFHUNG) so a hung or
+// pump-busy target cannot stall the worker (§2.5.A2 deadlock bound), and
+// EM_SETSEL is NEVER sent here (the probe mutates nothing). The verdict is
+// the pure ClassifyEmProbe over the collected signals - no class names.
+// VP-approved hardening over the §2.3 pseudocode: SendMessageTimeoutW also
+// returns SUCCESS when DefWindowProc answers 0 to an UNHANDLED message, so
+// the ambiguous (0,0) EM_GETSEL reply additionally requires positive EM line
+// -model evidence (EM_GETLINECOUNT >= 1, plus EM_LINEFROMCHAR for a non-empty
+// document) before Capable is granted. Fast paths (timeout / meaningful
+// selection) cost a single message, same traffic as the pre-B-6b hot path.
+EmCapability ProbeEmCapability(HWND focus) {
+    EmProbeSignals s{};
+    ULONG_PTR getsel = 0;
+    s.getsel_handled = SendEm(focus, EM_GETSEL, 0, 0, getsel);
+    if (s.getsel_handled) {
+        const DWORD sel = static_cast<DWORD>(getsel);
+        s.sel_start = LOWORD(sel);
+        s.sel_end = HIWORD(sel);
+    }
+    if (!s.getsel_handled || s.sel_start != 0 || s.sel_end != 0) {
+        return ClassifyEmProbe(s); // NotCapable (timeout) or Capable (meaningful reply)
+    }
+    // Ambiguous (0,0): cross-check with independent read-only queries.
+    s.limit_ok = SendEm(focus, EM_GETLIMITTEXT, 0, 0, s.limittext);
+    s.len_ok = SendEm(focus, WM_GETTEXTLENGTH, 0, 0, s.textlen);
+    s.count_ok = SendEm(focus, EM_GETLINECOUNT, 0, 0, s.linecount);
+    if (s.len_ok && s.textlen > 0) {
+        ULONG_PTR line = 0;
+        s.linefromchar_ok =
+            SendEm(focus, EM_LINEFROMCHAR, static_cast<WPARAM>(-1), 0, line);
+    }
+    return ClassifyEmProbe(s);
 }
 
 // §2.3.A2 lifecycle (a): drop entries whose focus window was destroyed.
@@ -833,19 +856,26 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
                reinterpret_cast<void*>(hwnd));
         return false;
     }
-    if (!edit_caret::IsStandardEditClass(key.focus_hwnd)) {
-        // Non-standard control (browser/Electron/WinUI/VSCode): EM_* is not
-        // implemented there, so this is the documented §2.8.A2 limitation
-        // path. Logged per Enter for QA attribution (class is app metadata,
-        // never user content).
-        wchar_t cls[64] = {};
-        ::GetClassNameW(key.focus_hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0])));
-        char cls_u8[128] = {};
-        ::WideCharToMultiByte(CP_UTF8, 0, cls, -1, cls_u8, static_cast<int>(sizeof(cls_u8)), nullptr, nullptr);
-        DIAG_F("WIN32_INPUT/EditCaretTracker/002: non-standard class '%s' (hwnd=%p); fallback to SelectMessageBlock\n",
+    // B-6b: capability probe replaces the class whitelist. The class name is
+    // logged for QA attribution ONLY (app metadata, never user content) and
+    // never feeds the verdict. Unknown/NotCapable both fall back to
+    // SelectMessageBlock; only the DIAG code differs (/006 vs /007) so the
+    // E2E matrix can attribute fallbacks to inconclusive vs refused EM_*.
+    char cls_u8[128] = {};
+    edit_caret::ClassNameUtf8(key.focus_hwnd, cls_u8);
+    const EmCapability capability = edit_caret::ProbeEmCapability(key.focus_hwnd);
+    if (capability == EmCapability::Unknown) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/006: EM capability inconclusive (class '%s' attribution only, hwnd=%p); conservative fallback to SelectMessageBlock\n",
                cls_u8, reinterpret_cast<void*>(key.focus_hwnd));
         return false;
     }
+    if (capability == EmCapability::NotCapable) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/007: EM_* not handled (class '%s' attribution only, hwnd=%p); fallback to SelectMessageBlock\n",
+               cls_u8, reinterpret_cast<void*>(key.focus_hwnd));
+        return false;
+    }
+    DIAG_LOG("EditCaretTracker", "focus_class=%s hwnd=%p capability=capable",
+             cls_u8, reinterpret_cast<const void*>(key.focus_hwnd));
 
     // EM_GETSEL with NULL pointer params: the selection comes back in the
     // return value (LOWORD start, HIWORD end), so no cross-process pointer
@@ -911,7 +941,7 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
     }
     edit_caret::Key key{};
     if (!edit_caret::ResolveFocusCandidate(hwnd, key) ||
-        !edit_caret::IsStandardEditClass(key.focus_hwnd)) {
+        edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return; // no EM session was possible for this window: nothing to advance
     }
 
@@ -953,13 +983,14 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
 }
 
 // REQ-027 B-6a: read-only caret (selection-end) probe. Same gates as
-// TrySelectNewText/NotifyReplacement - focus candidate resolution, standard
-// EDIT/RichEdit class, EM_GETSEL inside the 100 ms deadlock budget (§2.5.A2) -
-// but it never touches the state map. kEditCaretUnknown on any gate failure.
+// TrySelectNewText/NotifyReplacement - focus candidate resolution, EM_*
+// capability verdict (B-6b; class names unused), EM_GETSEL inside the
+// 100 ms deadlock budget (§2.5.A2) - but it never touches the state map.
+// kEditCaretUnknown on any gate failure.
 DWORD EditCaretTracker_SampleCaret(HWND hwnd) {
     edit_caret::Key key{};
     if (!edit_caret::ResolveFocusCandidate(hwnd, key) ||
-        !edit_caret::IsStandardEditClass(key.focus_hwnd)) {
+        edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return kEditCaretUnknown;
     }
     ULONG_PTR em_result = 0;
