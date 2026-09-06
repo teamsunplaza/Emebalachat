@@ -150,9 +150,22 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // as it would have without us. Copying/pasting mid-composition is the
     // corruption the audit describes ("마지막 글자 중복 복사") and must never
     // happen against a live GCS_COMPSTR.
+    //
+    // GATE 2 LIMIT (Phase 7 report §2.3): this probe is IMM32-based
+    // (ForegroundImeComposing), i.e. a Korean/legacy-IME-only backstop.
+    // TSF-native IMEs (modern Japanese/Chinese) keep composition state in
+    // ITfContext that is NOT mirrored to IMM32 - such an IME CAN PASS THIS
+    // GATE (probe returns false) even while a composition is open, falling
+    // through to the translate pipeline. Detection for TSF IMEs relies on
+    // the hook-side VK_PROCESSKEY mirror (GATE 1, ImeMirrorNext), the only
+    // language-agnostic signal (report §3.4). Logged here so a diag trace
+    // of a Japanese/Chinese composition incident attributes the pass to
+    // this gate's documented IMM32 scope, not to a probe malfunction.
     if (ForegroundImeComposing()) {
         DIAG_F("WORKER/ExecuteTask/033: IME composition detected at task start; "
-                        "bypassing translation (Enter handed to the app's IME)\n");
+                        "bypassing translation (Enter handed to the app's IME). "
+                        "NOTE: IMM32 backstop - a TSF IME (modern Japanese/Chinese) "
+                        "can pass this gate undetected\n");
         DIAG_LOG("PIPELINE", "stage=ime_backstop decision=bypass reason=foreground_composing "
                              "duration_ms=%llu",
                  ::GetTickCount64() - t_task_start);

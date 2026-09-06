@@ -726,6 +726,17 @@ void SendEnterKey(bool release_shift) {
 // window's IME context == a composition is still open. Passing (LPVOID)0/0
 // queries the required buffer size; > 0 means a live composition string.
 // See the header contract: NEVER call from a low-level hook callback.
+//
+// SCOPE DOWNGRADE (Phase 7 report §2.3, REQ-014): this is an IMM32 backstop -
+// Korean IME and other legacy IMM32-based IMEs ONLY. Modern Microsoft
+// Japanese/Chinese IMEs are TSF-native: they keep composition state in
+// ITfContext objects that are never mirrored into the IMM32 context, so
+// GCS_COMPSTR reads empty/0 and this function returns FALSE EVEN WHILE a
+// TSF composition is open. GATE 2 is therefore a Korean/legacy-IME-only
+// backstop and must not be relied on for TSF IME protection; the hook-side
+// VK_PROCESSKEY mirror (ImeMirrorNext) is the only language-agnostic signal
+// (report §3.4). Failing to detect here lets the pipeline proceed, which is
+// why GATE 1 (mirror) remains the primary defense.
 bool ForegroundImeComposing() {
     HWND hwnd = ::GetForegroundWindow();
     if (!hwnd) {

@@ -61,12 +61,19 @@ constexpr bool EnterSendReplaceAllowed(bool vk_is_return, bool active, bool work
 // Hook-local IME composition mirror, updated on every REAL (non-synthetic)
 // keydown with O(1) relaxed-atomic traffic and ZERO cross-thread messaging.
 //
+// CONTRACT (Phase 7, REQ-013/014 report §2.2/§3.4): this mirror is the
+// LANGUAGE-AGNOSTIC VK_PROCESSKEY signal, not a Korean-only heuristic.
 // Ground truth (documented LL-hook behavior): any key the active IME
 // intercepts is delivered to LowLevelKeyboardProc with vkCode VK_PROCESSKEY
-// (0xE5). The Korean IME assembles jamo through such intercepted keys, but it
-// LETS ENTER THROUGH as VK_RETURN even mid-composition (chat apps rely on it
-// to "commit + send") - which is exactly the key our Enter branch hijacks, so
-// the vkCode alone cannot detect that case. The mirror does:
+// (0xE5) - the single composition signal that crosses IME kinds (Korean
+// IMM32, Japanese/Chinese TSF, legacy IMEs) because it is raised at kernel
+// level BEFORE the IME's process-local TSF/IMM32 state, which this process
+// can never query cross-process (ITfThreadMgr is process-local COM).
+// Canonical case (Korean IME): jamo are assembled through intercepted
+// VK_PROCESSKEY keys, but the IME LETS ENTER THROUGH as VK_RETURN even
+// mid-composition (chat apps rely on it to "commit + send") - which is
+// exactly the key our Enter branch hijacks, so the vkCode alone cannot
+// detect that case. The mirror does:
 //   intercepted key (VK_PROCESSKEY)      -> composition active
 //   plain editing key reaching us        -> the IME is NOT intercepting it, so
 //     (Esc/Tab/Back/Delete/arrows/Home/End) no composition can be alive against
@@ -76,6 +83,16 @@ constexpr bool EnterSendReplaceAllowed(bool vk_is_return, bool active, bool work
 //                                          clearing it afterwards, so an
 //                                          Enter that finalises a composition
 //                                          is still gated on THIS press.
+// KNOWN LIMIT (Phase 7 report §2.2, Microsoft-undocumented): TSF-based IMEs
+// (modern Japanese/Chinese Microsoft IMEs) MAY pass SOME keys through to the
+// LL hook as their real vk WITHOUT routing them via VK_PROCESSKEY - the TSF
+// key path (ITfKeyEventSink) differs from IMM32 and its exact conditions are
+// not documented. On such a path the mirror cannot see the composition and
+// stays false (false negative). Consequence: the mirror is a frequency
+// reducer, not a complete guard, for TSF IMEs; residual risk is handled
+// upstream by the fail-open bias below and the worker-side GATE 2 backstop
+// (ForegroundImeComposing, which is itself IMM32-only - see win32_input.cpp).
+//
 // Fail-open bias: a stale true costs ONE missed translation (Enter passes
 // through and the app commits+sends normally); a false negative degrades to
 // the audited pre-R17 behavior.
