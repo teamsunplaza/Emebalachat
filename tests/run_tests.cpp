@@ -1861,6 +1861,87 @@ void TestHotkeyParsing() {
     }
 }
 
+// REQ-022 (Phase 6 batch 2): config wiring matrix for hotkey_lang/hotkey_mode
+// (plan §6.1). Covers resolver fallback (C3), default-spec equivalence (C1),
+// exact matching, and default-spec independence (C4). The drag_hotkey value
+// validation lives inside Start() as a non-pure block, so per plan §6.1 it is
+// covered by code review (hook.cpp Start()), not by a unit test here.
+void TestPhase6HotkeyWiring() {
+    std::cout << "[RUN] Testing Phase 6 Hotkey Wiring (REQ-022)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    using HK = KeyboardHook;
+
+    // Compile-time pins: the compiled-in defaults equal the historical
+    // hardcoded triggers (C1) - lang = Ctrl+F9, mode = Ctrl+Shift+Enter.
+    static_assert(HK::kDefaultLangHotkey.vk == VK_F9 && HK::kDefaultLangHotkey.ctrl &&
+                      !HK::kDefaultLangHotkey.shift && !HK::kDefaultLangHotkey.alt &&
+                      !HK::kDefaultLangHotkey.win && HK::kDefaultLangHotkey.valid,
+                  "Default lang hotkey must be Ctrl+F9");
+    static_assert(HK::kDefaultModeHotkey.vk == VK_RETURN && HK::kDefaultModeHotkey.ctrl &&
+                      HK::kDefaultModeHotkey.shift && !HK::kDefaultModeHotkey.alt &&
+                      !HK::kDefaultModeHotkey.win && HK::kDefaultModeHotkey.valid,
+                  "Default mode hotkey must be Ctrl+Shift+Enter");
+
+    // 1. Lang resolver: default string, fallbacks (C3), custom combo (C2).
+    TEST_CHECK(HK::ResolveLangFromConfig("Ctrl+F9") == HK::kDefaultLangHotkey,
+               "Lang config 'Ctrl+F9' resolves to the default lang spec");
+    TEST_CHECK(HK::ResolveLangFromConfig("") == HK::kDefaultLangHotkey,
+               "Empty lang config falls back to default (C3)");
+    TEST_CHECK(HK::ResolveLangFromConfig("nonsense") == HK::kDefaultLangHotkey,
+               "Invalid lang config falls back to default (C3)");
+    TEST_CHECK(HK::ResolveLangFromConfig("Ctrl+F99") == HK::kDefaultLangHotkey,
+               "Unsupported f-key lang config falls back to default (C3)");
+    const HK::HotkeySpec alt_l = HK::ResolveLangFromConfig("Ctrl+Alt+L");
+    TEST_CHECK(alt_l == HK::ParseHotkey("Ctrl+Alt+L"),
+               "Valid custom lang combo is honored as parsed (C2)");
+    TEST_CHECK(alt_l.valid && alt_l.vk == 'L' && alt_l.ctrl && alt_l.alt,
+               "Custom lang combo is Ctrl+Alt+L");
+
+    // 2. Mode resolver: default string, fallbacks (C3), custom combo (C2).
+    TEST_CHECK(HK::ResolveModeFromConfig("Ctrl+Shift+Enter") == HK::kDefaultModeHotkey,
+               "Mode config 'Ctrl+Shift+Enter' resolves to the default mode spec");
+    TEST_CHECK(HK::ResolveModeFromConfig("") == HK::kDefaultModeHotkey,
+               "Empty mode config falls back to default (C3)");
+    TEST_CHECK(HK::ResolveModeFromConfig("bad") == HK::kDefaultModeHotkey,
+               "Invalid mode config falls back to default (C3)");
+    const HK::HotkeySpec f10 = HK::ResolveModeFromConfig("Ctrl+F10");
+    TEST_CHECK(f10.valid && f10.vk == VK_F10, "Valid custom mode combo honors the key (C2)");
+    TEST_CHECK(f10.ctrl && !f10.shift && !f10.alt && !f10.win,
+               "Custom mode combo is Ctrl+F10");
+
+    // 3. Default-spec matching equivalence with the historical hardcoded
+    //    triggers (C1): only the exact combo fires; neighbors stay passthrough.
+    TEST_CHECK(HK::HotkeyMatches(HK::kDefaultLangHotkey, VK_F9, true, false, false, false),
+               "Lang default fires on Ctrl+F9 (historical hardcode)");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultLangHotkey, VK_F9, false, false, false, false),
+               "Bare F9 does not fire lang default (toggle passthrough)");
+    TEST_CHECK(HK::HotkeyMatches(HK::kDefaultModeHotkey, VK_RETURN, true, true, false, false),
+               "Mode default fires on Ctrl+Shift+Enter (historical hardcode)");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultModeHotkey, VK_RETURN, true, false, false, false),
+               "Ctrl+Enter does not fire mode default (passthrough preserved)");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultModeHotkey, VK_RETURN, false, true, false, false),
+               "Shift+Enter does not fire mode default (S2 newline preserved)");
+
+    // 4. Default-spec independence (C4): no keydown that matches one default
+    //    spec matches another, so the hook's evaluation order (toggle > lang >
+    //    mode) can never double-fire for the default configuration.
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultModeHotkey, VK_F9, true, false, false, false),
+               "Lang trigger never matches mode spec");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultLangHotkey, VK_RETURN, true, true, false, false),
+               "Mode trigger never matches lang spec");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultToggleHotkey, VK_RETURN, true, true, false, false),
+               "Mode trigger never matches toggle spec");
+    TEST_CHECK(!HK::HotkeyMatches(HK::kDefaultModeHotkey, VK_F9, false, false, false, false),
+               "Toggle trigger never matches mode spec");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Phase 6 Hotkey Wiring tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Phase 6 Hotkey Wiring tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-R07 (audit §3.1): active-change callback fires 1:1 with SetActive, and
 // REQ-R06 (audit §2.5): the double-Ctrl+C job runs OFF the caller thread with
 // a non-blocking dispatch seam (measured).
@@ -4742,6 +4823,7 @@ int main() {
     TestDragIconClickClipboardEarlyReturn();
     TestTtsVoiceSelectionModule();
     TestHotkeyParsing();
+    TestPhase6HotkeyWiring();
     TestKeyboardHookStateSyncAndDispatch();
     TestMouseHookDebounce();
     TestUIMarshaling();
