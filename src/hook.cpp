@@ -467,12 +467,16 @@ void KeyboardHook::SetActive(bool active) {
         // I4: this runs on the hook thread; read shared fields via a locked
         // snapshot instead of touching std::string members unsynchronized.
         // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
+        // REQ-025: drag pair passed through (drives the 번역툴팁 submenu
+        // check marks only; the tip keeps the type pair).
         const AppConfig::Snapshot snap = config_.GetSnapshot();
         tray_.UpdateStatus(
             active,
             snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
             snap.type_source_language,
             snap.type_target_language,
+            snap.drag_source_language,
+            snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
             badge_.IsVisible()
@@ -528,13 +532,16 @@ void KeyboardHook::CycleTargetLanguage() {
     config_.SetTypeLanguages(snap_pre.type_source_language, next_tgt); // I4: single locked write
     config_.SaveToFile(); // save takes the lock itself; never held across (non-recursive)
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // authoritative post-write state
-    // Badge and tray display the TYPE pair (plan §2.4).
+    // Badge and tray display the TYPE pair (plan §2.4). REQ-025: drag pair
+    // mirrors the snapshot for the 번역툴팁 submenu check marks.
     badge_.SetLanguages(ToUtf16(snap.type_source_language), ToUtf16(snap.type_target_language));
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
         snap.type_source_language,
         snap.type_target_language,
+        snap.drag_source_language,
+        snap.drag_target_language,
         snap.auto_send,
         snap.sound_enabled,
         badge_.IsVisible()
@@ -552,11 +559,14 @@ void KeyboardHook::ToggleAutoSend() {
     config_.SaveToFile();
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
     // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
+    // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
         snap.type_source_language,
         snap.type_target_language,
+        snap.drag_source_language,
+        snap.drag_target_language,
         next,
         snap.sound_enabled,
         badge_.IsVisible()

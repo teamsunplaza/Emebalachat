@@ -83,6 +83,11 @@ struct LocalizedStrings {
     // initializers (field order MUST keep matching table order).
     const wchar_t* about_reset_button;
     const wchar_t* about_reset_done;
+
+    // REQ-025 (Phase A §2.1.A3-25): tray language-picker group headers.
+    // Appended at the end (same trailing-initializer rule as above).
+    const wchar_t* menu_typing_group;
+    const wchar_t* menu_tooltip_group;
 };
 
 // 1. Korean (ko)
@@ -146,7 +151,9 @@ const LocalizedStrings kStringsKorean = {
     L"인터페이스 언어",
     L"자동 (시스템 언어)",
     L"시스템 기본값으로 리셋",
-    L"기본값으로 복원됨"
+    L"기본값으로 복원됨",
+    L"키보드 타이핑",
+    L"번역 툴팁"
 };
 
 // 2. Japanese (ja)
@@ -210,7 +217,9 @@ const LocalizedStrings kStringsJapanese = {
     L"表示言語",
     L"自動 (システム言語)",
     L"システム既定値にリセット",
-    L"既定値に復元しました"
+    L"既定値に復元しました",
+    L"キーボード入力",
+    L"ドラッグ翻訳ツールチップ"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -274,7 +283,9 @@ const LocalizedStrings kStringsChineseSimp = {
     L"界面语言",
     L"自动（系统语言）",
     L"重置为系统默认值",
-    L"已恢复默认值"
+    L"已恢复默认值",
+    L"键盘输入",
+    L"划译工具提示"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -338,7 +349,9 @@ const LocalizedStrings kStringsChineseTrad = {
     L"介面語言",
     L"自動（系統語言）",
     L"重設為系統預設值",
-    L"已還原預設值"
+    L"已還原預設值",
+    L"鍵盤輸入",
+    L"划譯工具提示"
 };
 
 // 5. Vietnamese (vi)
@@ -402,7 +415,9 @@ const LocalizedStrings kStringsVietnamese = {
     L"Ngôn ngữ giao diện",
     L"Tự động (ngôn ngữ hệ thống)",
     L"Đặt lại về mặc định hệ thống",
-    L"Đã khôi phục mặc định"
+    L"Đã khôi phục mặc định",
+    L"Gõ phím",
+    L"Dịch khi chọn văn bản"
 };
 
 // 6. Spanish (es)
@@ -463,7 +478,9 @@ const LocalizedStrings kStringsSpanish = {
     L"Idioma de la interfaz",
     L"Automático (idioma del sistema)",
     L"Restablecer valores predeterminados",
-    L"Valores restaurados"
+    L"Valores restaurados",
+    L"Escritura con teclado",
+    L"Tooltip de selección"
 };
 
 // 7. English (en) - Default Fallback
@@ -528,7 +545,9 @@ const LocalizedStrings kStringsEnglish = {
     L"Interface Language",
     L"Auto (system language)",
     L"Reset to system defaults",
-    L"Defaults restored"
+    L"Defaults restored",
+    L"Keyboard Typing",
+    L"Drag Tooltip"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -651,6 +670,8 @@ std::wstring I18n::Get(StringId id) {
         case StringId::MenuUiLanguageAuto: return s.menu_ui_language_auto;
         case StringId::AboutResetButton: return s.about_reset_button;
         case StringId::AboutResetDone: return s.about_reset_done;
+        case StringId::MenuTypingGroup: return s.menu_typing_group;
+        case StringId::MenuTooltipGroup: return s.menu_tooltip_group;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

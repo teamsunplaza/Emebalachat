@@ -15,6 +15,12 @@ public:
         std::function<void(int engine_idx)> on_select_engine; // 0 = Google Translate, 1 = Local LLM
         std::function<void(std::string_view code)> on_select_source_lang;
         std::function<void(std::string_view code)> on_select_target_lang;
+        // REQ-025 (Phase A §2.1.A3-25): "번역툴팁"(drag) language pair selectors,
+        // separate from the "키보드타이핑"(type) pair above. Same string_view
+        // contract (name_en passed); main.cpp routes to ApplyLanguageChange
+        // (LanguageContext::Drag).
+        std::function<void(std::string_view code)> on_select_drag_source_lang;
+        std::function<void(std::string_view code)> on_select_drag_target_lang;
         std::function<void()> on_swap_languages;
         std::function<void()> on_toggle_auto_send;
         std::function<void()> on_toggle_sound;
@@ -38,12 +44,17 @@ public:
     // Removes icon from system notification area
     void Destroy();
 
-    // Updates tray icon tooltip, status color, and checked state
+    // Updates tray icon tooltip, status color, and checked state.
+    // REQ-025: src/tgt are the TYPE pair (tip text + type submenu checks);
+    // drag_src/drag_tgt drive ONLY the new drag submenu check marks - the tip
+    // always keeps displaying the type pair (Phase A §2.1.A3-25 design).
     void UpdateStatus(
         bool active,
         std::string_view active_engine,
         std::string_view src_code,
         std::string_view tgt_code,
+        std::string_view drag_src_code,
+        std::string_view drag_tgt_code,
         bool auto_send,
         bool sound_enabled,
         bool badge_visible
@@ -73,6 +84,9 @@ private:
     std::string active_engine_ = "Google Translate";
     std::string src_code_ = "AUTO";
     std::string tgt_code_ = "EN";
+    // REQ-025: drag-pair check-mark state for the "번역툴팁" submenus.
+    std::string drag_src_code_ = "AUTO";
+    std::string drag_tgt_code_ = "EN";
     bool auto_send_ = false;
     bool sound_enabled_ = true;
     bool badge_visible_ = true;

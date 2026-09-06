@@ -97,6 +97,11 @@ enum class StringId {
     MenuUiLanguage,     // submenu title ("Interface Language")
     MenuUiLanguageAuto, // "Auto (system language)" entry of the selector
 
+    // REQ-025 (Phase A §2.1.A3-25): tray language-picker group headers -
+    // "키보드타이핑"(typing-translation) and "번역툴팁"(drag tooltip) contexts.
+    MenuTypingGroup,
+    MenuTooltipGroup,
+
     // Common
     AutoDetect,
 

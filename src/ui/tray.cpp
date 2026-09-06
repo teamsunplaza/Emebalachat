@@ -24,11 +24,16 @@ enum TrayMenuId : UINT {
     ID_TRAY_CHEATSHEET = 2060,
     ID_TRAY_ABOUT = 2065,
     ID_TRAY_EXIT = 2070,
-    ID_TRAY_SRC_BASE = 2100, // 2100..2137
-    ID_TRAY_TGT_BASE = 2200, // 2200..2236
+    ID_TRAY_SRC_BASE = 2100, // 2100..2137  (REQ-025: TYPE pair - unchanged)
+    ID_TRAY_TGT_BASE = 2200, // 2200..2236  (REQ-025: TYPE pair - unchanged)
     // R6 Phase 6 (plan §5.4): UI-language selector submenu (Auto + 7 locales)
     ID_TRAY_UILANG_AUTO = 2300,
-    ID_TRAY_UILANG_BASE = 2301 // 2301..2307
+    ID_TRAY_UILANG_BASE = 2301, // 2301..2307
+    // REQ-025 (Phase A §2.1.A3-25): DRAG ("번역툴팁") pair submenu IDs. The
+    // existing 2100/2200 bands stay TYPE-only (regression guard); the drag
+    // pair gets fresh non-overlapping bands. 2400..2437 / 2500..2536.
+    ID_TRAY_DRAG_SRC_BASE = 2400,
+    ID_TRAY_DRAG_TGT_BASE = 2500
 };
 
 } // namespace
@@ -227,6 +232,8 @@ void SystemTray::UpdateStatus(
     std::string_view active_engine,
     std::string_view src_code,
     std::string_view tgt_code,
+    std::string_view drag_src_code,
+    std::string_view drag_tgt_code,
     bool auto_send,
     bool sound_enabled,
     bool badge_visible
@@ -236,6 +243,10 @@ void SystemTray::UpdateStatus(
     active_engine_ = active_engine;
     src_code_ = src_code;
     tgt_code_ = tgt_code;
+    // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
+    // hover tip below intentionally keeps displaying the type pair.
+    drag_src_code_ = drag_src_code;
+    drag_tgt_code_ = drag_tgt_code;
     auto_send_ = auto_send;
     sound_enabled_ = sound_enabled;
     badge_visible_ = badge_visible;
@@ -254,10 +265,13 @@ void SystemTray::UpdateStatus(
 
     ::Shell_NotifyIconW(NIM_MODIFY, &nid_);
     // 260905 diagnostics: every tray status refresh (language changes old→new
-    // are visible through successive lines of this tag).
-    DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s auto_send=%d icon_changed=%d",
+    // are visible through successive lines of this tag). REQ-025 adds the drag
+    // pair so the DP-2 check (drag change must NOT alter src/tgt = type tip)
+    // is directly readable from this log line.
+    DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s drag_src=%s drag_tgt=%s auto_send=%d icon_changed=%d",
              active ? 1 : 0, std::string(active_engine).c_str(),
              std::string(src_code).c_str(), std::string(tgt_code).c_str(),
+             std::string(drag_src_code).c_str(), std::string(drag_tgt_code).c_str(),
              auto_send ? 1 : 0, iconChanged ? 1 : 0);
 }
 
@@ -298,27 +312,57 @@ void SystemTray::ShowContextMenu() {
     }
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), I18n::Get(StringId::MenuUiLanguage).c_str());
 
-    // 3. Source language submenu (AUTO + 37 languages)
-    HMENU hSrcMenu = ::CreatePopupMenu();
+    // 3+4. REQ-025 (Phase A §2.1.A3-25): the language pickers are grouped into
+    // TWO contexts so typing-translation and drag-tooltip translations can use
+    // different source/target pairs:
+    //   키보드타이핑 (type)  > 출발언어 / 도착언어  — IDs 2100/2200 (UNCHANGED)
+    //   번역툴팁   (drag)   > 출발언어 / 도착언어  — IDs 2400/2500 (NEW)
+    // Submenu entry texts reuse MenuSourceLang/MenuTargetLang per the plan.
     const auto& allLangs = GetSupportedLanguages();
+    const auto& tgtLangs = GetTargetLanguages();
+
+    HMENU hSrcMenu = ::CreatePopupMenu();
     std::string normSrc = NormalizeLanguageCode(src_code_);
     for (size_t i = 0; i < allLangs.size(); ++i) {
         std::wstring itemText = ToUtf16(allLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(allLangs[i].code);
         bool isCurrent = (normSrc == allLangs[i].code);
         ::AppendMenuW(hSrcMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_SRC_BASE + static_cast<UINT>(i), itemText.c_str());
     }
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
 
-    // 4. Target language submenu (37 languages)
     HMENU hTgtMenu = ::CreatePopupMenu();
-    const auto& tgtLangs = GetTargetLanguages();
     std::string normTgt = NormalizeLanguageCode(tgt_code_);
     for (size_t i = 0; i < tgtLangs.size(); ++i) {
         std::wstring itemText = ToUtf16(tgtLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(tgtLangs[i].code);
         bool isCurrent = (normTgt == tgtLangs[i].code);
         ::AppendMenuW(hTgtMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_TGT_BASE + static_cast<UINT>(i), itemText.c_str());
     }
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
+
+    HMENU hTypingGroup = ::CreatePopupMenu();
+    ::AppendMenuW(hTypingGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
+    ::AppendMenuW(hTypingGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTypingGroup), I18n::Get(StringId::MenuTypingGroup).c_str());
+
+    // 4b. Drag ("번역툴팁") pair — check marks follow drag_src_code_/drag_tgt_code_.
+    HMENU hDragSrcMenu = ::CreatePopupMenu();
+    std::string normDragSrc = NormalizeLanguageCode(drag_src_code_);
+    for (size_t i = 0; i < allLangs.size(); ++i) {
+        std::wstring itemText = ToUtf16(allLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(allLangs[i].code);
+        bool isCurrent = (normDragSrc == allLangs[i].code);
+        ::AppendMenuW(hDragSrcMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_DRAG_SRC_BASE + static_cast<UINT>(i), itemText.c_str());
+    }
+
+    HMENU hDragTgtMenu = ::CreatePopupMenu();
+    std::string normDragTgt = NormalizeLanguageCode(drag_tgt_code_);
+    for (size_t i = 0; i < tgtLangs.size(); ++i) {
+        std::wstring itemText = ToUtf16(tgtLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(tgtLangs[i].code);
+        bool isCurrent = (normDragTgt == tgtLangs[i].code);
+        ::AppendMenuW(hDragTgtMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_DRAG_TGT_BASE + static_cast<UINT>(i), itemText.c_str());
+    }
+
+    HMENU hTooltipGroup = ::CreatePopupMenu();
+    ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
+    ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTooltipGroup), I18n::Get(StringId::MenuTooltipGroup).c_str());
 
     // 5. Swap languages
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
@@ -381,6 +425,17 @@ void SystemTray::ShowContextMenu() {
         size_t idx = cmd - ID_TRAY_TGT_BASE;
         if (callbacks_.on_select_target_lang) {
             callbacks_.on_select_target_lang(tgtLangs[idx].name_en);
+        }
+    } else if (cmd >= ID_TRAY_DRAG_SRC_BASE && cmd < ID_TRAY_DRAG_SRC_BASE + allLangs.size()) {
+        // REQ-025: drag ("번역툴팁") pair picks route to the drag callbacks.
+        size_t idx = cmd - ID_TRAY_DRAG_SRC_BASE;
+        if (callbacks_.on_select_drag_source_lang) {
+            callbacks_.on_select_drag_source_lang(allLangs[idx].name_en);
+        }
+    } else if (cmd >= ID_TRAY_DRAG_TGT_BASE && cmd < ID_TRAY_DRAG_TGT_BASE + tgtLangs.size()) {
+        size_t idx = cmd - ID_TRAY_DRAG_TGT_BASE;
+        if (callbacks_.on_select_drag_target_lang) {
+            callbacks_.on_select_drag_target_lang(tgtLangs[idx].name_en);
         }
     } else if (cmd == ID_TRAY_UILANG_AUTO && callbacks_.on_select_ui_language) {
         callbacks_.on_select_ui_language("auto");

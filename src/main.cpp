@@ -516,8 +516,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::g_pMouseHook = &mouse_hook; // REQ-R14 resume/unlock re-registration
 
     // SC-02: single writer for the tray status refresh. Every GUI-thread site
-    // that used to spell out the 7-argument UpdateStatus call now funnels
-    // through this lambda so the argument list lives in exactly one place.
+    // that used to spell out the UpdateStatus call now funnels through this
+    // lambda so the argument list lives in exactly one place.
     // Snapshot read inside keeps the I4 contract (consistent, locked read).
     // GUI-thread only (all call sites are tray callbacks / coordinators).
     // Declared ahead of ApplyLanguageChange because that coordinator's Tray
@@ -526,11 +526,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         const auto snap = config.GetSnapshot();
         // Phase 3 Batch 2 (plan §2.4): the tray tip/checkmarks display the
         // TYPE pair (badge rationale: one displayed pair, the main pipeline).
+        // REQ-025 (Phase A §2.1.A3-25): the drag pair is passed through as
+        // well, but ONLY drives the new "번역툴팁" submenu check marks - the
+        // hover tip keeps showing the type pair.
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),
             snap.type_source_language,
             snap.type_target_language,
+            snap.drag_source_language,
+            snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
             badge.IsVisible()
@@ -548,8 +553,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //
     // Phase 3 Batch 2 (plan §2.4): the coordinator takes the LanguageContext of
     // the mutation as its first argument and owns the SURFACE FILTERING. Drag
-    // mutations (tooltip language menu, drag / double-Ctrl+C src==tgt fallback)
-    // rewrite only the drag pair and refresh only the tooltip; Type mutations
+    // mutations (tooltip language menu, drag / double-Ctrl+C src==tgt fallback,
+    // REQ-025 tray drag submenus) rewrite only the drag pair and refresh the
+    // tooltip + the tray menu's drag check marks (the tray TIP keeps showing
+    // the type pair - refresh_tray passes type as src/tgt); Type mutations
     // (Ctrl+F9 cycle, tray submenus, swap) rewrite the type pair and refresh
     // badge -> tray -> tooltip (badge and tray DISPLAY the type pair).
     //
@@ -630,9 +637,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     }
                     break;
                 case emebalachat::LanguageSurface::Tray:
-                    if (!drag) {
-                        refresh_tray();
-                    }
+                    // REQ-025 (Phase A §2.1.A3-25, DP-2): refresh for BOTH
+                    // contexts now. The tray tip is built from the type pair
+                    // (refresh_tray passes type as src/tgt), so a drag change
+                    // leaves the visible tip identical; the call exists to
+                    // re-mirror drag_src_code_/drag_tgt_code_ so the "번역툴팁"
+                    // submenu check marks track the persisted drag pair.
+                    refresh_tray();
                     break;
                 case emebalachat::LanguageSurface::Tooltip:
                     // Best-effort view sync: no-op while hidden/message-mode.
@@ -748,6 +759,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     trayCallbacks.on_select_target_lang = [&](std::string_view name) {
         ApplyLanguageChange(emebalachat::LanguageContext::Type, std::string_view{},
+                            name, false, false);
+    };
+
+    // REQ-025 (Phase A §2.1.A3-25): the tray "번역툴팁" submenu picks drive the
+    // DRAG pair through the same coordinator (INV-2: single writer). Same
+    // request contract as the type callbacks above.
+    trayCallbacks.on_select_drag_source_lang = [&](std::string_view code) {
+        ApplyLanguageChange(emebalachat::LanguageContext::Drag, code,
+                            std::string_view{}, false, false);
+    };
+
+    trayCallbacks.on_select_drag_target_lang = [&](std::string_view name) {
+        ApplyLanguageChange(emebalachat::LanguageContext::Drag, std::string_view{},
                             name, false, false);
     };
 
