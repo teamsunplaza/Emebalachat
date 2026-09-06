@@ -3568,6 +3568,230 @@ void TestResolveEffectiveTarget() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3 Batch 1 (plan §4.2): drag/type language-context separation.
+// Six scenarios: legacy migration to system defaults (no legacy copy),
+// new-schema sticky roundtrip, ResolveDragDefaultTarget pure mapping, the
+// user's sticky drag-change statement replayed at unit level, context
+// independence in both directions, and the R12 torn-read pattern extended to
+// the pair-atomic SetDragLanguages/SetTypeLanguages writers.
+// Host-OS-locale independent: every expectation involving the system language
+// is derived from the same primitives the code under test uses, never by
+// calling the function under test.
+void TestPhase3LanguageContexts() {
+    std::cout << "[RUN] Testing Phase 3 language contexts (drag/type pairs)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Expected drag default, derived INDEPENDENTLY of ResolveDragDefaultTarget
+    // (plan §2.6 mapping: unsupported/unknown -> English, EN -> Korean pivot,
+    // supported language -> its name_en).
+    const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
+    std::string expected_drag_default;
+    if (!sys_info || sys_info->code == "AUTO") {
+        expected_drag_default = "English";
+    } else if (sys_info->code == "EN") {
+        expected_drag_default = "Korean";
+    } else {
+        expected_drag_default = sys_info->name_en;
+    }
+
+    // ---- 1) Migration: a legacy config.json (no drag_/type_ keys) must RESET
+    //         the four context fields to the system defaults and must NOT copy
+    //         the shared legacy pair (plan §2.1: copying a legacy "Korean" into
+    //         type_target_language would violate REQ-016's English default).
+    {
+        // Force the legacy value to differ from the computed drag default on
+        // every host, so "copy instead of reset" can never pass by coincidence.
+        std::string legacy_tgt = "English";
+        if (legacy_tgt == expected_drag_default) legacy_tgt = "Japanese";
+        const std::string legacy_json =
+            std::string("{\n") +
+            "  \"ui_language\": \"auto\",\n"
+            "  \"engine_type\": \"auto\",\n" +
+            "  \"source_language\": \"" + legacy_tgt + "\",\n" +
+            "  \"target_language\": \"" + legacy_tgt + "\",\n" +
+            "  \"auto_send\": false\n"
+            "}\n";
+        AppConfig legacy;
+        TEST_CHECK(legacy.FromJsonString(legacy_json), "P3: legacy config.json parses");
+        const auto snap = legacy.GetSnapshot();
+        // Legacy fields are still parsed (deprecated schema members, plan §1.2).
+        TEST_CHECK(snap.source_language == legacy_tgt && snap.target_language == legacy_tgt,
+                   "P3: legacy pair retained in schema (not dropped)");
+        // Context fields reset to system defaults, independent of the legacy copy.
+        TEST_CHECK(snap.drag_source_language == "Auto Detect",
+                   "P3: migration reset drag source to Auto Detect (REQ-006)");
+        TEST_CHECK(snap.drag_target_language == expected_drag_default,
+                   "P3: migration reset drag target to OS-language default (REQ-007), NOT the legacy value");
+        TEST_CHECK(snap.type_source_language == "Auto Detect",
+                   "P3: migration reset type source to Auto Detect (REQ-015)");
+        TEST_CHECK(snap.type_target_language == "English",
+                   "P3: migration reset type target to English (REQ-016), NOT the legacy value");
+    }
+
+    // ---- 2) New-schema sticky load: all four keys present => values are kept
+    //         verbatim (has_new_schema path, no migration reset).
+    {
+        AppConfig sticky;
+        TEST_CHECK(sticky.FromJsonString(
+                       "{\n"
+                       "  \"drag_source_language\": \"Korean\",\n"
+                       "  \"drag_target_language\": \"Vietnamese\",\n"
+                       "  \"type_source_language\": \"Japanese\",\n"
+                       "  \"type_target_language\": \"English\"\n"
+                       "}"),
+                   "P3: new-schema config.json parses");
+        const auto snap = sticky.GetSnapshot();
+        TEST_CHECK(snap.drag_source_language == "Korean", "P3: sticky drag source kept");
+        TEST_CHECK(snap.drag_target_language == "Vietnamese", "P3: sticky drag target kept");
+        TEST_CHECK(snap.type_source_language == "Japanese", "P3: sticky type source kept");
+        TEST_CHECK(snap.type_target_language == "English", "P3: sticky type target kept");
+    }
+
+    // ---- 3) ResolveDragDefaultTarget: pure function matches the §2.6 mapping
+    //         for the CURRENT host OS language (expectation derived above).
+    {
+        const std::string drag_def = ResolveDragDefaultTarget();
+        TEST_CHECK(drag_def == expected_drag_default,
+                   "P3: ResolveDragDefaultTarget follows the plan §2.6 mapping");
+        const LanguageInfo* def_info = FindLanguageByName(drag_def);
+        TEST_CHECK(def_info != nullptr && def_info->code != "AUTO",
+                   "P3: drag default is always a concrete supported target language");
+    }
+
+    // ---- 4) User's-statement sticky scenario at unit level: tooltip (drag)
+    //         target change to Vietnamese persists, contaminates nothing, and
+    //         survives a restart (serialize -> parse).
+    {
+        AppConfig cfg; // in-memory defaults (no disk)
+        const auto snap0 = cfg.GetSnapshot();
+        const auto p = PlanLanguageSync(LanguageContext::Drag,
+                                        snap0.drag_source_language,
+                                        snap0.drag_target_language,
+                                        "", "Vietnamese");
+        TEST_CHECK(p.valid && p.target_language == "Vietnamese",
+                   "P3: Drag-context plan resolves Vietnamese target");
+        cfg.SetDragLanguages(p.source_language, p.target_language);
+        const auto snap = cfg.GetSnapshot();
+        TEST_CHECK(snap.drag_target_language == "Vietnamese",
+                   "P3: coordinator write lands in the drag pair");
+        TEST_CHECK(snap.type_target_language == "English",
+                   "P3: type pair untouched by the drag change");
+        TEST_CHECK(snap.source_language == "Auto Detect" && snap.target_language == "English",
+                   "P3: legacy pair untouched by the drag change");
+
+        const std::string json = cfg.ToJsonString();
+        TEST_CHECK(json.find("\"drag_target_language\": \"Vietnamese\"") != std::string::npos,
+                   "P3: ToJsonString emits the sticky drag key on disk");
+        AppConfig restarted;
+        TEST_CHECK(restarted.FromJsonString(json), "P3: restarted config parses");
+        TEST_CHECK(restarted.GetSnapshot().drag_target_language == "Vietnamese",
+                   "P3: drag Vietnamese sticky across restart (REQ-008/009)");
+        TEST_CHECK(restarted.GetSnapshot().type_target_language == "English",
+                   "P3: type English survives the restart untouched");
+    }
+
+    // ---- 5) Context independence both directions (the §6.3 pollution fix).
+    {
+        AppConfig iso;
+        iso.SetTypeLanguages("Korean", "Japanese");
+        const auto s1 = iso.GetSnapshot();
+        TEST_CHECK(s1.drag_source_language == "Auto Detect" && s1.drag_target_language == "English",
+                   "P3: type write leaves the drag pair at defaults");
+        TEST_CHECK(s1.type_source_language == "Korean" && s1.type_target_language == "Japanese",
+                   "P3: type write lands in the type pair");
+        iso.SetDragLanguages("English", "Korean");
+        const auto s2 = iso.GetSnapshot();
+        TEST_CHECK(s2.drag_source_language == "English" && s2.drag_target_language == "Korean",
+                   "P3: drag write lands in the drag pair");
+        TEST_CHECK(s2.type_source_language == "Korean" && s2.type_target_language == "Japanese",
+                   "P3: drag write leaves the type pair untouched");
+    }
+
+    // ---- 6) I4 torn-read extension (R12 pattern) on the pair-atomic setters:
+    //         each context's (source,target) must always be observed as one of
+    //         the fully-written pairs - a reader can never see (A,B) mixing,
+    //         proving both fields update atomically under one lock.
+    {
+        AppConfig conc;
+        static const std::string kA(256, 'A'); // long enough to force a heap buffer
+        static const std::string kB(256, 'B');
+        conc.SetDragLanguages(kA, kA);
+        conc.SetTypeLanguages(kA, kA);
+
+        std::atomic<bool> stop{false};
+        std::atomic<long long> torn{0};
+        std::atomic<long long> reads{0};
+
+        auto writer = [&](std::atomic<bool>& local_stop, bool drag) {
+            for (int i = 0; i < 20000 && !local_stop.load(std::memory_order_relaxed); ++i) {
+                if (drag) {
+                    conc.SetDragLanguages((i & 1) ? kB : kA, (i & 1) ? kB : kA);
+                } else {
+                    conc.SetTypeLanguages((i & 1) ? kB : kA, (i & 1) ? kB : kA);
+                }
+            }
+        };
+        std::thread drag_w(writer, std::ref(stop), true);
+        std::thread type_w(writer, std::ref(stop), false);
+        std::thread reader([&conc, &stop, &torn, &reads]() {
+            while (!stop.load(std::memory_order_relaxed)) {
+                const auto s = conc.GetSnapshot();
+                reads.fetch_add(1, std::memory_order_relaxed);
+                if (s.drag_source_language != s.drag_target_language ||
+                    s.type_source_language != s.type_target_language) {
+                    torn.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+        drag_w.join();
+        type_w.join();
+        stop.store(true, std::memory_order_relaxed);
+        reader.join();
+
+        TEST_CHECK(reads.load() > 0, "P3: pair-coherence reader actually ran");
+        TEST_CHECK(torn.load() == 0,
+                   "P3: zero torn pairs under concurrent SetDragLanguages/SetTypeLanguages");
+    }
+
+    // ---- 7) Fresh-install disk path: LoadFromFile on a missing file must
+    //         persist the OS-resolved drag default (REQ-007) as the new
+    //         sticky keys (plan §2.1 "SaveToFile로 신규 스키마를 디스크에 기록"
+    //         + §2.3 saved-value-equals-default), and a reload must keep it.
+    {
+        std::error_code ec;
+        const auto fresh = std::filesystem::temp_directory_path(ec) / "emebalachat_p3_fresh.json";
+        TEST_CHECK(!ec, "P3 fixture: temp path available");
+        std::filesystem::remove(fresh, ec); // stale leftovers must not mask a load
+        AppConfig first;
+        TEST_CHECK(first.LoadFromFile(fresh), "P3: LoadFromFile succeeds on a missing file");
+        std::error_code fec;
+        TEST_CHECK(std::filesystem::exists(fresh, fec) && !fec,
+                   "P3: fresh install auto-creates config.json on disk");
+        {
+            std::ifstream in(fresh);
+            std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            TEST_CHECK(content.find("\"drag_target_language\"") != std::string::npos,
+                       "P3: first-save already carries the new schema key");
+            const std::string want = "\"drag_target_language\": \"" + expected_drag_default + "\"";
+            TEST_CHECK(content.find(want) != std::string::npos,
+                       "P3: first-save persists the OS-resolved drag default (REQ-007), not the English placeholder");
+        }
+        AppConfig second;
+        TEST_CHECK(second.LoadFromFile(fresh), "P3: second startup loads the auto-created file");
+        TEST_CHECK(second.GetSnapshot().drag_target_language == expected_drag_default,
+                   "P3: reloaded drag default matches the OS-resolved value");
+        std::filesystem::remove(fresh, ec); // cleanup (best-effort)
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Phase 3 language context tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Phase 3 language context tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // R6 Phase 2 (B1, plan §1 B1-H1/H2 + §Phase 2): intermittent stale tooltip.
 // Two concurrent translate producers (detached drag threads, the REQ-R06
 // double-Ctrl+C worker) used to last-writer-wins on the tooltip model, so a
@@ -4343,6 +4567,7 @@ int main() {
     TestBatch2VersionScrollAbout();
     TestB3LanguageSync();
     TestResolveEffectiveTarget();
+    TestPhase3LanguageContexts();
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();

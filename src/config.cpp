@@ -342,6 +342,29 @@ std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
     return std::string(info ? info->name_en : "Korean");
 }
 
+// Phase 3 (REQ-007, plan §1.4/§2.6): drag-context default target. Queries the
+// OS system language through the same read-only I18n seam as
+// ResolveEffectiveTarget, canonicalizes it, and maps:
+//   * unsupported/unknown OS language (NormalizeLanguageCode -> "AUTO") =>
+//     "English" (plan §2.6: reasonable default when "system language" is
+//     impossible);
+//   * OS language == English => "Korean" (EN->EN drag translation is
+//     meaningless: EN<->KO pivot, matching the ResolveEffectiveTarget policy);
+//   * any other supported language => its canonical name_en.
+// Pure: no config mutation, no Win32 message traffic, safe from any thread.
+std::string ResolveDragDefaultTarget() {
+    const std::string sys_code =
+        NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    const LanguageInfo* info = FindLanguageByCode(sys_code);
+    if (!info || info->code == "AUTO") {
+        return "English"; // unsupported/unknown OS language
+    }
+    if (info->code == "EN") {
+        return "Korean"; // EN->EN pivot (plan §2.6)
+    }
+    return info->name_en;
+}
+
 std::string CycleTargetLanguage(std::string_view current_code_or_name) {
     const auto& targets = GetTargetLanguages();
     size_t current_idx = 0;
@@ -375,7 +398,14 @@ const LanguageInfo* ResolveLanguageInfo(std::string_view token) {
 }
 } // namespace
 
-LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
+// Phase 3 (plan §2.4/§3-Batch1): the context overload resolves a PAIR and is
+// deliberately context-AGNOSTIC - the planner output drives whichever pair the
+// coordinator persists, and surface_updates filtering per context happens in
+// src/main.cpp ApplyLanguageSync coordinator (Batch 2). The pre-Phase-3
+// 4-argument form is an inline wrapper in config.hpp delegating to Type, so
+// existing callers (main.cpp, TestB3LanguageSync) keep identical behavior.
+LanguageSyncPlan PlanLanguageSync(LanguageContext /*ctx*/,
+                                  std::string_view cur_source,
                                   std::string_view cur_target,
                                   std::string_view new_source,
                                   std::string_view new_target) {
@@ -649,7 +679,16 @@ bool AppConfig::LoadFromFile(const std::filesystem::path& path) {
     std::filesystem::path target_path = path.empty() ? GetDefaultConfigPath() : path;
 
     if (!std::filesystem::exists(target_path)) {
-        // Auto-create config file with defaults
+        // Auto-create config file with defaults.
+        // Phase 3 (REQ-007, plan §1.4/§2.3): the fresh-install drag target must
+        // already be the OS-resolved default, not the compile-time "English"
+        // placeholder, BEFORE the save below writes the sticky keys - plan §2.3
+        // pins that "the saved value equals the default", and the default is
+        // defined as (auto / OS language). Without this, first launch would
+        // persist "English" as sticky and REQ-007 could never take effect.
+        // The type pair's compile-time defaults already equal the system
+        // defaults (REQ-015/016), so only the drag pair needs resolution.
+        SetDragLanguages("Auto Detect", ResolveDragDefaultTarget());
         SaveToFile(target_path);
         return true;
     }
@@ -716,6 +755,10 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
     s.engine_type = engine_type;
     s.source_language = source_language;
     s.target_language = target_language;
+    s.drag_source_language = drag_source_language; // Phase 3 (I4: same lock)
+    s.drag_target_language = drag_target_language;
+    s.type_source_language = type_source_language;
+    s.type_target_language = type_target_language;
     s.ui_language = ui_language; // R6 Phase 6: selector read-back
     s.auto_send = auto_send.load(std::memory_order_relaxed);
     s.sound_enabled = sound_enabled.load(std::memory_order_relaxed);
@@ -752,6 +795,20 @@ void AppConfig::SetLanguages(std::string source, std::string target) {
     target_language = std::move(target);
 }
 
+// Phase 3 (plan §2.3): locked pair mutators - both fields of one context
+// update atomically under mutex_ so a snapshot never sees a half-applied pair.
+void AppConfig::SetDragLanguages(std::string source, std::string target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    drag_source_language = std::move(source);
+    drag_target_language = std::move(target);
+}
+
+void AppConfig::SetTypeLanguages(std::string source, std::string target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    type_source_language = std::move(source);
+    type_target_language = std::move(target);
+}
+
 std::string AppConfig::ToJsonString() const {
     std::lock_guard<std::mutex> lock(mutex_); // I4
     return ToJsonStringLocked();
@@ -766,6 +823,13 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"model_path\": \"" << EscapeJsonString(model_path) << "\",\n";
     ss << "  \"source_language\": \"" << EscapeJsonString(source_language) << "\",\n";
     ss << "  \"target_language\": \"" << EscapeJsonString(target_language) << "\",\n";
+    // Phase 3 (plan §2.3): the four context keys are ALWAYS serialized; the
+    // sticky distinction lives in FromJsonString's key-presence check, and the
+    // defaults-vs-user values are observationally identical until mutated.
+    ss << "  \"drag_source_language\": \"" << EscapeJsonString(drag_source_language) << "\",\n";
+    ss << "  \"drag_target_language\": \"" << EscapeJsonString(drag_target_language) << "\",\n";
+    ss << "  \"type_source_language\": \"" << EscapeJsonString(type_source_language) << "\",\n";
+    ss << "  \"type_target_language\": \"" << EscapeJsonString(type_target_language) << "\",\n";
     ss << "  \"auto_send\": " << (auto_send.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"sound_enabled\": " << (sound_enabled.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
@@ -792,6 +856,7 @@ bool AppConfig::FromJsonString(std::string_view json) {
     }
 
     const std::lock_guard<std::mutex> lock(mutex_); // I4: writes are visible to all reader threads
+    bool has_new_schema = false; // Phase 3: drag_target_language key present?
     for (const auto& [k, v] : pairs) {
         if (k == "ui_language") {
             ui_language = v;
@@ -800,9 +865,18 @@ bool AppConfig::FromJsonString(std::string_view json) {
         } else if (k == "model_path") {
             model_path = v;
         } else if (k == "source_language") {
-            source_language = v;
+            source_language = v;      // legacy
         } else if (k == "target_language") {
-            target_language = v;
+            target_language = v;      // legacy
+        } else if (k == "drag_source_language") {
+            drag_source_language = v;
+        } else if (k == "drag_target_language") {
+            drag_target_language = v;
+            has_new_schema = true;
+        } else if (k == "type_source_language") {
+            type_source_language = v;
+        } else if (k == "type_target_language") {
+            type_target_language = v;
         } else if (k == "auto_send") {
             auto_send.store(v == "true", std::memory_order_relaxed);
         } else if (k == "sound_enabled") {
@@ -832,6 +906,21 @@ bool AppConfig::FromJsonString(std::string_view json) {
         } else if (k == "repetition_penalty") {
             try { repetition_penalty = std::stof(v); } catch (...) {}
         }
+    }
+    // Phase 3 migration (plan §2.1): no new-schema keys => this is a pre-Phase-3
+    // config.json. RESET the four context fields to the system defaults instead
+    // of copying the legacy shared pair (REQ-020 alignment: copying e.g. a
+    // legacy "Korean" into type_target_language would violate REQ-016's English
+    // default). The legacy source_language/target_language keys stay parsed
+    // (deprecated schema members, Batch 2 removes the last runtime reads).
+    // The next SaveToFile persists the new keys, so from then on the values are
+    // sticky (REQ-008/009). ResolveDragDefaultTarget() locks nothing - mutex_ is
+    // non-recursive but the call is safe (pure read-only locale query).
+    if (!has_new_schema) {
+        drag_source_language = "Auto Detect";              // REQ-006
+        drag_target_language = ResolveDragDefaultTarget(); // REQ-007 (OS lang)
+        type_source_language = "Auto Detect";              // REQ-015
+        type_target_language = "English";                  // REQ-016
     }
     return true;
 }

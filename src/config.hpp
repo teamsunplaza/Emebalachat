@@ -47,6 +47,14 @@ std::string NormalizeLanguageCode(std::string_view code_or_name);
 std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
                                                    std::string_view current_tgt);
 
+// Phase 3 (REQ-007, plan §1.4): resolves the drag-context default target from
+// the OS system language (REQ-007). Returns the canonical name_en of the OS
+// language, "Korean" when the OS language is English itself (EN->EN
+// translation is meaningless: EN<->KO pivot, mirroring ResolveEffectiveTarget
+// policy), or "English" when the OS language is unsupported/unknown (plan
+// §2.6). Pure: read-only locale query, safe from any thread.
+std::string ResolveDragDefaultTarget();
+
 // Cycles to the next target language given current code or name, wrapping around.
 std::string CycleTargetLanguage(std::string_view current_code_or_name);
 
@@ -84,14 +92,33 @@ struct LanguageSyncPlan {
     std::vector<LanguageSurface> surface_updates;
 };
 
+// Phase 3 (plan §2.4): which language pair a mutation applies to. The tooltip
+// language menu drives Drag; Ctrl+F9 cycle / tray submenus / swap drive Type.
+enum class LanguageContext : unsigned char { Drag, Type };
+
 // Empty new_* arguments mean "keep the current value". A no-request call
 // (both empty) is the startup-alignment path: valid, unchanged, refresh-only.
 // All-or-nothing: if either requested field fails to resolve, the whole
 // mutation is rejected (a half-applied swap is worse than a refused one).
-LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
+// The planner resolves a PAIR and stays context-agnostic: surface_updates
+// still lists badge/tray/tooltip and the coordinator (src/main.cpp
+// ApplyLanguageChange) filters the actual refreshes per context (plan §2.4).
+LanguageSyncPlan PlanLanguageSync(LanguageContext ctx,
+                                  std::string_view cur_source,
                                   std::string_view cur_target,
                                   std::string_view new_source,
                                   std::string_view new_target);
+
+// Backward-compat wrapper (plan §3-Batch1): the pre-Phase-3 4-argument calls
+// (src/main.cpp startup/cycle path, TestB3LanguageSync) mutate the TYPE pair,
+// so they delegate to LanguageContext::Type verbatim.
+inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
+                                         std::string_view cur_target,
+                                         std::string_view new_source,
+                                         std::string_view new_target) {
+    return PlanLanguageSync(LanguageContext::Type, cur_source, cur_target,
+                            new_source, new_target);
+}
 
 // R6 Phase 4 (B2, architect plan §4.1 item 1+2): Formats translation prompt for
 // the Hy-MT2 model.
@@ -155,8 +182,9 @@ std::string ResolveModelPath(std::string_view raw_path,
 // Concurrency discipline, from smallest mechanism outward:
 //   * bool toggles mutated at runtime from more than one thread
 //     (auto_send, sound_enabled) are std::atomic.
-//   * shared std::string fields (engine_type, source_language, target_language)
-//     and the badge coordinates are guarded by mutex_ and must be read via
+//   * shared std::string fields (engine_type, source_language,
+//     target_language, and the Phase 3 drag_/type_ language fields) and the
+//     badge coordinates are guarded by mutex_ and must be read via
 //     GetSnapshot() / written via the Set*() mutators once threads are running.
 //   * SaveToFile serializes on the same mutex: previously two threads saving
 //     concurrently clobbered each other's shared "config.json.tmp".
@@ -173,6 +201,16 @@ struct AppConfig {
     std::string model_path = "models/Hy-MT2-1.8B-Q8_0.gguf";
     std::string source_language = "Auto Detect";
     std::string target_language = "English";
+    // Phase 3 (REQ-006/007/015/016): context-separated language pairs.
+    // Sticky model (REQ-008/009): a pair is "sticky" iff its key EXISTS in
+    // config.json. Absent key => system default is computed at load.
+    // Defaults below are the type-context defaults (REQ-016 target=English);
+    // drag defaults are resolved at LoadFromFile time via the OS system
+    // language (REQ-007), never as a compile-time constant.
+    std::string drag_source_language = "Auto Detect";  // REQ-006: auto
+    std::string drag_target_language = "English";      // placeholder; real default = OS lang (REQ-007)
+    std::string type_source_language = "Auto Detect";  // REQ-015: auto
+    std::string type_target_language = "English";      // REQ-016: English
     std::atomic<bool> auto_send{false};
     std::atomic<bool> sound_enabled{true};
     bool drag_to_translate = true;
@@ -198,8 +236,12 @@ struct AppConfig {
     // I4: point-in-time, thread-safe copy of the fields read by hook/worker threads.
     struct Snapshot {
         std::string engine_type;
-        std::string source_language;
-        std::string target_language;
+        std::string source_language;   // legacy, kept for migration
+        std::string target_language;   // legacy, kept for migration
+        std::string drag_source_language;  // Phase 3
+        std::string drag_target_language;  // Phase 3
+        std::string type_source_language;  // Phase 3
+        std::string type_target_language;  // Phase 3
         std::string ui_language; // R6 Phase 6: selector read-back (test seam)
         bool auto_send = false;
         bool sound_enabled = true;
@@ -218,6 +260,11 @@ struct AppConfig {
     void SetSourceLanguage(std::string value);
     void SetTargetLanguage(std::string value);
     void SetLanguages(std::string source, std::string target);
+    // Phase 3 (plan §2.3): locked mutators for the context-separated pairs.
+    // Both fields of one context update atomically under mutex_ (same pattern
+    // as SetLanguages) so a snapshot never sees a half-applied pair.
+    void SetDragLanguages(std::string source, std::string target);
+    void SetTypeLanguages(std::string source, std::string target);
     // R6 Phase 6: locked mutator for the tray UI-language selector (same
     // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
     void SetUiLanguage(std::string value);
@@ -242,7 +289,8 @@ struct AppConfig {
     std::string CycleLanguage();
 
 private:
-    // Guards engine_type/source_language/target_language/badge_x/badge_y and
+    // Guards engine_type/source_language/target_language, the Phase 3
+    // drag_/type_ language fields, badge_x/badge_y and
     // serializes file writes. Non-recursive: the *Locked helpers below assume
     // the lock is ALREADY held and must never be called through public wrappers.
     mutable std::mutex mutex_;
