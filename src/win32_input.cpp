@@ -748,7 +748,17 @@ bool ResolveFocusCandidate(HWND target, Key& out) {
 // (design §2.7.A2 double gate: exe category table + window class).
 bool IsStandardEditClass(HWND hwnd) {
     static const wchar_t* const kAllowedClasses[] = {
-        L"Edit", L"RichEdit20W", L"RichEdit20A", L"RichEdit50W", L"RICHEDIT_CLASS"
+        L"Edit", L"RichEdit20W", L"RichEdit20A", L"RichEdit50W", L"RICHEDIT_CLASS",
+        // REQ-027 B-5a: Windows 11 Notepad (22H2+) hosts its editor in the
+        // RichEditD2DPT class - a Microsoft 365 RichEdit derivative that
+        // renders via Direct2D/DirectWrite yet still services the EM_*
+        // family (redesign report 192100_architect-report-req027-
+        // richeditd2dpt-redesign.md §2.1 verdict 3). Evidence: user logs
+        // emebalachat_260907040407.log L200 (fallback signature) and
+        // emebalachat_260907041018.log L190+L328 (consecutive skips).
+        // RichEditD2D is the same family's non-PT variant, added
+        // defensively. Comparison stays case-insensitive via lstrcmpiW.
+        L"RichEditD2DPT", L"RichEditD2D"
     };
     wchar_t cls[64] = {};
     if (::GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) {
