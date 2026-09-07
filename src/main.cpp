@@ -464,11 +464,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     });
 
     // Asynchronously warm up local model in background so first translation is instantaneous (< 100ms)
+    //
+    // REQ-F4a: the old gate was file-existence-only, so a cloud-only config
+    // (engine=google + cloud_fallback=0 - 260908 session log L3) still paid the
+    // ~1.4 s llama.cpp tokenizer/context load (L10-11) plus the model's RAM for
+    // a model Translate() can never route to under that explicit pin
+    // (RefreshActiveEngine keeps active_type_ on GoogleTranslate). The decision
+    // lives in the pure, unit-pinned ShouldPreloadLocalModel seam (engine.hpp
+    // contract, same discipline as PlanTranslationRouting). Runtime tray
+    // switches to local are unaffected: SetEngineType only creates the llama
+    // engine object and the first local Translate() lazy-loads via
+    // LlamaEngine::EnsureLoaded (existing design, respected).
     std::thread warmup_thread;
-    if (engine.IsLocalModelAvailable()) {
+    const bool local_model_present = engine.IsLocalModelAvailable();
+    if (emebalachat::ShouldPreloadLocalModel(engine_type, config.cloud_fallback_enabled,
+                                             local_model_present)) {
         warmup_thread = std::thread([&engine]() {
             engine.PreloadLocalModel();
         });
+    } else if (local_model_present) {
+        // The skip is only newsworthy when a model file WAS present (absence
+        // was always a silent no-thread path). Startup-only direct field reads
+        // are I4-legal here (no worker/hook thread exists yet).
+        DIAG_LOG("SESSION", "local engine preload skipped reason=cloud-only engine=%s cloud_fallback=%d",
+                 config.engine_type.c_str(), config.cloud_fallback_enabled ? 1 : 0);
     }
 
     // 8. Initialize System Tray with Callbacks

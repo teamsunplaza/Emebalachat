@@ -105,6 +105,23 @@ EngineType PlanTranslationRouting(std::string_view src_code,
                                   EngineType engine_type,
                                   bool google_consent);
 
+// REQ-F4a: pure decision seam for the STARTUP local-model warmup in wWinMain
+// (src/main.cpp). Returns true when the caller must spawn the PreloadLocalModel
+// thread. Evidence (260908 session log): L3 shows a cloud-only config
+// (engine=google cloud_fallback=0) yet L10-11 show the Hy-MT2 tokenizer and
+// context loading anyway - ~1.4 s of dead startup time plus the model's RAM,
+// because the old gate was file-existence-only. Contract:
+//   * no model file on disk                                  -> false (historical: no warmup thread)
+//   * explicit GoogleTranslate + NO cloud_fallback consent   -> false (cloud-only session: Translate()
+//       can never route local - RefreshActiveEngine pins active_type_ to GoogleTranslate - and a later
+//       tray switch to local lazy-loads via LlamaEngine::EnsureLoaded, the existing design)
+//   * GoogleTranslate + cloud_fallback consent               -> true  (the user declared they want the
+//       local model resident as the fallback safety net; historical preload preserved)
+//   * Auto / LocalLlama with model available                 -> true  (local is the primary engine under
+//       documented Auto semantics; startup behavior unchanged)
+bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled,
+                             bool model_available);
+
 class TranslationManager {
 public:
     explicit TranslationManager(

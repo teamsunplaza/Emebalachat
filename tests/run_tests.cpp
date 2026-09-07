@@ -3475,6 +3475,81 @@ void TestR6P4LanguageRouting() {
 }
 
 // ===========================================================================
+// REQ-F4a (Phase 4): cloud-only config must not pay the local LLM startup
+// load. Evidence: 260908 session log L3 (engine=google, cloud_fallback=0) vs
+// L10-11 (Hy-MT2 tokenizer/context loaded anyway, ~1.4 s + model RAM). The
+// wWinMain warmup gate now calls the pure ShouldPreloadLocalModel seam, so
+// this matrix pins the SHIPPED decision (same discipline as the
+// PlanTranslationRouting pins above). Invariants asserted: local-primary
+// configs (auto/local) and the consented google+fallback config keep the
+// historical preload; only the cloud-only combo skips.
+// ===========================================================================
+void TestReqF4aPreloadGate() {
+    std::cout << "[RUN] Testing REQ-F4a startup preload gate (cloud-only skip)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1) No model file on disk -> never preload, under every configuration
+    //    (historical: the warmup thread was only spawned when available).
+    for (const EngineType eng : { EngineType::Auto, EngineType::GoogleTranslate,
+                                  EngineType::LocalLlama }) {
+        for (const bool consent : { false, true }) {
+            TEST_CHECK(!ShouldPreloadLocalModel(eng, consent, false),
+                       "F4a: absent model file never preloads (engine + consent matrix)");
+        }
+    }
+
+    // 2) THE defect scenario: explicit google pin WITHOUT cloud-fallback
+    //    consent + model present -> skip. This is the exact 260908 config
+    //    (engine=google cloud_fallback=0 models/Hy-MT2-1.8B-Q8_0.gguf exists).
+    TEST_CHECK(!ShouldPreloadLocalModel(EngineType::GoogleTranslate, false, true),
+               "F4a: engine=google + cloud_fallback=0 + model present skips the startup load (260908 L3/L10-11 scenario)");
+
+    // 3) cloud_fallback=1 keeps the preload: the user declared they want the
+    //    local model as the cloud-failure safety net (requirement: 'fallback
+    //    시 로컬로 폴백해야 하므로 로드를 유지').
+    TEST_CHECK(ShouldPreloadLocalModel(EngineType::GoogleTranslate, true, true),
+               "F4a: engine=google + cloud_fallback=1 keeps the preload (fallback safety net must be resident)");
+
+    // 4) Local-primary behavior is byte-for-byte unchanged: auto/local with
+    //    the model present always preload, with or without consent.
+    for (const EngineType eng : { EngineType::Auto, EngineType::LocalLlama }) {
+        for (const bool consent : { false, true }) {
+            TEST_CHECK(ShouldPreloadLocalModel(eng, consent, true),
+                       "F4a: local-primary engine (auto/local) with model present keeps the preload");
+        }
+    }
+
+    // 5) Runtime-switch path stays lazy-load capable after a skip: an
+    //    explicit-google manager with the (test) model file present reports
+    //    the cloud active engine even with preload skipped, and SetEngineType
+    //    to local re-resolves to a local active name - the design this fix
+    //    depends on (first local Translate() lazy-loads via EnsureLoaded).
+    {
+        const std::filesystem::path model_path =
+            std::filesystem::temp_directory_path() / "emebalachat_f4a_gate.gguf";
+        std::ofstream(model_path) << "not-a-real-gguf"; // existence is the gate's only file requirement
+        TranslationManager mgr(EngineType::GoogleTranslate,
+                               model_path.string());
+        TEST_CHECK(mgr.IsLocalModelAvailable(),
+                   "F4a: model file present is visible to the manager (skip is a policy decision, not availability)");
+        TEST_CHECK(mgr.GetActiveEngineName().find("Google") != std::string::npos,
+                   "F4a: explicit-google pin serves cloud regardless of the model file");
+        mgr.SetEngineType(EngineType::LocalLlama);
+        TEST_CHECK(mgr.GetActiveEngineName().find("Hy-MT2") != std::string::npos,
+                   "F4a: runtime switch to local activates the local engine (lazy-load path intact after a startup skip)");
+        std::error_code ec;
+        std::filesystem::remove(model_path, ec);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-F4a startup preload gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-F4a startup preload gate tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
 // R6 Phase 1 (B3): single-source-of-truth language sync. Pure planner seam
 // (PlanLanguageSync) + persistence (INV-1/3) + tooltip view refresh + hook
 // cycle-delegate routing. Mirrors the coordinator flow in src/main.cpp
@@ -7208,6 +7283,7 @@ int main() {
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
+    TestReqF4aPreloadGate(); // REQ-F4a: startup preload gate (cloud-only skip)
     TestR6P5P6I18n();
     TestDiagLogger();
     TestPhase5AppClassifier();

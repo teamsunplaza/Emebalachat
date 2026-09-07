@@ -815,6 +815,29 @@ EngineType PlanTranslationRouting(std::string_view src_code,
     return google_consent ? EngineType::GoogleTranslate : EngineType::LocalLlama;
 }
 
+// REQ-F4a: see the header contract in src/engine.hpp. Pure stateless predicate,
+// pinned headlessly by TestReqF4aPreloadGate (same seam-testing discipline as
+// PlanTranslationRouting above): the shipped wWinMain gate calls THIS function,
+// so the startup decision can never drift from the tested matrix.
+bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled,
+                             bool model_available) {
+    if (!model_available) {
+        return false; // nothing to preload (historical behavior unchanged)
+    }
+    if (engine_type == EngineType::GoogleTranslate) {
+        // Cloud-only session unless the user granted fallback consent: under an
+        // explicit google pin RefreshActiveEngine keeps active_type_ on
+        // GoogleTranslate for the whole session, so a resident local model is
+        // pure dead weight (260908 log L10-11). With cloud_fallback_enabled the
+        // user declared they want the local safety net available, so the
+        // historical preload stays.
+        return cloud_fallback_enabled;
+    }
+    // Auto / LocalLlama with the model on disk: local is (or can become, via
+    // pair routing under Auto) the serving engine - keep warming it up.
+    return true;
+}
+
 // 3-arg compatibility form for existing callers (main.cpp tooltip/drag paths).
 // Discards the REQ-R02 status; callers that must react to failure use the
 // status-aware overload below.
