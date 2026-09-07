@@ -81,6 +81,7 @@ endif()
 add_library(Emebalachat_core STATIC
     src/diag_logger.cpp
     src/config.cpp
+    src/bidi_utils.cpp
     src/unicode_utils.cpp
     src/smart_bypass.cpp
     src/sound.cpp

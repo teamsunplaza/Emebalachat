@@ -1,6 +1,7 @@
 #include "../src/config.hpp"
 #include "../src/diag_logger.hpp"
 #include "../src/unicode_utils.hpp"
+#include "../src/bidi_utils.hpp"
 #include "../src/smart_bypass.hpp"
 #include "../src/sound.hpp"
 #include "../src/win32_input.hpp"
@@ -6008,6 +6009,143 @@ void TestReq039ChatWindowEnterCapture() {
     }
 }
 
+// P4 Batch B-1 (session 260907_0002, design §2-Q1/§4.1): bidi_utils unit suite.
+// All checks are pure/headless (no window, no DWrite, no Win32 locale calls):
+// RTL set membership over the 37-language registry + name resolution, and the
+// UAX #9 first-strong heuristic on UTF-16 samples (design §4.1 case list).
+void TestBidiUtils() {
+    std::cout << "[RUN] Testing B-1 bidi_utils (RTL set + first-strong)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) RTL set membership: exactly AR/FA/UR/HE true, 33 false --------
+    // Iterates GetTargetLanguages() (the 37 registry entries minus AUTO) so
+    // the assertion scales with kAllLanguages instead of a hardcoded list.
+    {
+        const auto& targets = GetTargetLanguages();
+        TEST_CHECK(targets.size() == 37, "B1: registry has exactly 37 target languages");
+        int rtl_true = 0;
+        std::string unexpected_true;
+        std::string missing_true;
+        for (const auto& lang : targets) {
+            const bool rtl = IsRtlLanguageCode(lang.code);
+            const bool expected =
+                lang.code == "AR" || lang.code == "FA" || lang.code == "UR" || lang.code == "HE";
+            if (rtl) ++rtl_true;
+            if (rtl && !expected) unexpected_true += lang.code + " ";
+            if (expected && !rtl) missing_true += lang.code + " ";
+        }
+        TEST_CHECK(rtl_true == 4, "B1: exactly 4 of 37 language codes are RTL");
+        TEST_CHECK(unexpected_true.empty() && missing_true.empty(),
+                   "B1: RTL code set is exactly {AR,FA,UR,HE} (no extras, none missing)");
+    }
+
+    // ---- 2) Code forms: case-insensitive, names, natives, negatives --------
+    TEST_CHECK(IsRtlLanguageCode("AR") && IsRtlLanguageCode("ar") &&
+                   IsRtlLanguageCode("He") && IsRtlLanguageCode("uR"),
+               "B1: RTL codes accepted case-insensitively");
+    TEST_CHECK(IsRtlLanguageCode("Arabic") && IsRtlLanguageCode("Persian") &&
+                   IsRtlLanguageCode("Urdu") && IsRtlLanguageCode("Hebrew"),
+               "B1: English names resolve RTL via kAllLanguages (tooltip target_lang_ path)");
+    // Native-name resolution is asserted DATA-DRIVEN from the registry itself
+    // (no literals copied from config.cpp - a single-codepoint drift would
+    // silently mismatch; the registry entry is the source of truth).
+    TEST_CHECK(IsRtlLanguageCode("العربية") && IsRtlLanguageCode("فارسی") &&
+                   IsRtlLanguageCode("اردو") && IsRtlLanguageCode("עברית"),
+               "B1: native names resolve RTL via kAllLanguages");
+    {
+        bool all_forms = true;
+        for (const auto& lang : GetTargetLanguages()) {
+            const bool expected = lang.code == "AR" || lang.code == "FA" ||
+                                  lang.code == "UR" || lang.code == "HE";
+            if (IsRtlLanguageCode(lang.name_en) != expected) all_forms = false;
+            if (IsRtlLanguageCode(lang.name_native) != expected) all_forms = false;
+        }
+        TEST_CHECK(all_forms, "B1: every registry entry resolves RTL by name_en AND name_native iff its code is RTL (37x2)");
+    }
+    TEST_CHECK(IsRtlLanguageCode("arabic") && !IsRtlLanguageCode("korean"),
+               "B1: English-name lookup case-insensitive (RTL hit + LTR miss)");
+    TEST_CHECK(!IsRtlLanguageCode("KO") && !IsRtlLanguageCode("EN") &&
+                   !IsRtlLanguageCode("ZH-CN") && !IsRtlLanguageCode("TH"),
+               "B1: representative LTR codes are false");
+    TEST_CHECK(!IsRtlLanguageCode("AUTO") && !IsRtlLanguageCode("auto") &&
+                   !IsRtlLanguageCode("") && !IsRtlLanguageCode("klingon"),
+               "B1: AUTO/empty/unknown never RTL");
+
+    // ---- 3) IsRtlLocale / DirectionForLocale --------------------------------
+    // The RTL UiLocale enumerators land in B-3; today's full enum is LTR, and
+    // IsRtlLocale resolves through LocaleToString -> the same code set, so
+    // this loop also pins that no existing locale was miswired.
+    {
+        const UiLocale kAllEnumLocales[] = {
+            UiLocale::Auto, UiLocale::Korean, UiLocale::English, UiLocale::Japanese,
+            UiLocale::ChineseSimplified, UiLocale::ChineseTraditional,
+            UiLocale::Vietnamese, UiLocale::Spanish
+        };
+        bool all_ltr = true;
+        for (const UiLocale loc : kAllEnumLocales) {
+            if (IsRtlLocale(loc)) all_ltr = false;
+            if (DirectionForLocale(loc) != TextDirection::LTR) all_ltr = false;
+        }
+        TEST_CHECK(all_ltr, "B1: all current UiLocale enum values are LTR (RTL locales land in B-3)");
+    }
+
+    // ---- 4) First-strong: design §4.1 mandated cases ------------------------
+    // L"مرحبا" — pure Arabic.
+    TEST_CHECK(GuessBaseDirection(L"مرحبا") == TextDirection::RTL,
+               "B1: first-strong 'مرحبا' -> RTL");
+    TEST_CHECK(GuessBaseDirection(L"123 مرحبا") == TextDirection::RTL,
+               "B1: first-strong '123 مرحبا' -> RTL (ASCII digits skipped)");
+    TEST_CHECK(GuessBaseDirection(L"hello مرحبا") == TextDirection::LTR,
+               "B1: first-strong 'hello مرحبا' -> LTR (first strong wins)");
+    TEST_CHECK(GuessBaseDirection(L"") == TextDirection::LTR,
+               "B1: first-strong empty -> LTR (UAX #9 P2 default)");
+    TEST_CHECK(GuessBaseDirection(L"\x05D0") == TextDirection::RTL,
+               "B1: first-strong Hebrew U+05D0 (Alef) -> RTL");
+    TEST_CHECK(GuessBaseDirection(L"\xFBFC") == TextDirection::RTL,
+               "B1: first-strong Arabic presentation form U+FBFC -> RTL (AL block)");
+    TEST_CHECK(GuessBaseDirection(L"!?. , 123 -+%") == TextDirection::LTR,
+               "B1: first-strong punctuation/digits only -> LTR (no strong char)");
+    TEST_CHECK(GuessBaseDirection(L"\x2066مرحبا\x2069") == TextDirection::RTL,
+               "B1: isolate-wrapped Arabic (LRI U+2066 / PDI U+2069 skipped) -> RTL");
+
+    // ---- 5) First-strong: extended coverage ---------------------------------
+    TEST_CHECK(GuessBaseDirection(L"١٢٣") == TextDirection::LTR,
+               "B1: Arabic-Indic digits alone -> LTR (AN class is weak, skipped)");
+    TEST_CHECK(GuessBaseDirection(L"١٢٣ مرحبا") == TextDirection::RTL,
+               "B1: Arabic-Indic digits then Arabic -> RTL");
+    TEST_CHECK(GuessBaseDirection(L"!!! مرحبا") == TextDirection::RTL,
+               "B1: leading punctuation skipped -> RTL");
+    TEST_CHECK(GuessBaseDirection(L"안녕하세요") == TextDirection::LTR,
+               "B1: Hangul -> LTR");
+    TEST_CHECK(GuessBaseDirection(L"日本語テキスト") == TextDirection::LTR,
+               "B1: Kana -> LTR");
+    TEST_CHECK(GuessBaseDirection(L"Текст") == TextDirection::LTR,
+               "B1: Cyrillic -> LTR");
+    TEST_CHECK(GuessBaseDirection(L"テスト مرحبا") == TextDirection::LTR,
+               "B1: kana-first mixed sample -> LTR (first-strong, not majority)");
+    // Bidi controls and the BOM must not count as strong in either direction.
+    TEST_CHECK(GuessBaseDirection(L"\x200E\x200F\x202A\x202E\x2060\xFEFF") == TextDirection::LTR,
+               "B1: bidi controls/embeddings/BOM only -> LTR (all skipped)");
+    TEST_CHECK(GuessBaseDirection(L"\x200Fمرحبا") == TextDirection::RTL,
+               "B1: RLM-prefixed Arabic -> RTL (control skipped, not strong)");
+    // Astral CJK ext B (U+20000 -> surrogate pair D840 DC00) must read strong L.
+    TEST_CHECK(GuessBaseDirection(L"\U00020000") == TextDirection::LTR,
+               "B1: astral CJK ext-B surrogate pair -> LTR");
+    // Unpaired high surrogate is neutral noise; the Arabic letter after it decides.
+    TEST_CHECK(GuessBaseDirection(L"\xD800\x0628") == TextDirection::RTL,
+               "B1: unpaired surrogate skipped, following Arabic -> RTL");
+    TEST_CHECK(GuessBaseDirection(L"") == TextDirection::LTR &&
+                   GuessBaseDirection(L"   \t\r\n") == TextDirection::LTR,
+               "B1: whitespace-only -> LTR");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B-1 bidi_utils tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B-1 bidi_utils tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -6076,6 +6214,7 @@ int main() {
     TestReq034PasteWindowSuppress();
     TestReq036MultiBlockNoRetranslation();
     TestReq039ChatWindowEnterCapture();
+    TestBidiUtils();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
