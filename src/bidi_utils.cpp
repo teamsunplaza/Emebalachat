@@ -64,13 +64,18 @@ constexpr bool InAny(const std::span<const CodeRange> table, const unsigned int 
     return false;
 }
 
+// Hebrew base block (UAX #9 class R), defined ONCE and reused by the
+// first-strong table below and the exported G-4 predicate
+// (IsHebrewScriptCodePoint) so the two can never drift.
+constexpr CodeRange kHebrewBlock = {0x0590, 0x05FF};
+
 // Class R (explicit right-to-left), per design §2-Q1:
 //   U+0590–U+05FF  Hebrew
 //   U+07C0–U+085F  NKo/Samaritan/Mandaic band - the design's "and U+07C0–U+085F
 //                  Samaritan if trivial" range, taken verbatim
 //   U+FB1D–U+FB4F  Hebrew presentation forms
 constexpr CodeRange kStrongR[] = {
-    {0x0590, 0x05FF},
+    kHebrewBlock,
     {0x07C0, 0x085F},
     {0xFB1D, 0xFB4F},
 };
@@ -249,6 +254,13 @@ bool IsRtlLocale(UiLocale locale) {
 
 TextDirection DirectionForLocale(const UiLocale locale) {
     return IsRtlLocale(locale) ? TextDirection::RTL : TextDirection::LTR;
+}
+
+bool IsHebrewScriptCodePoint(const unsigned int cp) {
+    // G-4 (design §2.2.6, user-approved 2026-09-07): exported to smart_bypass
+    // so ContainsHebrew and the first-strong scanner read the same range
+    // constant (see kHebrewBlock above). Pure, no Win32.
+    return cp >= kHebrewBlock.first && cp <= kHebrewBlock.last;
 }
 
 TextDirection GuessBaseDirection(const std::wstring_view text) {

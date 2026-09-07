@@ -30,18 +30,23 @@
 #
 # Parameters:
 #   -ItemRegex   regex for the final menu item Name (required in
-#                InvokeTargetLang mode, unused in EnumUiLang mode)
+#                InvokeTargetLang / InvokeMenuItem modes, unused in EnumUiLang)
 #   -IconName    regex to find our tray icon (default 'Emebala')
 #   -Mode        'InvokeTargetLang' (default, unchanged B-6c contract) or
 #                'EnumUiLang' (REQ-037/B-4, design §4.3 E2E-UILANG-2): open
 #                the Interface-Language submenu and dump EVERY item Name as
 #                TRAY:NAME:<name> lines + TRAY:ENUMDONE:<count>, then ESC.
 #                Read-only: nothing is invoked, config is never written.
+#                'InvokeMenuItem' (REQ-040/B-6, design §4.3 E2E-RESET-1):
+#                open the root tray menu and Invoke the FIRST item whose Name
+#                matches -ItemRegex anywhere in the menu tree (used to open
+#                the localized "About Emebala Chat..." entry without knowing
+#                the UI language). Same output contract as InvokeTargetLang.
 param(
     [string]$ItemRegex = '',
     [string]$IconName = 'Emebala',
     [int]$TimeoutSec = 40,
-    [ValidateSet('InvokeTargetLang', 'EnumUiLang')]
+    [ValidateSet('InvokeTargetLang', 'EnumUiLang', 'InvokeMenuItem')]
     [string]$Mode = 'InvokeTargetLang'
 )
 
@@ -256,6 +261,34 @@ try {
         exit 0
     }
     if (-not $ItemRegex) { Write-Tray 'ERR:missing-ItemRegex(InvokeTargetLang mode)'; exit 1 }
+
+    # -- 3d. InvokeMenuItem mode (REQ-040/B-6 E2E-RESET-1) -------------------
+    # Single generic step: wait for the item to appear in the open menu tree
+    # and invoke it (the caller's regex names the target, e.g. the About
+    # entry 'Emebala Chat.*\u2026' which is locale-independent because every
+    # menu_about string embeds the brand token and ends with an ellipsis
+    # while no other item pairs both). No submenu walking.
+    if ($Mode -eq 'InvokeMenuItem') {
+        $wantRx = [regex]$ItemRegex
+        $hit = $null
+        while ((Get-Date) -lt $deadline) {
+            $hit = Find-ByName $menu $wantRx 6
+            if ($hit) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        if (-not $hit) { Press-Escape; Write-Tray "NOTFOUND:item($ItemRegex)"; exit 1 }
+        $hitName = ''
+        try { $hitName = $hit.Current.Name } catch { }
+        if (-not (Invoke-Item $hit)) {
+            try { $hit.SetFocus(); Start-Sleep -Milliseconds 100
+                [NativeMethods]::keybd_event(0x0D, 0, 0, 0)
+                Start-Sleep -Milliseconds 60
+                [NativeMethods]::keybd_event(0x0D, 0, $KEYEVENTF_KEYUP, 0) }
+            catch { Press-Escape; Write-Tray 'ERR:invoke-failed'; exit 1 }
+        }
+        Write-Tray "OK:$hitName"
+        exit 0
+    }
 
     # -- 4. walk: type group -> target submenu -> item ----------------------
     $groupRx = [regex]'(키보드 타이핑|Keyboard Typing)'

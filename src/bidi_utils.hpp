@@ -69,4 +69,20 @@ TextDirection DirectionForLocale(UiLocale locale);
 // categoricals (static range tables only, per design §2-Q1 implementation note).
 TextDirection GuessBaseDirection(std::wstring_view text);
 
+// ---- Script-range predicate shared with smart_bypass (G-4) -----------------
+// P4 Batch B-6 (session 260907_0002, design §2.2.6 / gap G-4, user-approved
+// 2026-09-07): smart_bypass's ContainsHebrew consumes this predicate instead
+// of restating the range, so the translation-trigger heuristic and the
+// first-strong scanner share ONE source of truth for the Hebrew block
+// (share > duplicate). Deliberate scope: the Arabic ranges stay in
+// smart_bypass.cpp - bidi_utils' first-strong AL table additionally carries
+// Thaana/Syriac Supplement and the Arabic presentation forms, and adopting
+// THAT set for Arabic detection would change trigger behavior beyond the
+// approved G-4 decision (Hebrew only). Pure.
+
+// Hebrew block U+0590–U+05FF (UAX #9 class R; exactly the design §2.2.6 /
+// G-4 extension range). This is the same constant the first-strong R table
+// uses (one definition in bidi_utils.cpp; no range drift possible).
+bool IsHebrewScriptCodePoint(unsigned int cp);
+
 } // namespace emebalachat

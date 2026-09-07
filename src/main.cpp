@@ -704,19 +704,47 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // the language-change chime as audible feedback. NOT routed through
     // ApplyLanguageChange/PlanLanguageSync: a reset is a direct 4-field write,
     // not a request-resolve cycle (plan §2.3).
+    //
+    // P4 Batch B-6 G-1 (design §2.3.2, user-approved 2026-09-07): the reset
+    // ALSO restores ui_language = "auto" ("system defaults" must include the
+    // system-driven UI language — the strongest convenience case is a user who
+    // set an unreadable UI language and needs this very button to recover).
+    //
+    // Coordinator ordering (design §5.2-5 "reset write -> refresh" invariant,
+    // plus the input-correctness step the B-6 oracle surfaced):
+    //   (0) re-resolve "auto" -> DetectSystemLocale and SetLocale FIRST. The
+    //       OS-derived default the design's rule table documents is consumed
+    //       through I18n::GetSystemLanguageCode, i.e. the ACTIVE locale's
+    //       code: computing the defaults under the stale explicit UI choice
+    //       the reset is discarding would derive them from the wrong input
+    //       (OS=th + UI=ja would reset to Japanese). Doing it first makes the
+    //       reset produce EXACTLY the fresh-install values (I18n::Initialize
+    //       "auto" -> DetectSystemLocale -> the same ResolveDragDefaultTarget
+    //       input), which is what "as if freshly installed" means.
+    //   (1) write all five keys (4 languages + ui_language "auto") and
+    //       persist them under ONE SaveToFile atomic swap, so no restart can
+    //       ever observe a half-reset config (G-1 without C5's persistence).
+    //   (2) THEN RefreshAllUiForLocaleChange so every surface (tray
+    //       check-mark + menu, badge, tooltip, About incl. its own
+    //       reset-feedback repaint) re-renders through the new locale; the
+    //       language-pair surface refreshes ride inside that coordinator (it
+    //       re-reads the snapshot), replacing the old hand-rolled trio.
     auto apply_system_defaults = [&]() {
+        emebalachat::I18n::SetLocale(emebalachat::I18n::DetectSystemLocale()); // (0) G-1
         const auto defs = emebalachat::ComputeSystemDefaultLanguages(); // pure
         config.SetDragLanguages(defs.drag_source, defs.drag_target);     // I4 locked
         config.SetTypeLanguages(defs.type_source, defs.type_target);     // I4 locked
-        config.SaveToFile();                                             // atomic swap
+        config.SetUiLanguage("auto");                                    // G-1, I4 locked
+        config.SaveToFile();                                             // (1) atomic swap
         const auto snap = config.GetSnapshot();
-        DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s (REQ-020)",
+        DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s ui=auto (REQ-020/B-6 G-1)",
                  snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
                  snap.type_source_language.c_str(), snap.type_target_language.c_str());
-        badge.SetLanguages(emebalachat::ToUtf16(snap.type_source_language),
-                           emebalachat::ToUtf16(snap.type_target_language));
-        refresh_tray();
-        tooltip.RefreshTargetLanguageFromConfig(snap.drag_target_language);
+        // (2) ALL surfaces (locale + both language pairs) re-render through
+        // the existing locale-change coordinator — single refresh authority,
+        // no duplicate surface nudges. The About window's own reset-feedback
+        // repaint rides inside it (RequestLocaleRefresh).
+        RefreshAllUiForLocaleChange();
         emebalachat::PlayLangChange();
     };
     // R6 Phase 1 (B3): Ctrl+F9 cycle now routes through the SAME coordinator.

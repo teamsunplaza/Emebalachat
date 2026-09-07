@@ -106,6 +106,21 @@ deliberately NOT automated, see README "Handed to user QA"):
                         starve the UIA menu provider - documented multi_lang
                         limitation): a NOTFOUND verdict is INCONCLUSIVE for
                         this scenario, never a product FAIL.
+    reset_defaults      REQ-040/B-6 (design 260907_0002 §4.3 E2E-RESET-1 +
+                        §2.3.2 G-1, user-approved 2026-09-07): seed the four
+                        language fields AND ui_language="th" into the app's
+                        LIVE config.json (%LOCALAPPDATA%, matching
+                        GetDefaultConfigPath order - the exe-dir copy only
+                        when absent), restart so the values are live in
+                        memory, open About through the tray (UIA
+                        InvokeMenuItem on the locale-independent
+                        "Emebala Chat...\u2026" brand+ellipsis item), click the
+                        reset button at its production DIP geometry, then
+                        assert the persisted config returns to the system
+                        defaults with ui_language="auto" and the lang_reset
+                        coordinator DIAG marker appears. Tray-UIA refusal =
+                        INCONCLUSIVE (same documented TrackPopupMenu
+                        starvation bound as uilang_37).
 
 Dependencies
 ------------
@@ -119,12 +134,16 @@ Usage
 -----
   python tools\\e2e\\req027_e2e.py qa27b
   python tools\\e2e\\req027_e2e.py example1 --step-timeout 40
-  python tools\\e2e\\req027_e2e.py all          ; all 12 automated scenarios
+  python tools\\e2e\\req027_e2e.py all          ; all automated scenarios
   python tools\\e2e\\req027_e2e.py multi_lang --no-tray   ; force config fallback
   python tools\\e2e\\req027_e2e.py uilang_37    ; tray UI-language submenu
                                                  enumeration (interactive
                                                  desktop; do not touch
                                                  keyboard/mouse during it)
+  python tools\\e2e\\req027_e2e.py reset_defaults ; REQ-040 E2E-RESET-1
+                                                 (interactive desktop; the
+                                                 run moves the real cursor
+                                                 onto the About reset button)
 Exit codes: 0 = PASS, 1 = FAIL, 2 = INCONCLUSIVE/environment, 3 = harness error.
 
 Operating constraints (documented; pre-flight enforced where possible)
@@ -2668,6 +2687,312 @@ def scenario_uilang_37(app_state, base):
 
 
 # ---------------------------------------------------------------------------
+# reset_defaults: REQ-040/B-6 E2E-RESET-1 (design §4.3 + §2.3.3 C7, G-1
+# reset x ui_language user decision 2026-09-07). The scenario is
+# interactive-desktop bound: it moves the REAL cursor (the About card is a
+# custom-drawn layered popup with no child HWNDs, so UIA Invoke cannot reach
+# the reset button - a synthetic click at the production DIP geometry is the
+# faithful reproduction of the user action, exercising the WM_LBUTTONUP
+# hit-test code path unchanged).
+# ---------------------------------------------------------------------------
+# Win32 seams added for this scenario (argtypes everywhere - x64 correctness).
+user32.GetWindowRect.argtypes = [HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowRect.restype = wintypes.BOOL
+user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+user32.SetCursorPos.restype = wintypes.BOOL
+user32.mouse_event.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.UINT,
+                               wintypes.ULONG, ctypes.c_void_p]  # ULONG_PTR
+user32.GetDpiForWindow.argtypes = [HWND]
+user32.GetDpiForWindow.restype = ctypes.c_uint
+# Unicode-only API: exported WITHOUT the W suffix (no A/W split on
+# GetUserDefaultLocaleName - probed live via this import path).
+kernel32.GetUserDefaultLocaleName.argtypes = [ctypes.c_wchar_p, ctypes.c_int]
+kernel32.GetUserDefaultLocaleName.restype = ctypes.c_int
+kernel32.GetUserDefaultUILanguage.restype = ctypes.c_ushort
+
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+ABOUT_CLASS = "Emebalachat_AboutClass"
+# Locale-independent About-menu matcher: every menu_about string embeds the
+# brand token "Emebala Chat" and ends in U+2026 (…); no other root-menu item
+# pairs both (menu_exit strings carry the brand but never the ellipsis).
+ABOUT_ITEM_RX = "Emebala Chat.*\u2026"
+# Non-default fixture for the five reset-covered keys (G-1 made ui_language
+# the fifth). Values are all valid persisted codes so the seeded config loads
+# cleanly through FromJsonString + I18n::Initialize("th").
+RESET_NONDEFAULTS = {
+    "ui_language": "th",
+    "drag_source_language": "English",
+    "drag_target_language": "Vietnamese",
+    "type_source_language": "Korean",
+    "type_target_language": "Japanese",
+}
+RESET_KEYS = tuple(RESET_NONDEFAULTS)
+RESET_POLL_S = 8.0
+
+
+def _runtime_config_path(app):
+    """The config.json the RUNNING app actually reads/writes. Mirrors
+    src/config.cpp GetDefaultConfigPath (REQ-029-B): %LOCALAPPDATA%\\
+    Emebalachat\\config.json first, exe-dir only when the Known-Folder file is
+    absent. The legacy _config_path (exe-dir) is the multi_lang pre-seed copy
+    and would NOT be what the app persists when LOCALAPPDATA exists."""
+    lad = os.environ.get("LOCALAPPDATA", "")
+    if lad:
+        p = os.path.join(lad, "Emebalachat", "config.json")
+        if os.path.exists(p):
+            return p
+    return _config_path(app)
+
+
+def _read_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def patch_config_fields(path, values):
+    """json-module rewrite of the given keys (never regex - multiline-safe).
+    Returns {key: previous value} for restore; a restore value of None DELETES
+    the key (the app re-derives absent keys as defaults - writing JSON null
+    would be a schema the loader does not expect)."""
+    if not os.path.exists(path):
+        raise EnvBlock(f"runtime config.json not found: {path}")
+    data = _read_json(path)
+    prev = {k: data.get(k) for k in values}
+    for k, v in values.items():
+        if v is None:
+            data.pop(k, None)
+        else:
+            data[k] = v
+    _write_json(path, data)
+    return prev
+
+
+def expected_system_drag_default():
+    """Python-side oracle of the design §2.6 rule for the HOST OS language
+    (the same mapping TestReq040SystemDefaults37 pins x37 at unit level):
+    unsupported/unknown -> English, EN -> 'Korean' (G-2 pivot), any other
+    supported language -> its registry name_en. Derived independently of the
+    C++ under test, from the OS seam DetectSystemLocale phase 1 reads
+    (GetUserDefaultLocaleName), with the zh script pre-check and the LANGID
+    fallback (GetUserDefaultUILanguage) mirrored for robustness."""
+    # BCP-47 language subtag -> registry code (iw = legacy Hebrew tag Windows
+    # still reports on some installs; nb/nn/no all map to Norwegian per the
+    # B-3 mapping table's dual-prefix row).
+    sub = {
+        "ko": "KO", "en": "EN", "vi": "VI", "ja": "JA", "es": "ES",
+        "fr": "FR", "de": "DE", "ru": "RU", "th": "TH", "ar": "AR",
+        "pt": "PT", "it": "IT", "id": "ID", "ms": "MS", "fil": "FIL",
+        "km": "KM", "lo": "LO", "hi": "HI", "bn": "BN", "tr": "TR",
+        "pl": "PL", "nl": "NL", "uk": "UK", "fa": "FA", "ur": "UR",
+        "he": "HE", "iw": "HE", "cs": "CS", "hu": "HU", "sv": "SV",
+        "el": "EL", "ro": "RO", "da": "DA", "fi": "FI", "no": "NO",
+        "nb": "NO", "nn": "NO", "my": "MY",
+    }
+    # Registry code -> name_en (src/config.cpp kAllLanguages, copied literals).
+    name_en = {
+        "AUTO": "Auto Detect", "EN": "English", "KO": "Korean",
+        "VI": "Vietnamese", "ZH-CN": "Chinese Simplified",
+        "ZH-TW": "Chinese Traditional", "JA": "Japanese", "ES": "Spanish",
+        "FR": "French", "DE": "German", "RU": "Russian", "TH": "Thai",
+        "AR": "Arabic", "PT": "Portuguese", "IT": "Italian",
+        "ID": "Indonesian", "MS": "Malay", "FIL": "Filipino", "KM": "Khmer",
+        "LO": "Lao", "HI": "Hindi", "BN": "Bengali", "TR": "Turkish",
+        "PL": "Polish", "NL": "Dutch", "UK": "Ukrainian", "FA": "Persian",
+        "UR": "Urdu", "HE": "Hebrew", "CS": "Czech", "HU": "Hungarian",
+        "SV": "Swedish", "EL": "Greek", "RO": "Romanian", "DA": "Danish",
+        "FI": "Finnish", "NO": "Norwegian", "MY": "Burmese",
+    }
+    buf = ctypes.create_unicode_buffer(85)
+    ok = kernel32.GetUserDefaultLocaleName(buf, 85)
+    tag = (buf.value or "").lower() if ok else ""
+    primary, _, region = tag.partition("-")
+    if primary == "zh":
+        if region in ("tw", "hk", "mo", "hant"):
+            code = "ZH-TW"
+        elif region in ("cn", "sg", "hans", "my"):
+            code = "ZH-CN"
+        else:
+            langid = kernel32.GetUserDefaultUILanguage()
+            if (langid & 0x3FF) == 0x04 and ((langid >> 10) & 0x3F) == 0x04:
+                code = "ZH-TW"  # SUBLANG_CHINESE_TRADITIONAL
+            else:
+                code = "ZH-CN"
+    else:
+        code = sub.get(primary)
+    if code is None:
+        return "English"   # unsupported/unknown OS language -> AUTO -> English
+    if code == "EN":
+        return "Korean"    # G-2 EN->EN pivot (user decision 2026-09-07)
+    return name_en[code]
+
+
+def _find_about_hwnd(pid):
+    for (h, _title, cls) in top_windows_for_pid(pid):
+        if cls == ABOUT_CLASS:
+            return int(h)
+    return 0
+
+
+def tray_invoke_about():
+    """Open About via the tray menu (UIA InvokeMenuItem, locale-matched).
+    Returns (ok, diag); NEVER raises - refusal is a normal environment outcome
+    the scenario classifies INCONCLUSIVE (same bound as tray_attempt_switch)."""
+    rc, tail, diag = _run_tray_ps1(
+        ["-Mode", "InvokeMenuItem", "-ItemRegex", ABOUT_ITEM_RX,
+         "-TimeoutSec", "45"], TRAY_ATTEMPT_TIMEOUT_S)
+    ok = any(ln.startswith("TRAY:OK") for ln in tail)
+    return ok, diag
+
+
+def click_about_reset(hwnd):
+    """Real left-click on the About card's reset button. Geometry comes from
+    the PRODUCTION code (about_window.cpp §Phase-4/B-5 comments): 440x596 DIP
+    card, reset_rect_ x[24, w-24] y[546,578] -> center (220, 562) DIP.
+    Physical px via GetDpiForWindow with the same round-to-nearest convention
+    as ui::ScaleDipsToPixels ((dips*dpi + 48) / 96)."""
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(HWND(hwnd), ctypes.byref(rect)):
+        raise EnvBlock("GetWindowRect failed on the About window")
+    dpi = user32.GetDpiForWindow(HWND(hwnd)) or 96
+    if dpi < 96:
+        dpi = 96
+    cx = rect.left + (220 * dpi + 48) // 96
+    cy = rect.top + (562 * dpi + 48) // 96
+    user32.SetForegroundWindow(HWND(hwnd))  # best-effort: the card is topmost
+    if not user32.SetCursorPos(cx, cy):
+        raise EnvBlock("SetCursorPos failed (cursor input locked?)")
+    time.sleep(0.08)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.06)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return (cx, cy, dpi)
+
+
+def scenario_reset_defaults(app_state, base_unused):
+    """E2E-RESET-1 (design §4.3): seed 4 language fields + ui_language=th ->
+    restart (values live in memory) -> About reset click -> persisted config
+    shows system defaults + ui_language auto + lang_reset DIAG marker.
+    See the section banner above for the interactive-desktop contract."""
+    rep = Report("reset_defaults")
+    app = app_state["app"]
+    cfg = _runtime_config_path(app)
+    try:
+        original = _read_json(cfg)
+    except OSError as e:
+        raise EnvBlock(f"runtime config unreadable: {cfg} ({e})")
+
+    want_drag_default = expected_system_drag_default()
+    rep.note(f"expected host drag default: {want_drag_default!r} "
+             f"(design §2.6 mapping via GetUserDefaultLocaleName)")
+    if globals().get("_TRAY_DISABLED"):
+        rep.note_env("--no-tray: E2E-RESET-1 needs the tray UIA path to "
+                     "open About; skipped by request (config untouched)")
+        return rep, app
+    # 1) Seed the non-defaults with the app DOWN (the multi_lang config-seed
+    #    idiom: a running app would overwrite the file from its in-memory
+    #    copy on the next save). From here on the restore block below must
+    #    run even on mid-scenario exceptions.
+    app_state["stop_app"]()
+    patch_config_fields(cfg, RESET_NONDEFAULTS)
+    rep.note(f"seeded {RESET_NONDEFAULTS}")
+    try:
+        app_state["start_app"]()
+        app = app_state["app"]
+        seeded = _read_json(cfg)
+        rep.add(1, seeded.get("ui_language") == "th" and
+                    seeded.get("type_target_language") == "Japanese",
+                "pre-reset config holds the injected non-defaults (G-1 fixture)",
+                f"ui={seeded.get('ui_language')!r} "
+                f"tgt={seeded.get('type_target_language')!r}")
+
+        # 2) Open About through the tray (UIA InvokeMenuItem).
+        ok, diag = tray_invoke_about()
+        if not ok:
+            rep.note_env(
+                "tray UIA refused About-open (documented TrackPopupMenu "
+                "starvation / no interactive desktop - NOT a product FAIL). "
+                "E2E-RESET-1 requires a live session with a responsive tray; "
+                "the G-1/C7 contract stays proven by "
+                "TestReq040SystemDefaults37 (unit half) + user QA. "
+                f"diag={diag[:300]}")
+        else:
+            hwnd = 0
+            deadline = time.time() + 6.0
+            while time.time() < deadline:
+                hwnd = _find_about_hwnd(app.proc.pid)
+                if hwnd and user32.IsWindowVisible(HWND(hwnd)):
+                    break
+                time.sleep(POLL_S)
+            rep.add(1, bool(hwnd) and user32.IsWindowVisible(HWND(hwnd)),
+                    "C6/E2E: About window (Emebalachat_AboutClass) opened via "
+                    "the tray About item under the Thai UI",
+                    f"hwnd={hwnd}")
+            if hwnd:
+                # 3) Real click on the reset button (C6 affordance exists ->
+                #    its WM_LBUTTONUP hit-test fires the coordinator callback).
+                click_info = click_about_reset(hwnd)
+                rep.add(1, True, f"real click at reset-button center {click_info}")
+
+                # 4) Coordinator ran + config re-recorded: poll marker + file.
+                log_hit = False
+                post = None
+                deadline = time.time() + RESET_POLL_S
+                while time.time() < deadline:
+                    log_hit = log_hit or ("lang_reset" in app.log_text())
+                    try:
+                        post = _read_json(cfg)
+                    except OSError:
+                        post = None
+                    if (post and post.get("ui_language") == "auto"
+                            and post.get("drag_source_language") == "Auto Detect"
+                            and post.get("type_source_language") == "Auto Detect"
+                            and post.get("type_target_language") == "English"):
+                        break
+                    time.sleep(0.15)
+                rep.add(1, log_hit,
+                        "lang_reset DIAG marker present (apply_system_defaults "
+                        "coordinator executed the reset)")
+                if post is None:
+                    post = _read_json(cfg)
+                rep.add(1, post.get("drag_source_language") == "Auto Detect",
+                        "C1/E2E: drag source back to Auto Detect",
+                        f"got={post.get('drag_source_language')!r}")
+                rep.add(1, post.get("drag_target_language") == want_drag_default,
+                        f"C2/E2E: drag target back to the host system default "
+                        f"({want_drag_default!r})",
+                        f"got={post.get('drag_target_language')!r}")
+                rep.add(1, post.get("type_source_language") == "Auto Detect",
+                        "C3/E2E: typing source back to Auto Detect",
+                        f"got={post.get('type_source_language')!r}")
+                rep.add(1, post.get("type_target_language") == "English",
+                        "C4/E2E: typing target back to English",
+                        f"got={post.get('type_target_language')!r}")
+                rep.add(1, post.get("ui_language") == "auto",
+                        "G-1: ui_language back to auto (the user-approved reset "
+                        "extension; surfaces re-resolve via DetectSystemLocale)",
+                        f"got={post.get('ui_language')!r}")
+                rep.add(1, app.proc.poll() is None,
+                        "app alive after the reset click")
+    finally:
+        # Restore the user's five config keys (json-module rewrite; other keys
+        # untouched) and leave a fresh app session for any scenario that
+        # follows - same teardown contract as run_multi_lang's fallback mode.
+        try:
+            app_state["stop_app"]()
+        finally:
+            patch_config_fields(cfg, {k: original.get(k) for k in RESET_KEYS})
+            app_state["start_app"]()
+    return rep, app_state["app"]
+
+
+# ---------------------------------------------------------------------------
 # scenario registry
 # ---------------------------------------------------------------------------
 LINE_SCENARIOS = {
@@ -2708,6 +3033,7 @@ def build_drivers():
     d.update(SIMPLE_DRIVERS)
     d["multi_lang"] = run_multi_lang
     d["uilang_37"] = scenario_uilang_37
+    d["reset_defaults"] = scenario_reset_defaults
     return d
 
 
@@ -2716,7 +3042,7 @@ DRIVERS = build_drivers()
 ALL_SCENARIOS = ["qa27b", "example1", "consecutive", "multi_lang",
                  "empty_enter", "cursor_mid", "backspace_enter",
                  "shift_enter_multi", "paste_then_enter", "long_text",
-                 "notepad_vscode_mix", "uilang_37"]
+                 "notepad_vscode_mix", "uilang_37", "reset_defaults"]
 # ime_composing is intentionally NOT in the matrix: WM_CHAR/SendInput cannot
 # create a real IME composition state, and simulating it unverified would
 # produce false verdicts. Handed to user QA (decisions.md 2026-09-07 20:54;

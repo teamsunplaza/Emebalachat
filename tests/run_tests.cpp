@@ -349,6 +349,34 @@ void TestSmartBypassModule() {
     TEST_CHECK(DetectLanguage(L"") == "Unknown", "Empty text detected as Unknown");
     TEST_CHECK(DetectLanguage(L"123456") == "Unknown", "Digits detected as Unknown");
 
+    // 8b. Hebrew script detection (REQ-040 gap G-4, user-approved 2026-09-07).
+    // "שלום עולם" = "Hello world" in Hebrew. Hebrew must get its OWN label -
+    // mislabeling it "Arabic" would corrupt the bypass decision and logs.
+    TEST_CHECK(ContainsHebrew(L"שלום עולם"), "ContainsHebrew: pure Hebrew");
+    TEST_CHECK(ContainsHebrew(L"discord에서 שלום"), "ContainsHebrew: mixed-script Hebrew present");
+    TEST_CHECK(!ContainsHebrew(L"مرحبا بالعالم"), "ContainsHebrew: Arabic is NOT Hebrew");
+    TEST_CHECK(!ContainsHebrew(L"hello world"), "ContainsHebrew: Latin is not Hebrew");
+    TEST_CHECK(!ContainsHebrew(L""), "ContainsHebrew: empty string false");
+    // Range boundary pins (U+0590-U+05FF, the shared bidi_utils predicate):
+    // U+058F is the last Armenian code point, U+0600 the first Arabic block one.
+    TEST_CHECK(ContainsHebrew(L"\u0590"), "ContainsHebrew: block start U+0590");
+    TEST_CHECK(ContainsHebrew(L"\u05FF"), "ContainsHebrew: block end U+05FF");
+    TEST_CHECK(!ContainsHebrew(L"\u058F"), "ContainsHebrew: U+058F (Armenian) outside block");
+    TEST_CHECK(!ContainsHebrew(L"\u0600"), "ContainsHebrew: U+0600 (Arabic) outside block");
+    TEST_CHECK(DetectLanguage(L"שלום עולם") == "Hebrew", "Detect Hebrew (own label, not Arabic)");
+    TEST_CHECK(NormalizeLanguageCode(DetectLanguage(L"שלום עולם")) == "HE",
+               "G-4: 'Hebrew' label maps to registry code HE (no hardcoded special case)");
+    // The behavior G-4 fixes: Hebrew text under a Hebrew target must bypass the
+    // engine (already-target), and under another target must still translate.
+    TEST_CHECK(!ShouldTranslate(L"שלום עולם", "Hebrew"),
+               "G-4: Hebrew targeting Hebrew bypassed (engine not called)");
+    TEST_CHECK(ShouldTranslate(L"שלום עולם", "Korean"),
+               "G-4: Hebrew to Korean still translates (detection did not over-bypass)");
+    // Priority discipline: Arabic wins when Arabic script is present (the
+    // G-4 check sits immediately after Arabic in the priority chain).
+    TEST_CHECK(DetectLanguage(L"مرحبا שלום") == "Arabic",
+               "G-4: mixed Arabic+Hebrew keeps the documented Arabic priority");
+
     // 9. URL detection
     TEST_CHECK(IsUrl(L"https://discord.com"), "IsUrl https");
     TEST_CHECK(IsUrl(L"http://example.com?query=test"), "IsUrl http with query");
@@ -6601,6 +6629,168 @@ void TestReq038B5AboutRtl() {
     }
 }
 
+// P4 Batch B-6 (session 260907_0002, design §4.1 "TestReq040SystemDefaults37"
+// row + §2.3.3 C1-C10 proof map): the REQ-040 rule-convenience proof suite.
+// Proves the documented default/sticky/reset rules hold for ALL 37 locales
+// with zero gaming: the C2 parametric leg drives the REAL production function
+// (ResolveDragDefaultTarget) through its only input seam - the I18n locale
+// GetLocaleCode reads - once per LocaleMapping row; the oracle is the
+// design §2.6 mapping derived independently from each row's registry data.
+// Gate decisions pinned here are user-approved (decisions.md 2026-09-07):
+//   G-1 reset also restores ui_language = "auto"  (C7-unit half)
+//   G-2 EN-pivot stays "Korean"                   (EN row of the C2 loop)
+//   G-4 Hebrew detection                          (pinned in TestSmartBypassModule 8b)
+void TestReq040SystemDefaults37() {
+    std::cout << "[RUN] Testing REQ-040 system defaults over all 37 locales (B-6)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Save/restore the global locale the parametric loop mutates (same
+    // suite-state hygiene as TestReq038B5AboutRtl).
+    const UiLocale initial = I18n::GetCurrentLocale();
+
+    // Independent oracle: the plan §2.6 / design §2.3.1 mapping "system
+    // language code -> expected drag default", derived from the registry, NOT
+    // by calling the function under test.
+    auto expected_for_sys_code = [](const std::string& code_or_name) -> std::string {
+        const std::string norm = NormalizeLanguageCode(code_or_name);
+        const LanguageInfo* info = FindLanguageByCode(norm);
+        if (!info || info->code == "AUTO") return "English"; // unsupported/unknown OS
+        if (info->code == "EN") return "Korean";             // G-2 EN->EN pivot (user decision)
+        return info->name_en;
+    };
+
+    // ---- C2 parametric: every one of the 37 LocaleMapping rows drives the
+    // REAL ResolveDragDefaultTarget through its input seam (I18n::SetLocale ->
+    // GetSystemLanguageCode/GetLocaleCode). Each row's expectation is its
+    // registry name_en; the EN row is the G-2 "Korean" pivot pin.
+    {
+        const auto& maps = GetLocaleMappings();
+        TEST_CHECK(maps.size() == 37, "B6/C2: parametric loop covers exactly 37 mapping rows");
+        for (const auto& m : maps) {
+            I18n::SetLocale(m.locale); // simulate "OS reports this language"
+            const std::string sys_code = NormalizeLanguageCode(std::string(I18n::GetSystemLanguageCode()));
+            const std::string want = expected_for_sys_code(sys_code);
+            const std::string got = ResolveDragDefaultTarget(); // production function
+            TEST_CHECK(got == want,
+                       ("B6/C2: system language " + std::string(m.config_code) +
+                        " -> drag default " + got + " (want " + want + ")").c_str());
+        }
+    }
+
+    // ---- G-2 explicit pin (decisions.md 2026-09-07 "한국어 유지"): an EN
+    // system language must yield "Korean", not "English" and not a no-op.
+    {
+        I18n::SetLocale(UiLocale::English);
+        TEST_CHECK(ResolveDragDefaultTarget() == "Korean",
+                   "B6/G-2: EN-pivot drag default stays 'Korean' (pinned user decision, no code change)");
+    }
+
+    // ---- AUTO/unknown-OS half of the mapping (design §2.3.3 "AUTO ->
+    // English"). No production seam can feed ResolveDragDefaultTarget an
+    // unresolvable code - GetLocaleCode is table-driven and always emits a
+    // known config_code (B-3 invariant, pinned by TestReq037LocaleMapping) -
+    // so this leg pins the DEFENSE-IN-DEPTH branch on the exact primitives the
+    // function composes: an unknown OS tag normalizes to AUTO, the AUTO
+    // registry row is matched by FindLanguageByCode, and the oracle (same
+    // §2.6 mapping the loop above verified against production for all 37 real
+    // rows) yields English for both the AUTO sentinel and garbage input.
+    {
+        TEST_CHECK(NormalizeLanguageCode("sw-KE") == "AUTO",
+                   "B6/AUTO: unsupported OS tag 'sw-KE' normalizes to AUTO (design §2.1.5)");
+        TEST_CHECK(NormalizeLanguageCode("klingon") == "AUTO",
+                   "B6/AUTO: garbage token normalizes to AUTO");
+        const LanguageInfo* auto_row = FindLanguageByCode("AUTO");
+        TEST_CHECK(auto_row != nullptr && auto_row->code == "AUTO",
+                   "B6/AUTO: AUTO sentinel is a real registry row (the branch ResolveDragDefaultTarget guards)");
+        TEST_CHECK(expected_for_sys_code("AUTO") == "English" &&
+                       expected_for_sys_code("sw-KE") == "English",
+                   "B6/AUTO: unknown/AUTO system language maps to 'English' (design §2.3.3 AUTO leg)");
+    }
+
+    // ---- C1/C3/C4 fresh-config defaults: a pre-Phase-3 JSON (no new-schema
+    // keys) loads through the migration branch and must land on the documented
+    // defaults; ui_language default ("auto") is the G-1 reset target value.
+    {
+        AppConfig fresh;
+        // Deliberately legacy-only JSON: none of the four context keys.
+        const bool parsed = fresh.FromJsonString(
+            "{ \"ui_language\": \"auto\", \"engine_type\": \"google\", "
+            "\"source_language\": \"Korean\", \"target_language\": \"Japanese\" }");
+        TEST_CHECK(parsed, "B6/C1-C4: legacy JSON parses");
+        const auto s = fresh.GetSnapshot();
+        TEST_CHECK(s.drag_source_language == "Auto Detect",
+                   "B6/C1: fresh-config drag SOURCE default is Auto Detect (REQ-006)");
+        TEST_CHECK(s.drag_target_language == ResolveDragDefaultTarget(),
+                   "B6/C2-host: fresh-config drag TARGET default = OS-resolved (REQ-007)");
+        TEST_CHECK(s.drag_target_language == expected_for_sys_code(
+                       NormalizeLanguageCode(std::string(I18n::GetSystemLanguageCode()))),
+                   "B6/C2-host: fresh-config drag target matches the §2.6 mapping for the host OS");
+        TEST_CHECK(s.type_source_language == "Auto Detect",
+                   "B6/C3: fresh-config typing SOURCE default is Auto Detect (REQ-015)");
+        TEST_CHECK(s.type_target_language == "English",
+                   "B6/C4: fresh-config typing TARGET default is English (REQ-016)");
+    }
+
+    // ---- C7 unit half + G-1 (decisions.md 2026-09-07 "G-1 포함"): the reset
+    // coordinator (main.cpp apply_system_defaults) writes the four language
+    // keys to ComputeSystemDefaultLanguages() AND ui_language back to "auto",
+    // persists all five, and a restart reload reads them back. The five
+    // Set*/SaveToFile calls below mirror the coordinator exactly (its
+    // ordering: persist all five keys under ONE atomic swap, then re-resolve
+    // the locale, then RefreshAllUiForLocaleChange - design §5.2-5).
+    {
+        AppConfig cfg;
+        cfg.SetDragLanguages("English", "Vietnamese");   // sticky user picks
+        cfg.SetTypeLanguages("Korean", "Japanese");
+        cfg.SetUiLanguage("th");                          // UI=Thai (G-1 scenario:
+                                                          // user cannot read the UI)
+        const auto pre = cfg.GetSnapshot();
+        TEST_CHECK(pre.drag_target_language == "Vietnamese" && pre.ui_language == "th",
+                   "B6/C7-G1: reset fixture applied (sticky pair + ui_language=th)");
+
+        const auto defs = ComputeSystemDefaultLanguages();
+        cfg.SetDragLanguages(defs.drag_source, defs.drag_target); // exactly what
+        cfg.SetTypeLanguages(defs.type_source, defs.type_target); // apply_system_defaults
+        cfg.SetUiLanguage("auto");                                // calls (B-6 G-1)
+        const std::string json = cfg.ToJsonString();               // = SaveToFile payload
+        TEST_CHECK(json.find("\"ui_language\": \"auto\"") != std::string::npos,
+                   "B6/C7-G1: serialized config carries ui_language auto after reset");
+        TEST_CHECK(json.find("\"drag_source_language\": \"Auto Detect\"") != std::string::npos &&
+                       json.find("\"type_source_language\": \"Auto Detect\"") != std::string::npos &&
+                       json.find("\"type_target_language\": \"English\"") != std::string::npos,
+                   "B6/C7: serialized config carries the 4 reset language keys (re-record, never deletion)");
+
+        AppConfig restarted;
+        TEST_CHECK(restarted.FromJsonString(json), "B6/C7-G1: restarted config parses the reset JSON");
+        const auto post = restarted.GetSnapshot();
+        TEST_CHECK(post.ui_language == "auto",
+                   "B6/G-1: reset restores ui_language to 'auto' across restart (surfaces re-resolve via DetectSystemLocale)");
+        TEST_CHECK(post.drag_source_language == "Auto Detect" &&
+                       post.drag_target_language == defs.drag_target &&
+                       post.type_source_language == "Auto Detect" &&
+                       post.type_target_language == "English",
+                   "B6/C7: all four language keys restored to system defaults across restart");
+
+        // G-1 semantics: "auto" is a VALID persisted value that the selector
+        // planner accepts and that resolves through DetectSystemLocale (the
+        // exact call apply_system_defaults performs before the refresh).
+        const UiLocaleChangePlan plan = PlanUiLocaleChange(post.ui_language, "auto");
+        TEST_CHECK(plan.valid, "B6/G-1: persisted 'auto' is a valid selector value after reset");
+        const UiLocale resolved = I18n::DetectSystemLocale();
+        TEST_CHECK(resolved != UiLocale::Auto,
+                   "B6/G-1: DetectSystemLocale never returns the Auto sentinel (reset re-resolve lands on a concrete locale)");
+    }
+
+    I18n::SetLocale(initial); // suite-state hygiene
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B-6 REQ-040 system-defaults 37-locale tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B-6 REQ-040 system-defaults 37-locale tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -6673,6 +6863,7 @@ int main() {
     TestReq038B2RegistryBcp47();
     TestReq037LocaleMapping();
     TestReq038B5AboutRtl();
+    TestReq040SystemDefaults37();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

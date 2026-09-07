@@ -1,4 +1,5 @@
 #include "smart_bypass.hpp"
+#include "bidi_utils.hpp"
 #include "diag_logger.hpp"
 #include "config.hpp"
 #include "unicode_utils.hpp"
@@ -94,7 +95,12 @@ inline bool IsLatinCodePoint(uint32_t cp) {
 inline bool IsLinguisticCodePoint(uint32_t cp) {
     if (IsKoreanCodePoint(cp) || IsKanaCodePoint(cp) || IsHanziCodePoint(cp) ||
         IsThaiCodePoint(cp) || IsArabicCodePoint(cp) || IsCyrillicCodePoint(cp) ||
-        IsVietnameseCodePoint(cp) || IsLatinCodePoint(cp)) {
+        IsVietnameseCodePoint(cp) || IsLatinCodePoint(cp) ||
+        // G-4 (design §2.2.6, user-approved 2026-09-07): Hebrew letters are
+        // explicit linguistic content via the shared bidi_utils predicate,
+        // mirroring the Arabic line above instead of relying on the
+        // GetStringTypeW C1_ALPHA fallback below (locale-dependent).
+        IsHebrewScriptCodePoint(cp)) {
         return true;
     }
 
@@ -172,6 +178,21 @@ bool ContainsArabic(std::wstring_view text) {
     while (idx < text.size()) {
         uint32_t cp = DecodeNextCodePoint(text, idx);
         if (IsArabicCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsHebrew(std::wstring_view text) {
+    // G-4 (REQ-040, design §2.2.6, user-approved 2026-09-07): Hebrew-script
+    // detection, same scan pattern as ContainsArabic. The U+0590-U+05FF range
+    // lives in bidi_utils (IsHebrewScriptCodePoint) so the translation
+    // trigger and the REQ-038 first-strong scanner share one source of truth.
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsHebrewScriptCodePoint(cp)) {
             return true;
         }
     }
@@ -302,6 +323,12 @@ std::string DetectLanguage(std::wstring_view text) {
     if (ContainsKana(trimmed)) return "Japanese"; // Kana takes precedence over Hanzi for Japanese
     if (ContainsThai(trimmed)) return "Thai";
     if (ContainsArabic(trimmed)) return "Arabic";
+    // G-4 (user-approved 2026-09-07): Hebrew gets its OWN label immediately
+    // after Arabic (same pattern) - reporting Hebrew as "Arabic" would corrupt
+    // downstream logs and the already-target bypass (NormalizeLanguageCode
+    // resolves "Hebrew" -> registry code "HE", so ShouldTranslate now bypasses
+    // Hebrew text under a Hebrew target instead of shipping it to the engine).
+    if (ContainsHebrew(trimmed)) return "Hebrew";
     if (ContainsCyrillic(trimmed)) return "Russian";
     if (ContainsVietnamese(trimmed)) return "Vietnamese";
     if (ContainsHanzi(trimmed)) return "Chinese Simplified";
