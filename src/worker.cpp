@@ -321,22 +321,34 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // translation (privacy-consent block or engine error), dispatch the low
     // failure tone via the existing sound facility before the (possibly) Enter
     // sends the untranslated original.
+    // REQ-029-A (design 114800 §2.4-b): LocalModelMissing joins the audible set -
+    // a missing local model must not be a silent no-response (B-7a precondition:
+    // the enum value exists; the engine now returns it instead of the cloud
+    // CloudConsentBlocked masquerade).
     if (!pasted && translated.empty() &&
-        (status == TranslationStatus::EngineFailed || status == TranslationStatus::CloudConsentBlocked)) {
+        (status == TranslationStatus::EngineFailed ||
+         status == TranslationStatus::CloudConsentBlocked ||
+         status == TranslationStatus::LocalModelMissing)) {
         DIAG_F("WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
                 static_cast<int>(status));
         PlaySoundAsync(SoundType::Disable);
     }
 
-    // Phase 5 (REQ-023): Category B always injects a newline after replacement,
-    // regardless of auto_send. Category A keeps the legacy send gate
-    // (shift_enter || auto_send). Both still pass the H1 foreground guard.
+    // REQ-028 (decisions.md 2026-09-07 11:46, design 114800 §2.4-a): Category B
+    // is now auto_send-gated too - OFF = replacement only (no newline) / ON =
+    // replacement + automatic newline. The REQ-023 "CategoryB always injects a
+    // newline" rule was retired with explicit user approval. Category A keeps the
+    // legacy send gate (shift_enter || auto_send). Both still pass the H1
+    // foreground guard.
     // (auto_send is std::atomic; implicit load is safe from this thread - I4)
     const AppCategory category = ClassifyAppWindow(task.target_hwnd);
     const bool h1_ok = IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow());
     bool inject_enter = false;
     if (category == AppCategory::CategoryB) {
-        inject_enter = true;                       // REQ-023: 항상 개행
+        // REQ-028 (decisions.md 2026-09-07 11:46): CategoryB도 auto_send 게이트.
+        // OFF = 치환만(개행 없음) / ON = 치환 후 자동 개행. REQ-023 "항상 개행"은
+        // 유저 승인으로 폐기. CategoryA 송신 게이트는 기존 유지.
+        inject_enter = config_.auto_send.load(std::memory_order_relaxed);
     } else {
         inject_enter = task.is_shift_enter ||      // Category A: 기존 전송 게이트
                        config_.auto_send.load(std::memory_order_relaxed);
