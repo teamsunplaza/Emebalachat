@@ -12,6 +12,7 @@ and the B-6c edge-flow matrix (design
 | File | Role |
 |---|---|
 | [`req027_e2e.py`](req027_e2e.py) | Main harness. Launches `build\Emebala_chat.exe` + a real Notepad scratch window, types/drives input, judges on 3 layers (log / content / verdict). |
+| [`app_probe.py`](app_probe.py) | D-4a universal-app matrix probe (design 173700 §2.3): lists edit-control classes of the 8 user-named apps (메모장/카톡/디스코드/Chrome/Firefox/HWP/PPT/Word), replays the app's read-only EM_* probe family via ctypes, ports `ClassifyEmProbe` verbatim, and renders the 앱×컨트롤×EM-능력×예상경로×판정 matrix (markdown, `--json` for machine reading, `--fallback` adds the opt-in keyboard-geometry measurement). Reuses the `req027_e2e` ctypes layer (one source of truth, stdlib only). |
 | [`uia_read_edit.ps1`](uia_read_edit.ps1) | Layer-2 fallback reader: UIA ValuePattern via `System.Windows.Automation` (ships with .NET — no install). Used only when `WM_GETTEXT` cannot read the edit control. |
 | [`uia_close_window.ps1`](uia_close_window.ps1) | Teardown helper: dismisses the Win11 Notepad "save?" dialog via UIA when closing our dirty scratch window. (B-6c fixed the ko-KR discard-button pattern `저장하지 않음`.) |
 | [`uia_tray_menu.ps1`](uia_tray_menu.ps1) | B-6c multi_lang 1st-choice path: right-clicks the app tray icon and walks the type → target-language submenu via UIA. Verdict is parsed from its `TRAY:` output lines. |
@@ -24,11 +25,11 @@ and the B-6c edge-flow matrix (design
 | `example1` | 6 sentences, Enter each (existing) | non-cumulative captures, 6 replacements, newline structure |
 | `consecutive` | 2 same-language lines (existing) | no `translation_equals_source` skip (QA-27-4) |
 | `multi_lang` | 3 blocks EN→JA→VI (new, REQ-019) | per-block target language: `lang_pair tgt` + output script witness |
-| `empty_enter` | bare Enter ×3 on empty doc (new) | R5 `empty_capture hold_send` on every Enter, no crash, doc stays empty |
+| `empty_enter` | bare Enter ×3 on empty doc | R5 `empty_capture hold_send` on every Enter, no crash, doc stays empty; **D-4b (F3-B/C-5)**: the no-selection notice MUST surface per held task (`tooltip_show kind=message`) and the paste-window suppression must NOT fire (2.6 s settle guards against a previous scenario's paste still inside the 2000 ms window) |
 | `cursor_mid` | caret mid-line via EM_SETSEL + Enter (new) | capture = [start..caret) only; text after the caret survives |
 | `backspace_enter` | translate → retype → real VK_BACK across the stored offset → Enter (new) | `/004` clamp path fires and completes safely (last>caret → 0) |
 | `shift_enter_multi` | Shift+Enter ×2 then bare Enter (new, REQ-018) | 2× `ENTER_GATE reason=shift_enter_newline`, exactly ONE task, capture spans the multi-line block |
-| `paste_then_enter` | external clipboard + Ctrl+V + immediate Enter (new) | capture == pasted text exactly, normal replacement |
+| `paste_then_enter` | external clipboard + Ctrl+V + immediate Enter (B-6c phase 1), **then one immediate retry Enter (D-4b phase 2)** | phase 1: capture == pasted text exactly, normal replacement; phase 2: retry Enter inside the 2000 ms paste window must log `WORKER/ExecuteTask/036` + `decision=paste_window_suppress`, surface NO notice, skip translate/paste, and hand the Enter to the app (document grows by the newline); the `/036` elapsed/window numbers are parsed as `kPasteEmptySuppressMs`-tuning evidence |
 | `long_text` | one 1000-char Hangul line + Enter (new) | no EM saturation, full-block capture, replacement normal |
 | `notepad_vscode_mix` | window-1 → window-2 → window-1 Enters (new) | per-hwnd caret-offset isolation: window-2 starts `last=0`, window-1 resumes its own stored offset, no cross leak, no spurious `/004` |
 
@@ -169,6 +170,33 @@ python tools\e2e\req027_e2e.py all            ; the full 11-scenario matrix
 python tools\e2e\req027_e2e.py qa27b          ; single scenarios...
 python tools\e2e\req027_e2e.py multi_lang --no-tray   ; force config-seed mode
 python tools\e2e\req027_e2e.py long_text --step-timeout 90
+python tools\e2e\req027_e2e.py paste_then_enter  ; incl. D-4b F3-B retry-Enter phase
+python tools\e2e\req027_e2e.py empty_enter       ; incl. D-4b notice-required + never-suppress
 
 optional: --app-exe <path>  --no-cleanup (debug: leave the app running)
 ```
+
+### app_probe.py (D-4a, universal-app matrix)
+
+```bat
+python tools\e2e\app_probe.py --help                 ; full option list
+python tools\e2e\app_probe.py                        ; markdown matrix, all 8 apps (READ-ONLY)
+python tools\e2e\app_probe.py --app word --json      ; one app, machine-readable
+python tools\e2e\app_probe.py --app all --fallback   ; + Shift+Home/Ctrl+C geometry (mutates selection+clipboard, never text)
+python tools\e2e\app_probe.py --probe-hwnd 0x1234    ; arbitrary control (user-QA escape hatch)
+python tools\e2e\app_probe.py --out app-matrix.md    ; also write the rendered matrix
+```
+
+Default mode sends **read-only** messages only (EM_GETSEL / EM_GETLIMITTEXT /
+WM_GETTEXTLENGTH / EM_GETLINECOUNT / EM_LINEFROMCHAR / EM_GETLINE via
+`SendMessageTimeoutW` 100 ms, the app's own SendEm budget) plus an EM_SETSEL
+no-op re-set of the *current* range whose reply is verified unchanged. It
+never activates windows and never types. `--fallback` opts into the design
+§2.3 item-5 measurement (Shift+Home span, Ctrl+Shift+Home span, Ctrl+C
+clipboard-sequence/length) which does mutate selection and the clipboard and
+needs the foreground - interactive-QA scoped. Launching an app requires
+`--top` and only for apps with a locatable install path; anything not
+measurable stays "확인 필요" by design (no guesses). Per the D-4 delegation,
+the 8-app LIVE run (with each app focused and holding a representative
+document) is **user QA**; the harness sandbox proof is `--help` + a
+read-only default run in `tools_d4_probe.log` (workspace root).

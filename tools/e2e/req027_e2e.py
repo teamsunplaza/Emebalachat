@@ -58,8 +58,11 @@ deliberately NOT automated, see README "Handed to user QA"):
                       fallback runs per-block sessions and the report notes
                       "runtime switch path unverified by this run".
   empty_enter         empty document, bare Enter x3 -> every task ends in
-                      stage=empty_capture decision=hold_send, no crash,
-                      document still empty (REQ-023 / R5 hold contract)
+                        stage=empty_capture decision=hold_send, no crash,
+                        document still empty (REQ-023 / R5 hold contract);
+                        REQ-034 F3-B: the no-selection notice MUST surface
+                        per held task (tooltip kind=message) and the
+                        paste-window suppression must NEVER fire here (C-5)
   cursor_mid          caret placed mid-line (EM_SETSEL) before Enter ->
                       capture == [doc start .. caret) exactly, the tail
                       after the caret survives untouched
@@ -72,8 +75,11 @@ deliberately NOT automated, see README "Handed to user QA"):
                       reason=shift_enter_newline x2, REQ-018), exactly ONE
                       task whose capture spans the whole multi-line block
   paste_then_enter    clipboard seeded OUTSIDE the app + real Ctrl+V
-                      (SendInput) + immediate Enter -> capture == pasted
-                      text exactly, replacement normal
+                        (SendInput) + immediate Enter -> capture == pasted
+                        text exactly, replacement normal; then one IMMEDIATE
+                        retry Enter -> REQ-034 F3-B: WORKER/ExecuteTask/036 +
+                        decision=paste_window_suppress, NO notice, silent
+                        send-through (the app really adds a newline)
   long_text           one 1000-char Hangul line + Enter -> capture len
                       1000, replacement normal. The 64K EM_GETSEL WORD
                       saturation boundary is NOT automated (user QA
@@ -588,6 +594,22 @@ RE_SETTLE_008 = re.compile(r"EditCaretTracker/008")
 RE_EM_FAILURE = re.compile(
     r"EditCaretTracker/(001|003): EM_(GETSEL|SETSEL).*failed/timed out")
 RE_EMPTY_HOLD = re.compile(r"stage=empty_capture decision=hold_send")
+# REQ-034 F3-B paste-window gate signatures (src/worker.cpp L242-254): the
+# suppression decision line and its WORKER/ExecuteTask/036 companion.
+RE_EMPTY_SUPPRESS = re.compile(
+    r"stage=empty_capture decision=paste_window_suppress")
+RE_DIAG_036 = re.compile(r"WORKER/ExecuteTask/036")
+RE_DIAG_036_DETAIL = re.compile(
+    r"WORKER/ExecuteTask/036: empty capture within paste window "
+    r"\(elapsed (\d+)ms <= (\d+)ms\)")
+# No-selection notice surface (hold branch's UI side effect via
+# empty_capture_cb_ -> ShowMessageThreadSafe): "UI tooltip_show kind=message"
+# (src/ui/tooltip.cpp L760). The marshal-drop variant (L754) counts as
+# SURFACE evidence too - it proves the callback fired and only lost a
+# generation race, which must not turn the C-5 notice assertion into a
+# false product FAIL.
+RE_NOTICE_SURFACE = re.compile(
+    r"tooltip_(?:show|marshal_drop) kind=message")
 RE_SUBSYSTEMS = re.compile(r"SESSION/subsystems started")
 RE_SECOND_INSTANCE = re.compile(r"SESSION/second instance")
 RE_LANG_PAIR = re.compile(
@@ -635,6 +657,9 @@ class TaskBlock:
         self.fallback_nonstandard = False
         self.em_failure = False
         self.empty_hold = False
+        self.empty_suppress = False   # REQ-034 F3-B paste-window gate fired
+        self.diag_036 = False         # WORKER/ExecuteTask/036 line seen
+        self.notice_surface = False   # tooltip show/drop kind=message seen
         self.send_through = False
         self.cap_unknown = False
         self.cap_notcapable = False
@@ -680,6 +705,12 @@ class TaskBlock:
             self.em_failure = True
         if RE_EMPTY_HOLD.search(text):
             self.empty_hold = True
+        if RE_EMPTY_SUPPRESS.search(text):
+            self.empty_suppress = True
+        if RE_DIAG_036.search(text):
+            self.diag_036 = True
+        if RE_NOTICE_SURFACE.search(text):
+            self.notice_surface = True
         if RE_SEND_THROUGH.search(text):
             self.send_through = True
         if RE_CAP_UNKNOWN.search(text):
@@ -730,6 +761,28 @@ def parse_tasks(text):
 
 def utf16_len(s):
     return len(s.encode("utf-16-le")) // 2
+
+
+def wait_block_terminal(app_log_text, index, timeout=None):
+    """Poll until task block `index` reaches ANY terminal marker. Both empty-
+    capture exits (R5 hold src/worker.cpp L256-266 and the F3-B suppression
+    branch L242-255) return BEFORE stage=task_end, so the method-level
+    wait_task_complete (early-exit on completed OR empty_hold) never sees the
+    suppression branch. This helper adds empty_suppress + send_through to the
+    exit set; timeout behaves identically (return the newest block view)."""
+    deadline = time.time() + (timeout or STEP_TIMEOUT_S)
+    blocks = []
+    while time.time() < deadline:
+        blocks = parse_tasks(app_log_text())
+        if len(blocks) > index:
+            b = blocks[index]
+            if (b.completed or b.empty_hold or b.empty_suppress
+                    or b.send_through):
+                return b
+        time.sleep(POLL_S)
+    if len(blocks) > index:
+        return blocks[index]
+    return TaskBlock(index, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1761,13 +1814,24 @@ def run_line_session(name, lines, app, base, *, step_timeout=None,
 def scenario_empty_enter(app, base):
     """Empty document, bare Enter x3. Every task must end in the R5
     empty-capture hold (no translation, no paste, no crash) and the
-    document must remain empty."""
+    document must remain empty. REQ-034 F3-B (C-5) additions judged per
+    task: the no-selection notice MUST surface (tooltip kind=message via
+    empty_capture_cb_), and the paste-window suppression MUST NOT fire -
+    this document has no paste history, so a general empty Enter keeps the
+    pre-F3-B hold behavior exactly."""
     rep = Report("empty_enter")
     notepad = NotepadSession()
     try:
         notepad.start()
         rep.note(f"notepad pid={notepad.pid} edit_class={notepad.edit_class}")
         notepad.assert_empty()
+        # F3-B determinism (D-4b): last_paste_ms_ is WORKER-GLOBAL state
+        # shared by every scenario in this app session - if a PREVIOUS
+        # scenario pasted successfully < kPasteEmptySuppressMs (2000 ms)
+        # ago, the first Enter here would take the suppression branch
+        # instead of the C-5 hold+notice this scenario asserts. Settle past
+        # the window (margin 600 ms) before judging hold+notice.
+        time.sleep(2.6)
         # Settle between Enters: firing the next one while the worker is
         # still busy makes the hook PASS IT THROUGH (ENTER_GATE
         # reason=worker_busy), Notepad then inserts a real "\r\n" and the
@@ -1814,6 +1878,16 @@ def scenario_empty_enter(app, base):
                     f"task {b.index}: no translate/paste stages "
                     "(nothing to translate)",
                     f"translate={b.translate_status} paste={b.paste_result}")
+            rep.add(1, not (b.empty_suppress or b.diag_036),
+                    f"task {b.index}: F3-B paste window did NOT fire on the "
+                    "never-pasted document (C-5: hold+notice path intact)",
+                    b.cite(RE_EMPTY_SUPPRESS) or b.cite(RE_DIAG_036))
+            if b.empty_hold:
+                rep.add(1, b.notice_surface,
+                        f"task {b.index}: no-selection notice surfaced "
+                        "(tooltip kind=message marshaled to the GUI thread)",
+                        b.cite(RE_NOTICE_SURFACE) or "(no tooltip line in "
+                        "this block's slice)")
             doc, _ = notepad.read_text()
             rep.add(2, doc is not None and not doc.strip(),
                     f"task {b.index}: document holds no user-visible text "
@@ -2007,7 +2081,18 @@ def scenario_shift_enter_multi(app, base):
 def scenario_paste_then_enter(app, base):
     """Clipboard seeded OUTSIDE the app, real (unmarked) Ctrl+V into the
     fresh window, then immediate bare Enter: capture must equal the pasted
-    text exactly and the replacement must run normally."""
+    text exactly and the replacement must run normally.
+
+    D-4b phase 2 (REQ-034 F3-B): one IMMEDIATE retry Enter after the
+    successful pipeline paste. The stored offset equals the caret (B-6a
+    save), so this Enter's EM_SETSEL range is empty -> Ctrl+C changes
+    nothing -> 180 ms stale-refuse -> EMPTY capture. Because the retry
+    lands within kPasteEmptySuppressMs (2000 ms) of the worker's own paste
+    stamp, the product must take the F3-B branch: WORKER/ExecuteTask/036 +
+    stage=empty_capture decision=paste_window_suppress, NO TooltipNoSelection
+    (kind=message) notice, and a silent send-through the app answers with a
+    real newline (the user's 'notice 없이 send-through' rule). Phase 1 is
+    unchanged from B-6c."""
     rep = Report("paste_then_enter")
     text = "클립보드로 외부에서 들어온 원본 문장입니다. E2E01"
     notepad = NotepadSession()
@@ -2036,6 +2121,70 @@ def scenario_paste_then_enter(app, base):
         after, _ = notepad.read_text()
         verify_task_layer1(rep, block, text, 0)
         verify_task_layer2(rep, block, text, before, after)
+        # ---- D-4b phase 2: immediate retry Enter -> F3-B suppression ----
+        # The window opens ONLY on a SUCCESSFUL paste (worker.cpp stamps
+        # last_paste_ms_ under `if (pasted)`). If phase 1 did not replace
+        # (cloud/engine/smart-bypass), the setup for the suppression branch
+        # does not exist -> honest INCONCLUSIVE via env note, never a fake
+        # FAIL (backspace_enter uses the same guard shape).
+        if block.paste_result != 1:
+            rep.note_env(
+                "phase 2 skipped: paste result="
+                f"{block.paste_result} skip={block.paste_skip_reason} - no "
+                "successful paste means no F3-B window to exercise")
+            return rep
+        # 300 ms settle: guarantees task 1's ExecuteTask fully returned
+        # (is_busy_ cleared) so the retry Enter is not passed through by
+        # ENTER_GATE reason=worker_busy; still ~6-7x inside the 2000 ms
+        # suppression window measured from the paste stamp.
+        time.sleep(0.3)
+        notepad.press_enter_wait_task(app.log_text, base + 2)
+        # The suppression branch returns BEFORE stage=task_end (worker.cpp
+        # L252-254) and the R5 hold branch likewise skips task_end; the
+        # method-level wait only knows completed/empty_hold, so blocks with
+        # decision=paste_window_suppress are terminal here.
+        blk2 = wait_block_terminal(app.log_text, base + 1)
+        doc2, method = notepad.read_text()
+        rep.add(1, blk2.empty_suppress,
+                "retry Enter (post-paste window): "
+                "stage=empty_capture decision=paste_window_suppress recorded",
+                blk2.cite(RE_EMPTY_SUPPRESS))
+        rep.add(1, blk2.diag_036,
+                "WORKER/ExecuteTask/036 DIAG line present (suppress "
+                "branch executed)", blk2.cite(RE_DIAG_036))
+        rep.add(1, not blk2.empty_hold,
+                "the R5 hold_send + no-selection notice branch did NOT run "
+                "inside the paste window", blk2.cite(RE_EMPTY_HOLD))
+        rep.add(1, not blk2.notice_surface,
+                "no TooltipNoSelection surfaced for the suppressed retry "
+                "(notice-free send-through)", blk2.cite(RE_NOTICE_SURFACE))
+        rep.add(1, blk2.translate_status is None and blk2.paste_result is None,
+                "suppressed task ran no translate/paste stages (silent "
+                "release + Enter handoff only)",
+                f"translate={blk2.translate_status} paste={blk2.paste_result}")
+        # /036 carries the MEASURED elapsed-vs-window numbers
+        # (D-4 evidence for tuning kPasteEmptySuppressMs):
+        m = RE_DIAG_036_DETAIL.search(
+            "\n".join(tx for _ln, tx in blk2.lines))
+        if m:
+            rep.note(f"F3-B window timing (measured): elapsed={m.group(1)}ms "
+                     f"<= window={m.group(2)}ms (kPasteEmptySuppressMs)")
+        else:
+            rep.note("F3-B window timing: /036 detail line not parseable "
+                     "(informational only)")
+        # send-through proof: the app received the Enter and grew the
+        # document by the newline the pipeline did not inject (auto_send
+        # OFF leaves newline injection to this handoff; ON is equally fine
+        # because phase 1's own settle already covered its injected one).
+        grew = (doc2 is not None and after is not None
+                and len(doc2) > len(after))
+        rep.add(2, grew,
+                f"retry Enter reached the app: document grew by the "
+                f"newline ({method} {len(after or '')} -> "
+                f"{len(doc2 or '')} chars)", f"doc2={doc2[:120]!r}")
+        rep.add(1, app.proc is None or app.proc.poll() is None,
+                "app process alive after the suppressed retry",
+                f"exit={None if app.proc is None else app.proc.poll()}")
     finally:
         notepad.stop()
     if notepad.cleanup_note:
