@@ -26,15 +26,29 @@ enum TrayMenuId : UINT {
     ID_TRAY_EXIT = 2070,
     ID_TRAY_SRC_BASE = 2100, // 2100..2137  (REQ-025: TYPE pair - unchanged)
     ID_TRAY_TGT_BASE = 2200, // 2200..2236  (REQ-025: TYPE pair - unchanged)
-    // R6 Phase 6 (plan §5.4): UI-language selector submenu (Auto + 7 locales)
+    // R6 Phase 6 (plan §5.4), expanded by REQ-037 (P4 B-4, design §2-Q3):
+    // UI-language selector submenu = Auto (2300) + the 37 GetSupportedUiLocales
+    // entries (2301..2337, endonym-only labels, single column + OS auto-scroll
+    // per the §2-Q3 verdict A). Both the build loop and the dispatch below are
+    // size-dynamic, so only the band capacity is a code property: the next
+    // band (DRAG_SRC) starts at 2400 -> highest current ID 2337, 62 IDs of
+    // headroom, no collision (design §2-Q3 verified).
     ID_TRAY_UILANG_AUTO = 2300,
-    ID_TRAY_UILANG_BASE = 2301, // 2301..2307
+    ID_TRAY_UILANG_BASE = 2301, // 2301..2337 (Auto + 37 locales = 38 items)
     // REQ-025 (Phase A §2.1.A3-25): DRAG ("번역툴팁") pair submenu IDs. The
     // existing 2100/2200 bands stay TYPE-only (regression guard); the drag
     // pair gets fresh non-overlapping bands. 2400..2437 / 2500..2536.
     ID_TRAY_DRAG_SRC_BASE = 2400,
     ID_TRAY_DRAG_TGT_BASE = 2500
 };
+
+// REQ-037/B-4 compile-time guard for the band layout asserted above: the
+// 38-item UILANG submenu (Auto + 37 selector codes => 2300..2337) must stay
+// strictly below the DRAG band floor. If the selector ever grows past 99
+// locales, widen the bands here FIRST - the AppendMenu loop would otherwise
+// hand submenu IDs straight into DRAG_SRC territory.
+static_assert(ID_TRAY_UILANG_BASE + 37 <= ID_TRAY_DRAG_SRC_BASE,
+              "tray UI-language ID band must not collide with the drag band");
 
 } // namespace
 
@@ -307,6 +321,17 @@ void SystemTray::ShowContextMenu() {
     // plus a localized Auto entry. Check mark tracks the PERSISTED config
     // value (ui_language_), not the resolved locale, so "auto" stays visibly
     // selected while it follows the OS language.
+    //
+    // REQ-037/B-4 (design §2-Q3 verdict A): Auto + all 37 GetSupportedUiLocales
+    // entries (38 items) as a SINGLE column - Windows auto-adds scroll
+    // chevrons past screen height, the identical pattern the three 38-item
+    // SRC/TGT pickers below already ship (no MF_MENUBARBREAK columns, no
+    // owner-draw). Entry label = UiLocaleEntry.native_name (endonym only);
+    // display order and Auto-first placement are owned by
+    // GetSupportedUiLocales() (§2-Q3: KO, JA, zh-CN, zh-TW, VI, ES front
+    // block, remaining locales in registry order, EN last). The loop is
+    // size-dynamic (selector 37 => IDs 2301..2337, band guarded by the
+    // static_assert above); the check mark is per-entry dynamic too.
     HMENU hUiLangMenu = ::CreatePopupMenu();
     {
         const bool autoChecked = (ui_language_ == "auto" || ui_language_.empty());

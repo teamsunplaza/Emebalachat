@@ -85,15 +85,27 @@ deliberately NOT automated, see README "Handed to user QA"):
                       saturation boundary is NOT automated (user QA
                       QA-27-7, see README).
   notepad_vscode_mix  window-1 Enter -> switch to a SECOND Notepad window,
-                      Enter there -> back to window 1, Enter. Proves the
-                      caret-offset state map is keyed per focus hwnd:
-                      window 2 starts at last=0 (no window-1 offset leak),
-                      window 1's second Enter resumes at exactly its own
-                      stored post-newline offset. (VSCode automation is
-                      environment-dependent; per the delegation a second
-                      Notepad window is the sanctioned substitute - the
-                      verification target is per-hwnd isolation, not the
-                      specific client. Rationale also in README.)
+                        Enter there -> back to window 1, Enter. Proves the
+                        caret-offset state map is keyed per focus hwnd:
+                        window 2 starts at last=0 (no window-1 offset leak),
+                        window 1's second Enter resumes at exactly its own
+                        stored post-newline offset. (VSCode automation is
+                        environment-dependent; per the delegation a second
+                        Notepad window is the sanctioned substitute - the
+                        verification target is per-hwnd isolation, not the
+                        specific client. Rationale also in README.)
+    uilang_37           REQ-037/B-4 (design 260907_0002 §4.3 E2E-UILANG-2):
+                        open the tray "Interface Language" submenu via UIA and
+                        enumerate it: 38 items (localized Auto + the 37
+                        endonyms - العربية/日本語/한국어 spot-checked, order
+                        pinned to design §2-Q3, EN last). READ-ONLY: nothing is
+                        invoked, config is never touched. The AR-selection half
+                        of E2E-UILANG-1 is deferred to B-6 with the reset
+                        scenario per the delegation. Tray automation is
+                        environment-bounded (TrackPopupMenu modal loop can
+                        starve the UIA menu provider - documented multi_lang
+                        limitation): a NOTFOUND verdict is INCONCLUSIVE for
+                        this scenario, never a product FAIL.
 
 Dependencies
 ------------
@@ -107,8 +119,12 @@ Usage
 -----
   python tools\\e2e\\req027_e2e.py qa27b
   python tools\\e2e\\req027_e2e.py example1 --step-timeout 40
-  python tools\\e2e\\req027_e2e.py all          ; all 11 automated scenarios
+  python tools\\e2e\\req027_e2e.py all          ; all 12 automated scenarios
   python tools\\e2e\\req027_e2e.py multi_lang --no-tray   ; force config fallback
+  python tools\\e2e\\req027_e2e.py uilang_37    ; tray UI-language submenu
+                                                 enumeration (interactive
+                                                 desktop; do not touch
+                                                 keyboard/mouse during it)
 Exit codes: 0 = PASS, 1 = FAIL, 2 = INCONCLUSIVE/environment, 3 = harness error.
 
 Operating constraints (documented; pre-flight enforced where possible)
@@ -191,6 +207,7 @@ ENTER_TASK_TIMEOUT_S = 6.0    # Enter -> task_received appears in log
 TEARDOWN_SETTLE_S = 0.3       # diag flush batch settle before process kill
 WM_TIMEOUT_MS = 2000          # SendMessageTimeoutW cap for cross-process reads
 TRAY_ATTEMPT_TIMEOUT_S = 50.0  # hard cap for the UIA tray-menu attempt
+TRAY_ENUM_TIMEOUT_S = 70.0     # uilang_37 enumeration attempt (B-4)
 
 EDIT_CLASSES_PREFERRED = ("RichEditD2DPT", "RichEditD2D", "RICHEDIT50W",
                           "RichEdit20W", "RichEdit20A", "Edit")
@@ -621,6 +638,13 @@ RE_SHIFT_GATE = re.compile(r"ENTER_GATE.*reason=shift_enter_newline")
 # ApplyLanguageChange at runtime (REQ-019's live-switch path).
 RE_LANG_SYNC_TYPE_TO = re.compile(
     r"lang_sync ctx=type valid=1 (?:changed=\d )?pair .* -> .*/(.+?) \(req")
+# Tray "Interface Language" submenu title per locale table (src/i18n.cpp
+# StringId::MenuUiLanguage: KO L153 / EN L547; the ko/en pair is the exact
+# idiom of uia_tray_menu.ps1's $groupRx walker). ui_language defaults to
+# "auto", so the EN/KO tables are the deterministic enumeration target for
+# the uilang_37 scenario; other UI locales keep the count+endonym assertions
+# (only the title lookup is ko/en-bounded by the ps1 walker).
+UILANG_SUBMENU_TITLE_RX = r"(인터페이스 언어|Interface Language)"
 
 
 def read_log(path):
@@ -2331,29 +2355,53 @@ def patch_config_type_target(exe_dir, value):
     return prev
 
 
+def _run_tray_ps1(args, timeout_s):
+    """Shared uia_tray_menu.ps1 runner: returns (returncode|None,
+    TRAY:-prefix lines decoded). NEVER raises - a refusal is a normal
+    outcome the callers classify."""
+    ps1 = os.path.join(HERE, "uia_tray_menu.ps1")
+    if not os.path.exists(ps1):
+        return None, [], "uia_tray_menu.ps1 missing"
+    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+           "-File", ps1] + args
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout_s)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, [], f"ps1 timeout/error: {e}"
+    out = (p.stdout or b"").decode("utf-8-sig", errors="replace")
+    tail = [ln for ln in out.splitlines() if ln.startswith("TRAY:")]
+    err = (p.stderr or b"").decode("utf-8", "replace").strip()
+    diag = " | ".join(tail[-4:]) or f"rc={p.returncode}"
+    if err:
+        diag += f" :: stderr[:200]={err[:200]}"
+    return p.returncode, tail, diag
+
+
 def tray_attempt_switch(target_code):
     """Invoke tools/e2e/uia_tray_menu.ps1 to right-click the app tray icon
     and select the typing->target-language item matching 'CODE - '. Returns
     (ok: bool, diag: str). NEVER raises: a refusal is a normal outcome that
     triggers the documented fallback."""
-    ps1 = os.path.join(HERE, "uia_tray_menu.ps1")
-    if not os.path.exists(ps1):
-        return False, "uia_tray_menu.ps1 missing"
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-           "-File", ps1, "-ItemRegex", rf"^{target_code}\s*-"]
-    try:
-        p = subprocess.run(cmd, capture_output=True,
-                           timeout=TRAY_ATTEMPT_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"ps1 timeout/error: {e}"
-    out = (p.stdout or b"").decode("utf-8-sig", errors="replace")
-    tail = [ln for ln in out.splitlines() if ln.startswith("TRAY:")]
+    rc, tail, diag = _run_tray_ps1(
+        ["-ItemRegex", rf"^{target_code}\s*-"], TRAY_ATTEMPT_TIMEOUT_S)
     ok = any(ln.startswith("TRAY:OK") for ln in tail)
-    diag = " | ".join(tail[-4:]) or f"rc={p.returncode}"
-    err = (p.stderr or b"").decode("utf-8", "replace").strip()
-    if err:
-        diag += f" :: stderr[:200]={err[:200]}"
     return ok, diag
+
+
+def tray_enumerate_uilang():
+    """B-4 (design §4.3 E2E-UILANG-2): run uia_tray_menu.ps1 in EnumUiLang
+    mode - open the tray Interface-Language submenu and dump every item
+    Name. Returns (names: list|None, diag) where names is None on refusal
+    (environment-bounded: the TrackPopupMenu modal loop can starve the UIA
+    menu provider - see multi_lang's documented fallback note)."""
+    rc, tail, diag = _run_tray_ps1(
+        ["-Mode", "EnumUiLang", "-ItemRegex", UILANG_SUBMENU_TITLE_RX],
+        TRAY_ENUM_TIMEOUT_S)
+    names = [ln[len("TRAY:NAME:"):] for ln in tail
+             if ln.startswith("TRAY:NAME:")]
+    if not names:
+        return None, diag
+    return names, diag
 
 
 def wait_lang_sync_type(app, tgt_name, since_len, timeout=8.0):
@@ -2523,6 +2571,103 @@ def _assert_lang_block(rep, blk, lang_name, script_re, code_prefix, label=""):
 
 
 # ---------------------------------------------------------------------------
+# uilang_37: REQ-037/B-4 tray submenu enumeration (design §4.3 E2E-UILANG-2)
+# ---------------------------------------------------------------------------
+# The 37 selector endonyms in design §2-Q3 display order (front block KO, JA,
+# zh-CN, zh-TW, VI, ES, then registry order for the rest, EN last). This is
+# the tray's source-of-truth expectation, independent of the live selector:
+# TestReq037LocaleMapping pins the selector's endonyms to the kAllLanguages
+# registry, and this list is copied from the same registry rows. If B-3 ever
+# changes the join, this list changing is a deliberate cross-file sync.
+UILANG_ENDONYM_ORDER = [
+    "한국어", "日本語", "简体中文", "繁體中文", "Tiếng Việt", "Español",
+    "English",  # placeholder slot for EN; moved last before assertion below
+    "Français", "Deutsch", "Русский", "ไทย", "العربية", "Português",
+    "Italiano", "Bahasa Indonesia", "Bahasa Melayu", "Filipino",
+    "ភាសាខ្មែរ", "ພາສາລາວ", "हिन्दी", "বাংলা", "Türkçe", "Polski",
+    "Nederlands", "Українська", "فارسی", "اردو", "עברית", "Čeština",
+    "Magyar", "Svenska", "Ελληνικά", "Română", "Dansk", "Suomi",
+    "Norsk", "မြန်မာစာ",
+]
+# §2-Q3 order with the legacy front block first and English last:
+UILANG_EXPECTED_ORDER = (UILANG_ENDONYM_ORDER[:6]
+                         + [e for e in UILANG_ENDONYM_ORDER[6:] if e != "English"]
+                         + ["English"])
+
+
+def scenario_uilang_37(app_state, base):
+    """REQ-037/B-4 (design §4.3 E2E-UILANG-2, delegation B-4 item 4):
+    enumerate the tray Interface-Language submenu via UIA and assert the
+    38-item expansion. READ-ONLY - the ps1 ESC-closes without invoking,
+    so config/app state are untouched. Verdict policy: menu-automation
+    refusal (ps1 NOTFOUND or empty tree = the documented TrackPopupMenu
+    UIA-starve environment bound) -> INCONCLUSIVE (note_env), never a
+    product FAIL; ONLY a readable-but-wrong submenu FAILs."""
+    rep = Report("uilang_37")
+    app = app_state["app"]
+    if globals().get("_TRAY_DISABLED"):
+        rep.note_env("--no-tray: UIA enumeration skipped by request")
+        return rep, app
+    names, diag = tray_enumerate_uilang()
+    rep.note(f"uia_tray_menu.ps1 EnumUiLang diag: {diag[:400]}")
+    if names is None:
+        rep.note_env(
+            "tray submenu enumeration refused (TrackPopupMenu modal loop "
+            "starves the UIA menu provider in this environment - the same "
+            "documented multi_lang bound; NOT a product FAIL). Verdict via "
+            "B-4 static review + TestReq037LocaleMapping selector-order "
+            "pin + user QA M3 (RTL legibility).")
+        return rep, app
+
+    def _norm(s):
+        return s.replace("\u200f", "").strip()
+    # The dump also contains the root-menu items that were visible while the
+    # submenu was open (the ps1 walks ALL #32768 panes). The Interface-
+    # Language submenu is identified by its two unique markers; assert on
+    # the SUBSET whose names match the 37 endonyms + an auto entry.
+    norm = [_norm(n) for n in names]
+    endonym_set = set(UILANG_EXPECTED_ORDER)
+    lang_hits = [n for n in norm if n in endonym_set]
+    auto_hits = [n for n in norm
+                 if n == "자동 (시스템 언어)" or n == "Auto (system language)"]
+    rep.add(1, len(auto_hits) == 1,
+            "exactly one Auto (system language) entry in the submenu",
+            f"auto_hits={auto_hits}")
+    rep.add(1, len(lang_hits) == 37,
+            f"37 endonym entries present (got {len(lang_hits)})",
+            f"missing={sorted(endonym_set - set(lang_hits))}")
+    # Spot-assert the delegation's named witnesses + the RTL entries the
+    # expansion is about (endonyms render in their own scripts).
+    for spot in ("العربية", "日本語", "한국어"):
+        rep.add(1, spot in norm, f"endonym witness present: {spot}",
+                f"submenu={norm[:40]}")
+    # Order pin (design §2-Q3 muscle memory): among the names that ARE
+    # selector entries, their relative dump order must equal the expected
+    # order. The walk order within a pane is top-to-bottom; cross-pane root
+    # items are ignored by the endonym filter.
+    dumped_order = [n for n in norm if n in endonym_set]
+    rep.add(1, dumped_order == UILANG_EXPECTED_ORDER,
+            "selector entries appear in design §2-Q3 order (KO, JA, zh-CN, "
+            "zh-TW, VI, ES front block then registry order, EN last)",
+            f"dumped={dumped_order}")
+    rep.add(1, len(norm) >= 38,
+            f"submenu pane exposed >= 38 item names (count={len(norm)})",
+            f"diag={diag[:200]}")
+    # App still alive + untouched: the enumeration must not change config.
+    rep.add(1, app.proc is None or app.proc.poll() is None,
+            "app process alive after submenu enumeration",
+            f"exit={None if app.proc is None else app.proc.poll()}")
+    try:
+        cfg_path = _config_path(app)
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            ui_val = json.load(f).get("ui_language")
+        rep.add(1, True, f"[info] config.ui_language unchanged-read={ui_val!r}")
+    except (OSError, ValueError) as e:  # ValueError = json decode (malformed)
+        rep.note(f"config readback skipped ({e}) - read-only scenario anyway")
+    return rep, app
+
+
+# ---------------------------------------------------------------------------
 # scenario registry
 # ---------------------------------------------------------------------------
 LINE_SCENARIOS = {
@@ -2562,6 +2707,7 @@ def build_drivers():
     d = {name: scenario_line_driver(name) for name in LINE_SCENARIOS}
     d.update(SIMPLE_DRIVERS)
     d["multi_lang"] = run_multi_lang
+    d["uilang_37"] = scenario_uilang_37
     return d
 
 
@@ -2570,7 +2716,7 @@ DRIVERS = build_drivers()
 ALL_SCENARIOS = ["qa27b", "example1", "consecutive", "multi_lang",
                  "empty_enter", "cursor_mid", "backspace_enter",
                  "shift_enter_multi", "paste_then_enter", "long_text",
-                 "notepad_vscode_mix"]
+                 "notepad_vscode_mix", "uilang_37"]
 # ime_composing is intentionally NOT in the matrix: WM_CHAR/SendInput cannot
 # create a real IME composition state, and simulating it unverified would
 # produce false verdicts. Handed to user QA (decisions.md 2026-09-07 20:54;
@@ -2608,7 +2754,7 @@ def main(argv=None):
         globals()["_TRAY_DISABLED"] = True
 
     chosen = list(ALL_SCENARIOS) if args.scenario == "all" else [args.scenario]
-    print("== REQ-027 E2E harness (B-6c matrix) ==")
+    print("== REQ-027 E2E harness (B-6c matrix + B-4 uilang_37) ==")
     print(f"   scenarios: {chosen}")
     print(f"   app exe  : {args.app_exe}")
     print(f"   log dir  : {LOG_DIR}")

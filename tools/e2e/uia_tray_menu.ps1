@@ -19,7 +19,9 @@
 #      REQ-019).
 #
 # Output contract (parsed by req027_e2e.py): lines starting with TRAY:.
-#   TRAY:OK:<item>          selection invoked
+#   TRAY:OK:<item>          selection invoked (InvokeTargetLang mode)
+#   TRAY:NAME:<name>        one submenu item Name (EnumUiLang mode, UTF-8)
+#   TRAY:ENUMDONE:<count>   enumeration finished (EnumUiLang mode)
 #   TRAY:NOTFOUND:<step>    a walker step could not resolve its element
 #   TRAY:ERR:<message>      exception (also ESC-cleanup attempted)
 # Exit code mirrors the verdict (0 OK, 1 refusal) but the harness judges on
@@ -27,17 +29,33 @@
 # config-seed fallback in the harness - this script never has to "pass".
 #
 # Parameters:
-#   -ItemRegex   regex for the final menu item Name (required)
+#   -ItemRegex   regex for the final menu item Name (required in
+#                InvokeTargetLang mode, unused in EnumUiLang mode)
 #   -IconName    regex to find our tray icon (default 'Emebala')
+#   -Mode        'InvokeTargetLang' (default, unchanged B-6c contract) or
+#                'EnumUiLang' (REQ-037/B-4, design §4.3 E2E-UILANG-2): open
+#                the Interface-Language submenu and dump EVERY item Name as
+#                TRAY:NAME:<name> lines + TRAY:ENUMDONE:<count>, then ESC.
+#                Read-only: nothing is invoked, config is never written.
 param(
-    [Parameter(Mandatory = $true)][string]$ItemRegex,
+    [string]$ItemRegex = '',
     [string]$IconName = 'Emebala',
-    [int]$TimeoutSec = 40
+    [int]$TimeoutSec = 40,
+    [ValidateSet('InvokeTargetLang', 'EnumUiLang')]
+    [string]$Mode = 'InvokeTargetLang'
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+
+# EnumUiLang dumps ENDONYMS (한국어, العربية, မြန်မာစာ, ...). Windows PowerShell
+# 5.1 writes stdout with the OEM console codepage, which would mojibake every
+# non-ASCII name into the harness pipe - force UTF-8 (ASCII TRAY: verdict
+# lines are byte-identical either way, req027_e2e.py decodes utf-8-sig).
+$enc = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $enc
+$OutputEncoding = $enc
 
 if (-not ('NativeMethods' -as [type])) {
     Add-Type -Namespace '' -Name 'NativeMethods' -MemberDefinition @'
@@ -181,6 +199,63 @@ try {
         Write-Tray 'NOTFOUND:menu-items-uia-empty(TrackPopupMenu modal loop starves the UIA menu provider - tray automation INFEASIBLE via UIA)'
         exit 1
     }
+
+    # -- 3c. EnumUiLang mode (REQ-037/B-4, design §4.3 E2E-UILANG-2) ---------
+    # Open the Interface-Language submenu and dump every MenuItem Name across
+    # ALL #32768 panes (a Win32 submenu opens as an ADDITIONAL desktop-child
+    # popup, so the root-pane walk below would miss the language entries).
+    # Read-only: ESC-closes the menu, never invokes an item.
+    if ($Mode -eq 'EnumUiLang') {
+        $ulRx = [regex]'(인터페이스 언어|Interface Language)'
+        $ul = $null
+        while ((Get-Date) -lt $deadline) {
+            $ul = Find-ByName $menu $ulRx 7
+            if ($ul) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        if (-not $ul) { Press-Escape; Write-Tray 'NOTFOUND:uilang-submenu'; exit 1 }
+        if (-not (Expand-Item $ul)) { Press-Escape; Write-Tray 'NOTFOUND:uilang-expand'; exit 1 }
+
+        # An expanded Win32 submenu is BOTH a separate desktop-child #32768
+        # pane AND (per the UIA bridge) reachable through the root pane's
+        # Descendants tree - so the all-panes walk can see the same item
+        # twice. First-seen-order dedupe keeps the dump unambiguous and the
+        # UIA tree order (top-to-bottom menu order) intact.
+        $names = @()
+        $seen = @{}
+        $clsCond2 = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ClassNameProperty, '#32768')
+        $waitUntil = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $waitUntil) {
+            $panes = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $clsCond2)
+            $names = @(); $seen = @{}
+            foreach ($p in $panes) {
+                $mi = $p.FindAll([System.Windows.Automation.TreeScope]::Descendants, $miCond)
+                foreach ($m in $mi) {
+                    try { $n = $m.Current.Name } catch { $n = '' }
+                    if (-not $n) { continue }        # separators surface empty
+                    if (-not $seen.ContainsKey($n)) { $seen[$n] = $true; $names += $n }
+                }
+            }
+            # Auto + 37 endonyms = 38 unique names once the submenu is
+            # readable; 38 is the conservative "tree readable" threshold
+            # (root-pane items only add to it). Below it -> partial starve,
+            # honest NOTFOUND (harness judges INCONCLUSIVE, never FAIL).
+            if ($names.Count -ge 38) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        Press-Escape
+        Start-Sleep -Milliseconds 120
+        Press-Escape
+        if ($names.Count -lt 38) {
+            Write-Tray "NOTFOUND:uilang-items-partial($($names.Count))"
+            exit 1
+        }
+        foreach ($n in $names) { Write-Tray "NAME:$n" }
+        Write-Tray "ENUMDONE:$($names.Count)"
+        exit 0
+    }
+    if (-not $ItemRegex) { Write-Tray 'ERR:missing-ItemRegex(InvokeTargetLang mode)'; exit 1 }
 
     # -- 4. walk: type group -> target submenu -> item ----------------------
     $groupRx = [regex]'(키보드 타이핑|Keyboard Typing)'

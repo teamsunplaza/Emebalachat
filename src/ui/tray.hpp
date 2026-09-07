@@ -29,9 +29,13 @@ public:
         std::function<void()> on_show_cheat_sheet;
         std::function<void()> on_show_about; // Opens the About window (wired in main.cpp)
         std::function<void()> on_exit;
-        // R6 Phase 6 (plan §5.4): UI-language selector submenu. Argument is the
-        // canonical locale code ("auto", "ko", "ja", "zh-CN", "zh-TW", "vi",
-        // "es", "en"); main.cpp validates/persists via PlanUiLocaleChange.
+        // R6 Phase 6 (plan §5.4), REQ-037/B-4 expansion (design §2-Q3):
+        // UI-language selector submenu (Auto + 37 locales). Argument is the
+        // canonical persisted code - "auto" or the config_code of any entry in
+        // I18n::GetSupportedUiLocales() as emitted by I18n::LocaleToString
+        // ("ko", "ja", "zh-CN", "zh-TW", "vi", "es", ... ; the 37 canonical
+        // spellings live in i18n.cpp kLocaleMappings). main.cpp
+        // validates/persists via PlanUiLocaleChange.
         std::function<void(std::string_view code)> on_select_ui_language;
     };
 
