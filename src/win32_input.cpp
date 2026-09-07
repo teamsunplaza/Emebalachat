@@ -999,6 +999,63 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd) {
     return true;
 }
 
+// REQ-036 FIX-2 data-driven newline compensation. See the header contract for
+// the full rationale. Returns true when the stored offset was advanced by
+// 2*pair_count UTF-16 units. EM_SETSEL is NOT re-issued: the selection is
+// already correct in [stored_start..caret) TERMS; the pairs belong OUTSIDE
+// the replacement (they are the PREVIOUS blocks' terminators), so the
+// caller strips them from the capture text instead - no second clipboard
+// round-trip, no chance to observe a mid-state document.
+bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count) {
+    if (pair_count == 0) {
+        return false; // nothing measured: nothing to compensate
+    }
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key)) {
+        return false;
+    }
+    if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
+        return false; // no EM session: the map holds nothing meaningful
+    }
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        return false;
+    }
+    const DWORD sel_end = HIWORD(static_cast<DWORD>(em_result));
+
+    std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+    edit_caret::PurgeDeadEntriesLocked();
+    const auto it = edit_caret::g_map.find(key);
+    if (it == edit_caret::g_map.end() || it->second.offset == 0) {
+        return false; // untracked or already block-head: no drift to repair
+    }
+    const DWORD drifted_start = it->second.offset;
+    // The clamp mirror (TrySelectNewText /004 rule): if the advanced start
+    // would exceed the measured caret the entry is stale beyond repair by
+    // arithmetic - refuse, the next Enter's clamp handles it as always.
+    const uint64_t advanced = static_cast<uint64_t>(drifted_start) + 2ull * pair_count;
+    if (advanced > sel_end) {
+        return false;
+    }
+    // Re-select EXCLUDING the pairs (same EM_SETSEL-under-lock discipline as
+    // TrySelfCorrectReSelect). The pairs are the PREVIOUS blocks' terminators:
+    // they must sit OUTSIDE the replacement range, or the paste would delete
+    // the separator and merge the blocks (the F2 line-merge mechanism). The
+    // capture text the caller holds is trimmed by the same 2*pair_count units,
+    // so selection and text stay byte-consistent without a second Ctrl+C.
+    ULONG_PTR set_sel_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_SETSEL, static_cast<WPARAM>(advanced),
+                            static_cast<LPARAM>(sel_end), set_sel_result)) {
+        return false; // offset NOT advanced: caller keeps its fallback budget
+    }
+    it->second.offset = static_cast<DWORD>(advanced);
+    it->second.last_used_ms = ::GetTickCount64();
+    DIAG_F("WIN32_INPUT/EditCaretTracker/011: leading %zu CRLF pair(s) compensated; start %lu -> %lu re-select [%lu..%lu) (hwnd=%p)\n",
+           pair_count, drifted_start, it->second.offset, it->second.offset, sel_end,
+           reinterpret_cast<void*>(key.focus_hwnd));
+    return true;
+}
+
 // §2.6.A2 step 4 + B-6a call-timing contract (design 210000 §2.2 option (a)):
 // after a successful replacement, advance the stored "previous translation
 // end" offset. The stored value is the START of the next Enter's EM_SETSEL
@@ -1113,6 +1170,61 @@ void EditCaretTracker_SettleNewlineVisible(HWND hwnd, DWORD pre_newline_caret) {
            reinterpret_cast<void*>(hwnd), pre_newline_caret);
 }
 
+// REQ-036 FIX-1: the worker sent an Enter that ends the task WITHOUT a paste
+// (IME backstop, paste-window send-through, empty/bypass send-through; the
+// full enumeration is in the debug-surgical report). That Enter inserted the
+// CURRENT block's terminator into the document - the stored offset must
+// advance past it or the NEXT Enter's capture begins with the CRLF pair.
+// Same settle pattern as the B-6a paste path, then stores the measured
+// caret (measurement, not a +2 assumption, so single-LF controls store
+// correctly too). No-op when untracked or any EM gate fails.
+void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
+    if (hwnd == nullptr) {
+        return;
+    }
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key)) {
+        return;
+    }
+    if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
+        return; // settle would only burn the fixed 50 ms on a non-EM window
+    }
+    // Untracked? Nothing to advance (the map holds no entry) - skip the settle.
+    {
+        std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+        if (edit_caret::g_map.find(key) == edit_caret::g_map.end()) {
+            return;
+        }
+    }
+    // Settle (same budget as the B-6a paste path): SendEnterKey's input is
+    // async; waiting for the caret to move off the pre-sample proves the
+    // newline is visible to EM_GETSEL before we store it.
+    EditCaretTracker_SettleNewlineVisible(hwnd, pre_newline_caret);
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        return;
+    }
+    const DWORD caret = HIWORD(static_cast<DWORD>(em_result));
+    ULONG_PTR textlen_res = 0;
+    const bool len_ok =
+        edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
+    const DWORD baseline = len_ok ? static_cast<DWORD>(textlen_res)
+                                  : edit_caret::kBaselineUnknown;
+    {
+        std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+        edit_caret::PurgeDeadEntriesLocked();
+        const auto it = edit_caret::g_map.find(key);
+        if (it == edit_caret::g_map.end() || caret < it->second.offset) {
+            return; // untracked, or stale (deletion behind us): leave as-is
+        }
+        it->second.offset = caret;
+        it->second.baseline_textlen = baseline;
+        it->second.last_used_ms = ::GetTickCount64();
+    }
+    DIAG_F("WIN32_INPUT/EditCaretTracker/012: worker-sent newline; start advanced to measured caret %lu (hwnd=%p)\n",
+           caret, reinterpret_cast<void*>(key.focus_hwnd));
+}
+
 std::wstring CopySelectedText(HWND hwnd) {
     // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
     // here. ClassifyAppWindow is consulted once and its category picks the
@@ -1169,41 +1281,37 @@ std::wstring CopySelectedText(HWND hwnd) {
     DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, category=%d)\n",
             text.size(), nl, static_cast<int>(category));
 
-    // REQ-034 F2-B' (design 260907 173700 §4.1): a stored EM start that was
-    // never advanced over a user-inserted manual newline (Shift+Enter is
-    // pass_through - debug §F2 mechanism 1) makes the capture begin with
-    // "\r\n"; translating that range would delete the break on replacement
-    // (line merge). The verdict is measured on the capture itself, so
-    // normal progress (no leading CRLF) is NEVER touched and the REQ-027
-    // offset-saving contract (worker B-6a call sites) stays untouched.
-    // Bounded to ONE retry per call by construction (no flag needed beyond
-    // the control flow): a second self-correct would be refused because the
-    // start is already 0 after the first one.
+    // REQ-036 FIX-2 (design supersession of the F2-B' start=0 self-correct,
+    // documented in the debug-surgical report 260907): a stored EM start that
+    // lagged behind out-of-band Enter passes (hook pass-throughs, worker
+    // send-throughs - the full enumeration is in the report) makes the
+    // capture begin with N leading CRLF pairs. Those pairs are the PREVIOUS
+    // blocks' terminators (or the drift itself): they must sit OUTSIDE the
+    // replacement, and the blocks BEFORE them must NEVER be re-captured.
+    // The pairs are counted from the MEASURED capture text (data-driven -
+    // no path enumeration at the capture seam), the stored start and the
+    // live selection advance past them, and the capture text is trimmed by
+    // the same 2*N units - selection and text stay byte-consistent with no
+    // second clipboard round-trip. The former start=0 re-select would have
+    // swallowed every preceding already-translated block: exactly the
+    // whole-document retranslation defect of REQ-036 (user log
+    // emebalachat_260907200313 L322-326/L437-448), only correct when the
+    // current block is the document's first.
     if (em_path && EditCaretTracker_HasLeadingCrlf(text)) {
-        if (EditCaretTracker_TrySelfCorrectReSelect(hwnd)) {
-            ::Sleep(10);
-            if (CopySelectionWithSequenceWait()) {
-                const std::wstring corrected = GetClipboardText();
-                size_t nl2 = 0;
-                for (wchar_t c : corrected) { if (c == L'\n' || c == L'\r') ++nl2; }
-                // Shape only (same R5 rule as /002 - never log user content).
-                DIAG_F("WIN32_INPUT/SelfCorrectReCapture/001: re-captured %zu chars (%zu newline chars) after start=0 self-correction\n",
-                        corrected.size(), nl2);
-                text = corrected;
-            } else {
-                // Never hand the drifted capture to the pipeline (it is the
-                // line-merge source). Empty = "nothing to translate"; the
-                // stored start is already 0, so the next Enter whole-block
-                // selects and self-heals the user's message.
-                DIAG_F("WIN32_INPUT/SelfCorrectReCapture/002: re-copy not confirmed (hwnd=%p); dropped drifted capture, start=0 stored for next Enter\n",
-                        reinterpret_cast<void*>(hwnd));
-                text.clear();
-            }
+        const size_t pairs = EditCaretTracker_CountLeadingCrlfPairs(text);
+        if (EditCaretTracker_CompensateLeadingNewlines(hwnd, pairs)) {
+            text.erase(0, 2 * pairs);
+            // Shape only (same R5 rule as /002 - never log user content).
+            size_t nl2 = 0;
+            for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl2; }
+            DIAG_F("WIN32_INPUT/CaptureCompensated/001: %zu leading CRLF pair(s) excluded; capture now %zu chars (%zu newline chars)\n",
+                    pairs, text.size(), nl2);
         } else {
-            // Refused: untracked / EM lost / start already 0 (document itself
+            // Refused: untracked / start already 0 (the document itself
             // begins with the newline - whole-block geometry is already the
-            // safe bound). Keep the original capture; retry stays spent.
-            DIAG_F("WIN32_INPUT/SelfCorrectReCapture/003: leading CRLF but re-select refused (hwnd=%p sel_send=%d); keeping capture (already-safe geometry)\n",
+            // safe bound) / EM gates failed. Keep the original capture; the
+            // semantics are unchanged from the F2 /003 refusal.
+            DIAG_F("WIN32_INPUT/CaptureCompensated/002: leading CRLF but compensation refused (hwnd=%p sel_send=%d); keeping capture (already-safe geometry)\n",
                     reinterpret_cast<void*>(hwnd), sel_ok ? 1 : 0);
         }
     }

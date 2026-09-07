@@ -324,6 +324,56 @@ inline constexpr bool EditCaretTracker_HasLeadingCrlf(std::wstring_view captured
     return captured.size() >= 2 && captured[0] == L'\r' && captured[1] == L'\n';
 }
 
+// REQ-036 (docs/260907_0001 session, log emebalachat_260907200313 L247-264/
+// L322-326/L437-448): count the CRLF pairs that prefix an EM-path capture.
+// A pair proves a hook pass-through Enter inserted a block terminator the
+// stored offset never advanced over (out-of-band newline). Unlike the
+// HasLeadingCrlf predicate above (single pair, reselect trigger), this counts
+// EVERY consecutive pair: each pass-through Enter that terminated a block
+// between the stored offset and the caret contributed one pair, and each one
+// must push the effective selection start forward by exactly 2 UTF-16 units.
+// Pure seam: no Win32 contact, unit-testable headlessly.
+inline constexpr size_t EditCaretTracker_CountLeadingCrlfPairs(std::wstring_view captured) {
+    size_t n = 0;
+    while (captured.size() >= 2 * (n + 1) &&
+           captured[2 * n] == L'\r' && captured[2 * n + 1] == L'\n') {
+        ++n;
+    }
+    return n;
+}
+
+// REQ-036 surgical FIX-1 worker-sent-newline notification: call AFTER the
+// worker's own SendEnterKey when the task ends WITHOUT a paste (IME backstop,
+// paste-window send-through, empty/bypass send-through - the full enumeration
+// is in the debug-surgical report). The Enter this process just sent inserted
+// the CURRENT block's terminator in the document; the stored offset must
+// advance past it or the NEXT Enter's capture begins with the CRLF pair that
+// splits the two out-of-band block boundaries. pre_newline_caret is sampled
+// by the caller BEFORE SendEnterKey (the B-6a pre-sample pattern). Settles
+// (same budget as the paste path), then re-queries EM_GETSEL and stores the
+// measured caret - measurement, not a +2 assumption, so single-LF controls
+// store correctly too. No-op when the hwnd is untracked or any EM gate fails
+// (the stored offset is then left alone; FIX-2 compensates at capture time).
+void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret);
+
+// REQ-036 surgical FIX-2 data-driven compensation: after an EM-path capture
+// that begins with N leading CRLF pairs (N >= 1), the stored start was N
+// newlines behind the true block boundary. Instead of re-selecting from 0
+// (which grabs every PRECEDING already-translated block - the whole-document
+// retranslation defect of REQ-036) or re-selecting and re-copying at all
+// (extra clipboard round-trip whose re-copy can only reproduce bytes we
+// already hold), this advances the stored offset by exactly 2*N UTF-16
+// units: the measured, structural size of the N block terminators the
+// capture itself proves exist. The caller then strips those leading pairs
+// from the capture text (the newline now sits OUTSIDE the replacement, so
+// the block boundary survives) and the pipeline proceeds with the corrected
+// text directly. Same gate discipline as TrySelfCorrectReSelect (focus
+// resolution + capability probe + stored-entry-is-ahead check); returns
+// false (changing nothing) when the hwnd is unusable, the entry is
+// missing/already 0/staler than the caret, or the EM_SETSEL-less design
+// needs the caller to fall back to conservative behavior.
+bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count);
+
 // Self-correction re-selection for the once-per-Enter retry (CopySelectedText
 // drives predicate -> re-select -> re-copy). Same gates as TrySelectNewText
 // (focus resolution + EM capability + SendEm 100 ms budget), then
@@ -343,11 +393,13 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // (CategoryB + standard EDIT/RichEdit classes only), or SelectMessageBlock()
 // (CategoryB fallback for everything else), then runs the REQ-R04
 // sequence-number copy-settle wait and retrieves clipboard text.
-// REQ-034 F2-B': when the EM-path capture starts with a leading CRLF the
-// stored start absorbed a manual newline - re-select from 0 and re-copy,
-// ONCE per call (bounded retry, loop-free), then hand the corrected text
-// to the pipeline. The offset-saving contract (worker post-newline
-// NotifyReplacement) is untouched.
+// REQ-036 FIX-2: when the EM-path capture begins with N leading CRLF pairs,
+// the stored start lagged N out-of-band block terminators behind - advance
+// the stored offset AND the live selection by exactly 2*N units, trim the
+// same units from the capture text, and hand the corrected text to the
+// pipeline (no re-copy; data-driven from the measured capture). The
+// offset-saving contracts (worker post-newline NotifyReplacement /
+// NotifySentNewline) are the FIX-1 producers and stay untouched here.
 // Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);
 

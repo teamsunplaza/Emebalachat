@@ -5724,6 +5724,152 @@ void TestReq034PasteWindowSuppress() {
     }
 }
 
+// REQ-036 (docs/260907_0001 session, log emebalachat_260907200313 L236-448):
+// the multi-block whole-document retranslation defect. Enter semantics the
+// user defined: Enter terminates ONE block (1 Enter = 1 translation), already
+// translated blocks must NEVER be re-captured. The defect: out-of-band Enter
+// passes (hook pass-throughs, worker send-throughs) insert block terminators
+// the stored offset never advanced over, and the F2 start=0 self-correct
+// re-selected [0..caret) - the WHOLE document - whenever a preceding
+// already-translated block existed. FIX-1/FIX-2 contract pinned here:
+//  (a) pure seam: EditCaretTracker_CountLeadingCrlfPairs counts consecutive
+//      CRLF pairs only (a lone LF inside block content never counts).
+//  (b) live FIX-2: on a two-block document where the stored start drifted
+//      behind ONE out-of-band terminator, CompensateLeadingNewlines advances
+//      start by exactly 2 (NOT to 0) and re-selects [start+2..caret) - the
+//      FIRST block stays outside the selection, and the selection text has
+//      no leading CRLF (the separator survives the replacement).
+//  (c) live FIX-1: NotifySentNewline after a worker-sent Enter stores the
+//      measured post-newline caret, so the NEXT Enter's capture does not
+//      begin with the pair at all (prevention, the strict superset of (b)).
+void TestReq036MultiBlockNoRetranslation() {
+    std::cout << "[TEST] REQ-036 multi-block: first blocks never re-captured" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) pure pair-counting seam.
+    static_assert(EditCaretTracker_CountLeadingCrlfPairs(L"\r\n\r\nblock") == 2,
+                  "REQ-036: two leading pairs counted");
+    static_assert(EditCaretTracker_CountLeadingCrlfPairs(L"\r\nblock\r\n") == 1,
+                  "REQ-036: trailing pairs are not counted");
+    static_assert(EditCaretTracker_CountLeadingCrlfPairs(L"block") == 0,
+                  "REQ-036: no pairs -> 0");
+    TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(L"\r\n\r\n\r\nx") == 3,
+               "REQ-036: three leading pairs counted");
+    TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(L"\n\r\nx") == 0,
+               "REQ-036: lone-LF first unit breaks the pair sequence (block content)");
+    TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(L"\r\n") == 1,
+               "REQ-036: exact one-pair buffer -> 1");
+    TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(L"\r") == 0,
+               "REQ-036: 1-unit buffer -> 0");
+
+    // (b)/(c) live sequence on a real in-process EDIT control.
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req036Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req036", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-036: in-process EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; REQ-036 live sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        auto doc_text = [](HWND h) {
+            wchar_t buf[256] = {};
+            const int n = static_cast<int>(::SendMessageW(h, WM_GETTEXT, 255, reinterpret_cast<LPARAM>(buf)));
+            return std::wstring(buf, (n > 0 && n < 255) ? static_cast<size_t>(n) : 0);
+        };
+        auto doc_sel = [](HWND h) {
+            return static_cast<DWORD>(::SendMessageW(h, EM_GETSEL, 0, 0));
+        };
+
+        // ---- (b) FIX-2 on the REQ-036 defect shape ----
+        // Block 1 ("AAA") translated by an earlier pipeline pass; the B-6a
+        // post-newline save stored caret 5 (right after "AAA\r\n"). The user
+        // then pressed an Enter that PASSED THROUGH out-of-band (hook
+        // pass-through / send-through) and typed block 2 ("BBB").
+        ::SetWindowTextW(edit, L"AAA\r\n");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(5), static_cast<LPARAM>(5));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-036: baseline pass enters the EM path");
+        EditCaretTracker_NotifyReplacement(edit, true, 5); // stores the real caret 5
+
+        // Out-of-band terminator + typing: doc "AAA\r\n\r\nBBB", caret 10.
+        ::SetWindowTextW(edit, L"AAA\r\n\r\nBBB");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(10), static_cast<LPARAM>(10));
+
+        // Enter N: drifted start 5 -> EM_SETSEL(5,10) -> capture "\r\nBBB".
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-036: drifted pass enters the EM path");
+        DWORD sel = doc_sel(edit);
+        TEST_CHECK(LOWORD(sel) == 5u && HIWORD(sel) == 10u, "REQ-036: drifted range reproduced [5..10)");
+        const std::wstring drifted = doc_text(edit).substr(5, 5);
+        TEST_CHECK(drifted.size() == 5u, "REQ-036: drifted capture shape is 5 units");
+        TEST_CHECK(EditCaretTracker_HasLeadingCrlf(drifted),
+                   "REQ-036: drifted capture begins with the out-of-band CRLF pair");
+        TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(drifted) == 1,
+                   "REQ-036: exactly one out-of-band pair measured");
+
+        // FIX-2 fires: the FIRST block stays outside. start 5 -> 7, selection
+        // becomes [7..10) = "BBB" only - NOT [0..10) (the REQ-036 defect).
+        TEST_CHECK(EditCaretTracker_CompensateLeadingNewlines(edit, 1),
+                   "REQ-036: FIX-2 compensation advanced the stored start");
+        sel = doc_sel(edit);
+        TEST_CHECK(LOWORD(sel) == 7u && HIWORD(sel) == 10u,
+                   "REQ-036: post-compensation selection is [7..10) - block 1 NOT captured");
+        TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(doc_text(edit).substr(7, 3)),
+                   "REQ-036: compensated capture has no leading CRLF (separator survives)");
+
+        // ---- (c) FIX-1 on a fresh geometry: stored caret 10, the worker
+        // sends Enter out (send-through path), the caret lands at 12. ----
+        ::SetWindowTextW(edit, L"AAAA\r\nBBBB");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(10), static_cast<LPARAM>(10));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-036: FIX-1 setup pass enters the EM path");
+        EditCaretTracker_NotifyReplacement(edit, true, 10); // stores the real caret 10
+        const DWORD pre = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(pre == 10u, "REQ-036: FIX-1 pre-send caret sampled at the block end");
+        // Worker-sent Enter (what SendEnterKey does to an editor): +CRLF.
+        ::SetWindowTextW(edit, L"AAAA\r\nBBBB\r\n");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(12), static_cast<LPARAM>(12));
+        EditCaretTracker_NotifySentNewline(edit, pre); // settle + store caret 12
+        // User types block 3, caret 12 -> 15.
+        ::SetWindowTextW(edit, L"AAAA\r\nBBBB\r\nCCC");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(15), static_cast<LPARAM>(15));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-036: FIX-1 follow-up Enter enters the EM path");
+        sel = doc_sel(edit);
+        TEST_CHECK(LOWORD(sel) == 12u && HIWORD(sel) == 15u,
+                   "REQ-036: FIX-1 stored the post-newline caret: capture is ONLY 'CCC' [12..15)");
+        TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(doc_text(edit).substr(LOWORD(sel), HIWORD(sel) - LOWORD(sel))),
+                   "REQ-036: FIX-1 capture has no leading pair (prevention path)");
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-036 multi-block no-retranslation tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-036 multi-block tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5790,6 +5936,7 @@ int main() {
     TestReq034ManualNewlineRecovery();
     TestReq034NoLeadingCrlfNormalProgress();
     TestReq034PasteWindowSuppress();
+    TestReq036MultiBlockNoRetranslation();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

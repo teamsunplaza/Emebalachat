@@ -169,8 +169,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         DIAG_LOG("PIPELINE", "stage=ime_backstop decision=bypass reason=foreground_composing "
                              "duration_ms=%llu",
                  ::GetTickCount64() - t_task_start);
+        // REQ-036 FIX-1: this task ends by SENDING the Enter - in an editor it
+        // inserts the current block's terminator. Sample the caret BEFORE the
+        // selection release (VK_RIGHT moves it +1), then advance the stored
+        // offset to the measured post-newline caret (no-op untracked/non-EM).
+        const DWORD ime_pre = EditCaretTracker_SampleCaret(task.target_hwnd);
         ReleaseSelectionOnce();
         SendEnterKey(task.is_shift_enter);
+        EditCaretTracker_NotifySentNewline(task.target_hwnd, ime_pre);
         DIAG_LOG("PIPELINE", "stage=send_enter action=synthetic(reason=ime_backstop) shift=%d",
                  task.is_shift_enter ? 1 : 0);
         return;
@@ -249,8 +255,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                              "duration_ms=%llu",
                  t_notice_gate_now - t_task_start);
         // Never log the captured body (R5 rule): the capture IS empty anyway.
-        ReleaseSelectionOnce();
-        SendEnterKey(task.is_shift_enter);
+        // REQ-036 FIX-1 (session 260907, debug report): the send-through Enter
+        // below inserts the current block's terminator (editor) - sample the
+        // caret BEFORE the release (VK_RIGHT moves it), settle + store after.
+        {
+            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
+            ReleaseSelectionOnce();
+            SendEnterKey(task.is_shift_enter);
+            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+        }
         return;
     }
     if (empty_capture_hold && empty_capture_cb_) {
@@ -274,8 +287,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  ::GetTickCount64() - t_task_start);
         // No paste will happen on this path: release the block selection before
         // Enter so the (about to be sent) text cannot be clobbered (REQ-R03).
-        ReleaseSelectionOnce();
-        SendEnterKey(task.is_shift_enter);
+        // REQ-036 FIX-1 (session 260907, debug report): same send-through
+        // contract as the paste-window branch above - sample the caret BEFORE
+        // the release, advance the stored offset past the terminator after.
+        {
+            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
+            ReleaseSelectionOnce();
+            SendEnterKey(task.is_shift_enter);
+            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+        }
         return;
     }
 
