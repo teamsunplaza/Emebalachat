@@ -30,46 +30,55 @@ bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
     return true;
 }
 
-// Complete 38-language table (AUTO + 37 translation targets)
+// Complete 38-language table (AUTO + 37 translation targets).
+// bcp47 (P4 Batch B-2, design §3 B-2 note): canonical BCP-47 tag fed to
+// DWrite CreateTextFormat(localeName) for script-appropriate font fallback
+// (REQ-038/REQ-037 font lever, §2-Q5 verdict A). Language subtags per
+// ISO 639-1 (fil = Filipino, he = Hebrew, my = Burmese, no = Norwegian);
+// zh carries the explicit script region (zh-CN/zh-TW, mirroring the config
+// code). AUTO = "en" pivot. All 38 values verified accepted by DWrite on
+// SDK 10.0.26100 (B-2 probe: tools_tmp_b2_dwrite_probe.cpp, probe_b2_run.log).
+// NOTE: the UI-chrome counterpart is B-3's i18n LocaleMapping.bcp47_full
+// (UiLocale-keyed); do not merge the two tables (two owners, two purposes).
 const std::vector<LanguageInfo> kAllLanguages = {
-    {"AUTO",  "Auto Detect",          "자동 감지",         "AUTO"},
-    {"EN",    "English",              "English",           "EN"},
-    {"KO",    "Korean",               "한국어",            "KO"},
-    {"VI",    "Vietnamese",           "Tiếng Việt",        "VI"},
-    {"ZH-CN", "Chinese Simplified",   "简体中文",          "ZH-CN"},
-    {"ZH-TW", "Chinese Traditional",  "繁體中文",          "ZH-TW"},
-    {"JA",    "Japanese",             "日本語",            "JA"},
-    {"ES",    "Spanish",              "Español",           "ES"},
-    {"FR",    "French",               "Français",          "FR"},
-    {"DE",    "German",               "Deutsch",           "DE"},
-    {"RU",    "Russian",              "Русский",           "RU"},
-    {"TH",    "Thai",                 "ไทย",               "TH"},
-    {"AR",    "Arabic",               "العربية",           "AR"},
-    {"PT",    "Portuguese",           "Português",         "PT"},
-    {"IT",    "Italian",              "Italiano",          "IT"},
-    {"ID",    "Indonesian",           "Bahasa Indonesia",  "ID"},
-    {"MS",    "Malay",                "Bahasa Melayu",     "MS"},
-    {"FIL",   "Filipino",             "Filipino",          "FIL"},
-    {"KM",    "Khmer",                "ភាសាខ្មែរ",          "KM"},
-    {"LO",    "Lao",                  "ພາສາລາວ",          "LO"},
-    {"HI",    "Hindi",                "हिन्दी",             "HI"},
-    {"BN",    "Bengali",              "বাংলা",              "BN"},
-    {"TR",    "Turkish",              "Türkçe",            "TR"},
-    {"PL",    "Polish",               "Polski",            "PL"},
-    {"NL",    "Dutch",                "Nederlands",        "NL"},
-    {"UK",    "Ukrainian",            "Українська",        "UK"},
-    {"FA",    "Persian",              "فارسی",             "FA"},
-    {"UR",    "Urdu",                 "اردو",              "UR"},
-    {"HE",    "Hebrew",               "עברית",             "HE"},
-    {"CS",    "Czech",                "Čeština",           "CS"},
-    {"HU",    "Hungarian",            "Magyar",            "HU"},
-    {"SV",    "Swedish",              "Svenska",           "SV"},
-    {"EL",    "Greek",                "Ελληνικά",          "EL"},
-    {"RO",    "Romanian",             "Română",            "RO"},
-    {"DA",    "Danish",               "Dansk",             "DA"},
-    {"FI",    "Finnish",              "Suomi",             "FI"},
-    {"NO",    "Norwegian",            "Norsk",             "NO"},
-    {"MY",    "Burmese",              "မြန်မာစာ",          "MY"}
+    {"AUTO",  "Auto Detect",          "자동 감지",         "AUTO",  "en"},
+    {"EN",    "English",              "English",           "EN",    "en"},
+    {"KO",    "Korean",               "한국어",            "KO",    "ko"},
+    {"VI",    "Vietnamese",           "Tiếng Việt",        "VI",    "vi"},
+    {"ZH-CN", "Chinese Simplified",   "简体中文",          "ZH-CN", "zh-CN"},
+    {"ZH-TW", "Chinese Traditional",  "繁體中文",          "ZH-TW", "zh-TW"},
+    {"JA",    "Japanese",             "日本語",            "JA",    "ja"},
+    {"ES",    "Spanish",              "Español",           "ES",    "es"},
+    {"FR",    "French",               "Français",          "FR",    "fr"},
+    {"DE",    "German",               "Deutsch",           "DE",    "de"},
+    {"RU",    "Russian",              "Русский",           "RU",    "ru"},
+    {"TH",    "Thai",                 "ไทย",               "TH",    "th"},
+    {"AR",    "Arabic",               "العربية",           "AR",    "ar"},
+    {"PT",    "Portuguese",           "Português",         "PT",    "pt"},
+    {"IT",    "Italian",              "Italiano",          "IT",    "it"},
+    {"ID",    "Indonesian",           "Bahasa Indonesia",  "ID",    "id"},
+    {"MS",    "Malay",                "Bahasa Melayu",     "MS",    "ms"},
+    {"FIL",   "Filipino",             "Filipino",          "FIL",   "fil"},
+    {"KM",    "Khmer",                "ភាសាខ្មែរ",          "KM",    "km"},
+    {"LO",    "Lao",                  "ພາສາລາວ",          "LO",    "lo"},
+    {"HI",    "Hindi",                "हिन्दी",             "HI",    "hi"},
+    {"BN",    "Bengali",              "বাংলা",              "BN",    "bn"},
+    {"TR",    "Turkish",              "Türkçe",            "TR",    "tr"},
+    {"PL",    "Polish",               "Polski",            "PL",    "pl"},
+    {"NL",    "Dutch",                "Nederlands",        "NL",    "nl"},
+    {"UK",    "Ukrainian",            "Українська",        "UK",    "uk"},
+    {"FA",    "Persian",              "فارسی",             "FA",    "fa"},
+    {"UR",    "Urdu",                 "اردو",              "UR",    "ur"},
+    {"HE",    "Hebrew",               "עברית",             "HE",    "he"},
+    {"CS",    "Czech",                "Čeština",           "CS",    "cs"},
+    {"HU",    "Hungarian",            "Magyar",            "HU",    "hu"},
+    {"SV",    "Swedish",              "Svenska",           "SV",    "sv"},
+    {"EL",    "Greek",                "Ελληνικά",          "EL",    "el"},
+    {"RO",    "Romanian",             "Română",            "RO",    "ro"},
+    {"DA",    "Danish",               "Dansk",             "DA",    "da"},
+    {"FI",    "Finnish",              "Suomi",             "FI",    "fi"},
+    {"NO",    "Norwegian",            "Norsk",             "NO",    "no"},
+    {"MY",    "Burmese",              "မြန်မာစာ",          "MY",    "my"}
 };
 
 // Target languages only (skipping AUTO)

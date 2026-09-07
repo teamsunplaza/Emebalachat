@@ -6146,6 +6146,105 @@ void TestBidiUtils() {
     }
 }
 
+// P4 Batch B-2 (session 260907_0002, design §3 B-2 row + LanguageInfo bcp47
+// note): registry schema tests for the new bcp47 column. All checks are pure
+// data assertions over the shared registry (no COM seam in tooltip.cpp per
+// the anti-gaming rule — the direction mutation itself is proven by the
+// grep-able DIAG line + design §4.4 manual QA, not by a test-only hook).
+void TestReq038B2RegistryBcp47() {
+    std::cout << "[RUN] Testing B-2 LanguageInfo.bcp47 registry..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) Every registry row carries a non-empty BCP-47 tag (all 38) ------
+    // Iterates GetSupportedLanguages() (AUTO + 37 targets) so the assertion
+    // scales with the registry instead of a hardcoded list.
+    {
+        const auto& all = GetSupportedLanguages();
+        TEST_CHECK(all.size() == 38, "B2: registry has exactly 38 rows (AUTO + 37)");
+        bool all_nonempty = true;
+        std::string offenders;
+        for (const auto& lang : all) {
+            const bool ok = lang.bcp47 != nullptr && lang.bcp47[0] != '\0';
+            if (!ok) {
+                all_nonempty = false;
+                offenders += lang.code + " ";
+            }
+        }
+        TEST_CHECK(all_nonempty, "B2: every bcp47 tag non-empty (null/empty would disable DWrite font fallback)");
+        if (!all_nonempty) std::cout << "     offenders: " << offenders << std::endl;
+    }
+
+    // ---- 2) Spot cases required by the B-2 delegation ------------------------
+    {
+        const LanguageInfo* ar = FindLanguageByCode("AR");
+        TEST_CHECK(ar && std::string_view(ar->bcp47) == "ar", "B2: AR -> bcp47 \"ar\"");
+        const LanguageInfo* zhtw = FindLanguageByCode("ZH-TW");
+        TEST_CHECK(zhtw && std::string_view(zhtw->bcp47) == "zh-TW", "B2: ZH-TW -> bcp47 \"zh-TW\"");
+        const LanguageInfo* zhcn = FindLanguageByCode("ZH-CN");
+        TEST_CHECK(zhcn && std::string_view(zhcn->bcp47) == "zh-CN", "B2: ZH-CN -> bcp47 \"zh-CN\"");
+        const LanguageInfo* fil = FindLanguageByCode("FIL");
+        TEST_CHECK(fil && std::string_view(fil->bcp47) == "fil", "B2: FIL -> bcp47 \"fil\" (ISO 639-1/BCP-47 subtag)");
+        const LanguageInfo* auto_lang = FindLanguageByCode("AUTO");
+        TEST_CHECK(auto_lang && std::string_view(auto_lang->bcp47) == "en", "B2: AUTO -> \"en\" pivot tag");
+    }
+
+    // ---- 3) RTL rows carry exactly the four RTL tags -------------------------
+    // The tooltip body direction derives from the registry code, but B-3's
+    // locale table and any chrome callers key off bcp47: pin the pairing so
+    // the two never drift silently.
+    {
+        std::string rtl_tags;
+        for (const auto& lang : GetTargetLanguages()) {
+            if (IsRtlLanguageCode(lang.code)) {
+                rtl_tags += std::string(lang.bcp47) + ",";
+            }
+        }
+        TEST_CHECK(rtl_tags == "ar,fa,ur,he,",
+                   "B2: RTL rows' bcp47 tags are exactly ar,fa,ur,he in registry order");
+    }
+
+    // ---- 4) Tag hygiene: lowercase language subtag, hyphen region, ASCII ------
+    // DWrite canonicalizes tags on readback and the clone-swap equality check
+    // case-folds; a malformed tag (underscore separator, non-ASCII) would
+    // churn the COM object on every show or fail CreateTextFormat.
+    {
+        bool clean = true;
+        for (const auto& lang : GetSupportedLanguages()) {
+            const std::string_view tag = lang.bcp47 ? lang.bcp47 : "";
+            if (tag.empty()) { clean = false; continue; }
+            for (char c : tag) {
+                const bool alpha_lower = (c >= 'a' && c <= 'z');
+                const bool alpha_upper = (c >= 'A' && c <= 'Z'); // zh-CN script region
+                const bool digit = (c >= '0' && c <= '9');
+                const bool hyphen = (c == '-');
+                if (!alpha_lower && !alpha_upper && !digit && !hyphen) { clean = false; break; }
+            }
+        }
+        TEST_CHECK(clean, "B2: every bcp47 tag is ASCII [A-Za-z0-9-] (BCP-47 subtag charset)");
+    }
+
+    // ---- 5) GetTargetLanguages() copies carry bcp47 through ------------------
+    // The target view is built by value-copies of the registry rows (InitTarget
+    // Languages); the tooltip resolves tags through it too (NormalizeLanguage
+    // Code -> FindLanguageByCode on the FULL registry, but GetTargetLanguages
+    // is the public content-side accessor — pin that the field survives the
+    // copy so B-5/B-3 consumers can rely on it).
+    {
+        bool targets_ok = true;
+        for (const auto& lang : GetTargetLanguages()) {
+            if (!lang.bcp47 || !lang.bcp47[0]) targets_ok = false;
+        }
+        TEST_CHECK(targets_ok, "B2: all 37 GetTargetLanguages() rows keep non-empty bcp47 after copy");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B-2 registry bcp47 tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B-2 registry bcp47 tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -6215,6 +6314,7 @@ int main() {
     TestReq036MultiBlockNoRetranslation();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
+    TestReq038B2RegistryBcp47();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

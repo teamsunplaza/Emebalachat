@@ -6,6 +6,7 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 #include "../win32_input.hpp"
+#include "../bidi_utils.hpp"  // P4 Batch B-2: IsRtlLanguageCode / DirectionForLocale
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,47 @@ const wchar_t kTooltipClassName[] = L"Emebalachat_TooltipClass";
 
 bool IsPointInRect(const D2D1_RECT_F& r, float x, float y) {
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+// P4 Batch B-2 (session 260907_0002, design §2-Q5 verdict A / §3 B-2): DWrite
+// localeName is CREATION-ONLY — IDWriteTextFormat exposes no SetLocaleName at
+// any interface version (SDK 10.0.26100 header audit + B-2 headless probe).
+// The body format's script-font fallback is therefore updated by CLONING the
+// live format under a new BCP-47 tag (family/weight/style/stretch/size and
+// all paragraph settings carried over). Returns the fresh format, or nullptr
+// on any failure — a failed swap must never lose the working format.
+IDWriteTextFormat* CloneFormatWithLocale(IDWriteFactory* factory, IDWriteTextFormat* src,
+                                         const wchar_t* locale_name) {
+    if (!factory || !src || !locale_name) return nullptr;
+    const UINT32 fam_len = src->GetFontFamilyNameLength();
+    if (fam_len == 0 || fam_len > 255) return nullptr;
+    wchar_t family[256] = {};
+    if (FAILED(src->GetFontFamilyName(family, fam_len + 1))) return nullptr;
+    IDWriteTextFormat* dst = nullptr;
+    if (FAILED(factory->CreateTextFormat(
+            family, nullptr, src->GetFontWeight(), src->GetFontStyle(),
+            src->GetFontStretch(), src->GetFontSize(), locale_name, &dst)) || !dst) {
+        return nullptr;
+    }
+    dst->SetWordWrapping(src->GetWordWrapping());
+    dst->SetTextAlignment(src->GetTextAlignment());
+    dst->SetParagraphAlignment(src->GetParagraphAlignment());
+    dst->SetReadingDirection(src->GetReadingDirection());
+    return dst;
+}
+
+// ASCII-case-insensitive wide compare. DWrite canonicalizes locale tags on
+// readback ("zh-CN" is stored and echoed lowercased — B-2 probe datum), so
+// tag equality checks must case-fold or every show would churn a swap.
+bool WcsIEqualsAscii(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca >= L'A' && ca <= L'Z') ca += 32;
+        if (cb >= L'A' && cb <= L'Z') cb += 32;
+        if (ca != cb) return false;
+    }
+    return true;
 }
 
 std::string GetTokenName(ISpObjectToken* pToken) {
@@ -645,6 +687,61 @@ void TooltipWindow::ShowTranslation(
     copied_feedback_ = false;
     hovered_btn_ = 0;
 
+    // P4 Batch B-2 (REQ-038, design §2-Q2 verdict A / §2.2.2 item 1): the
+    // SINGLE body-direction mutation point — right after translated_text_ is
+    // stored, before measure (CreateTextLayout below + the gutter re-measure)
+    // and Render's DrawText consume body_format_. Measure and render can then
+    // never disagree (risk R1 eliminated by construction). Direction follows
+    // the CONTENT's target language, never the UI locale; header/button/
+    // close/scrollbar chrome stays LTR (design constraint 2). GUI thread only
+    // (§2-Q2 threading rule): this body runs after the marshal re-entry, on
+    // the same thread that creates layouts and draws.
+    if (body_format_) {
+        const bool body_rtl = IsRtlLanguageCode(target_lang_);
+        // Design §2-Q5 verdict A: body_format_'s localeName carries the
+        // target's BCP-47 tag so DWrite's font fallback resolves script-
+        // appropriate faces (Myanmar Text, Leelawadee UI/Nirmala UI, Segoe UI
+        // Historic...). localeName is CREATION-ONLY in DWrite (no
+        // SetLocaleName exists — B-2 SDK header audit + headless probe), so a
+        // tag change is a clone-swap; an unchanged tag (case-folded, DWrite
+        // lowercases on readback) never churns the COM object. Unresolvable
+        // or empty targets normalize to AUTO, whose tag is the "en" pivot.
+        const std::string norm_code = NormalizeLanguageCode(target_lang_);
+        const LanguageInfo* tag_info = FindLanguageByCode(norm_code);
+        if (tag_info && tag_info->bcp47 && tag_info->bcp47[0]) {
+            const std::wstring tag = ToUtf16(tag_info->bcp47);
+            wchar_t cur_locale[64] = {};
+            const bool same_locale =
+                SUCCEEDED(body_format_->GetLocaleName(cur_locale, 64)) &&
+                WcsIEqualsAscii(cur_locale, tag);
+            if (!same_locale) {
+                IDWriteTextFormat* swapped =
+                    CloneFormatWithLocale(dwrite_factory_, body_format_, tag.c_str());
+                if (swapped) {
+                    body_format_->Release();
+                    body_format_ = swapped;
+                } else {
+                    // Fail-safe: keep the previous format (L"" fallback locale
+                    // still resolves glyphs via the system chain; only the
+                    // script-first-face hint is lost). Direction below still
+                    // applies to the surviving format.
+                    DIAG_LOG("UI",
+                             "tooltip_b2/ShowTranslation/001 body_locale_swap_fail tag=%ls",
+                             tag.c_str());
+                }
+            }
+        }
+        body_format_->SetReadingDirection(
+            body_rtl ? DWRITE_READING_DIRECTION_RIGHT_TO_LEFT
+                     : DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+        // Grep-able proof the per-content direction decision ran (design §4.2c
+        // — the E2E-RTL-1 log assertion; same DIAG discipline as tooltip_show).
+        // target= carries the CANONICAL code per the design's `target=AR`
+        // example, not the raw name_en payload ("Arabic").
+        DIAG_LOG("UI", "tooltip body_dir=%s target=%s",
+                 body_rtl ? "rtl" : "ltr", norm_code.c_str());
+    }
+
     // Measure body text layout height (DIP; DirectWrite metrics are DPI
     // independent). Layout width matches the painted body rect exactly
     // (w - 28 when not scrollable) so measurement cannot disagree with render.
@@ -770,6 +867,47 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     target_lang_.clear();
     copied_feedback_ = false;
     hovered_btn_ = 0;
+
+    // P4 Batch B-2 (REQ-038, design §2.2.2 items 2+3): message bodies are
+    // app-authored notices in the UI locale — direction follows the UI
+    // locale, NOT the content's script (per-region rule: an English notice
+    // under an RTL UI reads RTL like every other UI-locale string; the
+    // first-strong heuristic is the documented future fallback). small_format_
+    // is the exclusive message-body format (header_format_ renders the title
+    // as LTR chrome — never touched). Single mutation point before Render.
+    if (small_format_) {
+        const TextDirection msg_dir = DirectionForLocale(I18n::GetCurrentLocale());
+        // Design §1.3.2 font binding for the UI-locale-authored content:
+        // small_format_'s localeName carries the current UI-locale tag (the
+        // eight GetLocaleCode() outputs are all probe-verified BCP-47 tags).
+        // Creation-only param => clone-swap on change (see ShowTranslation).
+        const std::wstring ui_tag = ToUtf16(I18n::GetLocaleCode());
+        if (!ui_tag.empty()) {
+            wchar_t cur_locale[64] = {};
+            const bool same_locale =
+                SUCCEEDED(small_format_->GetLocaleName(cur_locale, 64)) &&
+                WcsIEqualsAscii(cur_locale, ui_tag);
+            if (!same_locale) {
+                IDWriteTextFormat* swapped =
+                    CloneFormatWithLocale(dwrite_factory_, small_format_, ui_tag.c_str());
+                if (swapped) {
+                    small_format_->Release();
+                    small_format_ = swapped;
+                } else {
+                    DIAG_LOG("UI",
+                             "tooltip_b2/ShowMessage/002 body_locale_swap_fail tag=%ls",
+                             ui_tag.c_str());
+                }
+            }
+        }
+        small_format_->SetReadingDirection(msg_dir == TextDirection::RTL
+                                               ? DWRITE_READING_DIRECTION_RIGHT_TO_LEFT
+                                               : DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+        DIAG_LOG("UI", "tooltip msg_dir=%s locale=%s",
+                 msg_dir == TextDirection::RTL ? "rtl" : "ltr",
+                 std::string(I18n::GetLocaleCode()).c_str());
+    }
+
     // REQ-002: the compact notice card is fixed-height and never scrolls.
     scroll_offset_dip_ = 0.0f;
     scrollable_ = false;

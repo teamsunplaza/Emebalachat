@@ -16,6 +16,18 @@ struct LanguageInfo {
     std::string name_en;        // e.g. "Auto Detect", "Korean", "English", "Vietnamese"
     std::string name_native;    // e.g. "자동 감지", "한국어", "English", "Tiếng Việt"
     std::string display_short;  // e.g. "AUTO", "KO", "EN", "VI", "ZH-CN"
+    // P4 Batch B-2 (design §3 B-2 note, §2-Q5 verdict A): canonical BCP-47 tag
+    // fed to DWrite CreateTextFormat(localeName) so MapCharacters picks
+    // script-appropriate fallback fonts (Myanmar Text, Leelawadee UI, Nirmala
+    // UI...). "AUTO" carries the "en" pivot tag (auto-detected content is
+    // overwhelmingly Latin; an empty localeName would freeze the fallback on
+    // the user default locale instead). Deliberately distinct from B-3's
+    // LocaleMapping.bcp47_full: that table is UiLocale-keyed (UI chrome),
+    // this field is translation-language-keyed (content). Two owners, two
+    // purposes — cross-reference prevents drift. Non-empty for all 38 rows
+    // (pinned by TestReq038B2RegistryBcp47). const char* per the design's
+    // B-2 row: static-literal storage, no allocation, copy-safe.
+    const char* bcp47;          // e.g. "en", "ko", "zh-CN", "ar", "fil", "my"
 };
 
 // Returns the full list of 38 language entries (AUTO + 37 supported languages).
