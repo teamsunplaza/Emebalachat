@@ -79,6 +79,30 @@ constexpr bool PasteWindowSuppressesNotice(uint64_t now_ms, uint64_t last_paste_
     return (now_ms - last_paste_ms) <= kPasteEmptySuppressMs;
 }
 
+// REQ-039 FIX-2 (VS Code / editor whole-content re-check): a capture whose
+// translation EQUALS the source (identity outcome - e.g. the engine returns
+// the text unchanged, or auto-translation of an already-translated doc)
+// currently ends the task WITHOUT injecting Enter and WITHOUT pasting. The
+// hook already intercepted and swallowed the user's bare Enter, so the user
+// experiences "Enter does nothing: the caret never advances, and the whole
+// content is re-checked on every retry" (user log emebalachat_260907204046
+// L3450-3760, VS Code window: identical whole-file capture each Enter).
+// One pure predicate so worker.cpp and the unit tests assert on ONE
+// definition (same discipline as EmptyCaptureNeedsHold /
+// PasteWindowSuppressesNotice): identity translations must hand the
+// intercepted Enter to the target app exactly like the established
+// send-through paths - the user's intent (line-break / send) is never lost.
+//
+// should_translate is the worker's decision for the captured block; the
+// R5 hold branch (capture_empty) is upstream and unaffected. A smart
+// bypass (already-target-language) is a positive product decision whose
+// send-through contract is already pinned - this predicate covers ONLY the
+// newly-translated-but-unchanged outcome, keeping the two contracts
+// disjoint.
+constexpr bool EqualsSourceNeedsSendThrough(bool captured_empty, bool smart_bypassed) {
+    return !captured_empty && !smart_bypassed;
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);

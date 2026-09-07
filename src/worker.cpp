@@ -323,6 +323,16 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // B-6a: set when NotifyReplacement still owes its post-newline call (see
     // branch comment at the paste site and the injection block below).
     bool pending_notify = false;
+    // REQ-039 FIX-2 (user log L3450-3760, VS Code window): identity outcome -
+    // the engine returned the source unchanged, so nothing is pasted and
+    // nothing would inject Enter at the send gate below (auto_send=0,
+    // bare Enter). The hook already swallowed the user's Enter; ending the
+    // task here is the "엔터치면 넘어가지지도 않고" defect: the caret never
+    // advances and every retry re-checks the whole capture. The shared
+    // predicate (worker.hpp) keeps worker.cpp and the tests on ONE
+    // definition of the send-through verdict.
+    const bool identity_outcome = !translated.empty() && translated == line &&
+                                  EqualsSourceNeedsSendThrough(line.empty(), was_smart_bypassed);
     if (!translated.empty() && translated != line) {
         // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
         // foreground window immediately before Ctrl+V and aborts on mismatch.
@@ -364,6 +374,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     } else {
         DIAG_LOG("PIPELINE", "stage=paste skipped reason=%s",
                  translated.empty() ? "translation_empty" : "translation_equals_source");
+        if (identity_outcome) {
+            DIAG_F("WORKER/ExecuteTask/037: identity translation (equals source); intercepted Enter will be handed to the app (no-paste send-through)\n");
+        }
     }
 
     // REQ-R03: exactly-once selection release on every non-paste outcome. The
@@ -408,6 +421,16 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     } else {
         inject_enter = task.is_shift_enter ||      // Category A: 기존 전송 게이트
                        config_.auto_send.load(std::memory_order_relaxed);
+    }
+    if (identity_outcome) {
+        // REQ-039 FIX-2: nothing was pasted (translation == source), so the
+        // intercepted Enter's whole purpose collapses to the user's intent -
+        // a line-break/s movement the hook already swallowed. Hand it to the
+        // app exactly like the established send-through paths (worker log
+        // emebalachat_260907204046 L3450-3760: Enter dead, whole content
+        // re-checked each retry). The H1 foreground guard below still vets
+        // the target; the release above already restored the caret.
+        inject_enter = true;
     }
     if (inject_enter && h1_ok) {
         // B-6a settle baseline: caret right BEFORE the newline injection (the

@@ -1142,6 +1142,29 @@ DWORD EditCaretTracker_SampleCaret(HWND hwnd) {
     return HIWORD(static_cast<DWORD>(em_result));
 }
 
+// REQ-039: read-only EM-selection emptiness probe for the copy-chord retry
+// gate (see CopyChordRetryWarranted). Resolves the same focus candidate and
+// capability verdict the capture path uses, then reads EM_GETSEL once. True
+// only on Capable + successfully-probed empty range; every gate failure is
+// false ("not provably empty"), so a failed copy on a non-EM control is
+// always retried under the attempt budget - only the measured
+// paste-window-type geometry can skip the retry.
+bool EditCaretTracker_SelectionProvablyEmpty(HWND hwnd) {
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key)) {
+        return false;
+    }
+    if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
+        return false;
+    }
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        return false;
+    }
+    const DWORD sel = static_cast<DWORD>(em_result);
+    return LOWORD(sel) == HIWORD(sel);
+}
+
 // REQ-027 B-6a settle (design §2.2 mandatory companion): SendEnterKey injects
 // Enter asynchronously (down + 35 ms hold + up), so the target may not have
 // written the CRLF by the time the worker re-samples the caret. Tier 1: fixed
@@ -1249,23 +1272,69 @@ std::wstring CopySelectedText(HWND hwnd) {
     const AppCategory category = ClassifyAppWindow(hwnd);
     bool em_path = false; // REQ-034: self-correction is EM-path only
     bool sel_ok = false;
-    if (category == AppCategory::CategoryA) {
-        sel_ok = SelectAll();
-    } else if (EditCaretTracker_TrySelectNewText(hwnd)) {
-        sel_ok = true; // selection already set by EM_SETSEL - skip keyboard geometry
-        em_path = true;
-    } else {
-        sel_ok = SelectMessageBlock();
+    // REQ-039 FIX-1 (chat-window Enter capture): Electron/Chromium targets
+    // intermittently drop a synthetic Ctrl+C chord (the renderer-side
+    // clipboard commit never lands - Discord log signatures L1782/L1860/
+    // L1939; same dropped-chord class as PowerToys #46485). A single such
+    // drop on the bare-Enter path is an empty capture, which the worker's
+    // R5 hold turns into a swallowed Enter. Re-run the WHOLE cycle -
+    // selection primitive + Ctrl+C + sequence wait - under the bounded
+    // CopyChordRetryWarranted budget: every primitive (SelectAll /
+    // SelectMessageBlock keyboard geometry / EM_SETSEL(last, caret)) is
+    // idempotent, and each attempt re-baselines the sequence wait, so a
+    // LATE commit from an earlier chord is read as a confirmed copy, never
+    // stale text. The REQ-034 F3-B paste-window geometry (provably-empty EM
+    // selection: Ctrl+C legitimately changes nothing) is exempt - the retry
+    // could only add latency before the worker's silent send-through.
+    bool copy_confirmed = false;
+    for (int attempt = 0; attempt < kClipboardCopyChordAttempts; ++attempt) {
+        if (attempt == 0) {
+            if (category == AppCategory::CategoryA) {
+                sel_ok = SelectAll();
+            } else if (EditCaretTracker_TrySelectNewText(hwnd)) {
+                sel_ok = true; // selection already set by EM_SETSEL - skip keyboard geometry
+                em_path = true;
+            } else {
+                sel_ok = SelectMessageBlock();
+            }
+            ::Sleep(10);
+        } else {
+            ::Sleep(kClipboardCopyChordRetryGapMs);
+            // Re-establish the selection: idempotent. CategoryA re-runs
+            // Ctrl+A; the EM path re-runs the offset-based EM_SETSEL; the
+            // fallback re-runs the Shift/Ctrl+Home geometry.
+            if (category == AppCategory::CategoryA) {
+                SelectAll();
+            } else if (em_path) {
+                EditCaretTracker_TrySelectNewText(hwnd);
+            } else {
+                SelectMessageBlock();
+            }
+            ::Sleep(10);
+        }
+        // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
+        // On timeout the clipboard provably still holds pre-copy content, so
+        // we treat this attempt as failed (never read stale text).
+        if (CopySelectionWithSequenceWait()) {
+            copy_confirmed = true;
+            break;
+        }
+        if (attempt == 0) {
+            DIAG_F("WIN32_INPUT/CopySelectedText/003: copy chord not confirmed on attempt 1/%d (hwnd=%p category=%d sel_send=%d); retrying full selection+copy cycle\n",
+                    kClipboardCopyChordAttempts,
+                    reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
+        }
+        if (attempt + 1 >= kClipboardCopyChordAttempts) {
+            break; // attempt budget exhausted - stop before the probe call
+        }
+        if (!CopyChordRetryWarranted(attempt, EditCaretTracker_SelectionProvablyEmpty(hwnd))) {
+            break;
+        }
     }
-    ::Sleep(10);
-
-    // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
-    // On timeout the clipboard provably still holds pre-copy content, so we
-    // return empty (copy failure) instead of reading stale text. The worker
-    // treats empty as "nothing to translate" and releases the selection.
-    if (!CopySelectionWithSequenceWait()) {
+    if (!copy_confirmed) {
         DIAG_F(
-                "WIN32_INPUT/CopySelectedText/001: copy not confirmed (hwnd=%p category=%d sel_send=%d); returning empty\n",
+                "WIN32_INPUT/CopySelectedText/001: copy not confirmed after %d chord attempt(s) (hwnd=%p category=%d sel_send=%d); returning empty\n",
+                kClipboardCopyChordAttempts,
                 reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
         return {};
     }

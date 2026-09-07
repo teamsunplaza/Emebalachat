@@ -126,6 +126,38 @@ inline constexpr uint32_t kClipboardPollIntervalMs = 8;
 inline constexpr uint64_t kClipboardCopyDeadlineMs =
     kClipboardChangeTimeoutMs + kClipboardStableWindowMs;
 
+// ---- REQ-039 (chat-window Enter capture: Chromium dropped-chord) ----------
+//
+// Electron/Chromium targets intermittently drop a synthetic Ctrl+C chord:
+// the selection commands were delivered, SendInput reports success, but the
+// renderer-side clipboard write never lands (GetClipboardSequenceNumber
+// stays on the pre-chord baseline), so CopySelectionWithSequenceWait's
+// REQ-R04 stale-read refusal fires on a chord the app silently discarded
+// (user log emebalachat_260907204046 L1782/L1860/L1939 - Discord, class
+// Chrome_WidgetWin_1; same signature as PowerToys issue #46485). One such
+// drop on the bare-Enter path means an EMPTY capture, which the worker's R5
+// hold turns into a swallowed Enter. The fix re-runs the full
+// selection+copy cycle a bounded number of times: every selection primitive
+// (SelectAll / keyboard geometry / EM_SETSEL(last, caret)) is idempotent,
+// and the sequence-wait re-baselines each attempt, so a late commit from an
+// earlier chord is read as a confirmed copy rather than stale text.
+inline constexpr int kClipboardCopyChordAttempts = 3;
+// Settle between chord attempts so the target's input pipeline can drain -
+// a half-processed chord is one drop hypothesis this gap addresses.
+inline constexpr uint32_t kClipboardCopyChordRetryGapMs = 30;
+
+// Pure retry-warrant predicate (single definition shared by
+// CopySelectedText and the unit tests; same discipline as
+// SelectionReleaseRequired / EmptyCaptureNeedsHold). attempt_index is
+// 0-based. False when the attempt budget is exhausted or when the
+// established selection is PROVABLY EMPTY - the REQ-034 F3-B paste-window
+// geometry (EM_SETSEL(last, last): Ctrl+C over an empty selection
+// legitimately changes nothing, so re-sending the chord can only add
+// latency before the worker's silent send-through).
+constexpr bool CopyChordRetryWarranted(int attempt_index, bool selection_provably_empty) {
+    return (attempt_index + 1 < kClipboardCopyChordAttempts) && !selection_provably_empty;
+}
+
 enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 
 // Pure, time-parameterized state machine behind CopySelectionWithSequenceWait().
@@ -374,6 +406,18 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret);
 // needs the caller to fall back to conservative behavior.
 bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count);
 
+// REQ-039: read-only probe of the CURRENT EM selection range on the focus
+// candidate resolved for hwnd. True only when the control is EM-capable AND
+// the probe successfully reads an exactly-empty range (start == end >= 0) -
+// the REQ-034 F3-B paste-window geometry where a subsequent Ctrl+C
+// legitimately leaves the clipboard sequence untouched. All gates fail to
+// false (untracked / non-EM / probe timeout), which simply means "retry is
+// allowed": a non-EM control's copy failure is not provably legitimate, so
+// the chord re-send proceeds and only the attempt budget bounds it. Pure
+// read: EM_GETSEL never mutates state (same primitive ProbeEmCapability
+// uses, same SendEm 100 ms deadlock bound).
+bool EditCaretTracker_SelectionProvablyEmpty(HWND hwnd);
+
 // Self-correction re-selection for the once-per-Enter retry (CopySelectedText
 // drives predicate -> re-select -> re-copy). Same gates as TrySelectNewText
 // (focus resolution + EM capability + SendEm 100 ms budget), then
@@ -400,6 +444,14 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // pipeline (no re-copy; data-driven from the measured capture). The
 // offset-saving contracts (worker post-newline NotifyReplacement /
 // NotifySentNewline) are the FIX-1 producers and stay untouched here.
+// REQ-039 FIX-1: a sequence-wait failure no longer terminates the capture
+// immediately. Electron/Chromium targets intermittently drop synthetic
+// Ctrl+C chords (renderer-side commit never lands), so the full
+// selection+copy cycle is re-run under the CopyChordRetryWarranted budget:
+// all selection primitives are idempotent and each attempt re-baselines
+// the sequence wait, so a late commit from an earlier chord reads as a
+// confirmed copy, never stale text. The provably-empty EM selection (the
+// REQ-034 F3-B paste-window geometry) is exempt (no retry, no latency).
 // Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);
 

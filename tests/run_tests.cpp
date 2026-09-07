@@ -5870,6 +5870,144 @@ void TestReq036MultiBlockNoRetranslation() {
     }
 }
 
+// REQ-039 (chat-window Enter capture): regression suite for the two proven
+// failure shapes of user log emebalachat_260907204046.
+//   FIX-1 - Electron/Chromium intermittently drops a synthetic Ctrl+C chord
+//           (Discord Chrome_WidgetWin_1: /002 sequence-unchanged at L1782/
+//           L1860/L1939) turning the bare-Enter capture empty; the R5 hold
+//           then swallows the Enter. The fix re-runs the bounded
+//           selection+copy cycle (CopyChordRetryWarranted), exempting the
+//           provably-empty EM selection (REQ-034 F3-B paste-window
+//           geometry) so the worker's silent send-through keeps its
+//           latency contract.
+//   FIX-2 - identity translation (equals source) ended the task with the
+//           intercepted Enter undelivered (VS Code window L3450-3760:
+//           send_enter SKIPPED reason=send_gate every Enter, caret never
+//           advanced, whole content re-checked). EqualsSourceNeedsSendThrough
+//           now hands the Enter to the app like the established
+//           send-through contracts.
+void TestReq039ChatWindowEnterCapture() {
+    std::cout << "[TEST] REQ-039 chat-window Enter capture (dropped chord + identity send-through)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) pure retry-budget predicate matrix ----
+    static_assert(kClipboardCopyChordAttempts == 3,
+                  "REQ-039: three bounded chord attempts (drop + 2 retries)");
+    static_assert(CopyChordRetryWarranted(0, false),
+                  "REQ-039: first drop with budget left must retry");
+    static_assert(CopyChordRetryWarranted(1, false),
+                  "REQ-039: second drop still inside the budget");
+    static_assert(!CopyChordRetryWarranted(2, false),
+                  "REQ-039: budget exhausted - no retry past the last attempt");
+    static_assert(!CopyChordRetryWarranted(9, false),
+                  "REQ-039: out-of-range attempt index never retries");
+    static_assert(!CopyChordRetryWarranted(0, true),
+                  "REQ-039: provably-empty EM selection skips the retry (F3-B latency contract)");
+    static_assert(kClipboardCopyChordRetryGapMs > 0,
+                  "REQ-039: retry gap lets the target input pipeline drain");
+
+    // ---- (b) pure identity send-through predicate matrix ----
+    // The R5 hold (empty capture) and smart-bypass contracts stay disjoint:
+    // only the translate-but-unchanged outcome sends through.
+    TEST_CHECK(EqualsSourceNeedsSendThrough(false, false),
+               "REQ-039: identity translation must hand Enter to the app");
+    TEST_CHECK(!EqualsSourceNeedsSendThrough(true, false),
+               "REQ-039: empty capture stays on the R5 hold branch (upstream, disjoint)");
+    TEST_CHECK(!EqualsSourceNeedsSendThrough(false, true),
+               "REQ-039: smart bypass keeps its own send-through contract (not this predicate's)");
+    static_assert(!EqualsSourceNeedsSendThrough(true, true),
+                  "REQ-039: vacuous pair never sends");
+
+    // ---- (c) live sequence on a real in-process EDIT control ----
+    // c1: SelectionProvablyEmpty on the F3-B geometry (EM_SETSEL(n, n)) must
+    //     read true - the retry exemption is exactly this shape. A non-empty
+    //     range must read false. A non-EM control must read false (retry
+    //     allowed; only measured emptiness may skip).
+    // c2: the full capture path (selection + bounded chord loop + clipboard
+    //     read) still returns the selected text on the happy path - the
+    //     retry loop must not corrupt the pre-REQ-039 contract.
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req039Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req039", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                  WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                  0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-039: in-process EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; REQ-039 live sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // c1a: the F3-B empty-range geometry reads provably empty.
+        ::SetWindowTextW(edit, L"first\r\nsecond");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(6), static_cast<LPARAM>(6));
+        TEST_CHECK(EditCaretTracker_SelectionProvablyEmpty(edit),
+                   "REQ-039: EM empty range (start == end) is provably empty - retry exempt");
+        // c1b: a real selection is NOT provably empty.
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(0), static_cast<LPARAM>(6));
+        TEST_CHECK(!EditCaretTracker_SelectionProvablyEmpty(edit),
+                   "REQ-039: non-empty EM range is not provably empty - retry allowed");
+        // c1c: a non-EM control (the host popup itself, static-class) never
+        //      claims provable emptiness - copy failures there stay retryable.
+        TEST_CHECK(!EditCaretTracker_SelectionProvablyEmpty(host),
+                   "REQ-039: non-EM window is never provably empty (fail-open to retry)");
+
+        // c2: retry-loop idempotence geometry (no clipboard round-trip:
+        // this thread owns the EDIT control, so SendInput chords could not
+        // be pumped - the same reason the REQ-036 suite stays on the EM
+        // seams; the chord loop's primitives are the seam functions).
+        // A second TrySelectNewText on the same caret must land on the SAME
+        // selection (idempotent), and the provably-empty probe must still
+        // answer correctly AFTER a first capture-cycle pass - which is the
+        // state the chord retry consults.
+        ::SetWindowTextW(edit, L"REQ039 happy path block");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(22), static_cast<LPARAM>(22));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-039: chord-cycle pass 1 enters the EM path");
+        DWORD sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 22u,
+                   "REQ-039: pass-1 selection geometry is [0..caret) (untracked start)");
+        // The retry pass (attempt 2 in the loop) repeats exactly this call;
+        // with the offset now stored at 0 the selection must be stable, not
+        // double-applied or shifted - idempotence is what makes the chord
+        // retry safe in the live pipeline.
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit),
+                   "REQ-039: chord-cycle retry pass re-enters the EM path");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 22u,
+                   "REQ-039: retry pass selection is idempotent (same geometry, no drift)");
+        TEST_CHECK(!EditCaretTracker_SelectionProvablyEmpty(edit),
+                   "REQ-039: full selection after retry pass is not provably empty");
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-039 chat-window Enter capture tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-039 chat-window tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5937,6 +6075,7 @@ int main() {
     TestReq034NoLeadingCrlfNormalProgress();
     TestReq034PasteWindowSuppress();
     TestReq036MultiBlockNoRetranslation();
+    TestReq039ChatWindowEnterCapture();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
