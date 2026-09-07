@@ -8,6 +8,11 @@
 #include <fstream>
 #include <sstream>
 #include <windows.h>
+// REQ-029-B: SHGetKnownFolderPath(FOLDERID_LocalAppData) for the single-source
+// config path. objbase.h for CoTaskMemFree (shell32/ole32 already linked in
+// CMakeLists for Emebalachat_core).
+#include <shlobj.h>
+#include <objbase.h>
 
 namespace emebalachat {
 
@@ -683,7 +688,26 @@ std::string ResolveModelPath(std::string_view raw_path,
     return ToUtf8(joined.native());
 }
 
+// REQ-029-B: config 단일 진실 경로. 설치본(Program Files, BUILTIN\Users:RX)에서는
+// exe-dir 쓰기가 불가하므로 %LOCALAPPDATA%\Emebalachat\config.json으로 통일한다.
+// 실패 시 empty 반환 → 호출자(GetDefaultConfigPath)가 exe-dir 폐백.
+std::filesystem::path AppConfig::GetLocalAppDataConfigPath() {
+    PWSTR known = nullptr;
+    std::filesystem::path result;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known))) {
+        result = std::filesystem::path(known) / "Emebalachat" / "config.json";
+        ::CoTaskMemFree(known);
+    }
+    return result;  // 실패 시 empty → 호출자가 exe-dir 폐백
+}
+
 std::filesystem::path AppConfig::GetDefaultConfigPath() {
+    // REQ-029-B (설계서 §2.1 3-b): %LOCALAPPDATA% 우선, empty면 exe-dir 폐백,
+    // 그마저 empty면 current_path 폐백(기존 동작 호환).
+    const std::filesystem::path lad = GetLocalAppDataConfigPath();
+    if (!lad.empty()) {
+        return lad;
+    }
     const std::filesystem::path exe_dir = GetExecutableDir();
     if (!exe_dir.empty()) {
         return exe_dir / "config.json";
@@ -693,6 +717,37 @@ std::filesystem::path AppConfig::GetDefaultConfigPath() {
 
 bool AppConfig::LoadFromFile(const std::filesystem::path& path) {
     std::filesystem::path target_path = path.empty() ? GetDefaultConfigPath() : path;
+
+    // REQ-029-B 마이그레이션: 신규 경로(%LOCALAPPDATA%)에 config가 없고
+    // 레거시 exe-dir에만 있으면, 레거시를 읽어 신규 경로로 이관한다.
+    // - 신규 경로가 이미 있으면 레거시는 무시(신규가 진실).
+    // - 명시적 path 인자가 주어진 테스트/특수 호출은 마이그레이션 대상 아님.
+    // - 레거시는 삭제하지 않고 읽기 전용으로 잔존시켜 롤백 여지 보존.
+    // 프로세스 시작 시 main.cpp의 인자 없는 LoadFromFile() 호출 1회만 이 분기를
+    // 타므로(설계서 §2.5: 스레드 생성 전, 1회, 원자적), 부작용 창은 없다.
+    if (path.empty()) {  // 기본 경로 사용 시에만 마이그레이션 판단
+        const std::filesystem::path exe_dir = GetExecutableDir();
+        if (!exe_dir.empty()) {  // exe-dir 해석 실패 시 판단 보류(설계서 가드 강화)
+            const std::filesystem::path legacy = exe_dir / "config.json";
+            std::error_code ec_new, ec_legacy;
+            const bool new_exists = std::filesystem::exists(target_path, ec_new);
+            const bool legacy_exists = std::filesystem::exists(legacy, ec_legacy);
+            const bool same_file = !legacy.empty() && !target_path.empty() &&
+                                   std::filesystem::equivalent(legacy, target_path, ec_new) && !ec_new;
+            if (!new_exists && legacy_exists && !same_file) {
+                // 1) 레거시를 메모리로 로드
+                std::ifstream lf(legacy, std::ios::in | std::ios::binary);
+                if (lf.is_open()) {
+                    std::stringstream buf; buf << lf.rdbuf();
+                    if (FromJsonString(buf.str())) {
+                        // 2) 신규 경로로 저장 (디렉터리 자동 생성은 SaveToFileLocked가 담당)
+                        // 3) 레거시는 삭제하지 않고 읽기 전용으로 잔존시켜 롤백 여지 보존
+                        SaveToFile(target_path);
+                    }
+                }
+            }
+        }
+    }
 
     if (!std::filesystem::exists(target_path)) {
         // Auto-create config file with defaults.

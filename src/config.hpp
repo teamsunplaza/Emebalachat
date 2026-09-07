@@ -284,8 +284,16 @@ struct AppConfig {
     // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
     void SetUiLanguage(std::string value);
 
-    // Returns standard default config path: config.json next to executable or working dir.
+    // Returns standard default config path: %LOCALAPPDATA%\Emebalachat\config.json
+    // (REQ-029-B single-source-of-truth), falling back to the executable dir /
+    // working dir only when the Known-Folder query fails.
     static std::filesystem::path GetDefaultConfigPath();
+
+    // REQ-029-B: canonical per-user config path
+    // %LOCALAPPDATA%\Emebalachat\config.json. Returns an empty path when
+    // SHGetKnownFolderPath(FOLDERID_LocalAppData) fails so callers can fall
+    // back to the legacy exe-dir location.
+    static std::filesystem::path GetLocalAppDataConfigPath();
 
     // Loads configuration from file. If file does not exist, saves defaults to disk.
     // If JSON is invalid, retains existing defaults without throwing.
