@@ -4,6 +4,7 @@
 #include "hook.hpp"
 #include "i18n.hpp"
 #include "version.hpp"
+#include "bidi_utils.hpp" // P4 Batch B-5: DirectionForLocale (cheat-sheet RTL)
 #include "mouse_hook.hpp"
 #include "smart_bypass.hpp"
 #include "sound.hpp"
@@ -911,12 +912,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         RefreshAllUiForLocaleChange();
     };
 
+    // P4 Batch B-5 investigation (design §2.2.3): StringId::CheatSheetBody is
+    // rendered by a system MessageBoxW dialog HERE and nowhere else (the only
+    // CheatSheet* Get() call sites in the tree are this callback and the tray
+    // menu item label). A MessageBox is not custom-drawn, so the body-format
+    // direction rule does not apply; the dialog's text reading direction
+    // follows the thread locale, and the documented per-call override is
+    // MB_RTLREADING (winuser.h, 0x00100000L — verified present in the build
+    // SDK 10.0.26100), which applies WS_EX_RTLREADING to the message-box
+    // dialog window only. Scope discipline (§2.2.4): the owner is nullptr and
+    // the flag is computed at THIS call only — it can never leak into other
+    // surfaces; LTR UI locales pass no flag (byte-identical dialog today).
     trayCallbacks.on_show_cheat_sheet = [&]() {
+        UINT type = MB_OK | MB_ICONINFORMATION;
+        if (emebalachat::DirectionForLocale(emebalachat::I18n::GetCurrentLocale()) ==
+            emebalachat::TextDirection::RTL) {
+            type |= MB_RTLREADING;
+        }
         ::MessageBoxW(
             nullptr,
             emebalachat::I18n::Get(emebalachat::StringId::CheatSheetBody).c_str(),
             emebalachat::I18n::Get(emebalachat::StringId::CheatSheetTitle).c_str(),
-            MB_OK | MB_ICONINFORMATION
+            type
         );
     };
 

@@ -2,17 +2,105 @@
 #include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
+#include "../bidi_utils.hpp"  // P4 Batch B-5: DirectionForLocale / TextDirection
 #include "../i18n.hpp"
 #include "../version.hpp"
 
 #include <memory>
 #include <shellapi.h>
 #include <string>
+#include <string_view>
 
 namespace emebalachat {
 
 namespace {
 const wchar_t kAboutClassName[] = L"Emebalachat_AboutClass";
+
+// P4 Batch B-5 (session 260907_0002, design §2.2.3 + §2-Q5 verdict A):
+// ASCII-case-insensitive wide compare. DWrite canonicalizes locale tags on
+// readback (B-2 probe datum), so tag equality checks must case-fold or every
+// refresh would churn the COM object. Local copy of tooltip.cpp's
+// WcsIEqualsAscii — see the CloneFormatWithLocale note below for why B-5
+// replicates instead of sharing.
+bool WcsIEqualsAscii(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca >= L'A' && ca <= L'Z') ca += 32;
+        if (cb >= L'A' && cb <= L'Z') cb += 32;
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+// P4 Batch B-5 (design §2-Q5 verdict A): DWrite localeName is CREATION-ONLY
+// (no SetLocaleName at any interface version — B-2 SDK header audit + headless
+// probe), so a locale change is a CLONE-SWAP: family/weight/style/stretch/size
+// and all paragraph settings are carried over under the new BCP-47 tag.
+// Deliberate local replication of tooltip.cpp's file-local CloneFormatWithLocale
+// (src/ui/tooltip.cpp:26-51, session 260907_0002 B-2): extracting it to a
+// shared TU would be a tooltip.cpp EDIT, which the B-5 batch scope explicitly
+// forbids (file-disjoint wave discipline, design §3). Two owners keep the
+// same contract; this comment is the cross-reference. Returns the fresh format
+// or nullptr — a failed swap must never lose the working format.
+IDWriteTextFormat* CloneFormatWithLocale(IDWriteFactory* factory, IDWriteTextFormat* src,
+                                         const wchar_t* locale_name) {
+    if (!factory || !src || !locale_name) return nullptr;
+    const UINT32 fam_len = src->GetFontFamilyNameLength();
+    if (fam_len == 0 || fam_len > 255) return nullptr;
+    wchar_t family[256] = {};
+    if (FAILED(src->GetFontFamilyName(family, fam_len + 1))) return nullptr;
+    IDWriteTextFormat* dst = nullptr;
+    if (FAILED(factory->CreateTextFormat(
+            family, nullptr, src->GetFontWeight(), src->GetFontStyle(),
+            src->GetFontStretch(), src->GetFontSize(), locale_name, &dst)) || !dst) {
+        return nullptr;
+    }
+    dst->SetWordWrapping(src->GetWordWrapping());
+    dst->SetTextAlignment(src->GetTextAlignment());
+    dst->SetParagraphAlignment(src->GetParagraphAlignment());
+    dst->SetReadingDirection(src->GetReadingDirection());
+    return dst;
+}
+
+// Set (clone-swap) a live format's localeName to `tag` iff it differs. The
+// swap only lands when the cloned object VERIFIABLY carries the tag
+// (GetLocaleName readback) — DWrite accepts any syntactically valid tag, but
+// a rejected/mangled one must never replace the working format (fail-safe,
+// same contract as tooltip.cpp's B-2 in-place swap). Returns true when the
+// slot ends up carrying the requested tag.
+bool ApplyFormatLocale(IDWriteFactory* factory, IDWriteTextFormat** slot,
+                       const std::wstring& tag) {
+    if (!factory || !slot || !*slot || tag.empty()) return true; // vacuous
+    wchar_t cur[64] = {};
+    if (SUCCEEDED((*slot)->GetLocaleName(cur, 64)) && WcsIEqualsAscii(cur, tag)) {
+        return true; // unchanged tag: never churn the COM object (B-2 rule)
+    }
+    IDWriteTextFormat* swapped = CloneFormatWithLocale(factory, *slot, tag.c_str());
+    if (!swapped) return false;
+    wchar_t read[64] = {};
+    if (FAILED(swapped->GetLocaleName(read, 64)) || !WcsIEqualsAscii(read, tag)) {
+        swapped->Release();
+        return false;
+    }
+    (*slot)->Release();
+    *slot = swapped;
+    return true;
+}
+
+// Representative full BCP-47 tag for the CURRENT UI locale, from the B-3
+// LocaleMapping table (design §2.1.3: bcp47_full is the DWrite localeName
+// column; i18n.hpp's header comment cross-references LanguageInfo.bcp47 —
+// UI-chrome vs content, two owners, no drift). Auto/unmapped resolves to the
+// English pivot tag, mirroring GetLocaleCode()'s explicit "en" fallback.
+std::wstring LocaleTagForUi(UiLocale locale) {
+    for (const LocaleMapping& m : GetLocaleMappings()) {
+        if (m.locale == locale && m.bcp47_full && m.bcp47_full[0]) {
+            return std::wstring(m.bcp47_full);
+        }
+    }
+    return L"en-US";
+}
 
 // ---- R6 Phase 5 (plan §5.2, user decision "About 다국어화"): the About body
 // is now fully localized. The former hardcoded English constants (tagline,
@@ -156,6 +244,15 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
     if (header_format_) {
         header_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
+
+    // P4 Batch B-5 (design §2.2.3): bind the freshly created formats to the
+    // STARTUP locale once — reading direction on the three UI-prose formats
+    // and the Q5-A font-fallback localeName on the five localized-copy
+    // formats (see ApplyLocaleFormatting). Without this call an auto-detected
+    // RTL OS locale would render the first About show LTR until the first
+    // RequestLocaleRefresh. Formats are created with localeName L""; this is
+    // the single swap pass that moves them onto the real tag.
+    ApplyLocaleFormatting();
 
     return true;
 }
@@ -358,10 +455,80 @@ void AboutWindow::RequestLocaleRefresh() {
         return;
     }
     ::SetWindowTextW(hwnd_, I18n::Get(StringId::AboutTitle).c_str());
+    // P4 Batch B-5 (design §2.2.3): re-derive body/tagline/etymology reading
+    // direction + the UI-locale font tags BEFORE deciding whether to repaint,
+    // so a HIDDEN window's next ShowAt -> Render already carries the new
+    // direction (the caption repaint below only covers the visible case).
+    // Runs on the GUI thread — same single-threaded DWrite affinity as Render.
+    ApplyLocaleFormatting();
     if (visible_.load(std::memory_order_relaxed)) {
         Render();
         UpdateLayered();
     }
+}
+
+// P4 Batch B-5 (session 260907_0002, design §2.2.3 + §5.2 debug focus 4):
+// the About window's locale-refresh formatting seam. Called from Create()
+// (startup, incl. an auto-detected RTL OS locale) and from every
+// RequestLocaleRefresh on the GUI thread, so measure/paint can never observe
+// a stale direction or stale font tag — no reuse-across-switch hazard.
+//
+// Per-region rule (design §2.2.3, user verbatim "each window operates
+// properly according to its own rules"): ONLY the three UI-locale prose
+// formats (body/tagline/etymology) take the RTL/LTR reading direction.
+// title_format_ / version_format_ render brand + factual data ("Emebala
+// Chat", "vX.Y.Z"), header_format_ renders the "✕" glyph, and the reset
+// button + link labels (link_format_/small_format_) stay LTR chrome per the
+// batch contract — text inside the buttons is centered, so an RTL label under
+// an LTR base direction still shapes correctly glyph-run-wise (DWrite UAX #9).
+void AboutWindow::ApplyLocaleFormatting() {
+    const UiLocale locale = I18n::GetCurrentLocale();
+    const TextDirection text_dir = DirectionForLocale(locale);
+    const DWRITE_READING_DIRECTION dir = (text_dir == TextDirection::RTL)
+                                             ? DWRITE_READING_DIRECTION_RIGHT_TO_LEFT
+                                             : DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+
+    // Direction FIRST, then the locale clone-swap: CloneFormatWithLocale
+    // carries Get/SetReadingDirection over, so the swapped objects inherit
+    // whatever direction the live formats hold at swap time. Mutating the
+    // surviving formats afterwards would be equivalent, but this order makes
+    // a partially-failed swap (old format kept) keep the NEW direction too —
+    // direction correctness never depends on the font-fallback bonus.
+    if (body_format_) body_format_->SetReadingDirection(dir);
+    if (tagline_format_) tagline_format_->SetReadingDirection(dir);
+    if (etymology_format_) etymology_format_->SetReadingDirection(dir);
+
+    // Q5-A font fallback (design §1.3.2/§2-Q5): localeName L"" -> the active
+    // UI locale's representative BCP-47 tag (B-3 LocaleMapping.bcp47_full), so
+    // IDWriteFontFallback::MapCharacters picks script-appropriate faces
+    // (Nirmala UI, Leelawadee UI, Myanmar Text, Segoe UI Historic...). The
+    // five formats that paint UI-locale COPY get the tag: the three prose
+    // formats plus link_format_ (localized link labels + localized reset/"
+    // done" labels) and small_format_ (contact lines carry localized labels
+    // like "ساعات العمل"). JUDGMENT CALL, documented per delegation: the
+    // localeName here is a font-resolution hint only — none of these formats
+    // receives RTL reading direction (chrome stays LTR above).
+    // title_format_/version_format_/header_format_ keep L"": pure brand/
+    // factual ASCII + a single dingbat glyph, no script-fallback need.
+    const std::wstring tag = LocaleTagForUi(locale);
+    bool swap_failed = false;
+    if (!ApplyFormatLocale(dwrite_factory_, &body_format_, tag)) swap_failed = true;
+    if (!ApplyFormatLocale(dwrite_factory_, &tagline_format_, tag)) swap_failed = true;
+    if (!ApplyFormatLocale(dwrite_factory_, &etymology_format_, tag)) swap_failed = true;
+    if (!ApplyFormatLocale(dwrite_factory_, &link_format_, tag)) swap_failed = true;
+    if (!ApplyFormatLocale(dwrite_factory_, &small_format_, tag)) swap_failed = true;
+    if (swap_failed) {
+        // Fail-safe path: the working formats survive with their previous tag
+        // (L"" system-chain fallback still resolves glyphs; only the
+        // script-first-face hint is lost). Direction above still applied.
+        DIAG_F("ABOUT/ApplyLocaleFormatting/001: localeName clone-swap failed for tag '%ls'; keeping previous formats\n",
+               tag.c_str());
+    }
+    // Grep-able proof the refresh-time direction decision ran (design §4.2c
+    // DIAG discipline, manual-QA M4 correlation anchor).
+    DIAG_LOG("UI", "about locale_dir=%s locale=%s",
+             text_dir == TextDirection::RTL ? "rtl" : "ltr",
+             std::string(I18n::GetLocaleCode()).c_str());
 }
 
 // R6 Phase 5 pure seam (plan §7.2): every text the card paints, resolved for

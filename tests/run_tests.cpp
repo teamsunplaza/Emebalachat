@@ -6467,6 +6467,140 @@ void TestReq038B2RegistryBcp47() {
     }
 }
 
+// P4 Batch B-5 (session 260907_0002, design §3 B-5 row + §4.1 "About content"
+// row): BuildLocalizedContent under Arabic/Hebrew — the RTL UI locales the
+// About window renders under per design §2.2.3. Content must actually differ
+// from English (i18n-routed, not constants), and the reset label must be
+// localized + non-empty (the escape-hatch affordance an RTL user needs most).
+// Direction correctness itself (SetReadingDirection on the formats) lives in
+// COM code with no test-only seam (design §4.2 anti-gaming rule); it is
+// proven by the grep-able "about locale_dir=" DIAG line + manual QA M4.
+void TestReq038B5AboutRtl() {
+    std::cout << "[RUN] Testing B-5 About localized content under AR/HE (REQ-038)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Save/restore the global locale the suite runs with (same discipline as
+    // the R6 section that builds KO/JA/EN About snapshots).
+    const UiLocale initial = I18n::GetCurrentLocale();
+
+    I18n::SetLocale(UiLocale::English);
+    const auto en = AboutWindow::BuildLocalizedContent();
+    I18n::SetLocale(UiLocale::Arabic);
+    const auto ar = AboutWindow::BuildLocalizedContent();
+    I18n::SetLocale(UiLocale::Hebrew);
+    const auto he = AboutWindow::BuildLocalizedContent();
+
+    // ---- 1) RTL locales render fully localized copy (differs from EN) ------
+    TEST_CHECK(!ar.tagline.empty() && ar.tagline != en.tagline,
+               "B5: AR tagline localized (non-empty, differs from EN)");
+    TEST_CHECK(!he.tagline.empty() && he.tagline != en.tagline,
+               "B5: HE tagline localized (non-empty, differs from EN)");
+    bool ar_features_differ = true, he_features_differ = true;
+    for (int i = 0; i < 3; ++i) {
+        if (ar.features[i].empty() || ar.features[i] == en.features[i]) ar_features_differ = false;
+        if (he.features[i].empty() || he.features[i] == en.features[i]) he_features_differ = false;
+    }
+    TEST_CHECK(ar_features_differ, "B5: all 3 AR feature lines localized (differs from EN)");
+    TEST_CHECK(he_features_differ, "B5: all 3 HE feature lines localized (differs from EN)");
+    TEST_CHECK(!ar.etymology.empty() && ar.etymology != en.etymology,
+               "B5: AR etymology line localized");
+    TEST_CHECK(!he.etymology.empty() && he.etymology != en.etymology,
+               "B5: HE etymology line localized");
+
+    // The RTL scripts are actually present (the copy is not a Latin
+    // transliteration): first-strong over the AR body must be RTL, and the HE
+    // body must contain Hebrew letters — data-driven via the B-1 seam.
+    TEST_CHECK(GuessBaseDirection(ar.tagline) == TextDirection::RTL &&
+                   GuessBaseDirection(ar.etymology) == TextDirection::RTL,
+               "B5: AR tagline+etymology first-strong RTL (real Arabic script content)");
+    {
+        bool he_has_hebrew = false;
+        for (const wchar_t ch : he.tagline) {
+            if (ch >= 0x0590 && ch <= 0x05FF) { he_has_hebrew = true; break; }
+        }
+        TEST_CHECK(he_has_hebrew, "B5: HE tagline carries Hebrew-range codepoints (U+0590-U+05FF)");
+    }
+
+    // ---- 2) Brand tokens stay fixed under RTL locales -----------------------
+    // AboutTitle is localized ("حول Emebala Chat" / "אודות Emebala Chat") but
+    // the brand token itself must survive inside every locale's title.
+    TEST_CHECK(ar.title.find(L"Emebala Chat") != std::wstring::npos &&
+                   he.title.find(L"Emebala Chat") != std::wstring::npos,
+               "B5: About title keeps the 'Emebala Chat' brand token under AR/HE");
+    TEST_CHECK(ar.link_labels[2] == L"Reddit" && he.link_labels[2] == L"Reddit",
+               "B5: Reddit brand token untranslated under AR/HE");
+
+    // ---- 3) Contact factual data survives; labels translate -----------------
+    TEST_CHECK(ar.contacts[1].find(L"+82 2 575 0414") != std::wstring::npos &&
+                   he.contacts[1].find(L"+82 2 575 0414") != std::wstring::npos,
+               "B5: phone stays in the contact line under AR/HE (design G-5: LTR run inside RTL paragraph)");
+    TEST_CHECK(ar.contacts[1] != en.contacts[1] && he.contacts[1] != en.contacts[1],
+               "B5: contact-phone line's label localized under AR/HE");
+
+    // ---- 4) Reset label localized + non-empty (design §4.1 last row) --------
+    TEST_CHECK(!ar.reset_label.empty() && ar.reset_label != en.reset_label,
+               "B5: AR reset_label localized + non-empty (escape hatch readable in RTL UI)");
+    TEST_CHECK(!he.reset_label.empty() && he.reset_label != en.reset_label,
+               "B5: HE reset_label localized + non-empty");
+    TEST_CHECK(ar.reset_label != he.reset_label,
+               "B5: AR vs HE reset labels differ (per-locale tables, not one shared RTL string)");
+
+    // ---- 5) Direction seam: pure locale->direction policy (B-1 re-check on
+    // the two locales B-5 wires into About's ApplyLocaleFormatting) -----------
+    TEST_CHECK(DirectionForLocale(UiLocale::Arabic) == TextDirection::RTL &&
+                   DirectionForLocale(UiLocale::Hebrew) == TextDirection::RTL &&
+                   DirectionForLocale(UiLocale::Persian) == TextDirection::RTL &&
+                   DirectionForLocale(UiLocale::Urdu) == TextDirection::RTL,
+               "B5: all four RTL UI locales resolve RTL (About body direction policy)");
+    TEST_CHECK(DirectionForLocale(UiLocale::English) == TextDirection::LTR &&
+                   DirectionForLocale(UiLocale::Korean) == TextDirection::LTR,
+               "B5: representative LTR locales stay LTR (no over-flip)");
+
+    // ---- 6) B-5 font-tag source: LocaleMapping.bcp47_full for the RTL rows
+    // (about_window's ApplyLocaleFormatting clones these tags onto the body/
+    // tagline/etymology formats; a wrong/empty tag silently disables the Q5-A
+    // fallback, so pin the four rows About can actually show) -----------------
+    {
+        auto tag_for = [](UiLocale loc) -> std::wstring {
+            for (const LocaleMapping& m : GetLocaleMappings()) {
+                if (m.locale == loc) return m.bcp47_full ? std::wstring(m.bcp47_full) : std::wstring();
+            }
+            return std::wstring();
+        };
+        TEST_CHECK(tag_for(UiLocale::Arabic) == L"ar-SA" && tag_for(UiLocale::Hebrew) == L"he-IL" &&
+                       tag_for(UiLocale::Persian) == L"fa-IR" && tag_for(UiLocale::Urdu) == L"ur-PK",
+                   "B5: RTL rows carry the representative full BCP-47 tags About clones in");
+    }
+
+    // ---- 7) Runtime smoke of the REAL COM mutation path under an RTL locale.
+    // No test-only seam: this drives the production Create() +
+    // RequestLocaleRefresh() (same-thread synchronous branch), so DWrite
+    // actually executes SetReadingDirection(RTL) on the live body/tagline/
+    // etymology formats and the clone-swap onto the ar-SA tag must round-trip
+    // the GetLocaleName readback (a rejected tag would trip the fail-safe
+    // DIAG, not crash). Direction VALUE correctness stays with the DIAG line
+    // + manual QA M4 per design §4.2 (anti-gaming: no COM readback seam).
+    {
+        I18n::SetLocale(UiLocale::Arabic);
+        AboutWindow rtlAbout;
+        TEST_CHECK(rtlAbout.Create(::GetModuleHandleW(nullptr)),
+                   "B5: AboutWindow Create under AR locale (startup ApplyLocaleFormatting RTL path)");
+        rtlAbout.RequestLocaleRefresh(); // same thread -> direct GUI path, hidden window
+        TEST_CHECK(!rtlAbout.IsVisible(),
+                   "B5: hidden About stays hidden through AR locale refresh (repaint gate intact)");
+        rtlAbout.Destroy();
+    }
+
+    I18n::SetLocale(initial); // suite-state hygiene
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B-5 About RTL content tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B-5 About RTL content tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -6538,6 +6672,7 @@ int main() {
     TestBidiUtils();
     TestReq038B2RegistryBcp47();
     TestReq037LocaleMapping();
+    TestReq038B5AboutRtl();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
