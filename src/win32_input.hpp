@@ -363,7 +363,10 @@ inline constexpr bool EditCaretTracker_HasLeadingCrlf(std::wstring_view captured
 // HasLeadingCrlf predicate above (single pair, reselect trigger), this counts
 // EVERY consecutive pair: each pass-through Enter that terminated a block
 // between the stored offset and the caret contributed one pair, and each one
-// must push the effective selection start forward by exactly 2 UTF-16 units.
+// must push the effective selection start forward by that newline's
+// DOCUMENT width - 1 or 2 UTF-16 units, MEASURED via DocNewlineWidth below
+// (REQ-F1: the clipboard's 2-unit pair is a normalization artifact, never
+// the document's storage width).
 // Pure seam: no Win32 contact, unit-testable headlessly.
 inline constexpr size_t EditCaretTracker_CountLeadingCrlfPairs(std::wstring_view captured) {
     size_t n = 0;
@@ -372,6 +375,60 @@ inline constexpr size_t EditCaretTracker_CountLeadingCrlfPairs(std::wstring_view
         ++n;
     }
     return n;
+}
+
+// ---- REQ-F1 (docs/260908_0001 session): clipboard-vs-document newline width ----
+//
+// Root cause (user log emebalachat_260908062830 L546-550/L787-791/L1120-1124):
+// the compensation below advanced the stored start by 2 UTF-16 units per
+// leading CRLF pair, but the clipboard NORMALIZES every newline to "\r\n"
+// while the document may store each newline as a single LF unit (Notepad's
+// RichEditD2DPT: field arithmetic 63 captured vs 60 selected units over 3
+// newlines -> 1 unit per document newline). The 2-units-per-pair advance
+// overshot the true block start, the re-selection began INSIDE the block,
+// and the block's first character(s) stayed outside the replacement - the
+// "first char residue" ahead of the pasted translation ("오"/"처"/"왜 ").
+// The width must be MEASURED from the capture-vs-selection arithmetic,
+// never assumed.
+//
+// Pure seam: count the newline SEQUENCES in a capture. A "\r\n" pair, a
+// lone "\n", and a lone "\r" each count as ONE sequence. No Win32 contact.
+inline constexpr size_t EditCaretTracker_CountNewlineSequences(std::wstring_view captured) {
+    size_t n = 0;
+    for (size_t i = 0; i < captured.size(); ++i) {
+        if (captured[i] == L'\n') {
+            ++n;
+        } else if (captured[i] == L'\r' &&
+                   (i + 1 >= captured.size() || captured[i + 1] != L'\n')) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// REQ-F1 pure seam: back-compute the DOCUMENT's UTF-16 newline width from
+// the capture-vs-selection arithmetic. The capture is the CLIPBOARD text
+// (every newline CRLF-normalized, 2 units); the selection span is the same
+// range's DOCUMENT unit count. For a uniform-width document:
+//   captured == sel_span            -> every document newline is CRLF (width 2)
+//   captured == sel_span + sequences-> every document newline is LF (width 1)
+// Any other relation is a mixed-width document or a non-normalized capture
+// whose leading-newline widths arithmetic cannot recover: return 0 and the
+// caller must keep the original capture (refuse - never guess a width; the
+// hardcoded-width guess is exactly the F1 defect).
+inline constexpr size_t EditCaretTracker_DocNewlineWidth(size_t captured_units,
+                                                         size_t sel_span_units,
+                                                         size_t newline_sequences) {
+    if (newline_sequences == 0 || captured_units < sel_span_units) {
+        return 0;
+    }
+    if (captured_units == sel_span_units) {
+        return 2;
+    }
+    if (captured_units == sel_span_units + newline_sequences) {
+        return 1;
+    }
+    return 0;
 }
 
 // REQ-036 surgical FIX-1 worker-sent-newline notification: call AFTER the
@@ -388,23 +445,33 @@ inline constexpr size_t EditCaretTracker_CountLeadingCrlfPairs(std::wstring_view
 // (the stored offset is then left alone; FIX-2 compensates at capture time).
 void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret);
 
-// REQ-036 surgical FIX-2 data-driven compensation: after an EM-path capture
-// that begins with N leading CRLF pairs (N >= 1), the stored start was N
-// newlines behind the true block boundary. Instead of re-selecting from 0
-// (which grabs every PRECEDING already-translated block - the whole-document
-// retranslation defect of REQ-036) or re-selecting and re-copying at all
-// (extra clipboard round-trip whose re-copy can only reproduce bytes we
-// already hold), this advances the stored offset by exactly 2*N UTF-16
-// units: the measured, structural size of the N block terminators the
-// capture itself proves exist. The caller then strips those leading pairs
-// from the capture text (the newline now sits OUTSIDE the replacement, so
-// the block boundary survives) and the pipeline proceeds with the corrected
-// text directly. Same gate discipline as TrySelfCorrectReSelect (focus
-// resolution + capability probe + stored-entry-is-ahead check); returns
-// false (changing nothing) when the hwnd is unusable, the entry is
-// missing/already 0/staler than the caret, or the EM_SETSEL-less design
-// needs the caller to fall back to conservative behavior.
-bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count);
+// REQ-036 surgical FIX-2 data-driven compensation, width-corrected by
+// REQ-F1: after an EM-path capture that begins with N leading CRLF pairs
+// (N >= 1), the stored start was N newlines behind the true block boundary.
+// Instead of re-selecting from 0 (which grabs every PRECEDING already-
+// translated block - the whole-document retranslation defect of REQ-036)
+// or re-selecting and re-copying at all (extra clipboard round-trip whose
+// re-copy can only reproduce bytes we already hold), this advances the
+// stored offset by exactly N * width units, where width is the document's
+// MEASURED UTF-16 newline width back-computed from the capture text vs the
+// live selection span (DocNewlineWidth above - the clipboard normalizes
+// newlines to CRLF, but the document may store single-unit LFs; the old
+// hardcoded 2-units-per-pair advance overshot LF documents and left the
+// block's first character(s) outside the replacement - the F1 residue).
+// The capture text is the second argument: the function recounts the
+// leading pairs from it, so caller and callee can never disagree. When
+// the width is not recoverable (mixed-width document, non-normalized
+// capture, or capture shorter than the selection span) the function
+// refuses and changes NOTHING: the caller keeps the original capture and
+// its fallback budget. The caller then strips the leading pairs from the
+// capture text by their 2*N CLIPBOARD units (the newline now sits OUTSIDE
+// the replacement, so the block boundary survives) and the pipeline
+// proceeds with the corrected text directly. Same gate discipline as
+// TrySelfCorrectReSelect (focus resolution + capability probe + stored-
+// entry-ahead check + stale clamp); returns false when the hwnd is
+// unusable, the entry is missing/already 0, the width is unrecoverable, or
+// the advanced start would exceed the measured caret.
+bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, std::wstring_view captured);
 
 // REQ-039: read-only probe of the CURRENT EM selection range on the focus
 // candidate resolved for hwnd. True only when the control is EM-capable AND

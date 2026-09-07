@@ -5987,7 +5987,8 @@ void TestReq034PasteWindowSuppress() {
 //      CRLF pairs only (a lone LF inside block content never counts).
 //  (b) live FIX-2: on a two-block document where the stored start drifted
 //      behind ONE out-of-band terminator, CompensateLeadingNewlines advances
-//      start by exactly 2 (NOT to 0) and re-selects [start+2..caret) - the
+//      start by exactly the MEASURED doc newline width (CRLF doc: 2, so
+//      start+2..caret; NOT to 0) - the
 //      FIRST block stays outside the selection, and the selection text has
 //      no leading CRLF (the separator survives the replacement).
 //  (c) live FIX-1: NotifySentNewline after a worker-sent Enter stores the
@@ -6075,9 +6076,11 @@ void TestReq036MultiBlockNoRetranslation() {
         TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(drifted) == 1,
                    "REQ-036: exactly one out-of-band pair measured");
 
-        // FIX-2 fires: the FIRST block stays outside. start 5 -> 7, selection
-        // becomes [7..10) = "BBB" only - NOT [0..10) (the REQ-036 defect).
-        TEST_CHECK(EditCaretTracker_CompensateLeadingNewlines(edit, 1),
+        // FIX-2 fires: the FIRST block stays outside. The CRLF document's
+        // width is measured as 2 (capture 5 == span 5), start 5 -> 7,
+        // selection becomes [7..10) = "BBB" only - NOT [0..10) (the REQ-036
+        // defect).
+        TEST_CHECK(EditCaretTracker_CompensateLeadingNewlines(edit, drifted),
                    "REQ-036: FIX-2 compensation advanced the stored start");
         sel = doc_sel(edit);
         TEST_CHECK(LOWORD(sel) == 7u && HIWORD(sel) == 10u,
@@ -6117,6 +6120,228 @@ void TestReq036MultiBlockNoRetranslation() {
         std::cout << "[PASS] REQ-036 multi-block no-retranslation tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-036 multi-block tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+namespace {
+// REQ-F1 live-suite EM emulation: a control that stores single-unit LF
+// newlines (Notepad's RichEditD2DPT behavior, user log
+// emebalachat_260908062830) while the clipboard CRLF-normalizes - the width
+// mismatch the compensation must now MEASURE. A real EDIT control cannot
+// reproduce this: it CRLF-normalizes its internal storage itself. State is
+// file-scope: the suite owns exactly one control.
+std::wstring g_f1_doc;
+DWORD g_f1_sel_start = 0;
+DWORD g_f1_sel_end = 0;
+LRESULT CALLBACK F1EmuEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case EM_GETSEL:
+            if (wp) { *reinterpret_cast<DWORD*>(wp) = g_f1_sel_start; }
+            if (lp) { *reinterpret_cast<DWORD*>(lp) = g_f1_sel_end; }
+            return MAKELRESULT(g_f1_sel_start, g_f1_sel_end);
+        case EM_SETSEL:
+            g_f1_sel_start = static_cast<DWORD>(wp);
+            g_f1_sel_end = static_cast<DWORD>(lp);
+            return 1;
+        case WM_GETTEXT: {
+            const size_t cap = (wp > 0) ? static_cast<size_t>(wp) - 1 : 0;
+            const size_t n = g_f1_doc.size() < cap ? g_f1_doc.size() : cap;
+            wchar_t* out = reinterpret_cast<wchar_t*>(lp);
+            if (out) {
+                for (size_t i = 0; i < n; ++i) { out[i] = g_f1_doc[i]; }
+                out[n] = L'\0';
+            }
+            return static_cast<LRESULT>(n);
+        }
+        case WM_GETTEXTLENGTH:
+            return static_cast<LRESULT>(g_f1_doc.size());
+        case EM_GETLINECOUNT: {
+            size_t lines = 1;
+            for (wchar_t c : g_f1_doc) { if (c == L'\n') ++lines; }
+            return static_cast<LRESULT>(lines);
+        }
+        case EM_LINEFROMCHAR:
+            return 0;
+        case EM_GETLIMITTEXT:
+            return 0x7FFFFFF8;
+        default:
+            return ::DefWindowProcW(h, msg, wp, lp);
+    }
+}
+} // namespace
+
+// REQ-F1 (docs/260908_0001 session, user log emebalachat_260908062830
+// L546-550/L787-791/L1120-1124): first-character residue ahead of the pasted
+// translation ("오"/"처"/"왜 "). Root cause: the compensation advanced the
+// stored start by 2 UTF-16 units per leading CRLF pair, but the clipboard
+// CRLF-NORMALIZES every newline while the document stores single-unit LFs -
+// the advance overshot the true block start, re-selected INSIDE the block,
+// and left its first character(s) outside the replacement. Contract:
+//  (a) pure seams: CountNewlineSequences (a CRLF pair is ONE sequence) and
+//      DocNewlineWidth field arithmetic from the exact log shapes (LF doc ->
+//      1, CRLF doc -> 2, anything else -> refuse).
+//  (b) live LF document, single-pair drift (Japanese/Russian shape): the
+//      start advances by the measured width 1 (old code: +2 -> one-char
+//      residue), and the clipboard-trimmed capture equals the re-selected
+//      document text byte-for-byte (the user-facing side effect).
+//  (c) live LF document, two-pair drift (Hungarian shape): advance by 2
+//      (old code: +4 -> two-char residue).
+//  (d) refusal paths change NOTHING: re-compensating an already-compensated
+//      geometry (width no longer recoverable) and a disturbed live selection
+//      (consistency gate) both refuse, leaving the stored offset intact.
+void TestReqF1FirstCharResidue() {
+    std::cout << "[TEST] REQ-F1 first-char residue: width-measured compensation" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) pure seams - the exact field arithmetic of the three log captures.
+    static_assert(EditCaretTracker_CountNewlineSequences(L"\r\n\r\nblock") == 2,
+                  "REQ-F1: two CRLF pairs -> two newline sequences");
+    static_assert(EditCaretTracker_CountNewlineSequences(L"a\nb\rc") == 2,
+                  "REQ-F1: lone LF and lone CR each count once");
+    static_assert(EditCaretTracker_CountNewlineSequences(L"abc") == 0,
+                  "REQ-F1: no newlines -> 0");
+    static_assert(EditCaretTracker_DocNewlineWidth(63, 60, 3) == 1,
+                  "REQ-F1: Japanese capture (log L546-550): 63 clipboard units vs 60 doc units over 3 newlines -> LF doc, width 1");
+    static_assert(EditCaretTracker_DocNewlineWidth(79, 76, 3) == 1,
+                  "REQ-F1: Russian capture (log L787-791): 79 vs 76 over 3 newlines -> width 1");
+    static_assert(EditCaretTracker_DocNewlineWidth(135, 129, 6) == 1,
+                  "REQ-F1: Hungarian capture (log L1120-1124): 135 vs 129 over 6 newlines -> width 1");
+    static_assert(EditCaretTracker_DocNewlineWidth(5, 5, 1) == 2,
+                  "REQ-F1: CRLF document (REQ-036 shape): capture == span -> width 2");
+    static_assert(EditCaretTracker_DocNewlineWidth(0, 0, 0) == 0,
+                  "REQ-F1: no newlines -> refuse");
+    static_assert(EditCaretTracker_DocNewlineWidth(10, 12, 3) == 0,
+                  "REQ-F1: capture shorter than span -> refuse");
+    static_assert(EditCaretTracker_DocNewlineWidth(11, 10, 3) == 0,
+                  "REQ-F1: mixed-width arithmetic -> refuse (never guess)");
+    TEST_CHECK(EditCaretTracker_CountNewlineSequences(L"\r\n") == 1,
+               "REQ-F1: one CRLF pair -> ONE sequence (a pair is one newline)");
+    TEST_CHECK(EditCaretTracker_CountNewlineSequences(L"\n") == 1,
+               "REQ-F1: single LF -> one sequence");
+
+    // (b)-(d) live sequence on the LF-storing EM emulation control.
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_ReqF1Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"reqf1", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    WNDCLASSEXW wc_edit = {};
+    wc_edit.cbSize = sizeof(WNDCLASSEXW);
+    wc_edit.lpfnWndProc = F1EmuEditProc;
+    wc_edit.hInstance = wc.hInstance;
+    wc_edit.lpszClassName = L"Emebalachat_ReqF1EmuEdit";
+    ::RegisterClassExW(&wc_edit);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, wc_edit.lpszClassName, L"",
+                                 WS_CHILD | WS_VISIBLE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-F1: LF-storing EM emulation control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on the emulation control unavailable; REQ-F1 live sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        auto emu_sel = [](DWORD a, DWORD b) {
+            g_f1_sel_start = a;
+            g_f1_sel_end = b;
+        };
+
+        // ---- (b) single-pair drift: the Japanese/Russian one-char-residue shape ----
+        // Block 1 "AAA" stored at caret 3; an out-of-band Enter inserted a
+        // single-LF newline; the user typed "BBB". Document: "AAA\nBBB".
+        g_f1_doc = L"AAA\n";
+        emu_sel(3, 3);
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-F1: baseline pass enters the EM path");
+        EditCaretTracker_NotifyReplacement(edit, true, 3); // stores the real caret 3
+        g_f1_doc = L"AAA\nBBB";
+        emu_sel(7, 7);
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-F1: drifted pass enters the EM path");
+        // Clipboard-normalized capture of doc[3..7) = "\nBBB" -> "\r\nBBB".
+        const std::wstring drifted = L"\r\nBBB";
+        TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(drifted) == 1,
+                   "REQ-F1: exactly one leading pair measured");
+        TEST_CHECK(EditCaretTracker_CompensateLeadingNewlines(edit, drifted),
+                   "REQ-F1: width-measured compensation advanced the stored start");
+        // Measured width 1 (capture 5 units vs doc span 4 over 1 newline):
+        // start 3 -> 4, NOT 3 -> 5 (the old +2 overshoot whose selection
+        // [5..7) = "BB" stranded the block's first character outside the
+        // replacement - the log's "오"/"처" residue shape).
+        TEST_CHECK(g_f1_sel_start == 4u && g_f1_sel_end == 7u,
+                   "REQ-F1: post-compensation selection is [4..7) - the whole block, no residue");
+        std::wstring selected = g_f1_doc.substr(g_f1_sel_start, g_f1_sel_end - g_f1_sel_start);
+        std::wstring trimmed = drifted;
+        trimmed.erase(0, 2 * EditCaretTracker_CountLeadingCrlfPairs(drifted));
+        TEST_CHECK(selected == L"BBB" && trimmed == selected,
+                   "REQ-F1: clipboard-trimmed capture equals the re-selected document text byte-for-byte");
+
+        // ---- (d1) re-compensation of the same capture must refuse ----
+        // Span [4..7) vs capture 5 over 1 newline: 5 != 3 and 5 != 4 -> the
+        // width is no longer recoverable -> refuse; selection unchanged.
+        TEST_CHECK(!EditCaretTracker_CompensateLeadingNewlines(edit, drifted),
+                   "REQ-F1: re-compensation of the already-compensated geometry refuses");
+        TEST_CHECK(g_f1_sel_start == 4u && g_f1_sel_end == 7u,
+                   "REQ-F1: the refusal left the live selection untouched");
+
+        // ---- (d2) disturbed live selection: the consistency gate refuses ----
+        emu_sel(0, 7); // selection moved between copy and compensation
+        TEST_CHECK(!EditCaretTracker_CompensateLeadingNewlines(edit, drifted),
+                   "REQ-F1: consistency gate refuses when the live start is not the stored start");
+        // The stored offset survived: the next TrySelectNewText re-selects
+        // from 4 (not from the disturbed 0), proving refusal changed nothing.
+        emu_sel(7, 7);
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-F1: post-refusal pass enters the EM path");
+        TEST_CHECK(g_f1_sel_start == 4u && g_f1_sel_end == 7u,
+                   "REQ-F1: stored offset untouched by the refused compensations");
+
+        // ---- (c) two-pair drift: the Hungarian two-char-residue shape ----
+        // Document "AAAA\n\nBBBB": stored 4, two out-of-band single-LF
+        // newlines, caret 10. The old code advanced 4 -> 8 (selection
+        // [8..10) = "BB" - the log's "왜 " two-char residue); the fix
+        // measures width 1 and advances 4 -> 6.
+        g_f1_doc = L"AAAA\n\nBBBB";
+        emu_sel(4, 4);
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-F1: two-pair baseline pass enters the EM path");
+        EditCaretTracker_NotifyReplacement(edit, true, 4); // stores the real caret 4
+        emu_sel(10, 10);
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-F1: two-pair drifted pass enters the EM path");
+        const std::wstring drifted2 = L"\r\n\r\nBBBB"; // clipboard-normalized doc[4..10)
+        TEST_CHECK(EditCaretTracker_CountLeadingCrlfPairs(drifted2) == 2,
+                   "REQ-F1: two leading pairs measured");
+        TEST_CHECK(EditCaretTracker_CompensateLeadingNewlines(edit, drifted2),
+                   "REQ-F1: two-pair width-measured compensation advanced the stored start");
+        TEST_CHECK(g_f1_sel_start == 6u && g_f1_sel_end == 10u,
+                   "REQ-F1: two-pair post-compensation selection is [6..10) - no residue");
+        std::wstring selected2 = g_f1_doc.substr(g_f1_sel_start, g_f1_sel_end - g_f1_sel_start);
+        std::wstring trimmed2 = drifted2;
+        trimmed2.erase(0, 2 * EditCaretTracker_CountLeadingCrlfPairs(drifted2));
+        TEST_CHECK(selected2 == L"BBBB" && trimmed2 == selected2,
+                   "REQ-F1: two-pair trimmed capture equals the re-selected document text");
+
+        g_f1_doc.clear();
+        emu_sel(0, 0);
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-F1 first-char residue tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-F1 first-char residue tests: " << (g_failed_count - failures_before)
                   << " check(s) failed." << std::endl;
     }
 }
@@ -6858,6 +7083,7 @@ int main() {
     TestReq034NoLeadingCrlfNormalProgress();
     TestReq034PasteWindowSuppress();
     TestReq036MultiBlockNoRetranslation();
+    TestReqF1FirstCharResidue();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();

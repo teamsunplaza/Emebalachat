@@ -999,14 +999,24 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd) {
     return true;
 }
 
-// REQ-036 FIX-2 data-driven newline compensation. See the header contract for
-// the full rationale. Returns true when the stored offset was advanced by
-// 2*pair_count UTF-16 units. EM_SETSEL is NOT re-issued: the selection is
-// already correct in [stored_start..caret) TERMS; the pairs belong OUTSIDE
-// the replacement (they are the PREVIOUS blocks' terminators), so the
-// caller strips them from the capture text instead - no second clipboard
-// round-trip, no chance to observe a mid-state document.
-bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count) {
+// REQ-036 FIX-2 data-driven newline compensation, width-corrected by REQ-F1
+// (docs/260908_0001 session). See the header contract for the full
+// rationale. The capture text is passed IN: the leading pairs are recounted
+// from it (caller and callee can never disagree), and the document's UTF-16
+// newline WIDTH is back-computed from the capture-vs-selection arithmetic
+// (EditCaretTracker_DocNewlineWidth): the clipboard CRLF-normalizes every
+// newline, but the document may store each newline as a single LF unit -
+// the old hardcoded 2-units-per-pair advance overshot Notepad's LF
+// document (user log emebalachat_260908062830: selection 60 units vs
+// capture 63 over 3 newlines), re-selected INSIDE the block, and left its
+// first character(s) outside the replacement ("오"/"처"/"왜 " residue
+// ahead of the pasted translation). Returns true when the stored offset
+// was advanced by pair_count * width units. When the width is not
+// recoverable from the arithmetic the function refuses and changes
+// NOTHING - never guess a width; the hardcoded-width guess is exactly the
+// F1 defect. The caller keeps its fallback budget either way.
+bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, std::wstring_view captured) {
+    const size_t pair_count = EditCaretTracker_CountLeadingCrlfPairs(captured);
     if (pair_count == 0) {
         return false; // nothing measured: nothing to compensate
     }
@@ -1021,7 +1031,9 @@ bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count) {
     if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
         return false;
     }
-    const DWORD sel_end = HIWORD(static_cast<DWORD>(em_result));
+    const DWORD sel = static_cast<DWORD>(em_result);
+    const DWORD sel_start = LOWORD(sel);
+    const DWORD sel_end = HIWORD(sel);
 
     std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
     edit_caret::PurgeDeadEntriesLocked();
@@ -1030,10 +1042,33 @@ bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count) {
         return false; // untracked or already block-head: no drift to repair
     }
     const DWORD drifted_start = it->second.offset;
+    // REQ-F1 consistency gate: the width arithmetic assumes the live
+    // selection is exactly the [drifted_start..caret) range the capture
+    // was copied from. A different live start (or an inverted range)
+    // means the geometry was disturbed between copy and compensation -
+    // refuse rather than compute a width from unrelated numbers.
+    if (sel_start != drifted_start || sel_end < sel_start) {
+        return false;
+    }
+    // REQ-F1 width measurement: back-compute the document's UTF-16
+    // newline width from the capture text vs the live selection span.
+    // The clipboard CRLF-normalizes; the document may store 1-unit LFs.
+    const size_t newline_sequences = EditCaretTracker_CountNewlineSequences(captured);
+    const size_t width = EditCaretTracker_DocNewlineWidth(
+        captured.size(), static_cast<size_t>(sel_end - sel_start), newline_sequences);
+    if (width == 0) {
+        // Ambiguous arithmetic (mixed-width document / non-normalized
+        // capture / zero-span selection): refusing keeps the original
+        // capture AND the stored offset - the safe pre-F1 geometry.
+        DIAG_F("WIN32_INPUT/EditCaretTracker/012: document newline width not recoverable (captured %zu units vs span %lu over %zu newline(s)); refusing compensation, keeping capture\n",
+               captured.size(), sel_end - sel_start, newline_sequences);
+        return false;
+    }
     // The clamp mirror (TrySelectNewText /004 rule): if the advanced start
     // would exceed the measured caret the entry is stale beyond repair by
     // arithmetic - refuse, the next Enter's clamp handles it as always.
-    const uint64_t advanced = static_cast<uint64_t>(drifted_start) + 2ull * pair_count;
+    const uint64_t advanced = static_cast<uint64_t>(drifted_start) +
+                              static_cast<uint64_t>(pair_count) * width;
     if (advanced > sel_end) {
         return false;
     }
@@ -1050,8 +1085,8 @@ bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, size_t pair_count) {
     }
     it->second.offset = static_cast<DWORD>(advanced);
     it->second.last_used_ms = ::GetTickCount64();
-    DIAG_F("WIN32_INPUT/EditCaretTracker/011: leading %zu CRLF pair(s) compensated; start %lu -> %lu re-select [%lu..%lu) (hwnd=%p)\n",
-           pair_count, drifted_start, it->second.offset, it->second.offset, sel_end,
+    DIAG_F("WIN32_INPUT/EditCaretTracker/011: leading %zu CRLF pair(s) compensated at doc width %zu unit(s); start %lu -> %lu re-select [%lu..%lu) (hwnd=%p)\n",
+           pair_count, width, drifted_start, it->second.offset, it->second.offset, sel_end,
            reinterpret_cast<void*>(key.focus_hwnd));
     return true;
 }
@@ -1368,7 +1403,11 @@ std::wstring CopySelectedText(HWND hwnd) {
     // current block is the document's first.
     if (em_path && EditCaretTracker_HasLeadingCrlf(text)) {
         const size_t pairs = EditCaretTracker_CountLeadingCrlfPairs(text);
-        if (EditCaretTracker_CompensateLeadingNewlines(hwnd, pairs)) {
+        if (EditCaretTracker_CompensateLeadingNewlines(hwnd, text)) {
+            // The trim is in CLIPBOARD units: the pairs are literally
+            // "\r\n" in the capture text, so each pair strips exactly 2
+            // units regardless of the document's storage width (REQ-F1:
+            // only the DOCUMENT-side advance is width-dependent).
             text.erase(0, 2 * pairs);
             // Shape only (same R5 rule as /002 - never log user content).
             size_t nl2 = 0;
