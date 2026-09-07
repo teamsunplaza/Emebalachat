@@ -529,16 +529,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-025 (Phase A §2.1.A3-25): the drag pair is passed through as
         // well, but ONLY drives the new "번역툴팁" submenu check marks - the
         // hover tip keeps showing the type pair.
+        // REQ-029-B (design §2.1 change 2): the Engine submenu check mark is
+        // driven by the USER'S preference (config engine_type), not the
+        // displayed engine name. Rule: "local" -> Local checked; "google" and
+        // "auto" -> Google checked (Auto is Google-family for display; the
+        // flag never affects routing - SetEngineType is untouched).
         tray.UpdateStatus(
             hook.IsActive(),
-            engine.GetActiveEngineName(),
+            engine.GetActiveEngineName(),          // display-only (tooltip + log)
             snap.type_source_language,
             snap.type_target_language,
             snap.drag_source_language,
             snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
-            badge.IsVisible()
+            badge.IsVisible(),
+            /* preferred_engine_google = */ (snap.engine_type != "local")
         );
     };
 
@@ -733,6 +739,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     };
 
     trayCallbacks.on_select_engine = [&](int engine_idx) {
+        // REQ-029-B (design §2.1 change 4): the tray engine switch was a
+        // complete log blind spot (decisions.md 2026-09-07 11:40 item 3 -
+        // "why did it go back to local" was untraceable). 001 records the
+        // user's request against the PREVIOUS persisted config; 002 confirms
+        // the switch persisted and what the engine now honestly reports.
+        const char* requested = (engine_idx == 0) ? "google" : "local";
+        DIAG_F("MAIN/on_select_engine/001: user selected engine=%s (prev config=%s)\n",
+               requested, config.GetSnapshot().engine_type.c_str());
         // I4: runtime mutations go through the locked setters because the hook
         // and worker threads read these fields concurrently.
         if (engine_idx == 0) {
@@ -744,6 +758,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         config.SaveToFile();
         refresh_tray();
+        DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
+               engine.GetActiveEngineName().c_str());
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the

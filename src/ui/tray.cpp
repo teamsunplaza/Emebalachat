@@ -236,11 +236,16 @@ void SystemTray::UpdateStatus(
     std::string_view drag_tgt_code,
     bool auto_send,
     bool sound_enabled,
-    bool badge_visible
+    bool badge_visible,
+    bool preferred_engine_google
 ) {
     bool iconChanged = (is_active_ != active);
     is_active_ = active;
+    // REQ-029-B: display-only capture (tooltip + tray_update log below); the
+    // Engine submenu check mark now reads preferred_engine_google_ instead.
     active_engine_ = active_engine;
+    // REQ-029-B (design §2.1 change 2): single source of truth for the check.
+    preferred_engine_google_ = preferred_engine_google;
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
@@ -285,8 +290,14 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
     // 2. Engine submenu
+    // REQ-029-B (design §2.1 change 2): the check mark follows the USER'S
+    // preferred engine (config engine_type), not the displayed engine name.
+    // Before B-7a a missing local model made the engine report "Google
+    // Translate (Model Not Found)" and this substring search lied - Google
+    // appeared checked while Local was configured. active_engine_ remains
+    // display-only.
     HMENU hEngineMenu = ::CreatePopupMenu();
-    bool isGoogle = (active_engine_.find("Google") != std::string::npos);
+    bool isGoogle = preferred_engine_google_;
     ::AppendMenuW(hEngineMenu, MF_STRING | (isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (!isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());

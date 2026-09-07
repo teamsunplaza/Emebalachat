@@ -470,6 +470,8 @@ void KeyboardHook::SetActive(bool active) {
         // REQ-025: drag pair passed through (drives the 번역툴팁 submenu
         // check marks only; the tip keeps the type pair).
         const AppConfig::Snapshot snap = config_.GetSnapshot();
+        // REQ-029-B (design §2.1 change 2): check mark follows the user's
+        // preferred engine; the engine string above stays display-only.
         tray_.UpdateStatus(
             active,
             snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -479,7 +481,8 @@ void KeyboardHook::SetActive(bool active) {
             snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
-            badge_.IsVisible()
+            badge_.IsVisible(),
+            /* preferred_engine_google = */ (snap.engine_type != "local")
         );
         // REQ-R08 visual feedback: the floating badge above IS the visual
         // state indicator (green=active/gray=disabled, and it renders even
@@ -535,6 +538,8 @@ void KeyboardHook::CycleTargetLanguage() {
     // Badge and tray display the TYPE pair (plan §2.4). REQ-025: drag pair
     // mirrors the snapshot for the 번역툴팁 submenu check marks.
     badge_.SetLanguages(ToUtf16(snap.type_source_language), ToUtf16(snap.type_target_language));
+    // REQ-029-B (design §2.1 change 2): check mark follows the user's
+    // preferred engine; the engine string above stays display-only.
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -544,7 +549,8 @@ void KeyboardHook::CycleTargetLanguage() {
         snap.drag_target_language,
         snap.auto_send,
         snap.sound_enabled,
-        badge_.IsVisible()
+        badge_.IsVisible(),
+        /* preferred_engine_google = */ (snap.engine_type != "local")
     );
     PlayLangChange();
 }
@@ -560,6 +566,8 @@ void KeyboardHook::ToggleAutoSend() {
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
     // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
     // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
+    // REQ-029-B (design §2.1 change 2): check mark follows the user's
+    // preferred engine; the engine string above stays display-only.
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -569,7 +577,8 @@ void KeyboardHook::ToggleAutoSend() {
         snap.drag_target_language,
         next,
         snap.sound_enabled,
-        badge_.IsVisible()
+        badge_.IsVisible(),
+        /* preferred_engine_google = */ (snap.engine_type != "local")
     );
     PlayModeChange();
 }

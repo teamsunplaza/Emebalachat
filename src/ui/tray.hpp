@@ -48,6 +48,13 @@ public:
     // REQ-025: src/tgt are the TYPE pair (tip text + type submenu checks);
     // drag_src/drag_tgt drive ONLY the new drag submenu check marks - the tip
     // always keeps displaying the type pair (Phase A §2.1.A3-25 design).
+    //
+    // REQ-029-B (design §2.1 change 2): preferred_engine_google is the single
+    // source of truth for the Engine submenu check mark. It carries the USER'S
+    // configured preference (config engine_type != "local"), so the check can
+    // no longer lie when the local model is missing and the engine honestly
+    // reports "Local (Model Missing)". active_engine above stays a DISPLAY-ONLY
+    // string (tooltip + tray_update log); it is never used for check decisions.
     void UpdateStatus(
         bool active,
         std::string_view active_engine,
@@ -57,7 +64,8 @@ public:
         std::string_view drag_tgt_code,
         bool auto_send,
         bool sound_enabled,
-        bool badge_visible
+        bool badge_visible,
+        bool preferred_engine_google
     );
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
@@ -81,7 +89,14 @@ private:
     Callbacks callbacks_;
 
     bool is_active_ = true;
+    // REQ-029-B: display-only engine name (tooltip + tray_update log). The
+    // Engine submenu check mark NO LONGER reads this string.
     std::string active_engine_ = "Google Translate";
+    // REQ-029-B (design §2.1 change 2): preferred engine as configured by the
+    // user. true = Google (also covers "auto", which is Google-family for
+    // display purposes), false = Local. Default true matches the pre-existing
+    // active_engine_ default so the menu is coherent before the first refresh.
+    bool preferred_engine_google_ = true;
     std::string src_code_ = "AUTO";
     std::string tgt_code_ = "EN";
     // REQ-025: drag-pair check-mark state for the "번역툴팁" submenus.
