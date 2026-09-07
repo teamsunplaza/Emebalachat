@@ -6382,6 +6382,113 @@ void TestReqF2Category0Accumulation() {
     }
 }
 
+// REQ-F5 (docs/260908_0001 session, verification log emebalachat_260908082659
+// L435-472/L504-520/L556-607): the residual of the F2 ledger in EM-tracked
+// editors (Notepad). After a successful paste the send gate leaves the
+// translation in the input and the stored offset is the paste END; the user's
+// bare Enter then produces an EMPTY capture ([offset..caret) empty) which the
+// old R5 hold (outside the 2 s paste window) swallowed with hold_send +
+// no-selection notice. The fix promotes that exact geometry to the ExactMatch
+// send-of-output contract: empty capture + valid ledger for THIS window +
+// live caret == remembered paste-end -> hand Enter to the app. Contract:
+//  (a) pure predicate matrix (EmptyCapturePromotesToSend): only the exact
+//      (empty && !smart && valid-ledger && caret==end) combination promotes;
+//      every other combination refuses.
+//  (b) live sequence on a real EM-capable ES_MULTILINE EDIT control (the
+//      proven REQ-027 sample pattern): caret placed at the paste end -> the
+//      gate arithmetic promotes; caret moved off the end (deletion / arrow)
+//      -> refuses - the live caret and the remembered paste end are both
+//      EM_GETSEL UTF-16 offsets, so equality is the "no edit since paste"
+//      proof and any drift breaks it.
+void TestReqF5EmptyCaptureEnterPromotion() {
+    std::cout << "[TEST] REQ-F5 empty-capture Enter promotion (paste-end caret geometry)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) pure predicate matrix ----
+    static_assert(EmptyCapturePromotesToSend(true, false, true, true),
+                  "REQ-F5: empty + valid ledger + caret==paste-end -> promote");
+    static_assert(!EmptyCapturePromotesToSend(true, false, true, false),
+                  "REQ-F5: caret moved off paste-end -> refuse (deletion/arrow)");
+    static_assert(!EmptyCapturePromotesToSend(true, false, false, true),
+                  "REQ-F5: no ledger / different hwnd -> refuse");
+    static_assert(!EmptyCapturePromotesToSend(true, true, true, true),
+                  "REQ-F5: smart bypass keeps its own send-through contract");
+    static_assert(!EmptyCapturePromotesToSend(false, false, true, true),
+                  "REQ-F5: non-empty capture (typed tail) never promotes - normal pipeline");
+
+    // ---- (b) live gate arithmetic on a real EM-capable EDIT control ----
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_ReqF5Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"reqf5", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-F5: ES_MULTILINE EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on the EDIT control unavailable; REQ-F5 live sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // Post-paste geometry: the translation sits in the input and the
+        // caret rests at its end (the REQ-027 B-6a post-newline save stores
+        // exactly this). The remembered paste end is sampled the same way
+        // the worker does at paste time (EditCaretTracker_SampleCaret).
+        ::SetWindowTextW(edit, L"le lesz fordítva");
+        const DWORD paste_pos = 5; // a concrete non-zero post-paste caret
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(paste_pos),
+                       static_cast<LPARAM>(paste_pos));
+        const DWORD paste_end = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(paste_end == paste_pos, "REQ-F5: remembered paste-end sampled at the set caret");
+        const bool ledger_ok = (paste_end != kEditCaretUnknown);
+
+        // Promotion: empty capture, caret still at the paste end.
+        const DWORD now_caret = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(EmptyCapturePromotesToSend(true, false, ledger_ok, now_caret == paste_end),
+                   "REQ-F5: live caret == paste-end -> promote to send-of-output");
+
+        // Refusal: caret moved off the end (backspace / arrow move).
+        const DWORD moved = paste_pos > 1 ? paste_pos - 2 : paste_pos + 1;
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(moved),
+                       static_cast<LPARAM>(moved));
+        const DWORD now_moved = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(!EmptyCapturePromotesToSend(true, false, ledger_ok, now_moved == paste_end),
+                   "REQ-F5: moved caret != paste-end -> refuse (no false promotion on edit)");
+
+        // Refusal: the remembered end sentinel (no memory) can never equal a
+        // real caret, and the worker folds unknown into an invalid ledger.
+        TEST_CHECK(!EmptyCapturePromotesToSend(true, false, false, true),
+                   "REQ-F5: no ledger / unknown offset -> refuse");
+
+        ::SendMessageW(edit, EM_SETSEL, 0, 0);
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-F5 empty-capture Enter promotion tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-F5 empty-capture Enter promotion tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-F1 (docs/260908_0001 session, user log emebalachat_260908062830
 // L546-550/L787-791/L1120-1124): first-character residue ahead of the pasted
 // translation ("오"/"처"/"왜 "). Root cause: the compensation advanced the
@@ -7297,6 +7404,7 @@ int main() {
     TestReq036MultiBlockNoRetranslation();
     TestReqF1FirstCharResidue();
     TestReqF2Category0Accumulation();
+    TestReqF5EmptyCaptureEnterPromotion();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();

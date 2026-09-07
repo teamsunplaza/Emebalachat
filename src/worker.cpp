@@ -266,6 +266,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
         last_paste_target_ = nullptr;
         last_paste_text_.clear();
+        last_paste_end_offset_ = kEditCaretUnknown;
         return;
     }
     const bool should_translate = !line.empty() && !was_smart_bypassed;
@@ -326,6 +327,43 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             SendEnterKey(task.is_shift_enter);
             EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
         }
+        return;
+    }
+    // REQ-F5 (session 260908_0001): POST-window empty-capture promotion. The
+    // 036 paste-window suppress above covers only the first 2 s. After that,
+    // an empty capture whose live caret equals the remembered paste-end
+    // offset is the send-of-output geometry (auto_send=0 left the translation
+    // sitting there; the user's bare Enter is now a SEND): promote to the
+    // ExactMatch send-through contract instead of the 035 hold. Every other
+    // empty capture (moved caret, deletion, typed-then-cleared, no ledger,
+    // different hwnd, unknown offset) refuses and keeps the 035 hold.
+    const bool last_paste_valid = (last_paste_target_ == task.target_hwnd) &&
+                                  (last_paste_end_offset_ != kEditCaretUnknown);
+    const DWORD now_caret =
+        last_paste_valid ? EditCaretTracker_SampleCaret(task.target_hwnd)
+                         : kEditCaretUnknown;
+    if (EmptyCapturePromotesToSend(line.empty(), was_smart_bypassed, last_paste_valid,
+                                   now_caret == last_paste_end_offset_)) {
+        DIAG_F(
+                "WORKER/ExecuteTask/039: empty capture on bare-Enter path promoted to "
+                "send-of-output (caret %lu == paste-end %lu, no edit since paste); "
+                "Enter handed to the app\n",
+                static_cast<unsigned long>(now_caret),
+                static_cast<unsigned long>(last_paste_end_offset_));
+        DIAG_LOG("PIPELINE", "stage=empty_capture decision=promote_exact_match action=send_through_no_notice "
+                             "duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        {
+            const DWORD pre_caret = now_caret;
+            ReleaseSelectionOnce();
+            SendEnterKey(task.is_shift_enter);
+            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+        }
+        // Same one-shot ledger contract as the ExactMatch skip: this output
+        // has now been sent, so a fresh accumulation context starts.
+        last_paste_target_ = nullptr;
+        last_paste_text_.clear();
+        last_paste_end_offset_ = kEditCaretUnknown;
         return;
     }
     if (empty_capture_hold && empty_capture_cb_) {
@@ -436,6 +474,11 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // clears it; see the maintenance block at task end.
             last_paste_target_ = task.target_hwnd;
             last_paste_text_ = translated;
+            // REQ-F5: remember the paste END offset (live caret right after
+            // Ctrl+V consumed the selection) so a later EMPTY capture whose
+            // live caret sits at exactly this offset proves "no edit since
+            // the paste" and promotes to send-of-output instead of hold_send.
+            last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);
         }
         // REQ-027 B-6a (design 210000_architect §2.2 option (a)): the offset
         // saved here becomes the START of the NEXT Enter's EM_SETSEL range, so
@@ -568,6 +611,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     if (!pasted || last_paste_target_ != task.target_hwnd) {
         last_paste_target_ = nullptr;
         last_paste_text_.clear();
+        last_paste_end_offset_ = kEditCaretUnknown;
     }
 
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",

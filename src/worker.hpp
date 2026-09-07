@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "engine.hpp"
 #include "ui/badge.hpp"
+#include "win32_input.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -129,6 +130,35 @@ constexpr bool PastedPrefixNeedsSkip(bool capture_equals_last_paste, bool smart_
     return !captured_empty && !smart_bypassed && capture_equals_last_paste;
 }
 
+// REQ-F5 (docs/260908_0001 session, verification log
+// emebalachat_260908082659 L435-472/L504-520/L556-607): the bare-Enter path
+// whose capture is EMPTY (len=0). The old R5 hold (EmptyCaptureNeedsHold) and
+// the REQ-034 paste-window suppress decided this case by TIME alone: inside
+// 2 s of the last paste -> silent send-through (036); outside -> hold_send +
+// no-selection notice (035). The F5 residual is the OUTSIDE case in an EM
+// tracked editor (Notepad): after a successful paste the send gate left the
+// translation in the input and the stored offset is the paste END. A bare
+// Enter then yields [offset..caret) = empty selection -> empty capture (the
+// "refusing stale read / provably empty" signatures), which is the user's
+// SEND-of-output intent - not a no-selection mistake. The geometry proof of
+// "no edit since the paste" is: live caret == stored offset == paste end.
+// This pure predicate is the promotion decision as ONE definition shared by
+// worker.cpp and the unit tests (same discipline as EmptyCaptureNeedsHold):
+//   - captured_empty:           only the empty-capture case is expanded.
+//   - smart_bypassed:            disjoint positive decision, never promoted.
+//   - last_paste_valid (hwnd):   the ledger has an entry for THIS window.
+//   - caret_equals_paste_end:    live caret == remembered paste-end offset.
+// Both offsets are UTF-16 code units from EM_GETSEL; kEditCaretUnknown means
+// "sampling failed / untracked", which can never equal (a real caret >= 0) nor
+// (the stored end, also >= 0) - so an Unknown on EITHER side refuses, never
+// promotes on a coincidence. A moved caret (backspace deleting pasted text,
+// arrow-move, or new typing past the end) breaks the equality -> refuse ->
+// existing behavior. All three must hold to promote.
+constexpr bool EmptyCapturePromotesToSend(bool captured_empty, bool smart_bypassed,
+                                          bool last_paste_valid, bool caret_equals_paste_end) {
+    return captured_empty && !smart_bypassed && last_paste_valid && caret_equals_paste_end;
+}
+
 // REQ-F2: pure decomposition of a capture against the last-paste ledger,
 // shared by worker.cpp and the unit tests (ONE definition discipline). The
 // verdict decides the accumulation defense in ExecuteTask:
@@ -223,6 +253,14 @@ private:
     // last_paste_ms_'s design intent). hwnd==nullptr means "no memory".
     HWND last_paste_target_ = nullptr;
     std::wstring last_paste_text_;
+    // REQ-F5: the pasted text's END offset in the tracked window, sampled
+    // (EM_GETSEL) at the moment of the last successful paste - the geometry
+    // proof that a later empty capture means "no edit since the paste".
+    // kEditCaretUnknown (UINT32_MAX, from win32_input.hpp) = no valid memory;
+    // refreshed in lockstep with last_paste_target_/last_paste_text_ and
+    // cleared in the same maintenance block, so the three never diverge.
+    // Single-worker-thread discipline, same as the ledger pair above.
+    DWORD last_paste_end_offset_ = kEditCaretUnknown;
 
     std::mutex queue_mutex_;
     std::condition_variable cv_;
