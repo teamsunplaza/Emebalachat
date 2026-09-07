@@ -10,6 +10,8 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <string>
+#include <string_view>
 #include <thread>
 
 namespace emebalachat {
@@ -103,6 +105,66 @@ constexpr bool EqualsSourceNeedsSendThrough(bool captured_empty, bool smart_bypa
     return !captured_empty && !smart_bypassed;
 }
 
+// REQ-F2 (session 260908_0001, log emebalachat_260908062830 L1561/L1858/L1915):
+// category=0 apps (CategoryB, non-EM focus control - EVA_Window_Dblclk) fall
+// back to SelectMessageBlock's whole-input geometry [0..caret). With
+// auto_send=0 the send gate skips Enter, so the pasted translation REMAINS in
+// the input. The next bare Enter then re-captures that leftover verbatim
+// (44 -> 112 -> 200-char accumulation in the log), and each round trip
+// re-translates the previous output - compounding drift. The worker keeps a
+// "last paste ledger": (target hwnd, pasted text) of the most recent
+// SUCCESSFUL paste. This pure predicate decides what a capture that matches
+// the remembered prefix means, as ONE definition shared by worker.cpp and the
+// unit tests (same discipline as EmptyCaptureNeedsHold):
+//  - capture_equals_last_paste: the input still holds EXACTLY what we pasted
+//    last time. The user's bare Enter is a SEND of our own output, never a
+//    re-translation request - re-running the engine would risk rephrasing
+//    (or, worse, identity churn). True -> skip translation, hand Enter to
+//    the app exactly like the smart-bypass send-through contract.
+//  - smart_bypassed: disjoint positive decision, never overridden.
+//  - captured_empty: upstream R5 hold owns the empty case; this predicate
+//    never sees it in practice, but refuses it for safety.
+constexpr bool PastedPrefixNeedsSkip(bool capture_equals_last_paste, bool smart_bypassed,
+                                     bool captured_empty) {
+    return !captured_empty && !smart_bypassed && capture_equals_last_paste;
+}
+
+// REQ-F2: pure decomposition of a capture against the last-paste ledger,
+// shared by worker.cpp and the unit tests (ONE definition discipline). The
+// verdict decides the accumulation defense in ExecuteTask:
+//  - ExactMatch:    input still holds EXACTLY the pasted translation ->
+//                   the Enter is a send-of-output (skip re-translation).
+//  - PrefixWithTail: input holds the pasted translation followed by newly
+//                   typed text -> translate ONLY the tail (offset =
+//                   last_paste.size(), a whole-unit boundary: last_paste is
+//                   a complete stored string, so the split can never land
+//                   inside a surrogate pair).
+//  - NoMatch:       anything else - user edited our output, deleted from
+//                   it, typed BEFORE it, or the capture belongs to a
+//                   different context -> legacy behavior.
+// Both inputs are already CRLF-normalized by the caller.
+enum class PasteLedgerVerdict { NoMatch, ExactMatch, PrefixWithTail };
+
+inline PasteLedgerVerdict AnalyzeCaptureVsLastPaste(std::wstring_view captured,
+                                                    std::wstring_view last_paste) {
+    if (last_paste.empty() || captured.empty() ||
+        captured.size() < last_paste.size()) {
+        return PasteLedgerVerdict::NoMatch;
+    }
+    bool prefix_equal = true;
+    for (size_t i = 0; i < last_paste.size(); ++i) {
+        if (captured[i] != last_paste[i]) {
+            prefix_equal = false;
+            break;
+        }
+    }
+    if (!prefix_equal) {
+        return PasteLedgerVerdict::NoMatch;
+    }
+    return captured.size() == last_paste.size() ? PasteLedgerVerdict::ExactMatch
+                                               : PasteLedgerVerdict::PrefixWithTail;
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);
@@ -152,6 +214,15 @@ private:
     // only on the pipeline worker thread - the atomic is defensive
     // (design §2.2.1), so relaxed ordering is sufficient. 0 = never pasted.
     std::atomic<uint64_t> last_paste_ms_{0};
+
+    // REQ-F2: last paste ledger - the (target, pasted text) memory that the
+    // capture stage compares against (see PastedPrefixNeedsSkip above).
+    // At most one entry: only the most recent successful paste matters. All
+    // reads/writes happen on the pipeline worker thread inside ExecuteTask;
+    // plain members are sufficient (same single-thread discipline as
+    // last_paste_ms_'s design intent). hwnd==nullptr means "no memory".
+    HWND last_paste_target_ = nullptr;
+    std::wstring last_paste_text_;
 
     std::mutex queue_mutex_;
     std::condition_variable cv_;

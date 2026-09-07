@@ -206,6 +206,68 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // (lengths/booleans only; never the captured content itself).
     const bool was_smart_bypassed =
         !line.empty() && !ShouldTranslate(line, snap.type_target_language, snap.type_source_language);
+
+    // REQ-F2 (session 260908_0001): last paste ledger comparison. In
+    // category=0 apps the fallback selection is the WHOLE input
+    // [0..caret), and with auto_send=0 the send gate leaves our last pasted
+    // translation sitting there. This Enter's capture may therefore be:
+    //   (i)  EXACTLY the last pasted text  -> the user is pressing Enter to
+    //        SEND our own output: skip re-translation entirely and hand
+    //        Enter to the app (the L1297-1309 identity round trip in the
+    //        user log was this case - Google churned the sentence and the
+    //        "worked" appearance was a re-translation in disguise).
+    //   (ii) the last pasted text PLUS a newly typed tail -> translate
+    //        ONLY the tail and paste last_paste + tail_translation, so the
+    //        already-translated prefix is never re-translated (each
+    //        re-translation compounds the accumulation: 44 -> 112 -> 200
+    //        chars in the log).
+    //   (iii) neither (user edited our output, or a different window /
+    //        fresh context) -> legacy behavior, ledger cleared.
+    // The ledger is per (target hwnd) and both sides are already
+    // CRLF-normalized (line passed through NormalizeNewlinesToCRLF above;
+    // last_paste_text_ is stored from the equally normalized `translated`),
+    // so the comparison is representation-stable. Edit-detection (deletion
+    // warning in the delegation) falls out naturally: any change makes the
+    // exact/prefix tests fail and route to (iii).
+    bool pasted_prefix_skip = false;
+    std::wstring pasted_prefix_text;   // (ii): the remembered verbatim prefix
+    std::wstring untranslated_tail;    // (ii): the newly typed tail to translate
+    if (!line.empty() && last_paste_target_ == task.target_hwnd) {
+        switch (AnalyzeCaptureVsLastPaste(line, last_paste_text_)) {
+            case PasteLedgerVerdict::ExactMatch:
+                pasted_prefix_skip = PastedPrefixNeedsSkip(true, was_smart_bypassed, false);
+                break;
+            case PasteLedgerVerdict::PrefixWithTail:
+                // Tail offset = last_paste_text_.size(): a whole-unit
+                // boundary (last_paste_text_ is a complete stored string),
+                // so the split can never land inside a surrogate pair.
+                pasted_prefix_text = last_paste_text_;
+                untranslated_tail.assign(line, last_paste_text_.size(),
+                                         line.size() - last_paste_text_.size());
+                break;
+            case PasteLedgerVerdict::NoMatch:
+                break;
+        }
+    }
+    if (pasted_prefix_skip) {
+        DIAG_F("WORKER/ExecuteTask/038: capture equals last pasted translation (len=%zu); Enter handed to the app (send-of-output, no re-translation)\n",
+               line.size());
+        DIAG_LOG("PIPELINE", "stage=send_through decision=pasted_prefix_skip duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        // Same contract as the smart-bypass send-through below: release the
+        // block selection (Ctrl+V of the next task must not clobber it),
+        // hand the intercepted Enter to the app, and clear the ledger (this
+        // output has now been sent; a fresh accumulation context starts).
+        {
+            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
+            ReleaseSelectionOnce();
+            SendEnterKey(task.is_shift_enter);
+            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+        }
+        last_paste_target_ = nullptr;
+        last_paste_text_.clear();
+        return;
+    }
     const bool should_translate = !line.empty() && !was_smart_bypassed;
     DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
@@ -301,15 +363,28 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     // Indicate translating state on UI pill
     badge_.SetStatus(BadgeStatus::Translating);
-    DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu",
-             engine_.GetActiveEngineName().c_str(), line.size());
+    // REQ-F2 (ii): when the capture is last-paste + a newly typed tail, the
+    // ENGINE sees only the tail (the remembered prefix is verbatim - the
+    // compounding defect was the whole capture re-entering translation),
+    // and the paste recomposes prefix + tail translation so the whole-input
+    // selection geometry is still fully covered by the replacement.
+    const std::wstring& engine_input = untranslated_tail.empty() ? line : untranslated_tail;
+    DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu%s",
+             engine_.GetActiveEngineName().c_str(), engine_input.size(),
+             untranslated_tail.empty() ? "" : " (req_f2 tail_only; prefix held verbatim)");
 
     // REQ-R02: capture the explicit engine status. An empty result is no longer
     // silent - the status below distinguishes privacy-block from engine failure.
     TranslationStatus status = TranslationStatus::Ok;
     const ULONGLONG t_translate_start = ::GetTickCount64();
     std::wstring translated =
-        NormalizeNewlinesToCRLF(engine_.Translate(line, snap.type_source_language, snap.type_target_language, &status));
+        NormalizeNewlinesToCRLF(engine_.Translate(engine_input, snap.type_source_language, snap.type_target_language, &status));
+    if (!untranslated_tail.empty() && !translated.empty()) {
+        // Recompose: [remembered verbatim prefix][tail translation]. The
+        // pasted result must equal the full input span so the selection is
+        // wholly consumed by Ctrl+V (same guarantee as the normal path).
+        translated.insert(translated.begin(), pasted_prefix_text.begin(), pasted_prefix_text.end());
+    }
     DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
                          "out_len=%zu out=\"%s\"",
              static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
@@ -356,6 +431,11 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // Success-only: a failed paste (H1 abort) must not open a
             // suppression window.
             last_paste_ms_.store(::GetTickCount64(), std::memory_order_relaxed);
+            // REQ-F2: remember this paste for the next capture comparison
+            // (both sides CRLF-normalized). Failure of the next comparison
+            // clears it; see the maintenance block at task end.
+            last_paste_target_ = task.target_hwnd;
+            last_paste_text_ = translated;
         }
         // REQ-027 B-6a (design 210000_architect §2.2 option (a)): the offset
         // saved here becomes the START of the NEXT Enter's EM_SETSEL range, so
@@ -470,6 +550,26 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  h1_ok ? "send_gate" : "h1_foreground_mismatch",
                  reinterpret_cast<const void*>(task.target_hwnd));
     }
+
+    // REQ-F2 ledger maintenance. The ledger is a ONE-SHOT memory of the most
+    // recent paste into the CURRENT window context. It must never survive a
+    // context where it could misfire:
+    //   - !pasted (translation empty / identity / H1 abort): nothing new
+    //     was deposited - the previous memory no longer corresponds to any
+    //     live input state. Clear.
+    //   - different target hwnd: the previous paste went to another window.
+    //     Clear (a stale cross-window memory is worse than none).
+    //   - successful paste: refreshed above - keep (this is the branch the
+    //     next Enter's capture comparison reads).
+    // The (ii) prefix path lands here with pasted==true and its ledger
+    // already refreshed to the recomposed full text - the correct new
+    // memory: if the user keeps the recomposed output and presses Enter,
+    // the skip applies to the WHOLE recomposed text.
+    if (!pasted || last_paste_target_ != task.target_hwnd) {
+        last_paste_target_ = nullptr;
+        last_paste_text_.clear();
+    }
+
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",
              pasted ? 1 : 0, ::GetTickCount64() - t_task_start);
 }

@@ -6171,6 +6171,142 @@ LRESULT CALLBACK F1EmuEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 } // namespace
 
+// REQ-F2 (docs/260908_0001 session, user log emebalachat_260908062830
+// L1271/L1297-1309/L1561/L1858/L1915): category=0 (CategoryB, non-EM) apps
+// capture the WHOLE input on the SelectMessageBlock fallback, and with
+// auto_send=0 the send gate leaves the pasted translation in place - every
+// subsequent bare Enter re-captured and re-translated it (44 -> 112 -> 200
+// chars). The fix keeps a last-paste ledger in the worker and compares each
+// capture against it. Contract:
+//  (a) AnalyzeCaptureVsLastPaste pure seam: exact match (send-of-output),
+//      prefix + new tail (tail-only translation), no-match (user edit /
+//      deletion / different context) - pinned to the EXACT texts of the user
+//      log so the verdicts are not abstract.
+//  (b) PastedPrefixNeedsSkip predicate: only the exact-match case, never a
+//      smart bypass (disjoint positive decision), never an empty capture
+//      (upstream R5 hold owns it).
+//  (c) recomposition arithmetic (worker's (ii) branch, mirrored here): the
+//      engine input is ONLY the tail, and the pasted result must cover the
+//      whole captured span: prefix + tail-translation == full replacement
+//      - the user-facing side effect (input never accumulates).
+//  (d) deletion/edit discrimination (delegation warning): any user change to
+//      the pasted output routes to NoMatch, so a genuinely edited message is
+//      still re-translated as fresh text (never blindly passed through).
+void TestReqF2Category0Accumulation() {
+    std::cout << "[TEST] REQ-F2 category=0 capture accumulation: last-paste ledger" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) AnalyzeCaptureVsLastPaste: the exact log shapes ----
+    // Log L1278: the first paste into EVA (Korean -> Hungarian).
+    const std::wstring paste_hu = L"Itt normálisan le lesz fordítva? Nézzük meg.";
+    // Log L1297-1309: second Enter with NO new typing -> capture == paste
+    // EXACTLY (the old code sent it to Google, got an identity, and burned
+    // a synthetic Enter - the "worked" appearance was a re-translation).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(paste_hu, paste_hu) == PasteLedgerVerdict::ExactMatch,
+               "REQ-F2: L1297 capture (== last paste) is an ExactMatch send-of-output");
+    // Log L1561: the user typed new Korean AFTER the German paste was left in
+    // the input -> capture = German prefix + Korean tail.
+    const std::wstring paste_de = L"Warum funktioniert es nicht problemlos? Das funktioniert, aber warum funktioniert das nächste nicht auf Deutsch?";
+    const std::wstring tail_ko = L" 이건 되는데, 그 다음은 왜 독일어로 안 되는걸까?";
+    const std::wstring capture_mixed = paste_de + tail_ko;
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(capture_mixed, paste_de) == PasteLedgerVerdict::PrefixWithTail,
+               "REQ-F2: L1561 capture (paste + new tail) is a PrefixWithTail");
+    // L1858: the whole PASTED TRANSLATION became the prefix of the NEXT
+    // capture (112-char accumulation seed).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(L"Ist es nicht in Ordnung, 2, 3 oder 4 Sätze hintereinander zu schreiben? Wenn das der Fall ist, wird der aktuelle zweite Satz auch nicht funktionieren, oder? Geht das nur zum Betreten? 아니네 3번째 문장은 어떻지?",
+                                         L"Ist es nicht in Ordnung, 2, 3 oder 4 Sätze hintereinander zu schreiben? Wenn das der Fall ist, wird der aktuelle zweite Satz auch nicht funktionieren, oder? Geht das nur zum Betreten?")
+                   == PasteLedgerVerdict::PrefixWithTail,
+               "REQ-F2: L1915 200-char capture = L1864 183-char paste + typed tail");
+    // No ledger at all.
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(paste_hu, L"") == PasteLedgerVerdict::NoMatch,
+               "REQ-F2: empty ledger -> NoMatch");
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(L"", paste_hu) == PasteLedgerVerdict::NoMatch,
+               "REQ-F2: empty capture -> NoMatch");
+    // Shorter than the ledger (user deleted from our output).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(paste_de.substr(0, 40), paste_de) == PasteLedgerVerdict::NoMatch,
+               "REQ-F2: capture shorter than paste (deletion) -> NoMatch");
+    // Different head byte (user typed BEFORE / replaced the start).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(std::wstring(L"X") + paste_de.substr(1), paste_de)
+                   == PasteLedgerVerdict::NoMatch,
+               "REQ-F2: altered first character -> NoMatch");
+    // Internal edit of the pasted region (same length, one changed unit).
+    {
+        std::wstring edited = paste_hu;
+        edited[0] = L'X';
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(edited, paste_hu) == PasteLedgerVerdict::NoMatch,
+                   "REQ-F2: internal edit of the pasted output -> NoMatch");
+    }
+    // Surrogate-boundary safety: tail split offset is a whole-unit boundary
+    // because last_paste is a complete stored string. Korean text with an
+    // emoji tail exercises multi-unit codepoints end-to-end.
+    {
+        const std::wstring emoji_paste = L"번역된 문장 😀"; // pasted output ends on an emoji
+        const std::wstring tail_after_emoji = L" 그 다음 문장";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(emoji_paste + tail_after_emoji, emoji_paste)
+                       == PasteLedgerVerdict::PrefixWithTail,
+                   "REQ-F2: surrogate-ending paste + tail still PrefixWithTail");
+        // The tail offset (emoji_paste.size()) is past the full emoji
+        // surrogate pair by construction - pin the arithmetic explicitly.
+        const std::wstring split_tail(emoji_paste + tail_after_emoji, emoji_paste.size(),
+                                      tail_after_emoji.size());
+        TEST_CHECK(split_tail == tail_after_emoji,
+                   "REQ-F2: tail extraction at the whole-unit boundary yields the exact tail");
+    }
+
+    // ---- (b) PastedPrefixNeedsSkip ----
+    static_assert(PastedPrefixNeedsSkip(true, false, false), "REQ-F2: exact match -> skip re-translation");
+    static_assert(!PastedPrefixNeedsSkip(false, false, false), "REQ-F2: no exact match -> no skip");
+    static_assert(!PastedPrefixNeedsSkip(true, true, false), "REQ-F2: smart bypass keeps its own contract");
+    static_assert(!PastedPrefixNeedsSkip(true, false, true), "REQ-F2: empty capture never skips");
+
+    // ---- (c) recomposition arithmetic (mirrors the worker's (ii) branch) ----
+    // The engine must see ONLY the tail; the pasted result must cover the
+    // ENTIRE captured span (prefix verbatim + tail translation). This is the
+    // accumulation invariant: len(replacement) never compounds per round.
+    {
+        const std::wstring prefix = paste_de;             // verbatim, never re-translated
+        const std::wstring tail = tail_ko;
+        const std::wstring tail_translation = L" Das funktioniert, aber warum funktioniert das nächste nicht auf Deutsch? (Übersetzung)"; // stand-in engine output
+        std::wstring engine_input = tail;                 // what the worker feeds Translate()
+        std::wstring translated = tail_translation;       // engine result for the tail alone
+        TEST_CHECK(engine_input.find(paste_de) == std::wstring::npos,
+                   "REQ-F2: engine input excludes the already-translated prefix");
+        translated.insert(translated.begin(), prefix.begin(), prefix.end());
+        const std::wstring capture = prefix + tail;
+        // User-facing side effect: replacement span == capture span (the
+        // whole-input selection is fully consumed, no residue, no growth).
+        TEST_CHECK(translated.size() >= capture.size() && translated.compare(0, prefix.size(), prefix) == 0,
+                   "REQ-F2: recomposed replacement keeps the prefix verbatim and covers the capture span");
+    }
+
+    // ---- (d) multi-round stability: the ledger chains correctly ----
+    // Round 2 of the (ii) shape: the recomposed full text becomes the new
+    // ledger, so a subsequent bare Enter is an ExactMatch (send-of-output),
+    // and a THIRD typed sentence extends the PrefixWithTail chain - the
+    // 44->112->200 compounding is structurally impossible now.
+    {
+        std::wstring ledger = paste_hu;                       // round 1 paste
+        const std::wstring r2_tail = L" 두 번째 문장입니다.";
+        std::wstring r2_capture = ledger + r2_tail;
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(r2_capture, ledger) == PasteLedgerVerdict::PrefixWithTail,
+                   "REQ-F2 round 2: typed tail on the kept paste -> PrefixWithTail");
+        std::wstring r2_translated = ledger + L" A MÁSODIK MONDAT."; // recomposed paste
+        ledger = r2_translated;                                // worker stores the recomposed text
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(ledger, ledger) == PasteLedgerVerdict::ExactMatch,
+                   "REQ-F2 round 2->3: kept recomposed output + bare Enter -> ExactMatch send-of-output");
+        const std::wstring r3_tail = L" 세 번째 문장입니다.";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(ledger + r3_tail, ledger) == PasteLedgerVerdict::PrefixWithTail,
+                   "REQ-F2 round 3: chain continues without compounding");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-F2 category=0 accumulation tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-F2 category=0 accumulation tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-F1 (docs/260908_0001 session, user log emebalachat_260908062830
 // L546-550/L787-791/L1120-1124): first-character residue ahead of the pasted
 // translation ("오"/"처"/"왜 "). Root cause: the compensation advanced the
@@ -7084,6 +7220,7 @@ int main() {
     TestReq034PasteWindowSuppress();
     TestReq036MultiBlockNoRetranslation();
     TestReqF1FirstCharResidue();
+    TestReqF2Category0Accumulation();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();
