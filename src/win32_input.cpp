@@ -1322,6 +1322,11 @@ std::wstring CopySelectedText(HWND hwnd) {
     // selection: Ctrl+C legitimately changes nothing) is exempt - the retry
     // could only add latency before the worker's silent send-through.
     bool copy_confirmed = false;
+    // REQ-F3 (log 260908 F3): actual chord attempts executed so far (vs. the
+    // kClipboardCopyChordAttempts budget constant) so the final diagnostic
+    // reports what really ran - the provably-empty exemption can stop the
+    // loop after one attempt.
+    int attempts_executed = 0;
     for (int attempt = 0; attempt < kClipboardCopyChordAttempts; ++attempt) {
         if (attempt == 0) {
             if (category == AppCategory::CategoryA) {
@@ -1354,22 +1359,40 @@ std::wstring CopySelectedText(HWND hwnd) {
             copy_confirmed = true;
             break;
         }
+        attempts_executed = attempt + 1;
+        if (attempt + 1 >= kClipboardCopyChordAttempts) {
+            break; // attempt budget exhausted - stop before the probe call
+        }
+        const bool provably_empty = EditCaretTracker_SelectionProvablyEmpty(hwnd);
+        if (!CopyChordRetryWarranted(attempt, provably_empty)) {
+            if (attempt == 0) {
+                // REQ-F3 (log 260908 F3): the provably-empty EM selection is
+                // the REQ-034 F3-B paste-window geometry - Ctrl+C on an empty
+                // selection legitimately changes nothing, so the retry is
+                // skipped by design. This used to log "retrying ..." and then
+                // cancel silently, which misread in log analysis as a
+                // broken retry loop; state the skip and its reason instead.
+                DIAG_F("WIN32_INPUT/CopySelectedText/004: copy chord not confirmed on attempt 1/%d, but EM selection provably empty (hwnd=%p category=%d sel_send=%d); skipping retry by design (paste-window geometry, retry would only add latency)\n",
+                        kClipboardCopyChordAttempts,
+                        reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
+            }
+            break;
+        }
         if (attempt == 0) {
             DIAG_F("WIN32_INPUT/CopySelectedText/003: copy chord not confirmed on attempt 1/%d (hwnd=%p category=%d sel_send=%d); retrying full selection+copy cycle\n",
                     kClipboardCopyChordAttempts,
                     reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
         }
-        if (attempt + 1 >= kClipboardCopyChordAttempts) {
-            break; // attempt budget exhausted - stop before the probe call
-        }
-        if (!CopyChordRetryWarranted(attempt, EditCaretTracker_SelectionProvablyEmpty(hwnd))) {
-            break;
-        }
     }
     if (!copy_confirmed) {
+        // REQ-F3 (log 260908 F3): report the ACTUAL number of chord attempts
+        // executed, not the budget constant. The old message printed the
+        // constant unconditionally, so a first-attempt skip via the
+        // provably-empty exemption read as "failed after 3 attempts in the
+        // same millisecond" in log analysis.
         DIAG_F(
                 "WIN32_INPUT/CopySelectedText/001: copy not confirmed after %d chord attempt(s) (hwnd=%p category=%d sel_send=%d); returning empty\n",
-                kClipboardCopyChordAttempts,
+                attempts_executed,
                 reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
         return {};
     }
