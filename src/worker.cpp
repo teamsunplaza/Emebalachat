@@ -388,7 +388,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             pending_notify = false;
         }
         DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=%s target=%p",
-                 h1_ok ? "category_a_send_gate" : "h1_foreground_mismatch",
+                 h1_ok ? "send_gate" : "h1_foreground_mismatch",
                  reinterpret_cast<const void*>(task.target_hwnd));
     }
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",
