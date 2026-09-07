@@ -223,7 +223,37 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // The hold applies ONLY when a notice can actually land (empty_capture_cb_
     // registered at startup); without the seam this degrades to the legacy
     // send-through below rather than creating a new silent-swallow path.
-    if (EmptyCaptureNeedsHold(line.empty(), was_smart_bypassed) && empty_capture_cb_) {
+    //
+    // REQ-034 F3-B paste-window gate (design 173700_architect §2.2.1), checked
+    // BEFORE the hold branch: an empty capture within kPasteEmptySuppressMs of
+    // the last SUCCESSFUL paste is the last==caret geometry (empty EM_SETSEL
+    // range -> Ctrl+C changes nothing -> 180 ms stale-refuse -> empty), i.e.
+    // the user's re-translation retry, NOT a "no selection" mistake. Suppress
+    // the notice and hand Enter to the app exactly like the legacy send-through
+    // (ReleaseSelectionOnce + SendEnterKey): the retry Enter line-breaks/sends
+    // normally instead of being blocked by a false TooltipNoSelection (log
+    // L432/563/601 repetition). Outside the window (no paste sentinel 0, or
+    // elapsed) the R5 hold below runs UNCHANGED (C-5); the
+    // EmptyCaptureNeedsHold predicate itself is untouched - the window is
+    // shared-worker-only state, so the gate composes the two pure predicates
+    // here and the tests fold the same composition (PasteWindowSuppressesNotice).
+    const bool empty_capture_hold = EmptyCaptureNeedsHold(line.empty(), was_smart_bypassed);
+    const ULONGLONG t_notice_gate_now = ::GetTickCount64();
+    if (empty_capture_hold &&
+        PasteWindowSuppressesNotice(t_notice_gate_now,
+                                    last_paste_ms_.load(std::memory_order_relaxed))) {
+        DIAG_F("WORKER/ExecuteTask/036: empty capture within paste window (elapsed %llums <= %ums); silent send-through (no no-selection notice)\n",
+               t_notice_gate_now - last_paste_ms_.load(std::memory_order_relaxed),
+               static_cast<unsigned int>(kPasteEmptySuppressMs));
+        DIAG_LOG("PIPELINE", "stage=empty_capture decision=paste_window_suppress action=send_through_no_notice "
+                             "duration_ms=%llu",
+                 t_notice_gate_now - t_task_start);
+        // Never log the captured body (R5 rule): the capture IS empty anyway.
+        ReleaseSelectionOnce();
+        SendEnterKey(task.is_shift_enter);
+        return;
+    }
+    if (empty_capture_hold && empty_capture_cb_) {
         DIAG_F(
                 "WORKER/ExecuteTask/035: empty capture on bare-Enter path; holding send, "
                 "showing no-selection notice (smart_bypass=%d)\n",
@@ -290,6 +320,12 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         if (pasted) {
             // Clipboard swap consumed the backup; RAII restorer must not overwrite.
             restorer.active = false;
+            // REQ-034 F3-B: stamp the paste time that the empty-capture
+            // paste-window gate reads at the NEXT task's EmptyCaptureNeedsHold
+            // entry (see PasteWindowSuppressesNotice contract in worker.hpp).
+            // Success-only: a failed paste (H1 abort) must not open a
+            // suppression window.
+            last_paste_ms_.store(::GetTickCount64(), std::memory_order_relaxed);
         }
         // REQ-027 B-6a (design 210000_architect §2.2 option (a)): the offset
         // saved here becomes the START of the NEXT Enter's EM_SETSEL range, so

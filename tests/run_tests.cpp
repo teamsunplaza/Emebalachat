@@ -5633,6 +5633,97 @@ void TestReq034NoLeadingCrlfNormalProgress() {
     }
 }
 
+// REQ-034 F3-B batch D-3: paste-window empty-capture notice suppression
+// (design 173700_architect §2.2.1, debug 173700 §F3; user rule: a retry Enter
+// right after a paste is a re-translation intent and must NOT be blocked by a
+// false "no selection" notice).
+//
+// The worker gates the hold-and-notice branch on a pure time-window predicate
+// (src/worker.hpp PasteWindowSuppressesNotice) so this test and worker.cpp
+// assert ONE definition (same discipline as EmptyCaptureNeedsHold /
+// SelectionReleaseRequired). Inside the kPasteEmptySuppressMs window after a
+// SUCCESSFUL paste, an empty capture is the last==caret geometry (Ctrl+C into
+// an empty selection changes nothing -> the 180ms stale-refuse -> empty
+// capture): the notice would be FALSE, so it is suppressed and Enter is
+// delivered to the app (ReleaseSelectionOnce + SendEnterKey, silent
+// send-through). Outside the window - no paste history, or window elapsed -
+// the general empty Enter keeps the existing R5 behavior (hold_send +
+// no-selection notice).
+//
+// The fold below mirrors worker.cpp's composition 1:1:
+//   notice_fires = EmptyCaptureNeedsHold(empty, !bypass) && !window
+//   enter_delivered_on_suppression = hold_eligible && window  (send-through)
+void TestReq034PasteWindowSuppress() {
+    std::cout << "[TEST] REQ-034 F3-B paste-window empty-capture notice suppression" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) compile-time contract on the shared seam (src/worker.hpp).
+    static_assert(kPasteEmptySuppressMs == 2000,
+                  "F3-B: initial window is 2000 ms (design §2.2.1, tune in D-4 QA)");
+    static_assert(!PasteWindowSuppressesNotice(1000, 0),
+                  "F3-B: no-paste sentinel (0) never suppresses - general empty Enter keeps notice");
+    static_assert(PasteWindowSuppressesNotice(1000, 1000),
+                  "F3-B: capture at the paste instant is inside the window");
+    static_assert(PasteWindowSuppressesNotice(3000, 1000),
+                  "F3-B: the 2000 ms boundary is inclusive (<=, design pseudo-code)");
+    static_assert(!PasteWindowSuppressesNotice(3001, 1000),
+                  "F3-B: 2001 ms after paste the window has elapsed");
+    static_assert(!PasteWindowSuppressesNotice(999, 1000),
+                  "F3-B: non-monotonic clock pair is refused (never unsigned-underflows into 'inside')");
+
+    // (b) runtime fold of the user-reported sequences (fake clock, the same
+    // GetTickCount64 domain the worker stamps last_paste_ms_ with).
+    const uint64_t paste_at = 10000;
+
+    // Precondition: the bare-Enter empty capture IS hold-eligible on the R5
+    // predicate - the window gate is the only thing that may change its outcome.
+    TEST_CHECK(EmptyCaptureNeedsHold(true, false),
+               "F3-B: empty bare-Enter capture is hold-eligible (R5 predicate unchanged)");
+
+    // Scenario 1 (F3 repro, log L432/563/601): paste succeeded, user hits
+    // Enter again after reading the replacement -> empty capture INSIDE the
+    // window -> notice suppressed, Enter delivered to the app (send-through).
+    bool notice_fires =
+        EmptyCaptureNeedsHold(true, false) && !PasteWindowSuppressesNotice(paste_at + 500, paste_at);
+    TEST_CHECK(!notice_fires,
+               "F3-B: paste +500ms empty capture -> NO no-selection notice (re-translation intent respected)");
+    TEST_CHECK(EmptyCaptureNeedsHold(true, false) && PasteWindowSuppressesNotice(paste_at + 500, paste_at),
+               "F3-B: in-window empty capture takes the silent send-through branch (Enter delivered)");
+
+    // Boundary: exactly kPasteEmptySuppressMs after the paste is still inside
+    // (inclusive <=), one tick past is outside.
+    notice_fires = EmptyCaptureNeedsHold(true, false) &&
+                   !PasteWindowSuppressesNotice(paste_at + kPasteEmptySuppressMs, paste_at);
+    TEST_CHECK(!notice_fires, "F3-B: window boundary (exactly 2000ms) still suppresses");
+    notice_fires = EmptyCaptureNeedsHold(true, false) &&
+                   !PasteWindowSuppressesNotice(paste_at + kPasteEmptySuppressMs + 1, paste_at);
+    TEST_CHECK(notice_fires, "F3-B: 2001ms after paste -> existing hold_send + notice maintained");
+
+    // Scenario 2 (general empty Enter, C-5 constraint): no paste history at
+    // all -> sentinel keeps the legacy R5 behavior.
+    notice_fires = EmptyCaptureNeedsHold(true, false) && !PasteWindowSuppressesNotice(20000, 0);
+    TEST_CHECK(notice_fires, "F3-B: no paste history -> general empty Enter keeps hold_send + notice");
+
+    // Scenario 3: window elapsed after a real paste (user came back much
+    // later and pressed Enter on an unchanged caret) -> notice as before.
+    notice_fires = EmptyCaptureNeedsHold(true, false) && !PasteWindowSuppressesNotice(paste_at + 60000, paste_at);
+    TEST_CHECK(notice_fires, "F3-B: elapsed window -> existing notice path unchanged");
+
+    // Orthogonality: the window must never alter the two R5 exemptions -
+    // smart bypass and non-empty capture bypass the gate entirely upstream.
+    TEST_CHECK(!EmptyCaptureNeedsHold(true, true),
+               "F3-B: smart bypass is not hold-eligible regardless of the paste window");
+    TEST_CHECK(!EmptyCaptureNeedsHold(false, false),
+               "F3-B: non-empty capture never reaches the gate (normal pipeline)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-034 F3-B paste-window suppression tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-034 F3-B paste-window suppression tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5698,6 +5789,7 @@ int main() {
     TestReq027CapabilityProbe();
     TestReq034ManualNewlineRecovery();
     TestReq034NoLeadingCrlfNormalProgress();
+    TestReq034PasteWindowSuppress();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
