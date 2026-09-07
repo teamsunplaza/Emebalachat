@@ -759,8 +759,14 @@ void TranslationManager::RefreshActiveEngine() {
             active_name_ = "Google Translate (Llama Native Not Linked)";
 #endif
         } else {
-            active_type_ = EngineType::GoogleTranslate;
-            active_name_ = "Google Translate (Model Not Found)";
+            // REQ-029-B: the Google masquerade is gone. A strict-local pick
+            // with an absent model file stays honest: active_type_ remains
+            // LocalLlama (Translate() pre-blocks with LocalModelMissing
+            // before any cloud seam) and the display name carries no
+            // "Google" substring, so the tray checkmark side-effect
+            // (find("Google") on this string) is naturally eliminated too.
+            active_type_ = EngineType::LocalLlama;
+            active_name_ = "Local (Model Missing)";
         }
     } else {
         // EngineType::Auto
@@ -857,6 +863,29 @@ std::wstring TranslationManager::Translate(
     const auto* pTgt = FindLanguageByCode(norm_tgt);
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
     const std::string norm_src = NormalizeLanguageCode(src_code_or_name);
+
+    // REQ-029-B: local pin + missing model file must never leak to the cloud.
+    // Pre-block here, BEFORE the 040 routing log and every cloud seam: the old
+    // path reached line 964 with an active_type_ that had been polluted to
+    // GoogleTranslate, so a "model missing" failure was reported as
+    // CloudConsentBlocked (status=2) - blaming the privacy gate for an absent
+    // file while logs/UI claimed Google. LocalModelMissing separates the cause
+    // and keeps the user's text on-device unconditionally (even with
+    // cloud_fallback_enabled_: consent gates post-inference failures, it does
+    // not resurrect a translation that never started).
+    if (preferred_type_ == EngineType::LocalLlama && !local_model_available_) {
+        // REQ-R16 latch outranks this guard: an exit-intent must surface as
+        // Canceled, never as an audible failure (same precedence that kept
+        // the cancel short-circuit ahead of the H2 consent decision).
+        if (cancel_requested_.load(std::memory_order_acquire)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        DIAG_F("ENGINE/Translate/043: preferred=local but model file missing; "
+               "refusing cloud masquerade (model_path=%s)\n", model_path_.c_str());
+        set_status(TranslationStatus::LocalModelMissing);
+        return {};
+    }
 
     // R6 Phase 4 (B2, plan §4.1 item 3): pair routing, decided HERE (before the
     // 040 line) so the observability log reports the engine that will ACTUALLY

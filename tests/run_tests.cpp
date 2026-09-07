@@ -804,21 +804,46 @@ void TestEngineModule() {
     TEST_CHECK(!gated_res.empty(), "REQ-R02: auto->cloud fallback restored when no local model (no silent empty)");
     TEST_CHECK(auto_status == TranslationStatus::Ok, "REQ-R02: auto->cloud success reports Ok status");
 
-    // Strict explicit-local semantics: with gate off, no cloud - but the failure
-    // is SURFACED as CloudConsentBlocked instead of a bare {} (REQ-R02).
+    // Strict explicit-local semantics (REQ-029-B update): an explicit local
+    // pin with the model file ABSENT is surfaced as LocalModelMissing by the
+    // pre-block guard in Translate - not the old masquerade (active engine
+    // renamed to "Google Translate (Model Not Found)" and status=2
+    // CloudConsentBlocked, which blamed the H2 privacy gate for a missing
+    // file while logs/UI claimed Google).
     {
         TranslationManager strict_local(EngineType::LocalLlama, "D:\\non_existent_model.gguf");
         TranslationStatus st = TranslationStatus::Ok;
         std::wstring res = strict_local.Translate(L"안녕하세요", "KO", "EN", &st);
         TEST_CHECK(res.empty(), "REQ-R02: explicit local without consent still keeps text on-device (empty)");
-        TEST_CHECK(st == TranslationStatus::CloudConsentBlocked, "REQ-R02: privacy-block surfaced as CloudConsentBlocked, not silent");
+        TEST_CHECK(st == TranslationStatus::LocalModelMissing, "REQ-029-B: missing model surfaced as LocalModelMissing, never CloudConsentBlocked");
 
-        // Explicit local WITH consent -> cloud fallback now allowed and Ok.
+        // REQ-029-B: cloud_fallback_enabled_ gates post-INFERENCE failures
+        // only. With the model absent there is no inference that could fail,
+        // so even with consent the guard refuses the cloud seam - text never
+        // leaves the device while a local pin stands on a missing file.
         strict_local.SetCloudFallbackEnabled(true);
         TranslationStatus st2 = TranslationStatus::InputEmpty;
         std::wstring res2 = strict_local.Translate(L"안녕하세요", "KO", "EN", &st2);
-        TEST_CHECK(!res2.empty(), "REQ-R02: explicit local with consent falls back to cloud");
-        TEST_CHECK(st2 == TranslationStatus::Ok, "REQ-R02: consented cloud fallback reports Ok");
+        TEST_CHECK(res2.empty(), "REQ-029-B: consent does not resurrect a missing model (no cloud call)");
+        TEST_CHECK(st2 == TranslationStatus::LocalModelMissing, "REQ-029-B: status stays LocalModelMissing with cloud_fallback enabled");
+    }
+
+    // REQ-029-B display honesty (new pinned case): a LocalLlama manager over
+    // an absent model file must (1) translate to nothing, (2) report
+    // LocalModelMissing, and (3) name its active engine exactly
+    // "Local (Model Missing)" - no "Google" substring, so the tray
+    // find("Google") checkmark can no longer misattribute a local setup to
+    // the cloud (the user's "setting the engine to Google changed nothing"
+    // masquerade root, debug report §3.1).
+    {
+        TranslationManager missing_model(EngineType::LocalLlama, "D:\\non_existent.gguf");
+        TEST_CHECK(!missing_model.IsLocalModelAvailable(), "REQ-029-B: non-existent gguf reported unavailable");
+        TEST_CHECK(missing_model.GetActiveEngineName() == "Local (Model Missing)",
+                   "REQ-029-B: active engine name is honest 'Local (Model Missing)', no Google masquerade");
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res = missing_model.Translate(L"안녕하세요", "KO", "EN", &st);
+        TEST_CHECK(res.empty(), "REQ-029-B: missing-model local pin returns empty (never a cloud result)");
+        TEST_CHECK(st == TranslationStatus::LocalModelMissing, "REQ-029-B: missing-model local pin reports LocalModelMissing");
     }
 
     // Empty input is a neutral outcome, not a failure.

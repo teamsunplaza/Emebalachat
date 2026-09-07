@@ -55,6 +55,15 @@ enum class TranslationStatus {
     // critically, so the Auto policy does NOT fall through to a cloud
     // request that would transmit the user's text mid-exit.
     Canceled,
+    // REQ-029-B: preferred=LocalLlama but the model file is absent on disk,
+    // so translation never even started. The cause is distinct from
+    // CloudConsentBlocked (the H2 consent gate refusing an allowed cloud
+    // fallback), so logs/UI/sound can tell the user precisely "model
+    // missing" instead of the old masquerade that reported Google/cloud and
+    // then failed silently. Appended AFTER Canceled: existing values keep
+    // their integer order (0..4), so log-based diagnostic scripts that
+    // static_cast<int>(status) stay compatible.
+    LocalModelMissing,
 };
 
 enum class EngineType {
