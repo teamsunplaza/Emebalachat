@@ -5380,6 +5380,259 @@ void TestReq027CapabilityProbe() {
     }
 }
 
+// REQ-034 F2-B' batch D-1 (design 260907 173700 §4.1 rule 4, debug §F2):
+// leading-CRLF self-correction suite. F2 mechanism: manual Shift+Enter is
+// pass_through (hook logs it, the tracker never advances), so the stored
+// EM_SETSEL start points BEFORE the user's newline and the next capture
+// begins with "\r\n" - translating that range deletes the break on
+// replacement (line merge; user log emebalachat_260907171452 L997/L1147).
+// Contract points pinned here:
+//  (a) pure predicate matrix (constexpr seam): the CRLF PAIR only. Single-LF
+//      or single-CR controls (normal progress there legitimately starts a
+//      capture with their newline unit) must NOT trigger, and a 1-unit buffer
+//      cannot false-positive.
+//  (b) live recovery on a real in-process EDIT: a drifted stored start
+//      selects a capture range whose text begins with "\r\n" (defect
+//      reproduction), TrySelfCorrectReSelect re-selects the whole block
+//      [0..caret) whose text does NOT begin with "\r\n" (the user-visible
+//      fix), is ONCE-bounded (second call refuses), and leaves start=0
+//      stored so the next Enter whole-block selects.
+void TestReq034ManualNewlineRecovery() {
+    std::cout << "[TEST] REQ-034 F2-B' manual-newline leading-CRLF recovery" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) pure predicate matrix.
+    static_assert(EditCaretTracker_HasLeadingCrlf(std::wstring_view(L"\r\nblock")),
+                  "REQ-034: leading CRLF pair detected (constexpr seam)");
+    static_assert(!EditCaretTracker_HasLeadingCrlf(std::wstring_view(L"block")),
+                  "REQ-034: plain capture not flagged (constexpr seam)");
+    TEST_CHECK(EditCaretTracker_HasLeadingCrlf(L"\r\nsecond-line"), "REQ-034: leading CRLF -> true (F2 capture shape)");
+    TEST_CHECK(EditCaretTracker_HasLeadingCrlf(L"\r\n"), "REQ-034: exact 2-unit pair -> true");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L""), "REQ-034: empty capture -> false");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L"\r"), "REQ-034: 1-unit CR only -> false (short buffer)");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L"\nline2"), "REQ-034: leading lone LF (single-LF control) -> false (no over-correction)");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L"\rline2"), "REQ-034: leading lone CR -> false (no over-correction)");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L" \r\nx"), "REQ-034: space before CRLF -> false (start not absorbed by the EM geometry)");
+    TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(L"abc\r\n"), "REQ-034: trailing CRLF -> false (only the prefix matters)");
+
+    // (b) live drift + recovery on a real EDIT control (same focus-verified
+    // discipline as the REQ-027 suites; explicitly skipped, never lucked,
+    // when SetFocus is denied in a headless session).
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req034Host";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req034", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-034: in-process EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; REQ-034 live recovery sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // Helper: read the live document text (shape assertions never print
+        // content; this is test fixture text we create ourselves).
+        auto doc_text = [](HWND h) {
+            wchar_t buf[256] = {};
+            const int n = static_cast<int>(::SendMessageW(h, WM_GETTEXT, 255, reinterpret_cast<LPARAM>(buf)));
+            return std::wstring(buf, (n > 0 && n < 255) ? static_cast<size_t>(n) : 0);
+        };
+
+        // Pipeline pass N: replacement live, caret 10; the post-newline-free
+        // notify (design worker contract) stores the real caret 10.
+        ::SetWindowTextW(edit, L"translated");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(10), static_cast<LPARAM>(10));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-034: pass N enters the EM path");
+        EditCaretTracker_NotifyReplacement(edit, true, 10);
+
+        // USER edits out-of-band: manual Shift+Enter (pass_through - NO
+        // tracker call, the F2 root) then types "abc". Caret 10 -> 15.
+        ::SetWindowTextW(edit, L"translated\r\nabc");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(15), static_cast<LPARAM>(15));
+
+        // Enter N+1 with the drifted start: EM_SETSEL(10, 15) reproduces the
+        // defect capture range, which begins with the manual CRLF.
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-034: drifted pass still enters the EM path");
+        DWORD sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 10u && HIWORD(sel) == 15u,
+                   "REQ-034: drifted start reproduces the capture range [10..15)");
+        const std::wstring drifted_capture = doc_text(edit).substr(LOWORD(sel), HIWORD(sel) - LOWORD(sel));
+        TEST_CHECK(EditCaretTracker_HasLeadingCrlf(drifted_capture),
+                   "REQ-034: drifted capture begins with the manual CRLF (F2 premise)");
+
+        // Self-correction fires (CopySelectedText drives exactly this seam
+        // when the predicate flags the capture): [0..caret) whole block.
+        TEST_CHECK(EditCaretTracker_TrySelfCorrectReSelect(edit),
+                   "REQ-034: leading CRLF -> start=0 self-correct re-select fires");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 15u,
+                   "REQ-034: recovery selection is the whole block [0..15)");
+        const std::wstring corrected_capture = doc_text(edit).substr(0, 15);
+        TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(corrected_capture),
+                   "REQ-034: recovered capture has NO leading CRLF (line break survives the replacement)");
+
+        // ONCE-bounded: the start is now stored 0, so a second self-correct
+        // in the same Enter is refused (infinite-loop guard, work order D-2).
+        TEST_CHECK(!EditCaretTracker_TrySelfCorrectReSelect(edit),
+                   "REQ-034: second self-correct refused (start already 0; once-per-Enter bound)");
+
+        // Correction persisted: next Enter whole-block selects from the
+        // stored 0 until NotifyReplacement restores real-caret progress.
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-034: next Enter enters the EM path");
+        sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        TEST_CHECK(LOWORD(sel) == 0u && HIWORD(sel) == 15u,
+                   "REQ-034: start=0 stored by the correction makes the next Enter whole-block");
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host); // child EDIT dies with the parent
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-034 F2-B' manual-newline recovery tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-034 F2-B' manual-newline recovery tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-034 F2-B' batch D-1 companion: normal progress must NOT self-correct
+// (REQ-027 contract regression guard). Pins the three refusal gates of
+// TrySelfCorrectReSelect and the B-6a post-newline geometry the fix must
+// leave untouched: after the offset is saved AFTER the injected newline, the
+// following Enter's capture range starts AT the newline's end - the
+// predicate is false and CopySelectedText never reaches the re-select seam.
+void TestReq034NoLeadingCrlfNormalProgress() {
+    std::cout << "[TEST] REQ-034 F2-B' normal progress keeps the REQ-027 contract" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) unusable hwnds: safe refusal, no EM contact.
+    TEST_CHECK(!EditCaretTracker_TrySelfCorrectReSelect(nullptr),
+               "REQ-034: self-correct on null hwnd -> false");
+    const HWND garbage = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x1u));
+    TEST_CHECK(!EditCaretTracker_TrySelfCorrectReSelect(garbage),
+               "REQ-034: self-correct on invalid non-window hwnd -> false");
+
+    // (b) live normal-progress sequence on a real EDIT control (focus-
+    // verified discipline as above: explicit skip, never luck).
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_Req034NpHost";
+    ::RegisterClassExW(&wc);
+    HWND host = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"req034np", WS_POPUP,
+                                  -400, -400, 200, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND edit = nullptr;
+    if (host) {
+        edit = ::CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                 0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+    }
+    TEST_CHECK(edit != nullptr, "REQ-034 normal-progress: in-process EDIT control created");
+    bool focus_ok = false;
+    if (edit) {
+        ::ShowWindow(host, SW_SHOWNOACTIVATE);
+        ::SetFocus(edit);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(gti);
+        focus_ok = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndFocus == edit;
+    }
+    if (edit && !focus_ok) {
+        std::cout << "[SKIP] SetFocus on EDIT control unavailable; REQ-034 normal-progress sequence skipped." << std::endl;
+    }
+    if (edit && focus_ok) {
+        // B-6a pipeline geometry (worker.cpp post-newline save), NO user edit:
+        // replacement "translated" + injected CRLF -> caret 12 -> settle ->
+        // NotifyReplacement stores 12 (AFTER the newline - REQ-027 contract).
+        ::SetWindowTextW(edit, L"translated\r\n");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(12), static_cast<LPARAM>(12));
+        const DWORD pre = EditCaretTracker_SampleCaret(edit);
+        TEST_CHECK(pre == 12u, "REQ-034 normal-progress: caret sampled at the post-newline position");
+        // The settle is already pinned by TestReq027OffsetAfterNewline; here
+        // the caret sits post-newline from the start, so NotifyReplacement is
+        // called directly (skipping the poll avoids a 150 ms no-move budget).
+        EditCaretTracker_NotifyReplacement(edit, true, 10);
+
+        // User types ONLY "def" (no manual newline): caret 12 -> 15.
+        ::SetWindowTextW(edit, L"translated\r\ndef");
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(15), static_cast<LPARAM>(15));
+        TEST_CHECK(EditCaretTracker_TrySelectNewText(edit), "REQ-034 normal-progress: Enter enters the EM path");
+        const DWORD sel = static_cast<DWORD>(::SendMessageW(edit, EM_GETSEL, 0, 0));
+        // THE REQ-027 progress assertion, unchanged by F2-B': start is the
+        // stored post-newline caret 12, and the captured range "def" has no
+        // leading CRLF -> CopySelectedText's predicate gate keeps the capture
+        // as-is (no self-correct fires on normal progress).
+        TEST_CHECK(LOWORD(sel) == 12u && HIWORD(sel) == 15u,
+                   "REQ-034 normal-progress: selection starts AFTER the injected CRLF (REQ-027 contract held)");
+        wchar_t buf[256] = {};
+        ::SendMessageW(edit, WM_GETTEXT, 255, reinterpret_cast<LPARAM>(buf));
+        const std::wstring capture(buf);
+        TEST_CHECK(!EditCaretTracker_HasLeadingCrlf(capture.substr(12, 3)),
+                   "REQ-034 normal-progress: capture range has no leading CRLF (re-capture must NOT fire)");
+
+        // Refusal gate (stored start 0): an untracked control's first Enter
+        // already starts whole-block, so self-correct must refuse even if a
+        // caller mis-fired it - the once-per-Enter bound. Fresh Key per hwnd,
+        // so a brand-new control deterministically has no stored entry:
+        HWND edit2 = nullptr;
+        if (host) {
+            edit2 = ::CreateWindowExW(0, L"EDIT", L"",
+                                      WS_CHILD | WS_VISIBLE | ES_MULTILINE,
+                                      0, 0, 180, 80, host, nullptr, wc.hInstance, nullptr);
+        }
+        bool focus_ok2 = false;
+        if (edit2) {
+            ::SetFocus(edit2);
+            GUITHREADINFO gti2 = {};
+            gti2.cbSize = sizeof(gti2);
+            focus_ok2 = ::GetGUIThreadInfo(::GetCurrentThreadId(), &gti2) && gti2.hwndFocus == edit2;
+        }
+        if (edit2 && focus_ok2) {
+            ::SetWindowTextW(edit2, L"\r\nleading-doc-newline");
+            ::SendMessageW(edit2, EM_SETSEL, static_cast<WPARAM>(21), static_cast<LPARAM>(21));
+            // Untracked first Enter: start 0 stored - the document itself
+            // begins with CRLF, whole-block is already the safe geometry.
+            TEST_CHECK(EditCaretTracker_TrySelectNewText(edit2), "REQ-034 gate: first Enter on fresh control enters the EM path");
+            const DWORD sel0 = static_cast<DWORD>(::SendMessageW(edit2, EM_GETSEL, 0, 0));
+            TEST_CHECK(LOWORD(sel0) == 0u, "REQ-034 gate: untracked first Enter starts at 0");
+            TEST_CHECK(!EditCaretTracker_TrySelfCorrectReSelect(edit2),
+                       "REQ-034 gate: stored start 0 -> re-select refused (already-safe, retry spent)");
+            ::DestroyWindow(edit2);
+        } else {
+            std::cout << "[SKIP] SetFocus on second EDIT unavailable; stored-0 refusal gate skipped." << std::endl;
+        }
+
+        ::SetFocus(nullptr);
+    }
+    if (host) {
+        ::DestroyWindow(host);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-034 F2-B' normal-progress (no re-capture) tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-034 F2-B' normal-progress tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -5443,6 +5696,8 @@ int main() {
     TestReq027CaretTracker();
     TestReq027OffsetAfterNewline();
     TestReq027CapabilityProbe();
+    TestReq034ManualNewlineRecovery();
+    TestReq034NoLeadingCrlfNormalProgress();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

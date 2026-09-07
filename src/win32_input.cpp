@@ -690,8 +690,19 @@ struct KeyHash {
     }
 };
 
+// REQ-034 F2-B': sentinel for a baseline document-length sample that could
+// not be taken (WM_GETTEXTLENGTH timed out - same §2.5.A2 budget as the
+// rest of the EM family). DIAG-only; never compared against a real offset.
+constexpr DWORD kBaselineUnknown = UINT32_MAX;
+
 struct Entry {
     DWORD offset = 0;          // UTF-16 code-unit index of the last replacement end
+    // REQ-034 F2-B' auxiliary signal: document length (WM_GETTEXTLENGTH) at
+    // the moment the offset was stored. Logged by the leading-CRLF self-
+    // correction DIAG (/010) for drift attribution only - the PRIMARY verdict
+    // is the measured capture prefix (design 260907 173700 §4.1 F2-B'), so
+    // this value never gates selection geometry (Boring Technology).
+    DWORD baseline_textlen = kBaselineUnknown;
     uint64_t last_used_ms = 0; // LRU stamp (GetTickCount64)
 };
 
@@ -823,11 +834,15 @@ void PurgeDeadEntriesLocked() {
 // Inserts or refreshes key's entry and refreshes its LRU stamp. Caller must
 // hold g_mutex. Enforces the kMaxEntries upper bound by evicting the entry
 // with the oldest last_used_ms (§2.3.A2 lifecycle (c)).
-void StoreLocked(const Key& key, DWORD offset) {
+// REQ-034 F2-B': baseline_textlen is stored alongside the offset at every
+// save site (TrySelectNewText start store, NotifyReplacement requery/
+// estimate, self-correct) so the /010 DIAG can attribute drift.
+void StoreLocked(const Key& key, DWORD offset, DWORD baseline_textlen) {
     const uint64_t now = ::GetTickCount64();
     auto it = g_map.find(key);
     if (it != g_map.end()) {
         it->second.offset = offset;
+        it->second.baseline_textlen = baseline_textlen;
         it->second.last_used_ms = now;
         return;
     }
@@ -840,7 +855,7 @@ void StoreLocked(const Key& key, DWORD offset) {
         }
         g_map.erase(oldest);
     }
-    g_map.emplace(key, Entry{offset, now});
+    g_map.emplace(key, Entry{offset, baseline_textlen, now});
 }
 
 } // namespace edit_caret
@@ -892,6 +907,15 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
     const DWORD get_sel = static_cast<DWORD>(em_result);
     const DWORD sel_end = HIWORD(get_sel);
 
+    // REQ-034 F2-B': baseline document length sampled with the start point
+    // (auxiliary DIAG signal only - see Entry::baseline_textlen). The stored
+    // start stays the pipeline-observed caret; geometry is unchanged.
+    ULONG_PTR textlen_res = 0;
+    const bool len_ok =
+        edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
+    const DWORD baseline = len_ok ? static_cast<DWORD>(textlen_res)
+                                  : edit_caret::kBaselineUnknown;
+
     std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
     edit_caret::PurgeDeadEntriesLocked();
     DWORD last = 0;
@@ -917,9 +941,61 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
     }
     // Remember the start point used for this Enter so a later NotifyReplacement
     // can compute the estimate (last + pasted_cch) even without a focus hwnd.
-    edit_caret::StoreLocked(key, last);
+    edit_caret::StoreLocked(key, last, baseline);
     DIAG_LOG("EditCaretTracker", "em_setselect hwnd=%p last=%lu caret=%lu",
              reinterpret_cast<const void*>(key.focus_hwnd), last, sel_end);
+    return true;
+}
+
+// REQ-034 F2-B' (design 260907 173700 §4.1 rule 4, debug §F2): self-correction
+// re-selection, driven exclusively by CopySelectedText when the EM-path
+// capture begins with a leading CRLF - measured proof the stored start points
+// at a user-inserted (out-of-band) newline. Re-selects [0..caret) (the safe
+// whole-block geometry shared with SelectMessageBlock, C-4) and stores start
+// 0. ONCE per Enter by construction: a stored start of 0 refuses (a second
+// capture would be byte-identical - the document itself begins with the
+// newline), so the retry can never bounce. Same gates as TrySelectNewText
+// (focus resolution + capability probe + §2.5.A2 100 ms budget).
+bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd) {
+    edit_caret::Key key{};
+    if (!edit_caret::ResolveFocusCandidate(hwnd, key)) {
+        return false;
+    }
+    if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
+        return false; // fallback geometry never drifts this way (design §2.1.1)
+    }
+    ULONG_PTR em_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+        return false;
+    }
+    const DWORD sel_end = HIWORD(static_cast<DWORD>(em_result));
+    ULONG_PTR textlen_res = 0;
+    const bool len_ok =
+        edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
+    const DWORD baseline_now = len_ok ? static_cast<DWORD>(textlen_res)
+                                      : edit_caret::kBaselineUnknown;
+
+    std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
+    edit_caret::PurgeDeadEntriesLocked();
+    const auto it = edit_caret::g_map.find(key);
+    if (it == edit_caret::g_map.end() || it->second.offset == 0) {
+        return false; // untracked or already whole-block: retry budget spent
+    }
+    const DWORD drifted_start = it->second.offset;
+    const DWORD stored_baseline = it->second.baseline_textlen;
+
+    ULONG_PTR set_sel_result = 0;
+    if (!edit_caret::SendEm(key.focus_hwnd, EM_SETSEL, static_cast<WPARAM>(0),
+                            static_cast<LPARAM>(sel_end), set_sel_result)) {
+        DIAG_F("WIN32_INPUT/EditCaretTracker/010: self-correct EM_SETSEL(0,%lu) failed/timed out (hwnd=%p gle=%lu); keeping original capture\n",
+               sel_end, reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError());
+        return false;
+    }
+    edit_caret::StoreLocked(key, 0, baseline_now);
+    // /010 = design §4.1 rule 4. baseline/textlen deltas are attribution only.
+    DIAG_F("WIN32_INPUT/EditCaretTracker/010: leading CRLF absorbed; start %lu -> 0 self-correct re-select [0..%lu) (hwnd=%p textlen=%lu baseline=%lu)\n",
+           drifted_start, sel_end, reinterpret_cast<void*>(key.focus_hwnd),
+           baseline_now, stored_baseline);
     return true;
 }
 
@@ -952,6 +1028,15 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
         caret = HIWORD(static_cast<DWORD>(em_result));
         have_caret = true;
     }
+    // REQ-034 F2-B': record the document length AT SAVE TIME on both branches
+    // (requery success and estimate alike) so the next Enter's self-correct
+    // DIAG can attribute drift. Purely auxiliary: the B-6a offset contract
+    // (post-newline save) and the stored offset value are unchanged.
+    ULONG_PTR textlen_res = 0;
+    const bool len_ok =
+        edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
+    const DWORD baseline = len_ok ? static_cast<DWORD>(textlen_res)
+                                  : edit_caret::kBaselineUnknown;
 
     std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
     edit_caret::PurgeDeadEntriesLocked();
@@ -959,7 +1044,7 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
         // If the caret somehow precedes the stored start (deletion during
         // paste), the next Enter's clamp (§2.3.A2 lifecycle (b)) repairs it;
         // storing the real caret directly is the design's priority rule.
-        edit_caret::StoreLocked(key, caret);
+        edit_caret::StoreLocked(key, caret, baseline);
         return;
     }
     // Requery failed: estimate from the stored start plus the pasted length.
@@ -976,7 +1061,7 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
     }
     const uint64_t fails = edit_caret::g_requery_failures.fetch_add(1) + 1;
     const DWORD est = EditCaretTracker_EstimateNextOffset(last, pasted_cch);
-    edit_caret::StoreLocked(key, est);
+    edit_caret::StoreLocked(key, est, baseline);
     DIAG_F("WIN32_INPUT/EditCaretTracker/005: EM_GETSEL requery failed (hwnd=%p gle=%lu); stored estimate %lu = last %lu + pasted %zu (requery_failures=%llu)\n",
            reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError(), est, last, pasted_cch,
            static_cast<unsigned long long>(fails));
@@ -1050,11 +1135,13 @@ std::wstring CopySelectedText(HWND hwnd) {
     // the fallback is encapsulated here so worker.cpp needs no selection
     // wiring. CategoryA is untouched by construction.
     const AppCategory category = ClassifyAppWindow(hwnd);
+    bool em_path = false; // REQ-034: self-correction is EM-path only
     bool sel_ok = false;
     if (category == AppCategory::CategoryA) {
         sel_ok = SelectAll();
     } else if (EditCaretTracker_TrySelectNewText(hwnd)) {
         sel_ok = true; // selection already set by EM_SETSEL - skip keyboard geometry
+        em_path = true;
     } else {
         sel_ok = SelectMessageBlock();
     }
@@ -1081,6 +1168,45 @@ std::wstring CopySelectedText(HWND hwnd) {
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
     DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, category=%d)\n",
             text.size(), nl, static_cast<int>(category));
+
+    // REQ-034 F2-B' (design 260907 173700 §4.1): a stored EM start that was
+    // never advanced over a user-inserted manual newline (Shift+Enter is
+    // pass_through - debug §F2 mechanism 1) makes the capture begin with
+    // "\r\n"; translating that range would delete the break on replacement
+    // (line merge). The verdict is measured on the capture itself, so
+    // normal progress (no leading CRLF) is NEVER touched and the REQ-027
+    // offset-saving contract (worker B-6a call sites) stays untouched.
+    // Bounded to ONE retry per call by construction (no flag needed beyond
+    // the control flow): a second self-correct would be refused because the
+    // start is already 0 after the first one.
+    if (em_path && EditCaretTracker_HasLeadingCrlf(text)) {
+        if (EditCaretTracker_TrySelfCorrectReSelect(hwnd)) {
+            ::Sleep(10);
+            if (CopySelectionWithSequenceWait()) {
+                const std::wstring corrected = GetClipboardText();
+                size_t nl2 = 0;
+                for (wchar_t c : corrected) { if (c == L'\n' || c == L'\r') ++nl2; }
+                // Shape only (same R5 rule as /002 - never log user content).
+                DIAG_F("WIN32_INPUT/SelfCorrectReCapture/001: re-captured %zu chars (%zu newline chars) after start=0 self-correction\n",
+                        corrected.size(), nl2);
+                text = corrected;
+            } else {
+                // Never hand the drifted capture to the pipeline (it is the
+                // line-merge source). Empty = "nothing to translate"; the
+                // stored start is already 0, so the next Enter whole-block
+                // selects and self-heals the user's message.
+                DIAG_F("WIN32_INPUT/SelfCorrectReCapture/002: re-copy not confirmed (hwnd=%p); dropped drifted capture, start=0 stored for next Enter\n",
+                        reinterpret_cast<void*>(hwnd));
+                text.clear();
+            }
+        } else {
+            // Refused: untracked / EM lost / start already 0 (document itself
+            // begins with the newline - whole-block geometry is already the
+            // safe bound). Keep the original capture; retry stays spent.
+            DIAG_F("WIN32_INPUT/SelfCorrectReCapture/003: leading CRLF but re-select refused (hwnd=%p sel_send=%d); keeping capture (already-safe geometry)\n",
+                    reinterpret_cast<void*>(hwnd), sel_ok ? 1 : 0);
+        }
+    }
     return text;
 }
 

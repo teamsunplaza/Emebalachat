@@ -304,12 +304,50 @@ inline constexpr uint32_t EditCaretTracker_EstimateNextOffset(uint32_t last, siz
     return sum > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(sum);
 }
 
+// ---- REQ-034 F2-B': leading-CRLF self-correction (design 260907 173700 §4.1) ----
+//
+// Root cause (debug 260907 173700 §F2): the stored EM_SETSEL start is only
+// ever advanced by the pipeline, so out-of-band user edits (manual Shift+
+// Enter, paste, backspace) drift it: the next Enter's capture begins with
+// the "\r\n" the user typed at the saved boundary, and the replacement
+// swallows the line break (line merge - user log emebalachat_260907171452
+// L997/L1147). The primary verdict is measured, not inferred: when the
+// EM-path CAPTURE starts with a leading CRLF, the stored start pointed at a
+// newline - self-correct by re-selecting from 0.
+//
+// Pure seam (same pattern as ClassifyEmProbe/EstimateNextOffset): narrow by
+// design - the CRLF pair only. A lone '\r'/'\n' at index 0 is normal block
+// content in single-LF controls and must NOT trigger a re-capture (that is
+// the REQ-027 normal-progress contract; TestReq034NoLeadingCrlfNormalProgress
+// pins it). Widening is deferred to the D-4 per-app matrix measurement.
+inline constexpr bool EditCaretTracker_HasLeadingCrlf(std::wstring_view captured) {
+    return captured.size() >= 2 && captured[0] == L'\r' && captured[1] == L'\n';
+}
+
+// Self-correction re-selection for the once-per-Enter retry (CopySelectedText
+// drives predicate -> re-select -> re-copy). Same gates as TrySelectNewText
+// (focus resolution + EM capability + SendEm 100 ms budget), then
+// EM_SETSEL(0, caret) and stores start 0 + the REQ-034 baseline_textlen
+// auxiliary signal. Returns false - changing nothing - when the hwnd is
+// unusable/NotCapable/Unknown, any EM call fails, or the stored start is
+// already 0: that is the already-safe whole-block geometry (the document
+// itself begins with a newline), so re-capturing identical bytes would only
+// add a clipboard round trip and a repeat-retry risk. On true the next Enter
+// starts from 0 (safe whole-block) until the following NotifyReplacement
+// restores real-caret progress.
+bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
+
 // High-level pipeline helper:
 // Classifies the window via ClassifyAppWindow(hwnd) and selects text with
 // SelectAll() (CategoryA), the REQ-027 EditCaretTracker EM_SETSEL path
 // (CategoryB + standard EDIT/RichEdit classes only), or SelectMessageBlock()
 // (CategoryB fallback for everything else), then runs the REQ-R04
 // sequence-number copy-settle wait and retrieves clipboard text.
+// REQ-034 F2-B': when the EM-path capture starts with a leading CRLF the
+// stored start absorbed a manual newline - re-select from 0 and re-copy,
+// ONCE per call (bounded retry, loop-free), then hand the corrected text
+// to the pipeline. The offset-saving contract (worker post-newline
+// NotifyReplacement) is untouched.
 // Returns empty when the copy could not be confirmed (never stale data).
 std::wstring CopySelectedText(HWND hwnd);
 
