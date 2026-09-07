@@ -7,22 +7,58 @@
 
 namespace emebalachat {
 
-// R6 Phase 6 (architect plan §5.5, user decision "remove"): French, German and
-// Russian were declared here but had NO populated translation table (they
-// silently fell back to English - the half-wired state plan §5.1 flagged).
-// They are REMOVED from the enum; fr/de/ru config values now resolve to
-// English explicitly (I18n::StringToLocale default branch). FR/DE/RU remain
-// fully supported as TRANSLATION languages (src/config.cpp language registry)
-// - only the UI-localization locale set changed.
+// REQ-037 (P4 Batch B-3, design §2.1.1): the UI locale set expands to the full
+// 37 Hy-MT2 language registry (design §2.1.1 ordering rule). Values are
+// declared in kAllLanguages registry order (src/config.cpp) - Auto first -
+// so the enum, the LocaleMapping table, the selector join and the registry
+// share one canonical ordering.
+//
+// History note: the R6-era removal of FR/DE/RU (half-wired locales with no
+// translation tables, plan §5.5) is SUPERSEDED by REQ-037's "all 37" mandate -
+// the user explicitly forbade silent-English duplicates ("no checklist
+// gaming"). The removal MECHANISM survives as the authenticity gate: a locale
+// whose table is not authored is withheld from GetSupportedUiLocales() and
+// refused by PlanUiLocaleChange (design §2-Q4.2). All 37 tables are authored
+// in B-3, so the gate is fully open; it stays in place for future locales.
 enum class UiLocale {
     Auto,
     Korean,
     English,
-    Japanese,
+    Vietnamese,
     ChineseSimplified,
     ChineseTraditional,
-    Vietnamese,
-    Spanish
+    Japanese,
+    Spanish,
+    French,
+    German,
+    Russian,
+    Thai,
+    Arabic,
+    Portuguese,
+    Italian,
+    Indonesian,
+    Malay,
+    Filipino,
+    Khmer,
+    Lao,
+    Hindi,
+    Bengali,
+    Turkish,
+    Polish,
+    Dutch,
+    Ukrainian,
+    Persian,
+    Urdu,
+    Hebrew,
+    Czech,
+    Hungarian,
+    Swedish,
+    Greek,
+    Romanian,
+    Danish,
+    Finnish,
+    Norwegian,
+    Burmese
 };
 
 enum class StringId {
@@ -106,9 +142,59 @@ enum class StringId {
     AutoDetect,
 
     // R6 Phase 5: sentinel for the table-completeness unit test
-    // (every StringId below it must return a non-empty value in all 7 locales).
+    // (every StringId below it must return a non-empty value in all locales
+    // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
     EnumCount
 };
+
+// ---- REQ-037 (P4 Batch B-3, design §2.1.3): code-mapping table ----------
+//
+// One row per selectable UI locale (37 rows, NO Auto). StringToLocale,
+// LocaleToString, GetLocaleCode and the two phases of DetectSystemLocale are
+// all data-driven from this table, so adding a 38th language later is a
+// one-row change plus a string table (design §2.1.3). The table is exposed
+// (not file-static) so TestReq037LocaleMapping can pin row integrity,
+// round-trips and prefix hygiene headlessly (design §2.1.6).
+struct LocaleMapping {
+    UiLocale locale;
+    // Canonical PERSISTED spelling in config.ui_language (design §2.1.3);
+    // case-insensitive at match time, canonical case in storage/output.
+    const char* config_code;     // "ko", "zh-CN", "fil", "no", ...
+    // BCP-47 language-subtag prefix for DetectSystemLocale phase 1
+    // (GetUserDefaultLocaleName returns e.g. "ko-KR"). Matched on the
+    // hyphen/underscore boundary (design §5.1 R6): subtag == prefix exactly,
+    // never a raw starts_with (L"no" must not hit L"nob", L"fi" must not
+    // hit L"fil"). The zh rows carry their canonical prefix for the
+    // non-empty-prefix assertion, but Chinese detection is resolved by the
+    // explicit script-subtag pre-check BEFORE the generic loop (design
+    // §2.1.3), so the zh prefixes never participate in boundary matching.
+    const wchar_t* bcp47_prefix;   // L"ko" (never empty)
+    // Optional second prefix for locales Windows reports under two tags:
+    // Norwegian (nb-NO primary, no-* legacy). nullptr when unused.
+    const wchar_t* bcp47_prefix_alt;
+    // Representative full BCP-47 tag for DWrite CreateTextFormat localeName
+    // (design §2-Q5 verdict A; UI-chrome counterpart of LanguageInfo.bcp47 -
+    // two owners, two purposes, cross-reference comment in src/config.cpp).
+    const wchar_t* bcp47_full;   // L"ko-KR"
+    // PRIMARYLANGID for DetectSystemLocale's fallback phase (design §2.1.3).
+    WORD langid_primary;
+    // Authenticity gate (design §2-Q4.2): false = table exists but is not
+    // human-reviewed; the locale is withheld from GetSupportedUiLocales()
+    // and therefore refused by PlanUiLocaleChange. REQ-037 B-3 authors all
+    // 37 tables, so every row is true; the flag remains as the gate knob.
+    bool authored;
+};
+
+// The 37 mapping rows, in UiLocale enum order (kAllLanguages registry order).
+const std::vector<LocaleMapping>& GetLocaleMappings();
+
+// Pure BCP-47 tag -> UiLocale resolution used by DetectSystemLocale phase 1
+// (zh script pre-check + boundary-checked prefix loop). Returns UiLocale::Auto
+// as the "no match" sentinel (Auto is never produced by detection itself),
+// letting the caller fall through to the LANGID phase. Exposed headless for
+// TestReq037LocaleMapping (design §2.1.6: nb-NO -> Norwegian, fil -> Filipino,
+// unknown -> sentinel).
+UiLocale LocaleFromBcp47Tag(std::wstring_view tag);
 
 // ---- R6 Phase 6 (plan §5.4): UI-language selector data + pure change plan ----
 
@@ -120,8 +206,11 @@ struct UiLocaleEntry {
     const wchar_t* native_name;
 };
 
-// The 7 populated locales, in selector display order (KO, JA, zh-CN, zh-TW,
-// VI, ES, EN). FR/DE/RU are gone with the enum values (removed, plan §5.5).
+// The 37 selector locales (REQ-037/B-3), built once by joining the
+// LocaleMapping table against the kAllLanguages registry (endonym source of
+// truth, design §2.1.4) through the authenticity gate. Display order per
+// design §2-Q3: the legacy front block (KO, JA, zh-CN, zh-TW, VI, ES) keeps
+// its muscle memory, the remaining 30 follow registry order, English last.
 const std::vector<UiLocaleEntry>& GetSupportedUiLocales();
 
 // Surfaces RefreshAllUiForLocaleChange (src/main.cpp) must re-render after a
@@ -142,12 +231,22 @@ struct UiLocaleChangePlan {
 };
 
 // Pure planner (headless-testable per plan §7.2): "auto" selects the system
-// locale at apply time; any populated-locale code is stored verbatim in
-// lowercase-insensitive canonical form. Unknown values (e.g. the removed
-// "fr"/"de"/"ru") are REFUSED (valid=false) so config can never carry a
-// half-wired locale again.
+// locale at apply time; any AUTHORED-locale code is stored verbatim in
+// lowercase-insensitive canonical form (design §2.1.3 aliases accepted).
+// Values that are not selectable codes - unknown spellings, or a locale
+// withheld by the authenticity gate - are REFUSED (valid=false) so config can
+// never carry a half-wired locale again (the gate's enforcement point).
 UiLocaleChangePlan PlanUiLocaleChange(std::string_view current_persisted,
                                       std::string_view requested);
+
+// Pure overload taking the selector vector explicitly (design §2-Q4.2): the
+// gate's enforcement point is the selector loop, so tests pin "a locale
+// withheld from the vector is refused" with a SYNTHETIC reduced selector,
+// independent of whether every real locale is authored this batch. The
+// production entry point above simply forwards GetSupportedUiLocales().
+UiLocaleChangePlan PlanUiLocaleChangeWithSelector(const std::vector<UiLocaleEntry>& selector,
+                                                  std::string_view current_persisted,
+                                                  std::string_view requested);
 
 class I18n {
 public:
@@ -160,7 +259,8 @@ public:
     // Returns currently active UI locale
     static UiLocale GetCurrentLocale();
 
-    // Returns locale identifier (e.g. "ko", "ja", "zh-CN", "zh-TW", "vi", "es", "fr", "de", "ru", "en")
+    // Returns locale identifier (e.g. "ko", "ja", "zh-CN", "zh-TW", "vi", "es",
+    // "ar", "my", ... - all 37 canonical codes; design §2.1.3 table-driven).
     static std::string_view GetLocaleCode();
     static std::string GetSystemLanguageCode() { return std::string(GetLocaleCode()); }
 

@@ -4476,18 +4476,27 @@ void TestR6P5P6I18n() {
     std::cout << "[RUN] Testing R6 P5/P6 i18n coverage, About localization, UI-language selector..." << std::endl;
     const int failures_before = g_failed_count;
 
-    const UiLocale kCompleteLocales[] = {
-        UiLocale::Korean, UiLocale::Japanese, UiLocale::ChineseSimplified,
-        UiLocale::ChineseTraditional, UiLocale::Vietnamese, UiLocale::Spanish,
-        UiLocale::English
-    };
+    // REQ-037 (P4 Batch B-3): completeness iterates the SELECTOR vector, not a
+    // hardcoded locale list - the test scales with the authenticity gate
+    // automatically (design §2.1.6). A locale the gate withholds disappears
+    // from both selector and coverage; a locale in the selector MUST carry a
+    // fully non-empty table (user rule: no empty strings, no silent English
+    // fallback for selectable locales).
+    const std::vector<UiLocale> kCompleteLocales = [] {
+        std::vector<UiLocale> v;
+        for (const auto& e : GetSupportedUiLocales()) v.push_back(e.locale);
+        return v;
+    }();
 
     // ---- 1) Table completeness (VP scope item 6): every StringId in [0,
-    //         EnumCount) must resolve NON-EMPTY in all 7 complete locales.
-    //         Guards the 18 new Phase-5/6 strings and the existing ones
-    //         against any future table drift (a missing initializer would
-    //         compile as nullptr and crash Render - this pins it headlessly).
+    //         EnumCount) must resolve NON-EMPTY in ALL 37 selectable locales
+    //         (47 × 37 = 1739 checks collapsed into one counter). Guards the
+    //         30 new tables + the legacy seven against aggregate-order drift
+    //         (a missing initializer would compile as nullptr and crash
+    //         Render - this pins it headlessly).
     int empty_count = 0;
+    TEST_CHECK(kCompleteLocales.size() == 37,
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 47x37");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -4496,33 +4505,58 @@ void TestR6P5P6I18n() {
             }
         }
     }
-    TEST_CHECK(empty_count == 0, "P5/P6: every StringId non-empty in all 7 locales");
+    TEST_CHECK(empty_count == 0, "P5/P6/B3: every StringId non-empty in all 37 locales");
 
-    // ---- 2) Removed FR/DE/RU (user decision "미완성 로케일 제거") ----------
-    // The enum values are gone; StringToLocale must map the old codes to
-    // English (startup fallback), and the selector planner must REFUSE them
-    // so they can never be (re-)persisted as half-wired locales.
-    TEST_CHECK(I18n::StringToLocale("fr") == UiLocale::English, "P6: 'fr' falls back to English");
-    TEST_CHECK(I18n::StringToLocale("de") == UiLocale::English, "P6: 'de' falls back to English");
-    TEST_CHECK(I18n::StringToLocale("ru") == UiLocale::English, "P6: 'ru' falls back to English");
+    // ---- 2) FR/DE/RU acceptance (REQ-037 INVERTS the R6 removal) ------------
+    // Design §2.1.1 + §Issues: the half-wired removal is superseded by the
+    // "all 37" mandate; the tables are now authored, so the codes must
+    // RESOLVE to their locales, ACCEPT at the selector, and load at startup.
+    // The old refusal assertions are deliberately deleted here - the refusal
+    // MECHANISM itself stays pinned against a synthetic reduced selector in
+    // section 2b below (gate still exists and works, per delegation item 4).
+    TEST_CHECK(I18n::StringToLocale("fr") == UiLocale::French, "B3: 'fr' resolves to French");
+    TEST_CHECK(I18n::StringToLocale("de") == UiLocale::German, "B3: 'de' resolves to German");
+    TEST_CHECK(I18n::StringToLocale("ru") == UiLocale::Russian, "B3: 'ru' resolves to Russian");
     {
         const UiLocaleChangePlan frPlan = PlanUiLocaleChange("en", "fr");
-        TEST_CHECK(!frPlan.valid, "P6: selector refuses removed locale 'fr'");
-        TEST_CHECK(!PlanUiLocaleChange("en", "de").valid, "P6: selector refuses removed locale 'de'");
-        TEST_CHECK(!PlanUiLocaleChange("en", "ru").valid, "P6: selector refuses removed locale 'ru'");
+        TEST_CHECK(frPlan.valid && frPlan.applied == UiLocale::French,
+                   "B3: selector accepts authored locale 'fr' (inverted from R6 refusal)");
+        TEST_CHECK(PlanUiLocaleChange("en", "de").valid, "B3: selector accepts authored locale 'de'");
+        TEST_CHECK(PlanUiLocaleChange("en", "ru").valid, "B3: selector accepts authored locale 'ru'");
         TEST_CHECK(!PlanUiLocaleChange("en", "klingon").valid, "P6: selector refuses unknown code");
         TEST_CHECK(!PlanUiLocaleChange("en", "").valid, "P6: selector refuses empty code");
         I18n::Initialize("fr");
-        TEST_CHECK(I18n::GetCurrentLocale() == UiLocale::English,
-                   "P6: startup Initialize('fr') resolves to English fallback");
+        TEST_CHECK(I18n::GetCurrentLocale() == UiLocale::French,
+                   "B3: startup Initialize('fr') resolves to French (inverted from English fallback)");
+    }
+
+    // ---- 2b) Authenticity gate mechanism (design §2-Q4.2) ------------------
+    // All 37 real rows are authored in B-3, so the refusal path cannot be
+    // pinned by real data anymore - it is pinned with a SYNTHETIC selector:
+    // PlanUiLocaleChangeWithSelector must refuse every code that is NOT in
+    // the vector it was given, while the production entry point (full
+    // selector) accepts the same code. A withheld locale is therefore
+    // unreachable through the planner BY CONSTRUCTION of the selector loop.
+    {
+        const std::vector<UiLocaleEntry> syntheticReduced = {
+            { UiLocale::Thai, L"ไทย" },
+            { UiLocale::English, L"English" },
+        };
+        const UiLocaleChangePlan thaiOk = PlanUiLocaleChangeWithSelector(syntheticReduced, "en", "th");
+        TEST_CHECK(thaiOk.valid && thaiOk.applied == UiLocale::Thai,
+                   "B3: gate-pure planner accepts a code present in the selector");
+        TEST_CHECK(!PlanUiLocaleChangeWithSelector(syntheticReduced, "en", "my").valid,
+                   "B3: gate-pure planner REFUSES a code withheld from the selector (synthetic 'my')");
+        TEST_CHECK(PlanUiLocaleChange("en", "my").valid,
+                   "B3: production planner accepts 'my' (all 37 authored this batch)");
     }
 
     // ---- 3) Selector data + planner ----------------------------------------
     {
         const auto& entries = GetSupportedUiLocales();
-        TEST_CHECK(entries.size() == 7, "P6: selector lists exactly the 7 complete locales");
-        TEST_CHECK(entries[0].locale == UiLocale::Korean && entries[6].locale == UiLocale::English,
-                   "P6: selector order KO-first, EN-last (plan §5.4)");
+        TEST_CHECK(entries.size() == 37, "B3: selector lists exactly the 37 authored locales");
+        TEST_CHECK(entries[0].locale == UiLocale::Korean && entries[36].locale == UiLocale::English,
+                   "B3: selector order KO-first, EN-last (design §2-Q3 legacy front block kept)");
         bool all_named = true;
         for (const auto& e : entries) {
             if (e.native_name == nullptr || e.native_name[0] == L'\0') all_named = false;
@@ -4608,7 +4642,7 @@ void TestR6P5P6I18n() {
             I18n::SetLocale(loc);
             if (I18n::Get(StringId::TooltipTitle) != L"Emebala Chat") brand_fixed = false;
         }
-        TEST_CHECK(brand_fixed, "P5: brand token 'Emebala Chat' untranslated in all 7 locales");
+        TEST_CHECK(brand_fixed, "P5/B3: brand token 'Emebala Chat' untranslated in all 37 locales");
     }
 
     // ---- 6) Runtime locale switch changes Get output (atomic path) ---------
@@ -4639,12 +4673,200 @@ void TestR6P5P6I18n() {
                    "P6: persisted 'ja' resolves to the Japanese locale at (re)init");
     }
 
+    // ---- 8) R7 old-config regression (design §5.1 R7) ----------------------
+    // ui_language persists locale STRINGS, never enum ordinals, so the 8->38
+    // enum expansion cannot misread values written by pre-B-3 builds. The
+    // persisted forms shipped before this batch must load byte-identically:
+    // "es" -> Spanish, "ja" -> Japanese (section 7 above), "auto" -> detected.
+    {
+        I18n::Initialize("es");
+        TEST_CHECK(I18n::GetCurrentLocale() == UiLocale::Spanish,
+                   "R7: legacy config ui_language:'es' loads as Spanish after enum expansion");
+        I18n::Initialize("auto");
+        TEST_CHECK(I18n::GetCurrentLocale() != UiLocale::Auto,
+                   "R7: ui_language:'auto' resolves to a concrete locale at startup");
+        TEST_CHECK(I18n::StringToLocale("es") == UiLocale::Spanish &&
+                       I18n::LocaleToString(UiLocale::Spanish) == "es",
+                   "R7: 'es' round-trip stable across the B-3 rework");
+    }
+
     // Restore OS-derived locale for any later test functions.
     I18n::Initialize("auto");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] R6 P5/P6 i18n tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] R6 P5/P6 i18n tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// P4 Batch B-3 (session 260907_0002, design §2.1.6 / §4.1): LocaleMapping
+// table integrity for the 37-locale expansion. All pure seams - the table is
+// public (i18n.hpp) precisely so row correctness, round-trips and prefix
+// boundary hygiene (R6) are pinned headlessly instead of by manual review.
+void TestReq037LocaleMapping() {
+    std::cout << "[RUN] Testing B-3 LocaleMapping table (REQ-037)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    const auto& maps = GetLocaleMappings();
+
+    // ---- 1) Row count + declaration order ----------------------------------
+    TEST_CHECK(maps.size() == 37, "B3: LocaleMapping has exactly 37 rows");
+    {
+        bool order_ok = true;
+        for (size_t i = 0; i < maps.size(); ++i) {
+            // Auto(0) excluded; rows in UiLocale enum order == registry order.
+            if (static_cast<int>(maps[i].locale) != static_cast<int>(i) + 1) order_ok = false;
+        }
+        TEST_CHECK(order_ok, "B3: rows declared in UiLocale enum order (design §2.1.1 registry order)");
+    }
+
+    // ---- 2) 37x round-trip identity (LocaleToString ∘ StringToLocale) ------
+    {
+        bool round_trip = true;
+        for (const auto& m : maps) {
+            if (I18n::LocaleToString(m.locale) != m.config_code) round_trip = false;
+            if (I18n::StringToLocale(m.config_code) != m.locale) round_trip = false;
+        }
+        TEST_CHECK(round_trip, "B3: every config_code round-trips StringToLocale/LocaleToString (identity x37)");
+    }
+
+    // ---- 3) Non-empty prefix/full columns + uniqueness ----------------------
+    {
+        bool prefix_ok = true;
+        bool full_ok = true;
+        std::vector<std::wstring> primary;
+        for (const auto& m : maps) {
+            if (m.bcp47_prefix == nullptr || m.bcp47_prefix[0] == L'\0') prefix_ok = false;
+            if (m.bcp47_full == nullptr || m.bcp47_full[0] == L'\0') full_ok = false;
+            // zh rows intentionally share L"zh" (resolved by script pre-check,
+            // skipped by the boundary loop) - uniqueness applies to the rest.
+            if (m.locale != UiLocale::ChineseSimplified && m.locale != UiLocale::ChineseTraditional) {
+                primary.emplace_back(m.bcp47_prefix);
+                if (m.bcp47_prefix_alt) primary.emplace_back(m.bcp47_prefix_alt);
+            }
+        }
+        TEST_CHECK(prefix_ok, "B3: every mapping row carries a non-empty bcp47_prefix");
+        TEST_CHECK(full_ok, "B3: every mapping row carries a non-empty bcp47_full tag");
+        std::sort(primary.begin(), primary.end());
+        const bool unique = std::adjacent_find(primary.begin(), primary.end()) == primary.end();
+        TEST_CHECK(unique, "R6/B3: bcp47 prefixes (incl. nb/no dual row) are unique - no collision");
+    }
+
+    // ---- 4) Selector join against kAllLanguages (design §2.1.4) -------------
+    {
+        const auto& entries = GetSupportedUiLocales();
+        const auto& registry = GetSupportedLanguages();
+        bool join_ok = entries.size() == 37;
+        for (const auto& e : entries) {
+            const LocaleMapping* row = nullptr;
+            for (const auto& m : maps) {
+                if (m.locale == e.locale) row = &m;
+            }
+            if (row == nullptr || !row->authored) { join_ok = false; continue; }
+            std::string up = row->config_code;
+            for (char& c : up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            bool found = false;
+            for (const auto& lang : registry) {
+                if (lang.code == up) {
+                    found = true;
+                    if (ToUtf16(lang.name_native) != e.native_name) join_ok = false;
+                    break;
+                }
+            }
+            if (!found) join_ok = false;
+        }
+        TEST_CHECK(join_ok,
+                   "B3: selector == LocaleMapping x kAllLanguages join; endonyms come from the registry; gate fully open (37 authored)");
+    }
+
+    // ---- 5) BCP-47 resolution: delegation-mandated cases (design §4.1) ------
+    TEST_CHECK(LocaleFromBcp47Tag(L"ko-KR") == UiLocale::Korean, "B3: ko-KR -> Korean");
+    TEST_CHECK(LocaleFromBcp47Tag(L"nb-NO") == UiLocale::Norwegian, "B3: nb-NO -> Norwegian (Windows primary tag)");
+    TEST_CHECK(LocaleFromBcp47Tag(L"no-NO") == UiLocale::Norwegian, "B3: no-NO -> Norwegian (legacy alias prefix)");
+    TEST_CHECK(LocaleFromBcp47Tag(L"nn-NO") == UiLocale::Auto,
+               "B3: nn-NO defers to the LANGID phase (sentinel Auto); Nynorsk primary 0x14 still lands on Norwegian");
+    TEST_CHECK(LocaleFromBcp47Tag(L"fil-PH") == UiLocale::Filipino, "B3: fil-PH -> Filipino (fil vs FI boundary)");
+    TEST_CHECK(LocaleFromBcp47Tag(L"fi-FI") == UiLocale::Finnish, "B3: fi-FI -> Finnish");
+    TEST_CHECK(LocaleFromBcp47Tag(L"zh-Hans") == UiLocale::ChineseSimplified, "B3: zh-Hans script pre-check -> Simplified");
+    TEST_CHECK(LocaleFromBcp47Tag(L"zh-Hant") == UiLocale::ChineseTraditional, "B3: zh-Hant script pre-check -> Traditional");
+    TEST_CHECK(LocaleFromBcp47Tag(L"zh-CN") == UiLocale::ChineseSimplified &&
+                   LocaleFromBcp47Tag(L"zh-TW") == UiLocale::ChineseTraditional &&
+                   LocaleFromBcp47Tag(L"zh-HK") == UiLocale::ChineseTraditional &&
+                   LocaleFromBcp47Tag(L"zh-SG") == UiLocale::ChineseSimplified &&
+                   LocaleFromBcp47Tag(L"zh-MO") == UiLocale::ChineseTraditional,
+               "B3: legacy zh exact-match set preserved verbatim");
+    TEST_CHECK(LocaleFromBcp47Tag(L"ur-PK") == UiLocale::Urdu, "B3: ur-PK -> Urdu");
+    TEST_CHECK(LocaleFromBcp47Tag(L"my-MM") == UiLocale::Burmese, "B3: my-MM -> Burmese");
+    TEST_CHECK(LocaleFromBcp47Tag(L"en-US") == UiLocale::English, "B3: en-US -> English");
+    TEST_CHECK(LocaleFromBcp47Tag(L"sw-KE") == UiLocale::Auto,
+               "B3: unsupported OS tag -> sentinel; DetectSystemLocale falls through to English explicitly (design §2.1.5)");
+
+    // ---- 6) R6 hyphen-boundary discipline -----------------------------------
+    TEST_CHECK(LocaleFromBcp47Tag(L"nob") == UiLocale::Auto,
+               "R6: bare 'nob' does NOT match the Norwegian 'no-' boundary rule");
+    TEST_CHECK(LocaleFromBcp47Tag(L"fil") == UiLocale::Filipino,
+               "R6: exact 'fil' (no region) matches on length boundary");
+    TEST_CHECK(LocaleFromBcp47Tag(L"zh") == UiLocale::Auto,
+               "B3: bare 'zh' defers to the LANGID phase (SUBLANG disambiguation preserved)");
+
+    // ---- 7) StringToLocale aliases (design §2.1.3 preserved verbatim) -------
+    TEST_CHECK(I18n::StringToLocale("zh_cn") == UiLocale::ChineseSimplified &&
+                   I18n::StringToLocale("zh_tw") == UiLocale::ChineseTraditional &&
+                   I18n::StringToLocale("ZH-cn") == UiLocale::ChineseSimplified &&
+                   I18n::StringToLocale("zh") == UiLocale::ChineseSimplified,
+               "B3: legacy zh_cn/zh_tw/zh aliases + case-insensitivity preserved");
+    TEST_CHECK(I18n::StringToLocale("auto") == UiLocale::Auto, "B3: 'auto' still resolves to Auto");
+    TEST_CHECK(I18n::StringToLocale("klingon") == UiLocale::English,
+               "B3: unknown config value -> explicit English fallback (no silent half-wire)");
+
+    // ---- 8) Authoring-progress metric (design §2-Q4.4): REPORTED, NOT
+    //           failed. For every selectable non-English locale, count the
+    //           fields identical to the English table. Legitimate identities
+    //           exist by design (brand token "Emebala Chat", "Reddit", the
+    //           universal contact lines, emoji-button labels), so a small
+    //           non-zero count is expected in authored tables; a LARGE count
+    //           (near 47) is the placeholder signature this metric exists to
+    //           surface for VP's Gate 2 review. Printed as one [INFO] line.
+    {
+        I18n::SetLocale(UiLocale::English);
+        std::vector<std::wstring> enStrings;
+        for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
+            enStrings.push_back(I18n::Get(static_cast<StringId>(id)));
+        }
+        std::string report;
+        for (const auto& e : GetSupportedUiLocales()) {
+            if (e.locale == UiLocale::English) continue;
+            I18n::SetLocale(e.locale);
+            int identical = 0;
+            for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
+                if (I18n::Get(static_cast<StringId>(id)) == enStrings[id]) ++identical;
+            }
+            report += I18n::LocaleToString(e.locale) + "=" + std::to_string(identical) + " ";
+        }
+        std::cout << "[INFO] B3 authoring-metric fields-identical-to-English (brand + universal "
+                     "contact lines legitimately identical; near-47 would flag a placeholder): "
+                  << report << std::endl;
+        I18n::SetLocale(UiLocale::English);
+    }
+
+    // ---- 9) GetLocaleCode is table-driven for all 38 enum values ------------
+    {
+        bool code_ok = true;
+        for (const auto& m : maps) {
+            I18n::SetLocale(m.locale);
+            if (I18n::GetLocaleCode() != m.config_code) code_ok = false;
+        }
+        I18n::SetLocale(UiLocale::Auto);
+        if (I18n::GetLocaleCode() != "en") code_ok = false; // explicit fallback contract
+        TEST_CHECK(code_ok, "B3: GetLocaleCode matches config_code for all 37 locales + Auto->en");
+    }
+
+    I18n::Initialize("auto"); // restore OS-derived locale for later tests
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B-3 LocaleMapping tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B-3 LocaleMapping tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
     }
 }
 
@@ -6315,6 +6537,7 @@ int main() {
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();
+    TestReq037LocaleMapping();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
