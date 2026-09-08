@@ -5553,9 +5553,15 @@ void TestPhase5AppClassifier() {
                "CategoryA pure matcher retains WeChat.exe");
     TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"WhatsApp.exe"),
                "CategoryA pure matcher retains WhatsApp.exe");
+    // F4: Store (WinUI 3) WhatsApp runs as WhatsApp.Root.exe — same
+    // dual-entry precedent as Teams.exe / ms-teams.exe.
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"WhatsApp.Root.exe"),
+               "CategoryA pure matcher classifies WhatsApp.Root.exe (Store)");
     // Case-insensitivity (WhatsApp with a different case must still match).
     TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"whatsapp.EXE"),
                "CategoryA pure matcher is case-insensitive");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"whatsapp.root.EXE"),
+               "CategoryA pure matcher case-insensitive for WhatsApp.Root.exe");
     // Editors are NO LONGER CategoryA.
     TEST_CHECK(!IsChatAppExeNameForEnterTranslation(L"Code.exe"),
                "Code.exe removed from CategoryA (REQ-011 reversal)");

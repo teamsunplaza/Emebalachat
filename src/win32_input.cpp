@@ -276,8 +276,10 @@ bool ExeNameEqualsCi(std::wstring_view a, std::wstring_view b) {
 // 2076-char overwrite) and moved to kEditorApps below.
 const std::wstring_view kCategoryAApps[] = {
     L"KakaoTalk.exe", L"Discord.exe", L"Slack.exe", L"Telegram.exe",
+    // Teams.exe / ms-teams.exe precedent: dual entries for the same app
+    // family. WhatsApp.Root.exe is the Store (WinUI 3) packaging name.
     L"Teams.exe", L"ms-teams.exe", L"Line.exe", L"WeChat.exe",
-    L"WhatsApp.exe"
+    L"WhatsApp.exe", L"WhatsApp.Root.exe"
 };
 
 // F4/A2 (W1 결정 1/2 + W0): editors/IDEs excluded from the ENTER translate
