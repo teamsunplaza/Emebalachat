@@ -1274,6 +1274,84 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
         });
 
+    // ---- F9 (session 260908_0002, ADR-A1-5): async tooltip re-translation ----
+    // The tooltip language-change callback used to run engine.Translate
+    // SYNCHRONOUSLY on the GUI thread inside the tooltip WndProc (V8:
+    // measured 1.26-5.36 s freezes; gen 21 crossed the 5 s "Not
+    // Responding" threshold). TranslationManager::Translate holds mutex_
+    // for the WHOLE inference, so the message pump stalls until it
+    // returns. The re-translation now runs on a dedicated worker mirroring
+    // drag_translate_worker above (one persistent std::jthread, single
+    // pending slot, deterministic shutdown join). ADR-A1-5 keeps it in a
+    // SEPARATE queue from the drag jobs: a queued re-translation must
+    // never be superseded by an unrelated drag click; latest-wins applies
+    // only between consecutive language picks, and a result superseded in
+    // the meantime is dropped at render time by the B1-H1 generation
+    // guard (ShowTranslation logs the drop as tooltip_marshal_drop).
+    struct RetranslateJob {
+        std::wstring src;
+        std::string src_code;
+        std::string new_tgt;
+        int x = 0;
+        int y = 0;
+        uint64_t gen = emebalachat::TooltipWindow::kGenNone;
+    };
+    std::mutex retranslate_job_mutex;
+    std::condition_variable retranslate_job_cv;
+    bool retranslate_job_pending = false;
+    RetranslateJob retranslate_job;
+
+    // Runs ON retranslate_worker below. D2D-safe: the result is marshaled
+    // through the REQ-R10 ShowTranslationThreadSafe seam, never a direct
+    // ShowTranslation call. Empty-result policy (ADR-A1-5 / V8 §d-4): a
+    // failed translation keeps the existing tooltip content instead of
+    // rendering an empty body.
+    auto run_retranslate = [&](const RetranslateJob& job) {
+        DIAG_LOG("UI", "retranslate_worker_run gen=%llu src_len=%zu tgt=%s",
+                 static_cast<unsigned long long>(job.gen), job.src.size(),
+                 job.new_tgt.c_str());
+
+        badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        std::wstring translated = engine.Translate(job.src, job.src_code, job.new_tgt);
+        badge.SetStatus(emebalachat::BadgeStatus::Active);
+
+        if (translated.empty()) {
+            DIAG_LOG("UI", "retranslate_skip_empty gen=%llu existing_content_kept=1",
+                     static_cast<unsigned long long>(job.gen));
+            return;
+        }
+        // Worker thread -> marshal to the GUI thread. If a newer request
+        // was stamped while this thread sat inside engine.Translate, the
+        // tooltip's generation guard drops this stale payload.
+        tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, job.src_code,
+                                          job.new_tgt, translated, job.gen);
+    };
+
+    std::jthread retranslate_worker(
+        [&retranslate_job_mutex, &retranslate_job_cv, &retranslate_job_pending,
+         &retranslate_job, &run_retranslate](std::stop_token st) {
+            for (;;) {
+                RetranslateJob job;
+                {
+                    std::unique_lock<std::mutex> lk(retranslate_job_mutex);
+                    // GUI-thread producer sets pending UNDER this mutex -
+                    // textbook cv protocol, no lost wakeup, no time
+                    // backstop needed (same as the drag worker).
+                    retranslate_job_cv.wait(lk, [&st, &retranslate_job_pending]() {
+                        return st.stop_requested() || retranslate_job_pending;
+                    });
+                    if (st.stop_requested()) {
+                        break; // a pending job is superseded anyway (guard drops it)
+                    }
+                    job = std::move(retranslate_job);
+                    retranslate_job_pending = false;
+                }
+                // Mutex NOT held across engine.Translate (same rule as the
+                // drag worker / DoubleCtrlCWorkerLoop).
+                run_retranslate(job);
+            }
+        });
+
     // Click on DragIconWindow: runs ON THE MAIN GUI THREAD (its WndProc).
     // Stamp the generation at trigger time (R6 Phase 2 B1-H1), hand the job
     // to the worker, return immediately - the message pump is never blocked
@@ -1393,8 +1471,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // tray kept the old target and drifted forever (architect plan §1 B3).
     // R6 Phase 1: the menu pick is now a REQUEST to the single coordinator
     // (INV-2): persist -> badge -> tray -> tooltip label sync, THEN the local
-    // re-translation with the NEW target passed explicitly (INV-5), then the
-    // content re-show at the current position.
+    // re-translation with the NEW target passed explicitly (INV-5), dispatched
+    // to the F9 retranslate_worker so the GUI thread never blocks (ADR-A1-5).
     tooltip.SetLanguageChangeCallback([&](std::string_view new_target_lang) {
         // R6 Phase 2 (B1-H1): the language change is itself a NEW translate
         // request - stamp it so an in-flight older drag result cannot
@@ -1410,21 +1488,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         // Runs on the GUI thread (tooltip WndProc) - the coordinator's
         // required thread per plan §2.3. If the request is refused (invalid
-        // name), everything stays consistent at the OLD pair; the re-show
-        // below just re-renders the current state.
+        // name), everything stays consistent at the OLD pair; the worker
+        // re-translate below then just re-renders the current state.
         // Phase 3 Batch 2 (plan §2.4, REQ-008/009): the tooltip language menu
         // belongs to the drag-result window, so it mutates the DRAG pair and
         // refreshes only the tooltip (sticky per-plan §2.2 model).
         ApplyLanguageChange(emebalachat::LanguageContext::Drag, std::string_view{},
                             new_tgt, false, false);
 
-        badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(src, src_code, new_tgt);
-        badge.SetStatus(emebalachat::BadgeStatus::Active);
-
-        // Runs on the GUI thread: the fresh generation this callback just
-        // stamped makes the guard accept it unconditionally (>= latest).
-        tooltip.ShowTranslation(r.left, r.top, src, src_code, new_tgt, translated, gen);
+        // F9 (ADR-A1-5): engine.Translate is OFF the GUI thread now. It used
+        // to run HERE, inside the tooltip WndProc, and held the engine mutex
+        // for the whole local-LLM inference - V8 measured 1.26-5.36 s
+        // message-pump freezes (gen 21 crossed the 5 s "Not Responding"
+        // threshold). The job carries the src/src_code captured above plus
+        // this request's fresh gen; the worker translates and delivers via
+        // ShowTranslationThreadSafe, where the B1-H1 guard drops a result
+        // superseded while inference ran. Latest-wins on the single pending
+        // slot coalesces only between consecutive LANGUAGE PICKS on this
+        // queue - drag clicks live in the separate drag_translate_worker
+        // queue and can never swallow a user-requested re-translation.
+        DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt=%s",
+                 static_cast<unsigned long long>(gen), new_tgt.c_str());
+        {
+            std::lock_guard<std::mutex> lk(retranslate_job_mutex);
+            retranslate_job = RetranslateJob{ src, src_code, new_tgt,
+                                              r.left, r.top, gen };
+            retranslate_job_pending = true;
+        }
+        retranslate_job_cv.notify_one();
     });
 
     // REQ-R08 visual feedback: localized state-change bubble at the cursor,
@@ -1558,6 +1649,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     drag_job_cv.notify_all();
     if (drag_translate_worker.joinable()) {
         drag_translate_worker.join();
+    }
+    // F9 (ADR-A1-5): same shutdown discipline for the re-translate worker -
+    // stop + notify + join right here, so it is down before the surfaces it
+    // marshals to are Destroy()ed. Bounded the same way: engine.RequestCancel()
+    // (latched above) makes an in-flight decode unwind at the next token
+    // boundary, and a superseded/empty result renders nothing anyway.
+    retranslate_worker.request_stop();
+    retranslate_job_cv.notify_all();
+    if (retranslate_worker.joinable()) {
+        retranslate_worker.join();
     }
     // R6 Phase 1 (B3): drain any language-sync requests still queued before
     // the coordinator is retired, so a cycle posted a moment before shutdown
