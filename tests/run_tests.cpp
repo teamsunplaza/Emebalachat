@@ -3817,6 +3817,12 @@ void TestB3LanguageSync() {
 // SC-01 (Phase 1 batch 3): pure src==tgt fallback resolver extracted from the
 // two inline copies in main.cpp. Host-OS-locale independent: expectations are
 // derived from the same primitives the function uses.
+// F3/A1b (session 260908_0002, ADR-A1-7): the pivot arrival is now the
+// language-neutral 3-rank rule (OS language != src -> English -> skip). The
+// former "src==EN ? Korean : English" hardcoding cases were updated per the
+// design's test-plan table: N1-N3 (VI/AR/IT neutrality), N4 (OS==src
+// self-collision kick-out), N5 (EN-OS KO collision via 1st rank), and the
+// EN->EN + EN-OS expectation changed from "Korean" to nullopt (R7).
 void TestResolveEffectiveTarget() {
     std::cout << "[RUN] Testing SC-01 ResolveEffectiveTarget..." << std::endl;
     const int failures_before = g_failed_count;
@@ -3831,30 +3837,66 @@ void TestResolveEffectiveTarget() {
     const std::string sys_code =
         emebalachat::NormalizeLanguageCode(emebalachat::I18n::GetSystemLanguageCode());
 
+    // (ADR-A1-7 update) EN->EN on an EN/unknown-OS host: every neutral rank
+    // fails (1st: sys==src; 2nd: src==EN; 3rd: skip) -> NO pivot. The user can
+    // already read English, so the caller keeps the original target (R7
+    // intended behavior change; former expectation "Korean" retired).
     auto en_en = emebalachat::ResolveEffectiveTarget("English", "English");
-    TEST_CHECK(en_en.has_value(), "src == tgt == EN requires substitution");
-    if (sys_code == "EN" || sys_code.empty()) {
-        TEST_CHECK(en_en.value() == "Korean", "EN->EN with EN/unknown OS pivots to Korean");
+    if (sys_code == "EN" || sys_code == "AUTO" || sys_code.empty()) {
+        TEST_CHECK(!en_en.has_value(),
+                   "EN->EN with EN/unknown OS SKIPS the pivot (ADR-A1-7 3rd rank, R7)");
     } else if (const auto* info = emebalachat::FindLanguageByCode(sys_code)) {
-        TEST_CHECK(en_en.value() == info->name_en, "EN->EN uses OS language name_en");
-    } else {
-        TEST_CHECK(en_en.value() == "Korean", "EN->EN with unsupported OS falls back to Korean");
+        TEST_CHECK(en_en.has_value() && en_en.value() == info->name_en,
+                   "EN->EN with non-EN OS uses OS language name_en (1st rank)");
     }
 
-    // 3. Pivot direction: src == tgt == KO with KO OS -> English.
+    // 3. (N5) Pivot direction: src == tgt == KO. KO/unknown OS -> English via
+    //    the 2nd rank (the old hardcoded result is now a rule outcome); an EN
+    //    OS hits the 1st rank and yields "English" through OS name_en instead.
+    //    Either way the historical KO-OS experience is unchanged (regression
+    //    guard row 1 of the ADR-A1-7 compatibility table).
     auto ko_ko = emebalachat::ResolveEffectiveTarget("Korean", "Korean");
     TEST_CHECK(ko_ko.has_value(), "src == tgt == KO requires substitution");
-    if (sys_code == "KO" || sys_code.empty()) {
-        TEST_CHECK(ko_ko.value() == "English", "KO->KO with KO/unknown OS pivots to English");
+    if (sys_code == "KO" || sys_code == "AUTO" || sys_code.empty()) {
+        TEST_CHECK(ko_ko.value() == "English", "KO->KO with KO/unknown OS pivots to English (2nd rank)");
     } else if (const auto* info = emebalachat::FindLanguageByCode(sys_code)) {
-        TEST_CHECK(ko_ko.value() == info->name_en, "KO->KO uses OS language name_en");
+        TEST_CHECK(ko_ko.value() == info->name_en, "KO->KO uses OS language name_en (1st rank)");
+    }
+    TEST_CHECK(!ko_ko.has_value() ||
+                   emebalachat::NormalizeLanguageCode(ko_ko.value()) != "KO",
+               "pivot NEVER lands back on the colliding language (KO->KO corruption class cannot recur)");
+
+    // (N1/N2/N3 + N4) Language neutrality: non-KO/non-EN sources colliding
+    // with themselves must resolve by the SAME rule - OS language when it
+    // differs (1st rank), English otherwise (2nd rank; N4 is the sys==src
+    // self-collision host where the 1st rank must kick out). Expected values
+    // are derived from host primitives, so the block is host-independent.
+    for (const char* src : { "Vietnamese", "Arabic", "Italian" }) {
+        const std::string code = emebalachat::NormalizeLanguageCode(src);
+        auto pivoted = emebalachat::ResolveEffectiveTarget(src, src);
+        // A non-EN collision always finds a meaningful alternative (ranks
+        // 1-2); nullopt is only reachable for EN sources (rank 3).
+        TEST_CHECK(pivoted.has_value(),
+                   (std::string(code) + "->" + code + " collision always finds a neutral pivot").c_str());
+        if (sys_code == code || sys_code == "AUTO" || sys_code.empty()) {
+            TEST_CHECK(pivoted.has_value() && pivoted.value() == "English",
+                       (std::string(code) + "->" + code + " with OS==src/unknown falls back to English (2nd rank, N4 kick-out)").c_str());
+        } else if (const auto* info = emebalachat::FindLanguageByCode(sys_code)) {
+            TEST_CHECK(pivoted.has_value() && pivoted.value() == info->name_en,
+                       (std::string(code) + "->" + code + " uses OS language name_en (1st rank, N1-N3)").c_str());
+        }
+        TEST_CHECK(!pivoted.has_value() ||
+                       emebalachat::NormalizeLanguageCode(pivoted.value()) != code,
+                   (std::string(code) + " pivot never targets " + code + " (language-neutral guard)").c_str());
     }
 
-    // 4. Alias normalization: lowercase code input behaves like the full name.
+    // 4. Alias normalization: lowercase code input behaves exactly like the
+    //    canonical name form (compared against the EN->EN result above, so the
+    //    expectation stays host-independent under ADR-A1-7 rank 3, where an
+    //    EN-OS host legitimately gets nullopt for EN collisions).
     auto alias = emebalachat::ResolveEffectiveTarget("en", "english");
-    TEST_CHECK(alias.has_value() == (emebalachat::NormalizeLanguageCode("en") ==
-                                     emebalachat::NormalizeLanguageCode("english")),
-               "case/alias inputs normalize before comparison");
+    TEST_CHECK(alias == en_en,
+               "case/alias inputs normalize before comparison (same result as canonical EN->EN)");
 
     // 5. Unrecognized source ("AUTO" fallback) vs concrete target -> nullopt.
     auto auto_src = emebalachat::ResolveEffectiveTarget("not-a-language", "English");
@@ -3864,6 +3906,55 @@ void TestResolveEffectiveTarget() {
         std::cout << "[PASS] SC-01 ResolveEffectiveTarget tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] SC-01 ResolveEffectiveTarget tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// F3 (session 260908_0002, ADR-A1-2 / design §3 작업 F3 검증): headless unit
+// test for the extracted pure source-decision rule shared by the three
+// drag-family entry points (the lambdas in main.cpp themselves are not
+// headlessly testable). Contract: a NON-AUTO persisted source wins verbatim
+// over the caller's detected/last-displayed fallback; "Auto Detect" (and any
+// unresolvable value, which NormalizeLanguageCode maps to AUTO) keeps the
+// fallback so the engine still receives an EXPLICIT source on the drag paths.
+void TestResolveEffectiveSource() {
+    std::cout << "[RUN] Testing F3 ResolveEffectiveSource..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1. Pinned source wins over detection (V6 core defect: the setting was
+    //    never read on the drag paths).
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("Japanese", "Korean") == "Japanese",
+               "F3: non-AUTO persisted source overrides the detected fallback");
+    // 2. The value is returned VERBATIM (canonicalization belongs to the
+    //    callers' NormalizeLanguageCode / the engine's own token resolver;
+    //    case/alias forms are still recognized as non-AUTO).
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("korean", "Vietnamese") == "korean",
+               "F3: pinned value passes through unchanged (no silent canonicalization)");
+    // 3. "Auto Detect" (the REQ-006 default) keeps the detected value - the
+    //    established drag contract of explicit-source injection (ADR-A1-2).
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("Auto Detect", "Korean") == "Korean",
+               "F3: Auto Detect falls back to the detected/explicit source");
+    // 4. Canonical AUTO code form and case-insensitive variants behave like
+    //    "Auto Detect" (NormalizeLanguageCode is ASCII-case-insensitive).
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("AUTO", "KO") == "KO",
+               "F3: canonical AUTO token falls back");
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("auto detect", "KO") == "KO",
+               "F3: lowercase auto detect falls back (case-insensitive)");
+    // 5. Blank/garbage persisted values degrade to AUTO and thus to the
+    //    fallback - a corrupted config can never feed the engine an empty
+    //    source on the drag paths.
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("", "English") == "English",
+               "F3: empty persisted source falls back (unresolvable -> AUTO)");
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("not-a-language", "Thai") == "Thai",
+               "F3: garbage persisted source falls back (unresolvable -> AUTO)");
+    // 6. Re-translate path shape: the fallback may be a CODE ("KO") rather
+    //    than a name - the rule passes any token through untouched.
+    TEST_CHECK(emebalachat::ResolveEffectiveSource("Auto Detect", "KO") == "KO",
+               "F3: code-form fallback passes through verbatim");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] F3 ResolveEffectiveSource tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] F3 ResolveEffectiveSource tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -7385,6 +7476,7 @@ int main() {
     TestBatch2VersionScrollAbout();
     TestB3LanguageSync();
     TestResolveEffectiveTarget();
+    TestResolveEffectiveSource();
     TestPhase3LanguageContexts();
     TestPhase4SystemDefaults();
     TestB1TooltipStaleness();

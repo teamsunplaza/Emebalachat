@@ -1213,13 +1213,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             return;
         }
 
-        std::string detected = emebalachat::DetectLanguage(selected);
-        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
         // Phase 3 Batch 2 (plan §2.5, REQ-007): the drag path uses the DRAG
-        // pair. I4: snapshot read (worker thread).
-        std::string tgt_lang = config.GetSnapshot().drag_target_language;
+        // pair. I4: snapshot read (worker thread). F3 (session 260908_0002):
+        // read the WHOLE pair once - V6 found this path consumed only
+        // drag_target_language and forced the detected value as the engine
+        // source, silently ignoring a user-pinned drag_source_language.
+        const auto snap = config.GetSnapshot();
+        std::string detected = emebalachat::DetectLanguage(selected);
+        // ADR-A1-2: NON-AUTO persisted source wins over detection; "Auto
+        // Detect" keeps the established drag contract of injecting the
+        // DETECTED language into the engine as an explicit source.
+        const bool src_pinned = emebalachat::NormalizeLanguageCode(
+                                    snap.drag_source_language) != "AUTO";
+        std::string eff_src = emebalachat::ResolveEffectiveSource(
+                                  snap.drag_source_language, detected);
+        // ADR-A1-4: the tooltip tag shows the EFFECTIVE source (pinned value
+        // when fixed, detected code under AUTO), not the raw detection.
+        std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        std::string tgt_lang = snap.drag_target_language;
 
-        if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
+        bool pivot_fired = false;
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+            pivot_fired = true;
             tgt_lang = *effective;
             // R6 Phase 1 (B3): the src==tgt substitution was previously
             // EPHEMERAL - only this tooltip used it while config/badge/tray
@@ -1229,13 +1244,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // so the tooltip follows the language actually translated to.
             // Phase 3: DRAG context - only the drag pair (and the tooltip
             // label) move; badge/tray keep showing the type pair (plan §2.4).
+            // F3 note: the pivot comparison now uses eff_src (design F3-1);
+            // REMOVING this sync call is F1's scope, not F3's.
             emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
                                              emebalachat::LanguageContext::Drag,
                                              std::string{}, tgt_lang, false, false);
         }
+        // F3 DIAG (task §3-6): prove per request whether the engine source came
+        // from the pinned config or from detection, and whether the ADR-A1-7
+        // neutral pivot fired or was skipped (pivot=0 with eff==tgt and a
+        // collision is the 3rd-rank skip). QA cross-checks this line against
+        // the ENGINE/Translate/040 pair line so a (KO -> KO) regression is
+        // immediately attributable.
+        DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s",
+                 src_pinned ? "pinned" : "detect",
+                 snap.drag_source_language.c_str(), detected.c_str(),
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(selected, detected, tgt_lang);
+        std::wstring translated = engine.Translate(selected, eff_src, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
         // Worker thread, so marshal the D2D render to the GUI thread via the
@@ -1311,8 +1338,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                  static_cast<unsigned long long>(job.gen), job.src.size(),
                  job.new_tgt.c_str());
 
+        // F3-3 (session 260908_0002, ADR-A1-3): V6 entry-point 3 was the true
+        // origin of the KO->KO output corruption (log gen 8/10/12/21/24) - it
+        // fed the engine the last DISPLAYED detection code ("KO") together with
+        // the freshly picked target ("Korean") with no source resolution and no
+        // same-language guard. Now: (i) a pinned persisted source wins over the
+        // carried detection code (G2 / ADR-A1-2; job.src_code is the value the
+        // GUI thread captured at enqueue time, so no cross-thread tooltip read
+        // happens here), (ii) an empty AUTO fallback re-detects from the held
+        // text (R2 safety net), (iii) the ADR-A1-7 neutral pivot guard fires on
+        // eff_src == tgt so no re-translation path can request a same-language
+        // pair anymore.
+        const auto snap = config.GetSnapshot();
+        const bool src_pinned = emebalachat::NormalizeLanguageCode(
+                                    snap.drag_source_language) != "AUTO";
+        std::string eff_src = emebalachat::ResolveEffectiveSource(
+                                  snap.drag_source_language, job.src_code);
+        if (eff_src.empty()) {
+            eff_src = emebalachat::DetectLanguage(job.src);
+        }
+        std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        std::string tgt_lang = job.new_tgt;
+        bool pivot_fired = false;
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+            pivot_fired = true;
+            tgt_lang = *effective;
+        }
+        // F3 DIAG (task §3-6): same evidence contract as the drag paths -
+        // source decision (config vs carried detection) + pivot fired/skipped.
+        DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted=%s carried=%s eff=%s pivot=%d tgt=%s",
+                 static_cast<unsigned long long>(job.gen),
+                 src_pinned ? "pinned" : "detect",
+                 snap.drag_source_language.c_str(), job.src_code.c_str(),
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
+
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(job.src, job.src_code, job.new_tgt);
+        std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
         if (translated.empty()) {
@@ -1323,8 +1384,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Worker thread -> marshal to the GUI thread. If a newer request
         // was stamped while this thread sat inside engine.Translate, the
         // tooltip's generation guard drops this stale payload.
-        tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, job.src_code,
-                                          job.new_tgt, translated, job.gen);
+        tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, src_code,
+                                          tgt_lang, translated, job.gen);
     };
 
     std::jthread retranslate_worker(
@@ -1417,28 +1478,45 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             return;
         }
 
-        std::string detected = emebalachat::DetectLanguage(copied);
-        std::string src_code = emebalachat::NormalizeLanguageCode(detected);
         // Phase 3 Batch 2 (plan §2.5, REQ-007): double-Ctrl+C is a DRAG-context
         // translation (tooltip surface) - it uses the drag pair.
         // I4: snapshot read (REQ-R06: runs on the hook's async worker thread).
-        std::string tgt_lang = config.GetSnapshot().drag_target_language;
+        // F3 (session 260908_0002): same whole-pair + effective-source pattern
+        // as run_drag_translate above - this path ignored a pinned
+        // drag_source_language exactly like the drag icon path did (V6).
+        const auto snap = config.GetSnapshot();
+        std::string detected = emebalachat::DetectLanguage(copied);
+        const bool src_pinned = emebalachat::NormalizeLanguageCode(
+                                    snap.drag_source_language) != "AUTO";
+        std::string eff_src = emebalachat::ResolveEffectiveSource(
+                                  snap.drag_source_language, detected);
+        std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        std::string tgt_lang = snap.drag_target_language;
 
-        if (auto effective = emebalachat::ResolveEffectiveTarget(detected, tgt_lang)) {
+        bool pivot_fired = false;
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+            pivot_fired = true;
             tgt_lang = *effective;
             // R6 Phase 1 (B3): same coordinator routing as the drag path above
             // (this body runs on the hook's REQ-R06 async worker thread).
             // Phase 3: DRAG context (see the drag path above).
+            // F3 note: removing this sync call is F1's scope, not F3's.
             emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
                                              emebalachat::LanguageContext::Drag,
                                              std::string{}, tgt_lang, false, false);
         }
+        // F3 DIAG (task §3-6): source decision + pivot evidence (see the
+        // drag_src line above for the QA contract).
+        DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s",
+                 src_pinned ? "pinned" : "detect",
+                 snap.drag_source_language.c_str(), detected.c_str(),
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(copied, detected, tgt_lang);
+        std::wstring translated = engine.Translate(copied, eff_src, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
 
         // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI

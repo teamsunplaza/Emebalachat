@@ -347,13 +347,41 @@ std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
     if (tgt_code != src_code) {
         return std::nullopt;
     }
+    // ADR-A1-7 (session 260908_0002): language-neutral pivot. The former
+    // `src_code == "EN" ? "Korean" : "English"` hardcoding privileged the
+    // KO<->EN pair for every collision (a Vietnamese user dragging Vietnamese
+    // text was always pivoted to English regardless of their OS language).
+    // The neutral rule: (1) OS UI language when supported AND != src,
+    // (2) English when src != EN, (3) no pivot (nullopt -> caller keeps the
+    // original target). KO<->EN hosts keep their historical outcomes (KO OS +
+    // KO src: step 1 skipped by sys==src, step 2 -> English == old behavior;
+    // KO OS + EN src: step 1 -> Korean == old behavior). See ADR-A1-7
+    // compatibility table; the only intended change is R7 (EN OS + EN src==tgt
+    // now skips instead of pivoting to Korean).
     const std::string sys_code =
         NormalizeLanguageCode(I18n::GetSystemLanguageCode());
-    if (sys_code == src_code || sys_code.empty()) {
-        return std::string(src_code == "EN" ? "Korean" : "English");
+    if (!sys_code.empty() && sys_code != "AUTO" && sys_code != src_code) {
+        if (const LanguageInfo* info = FindLanguageByCode(sys_code)) {
+            return std::string(info->name_en); // 1st: OS language (!= src)
+        }
     }
-    const LanguageInfo* info = FindLanguageByCode(sys_code);
-    return std::string(info ? info->name_en : "Korean");
+    if (src_code != "EN") {
+        return std::string("English"); // 2nd: EN fallback (reliable pair side)
+    }
+    return std::nullopt; // 3rd: no meaningful alternative -> keep original tgt
+}
+
+// F3 (session 260908_0002, ADR-A1-2): single source-decision rule for the
+// drag-family entry points. See config.hpp for the contract.
+// NormalizeLanguageCode maps "Auto Detect"/"AUTO"/any unresolvable token to
+// "AUTO", so a blank or garbage persisted value safely degrades to the
+// caller's fallback instead of feeding the engine a meaningless source string.
+std::string ResolveEffectiveSource(std::string_view persisted_src,
+                                   std::string_view detected_or_fallback) {
+    if (NormalizeLanguageCode(persisted_src) != "AUTO") {
+        return std::string(persisted_src); // user-pinned: detection is ignored
+    }
+    return std::string(detected_or_fallback); // AUTO: explicit detected source
 }
 
 // Phase 3 (REQ-007, plan §1.4/§2.6): drag-context default target. Queries the

@@ -45,26 +45,48 @@ const LanguageInfo* FindLanguageByName(std::string_view name);
 // Resolves a code or name into a canonical uppercase language code (e.g. "korean" -> "KO").
 std::string NormalizeLanguageCode(std::string_view code_or_name);
 
-// Resolves the effective target language when the detected source equals the
+// Resolves the effective target language when the EFFECTIVE source equals the
 // configured target (src==tgt is meaningless for translation output).
-// Policy (identical to the two former inline copies in main.cpp):
-//   1. Query the OS system language; if it differs from src, translate to it.
-//   2. If the OS language equals src (or is unknown), fall back to the EN<->KO
-//      pivot: Korean when src is English, English otherwise.
-//   3. If the OS language code is not a supported language, fall back to Korean.
-// Returns std::nullopt when no substitution is needed (src != tgt), so callers
-// skip the language-sync notification entirely.
+// ADR-A1-7 policy (language-neutral pivot; supersedes the old "src==EN ?
+// Korean : English" hardcoding, which privileged the KO<->EN pair):
+//   1. OS UI language, when it is a supported language AND differs from the
+//      colliding src (the sys != src guard is what makes an OS==src pivot
+//      impossible instead of looping back to the same language);
+//   2. English, when src is not English (EN forms a reliable local pair with
+//      every non-EN source - LocalPairReliable);
+//   3. otherwise NO pivot: nullopt, so the caller keeps its original target.
+//      Reached only when src == tgt == EN and the OS language is EN/unknown -
+//      the user can already read that language, so showing the source text is
+//      not corruption (R7 in ADR-A1-7).
+// Returns std::nullopt when no substitution is needed (src != tgt) or when the
+// neutral rule found no meaningful alternative; callers skip the sync/pivot.
 // Pure: no Win32 message traffic, no config mutation. I18n::GetSystemLanguageCode
 // is a read-only locale query, safe from any thread.
 std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
                                                    std::string_view current_tgt);
 
+// F3 (session 260908_0002, ADR-A1-2): the single source-decision rule shared by
+// the three drag-family entry points (drag icon, double-Ctrl+C, tooltip
+// re-translate). A NON-AUTO persisted drag source wins over detection ("once
+// the user changes it, it stays changed"); "Auto Detect" - and any value that
+// fails to resolve, which normalizes to AUTO - keeps the caller's
+// detected/last-displayed fallback, which the entry points then inject into the
+// engine as an EXPLICIT source (the established drag contract: the engine never
+// sees a raw AUTO on this path). Pure: the caller passes snapshot values, no
+// config access here; safe from any thread. Unit-tested headlessly
+// (TestResolveEffectiveSource).
+std::string ResolveEffectiveSource(std::string_view persisted_src,
+                                   std::string_view detected_or_fallback);
+
 // Phase 3 (REQ-007, plan §1.4): resolves the drag-context default target from
 // the OS system language (REQ-007). Returns the canonical name_en of the OS
 // language, "Korean" when the OS language is English itself (EN->EN
-// translation is meaningless: EN<->KO pivot, mirroring ResolveEffectiveTarget
-// policy), or "English" when the OS language is unsupported/unknown (plan
-// §2.6). Pure: read-only locale query, safe from any thread.
+// translation is meaningless for the DEFAULT pairing per plan §2.6), or
+// "English" when the OS language is unsupported/unknown. Note: the
+// translation-time src==tgt pivot uses the ADR-A1-7 neutral rule in
+// ResolveEffectiveTarget and may legitimately skip; this default-target
+// mapping is a separate, unchanged REQ-007 policy. Pure: read-only locale
+// query, safe from any thread.
 std::string ResolveDragDefaultTarget();
 
 // Phase 4 (REQ-020, plan §1.2/§1.4): the four system-default language values,
