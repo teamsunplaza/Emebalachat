@@ -47,6 +47,14 @@ std::string NormalizeLanguageCode(std::string_view code_or_name);
 
 // Resolves the effective target language when the EFFECTIVE source equals the
 // configured target (src==tgt is meaningless for translation output).
+// F2 (session 260908_0003, verify 220310 §4 option (b)): the collision pivot
+// applies ONLY to never-touched AUTO defaults. user_explicit_target marks a
+// target the USER deliberately chose (tooltip/tray Drag-target menu pick, or
+// a value loaded from a persisted user pick = drag_target_pinned). An
+// explicit choice returns nullopt unconditionally - it is honoured verbatim
+// even when it collides with the source, per the user rule "사용자가 도착언어를
+// 한 번 바꾸면 그 값으로 고정". This preserves the V6 KO->KO anti-corruption
+// for AUTO defaults (user_explicit_target=false keeps the full rank ladder).
 // ADR-A1-7 policy (language-neutral pivot; supersedes the old "src==EN ?
 // Korean : English" hardcoding, which privileged the KO<->EN pair):
 //   1. OS UI language, when it is a supported language AND differs from the
@@ -63,7 +71,8 @@ std::string NormalizeLanguageCode(std::string_view code_or_name);
 // Pure: no Win32 message traffic, no config mutation. I18n::GetSystemLanguageCode
 // is a read-only locale query, safe from any thread.
 std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
-                                                   std::string_view current_tgt);
+                                                   std::string_view current_tgt,
+                                                   bool user_explicit_target = false);
 
 // F3 (session 260908_0002, ADR-A1-2): the single source-decision rule shared by
 // the three drag-family entry points (drag icon, double-Ctrl+C, tooltip
@@ -79,14 +88,15 @@ std::string ResolveEffectiveSource(std::string_view persisted_src,
                                    std::string_view detected_or_fallback);
 
 // Phase 3 (REQ-007, plan §1.4): resolves the drag-context default target from
-// the OS system language (REQ-007). Returns the canonical name_en of the OS
-// language, "Korean" when the OS language is English itself (EN->EN
-// translation is meaningless for the DEFAULT pairing per plan §2.6), or
-// "English" when the OS language is unsupported/unknown. Note: the
-// translation-time src==tgt pivot uses the ADR-A1-7 neutral rule in
-// ResolveEffectiveTarget and may legitimately skip; this default-target
-// mapping is a separate, unchanged REQ-007 policy. Pure: read-only locale
-// query, safe from any thread.
+// the OS system language (REQ-007). F2 (session 260908_0003, decisions.md
+// 2026-09-08 22:10 APPROVED OVERRIDE): returns the canonical name_en of the
+// OS language 1:1 for EVERY supported language (EN OS -> "English", JA OS ->
+// "Japanese", KO OS -> "Korean"...), superseding the former REQ-007 §2.6 EN->
+// Korean special case, or "English" when the OS language is
+// unsupported/unknown. Note: the translation-time src==tgt handling is the
+// ADR-A1-7 neutral rule in ResolveEffectiveTarget (with the F2 user-explicit
+// bypass); this default-target mapping only picks the INITIAL default value.
+// Pure: read-only locale query, safe from any thread.
 std::string ResolveDragDefaultTarget();
 
 // Phase 4 (REQ-020, plan §1.2/§1.4): the four system-default language values,
@@ -258,6 +268,15 @@ struct AppConfig {
     // language (REQ-007), never as a compile-time constant.
     std::string drag_source_language = "Auto Detect";  // REQ-006: auto
     std::string drag_target_language = "English";      // placeholder; real default = OS lang (REQ-007)
+    // F2 (session 260908_0003): true once the user has EXPLICITLY picked a
+    // drag TARGET (tooltip/tray Drag-target menu -> ApplyLanguageChange).
+    // Persisted as "drag_target_pinned" in config.json; false (key absent on
+    // pre-F2 configs) means the drag_target_language is a never-touched AUTO
+    // default that the ResolveEffectiveTarget collision pivot may still
+    // adjust per request. Cleared by the About-window reset. Guarded by
+    // mutex_ like the other shared config fields (runtime-mutated from the
+    // GUI thread, snapshot-read by the drag/retranslate worker threads).
+    bool drag_target_pinned = false;
     std::string type_source_language = "Auto Detect";  // REQ-015: auto
     std::string type_target_language = "English";      // REQ-016: English
     std::atomic<bool> auto_send{false};
@@ -289,6 +308,7 @@ struct AppConfig {
         std::string target_language;   // legacy, kept for migration
         std::string drag_source_language;  // Phase 3
         std::string drag_target_language;  // Phase 3
+        bool drag_target_pinned = false;   // F2 (session 260908_0003)
         std::string type_source_language;  // Phase 3
         std::string type_target_language;  // Phase 3
         std::string ui_language; // R6 Phase 6: selector read-back (test seam)
@@ -314,6 +334,13 @@ struct AppConfig {
     // as SetLanguages) so a snapshot never sees a half-applied pair.
     void SetDragLanguages(std::string source, std::string target);
     void SetTypeLanguages(std::string source, std::string target);
+    // F2 (session 260908_0003): locks the "user explicitly pinned the drag
+    // target" provenance flag. Kept as a separate locked write (not folded
+    // into SetDragLanguages) so startup seeding, migration and the reset
+    // coordinator can write the pair WITHOUT pinning, while the explicit-pick
+    // coordinator (ApplyLanguageChange) pins alongside its pair write. Read
+    // via GetSnapshot() once threads are running.
+    void SetDragTargetPinned(bool pinned);
     // R6 Phase 6: locked mutator for the tray UI-language selector (same
     // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
     void SetUiLanguage(std::string value);

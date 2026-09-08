@@ -649,6 +649,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config.SaveToFile();
             snap = config.GetSnapshot(); // read the authoritative post-write state
         }
+        // F2 (session 260908_0003): any VALID explicit Drag-TARGET request
+        // pins the provenance flag - even a no-change re-pick of the
+        // already-active target is the user re-affirming a deliberate
+        // choice, and a pick that happens to collide with the detected
+        // source must be honoured verbatim (zero pivot on user choice).
+        // `changed` alone cannot gate this: a same-value re-pick is changed==false,
+        // yet the user intent ("this value is MINE") is identical. The pin
+        // write happens for explicit target requests only; source-only picks
+        // (req_tgt empty) leave the target provenance untouched. This is the
+        // ONLY place user picks set the pin; the reset coordinator clears it.
+        // INV-3 disk discipline: a re-pick that neither changes the pair nor
+        // flips the pin (already pinned) stays a no-op write - the flag is
+        // already persisted, only the log line fires.
+        if (drag && plan.valid && !req_tgt.empty()) {
+            const bool was_pinned = snap.drag_target_pinned;
+            config.SetDragTargetPinned(true);
+            if (!plan.changed || !was_pinned) {
+                config.SaveToFile(); // persist the flip (or the pair change) -
+                                     // an already-pinned no-op re-pick keeps
+                                     // INV-3's no-churn rule for the disk.
+            }
+            DIAG_LOG("STATE", "drag_target_pinned tgt=%s (F2 user-explicit pick)",
+                     plan.target_language.c_str());
+        }
         // plan.surface_updates order (planner): Badge -> Tray -> Tooltip.
         // Phase 3 surface filtering (plan §2.4): the planner stays pair-
         // agnostic and lists all three; the coordinator drops Badge/Tray for
@@ -752,6 +776,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         emebalachat::I18n::SetLocale(emebalachat::I18n::DetectSystemLocale()); // (0) G-1
         const auto defs = emebalachat::ComputeSystemDefaultLanguages(); // pure
         config.SetDragLanguages(defs.drag_source, defs.drag_target);     // I4 locked
+        // F2 (session 260908_0003): reset returns the drag target to the
+        // never-touched AUTO default state, which includes CLEARING the
+        // user-pinned provenance flag - the restored default must be
+        // re-pivotable by the ADR-A1-7 collision logic like a fresh install
+        // (task item 6: clear the pinned flag so defaults are re-pivotable).
+        config.SetDragTargetPinned(false);                               // F2
         config.SetTypeLanguages(defs.type_source, defs.type_target);     // I4 locked
         config.SetUiLanguage("auto");                                    // G-1, I4 locked
         config.SaveToFile();                                             // (1) atomic swap
@@ -1242,9 +1272,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // -> I18n::AutoDetect), never as the raw string "AUTO".
         const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = snap.drag_target_language;
+        // F2 (session 260908_0003): pivot provenance. A drag target the user
+        // explicitly picked (drag_target_pinned, set by ApplyLanguageChange
+        // on every explicit Drag-target menu pick and persisted across
+        // restarts) bypasses the collision pivot entirely; only never-touched
+        // AUTO defaults stay pivotable (V6 KO->KO guard remains armed there).
+        const bool tgt_user_explicit = snap.drag_target_pinned;
 
         bool pivot_fired = false;
-        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang,
+                                                                 tgt_user_explicit)) {
             pivot_fired = true;
             tgt_lang = *effective;
             // F1 (session 260908_0002, ADR-A1-1): the pivot is a LOCAL,
@@ -1267,10 +1304,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // collision is the 3rd-rank skip). QA cross-checks this line against
         // the ENGINE/Translate/040 pair line so a (KO -> KO) regression is
         // immediately attributable.
-        DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s",
+        // F2: usr_explicit appended as a NEW trailing field - the existing
+        // pivot=/tgt= grep axes (F3 QA, B6/C2 parametric) are unchanged.
+        DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
                  src_pinned ? "pinned" : "detect",
                  snap.drag_source_language.c_str(), detected.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                 tgt_user_explicit ? 1 : 0);
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         std::wstring translated = engine.Translate(selected, eff_src, tgt_lang);
@@ -1376,18 +1416,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // the engine receives the AUTO marker end-to-end.
         const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = job.new_tgt;
+        // F2 (session 260908_0003): job.new_tgt is BY CONSTRUCTION a direct
+        // user pick - the retranslate queue only ever receives targets from
+        // the tooltip target menu (SetLanguageChangeCallback) and the source
+        // menu's re-render of the currently-shown target. Both are explicit
+        // user actions, so the pivot is bypassed unconditionally here
+        // (verify 220310 §5 item 3: "always user_pinned=true there").
+        const bool tgt_user_explicit = true;
         bool pivot_fired = false;
-        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang,
+                                                                 tgt_user_explicit)) {
             pivot_fired = true;
             tgt_lang = *effective;
         }
         // F3 DIAG (task §3-6): same evidence contract as the drag paths -
         // source decision (config vs carried detection) + pivot fired/skipped.
-        DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted=%s carried=%s eff=%s pivot=%d tgt=%s",
+        // F2: usr_explicit appended as a NEW trailing field; the existing
+        // pivot=/tgt= grep axes are unchanged.
+        DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted=%s carried=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
                  static_cast<unsigned long long>(job.gen),
                  src_pinned ? "pinned" : "detect",
                  snap.drag_source_language.c_str(), job.src_code.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                 tgt_user_explicit ? 1 : 0);
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang);
@@ -1512,9 +1563,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Detect" tooltip tag (same empty-label seam as the other drag paths).
         const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = snap.drag_target_language;
+        // F2: same provenance rule as run_drag_translate - a pinned drag
+        // target (explicit user pick persisted across restarts) bypasses the
+        // pivot; only the never-touched AUTO default remains pivotable.
+        const bool tgt_user_explicit = snap.drag_target_pinned;
 
         bool pivot_fired = false;
-        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
+        if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang,
+                                                                 tgt_user_explicit)) {
             pivot_fired = true;
             tgt_lang = *effective;
             // F1 (session 260908_0002, ADR-A1-1): same local-temporary pivot
@@ -1529,10 +1585,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         // F3 DIAG (task §3-6): source decision + pivot evidence (see the
         // drag_src line above for the QA contract).
-        DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s",
+        DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
                  src_pinned ? "pinned" : "detect",
                  snap.drag_source_language.c_str(), detected.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str());
+                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                 tgt_user_explicit ? 1 : 0);
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);

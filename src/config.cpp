@@ -341,10 +341,22 @@ std::string NormalizeLanguageCode(std::string_view code_or_name) {
 }
 
 std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
-                                                   std::string_view current_tgt) {
+                                                   std::string_view current_tgt,
+                                                   bool user_explicit_target) {
     const std::string src_code = NormalizeLanguageCode(detected_src);
     const std::string tgt_code = NormalizeLanguageCode(current_tgt);
     if (tgt_code != src_code) {
+        return std::nullopt;
+    }
+    // F2 (session 260908_0003, verify 220310 option (b)): a USER-EXPLICIT
+    // target bypasses the pivot entirely. The ADR-A1-7 rank ladder exists to
+    // stop stale AUTO defaults from producing a meaningless same-language
+    // request (V6 KO->KO corruption); it must never overwrite a value the
+    // user deliberately chose. Returning nullopt here means "keep the
+    // original target" - the caller then runs the engine with src==tgt
+    // (Google passthrough / local empty result), the exact semantics the
+    // ADR-A1-7 rank-3 skip already established for EN-OS hosts.
+    if (user_explicit_target) {
         return std::nullopt;
     }
     // ADR-A1-7 (session 260908_0002): language-neutral pivot. The former
@@ -400,9 +412,6 @@ std::string ResolveDragDefaultTarget() {
     const LanguageInfo* info = FindLanguageByCode(sys_code);
     if (!info || info->code == "AUTO") {
         return "English"; // unsupported/unknown OS language
-    }
-    if (info->code == "EN") {
-        return "Korean"; // EN->EN pivot (plan §2.6)
     }
     return info->name_en;
 }
@@ -880,6 +889,7 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
     s.target_language = target_language;
     s.drag_source_language = drag_source_language; // Phase 3 (I4: same lock)
     s.drag_target_language = drag_target_language;
+    s.drag_target_pinned = drag_target_pinned;     // F2: provenance
     s.type_source_language = type_source_language;
     s.type_target_language = type_target_language;
     s.ui_language = ui_language; // R6 Phase 6: selector read-back
@@ -932,6 +942,13 @@ void AppConfig::SetTypeLanguages(std::string source, std::string target) {
     type_target_language = std::move(target);
 }
 
+// F2 (session 260908_0003): plain bool under mutex_ (not std::atomic) - the
+// same I4 discipline as the drag/type string fields it accompanies.
+void AppConfig::SetDragTargetPinned(bool pinned) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    drag_target_pinned = pinned;
+}
+
 std::string AppConfig::ToJsonString() const {
     std::lock_guard<std::mutex> lock(mutex_); // I4
     return ToJsonStringLocked();
@@ -951,6 +968,7 @@ std::string AppConfig::ToJsonStringLocked() const {
     // defaults-vs-user values are observationally identical until mutated.
     ss << "  \"drag_source_language\": \"" << EscapeJsonString(drag_source_language) << "\",\n";
     ss << "  \"drag_target_language\": \"" << EscapeJsonString(drag_target_language) << "\",\n";
+    ss << "  \"drag_target_pinned\": " << (drag_target_pinned ? "true" : "false") << ",\n";
     ss << "  \"type_source_language\": \"" << EscapeJsonString(type_source_language) << "\",\n";
     ss << "  \"type_target_language\": \"" << EscapeJsonString(type_target_language) << "\",\n";
     ss << "  \"auto_send\": " << (auto_send.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
@@ -996,6 +1014,11 @@ bool AppConfig::FromJsonString(std::string_view json) {
         } else if (k == "drag_target_language") {
             drag_target_language = v;
             has_new_schema = true;
+        } else if (k == "drag_target_pinned") {
+            // F2: user-picked target provenance. Key absent on every pre-F2
+            // config => pinned stays false (AUTO default, re-pivotable),
+            // which is the correct backward-compatible reading.
+            drag_target_pinned = (v == "true");
         } else if (k == "type_source_language") {
             type_source_language = v;
         } else if (k == "type_target_language") {
@@ -1042,6 +1065,7 @@ bool AppConfig::FromJsonString(std::string_view json) {
     if (!has_new_schema) {
         drag_source_language = "Auto Detect";              // REQ-006
         drag_target_language = ResolveDragDefaultTarget(); // REQ-007 (OS lang)
+        drag_target_pinned = false;                         // F2: never-touched default
         type_source_language = "Auto Detect";              // REQ-015
         type_target_language = "English";                  // REQ-016
     }

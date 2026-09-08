@@ -4047,6 +4047,76 @@ void TestResolveEffectiveTarget() {
     auto auto_src = emebalachat::ResolveEffectiveTarget("not-a-language", "English");
     TEST_CHECK(!auto_src.has_value(), "unrecognized src (AUTO) never collides with concrete tgt");
 
+    // 6. F2 (session 260908_0003): USER-EXPLICIT target bypasses the pivot
+    //    unconditionally. The exact reported bug: user drags Korean text
+    //    (detected KO) and picks "Korean" in the tooltip target menu - the
+    //    old code pivoted the explicit pick to English at rank 1. With
+    //    provenance, the pick is honoured verbatim (nullopt = keep target).
+    auto ko_ko_explicit = emebalachat::ResolveEffectiveTarget("Korean", "Korean", true);
+    TEST_CHECK(!ko_ko_explicit.has_value(),
+               "F2: user-explicit Korean target + KO source stays Korean (zero pivot on user choice)");
+    // Every collision language, not just KO: the bypass is language-neutral
+    // (the same F1 "all Hy-MT2 pairs 100%" scope directive).
+    for (const char* lang : { "Vietnamese", "Arabic", "Italian", "English" }) {
+        auto bypassed = emebalachat::ResolveEffectiveTarget(lang, lang, true);
+        TEST_CHECK(!bypassed.has_value(),
+                   (std::string("F2: user-explicit ") + lang + " target bypasses the pivot").c_str());
+    }
+    // Non-colliding explicit picks are unaffected (already nullopt without
+    // the flag; the flag must not introduce a NEW substitution).
+    auto no_collision_explicit = emebalachat::ResolveEffectiveTarget("Korean", "English", true);
+    TEST_CHECK(!no_collision_explicit.has_value(),
+               "F2: explicit non-colliding pick stays a no-op (flag adds nothing)");
+
+    // 7. F2 V6 regression guard: NEVER-TOUCHED defaults still pivot. Case 3
+    //    above already proves KO->KO auto-default resolves; this explicit
+    //    restatement documents that the F2 flag defaults to false
+    //    (pre-existing callers keep the full rank ladder), so the KO->KO
+    //    corruption the pivot was built to prevent cannot recur through
+    //    the auto-default path.
+    {
+        auto still_pivots = emebalachat::ResolveEffectiveTarget("Korean", "Korean", false);
+        TEST_CHECK(still_pivots.has_value(),
+                   "F2: never-touched default KO->KO still pivots (V6 anti-corruption preserved)");
+        // And the 2-argument form (all pre-F2 call-site signatures) is
+        // identical to user_explicit_target=false.
+        auto two_arg = emebalachat::ResolveEffectiveTarget("Korean", "Korean");
+        TEST_CHECK(two_arg == still_pivots,
+                   "F2: default parameter keeps the 2-arg form on the auto-default path");
+    }
+
+    // 8. F2 restart persistence: a config.json written after an explicit
+    //    pick round-trips the pinned flag, so a restarted session treats
+    //    the persisted user-picked target as user-explicit (ZERO pivot),
+    //    never as a re-pivotable auto default. Mirrors the coordinator's
+    //    SetDragTargetPinned(true) + SaveToFile sequence.
+    {
+        AppConfig picked;
+        picked.SetDragLanguages("Auto Detect", "Korean"); // the explicit pick value
+        picked.SetDragTargetPinned(true);                // ApplyLanguageChange F2 write
+        const std::string json = picked.ToJsonString();  // = SaveToFile payload
+        TEST_CHECK(json.find("\"drag_target_pinned\": true") != std::string::npos,
+                   "F2: pinned flag serialized to config.json");
+        AppConfig restarted;
+        TEST_CHECK(restarted.FromJsonString(json), "F2: restarted config parses");
+        TEST_CHECK(restarted.GetSnapshot().drag_target_language == "Korean" &&
+                       restarted.GetSnapshot().drag_target_pinned,
+                   "F2: user-picked Korean target reloads PINNED across restart");
+        // Pre-F2 config (no drag_target_pinned key): pin reads false -
+        // the value is an auto default, re-pivotable. Backward compatible.
+        AppConfig legacy_f2;
+        TEST_CHECK(legacy_f2.FromJsonString(
+                       "{ \"drag_target_language\": \"Korean\" }"),
+                   "F2: pre-F2 config (no pin key) parses");
+        TEST_CHECK(legacy_f2.GetSnapshot().drag_target_pinned == false,
+                   "F2: key absent -> not pinned (auto default, re-pivotable)");
+        // Reset clears the pin: the same write sequence
+        // apply_system_defaults performs (SetDragLanguages + pin clear).
+        restarted.SetDragTargetPinned(false);
+        TEST_CHECK(!restarted.GetSnapshot().drag_target_pinned,
+                   "F2: reset re-opens the pivot for the restored default");
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] SC-01 ResolveEffectiveTarget tests completed." << std::endl;
     } else {
@@ -4118,15 +4188,17 @@ void TestPhase3LanguageContexts() {
     const int failures_before = g_failed_count;
 
     // Expected drag default, derived INDEPENDENTLY of ResolveDragDefaultTarget
-    // (plan §2.6 mapping: unsupported/unknown -> English, EN -> Korean pivot,
-    // supported language -> its name_en).
+    // (F2 session 260908_0003: 1:1 system-language mirror for ALL OS
+    // languages including EN - the EN->Korean pivot of REQ-007 §2.6 was
+    // SUPERSEDED by the user decision recorded in decisions.md 2026-09-08
+    // 22:10 "APPROVED OVERRIDE: remove EN-OS->Korean special case;
+    // system-language 1:1 mapping". Translation-time src==tgt handling is
+    // the ADR-A1-7 pivot/ResolveEffectiveTarget layer, NOT this default).
     const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
     const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
     std::string expected_drag_default;
     if (!sys_info || sys_info->code == "AUTO") {
         expected_drag_default = "English";
-    } else if (sys_info->code == "EN") {
-        expected_drag_default = "Korean";
     } else {
         expected_drag_default = sys_info->name_en;
     }
@@ -4340,15 +4412,15 @@ void TestPhase4SystemDefaults() {
     const int failures_before = g_failed_count;
 
     // Independent expectation for the drag default (same derivation pattern as
-    // TestPhase3LanguageContexts: unsupported/unknown -> English, EN ->
-    // Korean pivot, supported language -> its name_en).
+    // TestPhase3LanguageContexts: F2 session 260908_0003 supersedes the EN->
+    // Korean pivot with the 1:1 system-language mirror (decisions.md
+    // 2026-09-08 22:10 APPROVED OVERRIDE): unsupported/unknown -> English,
+    // every supported language (incl. EN) -> its own name_en).
     const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
     const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
     std::string expected_drag_default;
     if (!sys_info || sys_info->code == "AUTO") {
         expected_drag_default = "English";
-    } else if (sys_info->code == "EN") {
-        expected_drag_default = "Korean";
     } else {
         expected_drag_default = sys_info->name_en;
     }
@@ -4381,20 +4453,28 @@ void TestPhase4SystemDefaults() {
     // ---- 2) Reset simulation at the config level: sticky values -> re-record
     //         with the computed defaults (plan §2.1: REWRITE, never key
     //         deletion) -> snapshot holds the defaults; legacy pair untouched.
+    //         F2 (session 260908_0003): the pinned drag-target flag is part
+    //         of the sticky state the reset must clear (defaults become
+    //         re-pivotable, like a fresh install).
     {
         AppConfig cfg; // in-memory defaults, no disk
         cfg.SetDragLanguages("Auto Detect", "Vietnamese");   // sticky drag (user tooltip pick)
+        cfg.SetDragTargetPinned(true);                       // F2: explicit pick pinned
         cfg.SetTypeLanguages("Korean", "Japanese");          // sticky type pair
         const auto pre = cfg.GetSnapshot();
         TEST_CHECK(pre.drag_target_language == "Vietnamese" &&
+                       pre.drag_target_pinned &&
                        pre.type_source_language == "Korean" &&
                        pre.type_target_language == "Japanese",
-                   "P4: sticky fixture applied before reset");
+                   "P4: sticky fixture applied before reset (incl. F2 pin)");
 
         const auto defs = ComputeSystemDefaultLanguages();
         cfg.SetDragLanguages(defs.drag_source, defs.drag_target); // exactly the
+        cfg.SetDragTargetPinned(false);                           // F2 coordinator call
         cfg.SetTypeLanguages(defs.type_source, defs.type_target); // Batch 3 coordinator calls
         const auto post = cfg.GetSnapshot();
+        TEST_CHECK(!post.drag_target_pinned,
+                   "P4/F2: reset clears the drag-target pin (default re-pivotable)");
         TEST_CHECK(post.drag_source_language == "Auto Detect",
                    "P4: reset restores drag source to Auto Detect (sticky released)");
         TEST_CHECK(post.drag_target_language == expected_drag_default,
@@ -7729,15 +7809,18 @@ void TestReq040SystemDefaults37() {
     // suite-state hygiene as TestReq038B5AboutRtl).
     const UiLocale initial = I18n::GetCurrentLocale();
 
-    // Independent oracle: the plan §2.6 / design §2.3.1 mapping "system
-    // language code -> expected drag default", derived from the registry, NOT
-    // by calling the function under test.
+    // Independent oracle: the system-language 1:1 mirror (design §2.3.1 as
+    // superseded by F2 session 260908_0003, decisions.md 2026-09-08 22:10
+    // APPROVED OVERRIDE: "remove EN-OS->Korean special case; system-language
+    // 1:1 mapping"), derived from the registry, NOT by calling the function
+    // under test. The former G-2 "EN -> Korean" pin (user decision
+    // 2026-09-07) is EXPLICITLY SUPERSEDED by the 2026-09-08 user declaration
+    // "이 앱은 한국어<->영어 를 위한 앱이 아니야" (this app is not a KO<->EN app).
     auto expected_for_sys_code = [](const std::string& code_or_name) -> std::string {
         const std::string norm = NormalizeLanguageCode(code_or_name);
         const LanguageInfo* info = FindLanguageByCode(norm);
         if (!info || info->code == "AUTO") return "English"; // unsupported/unknown OS
-        if (info->code == "EN") return "Korean";             // G-2 EN->EN pivot (user decision)
-        return info->name_en;
+        return info->name_en;                                 // 1:1 mirror (incl. EN -> English)
     };
 
     // ---- C2 parametric: every one of the 37 LocaleMapping rows drives the
@@ -7758,12 +7841,16 @@ void TestReq040SystemDefaults37() {
         }
     }
 
-    // ---- G-2 explicit pin (decisions.md 2026-09-07 "한국어 유지"): an EN
-    // system language must yield "Korean", not "English" and not a no-op.
+    // ---- G-2 SUPERSEDED (F2, session 260908_0003): the 2026-09-07 pin
+    // "EN-OS drag default = Korean" was explicitly overridden by the user on
+    // 2026-09-08 22:10 (decisions.md APPROVED OVERRIDE, matching "도착언어가
+    // 기본값은 시스템언어" - target default is the SYSTEM language). An EN
+    // system language now mirrors 1:1 to "English". EN-OS + EN text dragged
+    // hits the ADR-A1-7 rank-3 skip (source shown as-is), NOT corruption.
     {
         I18n::SetLocale(UiLocale::English);
-        TEST_CHECK(ResolveDragDefaultTarget() == "Korean",
-                   "B6/G-2: EN-pivot drag default stays 'Korean' (pinned user decision, no code change)");
+        TEST_CHECK(ResolveDragDefaultTarget() == "English",
+                   "B6/G-2(F2): EN-OS drag default mirrors 1:1 to 'English' (2026-09-08 APPROVED OVERRIDE of the 2026-09-07 pin)");
     }
 
     // ---- AUTO/unknown-OS half of the mapping (design §2.3.3 "AUTO ->
@@ -7822,15 +7909,18 @@ void TestReq040SystemDefaults37() {
     {
         AppConfig cfg;
         cfg.SetDragLanguages("English", "Vietnamese");   // sticky user picks
+        cfg.SetDragTargetPinned(true);                   // F2: explicit pick pinned
         cfg.SetTypeLanguages("Korean", "Japanese");
         cfg.SetUiLanguage("th");                          // UI=Thai (G-1 scenario:
                                                           // user cannot read the UI)
         const auto pre = cfg.GetSnapshot();
-        TEST_CHECK(pre.drag_target_language == "Vietnamese" && pre.ui_language == "th",
-                   "B6/C7-G1: reset fixture applied (sticky pair + ui_language=th)");
+        TEST_CHECK(pre.drag_target_language == "Vietnamese" && pre.ui_language == "th" &&
+                       pre.drag_target_pinned,
+                   "B6/C7-G1: reset fixture applied (sticky pair + F2 pin + ui_language=th)");
 
         const auto defs = ComputeSystemDefaultLanguages();
         cfg.SetDragLanguages(defs.drag_source, defs.drag_target); // exactly what
+        cfg.SetDragTargetPinned(false);                           // F2 pin clear
         cfg.SetTypeLanguages(defs.type_source, defs.type_target); // apply_system_defaults
         cfg.SetUiLanguage("auto");                                // calls (B-6 G-1)
         const std::string json = cfg.ToJsonString();               // = SaveToFile payload
@@ -7848,9 +7938,10 @@ void TestReq040SystemDefaults37() {
                    "B6/G-1: reset restores ui_language to 'auto' across restart (surfaces re-resolve via DetectSystemLocale)");
         TEST_CHECK(post.drag_source_language == "Auto Detect" &&
                        post.drag_target_language == defs.drag_target &&
+                       post.drag_target_pinned == false &&
                        post.type_source_language == "Auto Detect" &&
                        post.type_target_language == "English",
-                   "B6/C7: all four language keys restored to system defaults across restart");
+                   "B6/C7: all four language keys + F2 pin (cleared) restored to system defaults across restart");
 
         // G-1 semantics: "auto" is a VALID persisted value that the selector
         // planner accepts and that resolves through DetectSystemLocale (the
