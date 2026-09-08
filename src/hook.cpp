@@ -863,13 +863,29 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             if (dbg_composing) {
                 const bool ime_active = s_instance->IsActive();
                 const bool ime_busy = s_instance->worker_.IsBusy();
-                if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
-                    HWND ime_target_hwnd = ::GetForegroundWindow();
+                // F4 (A2, REQ-011 reversal): editor/IDE exclusion on the
+                // composing-Enter path. kEditorApps (VS Code family + AI CLI
+                // editors) never enter the ENTER translate pipeline even when
+                // an IME composition is open: the composing Enter falls through
+                // to the shared pass-through below (mirror cleared, unchanged
+                // semantics) so the app commits + inserts its native newline -
+                // no task is posted, no whole-document capture. Design option
+                // (1) "hook-level exclusion", the safety axis of the A2 hybrid;
+                // CopySelectedText's empty-return backstop (A2 결정 2) covers
+                // any task already queued before this gate.
+                const HWND composing_hwnd = ::GetForegroundWindow();
+                const bool editor_excluded =
+                    ime_active && IsEnterTranslateExcludedApp(composing_hwnd);
+                if (editor_excluded) {
+                    DIAG_F("HOOK/Enter/005: editor/IDE app composing Enter pass-through "
+                           "(no translate; hwnd=%p)\n",
+                           reinterpret_cast<void*>(composing_hwnd));
+                } else if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
                     if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
-                                                     ime_target_hwnd)) {
+                                                     composing_hwnd)) {
                         DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
                                "posted (commit-then-translate, hwnd=%p)\n",
-                               reinterpret_cast<void*>(ime_target_hwnd));
+                               reinterpret_cast<void*>(composing_hwnd));
                         s_instance->ime_composing_.store(false, std::memory_order_relaxed);
                         DIAG_LOG("ENTER_GATE",
                                  "outcome=task_posted reason=ime_composing_commit_promoted "
@@ -920,6 +936,30 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             if (gate_allowed) {
                 // Capture target window HWND at interception time for process-aware selection
                 HWND target_hwnd = ::GetForegroundWindow();
+
+                // F4 (A2, REQ-011 reversal): editor/IDE exclusion on the
+                // bare-Enter path. kEditorApps (VS Code family + AI CLI
+                // editors) never enter the ENTER translate pipeline: their
+                // bare Enter passes through UNTOUCHED so the app inserts its
+                // native newline - no SelectAll / SelectMessageBlock
+                // whole-document capture, no worker swallow (the R5
+                // empty-capture notice would otherwise spam every bare Enter
+                // in an editor). Design option (1) "hook-level exclusion" -
+                // the safety axis of the A2 hybrid (옵션 1의 안전성) -
+                // evaluated only where interception is about to happen
+                // (active + idle + bare Enter), so the process-image query
+                // never runs on ordinary typing keys. CopySelectedText's
+                // empty-return backstop (A2 결정 2) covers any task already
+                // queued before this gate.
+                if (IsEnterTranslateExcludedApp(target_hwnd)) {
+                    DIAG_F("HOOK/Enter/004: editor/IDE app bare Enter pass-through "
+                           "(no translate; hwnd=%p)\n",
+                           reinterpret_cast<void*>(target_hwnd));
+                    DIAG_LOG("ENTER_GATE",
+                             "outcome=pass_through reason=editor_app_excluded hwnd=%p",
+                             reinterpret_cast<void*>(target_hwnd));
+                    return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+                }
 
                 // Post task to worker and intercept Enter from reaching target control
                 if (s_instance->worker_.PostTask(shift, target_hwnd)) {

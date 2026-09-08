@@ -1,5 +1,6 @@
 #include "win32_input.hpp"
 #include "diag_logger.hpp"
+#include "unicode_utils.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -208,54 +209,149 @@ bool SelectAll() {
     return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
 }
 
-AppCategory ClassifyAppWindow(HWND hwnd) {
+namespace {
+
+// F4/A2 (session 260908_0002): shared process-image resolution for
+// ClassifyAppWindow and IsEnterTranslateExcludedApp. Returns the exe basename
+// (last path segment after '\' or '/', case preserved) via out_basename, or
+// an attributed failure stage so the caller can log exactly where a window
+// fell to CategoryB (W3 axis C). The basename is a PROCESS NAME, not user
+// content, so it is R5/PII-safe to log.
+enum class ImageResolveStatus {
+    Ok,
+    NullOrInvalidWindow, // !hwnd || !::IsWindow
+    PidZero,             // GetWindowThreadProcessId returned pid 0
+    OpenFailed,          // OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
+    QueryFailed          // QueryFullProcessImageNameW failed or empty
+};
+
+ImageResolveStatus ResolveImageBasename(HWND hwnd, std::wstring& out_basename,
+                                        DWORD& out_gle) {
+    out_basename.clear();
+    out_gle = 0;
     if (!hwnd || !::IsWindow(hwnd)) {
-        return AppCategory::CategoryB; // fail-open to editor path
+        return ImageResolveStatus::NullOrInvalidWindow;
     }
     DWORD pid = 0;
     ::GetWindowThreadProcessId(hwnd, &pid);
     if (pid == 0) {
-        return AppCategory::CategoryB;
+        return ImageResolveStatus::PidZero;
     }
     HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!hProc) {
-        return AppCategory::CategoryB;
+        out_gle = ::GetLastError();
+        return ImageResolveStatus::OpenFailed;
     }
     wchar_t image_path[MAX_PATH] = {};
     DWORD size = MAX_PATH;
-    BOOL ok = ::QueryFullProcessImageNameW(hProc, 0, image_path, &size);
+    const BOOL ok = ::QueryFullProcessImageNameW(hProc, 0, image_path, &size);
+    out_gle = ::GetLastError();
     ::CloseHandle(hProc);
     if (!ok || size == 0) {
-        return AppCategory::CategoryB;
+        return ImageResolveStatus::QueryFailed;
     }
     std::wstring_view path_view(image_path, size);
-    auto last_slash = path_view.find_last_of(L"\\/");
-    std::wstring_view filename = (last_slash != std::wstring_view::npos)
-        ? path_view.substr(last_slash + 1) : path_view;
-    auto equals_ci = [](std::wstring_view a, std::wstring_view b) {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i) {
-            if (::towlower(a[i]) != ::towlower(b[i])) return false;
-        }
-        return true;
-    };
-    // Phase 5 (REQ-011): Category A = chat/command apps (Enter = send/execute).
-    // Static exe-name table, lowercase-insensitive (plan §2.2). Everything not
-    // listed is Category B (editor-type). Terminals are deliberately NOT listed
-    // (plan §2.2: synthetic Ctrl+C = SIGINT hazard, Phase 0 §5.2).
-    static const std::wstring_view kCategoryAApps[] = {
-        L"KakaoTalk.exe", L"Discord.exe", L"Slack.exe", L"Telegram.exe",
-        L"Teams.exe", L"ms-teams.exe", L"Line.exe", L"WeChat.exe",
-        L"WhatsApp.exe",
-        L"Code.exe", L"Code - Insiders.exe", L"Cursor.exe", L"Windsurf.exe",
-        L"VSCodium.exe", L"opencode.exe", L"claude.exe", L"codex.exe"
-    };
-    for (const auto& app : kCategoryAApps) {
-        if (equals_ci(filename, app)) {
-            return AppCategory::CategoryA;
-        }
+    const auto last_slash = path_view.find_last_of(L"\\/");
+    const std::wstring_view filename = (last_slash != std::wstring_view::npos)
+        ? path_view.substr(last_slash + 1)
+        : path_view;
+    out_basename.assign(filename);
+    return ImageResolveStatus::Ok;
+}
+
+bool ExeNameEqualsCi(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (::towlower(a[i]) != ::towlower(b[i])) return false;
     }
+    return true;
+}
+
+// Phase 5 (REQ-011): Category A = chat/command apps (Enter = send/execute).
+// Static exe-name table, lowercase-insensitive (plan §2.2). Everything not
+// listed is Category B (editor-type). Terminals are deliberately NOT listed
+// (plan §2.2: synthetic Ctrl+C = SIGINT hazard, Phase 0 §5.2).
+// F4/A2 (REQ-011 reversal): Code.exe-family and AI CLI editors were REMOVED
+// from this table (bare Enter triggered whole-document SelectAll, V3 verify
+// 2076-char overwrite) and moved to kEditorApps below.
+const std::wstring_view kCategoryAApps[] = {
+    L"KakaoTalk.exe", L"Discord.exe", L"Slack.exe", L"Telegram.exe",
+    L"Teams.exe", L"ms-teams.exe", L"Line.exe", L"WeChat.exe",
+    L"WhatsApp.exe"
+};
+
+// F4/A2 (W1 결정 1/2 + W0): editors/IDEs excluded from the ENTER translate
+// pipeline (bare Enter passes through; the app inserts its native newline).
+// VS Code family (5) + AI CLI editors (opencode/claude/codex) per the user's
+// REQ-011 list. notepad.exe and browser text areas are intentionally NOT
+// here: they are CategoryB targets whose capture is bounded by the EM tail
+// path or the capture-size guard (EnterCaptureWithinGuard).
+const std::wstring_view kEditorApps[] = {
+    L"Code.exe", L"Code - Insiders.exe", L"Cursor.exe", L"Windsurf.exe",
+    L"VSCodium.exe", L"opencode.exe", L"claude.exe", L"codex.exe"
+};
+
+} // namespace
+
+bool IsChatAppExeNameForEnterTranslation(std::wstring_view basename) {
+    for (const auto& app : kCategoryAApps) {
+        if (ExeNameEqualsCi(basename, app)) return true;
+    }
+    return false;
+}
+
+bool IsEditorExeNameForEnterExclusion(std::wstring_view basename) {
+    for (const auto& app : kEditorApps) {
+        if (ExeNameEqualsCi(basename, app)) return true;
+    }
+    return false;
+}
+
+AppCategory ClassifyAppWindow(HWND hwnd) {
+    std::wstring basename;
+    DWORD gle = 0;
+    const ImageResolveStatus status = ResolveImageBasename(hwnd, basename, gle);
+    switch (status) {
+        case ImageResolveStatus::Ok:
+            break;
+        case ImageResolveStatus::NullOrInvalidWindow:
+            DIAG_F("WIN32_INPUT/ClassifyAppWindow/001: null/invalid hwnd (%p); fail-open CategoryB (editor path)\n",
+                   reinterpret_cast<void*>(hwnd));
+            return AppCategory::CategoryB;
+        case ImageResolveStatus::PidZero:
+            DIAG_F("WIN32_INPUT/ClassifyAppWindow/002: GetWindowThreadProcessId pid==0 (hwnd=%p); fail-open CategoryB\n",
+                   reinterpret_cast<void*>(hwnd));
+            return AppCategory::CategoryB;
+        case ImageResolveStatus::OpenFailed:
+            DIAG_F("WIN32_INPUT/ClassifyAppWindow/003: OpenProcess failed (hwnd=%p gle=%lu); fail-open CategoryB\n",
+                   reinterpret_cast<void*>(hwnd), static_cast<unsigned long>(gle));
+            return AppCategory::CategoryB;
+        case ImageResolveStatus::QueryFailed:
+            DIAG_F("WIN32_INPUT/ClassifyAppWindow/004: QueryFullProcessImageNameW failed/empty (hwnd=%p gle=%lu); fail-open CategoryB\n",
+                   reinterpret_cast<void*>(hwnd), static_cast<unsigned long>(gle));
+            return AppCategory::CategoryB;
+    }
+    if (IsChatAppExeNameForEnterTranslation(basename)) {
+        return AppCategory::CategoryA;
+    }
+    // F4/A2 W3 (axis C): table miss -> CategoryB with the interpreted
+    // basename (process name, R5-safe) so a runtime log attributes the
+    // fallback to a miss instead of a silent resolution failure.
+    DIAG_F("WIN32_INPUT/ClassifyAppWindow/005: no CategoryA table match (basename='%s' hwnd=%p); CategoryB (editor path)\n",
+           ToUtf8(basename).c_str(), reinterpret_cast<void*>(hwnd));
     return AppCategory::CategoryB;
+}
+
+bool IsEnterTranslateExcludedApp(HWND hwnd) {
+    std::wstring basename;
+    DWORD gle = 0;
+    // Fail OPEN (returns false = not excluded) on any resolution failure:
+    // the window flows through normal classification where the capture-size
+    // guard (EnterCaptureWithinGuard) is the last line of defense.
+    if (ResolveImageBasename(hwnd, basename, gle) != ImageResolveStatus::Ok) {
+        return false;
+    }
+    return IsEditorExeNameForEnterExclusion(basename);
 }
 
 // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): console/terminal detection
@@ -1305,6 +1401,23 @@ std::wstring CopySelectedText(HWND hwnd) {
     // the fallback is encapsulated here so worker.cpp needs no selection
     // wiring. CategoryA is untouched by construction.
     const AppCategory category = ClassifyAppWindow(hwnd);
+    // F4 (A2 W1, REQ-011 reversal): editor/IDE exclusion backstop. The hook
+    // gate (hook.cpp) already passes editor/IDE bare Enters through, so a
+    // task normally never arrives here; if one does (e.g. an IME-composing
+    // task queued in a race window, or a future code path), abort to empty
+    // BEFORE any selection primitive (SelectAll / EM_SETSEL /
+    // SelectMessageBlock) can run on an editor document - the V3
+    // whole-document overwrite. Checked ONLY on the CategoryB branch (the
+    // F4 kEditorApps exes were removed from CategoryA, so an editor app can
+    // never classify CategoryA - no extra process query on the chat hot
+    // path). Fail-open: a resolution failure returns false (not excluded),
+    // where the capture-size guard (WIN32_INPUT/CopySelectedText/006) is the
+    // last line of defense.
+    if (category == AppCategory::CategoryB && IsEnterTranslateExcludedApp(hwnd)) {
+        DIAG_F("WIN32_INPUT/CopySelectedText/005: editor/IDE app excluded from Enter translate (hwnd=%p category=%d); returning empty\n",
+               reinterpret_cast<void*>(hwnd), static_cast<int>(category));
+        return {};
+    }
     bool em_path = false; // REQ-034: self-correction is EM-path only
     bool sel_ok = false;
     // REQ-039 FIX-1 (chat-window Enter capture): Electron/Chromium targets
@@ -1445,6 +1558,25 @@ std::wstring CopySelectedText(HWND hwnd) {
             DIAG_F("WIN32_INPUT/CaptureCompensated/002: leading CRLF but compensation refused (hwnd=%p sel_send=%d); keeping capture (already-safe geometry)\n",
                     reinterpret_cast<void*>(hwnd), sel_ok ? 1 : 0);
         }
+    }
+    // F4 (A2 W2 결정 4/5): capture-size guard, applied to the FINAL capture
+    // shape (after the EM-path leading-CRLF compensation above). Category-
+    // independent and language-neutral: >kMaxEnterTranslateChars UTF-16
+    // units or >kMaxEnterTranslateNewlines newline chars means the selection
+    // is document-sized (V3 verify: 2076-char overwrite), never a chat
+    // message - abort the Enter translate to empty (the worker's existing
+    // empty-capture handling holds/send-throughs; the translator never sees
+    // a document). The EM tail path (em_path) is EXEMPT by design decision
+    // 5: its geometry is bounded by the previous translation end and the
+    // long_text E2E (a legitimate 1000-char single line over EM_SETSEL) must
+    // keep passing, so the guard only vets SelectAll (CategoryA) and
+    // SelectMessageBlock (CategoryB fallback) whole-block captures.
+    size_t nl_final = 0;
+    for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl_final; }
+    if (!em_path && !EnterCaptureWithinGuard(text.size(), nl_final)) {
+        DIAG_F("WIN32_INPUT/CopySelectedText/006: capture exceeds Enter guard (chars=%zu newlines=%zu category=%d); aborting translate\n",
+               text.size(), nl_final, static_cast<int>(category));
+        return {};
     }
     return text;
 }

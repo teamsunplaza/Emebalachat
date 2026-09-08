@@ -5328,12 +5328,14 @@ static void TestDiagLogger() {
 // HWNDs — classification failure always lands on the editor path (CategoryB),
 // and (2) self-process classification — run_tests.exe is not in the CategoryA
 // exe table, so its own console window must classify as CategoryB. Full exe-table
-// matching (17 rows) needs real processes and is covered by the manual matrix
-// (plan §5.3). The null-HWND case at line 1654 is the Batch 1 one-line refresh
-// of the legacy IsChatApplicationWindow(false) assertion; these are the new,
-// non-duplicating checks.
+// matching needs real processes and is covered by the manual matrix (plan §5.3).
+// F4/A2 (session 260908_0002, REQ-011 reversal): the pure exe-basename matchers
+// (IsChatAppExeNameForEnterTranslation / IsEditorExeNameForEnterExclusion) ARE
+// headless-testable, so this suite now also pins the re-tabled rows (8 chat apps
+// stay CategoryA; the VS Code family + AI CLI editors moved out of CategoryA
+// into kEditorApps) and the Enter-pipeline capture guard boundaries.
 void TestPhase5AppClassifier() {
-    std::cout << "[RUN] Testing Phase 5 app classifier (REQ-011 fail-open + self-process)..." << std::endl;
+    std::cout << "[RUN] Testing Phase 5 app classifier (REQ-011 fail-open + self-process + F4 tables/guard)..." << std::endl;
     const int failures_before = g_failed_count;
 
     // Layer 1a: null HWND fails open to the editor path (CategoryB).
@@ -5355,9 +5357,87 @@ void TestPhase5AppClassifier() {
     if (console_hwnd != nullptr && ::IsWindow(console_hwnd)) {
         TEST_CHECK(ClassifyAppWindow(console_hwnd) == AppCategory::CategoryB,
                    "ClassifyAppWindow classifies own console window (run_tests.exe, not in table) as CategoryB");
+        // F4 (A2): the editor-exclusion probe fails open (false) on the self
+        // process too - run_tests.exe is in neither table, so it must NOT be
+        // treated as an editor/IDE excluded from Enter translation.
+        TEST_CHECK(!IsEnterTranslateExcludedApp(console_hwnd),
+                   "IsEnterTranslateExcludedApp fails open (false) for own console window (run_tests.exe)");
+        TEST_CHECK(IsEnterTranslateExcludedApp(nullptr) == false,
+                   "IsEnterTranslateExcludedApp returns false (fail-open) for null HWND");
+        TEST_CHECK(IsEnterTranslateExcludedApp(bogus_hwnd) == false,
+                   "IsEnterTranslateExcludedApp returns false (fail-open) for invalid HWND 0x1");
     } else {
-        std::cout << "[SKIP] No console window attached; self-process classification check skipped." << std::endl;
+        std::cout << "[SKIP] No console window attached; self-process classification checks skipped." << std::endl;
     }
+
+    // F4/A2 W1 (REQ-011 reversal): pure basename matcher - the 8 chat apps stay
+    // in CategoryA (Enter = send). VS Code-family + AI CLI editors were removed.
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"KakaoTalk.exe"),
+               "CategoryA pure matcher retains KakaoTalk.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"Discord.exe"),
+               "CategoryA pure matcher retains Discord.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"Slack.exe"),
+               "CategoryA pure matcher retains Slack.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"Telegram.exe"),
+               "CategoryA pure matcher retains Telegram.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"Teams.exe"),
+               "CategoryA pure matcher retains Teams.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"ms-teams.exe"),
+               "CategoryA pure matcher retains ms-teams.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"Line.exe"),
+               "CategoryA pure matcher retains Line.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"WeChat.exe"),
+               "CategoryA pure matcher retains WeChat.exe");
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"WhatsApp.exe"),
+               "CategoryA pure matcher retains WhatsApp.exe");
+    // Case-insensitivity (WhatsApp with a different case must still match).
+    TEST_CHECK(IsChatAppExeNameForEnterTranslation(L"whatsapp.EXE"),
+               "CategoryA pure matcher is case-insensitive");
+    // Editors are NO LONGER CategoryA.
+    TEST_CHECK(!IsChatAppExeNameForEnterTranslation(L"Code.exe"),
+               "Code.exe removed from CategoryA (REQ-011 reversal)");
+    TEST_CHECK(!IsChatAppExeNameForEnterTranslation(L"Cursor.exe"),
+               "Cursor.exe removed from CategoryA (REQ-011 reversal)");
+    TEST_CHECK(!IsChatAppExeNameForEnterTranslation(L"opencode.exe"),
+               "opencode.exe removed from CategoryA (REQ-011 reversal)");
+    TEST_CHECK(!IsChatAppExeNameForEnterTranslation(L"notepad.exe"),
+               "notepad.exe is not CategoryA");
+
+    // F4/A2 W1: kEditorApps pure matcher - VS Code family + AI CLI editors.
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"Code.exe"),
+               "kEditorApps matcher includes Code.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"code.exe"),
+               "kEditorApps matcher is case-insensitive (code.exe)");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"Code - Insiders.exe"),
+               "kEditorApps matcher includes Code - Insiders.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"Cursor.exe"),
+               "kEditorApps matcher includes Cursor.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"cursor.EXE"),
+               "kEditorApps matcher is case-insensitive (cursor.EXE)");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"Windsurf.exe"),
+               "kEditorApps matcher includes Windsurf.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"VSCodium.exe"),
+               "kEditorApps matcher includes VSCodium.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"opencode.exe"),
+               "kEditorApps matcher includes opencode.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"claude.exe"),
+               "kEditorApps matcher includes claude.exe");
+    TEST_CHECK(IsEditorExeNameForEnterExclusion(L"codex.exe"),
+               "kEditorApps matcher includes codex.exe");
+    // Not an editor-exclusion target: Notepad stays a CategoryB Enter target.
+    TEST_CHECK(!IsEditorExeNameForEnterExclusion(L"notepad.exe"),
+               "notepad.exe is NOT Enter-excluded (stays CategoryB)");
+    TEST_CHECK(!IsEditorExeNameForEnterExclusion(L"KakaoTalk.exe"),
+               "KakaoTalk.exe is NOT an editor/IDE");
+    TEST_CHECK(!IsEditorExeNameForEnterExclusion(L"run_tests.exe"),
+               "run_tests.exe is NOT an editor/IDE");
+
+    // F4/A2 W2: Enter-pipeline capture guard boundary (pure predicate).
+    TEST_CHECK(EnterCaptureWithinGuard(0, 0), "Guard allows empty capture (0 chars, 0 newlines)");
+    TEST_CHECK(EnterCaptureWithinGuard(512, 16), "Guard allows exactly 512 chars / 16 newlines");
+    TEST_CHECK(!EnterCaptureWithinGuard(513, 16), "Guard rejects 513 chars (>512)");
+    TEST_CHECK(!EnterCaptureWithinGuard(512, 17), "Guard rejects 17 newlines (>16)");
+    TEST_CHECK(EnterCaptureWithinGuard(511, 15), "Guard allows under-limit capture");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Phase 5 app classifier tests completed." << std::endl;

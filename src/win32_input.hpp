@@ -62,15 +62,27 @@ std::wstring GetClipboardText(DWORD timeout_ms = 100);
 // Places Unicode text onto Windows clipboard as CF_UNICODETEXT.
 bool SetClipboardText(std::wstring_view text, DWORD timeout_ms = 100);
 
-// Phase 5 (REQ-011): keyboard-pipeline app category. CategoryA = chat/command
-// apps where Enter means "send/execute" (KakaoTalk, Slack, Discord, VSCode,
-// terminals-as-command-pipelines, etc.): the whole input is selected (Ctrl+A),
-// replaced, and the synthetic Enter sends it. CategoryB = editor-type apps
-// (Notepad, IDE text editors, browser text areas) where the caret-line/block
-// context is replaced and a real newline is always injected afterwards
-// (REQ-012/023). Classification is a pure static exe-name table lookup;
-// anything not in the CategoryA table is CategoryB (fail-open to the editor
-// path, which is the pre-Phase-5 default for all non-chat apps).
+// Phase 5 (REQ-011, amended by F4/A2 for session 260908_0002): keyboard-
+// pipeline app category. CategoryA = chat/command apps where Enter means
+// "send/execute" (KakaoTalk, Slack, Discord, WhatsApp, terminals-as-command-
+// pipelines, etc.): the whole input is selected (Ctrl+A), replaced, and the
+// synthetic Enter sends it. CategoryB = editor-type apps (Notepad, IDE text
+// editors, browser text areas) where the caret-line/block context is replaced
+// and a real newline is always injected afterwards (REQ-012/023).
+// Classification is a pure static exe-name table lookup; anything not in the
+// CategoryA table is CategoryB (fail-open to the editor path, which is the
+// pre-Phase-5 default for all non-chat apps).
+//
+// F4/A2 (REQ-011 reversal): the VS Code family (Code.exe / Code - Insiders.exe
+// / Cursor.exe / Windsurf.exe / VSCodium.exe) and the AI CLI editors
+// (opencode.exe / claude.exe / codex.exe) are NO LONGER CategoryA. They are
+// IDE/editor apps whose bare Enter must insert a native newline - never select
+// and replace the whole source document (V3 verify: 2076-char overwrite).
+// They are classified by IsEditorExeNameForEnterExclusion and excluded from
+// the ENTER translate pipeline at the hook gate (pass-through) and inside
+// CopySelectedText (empty capture), while drag-to-translate stays untouched.
+// The capture-size guard (kMaxEnterTranslateChars / kMaxEnterTranslateNewlines)
+// is the category-independent safety net for any residual misclassification.
 enum class AppCategory : unsigned char { CategoryA, CategoryB };
 
 // Phase 5 (REQ-011): classifies the process owning hwnd into the keyboard
@@ -80,7 +92,43 @@ enum class AppCategory : unsigned char { CategoryA, CategoryB };
 // Fails closed to CategoryB on any resolution failure (null hwnd, bad pid,
 // OpenProcess/Query failure): the editor path is the safe default because it
 // never sends the message on the user's behalf beyond a newline.
+// F4/A2 diagnostics: every fail-open stage and the final table miss log an
+// attributed reason (WIN32_INPUT/ClassifyAppWindow/001-005) so a runtime
+// log can pinpoint where a window fell to CategoryB.
 AppCategory ClassifyAppWindow(HWND hwnd);
+
+// F4 (A2 W1 결정 2/3): true when the process owning hwnd is an editor/IDE
+// excluded from the ENTER translate pipeline (kEditorApps: VS Code family +
+// AI CLI editors). Same process-name resolution and case-insensitive compare
+// as ClassifyAppWindow, but the FAIL-OPEN polarity is inverted: any
+// resolution failure returns FALSE (not excluded), so the app flows through
+// normal classification where the capture-size guard (EnterCaptureWithinGuard)
+// remains the last line of defense. Never consulted by the drag path.
+bool IsEnterTranslateExcludedApp(HWND hwnd);
+
+// Pure basename matchers over the classifier tables, exposed for the headless
+// unit tests (same single-definition discipline as CopyChordRetryWarranted /
+// EnterCaptureWithinGuard). Case-insensitive.
+bool IsChatAppExeNameForEnterTranslation(std::wstring_view basename);
+bool IsEditorExeNameForEnterExclusion(std::wstring_view basename);
+
+// F4 (A2 W2 결정 4): Enter-pipeline capture-size guard. Language-neutral
+// thresholds (UTF-16 char count + newline-char count - no script/language
+// weighting). A whole-block capture above these is document-sized (V3:
+// 2076-char overwrite), never a chat message: the Enter translate must abort
+// to an empty capture. The EM tail path is exempt by construction (its
+// geometry is bounded by the previous translation end, so it never trips the
+// guard - see CopySelectedText).
+inline constexpr size_t kMaxEnterTranslateChars = 512;
+inline constexpr size_t kMaxEnterTranslateNewlines = 16;
+
+// Pure guard predicate (single shared definition for CopySelectedText and the
+// unit tests - same discipline as CopyChordRetryWarranted). True when the
+// capture shape is inside the Enter-translate limits.
+constexpr bool EnterCaptureWithinGuard(size_t chars, size_t newlines) {
+    return chars <= kMaxEnterTranslateChars &&
+           newlines <= kMaxEnterTranslateNewlines;
+}
 
 // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): true when hwnd belongs to
 // a console/terminal surface where a SYNTHETIC Ctrl+C is interpreted as
@@ -529,7 +577,15 @@ std::wstring CopySelectedText(HWND hwnd);
 // If expected_target is non-null, re-verifies the foreground window immediately before
 // injecting Ctrl+V and aborts (returns false, no paste) when focus has shifted to a
 // different window root. Prevents translated text leaking into the wrong application.
-bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target = nullptr);
+//
+// F7 (session 260908_0002, log 문제2 clipboard_restored=0): when clipboard_restored
+// is non-null it receives whether RestoreClipboard actually confirmed putting the
+// ORIGINAL backup (text + extra formats) back before returning. A caller that
+// disables its own scope-exit RAII restorer on paste success MUST gate that on this
+// flag: disarming after a silently-failed restore leaves the translated text
+// permanently on the user's clipboard (backup collected, then discarded).
+bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup,
+                     HWND expected_target = nullptr, bool* clipboard_restored = nullptr);
 
 // Pure foreground-equivalence check for injection gating (H1 wrong-window fix).
 // - expected_target == nullptr  -> always true (no target captured; PasteAndRestore default)
