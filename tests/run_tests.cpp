@@ -345,7 +345,13 @@ void TestSmartBypassModule() {
     TEST_CHECK(DetectLanguage(L"Привет мир") == "Russian", "Detect Russian");
     TEST_CHECK(DetectLanguage(L"สวัสดีชาวโลก") == "Thai", "Detect Thai");
     TEST_CHECK(DetectLanguage(L"مرحبا بالعالم") == "Arabic", "Detect Arabic");
-    TEST_CHECK(DetectLanguage(L"Hello world") == "English", "Detect English");
+    // F5 (session 260908_0003, ask audit 181530 condition 1 Option B): the
+    // pure-ASCII "English" LABEL is retired - Latin is a script, and ASCII
+    // Latin cannot separate English from Indonesian/Malay/Tagalog (all
+    // Hy-MT2-supported). ASCII Latin now returns the AUTO marker and the
+    // model's built-in language ID decides. (Supersedes the historical
+    // "Detect English" pin and the F1 Phase-1 pure-ASCII trade-off.)
+    TEST_CHECK(DetectLanguage(L"Hello world") == "Auto Detect", "F5: ASCII Latin detects as AUTO marker (no language claim)");
     TEST_CHECK(DetectLanguage(L"") == "Unknown", "Empty text detected as Unknown");
     TEST_CHECK(DetectLanguage(L"123456") == "Unknown", "Digits detected as Unknown");
 
@@ -372,9 +378,11 @@ void TestSmartBypassModule() {
     TEST_CHECK(DetectLanguage(L"étrange méditerranéen") == "Auto Detect", "F1: French (grave/acute) detects as AUTO marker");
     TEST_CHECK(NormalizeLanguageCode(DetectLanguage(L"rápido corazón")) == "AUTO", "F1: AUTO marker normalizes to registry code AUTO (engine sees no source token)");
     TEST_CHECK(DetectLanguage(L"Việt Nam thật tuyệt vời") == "Vietnamese", "F1: true-VI text still detects Vietnamese after the narrowing");
-    // Pure-ASCII Latin keeps "English" (documented Phase-1 policy: the EN->EN
-    // identity bypass below depends on it; verify 220010 §5 item 2 / [reg]).
-    TEST_CHECK(DetectLanguage(L"le chat est sur la table") == "English", "F1: pure-ASCII Latin stays English (Phase-1 identity-bypass trade-off)");
+    // F1 Phase-1 kept pure-ASCII Latin labeled "English"; F5 Phase 2 (audit
+    // 181530 Option B, adjudicated) supersedes that trade-off: the label is
+    // "Auto Detect" for ALL Latin script, and the EN->EN identity bypass now
+    // keys on the PIN (step 7), not on the detection label.
+    TEST_CHECK(DetectLanguage(L"le chat est sur la table") == "Auto Detect", "F5: pure-ASCII Latin routes as AUTO marker (supersedes F1 Phase-1 label)");
     // Latin WITH umlauts (German) is also ambiguous -> AUTO, not English:
     TEST_CHECK(DetectLanguage(L"Liebe Grüße") == "Auto Detect", "F1: German umlauts detect as AUTO marker, not English");
     // Regression: the VI detection that used shared chars AND true markers
@@ -425,8 +433,11 @@ void TestSmartBypassModule() {
     TEST_CHECK(ShouldTranslate(L"도와주셔서 감사합니다!", "English"), "Korean to English");
     TEST_CHECK(ShouldTranslate(L"도와주셔서 감사합니다!", "Vietnamese"), "Korean to Vietnamese");
 
-    // Same language bypass
-    TEST_CHECK(!ShouldTranslate(L"Hello world, have a good day", "English"), "English targeting English bypassed");
+    // Same language bypass. F5: the English case now requires a PINNED source
+    // - the detection-based ASCII-Latin "English" bypass is retired (it also
+    // swallowed Indonesian/Malay/Tagalog). Script-certain identities (KO/VI/JA)
+    // keep the detection-based bypass unchanged.
+    TEST_CHECK(!ShouldTranslate(L"Hello world, have a good day", "English", "English"), "F5: PINNED English targeting English bypassed (identity preserved for pins)");
     TEST_CHECK(!ShouldTranslate(L"안녕하세요 만나서 반갑습니다", "Korean"), "Korean targeting Korean bypassed");
     TEST_CHECK(!ShouldTranslate(L"Xin chào bạn nhé", "Vietnamese"), "Vietnamese targeting Vietnamese bypassed");
     TEST_CHECK(!ShouldTranslate(L"こんにちは、元気ですか？", "Japanese"), "Japanese targeting Japanese bypassed");
@@ -444,10 +455,36 @@ void TestSmartBypassModule() {
     // text "English" == target even though the user pinned French.
     TEST_CHECK(ShouldTranslate(L"the book is on the table", "English", "French"), "F1: pinned French source reaches the engine even when detection says English");
     TEST_CHECK(ShouldTranslate(L"não presto muita atenção em futebol", "English", "Portuguese"), "F1: pinned Portuguese -> English translates (pin is ground truth, no detect override)");
-    // Accepted Phase-1 nuance (verify 220010 §5 item 2): pure-ASCII Latin
-    // under Auto keeps the EN->EN identity bypass - plain English targeting
-    // English stays untranslated. Pinned sources above are unaffected.
-    TEST_CHECK(!ShouldTranslate(L"le chat est sur la table", "English"), "F1: pure-ASCII Latin -> English identity bypass is the documented Phase-1 trade-off");
+    // F5 Phase 2 (this session, ask audit 181530 condition 1 Option B,
+    // VP/user adjudication): the pure-ASCII Latin "English" label is retired -
+    // the F1 Phase-1 trade-off pin ("le chat est sur la table" -> English
+    // bypassed) is SUPERSEDED. ASCII-Latin Hy-MT2-supported languages
+    // (Indonesian/Malay/Tagalog/Swahili...) must no longer silently pass
+    // through untranslated toward an English target; they route as AUTO
+    // translation and the model's built-in language ID decides. Accepted cost
+    // per the audit: genuine English text under Auto targeting English spends
+    // one local inference and returns near-identical output (visible, not
+    // silent like the old failure).
+    TEST_CHECK(ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "English"),
+               "F5: Indonesian (ASCII Latin) -> English must NOT bypass; routes as translation");
+    TEST_CHECK(ShouldTranslate(L"Hindi ko masyadong binibigyang pansin ang bola", "English"),
+               "F5: Tagalog/Filipino (ASCII Latin) -> English translates (no silent passthrough)");
+    TEST_CHECK(ShouldTranslate(L"Sisitiki sana", "English"),
+               "F5: Swahili (ASCII Latin) -> English translates");
+    TEST_CHECK(ShouldTranslate(L"le chat est sur la table", "English"),
+               "F5: unaccented French -> English no longer bypassed (supersedes the F1 trade-off pin)");
+    TEST_CHECK(ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Indonesian"),
+               "F5: ASCII Latin -> Indonesian under Auto reaches the engine (model ID decides, no local shortcut)");
+    // True identity bypass survives ONLY for a pinned source (user declaration
+    // is ground truth), language-neutrally:
+    TEST_CHECK(!ShouldTranslate(L"Hello world, have a good day", "English", "EN"),
+               "F5: PINNED English (code form) -> English identity bypass preserved");
+    TEST_CHECK(!ShouldTranslate(L"le chat est sur la table", "English", "English"),
+               "F5: PINNED English (name form) -> English identity bypass preserved");
+    TEST_CHECK(!ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Indonesian", "Indonesian"),
+               "F5: PINNED Indonesian -> Indonesian identity bypass (pin identity is language-neutral)");
+    TEST_CHECK(ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Korean"),
+               "F5: Indonesian -> Korean translates (non-EN targets unaffected by the label change)");
     // Same-language bypass survives the narrowing for REAL Vietnamese (the
     // 1EA0-block ạ marker in "bạn"):
     TEST_CHECK(!ShouldTranslate(L"Việt Nam thật tuyệt vời", "Vietnamese"), "F1: true-VI text targeting Vietnamese still bypassed (engine not called)");
@@ -1564,9 +1601,11 @@ void TestMultiLineBlockFix() {
         TEST_CHECK(ShouldTranslate(l, "Korean"), "MLF: English line alone translates (per-line)");
     }
 
-    // Same-language multi-line block: STILL bypassed (unchanged semantics).
-    TEST_CHECK(!ShouldTranslate(L"first line\nsecond line\nthird line", "English"), "MLF: English->English multi-line still bypassed");
-    TEST_CHECK(!ShouldTranslate(en_block, "English"), "MLF: bypassed when block already in target language");
+    // Same-language multi-line block: STILL bypassed under a PINNED source
+    // (F5: the detection-based ASCII-Latin English identity bypass moved to
+    // pin-keyed; the per-block decision semantics themselves are unchanged).
+    TEST_CHECK(!ShouldTranslate(L"first line\nsecond line\nthird line", "English", "English"), "MLF: pinned English->English multi-line still bypassed");
+    TEST_CHECK(!ShouldTranslate(en_block, "English", "English"), "MLF: bypassed when pinned source equals target language");
 
     // ---- 3) Translation payload round-trip with newlines (Google seam) ----
     // UrlEncode must %-encode the LF inside a UTF-8 Korean block so the q=
@@ -3515,38 +3554,58 @@ void TestR6P4LanguageRouting() {
         TEST_CHECK(GoogleTranslate::MapLanguageCode(l.name_en) == l.google, R6P4Msg("google map of name_en", l.code, "-"));
     }
 
-    // ---- 5) LocalPairReliable verdicts (plan §4.1 item 3 conservative set).
-    // Default supported set: every pair involving English (en<->*, auto->en).
-    // zh<->ja (the user bug pair) and other non-EN pairs are OUTSIDE the set
-    // pending VP confirmation (plan §9 open decision).
+    // ---- 5) LocalPairReliable verdicts. F5 Phase 2 (ask audit 181530
+    // condition 1 / Inquiry 3, adjudicated) SUPERSEDES the R6p4 plan §4.1
+    // item 3 conservative EN-only set: a PINNED real source is ground truth
+    // and every pinned distinct pair is reliable locally (the user SCOPE
+    // DIRECTIVE demands 100% of all Hy-MT2 pairs; the EN-side gate pushed
+    // pinned non-EN pairs onto the 041 cloud-leak / 042 degraded route).
+    // Excluded verdicts kept: AUTO target, and the degenerate src==tgt
+    // identity pair (nothing to translate; ShouldTranslate/pivot own it).
     {
         TEST_CHECK(LocalPairReliable("AUTO", "EN"),
                    "R6p4: AUTO->EN (the user's working scenario) is reliable");
         TEST_CHECK(LocalPairReliable("EN", "KO"), "R6p4: EN->KO reliable (source EN)");
         TEST_CHECK(LocalPairReliable("KO", "EN"), "R6p4: KO->EN reliable (target EN)");
         TEST_CHECK(LocalPairReliable("ja", "english"), "R6p4: verdicts are case/name-insensitive");
-        TEST_CHECK(!LocalPairReliable("JA", "ZH-CN"),
-                   "R6p4: the user bug pair JA->ZH-CN is NOT reliable locally");
-        TEST_CHECK(!LocalPairReliable("KO", "JA"), "R6p4: KO->JA not in conservative set");
-        TEST_CHECK(!LocalPairReliable("DE", "VI"), "R6p4: DE->VI not in conservative set");
+        TEST_CHECK(LocalPairReliable("JA", "ZH-CN"),
+                   "F5: JA->ZH-CN pinned pair now reliable locally (supersedes the R6p4 conservative-set pin; the old degraded-to-English failure is answered by trusting the model, not by cloud routing)");
+        TEST_CHECK(LocalPairReliable("KO", "JA"), "F5: KO->JA reliable (no English special case)");
+        TEST_CHECK(LocalPairReliable("DE", "VI"), "F5: DE->VI reliable (no English special case)");
         TEST_CHECK(LocalPairReliable("ZH-CN", "EN"), "R6p4: ZH-CN->EN reliable (target EN)");
         TEST_CHECK(!LocalPairReliable("KO", "AUTO"), "R6p4: AUTO target is never reliable");
-        TEST_CHECK(!LocalPairReliable("KO", "KO"), "R6p4: same-language pin (src==tgt) keeps EN-equality semantics");
+        // F5: identity pair (src==tgt) is now RELIABLE (served locally). The
+        // old test pinned KO->KO unreliable (an accidental EN privilege:
+        // EN->EN was the one identity pair that stayed on-device while KO->KO
+        // Auto-routed to the cloud). Making every identity pair local keeps
+        // the EN->EN privacy property language-neutral; the typing path never
+        // routes identity anyway (ShouldTranslate bypasses it first).
+        TEST_CHECK(LocalPairReliable("KO", "KO"), "F5: identity pair KO->KO reliable (on-device echo, no cloud); supersedes the R6p4 EN-equality pin");
+        TEST_CHECK(LocalPairReliable("EN", "EN"), "F5: identity pair EN->EN reliable (pre-F5 behavior preserved for EN)");
     }
 
     // ---- 5b) F1 companion fix (session 260908_0003, verify 220010 §5 item 4):
     // an AUTO SOURCE is reliable to every real target - Hy-MT2's built-in
     // language ID owns the decision, so Latin Auto -> KO must NOT be flagged
     // outside-the-reliable-set and shipped to Google via 041 (privacy + the
-    // false "VI -> KO" pair churn of the reported log). Pinned non-EN pairs
-    // (VI->KO) keep the conservative EN-side rule: that is the VP-flagged R4
-    // decision, deliberately OUT of this task's scope.
+    // false "VI -> KO" pair churn of the reported log).
+    // F5 Phase 2 (audit 181530 Inquiry 3): the pinned-non-EN tripwire below
+    // (VI->KO unreliable) was placed to await VP adjudication of exactly this
+    // decision; the audit recommended and the VP/user directed removal of the
+    // English-centric conservative gate for PINNED sources. Updated to the
+    // adjudicated behavior (supersession documented at the assertion).
     {
         TEST_CHECK(LocalPairReliable("AUTO", "KO"), "F1: AUTO->KO reliable (model language ID, no cloud leak)");
         TEST_CHECK(LocalPairReliable("Auto Detect", "Korean"), "F1: AUTO reliability is name/code-form insensitive");
         TEST_CHECK(LocalPairReliable("AUTO", "VI"), "F1: AUTO->VI reliable");
         TEST_CHECK(LocalPairReliable("AUTO", "DE"), "F1: AUTO->DE reliable");
-        TEST_CHECK(!LocalPairReliable("VI", "KO"), "F1/R4: PINNED VI->KO stays outside the conservative set (unchanged, VP decision pending)");
+        TEST_CHECK(LocalPairReliable("VI", "KO"),
+                   "F5/R4: PINNED VI->KO now reliable locally (supersedes the tripwire pin - audit 181530 Inquiry 3 adjudicated)");
+        TEST_CHECK(LocalPairReliable("ko", "Japanese"), "F5: pinned KO->JA reliable, name/code-form insensitive");
+        TEST_CHECK(PlanTranslationRouting("VI", "KO", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+                   "F5: pinned VI->KO strict-local stays local WITHOUT cloud consent (041 cannot fire for pinned real pairs)");
+        TEST_CHECK(PlanTranslationRouting("KO", "JA", EngineType::Auto, false) == EngineType::LocalLlama,
+                   "F5: pinned KO->JA under Auto engine routes local (all-pairs directive: no cloud leak)");
         TEST_CHECK(PlanTranslationRouting("AUTO", "KO", EngineType::LocalLlama, false) == EngineType::LocalLlama,
                    "F1: AUTO->KO explicit-local stays local even WITHOUT cloud consent (041 must not fire)");
         TEST_CHECK(PlanTranslationRouting("Auto Detect", "Korean", EngineType::Auto, false) == EngineType::LocalLlama,
@@ -3601,16 +3660,35 @@ void TestR6P4LanguageRouting() {
 
     // ---- 7) Pin the decisive user-scenario verdicts explicitly (readable   -
     // regression anchor independent of the loop above).
-    TEST_CHECK(PlanTranslationRouting("JA", "ZH-CN", EngineType::Auto, false) == EngineType::GoogleTranslate,
-               "R6p4: JA->ZH-CN under Auto routes to Google even without extra consent (user bug fixed)");
-    TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::LocalLlama, true) == EngineType::GoogleTranslate,
-               "R6p4: JA->ZH-CN explicit-local WITH cloud consent routes to Google");
+    // F5 Phase 2 (audit 181530): the JA->ZH-CN verdicts below flipped from
+    // Google-routed to local-served. The ORIGINAL R6 bug (JA->ZH silently
+    // degrading to English output on-device) is now answered by trusting the
+    // pair on Hy-MT2 per the user's all-pairs directive, instead of by
+    // shipping text to the cloud. The Google pin path still reaches Google
+    // (deliberate pick), so the cloud remains available on request.
+    TEST_CHECK(PlanTranslationRouting("JA", "ZH-CN", EngineType::Auto, false) == EngineType::LocalLlama,
+               "F5: JA->ZH-CN under Auto serves locally (pinned pair reliable; supersedes the R6p4 cloud-routing pin)");
+    TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::LocalLlama, true) == EngineType::LocalLlama,
+               "F5: JA->ZH-CN explicit-local stays local even WITH cloud consent (reliable pair never leaks to cloud)");
     TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::LocalLlama, false) == EngineType::LocalLlama,
                "R6p4: JA->ZH-CN explicit-local WITHOUT consent stays on device");
+    TEST_CHECK(PlanTranslationRouting("JA", "Chinese Simplified", EngineType::GoogleTranslate, false) == EngineType::GoogleTranslate,
+               "F5: deliberate Google pin still wins over pair reliability (cloud choice stays sovereign)");
     TEST_CHECK(PlanTranslationRouting("AUTO", "English", EngineType::LocalLlama, false) == EngineType::LocalLlama,
                "R6p4: AUTO->EN stays local under every pin (works today per user report)");
     TEST_CHECK(PlanTranslationRouting("KO", "EN", EngineType::Auto, false) == EngineType::LocalLlama,
                "R6p4: KO->EN stays local (reliable pair, offline capability preserved)");
+    // Identity pair (src == tgt) routing: F5 made every identity pair RELIABLE
+    // (local echo), removing the pre-F5 EN privilege that cloud-routed non-EN
+    // identity pairs under Auto. The typing path never reaches routing here
+    // (ShouldTranslate bypasses identity first); this pins the drag explicit-
+    // pin contract (F2 user_explicit_target keeps a colliding target verbatim).
+    TEST_CHECK(PlanTranslationRouting("KO", "KO", EngineType::Auto, false) == EngineType::LocalLlama,
+               "F5: KO->KO identity serves locally (supersedes the pre-F5 cloud routing; privacy for every language)");
+    TEST_CHECK(PlanTranslationRouting("EN", "EN", EngineType::Auto, false) == EngineType::LocalLlama,
+               "F5: EN->EN stays local under Auto (pre-F5 behavior preserved, now language-neutral)");
+    TEST_CHECK(PlanTranslationRouting("KO", "KO", EngineType::GoogleTranslate, false) == EngineType::GoogleTranslate,
+               "F5: deliberate Google pin still wins for an identity pair (user choice sovereign)");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] R6 Phase 4 language routing tests completed." << std::endl;

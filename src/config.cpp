@@ -627,23 +627,37 @@ std::string BuildPrompt(std::string_view source_text,
 }
 
 // R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
-// LOCAL Hy-MT2 engine (see config.hpp doc). Conservative default: English on
-// either side, which includes the user-confirmed-working AUTO -> EN case.
-// zh<->ja and every other non-EN pair are EXCLUDED pending VP/user
-// confirmation (plan §9 open decision); TranslationManager routes those to
-// Google per PlanTranslationRouting (src/engine.hpp).
+// LOCAL Hy-MT2 engine (see config.hpp doc).
 //
 // F1 companion fix (session 260908_0003, verify 220010 §5 item 4): an AUTO
 // SOURCE is reliable to EVERY target. Under src=Auto the local Hy-MT2 model
 // decides the source language with its own built-in language ID - the exact
-// mechanism the Latin-script AUTO pass-through now feeds it (DetectLanguage
-// returns "Auto Detect" for diacritic Latin instead of a forced language).
-// Without this clause, Latin Auto -> non-EN targets (e.g. Portuguese ->
-// Korean) would normalize AUTO, fail the EN-side gate, and be flagged
-// "outside the reliable set": the 041 branch would ship the text to Google
-// (privacy regression + wrong "VI -> KO" pair churn). The VP-flagged R4
-// question (is the EN-only gate too narrow for PINNED non-EN pairs like
-// VI->KO?) stays out of scope here; this clause covers AUTO sources only.
+// mechanism the Latin-script AUTO pass-through feeds it (DetectLanguage
+// returns "Auto Detect" for Latin instead of a forced language). Without this
+// clause, Latin Auto -> non-EN targets (e.g. Portuguese -> Korean) would
+// normalize AUTO, fail the EN-side gate, and be flagged "outside the reliable
+// set": the 041 branch would ship the text to Google (privacy regression +
+// wrong "VI -> KO" pair churn).
+//
+// F5 Phase 2 (session 260908_0003, ask audit 181530 Inquiry 3 adjudicated):
+// the EN-side conservative rule for PINNED sources is REMOVED. A pinned
+// source is ground truth (the user declared it), so pair reliability is
+// evaluated on the pair itself: Hy-MT2 is a multilingual model whose registry
+// covers all 37 languages as native source/target names (BuildPrompt injects
+// name_native on both sides), and the user SCOPE DIRECTIVE ("Hy-MT2에서
+// 지원하는 모든 언어쌍을 정확하게 100% 지원") forbids an English-centric gate
+// that pushed explicitly pinned non-EN pairs (VI->KO, JA->ZH-CN, KO->JA...)
+// onto the 041 cloud-leak path or the 042 degraded-local route. Result: every
+// pair with a REAL target is reliable locally. The identity pair src == tgt
+// included - served on-device (echo): the pre-F5 rule made EN->EN the only
+// identity pair that never left the device, and generalizing that privacy
+// property to all 37 languages removes the last English privilege (the
+// typing path never routes identity anyway; ShouldTranslate bypasses it
+// first, so the echo only serves pinned-target drag requests). The only
+// remaining false verdicts are meaningless targets: empty or AUTO (auto-detect
+// is never a translation target). Unresolvable source tokens normalize to
+// AUTO via NormalizeLanguageCode, so they keep the F1 AUTO-source guard
+// (always local, model's built-in language ID decides).
 bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
     const std::string src = NormalizeLanguageCode(src_code);
     const std::string tgt = NormalizeLanguageCode(tgt_code);
@@ -653,7 +667,7 @@ bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
     if (src == "AUTO") {
         return true; // model's built-in language ID handles any real target (F1)
     }
-    return tgt == "EN" || src == "EN";
+    return true; // pinned real pair (identity included, on-device echo): reliable (F5)
 }
 
 namespace {

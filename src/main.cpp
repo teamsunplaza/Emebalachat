@@ -1253,13 +1253,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // ADR-A1-2: NON-AUTO persisted source wins over detection; "Auto
         // Detect" keeps the established drag contract of injecting the
         // DETECTED language into the engine as an explicit source.
-        // F1 (session 260908_0003, verify 220010 §5 item 4): the injected
-        // value is now the AUTO marker "Auto Detect" for diacritic Latin
-        // (script-certain, language-ambiguous) - NormalizeLanguageCode maps it
-        // to "AUTO", LocalPairReliable keeps the request on Hy-MT2 (model's
-        // built-in language ID), and BuildPrompt emits no source token. The
-        // engine call below receives eff_src verbatim - the label policy is in
-        // DetectLanguage, not a string special-case here.
+        // F1 (session 260908_0003, verify 220010 §5 item 4) + F5 (audit 181530
+        // Option B): the injected value is the AUTO marker "Auto Detect" for
+        // ALL Latin script (pure-ASCII included - the "English" label was
+        // retired F5) and for true-VI-less diacritic Latin before that -
+        // NormalizeLanguageCode maps it to "AUTO", LocalPairReliable keeps the
+        // request on Hy-MT2 (model's built-in language ID), and BuildPrompt
+        // emits no source token. The engine call below receives eff_src
+        // verbatim - the label policy is in DetectLanguage, not a string
+        // special-case here.
         const bool src_pinned = emebalachat::NormalizeLanguageCode(
                                     snap.drag_source_language) != "AUTO";
         std::string eff_src = emebalachat::ResolveEffectiveSource(

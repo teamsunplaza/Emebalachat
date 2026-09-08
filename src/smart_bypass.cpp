@@ -327,20 +327,11 @@ bool IsUrl(std::wstring_view text) {
     return false;
 }
 
-// True when the text contains at least one NON-ASCII Latin letter, i.e. a
-// diacritic-modified Latin character (F1: the signal that the text is Latin
-// script but NOT language-certain; pure-ASCII Latin keeps the historical
-// "English" label so the EN->EN identity bypass still works).
-bool ContainsDiacriticLatin(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (cp > 0x007F && IsLatinCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
-}
+// F5 (session 260908_0003, ask audit 181530 condition 1 Option B): the F1
+// helper ContainsDiacriticLatin is REMOVED with the supersession of the
+// pure-ASCII "English" label (see DetectLanguage below) - diacritic and
+// pure-ASCII Latin now share one policy (AUTO), so the distinction no longer
+// gates anything.
 
 std::string DetectLanguage(std::wstring_view text) {
     std::wstring norm = NormalizeNFC(text);
@@ -381,14 +372,26 @@ std::string DetectLanguage(std::wstring_view text) {
     //     Latin->English request (Claim C), and
     // (c) got INJECTED as the engine source under Auto Detect (ADR-A1-2),
     //     overriding Hy-MT2's own language ID with a wrong label.
-    // Policy now: pure-ASCII Latin stays "English" (the EN->EN identity bypass
-    // is a positive product decision, probe-pinned by 220010 [reg]); Latin
-    // containing any diacritic letter returns the canonical AUTO name so the
-    // chain injects no source token (NormalizeLanguageCode("Auto Detect") ==
-    // "AUTO", BuildPrompt adds no source hint) and the model's built-in
-    // language ID decides. Non-Latin scripts keep the contract above unchanged.
+    // F1 Phase 1 kept the "English" label for PURE-ASCII Latin so the EN->EN
+    // identity bypass survived. F5 Phase 2 (this session, ask audit 181530
+    // condition 1 Option B, VP/user adjudication of the user SCOPE DIRECTIVE
+    // "Hy-MT2에서 지원하는 모든 언어쌍을 정확하게 100% 지원") removes the
+    // residue: pure-ASCII Latin cannot distinguish English from Indonesian/
+    // Malay/Tagalog/Swahili (all Hy-MT2-supported, all ASCII-Latin), so
+    // asserting "English" re-opened a SILENT untranslated passthrough for
+    // exactly the multilingual users the directive champions. Policy now: ANY
+    // Latin-script text returns the canonical AUTO name - NormalizeLanguageCode
+    // maps it to "AUTO", BuildPrompt injects no source token, and Hy-MT2's
+    // built-in language ID decides (it separates Indonesian from English).
+    // Accepted cost, per the audit: a short English sentence targeting English
+    // spends one local inference and returns near-identical text (no user
+    // harm; the old failure was silent). The true EN->EN identity bypass now
+    // exists ONLY for an explicitly pinned English source (ShouldTranslate
+    // step 7; step 5 can never see an "English" label again). Non-Latin
+    // scripts keep the contract above unchanged - their labels are script-
+    // certain and still drive the already-target bypass.
     if (ContainsLatin(trimmed)) {
-        return ContainsDiacriticLatin(trimmed) ? "Auto Detect" : "English";
+        return "Auto Detect";
     }
 
     return "Unknown";
@@ -442,6 +445,15 @@ bool ShouldTranslate(
     //    "Auto Detect" detection outcome (diacritic Latin - script-certain,
     //    language-ambiguous) must never match a real target, so it is skipped
     //    here as well: the request passes through to the engine.
+    //    F5 (audit 181530 Option B): DetectLanguage now returns "Auto Detect"
+    //    for ALL Latin script (pure-ASCII included), so the labels that can
+    //    still reach this comparison are script-certain languages only (KO/JA/
+    //    ZH/TH/AR/HE/RU + true-VI markers). The detection-based "English"
+    //    bypass retired with the label; the identity-bypass predicate is now
+    //    keyed on script CERTAINTY, not on the "English" name: an ASCII-Latin
+    //    sentence targeting English routes as AUTO translation (the model's
+    //    language ID owns the call), while pinned English -> English still
+    //    bypasses through step 7 (a user pin is ground truth).
     std::string detected = DetectLanguage(trimmed);
     if (!src_pinned && detected != "Unknown" && detected != "Auto Detect") {
         if (CaseInsensitiveEqual(detected, target_name) ||

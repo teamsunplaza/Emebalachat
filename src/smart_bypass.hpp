@@ -43,15 +43,25 @@ bool ContainsLatin(std::wstring_view text);
 
 // Detects language of given text based on script analysis.
 // Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian",
-// "Thai", "Arabic", "Hebrew", "English", "Auto Detect", or "Unknown".
+// "Thai", "Arabic", "Hebrew", "Auto Detect", or "Unknown". ("English" was
+// removed as a return value by F5; see below.)
 // ("Hebrew" added by G-4, REQ-040 batch B-6, user-approved 2026-09-07:
 // Hebrew text must never be reported as "Arabic" - the name feeds
 // NormalizeLanguageCode -> registry "HE" and the already-target bypass.)
 // (F1, session 260908_0003, verify 220010: diacritic-bearing LATIN text
 // returns the canonical AUTO name "Auto Detect" instead of a forced language
 // identity - NormalizeLanguageCode maps it to "AUTO", so the drag/typing
-// chains inject NO source token and Hy-MT2's built-in language ID decides.
-// Pure-ASCII Latin keeps "English" so the EN->EN identity bypass survives.)
+// chains inject NO source token and Hy-MT2's built-in language ID decides.)
+// (F5 Phase 2, session 260908_0003, ask audit 181530 condition 1 Option B,
+// VP/user adjudication: the pure-ASCII "English" label is REMOVED. ASCII
+// Latin cannot separate English from Indonesian/Malay/Tagalog/Swahili (all
+// Hy-MT2-supported), so keeping it re-opened a silent untranslated passthrough
+// for Latin-script non-English users targeting English. ALL Latin-script text
+// now returns "Auto Detect" and the model's built-in language ID decides. The
+// true EN->EN identity bypass survives ONLY for an explicitly pinned English
+// source (ShouldTranslate step 7). Accepted cost per the audit: English text
+// under Auto targeting English spends one local inference and returns
+// near-identical output.)
 std::string DetectLanguage(std::wstring_view text);
 
 // Returns true if text represents a standalone URL or web domain.

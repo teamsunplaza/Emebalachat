@@ -199,15 +199,19 @@ std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
                         std::string_view source_lang = {});
 
-// R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy default
-// list for the LOCAL Hy-MT2 engine. True only for pairs the model handles
-// reliably without degrading to English. Conservative default per the plan:
-// every pair involving English on either side (en↔*), which includes the
-// user-confirmed-working AUTO→EN case (English output is the model's strongest
-// behavior). zh↔ja was left open in the plan ("zh↔ja?") and Option A routes
-// JA→ZH to Google, so it is EXCLUDED pending VP/user confirmation. src/tgt
-// accept any form (code or name). AUTO is never a reliable TARGET. Pure
-// function: the whole pair matrix is unit-tested (TestR6P4LanguageRouting).
+// R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
+// LOCAL Hy-MT2 engine. F5 Phase 2 (session 260908_0003, ask audit 181530
+// Inquiry 3 adjudicated) SUPERSEDES the original conservative EN-only set:
+// a PINNED source is ground truth, so every distinct (src, tgt) pair of real
+// registry languages is reliable locally - the user's scope directive demands
+// 100% of all Hy-MT2 pairs, and the EN-side gate pushed explicitly pinned
+// non-EN pairs (VI→KO, JA→ZH-CN, ...) onto the 041 cloud-leak / 042 degraded
+// route. The AUTO source stays reliable to every real target (F1: the model's
+// built-in language ID decides). Excluded verdicts: AUTO is never a reliable
+// TARGET, and the degenerate identity pair src == tgt is not "reliable" (there
+// is nothing to translate; ShouldTranslate/pivot own the sane handling).
+// src/tgt accept any form (code or name). Pure function: the whole pair matrix
+// is unit-tested (TestR6P4LanguageRouting).
 bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code);
 
 // REQ-R11 (audit §4 M3): Directory containing the running executable
