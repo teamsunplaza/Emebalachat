@@ -77,7 +77,7 @@ $VK_ESCAPE = 0x1B; $KEYEVENTF_KEYUP = 0x0002
 
 function Write-Tray([string]$msg) { Write-Output "TRAY:$msg" }
 
-function Press-Escape {
+function Send-Escape {
     [NativeMethods]::keybd_event($VK_ESCAPE, 0, 0, 0)
     Start-Sleep -Milliseconds 60
     [NativeMethods]::keybd_event($VK_ESCAPE, 0, $KEYEVENTF_KEYUP, 0)
@@ -200,7 +200,7 @@ try {
         [System.Windows.Automation.Condition]::TrueCondition)
     $items = $menu.FindAll([System.Windows.Automation.TreeScope]::Descendants, $miCond)
     if (($kids.Count -eq 0) -and ($items.Count -eq 0)) {
-        Press-Escape
+        Send-Escape
         Write-Tray 'NOTFOUND:menu-items-uia-empty(TrackPopupMenu modal loop starves the UIA menu provider - tray automation INFEASIBLE via UIA)'
         exit 1
     }
@@ -218,8 +218,8 @@ try {
             if ($ul) { break }
             Start-Sleep -Milliseconds 150
         }
-        if (-not $ul) { Press-Escape; Write-Tray 'NOTFOUND:uilang-submenu'; exit 1 }
-        if (-not (Expand-Item $ul)) { Press-Escape; Write-Tray 'NOTFOUND:uilang-expand'; exit 1 }
+        if (-not $ul) { Send-Escape; Write-Tray 'NOTFOUND:uilang-submenu'; exit 1 }
+        if (-not (Expand-Item $ul)) { Send-Escape; Write-Tray 'NOTFOUND:uilang-expand'; exit 1 }
 
         # An expanded Win32 submenu is BOTH a separate desktop-child #32768
         # pane AND (per the UIA bridge) reachable through the root pane's
@@ -249,9 +249,9 @@ try {
             if ($names.Count -ge 38) { break }
             Start-Sleep -Milliseconds 150
         }
-        Press-Escape
+        Send-Escape
         Start-Sleep -Milliseconds 120
-        Press-Escape
+        Send-Escape
         if ($names.Count -lt 38) {
             Write-Tray "NOTFOUND:uilang-items-partial($($names.Count))"
             exit 1
@@ -276,7 +276,7 @@ try {
             if ($hit) { break }
             Start-Sleep -Milliseconds 150
         }
-        if (-not $hit) { Press-Escape; Write-Tray "NOTFOUND:item($ItemRegex)"; exit 1 }
+        if (-not $hit) { Send-Escape; Write-Tray "NOTFOUND:item($ItemRegex)"; exit 1 }
         $hitName = ''
         try { $hitName = $hit.Current.Name } catch { }
         if (-not (Invoke-Item $hit)) {
@@ -284,7 +284,7 @@ try {
                 [NativeMethods]::keybd_event(0x0D, 0, 0, 0)
                 Start-Sleep -Milliseconds 60
                 [NativeMethods]::keybd_event(0x0D, 0, $KEYEVENTF_KEYUP, 0) }
-            catch { Press-Escape; Write-Tray 'ERR:invoke-failed'; exit 1 }
+            catch { Send-Escape; Write-Tray 'ERR:invoke-failed'; exit 1 }
         }
         Write-Tray "OK:$hitName"
         exit 0
@@ -293,8 +293,8 @@ try {
     # -- 4. walk: type group -> target submenu -> item ----------------------
     $groupRx = [regex]'(키보드 타이핑|Keyboard Typing)'
     $group = Find-ByName $menu $groupRx 5
-    if (-not $group) { Press-Escape; Write-Tray 'NOTFOUND:typing-group'; exit 1 }
-    if (-not (Expand-Item $group)) { Press-Escape; Write-Tray 'NOTFOUND:typing-expand'; exit 1 }
+    if (-not $group) { Send-Escape; Write-Tray 'NOTFOUND:typing-group'; exit 1 }
+    if (-not (Expand-Item $group)) { Send-Escape; Write-Tray 'NOTFOUND:typing-expand'; exit 1 }
 
     $tgtRx = [regex]'(도착 언어|Target language)'
     $tgt = $null
@@ -303,8 +303,8 @@ try {
         if ($tgt) { break }
         Start-Sleep -Milliseconds 150
     }
-    if (-not $tgt) { Press-Escape; Write-Tray 'NOTFOUND:target-lang-submenu'; exit 1 }
-    if (-not (Expand-Item $tgt)) { Press-Escape; Write-Tray 'NOTFOUND:target-expand'; exit 1 }
+    if (-not $tgt) { Send-Escape; Write-Tray 'NOTFOUND:target-lang-submenu'; exit 1 }
+    if (-not (Expand-Item $tgt)) { Send-Escape; Write-Tray 'NOTFOUND:target-expand'; exit 1 }
 
     $itemRx = [regex]$ItemRegex
     $item = $null
@@ -313,7 +313,7 @@ try {
         if ($item) { break }
         Start-Sleep -Milliseconds 150
     }
-    if (-not $item) { Press-Escape; Write-Tray "NOTFOUND:item($ItemRegex)"; exit 1 }
+    if (-not $item) { Send-Escape; Write-Tray "NOTFOUND:item($ItemRegex)"; exit 1 }
 
     if (-not (Invoke-Item $item)) {
         # last resort: keyboard-activate the focused item
@@ -321,13 +321,13 @@ try {
             [NativeMethods]::keybd_event(0x0D, 0, 0, 0)
             Start-Sleep -Milliseconds 60
             [NativeMethods]::keybd_event(0x0D, 0, $KEYEVENTF_KEYUP, 0) }
-        catch { Press-Escape; Write-Tray 'ERR:invoke-failed'; exit 1 }
+        catch { Send-Escape; Write-Tray 'ERR:invoke-failed'; exit 1 }
     }
     Write-Tray "OK:$($item.Current.Name)"
     exit 0
 }
 catch {
-    try { Press-Escape } catch { }
+    try { Send-Escape } catch { }
     Write-Tray "ERR:$($_.Exception.Message)"
     exit 1
 }
