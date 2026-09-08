@@ -31,17 +31,27 @@ bool ContainsHebrew(std::wstring_view text);
 // Returns true if text contains Thai script characters.
 bool ContainsThai(std::wstring_view text);
 
-// Returns true if text contains Vietnamese specific diacritics or modified characters.
+// Returns true if text contains Vietnamese-SPECIFIC codepoints only (F1,
+// session 260908_0003: Latin Extended Additional tone marks 0x1EA0-0x1EF9
+// plus O-horn/U-horn/A-breve/D-stroke. Shared Latin-1 accented letters and
+// U-tilde - Portuguese orthography too - are NOT Vietnamese markers anymore).
 bool ContainsVietnamese(std::wstring_view text);
 
-// Returns true if text contains Latin alphabetic characters.
+// Returns true if text contains Latin-SCRIPT letters (accents included). A
+// script-family classifier, not a language assertion (F1).
 bool ContainsLatin(std::wstring_view text);
 
 // Detects language of given text based on script analysis.
-// Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian", "Thai", "Arabic", "Hebrew", "English", or "Unknown".
+// Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian",
+// "Thai", "Arabic", "Hebrew", "English", "Auto Detect", or "Unknown".
 // ("Hebrew" added by G-4, REQ-040 batch B-6, user-approved 2026-09-07:
 // Hebrew text must never be reported as "Arabic" - the name feeds
 // NormalizeLanguageCode -> registry "HE" and the already-target bypass.)
+// (F1, session 260908_0003, verify 220010: diacritic-bearing LATIN text
+// returns the canonical AUTO name "Auto Detect" instead of a forced language
+// identity - NormalizeLanguageCode maps it to "AUTO", so the drag/typing
+// chains inject NO source token and Hy-MT2's built-in language ID decides.
+// Pure-ASCII Latin keeps "English" so the EN->EN identity bypass survives.)
 std::string DetectLanguage(std::wstring_view text);
 
 // Returns true if text represents a standalone URL or web domain.

@@ -115,6 +115,16 @@ private:
     // permanently blank.
     void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
+    // P4 Batch B-5 (session 260907_0002, design §2.2.3): align the
+    // UI-locale-dependent text formats with the active I18n locale —
+    // body/tagline/etymology reading direction (RTL for AR/FA/UR/HE) plus the
+    // Q5-A font-fallback localeName (clone-swap; localeName is creation-only
+    // in DWrite, B-2 SDK audit) on all five localized-copy formats. Chrome
+    // formats (title/version/header) stay untouched LTR/neutral-locale.
+    // Called from Create() (startup locale incl. auto-detected RTL OS) and
+    // from RequestLocaleRefresh on every UI-language switch. GUI thread only
+    // (owns the DWrite formats exactly like Render).
+    void ApplyLocaleFormatting();
     void OpenLink(int index); // 0=website 1=contact 2=reddit (ShellExecuteW)
 
     HWND hwnd_ = nullptr;

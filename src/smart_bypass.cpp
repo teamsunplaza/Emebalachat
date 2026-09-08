@@ -62,34 +62,61 @@ inline bool IsHanziCodePoint(uint32_t cp) {
            (cp >= 0xF900 && cp <= 0xFAFF);
 }
 
+// F1 (session 260908_0003, verify 220010 root cause R1): VIETNAMESE-SPECIFIC
+// codepoints only. The previous implementation also accepted the shared
+// Latin-1 accented letters (0x00E0-0x00FD / 0x00C0-0x00DD: a-grave through
+// y-acute etc.) - every one of which is ordinary Portuguese, French, Spanish,
+// Italian or German orthography - and additionally Ũ/ũ (U+0168/U+0169), which
+// Vietnamese uses but Portuguese SHARES (nasal ũ in native Portuguese words).
+// Because ContainsVietnamese is a single-ANY predicate, one shared "a-grave"
+// in "corazon" mislabeled the whole text Vietnamese (probe: 220010 Claim A).
+// Those ranges are REMOVED here; accented Latin without a VI-specific marker
+// is now script-certain but language-ambiguous and classifies as Latin-script
+// AUTO content (see DetectLanguage). The remaining sets below appear ONLY in
+// Vietnamese orthography among the 37 supported languages:
+//   0x1EA0-0x1EF9  Latin Extended Additional precomposed VI tone marks (a-circumflex-breve, e-grave, o-horn-acute, ...)
+//   U+01A0/U+01A1  O-horn (O with horn), o-horn
+//   U+01AF/U+01B0  U-horn (U with horn), u-horn
+//   U+0102/U+0103  A-breve, a-breve        (Romanian also writes a-breve; kept
+//                                            per the F1 directive - among the
+//                                            37 languages it is listed as a VI
+//                                            marker, and a bare a-breve is far
+//                                            rarer in the field than the VI
+//                                            tone block. Residual Romanian-a-
+//                                            breve misdetection is a KNOWN,
+//                                            ACCEPTED limitation of the Phase-1
+//                                            hybrid; Phase 2 delegates Latin
+//                                            language ID to the model entirely.)
+//   U+0110/U+0111  D-stroke, d-stroke      (same accepted-sharing note as
+//                                            a-breve: Croatian/Slovenian also
+//                                            write d-stroke.)
+//   U+0168/U+0169  U-tilde DELIBERATELY EXCLUDED - shared with Portuguese.
 inline bool IsVietnameseCodePoint(uint32_t cp) {
     if (cp >= 0x1EA0 && cp <= 0x1EF9) return true; // Latin Extended Additional (tone marks)
-    if (cp == 0x0102 || cp == 0x0103) return true; // Ă, ă
-    if (cp == 0x0110 || cp == 0x0111) return true; // Đ, đ
-    if (cp == 0x0168 || cp == 0x0169) return true; // Ũ, ũ
-    if (cp == 0x01A0 || cp == 0x01A1) return true; // Ơ, ơ
-    if (cp == 0x01AF || cp == 0x01B0) return true; // Ư, ư
-    switch (cp) {
-        case 0x00E0: case 0x00E1: case 0x00E2: case 0x00E3:
-        case 0x00E8: case 0x00E9: case 0x00EA:
-        case 0x00EC: case 0x00ED:
-        case 0x00F2: case 0x00F3: case 0x00F4: case 0x00F5:
-        case 0x00F9: case 0x00FA:
-        case 0x00FD:
-        case 0x00C0: case 0x00C1: case 0x00C2: case 0x00C3:
-        case 0x00C8: case 0x00C9: case 0x00CA:
-        case 0x00CC: case 0x00CD:
-        case 0x00D2: case 0x00D3: case 0x00D4: case 0x00D5:
-        case 0x00D9: case 0x00DA:
-        case 0x00DD:
-            return true;
-        default:
-            return false;
-    }
+    if (cp == 0x0102 || cp == 0x0103) return true; // A-breve, a-breve
+    if (cp == 0x0110 || cp == 0x0111) return true; // D-stroke, d-stroke
+    if (cp == 0x01A0 || cp == 0x01A1) return true; // O-horn, o-horn
+    if (cp == 0x01AF || cp == 0x01B0) return true; // U-horn, u-horn
+    return false;
 }
 
+// Latin SCRIPT letters - a script-family classifier, NOT a language assertion.
+// F1 (session 260908_0003): widened beyond A-Za-z so accented Latin text
+// (Portuguese a-tilde/o-tilde/c-cedilla, French e-acute/e-grave, Spanish
+// a-acute, German u-umlaut, Turkish s-cedilla/g-breve, ...) is deterministically
+// recognized as Latin-script linguistic content. Previously this was masked by
+// the over-broad Vietnamese predicate inside IsLinguisticCodePoint; narrowing
+// that predicate without widening this one would have pushed shared-Latin-1
+// letters onto the locale-dependent GetStringTypeW fallback. Excludes the
+// Latin-1 SYMBOL codepoints multiplication-sign (U+00D7) and division-sign
+// (U+00F7); every other listed range is letters per the Unicode database.
 inline bool IsLatinCodePoint(uint32_t cp) {
-    return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z');
+    return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') ||
+           (cp >= 0x00C0 && cp <= 0x00D6) || // Latin-1 letters A-grave .. O-diaeresis
+           (cp >= 0x00D8 && cp <= 0x00F6) || // Latin-1 letters O-stroke .. o-diaeresis
+           (cp >= 0x00F8 && cp <= 0x00FF) || // Latin-1 letters o-stroke .. y-diaeresis
+           (cp >= 0x0100 && cp <= 0x024F) || // Latin Extended-A/B (A-macron .. w-yogh: includes a-breve, d-stroke, uhorn, schwa, s-cedilla, g-breve, i-dotless, l-stroke, r-cedilla ...)
+           (cp >= 0x1E00 && cp <= 0x1EFF);   // Latin Extended Additional (A-dota-below .. y-grave; VI tone marks are the 1EA0-1EF9 subset)
 }
 
 inline bool IsLinguisticCodePoint(uint32_t cp) {
@@ -300,6 +327,21 @@ bool IsUrl(std::wstring_view text) {
     return false;
 }
 
+// True when the text contains at least one NON-ASCII Latin letter, i.e. a
+// diacritic-modified Latin character (F1: the signal that the text is Latin
+// script but NOT language-certain; pure-ASCII Latin keeps the historical
+// "English" label so the EN->EN identity bypass still works).
+bool ContainsDiacriticLatin(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (cp > 0x007F && IsLatinCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string DetectLanguage(std::wstring_view text) {
     std::wstring norm = NormalizeNFC(text);
 
@@ -332,7 +374,22 @@ std::string DetectLanguage(std::wstring_view text) {
     if (ContainsCyrillic(trimmed)) return "Russian";
     if (ContainsVietnamese(trimmed)) return "Vietnamese";
     if (ContainsHanzi(trimmed)) return "Chinese Simplified";
-    if (ContainsLatin(trimmed)) return "English";
+    // F1 (session 260908_0003, verify 220010 root cause R2): Latin is a SCRIPT
+    // family, not a language. The old unconditional `return "English"` here
+    // (a) force-labeled French/Spanish/Portuguese/German text English,
+    // (b) let the ShouldTranslate already-target gate SILENTLY bypass any
+    //     Latin->English request (Claim C), and
+    // (c) got INJECTED as the engine source under Auto Detect (ADR-A1-2),
+    //     overriding Hy-MT2's own language ID with a wrong label.
+    // Policy now: pure-ASCII Latin stays "English" (the EN->EN identity bypass
+    // is a positive product decision, probe-pinned by 220010 [reg]); Latin
+    // containing any diacritic letter returns the canonical AUTO name so the
+    // chain injects no source token (NormalizeLanguageCode("Auto Detect") ==
+    // "AUTO", BuildPrompt adds no source hint) and the model's built-in
+    // language ID decides. Non-Latin scripts keep the contract above unchanged.
+    if (ContainsLatin(trimmed)) {
+        return ContainsDiacriticLatin(trimmed) ? "Auto Detect" : "English";
+    }
 
     return "Unknown";
 }
@@ -368,9 +425,25 @@ bool ShouldTranslate(
     const auto* target_info = FindLanguageByCode(target_code);
     std::string target_name = target_info ? target_info->name_en : std::string(target_code_or_name);
 
-    // 5. If input text is already in the target language, bypass translation immediately
+    // F1 (session 260908_0003, verify 220010 root cause R3): resolve the
+    // source pin FIRST - an explicit user pin is ground truth. "Auto Detect"
+    // (and any unresolvable/empty token, which normalizes to AUTO) means no
+    // pin. The old logic ran DetectLanguage's script result against the target
+    // even under a pin, so a pinned-French text with shared diacritics that
+    // misdetected as Vietnamese was wrongly bypassed toward a Vietnamese
+    // target, and pinned sources could be overridden by detection noise.
+    std::string source_norm = NormalizeLanguageCode(source_code_or_name);
+    const bool src_pinned = source_norm != "AUTO" && !source_code_or_name.empty() &&
+                            !CaseInsensitiveEqual(source_code_or_name, "Auto Detect");
+
+    // 5. If input text is already in the target language, bypass translation
+    //    immediately - but ONLY under Auto Detect. With an explicit pin, the
+    //    pin-vs-target comparison in step 7 owns the identity decision. The
+    //    "Auto Detect" detection outcome (diacritic Latin - script-certain,
+    //    language-ambiguous) must never match a real target, so it is skipped
+    //    here as well: the request passes through to the engine.
     std::string detected = DetectLanguage(trimmed);
-    if (detected != "Unknown") {
+    if (!src_pinned && detected != "Unknown" && detected != "Auto Detect") {
         if (CaseInsensitiveEqual(detected, target_name) ||
             CaseInsensitiveEqual(NormalizeLanguageCode(detected), target_code)) {
             // R5 observability: pin the exact bypass so "didn't translate after
@@ -390,10 +463,9 @@ bool ShouldTranslate(
         }
     }
 
-    // 6. Resolve source language
+    // 6. Resolve source language (F1: uses the pin predicate computed above)
     std::string effective_source_name;
-    std::string source_norm = NormalizeLanguageCode(source_code_or_name);
-    if (source_norm != "AUTO" && !source_code_or_name.empty() && !CaseInsensitiveEqual(source_code_or_name, "Auto Detect")) {
+    if (src_pinned) {
         const auto* src_info = FindLanguageByCode(source_norm);
         effective_source_name = src_info ? src_info->name_en : std::string(source_code_or_name);
     } else {

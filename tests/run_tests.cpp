@@ -349,6 +349,38 @@ void TestSmartBypassModule() {
     TEST_CHECK(DetectLanguage(L"") == "Unknown", "Empty text detected as Unknown");
     TEST_CHECK(DetectLanguage(L"123456") == "Unknown", "Digits detected as Unknown");
 
+    // 8c. F1 (session 260908_0003, verify 220010 root causes R1/R2): Latin
+    // script is NEVER Vietnamese unless a TRUE Vietnamese-specific codepoint
+    // is present, and diacritic Latin is NEVER force-labeled "English".
+    // Negative predicate tests - shared Latin-1 diacritics dropped from the
+    // Vietnamese set (Portuguese a-tilde/c-cedilla, Spanish acute accents,
+    // French grave/acute accents; the Ũ/ũ U-tilde exclusion covers Portuguese):
+    TEST_CHECK(!ContainsVietnamese(L"não presto muita atenção em futebol"), "F1: Portuguese a-tilde/o-tilde/c-cedilla are NOT Vietnamese markers");
+    TEST_CHECK(!ContainsVietnamese(L"rápido corazón"), "F1: Spanish acute accents are NOT Vietnamese markers");
+    TEST_CHECK(!ContainsVietnamese(L"étrange méditerranéen"), "F1: French grave/acute accents are NOT Vietnamese markers");
+    TEST_CHECK(!ContainsVietnamese(L"muito ũma"), "F1: U-tilde (u-tilde) alone is NOT a Vietnamese marker (shared with Portuguese)");
+    // Positive predicate test - true VI-specific codepoints (1EA0-block tone
+    // marks + u-horn + o-horn + a-breve + d-stroke) still detect:
+    TEST_CHECK(ContainsVietnamese(L"Việt Nam thật tuyệt vời"), "F1: e-grave-hook (ệ), a-dot-below (ậ), u-horn (ư), o-horn-grave (ờ) are Vietnamese markers");
+    TEST_CHECK(ContainsVietnamese(L"Đừng ăn đó"), "F1: D-stroke (Đ), u-horn, a-circumflex-dot-below, o-horn-dot-below detect Vietnamese");
+    // DetectLanguage: the three task-mandated samples must route as the AUTO
+    // marker - neither Vietnamese nor English (Hy-MT2's built-in language ID
+    // decides downstream; NormalizeLanguageCode("Auto Detect") == "AUTO"):
+    TEST_CHECK(DetectLanguage(L"não presto muita atenção em futebol") != "Vietnamese", "F1: Portuguese never mislabels Vietnamese");
+    TEST_CHECK(DetectLanguage(L"não presto muita atenção em futebol") == "Auto Detect", "F1: Portuguese (a-tilde/c-cedilla) detects as AUTO marker");
+    TEST_CHECK(DetectLanguage(L"rápido corazón") == "Auto Detect", "F1: Spanish (acute accents) detects as AUTO marker");
+    TEST_CHECK(DetectLanguage(L"étrange méditerranéen") == "Auto Detect", "F1: French (grave/acute) detects as AUTO marker");
+    TEST_CHECK(NormalizeLanguageCode(DetectLanguage(L"rápido corazón")) == "AUTO", "F1: AUTO marker normalizes to registry code AUTO (engine sees no source token)");
+    TEST_CHECK(DetectLanguage(L"Việt Nam thật tuyệt vời") == "Vietnamese", "F1: true-VI text still detects Vietnamese after the narrowing");
+    // Pure-ASCII Latin keeps "English" (documented Phase-1 policy: the EN->EN
+    // identity bypass below depends on it; verify 220010 §5 item 2 / [reg]).
+    TEST_CHECK(DetectLanguage(L"le chat est sur la table") == "English", "F1: pure-ASCII Latin stays English (Phase-1 identity-bypass trade-off)");
+    // Latin WITH umlauts (German) is also ambiguous -> AUTO, not English:
+    TEST_CHECK(DetectLanguage(L"Liebe Grüße") == "Auto Detect", "F1: German umlauts detect as AUTO marker, not English");
+    // Regression: the VI detection that used shared chars AND true markers
+    // ("Xin chào thế giới": e-circumflex-acute ế from the 1EA0 block) holds:
+    TEST_CHECK(DetectLanguage(L"Xin chào thế giới") == "Vietnamese", "F1: existing VI sample keeps Vietnamese via ế (1EA0 block)");
+
     // 8b. Hebrew script detection (REQ-040 gap G-4, user-approved 2026-09-07).
     // "שלום עולם" = "Hello world" in Hebrew. Hebrew must get its OWN label -
     // mislabeling it "Arabic" would corrupt the bypass decision and logs.
@@ -398,6 +430,28 @@ void TestSmartBypassModule() {
     TEST_CHECK(!ShouldTranslate(L"안녕하세요 만나서 반갑습니다", "Korean"), "Korean targeting Korean bypassed");
     TEST_CHECK(!ShouldTranslate(L"Xin chào bạn nhé", "Vietnamese"), "Vietnamese targeting Vietnamese bypassed");
     TEST_CHECK(!ShouldTranslate(L"こんにちは、元気ですか？", "Japanese"), "Japanese targeting Japanese bypassed");
+
+    // F1 Claim-C: diacritic Latin targeting English must TRANSLATE. The old
+    // code detected it "English" (or "Vietnamese") and the already-target gate
+    // SILENTLY bypassed, returning the original text as its own "translation".
+    TEST_CHECK(ShouldTranslate(L"não presto muita atenção em futebol", "English"), "F1: Portuguese -> English is no longer silently bypassed");
+    TEST_CHECK(ShouldTranslate(L"rápido corazón", "English"), "F1: Spanish -> English translates");
+    TEST_CHECK(ShouldTranslate(L"étrange méditerranéen", "English"), "F1: French -> English translates");
+    // F1: the same samples route to every other target (engine receives AUTO):
+    TEST_CHECK(ShouldTranslate(L"não presto muita atenção em futebol", "Korean"), "F1: Portuguese -> Korean translates");
+    // F1 R3: an explicit source pin SKIPS detection-based bypass. Under the
+    // old code this was bypassed because script detection labeled the ASCII
+    // text "English" == target even though the user pinned French.
+    TEST_CHECK(ShouldTranslate(L"the book is on the table", "English", "French"), "F1: pinned French source reaches the engine even when detection says English");
+    TEST_CHECK(ShouldTranslate(L"não presto muita atenção em futebol", "English", "Portuguese"), "F1: pinned Portuguese -> English translates (pin is ground truth, no detect override)");
+    // Accepted Phase-1 nuance (verify 220010 §5 item 2): pure-ASCII Latin
+    // under Auto keeps the EN->EN identity bypass - plain English targeting
+    // English stays untranslated. Pinned sources above are unaffected.
+    TEST_CHECK(!ShouldTranslate(L"le chat est sur la table", "English"), "F1: pure-ASCII Latin -> English identity bypass is the documented Phase-1 trade-off");
+    // Same-language bypass survives the narrowing for REAL Vietnamese (the
+    // 1EA0-block ạ marker in "bạn"):
+    TEST_CHECK(!ShouldTranslate(L"Việt Nam thật tuyệt vời", "Vietnamese"), "F1: true-VI text targeting Vietnamese still bypassed (engine not called)");
+    TEST_CHECK(ShouldTranslate(L"Việt Nam thật tuyệt vời", "Korean"), "F1: true-VI text targeting Korean still translates (VI->VI guard did not over-fire)");
 
     // Non-linguistic bypass
     std::vector<std::wstring> non_ling = {
@@ -3478,6 +3532,35 @@ void TestR6P4LanguageRouting() {
         TEST_CHECK(LocalPairReliable("ZH-CN", "EN"), "R6p4: ZH-CN->EN reliable (target EN)");
         TEST_CHECK(!LocalPairReliable("KO", "AUTO"), "R6p4: AUTO target is never reliable");
         TEST_CHECK(!LocalPairReliable("KO", "KO"), "R6p4: same-language pin (src==tgt) keeps EN-equality semantics");
+    }
+
+    // ---- 5b) F1 companion fix (session 260908_0003, verify 220010 §5 item 4):
+    // an AUTO SOURCE is reliable to every real target - Hy-MT2's built-in
+    // language ID owns the decision, so Latin Auto -> KO must NOT be flagged
+    // outside-the-reliable-set and shipped to Google via 041 (privacy + the
+    // false "VI -> KO" pair churn of the reported log). Pinned non-EN pairs
+    // (VI->KO) keep the conservative EN-side rule: that is the VP-flagged R4
+    // decision, deliberately OUT of this task's scope.
+    {
+        TEST_CHECK(LocalPairReliable("AUTO", "KO"), "F1: AUTO->KO reliable (model language ID, no cloud leak)");
+        TEST_CHECK(LocalPairReliable("Auto Detect", "Korean"), "F1: AUTO reliability is name/code-form insensitive");
+        TEST_CHECK(LocalPairReliable("AUTO", "VI"), "F1: AUTO->VI reliable");
+        TEST_CHECK(LocalPairReliable("AUTO", "DE"), "F1: AUTO->DE reliable");
+        TEST_CHECK(!LocalPairReliable("VI", "KO"), "F1/R4: PINNED VI->KO stays outside the conservative set (unchanged, VP decision pending)");
+        TEST_CHECK(PlanTranslationRouting("AUTO", "KO", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+                   "F1: AUTO->KO explicit-local stays local even WITHOUT cloud consent (041 must not fire)");
+        TEST_CHECK(PlanTranslationRouting("Auto Detect", "Korean", EngineType::Auto, false) == EngineType::LocalLlama,
+                   "F1: AUTO->KO under Auto engine stays local (Hy-MT2 built-in language ID)");
+        // BuildPrompt: the AUTO marker token adds no source hint (the exact
+        // value DetectLanguage now returns for diacritic Latin).
+        {
+            const std::string base_ko = BuildPrompt("ola", "Korean");
+            TEST_CHECK(BuildPrompt("ola", "Korean", "Auto Detect") == base_ko,
+                       "F1: 'Auto Detect' source token adds no hint (model ID decides)");
+            TEST_CHECK(base_ko.find("Tiếng Việt") == std::string::npos &&
+                           base_ko.find("Vietnamese") == std::string::npos,
+                       "F1: AUTO->KO prompt must not carry a Vietnamese claim (bogus LANG label gone)");
+        }
     }
 
     // ---- 6) Full routing matrix: sources x targets x engines x consent. ---

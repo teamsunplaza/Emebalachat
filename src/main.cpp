@@ -1223,6 +1223,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // ADR-A1-2: NON-AUTO persisted source wins over detection; "Auto
         // Detect" keeps the established drag contract of injecting the
         // DETECTED language into the engine as an explicit source.
+        // F1 (session 260908_0003, verify 220010 §5 item 4): the injected
+        // value is now the AUTO marker "Auto Detect" for diacritic Latin
+        // (script-certain, language-ambiguous) - NormalizeLanguageCode maps it
+        // to "AUTO", LocalPairReliable keeps the request on Hy-MT2 (model's
+        // built-in language ID), and BuildPrompt emits no source token. The
+        // engine call below receives eff_src verbatim - the label policy is in
+        // DetectLanguage, not a string special-case here.
         const bool src_pinned = emebalachat::NormalizeLanguageCode(
                                     snap.drag_source_language) != "AUTO";
         std::string eff_src = emebalachat::ResolveEffectiveSource(
@@ -1230,6 +1237,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // ADR-A1-4: the tooltip tag shows the EFFECTIVE source (pinned value
         // when fixed, detected code under AUTO), not the raw detection.
         std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        // F1: an AUTO engine source renders as the localized "Auto Detect" tag
+        // via the tooltip's existing empty-label seam (empty source_lang_code
+        // -> I18n::AutoDetect), never as the raw string "AUTO".
+        const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = snap.drag_target_language;
 
         bool pivot_fired = false;
@@ -1271,7 +1282,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // inside engine.Translate (local LLM takes seconds), the tooltip
         // drops this stale payload instead of showing the previous
         // translation (the reported intermittent bug).
-        tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, src_code, tgt_lang, translated,
+        tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, tooltip_src, tgt_lang, translated,
                                           gen);
     };
 
@@ -1358,6 +1369,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             eff_src = emebalachat::DetectLanguage(job.src);
         }
         std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        // F1 (session 260908_0003): AUTO engine source -> localized "Auto
+        // Detect" tooltip tag via the empty-label seam (see run_drag_translate).
+        // job.src_code is empty exactly when the previous tooltip showed AUTO,
+        // so the re-detect above yields "Auto Detect" again for Latin text and
+        // the engine receives the AUTO marker end-to-end.
+        const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = job.new_tgt;
         bool pivot_fired = false;
         if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
@@ -1384,7 +1401,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Worker thread -> marshal to the GUI thread. If a newer request
         // was stamped while this thread sat inside engine.Translate, the
         // tooltip's generation guard drops this stale payload.
-        tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, src_code,
+        tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, tooltip_src,
                                           tgt_lang, translated, job.gen);
     };
 
@@ -1491,6 +1508,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::string eff_src = emebalachat::ResolveEffectiveSource(
                                   snap.drag_source_language, detected);
         std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
+        // F1 (session 260908_0003): AUTO engine source -> localized "Auto
+        // Detect" tooltip tag (same empty-label seam as the other drag paths).
+        const std::string tooltip_src = (src_code == "AUTO") ? std::string() : src_code;
         std::string tgt_lang = snap.drag_target_language;
 
         bool pivot_fired = false;
@@ -1526,7 +1546,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // R6 B1-H1: generation-guarded (a drag request stamped meanwhile makes
         // this result the stale one, and the tooltip drops it instead).
         tooltip.ShowTranslationThreadSafe(
-            cursor.x + 12, cursor.y + 12, copied, src_code, tgt_lang, translated, gen);
+            cursor.x + 12, cursor.y + 12, copied, tooltip_src, tgt_lang, translated, gen);
     });
 
     // ESC Key Dismissal

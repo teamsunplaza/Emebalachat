@@ -623,11 +623,26 @@ std::string BuildPrompt(std::string_view source_text,
 // zh<->ja and every other non-EN pair are EXCLUDED pending VP/user
 // confirmation (plan §9 open decision); TranslationManager routes those to
 // Google per PlanTranslationRouting (src/engine.hpp).
+//
+// F1 companion fix (session 260908_0003, verify 220010 §5 item 4): an AUTO
+// SOURCE is reliable to EVERY target. Under src=Auto the local Hy-MT2 model
+// decides the source language with its own built-in language ID - the exact
+// mechanism the Latin-script AUTO pass-through now feeds it (DetectLanguage
+// returns "Auto Detect" for diacritic Latin instead of a forced language).
+// Without this clause, Latin Auto -> non-EN targets (e.g. Portuguese ->
+// Korean) would normalize AUTO, fail the EN-side gate, and be flagged
+// "outside the reliable set": the 041 branch would ship the text to Google
+// (privacy regression + wrong "VI -> KO" pair churn). The VP-flagged R4
+// question (is the EN-only gate too narrow for PINNED non-EN pairs like
+// VI->KO?) stays out of scope here; this clause covers AUTO sources only.
 bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
     const std::string src = NormalizeLanguageCode(src_code);
     const std::string tgt = NormalizeLanguageCode(tgt_code);
     if (tgt.empty() || tgt == "AUTO") {
         return false; // auto-detect is never a translation target
+    }
+    if (src == "AUTO") {
+        return true; // model's built-in language ID handles any real target (F1)
     }
     return tgt == "EN" || src == "EN";
 }
