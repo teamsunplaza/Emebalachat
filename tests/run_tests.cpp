@@ -6642,6 +6642,78 @@ void TestReqF5EmptyCaptureEnterPromotion() {
     }
 }
 
+// F6 (session 260908_0002, verify report 164500 §5/§7 - V5 ledger-on-focus
+// clear defect): a task whose paste is aborted by the H1 foreground guard
+// (the user Alt-Tabbed / clicked the tray while the translation network call
+// was in flight) must NOT wipe the last-paste ledger when that ledger belongs
+// to the SAME target hwnd the task operated on: no paste and no H1-gated
+// Enter ran, so the window's text is unchanged and the ledger entry still
+// describes live text. The pre-F6 unconditional `!pasted` clear (worker.cpp
+// C3 maintenance) emptied the memory; the next Enter's fallback whole-input
+// selection [0..caret) then re-translated and overwrote earlier translated
+// blocks (verify 164500 example-3 chain). Contract:
+//  (a) LedgerSurvivesH1Abort pure predicate matrix: preserve ONLY the
+//      (paste attempted == H1 abort) && (ledger hwnd == task hwnd)
+//      combination; a confirmed switch to a different hwnd (cross-window
+//      contamination hygiene) and the no-paste-not-attempted outcomes
+//      (translation empty / identity, whose send geometry is owned by the
+//      untouched C1/C2 clears) keep the legacy clear.
+//  (b) the user-visible consequence through the existing pure seams: a kept
+//      ledger makes the post-abort retry capture a PrefixWithTail (tail-only
+//      translation, earlier blocks untouched), while the wiped ledger makes
+//      the identical capture a NoMatch (whole-input re-translation - the V5
+//      overwrite defect).
+void TestReqF6LedgerH1AbortPreserve() {
+    std::cout << "[TEST] F6 ledger protection on H1-abort no-paste (C3 !pasted arm subdivision)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) pure predicate matrix ----
+    static_assert(LedgerSurvivesH1Abort(true, true),
+                  "F6: H1 abort into the same ledger hwnd -> preserve (window unchanged, memory live)");
+    static_assert(!LedgerSurvivesH1Abort(true, false),
+                  "F6: H1 abort but ledger belongs to a DIFFERENT hwnd -> clear (cross-window hygiene)");
+    static_assert(!LedgerSurvivesH1Abort(false, true),
+                  "F6: no paste attempted (translation empty/identity), same hwnd -> clear (legacy)");
+    static_assert(!LedgerSurvivesH1Abort(false, false),
+                  "F6: no paste attempted + no ledger -> clear (no-op legacy)");
+    TEST_CHECK(LedgerSurvivesH1Abort(true, true),
+               "F6: keep decision is exactly the H1-abort + same-hwnd combination");
+    TEST_CHECK(!LedgerSurvivesH1Abort(true, false),
+               "F6: a hwnd-confirmed switch clears even on an H1 abort");
+
+    // ---- (b) chain consequence through the existing pure seams ----
+    // Round 1: paragraph 1 pasted -> ledger = the block-1 translation.
+    const std::wstring block1_en = L"The first paragraph, translated.";
+    // Round 2: paragraph 2 typed, Enter pressed, H1 abort (no paste, no
+    // Enter) into the SAME window. F6 keeps the ledger; pre-F6 wiped it.
+    std::wstring ledger = block1_en;
+    if (!LedgerSurvivesH1Abort(true, true)) {
+        ledger.clear(); // pre-F6 C3 behavior
+    }
+    // Round 3: the user returns and retries Enter. Capture = whole input
+    // [0..caret): block1(en) + block2(source) - the fallback geometry of
+    // untracked windows (SelectMessageBlock).
+    const std::wstring block2_ko = L"두 번째 문단 원문";
+    const std::wstring capture_next = block1_en + block2_ko;
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(capture_next, block1_en) == PasteLedgerVerdict::PrefixWithTail,
+               "F6 (kept ledger): post-abort retry is PrefixWithTail -> only the new tail is translated; block 1 is never re-translated");
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(capture_next, L"") == PasteLedgerVerdict::NoMatch,
+               "F6 (wiped ledger, pre-F6): identical retry is NoMatch -> whole-input re-translation would overwrite block 1 (the V5 defect)");
+    // C1/C2 send-of-output contracts are untouched by F6: an ExactMatch still
+    // reads as the send-of-output skip verdict (its own early-return clear).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(block1_en, block1_en) == PasteLedgerVerdict::ExactMatch,
+               "F6: C1 ExactMatch verdict unchanged (send-of-output consumed by its own clear)");
+    static_assert(EmptyCapturePromotesToSend(true, false, true, true),
+                  "F6: C2 F5-promote contract unchanged (send-of-output clear retained)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] F6 ledger protection on H1-abort no-paste tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] F6 ledger protection on H1-abort no-paste tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-F1 (docs/260908_0001 session, user log emebalachat_260908062830
 // L546-550/L787-791/L1120-1124): first-character residue ahead of the pasted
 // translation ("오"/"처"/"왜 "). Root cause: the compensation advanced the
@@ -7559,6 +7631,7 @@ int main() {
     TestReqF1FirstCharResidue();
     TestReqF2Category0Accumulation();
     TestReqF5EmptyCaptureEnterPromotion();
+    TestReqF6LedgerH1AbortPreserve();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();

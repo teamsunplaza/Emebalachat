@@ -433,6 +433,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     badge_.SetStatus(BadgeStatus::Active);
 
     bool pasted = false;
+    // F6 (session 260908_0002, verify 164500 §7): true when this task reached
+    // the paste attempt (translation non-empty and != source). PasteAndRestore
+    // then fails on exactly ONE path - the H1 foreground-guard abort (the
+    // foreground changed while the translation network call was in flight).
+    // Distinguishing that abort from the other no-paste outcomes (translation
+    // empty / identity) lets the C3 ledger maintenance below preserve a
+    // still-valid same-window ledger entry instead of wiping it (the V5
+    // defect: the next Enter then re-translated earlier blocks).
+    bool paste_attempted = false;
     // B-6a: set when NotifyReplacement still owes its post-newline call (see
     // branch comment at the paste site and the injection block below).
     bool pending_notify = false;
@@ -447,6 +456,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const bool identity_outcome = !translated.empty() && translated == line &&
                                   EqualsSourceNeedsSendThrough(line.empty(), was_smart_bypassed);
     if (!translated.empty() && translated != line) {
+        // F6: this branch is the ONLY paste attempt in ExecuteTask; a false
+        // `pasted` below therefore means the H1 foreground-guard abort.
+        paste_attempted = true;
         // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
         // foreground window immediately before Ctrl+V and aborts on mismatch.
         const ULONGLONG t_paste_start = ::GetTickCount64();
@@ -597,21 +609,69 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // REQ-F2 ledger maintenance. The ledger is a ONE-SHOT memory of the most
     // recent paste into the CURRENT window context. It must never survive a
     // context where it could misfire:
-    //   - !pasted (translation empty / identity / H1 abort): nothing new
-    //     was deposited - the previous memory no longer corresponds to any
-    //     live input state. Clear.
-    //   - different target hwnd: the previous paste went to another window.
-    //     Clear (a stale cross-window memory is worse than none).
     //   - successful paste: refreshed above - keep (this is the branch the
     //     next Enter's capture comparison reads).
+    //   - H1-abort no-paste into the SAME window (F6, verify 164500 §5/§7):
+    //     a paste WAS attempted (translation non-empty, != source) but
+    //     PasteAndRestore's foreground guard aborted. Neither the paste nor
+    //     the H1-gated Enter ran, so the target window's text is unchanged
+    //     from the previous successful paste - the ledger entry for this same
+    //     hwnd still describes live text. KEEP it; wiping it (the V5 defect)
+    //     emptied the memory and the next Enter's fallback whole-input
+    //     selection [0..caret) re-translated and overwrote earlier blocks
+    //     (verify 164500 example-3 chain).
+    //   - any other !pasted (translation empty / identity): nothing new was
+    //     deposited and no send geometry was produced (a real send-of-output
+    //     consumes the ledger through the C1 ExactMatch / C2 F5-promote
+    //     clears above, which are untouched by F6) - the previous memory no
+    //     longer corresponds to any live input state. Clear.
+    //   - different target hwnd: the previous paste went to another window.
+    //     Clear (a stale cross-window memory is worse than none).
     // The (ii) prefix path lands here with pasted==true and its ledger
     // already refreshed to the recomposed full text - the correct new
     // memory: if the user keeps the recomposed output and presses Enter,
     // the skip applies to the WHOLE recomposed text.
     if (!pasted || last_paste_target_ != task.target_hwnd) {
-        last_paste_target_ = nullptr;
-        last_paste_text_.clear();
-        last_paste_end_offset_ = kEditCaretUnknown;
+        // F6: preserve ONLY the H1-abort-into-the-same-window case; the abort
+        // proves the target was not the foreground at paste time, so nothing
+        // was injected and the previous paste's text is still the live input.
+        const bool ledger_same_target = (last_paste_target_ == task.target_hwnd);
+        if (LedgerSurvivesH1Abort(paste_attempted, ledger_same_target)) {
+            DIAG_LOG("PIPELINE",
+                     "stage=ledger_maint decision=keep reason=h1_abort_same_hwnd "
+                     "target=%p ledger_len=%zu",
+                     reinterpret_cast<const void*>(task.target_hwnd),
+                     last_paste_text_.size());
+        } else {
+            // QA-visible wipe evidence (F6 verify protocol: a same-hwnd H1
+            // abort must log decision=keep; cross-window / empty / identity
+            // must log decision=clear with the exact reason below).
+            const char* clear_reason = "unknown";
+            if (pasted) {
+                // Unreachable today: a successful paste refreshes the ledger
+                // to task.target_hwnd, so this block is never entered with
+                // pasted==true. Kept for defensive completeness.
+                clear_reason = "pasted_but_cross_hwnd";
+            } else if (last_paste_target_ == nullptr) {
+                clear_reason = "no_ledger";
+            } else if (!paste_attempted) {
+                // Translation empty / identity: nothing was deposited and no
+                // send-of-output geometry was produced (C1/C2 own that and
+                // clear on their early-return paths above - untouched by F6).
+                clear_reason = "no_paste_not_attempted";
+            } else {
+                // paste_attempted (H1 abort) but the ledger belongs to a
+                // DIFFERENT hwnd than this task's target - cross-window
+                // contamination hygiene (kept legacy behavior).
+                clear_reason = "h1_abort_different_hwnd";
+            }
+            DIAG_LOG("PIPELINE",
+                     "stage=ledger_maint decision=clear reason=%s target=%p",
+                     clear_reason, reinterpret_cast<const void*>(task.target_hwnd));
+            last_paste_target_ = nullptr;
+            last_paste_text_.clear();
+            last_paste_end_offset_ = kEditCaretUnknown;
+        }
     }
 
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",

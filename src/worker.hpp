@@ -192,7 +192,31 @@ inline PasteLedgerVerdict AnalyzeCaptureVsLastPaste(std::wstring_view captured,
         return PasteLedgerVerdict::NoMatch;
     }
     return captured.size() == last_paste.size() ? PasteLedgerVerdict::ExactMatch
-                                               : PasteLedgerVerdict::PrefixWithTail;
+                                                : PasteLedgerVerdict::PrefixWithTail;
+}
+
+// F6 (session 260908_0002, verify report 164500 §5/§7, V5 ledger-on-focus-clear
+// defect): the C3 ledger-maintenance `!pasted` arm is subdivided. A paste is
+// ATTEMPTED only when the translation is non-empty and differs from the source
+// (the worker's paste branch); PasteAndRestore then returns false on exactly
+// one path - the H1 foreground-guard abort (win32_input.cpp PasteAndRestore:
+// the foreground changed while the network translation was in flight). In that
+// abort the target window receives NO paste and NO synthetic Enter (both are
+// H1-gated), so its text state is byte-identical to what the previous
+// SUCCESSFUL paste into it left behind: when the ledger entry belongs to the
+// SAME target hwnd this task operated on, it still describes live text and
+// must be PRESERVED. Wiping it (the pre-F6 unconditional clear) emptied the
+// ledger and let the next Enter's fallback whole-input selection [0..caret)
+// re-translate and overwrite earlier translated blocks (verify 164500 §1.4
+// example-3 chain). Every other no-paste outcome (translation empty / identity
+// - no send geometry was produced, and a chat send would have consumed the
+// ledger via C1/C2 first) or a different target hwnd keeps the legacy clear
+// (cross-window contamination hygiene). One pure definition shared by
+// worker.cpp and the unit tests (same discipline as the other predicates).
+// The ledger's own self-invalidation still applies: any later edit makes the
+// next AnalyzeCaptureVsLastPaste comparison fail and route to legacy behavior.
+constexpr bool LedgerSurvivesH1Abort(bool paste_attempted, bool ledger_same_target_hwnd) {
+    return paste_attempted && ledger_same_target_hwnd;
 }
 
 class PipelineWorker {
