@@ -1598,6 +1598,57 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         retranslate_job_cv.notify_one();
     });
 
+    // F8 (ADR-A1-4): source-language dropdown on the tooltip header. A pick is
+    // a REQUEST to the single coordinator: ApplyLanguageChange persists the
+    // drag_source_language (an AUTO pick re-records "Auto Detect" - the
+    // re-record contract, user decision ④) and refreshes the tray check marks.
+    // Re-translation then runs on the F9 retranslate_worker above (ADR-A1-5:
+    // NEVER a synchronous engine.Translate on the GUI thread - V8 freeze
+    // regression guard). The worker resolves eff_src from the NEW persisted
+    // value - pinned wins over the carried detection code, AUTO falls back to
+    // it (F3-3) - and its ADR-A1-7 pivot guard re-checks eff_src == tgt, so
+    // the KO->KO corruption path stays closed for source picks too.
+    tooltip.SetSourceLanguageChangeCallback([&](std::string_view new_source_lang) {
+        // The source change is itself a NEW translate request (B1-H1 stamp):
+        // an in-flight older drag/retranslate result must not overwrite this
+        // re-translation when it lands.
+        const uint64_t gen = tooltip.BeginTranslationRequest();
+
+        std::wstring src = tooltip.GetSourceText();
+        std::string src_code = tooltip.GetSourceLangCode(); // AUTO fallback only
+        // Keep the currently SHOWN effective target (the drag pair's target
+        // may have been pivoted - the tooltip re-shows at the same effective
+        // target it is displaying right now).
+        std::string tgt_lang = tooltip.GetTargetLang();
+
+        RECT r = {};
+        ::GetWindowRect(tooltip.GetHwnd(), &r);
+
+        // Runs on the GUI thread (tooltip WndProc) - the coordinator's
+        // required thread (plan §2.3). Only EXPLICIT tooltip picks reach
+        // persistence here (C2: no translation path calls this coordinator).
+        const bool applied = ApplyLanguageChange(
+            emebalachat::LanguageContext::Drag, new_source_lang, std::string_view{},
+            false, false);
+        // F8 DIAG: menu pick + whether the coordinator accepted it (a
+        // refused request leaves config untouched and re-renders current
+        // state, exactly like the target-menu callback above).
+        DIAG_LOG("STATE", "tooltip_src lang=%s applied=%d gen=%llu",
+                 std::string(new_source_lang).c_str(), applied ? 1 : 0,
+                 static_cast<unsigned long long>(gen));
+
+        DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick=%s tgt=%s",
+                 static_cast<unsigned long long>(gen),
+                 std::string(new_source_lang).c_str(), tgt_lang.c_str());
+        {
+            std::lock_guard<std::mutex> lk(retranslate_job_mutex);
+            retranslate_job = RetranslateJob{ src, src_code, tgt_lang,
+                                              r.left, r.top, gen };
+            retranslate_job_pending = true;
+        }
+        retranslate_job_cv.notify_one();
+    });
+
     // REQ-R08 visual feedback: localized state-change bubble at the cursor,
     // audio chime comes from SetActive() itself. Runs on the hook thread
     // (Win+F9 path) or the main thread (badge/tray paths) - the thread-safe

@@ -22,6 +22,12 @@ class TooltipWindow {
 public:
     using LanguageChangeCallback = std::function<void(std::string_view new_target_lang)>;
 
+    // F8 (ADR-A1-4): source-language dropdown callback. Passes the picked
+    // source as name_en ("Auto Detect" for the AUTO entry) - the same payload
+    // form the target menu uses, so main.cpp routes both through the single
+    // ApplyLanguageChange coordinator (persist -> tray check-marks -> tooltip).
+    using SourceLanguageChangeCallback = std::function<void(std::string_view new_source_lang)>;
+
     TooltipWindow();
     ~TooltipWindow();
 
@@ -250,6 +256,9 @@ public:
 
     void SetLanguageChangeCallback(LanguageChangeCallback cb) { lang_change_cb_ = std::move(cb); }
 
+    // F8 (ADR-A1-4): register the source-language dropdown pick handler.
+    void SetSourceLanguageChangeCallback(SourceLanguageChangeCallback cb) { src_lang_change_cb_ = std::move(cb); }
+
     // ---- R6 Phase 1 (B3): single-source-of-truth language sync (plan §2.4) ----
     // View-refresh seam called by the main.cpp ApplyLanguageChange coordinator
     // whenever ANY surface (tray menu, swap, cycle, config load) mutates the
@@ -346,6 +355,9 @@ private:
     D2D1_RECT_F tts_btn_rect_ = {};
     D2D1_RECT_F lang_btn_rect_ = {};
     D2D1_RECT_F close_btn_rect_ = {};
+    // F8 (ADR-A1-4): source-language dropdown button rect (target-pattern
+    // member so the WM_MOUSEMOVE/WM_LBUTTONUP hit tests can reach it).
+    D2D1_RECT_F src_btn_rect_ = {};
 
     // ---- REQ-002 scroll state (DIP layout space, plan §1.3) ----
     float scroll_offset_dip_ = 0.0f;    // current scroll position (>= 0)
@@ -360,7 +372,7 @@ private:
     D2D1_RECT_F scrollbar_track_rect_ = {};
     D2D1_RECT_F scrollbar_thumb_rect_ = {};
 
-    int hovered_btn_ = 0; // 0=none, 1=copy, 2=tts, 3=lang, 4=close
+    int hovered_btn_ = 0; // 0=none, 1=copy, 2=tts, 3=lang, 4=close, 5=src
     bool copied_feedback_ = false;
     bool is_message_mode_ = false;
     std::wstring message_header_;
@@ -372,6 +384,9 @@ private:
     std::string current_voice_lang_;
 
     LanguageChangeCallback lang_change_cb_;
+    // F8 (ADR-A1-4): source-language dropdown handler (optional; hidden when
+    // unset, exactly like the target callback).
+    SourceLanguageChangeCallback src_lang_change_cb_;
 
     static constexpr UINT_PTR kTimerCopiedFeedback = 4001;
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;

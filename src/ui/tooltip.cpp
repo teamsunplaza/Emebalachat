@@ -1230,18 +1230,48 @@ void TooltipWindow::Render() {
     if (goldBorderBrush) goldBorderBrush->Release();
     if (logoBgBrush) logoBgBrush->Release();
 
-    // 2. Source language badge (clean layout following 1:1 logo frame)
+    // 2. Source language dropdown button (clean layout following 1:1 logo
+    // frame). F8 (ADR-A1-4): the source tag is now interactive exactly like
+    // the target button - a "▾" label, a MEMBER rect (src_btn_rect_) so the
+    // hit tests can reach it, and a hover highlight (hover id 5).
     // R6 Phase 5 (plan §5.3): the empty-code fallback was a hardcoded L"Auto";
     // it now uses the localized AutoDetect string.
     float src_tag_x = 44.0f;
-    std::wstring src_tag = source_lang_code_.empty() ? I18n::Get(StringId::AutoDetect)
-                                                     : ToUtf16(source_lang_code_);
+    std::wstring src_tag_text = source_lang_code_.empty() ? I18n::Get(StringId::AutoDetect)
+                                                          : ToUtf16(source_lang_code_);
+    std::wstring src_tag = src_tag_text + L" ▾";
+    // F8 (ADR-A1-4): DYNAMIC width - the hardcoded 44.0f box clipped localized
+    // Auto-Detect strings and wider codes (e.g. "ZH-CN"). Measure the label
+    // with header_format_ (the format the text is actually drawn with) and add
+    // horizontal padding so the pill never hugs the glyphs; 44.0f stays the
+    // floor so measurement failure degrades to today's fixed size.
     float src_tag_width = 44.0f;
-    D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f), 4.0f, 4.0f);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &btnBgBrush);
+    if (header_format_ && dwrite_factory_) {
+        IDWriteTextLayout* src_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_,
+                512.0f, 22.0f, &src_layout)) && src_layout) {
+            DWRITE_TEXT_METRICS src_metrics = {};
+            if (SUCCEEDED(src_layout->GetMetrics(&src_metrics))) {
+                const float measured = src_metrics.width + 16.0f;
+                if (measured > src_tag_width) src_tag_width = measured;
+            }
+            src_layout->Release();
+        }
+    }
+    // F8: persist the button rect as a member for hover/click hit tests.
+    src_btn_rect_ = D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f);
+    D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(src_btn_rect_, 4.0f, 4.0f);
+    dc_render_target_->CreateSolidColorBrush(
+        (hovered_btn_ == 5) ? D2D1::ColorF(0x334155, 1.0f) : D2D1::ColorF(0x1E293B, 0.9f),
+        &btnBgBrush
+    );
     if (btnBgBrush) {
         dc_render_target_->FillRoundedRectangle(srcTagRect, btnBgBrush);
-        dc_render_target_->DrawRoundedRectangle(srcTagRect, borderBrush, 1.0f);
+        // F8: hover highlight mirrors the target button's hovered_btn_==3
+        // pattern - accent border when hovered (tooltip.cpp:1269-1275 model).
+        dc_render_target_->DrawRoundedRectangle(
+            srcTagRect, (hovered_btn_ == 5) ? accentBrush : borderBrush, 1.0f);
         btnBgBrush->Release();
         btnBgBrush = nullptr;
     }
@@ -1642,6 +1672,8 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
             if (IsPointInRect(pThis->copy_btn_rect_, x, y) ||
                 IsPointInRect(pThis->tts_btn_rect_, x, y) ||
+                // F8 (ADR-A1-4): the source button is interactive now.
+                IsPointInRect(pThis->src_btn_rect_, x, y) ||
                 IsPointInRect(pThis->lang_btn_rect_, x, y) ||
                 IsPointInRect(pThis->close_btn_rect_, x, y) ||
                 (pThis->scrollable_ && IsPointInRect(pThis->scrollbar_thumb_rect_, x, y))) {
@@ -1687,6 +1719,9 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             int new_hover = 0;
             if (IsPointInRect(pThis->copy_btn_rect_, x, y)) new_hover = 1;
             else if (IsPointInRect(pThis->tts_btn_rect_, x, y)) new_hover = 2;
+            // F8 (ADR-A1-4): source button hover (id 5) before the target
+            // button so the leftmost header control wins on any overlap.
+            else if (IsPointInRect(pThis->src_btn_rect_, x, y)) new_hover = 5;
             else if (IsPointInRect(pThis->lang_btn_rect_, x, y)) new_hover = 3;
             else if (IsPointInRect(pThis->close_btn_rect_, x, y)) new_hover = 4;
 
@@ -1787,6 +1822,64 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
             if (IsPointInRect(pThis->close_btn_rect_, x, y)) {
                 pThis->Dismiss();
+                return 0;
+            }
+
+            // F8 (ADR-A1-4): source-language dropdown. The source menu uses
+            // GetSupportedLanguages() (AUTO + 37 = 38 entries) - NOT the
+            // target list (AUTO is excluded there because it can never be a
+            // translation target, but it is a first-class source setting:
+            // "기본값은 자동감지"). Picking AUTO re-records the persisted
+            // drag_source_language as "Auto Detect" via the main.cpp callback
+            // (re-record contract, user decision ④ / ADR-A1-4).
+            if (IsPointInRect(pThis->src_btn_rect_, x, y)) {
+                DIAG_LOG("UI", "tooltip src_menu_open count=%zu",
+                         GetSupportedLanguages().size());
+                HMENU hMenu = ::CreatePopupMenu();
+                const auto& src_langs = GetSupportedLanguages();
+                // Check mark follows the tag's EFFECTIVE source (the displayed
+                // value): the AUTO entry when the tag is showing the localized
+                // Auto-Detect fallback (empty code), otherwise the entry whose
+                // code matches the normalized effective code. This is the
+                // same effective-value convention the target menu already uses
+                // (ADR-A1-4 display doctrine - the tag shows the effective
+                // source, so the check reflects what the user sees).
+                const std::string norm_src =
+                    pThis->source_lang_code_.empty()
+                        ? std::string("AUTO")
+                        : NormalizeLanguageCode(pThis->source_lang_code_);
+                for (size_t i = 0; i < src_langs.size(); ++i) {
+                    std::wstring item = ToUtf16(src_langs[i].name_en) + L" (" + ToUtf16(src_langs[i].name_native) + L")";
+                    UINT flags = MF_STRING;
+                    if (norm_src == src_langs[i].code) {
+                        flags |= MF_CHECKED;
+                    }
+                    ::AppendMenuW(hMenu, flags, static_cast<UINT_PTR>(i + 1), item.c_str());
+                }
+
+                // REQ-R15: the dropdown anchor is DIP layout coords; the
+                // window-to-screen conversion works in physical px (same as
+                // the target menu below).
+                POINT pt = {
+                    emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->src_btn_rect_.left), pThis->dpi_),
+                    emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->src_btn_rect_.bottom), pThis->dpi_)
+                };
+                ::ClientToScreen(hwnd, &pt);
+                ::SetForegroundWindow(hwnd);
+
+                int cmd = ::TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd, nullptr);
+                ::DestroyMenu(hMenu);
+
+                if (cmd > 0 && static_cast<size_t>(cmd - 1) < src_langs.size()) {
+                    // name_en payload (the AUTO entry yields "Auto Detect") -
+                    // unified with the target menu's payload form (ADR-A1-4).
+                    std::string new_src = src_langs[cmd - 1].name_en;
+                    DIAG_LOG("UI", "tooltip src_menu_select lang=%s",
+                             new_src.c_str());
+                    if (pThis->src_lang_change_cb_) {
+                        pThis->src_lang_change_cb_(new_src);
+                    }
+                }
                 return 0;
             }
 
