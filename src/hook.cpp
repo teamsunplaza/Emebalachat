@@ -738,6 +738,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // Always let Alt or Win key combinations pass through immediately
         // (preserves Excel newline Alt+Enter, game fullscreen Alt+Enter, Win shortcuts, etc.)
         if (alt || win) {
+            // F3: an Alt/Win+Enter passthrough may insert a terminator the
+            // pipeline never captures (Excel in-cell newline). Same
+            // conservative reset as Ctrl+Enter: under-slicing (miss) is safe,
+            // an over-counted K could reach BACK into already-translated
+            // lines on the next capture (the destruction direction). Only
+            // VK_RETURN matters; other Alt/Win combos keep K untouched.
+            if (kbd->vkCode == VK_RETURN) {
+                s_instance->shift_enter_k_ = 0;
+                s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
+            }
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
@@ -746,6 +756,25 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             if (s_instance->esc_cb_ && s_instance->esc_cb_()) {
                 return 1; // Consumed: dismissed overlay UI
             }
+        }
+
+        // F3 (session 260908_0003): a user Ctrl+V deposits an UNKNOWN number
+        // of logical newlines that no Shift+Enter keystroke ever announced, so
+        // the K counter would under-count separators and slice a pasted
+        // multi-line block down to its last line (the typed-block contract
+        // cannot know paste geometry). Saturate K to the guard's newline
+        // ceiling instead: FindCurrentBlockStart asks for K+1 = 65 boundaries
+        // while a guard-passing capture holds at most 32 (64 newline CHARS),
+        // so the next bare Enter translates the WHOLE capture (one-time, like
+        // the pre-F3 behavior for paste). The saturated value is consumed and
+        // reset by the very next bare-Enter exit (K=0 re-anchor), bounding the
+        // no-slice window to the paste's own block. Synthetic pastes (our own
+        // PasteAndRestore, drag path) carry EXTRA_INFO_MARKER and return at
+        // the top of this proc - they never reach here.
+        if (kbd->vkCode == 'V' && ctrl && !shift && !alt && !win) {
+            s_instance->shift_enter_k_ = static_cast<int>(kMaxEnterTranslateNewlines);
+            s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
+            return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
         // Double Ctrl+C hotkey detection (< 400ms)
@@ -804,9 +833,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // default Ctrl+Shift+Enter combo, C1). Only Ctrl+Enter,
             // Shift+Enter (S2 newline), and the IME/bare-Enter gates follow.
             if (ctrl) {
+                // F3: Ctrl+Enter passes through and is app-dependent (chat
+                // send / editor newline). Either way it TERMINATES the block
+                // being typed if the app inserts a newline, so K resets
+                // (conservative direction: an uncounted separator can only
+                // UNDER-slice the block - safe - never over-slice it).
+                s_instance->shift_enter_k_ = 0;
+                s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
-                         "ime_composing=%d shift=%d",
+                         "ime_composing=%d shift=%d (K reset)",
                          s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
                          dbg_composing ? 1 : 0, shift ? 1 : 0);
                 // Ctrl+Enter is normal pass-through
@@ -825,11 +861,28 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // for a VK_RETURN (ImeMirrorNext), and we are returning without
             // touching the pipeline, so no mirror clear is needed here either.
             if (shift) {
-                DIAG_LOG("ENTER_GATE",
-                         "outcome=pass_through reason=shift_enter_newline active=%d busy=%d "
-                         "ime_composing=%d shift=1",
-                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
-                         dbg_composing ? 1 : 0);
+                // F3 (session 260908_0003): K tracking for the block-slice
+                // engine. Shift+Enter passes through UNTOUCHED (the app
+                // inserts the newline); the hook only COUNTS it, per the
+                // ShiftEnterKNext contract: frozen mid-composition (IME-
+                // safe, verify 220750 §6-(iii)), clamped at the capture
+                // guard's newline ceiling, lazily re-anchored to 0 when the
+                // foreground window changes (ledger-coherent: the worker
+                // ledger's own context ends with the hwnd, V5/F6).
+                {
+                    const HWND k_fg = ::GetForegroundWindow();
+                    if (k_fg != s_instance->k_anchor_hwnd_) {
+                        s_instance->k_anchor_hwnd_ = k_fg;
+                        s_instance->shift_enter_k_ = 0;
+                    }
+                    s_instance->shift_enter_k_ =
+                        ShiftEnterKNext(s_instance->shift_enter_k_, dbg_composing);
+                    DIAG_LOG("ENTER_GATE",
+                             "outcome=pass_through reason=shift_enter_newline active=%d busy=%d "
+                             "ime_composing=%d shift=1 K=%d",
+                             s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
+                             dbg_composing ? 1 : 0, s_instance->shift_enter_k_);
+                }
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
@@ -881,17 +934,31 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                            "(no translate; hwnd=%p)\n",
                            reinterpret_cast<void*>(composing_hwnd));
                 } else if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
+                    // F3: this composing Enter CONSUMES the block - capture
+                    // the K observed so far for it (frozen through the
+                    // composition by ShiftEnterKNext, so jamo keystrokes
+                    // never polluted it) and reset the counter: the next
+                    // block starts a fresh K, aligned with the capture
+                    // completion the ledger anchors on. The count is valid
+                    // only for its anchor window: a foreground switch since
+                    // the last Shift+Enter means the current block belongs
+                    // to a different context -> K=0 (whole capture).
+                    const int k_composing =
+                        (s_instance->k_anchor_hwnd_ == composing_hwnd)
+                            ? s_instance->shift_enter_k_ : 0;
                     if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
-                                                     composing_hwnd)) {
+                                                     composing_hwnd, k_composing)) {
+                        s_instance->shift_enter_k_ = 0;
+                        s_instance->k_anchor_hwnd_ = composing_hwnd;
                         DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
-                               "posted (commit-then-translate, hwnd=%p)\n",
-                               reinterpret_cast<void*>(composing_hwnd));
+                               "posted (commit-then-translate, hwnd=%p K=%d)\n",
+                               reinterpret_cast<void*>(composing_hwnd), k_composing);
                         s_instance->ime_composing_.store(false, std::memory_order_relaxed);
                         DIAG_LOG("ENTER_GATE",
                                  "outcome=task_posted reason=ime_composing_commit_promoted "
-                                 "active=%d busy=%d ime_composing=1 shift=0 "
+                                 "active=%d busy=%d ime_composing=1 shift=0 K=%d "
                                  "(mirror cleared, commit deferred to worker FlushIme)",
-                                 ime_active ? 1 : 0, ime_busy ? 1 : 0);
+                                 ime_active ? 1 : 0, ime_busy ? 1 : 0, k_composing);
                         return 1; // Intercepted: worker flushes the composition then captures
                     }
                     // PostTask refused (busy flipped in the race window between
@@ -900,9 +967,13 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     // usual and the mirror is still retired.
                 }
                 s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+                // F3: this Enter reaches the app (chat send / editor newline)
+                // and terminates the block, so the counted K is consumed
+                // WITHOUT being carried to a capture (nothing was posted).
+                s_instance->shift_enter_k_ = 0;
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
-                         "ime_composing=1 shift=0 (mirror cleared)",
+                         "ime_composing=1 shift=0 (mirror cleared, K consumed by passthrough)",
                          ime_active ? 1 : 0, ime_busy ? 1 : 0);
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
@@ -922,20 +993,35 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 gate_busy,
                 /*ime_composing*/ false,
                 /*shift*/ shift);
+            // F3: EVERY bare-Enter exit below terminates the current block
+            // one way or another (interception posts a task whose worker
+            // consumes the capture; pass-throughs let the app insert its
+            // newline or send). The counted K is therefore consumed HERE for
+            // all arms, and only the intercepted arm carries it to the
+            // worker. A foreground-window switch since the last Shift+Enter
+            // re-anchors the count: K=0 for a block that did not accumulate
+            // in this window (whole-capture semantics, legacy safe).
+            HWND target_hwnd = ::GetForegroundWindow();
+            const int k_bare =
+                (s_instance->k_anchor_hwnd_ == target_hwnd)
+                    ? s_instance->shift_enter_k_ : 0;
+            s_instance->shift_enter_k_ = 0;
+            s_instance->k_anchor_hwnd_ = target_hwnd;
             // Full decision record EVERY time (file sink; the stderr sites
             // below keep their historical spam discipline unchanged):
             // active, busy, ime_composing (just cleared -> 0 by here), shift,
             // and the predicate verdict with the reason it produced.
             DIAG_LOG("ENTER_GATE",
                      "bare_enter evaluated active=%d worker_busy=%d ime_composing=0 shift=%d "
-                     "verdict=%s reason=%s",
+                     "verdict=%s reason=%s K=%d",
                      gate_active ? 1 : 0, gate_busy ? 1 : 0, shift ? 1 : 0,
                      gate_allowed ? "INTERCEPT" : "PASS_THROUGH",
                      gate_allowed ? "all_gates_open"
-                                  : (gate_busy ? "worker_busy" : (gate_active ? "gate_denied_unspecified" : "hook_inactive")));
+                                  : (gate_busy ? "worker_busy" : (gate_active ? "gate_denied_unspecified" : "hook_inactive")),
+                     k_bare);
             if (gate_allowed) {
-                // Capture target window HWND at interception time for process-aware selection
-                HWND target_hwnd = ::GetForegroundWindow();
+                // (target_hwnd + k_bare captured above at interception time
+                // for process-aware selection and the F3 block slice)
 
                 // F4 (A2, REQ-011 reversal): editor/IDE exclusion on the
                 // bare-Enter path. kEditorApps (VS Code family + AI CLI
@@ -961,12 +1047,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
                 }
 
-                // Post task to worker and intercept Enter from reaching target control
-                if (s_instance->worker_.PostTask(shift, target_hwnd)) {
-                    DIAG_F("HOOK/Enter/001: bare Enter intercepted -> pipeline task posted (hwnd=%p)\n",
-                           reinterpret_cast<void*>(target_hwnd));
-                    DIAG_LOG("ENTER_GATE", "outcome=task_posted hwnd=%p",
-                             reinterpret_cast<void*>(target_hwnd));
+                // Post task to worker and intercept Enter from reaching target
+                // control. F3: k_bare (consumed at the gate evaluation above)
+                // rides the task as the block-slice depth K; the counter and
+                // anchor were already reset there, so every bare-Enter exit
+                // (posted or refused) starts the next block from K=0.
+                if (s_instance->worker_.PostTask(shift, target_hwnd, k_bare)) {
+                    DIAG_F("HOOK/Enter/001: bare Enter intercepted -> pipeline task posted (hwnd=%p K=%d)\n",
+                           reinterpret_cast<void*>(target_hwnd), k_bare);
+                    DIAG_LOG("ENTER_GATE", "outcome=task_posted hwnd=%p K=%d",
+                             reinterpret_cast<void*>(target_hwnd), k_bare);
                     return 1; // Intercepted immediately (< 1ms)!
                 }
                 DIAG_LOG("ENTER_GATE",

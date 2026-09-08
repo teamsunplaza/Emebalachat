@@ -5602,11 +5602,27 @@ void TestPhase5AppClassifier() {
                "run_tests.exe is NOT an editor/IDE");
 
     // F4/A2 W2: Enter-pipeline capture guard boundary (pure predicate).
+    // F3 RAISE (session 260908_0003, verify 220750 §5-2): limits moved 512 ->
+    // 4096 chars / 16 -> 64 newlines so the non-EM whole-capture accumulation
+    // of 6+ translated sentences (예시1) stays translatable; document-sized
+    // captures above the new limits are still rejected.
     TEST_CHECK(EnterCaptureWithinGuard(0, 0), "Guard allows empty capture (0 chars, 0 newlines)");
-    TEST_CHECK(EnterCaptureWithinGuard(512, 16), "Guard allows exactly 512 chars / 16 newlines");
-    TEST_CHECK(!EnterCaptureWithinGuard(513, 16), "Guard rejects 513 chars (>512)");
-    TEST_CHECK(!EnterCaptureWithinGuard(512, 17), "Guard rejects 17 newlines (>16)");
-    TEST_CHECK(EnterCaptureWithinGuard(511, 15), "Guard allows under-limit capture");
+    TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines),
+               "Guard allows exactly the limit capture (4096 chars / 64 newlines)");
+    TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars + 1, kMaxEnterTranslateNewlines),
+               "Guard rejects one char over the limit");
+    TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines + 1),
+               "Guard rejects one newline over the limit");
+    TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars - 1, kMaxEnterTranslateNewlines - 1),
+               "Guard allows under-limit capture");
+    static_assert(kMaxEnterTranslateChars == 4096, "F3: guard char limit raised to 4096");
+    static_assert(kMaxEnterTranslateNewlines == 64, "F3: guard newline limit raised to 64");
+    // The raise must be the documented values (예시1 justification in
+    // win32_input.hpp: ~40 sentences of 100 chars, hook K-clamp coherence).
+    TEST_CHECK(EnterCaptureWithinGuard(6 * 100 + 5, 5),
+               "F3 guard: 예시1 accumulation (6 sentences x ~100 chars) inside limits");
+    TEST_CHECK(!EnterCaptureWithinGuard(5000, 3), "F3 guard: pasted document still rejected by chars");
+    TEST_CHECK(!EnterCaptureWithinGuard(100, 65), "F3 guard: 65-newline abuse still rejected");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Phase 5 app classifier tests completed." << std::endl;
@@ -6917,18 +6933,28 @@ void TestReqF6LedgerH1AbortPreserve() {
     const int failures_before = g_failed_count;
 
     // ---- (a) pure predicate matrix ----
-    static_assert(LedgerSurvivesH1Abort(true, true),
+    // F3 (session 260908_0003): renamed LedgerSurvivesH1Abort ->
+    // LedgerSurvivesNoPaste with a THIRD input (ledger_has_text). The F6
+    // H1-abort arm (paste_attempted) is unchanged; the no-paste arm
+    // (translation empty / identity) now KEEPS a same-hwnd ledger that has
+    // text (the C3 re-arm) - nothing was injected into the window either
+    // way, so the entry still describes live text.
+    static_assert(LedgerSurvivesNoPaste(true, true, true),
                   "F6: H1 abort into the same ledger hwnd -> preserve (window unchanged, memory live)");
-    static_assert(!LedgerSurvivesH1Abort(true, false),
+    static_assert(!LedgerSurvivesNoPaste(true, false, true),
                   "F6: H1 abort but ledger belongs to a DIFFERENT hwnd -> clear (cross-window hygiene)");
-    static_assert(!LedgerSurvivesH1Abort(false, true),
-                  "F6: no paste attempted (translation empty/identity), same hwnd -> clear (legacy)");
-    static_assert(!LedgerSurvivesH1Abort(false, false),
+    static_assert(LedgerSurvivesNoPaste(false, true, true),
+                  "F3 C3 re-arm: no paste (empty/identity) + same hwnd + ledger has text -> KEEP (re-arm the block start)");
+    static_assert(!LedgerSurvivesNoPaste(false, true, false),
+                  "F3 C3 re-arm boundary: same hwnd but empty ledger -> clear (nothing to re-arm on)");
+    static_assert(!LedgerSurvivesNoPaste(false, false, false),
                   "F6: no paste attempted + no ledger -> clear (no-op legacy)");
-    TEST_CHECK(LedgerSurvivesH1Abort(true, true),
-               "F6: keep decision is exactly the H1-abort + same-hwnd combination");
-    TEST_CHECK(!LedgerSurvivesH1Abort(true, false),
+    TEST_CHECK(LedgerSurvivesNoPaste(true, true, true),
+               "F6: keep decision holds for the H1-abort + same-hwnd combination");
+    TEST_CHECK(!LedgerSurvivesNoPaste(true, false, true),
                "F6: a hwnd-confirmed switch clears even on an H1 abort");
+    TEST_CHECK(LedgerSurvivesNoPaste(false, true, true),
+               "F3: an empty/identity no-paste outcome keeps a non-empty same-hwnd ledger (C3 re-arm)");
 
     // ---- (b) chain consequence through the existing pure seams ----
     // Round 1: paragraph 1 pasted -> ledger = the block-1 translation.
@@ -6936,7 +6962,7 @@ void TestReqF6LedgerH1AbortPreserve() {
     // Round 2: paragraph 2 typed, Enter pressed, H1 abort (no paste, no
     // Enter) into the SAME window. F6 keeps the ledger; pre-F6 wiped it.
     std::wstring ledger = block1_en;
-    if (!LedgerSurvivesH1Abort(true, true)) {
+    if (!LedgerSurvivesNoPaste(true, true, !ledger.empty())) {
         ledger.clear(); // pre-F6 C3 behavior
     }
     // Round 3: the user returns and retries Enter. Capture = whole input
@@ -6949,7 +6975,9 @@ void TestReqF6LedgerH1AbortPreserve() {
     TEST_CHECK(AnalyzeCaptureVsLastPaste(capture_next, L"") == PasteLedgerVerdict::NoMatch,
                "F6 (wiped ledger, pre-F6): identical retry is NoMatch -> whole-input re-translation would overwrite block 1 (the V5 defect)");
     // C1/C2 send-of-output contracts are untouched by F6: an ExactMatch still
-    // reads as the send-of-output skip verdict (its own early-return clear).
+    // reads as the send-of-output skip verdict. (F3 session 260908_0003
+    // hardened the C1 arm to KEEP the ledger instead of clearing it - the
+    // verdict tested here is unchanged; see TestReqF3BlockSliceCurrentBlockOnly.)
     TEST_CHECK(AnalyzeCaptureVsLastPaste(block1_en, block1_en) == PasteLedgerVerdict::ExactMatch,
                "F6: C1 ExactMatch verdict unchanged (send-of-output consumed by its own clear)");
     static_assert(EmptyCapturePromotesToSend(true, false, true, true),
@@ -6959,6 +6987,263 @@ void TestReqF6LedgerH1AbortPreserve() {
         std::cout << "[PASS] F6 ledger protection on H1-abort no-paste tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] F6 ledger protection on H1-abort no-paste tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// F3 (session 260908_0003, verify 220750 §6/§7 adopted design): current-block-
+// only translation via BLOCK-SLICE-FROM-WHOLE-CAPTURE. The non-EM CategoryB
+// fallback selection is the WHOLE [0..caret) accumulation; the current block is
+// the last K+1 logical lines (K = hook-counted Shift+Enter passthroughs), and
+// everything before the slice point is preserved verbatim through the REQ-F2
+// recomposition machinery. Contract (the three user examples must hold):
+//  예시1: 6 sentences each ended by a bare Enter -> 6 independent one-time
+//         translations, earlier sentences untouched (no whole-capture
+//         re-translation after a redundant Enter - the C1 chain break).
+//  예시2: Shift+Enter joins lines into blocks -> 3 blocks -> exactly 3
+//         translations (a block's internal newlines must NOT split it).
+//  예시3: blocks translated to the then-current target (EN->JP->VN); earlier
+//         blocks keep their language and text.
+// Plus the two ledger chain-break arms the verification identified: C1
+// (ExactMatch consumption on a redundant Enter) and C3 (empty/identity
+// translation), and the guard-limit raise. All pure seams (headless).
+void TestReqF3BlockSliceCurrentBlockOnly() {
+    std::cout << "[TEST] F3 current-block-only translation (block-slice-from-whole-capture)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) FindCurrentBlockStart: pure slice matrix ----
+    // A \r\n PAIR is one logical terminator (a lone \r or \n too); the block
+    // is the last K+1 LOGICAL lines, and K+1 terminators are crossed from the
+    // end. A single line with K=0 has none to cross -> whole capture.
+    static_assert(FindCurrentBlockStart(L"hello", 0) == 0,
+                  "F3 slice: single line, K=0 -> whole capture");
+    static_assert(FindCurrentBlockStart(L"AAA\r\nBBB", 0) == 5,
+                  "F3 slice: K=0 -> everything after the last terminator");
+    static_assert(FindCurrentBlockStart(L"AAA\r\nBBB\r\nCCC", 1) == 5,
+                  "F3 slice: K=1 -> last two lines (BBB..CCC)");
+    static_assert(FindCurrentBlockStart(L"AAA\r\nBBB\r\nCCC", 0) == 10,
+                  "F3 slice: K=0 -> only the last line");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\nBBB\r\nCCC\r\nDDD", 2) == 5,
+               "F3 slice: K=2 -> last three lines (BBB..DDD)");
+    TEST_CHECK(FindCurrentBlockStart(L"1\r\n2\r\n3\r\n4\r\n5\r\n6", 5) == 0,
+               "F3 slice: K=5 needs 6 terminators, capture has 5 -> whole 6-line block");
+    // Over-count (fewer terminators than K+1) clamps to 0: the WHOLE capture
+    // is the block. This is what makes the slice a provable no-op on EM-
+    // tracked captures (which cover exactly the current block, K terminators
+    // inside, while the slice asks for K+1).
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\nBBB", 5) == 0,
+               "F3 slice: K over-count clamps to 0 (whole capture, never out of bounds)");
+    TEST_CHECK(FindCurrentBlockStart(L"single", 3) == 0,
+               "F3 slice: no terminators at all -> whole capture regardless of K");
+    // A capture ending in a terminator: the final empty line is a logical
+    // line, so K=0 slices to index == size (empty tail: the worker's 041
+    // send-through owns it, never re-translate the prefix).
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\n", 0) == 5,
+               "F3 slice: trailing terminator, K=0 -> empty tail (index == size)");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\nBBB\r\n", 1) == 5,
+               "F3 slice: trailing terminator, K=1 -> last two lines (BBB + empty)");
+    // Blank-line handling (split() semantics): "AAA\r\n\r\nBBB" holds TWO
+    // terminators with an empty logical line between; K=1 takes the last two
+    // lines (blank + BBB) starting AT the blank line.
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\n\r\nBBB", 2) == 0,
+               "F3 slice: K=2 -> all three logical lines (AAA, blank, BBB)");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\n\r\nBBB", 1) == 5,
+               "F3 slice: K=1 -> last two lines (blank, BBB)");
+    // LF / CR forms are tolerated (the worker CRLF-normalizes, but the helper
+    // must not depend on that).
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\nBBB", 0) == 4, "F3 slice: lone LF is a terminator");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\rBBB", 0) == 4, "F3 slice: lone CR is a terminator");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\r\nBBB\nCCC", 0) == 9,
+               "F3 slice: mixed CRLF/LF forms split independently");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA\n\nBBB", 1) == 4,
+               "F3 slice: lone-LF blank line = two terminators, K=1 -> (blank, BBB)");
+    // Degenerate inputs.
+    TEST_CHECK(FindCurrentBlockStart(L"", 0) == 0, "F3 slice: empty capture -> 0");
+    TEST_CHECK(FindCurrentBlockStart(L"AAA", -1) == 0, "F3 slice: negative K -> whole capture (safe)");
+    TEST_CHECK(FindCurrentBlockStart(L"\r\n", 0) == 2,
+               "F3 slice: capture is only a terminator -> empty tail");
+    // Surrogate safety: 0x0D/0x0A never appear inside a surrogate pair, so the
+    // returned index is always a code-unit boundary (Korean + emoji block).
+    {
+        const std::wstring ko_emoji = L"번역 문장 😀\r\n두 번째 문장 🚀";
+        const size_t at = FindCurrentBlockStart(ko_emoji, 0);
+        TEST_CHECK(at > 0 && at < ko_emoji.size(), "F3 slice: boundary is an interior code-unit index");
+        TEST_CHECK(ko_emoji.compare(at, std::wstring::npos, L"두 번째 문장 🚀") == 0,
+                   "F3 slice: sliced block is the second line verbatim (past the surrogate emoji)");
+    }
+
+    // ---- (b) ShiftEnterKNext: the hook's K counter contract (IME-safe) ----
+    static_assert(ShiftEnterKNext(0, false) == 1, "F3 K: Shift+Enter while not composing -> +1");
+    static_assert(ShiftEnterKNext(3, false) == 4, "F3 K: counting accumulates");
+    static_assert(ShiftEnterKNext(2, true) == 2, "F3 K: FROZEN during IME composition (V2/F2 gate)");
+    static_assert(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines), false) ==
+                      static_cast<int>(kMaxEnterTranslateNewlines),
+                  "F3 K: clamped at the guard's newline ceiling (abuse protection)");
+    static_assert(kMaxEnterTranslateNewlines == 64,
+                  "F3 K clamp coherence: K+1 (65) > max runs of any guard-passing capture (32), so a clamped/saturated K never over-slices");
+    TEST_CHECK(ShiftEnterKNext(63, false) == 64, "F3 K: last increment lands exactly on the clamp");
+    TEST_CHECK(ShiftEnterKNext(64, false) == 64, "F3 K: further Shift+Enters stay clamped");
+    TEST_CHECK(ShiftEnterKNext(0, true) == 0, "F3 K: composition at zero stays zero (never fires mid-IME)");
+
+    // ---- (c) 예시1: 6 sentences, each ended by a bare Enter -> 6 one-time
+    // translations. Model of the non-EM whole-capture chain (auto_send=0: the
+    // send gate leaves the pasted translation in the input, mirroring the
+    // worker's (ii)/slice recomposition through the SAME pure seams). ----
+    {
+        auto fake_engine = [](const std::wstring& in, const wchar_t* tag) {
+            return std::wstring(tag) + L"[" + in + L"]"; // stands in for a translation
+        };
+        auto enter_round = [&](std::wstring& doc, std::wstring& ledger, int K,
+                               const std::wstring& typed, const wchar_t* tag,
+                               std::wstring& engine_input_out) {
+            doc += typed;                       // user types the next block
+            const size_t bs0 = FindCurrentBlockStart(doc, K);
+            size_t bs = (!ledger.empty() && bs0 < ledger.size() &&
+                         AnalyzeCaptureVsLastPaste(doc, ledger) ==
+                             PasteLedgerVerdict::PrefixWithTail)
+                            ? ledger.size()
+                            : bs0;
+            while (bs < doc.size() && (doc[bs] == L'\r' || doc[bs] == L'\n')) { ++bs; }
+            const std::wstring prefix = doc.substr(0, bs);
+            const std::wstring block = doc.substr(bs);
+            engine_input_out = block;                                   // what the engine sees
+            const std::wstring translated = prefix + fake_engine(block, tag);
+            TEST_CHECK(translated.compare(0, prefix.size(), prefix) == 0,
+                       "F3 예시1: earlier content survives the replacement verbatim");
+            doc = translated;                                           // Ctrl+V replaces [0..caret)
+            ledger = translated;                                        // re-anchor post-replace
+        };
+        std::wstring doc, ledger, engine_in;
+        const std::wstring s[6] = { L"첫 번째 문장.", L"두 번째 문장.", L"세 번째 문장.",
+                                    L"네 번째 문장.", L"다섯 번째 문장.", L"여섯 번째 문장." };
+        for (int i = 0; i < 6; ++i) {
+            enter_round(doc, ledger, /*K*/ 0, s[i], L"EN", engine_in);
+            TEST_CHECK(engine_in == s[i], "F3 예시1: engine input is EXACTLY the new sentence (one-time)");
+        }
+        for (int i = 0; i < 6; ++i) {
+            const std::wstring want = L"EN[" + s[i] + L"]";
+            TEST_CHECK(doc.find(want) != std::wstring::npos, "F3 예시1: every sentence keeps its own translation");
+        }
+        // C1 regression: a REDUNDANT Enter (capture == ledger, no new typing)
+        // is a send-of-output. Pre-F3 it CONSUMED the ledger, arming the next
+        // block as a NoMatch whole-capture re-translation (the R1->R2 chain
+        // that destroyed 예시1). Now the ledger survives, so the next round is
+        // still a tail-only translation.
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(doc, ledger) == PasteLedgerVerdict::ExactMatch,
+                   "F3 예시1: redundant Enter reads as ExactMatch (send-of-output)");
+        const std::wstring ledger_after_redundant =
+            LedgerSurvivesNoPaste(false, true, true) ? ledger : std::wstring();
+        TEST_CHECK(ledger_after_redundant == ledger,
+                   "F3 C1 hardening: the redundant Enter no longer clears the ledger");
+        enter_round(doc, ledger, /*K*/ 0, L"일곱 번째 문장.", L"EN", engine_in);
+        TEST_CHECK(engine_in == L"일곱 번째 문장.",
+                   "F3 C1 regression: the block after a redundant Enter is still ONE new sentence (no whole-capture re-translation)");
+    }
+
+    // ---- (d) 예시2: Shift+Enter joins lines into blocks -> 3 blocks ->
+    // exactly 3 translations. A block's internal newlines must NOT split it,
+    // and (crucially) the slice must not fire while the ledger chain is
+    // intact; when it is broken, the K slice recovers the exact block. ----
+    {
+        // Block = 3 lines joined by 2 Shift+Enters => K=2.
+        const std::wstring b1 = L"A1\r\nA2\r\nA3";
+        const std::wstring b2 = L"B1\r\nB2\r\nB3";
+        const std::wstring b3 = L"C1\r\nC2\r\nC3";
+        // Healthy chain (ledger intact): the whole first block is translated.
+        TEST_CHECK(FindCurrentBlockStart(b1, 2) == 0,
+                   "F3 예시2: a 3-line block with K=2 is ONE translation (no internal split)");
+        // Ledger broken (foreign content before the block): the slice recovers
+        // exactly the current 3-line block, prefix preserved verbatim.
+        const std::wstring foreign = L"EN[이미 번역된 앞 블록]";
+        const std::wstring whole = foreign + L"\r\n" + b2;
+        const size_t bs = FindCurrentBlockStart(whole, 2);
+        TEST_CHECK(whole.compare(bs, std::wstring::npos, b2) == 0,
+                   "F3 예시2: broken chain -> slice yields EXACTLY the current block (earlier text preserved)");
+        TEST_CHECK(whole.compare(0, bs, foreign + L"\r\n") == 0,
+                   "F3 예시2: the slice point keeps the earlier block + its terminator verbatim");
+        // Three successive blocks => three engine inputs (three translations).
+        int translations = 0;
+        std::wstring doc;
+        for (const auto& blk : { b1, b2, b3 }) {
+            const size_t cut = FindCurrentBlockStart(doc + blk, 2);
+            const std::wstring block_view = (doc + blk).substr(cut);
+            if (block_view == blk) { ++translations; }
+            doc += blk + L"\r\n"; // the app's own terminator between blocks
+        }
+        TEST_CHECK(translations == 3, "F3 예시2: 3 blocks -> exactly 3 translations");
+    }
+
+    // ---- (e) 예시3: per-block language is already pinned by the task-start
+    // GetSnapshot(); the remaining requirement is that translated blocks are
+    // never re-captured. Model the EN->JP->VN target changes. ----
+    {
+        std::wstring doc = L"EN[문장1]";            // block 1 -> English
+        std::wstring ledger = doc;
+        doc += L"\r\nJP[문장2]";                     // block 2 -> Japanese
+        ledger = doc;
+        const std::wstring capture3 = doc + L"\r\n문장3"; // block 3 pending, target now VN
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(capture3, ledger) == PasteLedgerVerdict::PrefixWithTail,
+                   "F3 예시3: the third Enter's capture is a ledger-protected tail");
+        const size_t bs = FindCurrentBlockStart(capture3, 0);
+        TEST_CHECK(bs >= ledger.size(),
+                   "F3 예시3: the slice never reaches back into the earlier EN/JP blocks");
+        TEST_CHECK(capture3.substr(bs) == L"\r\n문장3" || capture3.substr(bs) == L"문장3",
+                   "F3 예시3: engine input is the third block only (its separator is prefix)");
+        // Even with the ledger gone (the pre-F3 R2/R4 state), the slice keeps
+        // the earlier EN/JP blocks out of the engine input: the preserved
+        // prefix is exactly the earlier document + its terminator.
+        const size_t bs_nolidger = FindCurrentBlockStart(capture3, 0);
+        TEST_CHECK(capture3.compare(0, bs_nolidger, doc + L"\r\n") == 0,
+                   "F3 예시3: with K=0 the preserved prefix is exactly the earlier blocks + terminator");
+        TEST_CHECK(capture3.compare(bs_nolidger, std::wstring::npos, L"문장3") == 0,
+                   "F3 예시3: no-ledger fallback translates ONLY the new block (earlier languages intact)");
+    }
+
+    // ---- (f) C3 hardening: an empty/identity translation re-arms the block
+    // start instead of losing it, so the next Enter stays a tail-only
+    // translation (the pre-F3 R4 chain destroyed the earlier blocks). ----
+    {
+        const std::wstring block1 = L"EN[첫째 블록]";
+        const std::wstring ledger = block1;
+        // Task 2: engine returns empty (network failure) -> no paste, nothing
+        // injected. Pre-F3: C3 cleared. F3: kept (same hwnd, ledger has text).
+        const bool keep = LedgerSurvivesNoPaste(/*paste_attempted*/ false,
+                                                /*same_hwnd*/ true, /*has_text*/ true);
+        std::wstring ledger_after = keep ? ledger : std::wstring();
+        TEST_CHECK(ledger_after == block1, "F3 C3 re-arm: empty/identity outcome keeps a non-empty same-hwnd ledger");
+        const std::wstring next_capture = block1 + L"\r\n둘째 블록";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(next_capture, ledger_after) == PasteLedgerVerdict::PrefixWithTail,
+                   "F3 C3 regression: the next Enter is a tail-only translation, not a whole-capture re-translation");
+        // And the slice alone (even if the ledger were empty) still protects.
+        const size_t bs = FindCurrentBlockStart(next_capture, 0);
+        TEST_CHECK(next_capture.compare(bs, std::wstring::npos, L"둘째 블록") == 0,
+                   "F3: slice protection holds independently of the ledger");
+        // Cross-window hygiene stays: a different hwnd still clears.
+        TEST_CHECK(!LedgerSurvivesNoPaste(false, false, true),
+                   "F3 C3: a different target hwnd keeps the legacy clear (cross-window hygiene)");
+    }
+
+    // ---- (g) the per-block language snapshot (no change expected, pinned) ----
+    {
+        AppConfig cfg;
+        cfg.SetTypeLanguages("Korean", "English");
+        const AppConfig::Snapshot pinned = cfg.GetSnapshot(); // == task start
+        cfg.SetTypeLanguages("Korean", "Vietnamese");          // user cycles mid-flight
+        TEST_CHECK(pinned.type_target_language == "English",
+                   "F3 예시3: the task-start snapshot pins the target (a mid-flight change cannot repivot it)");
+        TEST_CHECK(cfg.GetSnapshot().type_target_language == "Vietnamese",
+                   "F3 예시3: the NEXT task's snapshot sees the new target");
+    }
+
+    // ---- (h) the guard raise keeps abuse protection (see TestF4 capture
+    // guard boundary for the limit matrix) ----
+    TEST_CHECK(FindCurrentBlockStart(std::wstring(4096, L'a'), 0) == 0,
+               "F3 guard coherence: a maximal single-line capture is one block");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] F3 current-block-only block-slice tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] F3 current-block-only block-slice tests: " << (g_failed_count - failures_before)
                   << " check(s) failed." << std::endl;
     }
 }
@@ -8042,6 +8327,7 @@ int main() {
     TestReqF2Category0Accumulation();
     TestReqF5EmptyCaptureEnterPromotion();
     TestReqF6LedgerH1AbortPreserve();
+    TestReqF3BlockSliceCurrentBlockOnly();
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();

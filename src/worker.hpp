@@ -17,9 +17,17 @@
 
 namespace emebalachat {
 
+// F3 (session 260908_0003, verify 220750 §6 adopted design): K = the number
+// of Shift+Enter passthroughs the hook counted for the CURRENT composition
+// block (since the last bare-Enter capture / window switch). The non-EM
+// fallback captures the whole [0..caret) accumulation; the worker slices the
+// current block (the last K+1 logical lines) out of it and preserves
+// everything before the slice point verbatim (see FindCurrentBlockStart).
+// 0 for the drag path and any task posted without block context.
 struct PipelineTask {
     bool is_shift_enter = false;
     HWND target_hwnd = nullptr;
+    int shift_enter_count = 0;
 };
 
 // REQ-R03 (Batch D1) path-matrix predicate - single source of truth, shared by
@@ -159,6 +167,71 @@ constexpr bool EmptyCapturePromotesToSend(bool captured_empty, bool smart_bypass
     return captured_empty && !smart_bypassed && last_paste_valid && caret_equals_paste_end;
 }
 
+// F3 (session 260908_0003, verify 220750 §6 "수정-Ananke" adopted design):
+// block-slice-from-whole-capture. The non-EM CategoryB fallback selection is
+// the WHOLE [0..caret) accumulation; the CURRENT block is the last K+1
+// logical lines, K = the Shift+Enter passthroughs the hook counted since the
+// last bare-Enter capture. Everything before the slice point is earlier
+// (already-translated) content and MUST be preserved verbatim - the worker
+// recomposes [prefix][translation of block] with the SAME machinery as the
+// REQ-F2 PrefixWithTail branch, so 예시1/2/3 hold even when the ledger chain
+// broke (the R2/R4 whole-document destruction path of verify 220750 §2).
+//
+// Pure helper (no Win32 calls, unit-testable headlessly). Input should be
+// CRLF-normalized (ExecuteTask normalizes at the capture seam) but lone-LF /
+// lone-CR separators are tolerated: a \r\n PAIR is one logical newline, and
+// a lone \r or \n is one too. Two ADJACENT terminators ("AAA\r\n\r\nBBB")
+// are TWO boundaries with an empty logical line between them - exactly the
+// split() semantics the "last K+1 LOGICAL lines" contract needs (merging
+// them would under-count Shift+Enters and reach back into translated
+// content). Returns the START INDEX of the current block within `capture`:
+//   - empty capture, negative K, or fewer than K+1 terminators in the text
+//     -> 0 (whole capture is the block: first-block geometry, legacy safe);
+//   - otherwise: the index immediately after the (K+1)-th terminator
+//     counted from the END. A capture ending in a terminator (caret on a
+//     fresh empty line) with K=0 therefore yields index == capture.size() -
+//     the "empty tail" the worker turns into a plain send-through (041)
+//     instead of re-translating the prefix;
+//   - K over-count (fewer terminators than K+1) clamps to 0, never out of
+//     bounds. Word-wrap is irrelevant BY DESIGN: the clipboard capture only
+//     ever contains LOGICAL newlines (the app's own line breaks), never the
+//     display-line folds - exactly why the rejected Shift+Up x K geometry
+//     (verify 220750 §6-(i)) is not needed here.
+// Surrogate safety: 0x0D/0x0A never participate in UTF-16 surrogate pairs,
+// and the returned index always sits immediately after a terminator.
+constexpr size_t FindCurrentBlockStart(std::wstring_view capture, int shift_enter_count) {
+    if (capture.empty() || shift_enter_count < 0) {
+        return 0;
+    }
+    const int want = shift_enter_count + 1; // terminators to cross from the end
+    int crossed = 0;
+    size_t i = capture.size();
+    while (i > 0) {
+        const wchar_t c = capture[i - 1];
+        if (c != L'\r' && c != L'\n') {
+            --i;
+            continue;
+        }
+        // One logical terminator ends at `i`: a \r\n pair (two units) or a
+        // lone \r / \n (one unit). A lone \r BEFORE another \r (or end-of-
+        // scan) is its own line break; the \n of a pair swallows its \r.
+        size_t term_start = i - 1;
+        if (c == L'\n' && term_start > 0 && capture[term_start - 1] == L'\r') {
+            --term_start;
+        }
+        ++crossed;
+        if (crossed == want) {
+            // The block starts right after this terminator (`i` is the index
+            // one past its end). When the capture ENDS in a terminator,
+            // i == capture.size(): the empty-tail shape the worker trims to
+            // a send-through.
+            return i;
+        }
+        i = term_start;
+    }
+    return 0; // fewer than K+1 terminators: the whole capture is the block
+}
+
 // REQ-F2: pure decomposition of a capture against the last-paste ledger,
 // shared by worker.cpp and the unit tests (ONE definition discipline). The
 // verdict decides the accumulation defense in ExecuteTask:
@@ -171,7 +244,10 @@ constexpr bool EmptyCapturePromotesToSend(bool captured_empty, bool smart_bypass
 //                   inside a surrogate pair).
 //  - NoMatch:       anything else - user edited our output, deleted from
 //                   it, typed BEFORE it, or the capture belongs to a
-//                   different context -> legacy behavior.
+//                   different context. F3 (verify 220750 §2 R2/R4): the
+//                   worker now slices the current block from the whole
+//                   capture (FindCurrentBlockStart) in this arm, so earlier
+//                   blocks keep their language and text.
 // Both inputs are already CRLF-normalized by the caller.
 enum class PasteLedgerVerdict { NoMatch, ExactMatch, PrefixWithTail };
 
@@ -208,15 +284,26 @@ inline PasteLedgerVerdict AnalyzeCaptureVsLastPaste(std::wstring_view captured,
 // must be PRESERVED. Wiping it (the pre-F6 unconditional clear) emptied the
 // ledger and let the next Enter's fallback whole-input selection [0..caret)
 // re-translate and overwrite earlier translated blocks (verify 164500 §1.4
-// example-3 chain). Every other no-paste outcome (translation empty / identity
-// - no send geometry was produced, and a chat send would have consumed the
-// ledger via C1/C2 first) or a different target hwnd keeps the legacy clear
+// example-3 chain). A different target hwnd keeps the legacy clear
 // (cross-window contamination hygiene). One pure definition shared by
 // worker.cpp and the unit tests (same discipline as the other predicates).
 // The ledger's own self-invalidation still applies: any later edit makes the
 // next AnalyzeCaptureVsLastPaste comparison fail and route to legacy behavior.
-constexpr bool LedgerSurvivesH1Abort(bool paste_attempted, bool ledger_same_target_hwnd) {
-    return paste_attempted && ledger_same_target_hwnd;
+//
+// F3 C3 RE-ARM (session 260908_0003, verify 220750 §2 R4): the legacy clear
+// for the no-paste-not-attempted outcomes (translation empty / identity,
+// same hwnd) is replaced by KEEP when the ledger actually HAS text. Neither
+// the engine failure nor the identity result modified the target window - the
+// window's content still ends with exactly what the last successful paste
+// deposited, so the ledger still describes live text and re-arming the block
+// start on it (instead of losing it) keeps the PrefixWithTail defense one
+// link alive: the next Enter's capture stays a tail-only translation and the
+// F3 slice stays a pure fallback. An EMPTY ledger has nothing to keep (the
+// clear is a no-op there), so the third input gates the re-arm. Renamed from
+// LedgerSurvivesH1Abort to reflect the widened (F6 + F3-C3) contract.
+constexpr bool LedgerSurvivesNoPaste(bool paste_attempted, bool ledger_same_target_hwnd,
+                                     bool ledger_has_text) {
+    return ledger_same_target_hwnd && (paste_attempted || ledger_has_text);
 }
 
 // F7 (session 260908_0002, log 문제2 clipboard_restored=0): whether the
@@ -250,7 +337,11 @@ public:
 
     // Enqueues a translation pipeline task if not already busy.
     // Returns true if task was accepted, false if currently busy.
-    bool PostTask(bool is_shift_enter, HWND target_hwnd = nullptr);
+    // F3 (session 260908_0003): shift_enter_count is the hook's K for the
+    // current composition block (see PipelineTask::shift_enter_count); 0 for
+    // callers without block context (double-Ctrl+C, tests).
+    bool PostTask(bool is_shift_enter, HWND target_hwnd = nullptr,
+                  int shift_enter_count = 0);
 
     // Returns true if the worker is actively executing a task.
     bool IsBusy() const { return is_busy_.load(std::memory_order_relaxed); }

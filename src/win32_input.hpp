@@ -119,8 +119,21 @@ bool IsEditorExeNameForEnterExclusion(std::wstring_view basename);
 // to an empty capture. The EM tail path is exempt by construction (its
 // geometry is bounded by the previous translation end, so it never trips the
 // guard - see CopySelectedText).
-inline constexpr size_t kMaxEnterTranslateChars = 512;
-inline constexpr size_t kMaxEnterTranslateNewlines = 16;
+// F3 RAISE (session 260908_0003, verify 220750 §5-2): the old 512/16 limits
+// conflicted with the 예시1 contract - on the non-EM fallback the capture is
+// the WHOLE [0..caret) accumulation, so 6+ translated sentences (each ~100
+// chars + terminator) exceeded 512 and the guard aborted the translation of
+// the CURRENT block together with it. 4096 covers a comfortably long
+// accumulation (≈40 sentences of 100 chars) while still rejecting pasted
+// documents; 64 newlines is the abuse ceiling aligned with the hook's
+// Shift+Enter counter cap (ShiftEnterKNext clamps K to this constant, so the
+// block slice can never ask for more than 65 lines). Whole-document captures
+// above these limits are still rejected outright; captures UNDER these
+// limits but spanning multiple blocks are now handled safely by the F3
+// block-slice (worker.hpp FindCurrentBlockStart), which is what the raise
+// makes reachable.
+inline constexpr size_t kMaxEnterTranslateChars = 4096;
+inline constexpr size_t kMaxEnterTranslateNewlines = 64;
 
 // Pure guard predicate (single shared definition for CopySelectedText and the
 // unit tests - same discipline as CopyChordRetryWarranted). True when the

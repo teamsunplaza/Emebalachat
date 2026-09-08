@@ -64,13 +64,14 @@ void PipelineWorker::Stop() {
     }
 }
 
-bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd) {
+bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd,
+                              int shift_enter_count) {
     if (is_busy_.exchange(true, std::memory_order_acquire)) {
         return false; // Busy with existing translation task
     }
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        queue_.push(PipelineTask{is_shift_enter, target_hwnd});
+        queue_.push(PipelineTask{is_shift_enter, target_hwnd, shift_enter_count});
     }
     cv_.notify_one();
     return true;
@@ -222,7 +223,13 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     //        re-translation compounds the accumulation: 44 -> 112 -> 200
     //        chars in the log).
     //   (iii) neither (user edited our output, or a different window /
-    //        fresh context) -> legacy behavior, ledger cleared.
+    //        fresh context) -> F3 block slice: the current block (the last
+    //        K+1 logical lines, K = hook-counted Shift+Enters) is translated
+    //        and the verbatim prefix before it is preserved by the same
+    //        recomposition machinery as (ii) - the whole-capture
+    //        re-translation that destroyed 예시1/2/3 (verify 220750 §2 R2)
+    //        is gone. The same-hwnd ledger entry SURVIVES (C1/C3 keep);
+    //        only a different-hwnd context still clears it.
     // The ledger is per (target hwnd) and both sides are already
     // CRLF-normalized (line passed through NormalizeNewlinesToCRLF above;
     // last_paste_text_ is stored from the equally normalized `translated`),
@@ -249,24 +256,116 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                 break;
         }
     }
+    // F3 (session 260908_0003, verify 220750 §6 adopted design): block-slice
+    // from whole capture. The CURRENT block is the last K+1 logical lines of
+    // the capture (K = hook-counted Shift+Enters of the current composition);
+    // everything before the slice point is earlier (already-translated or
+    // foreign) content and joins the REQ-F2 PrefixWithTail recomposition
+    // machinery, so the Ctrl+V replacement is [prefix verbatim][block
+    // translated] - earlier blocks keep their text AND their language
+    // (예시1/2/3), and the ledger re-anchors to the recomposed post-replace
+    // state (the successful-paste store IS the design §3 re-anchor). The
+    // slice replaces the legacy whole-capture translation exactly in the
+    // arms that destroyed the examples (R2 NoMatch with an empty/foreign
+    // ledger, R4 after C3 clears). For the ledger-protected PrefixWithTail
+    // arm the ledger end is a LOWER bound of the block start (the pasted
+    // text stays verbatim), and the separator run the send-through Enter
+    // deposited between ledger and new typing is moved into the verbatim
+    // prefix too - the engine never sees a leading bare newline (it churns
+    // or drops it: the line-merge risk the ledger-keep introduced). On EM-
+    // tracked captures the slice is a provable no-op: an EM selection covers
+    // exactly the current block, which contains exactly K boundaries, and
+    // FindCurrentBlockStart wants K+1 -> clamps to 0 (whole block, as-is).
+    if (!line.empty() && !pasted_prefix_skip) {
+        size_t block_start = FindCurrentBlockStart(line, task.shift_enter_count);
+        // The switch above fills the (prefix, tail) pair ONLY for the
+        // ledger-protected PrefixWithTail arm; a non-empty tail therefore IS
+        // the proof the ledger byte-matched as a prefix - the slice can only
+        // push the split LATER (never shrink the verbatim prefix below what
+        // the ledger proved).
+        if (!untranslated_tail.empty() && block_start < pasted_prefix_text.size()) {
+            block_start = pasted_prefix_text.size(); // ledger is a proven prefix
+        }
+        // Move a separator run at the block start into the verbatim prefix
+        // (block starts at real content, or is empty).
+        while (block_start < line.size() &&
+               (line[block_start] == L'\r' || line[block_start] == L'\n')) {
+            ++block_start;
+        }
+        if (block_start >= line.size()) {
+            // Empty current block (capture ends on a separator with nothing
+            // typed after it): the prefix is earlier content and MUST NOT be
+            // re-translated. Hand the Enter to the app (same send-of-output
+            // mechanics as the ExactMatch skip; the line-break the user just
+            // asked for lands). The ledger is KEPT (F3 chain coherence):
+            // nothing was pasted or edited here beyond the newline the app
+            // inserts after the remembered text, so the entry still
+            // describes live text and the next capture stays a
+            // PrefixWithTail (byte-comparison self-invalidation remains the
+            // stale-memory guard, same reasoning as the C1 keep).
+            DIAG_F("WORKER/ExecuteTask/041: block slice is empty (capture ends at a line separator, K=%d, len=%zu); prefix held verbatim, Enter handed to the app (no re-translation)\n",
+                   task.shift_enter_count, line.size());
+            DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
+                     ::GetTickCount64() - t_task_start);
+            {
+                const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
+                ReleaseSelectionOnce();
+                SendEnterKey(task.is_shift_enter);
+                EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+            }
+            return;
+        }
+        if (block_start > 0) {
+            // Slice owns this capture (NoMatch / foreign / no ledger) or
+            // refines the ledger-protected PrefixWithTail split down to the
+            // block boundary (block_start was floored at the ledger end
+            // above, so the re-derivation never SHRINKS the verbatim prefix
+            // below what the ledger proved). Either way: verbatim prefix +
+            // translated block tail; the recomposition covers the whole
+            // captured span exactly.
+            const bool refines_ledger_split = !untranslated_tail.empty();
+            pasted_prefix_text.assign(line, 0, block_start);
+            untranslated_tail.assign(line, block_start, line.size() - block_start);
+            DIAG_LOG("PIPELINE", "stage=block_slice%s K=%d capture_len=%zu prefix_len=%zu block_len=%zu",
+                     refines_ledger_split ? "_ledger_refine" : "",
+                     task.shift_enter_count, line.size(),
+                     pasted_prefix_text.size(), untranslated_tail.size());
+        }
+    }
     if (pasted_prefix_skip) {
         DIAG_F("WORKER/ExecuteTask/038: capture equals last pasted translation (len=%zu); Enter handed to the app (send-of-output, no re-translation)\n",
                line.size());
         DIAG_LOG("PIPELINE", "stage=send_through decision=pasted_prefix_skip duration_ms=%llu",
                  ::GetTickCount64() - t_task_start);
         // Same contract as the smart-bypass send-through below: release the
-        // block selection (Ctrl+V of the next task must not clobber it),
-        // hand the intercepted Enter to the app, and clear the ledger (this
-        // output has now been sent; a fresh accumulation context starts).
+        // block selection (Ctrl+V of the next task must not clobber it) and
+        // hand the intercepted Enter to the app.
         {
             const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
             ReleaseSelectionOnce();
             SendEnterKey(task.is_shift_enter);
             EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
         }
-        last_paste_target_ = nullptr;
-        last_paste_text_.clear();
-        last_paste_end_offset_ = kEditCaretUnknown;
+        // F3 C1 hardening (session 260908_0003, verify 220750 §2 R1->R2 and
+        // §7 예시1): the redundant-Enter (send-of-output) NO LONGER clears
+        // the ledger. The pre-F3 clear was the chain-break that armed the R2
+        // whole-document destruction: paragraph 2 typed after a redundant
+        // Enter met an EMPTY ledger -> NoMatch -> [0..caret) whole
+        // re-translate. The ledger is content-self-invalidating
+        // (AnalyzeCaptureVsLastPaste byte-prefix): keeping it is SAFE in
+        // every outcome -
+        //  - editor (auto_send=0, text stays live): the kept entry is now
+        //    the prefix of the new accumulation -> next Enter = PrefixWithTail
+        //    (tail-only translation, explicit chain protection without
+        //    relying on the hook's K count);
+        //  - chat send (input cleared by the app): the next capture cannot
+        //    byte-match the stale entry -> NoMatch -> the F3 block slice
+        //    (K=0 -> whole current capture) owns the new accumulation from
+        //    the document start, and the successful paste re-anchors the
+        //    ledger anyway.
+        // No clear here; the one-shot semantics are preserved by these two
+        // self-invalidation mechanisms (verify 220750 §7 explicit guidance
+        // against clearing on non-EM CategoryB ExactMatch).
         return;
     }
     const bool should_translate = !line.empty() && !was_smart_bypassed;
@@ -624,9 +723,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  reinterpret_cast<const void*>(task.target_hwnd));
     }
 
-    // REQ-F2 ledger maintenance. The ledger is a ONE-SHOT memory of the most
-    // recent paste into the CURRENT window context. It must never survive a
-    // context where it could misfire:
+    // REQ-F2 ledger maintenance. The ledger is the block-start memory of the
+    // most recent paste into the CURRENT window context. It must never survive
+    // a context where it could misfire:
     //   - successful paste: refreshed above - keep (this is the branch the
     //     next Enter's capture comparison reads).
     //   - H1-abort no-paste into the SAME window (F6, verify 164500 §5/§7):
@@ -638,11 +737,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     //     emptied the memory and the next Enter's fallback whole-input
     //     selection [0..caret) re-translated and overwrote earlier blocks
     //     (verify 164500 example-3 chain).
-    //   - any other !pasted (translation empty / identity): nothing new was
-    //     deposited and no send geometry was produced (a real send-of-output
-    //     consumes the ledger through the C1 ExactMatch / C2 F5-promote
-    //     clears above, which are untouched by F6) - the previous memory no
-    //     longer corresponds to any live input state. Clear.
+    //   - translation empty / identity, SAME window (F3 C3 re-arm, session
+    //     260908_0003, verify 220750 §2 R4): the engine produced nothing new
+    //     and NOTHING was injected into the window either, so the live text
+    //     still ends with exactly what the last successful paste deposited -
+    //     the same self-evidence the F6 H1-abort keep uses. KEEP (re-arm the
+    //     block start) when the ledger has text: clearing it armed the R4
+    //     whole-document destruction chain. An empty/foreign ledger has
+    //     nothing to keep and is cleared as before.
     //   - different target hwnd: the previous paste went to another window.
     //     Clear (a stale cross-window memory is worse than none).
     // The (ii) prefix path lands here with pasted==true and its ledger
@@ -650,20 +752,24 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // memory: if the user keeps the recomposed output and presses Enter,
     // the skip applies to the WHOLE recomposed text.
     if (!pasted || last_paste_target_ != task.target_hwnd) {
-        // F6: preserve ONLY the H1-abort-into-the-same-window case; the abort
-        // proves the target was not the foreground at paste time, so nothing
-        // was injected and the previous paste's text is still the live input.
+        // F6 + F3-C3: preserve the same-window ledger when its text still
+        // describes live input - proven by the paste attempt itself (H1 abort:
+        // nothing injected) or by the no-paste outcome (empty/identity: also
+        // nothing injected) provided the entry actually HAS text.
         const bool ledger_same_target = (last_paste_target_ == task.target_hwnd);
-        if (LedgerSurvivesH1Abort(paste_attempted, ledger_same_target)) {
+        const bool ledger_has_text = !last_paste_text_.empty();
+        if (LedgerSurvivesNoPaste(paste_attempted, ledger_same_target, ledger_has_text)) {
             DIAG_LOG("PIPELINE",
-                     "stage=ledger_maint decision=keep reason=h1_abort_same_hwnd "
+                     "stage=ledger_maint decision=keep reason=%s "
                      "target=%p ledger_len=%zu",
+                     paste_attempted ? "h1_abort_same_hwnd" : "f3_no_paste_rearm_same_hwnd",
                      reinterpret_cast<const void*>(task.target_hwnd),
                      last_paste_text_.size());
         } else {
             // QA-visible wipe evidence (F6 verify protocol: a same-hwnd H1
-            // abort must log decision=keep; cross-window / empty / identity
-            // must log decision=clear with the exact reason below).
+            // abort must log decision=keep; cross-window must log decision=
+            // clear with the exact reason below; F3 adds the no-ledger-text
+            // same-hwnd clear, the only remaining same-hwnd wipe).
             const char* clear_reason = "unknown";
             if (pasted) {
                 // Unreachable today: a successful paste refreshes the ledger
@@ -672,10 +778,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                 clear_reason = "pasted_but_cross_hwnd";
             } else if (last_paste_target_ == nullptr) {
                 clear_reason = "no_ledger";
+            } else if (!paste_attempted && !ledger_has_text) {
+                // Same window but the ledger holds no text (defensive: the
+                // paste branch only stores non-empty translations): nothing
+                // to re-arm on - legacy clear (a no-op wipe).
+                clear_reason = "no_paste_no_ledger_text";
             } else if (!paste_attempted) {
-                // Translation empty / identity: nothing was deposited and no
-                // send-of-output geometry was produced (C1/C2 own that and
-                // clear on their early-return paths above - untouched by F6).
+                // Unreachable when the ledger has text (F3 keeps it); kept
+                // for defensive completeness.
                 clear_reason = "no_paste_not_attempted";
             } else {
                 // paste_attempted (H1 abort) but the ledger belongs to a

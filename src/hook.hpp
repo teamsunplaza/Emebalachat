@@ -100,6 +100,41 @@ constexpr bool ImeCommitEnterPromoted(bool active, bool worker_busy) {
     return active && !worker_busy;
 }
 
+// ---- F3 (session 260908_0003, verify 220750 §6 adopted design): K tracking
+// for the block-slice-from-whole-capture engine ----
+//
+// The non-EM CategoryB fallback selection is the WHOLE [0..caret)
+// accumulation. The worker slices the CURRENT block (the last K+1 logical
+// lines) out of it (worker.hpp FindCurrentBlockStart). K = the number of
+// Shift+Enter passthroughs observed for the current composition block, i.e.
+// since the last bare-Enter capture in the same foreground window. Shift+
+// Enter is a hard pass-through upstream (the app inserts the newline
+// itself), so the hook never otherwise sees it - this O(1) mirror is the
+// ONLY consumer, and it must stay IME-safe and ledger-coherent:
+//   - ime_composing == true: the key arrives mid-composition; its newline
+//     semantics are IME-dependent, so the count is FROZEN (verify 220750
+//     §6-(iii): K must never fire during composition; the F2 composing-
+//     Enter promotion carries the block as-is with the K observed BEFORE
+//     the composition opened).
+//   - clamped at kMaxEnterTranslateNewlines: the capture guard would abort
+//     a capture with more separators than that anyway, and the clamp keeps
+//     an over-count (stale K from an un-captured region) from ever slicing
+//     more than the guard allows through. One shared definition with the
+//     win32_input.hpp guard constant - the slice can never ask for more
+//     lines than the guard admits.
+// Reset points (aligned with the last-paste ledger's): (a) a bare-Enter
+// capture consumes K (posted to the worker, then zeroed), (b) a foreground
+// window change re-anchors the counter to the new block context - the same
+// "one window, one accumulation" world view the ledger enforces via
+// last_paste_target_ (worker.cpp C3) and V5/F6 via hwnd identity.
+constexpr int ShiftEnterKNext(int k, bool ime_composing) {
+    if (ime_composing) {
+        return k;
+    }
+    constexpr int kCap = static_cast<int>(kMaxEnterTranslateNewlines);
+    return k < kCap ? k + 1 : k;
+}
+
 // Hook-local IME composition mirror, updated on every REAL (non-synthetic)
 // keydown with O(1) relaxed-atomic traffic and ZERO cross-thread messaging.
 //
@@ -374,6 +409,16 @@ private:
     // REQ-R17: hook-local IME composition mirror (see ImeMirrorNext). Owned by
     // the hook thread; relaxed atomics because no other thread reads it.
     std::atomic<bool> ime_composing_{false};
+
+    // F3 (session 260908_0003): Shift+Enter passthrough counter K for the
+    // block-slice engine (see ShiftEnterKNext). Hook-thread only (written in
+    // LowLevelKeyboardProc's shift-Enter branch, consumed + reset in the
+    // bare-Enter branch) - plain members, same single-thread discipline as
+    // last_ctrl_c_time_. k_anchor_hwnd_ is the foreground window K was last
+    // counting for: a switch lazily re-anchors K to 0 on the next counting
+    // event (aligned with the worker ledger's per-hwnd identity, V5/F6).
+    int shift_enter_k_ = 0;
+    HWND k_anchor_hwnd_ = nullptr;
 
     // REQ-R06 persistent-worker lifecycle. Start() spawns the loop, Stop() (and
     // therefore ~KeyboardHook) request_stop()+joins it deterministically so the
