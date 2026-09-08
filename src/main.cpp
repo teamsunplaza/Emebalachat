@@ -1236,19 +1236,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
             pivot_fired = true;
             tgt_lang = *effective;
-            // R6 Phase 1 (B3): the src==tgt substitution was previously
-            // EPHEMERAL - only this tooltip used it while config/badge/tray
-            // kept the (now meaningless) old target. Post it to the GUI-
-            // thread coordinator (fire-and-forget PostMessage; this worker
-            // thread must never touch the surfaces directly - plan §2.3),
-            // so the tooltip follows the language actually translated to.
-            // Phase 3: DRAG context - only the drag pair (and the tooltip
-            // label) move; badge/tray keep showing the type pair (plan §2.4).
-            // F3 note: the pivot comparison now uses eff_src (design F3-1);
-            // REMOVING this sync call is F1's scope, not F3's.
-            emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
-                                             emebalachat::LanguageContext::Drag,
-                                             std::string{}, tgt_lang, false, false);
+            // F1 (session 260908_0002, ADR-A1-1): the pivot is a LOCAL,
+            // per-request temporary value. It feeds this engine.Translate
+            // call and the tooltip label ONLY - the user-pinned
+            // drag_target_language in config.json is never overwritten by an
+            // automatic pivot. V1's root cause was the RequestLanguageSync
+            // here persisting the ephemeral pivot through SaveToFile(); with
+            // that coordinator call removed, no translation-path code can
+            // reach persistence (explicit tray/tooltip menu picks remain the
+            // only writers). Tray/badge keep the persisted pair while the
+            // tooltip shows this effective value - the intended ADR-A1-1
+            // surface split. persist=0 marks this pivot as non-persisting.
+            DIAG_LOG("STATE", "pivot_temporary ctx=drag path=icon persisted_tgt=%s pivot_tgt=%s persist=0",
+                     snap.drag_target_language.c_str(), tgt_lang.c_str());
         }
         // F3 DIAG (task §3-6): prove per request whether the engine source came
         // from the pinned config or from detection, and whether the ADR-A1-7
@@ -1497,13 +1497,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (auto effective = emebalachat::ResolveEffectiveTarget(eff_src, tgt_lang)) {
             pivot_fired = true;
             tgt_lang = *effective;
-            // R6 Phase 1 (B3): same coordinator routing as the drag path above
-            // (this body runs on the hook's REQ-R06 async worker thread).
-            // Phase 3: DRAG context (see the drag path above).
-            // F3 note: removing this sync call is F1's scope, not F3's.
-            emebalachat::RequestLanguageSync(emebalachat::g_hControllerWnd,
-                                             emebalachat::LanguageContext::Drag,
-                                             std::string{}, tgt_lang, false, false);
+            // F1 (session 260908_0002, ADR-A1-1): same local-temporary pivot
+            // rule as the drag icon path above - this translation uses the
+            // effective target, while config.json keeps the user's pinned
+            // drag pair. The former RequestLanguageSync here (V1's second
+            // entry point) persisted the ephemeral pivot from the hook's
+            // REQ-R06 worker thread; removed so no automatic translation path
+            // reaches SaveToFile(). persist=0 marks the pivot non-persisting.
+            DIAG_LOG("STATE", "pivot_temporary ctx=drag path=dbl_ctrl_c persisted_tgt=%s pivot_tgt=%s persist=0",
+                     snap.drag_target_language.c_str(), tgt_lang.c_str());
         }
         // F3 DIAG (task §3-6): source decision + pivot evidence (see the
         // drag_src line above for the QA contract).
