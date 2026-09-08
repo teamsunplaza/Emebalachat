@@ -6714,6 +6714,156 @@ void TestReqF6LedgerH1AbortPreserve() {
     }
 }
 
+// REQ-F7 (session 260908_0002, log 문제2): the DIAG field `clipboard_restored`
+// printed `pasted ? 0 : 1`, i.e. it logged 0 on every SUCCESSFUL paste even
+// though PasteAndRestore had restored the original clipboard before returning.
+// Log-driven analysis read `clipboard_restored=0` as "restore never happens" and
+// reported the user's clipboard permanently replaced by the translation. The fix:
+//  (a) PasteAndRestore reports the ACTUAL restore outcome (out-param) and retries
+//      the restore once after a short window when OpenClipboard contention makes
+//      the first attempt fail;
+//  (b) the worker logs that real outcome (1 = original clipboard confirmed back);
+//  (c) the worker's scope-exit RAII restorer is disarmed ONLY on a confirmed
+//      restore (ClipboardRestorerStaysArmed) - a failed internal restore leaves
+//      the guard armed so function exit gives a SECOND restore attempt (no
+//      permanent replacement even in the contention case).
+// Headless-safe coverage: the pure guard predicate matrix, the lossless text +
+// extra-format round-trip (the exact restore primitive PasteAndRestore uses),
+// and the H1-abort no-touch contract of PasteAndRestore (no Ctrl+V is sent on
+// the abort path, so the real clipboard is only read/written by the backup and
+// restore primitives, which this suite already exercises).
+void TestReqF7ClipboardRestore() {
+    std::cout << "[TEST] F7 clipboard restore after paste (clipboard_restored=1 evidence path)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) pure guard-predicate matrix ----
+    static_assert(ClipboardRestorerStaysArmed(true, true) == false,
+                  "F7: paste succeeded AND restore confirmed -> worker RAII restorer disarmed (restore already done)");
+    static_assert(ClipboardRestorerStaysArmed(true, false) == true,
+                  "F7: paste succeeded but restore NOT confirmed -> worker RAII restorer STAYS armed (scope-exit second attempt)");
+    static_assert(ClipboardRestorerStaysArmed(false, false) == true,
+                  "F7: no paste (H1 abort / empty / identity) -> guard armed restores the capture-stage overwrite at scope exit");
+    static_assert(ClipboardRestorerStaysArmed(false, true) == true,
+                  "F7: defensive - no paste but restore confirmed is still a no-op restore at scope exit (harmless)");
+    TEST_CHECK(ClipboardRestorerStaysArmed(true, true) == false,
+               "F7: only the (pasted && restore_confirmed) combination disarms the guard");
+    TEST_CHECK(ClipboardRestorerStaysArmed(true, false) == true,
+               "F7: restore failure keeps the fallback armed (permanent-replacement guard)");
+
+    // ---- (b) lossless restore round-trip (text + an extra registered format) ----
+    // Preserve whatever is on the real clipboard now so the test is non-destructive.
+    ClipboardBackup ambient;
+    const bool ambient_ok = BackupClipboard(ambient);
+    TEST_CHECK(ambient_ok, "F7 fixture: ambient clipboard backed up");
+
+    // Build a synthetic ORIGINAL clipboard: CF_UNICODETEXT + one extra private
+    // format (mirrors the log shape `has_text=1 extra_formats=4`).
+    const std::wstring original_text = L"사용자 원본 클립보드 내용 F7 🚀";
+    const UINT cf_extra = ::RegisterClipboardFormatW(L"Emebalachat_F7_ExtraFormat");
+    TEST_CHECK(cf_extra != 0, "F7 fixture: extra private clipboard format registered");
+    {
+        if (::OpenClipboard(nullptr)) {
+            ::EmptyClipboard();
+            const size_t byte_len = (original_text.size() + 1) * sizeof(wchar_t);
+            HGLOBAL hText = ::GlobalAlloc(GMEM_MOVEABLE, byte_len);
+            if (hText) {
+                void* p = ::GlobalLock(hText);
+                if (p) {
+                    memcpy(p, original_text.data(), original_text.size() * sizeof(wchar_t));
+                    static_cast<wchar_t*>(p)[original_text.size()] = L'\0';
+                    ::GlobalUnlock(hText);
+                    // Ownership moves to the clipboard on success; freed locally
+                    // on failure (same contract as SetClipboardText).
+                    if (!::SetClipboardData(CF_UNICODETEXT, hText)) {
+                        ::GlobalFree(hText);
+                    }
+                } else {
+                    ::GlobalFree(hText);
+                }
+            }
+            // Extra format: 8 bytes of payload.
+            HGLOBAL hExtra = ::GlobalAlloc(GMEM_MOVEABLE, 8);
+            if (hExtra) {
+                void* p = ::GlobalLock(hExtra);
+                if (p) {
+                    memset(p, 0xAB, 8);
+                    ::GlobalUnlock(hExtra);
+                    if (!::SetClipboardData(cf_extra, hExtra)) {
+                        ::GlobalFree(hExtra);
+                    }
+                } else {
+                    ::GlobalFree(hExtra);
+                }
+            }
+            ::CloseClipboard();
+        }
+    }
+
+    ClipboardBackup original;
+    const bool original_ok = BackupClipboard(original);
+    TEST_CHECK(original_ok, "F7: synthetic original clipboard backed up");
+    TEST_CHECK(original.text.has_value() && *original.text == original_text,
+               "F7: backup captured the original text verbatim");
+    {
+        bool found_extra = false;
+        for (const auto& [fmt, data] : original.formats) {
+            if (fmt == cf_extra && data.size() == 8) {
+                found_extra = true;
+            }
+        }
+        TEST_CHECK(found_extra, "F7: backup captured the extra registered format (8 bytes)");
+    }
+
+    // Simulate the paste swap: translation overwrites the clipboard.
+    const std::wstring translation = L"Translated text that must NOT outlive the task F7.";
+    TEST_CHECK(SetClipboardText(translation), "F7: translation written over the original (paste step)");
+    TEST_CHECK(GetClipboardText() == translation, "F7: clipboard holds the translation during the paste window");
+
+    // The restore primitive PasteAndRestore relies on must bring back BOTH the
+    // original text and the extra format.
+    const bool restore_ok = RestoreClipboard(original);
+    TEST_CHECK(restore_ok, "F7: RestoreClipboard succeeds after the translation swap");
+    const std::wstring after_restore = GetClipboardText();
+    TEST_CHECK(after_restore == original_text,
+               "F7: original text is back after restore (translation did not outlive the swap)");
+    {
+        bool extra_back = false;
+        if (::OpenClipboard(nullptr)) {
+            extra_back = ::IsClipboardFormatAvailable(cf_extra) == TRUE;
+            ::CloseClipboard();
+        }
+        TEST_CHECK(extra_back, "F7: extra registered format is back after restore (extra-format fidelity)");
+    }
+
+    // ---- (c) PasteAndRestore H1-abort contract: no paste, clipboard untouched ----
+    // A fake, invalid expected target can never be the current foreground root,
+    // so PasteAndRestore must abort BEFORE SetClipboardText/Ctrl+V. Prove the
+    // abort leaves the (restored) clipboard content intact and reports
+    // clipboard_restored=false (nothing was restored because nothing was pasted).
+    SetClipboardText(original_text);
+    bool abort_restored = true; // sentinel: must be flipped to false by the call
+    const HWND fake_target = reinterpret_cast<HWND>(static_cast<intptr_t>(0x3F7));
+    const bool abort_result = PasteAndRestore(L"must not land", original, fake_target, &abort_restored);
+    TEST_CHECK(abort_result == false, "F7: H1 abort returns false (no paste into a foreign target)");
+    TEST_CHECK(abort_restored == false, "F7: abort path reports clipboard_restored=false (nothing restored here)");
+    TEST_CHECK(GetClipboardText() == original_text,
+               "F7: abort left the clipboard content untouched (no translation leak)");
+
+    // ---- cleanup: put the ambient clipboard back ----
+    if (ambient_ok) {
+        RestoreClipboard(ambient);
+    } else {
+        SetClipboardText(L"");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] F7 clipboard restore tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] F7 clipboard restore tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-F1 (docs/260908_0001 session, user log emebalachat_260908062830
 // L546-550/L787-791/L1120-1124): first-character residue ahead of the pasted
 // translation ("오"/"처"/"왜 "). Root cause: the compensation advanced the
@@ -7632,6 +7782,7 @@ int main() {
     TestReqF2Category0Accumulation();
     TestReqF5EmptyCaptureEnterPromotion();
     TestReqF6LedgerH1AbortPreserve();
+    TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
     TestReq038B2RegistryBcp47();

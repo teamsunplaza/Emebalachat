@@ -461,20 +461,38 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         paste_attempted = true;
         // H1 guard: pass the captured target HWND. PasteAndRestore re-verifies the
         // foreground window immediately before Ctrl+V and aborts on mismatch.
+        //
+        // F7 (session 260908_0002, log 문제2 clipboard_restored=0): PasteAndRestore
+        // reports whether it actually confirmed the ORIGINAL clipboard (text +
+        // extra formats) is back before returning. The DIAG field below now logs
+        // that REAL outcome (1 = restored, 0 = restore not confirmed yet) instead
+        // of the old inverted `pasted ? 0 : 1` shorthand, which read as "restore
+        // never happens" in every successful-paste log line and drove this task.
+        bool restore_ok = false;
         const ULONGLONG t_paste_start = ::GetTickCount64();
-        pasted = PasteAndRestore(translated, backup, task.target_hwnd);
+        pasted = PasteAndRestore(translated, backup, task.target_hwnd, &restore_ok);
         DIAG_LOG("PIPELINE", "stage=paste result=%d target_hwnd=%p duration_ms=%llu "
                              "clipboard_restored=%d",
                  pasted ? 1 : 0, reinterpret_cast<const void*>(task.target_hwnd),
-                 ::GetTickCount64() - t_paste_start, pasted ? 0 : 1);
+                 ::GetTickCount64() - t_paste_start, restore_ok ? 1 : 0);
         // If !pasted (focus shifted): clipboard untouched, nothing leaked. The
         // block selection is still live and MUST be released - a VK_RIGHT into a
         // possibly different foreground window is a benign cursor move, while
         // leaving it selected destroys the user's whole message on their next
         // keystroke (audit §2.2 / §5-3, REQ-R03). Enter remains H1-gated below.
         if (pasted) {
-            // Clipboard swap consumed the backup; RAII restorer must not overwrite.
-            restorer.active = false;
+            // F7: one shared definition (worker.hpp ClipboardRestorerStaysArmed)
+            // decides the guard. Disarmed ONLY when PasteAndRestore confirmed it
+            // restored the original clipboard before returning; a paste whose
+            // internal restore failed (transient OpenClipboard contention even
+            // after retry) keeps the scope-exit guard armed - its RestoreClipboard
+            // at function end is the second attempt that guarantees the user's
+            // clipboard data is never left permanently replaced by the
+            // translation (the F7 reported defect).
+            restorer.active = ClipboardRestorerStaysArmed(pasted, restore_ok);
+            if (!restore_ok) {
+                DIAG_F("WORKER/ExecuteTask/040: paste succeeded but clipboard restore not confirmed; scope-exit RAII restorer retained as fallback\n");
+            }
             // REQ-034 F3-B: stamp the paste time that the empty-capture
             // paste-window gate reads at the NEXT task's EmptyCaptureNeedsHold
             // entry (see PasteWindowSuppressesNotice contract in worker.hpp).

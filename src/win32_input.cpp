@@ -1468,14 +1468,19 @@ bool IsSameWindowForInjection(HWND expected_target, HWND current_foreground) {
     return expected_root && (expected_root == current_root);
 }
 
-bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target) {
+bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND expected_target,
+                     bool* clipboard_restored) {
+    if (clipboard_restored) {
+        *clipboard_restored = false;
+    }
     // H1 guard: re-verify the foreground window IMMEDIATELY before the injection
     // sequence. The translation network call above can take seconds; if the user
     // Alt-Tabbed or focus shifted, pasting here would leak translated text into
     // (and send synthetic input to) the wrong application.
     if (!IsSameWindowForInjection(expected_target, ::GetForegroundWindow())) {
-        // Abort: clipboard untouched, nothing pasted. Original clipboard is
-        // preserved by the caller's RAII restorer (backup was never overwritten).
+        // Abort: clipboard untouched, nothing pasted. The backup was never
+        // overwritten here; the caller's scope-exit RAII restorer preserves the
+        // original clipboard (it restores the capture-stage Ctrl+C overwrite).
         return false;
     }
 
@@ -1485,8 +1490,25 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
         ::Sleep(kPasteSettleDelayMs); // M1: minimal paste settle (Electron/Slate.js IPC stability)
     }
 
-    // Always restore original clipboard state without leak
-    RestoreClipboard(backup);
+    // F7 (session 260908_0002, log 문제2 clipboard_restored=0): the original
+    // clipboard (text + extra formats) is USER DATA - a silently failed restore
+    // leaves the translated text on the clipboard permanently. RestoreClipboard
+    // already retries OpenClipboard contention (REQ-R13 backoff inside its
+    // ScopedClipboard); on a still-failing result give the target app a short
+    // extra window (it may still be releasing the clipboard right after its
+    // async read), then report the ACTUAL outcome so the caller never disarms
+    // its own scope-exit restorer on a restore that did not happen.
+    bool restored = RestoreClipboard(backup);
+    if (!restored) {
+        ::Sleep(50);
+        restored = RestoreClipboard(backup);
+    }
+    if (clipboard_restored) {
+        *clipboard_restored = restored;
+    }
+    if (!restored) {
+        DIAG_F("WIN32_INPUT/PasteAndRestore/001: original clipboard restore failed after retries; caller RAII restorer is the final fallback\n");
+    }
     return ok;
 }
 

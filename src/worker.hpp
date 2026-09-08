@@ -219,6 +219,27 @@ constexpr bool LedgerSurvivesH1Abort(bool paste_attempted, bool ledger_same_targ
     return paste_attempted && ledger_same_target_hwnd;
 }
 
+// F7 (session 260908_0002, log 문제2 clipboard_restored=0): whether the
+// worker's scope-exit RAII clipboard restorer (ExecuteTask's RestorerGuard)
+// must STAY ARMED after the paste attempt. It may be disarmed ONLY when the
+// paste succeeded AND PasteAndRestore confirmed the ORIGINAL clipboard (text +
+// extra formats) was restored before returning (win32_input.cpp out-param).
+// Every other combination keeps the guard armed so the original clipboard is
+// restored at ExecuteTask exit at the latest:
+//   - paste aborted (H1 foreground-guard): the target never received the
+//     translation, but the earlier Ctrl+C capture displaced the clipboard; the
+//     scope-exit restore puts the user's pre-task content back.
+//   - paste succeeded but internal restore failed (transient OpenClipboard
+//     contention even after PasteAndRestore's retry): leaving the guard armed
+//     gives a SECOND restore attempt at scope exit - without it the translated
+//     text would remain on the user's clipboard permanently (the exact defect
+//     F7 reports: backup collected, then discarded).
+// One pure definition shared by worker.cpp and the unit tests (same discipline
+// as LedgerSurvivesH1Abort above).
+constexpr bool ClipboardRestorerStaysArmed(bool pasted, bool restore_confirmed) {
+    return !(pasted && restore_confirmed);
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);
