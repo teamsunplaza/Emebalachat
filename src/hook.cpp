@@ -833,21 +833,69 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
-            // Composition open: the Enter belongs to the IME commit cycle.
-            // Hand it through untouched and retire the mirror flag.
+            // Composition open: this Enter is the IME's commit keystroke.
+            //
+            // F2 (REQ-F2, session 260908_0002, V2 verify §3d): commit-then-
+            // translate. Pre-F2 this branch always handed the Enter through,
+            // so on IMM32-class IMEs (Korean jamo routed via VK_PROCESSKEY ->
+            // mirror true) the app committed AND SENT the untranslated
+            // sentence in chat apps (KakaoTalk/Discord/Slack) or merely
+            // line-broke in editors - the "1회 Enter로 번역" rule never fired.
+            // F2 promotes the composing Enter into the SAME pipeline the
+            // bare-Enter path uses, but ONLY when it can serve it
+            // (ImeCommitEnterPromoted = hook active + worker idle; Shift/Ctrl
+            // have already returned above, so the candidate is always bare).
+            // The commit half is the worker's existing ExecuteTask start
+            // (FlushIme + ForegroundImeComposing re-probe, worker.cpp): it
+            // finalises the still-open composition BEFORE any capture, so a
+            // live GCS_COMPSTR is never copied (the "마지막 글자 중복 복사"
+            // corruption); if the flush cannot commit, the worker backstop
+            // hands a synthetic Enter to the app and the user sees the
+            // pre-F2 behavior (graceful degradation).
+            //
+            // Single-promotion guarantee: the mirror is retired here on EVERY
+            // composing-Enter exit (promoted or passed), so the NEXT Enter is
+            // never composing and flows through the ordinary gates below
+            // (busy -> pass-through; last-paste ledger ExactMatch ->
+            // send-of-output). Only the ONE Enter that finalises a composition
+            // can be promoted; a consecutive second composing Enter requires a
+            // fresh VK_PROCESSKEY (a new sentence), which SHOULD translate.
             if (dbg_composing) {
+                const bool ime_active = s_instance->IsActive();
+                const bool ime_busy = s_instance->worker_.IsBusy();
+                if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
+                    HWND ime_target_hwnd = ::GetForegroundWindow();
+                    if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
+                                                     ime_target_hwnd)) {
+                        DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
+                               "posted (commit-then-translate, hwnd=%p)\n",
+                               reinterpret_cast<void*>(ime_target_hwnd));
+                        s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+                        DIAG_LOG("ENTER_GATE",
+                                 "outcome=task_posted reason=ime_composing_commit_promoted "
+                                 "active=%d busy=%d ime_composing=1 shift=0 "
+                                 "(mirror cleared, commit deferred to worker FlushIme)",
+                                 ime_active ? 1 : 0, ime_busy ? 1 : 0);
+                        return 1; // Intercepted: worker flushes the composition then captures
+                    }
+                    // PostTask refused (busy flipped in the race window between
+                    // IsBusy() and the exchange): fall through to the pre-F2
+                    // pass-through below; the app's IME commits + sends as
+                    // usual and the mirror is still retired.
+                }
+                s_instance->ime_composing_.store(false, std::memory_order_relaxed);
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
                          "ime_composing=1 shift=0 (mirror cleared)",
-                         s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0);
-                s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+                         ime_active ? 1 : 0, ime_busy ? 1 : 0);
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
 
             // Only a BARE Enter reaches here (Shift and Ctrl already returned
-            // above). The shared S2 predicate decides interception (mirror just
-            // cleared -> composing input is false; shift is false by now). One
-            // definition pinned by the unit tests.
+            // above, and the composing branch handled composing=true). The
+            // shared S2 predicate decides interception (composing input is
+            // false by here; shift is false by now). One definition pinned by
+            // the unit tests.
             // R5 observability: log the gate inputs so a silent "Enter sent
             // untranslated" can be attributed to the exact failing gate.
             const bool gate_active = s_instance->IsActive();

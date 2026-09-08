@@ -15,9 +15,9 @@ and the B-6c edge-flow matrix (design
 | [`app_probe.py`](app_probe.py) | D-4a universal-app matrix probe (design 173700 §2.3): lists edit-control classes of the 8 user-named apps (메모장/카톡/디스코드/Chrome/Firefox/HWP/PPT/Word), replays the app's read-only EM_* probe family via ctypes, ports `ClassifyEmProbe` verbatim, and renders the 앱×컨트롤×EM-능력×예상경로×판정 matrix (markdown, `--json` for machine reading, `--fallback` adds the opt-in keyboard-geometry measurement). Reuses the `req027_e2e` ctypes layer (one source of truth, stdlib only). |
 | [`uia_read_edit.ps1`](uia_read_edit.ps1) | Layer-2 fallback reader: UIA ValuePattern via `System.Windows.Automation` (ships with .NET — no install). Used only when `WM_GETTEXT` cannot read the edit control. |
 | [`uia_close_window.ps1`](uia_close_window.ps1) | Teardown helper: dismisses the Win11 Notepad "save?" dialog via UIA when closing our dirty scratch window. (B-6c fixed the ko-KR discard-button pattern `저장하지 않음`.) |
-| [`uia_tray_menu.ps1`](uia_tray_menu.ps1) | B-6c multi_lang 1st-choice path: right-clicks the app tray icon and walks the type → target-language submenu via UIA. Verdict is parsed from its `TRAY:` output lines. |
+| [`uia_tray_menu.ps1`](uia_tray_menu.ps1) | B-6c multi_lang 1st-choice path: right-clicks the app tray icon and walks the type → target-language submenu via UIA. Verdict is parsed from its `TRAY:` output lines. B-4 added `-Mode EnumUiLang`: opens the Interface-Language submenu and dumps every item endonym as `TRAY:NAME:` lines (read-only, ESC-closes). |
 
-## Scenarios (11 automated)
+## Scenarios (12 automated)
 
 | Scenario | Flow (design §2.4 #) | What it proves |
 |---|---|---|
@@ -32,8 +32,9 @@ and the B-6c edge-flow matrix (design
 | `paste_then_enter` | external clipboard + Ctrl+V + immediate Enter (B-6c phase 1), **then one immediate retry Enter (D-4b phase 2)** | phase 1: capture == pasted text exactly, normal replacement; phase 2: retry Enter inside the 2000 ms paste window must log `WORKER/ExecuteTask/036` + `decision=paste_window_suppress`, surface NO notice, skip translate/paste, and hand the Enter to the app (document grows by the newline); the `/036` elapsed/window numbers are parsed as `kPasteEmptySuppressMs`-tuning evidence |
 | `long_text` | one 1000-char Hangul line + Enter (new) | no EM saturation, full-block capture, replacement normal |
 | `notepad_vscode_mix` | window-1 → window-2 → window-1 Enters (new) | per-hwnd caret-offset isolation: window-2 starts `last=0`, window-1 resumes its own stored offset, no cross leak, no spurious `/004` |
+| `uilang_37` | tray Interface-Language submenu UIA enumeration (REQ-037/B-4, design §4.3 E2E-UILANG-2) | 38 items: localized Auto + 37 endonyms (العربية/日本語/한국어 witnesses), §2-Q3 order, EN last. READ-ONLY (never invokes). Menu-tree starvation (TrackPopupMenu modal loop, see multi_lang limitation) is judged INCONCLUSIVE, not FAIL; offline verdict-path proof: `tools_tmp_b4_uilang37_proof.py` at repo root |
 
-`--all` runs all 11 (shared app instance, fresh scratch window per
+`--all` runs all 12 (shared app instance, fresh scratch window per
 scenario; `multi_lang` uses its own sessions — see below). INCONCLUSIVE
 results are auto-retried once (delegation §4). Individual runs:
 `python tools\e2e\req027_e2e.py <scenario>`.
@@ -92,9 +93,16 @@ results are auto-retried once (delegation §4). Individual runs:
   can create a real IME *composition* state (WM_CHAR is post-commit text;
   vk=0 unicode events never set the hook's IME mirror). Simulating jamo
   without a way to VERIFY the OS IME state would produce unverified fake
-  verdicts (decisions.md 2026-09-07 20:54). Manual QA: compose Hangul with
-  the real IME, press Enter mid-composition; the log must show
-  `ENTER_GATE ... reason=ime_composing_commit` and no pipeline task.
+  verdicts (decisions.md 2026-09-07 20:54). Manual QA (IMM32 Korean IME —
+  jamo routed via `VK_PROCESSKEY`, so the hook mirror opens) with the hook
+  ACTIVE and worker idle: compose Hangul, press Enter mid-composition; F2
+  (REQ-F2) now promotes that Enter — the log must show
+  `ENTER_GATE ... outcome=task_posted reason=ime_composing_commit_promoted`
+  followed by a pipeline task whose `stage=capture` contains the committed
+  Hangul, then a pasted translation (commit-then-translate). With the hook
+  INACTIVE (or worker busy) the pre-F2 pass-through line remains:
+  `ENTER_GATE ... outcome=pass_through reason=ime_composing_commit` and no
+  pipeline task.
 - **64K offset saturation is NOT automated (user QA QA-27-7).** `EM_GETSEL`
   answers are WORD-packed (saturate at 65535). 65,000-char input via
   65,000 `PostMessage`s risks message-queue overflow and minutes of
@@ -166,7 +174,7 @@ results are auto-retried once (delegation §4). Individual runs:
 ## Usage
 
 ```bat
-python tools\e2e\req027_e2e.py all            ; the full 11-scenario matrix
+python tools\e2e\req027_e2e.py all            ; the full 12-scenario matrix
 python tools\e2e\req027_e2e.py qa27b          ; single scenarios...
 python tools\e2e\req027_e2e.py multi_lang --no-tray   ; force config-seed mode
 python tools\e2e\req027_e2e.py long_text --step-timeout 90

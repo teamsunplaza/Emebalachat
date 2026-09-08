@@ -2643,18 +2643,35 @@ void TestImeCompositionGate() {
         // (5) Full commit+send sequence (canonical Korean IME, report §4.2):
         //     jamo interception -> composing; Enter arrives as VK_RETURN and
         //     the mirror KEEPS state (the Enter branch owns the decision and
-        //     clears the flag after accepting a task); the next keydown after
-        //     the branch cleared the flag sees idle again - i.e. a fresh bare
-        //     Enter with composing=false re-arms the pipeline.
+        //     retires the flag). F2 (REQ-F2, V2 verify §3d): with the hook
+        //     active and the worker idle the composing Enter is PROMOTED into
+        //     the pipeline (ImeCommitEnterPromoted) instead of the pre-F2 pure
+        //     pass-through - commit-then-translate. EnterTranslationAllowed is
+        //     intentionally UNCHANGED: composing still never fires through the
+        //     BARE gate; promotion is a separate decision evaluated only from
+        //     the composing branch (hook.cpp). The safe commit is the worker's
+        //     ExecuteTask start (FlushIme + ForegroundImeComposing re-probe),
+        //     so a live GCS_COMPSTR is never captured. The next keydown after
+        //     the branch retired the flag sees idle again - a fresh bare Enter
+        //     with composing=false re-arms the pipeline (send-of-output).
         constexpr bool s2 = ImeMirrorNext(s0, VK_PROCESSKEY); // jamo intercepted
         static_assert(ImeMirrorNext(s2, VK_RETURN), "P7: commit Enter mid-composition keeps mirror (branch clears)");
         constexpr bool s3 = ImeMirrorNext(s2, VK_RETURN); // mirror value at branch decision time
-        static_assert(!EnterTranslationAllowed(true, true, false, s3), "P7: composing Enter is gated, not fired");
-        //     Branch accepted the task and cleared the flag -> the next keydown
-        //     observes the cleared state; a subsequent bare Enter can fire.
-        constexpr bool s4 = false; // post-branch clear performed by hook.cpp
+        static_assert(!EnterTranslationAllowed(true, true, false, s3),
+                      "P7: composing Enter never fires through the BARE gate (unchanged; F2 promotes it separately)");
+        static_assert(ImeCommitEnterPromoted(true, false),
+                      "F2: composing Enter + active hook + idle worker -> promoted (commit-then-translate)");
+        static_assert(!ImeCommitEnterPromoted(false, false),
+                      "F2: composing Enter + inactive hook -> pass through unchanged (pre-F2)");
+        static_assert(!ImeCommitEnterPromoted(true, true),
+                      "F2: composing Enter + busy worker -> pass through unchanged (pre-F2)");
+        //     Branch retired the flag (promotion or pass-through) -> the next
+        //     keydown observes the cleared state; a subsequent bare Enter can
+        //     fire through the ordinary gates (the consecutive-second-Enter
+        //     send/newline path - never double-promoted from one composition).
+        constexpr bool s4 = false; // post-branch retire performed by hook.cpp
         static_assert(EnterTranslationAllowed(true, true, false, ImeMirrorNext(s4, VK_RETURN)),
-                      "P7: bare Enter after branch-cleared mirror re-arms pipeline");
+                      "P7: bare Enter after branch-retired mirror re-arms pipeline");
         // (6) Esc-cleared composition followed by bare Enter also re-arms:
         constexpr bool s5 = ImeMirrorNext(s2, VK_ESCAPE); // user cancelled composition
         static_assert(!s5, "P7: Esc-clear folds mirror to idle");
@@ -2679,7 +2696,7 @@ void TestImeCompositionGate() {
         m = ImeMirrorNext(m, VK_RETURN);              // commit Enter keeps mirror
         TEST_CHECK(m, "P7 runtime: commit Enter keeps mirror (branch owns clear)");
         TEST_CHECK(!EnterTranslationAllowed(true, true, false, m),
-                   "P7 runtime: composing Enter is gated, not fired");
+                   "P7 runtime: composing Enter never fires through the BARE gate (F2 promotes separately)");
         m = ImeMirrorNext(m, VK_ESCAPE);              // Esc clears composition
         TEST_CHECK(!m, "P7 runtime: Esc-clear folds mirror to idle");
         m = ImeMirrorNext(m, VK_PROCESSKEY);          // fresh interception re-opens
@@ -2688,6 +2705,33 @@ void TestImeCompositionGate() {
         TEST_CHECK(!m, "P7 runtime: plain Delete clears reopened composition");
         TEST_CHECK(EnterTranslationAllowed(true, true, false, ImeMirrorNext(m, VK_RETURN)),
                    "P7 runtime: bare Enter after clear re-arms pipeline");
+    }
+
+    // F2 (REQ-F2, V2 verify §3d): runtime fold of the composing-Enter
+    // commit-then-translate decision + the single-promotion guarantee (the
+    // "연속 두 번째 Enter" gate). One composing Enter is promoted (active +
+    // idle) and the mirror is retired by the branch; the NEXT Enter then sees
+    // idle and is evaluated by the ordinary gates, so a second Enter can never
+    // be double-promoted from the same composition - it takes the send/newline
+    // path. Only a fresh sentence (new VK_PROCESSKEY) re-opens composition and
+    // is promoted again.
+    {
+        bool m = ImeMirrorNext(false, VK_PROCESSKEY); // jamo interception opens composition
+        TEST_CHECK(m, "F2 runtime: composition open before the commit Enter");
+        TEST_CHECK(ImeCommitEnterPromoted(true, false),
+                   "F2 runtime: active hook + idle worker -> composing Enter promoted (translate)");
+        TEST_CHECK(!ImeCommitEnterPromoted(false, false),
+                   "F2 runtime: inactive hook -> composing Enter passes through (pre-F2)");
+        TEST_CHECK(!ImeCommitEnterPromoted(true, true),
+                   "F2 runtime: busy worker -> composing Enter passes through (pre-F2)");
+        m = ImeMirrorNext(m, VK_RETURN); // mirror value at the branch decision (kept)
+        TEST_CHECK(m, "F2 runtime: commit Enter keeps mirror until the branch decides");
+        m = false;                       // post-promotion retire (hook.cpp store)
+        TEST_CHECK(EnterTranslationAllowed(true, true, false, ImeMirrorNext(m, VK_RETURN)),
+                   "F2 runtime: second Enter after promotion is a normal bare Enter (send-of-output)");
+        m = ImeMirrorNext(false, VK_PROCESSKEY); // fresh sentence re-opens composition
+        TEST_CHECK(m && ImeCommitEnterPromoted(true, false),
+                   "F2 runtime: fresh-sentence composing Enter is promoted again (translate-per-sentence)");
     }
 
     // R5 (Debug-Surgical) Enter-path empty-capture verdict, pinned on the
@@ -2707,13 +2751,27 @@ void TestImeCompositionGate() {
     static_assert(!EmptyCaptureNeedsHold(false, true),
                   "R5: non-empty capture cannot be smart-bypassed and held simultaneously (vacuous guard)");
 
-    // Enter gate matrix (mirror value feeds ime_composing):
+    // Enter gate matrix (mirror value feeds ime_composing). These pin the
+    // BARE-Enter gate contract, which is UNCHANGED by F2: composing Enter is
+    // served by the composing branch via ImeCommitEnterPromoted (separate
+    // predicate), never by this gate.
     static_assert(EnterTranslationAllowed(true, true, false, false), "R17: plain Enter while idle -> fire");
-    static_assert(!EnterTranslationAllowed(true, true, false, true), "R17: composing -> NEVER fire");
+    static_assert(!EnterTranslationAllowed(true, true, false, true),
+                  "R17: composing -> NEVER fire through the bare gate (F2 promotes in the composing branch)");
     static_assert(!EnterTranslationAllowed(true, true, true, false), "R17: busy worker -> pass through");
     static_assert(!EnterTranslationAllowed(true, false, false, false), "R17: inactive hook -> pass through");
     static_assert(!EnterTranslationAllowed(false, true, false, true), "R17: VK_PROCESSKEY Enter -> pass through");
     static_assert(!EnterTranslationAllowed(false, true, false, false), "R17: non-Enter vk -> gate closed");
+    // F2 promotion matrix (evaluated only from the composing branch; Shift/Ctrl
+    // already returned upstream so the candidate is always a bare Enter):
+    static_assert(ImeCommitEnterPromoted(true, false),
+                  "F2: active + idle -> composing Enter promoted (commit-then-translate)");
+    static_assert(!ImeCommitEnterPromoted(false, false),
+                  "F2: inactive -> composing Enter passed through (pre-F2 byte-identical)");
+    static_assert(!ImeCommitEnterPromoted(true, true),
+                  "F2: busy -> composing Enter passed through (no queue pile-up)");
+    static_assert(!ImeCommitEnterPromoted(false, true),
+                  "F2: inactive + busy -> composing Enter passed through");
 
     // 2. Runtime IMM probe stability (win32_input seam - worker-thread-safe):
     //    callable from the test thread, idempotent, never crashes regardless
@@ -2790,10 +2848,14 @@ void TestShiftEnterGate() {
                   "S2: bare Enter, worker BUSY -> pass through (re-entrancy guard)");
     static_assert(!EnterSendReplaceAllowed(true, true, true, false, true),
                   "S2: Shift+Enter, worker BUSY -> pass through");
+    // F2 (REQ-F2) note: these two pin the BARE-GATE contract only
+    // (EnterSendReplaceAllowed is evaluated solely when composing==false, after
+    // the hook's composing branch returns). A composing Enter is decided by the
+    // composing branch + ImeCommitEnterPromoted, never by this S2 gate.
     static_assert(!EnterSendReplaceAllowed(true, true, false, true, false),
-                  "S2: bare Enter mid-IME-composition -> pass through (IME commit)");
+                  "S2: bare Enter mid-IME-composition never fires through the BARE gate (F2: composing branch promotes)");
     static_assert(!EnterSendReplaceAllowed(true, true, false, true, true),
-                  "S2: Shift+Enter mid-IME-composition -> pass through");
+                  "S2: Shift+Enter mid-IME-composition -> gate closed (Shift+Enter already passes upstream)");
 
     // Non-Enter vk never intercepts (gate stays closed on the vk axis).
     static_assert(!EnterSendReplaceAllowed(false, true, false, false, false),

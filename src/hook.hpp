@@ -58,6 +58,48 @@ constexpr bool EnterSendReplaceAllowed(bool vk_is_return, bool active, bool work
     return EnterTranslationAllowed(vk_is_return, active, worker_busy, ime_composing) && !shift;
 }
 
+// ---- F2 (REQ-F2, session 260908_0002, V2 verify §3d): composing-Enter
+// commit-then-translate promotion ----
+//
+// Pre-F2, a VK_RETURN arriving while the hook-local mirror reported a live
+// composition was passed through untouched ([hook.cpp] composing branch). On
+// IMM32-class IMEs (Korean jamo delivered as VK_PROCESSKEY - the mirror's
+// documented opening case) that Enter IS the IME's commit keystroke: in a chat
+// app the app commits AND SENDS the untranslated text (KakaoTalk/Discord/
+// Slack), in an editor it only line-breaks - translation never runs, breaking
+// the product rule "유저가 작성한 문장 1회 Enter로 번역". F2 promotes that
+// composing Enter into the SAME pipeline the bare-Enter path uses
+// (commit-then-translate), but ONLY when the pipeline can actually serve it:
+// hook active and worker idle. When inactive or busy the Enter passes through
+// unchanged and the app's IME commits+sends exactly as it would have without
+// us (byte-identical to pre-F2).
+//
+// The predicate intentionally carries NO composing/modifier inputs: it is only
+// evaluated from the hook's composing branch, where composing==true by
+// construction and Shift/Ctrl have already returned upstream (Shift+Enter
+// newline, Ctrl+Enter pass-through), so the candidate is always a bare Enter.
+// The SAFE commit half is performed by the worker, never by the hook:
+// ExecuteTask starts with FlushIme() + a ForegroundImeComposing() re-probe
+// (worker.cpp) that finalises the still-open composition BEFORE any
+// clipboard/capture work - the exact mechanism the TSF path (mirror false
+// negative) already relies on and the reason no capture can ever run against a
+// live GCS_COMPSTR (the "마지막 글자 중복 복사" corruption). If the flush
+// cannot commit, the worker backstop hands a synthetic Enter to the app
+// (graceful degradation to the pre-F2 send).
+//
+// Single-promotion guarantee (the "연속 두 번째 Enter" gate): promotion
+// retires the mirror, so the NEXT Enter is never composing and flows through
+// the ordinary gates (busy -> pass-through; last-paste ledger ExactMatch ->
+// send-of-output). Only the ONE Enter that finalises a composition can be
+// promoted; a consecutive second composing Enter requires a fresh
+// VK_PROCESSKEY (a new sentence), which SHOULD translate. EnterTranslationAllowed
+// itself is intentionally UNCHANGED (composing -> never fire through the bare
+// gate) - promotion is a separate decision evaluated only from the composing
+// branch, so the existing predicate contracts stay intact.
+constexpr bool ImeCommitEnterPromoted(bool active, bool worker_busy) {
+    return active && !worker_busy;
+}
+
 // Hook-local IME composition mirror, updated on every REAL (non-synthetic)
 // keydown with O(1) relaxed-atomic traffic and ZERO cross-thread messaging.
 //
