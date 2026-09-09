@@ -41,6 +41,13 @@ bool ContainsVietnamese(std::wstring_view text);
 // script-family classifier, not a language assertion (F1).
 bool ContainsLatin(std::wstring_view text);
 
+bool ContainsDevanagari(std::wstring_view text);
+bool ContainsBengali(std::wstring_view text);
+bool ContainsKhmer(std::wstring_view text);
+bool ContainsLao(std::wstring_view text);
+bool ContainsMyanmar(std::wstring_view text);
+bool ContainsGreek(std::wstring_view text);
+
 // Detects language of given text based on script analysis.
 // Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian",
 // "Thai", "Arabic", "Hebrew", "Auto Detect", or "Unknown". ("English" was

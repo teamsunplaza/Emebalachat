@@ -34,10 +34,13 @@ ExtraDiskSpaceRequired=2100000000
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
+AppMutex=Global\Emebalachat_SingleInstance
+CloseApplications=yes
+RestartApplications=no
+UninstallDisplayIcon={app}\Emebala_chat.exe
+
 ; Optional icon/image files - compile succeeds even if they don't exist
-#ifexist "assets\icon.ico"
-SetupIconFile=assets\icon.ico
-#endif
+SetupIconFile=..\assets\Emebala_Chat_Appicon.ico
 #ifexist "assets\wizard_large.bmp"
 WizardImageFile=assets\wizard_large.bmp
 #endif
@@ -52,8 +55,8 @@ WizardSmallImageFile=assets\wizard_small.bmp
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
+Name: "chinesetraditional"; MessagesFile: "languages\ChineseTraditional.isl"
 
 ; ------------------------------------------------------------------------
 ; [CustomMessages] - Localized strings for download and disk space logic
@@ -67,27 +70,79 @@ chinesetraditional.TaskAutoStart=Windows 啟動時自動執行埃梅巴拉 翻�
 
 english.TaskDesktopIcon=Create a desktop shortcut
 korean.TaskDesktopIcon=바탕화면에 바로가기 만들기
+japanese.TaskDesktopIcon=デスクトップにショートカットを作成する
+chinesesimplified.TaskDesktopIcon=创建桌面快捷方式
+chinesetraditional.TaskDesktopIcon=建立桌面捷徑
 
 english.DownloadingModel=Downloading AI translation model...
 korean.DownloadingModel=AI 번역 모델 다운로드 중...
+japanese.DownloadingModel=AI翻訳モデルをダウンロード中...
+chinesesimplified.DownloadingModel=正在下载AI翻译模型...
+chinesetraditional.DownloadingModel=正在下載AI翻譯模型...
 
 english.DownloadingModelDesc=This may take several minutes...
 korean.DownloadingModelDesc=인터넷 속도에 따라 몇 분 정도 걸릴 수 있습니다.
+japanese.DownloadingModelDesc=インターネット速度によって数分かかる場合があります...
+chinesesimplified.DownloadingModelDesc=根据网速可能需要几分钟...
+chinesetraditional.DownloadingModelDesc=根據網速可能需要幾分鐘...
 
 english.ModelAlreadyExists=AI model already exists. Skipping download.
 korean.ModelAlreadyExists=AI 모델이 이미 설치되어 있습니다. 다운로드를 건너뜁니다.
+japanese.ModelAlreadyExists=AIモデルは既にインストールされています。ダウンロードをスキップします。
+chinesesimplified.ModelAlreadyExists=AI模型已安装。跳过下载。
+chinesetraditional.ModelAlreadyExists=AI模型已安裝。跳過下載。
+
+; F2 (security, session 260909_0002): a pre-existing model file whose SHA-256
+; does NOT match the pin (or cannot be hashed at all) is now an EXPLICIT user
+; decision instead of a log-only warning. YES = delete + re-download the
+; verified model; NO = keep the file untouched and continue (historical).
+english.ModelHashMismatchQuestion=The existing model file failed integrity (SHA-256) verification. It may be corrupted or tampered with.%n%nYes deletes the file and re-downloads the verified model. No keeps the existing file untouched and skips the download.%n%nDelete and re-download now?
+korean.ModelHashMismatchQuestion=기존 모델 파일의 무결성(SHA-256) 검증에 실패했습니다. 파일이 손상되었거나 변조되었을 수 있습니다.%n%n예를 선택하면 파일을 삭제하고 검증된 모델을 다시 다운로드합니다. 아니요를 선택하면 기존 파일을 그대로 두고 다운로드를 건너뜁니다.%n%n지금 삭제하고 재다운로드할까요?
+japanese.ModelHashMismatchQuestion=既存のモデルファイルの整合性（SHA-256）検証に失敗しました。ファイルが破損しているか改ざんされている可能性があります。%n%n「はい」を選ぶとファイルを削除し、検証済みモデルを再ダウンロードします。「いいえ」を選ぶと既存のファイルをそのままにし、ダウンロードをスキップします。%n%n今すぐ削除して再ダウンロードしますか？
+chinesesimplified.ModelHashMismatchQuestion=现有模型文件未通过完整性（SHA-256）验证，可能已损坏或被篡改。%n%n选择“是”将删除该文件并重新下载经过验证的模型；选择“否”将保留现有文件并跳过下载。%n%n是否立即删除并重新下载？
+chinesetraditional.ModelHashMismatchQuestion=現有模型檔案未通過完整性（SHA-256）驗證，可能已損壞或被竄改。%n%n選擇「是」將刪除該檔案並重新下載經過驗證的模型；選擇「否」將保留現有檔案並略過下載。%n%n是否立即刪除並重新下載？
+
+english.ModelHashUnverifiableQuestion=The existing model file could not be hashed to verify its integrity (read error). It may be corrupted or locked by another program.%n%nYes deletes the file and re-downloads the verified model. No keeps the existing file untouched and skips the download.%n%nDelete and re-download now?
+korean.ModelHashUnverifiableQuestion=기존 모델 파일을 해싱하여 무결성을 확인할 수 없습니다(읽기 오류). 파일이 손상되었거나 다른 프로그램에 의해 잠겨 있을 수 있습니다.%n%n예를 선택하면 파일을 삭제하고 검증된 모델을 다시 다운로드합니다. 아니요를 선택하면 기존 파일을 그대로 두고 다운로드를 건너뜁니다.%n%n지금 삭제하고 재다운로드할까요?
+japanese.ModelHashUnverifiableQuestion=既存のモデルファイルをハッシュ化して整合性を確認できませんでした（読み取りエラー）。ファイルが破損しているか、他のプログラムによってロックされている可能性があります。%n%n「はい」を選ぶとファイルを削除し、検証済みモデルを再ダウンロードします。「いいえ」を選ぶと既存のファイルをそのままにし、ダウンロードをスキップします。%n%n今すぐ削除して再ダウンロードしますか？
+chinesesimplified.ModelHashUnverifiableQuestion=无法对现有模型文件进行哈希校验以确认其完整性（读取错误）。文件可能已损坏或被其他程序锁定。%n%n选择“是”将删除该文件并重新下载经过验证的模型；选择“否”将保留现有文件并跳过下载。%n%n是否立即删除并重新下载？
+chinesetraditional.ModelHashUnverifiableQuestion=無法對現有模型檔案進行雜湊校驗以確認其完整性（讀取錯誤）。檔案可能已損壞或被其他程式鎖定。%n%n選擇「是」將刪除該檔案並重新下載經過驗證的模型；選擇「否」將保留現有檔案並略過下載。%n%n是否立即刪除並重新下載？
+
+english.ModelHashDeleteFailed=The unverified model file could not be deleted (it may be locked by another program). The installer will keep it unchanged and continue; the app will refuse to load it until it passes verification.
+korean.ModelHashDeleteFailed=검증되지 않은 모델 파일을 삭제할 수 없습니다(다른 프로그램이 사용 중일 수 있음). 설치 마법사가 기존 파일을 그대로 두고 계속 진행하며, 앱은 검증을 통과할 때까지 이 파일의 로드를 거부합니다.
+japanese.ModelHashDeleteFailed=検証されていないモデルファイルを削除できませんでした（他のプログラムによって使用中の可能性があります）。インストーラーは既存のファイルを変更せずに続行します。アプリは検証に合格するまでこのファイルの読み込みを拒否します。
+chinesesimplified.ModelHashDeleteFailed=无法删除未经验证的模型文件（可能正被其他程序占用）。安装程序将保留该文件并继续；在通过验证之前，应用将拒绝加载该文件。
+chinesetraditional.ModelHashDeleteFailed=無法刪除未經驗證的模型檔案（可能正被其他程式佔用）。安裝程式將保留該檔案並繼續；在通過驗證之前，應用程式將拒絕載入該檔案。
 
 english.DownloadFailed=Failed to download the AI model.
 korean.DownloadFailed=AI 번역 모델 다운로드에 실패했습니다.
+japanese.DownloadFailed=AI翻訳モデルのダウンロードに失敗しました。
+chinesesimplified.DownloadFailed=AI翻译模型下载失败。
+chinesetraditional.DownloadFailed=AI翻譯模型下載失敗。
 
 english.DownloadFailedDetail=You can still use Google Translate (free, online). The model can be downloaded later.
 korean.DownloadFailedDetail=Google 번역(무료, 온라인)으로 계속 사용 가능합니다. 모델은 나중에 수동 다운로드 가능합니다.
+japanese.DownloadFailedDetail=Google翻訳（無料、オンライン）で引き続き利用可能です。モデルは後で手動ダウンロードできます。
+chinesesimplified.DownloadFailedDetail=仍可使用Google翻译（免费、在线）。模型可稍后手动下载。
+chinesetraditional.DownloadFailedDetail=仍可使用Google翻譯（免費、線上）。模型可稍後手動下載。
 
 english.DownloadRetry=Retry download?
 korean.DownloadRetry=다운로드를 다시 시도하시겠습니까?
+japanese.DownloadRetry=ダウンロードを再試行しますか？
+chinesesimplified.DownloadRetry=是否重试下载？
+chinesetraditional.DownloadRetry=是否重試下載？
 
 english.DiskSpaceWarning=At least 3 GB free space recommended. Current: %1 GB. Continue?
 korean.DiskSpaceWarning=최소 3GB 여유 공간 필요. 현재: %1 GB. 계속?
+japanese.DiskSpaceWarning=最低3GBの空き容量が必要です。現在: %1 GB。続行しますか？
+chinesesimplified.DiskSpaceWarning=至少需要3GB可用空间。当前: %1 GB。是否继续？
+chinesetraditional.DiskSpaceWarning=至少需要3GB可用空間。目前: %1 GB。是否繼續？
+
+english.UninstallCleanupPrompt=Do you want to remove user settings and diagnostic logs? (Recommended for clean uninstall)
+korean.UninstallCleanupPrompt=사용자 설정 및 진단 로그를 삭제하시겠습니까? (클린 제거 시 권장)
+japanese.UninstallCleanupPrompt=ユーザー設定と診断ログを削除しますか？（クリーンアンインストールに推奨）
+chinesesimplified.UninstallCleanupPrompt=是否删除用户设置和诊断日志？（建议进行干净卸载）
+chinesetraditional.UninstallCleanupPrompt=是否刪除使用者設定和診斷日誌？（建議進行乾淨移除）
 
 english.ShortcutName=Emebala Chat
 korean.ShortcutName=에메발라 챗
@@ -108,13 +163,18 @@ Name: "autostart"; Description: "{cm:TaskAutoStart}"
 [Files]
 Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\assets\Emebala_Chat_Appicon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\Emebala_Chat_Appicon.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\assets\Emebala_Chat_Appicon_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\Emebala_Chat_Logo_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; ------------------------------------------------------------------------
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
 [Icons]
 Name: "{group}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"
-Name: "{group}\Uninstall"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,{cm:ShortcutName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
@@ -129,12 +189,13 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\models"
 Type: files; Name: "{app}\config.json"
+Type: filesandordirs; Name: "{app}\assets"
 
 ; ------------------------------------------------------------------------
 ; [Run] - Post-install launch option
 ; ------------------------------------------------------------------------
 [Run]
-Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,{cm:ShortcutName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,{cm:ShortcutName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 ; ========================================================================
 ; [Code] - Pascal Script for custom installer logic
@@ -156,7 +217,7 @@ const
   // VerifyDownloadedModel() re-checks the temp file before it is copied to
   // the models directory, so an attacker-influenced GGUF is never handed
   // to the llama.cpp parser.
-  EXPECTED_MODEL_SHA256 = '';
+  EXPECTED_MODEL_SHA256 = '5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4';
 
 var
   DownloadPage: TDownloadWizardPage;
@@ -236,8 +297,8 @@ begin
     begin
       // Format free space as GB with one decimal place
       FreeSpaceGB := Format('%.1f', [FreeSpaceMB / 1024.0]);
-      if MsgBox(FmtMessage(CustomMessage('DiskSpaceWarning'), [FreeSpaceGB]),
-                mbConfirmation, MB_YESNO) = IDNO then
+      if SuppressibleMsgBox(FmtMessage(CustomMessage('DiskSpaceWarning'), [FreeSpaceGB]),
+                mbConfirmation, MB_YESNO, IDYES) = IDNO then
       begin
         Result := False;
       end;
@@ -256,7 +317,19 @@ var
   DownloadSuccess: Boolean;
   HashOk: Boolean;
   UserChoice: Integer;
+  // F2 (security, session 260909_0002): pre-existing model verification state
+  ExistingHashOk: Boolean;
+  ExistingHashError: Boolean;
+  MismatchQuestion: String;
 begin
+  // Support /SKIPMODEL command-line parameter for silent/automated installs
+  if ExpandConstant('{param:SKIPMODEL|0}') = '1' then
+  begin
+    Log('/SKIPMODEL parameter detected - skipping model download.');
+    ModelSkipped := True;
+    Exit;
+  end;
+
   ModelDestDir := ExpandConstant('{app}\models');
   ModelDestPath := ModelDestDir + '\' + MODEL_FILENAME;
   ModelTmpPath := ExpandConstant('{tmp}\') + MODEL_FILENAME;
@@ -265,17 +338,67 @@ begin
   if FileExists(ModelDestPath) then
   begin
     Log('Model already exists at: ' + ModelDestPath);
-    // M2: log-only hash check for pre-existing files. User data is never
-    // deleted by the installer; a mismatch is surfaced in the setup log so
-    // the user can re-download or manually verify (certutil -hashfile).
+    // F2 (security, session 260909_0002, replaces the M2 log-only path): a
+    // pre-existing model that FAILS the SHA-256 pin (or cannot be hashed at
+    // all) is no longer a silent "warning + skip". The user is explicitly
+    // asked (mbConfirmation / MB_YESNO):
+    //   YES -> delete the unverified file and FALL THROUGH into the normal
+    //          download flow below. The temp-file/retry logic is untouched:
+    //          the destination slot is now free, so the post-download
+    //          rename/copy succeeds and RequiredSHA256OfFile re-pins the
+    //          fresh bytes (plus the VerifyDownloadedModel re-check).
+    //   NO  -> historical behavior: keep the file untouched, skip the
+    //          download, continue installation. The runtime now re-verifies
+    //          the model before loading it (F3, src/engine.cpp), so a file
+    //          left unverified here cannot silently serve translations.
+    // Matching hash (or empty pin on dev builds) keeps the old info dialog.
+    // Under /SILENT or /SUPPRESSIBLE the confirmation defaults to NO: the
+    // installer never deletes a pre-existing file without a visible answer.
+    ExistingHashOk := True;
+    ExistingHashError := False;
     try
-      if not VerifyDownloadedModel(ModelDestPath) then
-        Log('WARNING: pre-existing model file does not match EXPECTED_MODEL_SHA256. It was NOT touched by this installer.');
+      ExistingHashOk := VerifyDownloadedModel(ModelDestPath);
     except
       Log('WARNING: could not hash pre-existing model file: ' + GetExceptionMessage());
+      ExistingHashOk := False;
+      ExistingHashError := True;
     end;
-    MsgBox(CustomMessage('ModelAlreadyExists'), mbInformation, MB_OK);
-    Exit;
+
+    if ExistingHashOk then
+    begin
+      SuppressibleMsgBox(CustomMessage('ModelAlreadyExists'), mbInformation, MB_OK, IDOK);
+      Exit;
+    end;
+
+    if ExistingHashError then
+      MismatchQuestion := CustomMessage('ModelHashUnverifiableQuestion')
+    else
+      MismatchQuestion := CustomMessage('ModelHashMismatchQuestion');
+
+    if SuppressibleMsgBox(MismatchQuestion, mbConfirmation, MB_YESNO, IDNO) = IDYES then
+    begin
+      if DeleteFile(ModelDestPath) then
+      begin
+        Log('F2: user chose to delete the unverified pre-existing model; re-downloading to: ' + ModelDestPath);
+        // fall through to the download flow below
+      end
+      else
+      begin
+        // Deletion failed (file locked). Do NOT download over it; surface
+        // the state and continue without a model: ModelSkipped := True makes
+        // CreateConfigFile choose engine_type=google, and the runtime F3
+        // check keeps the unverifiable file from loading locally.
+        Log('F2: user chose re-download but the unverified file could not be deleted: ' + ModelDestPath);
+        SuppressibleMsgBox(CustomMessage('ModelHashDeleteFailed'), mbError, MB_OK, IDOK);
+        ModelSkipped := True;
+        Exit;
+      end;
+    end
+    else
+    begin
+      Log('F2: user chose to keep the unverified pre-existing model; download skipped. It was NOT touched by this installer.');
+      Exit;
+    end;
   end;
 
   // Create the models directory if it does not exist
@@ -321,13 +444,23 @@ begin
 
     if DownloadSuccess then
     begin
-      // Copy the downloaded file from temp to the models directory
-      if FileCopy(ModelTmpPath, ModelDestPath, False) then
-        Log('Model file copied to: ' + ModelDestPath)
+      // Try rename first (zero-copy if same volume), fall back to copy+delete
+      if RenameFile(ModelTmpPath, ModelDestPath) then
+      begin
+        Log('Model file moved (renamed) to: ' + ModelDestPath);
+      end
+      else if CopyFile(ModelTmpPath, ModelDestPath, False) then
+      begin
+        Log('Model file copied to: ' + ModelDestPath);
+        if DeleteFile(ModelTmpPath) then
+          Log('Temp model file deleted: ' + ModelTmpPath)
+        else
+          Log('WARNING: Could not delete temp model file: ' + ModelTmpPath);
+      end
       else
       begin
         Log('Failed to copy model file to destination.');
-        MsgBox(CustomMessage('DownloadFailed'), mbError, MB_OK);
+        SuppressibleMsgBox(CustomMessage('DownloadFailed'), mbError, MB_OK, IDOK);
         ModelSkipped := True;
         Exit;
       end;
@@ -335,12 +468,13 @@ begin
     else
     begin
       // Download failed - offer Retry / Skip / Cancel
-      UserChoice := MsgBox(
+      UserChoice := SuppressibleMsgBox(
         CustomMessage('DownloadFailed') + #13#10#13#10 +
         CustomMessage('DownloadFailedDetail') + #13#10#13#10 +
         CustomMessage('DownloadRetry'),
         mbError,
-        MB_YESNOCANCEL
+        MB_YESNOCANCEL,
+        IDNO
       );
 
       case UserChoice of
@@ -437,6 +571,8 @@ end;
 // CurUninstallStepChanged - Clean up auto-start registry entry on uninstall
 // ------------------------------------------------------------------------
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  LocalAppData: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
@@ -444,5 +580,19 @@ begin
       'Software\Microsoft\Windows\CurrentVersion\Run',
       'Emebalachat');
     Log('Auto-start registry entry removed.');
+
+    // Offer to clean up user settings and diagnostic logs
+    LocalAppData := ExpandConstant('{localappdata}\Emebalachat');
+    if DirExists(LocalAppData) then
+    begin
+      if SuppressibleMsgBox(CustomMessage('UninstallCleanupPrompt'),
+                            mbConfirmation, MB_YESNO, IDNO) = IDYES then
+      begin
+        DelTree(LocalAppData, True, True, True);
+        Log('User data directory removed: ' + LocalAppData);
+      end
+      else
+        Log('User chose to keep settings at: ' + LocalAppData);
+    end;
   end;
 end;

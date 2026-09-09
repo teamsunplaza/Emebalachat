@@ -10,3 +10,35 @@
 #include <windows.h>
 
 IDI_ICON1 ICON "..\\assets\\Emebala_Chat_Appicon.ico"
+
+// REQ-B8: VERSIONINFO resource for Explorer file properties.
+// Exposes version, product name, and company in the Details tab of
+// the executable's Properties dialog (right-click -> Properties).
+1 VERSIONINFO
+ FILEVERSION 0,10,0,0
+ PRODUCTVERSION 0,10,0,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Team Sunplaza\0"
+            VALUE "FileDescription",  "Emebala Chat - Real-time Translation\0"
+            VALUE "FileVersion",      "0.10.0.0\0"
+            VALUE "InternalName",     "Emebala_chat\0"
+            VALUE "LegalCopyright",   "Copyright (C) 2025-2026 Team Sunplaza\0"
+            VALUE "OriginalFilename", "Emebala_chat.exe\0"
+            VALUE "ProductName",      "Emebala Chat\0"
+            VALUE "ProductVersion",   "0.10.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -8,9 +8,15 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include <windows.h>
+#include <bcrypt.h>
+
+#pragma comment(lib, "bcrypt.lib")
 
 #if defined(HAVE_LLAMA_CPP) || __has_include("llama.h")
 #ifndef HAVE_LLAMA_CPP
@@ -186,6 +192,292 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
     return true;
 }
 
+// F3 (security, session 260909_0002): SHA-256 over an arbitrary file using
+// Windows CNG (bcrypt.dll). Streams in 4 MiB chunks so a 1.91 GB model never
+// loads into memory. BCRYPT_FLAG_ALGSCOPE_EXPLICIT is not needed: BCrypt*
+// signatures below are the exact SDK declarations (SDK 10.0.26100.0,
+// shared/bcrypt.h lines 1213/1522/1535/1545/1591/1303 - verified during
+// implementation; dependency-hallucination-check passed against the header).
+bool ComputeFileSha256(const std::filesystem::path& file, std::string& out_hex) {
+    out_hex.clear();
+
+    HANDLE hFile = ::CreateFileW(file.c_str(), GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                                 nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        DIAG_F("ENGINE/ComputeFileSha256/010: CreateFileW failed (err=%lu) path=%s\n",
+               ::GetLastError(), file.string().c_str());
+        return false;
+    }
+
+    // RAII guards keep every early-return path handle-and-API leak free.
+    struct HandleGuard {
+        HANDLE h;
+        ~HandleGuard() { if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h); }
+    } file_guard{hFile};
+
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    NTSTATUS st = ::BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    if (st < 0) { // NT_SUCCESS == (st >= 0)
+        DIAG_F("ENGINE/ComputeFileSha256/011: BCryptOpenAlgorithmProvider failed (st=0x%08lx)\n",
+               static_cast<unsigned long>(st));
+        return false;
+    }
+    struct AlgGuard {
+        BCRYPT_ALG_HANDLE* p;
+        ~AlgGuard() { if (p && *p) ::BCryptCloseAlgorithmProvider(*p, 0); }
+    } alg_guard{&hAlg};
+
+    st = ::BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0);
+    if (st < 0) {
+        DIAG_F("ENGINE/ComputeFileSha256/012: BCryptCreateHash failed (st=0x%08lx)\n",
+               static_cast<unsigned long>(st));
+        return false;
+    }
+    struct HashGuard {
+        BCRYPT_HASH_HANDLE* p;
+        ~HashGuard() { if (p && *p) ::BCryptDestroyHash(*p); }
+    } hash_guard{&hHash};
+
+    std::vector<BYTE> chunk(4 * 1024 * 1024);
+    for (;;) {
+        DWORD read = 0;
+        if (!::ReadFile(hFile, chunk.data(), static_cast<DWORD>(chunk.size()), &read, nullptr)) {
+            DIAG_F("ENGINE/ComputeFileSha256/013: ReadFile failed (err=%lu) path=%s\n",
+                   ::GetLastError(), file.string().c_str());
+            return false;
+        }
+        if (read == 0) {
+            break; // EOF
+        }
+        st = ::BCryptHashData(hHash, chunk.data(), read, 0);
+        if (st < 0) {
+            DIAG_F("ENGINE/ComputeFileSha256/014: BCryptHashData failed (st=0x%08lx)\n",
+                   static_cast<unsigned long>(st));
+            return false;
+        }
+    }
+
+    BYTE digest[32] = {};
+    st = ::BCryptFinishHash(hHash, digest, sizeof(digest), 0);
+    if (st < 0) {
+        DIAG_F("ENGINE/ComputeFileSha256/015: BCryptFinishHash failed (st=0x%08lx)\n",
+               static_cast<unsigned long>(st));
+        return false;
+    }
+
+    static const char kHex[] = "0123456789abcdef";
+    out_hex.reserve(64);
+    for (BYTE b : digest) {
+        out_hex.push_back(kHex[b >> 4]);
+        out_hex.push_back(kHex[b & 0x0F]);
+    }
+    return true;
+}
+
+namespace {
+
+// F3 marker cache: the 1.91 GB hash must run at most ONCE per model file.
+// A marker file named "<model>.sha256ok" (next to the model, or in the
+// caller-supplied marker_dir for tests) stores:
+//   line 1: verified SHA-256 hex
+//   line 2: raw last-write mtime (file_clock epoch ticks)
+//   line 3: file size in bytes
+// VerifyModelSha256() skips the full hash when the marker exists AND both
+// mtime and size still match the model on disk - the attacker model behind
+// F2/F3 (tamper the GGUF in place) changes mtime, invalidating the cache.
+// Touching ONLY the mtime without content change is a local-privileged
+// scenario the installer (F2) also cannot distinguish; accepted trade-off,
+// documented here.
+// Production default (marker_dir empty) checks TWO locations because the
+// shipped model lives in {app}\models (Program Files, admin-written by the
+// installer) where a non-elevated app process may not be able to create the
+// marker: first next to the model, then %LOCALAPPDATA%\Emebalachat.
+std::vector<std::filesystem::path> MarkerCandidates(
+        const std::filesystem::path& model_path,
+        const std::filesystem::path& marker_dir) {
+    std::wstring marker_name = model_path.filename().native() + L".sha256ok";
+    std::vector<std::filesystem::path> dirs;
+    if (!marker_dir.empty()) {
+        dirs.push_back(marker_dir);
+    } else {
+        dirs.push_back(model_path.parent_path());
+        // LocalAppData fallback dir: parent of %LOCALAPPDATA%\Emebalachat\config.json
+        const auto cfg = AppConfig::GetLocalAppDataConfigPath();
+        if (!cfg.empty()) {
+            std::filesystem::path la = cfg.parent_path();
+            if (la != dirs.front()) {
+                dirs.push_back(la);
+            }
+        }
+    }
+    std::vector<std::filesystem::path> out;
+    out.reserve(dirs.size());
+    for (const auto& d : dirs) {
+        out.push_back(d / marker_name);
+    }
+    return out;
+}
+
+bool WriteVerifyMarker(const std::filesystem::path& marker,
+                       const std::string& hex,
+                       const std::filesystem::file_time_type& mtime,
+                       uintmax_t size) {
+    // Raw file_clock epoch count (100 ns ticks on Windows). No wall-clock
+    // conversion is needed: the marker only has to be SELF-CONSISTENT with
+    // the values MarkerMatchesFile() recomputes, and the raw count is
+    // stable across runs and locale/timezone changes.
+    const long long stamp = static_cast<long long>(mtime.time_since_epoch().count());
+    std::ofstream out(marker, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out << hex << '\n' << stamp << '\n' << size << '\n';
+    return static_cast<bool>(out);
+}
+
+bool IsPinnedModelName(const std::filesystem::path& model_path) {
+    return LowerAscii(model_path.filename().string()) ==
+           LowerAscii(std::string(kPinnedModelFilename));
+}
+
+bool MarkerMatchesFile(const std::filesystem::path& marker,
+                       const std::filesystem::path& model_path) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(marker, ec) || ec) {
+        return false;
+    }
+    std::ifstream in(marker, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::string hex;
+    long long epoch = -1;
+    unsigned long long size = 0;
+    if (!(in >> hex >> epoch >> size)) {
+        return false;
+    }
+    // A marker authorizes skipping the hash ONLY in the same situations
+    // VerifyModelSha256 itself would authorize: (a) hash equals the pin, or
+    // (b) a consent marker for a non-pinned, user-configured filename. A
+    // marker naming the PINNED file but carrying a different hash (pin
+    // rotation, or a forged consent marker for the pinned name) never hits -
+    // the file must re-hash and be compared against the current pin.
+    if (hex != kExpectedModelSha256 && IsPinnedModelName(model_path)) {
+        return false;
+    }
+    const auto actual_size = static_cast<unsigned long long>(
+        std::filesystem::file_size(model_path, ec));
+    if (ec || actual_size != size) {
+        return false;
+    }
+    const auto mtime = std::filesystem::last_write_time(model_path, ec);
+    if (ec) {
+        return false;
+    }
+    // Same raw file_clock epoch count that WriteVerifyMarker persisted.
+    const auto actual_epoch = static_cast<long long>(mtime.time_since_epoch().count());
+    return actual_epoch == epoch;
+}
+
+} // namespace
+
+bool VerifyModelSha256(const std::filesystem::path& model_path,
+                       const std::filesystem::path& marker_dir) {
+    if (model_path.empty()) {
+        DIAG_F("ENGINE/VerifyModelSha256/001: empty model path rejected\n");
+        return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(model_path, ec) || ec) {
+        DIAG_F("ENGINE/VerifyModelSha256/002: model file missing or not regular: %s\n",
+               model_path.string().c_str());
+        return false;
+    }
+
+    const auto markers = MarkerCandidates(model_path, marker_dir);
+    for (const auto& marker : markers) {
+        if (MarkerMatchesFile(marker, model_path)) {
+            // Cache hit: the file was fully verified before and neither its
+            // size nor its last-write time changed since. Skip the 1.91 GB hash.
+            return true;
+        }
+    }
+
+    // Capture size+mtime BEFORE hashing and bind the marker to THAT stamp.
+    // Re-stating after the ~2 s hash would let a mid-hash in-place rewrite
+    // pair a stale-content hash with a fresh stamp (marker cache poisoning).
+    // If the file changes during/after hashing, the next run's stamp check
+    // fails and the file simply re-hashes.
+    const auto pre_mtime = std::filesystem::last_write_time(model_path, ec);
+    if (ec) {
+        DIAG_F("ENGINE/VerifyModelSha256/003: cannot stat model file: %s\n",
+               model_path.string().c_str());
+        return false;
+    }
+    const auto pre_size = std::filesystem::file_size(model_path, ec);
+    if (ec) {
+        DIAG_F("ENGINE/VerifyModelSha256/003: cannot size model file: %s\n",
+               model_path.string().c_str());
+        return false;
+    }
+
+    std::string hex;
+    if (!ComputeFileSha256(model_path, hex)) {
+        DIAG_F("ENGINE/VerifyModelSha256/003: hash computation failed: %s\n",
+               model_path.string().c_str());
+        return false;
+    }
+
+    if (hex == kExpectedModelSha256) {
+        // Success: persist the marker (first writable candidate) so the next
+        // launch is instant. A marker write failure is NOT a load failure
+        // (worst case: re-hash next run).
+        bool marker_written = false;
+        for (const auto& marker : markers) {
+            std::error_code mec;
+            std::filesystem::create_directories(marker.parent_path(), mec);
+            if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
+                marker_written = true;
+                break;
+            }
+        }
+        if (!marker_written) {
+            DIAG_F("ENGINE/VerifyModelSha256/004: could not write verification marker for: %s\n",
+                   model_path.string().c_str());
+        }
+        return true;
+    }
+
+    // Mismatch. Strict fail-closed ONLY for the pinned filename (see the
+    // header contract): that exact name is what installer/setup.iss downloads
+    // and what the pin was computed for, so any other bytes are corruption or
+    // tampering. Other filenames are models the user deliberately configured
+    // (e.g. a self-downloaded Q4 quant): consent-by-config, warn and allow.
+    if (IsPinnedModelName(model_path)) {
+        DIAG_F("ENGINE/VerifyModelSha256/006: SHA-256 MISMATCH for pinned model (expected %s, got %s); load blocked: %s\n",
+               kExpectedModelSha256, hex.c_str(), model_path.string().c_str());
+        return false;
+    }
+    // Consent path: persist a marker keyed on the file's OWN hash so the
+    // "once per changed file" rule holds for user models too. MarkerMatchesFile
+    // only accepts a non-pin marker for non-pinned filenames, so this can
+    // never authorize the shipped model.
+    for (const auto& marker : markers) {
+        std::error_code mec;
+        std::filesystem::create_directories(marker.parent_path(), mec);
+        if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
+            break;
+        }
+    }
+    DIAG_F("ENGINE/VerifyModelSha256/005: SHA-256 does not match the shipped-model pin (expected %s, got %s), but the path is a user-configured model name; proceeding on explicit-config consent basis: %s\n",
+           kExpectedModelSha256, hex.c_str(), model_path.string().c_str());
+    return true;
+}
+
 #ifdef HAVE_LLAMA_CPP
 
 namespace {
@@ -269,6 +561,26 @@ struct TranslationManager::LlamaEngine {
         // the GGUF loader. Fail-closed with an ENGINE/IsValidModelPath/NNN code
         // on stderr; the worker treats a false return like any load failure.
         if (!IsValidModelPath(path)) {
+            return false;
+        }
+
+        // F3 (security, session 260909_0002, audit §F3): content-hash pin at
+        // runtime. The installer verifies the SHA-256 only at download time,
+        // so a GGUF tampered AFTER installation (or restored from backup)
+        // used to reach the llama.cpp parser unchecked. VerifyModelSha256()
+        // streams the file through Windows CNG once and caches the result in
+        // a "<model>.sha256ok" marker keyed on mtime+size, so the 1.91 GB
+        // hash costs at most one full pass per changed file. Fail-closed for
+        // the pinned filename; user-configured alternative names proceed on
+        // explicit-config consent basis (see engine.hpp contract). A false
+        // return here behaves like any load failure: Auto falls back to the
+        // cloud, strict-local surfaces EngineFailed/LocalModelMissing to the
+        // worker, and every rejection carries an ENGINE/VerifyModelSha256/NNN
+        // diagnostic on stderr (DIAG_F mirrors to the diagnostic log).
+        // This also completes the F2 story: an installer run where the user
+        // answered "No" to the mismatch dialog leaves the unverified file in
+        // place, but the app refuses to load it now.
+        if (!VerifyModelSha256(std::filesystem::path{path}, {})) {
             return false;
         }
 

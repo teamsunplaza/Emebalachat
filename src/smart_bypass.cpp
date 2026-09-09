@@ -62,6 +62,25 @@ inline bool IsHanziCodePoint(uint32_t cp) {
            (cp >= 0xF900 && cp <= 0xFAFF);
 }
 
+inline bool IsDevanagariCodePoint(uint32_t cp) {
+    return (cp >= 0x0900 && cp <= 0x097F);  // Hindi
+}
+inline bool IsBengaliCodePoint(uint32_t cp) {
+    return (cp >= 0x0980 && cp <= 0x09FF);
+}
+inline bool IsKhmerCodePoint(uint32_t cp) {
+    return (cp >= 0x1780 && cp <= 0x17FF);
+}
+inline bool IsLaoCodePoint(uint32_t cp) {
+    return (cp >= 0x0E80 && cp <= 0x0EFF);
+}
+inline bool IsMyanmarCodePoint(uint32_t cp) {
+    return (cp >= 0x1000 && cp <= 0x109F);
+}
+inline bool IsGreekCodePoint(uint32_t cp) {
+    return (cp >= 0x0370 && cp <= 0x03FF);
+}
+
 // F1 (session 260908_0003, verify 220010 root cause R1): VIETNAMESE-SPECIFIC
 // codepoints only. The previous implementation also accepted the shared
 // Latin-1 accented letters (0x00E0-0x00FD / 0x00C0-0x00DD: a-grave through
@@ -123,6 +142,9 @@ inline bool IsLinguisticCodePoint(uint32_t cp) {
     if (IsKoreanCodePoint(cp) || IsKanaCodePoint(cp) || IsHanziCodePoint(cp) ||
         IsThaiCodePoint(cp) || IsArabicCodePoint(cp) || IsCyrillicCodePoint(cp) ||
         IsVietnameseCodePoint(cp) || IsLatinCodePoint(cp) ||
+        IsDevanagariCodePoint(cp) || IsBengaliCodePoint(cp) ||
+        IsKhmerCodePoint(cp) || IsLaoCodePoint(cp) ||
+        IsMyanmarCodePoint(cp) || IsGreekCodePoint(cp) ||
         // G-4 (design §2.2.6, user-approved 2026-09-07): Hebrew letters are
         // explicit linguistic content via the shared bidi_utils predicate,
         // mirroring the Arabic line above instead of relying on the
@@ -259,6 +281,72 @@ bool ContainsLatin(std::wstring_view text) {
     return false;
 }
 
+bool ContainsDevanagari(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsDevanagariCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsBengali(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsBengaliCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsKhmer(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsKhmerCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsLao(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsLaoCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsMyanmar(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsMyanmarCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsGreek(std::wstring_view text) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsGreekCodePoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool HasLinguisticContent(std::wstring_view text) {
     size_t idx = 0;
     while (idx < text.size()) {
@@ -327,6 +415,112 @@ bool IsUrl(std::wstring_view text) {
     return false;
 }
 
+namespace {
+
+struct LangStopWords {
+    const char* lang_name;      // e.g. "English", "Spanish", etc.
+    const wchar_t* const* words;
+    size_t count;
+    int min_hits;
+};
+
+const wchar_t* const kStopWordsEN[] = { L"the", L"is", L"are", L"was", L"were", L"this", L"that", L"have", L"has", L"with", L"for", L"you", L"and", L"not", L"but", L"from", L"they", L"will", L"would", L"been", L"can" };
+const wchar_t* const kStopWordsES[] = { L"el", L"la", L"los", L"las", L"de", L"en", L"que", L"es", L"un", L"una", L"por", L"con", L"para", L"del", L"se", L"al", L"como", L"más", L"pero", L"su" };
+const wchar_t* const kStopWordsFR[] = { L"le", L"la", L"les", L"des", L"est", L"une", L"dans", L"pour", L"que", L"sur", L"pas", L"avec", L"son", L"qui", L"ont", L"aux", L"ces", L"par", L"cette", L"tout" };
+const wchar_t* const kStopWordsDE[] = { L"der", L"die", L"das", L"und", L"ist", L"ein", L"eine", L"den", L"dem", L"auf", L"für", L"nicht", L"mit", L"sich", L"des", L"von", L"auch", L"noch", L"wie" };
+const wchar_t* const kStopWordsPT[] = { L"o", L"a", L"os", L"as", L"e", L"em", L"na", L"no", L"do", L"da", L"que", L"de", L"não", L"um", L"uma", L"para", L"com", L"por", L"mais", L"como", L"dos", L"das", L"seu", L"sua", L"foi", L"são", L"tem", L"nos", L"essa" };
+const wchar_t* const kStopWordsIT[] = { L"che", L"non", L"una", L"del", L"per", L"con", L"sono", L"della", L"anche", L"come", L"dei", L"gli", L"alla", L"questo", L"quella", L"molto", L"suo", L"sua" };
+const wchar_t* const kStopWordsID[] = { L"yang", L"dan", L"ini", L"itu", L"untuk", L"dengan", L"tidak", L"dari", L"pada", L"akan", L"saya", L"bisa", L"ada", L"sudah", L"juga", L"mereka", L"kami", L"kita" };
+const wchar_t* const kStopWordsMS[] = { L"yang", L"dan", L"ini", L"itu", L"untuk", L"dengan", L"tidak", L"dari", L"pada", L"akan", L"kami", L"juga", L"mereka", L"telah", L"boleh", L"ada", L"oleh" };
+const wchar_t* const kStopWordsFIL[] = { L"ang", L"mga", L"sa", L"na", L"ng", L"at", L"ay", L"ko", L"si", L"ni", L"hindi", L"ito", L"para", L"nang", L"ako", L"siya", L"nila", L"kami", L"namin" };
+const wchar_t* const kStopWordsTR[] = { L"bir", L"ve", L"bu", L"için", L"ile", L"olan", L"gibi", L"daha", L"çok", L"ama", L"kadar", L"ben", L"benim", L"onun", L"bize", L"şey", L"olarak" };
+const wchar_t* const kStopWordsPL[] = { L"nie", L"się", L"jest", L"jak", L"ale", L"lub", L"czy", L"dla", L"już", L"był", L"być", L"tak", L"też", L"przez", L"tylko", L"ich", L"jego", L"jej" };
+const wchar_t* const kStopWordsNL[] = { L"het", L"een", L"van", L"dat", L"met", L"voor", L"zijn", L"aan", L"ook", L"maar", L"nog", L"werd", L"wel", L"hun", L"naar", L"uit", L"bij", L"kan", L"deze" };
+const wchar_t* const kStopWordsCS[] = { L"není", L"jsem", L"jsou", L"jako", L"aby", L"jeho", L"její", L"také", L"nebo", L"byl", L"být", L"jen", L"tak", L"ale", L"než", L"které", L"které" };
+const wchar_t* const kStopWordsHU[] = { L"nem", L"egy", L"hogy", L"meg", L"van", L"már", L"csak", L"vagy", L"még", L"mint", L"sem", L"igen", L"volt", L"lett", L"lesz", L"azt", L"ezt" };
+const wchar_t* const kStopWordsSV[] = { L"och", L"att", L"det", L"som", L"för", L"med", L"den", L"var", L"har", L"men", L"inte", L"kan", L"ska", L"ett", L"också", L"från", L"eller", L"vid" };
+const wchar_t* const kStopWordsRO[] = { L"este", L"sunt", L"care", L"din", L"pentru", L"sau", L"acest", L"această", L"prin", L"fost", L"mai", L"doar", L"între", L"poate", L"dacă", L"cea" };
+const wchar_t* const kStopWordsDA[] = { L"og", L"den", L"det", L"til", L"for", L"med", L"som", L"har", L"kan", L"ved", L"skal", L"alle", L"ikke", L"hun", L"han", L"var", L"der", L"fra" };
+const wchar_t* const kStopWordsFI[] = { L"ja", L"on", L"oli", L"tai", L"kun", L"niin", L"olen", L"olet", L"mutta", L"eikä", L"ovat", L"joka", L"siitä", L"tämä", L"myös", L"kuin", L"nyt", L"vain" };
+const wchar_t* const kStopWordsNO[] = { L"og", L"det", L"som", L"for", L"med", L"har", L"kan", L"til", L"den", L"fra", L"var", L"men", L"han", L"hun", L"alle", L"ikke", L"eller", L"meg", L"seg" };
+
+const LangStopWords kLatinLangs[] = {
+    { "English", kStopWordsEN, std::size(kStopWordsEN), 2 },
+    { "Spanish", kStopWordsES, std::size(kStopWordsES), 2 },
+    { "French", kStopWordsFR, std::size(kStopWordsFR), 2 },
+    { "German", kStopWordsDE, std::size(kStopWordsDE), 2 },
+    { "Portuguese", kStopWordsPT, std::size(kStopWordsPT), 2 },
+    { "Italian", kStopWordsIT, std::size(kStopWordsIT), 2 },
+    { "Indonesian", kStopWordsID, std::size(kStopWordsID), 2 },
+    { "Malay", kStopWordsMS, std::size(kStopWordsMS), 2 },
+    { "Filipino", kStopWordsFIL, std::size(kStopWordsFIL), 2 },
+    { "Turkish", kStopWordsTR, std::size(kStopWordsTR), 2 },
+    { "Polish", kStopWordsPL, std::size(kStopWordsPL), 2 },
+    { "Dutch", kStopWordsNL, std::size(kStopWordsNL), 2 },
+    { "Czech", kStopWordsCS, std::size(kStopWordsCS), 2 },
+    { "Hungarian", kStopWordsHU, std::size(kStopWordsHU), 2 },
+    { "Swedish", kStopWordsSV, std::size(kStopWordsSV), 2 },
+    { "Romanian", kStopWordsRO, std::size(kStopWordsRO), 2 },
+    { "Danish", kStopWordsDA, std::size(kStopWordsDA), 2 },
+    { "Finnish", kStopWordsFI, std::size(kStopWordsFI), 2 },
+    { "Norwegian", kStopWordsNO, std::size(kStopWordsNO), 2 }
+};
+
+std::string DetectLatinLanguage(std::wstring_view text) {
+    std::vector<std::wstring> tokens;
+    std::wstring current_token;
+    for (wchar_t c : text) {
+        if (iswalpha(c)) {
+            current_token += towlower(c);
+        } else if (!current_token.empty()) {
+            tokens.push_back(current_token);
+            current_token.clear();
+        }
+    }
+    if (!current_token.empty()) {
+        tokens.push_back(current_token);
+    }
+
+    if (tokens.size() < 3) {
+        return "Auto Detect";
+    }
+
+    int best_hits = 0;
+    const char* best_lang = nullptr;
+    bool tie = false;
+
+    for (const auto& lang : kLatinLangs) {
+        int hits = 0;
+        for (const auto& token : tokens) {
+            for (size_t i = 0; i < lang.count; ++i) {
+                if (token == lang.words[i]) {
+                    hits++;
+                    break;
+                }
+            }
+        }
+        
+        if (hits > 0 && hits >= lang.min_hits) {
+            if (hits > best_hits) {
+                best_hits = hits;
+                best_lang = lang.lang_name;
+                tie = false;
+            } else if (hits == best_hits) {
+                tie = true;
+            }
+        }
+    }
+
+    if (best_lang && !tie) {
+        DIAG_F("SMART_BYPASS/DetectLatinLanguage: detected=%s with %d hits\n", best_lang, best_hits);
+        return best_lang;
+    }
+
+    return "Auto Detect";
+}
+
+} // namespace
+
 // F5 (session 260908_0003, ask audit 181530 condition 1 Option B): the F1
 // helper ContainsDiacriticLatin is REMOVED with the supersession of the
 // pure-ASCII "English" label (see DetectLanguage below) - diacritic and
@@ -355,16 +549,59 @@ std::string DetectLanguage(std::wstring_view text) {
     if (ContainsKorean(trimmed)) return "Korean";
     if (ContainsKana(trimmed)) return "Japanese"; // Kana takes precedence over Hanzi for Japanese
     if (ContainsThai(trimmed)) return "Thai";
-    if (ContainsArabic(trimmed)) return "Arabic";
+    
+    if (ContainsArabic(trimmed)) {
+        // Disambiguate Arabic, Persian, Urdu
+        bool is_urdu = false;
+        bool is_persian = false;
+        size_t idx = 0;
+        while (idx < trimmed.size()) {
+            uint32_t cp = DecodeNextCodePoint(trimmed, idx);
+            if (cp == 0x0679 || cp == 0x0688 || cp == 0x0691 || cp == 0x06BA || cp == 0x06D2 || cp == 0x06BE) {
+                is_urdu = true;
+                break;
+            }
+            if (cp == 0x067E || cp == 0x0686 || cp == 0x0698 || cp == 0x06AF) {
+                is_persian = true;
+            }
+        }
+        if (is_urdu) return "Urdu";
+        if (is_persian) return "Persian";
+        return "Arabic";
+    }
+
     // G-4 (user-approved 2026-09-07): Hebrew gets its OWN label immediately
     // after Arabic (same pattern) - reporting Hebrew as "Arabic" would corrupt
     // downstream logs and the already-target bypass (NormalizeLanguageCode
     // resolves "Hebrew" -> registry code "HE", so ShouldTranslate now bypasses
     // Hebrew text under a Hebrew target instead of shipping it to the engine).
     if (ContainsHebrew(trimmed)) return "Hebrew";
-    if (ContainsCyrillic(trimmed)) return "Russian";
+    
+    if (ContainsCyrillic(trimmed)) {
+        // Disambiguate Russian vs Ukrainian
+        bool is_ukrainian = false;
+        size_t idx = 0;
+        while (idx < trimmed.size()) {
+            uint32_t cp = DecodeNextCodePoint(trimmed, idx);
+            if (cp == 0x0491 || cp == 0x0454 || cp == 0x0456 || cp == 0x0457) {
+                is_ukrainian = true;
+                break;
+            }
+        }
+        if (is_ukrainian) return "Ukrainian";
+        return "Russian";
+    }
+    
     if (ContainsVietnamese(trimmed)) return "Vietnamese";
     if (ContainsHanzi(trimmed)) return "Chinese Simplified";
+
+    if (ContainsDevanagari(trimmed)) return "Hindi";
+    if (ContainsBengali(trimmed)) return "Bengali";
+    if (ContainsKhmer(trimmed)) return "Khmer";
+    if (ContainsLao(trimmed)) return "Lao";
+    if (ContainsMyanmar(trimmed)) return "Burmese";
+    if (ContainsGreek(trimmed)) return "Greek";
+
     // F1 (session 260908_0003, verify 220010 root cause R2): Latin is a SCRIPT
     // family, not a language. The old unconditional `return "English"` here
     // (a) force-labeled French/Spanish/Portuguese/German text English,
@@ -391,7 +628,8 @@ std::string DetectLanguage(std::wstring_view text) {
     // scripts keep the contract above unchanged - their labels are script-
     // certain and still drive the already-target bypass.
     if (ContainsLatin(trimmed)) {
-        return "Auto Detect";
+        std::string latin_detected = DetectLatinLanguage(trimmed);
+        return latin_detected;
     }
 
     return "Unknown";

@@ -373,7 +373,8 @@ void TestSmartBypassModule() {
     // marker - neither Vietnamese nor English (Hy-MT2's built-in language ID
     // decides downstream; NormalizeLanguageCode("Auto Detect") == "AUTO"):
     TEST_CHECK(DetectLanguage(L"não presto muita atenção em futebol") != "Vietnamese", "F1: Portuguese never mislabels Vietnamese");
-    TEST_CHECK(DetectLanguage(L"não presto muita atenção em futebol") == "Auto Detect", "F1: Portuguese (a-tilde/c-cedilla) detects as AUTO marker");
+    TEST_CHECK(DetectLanguage(L"não presto muita atenção em futebol") == "Portuguese",
+               "A2: Portuguese detected via stop-words (supersedes F1 AUTO marker fallback)");
     TEST_CHECK(DetectLanguage(L"rápido corazón") == "Auto Detect", "F1: Spanish (acute accents) detects as AUTO marker");
     TEST_CHECK(DetectLanguage(L"étrange méditerranéen") == "Auto Detect", "F1: French (grave/acute) detects as AUTO marker");
     TEST_CHECK(NormalizeLanguageCode(DetectLanguage(L"rápido corazón")) == "AUTO", "F1: AUTO marker normalizes to registry code AUTO (engine sees no source token)");
@@ -382,7 +383,7 @@ void TestSmartBypassModule() {
     // 181530 Option B, adjudicated) supersedes that trade-off: the label is
     // "Auto Detect" for ALL Latin script, and the EN->EN identity bypass now
     // keys on the PIN (step 7), not on the detection label.
-    TEST_CHECK(DetectLanguage(L"le chat est sur la table") == "Auto Detect", "F5: pure-ASCII Latin routes as AUTO marker (supersedes F1 Phase-1 label)");
+    TEST_CHECK(DetectLanguage(L"le chat est sur la table") == "French", "A2: unaccented French detected via stop-words (supersedes F5 Auto Detect fallback)");
     // Latin WITH umlauts (German) is also ambiguous -> AUTO, not English:
     TEST_CHECK(DetectLanguage(L"Liebe Grüße") == "Auto Detect", "F1: German umlauts detect as AUTO marker, not English");
     // Regression: the VI detection that used shared chars AND true markers
@@ -473,8 +474,8 @@ void TestSmartBypassModule() {
                "F5: Swahili (ASCII Latin) -> English translates");
     TEST_CHECK(ShouldTranslate(L"le chat est sur la table", "English"),
                "F5: unaccented French -> English no longer bypassed (supersedes the F1 trade-off pin)");
-    TEST_CHECK(ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Indonesian"),
-               "F5: ASCII Latin -> Indonesian under Auto reaches the engine (model ID decides, no local shortcut)");
+    TEST_CHECK(!ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Indonesian"),
+               "A2: Indonesian text -> Indonesian target self-bypass (stop-words: tidak, saya)");
     // True identity bypass survives ONLY for a pinned source (user declaration
     // is ground truth), language-neutrally:
     TEST_CHECK(!ShouldTranslate(L"Hello world, have a good day", "English", "EN"),
@@ -504,6 +505,65 @@ void TestSmartBypassModule() {
         std::cout << "[PASS] Smart Bypass tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] Smart Bypass tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+void TestSelfLanguageBypass() {
+    std::cout << "[RUN] Testing Self-Language Bypass..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1a. Non-Latin Script Self-Bypass (already partially covered, verify expansions)
+    TEST_CHECK(!ShouldTranslate(L"오늘 날씨가 좋습니다", "Korean"), "Korean text -> Korean target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"今日はいい天気です", "Japanese"), "Japanese text -> Japanese target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"สวัสดีครับ วันนี้อากาศดี", "Thai"), "Thai text -> Thai target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"مرحبا كيف حالك", "Arabic"), "Arabic text -> Arabic target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"Привет как дела сегодня", "Russian"), "Russian text -> Russian target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"आज मौसम अच्छा है", "Hindi"), "Hindi text -> Hindi target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"Γεια σας πώς είστε", "Greek"), "Greek text -> Greek target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"আজ আবহাওয়া ভালো", "Bengali"), "Bengali text -> Bengali target bypasses");
+
+    // 1b. Latin-Script Self-Bypass (NEW — the core A-2 feature)
+    TEST_CHECK(!ShouldTranslate(L"The weather is nice today and I have a meeting", "English"),
+               "A2: English text -> English target bypasses (stop-words: the, is, and, have, a)");
+    TEST_CHECK(!ShouldTranslate(L"This is a test for the translation bypass feature", "English"),
+               "A2: English text -> English target bypasses (stop-words: this, is, a, for, the)");
+    TEST_CHECK(!ShouldTranslate(L"El gato está en la mesa con el perro", "Spanish"),
+               "A2: Spanish text -> Spanish target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"Le chat est sur la table avec les enfants", "French"),
+               "A2: French text -> French target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"Der Hund ist auf dem Tisch mit der Katze", "German"),
+               "A2: German text -> German target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"Saya tidak terlalu memperhatikan bola yang ada di sana", "Indonesian"),
+               "A2: Indonesian text -> Indonesian target bypasses");
+    TEST_CHECK(!ShouldTranslate(L"O gato está na mesa com o cachorro para todos", "Portuguese"),
+               "A2: Portuguese text -> Portuguese target bypasses");
+
+    // 1c. Cross-Language Translation MUST STILL WORK (safety checks)
+    TEST_CHECK(ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "English"),
+               "A2-safety: Indonesian -> English must translate (F5 invariant)");
+    TEST_CHECK(ShouldTranslate(L"Hindi ko masyadong binibigyang pansin ang bola", "English"),
+               "A2-safety: Tagalog -> English must translate (F5 invariant)");
+    TEST_CHECK(ShouldTranslate(L"Sisitiki sana", "English"),
+               "A2-safety: Swahili -> English must translate (F5 invariant)");
+    TEST_CHECK(ShouldTranslate(L"le chat est sur la table", "English"),
+               "A2-safety: French -> English must translate (F5 invariant)");
+    TEST_CHECK(ShouldTranslate(L"Hotel", "English"),
+               "A2-safety: single-word loanword must translate");
+    TEST_CHECK(ShouldTranslate(L"No", "English"),
+               "A2-safety: single-word must translate");
+    TEST_CHECK(ShouldTranslate(L"오늘 날씨가 좋습니다", "English"),
+               "A2-safety: Korean -> English must translate");
+
+    // 1d. Non-Latin Cross-Script (different language) MUST Translate
+    TEST_CHECK(ShouldTranslate(L"आज मौसम अच्छा है", "English"),
+               "A2: Hindi -> English must translate");
+    TEST_CHECK(ShouldTranslate(L"Γεια σας πώς είστε", "English"),
+               "A2: Greek -> English must translate");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Self-Language Bypass tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Self-Language Bypass tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -1161,6 +1221,142 @@ void TestModelPathValidation() {
         std::cout << "[PASS] M3 Model Path Validation tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] M3 Model Path Validation tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// F3 (security, session 260909_0002): runtime SHA-256 model pin + marker
+// cache. Headless against temp fixtures - no real model needed. Pins:
+//  * ComputeFileSha256 against NIST known-answer vectors (empty, "abc").
+//  * Fail-closed for the PINNED filename on any hash mismatch (006).
+//  * Consent (warn-and-allow) for user-configured alternative names (005),
+//    with a marker cached for the file's own hash.
+//  * Forged/mismatched markers never authorize skipping the hash for the
+//    pinned filename.
+//  * Marker cache hit (mtime+size unchanged) short-circuits re-verification.
+void TestModelSha256Verification() {
+    std::cout << "[RUN] Testing F3 model SHA-256 verification..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    std::error_code ec;
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path(ec) / "emebala_f3_sha256";
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "models", ec);
+    std::filesystem::create_directories(root / "markers", ec);
+    TEST_CHECK(!ec, "F3 fixture: temp dirs created");
+    const std::filesystem::path markers = root / "markers";
+
+    auto write_file = [](const std::filesystem::path& p, std::string_view bytes) {
+        std::ofstream of(p, std::ios::binary | std::ios::trunc);
+        of.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+
+    // 1. Known-answer vectors (FIPS 180-4 / NIST examples).
+    const std::filesystem::path abc = root / "abc.bin";
+    write_file(abc, "abc");
+    std::string hex;
+    TEST_CHECK(ComputeFileSha256(abc, hex), "F3: ComputeFileSha256 succeeds on a readable file");
+    TEST_CHECK(hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+               "F3: SHA-256(\"abc\") matches the NIST known-answer vector");
+
+    const std::filesystem::path empty = root / "empty.bin";
+    write_file(empty, "");
+    TEST_CHECK(ComputeFileSha256(empty, hex) &&
+               hex == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+               "F3: SHA-256(empty) matches the known-answer vector");
+
+    // 2. Unreadable/missing file -> ComputeFileSha256 fails closed.
+    TEST_CHECK(!ComputeFileSha256(root / "nope.bin", hex),
+               "F3: ComputeFileSha256 fails for a missing file");
+
+    // 3. VerifyModelSha256 guard clauses.
+    TEST_CHECK(!VerifyModelSha256({}, markers), "F3: empty model path rejected (001)");
+    TEST_CHECK(!VerifyModelSha256(root / "models" / "missing.gguf", markers),
+               "F3: missing model file rejected (002)");
+
+    // 4. PINNED filename + wrong bytes -> fail-closed, no marker written.
+    const std::filesystem::path pinned_bad = root / "models" / "Hy-MT2-1.8B-Q8_0.gguf";
+    write_file(pinned_bad, "not-the-real-model");
+    TEST_CHECK(!VerifyModelSha256(pinned_bad, markers),
+               "F3: pinned-name file with non-matching hash is blocked (006)");
+    TEST_CHECK(!std::filesystem::exists(markers / L"Hy-MT2-1.8B-Q8_0.gguf.sha256ok"),
+               "F3: blocked verification writes no marker");
+
+    // 5. User-configured alternative name -> consent path allows it (005) and
+    //    caches a marker keyed on the file's OWN hash (no re-hash per launch).
+    const std::filesystem::path user_model = root / "models" / "my-q4.gguf";
+    write_file(user_model, "user-quantized-model-bytes");
+    TEST_CHECK(VerifyModelSha256(user_model, markers),
+               "F3: alternative user-configured model proceeds on consent basis (005)");
+    const std::filesystem::path user_marker =
+        markers / (std::wstring(user_model.filename().native()) + L".sha256ok");
+    TEST_CHECK(std::filesystem::exists(user_marker),
+               "F3: consent path persists a verification marker");
+    // The marker stores the file's own hash (not the pin) as line 1.
+    {
+        std::ifstream in(user_marker, std::ios::binary);
+        std::string first;
+        in >> first;
+        TEST_CHECK(ComputeFileSha256(user_model, hex) && first == hex,
+                   "F3: consent marker records the file's own hash, never the pin");
+    }
+
+    // 6. Tampering the consented model changes size/mtime -> marker must be
+    //    re-evaluated (hash recomputed; still allowed for the alt name).
+    write_file(user_model, "user-quantized-model-bytes-tampered");
+    TEST_CHECK(VerifyModelSha256(user_model, markers),
+               "F3: changed consented model re-verifies through the marker-invalidation path");
+
+    // 7. Consent-marker laundering proof: a marker generated for a USER model
+    //    (line 1 = that model's own hash, NOT the pin) must never authorize a
+    //    PINNED filename. Fabricate exactly that: a consent-style marker with
+    //    matching mtime/size for a pinned-name file with wrong bytes. The
+    //    anti-forgery rule in MarkerMatchesFile rejects non-pin markers on
+    //    pinned names, forcing a real re-hash -> still blocked (006).
+    //    (A marker carrying the PIN hash on a pinned name is the legitimate
+    //    cache of a previously verified good file; marker-file integrity is
+    //    the same-directory trust boundary documented in engine.cpp.)
+    {
+        const std::filesystem::path models2 = root / "models2";
+        std::filesystem::create_directories(models2, ec);
+        const std::filesystem::path pinned_forged = models2 / "Hy-MT2-1.8B-Q8_0.gguf";
+        write_file(pinned_forged, "still-not-the-model");
+        const std::filesystem::path forged_marker =
+            markers / L"Hy-MT2-1.8B-Q8_0.gguf.sha256ok";
+        {
+            std::ofstream m(forged_marker, std::ios::binary | std::ios::trunc);
+            m << "0000000000000000000000000000000000000000000000000000000000000000" << '\n'
+              << std::filesystem::last_write_time(pinned_forged, ec).time_since_epoch().count() << '\n'
+              << static_cast<unsigned long long>(std::filesystem::file_size(pinned_forged, ec)) << '\n';
+        }
+        TEST_CHECK(!VerifyModelSha256(pinned_forged, markers),
+                   "F3: consent-style marker cannot authorize a pinned-name file with wrong content");
+    }
+
+    // 8. Positive cache-hit proof (deterministic, no timing): user_model was
+    //    verified in case 6 and its consent marker matches the current
+    //    mtime/size. Re-open it EXCLUSIVELY (share=0): a re-hash attempt would
+    //    fail at CreateFileW (003). The call must still return true, which is
+    //    only possible through the marker cache - pinning the "skip the full
+    //    hash when mtime+size are unchanged" behavior observationally.
+    {
+        HANDLE hExclusive = ::CreateFileW(user_model.c_str(), GENERIC_READ, 0, nullptr,
+                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        TEST_CHECK(hExclusive != INVALID_HANDLE_VALUE,
+                   "F3: exclusive re-open of consented model succeeded");
+        if (hExclusive != INVALID_HANDLE_VALUE) {
+            TEST_CHECK(VerifyModelSha256(user_model, markers),
+                       "F3: marker cache hit skips re-hashing (true even while the file is unhashable)");
+            ::CloseHandle(hExclusive);
+        }
+    }
+
+    std::filesystem::remove_all(root, ec);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] F3 model SHA-256 verification tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] F3 model SHA-256 verification tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -8439,6 +8635,7 @@ int main() {
     TestConfigModule();
     TestUnicodeModule();
     TestSmartBypassModule();
+    TestSelfLanguageBypass();
     TestSoundModule();
     TestWin32InputModule();
     TestClipboardSequencePolling();
@@ -8446,6 +8643,7 @@ int main() {
     TestGoogleHttpProfile();
     TestEngineModule();
     TestModelPathValidation();
+    TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache
     TestModelPathNormalization();
     TestConfigSnapshotThreadSafety();
     TestTokenTruncation();

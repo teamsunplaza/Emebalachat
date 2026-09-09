@@ -550,6 +550,13 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // Recompose: [remembered verbatim prefix][tail translation]. The
         // pasted result must equal the full input span so the selection is
         // wholly consumed by Ctrl+V (same guarantee as the normal path).
+        auto is_ws = [](wchar_t c) { return c == L' ' || c == L'\n' || c == L'\r' || c == L'\t'; };
+        if (!pasted_prefix_text.empty() && !is_ws(pasted_prefix_text.back()) &&
+            !translated.empty() && !is_ws(translated.front()) &&
+            !untranslated_tail.empty() && is_ws(untranslated_tail.front())) {
+            translated.insert(translated.begin(), L' ');
+            DIAG_F("WORKER: Added boundary whitespace between prefix and translation\n");
+        }
         translated.insert(translated.begin(), pasted_prefix_text.begin(), pasted_prefix_text.end());
     }
     DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -20,6 +21,48 @@ namespace emebalachat {
 // are not subject to the containment rule (they define their own location).
 // Pure filesystem logic - unit-testable without loading any model.
 bool IsValidModelPath(std::string_view path, std::string_view base_dir = {});
+
+// F3 (security, session 260909_0002, audit §F3 MEDIUM): runtime content-hash
+// pin for the shipped Hy-MT2 model. The installer (installer/setup.iss) pins
+// this SHA-256 at download time; the app never re-checked the FILE CONTENTS
+// before handing it to the llama.cpp GGUF parser. VerifyModelSha256() closes
+// that gap: it is called by LlamaEngine::EnsureLoaded immediately BEFORE
+// llama_model_load_from_file, fail-closed (a false return blocks the load).
+//   001 path is empty
+//   002 path does not exist as a regular file
+//   003 file read error while hashing
+//   004 hash does not match kExpectedModelSha256
+// Semantics for user-configured model_path values (config.json lets a user
+// point at ANY .gguf):
+//   * file name == kPinnedModelFilename ("Hy-MT2-1.8B-Q8_0.gguf", the model
+//     the installer downloads and the hash below was computed for) -> strict
+//     fail-closed. Anything else named the same is corrupt or tampered.
+//   * any OTHER file name -> the user deliberately selected a different model
+//     (e.g. a Q4 quantization they downloaded themselves). The hash cannot
+//     match by design, so we DIAG_F a visible warning (ENGINE/VerifyModelSha256/005)
+//     and ALLOW the load: consent basis = the user explicitly set this path
+//     in their own config file (on-device action, opt-in by construction).
+//     This difference is deliberate and documented in EnsureLoaded's call site.
+// kExpectedModelSha256 is the lowercase hex SHA-256 of
+// https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf
+// (certutil -hashfile ... SHA256, session 260909_0002; identical to
+// EXPECTED_MODEL_SHA256 in installer/setup.iss - keep the two in sync when
+// the model is ever rotated).
+inline constexpr char kExpectedModelSha256[] =
+    "5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4";
+inline constexpr std::string_view kPinnedModelFilename = "Hy-MT2-1.8B-Q8_0.gguf";
+
+// Streams the whole file through Windows CNG (bcrypt.dll BCrypt* SHA-256, no
+// third-party dependency) and writes 64 lowercase hex chars to out_hex.
+// Returns false on any read/provider failure. Exposed for unit testing.
+bool ComputeFileSha256(const std::filesystem::path& file, std::string& out_hex);
+
+// Full F3 decision INCLUDING the marker cache (see VerifyModelIntegrity docs
+// in engine.cpp for the <model>.sha256ok cache semantics). Returns true when
+// the model load may proceed. marker_dir selects where the cache marker is
+// stored (tests pass a temp dir; production uses the model's own directory).
+bool VerifyModelSha256(const std::filesystem::path& model_path,
+                       const std::filesystem::path& marker_dir);
 
 // REQ-R01 (Batch D1): llama.cpp context-window sizing constants, centralized so
 // the decode-time budget and the unit tests agree on one source of truth.

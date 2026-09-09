@@ -1,5 +1,6 @@
 #include "google_translate.hpp"
 #include "config.hpp"
+#include "diag_logger.hpp"
 #include "unicode_utils.hpp"
 
 #include <cctype>
@@ -15,6 +16,17 @@
 namespace emebalachat {
 
 namespace {
+
+// F5 (security, session 260909_0002, audit §F5 MEDIUM): hard upper bound on
+// the accumulated HTTP response body. The WinHttpQueryDataAvailable/
+// WinHttpReadData loop below appends WITHOUT a bound, so a MITM or a
+// DNS-hijacked handler streaming an endless/huge body could exhaust process
+// memory. Real translation responses are tens of KB; 10 MiB leaves ~100x
+// headroom while bounding the DoS surface. Exceeding the cap aborts the read
+// loop fail-closed: HttpGet returns false (caller tries the fallback
+// endpoint, then degrades to the historical no-network behavior).
+constexpr size_t kMaxResponseBodyBytes = 10 * 1024 * 1024;
+static_assert(kMaxResponseBodyBytes == 10485760, "F5: response body cap is exactly 10 MiB");
 
 struct WinHttpHandleDeleter {
     void operator()(HINTERNET h) const {
@@ -201,14 +213,36 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
 
     response_body.clear();
     DWORD bytes_avail = 0;
+    bool body_overflowed = false;
     while (::WinHttpQueryDataAvailable(hRequest.get(), &bytes_avail) && bytes_avail > 0) {
+        // F5: bound the buffer BEFORE allocating the next chunk, so a hostile
+        // server cannot inflate the pending allocation past the cap; the
+        // post-append check covers slow-drip chunking where each individual
+        // bytes_avail is small but the cumulative body is not.
+        if (response_body.size() + static_cast<size_t>(bytes_avail) > kMaxResponseBodyBytes) {
+            body_overflowed = true;
+            break;
+        }
         std::vector<char> buffer(bytes_avail);
         DWORD bytes_read = 0;
         if (::WinHttpReadData(hRequest.get(), buffer.data(), bytes_avail, &bytes_read) && bytes_read > 0) {
             response_body.append(buffer.data(), bytes_read);
+            if (response_body.size() > kMaxResponseBodyBytes) {
+                body_overflowed = true;
+                break;
+            }
         } else {
             break;
         }
+    }
+    if (body_overflowed) {
+        // Fail-closed: discard the partial body and report failure. The
+        // caller (Translate) then tries the fallback endpoint, and if that
+        // also fails returns the original text (historical no-network
+        // behavior) - a partial/corrupt oversized body is never parsed.
+        DIAG_F("GOOGLE_T/HttpGet/002: response body exceeded %zu-byte cap; aborting read (DoS guard)\n",
+               kMaxResponseBodyBytes);
+        return false;
     }
 
     return !response_body.empty();
