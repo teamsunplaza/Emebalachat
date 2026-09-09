@@ -200,9 +200,17 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     DIAG_LOG("PIPELINE", "stage=capture begin target_hwnd=%p",
              reinterpret_cast<const void*>(task.target_hwnd));
     std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
-    DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu content=\"%s\"",
-             line.size(), ::GetTickCount64() - t_capture_start,
-             ToUtf8(line).c_str());
+    // REQ-003 (session 260909): the captured body IS the user's text - recorded
+    // only when diag_log_content is on (default off). Length and duration
+    // metadata stay on both branches (shape-only rule, debugging preserved).
+    if (diag::ContentLoggingEnabled()) {
+        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu content=\"%s\"",
+                 line.size(), ::GetTickCount64() - t_capture_start,
+                 ToUtf8(line).c_str());
+    } else {
+        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu",
+                 line.size(), ::GetTickCount64() - t_capture_start);
+    }
 
     // R5 observability: log the capture/bypass decision so a silent
     // "nothing translated" can be attributed to the exact failing gate
@@ -559,11 +567,21 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
         translated.insert(translated.begin(), pasted_prefix_text.begin(), pasted_prefix_text.end());
     }
-    DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
-                         "out_len=%zu out=\"%s\"",
-             static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
-             ::GetTickCount64() - t_translate_start, translated.size(),
-             ToUtf8(translated).c_str());
+    // REQ-003 (session 260909): the translation output is user content - logged
+    // only when diag_log_content is on (default off). status/engine/duration/
+    // out_len keep the gate-decision and failure triage observable.
+    if (diag::ContentLoggingEnabled()) {
+        DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
+                             "out_len=%zu out=\"%s\"",
+                 static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
+                 ::GetTickCount64() - t_translate_start, translated.size(),
+                 ToUtf8(translated).c_str());
+    } else {
+        DIAG_LOG("PIPELINE", "stage=translate end status=%d engine=%s duration_ms=%llu "
+                             "out_len=%zu",
+                 static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
+                 ::GetTickCount64() - t_translate_start, translated.size());
+    }
 
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);

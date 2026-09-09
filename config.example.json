@@ -8,6 +8,8 @@
   "sound_enabled": true,
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
+  "diag_log_content": false,
+  "_diag_log_content_doc": "Diagnostic logs are shape-only by default (key codes, window class, lengths, timings). Set true to ALSO record user content: typed characters, foreground window titles, captured text and translation output. Privacy decision: only enable while actively troubleshooting, and restart the app after changing this value.",
   "drag_hotkey": "double_ctrl_c",
   "hotkey_toggle": "Win+F9",
   "hotkey_lang": "Ctrl+F9",

@@ -55,6 +55,14 @@ struct State {
 
 State g;
 
+// REQ-003 (session 260909): process-wide opt-in gate for USER-CONTENT fields
+// (typed characters, window titles, captured bodies, translation output,
+// prompt bodies). Deliberately NOT part of State: the value is applied once
+// by main.cpp after the config load and must survive Init/Shutdown cycles
+// (the tests re-Init, and startup order is Init -> config load -> apply).
+// Lock-free atomic load; safe from the WH_KEYBOARD_LL hook thread per key.
+std::atomic<bool> g_content_logging{false};
+
 // "yyyy-mm-dd hh:mm:ss.mmm" in LOCAL time, captured at enqueue time so the
 // stamp reflects true occurrence, not flush time.
 std::string TimestampNow() {
@@ -408,6 +416,14 @@ void SetEnabled(bool enabled) {
 
 bool IsEnabled() {
     return g.enabled.load(std::memory_order_relaxed);
+}
+
+void SetContentLogging(bool enabled) {
+    g_content_logging.store(enabled, std::memory_order_relaxed);
+}
+
+bool ContentLoggingEnabled() {
+    return g_content_logging.load(std::memory_order_relaxed);
 }
 
 bool IsInitialized() {

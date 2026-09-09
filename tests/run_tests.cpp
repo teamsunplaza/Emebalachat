@@ -8617,6 +8617,113 @@ void TestReq040SystemDefaults37() {
     }
 }
 
+// ---- REQ-003 (session 260909): PII logging gating tests ----
+// Pins the release posture: diag_log_content defaults to false, survives the
+// SaveToFile/LoadFromFile round-trip, absent-key configs load as false, and
+// the diag::SetContentLogging/ContentLoggingEnabled seam behaves as the
+// lock-free toggle the hook/worker call sites branch on. The call-site
+// branching itself (KEY char=/title=, capture content=, translate out=,
+// prompt body) is exercised by the shipped code paths (hook/worker threads),
+// not headlessly here; the gate state it reads is.
+static void TestReq003PiiGating() {
+    std::cout << "[RUN] Testing REQ-003 diag_log_content PII gating..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // (a1) Compile-time default is FALSE (release posture).
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.diag_log_content == false,
+                   "REQ-003: AppConfig.diag_log_content defaults to false");
+    }
+
+    // (a2) Field absent from the JSON (every pre-260909 config.json) => false.
+    // This mirrors the ONLY real load path: main.cpp default-constructs
+    // AppConfig (diag_log_content=false), then LoadFromFile->FromJsonString.
+    // FromJsonString leaves absent keys at their current value (the shared
+    // contract for every bool field, e.g. cloud_fallback_enabled), so a fresh
+    // object + legacy keyless JSON must read back the compile-time default.
+    {
+        AppConfig cfg; // default false
+        const bool parsed = cfg.FromJsonString(
+            "{ \"ui_language\": \"auto\", \"engine_type\": \"google\" }");
+        TEST_CHECK(parsed, "REQ-003: legacy JSON (no diag_log_content) parses");
+        TEST_CHECK(cfg.diag_log_content == false,
+                   "REQ-003: absent diag_log_content loads as false (default kept)");
+    }
+
+    // (a3) Explicit true / false parsing.
+    {
+        AppConfig t;
+        TEST_CHECK(t.FromJsonString("{ \"diag_log_content\": true }"),
+                   "REQ-003: diag_log_content=true JSON parses");
+        TEST_CHECK(t.diag_log_content == true,
+                   "REQ-003: diag_log_content true parsed");
+        AppConfig f;
+        TEST_CHECK(f.FromJsonString("{ \"diag_log_content\": false }"),
+                   "REQ-003: diag_log_content=false JSON parses");
+        TEST_CHECK(f.diag_log_content == false,
+                   "REQ-003: diag_log_content false parsed");
+    }
+
+    // (b) Round-trip through the REAL persistence path: set true -> SaveToFile
+    //     -> LoadFromFile (fresh object) -> still true; the serialization
+    //     always carries the key so restarts are deterministic.
+    {
+        const fs::path dir = fs::temp_directory_path(ec) / "emebala_req003_test";
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        const fs::path file = dir / "config.json";
+
+        AppConfig cfg;
+        cfg.diag_log_content = true;
+        TEST_CHECK(cfg.SaveToFile(file), "REQ-003: SaveToFile succeeds");
+        {
+            std::ifstream in(file, std::ios::binary);
+            std::string raw((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+            TEST_CHECK(raw.find("\"diag_log_content\": true") != std::string::npos,
+                       "REQ-003: serialized config carries diag_log_content: true");
+        }
+        AppConfig reloaded;
+        TEST_CHECK(reloaded.LoadFromFile(file), "REQ-003: LoadFromFile succeeds");
+        TEST_CHECK(reloaded.diag_log_content == true,
+                   "REQ-003: diag_log_content true survives SaveToFile/LoadFromFile round-trip");
+
+        // Default-false also round-trips (fresh install writes false).
+        AppConfig def;
+        TEST_CHECK(def.SaveToFile(file), "REQ-003: default SaveToFile succeeds");
+        AppConfig back;
+        back.diag_log_content = true; // poison against a silent no-key read
+        TEST_CHECK(back.LoadFromFile(file), "REQ-003: default round-trip reload");
+        TEST_CHECK(back.diag_log_content == false,
+                   "REQ-003: diag_log_content false survives round-trip");
+        fs::remove_all(dir, ec);
+    }
+
+    // (c) diag seam: default off, toggle on/off reflected (hook/worker branch
+    //     on exactly this). Restore false afterwards (suite-state hygiene —
+    //     the shipped startup state is off and later tests assume the default).
+    {
+        TEST_CHECK(!diag::ContentLoggingEnabled(),
+                   "REQ-003: ContentLoggingEnabled defaults to false");
+        diag::SetContentLogging(true);
+        TEST_CHECK(diag::ContentLoggingEnabled(),
+                   "REQ-003: SetContentLogging(true) reflected");
+        diag::SetContentLogging(false);
+        TEST_CHECK(!diag::ContentLoggingEnabled(),
+                   "REQ-003: SetContentLogging(false) reflected");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-003 diag_log_content PII gating tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-003 diag_log_content PII gating tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -8700,6 +8807,7 @@ int main() {
     TestReq037LocaleMapping();
     TestReq038B5AboutRtl();
     TestReq040SystemDefaults37();
+    TestReq003PiiGating(); // REQ-003: diag_log_content PII logging gate
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

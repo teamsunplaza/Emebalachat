@@ -318,6 +318,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::AppConfig config;
     const bool config_ok = config.LoadFromFile();
 
+    // REQ-003 (session 260909): apply the opt-in USER-CONTENT logging gate from
+    // config exactly once, here after the load and before any hook/worker
+    // thread exists (the atomic lives in diag_logger; call sites branch on
+    // diag::ContentLoggingEnabled()). Default is OFF — shipped logs stay
+    // shape-only. There is no runtime UI toggle: editing diag_log_content in
+    // config.json takes effect on the next start.
+    diag::SetContentLogging(config.diag_log_content);
+    DIAG_LOG("SESSION", "diag_log_content=%d (user-content fields %s)",
+             config.diag_log_content ? 1 : 0,
+             config.diag_log_content ? "ENABLED - keystroke chars, window titles, captured and translated text WILL be recorded"
+                                     : "disabled - shape-only logging");
+
     // 260905 diagnostics: config snapshot summary. Full config values are
     // logged per the VP/user authorization for this diagnostic build
     // ("possible config dump"); model_path, language pair, engine, toggles.

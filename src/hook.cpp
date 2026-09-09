@@ -658,28 +658,41 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         bool win = ((::GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((::GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
 
-        // ---- 260905 diagnostics (user-authorized keystroke CONTENT logging) ----
+        // ---- 260905 diagnostics; REQ-003 gating (session 260909) ----
         // EVERY real (non-synthetic) keydown is recorded: vk, scan, modifier
-        // states, the resulting char, the IME-composing flag, and the target
-        // foreground window title+class (cached ~200 ms, see
-        // RefreshForegroundWindowInfo). Enqueue-only: this whole block formats
-        // a string and hands it to the diag queue; file I/O happens on the
-        // logger's own thread. vk==VK_PROCESSKEY (IME-intercepted key) is
-        // marked ime=1 and carries char '?'.
+        // states, the IME-composing flag, and the target foreground window
+        // class + handle (cached ~200 ms, see RefreshForegroundWindowInfo).
+        // Enqueue-only: this whole block formats a string and hands it to the
+        // diag queue; file I/O happens on the logger's own thread.
+        // vk==VK_PROCESSKEY (IME-intercepted key) is marked ime=1 and carries
+        // char '?'. The typed CHARACTER and the window TITLE are user content
+        // (Gmail/Discord tab titles proved PII in real user logs) and are
+        // recorded ONLY when diag_log_content is enabled (default off; see
+        // diag::ContentLoggingEnabled). With the gate off the line keeps its
+        // shape-only fields and the KeyChar ToUnicodeEx call is skipped
+        // entirely (also removes that residual hook-latency vector).
         {
             std::string fg_title;
             std::string fg_cls;
             const HWND fg = RefreshForegroundWindowInfo(fg_title, fg_cls);
             const bool ime_key = (kbd->vkCode == VK_PROCESSKEY);
-            const char ch = ime_key ? 0 : KeyChar(kbd->vkCode, kbd->scanCode, ctrl, shift, alt);
-            char chtok[8];
-            KeyCharToken(ch, chtok);
             const bool composing = s_instance->ime_composing_.load(std::memory_order_relaxed);
-            DIAG_LOG("KEY", "vk=0x%02X scan=0x%02X %s%s%s%s char=%s ime=%d composing=%d fg=%p class=%s title=%s",
-                     kbd->vkCode, kbd->scanCode,
-                     shift ? "S" : "-", ctrl ? "C" : "-", alt ? "A" : "-", win ? "W" : "-",
-                     chtok, ime_key ? 1 : 0, composing ? 1 : 0,
-                     reinterpret_cast<void*>(fg), fg_cls.c_str(), fg_title.c_str());
+            if (diag::ContentLoggingEnabled()) {
+                const char ch = ime_key ? 0 : KeyChar(kbd->vkCode, kbd->scanCode, ctrl, shift, alt);
+                char chtok[8];
+                KeyCharToken(ch, chtok);
+                DIAG_LOG("KEY", "vk=0x%02X scan=0x%02X %s%s%s%s char=%s ime=%d composing=%d fg=%p class=%s title=%s",
+                         kbd->vkCode, kbd->scanCode,
+                         shift ? "S" : "-", ctrl ? "C" : "-", alt ? "A" : "-", win ? "W" : "-",
+                         chtok, ime_key ? 1 : 0, composing ? 1 : 0,
+                         reinterpret_cast<void*>(fg), fg_cls.c_str(), fg_title.c_str());
+            } else {
+                DIAG_LOG("KEY", "vk=0x%02X scan=0x%02X %s%s%s%s ime=%d composing=%d fg=%p class=%s",
+                         kbd->vkCode, kbd->scanCode,
+                         shift ? "S" : "-", ctrl ? "C" : "-", alt ? "A" : "-", win ? "W" : "-",
+                         ime_key ? 1 : 0, composing ? 1 : 0,
+                         reinterpret_cast<void*>(fg), fg_cls.c_str());
+            }
         }
 
         // REQ-R08: the configured toggle combo (default Win+F9) is matched

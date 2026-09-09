@@ -685,12 +685,25 @@ struct TranslationManager::LlamaEngine {
                     }
                 }
             }
+            // REQ-003 (session 260909) exhaustive-content audit: the built
+            // prompt embeds the user's source text (first 240 bytes printed
+            // below), so it needs BOTH gates - the pre-existing opt-in
+            // EMEBALA_DEBUG_PROMPT env var AND diag_log_content (default off).
+            // With either off, only the byte count is recorded.
             if (DebugPromptEnabled()) {
-                DIAG_F(
-                        "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
-                        static_cast<int>(tgt_name.size()), tgt_name.data(),
-                        static_cast<int>(src_name.size()), src_name.data(),
-                        p.size(), p.c_str());
+                if (diag::ContentLoggingEnabled()) {
+                    DIAG_F(
+                            "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
+                            static_cast<int>(tgt_name.size()), tgt_name.data(),
+                            static_cast<int>(src_name.size()), src_name.data(),
+                            p.size(), p.c_str());
+                } else {
+                    DIAG_F(
+                            "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu (content logging disabled)\n",
+                            static_cast<int>(tgt_name.size()), tgt_name.data(),
+                            static_cast<int>(src_name.size()), src_name.data(),
+                            p.size());
+                }
             }
             return p;
         };

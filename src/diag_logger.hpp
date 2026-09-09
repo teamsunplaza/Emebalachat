@@ -6,8 +6,15 @@
 // Purpose: give the user a complete forensic trail of every keystroke, every
 // Enter-path gate decision, every pipeline stage and every UI transition so
 // the live bugs can be reproduced and attributed from a single log file.
-// The VP/user explicitly authorized keystroke CONTENT logging for this
-// diagnostic build (overrides the previous shape-only rule for this feature).
+// RELEASE POSTURE (REQ-003, session 260909): user-CONTENT logging (typed
+// chars, foreground-window titles, captured bodies, translation output) is
+// OFF by default and strictly opt-in via the AppConfig field
+// "diag_log_content" (config.json, applied once at startup through
+// SetContentLogging below). With the flag off, the PII call sites record
+// shape-only metadata (key codes, modifier flags, window class, lengths,
+// timings) and omit every content field. Enabling it is a deliberate,
+// user-initiated troubleshooting action that re-exposes content in the log
+// file; restart is required after changing the field.
 //
 // Design contract (must hold — see the .cpp for the implementation):
 //   * ONE file per app run:
@@ -67,6 +74,19 @@ void Shutdown();
 // Does not affect DIAG_F's stderr output. Not persisted anywhere.
 void SetEnabled(bool enabled);
 bool IsEnabled();
+
+// REQ-003 (session 260909): opt-in gate for USER-CONTENT fields in diagnostic
+// lines (typed characters, foreground-window titles, captured text bodies,
+// translation output, local prompt bodies). Default FALSE. main.cpp applies
+// AppConfig::diag_log_content exactly once here: after the config load and
+// before any hook/worker thread exists (runtime UI toggling is out of scope;
+// a config change takes effect on restart). Call sites branch on
+// ContentLoggingEnabled() and MUST keep every non-PII field (shape-only
+// rule): vk/scan/modifiers/ime/composing/class/fg handle, len=, out_len=,
+// duration_ms=, status= etc. Lock-free std::atomic<bool>, safe on the
+// WH_KEYBOARD_LL thread. Independent of Init()/Shutdown() lifecycles.
+void SetContentLogging(bool enabled);
+bool ContentLoggingEnabled();
 
 // True between a successful Init() and Shutdown().
 bool IsInitialized();

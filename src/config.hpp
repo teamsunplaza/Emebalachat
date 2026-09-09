@@ -291,6 +291,16 @@ struct AppConfig {
     // nor as the auto engine when no local model is installed. Translation returns
     // empty instead (the worker already handles empty gracefully). Default false.
     bool cloud_fallback_enabled = false;
+    // REQ-003 (session 260909): opt-in gate for writing USER CONTENT (typed
+    // characters, foreground-window titles, captured text bodies, translation
+    // output, local prompt bodies) into the diagnostic log. Default FALSE —
+    // release posture is shape-only logging (lengths, codes, timings, window
+    // class). Read ONCE at startup in main.cpp right after LoadFromFile and
+    // handed to diag::SetContentLogging(); changing the value in config.json
+    // takes effect on restart (no runtime UI toggle in scope). Like
+    // cloud_fallback_enabled it is never mutated after threads exist, so it
+    // needs no mutex_ or Snapshot entry.
+    bool diag_log_content = false;
     // REQ-022 (Phase 6): gesture-pattern selector. Only "double_ctrl_c" is supported; other values fall back with a DIAG warning (hook.cpp Start()).
     std::string drag_hotkey = "double_ctrl_c";
     int badge_x = -1;
