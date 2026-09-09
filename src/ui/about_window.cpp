@@ -476,11 +476,14 @@ void AboutWindow::RequestLocaleRefresh() {
 // Per-region rule (design §2.2.3, user verbatim "each window operates
 // properly according to its own rules"): ONLY the three UI-locale prose
 // formats (body/tagline/etymology) take the RTL/LTR reading direction.
-// title_format_ / version_format_ render brand + factual data ("Emebala
-// Chat", "vX.Y.Z"), header_format_ renders the "✕" glyph, and the reset
+// title_format_ / version_format_ render brand + factual data (localized
+// brand name, "vX.Y.Z"), header_format_ renders the "✕" glyph, and the reset
 // button + link labels (link_format_/small_format_) stay LTR chrome per the
 // batch contract — text inside the buttons is centered, so an RTL label under
 // an LTR base direction still shapes correctly glyph-run-wise (DWrite UAX #9).
+// REQ-B-005 note (design §1.1.7): the title is now the localized brand; for
+// RTL-script brands (AR/HE) the centered single-line text still shapes
+// correctly under the LTR base direction, so title_format_ keeps LTR chrome.
 void AboutWindow::ApplyLocaleFormatting() {
     const UiLocale locale = I18n::GetCurrentLocale();
     const TextDirection text_dir = DirectionForLocale(locale);
@@ -502,14 +505,18 @@ void AboutWindow::ApplyLocaleFormatting() {
     // UI locale's representative BCP-47 tag (B-3 LocaleMapping.bcp47_full), so
     // IDWriteFontFallback::MapCharacters picks script-appropriate faces
     // (Nirmala UI, Leelawadee UI, Myanmar Text, Segoe UI Historic...). The
-    // five formats that paint UI-locale COPY get the tag: the three prose
+    // six formats that paint UI-locale COPY get the tag: the three prose
     // formats plus link_format_ (localized link labels + localized reset/"
-    // done" labels) and small_format_ (contact lines carry localized labels
-    // like "ساعات العمل"). JUDGMENT CALL, documented per delegation: the
-    // localeName here is a font-resolution hint only — none of these formats
-    // receives RTL reading direction (chrome stays LTR above).
-    // title_format_/version_format_/header_format_ keep L"": pure brand/
-    // factual ASCII + a single dingbat glyph, no script-fallback need.
+    // done" labels), small_format_ (contact lines carry localized labels
+    // like "ساعات العمل") and title_format_ (D4, session 260909_0001: the
+    // title is now I18n::Get(StringId::AppName), a per-locale brand that can
+    // be Hangul/Kana/CJK/Cyrillic/Thai/Arabic/Hebrew/... and needs the same
+    // script-appropriate font fallback). JUDGMENT CALL, documented per
+    // delegation: the localeName here is a font-resolution hint only — none
+    // of these formats receives RTL reading direction (chrome stays LTR
+    // above).
+    // version_format_/header_format_ keep L"": ASCII "vX.Y.Z" + a single
+    // dingbat glyph, no script-fallback need.
     const std::wstring tag = LocaleTagForUi(locale);
     bool swap_failed = false;
     if (!ApplyFormatLocale(dwrite_factory_, &body_format_, tag)) swap_failed = true;
@@ -517,6 +524,7 @@ void AboutWindow::ApplyLocaleFormatting() {
     if (!ApplyFormatLocale(dwrite_factory_, &etymology_format_, tag)) swap_failed = true;
     if (!ApplyFormatLocale(dwrite_factory_, &link_format_, tag)) swap_failed = true;
     if (!ApplyFormatLocale(dwrite_factory_, &small_format_, tag)) swap_failed = true;
+    if (!ApplyFormatLocale(dwrite_factory_, &title_format_, tag)) swap_failed = true;
     if (swap_failed) {
         // Fail-safe path: the working formats survive with their previous tag
         // (L"" system-chain fallback still resolves glyphs; only the
@@ -624,7 +632,9 @@ void AboutWindow::Render() {
     }
 
     // 2. Title + version (version from the single source of truth, REQ-006).
-    const std::wstring titleText(kAppNameW);
+    // REQ-B-005 (design §1.1.7): localized brand title (previously the fixed
+    // English display-name constant); resolved per Render through the i18n seam.
+    const std::wstring titleText = I18n::Get(StringId::AppName);
     if (title_format_ && textBrush) {
         dc_render_target_->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.size()),
                                     title_format_, D2D1::RectF(24.0f, 100.0f, w - 24.0f, 132.0f), textBrush);

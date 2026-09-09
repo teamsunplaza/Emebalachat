@@ -51,6 +51,9 @@ WizardSmallImageFile=assets\wizard_small.bmp
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
 
 ; ------------------------------------------------------------------------
 ; [CustomMessages] - Localized strings for download and disk space logic
@@ -58,6 +61,9 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 [CustomMessages]
 english.TaskAutoStart=Launch Emebala Chat automatically when Windows starts
 korean.TaskAutoStart=Windows 시작 시 Emebala Chat 자동 실행
+japanese.TaskAutoStart=Windows 起動時にエメバラチャットを自動起動する
+chinesesimplified.TaskAutoStart=Windows 启动时自动运行埃梅巴拉 翻译
+chinesetraditional.TaskAutoStart=Windows 啟動時自動執行埃梅巴拉 翻譯
 
 english.TaskDesktopIcon=Create a desktop shortcut
 korean.TaskDesktopIcon=바탕화면에 바로가기 만들기
@@ -83,6 +89,12 @@ korean.DownloadRetry=다운로드를 다시 시도하시겠습니까?
 english.DiskSpaceWarning=At least 3 GB free space recommended. Current: %1 GB. Continue?
 korean.DiskSpaceWarning=최소 3GB 여유 공간 필요. 현재: %1 GB. 계속?
 
+english.ShortcutName=Emebala Chat
+korean.ShortcutName=에메발라 챗
+japanese.ShortcutName=エメバラチャット
+chinesesimplified.ShortcutName=埃梅巴拉 翻译
+chinesetraditional.ShortcutName=埃梅巴拉 翻譯
+
 ; ------------------------------------------------------------------------
 ; [Tasks] - Optional user-selectable tasks
 ; ------------------------------------------------------------------------
@@ -101,9 +113,9 @@ Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoe
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
 [Icons]
-Name: "{group}\Emebala Chat"; Filename: "{app}\Emebala_chat.exe"
+Name: "{group}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"
 Name: "{group}\Uninstall"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Emebala Chat"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
+Name: "{autodesktop}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
 ; [Registry] - Auto-start entry (only if autostart task selected)
@@ -122,7 +134,7 @@ Type: files; Name: "{app}\config.json"
 ; [Run] - Post-install launch option
 ; ------------------------------------------------------------------------
 [Run]
-Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,Emebala Chat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,{cm:ShortcutName}}"; Flags: nowait postinstall skipifsilent
 
 ; ========================================================================
 ; [Code] - Pascal Script for custom installer logic

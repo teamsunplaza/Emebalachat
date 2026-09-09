@@ -4993,7 +4993,7 @@ void TestR6P5P6I18n() {
     //         Render - this pins it headlessly).
     int empty_count = 0;
     TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 47x37");
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 49x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -5130,16 +5130,104 @@ void TestR6P5P6I18n() {
                    "P4: reset_label localized per locale (KO/JA/EN all differ)");
     }
 
-    // ---- 5) Brand token fixed (user decision) ------------------------------
-    // TooltipTitle (the notice header + tray tip prefix) stays "Emebala Chat"
-    // in every complete locale; only surrounding sentences translate.
+    // ---- 5) Per-locale AppName mapping + TooltipTitle unification (REQ-B,
+    // session 260909_0001; supersedes the 260908 "brand token untranslated"
+    // decision per decisions.md [2026-09-09 05:45]) --------------------------
     {
-        bool brand_fixed = true;
-        for (const UiLocale loc : kCompleteLocales) {
-            I18n::SetLocale(loc);
-            if (I18n::Get(StringId::TooltipTitle) != L"Emebala Chat") brand_fixed = false;
+        static const std::pair<UiLocale, const wchar_t*> kExpectedAppNames[37] = {
+            { UiLocale::Korean,             L"에메발라 챗" },
+            { UiLocale::Japanese,           L"エメバラチャット" },
+            { UiLocale::ChineseSimplified,  L"埃梅巴拉 翻译" },
+            { UiLocale::ChineseTraditional, L"埃梅巴拉 翻譯" },
+            { UiLocale::Russian,            L"Эмебала Чат" },
+            { UiLocale::Ukrainian,          L"Емебала Чат" },
+            { UiLocale::Thai,               L"เอเมบาลา แชท" },
+            { UiLocale::Arabic,             L"إيميبالا شات" },
+            { UiLocale::Persian,            L"امبالا چت" },
+            { UiLocale::Urdu,               L"ایمیبالا چیٹ" },
+            { UiLocale::Hebrew,             L"אמבאלה צ'אט" },
+            { UiLocale::Hindi,              L"एमेबाला चैट" },
+            { UiLocale::Bengali,            L"এমেবালা চ্যাট" },
+            { UiLocale::Greek,              L"Εμεμπάλα Τσατ" },
+            { UiLocale::Khmer,              L"អេមេបាឡា ឆាត" },
+            { UiLocale::Lao,                L"ເອເມບາລາ ແຊັດ" },
+            { UiLocale::Burmese,            L"အီမီဘာလာ ချက်" },
+            // Latin-script 20: keep the ASCII brand (decisions.md APPROVED)
+            { UiLocale::English,            L"Emebala Chat" },
+            { UiLocale::Spanish,            L"Emebala Chat" },
+            { UiLocale::French,             L"Emebala Chat" },
+            { UiLocale::German,             L"Emebala Chat" },
+            { UiLocale::Portuguese,         L"Emebala Chat" },
+            { UiLocale::Italian,            L"Emebala Chat" },
+            { UiLocale::Indonesian,         L"Emebala Chat" },
+            { UiLocale::Malay,              L"Emebala Chat" },
+            { UiLocale::Filipino,           L"Emebala Chat" },
+            { UiLocale::Turkish,            L"Emebala Chat" },
+            { UiLocale::Polish,             L"Emebala Chat" },
+            { UiLocale::Dutch,              L"Emebala Chat" },
+            { UiLocale::Czech,              L"Emebala Chat" },
+            { UiLocale::Hungarian,          L"Emebala Chat" },
+            { UiLocale::Swedish,            L"Emebala Chat" },
+            { UiLocale::Romanian,           L"Emebala Chat" },
+            { UiLocale::Danish,             L"Emebala Chat" },
+            { UiLocale::Finnish,            L"Emebala Chat" },
+            { UiLocale::Norwegian,          L"Emebala Chat" },
+            { UiLocale::Vietnamese,         L"Emebala Chat" },
+        };
+        bool names_match = true;
+        for (const auto& expect : kExpectedAppNames) {
+            I18n::SetLocale(expect.first);
+            if (I18n::Get(StringId::AppName) != expect.second) names_match = false;
+            // D2 unification: tooltip_title is value-identical to app_name in
+            // every locale (machine-checked single-sourcing of the brand).
+            if (I18n::Get(StringId::TooltipTitle) != I18n::Get(StringId::AppName)) names_match = false;
         }
-        TEST_CHECK(brand_fixed, "P5/B3: brand token 'Emebala Chat' untranslated in all 37 locales");
+        I18n::SetLocale(UiLocale::English);
+        TEST_CHECK(names_match, "REQ-B: per-locale AppName mapping + TooltipTitle unification in all 37 locales");
+    }
+
+    // ---- 5b) REQ-B-008 AppName integrity loop (session 260909_0001) --------
+    // Every locale: AppName non-empty, length 2..40, unified with
+    // TooltipTitle; the 20 Latin locales keep "Emebala Chat" and the 17
+    // non-Latin locales use the transliteration (no silent-English gate).
+    {
+        static const std::pair<UiLocale, bool> kLatinLocales[37] = {
+            { UiLocale::English, true },    { UiLocale::Spanish, true },
+            { UiLocale::French, true },     { UiLocale::German, true },
+            { UiLocale::Portuguese, true }, { UiLocale::Italian, true },
+            { UiLocale::Indonesian, true }, { UiLocale::Malay, true },
+            { UiLocale::Filipino, true },   { UiLocale::Turkish, true },
+            { UiLocale::Polish, true },     { UiLocale::Dutch, true },
+            { UiLocale::Czech, true },      { UiLocale::Hungarian, true },
+            { UiLocale::Swedish, true },    { UiLocale::Romanian, true },
+            { UiLocale::Danish, true },     { UiLocale::Finnish, true },
+            { UiLocale::Norwegian, true },  { UiLocale::Vietnamese, true },
+            { UiLocale::Korean, false },    { UiLocale::Japanese, false },
+            { UiLocale::ChineseSimplified, false },
+            { UiLocale::ChineseTraditional, false },
+            { UiLocale::Russian, false },   { UiLocale::Ukrainian, false },
+            { UiLocale::Thai, false },      { UiLocale::Arabic, false },
+            { UiLocale::Persian, false },   { UiLocale::Urdu, false },
+            { UiLocale::Hebrew, false },    { UiLocale::Hindi, false },
+            { UiLocale::Bengali, false },   { UiLocale::Greek, false },
+            { UiLocale::Khmer, false },     { UiLocale::Lao, false },
+            { UiLocale::Burmese, false },
+        };
+        bool integrity_ok = true;
+        for (const auto& entry : kLatinLocales) {
+            I18n::SetLocale(entry.first);
+            const std::wstring name = I18n::Get(StringId::AppName);
+            if (name.empty()) integrity_ok = false;
+            if (name.size() < 2 || name.size() > 40) integrity_ok = false;
+            if (name != I18n::Get(StringId::TooltipTitle)) integrity_ok = false;
+            if (entry.second) {
+                if (name != L"Emebala Chat") integrity_ok = false;
+            } else {
+                if (name == L"Emebala Chat") integrity_ok = false;
+            }
+        }
+        I18n::SetLocale(UiLocale::English);
+        TEST_CHECK(integrity_ok, "REQ-B-008: AppName integrity in all 37 locales (non-empty, 2..40 chars, unified with TooltipTitle, Latin/non-Latin split)");
     }
 
     // ---- 6) Runtime locale switch changes Get output (atomic path) ---------
@@ -8079,12 +8167,13 @@ void TestReq038B5AboutRtl() {
         TEST_CHECK(he_has_hebrew, "B5: HE tagline carries Hebrew-range codepoints (U+0590-U+05FF)");
     }
 
-    // ---- 2) Brand tokens stay fixed under RTL locales -----------------------
-    // AboutTitle is localized ("حول Emebala Chat" / "אודות Emebala Chat") but
-    // the brand token itself must survive inside every locale's title.
-    TEST_CHECK(ar.title.find(L"Emebala Chat") != std::wstring::npos &&
-                   he.title.find(L"Emebala Chat") != std::wstring::npos,
-               "B5: About title keeps the 'Emebala Chat' brand token under AR/HE");
+    // ---- 2) About title carries the per-locale brand (REQ-B, session
+    // 260909_0001) ------------------------------------------------------------
+    // AboutTitle is localized and now embeds each locale's transliterated
+    // brand instead of the ASCII "Emebala Chat".
+    TEST_CHECK(ar.title.find(L"إيميبالا شات") != std::wstring::npos &&
+                   he.title.find(L"אמבאלה צ'אט") != std::wstring::npos,
+               "REQ-B: About title keeps the per-locale brand token under AR/HE");
     TEST_CHECK(ar.link_labels[2] == L"Reddit" && he.link_labels[2] == L"Reddit",
                "B5: Reddit brand token untranslated under AR/HE");
 

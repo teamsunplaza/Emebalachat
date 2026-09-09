@@ -272,16 +272,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // 1. Single Instance Mutex
     // NOTE (R6 Phase 5 sweep): the two startup MessageBox texts below are now
-    // routed through i18n (StringId::AppAlreadyRunning / AppComFailed). They
-    // run BEFORE I18n::Initialize (config not loaded yet on the second
-    // instance), so they render the English table - behaviorally identical to
-    // the old hardcoded literals, but the strings live in exactly one place.
+    // routed through i18n (StringId::AppAlreadyRunning / AppComFailed; the
+    // captions use StringId::AppName per REQ-B-006). They run BEFORE
+    // I18n::Initialize (config not loaded yet on the second instance), so
+    // they render the English table - behaviorally identical to the old
+    // hardcoded literals, but the strings live in exactly one place.
     HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Global\\Emebalachat_SingleInstance");
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
         ::MessageBoxW(
             nullptr,
             emebalachat::I18n::Get(emebalachat::StringId::AppAlreadyRunning).c_str(),
-            emebalachat::kAppNameW.data(),
+            emebalachat::I18n::Get(emebalachat::StringId::AppName).c_str(),
             MB_OK | MB_ICONINFORMATION
         );
         if (hMutex) {
@@ -308,7 +309,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         ::MessageBoxW(
             nullptr,
             emebalachat::I18n::Get(emebalachat::StringId::AppComFailed).c_str(),
-            emebalachat::kAppNameW.data(),
+            emebalachat::I18n::Get(emebalachat::StringId::AppName).c_str(),
             MB_OK | MB_ICONWARNING
         );
     }

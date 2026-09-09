@@ -141,6 +141,14 @@ enum class StringId {
     // Common
     AutoDetect,
 
+    // REQ-B-001 (session 260909_0001 Batch-1): per-locale brand display name
+    // ("에메발라 챗" etc.). Appended last so the EnumCount completeness loop
+    // covers it automatically (49x37 with TooltipNoTtsVoice below).
+    AppName,
+    // REQ-C-004 (session 260909_0001 Batch-1): no-voice TTS notice body
+    // (Phase C, design §1.2.2 - "No Windows voice installed..." message).
+    TooltipNoTtsVoice,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

@@ -195,6 +195,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
              snap.engine_type.c_str(), snap.auto_send ? 1 : 0);
 
     const ULONGLONG t_capture_start = ::GetTickCount64();
+    // A-004 Option A: baseline the clipboard sequence BEFORE the copy chords (fast-path proof).
+    const DWORD clip_seq_at_capture = ::GetClipboardSequenceNumber();
     DIAG_LOG("PIPELINE", "stage=capture begin target_hwnd=%p",
              reinterpret_cast<const void*>(task.target_hwnd));
     std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
@@ -416,6 +418,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         DIAG_LOG("PIPELINE", "stage=empty_capture decision=paste_window_suppress action=send_through_no_notice "
                              "duration_ms=%llu",
                  t_notice_gate_now - t_task_start);
+        // Option E (A-005 observability): state the benign-skip provenance so a
+        // WIN32_INPUT-line-agnostic grep classifies this empty capture as the
+        // intended post-paste newline, not a swallowed Enter.
+        DIAG_LOG("PIPELINE", "stage=empty_capture provenance=benign_skip basis=paste_window_sentinel(armed_by_pipeline_paste, win32_/004 EM provably-empty is the capture-side twin) action=send_through_no_notice");
         // Never log the captured body (R5 rule): the capture IS empty anyway.
         // REQ-036 FIX-1 (session 260907, debug report): the send-through Enter
         // below inserts the current block's terminator (editor) - sample the
@@ -452,6 +458,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         DIAG_LOG("PIPELINE", "stage=empty_capture decision=promote_exact_match action=send_through_no_notice "
                              "duration_ms=%llu",
                  ::GetTickCount64() - t_task_start);
+        // Option E (A-005 observability): post-window twin of the /036 provenance.
+        DIAG_LOG("PIPELINE", "stage=empty_capture provenance=benign_skip basis=caret_equals_paste_end(no_edit_since_paste) action=send_through_no_notice");
         {
             const DWORD pre_caret = now_caret;
             ReleaseSelectionOnce();
@@ -463,6 +471,28 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         last_paste_target_ = nullptr;
         last_paste_text_.clear();
         last_paste_end_offset_ = kEditCaretUnknown;
+        return;
+    }
+    // A-004 Option A (user-approved decisions.md 09-09 08:32): has_text=0
+    // fast-path send-through. An image-only backup clipboard (no CF_UNICODETEXT)
+    // whose sequence never moved across ALL copy chords proves the target input
+    // holds no selectable text (out-of-band image paste + bare send-Enter; live
+    // repro 05:35:33-40: 3 Enters swallowed by the R5 hold). Stale-read safety
+    // is preserved: any committed copy moves the sequence and refuses this path.
+    // Disjoint from the REQ-034 F3-B EM exemption (category=1 carries has_text=1
+    // in every A-005 event), and the normal-text empty-selection hold requires
+    // has_text=1, so both keep their exact existing behavior.
+    if (empty_capture_hold && clip_backup_ok && !backup.text.has_value() &&
+        ::GetClipboardSequenceNumber() == clip_seq_at_capture) {
+        DIAG_F("WORKER/ExecuteTask/042: empty capture with image-only clipboard (has_text=0) and clipboard sequence unchanged since capture start (no chord committed a copy); R5 hold bypassed, send-Enter handed to the app\n");
+        DIAG_LOG("PIPELINE", "stage=empty_capture decision=has_text0_fastpath action=send_through_no_notice duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        {
+            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
+            ReleaseSelectionOnce();
+            SendEnterKey(task.is_shift_enter);
+            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
+        }
         return;
     }
     if (empty_capture_hold && empty_capture_cb_) {

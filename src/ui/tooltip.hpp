@@ -277,9 +277,47 @@ public:
     void CopyToClipboard();
 
     // Voice selection for multi-language TTS
+    //
+    // P4 Batch-3 (REQ-C-002, design §1.2.2 / decision D8) return contract:
+    // true  = a language-matching voice was selected;
+    // false = no voice for the language (unresolvable LCID or zero installed
+    // matches); voice state unchanged - the forced default-voice fallback is
+    // REMOVED (that was the silent wrong-language reading defect) and the
+    // caller decides the UX (SpeakCurrentText shows ShowNoVoiceNotice and
+    // speaks nothing).
     bool SelectVoiceForLanguage(std::string_view target_lang_name_or_code);
     const std::string& GetCurrentVoiceName() const { return current_voice_name_; }
     const std::string& GetCurrentVoiceLanguage() const { return current_voice_lang_; }
+
+    // ---- P4 Batch-3 (REQ-C-001, design §1.2.1 / decision D6): voice score
+    // lattice. Pure + constexpr, compile-time-proven below (same pattern as
+    // the scroll math section). cat_idx is the SelectVoiceForLanguage
+    // kCategories enumeration order: 0 = SPCAT_VOICES (legacy SAPI desktop
+    // voices), 1 = Speech_OneCore (modern high-quality Windows voices).
+    // Historical defect: SAPI base 80 outranked OneCore base 40, so a legacy
+    // mechanical voice won over an installed OneCore voice for the same
+    // language. Fixed lattice: OneCore 100 / SAPI 50 base, the exact-LCID
+    // bonus (+20, match == 2 per MatchTokenLanguage) preserved, so a SAPI
+    // voice can still win only when OneCore has no language match at all.
+    static constexpr int kVoiceCategorySapi = 0;
+    static constexpr int kVoiceCategoryOneCore = 1;
+    static constexpr int kVoiceBaseScoreSapi = 50;
+    static constexpr int kVoiceBaseScoreOneCore = 100;
+    static constexpr int kVoiceExactMatchBonus = 20;
+
+    static constexpr int VoiceBaseScore(int cat_idx) {
+        return cat_idx == kVoiceCategoryOneCore ? kVoiceBaseScoreOneCore : kVoiceBaseScoreSapi;
+    }
+
+    // match: 2 = exact LCID, 1 = primary-language match (MatchTokenLanguage).
+    static constexpr int VoiceTotalScore(int cat_idx, int match) {
+        return VoiceBaseScore(cat_idx) + (match == 2 ? kVoiceExactMatchBonus : 0);
+    }
+    // NOTE: the compile-time lattice proofs (static_assert 120/100/70/50) live
+    // at namespace scope right after the class - an in-class static_assert
+    // that CALLS a member of the same class is evaluated while the class is
+    // still incomplete and is rejected by MSVC (C2131). Same reason the
+    // scroll-math asserts sit in completed-type scope (run_tests.cpp:3142).
 
     // Retrieves current translation content
     const std::wstring& GetSourceText() const { return source_text_; }
@@ -308,6 +346,14 @@ private:
     void LoadLogoBitmap();
     void InitSapi();
     void CleanupSapi();
+    // P4 Batch-3 (REQ-C-002, design §1.2.2 / decision D7): transient "no
+    // Windows voice installed for this language" notice. Reuses the REQ-R08
+    // message-mode state machine through ShowMessage (compact card, header +
+    // body, 3s autohide via kMessageAutohideMs, generation guard) - no new
+    // window type, no new message ids, no new timers. While it is showing,
+    // no_voice_notice_active_ routes a card click to the Windows speech
+    // settings page (ms-settings:speech deep link, decision D7).
+    void ShowNoVoiceNotice();
 
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
@@ -376,6 +422,11 @@ private:
     bool copied_feedback_ = false;
     bool is_message_mode_ = false;
     std::wstring message_header_;
+    // P4 Batch-3 (REQ-C-002 / D7): true only while the CURRENT message-mode
+    // card is the no-voice notice. Cleared by every show/dismiss path that
+    // can replace or hide the card (ShowTranslation / ShowMessage / Dismiss)
+    // and consumed by the WM_LBUTTONDOWN click router.
+    bool no_voice_notice_active_ = false;
 
     // SAPI TTS Voice COM interface
     ISpVoice* voice_ = nullptr;
@@ -392,5 +443,20 @@ private:
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;
     static constexpr DWORD kMessageAutohideMs = 3000; // REQ-021: 3s startup reminder (also lengthens F-17/R5 notices)
 };
+
+// P4 Batch-3 (REQ-C-001 / D6): compile-time proof of the voice score lattice
+// (§1.2.1). Class is complete here, so the constexpr member calls evaluate.
+// The resulting order is OneCore exact 120 > OneCore partial 100 >
+// SAPI exact 70 > SAPI partial 50 - OneCore always outranks legacy SAPI for
+// the same language match level, and a SAPI voice can win only when OneCore
+// has no language match at all.
+static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategoryOneCore, 2) == 120,
+              "REQ-C-001: OneCore exact-match lattice point is 120");
+static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategoryOneCore, 1) == 100,
+              "REQ-C-001: OneCore partial-match lattice point is 100");
+static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategorySapi, 2) == 70,
+              "REQ-C-001: SAPI exact-match lattice point is 70");
+static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategorySapi, 1) == 50,
+              "REQ-C-001: SAPI partial-match lattice point is 50");
 
 } // namespace emebalachat

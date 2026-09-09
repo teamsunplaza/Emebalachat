@@ -90,6 +90,13 @@ struct LocalizedStrings {
     // Appended at the end (same trailing-initializer rule as above).
     const wchar_t* menu_typing_group;
     const wchar_t* menu_tooltip_group;
+
+    // REQ-B-001 (session 260909_0001 Batch-1): per-locale brand display
+    // name. Appended at the end (same trailing-initializer rule as above).
+    const wchar_t* app_name;
+    // REQ-C-004 (session 260909_0001 Batch-1): no-voice TTS notice body
+    // (Phase C, design §1.2.2). Same trailing-initializer rule.
+    const wchar_t* tooltip_no_tts_voice;
 };
 
 // 1. Korean (ko)
@@ -107,11 +114,11 @@ const LocalizedStrings kStringsKorean = {
     L"화면 플로팅 뱃지 표시",
     L"Windows 시작 시 자동 실행",
     L"단축키 안내 및 사용법 (도움말)...",
-    L"Emebala Chat 종료",
-    L"Emebala Chat 소개…",
+    L"에메발라 챗 종료",
+    L"에메발라 챗 소개…",
 
-    L"Emebala Chat 단축키 및 사용 안내",
-    L"Emebala Chat 단축키 및 간편 사용법:\n\n"
+    L"에메발라 챗 단축키 및 사용 안내",
+    L"에메발라 챗 단축키 및 간편 사용법:\n\n"
     L"  • F9 : 활성화 / 일시 정지 토글 (마우스 클릭으로도 가능)\n"
     L"  • Ctrl + F9 : 도착어(번역 대상 언어) 순환 변경\n"
     L"  • Ctrl + Shift + Enter : 자동 전송 모드 토글\n"
@@ -123,22 +130,22 @@ const LocalizedStrings kStringsKorean = {
     L"동작 모드:\n"
     L"  • 일반 모드 (자동 전송 꺼짐): 번역문으로 문장을 치환 후 확인하고 엔터 전송.\n"
     L"  • 자동 전송 모드 (자동 전송 켜짐): 번역문으로 치환 후 즉시 자동 전송.",
-    L"Emebala Chat 소개",
+    L"에메발라 챗 소개",
 
     L"활성",
     L"번역 중...",
     L"일시 정지",
 
-    L"Emebala Chat",
+    L"에메발라 챗",
     L"선택한 텍스트를 복사하지 못했습니다. 대상 앱을 확인하고 다시 시도하세요.",
     L"번역할 텍스트가 선택되어 있지 않습니다.",
     L"자동 감지",
 
-    L"Emebala Chat이 백그라운드에서 이미 실행 중입니다.\n시스템 알림 트레이를 확인하세요.",
+    L"에메발라 챗이 백그라운드에서 이미 실행 중입니다.\n시스템 알림 트레이를 확인하세요.",
     L"COM 초기화에 실패했습니다.\n플로팅 배지와 음성 읽기(TTS)는 사용할 수 없지만,\n번역, 단축키, 트레이, 알림음은 계속 동작합니다.",
     L"복사·붙여넣기는 이제 그만. 모국어로 자연스럽게 입력하면 어떤 Windows 앱에서든 실시간으로 번역문이 타이핑을 대체합니다.",
     L"⚡ 드래그 번역 — 어떤 앱에서든 텍스트를 선택하면 플로팅 아이콘이 즉시 번역합니다.",
-    L"🔊 뉴럴 TTS — KO/EN/JA/DE 발음 지원.",
+    L"🔊 뉴럴 TTS — Windows 음성팩 연동 시 37개 전 언어 발음 지원.",
     L"🔒 100% 온디바이스·프라이빗 — 단축키를 누르는 동안만 작동하며 클립보드는 건드리지 않습니다.",
     L"기원전 2000년, 메소포타미아 서기들은 언어로 세계를 잇는 자들을 '에메-발라(Eme-bala)'라 불렀습니다.",
     L"웹사이트",
@@ -155,7 +162,9 @@ const LocalizedStrings kStringsKorean = {
     L"시스템 기본값으로 리셋",
     L"기본값으로 복원됨",
     L"키보드 타이핑",
-    L"번역 툴팁"
+    L"번역 툴팁",
+    L"에메발라 챗",
+    L"이 언어에 설치된 Windows 음성이 없습니다. 🔊를 다시 클릭하면 음성 설정이 열립니다."
 };
 
 // 2. Japanese (ja)
@@ -173,11 +182,11 @@ const LocalizedStrings kStringsJapanese = {
     L"フローティングバッジを表示",
     L"Windows 起動時に自動実行",
     L"ショートカット案内とヘルプ...",
-    L"Emebala Chat を終了",
-    L"Emebala Chat について…",
+    L"エメバラチャット を終了",
+    L"エメバラチャット について…",
 
-    L"Emebala Chat ショートカットと使用案内",
-    L"Emebala Chat ショートカットと使用案内:\n\n"
+    L"エメバラチャット ショートカットと使用案内",
+    L"エメバラチャット ショートカットと使用案内:\n\n"
     L"  • F9 : 有効 / 一時停止の切り替え\n"
     L"  • Ctrl + F9 : 翻訳先言語を切り替える\n"
     L"  • Ctrl + Shift + Enter : 自動送信モードの切り替え\n"
@@ -189,22 +198,22 @@ const LocalizedStrings kStringsJapanese = {
     L"動作モード:\n"
     L"  • 置換のみ (自動送信OFF): 入力行を翻訳文に置き換え、確認後にEnterで送信できます。\n"
     L"  • 自動送信 (自動送信ON): 翻訳文に置き換えた直後、自動的にEnterを送信します。",
-    L"Emebala Chat について",
+    L"エメバラチャット について",
 
     L"有効",
     L"翻訳中...",
     L"一時停止",
 
-    L"Emebala Chat",
+    L"エメバラチャット",
     L"選択したテキストをコピーできませんでした。対象アプリを確認して再試行してください。",
     L"翻訳するテキストが選択されていません。",
     L"自動検出",
 
-    L"Emebala Chat はすでにバックグラウンドで実行中です。\nシステムトレイを確認してください。",
+    L"エメバラチャット はすでにバックグラウンドで実行中です。\nシステムトレイを確認してください。",
     L"COM の初期化に失敗しました。\nフローティングバッジと音声読み上げは利用できませんが、\n翻訳・ショートカット・トレイ・効果音は引き続き動作します。",
     L"コピー＆ペーストはもう不要。母語で自然に入力すると、あらゆる Windows アプリの中で打鍵がリアルタイムに翻訳へ置きわります。",
     L"⚡ ドラッグ翻訳 — 任意のアプリでテキストを選択すると、フローティングアイコンが即座に翻訳。",
-    L"🔊 ニューラルTTS — KO/EN/JA/DE の発音。",
+    L"🔊 ニューラルTTS — Windows 音声パック導入時、37言語すべての発音に対応。",
     L"🔒 100% ローカル・プライバシー — ショートカットを押している間だけ作動し、クリップボードは使いません。",
     L"紀元前2000年、メソポタミアの書記たちは「エメ＝バラ」——言語で世界を結ぶ者——と呼びました。",
     L"ウェブサイト",
@@ -221,7 +230,9 @@ const LocalizedStrings kStringsJapanese = {
     L"システム既定値にリセット",
     L"既定値に復元しました",
     L"キーボード入力",
-    L"ドラッグ翻訳ツールチップ"
+    L"ドラッグ翻訳ツールチップ",
+    L"エメバラチャット",
+    L"この言語用の Windows 音声がインストールされていません。🔊 をもう一度クリックすると音声設定が開きます。"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -239,11 +250,11 @@ const LocalizedStrings kStringsChineseSimp = {
     L"显示桌面悬浮徽章",
     L"开机自动启动 (Start with Windows)",
     L"快捷键与使用说明 (帮助)...",
-    L"退出 Emebala Chat",
-    L"关于 Emebala Chat…",
+    L"退出 埃梅巴拉 翻译",
+    L"关于 埃梅巴拉 翻译…",
 
-    L"Emebala Chat 快捷键与使用说明",
-    L"Emebala Chat 快捷键与使用说明:\n\n"
+    L"埃梅巴拉 翻译 快捷键与使用说明",
+    L"埃梅巴拉 翻译 快捷键与使用说明:\n\n"
     L"  • F9 : 启用 / 暂停 切换 (或点击悬浮徽章)\n"
     L"  • Ctrl + F9 : 循环切换目标语言\n"
     L"  • Ctrl + Shift + Enter : 切换自动发送模式\n"
@@ -255,22 +266,22 @@ const LocalizedStrings kStringsChineseSimp = {
     L"工作模式:\n"
     L"  • 仅替换模式 (自动发送关闭): 替换为译文并保留光标，方便发送前检查。\n"
     L"  • 自动发送模式 (自动发送开启): 替换为译文后自动模拟按下 Enter 发送。",
-    L"关于 Emebala Chat",
+    L"关于 埃梅巴拉 翻译",
 
     L"运行中",
     L"翻译中...",
     L"已暂停",
 
-    L"Emebala Chat",
+    L"埃梅巴拉 翻译",
     L"无法复制所选文本。请检查目标应用后重试。",
     L"未选择要翻译的文本。",
     L"自动检测",
 
-    L"Emebala Chat 已在后台运行。\n请查看系统通知托盘。",
+    L"埃梅巴拉 翻译 已在后台运行。\n请查看系统通知托盘。",
     L"COM 初始化失败。\n悬浮徽章和语音朗读将不可用，\n但翻译、快捷键、托盘和提示音仍可正常使用。",
     L"告别复制粘贴。用母语自然输入，译文会在任何 Windows 应用中实时替换你的键入。",
     L"⚡ 拖拽翻译 — 在任意应用中选中文本，悬浮图标即刻翻译。",
-    L"🔊 神经 TTS — 支持 KO/EN/JA/DE 发音。",
+    L"🔊 神经 TTS — 接入 Windows 语音包后支持全部 37 种语言发音。",
     L"🔒 100% 本地运行且私密 — 仅在按住快捷键时生效，不触碰剪贴板。",
     L"公元前 2000 年，美索不达米亚的书吏称那些以语言连通世界的人为 Eme-bala。",
     L"官网",
@@ -287,7 +298,9 @@ const LocalizedStrings kStringsChineseSimp = {
     L"重置为系统默认值",
     L"已恢复默认值",
     L"键盘输入",
-    L"划译工具提示"
+    L"划译工具提示",
+    L"埃梅巴拉 翻译",
+    L"此语言未安装 Windows 语音。再次点击 🔊 可打开语音设置。"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -305,11 +318,11 @@ const LocalizedStrings kStringsChineseTrad = {
     L"顯示桌面懸浮徽章",
     L"開機時自動啟動",
     L"快捷鍵與使用說明 (說明)...",
-    L"結束 Emebala Chat",
-    L"關於 Emebala Chat…",
+    L"結束 埃梅巴拉 翻譯",
+    L"關於 埃梅巴拉 翻譯…",
 
-    L"Emebala Chat 快捷鍵與使用說明",
-    L"Emebala Chat 快捷鍵與使用說明:\n\n"
+    L"埃梅巴拉 翻譯 快捷鍵與使用說明",
+    L"埃梅巴拉 翻譯 快捷鍵與使用說明:\n\n"
     L"  • F9 : 啟用 / 暫停 切換\n"
     L"  • Ctrl + F9 : 循環切換目標語言\n"
     L"  • Ctrl + Shift + Enter : 切換自動發送模式\n"
@@ -321,22 +334,22 @@ const LocalizedStrings kStringsChineseTrad = {
     L"工作模式:\n"
     L"  • 僅替換模式 (自動發送關閉): 替換為譯文供確認後發送。\n"
     L"  • 自動發送模式 (自動發送開啟): 替換為譯文後自動發送。",
-    L"關於 Emebala Chat",
+    L"關於 埃梅巴拉 翻譯",
 
     L"運行中",
     L"翻譯中...",
     L"已暫停",
 
-    L"Emebala Chat",
+    L"埃梅巴拉 翻譯",
     L"無法複製所選文字。請檢查目標應用程式後重試。",
     L"尚未選取要翻譯的文字。",
     L"自動檢測",
 
-    L"Emebala Chat 已在背景執行。\n請檢視系統通知列。",
+    L"埃梅巴拉 翻譯 已在背景執行。\n請檢視系統通知列。",
     L"COM 初始化失敗。\n懸浮徽章與語音朗讀將不可用，\n但翻譯、快捷鍵、系統匣與提示音仍可正常使用。",
     L"告別複製貼上。用母語自然輸入，譯文會在任何 Windows 應用程式中即時取代你的鍵入。",
     L"⚡ 拖曳翻譯 — 在任何應用程式中選取文字，懸浮圖示立即翻譯。",
-    L"🔊 神經 TTS — 支援 KO/EN/JA/DE 發音。",
+    L"🔊 神經 TTS — 接入 Windows 語音包後支援全部 37 種語言發音。",
     L"🔒 100% 本機執行且私密 — 僅在按住快捷鍵時生效，不觸碰剪貼簿。",
     L"西元前 2000 年，美索不達米亞的書吏稱那些以語言連結世界的人為 Eme-bala。",
     L"官網",
@@ -353,7 +366,9 @@ const LocalizedStrings kStringsChineseTrad = {
     L"重設為系統預設值",
     L"已還原預設值",
     L"鍵盤輸入",
-    L"划譯工具提示"
+    L"划譯工具提示",
+    L"埃梅巴拉 翻譯",
+    L"此語言未安裝 Windows 語音。再次點擊 🔊 可開啟語音設定。"
 };
 
 // 5. Vietnamese (vi)
@@ -402,7 +417,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"Khởi tạo COM thất bại.\nHuy hiệu nổi và đọc văn bản sẽ không khả dụng,\nnhưng dịch, phím tắt, khay hệ thống và âm thanh vẫn hoạt động.",
     L"Không còn copy-paste. Gõ tự nhiên bằng tiếng mẹ đẻ — bản dịch thay thế ngay câu bạn gõ trong mọi ứng dụng Windows.",
     L"⚡ Kéo để dịch — chọn văn bản trong bất kỳ ứng dụng nào, biểu tượng nổi dịch ngay lập tức.",
-    L"🔊 TTS thần kinh — phát âm KO/EN/JA/DE.",
+    L"🔊 TTS thần kinh — phát âm tất cả 37 ngôn ngữ khi có gói giọng nói Windows.",
     L"🔒 100% trên máy & riêng tư — chỉ hoạt động khi giữ phím tắt; không đụng tới clipboard.",
     L"Năm 2000 TCN, các thư lại Lưỡng Hà gọi 'Eme-bala' — những người dùng ngôn ngữ bắc nhịp nối các thế giới.",
     L"Website",
@@ -419,7 +434,9 @@ const LocalizedStrings kStringsVietnamese = {
     L"Đặt lại về mặc định hệ thống",
     L"Đã khôi phục mặc định",
     L"Gõ phím",
-    L"Dịch khi chọn văn bản"
+    L"Dịch khi chọn văn bản",
+    L"Emebala Chat",
+    L"Chưa cài đặt giọng nói Windows cho ngôn ngữ này. Nhấp lại 🔊 để mở Cài đặt Nhận dạng và giọng nói."
 };
 
 // 6. Spanish (es)
@@ -465,7 +482,7 @@ const LocalizedStrings kStringsSpanish = {
     L"Error al iniciar COM.\nLa insignia flotante y la voz no estarán disponibles,\npero la traducción, los atajos, la bandeja y los sonidos siguen funcionando.",
     L"Nunca más copiar y pegar. Escribe con naturalidad en tu idioma: la traducción reemplaza tu texto en tiempo real en cualquier aplicación de Windows.",
     L"⚡ Arrastrar y traducir — selecciona texto en cualquier app y el icono flotante lo traduce al instante.",
-    L"🔊 TTS neuronal — pronunciación KO/EN/JA/DE.",
+    L"🔊 TTS neuronal — pronuncia los 37 idiomas con los paquetes de voz de Windows instalados.",
     L"🔒 100% local y privado — solo activo mientras mantienes el atajo; sin tocar el portapapeles.",
     L"En el 2000 a. C., los escribas mesopotámicos llamaban «Eme-bala» a quienes convierten el lenguaje en un puente entre mundos.",
     L"Sitio web",
@@ -482,7 +499,9 @@ const LocalizedStrings kStringsSpanish = {
     L"Restablecer valores predeterminados",
     L"Valores restaurados",
     L"Escritura con teclado",
-    L"Tooltip de selección"
+    L"Tooltip de selección",
+    L"Emebala Chat",
+    L"No hay una voz de Windows instalada para este idioma. Haz clic de nuevo en 🔊 para abrir la configuración de Voz."
 };
 
 // 7. English (en) - Default Fallback
@@ -532,7 +551,7 @@ const LocalizedStrings kStringsEnglish = {
     L"Never copy-paste again. Type naturally in your native tongue \u2014 "
     L"translations replace your keystrokes in real time inside any Windows application.",
     L"\u26A1 Drag-to-Translate \u2014 select text in any app, the floating icon translates instantly.",
-    L"\U0001F50A Neural TTS \u2014 KO/EN/JA/DE pronunciation.",
+    L"🔊 Neural TTS — speaks all 37 languages via installed Windows voice packs.",
     L"\U0001F512 100% on-device & private \u2014 active only while the shortcut is held; clipboard untouched.",
     L"In 2000 BCE, Mesopotamian scribes called \u201CEme-bala\u201D \u2014 those who turn language to bridge worlds.",
     L"Website",
@@ -549,20 +568,22 @@ const LocalizedStrings kStringsEnglish = {
     L"Reset to system defaults",
     L"Defaults restored",
     L"Keyboard Typing",
-    L"Drag Tooltip"
+    L"Drag Tooltip",
+    L"Emebala Chat",
+    L"No Windows voice installed for this language. Click 🔊 again to open Speech settings."
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
 // Authored per §2-Q4 verdict A (aggregate-struct pattern). Field order and
-// grouping mirror kStringsEnglish EXACTLY (15 menu + 3 cheat/about + 3 badge +
-// 4 tooltip/autodetect + 13 startup+About-body + 5 tooltip-buttons/selector +
-// 2 reset + 2 group-headers = 47) so a reviewer can eyeball alignment
-// (design §5.2 focus 3). Every field is consciously authored. Brand tokens
-// ("Emebala Chat", "Reddit", "Google Translate", "Hy-MT2-1.8B", the TTS
-// language abbreviations KO/EN/JA/DE, and the factual contact data — org
-// proper noun, address, phone number, "KST", "Yongtai Kim") stay universal per
-// the R6 Phase-5 decision recorded in the legacy tables; only their LABELS and
-// surrounding prose translate.
+// grouping mirror kStringsEnglish EXACTLY (49 since Batch-1 of session
+// 260909_0001: 47 legacy + app_name + tooltip_no_tts_voice) so a reviewer can
+// eyeball alignment (design §5.2 focus 3). Every field is consciously authored.
+// Per REQ-B (session 260909_0001, decisions.md APPROVED brand transliteration
+// table): the brand token "Emebala Chat" is now per-locale (app_name +
+// re-bound composites) in the 17 non-Latin locales; Latin-20 keep the ASCII
+// brand. Universal factual tokens remain: "Reddit", "Google Translate",
+// "Hy-MT2-1.8B", contact data (org proper noun, address, phone, "KST",
+// "Yongtai Kim").
 
 // 8. French (fr)
 const LocalizedStrings kStringsFrench = {
@@ -610,7 +631,7 @@ const LocalizedStrings kStringsFrench = {
     L"L'initialisation COM a échoué.\nLe badge flottant et la synthèse vocale seront indisponibles,\nmais la traduction, les raccourcis, la barre d'état et les sons fonctionnent toujours.",
     L"Fini le copier-coller. Tapez naturellement dans votre langue maternelle — la traduction remplace votre frappe en temps réel dans n'importe quelle application Windows.",
     L"⚡ Glisser-traduire — sélectionnez un texte dans n'importe quelle app, l'icône flottante traduit instantanément.",
-    L"🔊 TTS neuronal — prononciation KO/EN/JA/DE.",
+    L"🔊 TTS neuronal — prononce les 37 langues via les packs de voix Windows installés.",
     L"🔒 100 % local et privé — actif uniquement pendant que le raccourci est maintenu ; presse-papiers intact.",
     L"En 2000 av. J.-C., les scribes mésopotamiens appelaient « Eme-bala » ceux qui font de la langue un pont entre les mondes.",
     L"Site web",
@@ -627,7 +648,9 @@ const LocalizedStrings kStringsFrench = {
     L"Réinitialiser aux valeurs système",
     L"Valeurs restaurées",
     L"Saisie au clavier",
-    L"Infobulle de glissement"
+    L"Infobulle de glissement",
+    L"Emebala Chat",
+    L"Aucune voix Windows installée pour cette langue. Cliquez à nouveau sur 🔊 pour ouvrir les paramètres de la Voix."
 };
 
 // 9. German (de)
@@ -676,7 +699,7 @@ const LocalizedStrings kStringsGerman = {
     L"COM-Initialisierung fehlgeschlagen.\nSchwebendes Badge und Sprachausgabe sind nicht verfügbar,\naber Übersetzung, Tastenkürzel, Tray und Sounds funktionieren weiterhin.",
     L"Schluss mit Kopieren und Einfügen. Tippen Sie natürlich in Ihrer Muttersprache — die Übersetzung ersetzt Ihre Eingabe in Echtzeit in jeder Windows-Anwendung.",
     L"⚡ Ziehen-und-Übersetzen — Text in einer beliebigen App markieren, das schwebende Symbol übersetzt sofort.",
-    L"🔊 Neuronales TTS — Aussprache KO/EN/JA/DE.",
+    L"🔊 Neuronales TTS — spricht alle 37 Sprachen über installierte Windows-Sprachpakete.",
     L"🔒 100 % lokal und privat — nur aktiv, während das Tastenkürzel gehalten wird; Zwischenablage unberührt.",
     L"Im Jahr 2000 v. Chr. nannten mesopotamische Schreiber „Eme-bala“ — jene, die Sprache zur Brücke zwischen Welten machen.",
     L"Webseite",
@@ -693,7 +716,9 @@ const LocalizedStrings kStringsGerman = {
     L"Auf Systemstandards zurücksetzen",
     L"Standards wiederhergestellt",
     L"Tastatureingabe",
-    L"Drag-Tooltip"
+    L"Drag-Tooltip",
+    L"Emebala Chat",
+    L"Für diese Sprache ist keine Windows-Stimme installiert. Klicken Sie erneut auf 🔊, um die Spracheinstellungen zu öffnen."
 };
 
 // 10. Russian (ru)
@@ -711,11 +736,11 @@ const LocalizedStrings kStringsRussian = {
     L"Показывать плавающий бейдж",
     L"Запускать с Windows",
     L"Шпаргалка горячих клавиш и помощь...",
-    L"Выйти из Emebala Chat",
-    L"Об Emebala Chat…",
+    L"Выйти из Эмебала Чат",
+    L"Об Эмебала Чат…",
 
-    L"Emebala Chat: горячие клавиши и руководство",
-    L"Горячие клавиши и руководство Emebala Chat:\n\n"
+    L"Эмебала Чат: горячие клавиши и руководство",
+    L"Горячие клавиши и руководство Эмебала Чат:\n\n"
     L"  • F9 : включить / пауза\n"
     L"  • Ctrl + F9 : смена языка перевода\n"
     L"  • Ctrl + Shift + Enter : режим автоотправки\n"
@@ -727,22 +752,22 @@ const LocalizedStrings kStringsRussian = {
     L"Режимы перевода:\n"
     L"  • Только замена (автоотправка выкл): заменяет строку переводом для проверки.\n"
     L"  • Автоотправка (вкл): заменяет строку и сразу нажимает Enter.",
-    L"Об Emebala Chat",
+    L"Об Эмебала Чат",
 
     L"Активно",
     L"Перевод...",
     L"Пауза",
 
-    L"Emebala Chat",
+    L"Эмебала Чат",
     L"Не удалось скопировать выделенный текст. Проверьте целевое приложение и повторите попытку.",
     L"Текст для перевода не выбран.",
     L"Определять автоматически",
 
-    L"Emebala Chat уже запущен в фоновом режиме.\nПроверьте область уведомлений.",
+    L"Эмебала Чат уже запущен в фоновом режиме.\nПроверьте область уведомлений.",
     L"Сбой инициализации COM.\nПлавающий бейдж и озвучивание текста будут недоступны,\nно перевод, горячие клавиши, трей и звуки продолжат работать.",
     L"Хватит копировать и вставлять. Печатайте естественно на родном языке — перевод заменяет ваш ввод в реальном времени в любом приложении Windows.",
     L"⚡ Перевод перетаскиванием — выделите текст в любом приложении, плавающий значок переведёт мгновенно.",
-    L"🔊 Нейронное TTS — произношение KO/EN/JA/DE.",
+    L"🔊 Нейронное TTS — озвучивает все 37 языков через установленные голосовые пакеты Windows.",
     L"🔒 100 % на устройстве и приватно — активно, только пока удерживается горячая клавиша; буфер обмена не затрагивается.",
     L"В 2000 г. до н. э. месопотамские писцы называли «Eme-bala» тех, кто превращает язык в мост между мирами.",
     L"Сайт",
@@ -759,7 +784,9 @@ const LocalizedStrings kStringsRussian = {
     L"Сброс к системным значениям",
     L"Значения восстановлены",
     L"Ввод с клавиатуры",
-    L"Всплывающая подсказка"
+    L"Всплывающая подсказка",
+    L"Эмебала Чат",
+    L"Для этого языка не установлен голос Windows. Нажмите 🔊 ещё раз, чтобы открыть параметры распознавания речи."
 };
 
 // 11. Portuguese (pt)
@@ -808,7 +835,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"Falha na inicialização do COM.\nO selo flutuante e a leitura de voz ficarão indisponíveis,\nmas tradução, atalhos, bandeja e sons continuam funcionando.",
     L"Chega de copiar e colar. Digite naturalmente no seu idioma nativo — a tradução substitui sua digitação em tempo real em qualquer aplicativo do Windows.",
     L"⚡ Arrastar para traduzir — selecione texto em qualquer app e o ícone flutuante traduz na hora.",
-    L"🔊 TTS neural — pronúncia KO/EN/JA/DE.",
+    L"🔊 TTS neural — fala todos os 37 idiomas via pacotes de voz do Windows instalados.",
     L"🔒 100% no dispositivo e privado — ativo apenas enquanto o atalho é pressionado; área de transferência intacta.",
     L"Em 2000 a.C., escribas mesopotâmicos chamavam de «Eme-bala» aqueles que transformam a linguagem em ponte entre mundos.",
     L"Site",
@@ -825,7 +852,9 @@ const LocalizedStrings kStringsPortuguese = {
     L"Restaurar padrões do sistema",
     L"Padrões restaurados",
     L"Digitação no teclado",
-    L"Dica de ferramenta"
+    L"Dica de ferramenta",
+    L"Emebala Chat",
+    L"Não há voz do Windows instalada para este idioma. Clique novamente em 🔊 para abrir as configurações de Fala."
 };
 
 // 12. Italian (it)
@@ -874,7 +903,7 @@ const LocalizedStrings kStringsItalian = {
     L"Inizializzazione COM non riuscita.\nIl badge fluttuante e la sintesi vocale non saranno disponibili,\nma traduzione, scorciatoie, tray e suoni continueranno a funzionare.",
     L"Basta copiare e incollare. Scrivi naturalmente nella tua lingua madre: la traduzione sostituisce la tua digitazione in tempo reale in qualsiasi app Windows.",
     L"⚡ Trascina e traduci — seleziona il testo in qualsiasi app, l'icona fluttuante traduce all'istante.",
-    L"🔊 TTS neurale — pronuncia KO/EN/JA/DE.",
+    L"🔊 TTS neurale — pronuncia tutte le 37 lingue tramite i pacchetti vocali di Windows installati.",
     L"🔒 100% sul dispositivo e privato — attivo solo mentre la scorciatoia è premuta; appunti intatti.",
     L"Nel 2000 a.C., gli scribi mesopotamici chiamavano «Eme-bala» coloro che fanno del linguaggio un ponte tra mondi.",
     L"Sito web",
@@ -891,7 +920,9 @@ const LocalizedStrings kStringsItalian = {
     L"Ripristina valori predefiniti di sistema",
     L"Valori ripristinati",
     L"Digitazione da tastiera",
-    L"Tooltip di trascinamento"
+    L"Tooltip di trascinamento",
+    L"Emebala Chat",
+    L"Nessuna voce Windows installata per questa lingua. Fai di nuovo clic su 🔊 per aprire le impostazioni di Riconoscimento vocale."
 };
 
 // 13. Dutch (nl)
@@ -940,7 +971,7 @@ const LocalizedStrings kStringsDutch = {
     L"COM-initialisatie mislukt.\nHet zwevende badge en voorlezen zijn niet beschikbaar,\nmaar vertalen, sneltoetsen, tray en geluiden werken nog steeds.",
     L"Nooit meer kopiëren en plakken. Typ natuurlijk in je moedertaal — de vertaling vervangt je getynde tekst realtime in elke Windows-app.",
     L"⚡ Sleep-om-te-vertalen — selecteer tekst in elke app, het zwevende pictogram vertaalt meteen.",
-    L"🔊 Neurale TTS — uitspraak KO/EN/JA/DE.",
+    L"🔊 Neurale TTS — spreekt alle 37 talen via geïnstalleerde Windows-spraakpakketten.",
     L"🔒 100% lokaal en privé — alleen actief zolang de sneltoets wordt ingehouden; klembord onaangeroerd.",
     L"In 2000 v.Chr. noemden Mesopotamische schrijvers «Eme-bala» — hen die taal omzetten in een brug tussen werelden.",
     L"Website",
@@ -957,7 +988,9 @@ const LocalizedStrings kStringsDutch = {
     L"Reset naar systeemstandaarden",
     L"Standaarden hersteld",
     L"Typen op toetsenbord",
-    L"Sleep-tooltip"
+    L"Sleep-tooltip",
+    L"Emebala Chat",
+    L"Er is geen Windows-stem geïnstalleerd voor deze taal. Klik nogmaals op 🔊 om de Spraak-instellingen te openen."
 };
 
 // 14. Polish (pl)
@@ -1006,7 +1039,7 @@ const LocalizedStrings kStringsPolish = {
     L"Inicjalizacja COM nie powiodła się.\nPływająca odznaka i czytanie na głos będą niedostępne,\nale tłumaczenie, skróty, zasobnik i dźwięki nadal działają.",
     L"Koniec z kopiowaniem i wklejaniem. Pis naturalnie w swoim języku ojczystym — tłumaczenie zastępuje Twoje wpisy w czasie rzeczywistym w każdej aplikacji Windows.",
     L"⚡ Przeciągnij, aby przetłumaczyć — zaznacz tekst w dowolnej aplikacji, pływająca ikona tłumaczy natychmiast.",
-    L"🔊 Neuralne TTS — wymowa KO/EN/JA/DE.",
+    L"🔊 Neuralne TTS — wymawia wszystkie 37 języków dzięki zainstalowanym pakietom głosowym Windows.",
     L"🔒 100% na urządzeniu i prywatne — aktywne tylko podczas trzymania skrótu; schowek nienaruszony.",
     L"W 2000 r. p.n.e. mezopotamscy skrybowie nazywali «Eme-bala» tych, którzy zamieniają język w most między światami.",
     L"Strona internetowa",
@@ -1023,7 +1056,9 @@ const LocalizedStrings kStringsPolish = {
     L"Przywróć ustawienia systemowe",
     L"Przywrócono wartości domyślne",
     L"Pisanie na klawiaturze",
-    L"Etykieta przeciągania"
+    L"Etykieta przeciągania",
+    L"Emebala Chat",
+    L"Dla tego języka nie zainstalowano głosu Windows. Kliknij ponownie 🔊, aby otworzyć ustawienia Mowy."
 };
 
 // 15. Czech (cs)
@@ -1072,7 +1107,7 @@ const LocalizedStrings kStringsCzech = {
     L"Inicializace COM se nezdařila.\nPlovoucí odznak a převod textu na řeč budou nedostupné,\nale překlad, klávesové zkratky, tray a zvuky stále fungují.",
     L"Konec kopírování a vkládání. Pište přirozeně ve svém rodném jazyce — překlad nahrazuje váš psaní v reálném čase v libovolné aplikaci Windows.",
     L"⚡ Přetáhněte pro překlad — vyberte text v libovolné aplikaci, plovoucí ikna přeloží okamžitě.",
-    L"🔊 Neuronové TTS — výslovnost KO/EN/JA/DE.",
+    L"🔊 Neuronové TTS — vyslovuje všech 37 jazyků pomocí nainstalovaných hlasových balíčků Windows.",
     L"🔒 100% na zařízení a soukromé — aktivní pouze při podržení zkratky; schránka nedotčena.",
     L"V roce 2000 př. n. l. mezopotámští písaři nazývaly «Eme-bala» ty, kdo mění jazyk v most mezi světy.",
     L"Web",
@@ -1089,7 +1124,9 @@ const LocalizedStrings kStringsCzech = {
     L"Obnovit výchozí nastavení systému",
     L"Výchozí hodnoty obnoveny",
     L"Psaní na klávesnici",
-    L"Tooltip tažení"
+    L"Tooltip tažení",
+    L"Emebala Chat",
+    L"Pro tento jazyk není nainstalován žádný hlas Windows. Klikněte znovu na 🔊 pro otevření nastavení Rozpoznávání řeči."
 };
 
 // 16. Hungarian (hu)
@@ -1138,7 +1175,7 @@ const LocalizedStrings kStringsHungarian = {
     L"A COM inicializálása sikertelen.\nA lebegő jelvény és a felolvasás nem lesz elérhető,\nde a fordítás, gyorsbillentyűk, tálca és hangok tovább működnek.",
     L"Kopírozás és beillesztés többé nem kell. Gépeljen természetesen az anyanyelvén — a fordítás valós időben felváltja a gépelést bármely Windows-alkalmazásban.",
     L"⚡ Húzássos fordítás — jelöljön ki szöveget bármely appban, a lebegő ikon azonnal fordít.",
-    L"🔊 Neurális TTS — KO/EN/JA/DE kiejtés.",
+    L"🔊 Neurális TTS — mind a 37 nyelvet kimondja a telepített Windows hangcsomagokkal.",
     L"🔒 100% eszközön és privát — csak a gyorsbillentyű tartása közben aktív; vágólap érintetlen.",
     L"Kr. e. 2000-ben a mezopotámiai írnokok „Eme-bala”-nak nevezték azokat, akik a nyelvet a világok hidává alakítják.",
     L"Weboldal",
@@ -1155,7 +1192,9 @@ const LocalizedStrings kStringsHungarian = {
     L"Visszaállítás rendszeralapértelmezettekre",
     L"Alapértelmezések visszaállítva",
     L"Billentyűzetes gépelés",
-    L"Húzás tippablak"
+    L"Húzás tippablak",
+    L"Emebala Chat",
+    L"Ehhez a nyelvhez nincs telepítve Windows-hang. Kattintson újra a 🔊 gombra a Beszéd beállításainak megnyitásához."
 };
 
 // 17. Romanian (ro)
@@ -1204,7 +1243,7 @@ const LocalizedStrings kStringsRomanian = {
     L"Inicializarea COM a eșuat.\nInsigna flotantă și citirea textului vor fi indisponibile,\ndar traducerea, scurtăturile, tava și sunetele continuă să funcționeze.",
     L"Gata cu copierea și lipirea. Tastați natural în limba maternă — traducerea vă înlocuiește tastarea în timp real în orice aplicație Windows.",
     L"⚡ Trage pentru a traduce — selectează text în orice aplicație, iconița flotantă traduce instant.",
-    L"🔊 TTS neuronal — pronunție KO/EN/JA/DE.",
+    L"🔊 TTS neuronal — pronunță toate cele 37 de limbi prin pachetele de voci Windows instalate.",
     L"🔒 100% pe dispozitiv și privat — activ doar cât timp este ținută scurtătura; clipboard neatins.",
     L"În anul 2000 î.Hr., scribii mesopotamieni numeau «Eme-bala» pe aceia care prefac limba în punte între lumi.",
     L"Site web",
@@ -1221,7 +1260,9 @@ const LocalizedStrings kStringsRomanian = {
     L"Resetează la valorile implicite de sistem",
     L"Valori implicite restaurate",
     L"Tastare de la tastatură",
-    L"Sfat de glisare"
+    L"Sfat de glisare",
+    L"Emebala Chat",
+    L"Nu există o voce Windows instalată pentru această limbă. Faceți clic din nou pe 🔊 pentru a deschide setările Vocii."
 };
 
 // 18. Swedish (sv)
@@ -1270,7 +1311,7 @@ const LocalizedStrings kStringsSwedish = {
     L"COM-initieringen misslyckades.\nDen flytande brickan och uppläsning är inte tillgängliga,\nmen översättning, snabbtangenter, aktivitetsfält och ljud fungerar fortfarande.",
     L"Inget mer kopierande. Skriv naturligt på ditt modersmål — översättningen ersätter din inskrift i realtid i alla Windows-appar.",
     L"⚡ Dra-för-att-översätta — markera text i vilken app som helst, den flytande ikonen översätter direkt.",
-    L"🔊 Neuronalt TTS — uttal KO/EN/JA/DE.",
+    L"🔊 Neuronalt TTS — talar alla 37 språk via installerade Windows-röstpaket.",
     L"🔒 100 % på enheten och privat — aktivt endast medan snabbtangenten hås; urklipp orört.",
     L"År 2000 f.Kr. kallade mesopotamiska skribenter «Eme-bala» — dem som gör språket till en bro mellan världar.",
     L"Webbplats",
@@ -1287,7 +1328,9 @@ const LocalizedStrings kStringsSwedish = {
     L"Återställ till systemstandard",
     L"Standardvärden återställda",
     L"Tangentbordsskrivning",
-    L"Dra-tooltip"
+    L"Dra-tooltip",
+    L"Emebala Chat",
+    L"Ingen Windows-röst är installerad för det här språket. Klicka på 🔊 igen för att öppna Tal-inställningarna."
 };
 
 // 19. Danish (da)
@@ -1336,7 +1379,7 @@ const LocalizedStrings kStringsDanish = {
     L"COM-initialisering mislykkedes.\nDen flydende badge og oplæsning er utilgængelige,\nmen oversættelse, genveje, bakke og lyde fungerer stadig.",
     L"Stop med at kopiere og indsætte. Skriv naturligt på dit modersmål — oversættelsen erstatter din indtastning i realtid i enhver Windows-app.",
     L"⚡ Træk-for-at-oversætte — markér tekst i en vilkårlig app, det flydende ikon oversætter med det samme.",
-    L"🔊 Neuralt TTS — udtale KO/EN/JA/DE.",
+    L"🔊 Neuralt TTS — udtaler alle 37 sprog via installerede Windows-talepakker.",
     L"🔒 100 % på enheden og privat — aktiv kun mens genvejen holdes; udklipsholder urørt.",
     L"I år 2000 f.Kr. kaldte mesopotamiske skriver «Eme-bala» — dem der gør sproget til en bro mellem verdener.",
     L"Hjemmeside",
@@ -1353,7 +1396,9 @@ const LocalizedStrings kStringsDanish = {
     L"Nulstil til systemstandarder",
     L"Standarder gendannet",
     L"Tastaturindtastning",
-    L"Drag-værktøjstip"
+    L"Drag-værktøjstip",
+    L"Emebala Chat",
+    L"Der er ikke installeret en Windows-tale til dette sprog. Klik på 🔊 igen for at åbne Tale-indstillingerne."
 };
 
 // 20. Finnish (fi)
@@ -1402,7 +1447,7 @@ const LocalizedStrings kStringsFinnish = {
     L"COM-käynnistys epäonnistui.\nKelluva merkki ja puheentuotto eivät ole käytettävissä,\nmutta käännös, pikanäppäimet, palkki ja äänet toimivat edelleen.",
     L"Liitä kopiointi ja liittäminen luonnollisesti aidolla kielelläsi — käännös korvaa kirjoituksesi reaaliajassa missä tahansa Windows-sovelluksessa.",
     L"⚡ Vedä kääntääksesi — valitse teksti missä tahansa sovelluksessa, kelluva kuvake kääntää heti.",
-    L"🔊 Neuro TTS — ääntämys KO/EN/JA/DE.",
+    L"🔊 Neuro TTS — puhuu kaikki 37 kieltä asennettujen Windows-äänipakettien avulla.",
     L"🔒 100 % laitteella ja yksityinen — aktiivinen vain pikanäppäintä pidettäessä; leikepöytää ei kosketa.",
     L"Vuonna 2000 eaa. mesopotamialaiset kirjurit kutsuivat kielen maailmat sillaksi kääntäviä «Eme-bala».",
     L"Verkkosivusto",
@@ -1419,7 +1464,9 @@ const LocalizedStrings kStringsFinnish = {
     L"Palauta järjestelmän oletukset",
     L"Oletukset palautettu",
     L"Näppäimistökirjoitus",
-    L"Veto-työkaluvihje"
+    L"Veto-työkaluvihje",
+    L"Emebala Chat",
+    L"Tälle kielelle ei ole asennettu Windows-ääntä. Napsauta 🔊 uudelleen avataksesi Puhe-asetukset."
 };
 
 // 21. Norwegian (no / nb)
@@ -1468,7 +1515,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"COM-initialisering mislyktes.\nDet svevende merket og taleavspilling er utilgjengelige,\nmen oversettelse, snarveier, varleske og lyder fungerer fortsatt.",
     L"Slutt å kopiere og lime inn. Skriv naturally på morsmålet ditt — oversettelsen erstatter tastene dine i sanntid i enhver Windows-app.",
     L"⚡ Dra-for-å-oversette — merk tekst i en vilkårlig app, det svevende ikonet oversetter umiddelbart.",
-    L"🔊 Nøyalt TTS — uttale KO/EN/JA/DE.",
+    L"🔊 Nøyalt TTS — uttaler alle 37 språk via installerte Windows-talepakker.",
     L"🔒 100 % på enheten og privat — aktivt kun mens snarveien holdes; utklippstavla urørt.",
     L"I år 2000 f.Kr. kalde mesopotamiske skrivere «Eme-bala» — de som gjør språket til ei bru mellom verdener.",
     L"Nettside",
@@ -1485,7 +1532,9 @@ const LocalizedStrings kStringsNorwegian = {
     L"Tilbakestill til systemstandarder",
     L"Standarder gjenopprettet",
     L"Tastaturskriving",
-    L"Dra-verktøytips"
+    L"Dra-verktøytips",
+    L"Emebala Chat",
+    L"Ingen Windows-stemme er installert for dette språket. Klikk på 🔊 igjen for å åpne Tale-innstillingene."
 };
 
 // 22. Greek (el)
@@ -1503,11 +1552,11 @@ const LocalizedStrings kStringsGreek = {
     L"Πloating σήμα ορατό",
     L"Έναρξη με τα Windows",
     L"Οδηγός συντομεύσεων και βοήθεια...",
-    L"Έξοδος από το Emebala Chat",
-    L"Σχετικά με το Emebala Chat…",
+    L"Έξοδος από το Εμεμπάλα Τσατ",
+    L"Σχετικά με το Εμεμπάλα Τσατ…",
 
-    L"Emebala Chat — συντομεύσεις και οδηγός",
-    L"Συντομεύσεις και οδηγός χρήσης του Emebala Chat:\n\n"
+    L"Εμεμπάλα Τσατ — συντομεύσεις και οδηγός",
+    L"Συντομεύσεις και οδηγός χρήσης του Εμεμπάλα Τσατ:\n\n"
     L"  • F9 : ενεργοποίηση / παύση\n"
     L"  • Ctrl + F9 : αλλαγή γλώσσας προορισμού\n"
     L"  • Ctrl + Shift + Enter : εναλλαγή αυτόματης αποστολής\n"
@@ -1519,22 +1568,22 @@ const LocalizedStrings kStringsGreek = {
     L"Λειτουργίες μετάφρασης:\n"
     L"  • Αντικατάσταση μόνο (αυτόματη αποστολή off): αντικαθιστά τη γραμμή με τη μετάφραση για έλεγχο.\n"
     L"  • Αυτόματη αποστολή (on): αντικαθιστά τη γραμμή και πατά αμέσως Enter.",
-    L"Σχετικά με το Emebala Chat",
+    L"Σχετικά με το Εμεμπάλα Τσατ",
 
     L"Ενεργό",
     L"Μετάφραση...",
     L"Σε παύση",
 
-    L"Emebala Chat",
+    L"Εμεμπάλα Τσατ",
     L"Δεν ήταν δυνατή η αντιγραφή του επιλεγμένου κειμένου. Ελέγξτε την εφαρμογή προορισμού και δοκιμάστε ξανά.",
     L"Δεν υπάρχει επιλεγμένο κείμενο για μετάφραση.",
     L"Αυτόματος εντοπισμός",
 
-    L"Το Emebala Chat εκτελείται ήδη στο παρασκήνιο.\nΕλέγξτε το πεδίο ειδοποιήσεων.",
+    L"Το Εμεμπάλα Τσατ εκτελείται ήδη στο παρασκήνιο.\nΕλέγξτε το πεδίο ειδοποιήσεων.",
     L"Η αρχικοποίηση COM απέτυχε.\nΤο πloating σήμα και η συνθετική ομιλία δεν θα είναι διαθέσιμα,\nαλλά η μετάφραση, οι συντομεύσεις, το εικονίδιο και οι ήχοι συνεχίζουν να λειτουργούν.",
     L"Σταματήστε το αντιγραφή-επικόλληση. Πληκτρολογήστε φυσικά στη μητρική σας γλώσσα — η μετάφραση αντικαθιστά την πληκτρολόγησή σας σε πραγματικό χρόνο σε οποιαδήποτε εφαρμογή Windows.",
     L"⚡ Σύρε-για-μετάφραση — επιλέξτε κείμενο σε οποιαδήποτε εφαρμογή, το σήμα μεταφράζει αμέσως.",
-    L"🔊 Νευρωνικό TTS — προφορά KO/EN/JA/DE.",
+    L"🔊 Νευρωνικό TTS — προφέρει και τις 37 γλώσσες μέσω εγκατεστημένων πακέτων φωνής των Windows.",
     L"🔒 100% στη συσκευή και ιδιωτικό — ενεργό μόνο όσο κρατιέται η συντόμευση· πρόχειρο ανέπαφο.",
     L"Το 2000 π.Χ., οι Μεσοποτάμιοι γραφείς ονόμαζαν «Eme-bala» όσους έκαναν τη γλώσσα γέφυρα μεταξύ κόσμων.",
     L"Ιστοσελίδα",
@@ -1551,7 +1600,9 @@ const LocalizedStrings kStringsGreek = {
     L"Επαναφορά στις προεπιλογές συστήματος",
     L"Οι προεπιλογές αποκαταστάθηκαν",
     L"Πληκτρολόγηση",
-    L"Υπόδειξη σύρσιμο"
+    L"Υπόδειξη σύρσιμο",
+    L"Εμεμπάλα Τσατ",
+    L"Δεν είναι εγκατεστημένη φωνή των Windows για αυτή τη γλώσσα. Κάντε ξανά κλικ στο 🔊 για να ανοίξετε τις ρυθμίσεις Ομιλίας."
 };
 
 // 23. Turkish (tr)
@@ -1600,7 +1651,7 @@ const LocalizedStrings kStringsTurkish = {
     L"COM başlatma başarısız.\nYüzen rozet ve metinden sese kullanılamayacak,\nancak çeviri, kısayollar, tepsi ve sesler çalışmaya devam ediyor.",
     L"Kopyala-yapıştırı bırakın. Ana dilinizde doğal yazın — çeviri, herhangi bir Windows uygulamasında yazdıklarınızı gerçek zamanlı değiştirir.",
     L"⚡ Sürükle-çevir — herhangi bir uygulamada metni seçin, yüzen simge anında çevirir.",
-    L"🔊 Nöral TTS — KO/EN/JA/DE telaffuzu.",
+    L"🔊 Nöral TTS — yüklü Windows ses paketleriyle 37 dilin tamamını seslendirir.",
     L"🔒 %100 cihazda ve özel — yalnızca kısayol basılıyken etkin; panoya dokunulmaz.",
     L"MÖ 2000'de Mezopotamyalı kâtipler, dili dünyalar arasında köprüye çevirenlere «Eme-bala» derdi.",
     L"Web sitesi",
@@ -1617,7 +1668,9 @@ const LocalizedStrings kStringsTurkish = {
     L"Sistem varsayılanlarına sıfırla",
     L"Varsayılanlar geri yüklendi",
     L"Klavye yazımı",
-    L"Sürükle ipucu"
+    L"Sürükle ipucu",
+    L"Emebala Chat",
+    L"Bu dil için yüklü bir Windows sesi yok. Konuşma ayarlarını açmak için 🔊 simgesine yeniden tıklayın."
 };
 
 // 24. Ukrainian (uk)
@@ -1635,11 +1688,11 @@ const LocalizedStrings kStringsUkrainian = {
     L"Плаваюча відзнака видима",
     L"Запускати з Windows",
     L"Гарячі клавіші та довідка...",
-    L"Вийти з Emebala Chat",
-    L"Про Emebala Chat…",
+    L"Вийти з Емебала Чат",
+    L"Про Емебала Чат…",
 
-    L"Emebala Chat — гарячі клавіші та посібник",
-    L"Гарячі клавіші та посібник Emebala Chat:\n\n"
+    L"Емебала Чат — гарячі клавіші та посібник",
+    L"Гарячі клавіші та посібник Емебала Чат:\n\n"
     L"  • F9 : увімкнути / пауза\n"
     L"  • Ctrl + F9 : змінити цільову мову\n"
     L"  • Ctrl + Shift + Enter : перемкнути автонадсилання\n"
@@ -1651,22 +1704,22 @@ const LocalizedStrings kStringsUkrainian = {
     L"Режими перекладу:\n"
     L"  • Лише заміна (автонадсилання вимк): замінює рядок перекладом для перевірки.\n"
     L"  • Автонадсилання (увімк): замінює рядок і одразу натискає Enter.",
-    L"Про Emebala Chat",
+    L"Про Емебала Чат",
 
     L"Активний",
     L"Переклад...",
     L"Призупинено",
 
-    L"Emebala Chat",
+    L"Емебала Чат",
     L"Не вдалося скопіювати вибраний текст. Перевірте цільовий застосунок і спробуйте ще раз.",
     L"Не вибрано тексту для перекладу.",
     L"Визначати автоматично",
 
-    L"Emebala Chat уже працює у фоні.\nПеревірте область сповіщень.",
+    L"Емебала Чат уже працює у фоні.\nПеревірте область сповіщень.",
     L"Помилка ініціалізації COM.\nПлаваюча відзнака й озвучення тексту будуть недоступні,\nале переклад, гарячі клавіші, трей і звуки продовжують працювати.",
     L"Геть копіювання та вставляння. Друкуйте природно рідною мовою — переклад замінює ваш набір у реальному часі в будь-якій програмі Windows.",
     L"⚡ Перетягни, щоб перекласти — виділіть текст у будь-якій програмі, плаваюча піктограма перекрить миттєво.",
-    L"🔊 Нейронне TTS — вимова KO/EN/JA/DE.",
+    L"🔊 Нейронне TTS — озвучує всі 37 мов через установлені голосові пакети Windows.",
     L"🔒 100% на пристрої та приватно — активно лише доки утримується скорочення; буфер обміну не чіпается.",
     L"У 2000 р. до н. е. месопотамські писці називали «Eme-bala» тих, хто перетворює мову на міст між світами.",
     L"Вебсайт",
@@ -1683,7 +1736,9 @@ const LocalizedStrings kStringsUkrainian = {
     L"Скинути до системних типових",
     L"Типові значення відновлено",
     L"Набирання з клавіатури",
-    L"Підказка перетягування"
+    L"Підказка перетягування",
+    L"Емебала Чат",
+    L"Для цієї мови не встановлено голос Windows. Натисніть 🔊 ще раз, щоб відкрити параметри мовлення."
 };
 
 // 25. Thai (th)
@@ -1701,11 +1756,11 @@ const LocalizedStrings kStringsThai = {
     L"แสดงป้ายลอย",
     L"เริ่มทำงานพร้อม Windows",
     L"สรุปคีย์ลัดและวิธีใช้...",
-    L"ออกจาก Emebala Chat",
-    L"เกี่ยวกับ Emebala Chat…",
+    L"ออกจาก เอเมบาลา แชท",
+    L"เกี่ยวกับ เอเมบาลา แชท…",
 
-    L"Emebala Chat — คีย์ลัดและคู่มือการใช้งาน",
-    L"คีย์ลัดและคู่มือการใช้งาน Emebala Chat:\n\n"
+    L"เอเมบาลา แชท — คีย์ลัดและคู่มือการใช้งาน",
+    L"คีย์ลัดและคู่มือการใช้งาน เอเมบาลา แชท:\n\n"
     L"  • F9 : เปิดใช้งาน / หยุดชั่วคราว\n"
     L"  • Ctrl + F9 : เปลี่ยนภาษาปลายทาง\n"
     L"  • Ctrl + Shift + Enter : สลับโหมดส่งอัตโนมัติ\n"
@@ -1717,22 +1772,22 @@ const LocalizedStrings kStringsThai = {
     L"โหมดการแปล:\n"
     L"  • แทนที่อย่างเดียว (ส่งอัตโนมัติปิด): แทนที่บรรทัดด้วยการแปลเพื่อตรวจสอบก่อน\n"
     L"  • ส่งอัตโนมัติ (เปิด): แทนที่บรรทัดแล้วกด Enter ทันที",
-    L"เกี่ยวกับ Emebala Chat",
+    L"เกี่ยวกับ เอเมบาลา แชท",
 
     L"ใช้งานอยู่",
     L"กำลังแปล...",
     L"หยุดชั่วคราว",
 
-    L"Emebala Chat",
+    L"เอเมบาลา แชท",
     L"คัดลอกข้อความที่เลือกไม่ได้ โปรดตรวจสอบแอปปลายทางแล้วลองอีกครั้ง",
     L"ยังไม่ได้เลือกข้อความสำหรับแปล",
     L"ตรวจจับอัตโนมัติ",
 
-    L"Emebala Chat ทำงานอยู่แล้วในพื้นหลัง\nโปรดตรวจสอบถาดการแจ้งเตือนของระบบ",
+    L"เอเมบาลา แชท ทำงานอยู่แล้วในพื้นหลัง\nโปรดตรวจสอบถาดการแจ้งเตือนของระบบ",
     L"ไม่สามารถเริ่มการทำงาน COM ได้\nป้ายลอยและการอ่านออกเสียงจะไม่สามารถใช้งานได้\nแต่การแปล คีย์ลัด ถาดระบบ และเสียงจะยังทำงานตามปกติ",
     L"เลิกลั่บการคัดลอกวาง พิมพ์ตามธรรมชาติในภาษาแม่ของคุณ แล้วคำแปลจะมาแทนที่สิ่งที่คุณพิมพ์แบบเรียลไทม์ในทุกแอปของ Windows",
     L"⚡ ลากเพื่อแปล — เลือกข้อความในแอปใดก็ได้ ไอคอนลอยจะแปลให้ทันที",
-    L"🔊 TTS แบบประสาท — การออกเสียง KO/EN/JA/DE",
+    L"🔊 TTS แบบประสาท — ออกเสียงได้ครบทั้ง 37 ภาษาเมื่อติดตั้งชุดเสียงของ Windows",
     L"🔒 ความเป็นส่วนตัว 100% บนอุปกรณ์ — ทำงานเฉพาะตอนกดคีย์ลัดเท่านั้น ไม่แตะคลิปบอร์ด",
     L"ในปี 2000 ปีก่อนคริสตกาล เสมียนเมโสโปเตเมียเรียกผู้ที่เปลี่ยนภาษาให้เป็นสะพานเชื่อมโลกว่า «Eme-bala»",
     L"เว็บไซต์",
@@ -1749,7 +1804,9 @@ const LocalizedStrings kStringsThai = {
     L"คืนค่าเป็นค่าเริ่มต้นของระบบ",
     L"กู้คืนค่าเริ่มต้นแล้ว",
     L"การพิมพ์ด้วยคีย์บอร์ด",
-    L"ทูลทิปแบบลาก"
+    L"ทูลทิปแบบลาก",
+    L"เอเมบาลา แชท",
+    L"ยังไม่ได้ติดตั้งเสียงของ Windows สำหรับภาษานี้ คลิก 🔊 อีกครั้งเพื่อเปิดการตั้งค่าคำพูด"
 };
 
 // 26. Indonesian (id)
@@ -1798,7 +1855,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"Inisialisasi COM gagal.\nLambang mengambang dan teks-ke-suara tidak tersedia,\ntapi terjemahan, pintasan, baki, dan suara tetap berfungsi.",
     L"Lupakan salin-tempel. Ketik secara alami dalam bahasa ibu Anda — terjemahan menggantikan ketikan Anda secara langsung di aplikasi Windows mana pun.",
     L"⚡ Seret-untuk-menerjemahkan — pilih teks di aplikasi mana pun, ikon mengambang menerjemahkan seketika.",
-    L"🔊 TTS neural — pengucapan KO/EN/JA/DE.",
+    L"🔊 TTS neural — mengucapkan semua 37 bahasa melalui paket suara Windows yang terpasang.",
     L"🔒 100% di perangkat & privat — aktif hanya saat pintasan ditekan; papan klip tak tersentuh.",
     L"Pada 2000 SM, para juru tulis Mesopotamia menyebut «Eme-bala» — mereka yang menjelma bahasa menjadi jembatan antar-dunia.",
     L"Situs web",
@@ -1815,7 +1872,9 @@ const LocalizedStrings kStringsIndonesian = {
     L"Setel ulang ke setelan bawaan sistem",
     L"Setelan bawaan dipulihkan",
     L"Pengetikan keyboard",
-    L"Tooltip seret"
+    L"Tooltip seret",
+    L"Emebala Chat",
+    L"Tidak ada suara Windows yang terpasang untuk bahasa ini. Klik 🔊 lagi untuk membuka pengaturan Ucapan."
 };
 
 // 27. Malay (ms)
@@ -1864,7 +1923,7 @@ const LocalizedStrings kStringsMalay = {
     L"Permulaan COM gagal.\nLambang terapung dan teks-ke-suara tidak tersedia,\ntetapi terjemahan, pintasan, dulang dan bunyi masih berfungsi.",
     L"Berhenti menyalin dan menampal. Taip secara semula jadi dalam bahasa ibunda anda — terjemahan menggantikan taipan anda secara masa nyata dalam mana-mana apl Windows.",
     L"⚡ Seret-untuk-terjemah — pilih teks dalam mana-mana apl, ikon terapung serta-merta menterjemah.",
-    L"🔊 TTS neural — sebutan KO/EN/JA/DE.",
+    L"🔊 TTS neural — menyebut kesemua 37 bahasa melalui pakej suara Windows yang dipasang.",
     L"🔒 100% pada peranti & persendirian — aktif hanya semasa pintasan ditekan; papan keratan tidak diusik.",
     L"Pada 2000 SM, jurutulis Mesopotamia memanggil «Eme-bala» — mereka yang menjadikan bahasa jambatan antara dunia.",
     L"Laman web",
@@ -1881,7 +1940,9 @@ const LocalizedStrings kStringsMalay = {
     L"Set semula ke lalai sistem",
     L"Lalai dipulihkan",
     L"Taipan papan kekunci",
-    L"Tooltip seret"
+    L"Tooltip seret",
+    L"Emebala Chat",
+    L"Tiada suara Windows dipasang untuk bahasa ini. Klik 🔊 sekali lagi untuk membuka tetapan Ucapan."
 };
 
 // 28. Filipino (fil)
@@ -1932,7 +1993,7 @@ const LocalizedStrings kStringsFilipino = {
     L"Nabigong i-initialize ang COM.\nHindi magagamit ang lumulutang badge at text-to-speech,\nngunit patuloy pa ring gumagana ang pagsasalin, shortcuts, tray at mga tunog.",
     L"Tigilan na ang kopya-at-idikit. Mag-type nang natural sa iyong katutubong wika — pinapalitan ng salin ang iyong pagta-type sa real time sa kahit aning app ng Windows.",
     L"⚡ I-drag para isalin — pumili ng teksto sa kahit aning app, agad isinasalin ng lumulutang icon.",
-    L"🔊 Neural TTS — pagbigkas KO/EN/JA/DE.",
+    L"🔊 Neural TTS — binibigkas ang lahat ng 37 wika sa pamamagitan ng naka-install na Windows voice packs.",
     L"🔒 100% sa device at pribado — aktibo lamang habang hawak ang shortcut; hindi hinahawakan ang clipboard.",
     L"Noong 2000 BCE, tinatawag ng mga maysulat ng Mesopotamia na «Eme-bala» ang mga gumagawa ng wika na tulay sa mga mundo.",
     L"Website",
@@ -1949,7 +2010,9 @@ const LocalizedStrings kStringsFilipino = {
     L"I-reset sa default ng sistema",
     L"Naibalik ang mga default",
     L"Pagta-type ng keyboard",
-    L"Tooltip ng pagdrag"
+    L"Tooltip ng pagdrag",
+    L"Emebala Chat",
+    L"Walang naka-install na Windows voice para sa wikang ito. I-click muli ang 🔊 upang buksan ang mga setting ng Pagsasalita."
 };
 
 // 29. Hindi (hi)
@@ -1967,11 +2030,11 @@ const LocalizedStrings kStringsHindi = {
     L"फ़्लोटिंग बैज दिखाएँ",
     L"Windows के साथ प्रारंभ करें",
     L"शॉर्टकट चीट-शीट और सहायता...",
-    L"Emebala Chat से बाहर निकलें",
-    L"Emebala Chat के बारे में…",
+    L"एमेबाला चैट से बाहर निकलें",
+    L"एमेबाला चैट के बारे में…",
 
-    L"Emebala Chat — शॉर्टकट और उपयोग गाइड",
-    L"Emebala Chat शॉर्टकट और उपयोग गाइड:\n\n"
+    L"एमेबाला चैट — शॉर्टकट और उपयोग गाइड",
+    L"एमेबाला चैट शॉर्टकट और उपयोग गाइड:\n\n"
     L"  • F9 : चालू / रोकें\n"
     L"  • Ctrl + F9 : लक्ष्य भाषा बदलें\n"
     L"  • Ctrl + Shift + Enter : स्वतः-भेजें मोड टॉगल करें\n"
@@ -1983,22 +2046,22 @@ const LocalizedStrings kStringsHindi = {
     L"अनुवाद मोड:\n"
     L"  • केवल प्रतिस्थापन (स्वतः-भेजें बंद): जाँच हेतु पंक्ति को अनुवाद से बदलता है।\n"
     L"  • स्वतः-भेजें (चालू): पंक्ति बदलकर तुरंत Enter दबाता है।",
-    L"Emebala Chat के बारे में",
+    L"एमेबाला चैट के बारे में",
 
     L"सक्रिय",
     L"अनुवाद हो रहा...",
     L"रुका हुआ",
 
-    L"Emebala Chat",
+    L"एमेबाला चैट",
     L"चयनित पाठ कॉपी नहीं हो सका। लक्ष्य ऐप जाँचें और फिर कोशिश करें।",
     L"अनुवाद हेतु कोई पाठ चयनित नहीं है।",
     L"स्वतः पहचान",
 
-    L"Emebala Chat पहले से पृष्ठभूमि में चल रहा है।\nसूचना ट्रे देखें।",
+    L"एमेबाला चैट पहले से पृष्ठभूमि में चल रहा है।\nसूचना ट्रे देखें।",
     L"COM आरंभ विफल।\nफ़्लोटिंग बैज और वाचन अनुपलब्ध रहेंगे,\nपर अनुवाद, शॉर्टकट, ट्रे और ध्वनियाँ काम करती रहेंगी।",
     L"कापी-पेस्ट की ज़रूरत नहीं। अपनी मातृभाषा में सहज टाइप करें — अनुवाद किसी भी Windows ऐप में आपकी टाइपिंग को रीयल-टाइम में बदल देता है।",
     L"⚡ खींचें-और-अनुवाद — किसी भी ऐप में पाठ चुनें, फ़्लोटिंग आइकन तुरंत अनुवाद करता है।",
-    L"🔊 न्यूरल TTS — KO/EN/JA/DE उच्चारण।",
+    L"🔊 न्यूरल TTS — इंस्टॉल Windows वॉइस पैक से सभी 37 भाषाओं का उच्चारण।",
     L"🔒 100% डिवाइस पर और निजी — जब तक शॉर्टकट दबा है तभी सक्रिय; क्लिपबोर्ड को छुए बिना।",
     L"2000 ईसा पूर्व, मेसोपोटामिया के लेखकों ने भाषा को दुनियाओं के बीच पुल बनाने वालों को «Eme-bala» कहा करता था।",
     L"वेबसाइट",
@@ -2015,7 +2078,9 @@ const LocalizedStrings kStringsHindi = {
     L"सिस्टम पूर्वनिर्धारित पर रीसेट करें",
     L"पूर्वनिर्धारित बहाल",
     L"कीबोर्ड टाइपिंग",
-    L"ड्रैग टूलटिप"
+    L"ड्रैग टूलटिप",
+    L"एमेबाला चैट",
+    L"इस भाषा के लिए कोई Windows वॉइस इंस्टॉल नहीं है. वॉइस सेटिंग खोलने के लिए 🔊 पर फिर से क्लिक करें."
 };
 
 // 30. Bengali (bn)
@@ -2033,11 +2098,11 @@ const LocalizedStrings kStringsBengali = {
     L"ফ্লোটিং ব্যাজ দৃশ্যমান",
     L"Windows-এর সাথে চালু",
     L"শর্টকাট চিট-শিট ও সহায়তা...",
-    L"Emebala Chat প্রস্থান",
-    L"Emebala Chat সম্পর্কে…",
+    L"এমেবালা চ্যাট প্রস্থান",
+    L"এমেবালা চ্যাট সম্পর্কে…",
 
-    L"Emebala Chat — শর্টকাট ও ব্যবহার গাইড",
-    L"Emebala Chat শর্টকাট ও ব্যবহার গাইড:\n\n"
+    L"এমেবালা চ্যাট — শর্টকাট ও ব্যবহার গাইড",
+    L"এমেবালা চ্যাট শর্টকাট ও ব্যবহার গাইড:\n\n"
     L"  • F9 : চালু / বিরতি\n"
     L"  • Ctrl + F9 : লক্ষ্য ভাষা পরিবর্তন\n"
     L"  • Ctrl + Shift + Enter : স্বয়ংক্রিয় প্রেরণ টগল\n"
@@ -2049,22 +2114,22 @@ const LocalizedStrings kStringsBengali = {
     L"অনুবাদ মোড:\n"
     L"  • শুধু প্রতিস্থাপন (স্বয়ং-প্রেরণ বন্ধ): পর্যালোচনার জন্য লাইনটি অনুবাদ দিয়ে বদলায়।\n"
     L"  • স্বয়ং-প্রেরণ (চালু): লাইন বদলে সঙ্গে সঙ্গে Enter চাপে।",
-    L"Emebala Chat সম্পর্কে",
+    L"এমেবালা চ্যাট সম্পর্কে",
 
     L"সক্রিয়",
     L"অনুবাদ হচ্ছে...",
     L"বিরতি",
 
-    L"Emebala Chat",
+    L"এমেবালা চ্যাট",
     L"নির্বাচিত লেখা কপি করা যায়নি। লক্ষ্য অ্যাপ দেখে আবার চেষ্টা করুন।",
     L"অনুবাদের জন্য কোনো লেখা নির্বাচন করা হয়নি।",
     L"স্বয়ংক্রিয় শনাক্ত",
 
-    L"Emebala Chat ইতিমধ্যে পটভূমিতে চলছে।\nসিস্টেম নোটিফিকেশন ট্রে দেখুন।",
+    L"এমেবালা চ্যাট ইতিমধ্যে পটভূমিতে চলছে।\nসিস্টেম নোটিফিকেশন ট্রে দেখুন।",
     L"COM আরম্ভ বিফল।\nফ্লোটিং ব্যাজ ও টেক্সট-টু-স্পিচ পাওয়া যাবে না,\nতবে অনুবাদ, শর্টকাট, ট্রে ও শব্দ কাজ করবে।",
     L"আর কপি-পেস্ট নয়। মাতৃভাষায় স্বাভাবিকভাবে লিখুন — যেকোনো Windows অ্যাপে আপনার টাইপিং রিয়েল-টাইমে অনুবাদে বদলে যায়।",
     L"⚡ ড্র্যাগ-করুন-অনুবাদ — যেকোনো অ্যাপে লেখা নির্বাচন করুন, ফ্লোটিং আইকন সঙ্গে সঙ্গে অনুবাদ করে।",
-    L"🔊 নিউরাল TTS — KO/EN/JA/DE উচ্চারণ।",
+    L"🔊 নিউরাল TTS — ইনস্টল করা Windows ভয়েস প্যাক দিয়ে সব 37টি ভাষার উচ্চারণ।",
     L"🔒 ১০০% ডিভাইসে ও গোপন — শর্টকাট চেপে রাখা অবধিই সক্রিয়; ক্লিপবোর্ড অক্ষত।",
     L"২০০০ খ্রিস্টপূর্বাব্দে মেসোপটেমীয় লেখকরা ভাষাকে জগতের সেতু বানানো লোকদের «Eme-bala» বলত।",
     L"ওয়েবসাইট",
@@ -2081,7 +2146,9 @@ const LocalizedStrings kStringsBengali = {
     L"সিস্টেম ডিফল্টে রিসেট",
     L"ডিফল্ট পুনরুদ্ধার",
     L"কীবোর্ড টাইপিং",
-    L"ড্র্যাগ টুলটিপ"
+    L"ড্র্যাগ টুলটিপ",
+    L"এমেবালা চ্যাট",
+    L"এই ভাষার জন্য কোনো Windows ভয়েস ইনস্টল করা নেই. ভয়েস সেটিংস খুলতে 🔊-এ আবার ক্লিক করুন."
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -2100,11 +2167,11 @@ const LocalizedStrings kStringsArabic = {
     L"إظهار الشارة العائمة",
     L"التشغيل عند بدء Windows",
     L"مرجع اختصارات لوحة المفاتيح والمساعدة...",
-    L"إنهاء Emebala Chat",
-    L"حول Emebala Chat…",
+    L"إنهاء إيميبالا شات",
+    L"حول إيميبالا شات…",
 
-    L"Emebala Chat — اختصارات ودليل الاستخدام",
-    L"اختصارات Emebala Chat ودليل الاستخدام:\n\n"
+    L"إيميبالا شات — اختصارات ودليل الاستخدام",
+    L"اختصارات إيميبالا شات ودليل الاستخدام:\n\n"
     L"  • F9 : تبديل التشغيل / الإيقاف المؤقت\n"
     L"  • Ctrl + F9 : تبديل لغة الهدف\n"
     L"  • Ctrl + Shift + Enter : تبديل الإرسال التلقائي\n"
@@ -2116,22 +2183,22 @@ const LocalizedStrings kStringsArabic = {
     L"أوضاع الترجمة:\n"
     L"  • الاستبدال فقط (الإرسال التلقائي متوقف): يستبدل السطر بالترجمة للمراجعة.\n"
     L"  • الإرسال التلقائي (مُفعّل): يستبدل السطر ويضغط Enter فورًا.",
-    L"حول Emebala Chat",
+    L"حول إيميبالا شات",
 
     L"نشِط",
     L"جارٍ الترجمة...",
     L"متوقف مؤقتًا",
 
-    L"Emebala Chat",
+    L"إيميبالا شات",
     L"تعذّر نسخ النص المحدد. تحقق من التطبيق الهدف وأعد المحاولة.",
     L"لم يتم تحديد أي نص لترجمته.",
     L"كشف تلقائي",
 
-    L"Emebala Chat يعمل بالفعل في الخلفية.\nتحقق من منطقة إشعارات النظام.",
+    L"إيميبالا شات يعمل بالفعل في الخلفية.\nتحقق من منطقة إشعارات النظام.",
     L"فشل تهيئة COM.\nلن تتوافر الشارة العائمة وقراءة النص بصوت مسموع،\nلكن الترجمة والاختصارات والإشعارات والأصوات ستواصل العمل.",
     L"ودِّع النسخ واللصق. اكتب بلغتك الأم بطبيعتك — تحل الترجمة محل كتابتك في الوقت الفعلي داخل أي تطبيق من تطبيقات Windows.",
     L"⚡ ترجم بالسحب — حدّد النص في أي تطبيق، فتُترجمه الأيقونة العائمة فورًا.",
-    L"🔊 تحويل نص إلى كلام عصبي — نطق KO/EN/JA/DE.",
+    L"🔊 تحويل نص إلى كلام عصبي — ينطق بجميع اللغات الـ37 عبر حزم الأصوات المثبتة في Windows.",
     L"🔒 يعمل محليًا وبخصوصية 100% — يتفعّل أثناء ضغط الاختصار فحسب، دون المساس بالحافظة.",
     L"في عام 2000 قبل الميلاد، أطلق كتّاب بلاد الرافدين اسم «Eme-bala» على من يجعلون من اللغة جسرًا بين العوالم.",
     L"الموقع الإلكتروني",
@@ -2148,7 +2215,9 @@ const LocalizedStrings kStringsArabic = {
     L"إعادة التعيين إلى إعدادات النظام الافتراضية",
     L"تمت استعادة الإعدادات الافتراضية",
     L"الكتابة بلوحة المفاتيح",
-    L"تلميح السحب"
+    L"تلميح السحب",
+    L"إيميبالا شات",
+    L"لا يوجد صوت Windows مثبت لهذه اللغة. انقر فوق 🔊 مرة أخرى لفتح إعدادات الكلام."
 };
 
 // 32. Persian (fa) — RTL
@@ -2166,11 +2235,11 @@ const LocalizedStrings kStringsPersian = {
     L"نمایش نشان شناور",
     L"شروع با ویندوز",
     L"برگه تقلبی کلیدهای میان‌بر و راهنما...",
-    L"خروج از Emebala Chat",
-    L"دربارهٔ Emebala Chat…",
+    L"خروج از امبالا چت",
+    L"دربارهٔ امبالا چت…",
 
-    L"کلیدهای میان‌بر و راهنمای Emebala Chat",
-    L"کلیدهای میان‌بر و راهنمای استفاده از Emebala Chat:\n\n"
+    L"کلیدهای میان‌بر و راهنمای امبالا چت",
+    L"کلیدهای میان‌بر و راهنمای استفاده از امبالا چت:\n\n"
     L"  • F9 : فعال / توقف موقت\n"
     L"  • Ctrl + F9 : تغییر زبان مقصد\n"
     L"  • Ctrl + Shift + Enter : تغییر حالت ارسال خودکار\n"
@@ -2182,22 +2251,22 @@ const LocalizedStrings kStringsPersian = {
     L"حالت‌های ترجمه:\n"
     L"  • فقط جای‌گزینی (ارسال خودکار خاموش): خط را برای بازبینی با ترجمه جای‌گزین می‌کند.\n"
     L"  • ارسال خودکار (روشن): خط را جای‌گزین و فوراً Enter را می‌فشارد.",
-    L"دربارهٔ Emebala Chat",
+    L"دربارهٔ امبالا چت",
 
     L"فعال",
     L"در حال ترجمه...",
     L"متوقف",
 
-    L"Emebala Chat",
+    L"امبالا چت",
     L"متن انتخابی کپی نشد. برنامهٔ مقصد را بررسی کنید و دوباره تلاش کنید.",
     L"متنی برای ترجمه انتخاب نشده است.",
     L"تشخیص خودکار",
 
-    L"Emebala Chat هم‌اکنون در پس‌زمینه در حال اجراست.\nسینی اعلان‌های سیستم را بررسی کنید.",
+    L"امبالا چت هم‌اکنون در پس‌زمینه در حال اجراست.\nسینی اعلان‌های سیستم را بررسی کنید.",
     L"مقداردهی COM ناموفق بود.\nنشان شناور و متن‌به‌کلام در دسترس نخواهند بود،\nاما ترجمه، میان‌برها، سینی و صداها همچنان کار می‌کنند.",
     L"کپی-پیست را فراموش کنید. به زبان مادری‌تان طبیعی تایپ کنید — ترجمه در هر برنامهٔ ویندوزی در زمان واقعی جای تایپ شما می‌نشیند.",
     L"⚡ بکشید تا ترجمه شود — متنی را در هر برنامه‌ای انتخاب کنید، نماد شناور فوراً ترجمه می‌کند.",
-    L"🔊 TTS عصبی — تلفظ KO/EN/JA/DE.",
+    L"🔊 TTS عصبی — تلفظ هر ۳۷ زبان از طریق بسته‌های صدای نصب‌شده Windows.",
     L"🔒 ۱۰۰٪ روی دستگاه و خصوصی — فقط هنگام فشردن میان‌بر فعال است؛ کلیپ‌بورد دست‌نخورده.",
     L"در سال ۲۰۰۰ پیش از میلاد، کاتبان بین‌النهرین «Eme-bala» می‌خواندند آنان را که زبان را پل میان جهان‌ها می‌کردند.",
     L"وب‌سایت",
@@ -2214,7 +2283,9 @@ const LocalizedStrings kStringsPersian = {
     L"بازنشانی به پیش‌فرض‌های سیستم",
     L"پیش‌فرض‌ها بازگردانده شدند",
     L"تایپ با کیبورد",
-    L"راهنمای ابزار کشیدن"
+    L"راهنمای ابزار کشیدن",
+    L"امبالا چت",
+    L"هیچ صدای Windows برای این زبان نصب نشده است. برای باز کردن تنظیمات گفتار، دوباره روی 🔊 کلیک کنید."
 };
 
 // 33. Urdu (ur) — RTL
@@ -2232,11 +2303,11 @@ const LocalizedStrings kStringsUrdu = {
     L"فلوٹنگ بیج دکھائیں",
     L"Windows کے ساتھ شروع",
     L"شارٹ کٹ چِٹ شیٹ اور مدد...",
-    L"Emebala Chat سے باہر نکلیں",
-    L"Emebala Chat کے بارے میں…",
+    L"ایمیبالا چیٹ سے باہر نکلیں",
+    L"ایمیبالا چیٹ کے بارے میں…",
 
-    L"Emebala Chat — شارٹ کٹس اور استعمال گائیڈ",
-    L"Emebala Chat شارٹ کٹس اور استعمال گائیڈ:\n\n"
+    L"ایمیبالا چیٹ — شارٹ کٹس اور استعمال گائیڈ",
+    L"ایمیبالا چیٹ شارٹ کٹس اور استعمال گائیڈ:\n\n"
     L"  • F9 : فعال / وقفہ سوئچ کریں\n"
     L"  • Ctrl + F9 : ہدف زبان بدلیں\n"
     L"  • Ctrl + Shift + Enter : خودکار ارسال ٹوگل کریں\n"
@@ -2248,22 +2319,22 @@ const LocalizedStrings kStringsUrdu = {
     L"ترجمہ موڈز:\n"
     L"  • صرف متبادل (خودکار ارسال بند): سطر کو جائزے کے لیے ترجمے سے بدل دیتا ہے۔\n"
     L"  • خودکار ارسال (چالو): سطر بدل کر فوراً Enter دبا دیتا ہے۔",
-    L"Emebala Chat کے بارے میں",
+    L"ایمیبالا چیٹ کے بارے میں",
 
     L"فعال",
     L"ترجمہ جاری...",
     L"وقفہ",
 
-    L"Emebala Chat",
+    L"ایمیبالا چیٹ",
     L"منتخب متن کاپی نہیں ہو سکا۔ ہدف ایپ چیک کریں اور دوبارہ کوشش کریں۔",
     L"ترجمے کے لیے کوئی متن منتخب نہیں ہے۔",
     L"خودکار شناخت",
 
-    L"Emebala Chat پہلے سے پس منظر میں چل رہا ہے۔\nسسٹم نوٹیفکیشن ٹرے کو دیکھیں۔",
+    L"ایمیبالا چیٹ پہلے سے پس منظر میں چل رہا ہے۔\nسسٹم نوٹیفکیشن ٹرے کو دیکھیں۔",
     L"COM آغاز ناکام۔\nفلوٹنگ بیج اور متن از آواز دستیاب نہیں ہوں گے،\nلیکن ترجمہ، شارٹ کٹس، ٹرے اور آوازیں چلتی رہیں گی۔",
     L"کاپی پیسٹ کی ضرورت ختم۔ اپنی مادری زبان میں قدرتی ٹائپ کریں — ترجمہ کسی بھی Windows ایپ میں آپ کی ٹائپنگ کو وقتی طور پر بدل دیتا ہے۔",
     L"⚡ کھینچیں اور ترجمہ کریں — کسی بھی ایپ میں متن منتخب کریں، فلوٹنگ آئیکن فوراً ترجمہ کر دیتا ہے۔",
-    L"🔊 نیورل TTS — KO/EN/JA/DE تلفظ۔",
+    L"🔊 نیورل TTS — انسٹال شد Windows وائس پیکس کے ذریعے تمام 37 زبانوں کا تلفظ۔",
     L"🔒 100% ڈیوائس پر اور نجی — جب تک شارٹ کٹ دبا رہے تب تک فعال؛ کلپ بورڈ کو ہاتھ نہیں لگاتا۔",
     L"2000 ق م، میسوپوٹیمیا کے کاتبوں نے انہیں «Eme-bala» کہا جنہوں نے زبان کو دنیاؤں کے درمیان پل بنایا۔",
     L"ویب سائٹ",
@@ -2280,7 +2351,9 @@ const LocalizedStrings kStringsUrdu = {
     L"سسٹم ڈیفالٹس پر ری سیٹ",
     L"ڈیفالٹس بحال ہو گئے",
     L"کی بورڈ ٹائپنگ",
-    L"ڈریگ ٹول ٹپ"
+    L"ڈریگ ٹول ٹپ",
+    L"ایمیبالا چیٹ",
+    L"اس زبان کے لیے کوئی Windows وائس انسٹال نہیں ہے۔ اسپیچ سیٹنگز کھولنے کے لیے 🔊 پر دوبارہ کلک کریں۔"
 };
 
 // 34. Hebrew (he) — RTL
@@ -2298,11 +2371,11 @@ const LocalizedStrings kStringsHebrew = {
     L"תג צף גלוי",
     L"הפעל עם Windows",
     L"מדריך קיצורי מקשים ועזרה...",
-    L"צא מ-Emebala Chat",
-    L"אודות Emebala Chat…",
+    L"צא מ-אמבאלה צ'אט",
+    L"אודות אמבאלה צ'אט…",
 
-    L"Emebala Chat — קיצורי מקשים ומדריך שימוש",
-    L"קיצורי המקשים ומדריך השימוש של Emebala Chat:\n\n"
+    L"אמבאלה צ'אט — קיצורי מקשים ומדריך שימוש",
+    L"קיצורי המקשים ומדריך השימוש של אמבאלה צ'אט:\n\n"
     L"  • F9 : הפעלה / השהיה\n"
     L"  • Ctrl + F9 : החלפת שפת יעד\n"
     L"  • Ctrl + Shift + Enter : החלפת מצב שליחה אוטומטית\n"
@@ -2314,22 +2387,22 @@ const LocalizedStrings kStringsHebrew = {
     L"מצבי תרגום:\n"
     L"  • החלפה בלבד (שליחה אוטומטית כבויה): מחליף את השורה בתרגום לסקירה.\n"
     L"  • שליחה אוטומטית (דלוקה): מחליף את השורה ולוחץ Enter מיד.",
-    L"אודות Emebala Chat",
+    L"אודות אמבאלה צ'אט",
 
     L"פעיל",
     L"מתרגם...",
     L"מושהה",
 
-    L"Emebala Chat",
+    L"אמבאלה צ'אט",
     L"לא ניתן להעתיק את הטקסט הנבחר. בדוק את אפליקציית היעד ונסה שוב.",
     L"לא נבחר טקסט לתרגום.",
     L"זיהוי אוטומטי",
 
-    L"Emebala Chat כבר פועל ברקע.\nבדוק את מגש ההודעות.",
+    L"אמבאלה צ'אט כבר פועל ברקע.\nבדוק את מגש ההודעות.",
     L"אתחול COM נכשל.\nהתג הצף והקראת טקסט לא יהיו זמינים,\nאך תרגום, קיצורי מקשים, מגש וצלילים ימשיכו לפעול.",
     L"להיפרד מהעתקה והדבקה. הקלדו בטבעיות בשפת האם — התרגום מחליף את ההקלדה בזמן אמת בכל אפליקציית Windows.",
     L"⚡ גררו ותרגמו — סמנו טקסט בכל אפליקציה, הסמל הצף מתרגם מיד.",
-    L"🔊 TTS עצבי — הגייה KO/EN/JA/DE.",
+    L"🔊 TTS עצבי — מדבר את כל 37 השפות באמצעות חבילות קול של Windows מותקנות.",
     L"🔒 100% מקומי ופרטי — פעיל רק בעוד קיצור המקשים מוחזק; לוח גזירים נשאר נקי.",
     L"בשנת 2000 לפנה\"ס כינו סופרי מסופוטמיה «Eme-bala» — אלה שהפכו שפה לגשר בין עולמות.",
     L"אתר אינטרנט",
@@ -2346,7 +2419,9 @@ const LocalizedStrings kStringsHebrew = {
     L"איפוס לברירות מחדל של המערכת",
     L"ברירות המחדל שוחזרו",
     L"הקלדה במקלדת",
-    L"רמז גרירה"
+    L"רמז גרירה",
+    L"אמבאלה צ'אט",
+    L"אין קול Windows מותקן עבור שפה זו. לחץ שוב על 🔊 כדי לפתוח את הגדרות הדיבור."
 };
 
 // 35. Khmer (km)
@@ -2364,11 +2439,11 @@ const LocalizedStrings kStringsKhmer = {
     L"បង្ហាញផ្លាកអណ្ដែត",
     L"ដំណើរការជាមួយ Windows",
     L"តារាងគន្លឹះក្ដារចុច និងជំនួយ...",
-    L"ចាកចេញពី Emebala Chat",
-    L"អំពី Emebala Chat…",
+    L"ចាកចេញពី អេមេបាឡា ឆាត",
+    L"អំពី អេមេបាឡា ឆាត…",
 
-    L"គន្លឹះ និងការណ៍នាំប្រើ Emebala Chat",
-    L"គន្លឹះ និងការណ៍នាំប្រើ Emebala Chat:\n\n"
+    L"គន្លឹះ និងការណ៍នាំប្រើ អេមេបាឡា ឆាត",
+    L"គន្លឹះ និងការណ៍នាំប្រើ អេមេបាឡា ឆាត:\n\n"
     L"  • F9 : បើក / ផ្អាក\n"
     L"  • Ctrl + F9 : ប្ដូរភាសាគោលដៅ\n"
     L"  • Ctrl + Shift + Enter : បិទ/បើកការផ្ញើស្វ័យប្រវត្តិ\n"
@@ -2380,22 +2455,22 @@ const LocalizedStrings kStringsKhmer = {
     L"របៀបបកប្រែ៖\n"
     L"  • ជំនួសតែប៉ុណ្ណោះ (ផ្ញើស្វ័យប្រវត្តិបិទ)៖ ជំនួសបន្ទាត់ដោយការបកប្រែសម្រាប់ពិនិត្យ។\n"
     L"  • ផ្ញើស្វ័យប្រវត្តិ (បើក)៖ ជំនួសបន្ទាត់ រួចចុច Enter ភ្លាម។",
-    L"អំពី Emebala Chat",
+    L"អំពី អេមេបាឡា ឆាត",
 
     L"សកម្ម",
     L"កំពុងបកប្រែ...",
     L"បានផ្អាក",
 
-    L"Emebala Chat",
+    L"អេមេបាឡា ឆាត",
     L"មិនអាចចម្លងអត្ថបទដែលបានជ្រើសរើសទេ។ សូមពិនិត្យកម្មវិធីគោលដៅ ហើយព្យាយាមម្ដងទៀត។",
     L"គ្មានអត្ថបទត្រូវបានជ្រើសសម្រាប់បកប្រែទេ។",
     L"កំណត់ស្វ័យប្រវត្តិ",
 
-    L"Emebala Chat កំពុងដំណើរការក្នុងផ្ទៃខាងក្រោយរួចជាស្រេច។\nសូមពិនិត្យតំបន់ជូនដំណឹងរបស់ប្រព័ន្ធ។",
+    L"អេមេបាឡា ឆាត កំពុងដំណើរការក្នុងផ្ទៃខាងក្រោយរួចជាស្រេច។\nសូមពិនិត្យតំបន់ជូនដំណឹងរបស់ប្រព័ន្ធ។",
     L"ការដំណើរការ COM បានបរាជ័យ។\nផ្លាកអណ្ដែត និងការអានអត្ថបទជាសំឡេងនឹងមិនអាចប្រើបានទេ\nប៉ុន្តែការបកប្រែ គន្លឹះ តំបន់ជូនដំណឹង និងសំឡេង នៅតែដំណើរការ។",
     L"ឈប់ចម្លងបិទភ្ជាប់។ សរសេរដោយធម្មជាតិជាភាសាកំណើតរបស់អ្នក — ការបកប្រែនឹងជំនួសអក្សរដែលអ្នកបោះ ជានិច្ចកាលនៅក្នុងកម្មវិធី Windows ណាក៏បាន។",
     L"⚡ អូសដើម្បីបកប្រែ — ជ្រើសរើសអត្ថបទក្នុងកម្មវិធីណាក៏បាន សញ្ញាអណ្ដែតបកប្រែភ្លាម។",
-    L"🔊 TTS បណ្ដាញប្រសាទ — ការបញ្ចេញសំឡេង KO/EN/JA/DE។",
+    L"🔊 TTS បណ្ដាញប្រសាទ — បញ្ចេញសំឡេងគ្រប់ភាសាទាំង 37 តាមរយៈកញ្ចប់សំឡេង Windows ដែលបានដំឡើង។",
     L"🔒 100% នៅលើឧបករណ៍ និងឯកជន — សកម្មតែពេលគន្លឹះកំពុងចុច; ក្ដារតម្កេញមិនត្រូវប៉ះទេ។",
     L"នៅឆ្នាំ 2000 មុនគ្រិស្តសករាជ កាតិកាម៉េសូប៉ូតាមីយាបានហៅ «Eme-bala» ចំពោះមនុស្សដែលធ្វើឱ្យភាសាក្លាយជាស្ពានភ្ជាប់ពិភព។",
     L"គេហទំព័រ",
@@ -2412,7 +2487,9 @@ const LocalizedStrings kStringsKhmer = {
     L"កំណត់ឡើងវិញទៅលំនាំដើមប្រព័ន្ធ",
     L"លំនាំដើមត្រូវបានត្រឡប់មកវិញ",
     L"ការវាយអក្សរលើក្ដារចុច",
-    L"បន្ទាត់ណែនាំពេលអូស"
+    L"បន្ទាត់ណែនាំពេលអូស",
+    L"អេមេបាឡា ឆាត",
+    L"មិនមានសំឡេង Windows ត្រូវបានដំឡើងសម្រាប់ភាសានេះទេ។ ចុច 🔊 ម្តងទៀតដើម្បីបើកការកំណត់ការនិយាយ។"
 };
 
 // 36. Lao (lo)
@@ -2430,11 +2507,11 @@ const LocalizedStrings kStringsLao = {
     L"ສະແດງແຖບປ້າຍລອຍ",
     L"ເປີດຄູ່ກັບ Windows",
     L"ຄີດທາງລັດ ແລະ ຄູ່ມືຊ່ວຍເຫຼືອ...",
-    L"ອອກຈາກ Emebala Chat",
-    L"ກ່ຽວກັບ Emebala Chat…",
+    L"ອອກຈາກ ເອເມບາລາ ແຊັດ",
+    L"ກ່ຽວກັບ ເອເມບາລາ ແຊັດ…",
 
-    L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ Emebala Chat",
-    L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ Emebala Chat:\n\n"
+    L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ ເອເມບາລາ ແຊັດ",
+    L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ ເອເມບາລາ ແຊັດ:\n\n"
     L"  • F9 : ເປີດ / ຢຸດຊົ່ວຄາວ\n"
     L"  • Ctrl + F9 : ປ່ຽນພາສາເປົ້າໝາຍ\n"
     L"  • Ctrl + Shift + Enter : ສະຫຼັບໂໝດສົ່ງອັດຕະໂນມັດ\n"
@@ -2446,22 +2523,22 @@ const LocalizedStrings kStringsLao = {
     L"ໂໝດການແປ:\n"
     L"  • ແທນທີ່ເທົ່ານັ້ນ (ສົ່ງອັດຕະໂນມັດປິດ): ແທນອັນລະເພາະດ້ວຍຄຳແປເພື່ອກວດສອບ.\n"
     L"  • ສົ່ງອັດຕະໂນມັດ (ເປີດ): ແທນແລ້ວກົດ Enter ທັນທີ.",
-    L"ກ່ຽວກັບ Emebala Chat",
+    L"ກ່ຽວກັບ ເອເມບາລາ ແຊັດ",
 
     L"ເປີດໃຊ້",
     L"ກຳລັງແປ...",
     L"ຢຸດຊົ່ວຄາວ",
 
-    L"Emebala Chat",
+    L"ເອເມບາລາ ແຊັດ",
     L"ບໍ່ສາມາດລອກເອົາຂໍ້ຄວາມທີ່ເລືອກໄດ້. ກະລຸນາກວດສອບແອັບເປົ້າໝາຍ ແລ້ວລອງໃໝ່.",
     L"ຍັງບໍ່ໄດ້ເລືອກຂໍ້ຄວາມສຳລັບແປ.",
     L"ກວດຈັບອັດຕະໂນມັດ",
 
-    L"Emebala Chat ກຳລັງປະຕິບັດຢູ່ພື້ນຫຼັງແລ້ວ.\nກະລຸນາກວດເບິ່ງຖາດແຈ້ງເຕືອນຂອງລະບົບ.",
+    L"ເອເມບາລາ ແຊັດ ກຳລັງປະຕິບັດຢູ່ພື້ນຫຼັງແລ້ວ.\nກະລຸນາກວດເບິ່ງຖາດແຈ້ງເຕືອນຂອງລະບົບ.",
     L"ການເລີ່ມຕົ້ນ COM ລົ້ມເຫຼວ.\nແຖບປ້າຍລອຍ ແລະ ການອ່ານຂໍ້ຄວາມຈະໃຊ້ບໍ່ໄດ້,\nແຕ່ການແປ, ຄີດທາງລັດ, ຖາດ ແລະ ສຽງຍັງເຮັດວຽກຕາມປົກກະຕິ.",
     L"ພໍໄດ້ກັບການລອກແຜ່. ພິມຢ່າງທຳມະຊາດເປັນພາສາແມ່ຂອງທ່ານ — ຄຳແປຈະແທນການພິມຂອງທ່ານທັນທີໃນທຸກແອັບ Windows.",
     L"⚡ ລາກເພື່ອແປ — ເລືອກຂໍ້ຄວາມໃນແອັບໃດກໍໄດ້ ຮູບສັນຍາລັກລອຍຈະແປທັນທີ.",
-    L"🔊 TTS ແບບປະສາດ — ການອອກສຽງ KO/EN/JA/DE.",
+    L"🔊 TTS ແບບປະສາດ — ອອກສຽງຄົບທັງ 37 ພາສາຜ່ານຊຸດສຽງ Windows ທີ່ຕິດຕັ້ງ.",
     L"🔒 100% ໃນອຸປະກອນ ແລະ ເປັນສ່ວນຕົວ — ເຮັດວຽກຕອນກົດຄີດທາງລັດເທົ່ານັ້ນ; ບໍ່ແຕະກະດານຂັບ.",
     L"ໃນປີ 2000 ກ່ອນຄຣິດສັກກະລາດ, ຜູ້ຂຽນແຫ່ງເມໂຊໂປເຕເມຍເອີ້ນຜູ້ທີ່ປ່ຽນພາສາເປັນຂົວເຊື່ອມໂລກວ່າ «Eme-bala».",
     L"ເວັບໄຊ",
@@ -2478,7 +2555,9 @@ const LocalizedStrings kStringsLao = {
     L"ຣີເຊັດຄືນຄ່າເລີ່ມຕົ້ນຂອງລະບົບ",
     L"ກູ້ຄືນຄ່າເລີ່ມຕົ້ນແລ້ວ",
     L"ການພິມດ້ວຍແປ້ນພິມ",
-    L"ຄຳແນະນຳເມື່ອລາກ"
+    L"ຄຳແນະນຳເມື່ອລາກ",
+    L"ເອເມບາລາ ແຊັດ",
+    L"ບໍ່ມີສຽງ Windows ຕິດຕັ້ງສຳລັບພາສານີ້. ຄລິກ 🔊 ອີກເທື່ອໜຶ່ງເພື່ອເປີດການຕັ້ງຄ່າການເວົ້າ."
 };
 
 // 37. Burmese (my)
@@ -2496,11 +2575,11 @@ const LocalizedStrings kStringsBurmese = {
     L"ပေါ်လောတံဆိပ် ပြရန်",
     L"Windows နှင့်အတူ စတင်မည်",
     L"ရှော့တ်ကတ် လမ်းညွှန်နှင့် အကူအညီ...",
-    L"Emebala Chat မှ ထွက်မည်",
-    L"Emebala Chat အကြောင်း…",
+    L"အီမီဘာလာ ချက် မှ ထွက်မည်",
+    L"အီမီဘာလာ ချက် အကြောင်း…",
 
-    L"Emebala Chat ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်",
-    L"Emebala Chat ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်:\n\n"
+    L"အီမီဘာလာ ချက် ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်",
+    L"အီမီဘာလာ ချက် ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်:\n\n"
     L"  • F9 : ဖွင့် / ခေတ္တရပ် ပြောင်းလဲရန်\n"
     L"  • Ctrl + F9 : ပစ်မှတ်ဘာသာစကား ပြောင်းရန်\n"
     L"  • Ctrl + Shift + Enter : အလိုအလျောက်ပို့မှု ပြောင်းလဲရန်\n"
@@ -2512,22 +2591,22 @@ const LocalizedStrings kStringsBurmese = {
     L"ဘာသာပြန် မုဒ်များ:\n"
     L"  • အစားထိုးသာ (အလိုအလျောက်ပို့ ပိတ်): စာကြောင်းကို ပြန်ဆိုချက်ဖြင့် စိစစ်ရန် အစားထိုးသည်။\n"
     L"  • အလိုအလျောက်ပို့ (ပွင့်): အစားထိုးပြီး ချက်ချင်း Enter နှိပ်သည်။",
-    L"Emebala Chat အကြောင်း",
+    L"အီမီဘာလာ ချက် အကြောင်း",
 
     L"လုပ်ဆောင်နေ",
     L"ပြန်ဆိုနေ...",
     L"ခေတ္တရပ်",
 
-    L"Emebala Chat",
+    L"အီမီဘာလာ ချက်",
     L"ရွေးချယ်ထားသော စာသားကို ကူးယူ၍မရပါ။ ပစ်မှတ်အက်ပ်ကို စစ်ဆေးပြီး ပြန်ကြိုးစားပါ။",
     L"ပြန်ဆိုရန် စာသား မရွေးချယ်ရသေးပါ။",
     L"အလိုအလျောက် ဖော်ထုတ်",
 
-    L"Emebala Chat သည် နောက်ခံတွင် စတင်လည်ပတ်နေပြီ ဖြစ်သည်။\nစနစ်အသိပေးချက် တရေးကို ကြည့်ပါ။",
+    L"အီမီဘာလာ ချက် သည် နောက်ခံတွင် စတင်လည်ပတ်နေပြီ ဖြစ်သည်။\nစနစ်အသိပေးချက် တရေးကို ကြည့်ပါ။",
     L"COM စတင်ခြင်း မအောင်မြင်ပါ။\nပေါ်လောတံဆိပ်နှင့် စာသားအသံဖတ်ခြင်း မရတော့သော်လည်း၊\nဘာသာပြန်ခြင်း၊ ရှော့တ်ကတ်များ၊ တရေးနှင့် အသံများ ဆက်လက်လည်ပတ်နေမည်။",
     L"ကူးတိပ် ပွဲတိပ်များကို မလုပ်တော့ပါနဲ့။ သင့်မိခင်ဘာသာဖြင့် သဘာဝကျ ရိုက်နှိပ်ပါ — Windows အက်ပ်များအတွင်း သင့်ရိုက်နှိပ်မှုများကို ဘာသာပြန်က ချက်ချင်း အစားထိုးပေးမည်။",
     L"⚡ ဆွဲပြန်ဆို — မည်သည့်အက်ပ်တွင်မဆို စာသားရွေးချယ်လိုက်လျှင် ပေါ်လောသင်္ကေတက ချက်ချင်း ပြန်ဆိုပေးသည်။",
-    L"🔊 Neural TTS — KO/EN/JA/DE အသံထွက်။",
+    L"🔊 Neural TTS — တပ်ဆင်ထားသော Windows အသံပက်ကေ့ဂျ်များဖြင့် ဘာသာစကား 37 မျိုးလုံးကို အသံထွက်ဖတ်သည်။",
     L"🔒 100% စက်ပေါ်တွင်သာ၊ လုံခြုံစွာ — ရှော့တ်ကတ် ဖိထားချိန်၌သာ လုပ်ဆောင်; ကလစ်ပွိုဒ်ကို မထိတွေ့ပါ။",
     L"ခရစ်တော် မပေါ်မီ နှစ်ပေါင်း ၂၀၀၀ က မက်ဆိုပိုတေးမီးယား စာရေးဆရာများက ဘာသာစကားကို ကမ္ဘာ့တံတားအဖြစ် ပြောင်းလဲသူများကို «Eme-bala» ဟု ခေါ်ကြသည်။",
     L"ဝက်ဘ်ဆိုက်",
@@ -2544,7 +2623,9 @@ const LocalizedStrings kStringsBurmese = {
     L"စနစ်ပုံသေများသို့ ပြန်လည်သတ်မှတ်ရန်",
     L"ပုံသေများ ပြန်လည်ရရှိပါသည်",
     L"ကီးဘုတ် ရိုက်နှိပ်ခြင်း",
-    L"ဆွဲယူမှု ToolTip"
+    L"ဆွဲယူမှု ToolTip",
+    L"အီမီဘာလာ ချက်",
+    L"ဤဘာသာစကားအတွက် Windows အသံ တပ်ဆင်ထားခြင်း မရှိပါ။ စပီခ် ဆက်တင်များ ဖွင့်ရန် 🔊 ကို ထပ်မံနှိပ်ပါ။"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -2769,6 +2850,9 @@ std::wstring I18n::Get(StringId id) {
         case StringId::AboutResetDone: return s.about_reset_done;
         case StringId::MenuTypingGroup: return s.menu_typing_group;
         case StringId::MenuTooltipGroup: return s.menu_tooltip_group;
+        // REQ-B-001 / REQ-C-004 (session 260909_0001 Batch-1)
+        case StringId::AppName: return s.app_name;
+        case StringId::TooltipNoTtsVoice: return s.tooltip_no_tts_voice;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

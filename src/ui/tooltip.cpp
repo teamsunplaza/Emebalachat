@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <shellapi.h> // P4 Batch-3 (REQ-C-002 / D7): ShellExecuteW ms-settings:speech deep link
 
 #include <cctype>
 
@@ -474,11 +475,10 @@ bool TooltipWindow::SelectVoiceForLanguage(std::string_view target_lang_name_or_
 
     DWORD target_lcid = GetLcidForLanguage(target_lang_name_or_code);
     if (target_lcid == 0) {
-        if (default_voice_token_) {
-            voice_->SetVoice(default_voice_token_);
-            current_voice_name_ = GetTokenName(default_voice_token_);
-            current_voice_lang_ = GetTokenLanguage(default_voice_token_);
-        }
+        // P4 Batch-3 (REQ-C-002 / D8): the forced default_voice_token_ fallback
+        // that used to live here is REMOVED — an unknown language must not
+        // silently read the text in the system default voice. Voice state
+        // stays untouched; the caller decides the UX (ShowNoVoiceNotice).
         return false;
     }
 
@@ -535,8 +535,13 @@ bool TooltipWindow::SelectVoiceForLanguage(std::string_view target_lang_name_or_
             if (SUCCEEDED(pEnum->Item(i, &pToken)) && pToken) {
                 int match = MatchTokenLanguage(pToken, target_lcid);
                 if (match > 0) {
-                    int base_score = (cat_idx == 0) ? 80 : 40;
-                    int score = base_score + ((match == 2) ? 20 : 0);
+                    // P4 Batch-3 (REQ-C-001 / D6): OneCore 100 / SAPI 50 base +
+                    // the preserved +20 exact-LCID bonus, via the constexpr
+                    // lattice helper whose static_assert proof lives in
+                    // tooltip.hpp. Replaces the old inverted inline math
+                    // ((cat_idx == 0) ? 80 : 40), which ranked legacy SAPI
+                    // voices above modern OneCore voices for the same language.
+                    int score = VoiceTotalScore(static_cast<int>(cat_idx), match);
 
                     VoiceCandidate c;
                     c.token = pToken; // Keep AddRef
@@ -573,15 +578,20 @@ bool TooltipWindow::SelectVoiceForLanguage(std::string_view target_lang_name_or_
     candidates.clear();
 
     if (voice_switched) {
+        // Manual-QA trace (P3 §3 Step 3 "OneCore name in log"): the winning
+        // voice is identifiable by name ("... Online (Natural)" / OneCore
+        // voices vs legacy "... Desktop" SAPI voices).
+        DIAG_LOG("UI", "tts_voice_selected name=%s lang=%s",
+                 current_voice_name_.c_str(), current_voice_lang_.c_str());
         return true;
     }
 
-    // Fallback safely to default voice
-    if (default_voice_token_) {
-        voice_->SetVoice(default_voice_token_);
-        current_voice_name_ = GetTokenName(default_voice_token_);
-        current_voice_lang_ = GetTokenLanguage(default_voice_token_);
-    }
+    // P4 Batch-3 (REQ-C-002 / D8): no candidates matched the target language.
+    // The forced default_voice_token_ fallback that used to live here is
+    // REMOVED — it made SAPI read the text in the system default language
+    // (English/Korean) with zero indication to the user. Voice state stays
+    // untouched; the caller surfaces ShowNoVoiceNotice() and speaks nothing.
+    DIAG_LOG("UI", "tts_voice_none target_lcid=0x%04lx", target_lcid);
     return false;
 }
 
@@ -678,6 +688,7 @@ void TooltipWindow::ShowTranslation(
              source_text.size(), translated_text.size());
 
     is_message_mode_ = false;
+    no_voice_notice_active_ = false; // P4 Batch-3 (D7): card replaced by translation content
     ::KillTimer(hwnd_, kTimerMessageAutohide);
 
     source_text_ = source_text;
@@ -860,6 +871,9 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     // REQ-R08 (audit §3.2): transient state-change notice. Compact fixed-size
     // card; translated_text_ carries the body line, message_header_ the title.
     is_message_mode_ = true;
+    // P4 Batch-3 (D7): any generic message resets the no-voice click arming —
+    // only ShowNoVoiceNotice re-arms it, AFTER this function returns.
+    no_voice_notice_active_ = false;
     message_header_ = header;
     translated_text_ = body;
     source_text_.clear();
@@ -1066,6 +1080,7 @@ void TooltipWindow::Dismiss() {
     hovered_btn_ = 0;
     copied_feedback_ = false;
     is_message_mode_ = false;
+    no_voice_notice_active_ = false; // P4 Batch-3 (D7): notice released on every dismissal path
     // R6 Phase 2 (B1-H2, plan §1 B1-H2 fix direction): clear the content
     // buffers on dismissal. WM_DPICHANGED re-renders the CURRENT model while
     // visible, and any future re-show path that skips a fresh ShowTranslation
@@ -1112,7 +1127,15 @@ void TooltipWindow::SpeakCurrentText() {
     if (translated_text_.empty()) return;
     InitSapi();
     if (voice_) {
-        SelectVoiceForLanguage(target_lang_);
+        // P4 Batch-3 (REQ-C-002 / D7+D8): the SelectVoiceForLanguage return
+        // value is now load-bearing. false = no voice installed for
+        // target_lang_ — block the utterance (the old code spoke in the
+        // fallback voice anyway, the silent wrong-language defect) and show
+        // the transient speech-settings notice instead.
+        if (!SelectVoiceForLanguage(target_lang_)) {
+            ShowNoVoiceNotice();
+            return;
+        }
         voice_->Speak(translated_text_.c_str(), SPF_ASYNC | SPF_PURGEBEFORESPEAK, nullptr);
     }
 }
@@ -1121,6 +1144,30 @@ void TooltipWindow::StopTTS() {
     if (voice_) {
         voice_->Speak(nullptr, SPF_PURGEBEFORESPEAK | SPF_ASYNC, nullptr);
     }
+}
+
+void TooltipWindow::ShowNoVoiceNotice() {
+    // P4 Batch-3 (REQ-C-002 / D7): REQ-R08 message-mode reuse — brand-
+    // consistent header (TooltipTitle, the localized bare brand) + localized
+    // guidance body (TooltipNoTtsVoice, Batch-1 37-table string). 3s autohide,
+    // generation guard and the compact card all come from ShowMessage itself
+    // (kGenNone = unmanaged show: user-triggered feedback, must always
+    // render). Anchored at the card's current screen position so the notice
+    // replaces the translation panel in place. While it is up, the WM_LBUTTONDOWN
+    // early-check opens ms-settings:speech on a click anywhere on the card.
+    if (!hwnd_) return;
+    RECT rc = {};
+    int x = 0;
+    int y = 0;
+    if (::GetWindowRect(hwnd_, &rc)) {
+        x = rc.left;
+        y = rc.top;
+    }
+    ShowMessage(x, y, I18n::Get(StringId::TooltipTitle),
+                I18n::Get(StringId::TooltipNoTtsVoice));
+    // Arm AFTER the show: ShowMessage clears the flag for every generic
+    // notice; only this one routes clicks to the speech settings page.
+    no_voice_notice_active_ = true;
 }
 
 void TooltipWindow::CopyToClipboard() {
@@ -1766,6 +1813,27 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_LBUTTONDOWN: {
+            // P4 Batch-3 (REQ-C-002 / D7): while the no-voice notice is up, a
+            // click ANYWHERE on the card opens the official Windows speech
+            // settings page (free voice-packs store, ms-settings:speech deep
+            // link). Single-shot: the flag is consumed BEFORE the ShellExecute
+            // so a double-fire cannot open two settings pages. Failure keeps a
+            // traceable code, same pattern as about_window.cpp OpenLink
+            // (INT_PTR <= 32 == error). The click is consumed here only — the
+            // notice dismissal rides the EXISTING tested message-mode
+            // WM_LBUTTONUP path (is_message_mode_ -> Dismiss), keeping the
+            // card's click lifecycle unchanged (no UP fall-through onto stale
+            // footer-button rects after an early Dismiss).
+            if (pThis->no_voice_notice_active_) {
+                pThis->no_voice_notice_active_ = false;
+                HINSTANCE hRes = ::ShellExecuteW(nullptr, L"open", L"ms-settings:speech",
+                                                 nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(hRes) <= 32) {
+                    DIAG_F("TTS/NoVoice/001: ShellExecuteW ms-settings:speech failed (INT_PTR %lld)\n",
+                           static_cast<long long>(reinterpret_cast<INT_PTR>(hRes)));
+                }
+                return 0;
+            }
             // REQ-002: begin a scrollbar thumb drag (plan §2.1). SetCapture so
             // moves outside the layered popup keep feeding the drag math.
             if (!pThis->is_message_mode_ && pThis->scrollable_ &&
