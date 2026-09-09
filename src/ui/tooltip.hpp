@@ -441,7 +441,7 @@ private:
 
     static constexpr UINT_PTR kTimerCopiedFeedback = 4001;
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;
-    static constexpr DWORD kMessageAutohideMs = 3000; // REQ-021: 3s startup reminder (also lengthens F-17/R5 notices)
+    static constexpr DWORD kMessageAutohideMs = 1800; // auto-hide delay for message-mode cards (F-17/R5/toggle notices)
 };
 
 // P4 Batch-3 (REQ-C-001 / D6): compile-time proof of the voice score lattice
