@@ -22,11 +22,44 @@ if (ENABLE_LLAMA_FETCH)
     set(GGML_STATIC ON CACHE BOOL "Build static ggml library" FORCE)
     set(LLAMA_STATIC ON CACHE BOOL "Build static llama library" FORCE)
     set(GGML_CUDA ON CACHE BOOL "Enable CUDA for llama.cpp" FORCE)
-    set(CMAKE_CUDA_ARCHITECTURES "75" CACHE STRING "Target CUDA architecture" FORCE)
+    # P4-B1 (universal GPU, REQ-102/107): multi-arch SASS — sm_75 retained (RTX 20),
+    # 86 (RTX 30), 89 (RTX 40), 120 (RTX 50/Blackwell) added per decisions.md.
+    set(CMAKE_CUDA_ARCHITECTURES "75;86;89;120" CACHE STRING "Target CUDA architectures" FORCE)
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING -Xcompiler=/Zc:preprocessor" CACHE STRING "CUDA flags" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
     set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
     set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Build server" FORCE)
+
+    # P4-B1 (universal GPU, REQ-101/103): Vulkan SDK auto-detect. llama.cpp b6099
+    # ggml-vulkan/CMakeLists.txt L4 hard-REQUIRES glslc (build-time shader codegen),
+    # so the probe requests that component explicitly. SDK+glslc present -> enable
+    # GGML_VULKAN on the FetchContent'd tree; absent -> CUDA-only build with a
+    # WARNING, never a hard-fail (user decision 2026-09-09 14:03, decisions.md).
+    option(EMEBALA_VULKAN "Enable Vulkan GPU backend when Vulkan SDK is present" ON)
+
+    set(_eme_vulkan_ready OFF)
+    if (EMEBALA_VULKAN)
+        find_package(Vulkan COMPONENTS glslc QUIET)
+        if (Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
+            set(_eme_vulkan_ready ON)
+            message(STATUS "Emebalachat: Vulkan SDK ${Vulkan_VERSION} found (glslc=${Vulkan_GLSLC_EXECUTABLE}) - building ggml-vulkan backend")
+        else()
+            message(WARNING "Emebalachat: Vulkan SDK with glslc NOT found - building CUDA-only. Install LunarG Vulkan SDK to enable AMD/Intel/old-NVIDIA GPU support.")
+        endif()
+    endif()
+
+    # Set the ggml option as a FORCED cache var BEFORE FetchContent_MakeAvailable so
+    # ggml/src/CMakeLists.txt's ggml_add_backend(Vulkan) gate picks it up (its
+    # option() call will not override an existing cache entry).
+    if (_eme_vulkan_ready)
+        set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan for llama.cpp" FORCE)
+    else()
+        # Deterministic CUDA-only: an earlier configure with the SDK present may have
+        # FORCE'd GGML_VULKAN=ON into this build dir's cache; forcing OFF here keeps
+        # the EMEBALA_VULKAN toggle authoritative on reconfigures (fresh caches are
+        # unaffected — ggml's own option() default is already OFF).
+        set(GGML_VULKAN OFF CACHE BOOL "Enable Vulkan for llama.cpp" FORCE)
+    endif()
 
     message(STATUS "Fetching llama.cpp (tag b6099)...")
     FetchContent_Declare(
@@ -62,7 +95,9 @@ if (ENABLE_LLAMA_FETCH)
     #       either.
     # No third-party sources are modified; no versions are bumped; project
     # warning flags are unchanged.
-    foreach(_r18_tp_target IN ITEMS llama ggml ggml-base ggml-cpu ggml-cuda common)
+    # P4-B1: ggml-vulkan added to the isolated set (C++-only TU, MSVC /W0 applies;
+    # the if(TARGET) guard keeps the loop safe on CUDA-only builds).
+    foreach(_r18_tp_target IN ITEMS llama ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan common)
         if (TARGET ${_r18_tp_target})
             get_target_property(_r18_tp_inc ${_r18_tp_target} INTERFACE_INCLUDE_DIRECTORIES)
             if (_r18_tp_inc)
@@ -168,11 +203,20 @@ if (MSVC)
         # the CUDA load chain on toolkit-installed machines (CPU fallback would
         # silently replace GPU inference). Revisit if the installer ever bundles
         # the CUDA DLLs into {app}, at which point PATH restriction becomes safe.
-        target_link_options(Emebalachat PRIVATE
+        #
+        # P4-B1 (P3 risk R5, REQ-104): vulkan-1.dll joins the delay-load list ONLY
+        # when ggml-vulkan was actually built (target exists). Without delay-loading
+        # it, a machine with no Vulkan driver would fail at process start (loader
+        # cannot resolve the static import) instead of CPU-falling back. Guarded so
+        # CUDA-only builds never reference a phantom delay-load.
+        set(_eme_delayload
             "/DELAYLOAD:cublas64_13.dll"
             "/DELAYLOAD:cublasLt64_13.dll"
-            "/DELAYLOAD:cudart64_13.dll"
-        )
+            "/DELAYLOAD:cudart64_13.dll")
+        if (TARGET ggml-vulkan)
+            list(APPEND _eme_delayload "/DELAYLOAD:vulkan-1.dll")
+        endif()
+        target_link_options(Emebalachat PRIVATE ${_eme_delayload})
     endif()
 endif()
 
@@ -188,11 +232,15 @@ target_link_libraries(run_tests PRIVATE
 if (MSVC)
     target_compile_options(run_tests PRIVATE /W4 /utf-8 /permissive-)
     if (TARGET llama)
-        target_link_options(run_tests PRIVATE
+        # P4-B1: same guarded delay-load wiring as the Emebalachat target above.
+        set(_eme_delayload_tests
             "/DELAYLOAD:cublas64_13.dll"
             "/DELAYLOAD:cublasLt64_13.dll"
-            "/DELAYLOAD:cudart64_13.dll"
-        )
+            "/DELAYLOAD:cudart64_13.dll")
+        if (TARGET ggml-vulkan)
+            list(APPEND _eme_delayload_tests "/DELAYLOAD:vulkan-1.dll")
+        endif()
+        target_link_options(run_tests PRIVATE ${_eme_delayload_tests})
     endif()
 endif()
 
