@@ -11,7 +11,7 @@
   "diag_log_content": false,
   "_diag_log_content_doc": "Diagnostic logs are shape-only by default (key codes, window class, lengths, timings). Set true to ALSO record user content: typed characters, foreground window titles, captured text and translation output. Privacy decision: only enable while actively troubleshooting, and restart the app after changing this value.",
   "drag_hotkey": "double_ctrl_c",
-  "hotkey_toggle": "Win+F9",
+  "hotkey_toggle": "F9",
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
   "_hotkeys_doc": "hotkey_toggle/lang/mode accept 'Mod+Key' (Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, arrows, A-Z, 0-9). Invalid values fall back to defaults. drag_hotkey supports only 'double_ctrl_c'. Overlapping combos fire one action in order: toggle > lang > mode.",

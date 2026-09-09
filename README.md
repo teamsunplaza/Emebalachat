@@ -15,15 +15,15 @@
 > **Type in your language. It replaces your text with the translation in real-time.**  
 > *No more copy-paste context switching (복붙 없는 번역).*
 
-### ⚡ The 3-Step Magic: Type ➔ Translate ➔ Replace & Send
+### ⚡ The 3-Step Magic: Type ➔ Translate ➔ Replace (and Send)
 
-- ⌨️ **Type** — Type naturally in your native language (Discord, Slack, in-game chat, browser, Excel, anywhere).
-- ⚡ **Translate** — Offline local AI (**Hy-MT2-1.8B** via llama.cpp) or cloud engine translates in sub-100ms.
-- 🚀 **Replace & Send** — Your original keystrokes are automatically erased and replaced with the translated text, right where your cursor is.
+- ⌨️ **Type** — Type naturally in your native language (Discord, Slack, in-game chat, browser, anywhere; editor/IDE windows are deliberately excluded from the Enter pipeline).
+- ⚡ **Translate** — Offline local AI (**Hy-MT2-1.8B** via llama.cpp) or cloud engine (Google Translate, no API key).
+- 🚀 **Replace** — Your original keystrokes are automatically erased and replaced with the translated text, right where your cursor is. In **Auto-Send** mode (or in chat apps where <kbd>Enter</kbd> sends), the translated text is sent too.
 
 ---
 
-**Emebala Chat** (에메발라챗) is an ultra-fast, zero-latency native Windows translation tool engineered in pure modern C++20 and Win32 APIs. It seamlessly intercepts input text across any Windows application (Discord, Slack, KakaoTalk, browsers, terminal, IDEs, games), translates it instantly via local LLM or cloud fallback, and places the translated text into the active input field with zero clipboard pollution.
+**Emebala Chat** (에메발라챗) is an ultra-fast native Windows translation tool engineered in pure modern C++20 and Win32 APIs. It intercepts input text across Windows applications (Discord, Slack, KakaoTalk, browsers, in-game chats, and most other text inputs), translates it via the local LLM or the consent-gated cloud engine, and places the translated text into the active input field with zero clipboard pollution. Editor/IDE windows are deliberately excluded from the Enter-translate pipeline (see Key Features §1).
 
 ---
 
@@ -60,9 +60,9 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 **Emebala Chat** eliminates all of these pain points:
 - **Instantaneous Native Performance**: Built in pure C++20 with MSVC static runtime (`/MT`), linking directly against Win32, Direct2D, DirectWrite, and WinHTTP.
 - **Dual-Engine Flexibility**:
-  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's state-of-the-art **Hy-MT2-1.8B** (Q8_0 quantized model). Utilizes full 33-layer GPU acceleration (CUDA sm_75+) with sub-100ms cached inference, falling back seamlessly to CPU multi-threading if GPU is unavailable.
-  - **Cloud Fallback Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**.
-- **Invisible In-Place Translation**: Type naturally in your native language, press <kbd>Enter</kbd> or <kbd>Shift</kbd>+<kbd>Enter</kbd>, and watch the text instantly transform and send—working in any chat, form, or document field.
+  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent.
+  - **Cloud Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**. Cloud use is consent-gated (see [Security & Privacy](#-security--privacy-guarantee)).
+- **Invisible In-Place Translation**: Type naturally in your native language, press <kbd>Enter</kbd>, and watch the text instantly transform—working in any chat, form, or document field. By default the translated text only **replaces** what you typed; toggling Auto-Send (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>) makes the app also **send** it for you.
 - **Hardware-Accelerated Minimalist UI**: Non-intrusive floating pill badge rendered via hardware Direct2D displaying real-time translation state and language pairs.
 
 ---
@@ -79,7 +79,7 @@ flowchart TB
     end
 
     subgraph Core_Pipeline ["Emebala Chat C++20 Pipeline Worker"]
-        FILTER{"Synthetic Event?\n(dwExtraInfo == 0x1337BEEF)"}
+        FILTER{"Synthetic Event?\n(randomized per-process marker\nin dwExtraInfo)"}
         DISPATCH{"Alt / Win Pressed\nor Disabled?"}
         TASK[Pipeline Task Queue & Worker Thread]
         IME_FLUSH[Flush IME Composition Buffer]
@@ -91,7 +91,7 @@ flowchart TB
 
     subgraph Translation_Engines ["Dual Translation Architecture"]
         ROUTER{"Engine Router\n(auto / local / google)"}
-        LLM["Local AI: llama.cpp (b6099)\nHy-MT2-1.8B Q8_0\nCUDA 33-Layer Offload / CPU"]
+        LLM["Local AI: llama.cpp (b6099)\nHy-MT2-1.8B Q8_0\nCUDA Layer Offload / CPU"]
         GTRANS["Cloud Engine: WinHTTP Client\nGoogle Translate API\nZero External DLLs"]
     end
 
@@ -136,21 +136,21 @@ flowchart TB
 ### 1. Zero-Latency Keyboard Hook & Anti-Reentrancy
 - Installs an asynchronous low-level keyboard hook (`WH_KEYBOARD_LL`) running on a dedicated message-pump thread.
 - **Re-entrancy Protection**: All synthetic key events emitted by Emebala Chat embed a per-process randomized signature marker `EXTRA_INFO_MARKER` (chosen at startup from QPC + PID + ASLR entropy, never a compile-time constant) into `KBDLLHOOKSTRUCT::dwExtraInfo`. The hook instantly ignores all flagged synthetic events, preventing recursive keystroke loops, while third-party processes cannot predict the value to spoof bypassed input.
-- **IME Composition Flushing**: Simulates a synthetic right-arrow advance before selection to force Windows CJK/Korean IME composition buffers into committed strings.
-- **Pass-through Safety**: Transparently lets <kbd>Alt</kbd>+<kbd>Enter</kbd> (Excel newline / full screen) and <kbd>Win</kbd> combinations pass through unhindered.
+- **IME Composition Flushing**: Simulates a synthetic right-arrow advance before selection to force Windows CJK/Korean IME composition buffers into committed strings. Enter pressed while an IME composition is open commits the composition first (Korean IMEs route Enter as the commit keystroke), and the translation pipeline only fires when composition state allows it.
+- **Pass-through Safety**: <kbd>Shift</kbd>+<kbd>Enter</kbd> (newline), <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, <kbd>Alt</kbd>-bearing and <kbd>Win</kbd>-bearing combinations pass through unhindered. Editor/IDE foreground apps (VS Code family, Cursor, Windsurf, VSCodium, and AI CLI editors, per `kEditorApps`) are excluded from the Enter-translate pipeline entirely, so a bare Enter never captures a whole document there.
 
 ### 2. Dual Translation Engines
 - **Local AI Engine**:
   - Direct C++ integration with `llama.cpp` (b6099).
-  - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB), custom-tuned for high-fidelity translation across 33+ language pairs.
-  - Automatically loads 33 transformer layers onto NVIDIA GPU via CUDA (Compute Capability 7.5+ / Turing, Ampere, Ada Lovelace, Blackwell).
-  - KV-cache reuse with in-process cache clearance (`llama_kv_cache_clear`) yielding inference latencies under **100ms** on modern GPUs.
-  - Automatic fallback to high-performance AVX2 CPU threads if CUDA drivers or hardware are absent.
-- **Built-in Cloud Fallback**:
+  - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 37 target languages listed below.
+  - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
+  - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size + mtime) before the model is handed to llama.cpp.
+  - Pairs outside the model's reliable set are routed to the cloud engine under `auto`, or kept on-device (with a degradation warning) under a strict `local` pin without cloud consent.
+- **Built-in Cloud Engine**:
   - Native asynchronous HTTP client built on `winhttp.dll`.
   - Communicates directly with Google Translate HTTPS endpoints.
   - Requires **no Google Cloud API keys**, no Python runtimes, and zero third-party dynamic libraries.
-  - Seamless auto-fallback: If the local model is not downloaded or GPU memory is exhausted, translation continues uninterrupted via the cloud engine.
+  - Consent-gated: the `auto` engine policy documents cloud fallback when the local model is absent or a local attempt fails, but with `engine_type` pinned to `local`, nothing is ever sent to the cloud unless you explicitly set `cloud_fallback_enabled` to `true` (default `false`).
 
 ### 3. Floating Pill Badge UI
 - **Hardware-Accelerated Direct2D / DirectWrite**:
@@ -159,8 +159,8 @@ flowchart TB
   - Dynamic width calculation based on active language labels and status state.
 - **Interactive Mouse Gestures**:
   - **Left Click**: Instantly toggle translation between Active and Paused.
-  - **Double Click**: Swap source and target languages immediately.
-  - **Right Click**: Open full context menu (Language picker, Auto-Send toggle, Sound toggle, Exit).
+  - **Double Click**: Swap the typing source and target languages.
+  - **Right Click**: Open the full context menu (engine selection, UI language, typing/drag language pairs, Auto-Send, Sound, Show Badge, Start with Windows, About, Cheat Sheet, Exit).
   - **Left Drag**: Freely reposition anywhere across your displays; coordinates automatically persist in `config.json`.
 
 ### 4. Zero-Leak Clipboard Safety & Privacy
@@ -170,14 +170,16 @@ flowchart TB
     - `ExcludeClipboardContentFromMonitorProcessing`
     - `CanIncludeInClipboardHistory` (explicitly set to 0)
     - `CanUploadToCloudClipboard` (explicitly set to 0)
-  - **RAII State Backup & Restore**: Completely snapshots existing clipboard contents (including non-text formats while safely skipping volatile GDI handles), performs the paste operation, and restores the original clipboard state within 120ms.
+  - **RAII State Backup & Restore**: Completely snapshots existing clipboard contents (including non-text formats while safely skipping volatile GDI handles), performs the paste operation, and restores the original clipboard state afterwards.
+  - **Paste Settle Timing**: After setting the clipboard, the synthetic paste waits a fixed 120 ms settle delay (`kPasteSettleDelayMs`) before sending <kbd>Ctrl</kbd>+<kbd>V</kbd>, and clipboard reads poll `AddClipboardFormatListener` sequence changes with a timeout gate so a stale copy is never read.
 
 ### 5. Smart Content Bypass
 Avoids wasting compute or generating corrupted translations on non-translatable text:
 - **URLs & Links**: Automatically detects `http://`, `https://`, `ftp://`, `www.`, and root domain URLs.
 - **Numbers & Math**: Skips pure digits, formulas, timestamps, and currency amounts.
 - **Emojis & Emoticons**: Skips strings consisting solely of Unicode emojis, symbols, and punctuation.
-- **Language Equivalence**: Detects if the source text is already written in the target language (e.g. typing English while target is set to English) and skips translation immediately.
+- **Script Compatibility**: Translation requests are skipped when the source text's script cannot produce the target language's script (e.g. Latin-only text typed while the target is Korean/Chinese/Japanese).
+- **Already-Target Equivalence**: When the source language is `Auto Detect` and the detected language equals the target language (e.g. typing English while target is set to English), translation is skipped. With an explicitly pinned source language the request is always honored.
 
 ### 6. Supported Languages (38 Languages)
 
@@ -211,17 +213,19 @@ Emebala Chat supports full bidirectional translation across **38 language entrie
 
 | Trigger | Action | Description |
 |:--------|:-------|:------------|
-| <kbd>Win</kbd> + <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime + on-screen notice (bare F9 is left free for VS/Excel) |
-| <kbd>Ctrl</kbd> + <kbd>F9</kbd> | **Cycle Target Language** | Cycles forward through the 37 target languages |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Toggle Auto-Send Mode** | Toggles whether <kbd>Enter</kbd> is automatically sent after translation |
-| <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Instant Translate & Send** | Translates input line and sends <kbd>Enter</kbd> immediately |
-| <kbd>Alt</kbd> + <kbd>Enter</kbd> | **Bypass Pass-through** | Always passed directly to host application (Excel newline, etc.) |
+| <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime + on-screen notice (default `hotkey_toggle` value; configurable, see below) |
+| <kbd>Ctrl</kbd> + <kbd>F9</kbd> | **Cycle Target Language** | Cycles forward through the 37 target languages of the **typing** pair |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Toggle Auto-Send Mode** | Toggles whether <kbd>Enter</kbd> is automatically sent (chat apps) / a newline injected (editors) after translation |
+| <kbd>Enter</kbd> | **Translate & Replace** | Intercepts the bare Enter, translates the current input block (only the block being typed after your last manual newline), replaces the text in place, and sends only when Auto-Send allows it |
+| <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Newline Pass-through** | Inserted by the host app untouched (chat-app convention); counted internally so the next <kbd>Enter</kbd> translates only the newest block |
+| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> / <kbd>Alt</kbd> + <kbd>Enter</kbd> | **Bypass Pass-through** | Always passed directly to host application (Excel newline / full screen, etc.) |
+| **Double <kbd>Ctrl</kbd>+<kbd>C</kbd>** | **Translate Selected Text** | Drag-to-translate capture of the current selection (tooltip result card); the only supported `drag_hotkey` pattern |
 | **Badge Left-Click** | **Pause / Resume** | Toggles active translation status |
-| **Badge Double-Click**| **Swap Languages** | Swaps source and target language pair |
-| **Badge Right-Click** | **Context Menu** | Opens popup settings, engine selection, and language menu |
+| **Badge Double-Click**| **Swap Languages** | Swaps the typing source and target language pair |
+| **Badge Right-Click** | **Context Menu** | Opens the same menu as the tray icon (engine, UI language, typing & drag language pairs, toggles, About, Exit) |
 | **Badge Left-Drag** | **Reposition Window** | Moves badge across monitors; saves position persistently |
 
-**Customizing hotkeys via `config.json`** — edit `hotkey_toggle`, `hotkey_lang`, and `hotkey_mode` (values accept `Mod+Key`: Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, arrows, A-Z, 0-9); invalid values fall back to defaults. `drag_hotkey` supports only `"double_ctrl_c"`. When combos overlap, one action fires in order: toggle > lang > mode. Restart the app to apply changes.
+**Customizing hotkeys via `config.json`** — edit `hotkey_toggle` (default `"F9"`), `hotkey_lang` (default `"Ctrl+F9"`), and `hotkey_mode` (default `"Ctrl+Shift+Enter"`); values accept `Mod+Key`: Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, Insert, Delete, Home, End, PgUp/PgDn, arrows, A-Z, 0-9. Invalid or empty values fall back to the compiled-in defaults. `drag_hotkey` supports only `"double_ctrl_c"`. When combos overlap, one action fires in order: toggle > lang > mode. Restart the app to apply changes.
 
 ---
 
@@ -236,26 +240,36 @@ C:\path\to\Emebalachat\
 ├── installer\                  # Inno Setup 6.x packaging scripts
 │   ├── README.md               # Installer build guide
 │   ├── setup.iss               # Inno Setup installer script (0.10.0)
+│   ├── languages\              # Bundled non-default .isl files (Chinese S/T)
 │   ├── assets\                 # Optional setup icons & wizard graphics
 │   └── output\                 # Compiled installer binaries
 ├── src\                        # Production C++20 source code
+│   ├── app_icon.rc             # Embedded multi-size branded application icon
+│   ├── bidi_utils.hpp/.cpp     # RTL script classification & first-strong direction detection
 │   ├── config.hpp/.cpp         # Configuration serialization & 38-language database
+│   ├── diag_logger.hpp/.cpp    # Per-run diagnostic log file (shape-only by default)
 │   ├── engine.hpp/.cpp         # Dual-engine translation manager (llama.cpp + WinHTTP)
 │   ├── google_translate.hpp/.cpp # Standalone WinHTTP Google Translate client
 │   ├── hook.hpp/.cpp           # Asynchronous low-level keyboard hook (WH_KEYBOARD_LL)
 │   ├── i18n.hpp/.cpp           # Internationalization and localization strings
 │   ├── main.cpp                # Application entry point, mutex & message loop
-│   ├── smart_bypass.hpp/.cpp   # Content filter (URLs, numbers, emojis, language matching)
+│   ├── mouse_hook.hpp/.cpp     # Low-level mouse hook (drag-to-translate gestures)
+│   ├── smart_bypass.hpp/.cpp   # Content filter (URLs, numbers, emojis, script matching)
 │   ├── sound.hpp/.cpp          # Synthesized WinMM audio notifications
 │   ├── unicode_utils.hpp/.cpp  # UTF-8 / UTF-16 conversion & script classification
+│   ├── version.hpp             # Single source of truth for app name & version string
 │   ├── win32_input.hpp/.cpp    # Simulated keyboard injection & RAII clipboard manager
 │   ├── worker.hpp/.cpp         # Background pipeline worker thread
 │   └── ui\                     # Hardware-accelerated presentation layer
+│       ├── about_window.hpp/.cpp # About dialog (version, reset-to-defaults button)
+│       ├── asset_loader.hpp/.cpp # PNG/ICO loading for D2D surfaces
 │       ├── badge.hpp/.cpp      # Direct2D / DirectWrite floating pill badge
+│       ├── dpi.hpp/.cpp        # Per-Monitor V2 DPI awareness helpers
+│       ├── drag_icon.hpp/.cpp  # Draggable floating translation icon
+│       ├── tooltip.hpp/.cpp    # Translation result tooltip card
 │       └── tray.hpp/.cpp       # Shell_NotifyIconW system tray integration
-├── tests\                      # Native unit test suite
-│   └── run_tests.cpp           # 557 unit tests covering all core modules
-└── MVP_Emebalachat\            # Python MVP reference prototype
+└── tests\                      # Native unit test suite
+    └── run_tests.cpp           # 2,048 unit checks covering all core modules
 ```
 
 ---
@@ -292,16 +306,16 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite verifying all 557 subsystem assertions:
+Emebala Chat includes a self-contained unit test suite (2,048 checks as of v0.10.0) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe
 ```
 
-Expected output:
+Expected output (excerpt):
 ```text
 ========================================
-  Emebalachat C++20 Core Test Suite     
+  Emebalachat C++20 Core Test Suite
 ========================================
 [RUN] Testing Config & Languages...
 [PASS] Config & Languages tests completed.
@@ -309,20 +323,8 @@ Expected output:
 [PASS] Unicode & Normalization tests completed.
 [RUN] Testing Smart Bypass...
 [PASS] Smart Bypass tests completed.
-[RUN] Testing Sound Feedback...
-[PASS] Sound Feedback tests completed.
-[RUN] Testing Win32 Input & Clipboard Safety...
-[PASS] Win32 Input & Clipboard Safety tests completed.
-[RUN] Testing Google Translate Engine...
-[PASS] Google Translate Engine tests completed.
-[RUN] Testing Translation Manager...
-[PASS] Translation Manager tests completed.
-[RUN] Testing Floating Badge Dynamic Sizing...
-[PASS] Floating Badge Dynamic Sizing tests completed.
-[RUN] Testing Universal i18n Localization...
-[PASS] Universal i18n Localization tests completed.
-========================================
-Total Checks: 557
+...
+Total Checks: 2048
 Failures:     0
 ========================================
 >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<
@@ -350,42 +352,60 @@ installer\output\Emebalachat_Setup_0.10.0.exe
 The installer offers:
 - Automatic installation to `%ProgramFiles%\Emebalachat`
 - Optional auto-start with Windows login
-- Automatic download of the `Hy-MT2-1.8B-Q8_0.gguf` model from Hugging Face
-- Fallback config generation if model download is skipped
+- Automatic download of the `Hy-MT2-1.8B-Q8_0.gguf` model from Hugging Face, verified against the SHA-256 hash pinned in `EXPECTED_MODEL_SHA256` (a pre-existing model file that fails verification triggers an explicit delete-and-redownload / keep decision)
+- A generated `config.json` in the install folder; when the model download is skipped, it starts with `engine_type: "google"`
+- Installer UI languages: English, Korean, Japanese, Chinese (Simplified), Chinese (Traditional)
 
 ---
 
 ## ⚙ Configuration Reference (`config.json`)
 
-On first launch, Emebala Chat generates `config.json` next to the executable. An example template is provided in `config.example.json`:
+The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first launch, missing keys fall back to the compiled-in defaults (the app also one-shot migrates a legacy config found next to the executable). An example template is provided in `config.example.json`:
 
 ```json
 {
-  "source_language": "Auto Detect",
-  "target_language": "English",
+  "ui_language": "auto",
   "engine_type": "auto",
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
+  "source_language": "Auto Detect",
+  "target_language": "English",
   "auto_send": false,
   "sound_enabled": true,
-  "hotkey_toggle": "Win+F9",
+  "drag_to_translate": true,
+  "cloud_fallback_enabled": false,
+  "diag_log_content": false,
+  "drag_hotkey": "double_ctrl_c",
+  "hotkey_toggle": "F9",
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
+  "temperature": 0.7,
+  "top_p": 0.6,
+  "top_k": 20,
+  "repetition_penalty": 1.05,
   "badge_x": -1,
   "badge_y": -1
 }
 ```
 
 ### Parameter Details:
-- `source_language`: Source language name or code (e.g. `"Auto Detect"`, `"Korean"`).
-- `target_language`: Target language name or code (e.g. `"English"`, `"Vietnamese"`, `"Japanese"`).
+- `ui_language`: Interface language (`"auto"` = follow Windows display language, or a locale code such as `"ko"`, `"en"`, `"ja"`, `"zh-CN"`, `"zh-TW"`). Changeable live from the tray menu.
 - `engine_type`:
-  - `"auto"`: Prefers local LLM if the model exists; automatically falls back to Google Translate.
-  - `"local"`: Strictly forces local llama.cpp model.
+  - `"auto"` (default): Prefers local LLM if the model exists; falls back to Google Translate when the model is absent or a local attempt fails.
+  - `"local"`: Strictly forces the local llama.cpp model. Cloud use then requires `cloud_fallback_enabled: true`.
   - `"google"`: Strictly forces Google Translate via WinHTTP.
-- `model_path`: Relative or absolute path to the `.gguf` model file.
-- `auto_send`: If `true`, automatically simulates an <kbd>Enter</kbd> keypress after replacing text.
-- `sound_enabled`: Enables pleasant synthesized audio tones for hotkey actions.
-- `badge_x` / `badge_y`: Screen coordinates for floating badge position (`-1` centers at top of screen).
+- `model_path`: Relative or absolute path to the `.gguf` model file (relative paths resolve against the executable directory, not the working directory).
+- `source_language` / `target_language`: Legacy single pair, kept only for migrating older configs. The runtime uses the two context pairs below.
+- `drag_source_language` / `drag_target_language`: Language pair for **drag-to-translate** (tooltip/drag icon). Defaults: source `Auto Detect`, target = your Windows display language.
+- `type_source_language` / `type_target_language`: Language pair for **typing** translation. Defaults: source `Auto Detect`, target `English`.
+- `auto_send`: If `true`, an <kbd>Enter</kbd> keypress is synthesized after replacing text (chat send / editor newline). Default `false` (translation replaces text but does not send). Toggle live with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>.
+- `sound_enabled`: Enables synthesized audio tones for hotkey actions.
+- `drag_to_translate`: Master switch for the drag-to-translate (double <kbd>Ctrl</kbd>+<kbd>C</kbd>) feature.
+- `cloud_fallback_enabled`: Privacy consent gate. When `false` (default), a strict `local` engine pin NEVER sends your text to the cloud, even after a local failure. (Selecting `engine_type: "auto"` is itself the documented consent to the seamless cloud fallback.)
+- `diag_log_content`: Diagnostic-log privacy gate. When `false` (default), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** Only enable while actively troubleshooting: your typed content will be written to disk.
+- `drag_hotkey`: Drag-capture gesture pattern; only `"double_ctrl_c"` is supported.
+- `hotkey_toggle` / `hotkey_lang` / `hotkey_mode`: Trigger combos in `Mod+Key` form (defaults `F9`, `Ctrl+F9`, `Ctrl+Shift+Enter`; invalid values fall back to defaults). Restart required.
+- `temperature` / `top_p` / `top_k` / `repetition_penalty`: Sampling parameters for the local llama.cpp engine.
+- `badge_x` / `badge_y`: Screen coordinates of the floating badge (`-1` places it at the bottom-right of the primary monitor, above the taskbar).
 
 ---
 
@@ -393,7 +413,15 @@ On first launch, Emebala Chat generates `config.json` next to the executable. An
 
 - **No Remote Telemetry**: Emebala Chat contains zero tracking, zero telemetry, and zero third-party analytics.
 - **Offline Capable**: In `local` engine mode with `Hy-MT2-1.8B`, all translation runs strictly offline on your local CPU/GPU. No text leaves your machine.
+- **Cloud Consent Gate**: With `engine_type` pinned to `local` and `cloud_fallback_enabled: false` (the default), typed text is never transmitted to Google Translate — even after a local failure. Choosing `engine_type: "auto"` is itself the documented consent to cloud fallback when no local model is available.
 - **Clipboard Isolation**: Temporary text placed on the clipboard is explicitly flagged with Windows privacy exclusions (`CanIncludeInClipboardHistory = 0`), preventing your sensitive messages from appearing in Windows Cloud Clipboard or <kbd>Win</kbd>+<kbd>V</kbd> history.
+- **Model Integrity**: The GGUF model file is SHA-256 verified at install time (hash pinned in `installer/setup.iss`) and again at load time (with an on-disk marker cache), so a tampered model is refused instead of loaded.
+
+### Diagnostic Logs (Privacy)
+
+- **Location**: `%LOCALAPPDATA%\Emebalachat\logs\emebalachat_yymmddhhmmss.log` — one new file per app run.
+- **Released default (`diag_log_content: false`)**: logs contain **no user content** — only shapes: virtual-key codes, modifier flags, window class names, text lengths, engine names, and timings. Typed characters, captured text, translation output, and window titles are NOT written.
+- **Opt-in for troubleshooting**: set `"diag_log_content": true` in `config.json` and restart the app. This additionally records the typed character for each key, the foreground window title, the captured source text, and the translation output. Use it only while actively diagnosing an issue (the logs sit unencrypted on disk), and remove the flag afterwards.
 
 ---
 

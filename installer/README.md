@@ -38,39 +38,41 @@ output\Emebalachat_Setup_0.10.0.exe
 
 ## Optional: Custom Icons and Images
 
-Place the following files in the `assets\` subdirectory to customize the installer appearance:
-
-| File | Description | Recommended Size |
-|------|-------------|------------------|
-| `icon.ico` | Setup icon (shown in taskbar and EXE) | 256×256 multi-resolution |
-| `wizard_large.bmp` | Wizard left-side banner image | 164×314 pixels |
-| `wizard_small.bmp` | Wizard header small image | 55×58 pixels |
-
-The installer compiles successfully even without these files — they are optional.
+| File | Description | Status |
+|------|-------------|--------|
+| `..\assets\Emebala_Chat_Appicon.ico` | Setup icon (`SetupIconFile`, shown in taskbar and EXE) | Committed in the repository `assets\` folder |
+| `assets\wizard_large.bmp` | Wizard left-side banner image (164×314 pixels) | Optional — `#ifexist` guarded, compile succeeds without it |
+| `assets\wizard_small.bmp` | Wizard header small image (55×58 pixels) | Optional — `#ifexist` guarded, compile succeeds without it |
 
 ## What the Installer Does
 
 1. Installs `Emebala_chat.exe` to `Program Files\Emebalachat`
 2. Creates Start Menu shortcuts and (optionally) a desktop shortcut
 3. Optionally registers the app for auto-start with Windows
-4. Downloads the AI translation model (~1.8 GB) from Hugging Face, verifying its
-   SHA-256 against the `EXPECTED_MODEL_SHA256` constant in `setup.iss`
-5. Generates a `config.json` configuration file
-6. If the model download is skipped, the config defaults to Google Translate mode
+4. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (~1.9 GB) from
+   Hugging Face, verifying its SHA-256 against the pinned `EXPECTED_MODEL_SHA256`
+   constant in `setup.iss`
+5. Generates a `config.json` in the install folder (the app one-shot migrates it
+   to `%LOCALAPPDATA%\Emebalachat\config.json` on first launch)
+6. If the model download is skipped, the generated config starts with
+   `engine_type: "google"` instead of `"auto"`
+7. On uninstall, removes the auto-start registry entry and offers to delete the
+   user data folder (`%LOCALAPPDATA%\Emebalachat`, settings + diagnostic logs)
 
 ## Model Integrity Verification (release procedure)
 
 The downloaded model's SHA-256 is checked against the `EXPECTED_MODEL_SHA256`
 constant in `setup.iss`:
 
-- **Non-empty** → the download page aborts on any hash mismatch, the temp file is
-  deleted, and the user is offered Retry / Skip / Cancel. The hash is re-checked
-  (Inno Setup 6.3+) before the file is copied to `{app}\models`.
-- **Empty string (default)** → verification is skipped. This is intentional for
-  development builds.
+- **Non-empty (current release state)** — pinned to
+  `5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4`: the download
+  page aborts on any hash mismatch, the temp file is deleted, and the user is
+  offered Retry / Skip / Cancel. The hash is re-checked (Inno Setup 6.3+) before
+  the file is copied to `{app}\models`.
+- **Empty string** → verification is skipped. Intended only for development builds.
 
-Before shipping a release, compute the hash of the exact file hosted at `MODEL_URL`
-and paste it (hex only, no separators) into `EXPECTED_MODEL_SHA256`:
+If the exact file hosted at `MODEL_URL` ever changes, recompute the hash and
+update the constant:
 
 ```powershell
 # PowerShell
@@ -82,10 +84,21 @@ and paste it (hex only, no separators) into `EXPECTED_MODEL_SHA256`:
 certutil -hashfile "Hy-MT2-1.8B-Q8_0.gguf" SHA256
 ```
 
-Pre-existing model files left by earlier installs are hash-checked too, but only
-logged on mismatch (the installer never deletes user data).
+Pre-existing model files left by earlier installs are hash-checked too. On
+mismatch (or an unreadable file) the user is asked an explicit Yes/No: **Yes**
+deletes the unverified file and re-downloads the verified model; **No** keeps the
+file untouched and skips the download. The app additionally re-verifies the model
+SHA-256 at load time (with a `.sha256ok` marker cache) and refuses tampered files.
 
-## Supported Languages
+## Installer UI Languages
+
+Configured in `[Languages]` (plus bundled `.isl` files under `languages\`):
 
 - English
 - Korean (한국어)
+- Japanese (日本語)
+- Chinese Simplified (简体中文) — `languages\ChineseSimplified.isl`
+- Chinese Traditional (繁體中文) — `languages\ChineseTraditional.isl`
+
+> Note: installer UI languages are separate from the 38 translation languages
+> supported by the app itself (see the root README).
