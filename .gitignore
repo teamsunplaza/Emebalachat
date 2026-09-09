@@ -49,6 +49,16 @@ venv/
 # Legacy prototype
 MVP_Emebalachat/
 
+# Build/test logs & throwaway verification artifacts (VP/sub-mode session temp)
+*.log
+filtered_log.txt
+
+# Temporary tooling scripts & scratch files (session-scoped, never published)
+tools_tmp_*
+scratch_test.cpp
+tmp.cpp
+nul
+
 # IDE & OS metadata
 .vs/
 .vscode/
