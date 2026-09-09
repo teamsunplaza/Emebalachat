@@ -90,6 +90,25 @@ deletes the unverified file and re-downloads the verified model; **No** keeps th
 file untouched and skips the download. The app additionally re-verifies the model
 SHA-256 at load time (with a `.sha256ok` marker cache) and refuses tampered files.
 
+## Inno Setup License Notes (for distribution)
+
+Inno Setup is used to build this installer. Per the official Inno Setup license
+(https://jrsoftware.org/files/is/license.txt), the software may be used
+"for any purpose, including commercial applications" — commercial distribution
+of our installer is permitted without purchasing a license. The vendor
+*requests* (but does not legally require) that commercial users purchase a
+voluntary commercial license.
+
+Conditions we comply with (we use Inno Setup unmodified):
+
+1. Binary redistribution of Inno Setup components inside our installer keeps
+   the original copyright notices and web-site references intact.
+2. We do not misrepresent the origin of Inno Setup.
+3. We do not ship modified Inno Setup sources.
+
+If you ever modify Inno Setup itself and ship the modified version, those
+changes must be plainly marked as such per license condition 4.
+
 ## Installer UI Languages
 
 Configured in `[Languages]` (plus bundled `.isl` files under `languages\`):
