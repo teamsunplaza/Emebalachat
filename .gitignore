@@ -6,6 +6,9 @@
 build/
 build-r18/
 build-*/
+build_*/
+build_gputest/
+build_gpuoff/
 bin/
 out/
 [Dd]ebug/
