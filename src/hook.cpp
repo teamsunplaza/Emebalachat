@@ -695,7 +695,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             }
         }
 
-        // REQ-R08: the configured toggle combo (default Win+F9) is matched
+        // REQ-R08: the configured toggle combo (default F9) is matched
         // FIRST - before the blanket Alt/Win passthrough below - and it only
         // swallows when the FULL modifier set matches toggle_spec_ exactly
         // (HotkeyMatches: vk + ctrl + shift + alt + win, pinned by unit tests).

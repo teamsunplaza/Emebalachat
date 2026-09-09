@@ -162,7 +162,7 @@ Name: "autostart"; Description: "{cm:TaskAutoStart}"
 ; ------------------------------------------------------------------------
 [Files]
 Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\Emebala_Chat_Appicon.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion

@@ -349,7 +349,7 @@ private:
     // P4 Batch-3 (REQ-C-002, design §1.2.2 / decision D7): transient "no
     // Windows voice installed for this language" notice. Reuses the REQ-R08
     // message-mode state machine through ShowMessage (compact card, header +
-    // body, 3s autohide via kMessageAutohideMs, generation guard) - no new
+    // body, 1.8s autohide via kMessageAutohideMs, generation guard) - no new
     // window type, no new message ids, no new timers. While it is showing,
     // no_voice_notice_active_ routes a card click to the Windows speech
     // settings page (ms-settings:speech deep link, decision D7).
