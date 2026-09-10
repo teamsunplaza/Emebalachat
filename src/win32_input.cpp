@@ -425,10 +425,13 @@ bool CopySelection() {
 //    to have held stable for kClipboardStableWindowMs, so handlers that write
 //    EmptyClipboard() (seq+1) then SetClipboardData() (seq+2) cannot be
 //    observed in their empty gap.
-//  - A change that is still flapping when the hard deadline hits is Confirmed:
-//    the clipboard demonstrably holds a committed post-Ctrl+C payload.
-//  - No change by kClipboardChangeTimeoutMs is Failed: reading now would
-//    return PRE-CopySelectedText content (the audit §2.3 stale-read bug).
+//  - A change that is still flapping when the hard deadline
+//    (change_timeout_ms_ + kClipboardStableWindowMs) hits is Confirmed: the
+//    clipboard demonstrably holds a committed post-Ctrl+C payload.
+//  - No change by the instance's change_timeout_ms_ (default
+//    kClipboardChangeTimeoutMs; per-attempt backoff values when the caller
+//    opts in) is Failed: reading then would return PRE-CopySelectedText
+//    content (the audit §2.3 stale-read bug).
 ClipboardCopyOutcome ClipboardCopyWatcher::Update(uint32_t current_seq, uint64_t now_ms) {
     if (outcome_ != ClipboardCopyOutcome::Pending) {
         return outcome_;
@@ -443,18 +446,20 @@ ClipboardCopyOutcome ClipboardCopyWatcher::Update(uint32_t current_seq, uint64_t
     }
 
     const uint64_t elapsed = (now_ms > start_ms_) ? (now_ms - start_ms_) : 0;
+    const uint64_t deadline_ms =
+        static_cast<uint64_t>(change_timeout_ms_) + kClipboardStableWindowMs;
 
     if (advanced_ && (now_ms - last_change_ms_) >= kClipboardStableWindowMs) {
         outcome_ = ClipboardCopyOutcome::Confirmed;
-    } else if (advanced_ && elapsed >= kClipboardCopyDeadlineMs) {
+    } else if (advanced_ && elapsed >= deadline_ms) {
         outcome_ = ClipboardCopyOutcome::Confirmed;
-    } else if (!advanced_ && elapsed >= kClipboardChangeTimeoutMs) {
+    } else if (!advanced_ && elapsed >= change_timeout_ms_) {
         outcome_ = ClipboardCopyOutcome::Failed;
     }
     return outcome_;
 }
 
-bool CopySelectionWithSequenceWait() {
+bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms) {
     // Baseline captured IMMEDIATELY before the keystroke: any sequence jump
     // from the worker's earlier BackupClipboard()/RestoreClipboard() writes is
     // already absorbed here (REQ-R04 directive: re-read after backup/restore).
@@ -466,7 +471,7 @@ bool CopySelectionWithSequenceWait() {
     }
 
     const uint64_t start = SteadyNowMs();
-    ClipboardCopyWatcher watcher(pre_seq, start);
+    ClipboardCopyWatcher watcher(pre_seq, start, change_timeout_ms);
 
     while (true) {
         const ClipboardCopyOutcome outcome = watcher.Update(::GetClipboardSequenceNumber(), SteadyNowMs());
@@ -474,10 +479,13 @@ bool CopySelectionWithSequenceWait() {
             return true;
         }
         if (outcome == ClipboardCopyOutcome::Failed) {
+            // Log the EFFECTIVE per-attempt timeout, not the constant, so a
+            // field log line says which backoff step refused the read
+            // (180 = attempt 1 or a single-shot caller, 400/800 = retry).
             DIAG_F(
                     "WIN32_INPUT/CopySelectionWithSequenceWait/002: clipboard sequence %lu unchanged %ums after Ctrl+C; "
                     "refusing stale read (copy treated as failure)\n",
-                    static_cast<unsigned long>(pre_seq), kClipboardChangeTimeoutMs);
+                    static_cast<unsigned long>(pre_seq), change_timeout_ms);
             return false;
         }
         ::Sleep(kClipboardPollIntervalMs);
@@ -1470,7 +1478,11 @@ std::wstring CopySelectedText(HWND hwnd) {
         // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
         // On timeout the clipboard provably still holds pre-copy content, so
         // we treat this attempt as failed (never read stale text).
-        if (CopySelectionWithSequenceWait()) {
+        // Option D backoff: attempt 1 waits the established 180 ms; attempts
+        // 2/3 wait 400/800 ms so a late-but-real commit from a slow target
+        // app (Chrome_WidgetWin_1 IPC copy) confirms inside this cycle
+        // instead of burning the whole budget at the identical wall.
+        if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(attempt))) {
             copy_confirmed = true;
             break;
         }

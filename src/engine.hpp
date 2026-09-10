@@ -78,11 +78,33 @@ bool VerifyModelSha256(const std::filesystem::path& model_path,
 // REQ-R01 (Batch D1): llama.cpp context-window sizing constants, centralized so
 // the decode-time budget and the unit tests agree on one source of truth.
 // kLlamaNCtx must stay in sync with cparams.n_ctx in engine.cpp EnsureLoaded().
-inline constexpr int kLlamaNCtx = 2048;
-inline constexpr int kLlamaGenReserve = 512;    // tokens reserved for generation (max_gen_tokens)
+//
+// P2 (session 260910_0001): n_ctx raised 2048 -> 4096 per the official Tencent
+// Hy-MT2-1.8B model card (recommended max_tokens=4096), which also forces the
+// generation reserve to be re-tuned 512 -> 2048.
+//
+// KV-cache cost (MEASURED from build/models/Hy-MT2-1.8B-Q8_0.gguf in the F10
+// audit, docs/260908_0002 report: hunyuan-dense, block_count=32, GQA
+// head_count_kv=4, head_dim=128, f16 KV):
+//   2 (K+V) x 32 layers x 4 kv_heads x 128 dims x 2 B = 64 KiB/token
+//   n_ctx 4096 -> 256 MiB KV total (+128 MiB vs the old 2048 window).
+//   With flash_attn enabled (EnsureLoaded L683) GPU residency is lower still.
+//   Safe for the Q8_0 1.8B (~2.0 GB weights) on typical 8 GB+ machines.
+//
+// Generation split trade-off: the card's max_tokens=4096 is an API ceiling that
+// is physically impossible inside a 4096-token window - a non-empty prompt
+// (instruction wrapper + chat-template specials alone are ~40-650 tokens) would
+// leave zero room for output. kLlamaGenReserve=2048 is the best balance for
+// translation workloads: output length tracks input length, so a reserve (2048)
+// roughly equal to the prompt budget (2032) maximizes both sides of the window
+// symmetrically. A future n_ctx=8192 (+512 MiB KV) would fully honor the 4096
+// output recommendation; deliberately NOT taken here to keep the 8 GB-class
+// memory envelope of this decision.
+inline constexpr int kLlamaNCtx = 4096;
+inline constexpr int kLlamaGenReserve = 2048;   // tokens reserved for generation (max_gen_tokens)
 inline constexpr int kLlamaTokenSafetyMargin = 16;
 inline constexpr int kLlamaPromptTokenBudget =
-    kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin; // 1520
+    kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin; // 2032
 
 // REQ-R01: pure, model-independent head+tail sliding-window truncation of source
 // text. Returns `text` unchanged when it already fits (2 * keep_per_side >= size).

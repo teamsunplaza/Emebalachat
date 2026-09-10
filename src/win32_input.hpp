@@ -207,6 +207,34 @@ inline constexpr int kClipboardCopyChordAttempts = 3;
 // a half-processed chord is one drop hypothesis this gap addresses.
 inline constexpr uint32_t kClipboardCopyChordRetryGapMs = 30;
 
+// Option D backoff (session 260910_0001, P1 fix): field logs
+// (emebalachat_260910063910 / emebalachat_260910073906) show ~18 occurrences
+// of WIN32_INPUT/CopySelectionWithSequenceWait/002 "sequence unchanged 180ms"
+// where attempt 1 fails but attempt 2 succeeds - slow target apps (e.g. a
+// Chrome_WidgetWin_1 editor) commit the clipboard copy LATER than the flat
+// 180 ms change budget allows, so a merely-slow copy is refused as stale and
+// the whole 3-attempt budget burns at the identical 180 ms wall. The fix
+// widens the per-attempt timeout ACROSS the retry cycle instead of raising
+// the constant: attempt 1 keeps the established 180 ms budget (zero behavior
+// change for the fast path and for every single-shot caller), attempts 2 and
+// 3 wait 400 ms / 800 ms so a late-but-real commit confirms inside the
+// existing cycle. The stale-read refusal semantics themselves are unchanged:
+// a sequence that never moves is still Failed - only the patience grows.
+inline constexpr uint32_t kClipboardCopyAttemptTimeoutMs[kClipboardCopyChordAttempts] =
+    {180, 400, 800};
+static_assert(kClipboardCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
+              "Option D: attempt 1 must equal the single-shot 180 ms budget");
+
+// 0-based attempt index -> per-attempt change timeout. Out-of-range indices
+// fall back to the attempt-1 budget (the safe, established timeline); the
+// retry loop only ever passes in-range values under the CopyChordRetryWarranted
+// budget. Single shared definition for CopySelectedText and the unit tests.
+constexpr uint32_t CopyAttemptTimeoutMs(int attempt) {
+    return (attempt >= 0 && attempt < kClipboardCopyChordAttempts)
+               ? kClipboardCopyAttemptTimeoutMs[attempt]
+               : kClipboardChangeTimeoutMs;
+}
+
 // Pure retry-warrant predicate (single definition shared by
 // CopySelectedText and the unit tests; same discipline as
 // SelectionReleaseRequired / EmptyCaptureNeedsHold). attempt_index is
@@ -227,8 +255,14 @@ enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 // headlessly with synthetic timestamps; see TestClipboardSequencePolling().
 class ClipboardCopyWatcher {
 public:
-    ClipboardCopyWatcher(uint32_t pre_copy_seq, uint64_t start_ms)
-        : pre_seq_(pre_copy_seq), start_ms_(start_ms), last_seq_(pre_copy_seq) {}
+    // change_timeout_ms: per-attempt change budget (Option D backoff above).
+    // The hard wall-clock deadline is derived as change_timeout_ms +
+    // kClipboardStableWindowMs. The default keeps every single-shot caller on
+    // the established 180 ms / 196 ms REQ-R04 timeline.
+    ClipboardCopyWatcher(uint32_t pre_copy_seq, uint64_t start_ms,
+                         uint32_t change_timeout_ms = kClipboardChangeTimeoutMs)
+        : pre_seq_(pre_copy_seq), start_ms_(start_ms), last_seq_(pre_copy_seq),
+          change_timeout_ms_(change_timeout_ms) {}
 
     // Feed the clipboard sequence number observed at now_ms (same clock epoch
     // as start_ms; now_ms must be monotonically non-decreasing).
@@ -240,6 +274,7 @@ private:
     uint32_t pre_seq_;
     uint64_t start_ms_;
     uint32_t last_seq_;
+    uint32_t change_timeout_ms_;
     uint64_t last_change_ms_ = 0;
     bool advanced_ = false;
     ClipboardCopyOutcome outcome_ = ClipboardCopyOutcome::Pending;
@@ -253,7 +288,10 @@ private:
 // Returns true only when the clipboard provably changed (fresh data is safe to
 // read). Returns false on SendInput failure or timeout: callers MUST NOT read
 // the clipboard afterwards - it would still hold stale content.
-bool CopySelectionWithSequenceWait();
+// change_timeout_ms is the per-attempt change budget (see the Option D
+// backoff constants above); the default keeps single-shot callers (main.cpp
+// double-Ctrl+C handler, drag path) on the established 180 ms timeline.
+bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms = kClipboardChangeTimeoutMs);
 
 // ---- REQ-R13 (overlaps this batch): OpenClipboard contention backoff ----
 inline constexpr int kClipboardOpenMaxAttempts = 5;

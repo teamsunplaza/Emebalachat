@@ -476,6 +476,21 @@ void TestSmartBypassModule() {
                "F5: Swahili (ASCII Latin) -> English translates");
     TEST_CHECK(ShouldTranslate(L"le chat est sur la table", "English"),
                "F5: unaccented French -> English no longer bypassed (supersedes the F1 trade-off pin)");
+    // N4 (session 260910_0001): the English stop-word confidence gate is now 3
+    // hits (kLatinLangs min_hits 2 -> 3). Boundary coverage: exactly 2 hits is
+    // too loose to assert English (field logs showed EN->EN identity inference
+    // on weak reads), so it must keep routing as AUTO translation; 3+ hits is
+    // high-confidence English and the already-target bypass must fire.
+    TEST_CHECK(DetectLanguage(L"This for testing purposes") == "Auto Detect",
+               "N4: exactly 2 English stop-word hits no longer asserts English (routes as AUTO)");
+    TEST_CHECK(ShouldTranslate(L"This for testing purposes", "English"),
+               "N4: 2-hit text targeting English still translates (no premature identity bypass)");
+    TEST_CHECK(DetectLanguage(L"This is for testing purposes") == "English",
+               "N4: 3 English stop-word hits (this, is, for) detect as English");
+    TEST_CHECK(!ShouldTranslate(L"This is for testing purposes", "English"),
+               "N4: 3+ hit English text targeting English bypasses (kills the EN->EN identity inference)");
+    TEST_CHECK(ShouldTranslate(L"This is for testing purposes", "Korean"),
+               "N4-safety: English detection does not over-bypass non-English targets");
     TEST_CHECK(!ShouldTranslate(L"Saya tidak terlalu memperhatikan bola", "Indonesian"),
                "A2: Indonesian text -> Indonesian target self-bypass (stop-words: tidak, saya)");
     // True identity bypass survives ONLY for a pinned source (user declaration
@@ -796,6 +811,62 @@ void TestClipboardSequencePolling() {
         }
     }
 
+    // 8. Option D per-attempt backoff (session 260910_0001, P1 fix): the
+    //    CopySelectedText retry cycle widens the change budget across the
+    //    3-attempt cycle (180/400/800 ms) instead of raising the flat
+    //    constant, so a late-but-real commit from a slow target app confirms
+    //    inside the cycle. The Failed verdict is delayed correspondingly; the
+    //    never-changed case still refuses the stale read.
+    static_assert(kClipboardCopyAttemptTimeoutMs[0] == 180 &&
+                      kClipboardCopyAttemptTimeoutMs[1] == 400 &&
+                      kClipboardCopyAttemptTimeoutMs[2] == 800,
+                  "Option D: attempt timeouts are the 180/400/800 ms backoff schedule");
+    static_assert(kClipboardCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
+                  "Option D: attempt 1 keeps the established single-shot 180 ms budget");
+    TEST_CHECK(CopyAttemptTimeoutMs(0) == 180 && CopyAttemptTimeoutMs(1) == 400 &&
+                   CopyAttemptTimeoutMs(2) == 800,
+               "Option D: CopyAttemptTimeoutMs maps 0-based attempts to 180/400/800");
+    TEST_CHECK(CopyAttemptTimeoutMs(-1) == kClipboardChangeTimeoutMs &&
+                   CopyAttemptTimeoutMs(kClipboardCopyChordAttempts) == kClipboardChangeTimeoutMs,
+               "Option D: out-of-range attempts fall back to the attempt-1 budget");
+
+    // 8a. Longer timeout DELAYS the Failed verdict: at the old 180 ms mark a
+    //     400 ms attempt is still Pending (the slow commit window the field
+    //     logs showed), and Failed only fires at 400 ms.
+    {
+        ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(1));
+        TEST_CHECK(w.Update(100, kClipboardChangeTimeoutMs) == ClipboardCopyOutcome::Pending,
+                   "Option D: 400 ms attempt still pending at the old 180 ms wall");
+        TEST_CHECK(w.Update(100, 399) == ClipboardCopyOutcome::Pending,
+                   "Option D: pending until the widened timeout expires");
+        TEST_CHECK(w.Update(100, 400) == ClipboardCopyOutcome::Failed,
+                   "Option D: no change by 400 ms -> Failed (stale read still refused)");
+    }
+
+    // 8b. A late Electron-style commit that lands at ~250 ms (after the old
+    //     180 ms wall, inside the attempt-3 window) now CONFIRMS on attempt 3
+    //     instead of being refused: the exact field-log failure mode.
+    {
+        ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(2));
+        TEST_CHECK(w.Update(100, 240) == ClipboardCopyOutcome::Pending,
+                   "Option D: attempt 3 pending while the late commit is outstanding");
+        TEST_CHECK(w.Update(101, 250) == ClipboardCopyOutcome::Pending,
+                   "Option D: late bump inside the stable window stays pending");
+        TEST_CHECK(w.Update(101, 266) == ClipboardCopyOutcome::Confirmed,
+                   "Option D: late commit settles Confirmed within the 800 ms attempt");
+    }
+
+    // 8c. The hard deadline derives from the instance timeout (change +
+    //     stable): an advanced-but-flapping write on a 400 ms attempt
+    //     resolves Confirmed at 416 ms, one tick earlier only pending.
+    {
+        ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(1));
+        TEST_CHECK(w.Update(101, 415) == ClipboardCopyOutcome::Pending,
+                   "Option D: derived deadline (400+16) not yet reached");
+        TEST_CHECK(w.Update(102, 416) == ClipboardCopyOutcome::Confirmed,
+                   "Option D: flapping-at-deadline branch honors the widened timeout");
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-R04 Clipboard Sequence Polling tests completed." << std::endl;
     } else {
@@ -1093,10 +1164,10 @@ void TestEngineModule() {
         std::cout << "  [CACHED LLAMA RESULT in " << ms2 << " ms]: '오늘 날씨가 아주 좋습니다.' -> '" << ToUtf8(second_res) << "'" << std::endl;
         TEST_CHECK(!second_res.empty(), "Second local LLM call produced non-empty result");
 
-        // REQ-R01 (audit §2.1): text long enough to exceed the 2048-token context
+        // REQ-R01 (audit §2.1): text long enough to exceed the 4096-token context
         // must be safely truncated (head+tail window) and STILL produce a
         // non-empty translation - no decode crash, no silent {}. ~8000 Korean
-        // UTF-16 units tokenize to well beyond kLlamaPromptTokenBudget (1520).
+        // UTF-16 units tokenize to well beyond kLlamaPromptTokenBudget (2032).
         {
             std::wstring filler;
             filler.reserve(9000);
@@ -1111,7 +1182,7 @@ void TestEngineModule() {
             std::cout << "  [R01 OVERFLOW in " << ms_ovf << " ms]: src " << filler.size()
                       << " UTF-16 units -> result " << ovf_res.size() << " units, status "
                       << static_cast<int>(ovf_st) << std::endl;
-            TEST_CHECK(!ovf_res.empty(), "REQ-R01: >2048-token input still returns a non-empty translation (no crash, no silent empty)");
+            TEST_CHECK(!ovf_res.empty(), "REQ-R01: >budget-token input still returns a non-empty translation (no crash, no silent empty)");
             TEST_CHECK(ovf_st == TranslationStatus::Ok, "REQ-R01: overflow truncation path reports Ok status");
             // The engine must remain usable after an overflow request (KV state sane).
             std::wstring after_ovf = local_mgr.Translate(L"고맙습니다.", "KO", "English");
@@ -1556,9 +1627,10 @@ void TestTokenTruncation() {
     // task's "static-assertion-style checks where feasible" directive (and it
     // avoids MSVC C4127 constant-condition warnings that runtime asserts on
     // constexpr values would emit under /W4).
-    static_assert(kLlamaNCtx == 2048, "test build: n_ctx 2048");
-    static_assert(kLlamaPromptTokenBudget == 2048 - 512 - 16, "test build: budget 1520");
-    static_assert(kLlamaPromptTokenBudget == 1520, "REQ-R01: prompt token budget is 1520");
+    static_assert(kLlamaNCtx == 4096, "test build/P2: n_ctx 4096 (official Hy-MT2 card)");
+    static_assert(kLlamaGenReserve == 2048, "test build/P2: generation reserve 2048");
+    static_assert(kLlamaPromptTokenBudget == 4096 - 2048 - 16, "test build: budget 2032");
+    static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 2032");
     static_assert(kLlamaNCtx > kLlamaPromptTokenBudget, "REQ-R01: budget leaves generation reserve");
 
     // Helper: true if s contains ANY unpaired (lone) UTF-16 surrogate.

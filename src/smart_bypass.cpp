@@ -445,7 +445,17 @@ const wchar_t* const kStopWordsFI[] = { L"ja", L"on", L"oli", L"tai", L"kun", L"
 const wchar_t* const kStopWordsNO[] = { L"og", L"det", L"som", L"for", L"med", L"har", L"kan", L"til", L"den", L"fra", L"var", L"men", L"han", L"hun", L"alle", L"ikke", L"eller", L"meg", L"seg" };
 
 const LangStopWords kLatinLangs[] = {
-    { "English", kStopWordsEN, std::size(kStopWordsEN), 2 },
+    // N4 (session 260910_0001): English confidence raised 2 -> 3. Two stopword
+    // hits proved too loose in the field (emebalachat_260910063910.log /
+    // _260910073906.log): weak-English reads that also collide with another
+    // ASCII-Latin language tie at 2-2, fall back to "Auto Detect", and spend a
+    // pointless EN->EN identity inference when the target is English. With 3+
+    // distinct-occurrence hits the read is high-confidence English and the
+    // already-target bypass (ShouldTranslate step 5) fires instead; 2-hit text
+    // now routes as AUTO so Hy-MT2's own language ID decides. 3 keeps the
+    // Indonesian/Malay/Filipino false-bypass risk low (F5 audit 181530:
+    // pure-ASCII Latin can never be hard-asserted as English).
+    { "English", kStopWordsEN, std::size(kStopWordsEN), 3 },
     { "Spanish", kStopWordsES, std::size(kStopWordsES), 2 },
     { "French", kStopWordsFR, std::size(kStopWordsFR), 2 },
     { "German", kStopWordsDE, std::size(kStopWordsDE), 2 },

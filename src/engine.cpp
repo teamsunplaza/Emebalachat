@@ -41,8 +41,11 @@ static_assert(kPenaltyLastN == 64, "Hy-MT2 lab spec: repetition penalty last-N w
 
 // REQ-R01 proof: the llama context budget must agree with the values EnsureLoaded
 // configures and the arithmetic the unit tests rely on. Wrong values fail the build.
-static_assert(kLlamaNCtx == 2048, "REQ-R01: n_ctx is 2048 (EnsureLoaded must configure the same)");
-static_assert(kLlamaGenReserve == 512, "REQ-R01: generation reserve equals max_gen_tokens");
+// P2 (session 260910_0001): re-pinned to the official Hy-MT2 model card plan -
+// n_ctx 4096, generation reserve 2048 (see src/engine.hpp for the KV-cache
+// memory justification and the max_tokens=4096 trade-off analysis).
+static_assert(kLlamaNCtx == 4096, "REQ-R01/P2: n_ctx is 4096 (EnsureLoaded must configure the same)");
+static_assert(kLlamaGenReserve == 2048, "REQ-R01/P2: generation reserve equals max_gen_tokens");
 static_assert(kLlamaPromptTokenBudget == kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin,
               "REQ-R01: prompt budget = n_ctx - gen reserve - safety margin");
 
@@ -62,7 +65,7 @@ bool DebugPromptEnabled() {
     }();
     return enabled;
 }
-static_assert(kLlamaPromptTokenBudget == 1520, "REQ-R01: prompt token budget is 1520");
+static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 4096-2048-16 = 2032");
 
 // Lower-case ASCII characters for case-insensitive path comparisons (Windows
 // paths are case-insensitive; this project targets Windows only).
