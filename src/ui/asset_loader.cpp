@@ -127,7 +127,7 @@ HRESULT LoadWicBitmap(
                 }
             }
             DIAG_LOG("ASSET_LOADER",
-                     "ASSET_LOADER/LoadWicBitmap/001 multi-frame container: frames=%u "
+                     "LoadWicBitmap/001 multi-frame container: frames=%u "
                      "selected_idx=%u selected=%ux%u",
                      frameCount, selectedIndex, bestWidth, bestHeight);
         }
