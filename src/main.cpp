@@ -7,6 +7,7 @@
 #include "version.hpp"
 #include "bidi_utils.hpp" // P4 Batch B-5: DirectionForLocale (cheat-sheet RTL)
 #include "mouse_hook.hpp"
+#include "single_slot_worker.hpp" // D2 (session 260910_0007): shared single-slot worker loops
 #include "smart_bypass.hpp"
 #include "sound.hpp"
 #include "unicode_utils.hpp"
@@ -1288,10 +1289,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         int y = 0;
         uint64_t gen = emebalachat::TooltipWindow::kGenNone;
     };
-    std::mutex drag_job_mutex;
-    std::condition_variable drag_job_cv;
-    bool drag_job_pending = false;
-    DragTranslateJob drag_job;
+    // D2 (session 260910_0007): the slot state (mutex/cv/pending/slot) now
+    // lives inside the SingleSlotWorker<DragTranslateJob> instance declared
+    // below the handler lambda.
 
     // The copy + translate body, verbatim from the old detached thread. Runs
     // on drag_translate_worker below; the config/engine/badge/tooltip
@@ -1464,30 +1464,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                           gen);
     };
 
-    std::jthread drag_translate_worker(
-        [&drag_job_mutex, &drag_job_cv, &drag_job_pending, &drag_job,
-         &run_drag_translate](std::stop_token st) {
-            for (;;) {
-                DragTranslateJob job;
-                {
-                    std::unique_lock<std::mutex> lk(drag_job_mutex);
-                    // The GUI-thread producer sets pending UNDER this mutex,
-                    // so the textbook cv protocol holds with no lost wakeup
-                    // (no time backstop needed - unlike the hook-thread
-                    // producer in hook.cpp, which must stay lock-free).
-                    drag_job_cv.wait(lk, [&st, &drag_job_pending]() {
-                        return st.stop_requested() || drag_job_pending;
-                    });
-                    if (st.stop_requested()) {
-                        break; // a pending job is superseded anyway (guard drops it)
-                    }
-                    job = drag_job;
-                    drag_job_pending = false;
-                }
-                // Mutex NOT held across clipboard work / engine.Translate
-                // (same rule as KeyboardHook::DoubleCtrlCWorkerLoop).
-                run_drag_translate(job.x, job.y, job.gen);
-            }
+    // D2 (session 260910_0007): loop body extracted verbatim into
+    // SingleSlotWorker<JobT> (src/single_slot_worker.hpp) - same predicate,
+    // same stop-before-pop ordering, same no-logging/no-exception-guard
+    // contract. The handler keeps the original call shape.
+    emebalachat::SingleSlotWorker<DragTranslateJob> drag_translate_worker(
+        [&run_drag_translate](const DragTranslateJob& job) {
+            run_drag_translate(job.x, job.y, job.gen);
         });
 
     // ---- F9 (session 260908_0002, ADR-A1-5): async tooltip re-translation ----
@@ -1512,10 +1495,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         int y = 0;
         uint64_t gen = emebalachat::TooltipWindow::kGenNone;
     };
-    std::mutex retranslate_job_mutex;
-    std::condition_variable retranslate_job_cv;
-    bool retranslate_job_pending = false;
-    RetranslateJob retranslate_job;
+    // D2 (session 260910_0007): slot state now lives inside the
+    // SingleSlotWorker<RetranslateJob> instance declared below the handler.
+    // ADR-A1-5 queue SEPARATION is unchanged: this is still a second, fully
+    // independent worker/queue from the drag one above.
 
     // Runs ON retranslate_worker below. D2D-safe: the result is marshaled
     // through the REQ-R10 ShowTranslationThreadSafe seam, never a direct
@@ -1594,47 +1577,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                           tgt_lang, translated, job.gen);
     };
 
-    std::jthread retranslate_worker(
-        [&retranslate_job_mutex, &retranslate_job_cv, &retranslate_job_pending,
-         &retranslate_job, &run_retranslate](std::stop_token st) {
-            for (;;) {
-                RetranslateJob job;
-                {
-                    std::unique_lock<std::mutex> lk(retranslate_job_mutex);
-                    // GUI-thread producer sets pending UNDER this mutex -
-                    // textbook cv protocol, no lost wakeup, no time
-                    // backstop needed (same as the drag worker).
-                    retranslate_job_cv.wait(lk, [&st, &retranslate_job_pending]() {
-                        return st.stop_requested() || retranslate_job_pending;
-                    });
-                    if (st.stop_requested()) {
-                        break; // a pending job is superseded anyway (guard drops it)
-                    }
-                    job = std::move(retranslate_job);
-                    retranslate_job_pending = false;
-                }
-                // Mutex NOT held across engine.Translate (same rule as the
-                // drag worker / DoubleCtrlCWorkerLoop).
-                run_retranslate(job);
-            }
-        });
+    // D2 (session 260910_0007): same template; the handler takes the job
+    // directly (the only call-shape delta between the two loops).
+    emebalachat::SingleSlotWorker<RetranslateJob> retranslate_worker(run_retranslate);
 
     // Click on DragIconWindow: runs ON THE MAIN GUI THREAD (its WndProc).
     // Stamp the generation at trigger time (R6 Phase 2 B1-H1), hand the job
     // to the worker, return immediately - the message pump is never blocked
     // by clipboard settle or inference.
     drag_icon.SetClickCallback([&](int click_x, int click_y) {
+        // Generation stamping STAYS at the producer (D2 acceptance
+        // constraint): stamp at trigger time, then hand the job over.
         const uint64_t gen = tooltip.BeginTranslationRequest();
-        {
-            std::lock_guard<std::mutex> lk(drag_job_mutex);
-            // Latest-wins overwrite: a job the worker has NOT popped yet is
-            // replaced (its render would be dropped by the generation guard
-            // anyway). A job already popped runs to completion and is guarded
-            // at render time - unchanged Phase 2 semantics.
-            drag_job = DragTranslateJob{ click_x, click_y, gen };
-            drag_job_pending = true;
-        }
-        drag_job_cv.notify_one();
+        // Latest-wins overwrite: a job the worker has NOT popped yet is
+        // replaced (its render would be dropped by the generation guard
+        // anyway). A job already popped runs to completion and is guarded
+        // at render time - unchanged Phase 2 semantics. Submit() is the
+        // same lock-under-mutex assign + notify_one handshake.
+        drag_translate_worker.Submit(DragTranslateJob{ click_x, click_y, gen });
     });
 
     // Double Ctrl+C Hotkey Detection (< 400ms).
@@ -1804,13 +1764,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // queue and can never swallow a user-requested re-translation.
         DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt=%s",
                  static_cast<unsigned long long>(gen), new_tgt.c_str());
-        {
-            std::lock_guard<std::mutex> lk(retranslate_job_mutex);
-            retranslate_job = RetranslateJob{ src, src_code, new_tgt,
-                                              r.left, r.top, gen };
-            retranslate_job_pending = true;
-        }
-        retranslate_job_cv.notify_one();
+        retranslate_worker.Submit(RetranslateJob{ src, src_code, new_tgt,
+                                                  r.left, r.top, gen });
     });
 
     // F8 (ADR-A1-4): source-language dropdown on the tooltip header. A pick is
@@ -1855,13 +1810,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick=%s tgt=%s",
                  static_cast<unsigned long long>(gen),
                  std::string(new_source_lang).c_str(), tgt_lang.c_str());
-        {
-            std::lock_guard<std::mutex> lk(retranslate_job_mutex);
-            retranslate_job = RetranslateJob{ src, src_code, tgt_lang,
-                                              r.left, r.top, gen };
-            retranslate_job_pending = true;
-        }
-        retranslate_job_cv.notify_one();
+        retranslate_worker.Submit(RetranslateJob{ src, src_code, tgt_lang,
+                                                  r.left, r.top, gen });
     });
 
     // REQ-R08 visual feedback: localized state-change bubble at the cursor,
@@ -1964,21 +1914,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Destroy(). Bounded: engine.RequestCancel() makes an in-flight decode
     // unwind at the next token boundary (REQ-R16), and a clipboard settle is
     // <= ~200 ms. Warmup-thread join precedent ~30 lines below.
-    drag_translate_worker.request_stop();
-    drag_job_cv.notify_all();
-    if (drag_translate_worker.joinable()) {
-        drag_translate_worker.join();
-    }
+    drag_translate_worker.Stop(); // request_stop() + cv.notify_all()
+    drag_translate_worker.Join(); // if (joinable()) join()
     // F9 (ADR-A1-5): same shutdown discipline for the re-translate worker -
     // stop + notify + join right here, so it is down before the surfaces it
     // marshals to are Destroy()ed. Bounded the same way: engine.RequestCancel()
     // (latched above) makes an in-flight decode unwind at the next token
     // boundary, and a superseded/empty result renders nothing anyway.
-    retranslate_worker.request_stop();
-    retranslate_job_cv.notify_all();
-    if (retranslate_worker.joinable()) {
-        retranslate_worker.join();
-    }
+    retranslate_worker.Stop(); // request_stop() + cv.notify_all()
+    retranslate_worker.Join(); // if (joinable()) join()
     // R6 Phase 1 (B3): drain any language-sync requests still queued before
     // the coordinator is retired, so a cycle posted a moment before shutdown
     // still persists instead of being silently dropped. Peek-only sweep: other

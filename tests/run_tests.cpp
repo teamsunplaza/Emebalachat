@@ -20,14 +20,17 @@
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
 #include "../src/vulkan_guard.hpp" // P5-F1: delay-load SEH guard probe/stub seam
+#include "../src/single_slot_worker.hpp" // D2 (session 260910_0007): shared worker template
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable> // D2: SingleSlotWorker harness gate
 #include <cstdint> // W6/C3: uint8_t/uint32_t ICO fixture builder
 #include <filesystem>
 #include <fstream>
+#include <future> // D2: promise/future seam for the re-entrant Submit deadlock test
 #include <iostream>
 #include <sstream> // P5-F1: diag log proof (TestVulkanGuard 3b) reads a log stream
 #include <string>
@@ -10598,6 +10601,177 @@ void TestVulkanGuard() {
               << " Vulkan Guard tests." << std::endl;
 }
 
+// D2 (session 260910_0007): headless unit pins for SingleSlotWorker<JobT>
+// (src/single_slot_worker.hpp). The template is pure std, so the slot
+// semantics the two production loops relied on are pinned here directly:
+//   1. submit into an empty slot runs the handler exactly once;
+//   2. slot is latest-wins OVERWRITE, not busy-drop (the production producer
+//      comment at the drag-icon callback: "a job the worker has NOT popped
+//      yet is replaced");
+//   3. Stop() with a pending-but-unconsumed job DISCARDS it (loop break
+//      before pop - "a pending job is superseded anyway (guard drops it)");
+//   4. Stop() + Join() from idle unblocks a cv.wait()ing thread (Stop's
+//      notify_all mirrors the explicit cv.notify_all() teardown token);
+//   5. handler runs with the mutex NOT held (production rule shared with
+//      KeyboardHook::DoubleCtrlCWorkerLoop).
+// Exception contract: the shipped loops had NO try/catch (a throwing handler
+// terminated the process); the template preserves that by adding none, so a
+// throw test would std::terminate the whole runner and is deliberately not
+// written - the structure is pinned by absence below (source grep style note
+// lives in the report, not here).
+namespace {
+
+struct D2TestJob {
+    int id = 0;
+};
+
+// Records handler invocations, gated so the test controls when each handler
+// call returns. Invocation #n (1-based) proceeds once permit >= n.
+struct D2WorkerHarness {
+    std::mutex m;
+    std::condition_variable cv;
+    std::vector<int> seen;
+    int permit = 0;
+
+    std::function<void(const D2TestJob&)> Handler() {
+        return [this](const D2TestJob& job) {
+            std::unique_lock<std::mutex> lk(m);
+            seen.push_back(job.id);
+            const int n = static_cast<int>(seen.size());
+            cv.notify_all();
+            bool ok = cv.wait_for(lk, std::chrono::seconds(5),
+                                  [this, n] { return permit >= n; });
+            // Never hang the runner: on timeout, release everything.
+            permit = 1 << 20;
+            cv.notify_all();
+            TEST_CHECK(ok, "D2: handler gate released within 5 s");
+        };
+    }
+
+    bool WaitForCount(int n) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::seconds(5),
+                           [this, n] { return static_cast<int>(seen.size()) >= n; });
+    }
+
+    void OpenGate(int n) {
+        std::lock_guard<std::mutex> lk(m);
+        permit = n;
+        cv.notify_all();
+    }
+};
+
+} // namespace
+
+void TestD2SingleSlotWorkerSemantics() {
+    std::cout << "[TEST] D2 SingleSlotWorker slot/stop semantics" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1. Empty-slot submit runs once.
+    {
+        D2WorkerHarness h;
+        SingleSlotWorker<D2TestJob> worker(h.Handler());
+        worker.Submit(D2TestJob{ 1 });
+        TEST_CHECK(h.WaitForCount(1), "D2: submitted job reached the handler");
+        h.OpenGate(1);
+        worker.Stop();
+        worker.Join(); // 4. also proves Stop unblocks cv.wait (nothing pending)
+        std::lock_guard<std::mutex> lk(h.m);
+        TEST_CHECK(h.seen == std::vector<int>{ 1 },
+                   "D2: exactly one handler call with the submitted payload");
+    }
+
+    // 2. Latest-wins overwrite: while the handler is busy on job 1, two
+    //    submits leave ONLY the last one in the slot; job 2 never runs.
+    {
+        D2WorkerHarness h;
+        SingleSlotWorker<D2TestJob> worker(h.Handler());
+        worker.Submit(D2TestJob{ 1 });
+        bool reached = h.WaitForCount(1); // handler is now blocked in the gate
+        TEST_CHECK(reached, "D2: handler busy on job 1");
+        if (reached) {
+            worker.Submit(D2TestJob{ 2 });
+            worker.Submit(D2TestJob{ 3 }); // overwrites the pending job 2
+            h.OpenGate(2);                // job 1 returns; worker pops job 3
+            bool two = h.WaitForCount(2);
+            TEST_CHECK(two, "D2: pending job reached the handler after the busy one");
+            h.OpenGate(1 << 20);
+            worker.Stop();
+            worker.Join();
+            std::lock_guard<std::mutex> lk(h.m);
+            const std::vector<int> expected{ 1, 3 }; // named: a braced list inside TEST_CHECK breaks the macro comma split
+            TEST_CHECK(h.seen == expected,
+                       "D2: slot is latest-wins overwrite (job 2 superseded, never run)");
+        } else {
+            h.OpenGate(1 << 20);
+            worker.Stop();
+            worker.Join();
+        }
+    }
+
+    // 3. Stop with a pending job discards it (break BEFORE the pop).
+    {
+        D2WorkerHarness h;
+        SingleSlotWorker<D2TestJob> worker(h.Handler());
+        worker.Submit(D2TestJob{ 10 });
+        bool reached = h.WaitForCount(1);
+        TEST_CHECK(reached, "D2: handler busy on job 10");
+        if (reached) {
+            worker.Submit(D2TestJob{ 11 }); // pending, not yet consumed
+            worker.Stop();                  // stop requested while job 11 sits in the slot
+            h.OpenGate(1 << 20);            // release job 10's handler
+            worker.Join();
+            std::lock_guard<std::mutex> lk(h.m);
+            const std::vector<int> expected{ 10 };
+            TEST_CHECK(h.seen == expected,
+                       "D2: pending job at Stop() is discarded, never handled");
+        } else {
+            h.OpenGate(1 << 20);
+            worker.Stop();
+            worker.Join();
+        }
+    }
+
+    // 5. Handler runs with the mutex NOT held: Submitting from inside the
+    //    handler must not deadlock (proof: the lock is released before the
+    //    handler call, since Submit re-locks the same internal mutex).
+    {
+        std::atomic<int> calls{ 0 };
+        std::promise<void> done;
+        auto fut = done.get_future();
+        // The handler submits from inside itself. MSVC forbids capturing
+        // `worker` in its own initializer (C2326), so the worker gets a thin
+        // trampoline over a std::function slot that is populated right after
+        // construction completes. The first Submit below is the first handler
+        // call, so the slot write is sequenced-before any read of it.
+        std::function<void(const D2TestJob&)> handler;
+        SingleSlotWorker<D2TestJob> worker(
+            [&handler](const D2TestJob& job) { handler(job); });
+        handler = [&](const D2TestJob& job) {
+            calls.fetch_add(1);
+            if (job.id == 0) {
+                worker.Submit(D2TestJob{ 1 }); // re-entrant submit from the handler
+            } else {
+                done.set_value();
+            }
+        };
+        worker.Submit(D2TestJob{ 0 });
+        auto status = fut.wait_for(std::chrono::seconds(5));
+        TEST_CHECK(status == std::future_status::ready,
+                   "D2: Submit from inside the handler does not deadlock (mutex released)");
+        worker.Stop();
+        worker.Join();
+        TEST_CHECK(calls.load() == 2, "D2: both chained jobs ran exactly once");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] D2 SingleSlotWorker tests." << std::endl;
+    } else {
+        std::cout << "[FAIL] D2 SingleSlotWorker tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -10697,6 +10871,7 @@ int main() {
     TestReq040SystemDefaults37();
     TestReq003PiiGating(); // REQ-003: diag_log_content PII logging gate
     TestVulkanGuard();     // P5-F1: driverless-machine Vulkan guard (probe+stubs+hook)
+    TestD2SingleSlotWorkerSemantics(); // D2: shared worker template slot/stop semantics
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
