@@ -58,6 +58,36 @@ constexpr bool EnterSendReplaceAllowed(bool vk_is_return, bool active, bool work
     return EnterTranslationAllowed(vk_is_return, active, worker_busy, ime_composing) && !shift;
 }
 
+// ---- REQ-003 (Issue C, session 260910_0003): busy-window bare-Enter guard ----
+//
+// While the pipeline worker is mid-task (capture + cloud translation, up to
+// ~1.6 s), a BARE Enter passed through to the SAME window the in-flight task
+// owns corrupts the pending paste-back: the capture-time selection geometry
+// (SelectAll / SelectMessageBlock / EM_SETSEL range) is replaced or shifted
+// by the app's own newline/send before PasteSelection's Ctrl+V can consume
+// it, or the caret moves off the offset the F5/REQ-027 ledger assumes - the
+// translated replacement then lands on the wrong range / the half-state
+// message is sent raw. This guard DROPS (suppresses; hook returns 1 without
+// calling CallNextHookEx) that keystroke instead of passing it through.
+// Scoping axes, pinned here as ONE definition shared by
+// LowLevelKeyboardProc and the unit tests:
+//   - worker_busy: only while a task is in flight (the idle bare-Enter
+//     contract is byte-identical - untouched by this guard).
+//   - same_window: the foreground window IS the in-flight task's target
+//     (PipelineWorker::BusyTargetHwnd). A DIFFERENT window's Enter passes
+//     through untouched: the in-flight task neither owns nor pastes into it,
+//     and swallowing cross-window keys would break unrelated input.
+// A suppressed Enter's intent is already being served: the in-flight
+// pipeline hands Enter to the app at its own send gate after the paste-back
+// (worker.cpp send gate / smart-bypass send-through), so DEFER-replay is
+// unnecessary state machinery that would re-open the REQ-001 duplicate-Enter
+// class - the reported request explicitly allows either ("드롭하거나 보류")
+// and DROP is the minimal fix. Every suppression is ENTER_GATE-logged so
+// field logs can attribute swallowed keys.
+constexpr bool BusyEnterSameWindowSuppressed(bool worker_busy, bool same_window) {
+    return worker_busy && same_window;
+}
+
 // ---- F2 (REQ-F2, session 260908_0002, V2 verify §3d): composing-Enter
 // commit-then-translate promotion ----
 //

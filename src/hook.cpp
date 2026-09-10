@@ -1087,6 +1087,59 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 DIAG_F("HOOK/Enter/002: bare Enter PASSED THROUGH untranslated while active=!1 busy=0 "
                        "(ime mirror race or unspecified gate; see HOOK/Enter/001 absence)\n");
             }
+
+            // REQ-003 (Issue C, session 260910_0003): busy same-window
+            // bare-Enter guard. Evaluated against the LIVE worker state
+            // (never the stale gate_busy snapshot) so exactly one decision
+            // covers both denial arms: (a) the gate denied because the
+            // worker was already busy at gate evaluation, and (b) the
+            // posttask_refused race arm above (busy flipped between
+            // IsBusy() and the PostTask exchange). A bare Enter passing
+            // through to the SAME window the in-flight task owns corrupts
+            // the pending paste-back - the app inserts its newline / sends
+            // the half-state message and shifts the selection geometry the
+            // worker's PasteSelection Ctrl+V still assumes (capture-time
+            // SelectAll / EM_SETSEL range / F5 paste-end offset). So DROP
+            // the keystroke here (return 1, no CallNextHookEx): the user's
+            // send intent is already owned by the in-flight pipeline,
+            // whose own send gate hands Enter to the app AFTER the
+            // paste-back lands. Scoping: hook must be ACTIVE (an inactive
+            // hook keeps byte-identical native pass-through), the worker
+            // LIVE-busy, and the in-flight task's target (BusyTargetHwnd)
+            // equal to this keypress's foreground window. A DIFFERENT
+            // window's Enter passes through untouched (logged as
+            // other_window: the in-flight task neither owns nor pastes
+            // into it). Shared pure predicate BusyEnterSameWindowSuppressed
+            // (hook.hpp) - ONE definition with the unit tests. F3 note: K
+            // was consumed above unconditionally, consistent with the
+            // "every bare-Enter exit terminates the block" contract; the
+            // worker's own send-gate Enter provides the newline/send this
+            // suppressed key stood for.
+            if (gate_active && s_instance->worker_.IsBusy()) {
+                const HWND busy_target = s_instance->worker_.BusyTargetHwnd();
+                const bool same_window =
+                    (busy_target != nullptr && busy_target == target_hwnd);
+                if (BusyEnterSameWindowSuppressed(/*worker_busy*/ true, same_window)) {
+                    DIAG_F("HOOK/Enter/006: bare Enter SUPPRESSED while worker busy on the "
+                           "SAME window (hwnd=%p; pending paste-back protected; the task's own "
+                           "send gate delivers Enter after the paste)\n",
+                           reinterpret_cast<void*>(target_hwnd));
+                    DIAG_LOG("ENTER_GATE",
+                             "outcome=suppressed reason=busy_same_window busy_hwnd=%p "
+                             "foreground_hwnd=%p",
+                             reinterpret_cast<void*>(busy_target),
+                             reinterpret_cast<void*>(target_hwnd));
+                    return 1; // Dropped, not passed through
+                }
+                // Busy on a DIFFERENT window: the in-flight task does not
+                // own this window - keep the historical pass-through
+                // (full ENTER_GATE record, not the stderr-spamming kind).
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=pass_through reason=worker_busy_other_window busy_hwnd=%p "
+                         "foreground_hwnd=%p",
+                         reinterpret_cast<void*>(busy_target),
+                         reinterpret_cast<void*>(target_hwnd));
+            }
         }
     }
 

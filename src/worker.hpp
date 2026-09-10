@@ -346,6 +346,20 @@ public:
     // Returns true if the worker is actively executing a task.
     bool IsBusy() const { return is_busy_.load(std::memory_order_relaxed); }
 
+    // REQ-003 (Issue C, session 260910_0003): the target_hwnd of the task
+    // currently in flight, for the hook thread's same-window bare-Enter
+    // guard (BusyEnterSameWindowSuppressed, hook.hpp). nullptr while idle.
+    // Published under the exact discipline of is_busy_: set by PostTask
+    // BEFORE the queue push (the hook may read it as soon as IsBusy() flips
+    // true), cleared in ExecuteTask's BusyGuard destructor right AFTER
+    // is_busy_ goes false, so the pair (busy, hwnd) never advertises a
+    // finished task. Relaxed ordering suffices - same as IsBusy(): the
+    // consumer re-checks nothing finer-grained off this value, and HWND is
+    // a pointer-sized scalar. Hook-thread read + worker-thread write only.
+    HWND BusyTargetHwnd() const {
+        return busy_target_hwnd_.load(std::memory_order_relaxed);
+    }
+
     // R5 (Debug-Surgical): called (on the worker thread, never the hook
     // thread) exactly when the Enter path takes the new hold-and-notice
     // empty-capture branch (see EmptyCaptureNeedsHold). The registered
@@ -369,6 +383,11 @@ private:
 
     std::atomic<bool> is_busy_{false};
     std::atomic<bool> running_{false};
+
+    // REQ-003: in-flight task's target, published in PostTask before the
+    // queue push and cleared on ExecuteTask exit (after is_busy_). Read by
+    // the hook thread via BusyTargetHwnd(). See that accessor's contract.
+    std::atomic<HWND> busy_target_hwnd_{nullptr};
 
     // R5: set once at startup via SetEmptyCaptureCallback (see contract there).
     std::function<void()> empty_capture_cb_;

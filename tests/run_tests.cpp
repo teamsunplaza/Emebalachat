@@ -3226,6 +3226,30 @@ void TestShiftEnterGate() {
     static_assert(!EnterSendReplaceAllowed(false, true, false, false, true),
                   "S2: non-Enter vk with Shift -> gate closed");
 
+    // REQ-003 (Issue C, session 260910_0003): busy same-window bare-Enter
+    // suppression predicate, pinned on the shared definition
+    // (src/hook.hpp BusyEnterSameWindowSuppressed) so hook.cpp and the tests
+    // assert ONE definition (same discipline as the other ENTER_GATE
+    // predicates). The hook evaluates it ONLY on the live busy arm (hook
+    // active + IsBusy() re-checked + BusyTargetHwnd == foreground window).
+    static_assert(BusyEnterSameWindowSuppressed(true, true),
+                  "REQ-003: busy + same window -> SUPPRESS (bare Enter would corrupt the pending paste-back)");
+    static_assert(!BusyEnterSameWindowSuppressed(true, false),
+                  "REQ-003: busy + DIFFERENT window -> pass through (in-flight task owns a different target)");
+    static_assert(!BusyEnterSameWindowSuppressed(false, true),
+                  "REQ-003: idle worker -> guard inert (idle bare-Enter contract byte-identical)");
+    static_assert(!BusyEnterSameWindowSuppressed(false, false),
+                  "REQ-003: idle + different window -> vacuous arm, never suppresses");
+
+    // Runtime sanity: the predicate is the pure conjunction of exactly the
+    // two scoping axes - no hidden inputs, no ordering effects.
+    for (bool busy : {false, true}) {
+        for (bool same : {false, true}) {
+            TEST_CHECK(BusyEnterSameWindowSuppressed(busy, same) == (busy && same),
+                       "REQ-003: predicate == (busy && same_window) on every input");
+        }
+    }
+
     // ---- Runtime sanity: predicate agrees with the base gate on the Shift
     // discrimination (the only new axis). The base EnterTranslationAllowed
     // ignores Shift entirely (it predates the fix); the S2 wrapper must equal

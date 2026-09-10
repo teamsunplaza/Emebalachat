@@ -69,6 +69,13 @@ bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd,
     if (is_busy_.exchange(true, std::memory_order_acquire)) {
         return false; // Busy with existing translation task
     }
+    // REQ-003 (Issue C, session 260910_0003): publish the in-flight target
+    // BEFORE the queue push - the hook thread's same-window bare-Enter
+    // guard (BusyEnterSameWindowSuppressed, hook.hpp) must see a non-null
+    // target as soon as IsBusy() can observe true. Published only from the
+    // one caller that won the exchange, so no write race exists; nullptr
+    // (untargeted callers/tests) simply never matches a live window.
+    busy_target_hwnd_.store(target_hwnd, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         queue_.push(PipelineTask{is_shift_enter, target_hwnd, shift_enter_count});
@@ -129,13 +136,21 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
     } restorer{backup};
 
-    // RAII guard ensuring is_busy_ is released upon function exit
+    // RAII guard ensuring is_busy_ is released upon function exit.
+    // REQ-003 (Issue C): BusyTargetHwnd is cleared AFTER is_busy_ inside
+    // this same destructor (sequenced stores on one thread) so the
+    // (busy, hwnd) pair the hook reads never advertises a finished task:
+    // the moment busy reads false the guard is already disarmed in the
+    // hook's same-window check, and a torn read of the hwnd alone is
+    // harmless there (suppression requires busy==true).
     struct BusyGuard {
         std::atomic<bool>& busy;
+        std::atomic<HWND>& busy_hwnd;
         ~BusyGuard() {
             busy.store(false, std::memory_order_release);
+            busy_hwnd.store(nullptr, std::memory_order_relaxed);
         }
-    } busy_guard{is_busy_};
+    } busy_guard{is_busy_, busy_target_hwnd_};
 
     FlushIme();
 
