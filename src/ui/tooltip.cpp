@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
+#include "dwrite_helpers.hpp"  // REF-3.7 (session 260910_0006 T6): shared IsPointInRect / CloneFormatWithLocale
 #include "../config.hpp"
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
@@ -20,36 +21,10 @@ namespace emebalachat {
 namespace {
 const wchar_t kTooltipClassName[] = L"Emebalachat_TooltipClass";
 
-bool IsPointInRect(const D2D1_RECT_F& r, float x, float y) {
-    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-}
-
-// P4 Batch B-2 (session 260907_0002, design §2-Q5 verdict A / §3 B-2): DWrite
-// localeName is CREATION-ONLY — IDWriteTextFormat exposes no SetLocaleName at
-// any interface version (SDK 10.0.26100 header audit + B-2 headless probe).
-// The body format's script-font fallback is therefore updated by CLONING the
-// live format under a new BCP-47 tag (family/weight/style/stretch/size and
-// all paragraph settings carried over). Returns the fresh format, or nullptr
-// on any failure — a failed swap must never lose the working format.
-IDWriteTextFormat* CloneFormatWithLocale(IDWriteFactory* factory, IDWriteTextFormat* src,
-                                         const wchar_t* locale_name) {
-    if (!factory || !src || !locale_name) return nullptr;
-    const UINT32 fam_len = src->GetFontFamilyNameLength();
-    if (fam_len == 0 || fam_len > 255) return nullptr;
-    wchar_t family[256] = {};
-    if (FAILED(src->GetFontFamilyName(family, fam_len + 1))) return nullptr;
-    IDWriteTextFormat* dst = nullptr;
-    if (FAILED(factory->CreateTextFormat(
-            family, nullptr, src->GetFontWeight(), src->GetFontStyle(),
-            src->GetFontStretch(), src->GetFontSize(), locale_name, &dst)) || !dst) {
-        return nullptr;
-    }
-    dst->SetWordWrapping(src->GetWordWrapping());
-    dst->SetTextAlignment(src->GetTextAlignment());
-    dst->SetParagraphAlignment(src->GetParagraphAlignment());
-    dst->SetReadingDirection(src->GetReadingDirection());
-    return dst;
-}
+// REF-3.7 (session 260910_0006 T6, verification §10a/§10c): the file-local
+// IsPointInRect and CloneFormatWithLocale (with its B-2 creation-only-locale
+// rationale comment) moved verbatim to the shared src/ui/dwrite_helpers.hpp
+// after being verified byte-identical against about_window.cpp's copies.
 
 // REF-3.1 (session 260910_0006 T2): the former file-local WcsIEqualsAscii was
 // an exact transcription of the shared EqualsIgnoreCaseAscii<wchar_t> template

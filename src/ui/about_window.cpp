@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
+#include "dwrite_helpers.hpp"  // REF-3.7 (session 260910_0006 T6): shared IsPointInRect / CloneFormatWithLocale
 #include "../bidi_utils.hpp"  // P4 Batch B-5: DirectionForLocale / TextDirection
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"  // REF-3.1 (session 260910_0006 T2): EqualsIgnoreCaseAscii
@@ -24,35 +25,13 @@ const wchar_t kAboutClassName[] = L"Emebalachat_AboutClass";
 // directly. DWrite canonicalizes locale tags on readback (B-2 probe datum),
 // so tag equality checks must case-fold or every refresh would churn the COM
 // object.
-// P4 Batch B-5 (design §2-Q5 verdict A): DWrite localeName is CREATION-ONLY
-// (no SetLocaleName at any interface version — B-2 SDK header audit + headless
-// probe), so a locale change is a CLONE-SWAP: family/weight/style/stretch/size
-// and all paragraph settings are carried over under the new BCP-47 tag.
-// Deliberate local replication of tooltip.cpp's file-local CloneFormatWithLocale
-// (src/ui/tooltip.cpp:26-51, session 260907_0002 B-2): extracting it to a
-// shared TU would be a tooltip.cpp EDIT, which the B-5 batch scope explicitly
-// forbids (file-disjoint wave discipline, design §3). Two owners keep the
-// same contract; this comment is the cross-reference. Returns the fresh format
-// or nullptr — a failed swap must never lose the working format.
-IDWriteTextFormat* CloneFormatWithLocale(IDWriteFactory* factory, IDWriteTextFormat* src,
-                                         const wchar_t* locale_name) {
-    if (!factory || !src || !locale_name) return nullptr;
-    const UINT32 fam_len = src->GetFontFamilyNameLength();
-    if (fam_len == 0 || fam_len > 255) return nullptr;
-    wchar_t family[256] = {};
-    if (FAILED(src->GetFontFamilyName(family, fam_len + 1))) return nullptr;
-    IDWriteTextFormat* dst = nullptr;
-    if (FAILED(factory->CreateTextFormat(
-            family, nullptr, src->GetFontWeight(), src->GetFontStyle(),
-            src->GetFontStretch(), src->GetFontSize(), locale_name, &dst)) || !dst) {
-        return nullptr;
-    }
-    dst->SetWordWrapping(src->GetWordWrapping());
-    dst->SetTextAlignment(src->GetTextAlignment());
-    dst->SetParagraphAlignment(src->GetParagraphAlignment());
-    dst->SetReadingDirection(src->GetReadingDirection());
-    return dst;
-}
+// REF-3.7 (session 260910_0006 T6, verification §10a): the former file-local
+// CloneFormatWithLocale (with its B-5 "deliberate local replication" rationale
+// comment) moved verbatim to the shared src/ui/dwrite_helpers.hpp after being
+// verified byte-identical against tooltip.cpp's copy; the B-5 file-disjoint
+// wave constraint that forced the duplication is void since both files are now
+// edited together. The B-5 design §2-Q5 verdict A rationale (CREATION-ONLY
+// localeName → clone-swap) travels with the helper in the shared header.
 
 // Set (clone-swap) a live format's localeName to `tag` iff it differs. The
 // swap only lands when the cloned object VERIFIABLY carries the tag
@@ -114,10 +93,6 @@ const wchar_t* const kLinkUrls[AboutWindow::kNumLinks] = {
 // Hover index encoding for hovered_link_ (link slots 0..2, close = 3,
 // reset = kHoverReset in the class header - Phase 4, REQ-020).
 constexpr int kHoverClose = 3;
-
-bool IsPointInRect(const D2D1_RECT_F& r, float x, float y) {
-    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-}
 } // namespace
 
 AboutWindow::AboutWindow() = default;
