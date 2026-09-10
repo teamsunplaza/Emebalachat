@@ -348,6 +348,64 @@ void TestUnicodeSharedHelpers() {
     TEST_CHECK(EqualsIgnoreCaseAscii(std::wstring_view{L"\x00C9"}, std::wstring_view{L"\x00E9"}) == false,
                "CI wchar: wide high code units (E-acute vs e-acute) do NOT fold");
 
+    // ---- 2b) StartsWithIgnoreCaseAscii (A6, session 260910_0007 W3) ---------
+    // Replaces the lowered-temporary prefix compares in engine.cpp's path
+    // containment. Fold edges mirror the EqualsIgnoreCaseAscii pins above.
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::string_view{"C:/Foo/Bar"}, std::string_view{"c:/foo/"}),
+               "SW: mixed-case prefix match");
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::string_view{"anything"}, std::string_view{}),
+               "SW: empty prefix matches everything");
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::string_view{}, std::string_view{}),
+               "SW: empty == empty");
+    TEST_CHECK(!StartsWithIgnoreCaseAscii(std::string_view{"abc"}, std::string_view{"abcd"}),
+               "SW: longer prefix rejects");
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::string_view{"ABC"}, std::string_view{"abc"}),
+               "SW: equal-length full match allowed");
+    TEST_CHECK(!StartsWithIgnoreCaseAscii(std::string_view{"aBd"}, std::string_view{"aBC"}),
+               "SW: differing last prefix char rejects");
+    // Non-ASCII bytes pass through verbatim: identical high bytes match,
+    // differing ones reject (no fold reaches >= 0x80; UTF-8 stays byte-safe).
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::string_view{"\xC3\xA9X"}, std::string_view{"\xC3\xA9"}),
+               "SW: high-byte prefix matches verbatim");
+    TEST_CHECK(!StartsWithIgnoreCaseAscii(std::string_view{"\xC3\xA9"}, std::string_view{"\xC3\xA8"}),
+               "SW: differing high bytes reject (no fold of >= 0x80)");
+    // Fold-window boundary inside a prefix compare: '@' (0x40) must NOT fold to 'a'.
+    TEST_CHECK(!StartsWithIgnoreCaseAscii(std::string_view{"@bc"}, std::string_view{"abc"}),
+               "SW: '@' does not fold to 'a'");
+    // Wide instantiation mirrors the char semantics.
+    TEST_CHECK(StartsWithIgnoreCaseAscii(std::wstring_view{L"Hy-MT2.File"}, std::wstring_view{L"hy-mt2"}),
+               "SW wchar: wide mixed-case prefix");
+
+    // ---- 2c) IsPathContainedIgnoreCaseAscii (A6 W3: the shared containment
+    // predicate that unified engine.cpp IsValidModelPath's traversal guard and
+    // config.cpp PathInsideBase's mirror) --------------------------------------
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b"}, std::string_view{"c:/a/b"}),
+               "PC: identical paths contained (equality branch)");
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b"}, std::string_view{"c:/a/b/"}),
+               "PC: base trailing '/' trimmed before equality");
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b/"}, std::string_view{"c:/a/b/"}),
+               "PC: trailing slash on both sides still contained");
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b"}, std::string_view{"c:/a/b///"}),
+               "PC: multiple trailing base slashes trimmed");
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/A/b/file.gguf"}, std::string_view{"C:/a/B"}),
+               "PC: mixed-case strict containment");
+    TEST_CHECK(!IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/bb/file"}, std::string_view{"c:/a/b"}),
+               "PC: sibling name sharing the prefix NOT contained (segment boundary)");
+    TEST_CHECK(!IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b"}, std::string_view{"c:/a/bb"}),
+               "PC: shorter joined path not contained");
+    // Lexical-only contract pin: '..' segments are NOT interpreted (the old
+    // lowered-string expression behaved identically; the traversal defense
+    // comes from callers lexically_normal()-ing BEFORE this call, as
+    // IsValidModelPath and PathInsideBase both do).
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"c:/a/b/../c"}, std::string_view{"c:/a/b"}),
+               "PC: predicate is purely lexical; '..' passes through uninterpreted");
+    // Empty base keeps the historical quirk: only a leading '/' matches the
+    // boundary test (both originals: compare(0,0,"")==0 then j[0]=='/').
+    TEST_CHECK(IsPathContainedIgnoreCaseAscii(std::string_view{"/x"}, std::string_view{}),
+               "PC: empty base + leading slash contained (quirk pin)");
+    TEST_CHECK(!IsPathContainedIgnoreCaseAscii(std::string_view{"x"}, std::string_view{}),
+               "PC: empty base + no leading slash rejects");
+
     // ---- 3) DecodeNextCodePoint: advance + sentinel semantics ---------------
     // Valid pair: U+1F600 (emoji grinning face) = D83D DE00.
     {
@@ -2120,6 +2178,25 @@ void TestModelPathValidation() {
     TEST_CHECK(IsValidModelPath("./sub/../fake.gguf", (root / "models").string()),
                "M3: relative path that collapses back inside base accepted");
 
+    // 12. A6/W3 differential pin: the containment compare is now the shared
+    // IsPathContainedIgnoreCaseAscii instead of two lowered-copy temporaries.
+    // Case-mismatched base spelling must still contain the joined path
+    // (Windows paths are case-insensitive; the old LowerAscii fold did this,
+    // the new lazy fold must agree).
+    {
+        // base_dir with inverted case of the real directory name: '..' escape
+        // resolves to root/OUTSIDE.GGUF whose generic form differs from the
+        // base only in CASE of the base itself -> containment decision must be
+        // identical to the exact-case spelling above (reject).
+        const std::string upper_base = (root / "MODELS").string();
+        TEST_CHECK(!IsValidModelPath("../outside.gguf", upper_base),
+                   "A6: containment on upper-cased base spelling matches lower-cased verdict (reject)");
+        // In-base relative path with the base spelled in inverted case -> the
+        // case-insensitive prefix+boundary branch must still accept.
+        TEST_CHECK(IsValidModelPath("fake.gguf", upper_base),
+                   "A6: relative in-base path accepted with upper-cased base spelling (mixed-case containment)");
+    }
+
     // Clean up fixtures (best-effort; temp dir, safe to force-remove).
     std::filesystem::remove_all(root, ec);
 
@@ -2187,6 +2264,14 @@ void TestModelSha256Verification() {
                "F3: pinned-name file with non-matching hash is blocked (006)");
     TEST_CHECK(!std::filesystem::exists(markers / L"Hy-MT2-1.8B-Q8_0.gguf.sha256ok"),
                "F3: blocked verification writes no marker");
+
+    // 4b. A6/W3 differential pin: IsPinnedModelName is now a lazy view fold
+    // (EqualsIgnoreCaseAscii) instead of two LowerAscii copies. A pinned name
+    // spelled in mixed case must stay under the strict fail-closed umbrella.
+    const std::filesystem::path pinned_mixed = root / "models" / "hY-Mt2-1.8B-q8_0.GgUF";
+    write_file(pinned_mixed, "not-the-real-model-either");
+    TEST_CHECK(!VerifyModelSha256(pinned_mixed, markers),
+               "A6: mixed-case pinned filename is still recognized as pinned and blocked (006)");
 
     // 5. User-configured alternative name -> consent path allows it (005) and
     //    caches a marker keyed on the file's OWN hash (no re-hash per launch).

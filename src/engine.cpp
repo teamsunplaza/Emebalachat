@@ -67,17 +67,15 @@ bool DebugPromptEnabled() {
 }
 static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 4096-2048-16 = 2032");
 
-// Lower-case ASCII characters for case-insensitive path comparisons (Windows
-// paths are case-insensitive; this project targets Windows only).
-std::string LowerAscii(std::string s) {
-    for (char& c : s) {
-        if (c >= 'A' && c <= 'Z') {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
-    return s;
-}
-
+// A6/W3 (session 260910_0007): the former file-local LowerAscii (lowered COPY
+// for case-insensitive path comparisons; Windows paths are case-insensitive,
+// this project targets Windows only) is removed. Its only three call sites
+// (extension equality, path containment, pinned-filename equality) were ALL
+// comparison-only — no call site ever consumed a lowered string as a value —
+// so each now folds lazily via the shared view helpers in unicode_utils.hpp
+// (EqualsIgnoreCaseAscii / IsPathContainedIgnoreCaseAscii), which use the
+// identical +32 A-Z fold set. Keeping the dead lowercaser would trip /W4
+// C4505 (unreferenced local function).
 } // namespace
 
 // REQ-R01 (Batch D1): pure, model-independent head+tail sliding-window truncation.
@@ -138,7 +136,11 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
 
     // Extension must be exactly ".gguf" (case-insensitive) so the GGUF parser
     // never touches arbitrary files chosen via a tampered config.json.
-    if (LowerAscii(p.extension().string()) != ".gguf") {
+    // A6/W3: lazy fold on a view; the temporary extension string still
+    // allocates (filesystem::path::extension has no view API), but the
+    // second lowered-copy allocation is gone. The temporary lives until the
+    // end of the full expression, so the view cannot dangle.
+    if (!EqualsIgnoreCaseAscii<char>(p.extension().string(), ".gguf")) {
         DIAG_F("ENGINE/IsValidModelPath/003: non-.gguf model path rejected: %s\n",
                 std::string(path).c_str());
         return false;
@@ -168,14 +170,15 @@ bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
 
         std::filesystem::path joined = (base / p).lexically_normal();
         std::filesystem::path norm_base = base.lexically_normal();
-        std::string j = LowerAscii(joined.generic_string());
-        std::string b = LowerAscii(norm_base.generic_string());
-        while (!b.empty() && b.back() == '/') {
-            b.pop_back();
-        }
-        const bool contained =
-            (j == b) ||
-            (j.size() > b.size() && j.compare(0, b.size(), b) == 0 && j[b.size()] == '/');
+        // A6/W3: the trailing-'/' trim and the equality-or-prefix+boundary
+        // test now live in the shared IsPathContainedIgnoreCaseAscii (byte-
+        // equivalent to the old lowered-string expression: the +32 fold is
+        // idempotent and length-preserving, and '/' is outside the fold set,
+        // so trimming before or after folding makes no difference). Saves two
+        // lowered-copy allocations per validation.
+        const std::string j = joined.generic_string();
+        const std::string b = norm_base.generic_string();
+        const bool contained = IsPathContainedIgnoreCaseAscii<char>(j, b);
         if (!contained) {
             DIAG_F("ENGINE/IsValidModelPath/004: relative model path escapes base directory via '..' (path traversal) rejected: %s\n",
                     std::string(path).c_str());
@@ -343,8 +346,12 @@ bool WriteVerifyMarker(const std::filesystem::path& marker,
 }
 
 bool IsPinnedModelName(const std::filesystem::path& model_path) {
-    return LowerAscii(model_path.filename().string()) ==
-           LowerAscii(std::string(kPinnedModelFilename));
+    // A6/W3: pure equality on views — kPinnedModelFilename is already a
+    // std::string_view, and the filename temporary lives until the end of the
+    // full expression, so no lowered-copy allocations remain here at all
+    // (beyond the unavoidable wide→UTF-8 filename conversion).
+    return EqualsIgnoreCaseAscii<char>(model_path.filename().string(),
+                                       kPinnedModelFilename);
 }
 
 bool MarkerMatchesFile(const std::filesystem::path& marker,

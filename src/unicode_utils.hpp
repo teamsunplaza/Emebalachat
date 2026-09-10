@@ -35,6 +35,45 @@ constexpr bool EqualsIgnoreCaseAscii(std::basic_string_view<CharT> a,
     return true;
 }
 
+// Case-insensitive (ASCII fold) prefix test built on the same fold idiom:
+// `haystack` starts with `prefix` ignoring ASCII A-Z case. Empty prefix is a
+// prefix of every haystack (matches std::string::compare(0, 0, "") == 0
+// semantics the A6-converted containment sites relied on). Behavior-identical
+// to comparing the first prefix.size() code units in a fully lowercased domain,
+// because the fold is idempotent and length-preserving (f(f(x)) == f(x)).
+// (A6, session 260910_0007 W3: replaces the lowered-std::string temporaries the
+// path-containment checks used to allocate in engine.cpp / config.cpp.)
+template <typename CharT>
+constexpr bool StartsWithIgnoreCaseAscii(std::basic_string_view<CharT> haystack,
+                                         std::basic_string_view<CharT> prefix) noexcept {
+    if (haystack.size() < prefix.size()) return false;
+    return EqualsIgnoreCaseAscii(haystack.substr(0, prefix.size()), prefix);
+}
+
+// Shared path-containment predicate for '/'-separated (generic-format) paths:
+// true when `joined` IS `base`, or is strictly inside `base` (prefix match plus
+// a '/' segment-boundary character, so "/foobar" is NOT inside "/foo").
+// Trailing '/'s on `base` are trimmed before comparing. All comparisons fold
+// ASCII A-Z only; every other code unit (including UTF-8 continuation bytes of
+// non-ASCII path segments) compares verbatim.
+//
+// (A6, session 260910_0007 W3): this is the single implementation of the
+// containment expression that was duplicated (byte-identical modulo its two
+// file-local mirror lowercasers: engine.cpp LowerAscii, config.cpp
+// LowerPathAscii) in IsValidModelPath's path-traversal guard and
+// config.cpp PathInsideBase. Both sites now call here; the mirrors are gone.
+template <typename CharT>
+constexpr bool IsPathContainedIgnoreCaseAscii(std::basic_string_view<CharT> joined,
+                                              std::basic_string_view<CharT> base) noexcept {
+    while (!base.empty() && base.back() == CharT('/')) {
+        base.remove_suffix(1);
+    }
+    if (EqualsIgnoreCaseAscii(joined, base)) return true;
+    return joined.size() > base.size() &&
+           StartsWithIgnoreCaseAscii(joined, base) &&
+           joined[base.size()] == CharT('/');
+}
+
 // Value DecodeNextCodePoint returns for unpaired UTF-16 surrogate units.
 // 0xFFFF is a Unicode noncharacter that matches no script-range predicate
 // and no UAX #9 strong-type table in this codebase, so callers treat it as

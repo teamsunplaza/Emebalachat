@@ -643,31 +643,25 @@ bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
 
 namespace {
 
-// Lowercase an ASCII-only byte sequence for path-containment comparison
-// (mirrors LowerAscii in src/engine.cpp; non-ASCII bytes are passed through so
-// UTF-8 stays byte-compatible for the prefix test).
-std::string LowerPathAscii(std::string s) {
-    for (char& c : s) {
-        if (static_cast<unsigned char>(c) < 0x80) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-    }
-    return s;
-}
-
 // True when `joined` (already lexically normalised) stays inside `base`
 // (already normalised). Same containment rule IsValidModelPath applies at
 // validation time, so absolutizing a relative path here cannot silently widen
 // the path-traversal guard that commit 46ff978 (M3 security) introduced.
+//
+// A6/W3 (session 260910_0007): the former file-local LowerPathAscii mirror of
+// engine.cpp's LowerAscii is removed; the containment expression (itself a
+// byte-identical twin of IsValidModelPath's) now lives once in
+// IsPathContainedIgnoreCaseAscii (unicode_utils.hpp). Fold-equivalence:
+// LowerPathAscii ran std::tolower under this project's default "C" CRT locale
+// (no setlocale call exists anywhere in src/), where tolower maps only
+// 'A'-'Z' with +32 and passes high bytes (>= 0x80, e.g. UTF-8 lead/continuation
+// bytes) through unchanged — exactly the shared template's fold set, so the
+// comparison result is unchanged for every input (REF-3.1 precedent).
 bool PathInsideBase(const std::filesystem::path& joined,
                     const std::filesystem::path& base) {
-    std::string j = LowerPathAscii(joined.generic_string());
-    std::string b = LowerPathAscii(base.generic_string());
-    while (!b.empty() && b.back() == '/') {
-        b.pop_back();
-    }
-    return (j == b) ||
-           (j.size() > b.size() && j.compare(0, b.size(), b) == 0 && j[b.size()] == '/');
+    const std::string j = joined.generic_string();
+    const std::string b = base.generic_string();
+    return IsPathContainedIgnoreCaseAscii<char>(j, b);
 }
 
 } // namespace
