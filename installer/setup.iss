@@ -289,6 +289,62 @@ french.ShortcutName=Emebala Chat
 german.ShortcutName=Emebala Chat
 italian.ShortcutName=Emebala Chat
 
+; B-2 (session 260910_0002, architect plan 1.5): Model Consent page strings.
+; Shown on wpReady+1 BEFORE the ~2 GB model download starts. Declining keeps
+; the install going with the free online Google Translate engine, mirroring
+; the DownloadFailedDetail wording above.
+english.ConsentTitle=AI Translation Model Download
+korean.ConsentTitle=AI 번역 모델 다운로드
+japanese.ConsentTitle=AI翻訳モデルのダウンロード
+chinesesimplified.ConsentTitle=AI翻译模型下载
+chinesetraditional.ConsentTitle=AI翻譯模型下載
+
+spanish.ConsentTitle=Descarga del modelo de traducción de IA
+portuguese.ConsentTitle=Transferência do modelo de tradução por IA
+brazilianportuguese.ConsentTitle=Download do modelo de tradução de IA
+french.ConsentTitle=Téléchargement du modèle de traduction IA
+german.ConsentTitle=Download des KI-Übersetzungsmodells
+italian.ConsentTitle=Download del modello di traduzione IA
+
+english.ConsentDesc=Emebala Chat can download a local AI translation model (about 2 GB) so translations work fully offline. If you skip, the free online Google Translate engine is used instead (requires internet).
+korean.ConsentDesc=에메발라 챗은 번역을 완전 오프라인으로 사용할 수 있도록 로컬 AI 번역 모델(약 2GB)을 다운로드할 수 있습니다. 건너뛰면 무료 온라인 Google 번역 엔진이 대신 사용됩니다(인터넷 필요).
+japanese.ConsentDesc=エメバラチャットは、翻訳を完全にオフラインで利用できるようにするため、ローカルAI翻訳モデル（約2GB）をダウンロードできます。スキップした場合は、無料のオンラインGoogle翻訳エンジンが代わりに使用されます（インターネット接続が必要）。
+chinesesimplified.ConsentDesc=埃梅巴拉 翻译可下载本地AI翻译模型（约2GB），使翻译完全离线可用。如果跳过，将改用免费的在线Google翻译引擎（需要互联网）。
+chinesetraditional.ConsentDesc=埃梅巴拉 翻譯可下載本地AI翻譯模型（約2GB），使翻譯完全離線可用。如果跳過，將改用免費的線上Google翻譯引擎（需要網路）。
+
+spanish.ConsentDesc=Emebala Chat puede descargar un modelo local de traducción por IA (unos 2 GB) para que las traducciones funcionen completamente sin conexión. Si lo omite, se usará en su lugar el motor gratuito de Google Translate en línea (requiere internet).
+portuguese.ConsentDesc=O Emebala Chat pode transferir um modelo local de tradução por IA (cerca de 2 GB) para que as traduções funcionem totalmente offline. Se ignorar, será utilizado em alternativa o Google Tradutor online gratuito (requer internet).
+brazilianportuguese.ConsentDesc=O Emebala Chat pode baixar um modelo local de tradução de IA (cerca de 2 GB) para que as traduções funcionem totalmente offline. Se você pular, o Google Tradutor online gratuito será usado no lugar (requer internet).
+french.ConsentDesc=Emebala Chat peut télécharger un modèle local de traduction IA (environ 2 Go) pour que les traductions fonctionnent entièrement hors ligne. Si vous passez cette étape, le moteur gratuit Google Traduction en ligne sera utilisé à la place (nécessite une connexion internet).
+german.ConsentDesc=Emebala Chat kann ein lokales KI-Übersetzungsmodell (ca. 2 GB) herunterladen, damit Übersetzungen vollständig offline funktionieren. Wenn Sie dies überspringen, wird stattdessen der kostenlose Online-Dienst Google Übersetzer verwendet (Internet erforderlich).
+italian.ConsentDesc=Emebala Chat può scaricare un modello locale di traduzione IA (circa 2 GB) per consentire alle traduzioni di funzionare completamente offline. Se scegli di ignorare, verrà utilizzato in alternativa Google Traduttore online gratuito (richiede internet).
+
+english.ConsentYes=Download the AI model now (recommended - offline translation)
+korean.ConsentYes=지금 AI 모델 다운로드 (권장 - 오프라인 번역)
+japanese.ConsentYes=今すぐAIモデルをダウンロード（推奨 - オフライン翻訳）
+chinesesimplified.ConsentYes=立即下载AI模型（推荐 - 离线翻译）
+chinesetraditional.ConsentYes=立即下載AI模型（建議 - 離線翻譯）
+
+spanish.ConsentYes=Descargar ahora el modelo de IA (recomendado - traducción sin conexión)
+portuguese.ConsentYes=Transferir agora o modelo de IA (recomendado - tradução offline)
+brazilianportuguese.ConsentYes=Baixar o modelo de IA agora (recomendado - tradução offline)
+french.ConsentYes=Télécharger le modèle IA maintenant (recommandé - traduction hors ligne)
+german.ConsentYes=KI-Modell jetzt herunterladen (empfohlen - Offline-Übersetzung)
+italian.ConsentYes=Scarica ora il modello IA (consigliato - traduzione offline)
+
+english.ConsentNo=Skip - use Google Translate (free, requires internet)
+korean.ConsentNo=건너뛰기 - Google 번역 사용 (무료, 인터넷 필요)
+japanese.ConsentNo=スキップ - Google翻訳を使用（無料、インターネットが必要）
+chinesesimplified.ConsentNo=跳过 - 使用Google翻译（免费，需要互联网）
+chinesetraditional.ConsentNo=略過 - 使用Google翻譯（免費，需要網路）
+
+spanish.ConsentNo=Omitir - usar Google Translate (gratis, requiere internet)
+portuguese.ConsentNo=Ignorar - usar o Google Tradutor (gratuito, requer internet)
+brazilianportuguese.ConsentNo=Pular - usar o Google Tradutor (grátis, requer internet)
+french.ConsentNo=Passer - utiliser Google Traduction (gratuit, nécessite internet)
+german.ConsentNo=Überspringen - Google Übersetzer verwenden (kostenlos, Internet erforderlich)
+italian.ConsentNo=Ignora - usa Google Traduttore (gratis, richiede internet)
+
 ; ------------------------------------------------------------------------
 ; [Tasks] - Optional user-selectable tasks
 ; ------------------------------------------------------------------------
@@ -361,6 +417,12 @@ const
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
+  // B-2 (session 260910_0002): consent page shown after wpReady, before the
+  // ~2 GB model download. ModelDeclined is latched from the user's radio
+  // choice in ReadConsentChoice() during ssInstall (before any file copy),
+  // and consumed by DownloadModel() in ssPostInstall.
+  ConsentPage: TInputOptionWizardPage;
+  ModelDeclined: Boolean;
 
 // ------------------------------------------------------------------------
 // VerifyDownloadedModel - M2 integrity check of the downloaded temp file
@@ -416,6 +478,34 @@ begin
     @OnDownloadProgress
   );
   ModelSkipped := False;
+
+  // B-2: model download consent page (right after wpReady, before installation).
+  // Signature: CreateInputOptionPage(AfterID, ACaption, ADescription, ASubCaption,
+  // Exclusive, ListBox) - the consent description text goes in the ASubCaption
+  // slot (architect plan 1.3); Exclusive=True renders the two Add() entries as
+  // radio buttons so only one choice is possible. Default selection is index 0
+  // (Yes) so /SILENT and /VERYSILENT installs keep the existing auto-download
+  // flow without any ShouldSkipPage handling.
+  ConsentPage := CreateInputOptionPage(wpReady,
+    CustomMessage('ConsentTitle'), '', CustomMessage('ConsentDesc'), True, False);
+  ConsentPage.Add(CustomMessage('ConsentYes'));  // index 0
+  ConsentPage.Add(CustomMessage('ConsentNo'));   // index 1
+  ConsentPage.SelectedValueIndex := 0;
+  ModelDeclined := False;
+end;
+
+// ------------------------------------------------------------------------
+// ReadConsentChoice - B-2: latch the consent page selection into ModelDeclined.
+// Called from CurStepChanged at ssInstall, i.e. before any file copy starts;
+// the actual download happens later at ssPostInstall.
+// ------------------------------------------------------------------------
+procedure ReadConsentChoice();
+begin
+  ModelDeclined := (ConsentPage.SelectedValueIndex = 1);
+  if ModelDeclined then
+    Log('User declined AI model download at consent page (chose Google Translate).')
+  else
+    Log('User consented to AI model download.');
 end;
 
 // ------------------------------------------------------------------------
@@ -465,6 +555,16 @@ begin
   if ExpandConstant('{param:SKIPMODEL|0}') = '1' then
   begin
     Log('/SKIPMODEL parameter detected - skipping model download.');
+    ModelSkipped := True;
+    Exit;
+  end;
+
+  // B-2: user declined the model at the consent page - continue the install
+  // without downloading. ModelSkipped := True makes CreateConfigFile choose
+  // engine_type=google, matching the existing skip/failure paths.
+  if ModelDeclined then
+  begin
+    Log('Model download skipped: user declined at consent page.');
     ModelSkipped := True;
     Exit;
   end;
@@ -685,10 +785,15 @@ begin
 end;
 
 // ------------------------------------------------------------------------
-// CurStepChanged - Trigger model download and config creation post-install
+// CurStepChanged - Latch consent choice pre-install; trigger model download
+// and config creation post-install
 // ------------------------------------------------------------------------
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  // B-2: read the consent choice before file copying starts (download runs
+  // later at ssPostInstall, so the decision must be final by then).
+  if CurStep = ssInstall then
+    ReadConsentChoice();
   if CurStep = ssPostInstall then
   begin
     DownloadModel();
