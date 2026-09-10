@@ -14,6 +14,7 @@
 #include "../src/ui/tooltip.hpp"
 #include "../src/ui/about_window.hpp"
 #include "../src/ui/asset_loader.hpp"
+#include "../src/ui/layered_renderer.hpp" // REF-3.6: shared renderer ownership pins
 #include "../src/version.hpp"
 #include "../src/mouse_hook.hpp"
 #include "../src/hook.hpp"
@@ -1432,6 +1433,76 @@ void TestGoogleHttpProfile() {
         std::cout << "[PASS] REQ-R05 Google HTTP Profile tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-R05 Google HTTP Profile tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REF-3.6 API-shape + headless-lifecycle pins for LayeredD2DRenderer (the
+// shared RAII owner extracted from badge/drag_icon/tooltip/about_window).
+// The four windows render D2D at runtime, but the renderer's ownership
+// contract and null-state degradation are fully testable headlessly:
+//  - non-copyable / non-assignable (single-owner GDI + COM handles),
+//  - default state: no target, no bitmap; every mutating call on the empty
+//    renderer degrades to a no-op exactly like the original per-site
+//    `if (!hMemDC_)` / `if (!dc_render_target_)` guards,
+//  - CreateTarget(nullptr) fails cleanly and leaves state unchanged,
+//  - ReallocateBuffer without a target still allocates the DIB and skips the
+//    bind (badge/tooltip/about Create() order-independence contract),
+//  - repeated reallocation + FreeBuffer returns the process GDI object count
+//    to baseline (select-old/delete-bitmap/delete-dc sequence leak-free).
+void TestRef36LayeredRendererPins() {
+    std::cout << "[RUN] Testing REF-3.6 LayeredD2DRenderer pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) Compile-time ownership pins ----
+    static_assert(!std::is_copy_constructible<LayeredD2DRenderer>::value,
+                  "REF-3.6: renderer must be non-copyable (sole GDI+COM owner)");
+    static_assert(!std::is_copy_assignable<LayeredD2DRenderer>::value,
+                  "REF-3.6: renderer must be non-assignable (double-Release guard)");
+    static_assert(std::is_default_constructible<LayeredD2DRenderer>::value,
+                  "REF-3.6: renderer must default-construct empty (member of all four windows)");
+    TEST_CHECK(true, "REF-3.6: ownership static_asserts compile (non-copyable, non-assignable, default-empty)");
+
+    // ---- 2) Default state + null-degradation ----
+    LayeredD2DRenderer r;
+    TEST_CHECK(r.target() == nullptr, "REF-3.6: fresh renderer owns no render target");
+    TEST_CHECK(!r.has_bitmap(), "REF-3.6: fresh renderer owns no DIB");
+    r.ReleaseTarget();          // must no-op, not crash
+    r.FreeBuffer();             // idempotent on empty (also again below)
+    r.Rebind(16, 16, 96, true); // no target/buffer -> silent (original per-site guard)
+    r.Present(nullptr, 16, 16, 245); // null hwnd -> silent (original `if (!hwnd_ ...)` guard)
+    TEST_CHECK(r.target() == nullptr && !r.has_bitmap(),
+               "REF-3.6: empty renderer degrades to no-ops on every mutating call");
+
+    // CreateTarget with a null factory fails cleanly and mirrors nullptr alias.
+    ID2D1DCRenderTarget* alias = reinterpret_cast<ID2D1DCRenderTarget*>(0x1);
+    TEST_CHECK(!r.CreateTarget(nullptr, &alias), "REF-3.6: CreateTarget(null factory) returns false");
+    TEST_CHECK(alias == nullptr, "REF-3.6: CreateTarget(null factory) nulls the site alias");
+    TEST_CHECK(r.target() == nullptr, "REF-3.6: failed CreateTarget leaves renderer empty");
+
+    // ---- 3) Buffer lifecycle without a target (bind-skip contract) ----
+    r.ReallocateBuffer(64, 24, 120); // dpi arbitrary; no target -> bind skipped
+    TEST_CHECK(r.has_bitmap(), "REF-3.6: ReallocateBuffer allocates the DIB even with no target");
+    r.ReallocateBuffer(128, 24, 120); // reallocate-over-existing (all sites do this)
+    TEST_CHECK(r.has_bitmap(), "REF-3.6: re-reallocation replaces the buffer in place");
+    r.FreeBuffer();
+    TEST_CHECK(!r.has_bitmap(), "REF-3.6: FreeBuffer releases the DIB");
+    r.FreeBuffer(); // idempotent second free (Destroy-after-Reallocate double-guard)
+    TEST_CHECK(!r.has_bitmap(), "REF-3.6: FreeBuffer is idempotent");
+
+    // ---- 4) GDI leak pin: N realloc cycles + free return to baseline ----
+    const UINT gdi_before = ::GetGuiResources(::GetCurrentProcess(), GR_GDIOBJECTS);
+    for (int i = 0; i < 10; ++i) {
+        r.ReallocateBuffer(32 + i, 16, 96); // each cycle frees the previous triple first
+    }
+    r.FreeBuffer();
+    const UINT gdi_after = ::GetGuiResources(::GetCurrentProcess(), GR_GDIOBJECTS);
+    TEST_CHECK(gdi_after <= gdi_before,
+               "REF-3.6: 10 realloc cycles + free leak zero GDI objects (teardown order pinned)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REF-3.6 LayeredD2DRenderer pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REF-3.6 LayeredD2DRenderer pins: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -9749,6 +9820,7 @@ int main() {
     TestGoogleHttpProfile();
     TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
     TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
+    TestRef36LayeredRendererPins(); // REF-3.6: shared renderer ownership + null-degradation + GDI-leak pins
     TestEngineModule();
     TestModelPathValidation();
     TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache

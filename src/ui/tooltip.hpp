@@ -13,6 +13,8 @@
 #include <dwrite.h>
 #include <sapi.h>
 
+#include "layered_renderer.hpp"
+
 namespace emebalachat {
 
 // Returns the Windows LCID for a given language code or name. Returns 0 if unknown.
@@ -380,15 +382,15 @@ private:
     int current_height_ = 160; // DIP
     UINT dpi_ = 96;            // REQ-R15: DPI of the monitor showing the tooltip
 
-    // GDI Memory DC & DIB Section
-    HDC hMemDC_ = nullptr;
-    HBITMAP hBitmap_ = nullptr;
-    HBITMAP hOldBitmap_ = nullptr;
-    void* pBits_ = nullptr;
+    // REF-3.6: GDI DIB + memory DC + DC render-target lifetime moved to the
+    // shared RAII owner. dc_render_target_ below is a NON-OWNING alias into
+    // renderer_.target(), kept in sync at the three points where the target
+    // changes (Create / RecreateAfterDeviceLost / Destroy).
+    LayeredD2DRenderer renderer_;
 
     // Direct2D & DirectWrite
     ID2D1Factory* d2d_factory_ = nullptr;
-    ID2D1DCRenderTarget* dc_render_target_ = nullptr;
+    ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
     ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* header_format_ = nullptr;

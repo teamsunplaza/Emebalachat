@@ -170,11 +170,9 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
-    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-    );
-    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+    // REF-3.6: target creation + lifetime owned by renderer_; dc_render_target_
+    // stays a non-owning alias so the render code below is untouched.
+    if (!renderer_.CreateTarget(d2d_factory_, &dc_render_target_)) {
         return false;
     }
 
@@ -278,22 +276,10 @@ void AboutWindow::Destroy() {
     if (version_format_) { version_format_->Release(); version_format_ = nullptr; }
     if (title_format_) { title_format_->Release(); title_format_ = nullptr; }
     if (dwrite_factory_) { dwrite_factory_->Release(); dwrite_factory_ = nullptr; }
-    if (dc_render_target_) { dc_render_target_->Release(); dc_render_target_ = nullptr; }
+    renderer_.ReleaseTarget(&dc_render_target_);
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
 
-    if (hMemDC_) {
-        if (hOldBitmap_) {
-            ::SelectObject(hMemDC_, hOldBitmap_);
-            hOldBitmap_ = nullptr;
-        }
-        if (hBitmap_) {
-            ::DeleteObject(hBitmap_);
-            hBitmap_ = nullptr;
-        }
-        ::DeleteDC(hMemDC_);
-        hMemDC_ = nullptr;
-        pBits_ = nullptr;
-    }
+    renderer_.FreeBuffer(); // also nulls the bits pointer (this site's pBits_ = nullptr)
 }
 
 void AboutWindow::LoadLogoBitmap() {
@@ -310,49 +296,14 @@ void AboutWindow::LoadLogoBitmap() {
     }
 }
 
+// REF-3.6: DIB (re)creation + SetDpi/BindDC tail owned by the shared renderer
+// (REQ-R15: D2D DPI tracks the monitor so DIP layout rasterizes 1:1).
 void AboutWindow::ReallocateBuffer(int width, int height) {
-    if (hMemDC_) {
-        if (hOldBitmap_) {
-            ::SelectObject(hMemDC_, hOldBitmap_);
-            hOldBitmap_ = nullptr;
-        }
-        if (hBitmap_) {
-            ::DeleteObject(hBitmap_);
-            hBitmap_ = nullptr;
-        }
-        ::DeleteDC(hMemDC_);
-        hMemDC_ = nullptr;
-    }
-
-    HDC hScreenDC = ::GetDC(nullptr);
-    hMemDC_ = ::CreateCompatibleDC(hScreenDC);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height; // Top-down DIB
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    hBitmap_ = ::CreateDIBSection(hMemDC_, &bmi, DIB_RGB_COLORS, &pBits_, nullptr, 0);
-    hOldBitmap_ = static_cast<HBITMAP>(::SelectObject(hMemDC_, hBitmap_));
-    ::ReleaseDC(nullptr, hScreenDC);
-
-    if (dc_render_target_) {
-        // REQ-R15: D2D DPI tracks the monitor so DIP layout rasterizes 1:1.
-        dc_render_target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
-        RECT rc = { 0, 0, width, height };
-        dc_render_target_->BindDC(hMemDC_, &rc);
-    }
+    renderer_.ReallocateBuffer(width, height, dpi_);
 }
 
 void AboutWindow::RebindRenderTarget() {
-    if (!dc_render_target_ || !hMemDC_) {
-        return;
-    }
-    const RECT rc = { 0, 0, PhysW(), PhysH() };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    renderer_.Rebind(PhysW(), PhysH(), dpi_, /*set_dpi=*/false);
 }
 
 // R6 Phase 3 (audit item 8): see header note. kDismissMessage carries no heap
@@ -820,19 +771,11 @@ void AboutWindow::Render() {
 // target; the logo bitmap was created on the lost device and must be rebuilt.
 void AboutWindow::RecreateAfterDeviceLost() {
     DIAG_F("ABOUT/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
-    if (dc_render_target_) {
-        dc_render_target_->Release();
-        dc_render_target_ = nullptr;
-    }
+    renderer_.ReleaseTarget(&dc_render_target_);
     if (!d2d_factory_) {
         return; // Create() never finished; all render paths null-guard already
     }
-    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-    );
-    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
-        dc_render_target_ = nullptr;
+    if (!renderer_.CreateTarget(d2d_factory_, &dc_render_target_)) {
         DIAG_F("ABOUT/DeviceLost/002: render-target recreation failed; About stays stale until next Create()\n");
         return;
     }
@@ -841,35 +784,11 @@ void AboutWindow::RecreateAfterDeviceLost() {
 }
 
 void AboutWindow::UpdateLayered() {
-    if (!hwnd_ || !hMemDC_) return;
-
-    POINT ptSrc = { 0, 0 };
-    SIZE sz = { PhysW(), PhysH() }; // REQ-R15: physical blit size
-    POINT ptDst = {};
-    RECT rcWindow = {};
-    ::GetWindowRect(hwnd_, &rcWindow);
-    ptDst.x = rcWindow.left;
-    ptDst.y = rcWindow.top;
-
-    BLENDFUNCTION blend = {};
-    blend.BlendOp = AC_SRC_OVER;
-    blend.BlendFlags = 0;
-    blend.SourceConstantAlpha = 245; // ~96% opacity, matches the tooltip card
-    blend.AlphaFormat = AC_SRC_ALPHA;
-
-    HDC hScreenDC = ::GetDC(nullptr);
-    ::UpdateLayeredWindow(
-        hwnd_,
-        hScreenDC,
-        &ptDst,
-        &sz,
-        hMemDC_,
-        &ptSrc,
-        0,
-        &blend,
-        ULW_ALPHA
-    );
-    ::ReleaseDC(nullptr, hScreenDC);
+    // REF-3.6: renderer_ performs the GetWindowRect-based ptDst +
+    // GetDC(nullptr) ULW sequence identical to the previous inline code.
+    // REQ-R15: physical blit size; alpha fixed 245 (~96% opacity, matches the
+    // tooltip card) per §6.
+    renderer_.Present(hwnd_, PhysW(), PhysH(), 245);
 }
 
 LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

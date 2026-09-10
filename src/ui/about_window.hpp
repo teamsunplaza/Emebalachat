@@ -8,6 +8,8 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include "layered_renderer.hpp"
+
 namespace emebalachat {
 
 // REQ-005 (architect plan §2.2): branded About popup opened from the tray
@@ -140,15 +142,15 @@ private:
     int current_height_ = 596; // DIP
     UINT dpi_ = 96;            // REQ-R15: DPI of the monitor showing the window
 
-    // GDI Memory DC & DIB Section
-    HDC hMemDC_ = nullptr;
-    HBITMAP hBitmap_ = nullptr;
-    HBITMAP hOldBitmap_ = nullptr;
-    void* pBits_ = nullptr;
+    // REF-3.6: GDI DIB + memory DC + DC render-target lifetime moved to the
+    // shared RAII owner. dc_render_target_ below is a NON-OWNING alias into
+    // renderer_.target(), kept in sync at the three points where the target
+    // changes (Create / RecreateAfterDeviceLost / Destroy).
+    LayeredD2DRenderer renderer_;
 
     // Direct2D & DirectWrite
     ID2D1Factory* d2d_factory_ = nullptr;
-    ID2D1DCRenderTarget* dc_render_target_ = nullptr;
+    ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
     ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* title_format_ = nullptr;     // 22 SemiBold, centered

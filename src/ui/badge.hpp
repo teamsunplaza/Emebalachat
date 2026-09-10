@@ -9,6 +9,8 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include "layered_renderer.hpp"
+
 namespace emebalachat {
 
 enum class BadgeStatus {
@@ -92,15 +94,16 @@ private:
     int current_width_ = 240; // DIP layout width (recomputed by Render())
     UINT dpi_ = 96;           // REQ-R15: DPI of the monitor hosting the badge
 
-    // GDI DIB & Memory DC
-    HDC hMemDC_ = nullptr;
-    HBITMAP hBitmap_ = nullptr;
-    HBITMAP hOldBitmap_ = nullptr;
-    void* pBits_ = nullptr;
+    // REF-3.6: GDI DIB + memory DC + DC render-target lifetime moved to the
+    // shared RAII owner. dc_render_target_ below is a NON-OWNING alias into
+    // renderer_.target(), kept in sync at the three points where the target
+    // changes (Create / RecreateAfterDeviceLost / Destroy) so the render code
+    // referencing it stays untouched.
+    LayeredD2DRenderer renderer_;
 
     // Direct2D & DirectWrite COM pointers
     ID2D1Factory* d2d_factory_ = nullptr;
-    ID2D1DCRenderTarget* dc_render_target_ = nullptr;
+    ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
     ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* text_format_ = nullptr;

@@ -55,12 +55,9 @@ bool DragIconWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
-    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-    );
-
-    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
+    // REF-3.6: target creation + lifetime owned by renderer_; dc_render_target_
+    // stays a non-owning alias so the render code below is untouched.
+    if (!renderer_.CreateTarget(d2d_factory_, &dc_render_target_)) {
         return false;
     }
 
@@ -76,52 +73,26 @@ bool DragIconWindow::Create(HINSTANCE hInstance) {
 // DPI transform. Cheap no-op while geometry is unchanged (the common case:
 // rapid ShowAt moves on one monitor).
 void DragIconWindow::EnsureBuffer(UINT dpi, int phys_edge) {
-    if (hBitmap_ && dpi == dpi_ && phys_edge == phys_size_) {
+    if (renderer_.has_bitmap() && dpi == dpi_ && phys_edge == phys_size_) {
         return;
     }
     dpi_ = dpi;
     phys_size_ = phys_edge;
 
-    if (hMemDC_) {
-        if (hOldBitmap_) {
-            ::SelectObject(hMemDC_, hOldBitmap_);
-            hOldBitmap_ = nullptr;
-        }
-        if (hBitmap_) {
-            ::DeleteObject(hBitmap_);
-            hBitmap_ = nullptr;
-        }
-        ::DeleteDC(hMemDC_);
-        hMemDC_ = nullptr;
-    }
-
-    HDC hScreenDC = ::GetDC(nullptr);
-    hMemDC_ = ::CreateCompatibleDC(hScreenDC);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = phys_size_;
-    bmi.bmiHeader.biHeight = -phys_size_; // Top-down DIB
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    hBitmap_ = ::CreateDIBSection(hMemDC_, &bmi, DIB_RGB_COLORS, &pBits_, nullptr, 0);
-    hOldBitmap_ = static_cast<HBITMAP>(::SelectObject(hMemDC_, hBitmap_));
-    ::ReleaseDC(nullptr, hScreenDC);
-
+    // REF-3.6: DIB (re)creation owned by the shared renderer. bind=false keeps
+    // this site's original ordering: the buffer is freed/recreated first, then
+    // RebindRenderTarget() re-attaches the target (BindDC + SetDpi) at the new
+    // square geometry.
+    renderer_.ReallocateBuffer(phys_size_, phys_size_, dpi_, /*bind=*/false);
     RebindRenderTarget();
 }
 
 void DragIconWindow::RebindRenderTarget() {
-    if (!dc_render_target_ || !hMemDC_) {
-        return;
-    }
-    const RECT rc = { 0, 0, phys_size_, phys_size_ };
-    dc_render_target_->BindDC(hMemDC_, &rc);
     // Render target DPI = monitor DPI: all DIP-authored geometry in Render()
     // then rasterizes 1:1 into the physical-pixel DIB (crisp at 150%/200%).
-    dc_render_target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
+    // (The original ran SetDpi after BindDC; both are pure state setters, so
+    // the shared Rebind's order is not observable.)
+    renderer_.Rebind(phys_size_, phys_size_, dpi_, /*set_dpi=*/true);
 }
 
 void DragIconWindow::LoadLogoBitmap() {
@@ -149,21 +120,10 @@ void DragIconWindow::Destroy() {
     }
 
     if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
-    if (dc_render_target_) { dc_render_target_->Release(); dc_render_target_ = nullptr; }
+    renderer_.ReleaseTarget(&dc_render_target_);
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
 
-    if (hMemDC_) {
-        if (hOldBitmap_) {
-            ::SelectObject(hMemDC_, hOldBitmap_);
-            hOldBitmap_ = nullptr;
-        }
-        if (hBitmap_) {
-            ::DeleteObject(hBitmap_);
-            hBitmap_ = nullptr;
-        }
-        ::DeleteDC(hMemDC_);
-        hMemDC_ = nullptr;
-    }
+    renderer_.FreeBuffer();
 }
 
 void DragIconWindow::ShowAt(int x, int y) {
@@ -249,8 +209,7 @@ void DragIconWindow::Render() {
     // REQ-R15: geometry stays authored in DIPs (kSize = 32 logical); the
     // render target DPI (set in EnsureBuffer/RebindRenderTarget) maps DIP ->
     // physical px. BindDC's rect must match the physical buffer.
-    RECT rc = { 0, 0, phys_size_, phys_size_ };
-    dc_render_target_->BindDC(hMemDC_, &rc);
+    renderer_.Rebind(phys_size_, phys_size_, dpi_, /*set_dpi=*/false);
 
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
@@ -312,19 +271,11 @@ void DragIconWindow::Render() {
 // be rebuilt.
 void DragIconWindow::RecreateAfterDeviceLost() {
     DIAG_F("DRAG_ICON/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
-    if (dc_render_target_) {
-        dc_render_target_->Release();
-        dc_render_target_ = nullptr;
-    }
+    renderer_.ReleaseTarget(&dc_render_target_);
     if (!d2d_factory_) {
         return; // Create() never finished; all render paths null-guard already
     }
-    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-    );
-    if (FAILED(d2d_factory_->CreateDCRenderTarget(&rtProps, &dc_render_target_))) {
-        dc_render_target_ = nullptr;
+    if (!renderer_.CreateTarget(d2d_factory_, &dc_render_target_)) {
         DIAG_F("DRAG_ICON/DeviceLost/002: render-target recreation failed; icon stays stale until next Create()\n");
         return;
     }
@@ -333,36 +284,10 @@ void DragIconWindow::RecreateAfterDeviceLost() {
 }
 
 void DragIconWindow::UpdateLayered() {
-    if (!hwnd_ || !hMemDC_) return;
-
-    POINT ptSrc = { 0, 0 };
-    // REQ-R15: blit the PHYSICAL buffer size (matches the DIB and window).
-    SIZE sz = { phys_size_, phys_size_ };
-    POINT ptDst = {};
-    RECT rcWindow = {};
-    ::GetWindowRect(hwnd_, &rcWindow);
-    ptDst.x = rcWindow.left;
-    ptDst.y = rcWindow.top;
-
-    BLENDFUNCTION blend = {};
-    blend.BlendOp = AC_SRC_OVER;
-    blend.BlendFlags = 0;
-    blend.SourceConstantAlpha = alpha_;
-    blend.AlphaFormat = AC_SRC_ALPHA;
-
-    HDC hScreenDC = ::GetDC(nullptr);
-    ::UpdateLayeredWindow(
-        hwnd_,
-        hScreenDC,
-        &ptDst,
-        &sz,
-        hMemDC_,
-        &ptSrc,
-        0,
-        &blend,
-        ULW_ALPHA
-    );
-    ::ReleaseDC(nullptr, hScreenDC);
+    // REQ-R15: blit the PHYSICAL buffer size (matches the DIB and window);
+    // renderer_ performs the GetWindowRect-based ptDst + GetDC(nullptr) ULW
+    // sequence identical to the previous inline code.
+    renderer_.Present(hwnd_, phys_size_, phys_size_, alpha_);
 }
 
 LRESULT CALLBACK DragIconWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

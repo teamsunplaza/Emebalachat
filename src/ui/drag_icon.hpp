@@ -7,6 +7,8 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include "layered_renderer.hpp"
+
 namespace emebalachat {
 
 class DragIconWindow {
@@ -108,17 +110,18 @@ private:
     bool is_hovered_ = false;          // WndProc (GUI thread) only
     BYTE alpha_ = 235;
 
-    HDC hMemDC_ = nullptr;
-    HBITMAP hBitmap_ = nullptr;
-    HBITMAP hOldBitmap_ = nullptr;
-    void* pBits_ = nullptr;
+    // REF-3.6: GDI DIB + memory DC + DC render-target lifetime moved to the
+    // shared RAII owner. dc_render_target_ below is a NON-OWNING alias into
+    // renderer_.target(), kept in sync at the three points where the target
+    // changes (Create / RecreateAfterDeviceLost / Destroy).
+    LayeredD2DRenderer renderer_;
 
     // REQ-R15: physical buffer geometry for the monitor the icon last showed on.
     UINT dpi_ = 96;
     int phys_size_ = kSize; // physical px edge length of window/DIB
 
     ID2D1Factory* d2d_factory_ = nullptr;
-    ID2D1DCRenderTarget* dc_render_target_ = nullptr;
+    ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
     ID2D1Bitmap* logo_bitmap_ = nullptr;
 
     ClickCallback click_cb_;

@@ -132,6 +132,7 @@ add_library(Emebalachat_core STATIC
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
     src/ui/dpi.cpp
+    src/ui/layered_renderer.cpp
     src/ui/tray.cpp
     src/ui/drag_icon.cpp
     src/ui/tooltip.cpp
