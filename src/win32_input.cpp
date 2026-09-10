@@ -1430,6 +1430,26 @@ std::wstring CopySelectedText(HWND hwnd) {
     }
     bool em_path = false; // REQ-034: self-correction is EM-path only
     bool sel_ok = false;
+    // REQ-002 (session 260910_0003 Issue B): post-selection settle before the
+    // copy chord. The old 10 ms wall was tuned before the Chromium async
+    // pipeline was understood: on Electron targets (Discord et al., CategoryA)
+    // the synthetic Ctrl+A travels browser -> renderer IPC -> Blink DOM
+    // selection commit, and only THEN does a Ctrl+C read a real selection.
+    // A chord arriving before that commit copies the OLD (empty/caret)
+    // selection - the sequence never moves, the attempt-0 wait burns its full
+    // 80 ms, and the retry cycle re-runs everything (~155 ms of recoverable
+    // latency per miss; the user's 260910 log analysis attributed ~58% of
+    // Discord attempt-0 misses to this race). 25 ms covers the observed
+    // Blink commit window with >2x the old margin while keeping the total
+    // two-attempt worst case at 25+80+30+25+120 = 280 ms, inside the REQ-001
+    // ~300 ms empty-input ceiling. The EM_SETSEL/keyboard-geometry paths
+    // (CategoryB) have a synchronous selection commit but pay the same
+    // settle for input-pipeline drain symmetry - the +15 ms is negligible
+    // against the surrounding paste/newline settle budget. Same value on the
+    // retry site: the retry re-runs the identical async primitive under the
+    // identical conditions, and a longer retry settle would only stack
+    // latency onto a cycle that is already in its recovery cadence.
+    constexpr DWORD kChordSelectionSettleMs = 25;
     // REQ-039 FIX-1 (chat-window Enter capture): Electron/Chromium targets
     // intermittently drop a synthetic Ctrl+C chord (the renderer-side
     // clipboard commit never lands - Discord log signatures L1782/L1860/
@@ -1460,7 +1480,7 @@ std::wstring CopySelectedText(HWND hwnd) {
             } else {
                 sel_ok = SelectMessageBlock();
             }
-            ::Sleep(10);
+            ::Sleep(kChordSelectionSettleMs);
         } else {
             ::Sleep(kClipboardCopyChordRetryGapMs);
             // Re-establish the selection: idempotent. CategoryA re-runs
@@ -1473,7 +1493,7 @@ std::wstring CopySelectedText(HWND hwnd) {
             } else {
                 SelectMessageBlock();
             }
-            ::Sleep(10);
+            ::Sleep(kChordSelectionSettleMs);
         }
         // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
         // On timeout the clipboard provably still holds pre-copy content, so
