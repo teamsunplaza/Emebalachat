@@ -927,6 +927,142 @@ void TestWin32InputModule() {
     }
 }
 
+// ---- W1 (session 260910_0007): win32_input A1/A2/A3 hygiene-refactor pins ----
+// Differential coverage for the five accepted dedups:
+//  (A3) PurgeDeadEntriesLocked std::erase_if rewrite: drives the production
+//       purge through the edit_caret test seams with synthetic composite keys.
+//       Pins the exact old-manual-loop semantics: dead focus window removed,
+//       live window's entries survive (including a second key on the same live
+//       hwnd), dead-hwnd keys with different pids ALL removed, purge idempotent,
+//       formerly-live entry dropped after DestroyWindow (IsWindow flips false).
+//  (A1) SetClipboardDword value parameterization: reads the three privacy-flag
+//       payloads back out of the real clipboard and pins 1 / 0 / 0 - the values
+//       the three byte-identical blocks originally wrote. Format-presence was
+//       already pinned by TestWin32InputModule; the payload values were not.
+//  (A2) ReadClipboardUnicodeText failure path with no CF_UNICODETEXT on the
+//       clipboard (the helper's false/untouched-out contract) +
+//       AllocGlobalUnicodeText NUL-trim read via the public roundtrip.
+// SendInput-dependent behavior (A4 chord arrays, A5 batched releases) is NOT
+// headless-testable in this suite by established convention (see the REQ-036 /
+// REQ-039 suite notes: this thread owns its windows, so injected chords cannot
+// be pumped); those two items are pinned by code-equality argument + build.
+void TestWin32InputW1Helpers() {
+    std::cout << "[RUN] Testing W1 win32_input hygiene refactor pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (A3) erase_if purge differential --------------------------------
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"Emebalachat_W1PurgeHost";
+    ::RegisterClassExW(&wc);
+    HWND live = ::CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"w1purge", WS_POPUP,
+                                  -400, -400, 80, 50, nullptr, nullptr, wc.hInstance, nullptr);
+    TEST_CHECK(live != nullptr, "W1/A3: live host window created for purge differential");
+    if (!live) {
+        std::cout << "[SKIP] W1/A3 purge differential needs a live window; unavailable." << std::endl;
+    } else {
+        const DWORD pid = ::GetCurrentProcessId();
+        const HWND dead = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x1u)); // never a window
+        TEST_CHECK(!::IsWindow(dead), "W1/A3: synthetic 0x1 hwnd is not a window (purge predicate)");
+
+        // Two live keys (same hwnd, different pids) + two dead keys (same dead
+        // hwnd, different pids). Composite-key hashing must not blur them.
+        TEST_CHECK(edit_caret::TestInsertEntry(live, pid, 111u), "W1/A3: live key inserted (new)");
+        TEST_CHECK(edit_caret::TestInsertEntry(live, pid + 1u, 222u), "W1/A3: second live key (different pid) inserted");
+        TEST_CHECK(edit_caret::TestInsertEntry(dead, pid, 333u), "W1/A3: dead key inserted");
+        TEST_CHECK(edit_caret::TestInsertEntry(dead, pid + 7u, 444u), "W1/A3: second dead key inserted");
+
+        edit_caret::TestPurgeDeadEntries();
+        TEST_CHECK(edit_caret::TestHasEntry(live, pid), "W1/A3: live entry survives erase_if purge");
+        TEST_CHECK(edit_caret::TestHasEntry(live, pid + 1u), "W1/A3: second live pid survives (predicate keys on focus_hwnd only)");
+        TEST_CHECK(!edit_caret::TestHasEntry(dead, pid), "W1/A3: dead entry purged");
+        TEST_CHECK(!edit_caret::TestHasEntry(dead, pid + 7u), "W1/A3: dead entry purged on every pid (composite keys sharing the dead hwnd)");
+
+        // Idempotence: a second purge changes nothing for the survivors (the old
+        // loop's no-op pass == erase_if with empty removal set).
+        edit_caret::TestPurgeDeadEntries();
+        TEST_CHECK(edit_caret::TestHasEntry(live, pid), "W1/A3: purge is idempotent (live entry intact after second run)");
+
+        // Lifecycle: destroy the window -> IsWindow flips false -> next purge
+        // must drop the formerly-live entries (same result set the manual loop
+        // produced, including erase-while-iterating across both pids).
+        TEST_CHECK(::DestroyWindow(live) != FALSE, "W1/A3: host window destroyed");
+        TEST_CHECK(!::IsWindow(live), "W1/A3: destroyed window no longer satisfies IsWindow");
+        edit_caret::TestPurgeDeadEntries();
+        TEST_CHECK(!edit_caret::TestHasEntry(live, pid), "W1/A3: formerly-live entry purged after DestroyWindow");
+        TEST_CHECK(!edit_caret::TestHasEntry(live, pid + 1u), "W1/A3: formerly-live second pid purged too (map left clean)");
+    }
+
+    // ---- (A1) privacy flag VALUES through SetClipboardDword ---------------
+    // Backup the ambient clipboard first; the whole block restores it at exit.
+    ClipboardBackup w1_backup;
+    const bool w1_backed_up = BackupClipboard(w1_backup);
+    TEST_CHECK(SetClipboardText(L"W1 A1 flag value probe"), "W1/A1: SetClipboardText succeeds for the flag readback");
+    {
+        const UINT cfExclude = ::RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+        const UINT cfHistory = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+        const UINT cfCloud   = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
+        bool readback_done = false;
+        if (::OpenClipboard(nullptr)) {
+            // DWORD value reader over the same GlobalLock/GlobalUnlock discipline
+            // the production reader uses; nullptr handle -> sentinel 0xDEAD so a
+            // missing/unlockable payload fails the equality pin loudly.
+            auto read_dword = [](UINT fmt) -> DWORD {
+                HANDLE h = ::GetClipboardData(fmt);
+                if (!h) return 0xDEADu;
+                const auto* p = static_cast<const DWORD*>(::GlobalLock(h));
+                if (!p) return 0xDEADu;
+                const DWORD v = *p;
+                ::GlobalUnlock(h);
+                return v;
+            };
+            TEST_CHECK(read_dword(cfExclude) == 1u, "W1/A1: ExcludeClipboardContentFromMonitorProcessing payload == 1 (unchanged value)");
+            TEST_CHECK(read_dword(cfHistory) == 0u, "W1/A1: CanIncludeInClipboardHistory payload == 0 (unchanged value)");
+            TEST_CHECK(read_dword(cfCloud) == 0u, "W1/A1: CanUploadToCloudClipboard payload == 0 (unchanged value)");
+            ::CloseClipboard();
+            readback_done = true;
+        }
+        if (!readback_done) {
+            std::cout << "[SKIP] OpenClipboard unavailable in this context; A1 value readback skipped." << std::endl;
+        }
+    }
+
+    // ---- (A2) reader failure path: no CF_UNICODETEXT on the clipboard -----
+    // Empty the clipboard, then prove GetClipboardText returns empty AND
+    // BackupClipboard leaves text nullopt - the ReadClipboardUnicodeText
+    // false-contract both call sites depend on (old inline blocks left the
+    // destination untouched on this path; identical behavior here).
+    bool emptied = false;
+    if (::OpenClipboard(nullptr)) {
+        emptied = ::EmptyClipboard() != FALSE;
+        ::CloseClipboard();
+    }
+    if (emptied && !::IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        TEST_CHECK(GetClipboardText().empty(), "W1/A2: reader returns empty when CF_UNICODETEXT absent");
+        ClipboardBackup empty_clip_backup;
+        TEST_CHECK(BackupClipboard(empty_clip_backup), "W1/A2: BackupClipboard succeeds on text-less clipboard");
+        TEST_CHECK(!empty_clip_backup.text.has_value(), "W1/A2: backup leaves text nullopt when reader finds no unicode format");
+    } else {
+        std::cout << "[SKIP] Clipboard could not be left text-less in this context; A2 failure-path pin skipped." << std::endl;
+    }
+
+    // ---- cleanup: restore the ambient clipboard ---------------------------
+    if (w1_backed_up) {
+        RestoreClipboard(w1_backup);
+    } else {
+        SetClipboardText(L"");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] W1 win32_input hygiene refactor pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] W1 win32_input hygiene refactor pins: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // ---- REQ-R04: clipboard sequence-number copy-settle polling ----
 // The Electron IPC delay bug (audit 2.3): BackupClipboard never calls
 // EmptyClipboard, so the old fixed Sleep(35) could read the PREVIOUS clipboard
@@ -9815,6 +9951,7 @@ int main() {
     TestSelfLanguageBypass();
     TestSoundModule();
     TestWin32InputModule();
+    TestWin32InputW1Helpers();
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();

@@ -679,5 +679,23 @@ void SendEnterKey(bool release_shift = false);
 // the race-window backstop before touching the clipboard pipeline.
 bool ForegroundImeComposing();
 
+// ---- W1 (session 260910_0007) internal test seams --------------------------
+//
+// Not application API: headless verification hooks for the edit_caret state
+// map's dead-entry purge (W1/A3 erase_if refactor). Declared here so
+// run_tests.cpp can drive PurgeDeadEntriesLocked directly; the production
+// callers keep their mutex-held internal use. Same discipline as the REQ-027
+// pure seams above (test-only, documented, zero app call sites).
+namespace edit_caret {
+
+// Insert (or overwrite) one map entry under g_mutex. Test helper ONLY.
+bool TestInsertEntry(HWND focus_hwnd, DWORD pid, DWORD offset);
+// True when the exact composite key {focus_hwnd, pid} is present. Test only.
+bool TestHasEntry(HWND focus_hwnd, DWORD pid);
+// Lock g_mutex and run the production purge (std::erase_if path). Test only.
+void TestPurgeDeadEntries();
+
+} // namespace edit_caret
+
 } // namespace emebalachat
 

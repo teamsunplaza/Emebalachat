@@ -104,6 +104,114 @@ uint64_t SteadyNowMs() {
     ).count());
 }
 
+// W1 (session 260910_0007): shared clipboard/input hygiene helpers. Defined in
+// this anonymous namespace so the public API of win32_input.hpp stays unchanged.
+//
+// W1/A4 (session 260910_0007): shared Ctrl+key chord primitive. Field-by-field
+// identical to the three 4-element INPUT arrays this replaces (SelectAll 'A',
+// CopySelection 'C', PasteSelection 'V'): modifier down, key down, key up,
+// modifier up - every event carries EXTRA_INFO_MARKER, and CreateKeyInput
+// supplies the same MapVirtualKeyW scan code + KEYEVENTF_EXTENDEDKEY handling
+// as before. Return contract preserved: true only when all 4 events were
+// injected (SendInput(4) == 4) - CopySelectionWithSequenceWait branches on it.
+// NOTE: worker.cpp ReleaseSelectionOnce is a DIFFERENT 2-input raw primitive
+// (no modifier, no CreateKeyInput) and intentionally stays outside this helper.
+bool SendModifiedKey(WORD mod, WORD key) {
+    INPUT inputs[4] = {
+        CreateKeyInput(mod, false, EXTRA_INFO_MARKER),
+        CreateKeyInput(key, false, EXTRA_INFO_MARKER),
+        CreateKeyInput(key, true, EXTRA_INFO_MARKER),
+        CreateKeyInput(mod, true, EXTRA_INFO_MARKER)
+    };
+    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+}
+
+// W1/A2 (session 260910_0007): shared CF_UNICODETEXT reader. Byte-for-byte the
+// sequence GetClipboardText and BackupClipboard each inlined:
+// IsClipboardFormatAvailable -> GetClipboardData -> GlobalSize -> GlobalLock ->
+// scan to first NUL within the block -> assign -> GlobalUnlock. The
+// clipboard-owned handle is NEVER freed here (owned by the clipboard); the
+// return value is false on every missing/empty/unlockable path so callers keep
+// their previous conditional-assignment semantics exactly.
+// PRECONDITION: the clipboard is already open (ScopedClipboard at both sites).
+bool ReadClipboardUnicodeText(std::wstring& out) {
+    if (!::IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        return false;
+    }
+    HANDLE hData = ::GetClipboardData(CF_UNICODETEXT);
+    if (!hData) {
+        return false;
+    }
+    SIZE_T sz = ::GlobalSize(hData);
+    if (sz == 0) {
+        return false; // original order: size probed BEFORE locking (no lock/unlock churn)
+    }
+    const auto* ptr = static_cast<const wchar_t*>(::GlobalLock(hData));
+    if (!ptr) {
+        return false;
+    }
+    size_t char_count = sz / sizeof(wchar_t);
+    size_t len = 0;
+    while (len < char_count && ptr[len] != L'\0') {
+        len++;
+    }
+    out.assign(ptr, len);
+    ::GlobalUnlock(hData);
+    return true;
+}
+
+// W1/A2 (session 260910_0007): allocate a GMEM_MOVEABLE block carrying `text`
+// plus its trailing NUL (the exact write pattern of SetClipboardText and the
+// RestoreClipboard text fallback). Ownership: on nullptr return the handle is
+// already freed internally (lock-failure path); on success the caller owns it
+// until a successful SetClipboardData transfers ownership to the clipboard.
+HGLOBAL AllocGlobalUnicodeText(std::wstring_view text) {
+    size_t byte_len = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, byte_len);
+    if (!hMem) {
+        return nullptr;
+    }
+    void* ptr = ::GlobalLock(hMem);
+    if (!ptr) {
+        ::GlobalFree(hMem);
+        return nullptr;
+    }
+    memcpy(ptr, text.data(), text.size() * sizeof(wchar_t));
+    static_cast<wchar_t*>(ptr)[text.size()] = L'\0';
+    ::GlobalUnlock(hMem);
+    return hMem;
+}
+
+// W1/A1 (session 260910_0007): write a 4-byte DWORD payload under a registered
+// clipboard format. Byte-for-byte the three inline HGLOBAL blocks this replaces
+// (history/cloud privacy flags below). Failure semantics preserved:
+//  - format == 0 (RegisterClipboardFormatW can fail) -> no-op guard;
+//  - GlobalFree ONLY when GlobalLock or SetClipboardData fails (on success the
+//    ownership transfers to the clipboard);
+//  - fire-and-forget void return - all three call sites ignored outcomes before
+//    and do so now.
+// PRECONDITION: the clipboard is already open (no OpenClipboard inside - that
+// would change the established call semantics).
+void SetClipboardDword(UINT format, DWORD val) {
+    if (!format) {
+        return;
+    }
+    HGLOBAL hFlag = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+    if (!hFlag) {
+        return;
+    }
+    void* p = ::GlobalLock(hFlag);
+    if (!p) {
+        ::GlobalFree(hFlag);
+        return;
+    }
+    *static_cast<DWORD*>(p) = val;
+    ::GlobalUnlock(hFlag);
+    if (!::SetClipboardData(format, hFlag)) {
+        ::GlobalFree(hFlag);
+    }
+}
+
 // L2 fix: build the per-process synthetic-input sentinel.
 //
 // The old value was the compile-time constant 0x1337BEEF, which any local
@@ -200,13 +308,7 @@ bool SelectMessageBlock() {
 }
 
 bool SelectAll() {
-    INPUT inputs[4] = {
-        CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),
-        CreateKeyInput('A', false, EXTRA_INFO_MARKER),
-        CreateKeyInput('A', true, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER)
-    };
-    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+    return SendModifiedKey(VK_CONTROL, 'A');
 }
 
 namespace {
@@ -405,13 +507,7 @@ bool IsConsoleCaptureUnsafe(HWND hwnd) {
 }
 
 bool CopySelection() {
-    INPUT inputs[4] = {
-        CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),
-        CreateKeyInput('C', false, EXTRA_INFO_MARKER),
-        CreateKeyInput('C', true, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER)
-    };
-    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+    return SendModifiedKey(VK_CONTROL, 'C');
 }
 
 // REQ-R04: pure state machine (declared in win32_input.hpp). No Win32 calls -
@@ -493,13 +589,7 @@ bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms) {
 }
 
 bool PasteSelection() {
-    INPUT inputs[4] = {
-        CreateKeyInput(VK_CONTROL, false, EXTRA_INFO_MARKER),
-        CreateKeyInput('V', false, EXTRA_INFO_MARKER),
-        CreateKeyInput('V', true, EXTRA_INFO_MARKER),
-        CreateKeyInput(VK_CONTROL, true, EXTRA_INFO_MARKER)
-    };
-    return ::SendInput(4, inputs, sizeof(INPUT)) == 4;
+    return SendModifiedKey(VK_CONTROL, 'V');
 }
 
 std::wstring GetClipboardText(DWORD timeout_ms) {
@@ -510,25 +600,7 @@ std::wstring GetClipboardText(DWORD timeout_ms) {
     }
 
     std::wstring result;
-    if (::IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-        HANDLE hData = ::GetClipboardData(CF_UNICODETEXT);
-        if (hData) {
-            SIZE_T sz = ::GlobalSize(hData);
-            if (sz > 0) {
-                const auto* ptr = static_cast<const wchar_t*>(::GlobalLock(hData));
-                if (ptr) {
-                    size_t char_count = sz / sizeof(wchar_t);
-                    size_t len = 0;
-                    while (len < char_count && ptr[len] != L'\0') {
-                        len++;
-                    }
-                    result.assign(ptr, len);
-                    ::GlobalUnlock(hData);
-                }
-            }
-        }
-    }
-
+    ReadClipboardUnicodeText(result); // W1/A2: shared reader (assign-only-on-success preserved)
     return result;
 }
 
@@ -551,21 +623,13 @@ static const UINT g_cfCanUploadToCloud = ::RegisterClipboardFormatW(L"CanUploadT
 constexpr DWORD kPasteSettleDelayMs = 120;
 
 bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
-    size_t byte_len = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, byte_len);
+    // W1/A2: allocation + NUL-terminated copy lives in AllocGlobalUnicodeText
+    // (byte-identical sequence; the helper already GlobalFreed on its internal
+    // lock failure, so the !hMem branch below keeps the exact old behavior).
+    HGLOBAL hMem = AllocGlobalUnicodeText(text);
     if (!hMem) {
         return false;
     }
-
-    void* ptr = ::GlobalLock(hMem);
-    if (!ptr) {
-        ::GlobalFree(hMem);
-        return false;
-    }
-
-    memcpy(ptr, text.data(), text.size() * sizeof(wchar_t));
-    static_cast<wchar_t*>(ptr)[text.size()] = L'\0';
-    ::GlobalUnlock(hMem);
 
     // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note. On
     // SetClipboardData SUCCESS the hMem ownership transfers to the clipboard
@@ -587,51 +651,11 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
 
     // Protect clipboard privacy: prevent Windows 10/11 Clipboard History (Win+V)
     // and cloud clipboard sync from logging or leaking temporary translated text
-    if (g_cfExcludeClipboardProcessing) {
-        HGLOBAL hFlag = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
-        if (hFlag) {
-            void* p = ::GlobalLock(hFlag);
-            if (p) {
-                *static_cast<DWORD*>(p) = 1;
-                ::GlobalUnlock(hFlag);
-                if (!::SetClipboardData(g_cfExcludeClipboardProcessing, hFlag)) {
-                    ::GlobalFree(hFlag);
-                }
-            } else {
-                ::GlobalFree(hFlag);
-            }
-        }
-    }
-    if (g_cfCanIncludeInHistory) {
-        HGLOBAL hFlag = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
-        if (hFlag) {
-            void* p = ::GlobalLock(hFlag);
-            if (p) {
-                *static_cast<DWORD*>(p) = 0;
-                ::GlobalUnlock(hFlag);
-                if (!::SetClipboardData(g_cfCanIncludeInHistory, hFlag)) {
-                    ::GlobalFree(hFlag);
-                }
-            } else {
-                ::GlobalFree(hFlag);
-            }
-        }
-    }
-    if (g_cfCanUploadToCloud) {
-        HGLOBAL hFlag = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
-        if (hFlag) {
-            void* p = ::GlobalLock(hFlag);
-            if (p) {
-                *static_cast<DWORD*>(p) = 0;
-                ::GlobalUnlock(hFlag);
-                if (!::SetClipboardData(g_cfCanUploadToCloud, hFlag)) {
-                    ::GlobalFree(hFlag);
-                }
-            } else {
-                ::GlobalFree(hFlag);
-            }
-        }
-    }
+    // (W1/A1: three byte-identical HGLOBAL blocks -> SetClipboardDword; values
+    // and formats unchanged: 1 = monitor-excluded, 0 = no history, 0 = no cloud.)
+    SetClipboardDword(g_cfExcludeClipboardProcessing, 1);
+    SetClipboardDword(g_cfCanIncludeInHistory, 0);
+    SetClipboardDword(g_cfCanUploadToCloud, 0);
 
     return true;
 }
@@ -647,23 +671,13 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
         return false;
     }
 
-    // Capture text if available
-    if (::IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-        HANDLE hData = ::GetClipboardData(CF_UNICODETEXT);
-        if (hData) {
-            SIZE_T sz = ::GlobalSize(hData);
-            if (sz > 0) {
-                const auto* ptr = static_cast<const wchar_t*>(::GlobalLock(hData));
-                if (ptr) {
-                    size_t char_count = sz / sizeof(wchar_t);
-                    size_t len = 0;
-                    while (len < char_count && ptr[len] != L'\0') {
-                        len++;
-                    }
-                    out.text = std::wstring(ptr, len);
-                    ::GlobalUnlock(hData);
-                }
-            }
+    // Capture text if available (W1/A2: shared reader; on success out.text is
+    // assigned exactly like the old inline block; on every missing/empty/
+    // unlockable failure out.text stays nullopt as before).
+    {
+        std::wstring clip_text;
+        if (ReadClipboardUnicodeText(clip_text)) {
+            out.text = std::move(clip_text);
         }
     }
 
@@ -743,20 +757,12 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
             }
         }
     } else if (in.text.has_value()) {
-        // Fallback text restore
-        const auto& str = *in.text;
-        size_t byte_len = (str.size() + 1) * sizeof(wchar_t);
-        HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        // Fallback text restore (W1/A2: shared allocator. Old shape: allocate;
+        // if the block exists, write it and set; GlobalFree on lock failure
+        // (inside the helper now) or SetClipboardData failure — identical).
+        HGLOBAL hMem = AllocGlobalUnicodeText(*in.text);
         if (hMem) {
-            void* ptr = ::GlobalLock(hMem);
-            if (ptr) {
-                memcpy(ptr, str.data(), str.size() * sizeof(wchar_t));
-                static_cast<wchar_t*>(ptr)[str.size()] = L'\0';
-                ::GlobalUnlock(hMem);
-                if (!::SetClipboardData(CF_UNICODETEXT, hMem)) {
-                    ::GlobalFree(hMem);
-                }
-            } else {
+            if (!::SetClipboardData(CF_UNICODETEXT, hMem)) {
                 ::GlobalFree(hMem);
             }
         }
@@ -923,18 +929,12 @@ EmCapability ProbeEmCapability(HWND focus) {
     return ClassifyEmProbe(s);
 }
 
-// §2.3.A2 lifecycle (a): drop entries whose focus window was destroyed.
-// Callers hold g_mutex and the map is bounded to kMaxEntries, so the sweep
-// is O(64) worst case on an Enter path that already did SendMessage round
-// trips.
+// W1/A3 (session 260910_0007): C++20 assoc-container overload. Same predicate
+// (`!::IsWindow(k.focus_hwnd)` — dead focus window), same callers (they hold
+// g_mutex), same result set. The erase count is discarded exactly as the old
+// manual loop discarded each erase's return value.
 void PurgeDeadEntriesLocked() {
-    for (auto it = g_map.begin(); it != g_map.end();) {
-        if (!::IsWindow(it->first.focus_hwnd)) {
-            it = g_map.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    std::erase_if(g_map, [](const auto& kv) { return !::IsWindow(kv.first.focus_hwnd); });
 }
 
 // Inserts or refreshes key's entry and refreshes its LRU stamp. Caller must
@@ -962,6 +962,29 @@ void StoreLocked(const Key& key, DWORD offset, DWORD baseline_textlen) {
         g_map.erase(oldest);
     }
     g_map.emplace(key, Entry{offset, baseline_textlen, now});
+}
+
+// ---- W1/A3 headless test seams (declared in win32_input.hpp) ----------------
+// Drive PurgeDeadEntriesLocked directly against synthetic composite keys so
+// the erase_if rewrite is differentially pinned against the old manual
+// erase-loop semantics (dead focus window removed, live window + its data
+// survive, other keys untouched). No production caller uses these.
+bool TestInsertEntry(HWND focus_hwnd, DWORD pid, DWORD offset) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_map
+        .insert_or_assign(Key{focus_hwnd, pid},
+                          Entry{offset, kBaselineUnknown, ::GetTickCount64()})
+        .second; // true = newly inserted, false = overwritten
+}
+
+bool TestHasEntry(HWND focus_hwnd, DWORD pid) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_map.find(Key{focus_hwnd, pid}) != g_map.end();
+}
+
+void TestPurgeDeadEntries() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    PurgeDeadEntriesLocked();
 }
 
 } // namespace edit_caret
@@ -1686,11 +1709,28 @@ void SendEnterKey(bool release_shift) {
         VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
         VK_LMENU, VK_RMENU, VK_MENU
     };
+    // W1/A5 (session 260910_0007): batched release. All 9 GetAsyncKeyState
+    // samples are taken BEFORE any injection (same states observed, same
+    // mods[] order as the old per-modifier sends), the released modifiers are
+    // collected into one INPUT array, and a single SendInput injects them —
+    // the target can no longer observe a half-released modifier state between
+    // two sends. Failure semantics checked: the old loop ignored every
+    // per-call SendInput result; SendInput(n) returns the count of events
+    // actually inserted (events are queued in array order, so a partial batch
+    // releases the same prefix the old loop would have released before an
+    // equivalent failure point). The return value stays ignored, and with zero
+    // modifiers held no SendInput call is made at all — exactly like the old
+    // loop body. Hygiene/atomicity only; NOT a perf claim (common case was
+    // already 0-2 syscalls).
+    INPUT ups[sizeof(mods) / sizeof(mods[0])];
+    UINT n = 0;
     for (WORD m : mods) {
         if ((::GetAsyncKeyState(m) & 0x8000) != 0) {
-            INPUT up = CreateKeyInput(m, true, EXTRA_INFO_MARKER);
-            ::SendInput(1, &up, sizeof(INPUT));
+            ups[n++] = CreateKeyInput(m, true, EXTRA_INFO_MARKER);
         }
+    }
+    if (n > 0) {
+        ::SendInput(n, ups, sizeof(INPUT));
     }
     ::Sleep(10);
 
