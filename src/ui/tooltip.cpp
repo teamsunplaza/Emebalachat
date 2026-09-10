@@ -1214,6 +1214,25 @@ void TooltipWindow::Render() {
     if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
     if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
 
+    // DESIGN-260910 (P2 glass depth): 1px warm-white rim light inset along the
+    // top edge - a Fluent-style specular cue that separates the card from
+    // bright / low-contrast host backgrounds. The DIB-sized layered window
+    // cannot host a spread outer glow (it would clip at the buffer edge), so
+    // the rim is the clipped-safe equivalent of elevation shading. Shared by
+    // both the translation card and the message-mode notice below.
+    {
+        ID2D1SolidColorBrush* rimBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &rimBrush);
+        if (rimBrush) {
+            dc_render_target_->DrawLine(
+                D2D1::Point2F(9.0f, 1.5f),
+                D2D1::Point2F(static_cast<float>(current_width_) - 9.0f, 1.5f),
+                rimBrush, 1.0f);
+            rimBrush->Release();
+        }
+    }
+
     // --- REQ-R08 message mode: compact header + body notice, no action buttons ---
     if (is_message_mode_) {
         D2D1_RECT_F msgHeaderRect = D2D1::RectF(14.0f, 10.0f, static_cast<float>(current_width_) - 14.0f, 36.0f);
@@ -1224,11 +1243,19 @@ void TooltipWindow::Render() {
         }
         D2D1_RECT_F msgBodyRect = D2D1::RectF(14.0f, 38.0f, static_cast<float>(current_width_) - 14.0f,
                                               static_cast<float>(current_height_) - 10.0f);
-        if (small_format_ && subTextBrush) {
+        // DESIGN-260910 (P1 readability): the notice body IS the primary
+        // content of a message-mode card, but slate-400 #94A3B8 muted it a
+        // full step below the header hierarchy on the small 11px format.
+        // Slate-300 #CBD5E1 keeps the hierarchy and clears WCAG AA at that
+        // size on the #0F172A card.
+        ID2D1SolidColorBrush* msgBodyBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xCBD5E1, 1.0f), &msgBodyBrush);
+        if (small_format_ && msgBodyBrush) {
             dc_render_target_->DrawText(
                 translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),
-                small_format_, msgBodyRect, subTextBrush);
+                small_format_, msgBodyRect, msgBodyBrush);
         }
+        if (msgBodyBrush) msgBodyBrush->Release();
         if (accentBrush) accentBrush->Release();
         if (dividerBrush) dividerBrush->Release();
         if (subTextBrush) subTextBrush->Release();
@@ -1457,8 +1484,57 @@ void TooltipWindow::Render() {
     }
 
     // --- Footer Action Buttons ---
+    // DESIGN-260910 (P1 fit): footer pills now measure their LOCALIZED labels
+    // (37-locale i18n) with the exact button_format_ they are drawn in, so no
+    // locale's Copy / Read-aloud label can clip against the old hardcoded
+    // 88/82 DIP boxes. Floors keep the previous geometry when measurement
+    // fails; caps keep the row inside the 360 DIP card (worst case right
+    // edge: 14 + 180 + 8 + 150 = 352 < 360). The copied-feedback label is
+    // measured too, so the success state can never outgrow its pill.
+    float copy_btn_w = 88.0f;
+    float tts_btn_w = 82.0f;
+    if (button_format_ && dwrite_factory_) {
+        IDWriteTextLayout* lbl_layout = nullptr;
+        DWRITE_TEXT_METRICS lbl_metrics = {};
+        const std::wstring copy_label = I18n::Get(StringId::TooltipButtonCopy);
+        lbl_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                copy_label.c_str(), static_cast<UINT32>(copy_label.size()),
+                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                copy_btn_w = lbl_metrics.width + 20.0f;
+                if (copy_btn_w < 88.0f) copy_btn_w = 88.0f;
+                if (copy_btn_w > 180.0f) copy_btn_w = 180.0f;
+            }
+            lbl_layout->Release();
+        }
+        const std::wstring copied_label = I18n::Get(StringId::TooltipCopied);
+        lbl_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                copied_label.c_str(), static_cast<UINT32>(copied_label.size()),
+                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                const float w_feedback = lbl_metrics.width + 20.0f;
+                if (w_feedback > copy_btn_w) copy_btn_w = w_feedback;
+                if (copy_btn_w > 180.0f) copy_btn_w = 180.0f;
+            }
+            lbl_layout->Release();
+        }
+        const std::wstring tts_label = I18n::Get(StringId::TooltipButtonTts);
+        lbl_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                tts_label.c_str(), static_cast<UINT32>(tts_label.size()),
+                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                tts_btn_w = lbl_metrics.width + 20.0f;
+                if (tts_btn_w < 82.0f) tts_btn_w = 82.0f;
+                if (tts_btn_w > 150.0f) tts_btn_w = 150.0f;
+            }
+            lbl_layout->Release();
+        }
+    }
     // [📋 Copy] button
-    copy_btn_rect_ = D2D1::RectF(14.0f, footer_div_y + 7.0f, 102.0f, footer_div_y + 31.0f);
+    copy_btn_rect_ = D2D1::RectF(14.0f, footer_div_y + 7.0f, 14.0f + copy_btn_w, footer_div_y + 31.0f);
     D2D1_ROUNDED_RECT copyBtnRect = D2D1::RoundedRect(copy_btn_rect_, 4.0f, 4.0f);
 
     if (copied_feedback_) {
@@ -1486,7 +1562,11 @@ void TooltipWindow::Render() {
         );
         if (btnBgBrush) {
             dc_render_target_->FillRoundedRectangle(copyBtnRect, btnBgBrush);
-            dc_render_target_->DrawRoundedRectangle(copyBtnRect, borderBrush, 1.0f);
+            // DESIGN-260910 (P3 affordance): a hovered pill gains the emerald
+            // accent border, matching the header language buttons' hover so
+            // interactivity reads identically across the card.
+            dc_render_target_->DrawRoundedRectangle(
+                copyBtnRect, (hovered_btn_ == 1) ? accentBrush : borderBrush, 1.0f);
             btnBgBrush->Release();
             btnBgBrush = nullptr;
         }
@@ -1498,7 +1578,8 @@ void TooltipWindow::Render() {
     }
 
     // [🔊 TTS] button
-    tts_btn_rect_ = D2D1::RectF(110.0f, footer_div_y + 7.0f, 192.0f, footer_div_y + 31.0f);
+    const float tts_left = 14.0f + copy_btn_w + 8.0f;
+    tts_btn_rect_ = D2D1::RectF(tts_left, footer_div_y + 7.0f, tts_left + tts_btn_w, footer_div_y + 31.0f);
     D2D1_ROUNDED_RECT ttsBtnRect = D2D1::RoundedRect(tts_btn_rect_, 4.0f, 4.0f);
 
     dc_render_target_->CreateSolidColorBrush(
@@ -1507,7 +1588,9 @@ void TooltipWindow::Render() {
     );
     if (btnBgBrush) {
         dc_render_target_->FillRoundedRectangle(ttsBtnRect, btnBgBrush);
-        dc_render_target_->DrawRoundedRectangle(ttsBtnRect, borderBrush, 1.0f);
+        // DESIGN-260910 (P3 affordance): same accent-on-hover as the Copy pill.
+        dc_render_target_->DrawRoundedRectangle(
+            ttsBtnRect, (hovered_btn_ == 2) ? accentBrush : borderBrush, 1.0f);
         btnBgBrush->Release();
         btnBgBrush = nullptr;
     }

@@ -615,6 +615,21 @@ void AboutWindow::Render() {
     if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
     if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
 
+    // DESIGN-260910 (P2 consistency): 1px warm-white top rim light, identical
+    // to the tooltip card's (src/ui/tooltip.cpp Render) so both windows read
+    // as the same glass material over any host background.
+    {
+        ID2D1SolidColorBrush* rimBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &rimBrush);
+        if (rimBrush) {
+            dc_render_target_->DrawLine(
+                D2D1::Point2F(9.0f, 1.5f), D2D1::Point2F(w - 9.0f, 1.5f),
+                rimBrush, 1.0f);
+            rimBrush->Release();
+        }
+    }
+
     // 1. Logo: 64x64 squircle, gold border (plan §2.2 layout item 1).
     const D2D1_RECT_F logoFrame = D2D1::RectF((w - 64.0f) / 2.0f, 28.0f, (w + 64.0f) / 2.0f, 92.0f);
     if (logoBgBrush) {
@@ -661,14 +676,26 @@ void AboutWindow::Render() {
                                     dividerBrush, 1.0f);
     }
 
-    // 4. Features: 3 blocks of 42 DIP, wrapped leading text.
-    if (body_format_ && textBrush) {
+    // 4. Features: 3 blocks of 42 DIP. DESIGN-260910 (P2 hierarchy): each
+    // block gains a 5 DIP emerald marker dot so the section scans as three
+    // distinct capability statements instead of one gray paragraph wall.
+    // The marker mirrors with the UI locale's reading direction (body_format_
+    // carries RTL for RTL locales; leading alignment starts at the rect's
+    // reading edge), so RTL locales get the dot on the right.
+    const bool ui_rtl = DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL;
+    if (body_format_ && textBrush && accentBrush) {
         for (int i = 0; i < 3; ++i) {
             const float top = 230.0f + static_cast<float>(i) * 42.0f;
+            const D2D1_ROUNDED_RECT dot = D2D1::RoundedRect(
+                ui_rtl ? D2D1::RectF(w - 33.0f, top + 7.0f, w - 28.0f, top + 12.0f)
+                       : D2D1::RectF(28.0f, top + 7.0f, 33.0f, top + 12.0f),
+                2.5f, 2.5f);
+            dc_render_target_->FillRoundedRectangle(dot, accentBrush);
             dc_render_target_->DrawText(content.features[i].c_str(),
                                         static_cast<UINT32>(content.features[i].size()),
                                         body_format_,
-                                        D2D1::RectF(28.0f, top, w - 28.0f, top + 40.0f),
+                                        ui_rtl ? D2D1::RectF(28.0f, top, w - 40.0f, top + 40.0f)
+                                               : D2D1::RectF(40.0f, top, w - 28.0f, top + 40.0f),
                                         textBrush);
         }
     }
