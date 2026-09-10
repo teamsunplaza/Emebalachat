@@ -1063,6 +1063,106 @@ void TestWin32InputW1Helpers() {
     }
 }
 
+// W2/B1 (session 260910_0007): src/worker.cpp source-structure pins for the
+// SendThroughWithNewlineTracking single-sourcing. The helper's runtime legs are
+// SendInput chords (VK_RIGHT release + Enter) which CANNOT be observed headlessly
+// for a test-thread-owned EDIT control (established suite convention, see the
+// REQ-036/REQ-039 [SKIP] reasoning: injected input is not pumped to windows this
+// thread owns; behavior-preserving proof rides on the unchanged primitives, whose
+// EM geometry contracts are already pinned live by TestReq036SendThroughNewline /
+// TestReq027OffsetAfterNewline). What B1 actually defends is the STRUCTURAL
+// property: every non-paste send-through goes through ONE definition, with the
+// canonical SampleCaret → Release → SendEnter → Notify order, and no site re-
+// inline'd a bypass. A source scan pins exactly that (creative verification):
+// any future re-inline omission, order shuffle, or accidental paste-path merge
+// fails these checks at build-test time. If the file cannot be located from any
+// plausible CWD (build/ under ctest, project root under a direct run), the test
+// skips loudly rather than passing silently.
+void TestWorkerB1SendThroughPins() {
+    std::cout << "[TEST] W2/B1 worker send-through single-source pins" << std::endl;
+    const int failures_before = g_failed_count;
+
+    std::string src;
+    const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+    for (const char* cand : candidates) {
+        std::ifstream in(cand, std::ios::binary);
+        if (in) {
+            src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            break;
+        }
+    }
+    if (src.empty()) {
+        std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; B1 source pins skipped." << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] W2/B1 worker send-through single-source pins completed." << std::endl;
+        }
+        return;
+    }
+
+    auto count_occ = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = hay.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+
+    // (1) Exactly 7 helper call sites, and the site-5 pre-sampled-caret form
+    //     appears exactly once (REQ-F5 promote branch keeps its earlier sample).
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 7,
+               "B1: exactly 7 send-through helper call sites in worker.cpp");
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter)") == 6,
+               "B1: six sampling call sites (helper owns SampleCaret)");
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter, now_caret)") == 1,
+               "B1: site 5 passes its pre-sampled caret (no re-sample, /039 baseline preserved)");
+
+    // (2) No call site bypasses the helper: NotifySentNewline is only ever
+    //     reached through it, and the explicit-flag Enter call remains only on
+    //     the deliberately-excluded paste path (worker.cpp B-6a settle contract).
+    TEST_CHECK(count_occ(src, "NotifySentNewline(task.target_hwnd") == 0,
+               "B1: no inline NotifySentNewline(task...) bypass survives (helper-exclusive)");
+    TEST_CHECK(count_occ(src, "SendEnterKey(task.is_shift_enter)") == 1,
+               "B1: exactly one raw SendEnterKey(task...) remains - the paste path (must NOT merge)");
+
+    // (3) Every direct ReleaseSelectionOnce() use is accounted for: the helper,
+    //     the hold-notice branch (Enter NOT sent there), and the paste-branch
+    //     SelectionReleaseRequired gate. Any unlisted new use fails this pin.
+    TEST_CHECK(count_occ(src, "ReleaseSelectionOnce();") == 3,
+               "B1: ReleaseSelectionOnce inventory == helper + hold-notice + paste-gate (3 sites)");
+
+    // (4) Helper body: canonical order SampleCaret-branch → Release → SendEnter
+    //     → Notify, and the std::optional pre-sample signature/default.
+    const size_t body_start = src.find("std::optional<DWORD> pre_sampled_caret = std::nullopt) {");
+    TEST_CHECK(body_start != std::string::npos,
+               "B1: helper signature carries the optional pre-sampled caret with a nullopt default");
+    if (body_start != std::string::npos) {
+        const size_t body_end = src.find("// REQ-R03 path matrix", body_start);
+        TEST_CHECK(body_end != std::string::npos, "B1: helper body bound located");
+        if (body_end != std::string::npos) {
+            const std::string body = src.substr(body_start, body_end - body_start);
+            const size_t p1 = body.find("EditCaretTracker_SampleCaret(target_hwnd);");
+            const size_t p2 = body.find("ReleaseSelectionOnce();");
+            const size_t p3 = body.find("SendEnterKey(is_shift_enter);");
+            const size_t p4 = body.find("NotifySentNewline(target_hwnd, pre_caret);");
+            const bool ordered = p1 != std::string::npos && p2 != std::string::npos &&
+                                 p3 != std::string::npos && p4 != std::string::npos &&
+                                 p1 < p2 && p2 < p3 && p3 < p4;
+            TEST_CHECK(ordered,
+                       "B1: helper body executes SampleCaret → Release → SendEnter → Notify in canonical order");
+            TEST_CHECK(body.find("pre_sampled_caret.has_value()") != std::string::npos,
+                       "B1: helper honors a pre-sampled caret (skips its own sampling)");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] W2/B1 worker send-through single-source pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] W2/B1 worker send-through single-source pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // ---- REQ-R04: clipboard sequence-number copy-settle polling ----
 // The Electron IPC delay bug (audit 2.3): BackupClipboard never calls
 // EmptyClipboard, so the old fixed Sleep(35) could read the PREVIOUS clipboard
@@ -9952,6 +10052,7 @@ int main() {
     TestSoundModule();
     TestWin32InputModule();
     TestWin32InputW1Helpers();
+    TestWorkerB1SendThroughPins();
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();

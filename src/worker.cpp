@@ -6,6 +6,7 @@
 #include "win32_input.hpp"
 
 #include <cstdio>
+#include <optional>
 
 namespace emebalachat {
 
@@ -23,6 +24,41 @@ void ReleaseSelectionOnce() {
     unsel[1].ki.dwFlags = KEYEVENTF_KEYUP;
     ::SendInput(2, unsel, sizeof(INPUT));
     ::Sleep(10);
+}
+
+// B1 (session 260910_0007, catalog verify 050211 §B1): single-sourced send-through
+// sequence. Every non-paste "hand the Enter to the app" outcome executes exactly:
+//   1. EditCaretTracker_SampleCaret(target)      (REQ-036 FIX-1 pre-send baseline;
+//                                                 VK_RIGHT in step 2 moves the caret,
+//                                                 so the sample MUST precede the release)
+//   2. ReleaseSelectionOnce()                    (REQ-R03)
+//   3. SendEnterKey(is_shift_enter)              (all seven legacy sites passed the
+//                                                 task flag explicitly; SendEnterKey is
+//                                                 void, no site ever inspected a return)
+//   4. EditCaretTracker_NotifySentNewline(target, pre_caret)  (settle + store)
+// No site had a branch, log, or wait BETWEEN the four steps (re-verified at HEAD
+// 6c2aa30); the per-step comments at the call sites describe the branch's WHY and
+// were kept in place. The paste path's SampleCaret + SendEnterKey +
+// SettleNewlineVisible + NotifyReplacement sequence is a DIFFERENT contract
+// (B-6a, verify 050211 §B1) and is deliberately NOT folded in here.
+//
+// pre_sampled_caret design choice (site 5, REQ-F5 post-window promote): that site
+// sampled the caret EARLIER (before the EmptyCapturePromotesToSend gate; the value
+// also feeds the gate arithmetic), so re-sampling inside the helper would move the
+// /039 caret baseline. The site passes its existing sample and the helper skips
+// step 1 - execution order stays provably identical at all seven sites. std::optional
+// instead of a kEditCaretUnknown sentinel: kEditCaretUnknown is a legal SampleCaret
+// failure value a future caller could pass, and conflating "use this value" with
+// "sample now (and maybe fail)" would be ambiguous; nullopt is the only true
+// "no pre-sample" witness.
+void SendThroughWithNewlineTracking(HWND target_hwnd, bool is_shift_enter,
+                                    std::optional<DWORD> pre_sampled_caret = std::nullopt) {
+    const DWORD pre_caret = pre_sampled_caret.has_value()
+                                ? *pre_sampled_caret
+                                : EditCaretTracker_SampleCaret(target_hwnd);
+    ReleaseSelectionOnce();
+    SendEnterKey(is_shift_enter);
+    EditCaretTracker_NotifySentNewline(target_hwnd, pre_caret);
 }
 
 // REQ-R03 path matrix, compile-time proven against the shared header predicate
@@ -189,10 +225,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // inserts the current block's terminator. Sample the caret BEFORE the
         // selection release (VK_RIGHT moves it +1), then advance the stored
         // offset to the measured post-newline caret (no-op untracked/non-EM).
-        const DWORD ime_pre = EditCaretTracker_SampleCaret(task.target_hwnd);
-        ReleaseSelectionOnce();
-        SendEnterKey(task.is_shift_enter);
-        EditCaretTracker_NotifySentNewline(task.target_hwnd, ime_pre);
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         DIAG_LOG("PIPELINE", "stage=send_enter action=synthetic(reason=ime_backstop) shift=%d",
                  task.is_shift_enter ? 1 : 0);
         return;
@@ -332,12 +365,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                    task.shift_enter_count, line.size());
             DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
                      ::GetTickCount64() - t_task_start);
-            {
-                const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
-                ReleaseSelectionOnce();
-                SendEnterKey(task.is_shift_enter);
-                EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-            }
+            SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
             return;
         }
         if (block_start > 0) {
@@ -365,12 +393,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // Same contract as the smart-bypass send-through below: release the
         // block selection (Ctrl+V of the next task must not clobber it) and
         // hand the intercepted Enter to the app.
-        {
-            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
-            ReleaseSelectionOnce();
-            SendEnterKey(task.is_shift_enter);
-            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         // F3 C1 hardening (session 260908_0003, verify 220750 §2 R1->R2 and
         // §7 예시1): the redundant-Enter (send-of-output) NO LONGER clears
         // the ledger. The pre-F3 clear was the chain-break that armed the R2
@@ -449,12 +472,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // REQ-036 FIX-1 (session 260907, debug report): the send-through Enter
         // below inserts the current block's terminator (editor) - sample the
         // caret BEFORE the release (VK_RIGHT moves it), settle + store after.
-        {
-            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
-            ReleaseSelectionOnce();
-            SendEnterKey(task.is_shift_enter);
-            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         return;
     }
     // REQ-F5 (session 260908_0001): POST-window empty-capture promotion. The
@@ -483,12 +501,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  ::GetTickCount64() - t_task_start);
         // Option E (A-005 observability): post-window twin of the /036 provenance.
         DIAG_LOG("PIPELINE", "stage=empty_capture provenance=benign_skip basis=caret_equals_paste_end(no_edit_since_paste) action=send_through_no_notice");
-        {
-            const DWORD pre_caret = now_caret;
-            ReleaseSelectionOnce();
-            SendEnterKey(task.is_shift_enter);
-            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-        }
+        // Site 5: pass the pre-sampled caret (sampled above before the promote
+        // gate); the helper skips its own SampleCaret - the /039 baseline stays.
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter, now_caret);
         // Same one-shot ledger contract as the ExactMatch skip: this output
         // has now been sent, so a fresh accumulation context starts.
         last_paste_target_ = nullptr;
@@ -510,12 +525,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         DIAG_F("WORKER/ExecuteTask/042: empty capture with image-only clipboard (has_text=0) and clipboard sequence unchanged since capture start (no chord committed a copy); R5 hold bypassed, send-Enter handed to the app\n");
         DIAG_LOG("PIPELINE", "stage=empty_capture decision=has_text0_fastpath action=send_through_no_notice duration_ms=%llu",
                  ::GetTickCount64() - t_task_start);
-        {
-            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
-            ReleaseSelectionOnce();
-            SendEnterKey(task.is_shift_enter);
-            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         return;
     }
     if (empty_capture_hold && empty_capture_cb_) {
@@ -542,12 +552,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // REQ-036 FIX-1 (session 260907, debug report): same send-through
         // contract as the paste-window branch above - sample the caret BEFORE
         // the release, advance the stored offset past the terminator after.
-        {
-            const DWORD pre_caret = EditCaretTracker_SampleCaret(task.target_hwnd);
-            ReleaseSelectionOnce();
-            SendEnterKey(task.is_shift_enter);
-            EditCaretTracker_NotifySentNewline(task.target_hwnd, pre_caret);
-        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         return;
     }
 
