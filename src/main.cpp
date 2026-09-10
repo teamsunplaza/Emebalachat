@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "diag_logger.hpp"
 #include "engine.hpp"
+#include "vulkan_guard.hpp" // P5-F1: driverless-machine Vulkan pre-probe + stub guard
 #include "hook.hpp"
 #include "i18n.hpp"
 #include "version.hpp"
@@ -269,6 +270,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_F("MAIN/Diag/001: diag logger init failed (no LOCALAPPDATA and no "
                "exe-dir logs fallback?); file diagnostics disabled this run\n");
     }
+
+    // P5-F1 (session 260909_0004, REQ-104 runtime gap): probe vulkan-1.dll
+    // resolvability BEFORE the engine/warmup thread can trigger the ggml
+    // backend-registry ctor (engine.cpp:601 -> llama.cpp:143 ->
+    // ggml_backend_vk_reg -> first /DELAYLOAD:vulkan-1.dll touch). On a
+    // driverless machine the delay helper would raise uncatchable SEH
+    // 0xC06D007E and kill the process instead of CPU-falling back; the
+    // guard's delay-load failure hook substitutes VkResult-error stubs so
+    // ggml's existing vk::SystemError catch neutralizes the backend cleanly.
+    // Runs right after SetDllDirectoryW(nullptr) above and diag::Init so the
+    // probe sees the exact same search order the delay-load will use, and
+    // before any thread that could load a model exists.
+    (void)emebalachat::EnsureVulkanGuard();
 
     // 1. Single Instance Mutex
     // NOTE (R6 Phase 5 sweep): the two startup MessageBox texts below are now

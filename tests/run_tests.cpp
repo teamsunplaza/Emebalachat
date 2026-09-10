@@ -18,6 +18,7 @@
 #include "../src/mouse_hook.hpp"
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
+#include "../src/vulkan_guard.hpp" // P5-F1: delay-load SEH guard probe/stub seam
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
@@ -26,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream> // P5-F1: diag log proof (TestVulkanGuard 3b) reads a log stream
 #include <string>
 #include <thread>
 #include <type_traits> // R6 B3: static_assert pins on accessor signatures
@@ -8724,6 +8726,206 @@ static void TestReq003PiiGating() {
     }
 }
 
+// P5-F1 (session 260909_0004): vulkan_guard — driverless-machine CPU fallback.
+// Covers the pure decision, the real loader probe on THIS machine (Vulkan
+// present: probe must succeed and the backend must stay enabled), the stub
+// value shapes (executed directly: they are plain functions inside our own
+// module), and the failure-hook substitution/no-subtraction contract on
+// synthesized DelayLoadInfo. This is the harness the task mandates for the
+// "disable mechanism works" proof: the stub return -3 is exactly the VkResult
+// Vulkan-Hpp's detail::resultCheck turns into vk::SystemError, which
+// ggml_backend_vk_reg() (ggml-vulkan.cpp:11273) catches -> backend nullptr ->
+// register_backend skips it (ggml-backend-reg.cpp:211-213) -> no Vulkan
+// devices, no 0xC06D007E. A driverless machine differs only in that the
+// loader probe fails and dliFailLoadLib fires; both legs are asserted here.
+void TestVulkanGuard() {
+    std::cout << "[RUN] Testing Vulkan Guard (P5-F1)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1. Pure decision table (all four combinations).
+    TEST_CHECK(emebalachat::VulkanBackendShouldBeDisabled(false, false) == true,
+               "guard: loader missing + guard on -> Vulkan must be disabled");
+    TEST_CHECK(emebalachat::VulkanBackendShouldBeDisabled(true, false) == false,
+               "guard: loader present + guard on -> Vulkan stays enabled");
+    TEST_CHECK(emebalachat::VulkanBackendShouldBeDisabled(false, true) == false,
+               "guard: kill-switch honored -> no disable decision even loaderless");
+    TEST_CHECK(emebalachat::VulkanBackendShouldBeDisabled(true, true) == false,
+               "guard: kill-switch + loader present -> enabled");
+
+    // 2. The kill-switch must be OFF for the rest of this suite to be
+    // meaningful (assert, then clear so the hook legs below are deterministic
+    // regardless of the developer's ambient environment).
+    ::SetEnvironmentVariableA("GGML_VK_GUARD_DISABLE", nullptr);
+    TEST_CHECK(emebalachat::VulkanGuardDisabledByEnv() == false,
+               "guard: env kill-switch cleared for deterministic assertions");
+
+    // 3. Real probe on this machine. The test box has the Vulkan SDK + driver
+    // loader, so LoadLibraryW("vulkan-1.dll") must resolve, the decision must
+    // be "backend stays enabled", and the probe must have released its handle
+    // (no refcount corruption: re-loading still succeeds afterwards).
+    const emebalachat::VulkanGuardResult res = emebalachat::EnsureVulkanGuard();
+    TEST_CHECK(res.loader_resolved == true,
+               "guard probe: vulkan-1.dll resolvable on this machine (Vulkan present)");
+    TEST_CHECK(res.guard_disabled_by_env == false, "guard probe: no env kill-switch");
+    TEST_CHECK(res.backend_expected_disabled == false,
+               "guard probe: Vulkan backend must STAY enabled here (driver present)");
+    HMODULE reprobe = ::LoadLibraryW(L"vulkan-1.dll");
+    TEST_CHECK(reprobe != nullptr, "guard probe: loader state intact after probe (FreeLibrary not corrupting)");
+    if (reprobe) {
+        ::FreeLibrary(reprobe);
+    }
+
+    // 3b. Log proof (task e item 2): re-run the probe with the diag logger on
+    // a temp dir and assert the decision line actually lands in the log file
+    // ("guard/003 ... resolved ... stays enabled" on this Vulkan-present box).
+    {
+        const std::filesystem::path log_dir =
+            std::filesystem::temp_directory_path() / "eme_f1_guard_logs";
+        std::error_code mkec;
+        std::filesystem::create_directories(log_dir, mkec);
+        const bool diag_was_live = diag::IsInitialized();
+        if (!diag_was_live) {
+            diag::Init(log_dir);
+        }
+        diag::Flush();
+        const emebalachat::VulkanGuardResult logged = emebalachat::EnsureVulkanGuard();
+        diag::Flush();
+        std::wstring log_path = diag::CurrentLogPath();
+        if (!diag_was_live) {
+            diag::Shutdown();
+        }
+        std::string log_text;
+        if (!log_path.empty()) {
+            std::ifstream lf(std::filesystem::path(log_path), std::ios::binary);
+            std::ostringstream ss;
+            ss << lf.rdbuf();
+            log_text = ss.str();
+        }
+        TEST_CHECK(log_text.find("guard/003: vulkan-1.dll resolved") != std::string::npos,
+                   "guard log: probe-success decision line written to the diag log");
+        TEST_CHECK(logged.loader_resolved && !logged.backend_expected_disabled,
+                   "guard log run: backend stays enabled on this machine");
+    }
+
+    // 4. Stub value shapes, executed directly (all stubs are static functions
+    // linked into this test image; calling them via the published mapping is
+    // the safe, driverless-free proof of the F1 mechanism):
+    using FnVersion = INT32(WINAPI*)(UINT32*);
+    using FnProps = INT32(WINAPI*)(const char*, UINT32*, void*);
+    using FnGPA = void* (WINAPI*)(void*, const char*);
+    using FnAny = INT64(WINAPI*)(void*, void*, void*, void*);
+
+    auto fn_version = reinterpret_cast<FnVersion>(
+        emebalachat::VulkanGuardStubForImport("vkEnumerateInstanceVersion"));
+    UINT32 api_version = 0xDEADBEEFu;
+    const INT32 vr = fn_version(&api_version);
+    TEST_CHECK(vr == -3, "stub: vkEnumerateInstanceVersion returns VK_ERROR_INITIALIZATION_FAILED(-3)");
+    TEST_CHECK(api_version == 0u, "stub: vkEnumerateInstanceVersion zeroes out-param");
+
+    auto fn_props = reinterpret_cast<FnProps>(
+        emebalachat::VulkanGuardStubForImport("vkEnumerateInstanceExtensionProperties"));
+    UINT32 count = 99u;
+    TEST_CHECK(fn_props(nullptr, &count, nullptr) == -3,
+               "stub: vkEnumerateInstanceExtensionProperties returns -3");
+    TEST_CHECK(count == 0u, "stub: enumerate out-count zeroed");
+
+    auto fn_layers = reinterpret_cast<FnProps>(
+        emebalachat::VulkanGuardStubForImport("vkEnumerateInstanceLayerProperties"));
+    TEST_CHECK(fn_layers(nullptr, &count, nullptr) == -3,
+               "stub: vkEnumerateInstanceLayerProperties returns -3");
+
+    auto fn_gpa = reinterpret_cast<FnGPA>(
+        emebalachat::VulkanGuardStubForImport("vkGetInstanceProcAddr"));
+    void* pfn = fn_gpa(nullptr, "vkCreateDevice");
+    TEST_CHECK(pfn != nullptr, "stub: vkGetInstanceProcAddr yields non-null PFN (no null-call AV)");
+    // The PFN the stub hands out is itself -3-shaped when used as a query.
+    auto fn_via_gpa = reinterpret_cast<FnAny>(pfn);
+    TEST_CHECK(fn_via_gpa(nullptr, nullptr, nullptr, nullptr) == -3,
+               "stub: PFN returned via GetInstanceProcAddr is -3-shaped");
+
+    // Unknown / ordinal-style names fall back to the universal stub, never null.
+    auto fn_unknown = reinterpret_cast<FnAny>(
+        emebalachat::VulkanGuardStubForImport("vkNotARealCommand"));
+    TEST_CHECK(fn_unknown != nullptr, "stub: unknown name gets non-null universal stub");
+    TEST_CHECK(fn_unknown(nullptr, nullptr, nullptr, nullptr) == -3,
+               "stub: universal stub returns -3");
+    auto fn_null_named = reinterpret_cast<FnAny>(emebalachat::VulkanGuardStubForImport(nullptr));
+    TEST_CHECK(fn_null_named != nullptr &&
+               fn_null_named(nullptr, nullptr, nullptr, nullptr) == -3,
+               "stub: null name tolerated (universal fallback)");
+
+    // 5. Failure-hook contract on synthesized DelayLoadInfo (exactly what the
+    // delay helper would pass on a driverless machine / any late failure).
+    DelayLoadInfo dli{};
+    dli.cb = sizeof(dli);
+    dli.szDll = const_cast<LPSTR>("vulkan-1.dll");
+    dli.dlp.fImportByName = TRUE;
+    dli.dlp.szProcName = const_cast<LPSTR>("vkEnumerateInstanceVersion");
+
+    FARPROC h = emebalachat::VulkanGuardFailureHook(dliFailLoadLib, &dli);
+    TEST_CHECK(h == reinterpret_cast<FARPROC>(::GetModuleHandleW(nullptr)),
+               "hook: dliFailLoadLib(vulkan-1.dll) substitutes the host-exe module (stub path opens)");
+
+    FARPROC s = emebalachat::VulkanGuardFailureHook(dliFailGetProc, &dli);
+    TEST_CHECK(s == reinterpret_cast<FARPROC>(
+                   emebalachat::VulkanGuardStubForImport("vkEnumerateInstanceVersion")),
+               "hook: dliFailGetProc returns the mapped typed stub");
+
+    // Case-insensitive DLL-name match (delayimp passes the descriptor string).
+    dli.szDll = const_cast<LPSTR>("VULKAN-1.DLL");
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailLoadLib, &dli) != nullptr,
+               "hook: DLL name matched case-insensitively");
+
+    // Ordinal-style import (fImportByName=FALSE) must still get a stub, never null.
+    dli.szDll = const_cast<LPSTR>("vulkan-1.dll");
+    dli.dlp.fImportByName = FALSE;
+    dli.dlp.dwOrdinal = 1;
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailGetProc, &dli) != nullptr,
+               "hook: ordinal import -> universal stub (total coverage)");
+
+    // Non-vulkan DLLs must NOT be touched (pre-F1 CUDA delay-load behavior kept).
+    DelayLoadInfo dli_cuda{};
+    dli_cuda.cb = sizeof(dli_cuda);
+    dli_cuda.szDll = const_cast<LPSTR>("cublas64_13.dll");
+    dli_cuda.dlp.fImportByName = TRUE;
+    dli_cuda.dlp.szProcName = const_cast<LPSTR>("cublasCreate_v2");
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailLoadLib, &dli_cuda) == nullptr,
+               "hook: cublas failure passes through untouched (no CUDA behavior change)");
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailGetProc, &dli_cuda) == nullptr,
+               "hook: cublas getproc passes through untouched");
+
+    // Kill-switch honored: with the env set, even the vulkan DLL gets nullptr
+    // (pre-F1 behavior for triage).
+    ::SetEnvironmentVariableA("GGML_VK_GUARD_DISABLE", "1");
+    TEST_CHECK(emebalachat::VulkanGuardDisabledByEnv() == true, "guard: kill-switch env detected");
+    dli.dlp.fImportByName = TRUE;
+    dli.dlp.szProcName = const_cast<LPSTR>("vkEnumerateInstanceVersion");
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailLoadLib, &dli) == nullptr,
+               "guard: kill-switch makes hook inert (dliFailLoadLib)");
+    TEST_CHECK(emebalachat::VulkanGuardFailureHook(dliFailGetProc, &dli) == nullptr,
+               "guard: kill-switch makes hook inert (dliFailGetProc)");
+    const emebalachat::VulkanGuardResult res_off = emebalachat::EnsureVulkanGuard();
+    TEST_CHECK(res_off.guard_disabled_by_env == true,
+               "guard probe: reports kill-switch state");
+    TEST_CHECK(res_off.backend_expected_disabled == false,
+               "guard probe: kill-switch -> no disable decision");
+    ::SetEnvironmentVariableA("GGML_VK_GUARD_DISABLE", nullptr);
+
+    // 6. Hook pointers actually bound into the image delayimp reads. The
+    // names are declared extern "C" at global scope by delayimp.h (included
+    // via vulkan_guard.hpp); referencing them here forces the linker to pull
+    // vulkan_guard.obj into run_tests.exe — a mis-linked (internal-linkage)
+    // hook definition would fail THIS build with unresolved externals.
+    // Verify the binding itself.
+    TEST_CHECK(__pfnDliFailureHook2 == &emebalachat::VulkanGuardFailureHook,
+               "linkage: delayimp failure-hook pointer bound to VulkanGuardFailureHook");
+    TEST_CHECK(__pfnDliNotifyHook2 != nullptr,
+               "linkage: delayimp notify hook pointer defined");
+
+    std::cout << (g_failed_count == failures_before ? "[PASS]" : "[FAIL]")
+              << " Vulkan Guard tests." << std::endl;
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -8808,6 +9010,7 @@ int main() {
     TestReq038B5AboutRtl();
     TestReq040SystemDefaults37();
     TestReq003PiiGating(); // REQ-003: diag_log_content PII logging gate
+    TestVulkanGuard();     // P5-F1: driverless-machine Vulkan guard (probe+stubs+hook)
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -116,6 +116,10 @@ endif()
 add_library(Emebalachat_core STATIC
     src/diag_logger.cpp
     src/config.cpp
+    # P5-F1 (session 260909_0004): delay-load failure hook + loader probe that
+    # keeps the ggml Vulkan backend out of the registry on driverless machines
+    # (CPU fallback instead of SEH 0xC06D007E). Also defines __pfnDli*Hook2.
+    src/vulkan_guard.cpp
     src/bidi_utils.cpp
     src/unicode_utils.cpp
     src/smart_bypass.cpp
