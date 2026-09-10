@@ -295,6 +295,149 @@ void TestUnicodeModule() {
     }
 }
 
+// REF-3.1/REF-3.3 (session 260910_0006 T1): pins the shared unicode_utils
+// helpers that replaced the former file-local duplicates in smart_bypass.cpp
+// and bidi_utils.cpp. Everything is locale-independent by construction.
+void TestUnicodeSharedHelpers() {
+    std::cout << "[RUN] Testing shared unicode_utils helpers (REF-3.1/3.3)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) EqualsIgnoreCaseAscii<char>: ASCII fold boundaries --------------
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"AbC"}, std::string_view{"aBc"}),
+               "CI: mixed-case equal");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{}, std::string_view{}),
+               "CI: empty == empty");
+    TEST_CHECK(!EqualsIgnoreCaseAscii(std::string_view{"a"}, std::string_view{}),
+               "CI: size mismatch rejects");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"A"}, std::string_view{"Z"} ) == false,
+               "CI: different letters reject");
+    // Boundary letters of the fold window.
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"@"}, std::string_view{"A"}) == false,
+               "CI: '@' (0x40) just below 'A' does not fold to 'a'");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"["}, std::string_view{"Z"}) == false,
+               "CI: '[' (0x5B) just above 'Z' does not fold");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"`"}, std::string_view{"a"}) == false,
+               "CI: '`' (0x60) just below 'a' is not 'A'");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"{"}, std::string_view{"z"}) == false,
+               "CI: '{' (0x7B) just above 'z' is not 'Z'");
+    // Digits/symbols pass through verbatim and still compare.
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"123!?"}, std::string_view{"123!?"}),
+               "CI: digits/symbols compare verbatim");
+    // High bytes (UTF-8 lead/continuation): NOT folded, compare byte-for-byte -
+    // matches the old std::tolower(static_cast<unsigned char>) idiom under the
+    // default "C" locale (tolower leaves >= 0x80 alone).
+    {
+        const std::string hi_a{"\xC3\xA9"};  // UTF-8 e-acute (C3 A9)
+        const std::string hi_b{"\xC3\xA9"};
+        TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{hi_a}, std::string_view{hi_b}),
+                   "CI: identical high bytes (UTF-8 e-acute) equal");
+        const std::string hi_c{"\xC3\xA8"};  // UTF-8 e-grave: differs -> reject
+        TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{hi_a}, std::string_view{hi_c}) == false,
+                   "CI: differing high bytes reject (no fold of >= 0x80)");
+    }
+    // The exact strings smart_bypass/bidi_utils compared at runtime.
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"Auto Detect"}, std::string_view{"AUTO DETECT"}),
+               "CI: 'Auto Detect' pin check still matches case-insensitively");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::string_view{"ar"}, std::string_view{"AR"}),
+               "CI: RTL code 'ar' matches 'AR'");
+
+    // ---- 2) EqualsIgnoreCaseAscii<wchar_t> instantiates for wide views ------
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::wstring_view{L"HeLLo"}, std::wstring_view{L"hello"}),
+               "CI wchar: wide mixed-case equal");
+    TEST_CHECK(EqualsIgnoreCaseAscii(std::wstring_view{L"\x00C9"}, std::wstring_view{L"\x00E9"}) == false,
+               "CI wchar: wide high code units (E-acute vs e-acute) do NOT fold");
+
+    // ---- 3) DecodeNextCodePoint: advance + sentinel semantics ---------------
+    // Valid pair: U+1F600 (emoji grinning face) = D83D DE00.
+    {
+        std::wstring_view s{L"\xD83D\xDE00"};
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 0x1F600u, "Decode: valid surrogate pair -> U+1F600");
+        TEST_CHECK(idx == 2, "Decode: valid pair consumes 2 units");
+        TEST_CHECK(idx == s.size(), "Decode: valid pair reaches end of string");
+    }
+    // Unpaired high surrogate (followed by a BMP char): consume 1, sentinel.
+    {
+        std::wstring_view s{L"\xD800\x0628"};  // high surrogate + Arabic BA
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == kSurrogateNeutralSentinel,
+                   "Decode: unpaired high surrogate -> neutral sentinel (0xFFFF)");
+        TEST_CHECK(idx == 1, "Decode: unpaired high surrogate consumes 1 unit");
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 0x0628u, "Decode: following BMP unit decodes normally");
+        TEST_CHECK(idx == 2, "Decode: BMP unit consumes 1 unit");
+    }
+    // High surrogate at end of string: consume 1, sentinel (idx stays in range).
+    {
+        std::wstring_view s{L"\xDBFF"};
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == kSurrogateNeutralSentinel,
+                   "Decode: trailing high surrogate -> neutral sentinel");
+        TEST_CHECK(idx == 1, "Decode: trailing high surrogate consumes 1 unit");
+    }
+    // Lone low surrogate: consume 1, sentinel. (String-literal split: 'a' is
+    // a hex digit, so "\xDC00abc" would lex as one overflowing escape.)
+    {
+        std::wstring_view s{L"\xDC00" L"abc"};
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == kSurrogateNeutralSentinel,
+                   "Decode: lone low surrogate -> neutral sentinel");
+        TEST_CHECK(idx == 1, "Decode: lone low surrogate consumes 1 unit");
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 'a', "Decode: scan resumes at next unit");
+    }
+    // High surrogate followed by another high surrogate: first is unpaired.
+    {
+        std::wstring_view s{L"\xD800\xD800\xDC00"};
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == kSurrogateNeutralSentinel,
+                   "Decode: high-high pair: first high is unpaired sentinel");
+        TEST_CHECK(idx == 1, "Decode: first high consumes 1 unit");
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 0x10000u,
+                   "Decode: second high + low forms U+10000");
+        TEST_CHECK(idx == 3, "Decode: formed pair consumes 2 units");
+    }
+    // BMP boundary units adjacent to the surrogate window pass through.
+    {
+        std::wstring_view s{L"\xD7FF\xE000"};
+        std::size_t idx = 0;
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 0xD7FFu, "Decode: U+D7FF (below surrogates) verbatim");
+        TEST_CHECK(DecodeNextCodePoint(s, idx) == 0xE000u, "Decode: U+E000 (above surrogates) verbatim");
+    }
+    // Sentinel must equal the value bidi_utils relied on for its neutral skip.
+    // static_assert (not TEST_CHECK): constexpr compare would trip /W4 C4127.
+    static_assert(kSurrogateNeutralSentinel == 0xFFFFu,
+                  "sentinel must stay 0xFFFF (bidi InAny-neutral + probe-proven non-alpha)");
+
+    // ---- 4) Regression pins: lone surrogates stay neutral at BOTH call sites -
+    {
+        // smart_bypass site: old decoder returned the RAW 0xD800 here; the new
+        // one returns 0xFFFF. Both match zero Is*CodePoint ranges, so the
+        // public predicates must be unchanged: a lone surrogate carries no
+        // script (false) and does not disturb the neighbors (Korean after it
+        // is still found).
+        TEST_CHECK(!ContainsKorean(L"\xD800\x1234"), "Regression: lone high + non-low unit -> no Korean");
+        TEST_CHECK(!ContainsKorean(L"\xDC00"), "Regression: lone low surrogate -> no Korean");
+        TEST_CHECK(ContainsKorean(L"\xD800\xD83D\xDE00\xAC00"),
+                   "Regression: surrogates neutral, trailing 가 still Korean");
+        // Literal split after \xDC00: 'a' is a hex digit and would extend the escape.
+        TEST_CHECK(HasLinguisticContent(L"!?123 \xD800\xDC00" L"a"),
+                   "Regression: lone surrogates neutral, 'a' keeps linguistic content");
+        TEST_CHECK(!HasLinguisticContent(L"!?123 \xD800\xDC00 \t"),
+                   "Regression: lone surrogates never create linguistic content");
+        // bidi_utils site: first-strong skips the unpaired surrogate (existing
+        // B1 pin re-checked here on the shared decoder path).
+        TEST_CHECK(GuessBaseDirection(L"\xD800\x0628") == TextDirection::RTL,
+                   "Regression: bidi first-strong skips unpaired surrogate -> Arabic decides RTL");
+        TEST_CHECK(GuessBaseDirection(L"\xDC00\xDC01") == TextDirection::LTR,
+                   "Regression: bidi lone-low units skipped -> LTR default");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Shared unicode_utils helper tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Shared unicode_utils helper tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 void TestSmartBypassModule() {
     std::cout << "[RUN] Testing Smart Bypass..." << std::endl;
     const int failures_before = g_failed_count;
@@ -9214,6 +9357,7 @@ int main() {
 
     TestConfigModule();
     TestUnicodeModule();
+    TestUnicodeSharedHelpers();
     TestSmartBypassModule();
     TestSelfLanguageBypass();
     TestSoundModule();

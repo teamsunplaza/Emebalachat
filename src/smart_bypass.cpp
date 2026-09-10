@@ -5,7 +5,6 @@
 #include "unicode_utils.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdio>
 #include <cwctype>
 #include <vector>
@@ -15,17 +14,14 @@ namespace emebalachat {
 
 namespace {
 
-inline uint32_t DecodeNextCodePoint(std::wstring_view sv, size_t& idx) {
-    wchar_t c = sv[idx++];
-    if (c >= 0xD800 && c <= 0xDBFF && idx < sv.size()) {
-        wchar_t low = sv[idx];
-        if (low >= 0xDC00 && low <= 0xDFFF) {
-            idx++;
-            return 0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
-        }
-    }
-    return static_cast<uint32_t>(c);
-}
+// REF-3.3 (session 260910_0006 T1): the former file-local DecodeNextCodePoint
+// is replaced by the shared emebalachat::DecodeNextCodePoint in
+// unicode_utils.hpp. Behavioral diff: unpaired surrogates now decode to the
+// 0xFFFF neutral sentinel instead of the raw surrogate value. Observably
+// identical here: no Is*CodePoint range below covers 0xD800-0xDFFF or 0xFFFF,
+// and a built probe confirmed GetStringTypeW(CT_CTYPE1) reports C1_ALPHA=0 for
+// every surrogate unit AND for 0xFFFF, so the IsLinguisticCodePoint fallback
+// rejects both alike. The idx advance semantics match the old decoder exactly.
 
 inline bool IsKoreanCodePoint(uint32_t cp) {
     return (cp >= 0xAC00 && cp <= 0xD7A3) || // Hangul Syllables: 가..힣
@@ -165,72 +161,48 @@ inline bool IsLinguisticCodePoint(uint32_t cp) {
     return false;
 }
 
-bool CaseInsensitiveEqual(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
+// REF-3.1 (session 260910_0006 T1): the former file-local CaseInsensitiveEqual
+// is replaced at every call site by the shared EqualsIgnoreCaseAscii<char>
+// template in unicode_utils.hpp. Equivalent under this project's default "C"
+// CRT locale (no setlocale call exists in src/): std::tolower maps only
+// 'A'-'Z' there, and the +32 fold here covers exactly that set; high bytes
+// pass through both implementations verbatim.
+
+// REF-3.2 (session 260910_0006 T1): single scan driver for the 16 script
+// predicates below. Loop body is character-for-character the old hand-unrolled
+// boilerplate (shared decoder, same idx advance, early-return on first hit).
+template <typename Predicate>
+bool ContainsCodePointMatching(std::wstring_view text, Predicate pred) {
+    size_t idx = 0;
+    while (idx < text.size()) {
+        uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (pred(cp)) {
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 } // namespace
 
 bool ContainsKorean(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsKoreanCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsKoreanCodePoint);
 }
 
 bool ContainsKana(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsKanaCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsKanaCodePoint);
 }
 
 bool ContainsHanzi(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsHanziCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsHanziCodePoint);
 }
 
 bool ContainsCyrillic(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsCyrillicCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsCyrillicCodePoint);
 }
 
 bool ContainsArabic(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsArabicCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsArabicCodePoint);
 }
 
 bool ContainsHebrew(std::wstring_view text) {
@@ -238,124 +210,47 @@ bool ContainsHebrew(std::wstring_view text) {
     // detection, same scan pattern as ContainsArabic. The U+0590-U+05FF range
     // lives in bidi_utils (IsHebrewScriptCodePoint) so the translation
     // trigger and the REQ-038 first-strong scanner share one source of truth.
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsHebrewScriptCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsHebrewScriptCodePoint);
 }
 
 bool ContainsThai(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsThaiCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsThaiCodePoint);
 }
 
 bool ContainsVietnamese(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsVietnameseCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsVietnameseCodePoint);
 }
 
 bool ContainsLatin(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsLatinCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsLatinCodePoint);
 }
 
 bool ContainsDevanagari(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsDevanagariCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsDevanagariCodePoint);
 }
 
 bool ContainsBengali(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsBengaliCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsBengaliCodePoint);
 }
 
 bool ContainsKhmer(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsKhmerCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsKhmerCodePoint);
 }
 
 bool ContainsLao(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsLaoCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsLaoCodePoint);
 }
 
 bool ContainsMyanmar(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsMyanmarCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsMyanmarCodePoint);
 }
 
 bool ContainsGreek(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsGreekCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsGreekCodePoint);
 }
 
 bool HasLinguisticContent(std::wstring_view text) {
-    size_t idx = 0;
-    while (idx < text.size()) {
-        uint32_t cp = DecodeNextCodePoint(text, idx);
-        if (IsLinguisticCodePoint(cp)) {
-            return true;
-        }
-    }
-    return false;
+    return ContainsCodePointMatching(text, IsLinguisticCodePoint);
 }
 
 bool IsUrl(std::wstring_view text) {
@@ -685,7 +580,7 @@ bool ShouldTranslate(
     // target, and pinned sources could be overridden by detection noise.
     std::string source_norm = NormalizeLanguageCode(source_code_or_name);
     const bool src_pinned = source_norm != "AUTO" && !source_code_or_name.empty() &&
-                            !CaseInsensitiveEqual(source_code_or_name, "Auto Detect");
+                            !EqualsIgnoreCaseAscii(source_code_or_name, std::string_view{"Auto Detect"});
 
     // 5. If input text is already in the target language, bypass translation
     //    immediately - but ONLY under Auto Detect. With an explicit pin, the
@@ -704,8 +599,8 @@ bool ShouldTranslate(
     //    bypasses through step 7 (a user pin is ground truth).
     std::string detected = DetectLanguage(trimmed);
     if (!src_pinned && detected != "Unknown" && detected != "Auto Detect") {
-        if (CaseInsensitiveEqual(detected, target_name) ||
-            CaseInsensitiveEqual(NormalizeLanguageCode(detected), target_code)) {
+        if (EqualsIgnoreCaseAscii(std::string_view{detected}, std::string_view{target_name}) ||
+            EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(detected)}, std::string_view{target_code})) {
             // R5 observability: pin the exact bypass so "didn't translate after
             // a language switch" is attributable at runtime.
             DIAG_F(
@@ -714,7 +609,7 @@ bool ShouldTranslate(
             return false;
         }
         if (target_code.starts_with("ZH") && detected.find("Chinese") != std::string::npos) {
-            if (CaseInsensitiveEqual(detected, target_name)) {
+            if (EqualsIgnoreCaseAscii(std::string_view{detected}, std::string_view{target_name})) {
                 DIAG_F(
                         "SMART_BYPASS/ShouldTranslate/002: Chinese-variant bypass (detected=%s, target=%s/%s)\n",
                         detected.c_str(), target_name.c_str(), target_code.c_str());
@@ -734,14 +629,14 @@ bool ShouldTranslate(
 
     // 7. Check if configured source matches target
     if (effective_source_name != "Unknown") {
-        if (CaseInsensitiveEqual(effective_source_name, target_name) ||
-            CaseInsensitiveEqual(NormalizeLanguageCode(effective_source_name), target_code)) {
+        if (EqualsIgnoreCaseAscii(std::string_view{effective_source_name}, std::string_view{target_name}) ||
+            EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(effective_source_name)}, std::string_view{target_code})) {
             return false;
         }
 
         // Chinese variant normalization
         if (target_code.starts_with("ZH") && (effective_source_name.find("Chinese") != std::string::npos)) {
-            if (CaseInsensitiveEqual(effective_source_name, target_name)) {
+            if (EqualsIgnoreCaseAscii(std::string_view{effective_source_name}, std::string_view{target_name})) {
                 return false;
             }
         }

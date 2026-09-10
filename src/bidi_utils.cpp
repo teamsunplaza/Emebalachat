@@ -2,9 +2,9 @@
 
 #include "config.hpp"
 #include "i18n.hpp"
+#include "unicode_utils.hpp"
 
 #include <array>
-#include <cctype>
 #include <span>
 #include <string>
 #include <string_view>
@@ -13,18 +13,11 @@ namespace emebalachat {
 
 namespace {
 
-// ASCII case-insensitive comparison (registry codes and config locale codes
-// are pure ASCII; mirrors the EqualsIgnoreCase idiom in src/config.cpp).
-bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
+// REF-3.1 (session 260910_0006 T1): the former file-local EqualsIgnoreCaseAscii
+// is replaced by the shared template in unicode_utils.hpp. Equivalent under
+// this project's default "C" CRT locale (no setlocale call exists in src/):
+// std::tolower mapped only 'A'-'Z' there, exactly the +32 fold set; high bytes
+// compared verbatim in both implementations.
 
 // The closed RTL language-code set (design §2-Q1 verdict A / P2 §A2): exactly
 // 4 of the 37 registry languages are right-to-left.
@@ -194,31 +187,12 @@ constexpr CodeRange kStrongRAstral[] = {
     {0x1E900, 0x1E943},  // Adlam letters (U+1E950.. formatting chars excluded)
 };
 
-// Decodes one code point starting at idx (advancing it past the unit(s)).
-// Unpaired surrogates decode to the private-use-FFFF-adjacent sentinel below
-// and match nothing => skipped as neutral (mismatched halves carry no script).
-constexpr unsigned int kNeutralSentinel = 0xFFFF;
-
-unsigned int DecodeCodePoint(const std::wstring_view text, std::size_t& idx) {
-    const unsigned int cp = static_cast<unsigned int>(static_cast<unsigned short>(text[idx]));
-    if (cp >= 0xD800 && cp <= 0xDBFF) {
-        if (idx + 1 < text.size()) {
-            const unsigned int lo = static_cast<unsigned int>(static_cast<unsigned short>(text[idx + 1]));
-            if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                idx += 2;
-                return 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
-            }
-        }
-        idx += 1;
-        return kNeutralSentinel;
-    }
-    if (cp >= 0xDC00 && cp <= 0xDFFF) {
-        idx += 1;
-        return kNeutralSentinel;
-    }
-    idx += 1;
-    return cp;
-}
+// REF-3.3 (session 260910_0006 T1): the former file-local DecodeCodePoint is
+// replaced by the shared emebalachat::DecodeNextCodePoint in unicode_utils.hpp.
+// Byte-identical semantics, including the 0xFFFF neutral sentinel for unpaired
+// surrogates (kSurrogateNeutralSentinel == kNeutralSentinel): surrogates match
+// no InAny() table below, so they are skipped as neutral (mismatched halves
+// carry no script).
 
 } // namespace
 
@@ -248,7 +222,7 @@ bool IsRtlLocale(UiLocale locale) {
     // CONSTRUCTION - no edit in bidi_utils, no enum-list drift.
     // Today's 8-value enum (Auto/KO/EN/JA/zh-CN/zh-TW/VI/ES) is all-LTR.
     const std::string code = I18n::LocaleToString(locale);
-    if (code.empty() || EqualsIgnoreCaseAscii(code, "auto")) return false;
+    if (code.empty() || EqualsIgnoreCaseAscii(std::string_view{code}, std::string_view{"auto"})) return false;
     return MatchesRtlCodeSet(code);
 }
 
@@ -271,7 +245,7 @@ TextDirection GuessBaseDirection(const std::wstring_view text) {
     // controls/isolates/BOM) are skipped; no strong char -> LTR (P2 default).
     std::size_t idx = 0;
     while (idx < text.size()) {
-        const unsigned int cp = DecodeCodePoint(text, idx);
+        const unsigned int cp = DecodeNextCodePoint(text, idx);
         if (InAny(kDigitsAN, cp)) continue;
         if (InAny(kStrongR, cp)) return TextDirection::RTL;
         if (InAny(kStrongAL, cp)) return TextDirection::RTL;
