@@ -263,51 +263,29 @@ std::wstring GoogleTranslate::ChromeAdditionalHeaders() {
            L"Accept-Language: en-US,en;q=0.9\r\n";
 }
 
+// REF-3.4 (session 260910_0006): the former 36-branch if-chain collapsed to
+// the four mappings that are NOT the plain ASCII lowercase of the canonical
+// code, plus the lowercase pass-through. Equivalence rests on two facts
+// pinned by TestRef34MapLanguageCodePins (tests/run_tests.cpp):
+//   1. NormalizeLanguageCode returns ONLY one of the 38 uppercase registry
+//      codes (kAllLanguages, config.cpp) or "AUTO" - never mixed case; and
+//   2. for all 38 codes, Google's target equals ASCII-lowercase(code) except
+//      ZH-CN->zh-CN, ZH-TW->zh-TW, FIL->tl, HE->iw ("AUTO"->"auto" is covered
+//      by the lowercase rule itself).
+// The old chain matched `norm`, so the raw-input tolower fallback at the tail
+// was unreachable (any norm value hit a branch first); lowering `norm` keeps
+// it reachable-by-construction identical: norm is never empty because an
+// empty input normalizes to "AUTO" -> "auto".
 std::string GoogleTranslate::MapLanguageCode(std::string_view code) {
     std::string norm = NormalizeLanguageCode(code);
-    if (norm == "AUTO") return "auto";
-    if (norm == "EN") return "en";
-    if (norm == "KO") return "ko";
-    if (norm == "VI") return "vi";
     if (norm == "ZH-CN") return "zh-CN";
     if (norm == "ZH-TW") return "zh-TW";
-    if (norm == "JA") return "ja";
-    if (norm == "ES") return "es";
-    if (norm == "FR") return "fr";
-    if (norm == "DE") return "de";
-    if (norm == "RU") return "ru";
-    if (norm == "TH") return "th";
-    if (norm == "AR") return "ar";
-    if (norm == "PT") return "pt";
-    if (norm == "IT") return "it";
-    if (norm == "ID") return "id";
-    if (norm == "MS") return "ms";
     if (norm == "FIL") return "tl"; // Tagalog / Filipino
-    if (norm == "KM") return "km";
-    if (norm == "LO") return "lo";
-    if (norm == "HI") return "hi";
-    if (norm == "BN") return "bn";
-    if (norm == "TR") return "tr";
-    if (norm == "PL") return "pl";
-    if (norm == "NL") return "nl";
-    if (norm == "UK") return "uk";
-    if (norm == "FA") return "fa";
-    if (norm == "UR") return "ur";
     if (norm == "HE") return "iw";
-    if (norm == "CS") return "cs";
-    if (norm == "HU") return "hu";
-    if (norm == "SV") return "sv";
-    if (norm == "EL") return "el";
-    if (norm == "RO") return "ro";
-    if (norm == "DA") return "da";
-    if (norm == "FI") return "fi";
-    if (norm == "NO") return "no";
-    if (norm == "MY") return "my";
 
-    // Default fallback to lowercase
     std::string res;
-    res.reserve(code.size());
-    for (char c : code) {
+    res.reserve(norm.size());
+    for (char c : norm) {
         res += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return res.empty() ? "en" : res;

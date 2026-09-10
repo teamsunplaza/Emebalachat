@@ -1266,6 +1266,130 @@ void TestGoogleHttpProfile() {
     }
 }
 
+// REF-3.4 differential pin (written BEFORE the 36-branch if-chain collapse):
+// freezes MapLanguageCode's output for EVERY reachable input class so the
+// refactor to 4 special cases + ASCII-lowercase(norm) cannot silently change
+// behavior. Expected values are an INDEPENDENT hand-written table (transcribed
+// from Google's supported-translate-languages list, not from the
+// implementation), so a broken refactor fails here rather than re-deriving
+// the bug. Reachability premise (verified in config.cpp):
+// NormalizeLanguageCode returns one of the 38 registry codes (all uppercase,
+// e.g. "KO", "ZH-CN", "FIL") or "AUTO" for every unresolvable token, so the
+// old chain's raw-input lowercase fallback was dead code and MapLanguageCode
+// is fully determined by norm -> google mapping.
+void TestRef34MapLanguageCodePins() {
+    std::cout << "[RUN] Testing REF-3.4 MapLanguageCode differential pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Independent expected mapping: canonical registry code -> Google BCP-47.
+    // All rows are plain ASCII-lowercase of the code EXCEPT the five marked
+    // special (AUTO lowercase works; the 4 real specials must stay branches).
+    struct ExpectedMap { const char* code; const char* google; };
+    static constexpr ExpectedMap kExpected[] = {
+        {"AUTO",  "auto"},
+        {"EN",    "en"},
+        {"KO",    "ko"},
+        {"VI",    "vi"},
+        {"ZH-CN", "zh-CN"}, // special: lowercase would be zh-cn
+        {"ZH-TW", "zh-TW"}, // special: lowercase would be zh-tw
+        {"JA",    "ja"},
+        {"ES",    "es"},
+        {"FR",    "fr"},
+        {"DE",    "de"},
+        {"RU",    "ru"},
+        {"TH",    "th"},
+        {"AR",    "ar"},
+        {"PT",    "pt"},
+        {"IT",    "it"},
+        {"ID",    "id"},
+        {"MS",    "ms"},
+        {"FIL",   "tl"},    // special: Tagalog ISO code
+        {"KM",    "km"},
+        {"LO",    "lo"},
+        {"HI",    "hi"},
+        {"BN",    "bn"},
+        {"TR",    "tr"},
+        {"PL",    "pl"},
+        {"NL",    "nl"},
+        {"UK",    "uk"},
+        {"FA",    "fa"},
+        {"UR",    "ur"},
+        {"HE",    "iw"},    // special: Google legacy Hebrew code
+        {"CS",    "cs"},
+        {"HU",    "hu"},
+        {"SV",    "sv"},
+        {"EL",    "el"},
+        {"RO",    "ro"},
+        {"DA",    "da"},
+        {"FI",    "fi"},
+        {"NO",    "no"},
+        {"MY",    "my"},
+    };
+    auto expectedFor = [](std::string_view code) -> const char* {
+        for (const auto& e : kExpected) {
+            if (code == e.code) return e.google;
+        }
+        return nullptr;
+    };
+
+    // 1. The pin table must cover the ENTIRE live registry (guards against a
+    //    future registry row added without a pin).
+    const auto& langs = GetSupportedLanguages();
+    TEST_CHECK(langs.size() == std::size(kExpected),
+               "REF-3.4: registry size matches pin table size (add a pin row when adding a locale)");
+    for (const auto& l : langs) {
+        const char* exp = expectedFor(l.code);
+        TEST_CHECK(exp != nullptr && GoogleTranslate::MapLanguageCode(l.code) == exp,
+                   ("REF-3.4: MapLanguageCode(registry code " + l.code + ") matches independent pin").c_str());
+    }
+
+    // 2. Case-insensitive entry: raw lowercase / mixed-case codes normalize
+    //    through FindLanguageByCode before mapping, so they must equal the
+    //    uppercase-input result.
+    static constexpr const char* kCaseInputs[][2] = {
+        {"ko", "ko"}, {"Ko", "ko"}, {"zh-cn", "zh-CN"}, {"Zh-Tw", "zh-TW"},
+        {"fil", "tl"}, {"Fil", "tl"}, {"he", "iw"}, {"He", "iw"},
+        {"auto", "auto"}, {"Auto", "auto"},
+    };
+    for (const auto& in : kCaseInputs) {
+        TEST_CHECK(GoogleTranslate::MapLanguageCode(in[0]) == in[1],
+                   (std::string("REF-3.4: mixed-case input '") + in[0] + "' maps through registry").c_str());
+    }
+
+    // 3. Name inputs (English + native + display name) resolve via the
+    //    registry, then map identically to codes.
+    static constexpr const char* kNameInputs[][2] = {
+        {"Korean", "ko"},
+        {"Auto Detect", "auto"},
+        {"Chinese Simplified", "zh-CN"},
+        {"Chinese Traditional", "zh-TW"},
+        {"Filipino", "tl"},
+        {"Hebrew", "iw"},
+        {"한국어", "ko"},   // native name lookup
+    };
+    for (const auto& in : kNameInputs) {
+        TEST_CHECK(GoogleTranslate::MapLanguageCode(in[0]) == in[1],
+                   (std::string("REF-3.4: name input '") + in[0] + "' resolves via registry").c_str());
+    }
+
+    // 4. Junk inputs: NormalizeLanguageCode degrades ANY unresolvable token to
+    //    "AUTO" -> "auto". This is why the old raw-lowercase fallback was
+    //    unreachable; pin it so the refactor cannot introduce a different
+    //    junk path (e.g. accidentally lowercasing the raw token).
+    static constexpr const char* kJunk[] = {"", "xx", "klingon", "iw", "iw-il", "zh_CN"};
+    for (const char* junk : kJunk) {
+        TEST_CHECK(GoogleTranslate::MapLanguageCode(junk) == "auto",
+                   (std::string("REF-3.4: junk input '") + junk + "' degrades to auto").c_str());
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REF-3.4 MapLanguageCode pin tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REF-3.4 MapLanguageCode pin tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 void TestEngineModule() {
     std::cout << "[RUN] Testing Translation Manager..." << std::endl;
     const int failures_before = g_failed_count;
@@ -9454,6 +9578,7 @@ int main() {
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();
+    TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
     TestEngineModule();
     TestModelPathValidation();
     TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache
