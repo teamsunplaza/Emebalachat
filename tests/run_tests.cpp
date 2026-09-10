@@ -3710,11 +3710,16 @@ void TestLanguageSwitchingMatrix() {
 }
 
 // ===========================================================================
-// R6 Phase 4 (B2, architect plan §4): language routing. Pins the three pure
-// seams headlessly:
-//   (1) BuildPrompt injects the NATIVE target name (简体中文, not "Chinese
-//       Simplified") and a native source hint only for a known non-AUTO source
-//       (AUTO/empty/unresolvable -> byte-identical historical prompt).
+// R6 Phase 4 (B2, architect plan §4) + Task 1 (session 260910_0004): language
+// routing. Pins the three pure seams headlessly:
+//   (1) BuildPrompt names the target in the template's form: the Chinese
+//       branch keeps the NATIVE name (简体中文, not "Chinese Simplified"; the
+//       branch output is byte-identical to R6 Phase 4), while the English
+//       branch injects name_en ("into Korean", not "into 한국어" — Task 1
+//       removed the code-switching that degraded the small local model). A
+//       source hint is added only for a known non-AUTO source, in the same
+//       per-branch form (AUTO/empty/unresolvable -> byte-identical historical
+//       prompt).
 //   (2) NormalizeLanguageCode / GoogleTranslate::MapLanguageCode round-trip
 //       over the full plan §4.2(b) matrix (no mapping gap for any pair).
 //   (3) LocalPairReliable + PlanTranslationRouting verdicts over sources
@@ -3741,10 +3746,12 @@ void TestR6P4LanguageRouting() {
     std::cout << "[RUN] Testing R6 Phase 4 language routing (B2 prompt + pair matrix)..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- 1) Target native-name injection, plan §4.2(a) row 1. -------------
+    // ---- 1) Target name injection per branch, plan §4.2(a) row 1 + Task 1.
     // The ZH-CN user bug: "将以下文本翻译为Chinese Simplified" (English name
     // inside the Chinese instruction) is out-of-distribution for Hy-MT2 and
-    // degraded JA->ZH output to English. The seam now injects name_native.
+    // degraded JA->ZH output to English. The Chinese branch keeps name_native.
+    // The English branch uses name_en (Task 1): "into 한국어" / "into Deutsch"
+    // native injection was code-switching that hurt small-model quality.
     TEST_CHECK(BuildPrompt("hello", "ZH-CN") ==
                    "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
                "R6p4: ZH-CN target prompt carries native 简体中文 (exact form)");
@@ -3770,24 +3777,60 @@ void TestR6P4LanguageRouting() {
     for (const auto& t : targets) {
         const std::string by_code = BuildPrompt("hello", t.code);
         const std::string by_name = BuildPrompt("hello", t.name_en);
-        TEST_CHECK(by_code.find(t.name_native) != std::string::npos,
-                   R6P4Msg(std::string("target prompt contains native '") + t.name_native + "'", "-", t.code));
+        const bool zh_branch =
+            std::string(t.code) == "ZH-CN" || std::string(t.code) == "ZH-TW";
+        const std::string expected_name = zh_branch ? t.name_native : t.name_en;
+        const std::string wrong_name = zh_branch ? t.name_en : t.name_native;
+        TEST_CHECK(by_code.find(expected_name) != std::string::npos,
+                   R6P4Msg(std::string("target prompt contains '") + expected_name + "'", "-", t.code));
         TEST_CHECK(by_code == by_name,
                    R6P4Msg("code-form and name-form prompts are identical", "-", t.code));
-        if (std::string(t.name_en) != std::string(t.name_native)) {
-            TEST_CHECK(by_code.find(t.name_en) == std::string::npos,
-                       R6P4Msg(std::string("English name '") + t.name_en + "' must NOT appear", "-", t.code));
+        if (expected_name != wrong_name) {
+            TEST_CHECK(by_code.find(wrong_name) == std::string::npos,
+                       R6P4Msg(std::string("wrong-form name '") + wrong_name + "' must NOT appear", "-", t.code));
         }
     }
 
-    // ---- 2) Source hint injection, plan §4.2(a) row 2. --------------------
-    // Known non-AUTO source -> native source name is named in the instruction.
+    // Task 1 acceptance pins: the original code-switching complaints must be
+    // gone — targets Korean/German/Vietnamese produce fully-English
+    // instructions via name_en (previously "into 한국어" / "into Deutsch" /
+    // "into Tiếng Việt").
+    {
+        struct { const char* token; const char* needle; const char* banned; } en_cases[] = {
+            { "Korean",     "into Korean",     "한국어" },
+            { "German",     "into German",     "Deutsch" },
+            { "Vietnamese", "into Vietnamese", "Tiếng Việt" },
+            { "KO",         "into Korean",     "한국어" },
+            { "DE",         "into German",     "Deutsch" },
+            { "VI",         "into Vietnamese", "Tiếng Việt" },
+        };
+        for (const auto& c : en_cases) {
+            const std::string p = BuildPrompt("hello", c.token);
+            TEST_CHECK(p.find(c.needle) != std::string::npos,
+                       R6P4Msg(std::string("English-branch prompt carries '") + c.needle + "'", "-", c.token));
+            TEST_CHECK(p.find(c.banned) == std::string::npos,
+                       R6P4Msg(std::string("English-branch prompt has no native '") + c.banned + "'", "-", c.token));
+        }
+    }
+
+    // ---- 2) Source hint injection, plan §4.2(a) row 2 + Task 1. -----------
+    // Known non-AUTO source -> name in the BRANCH's form: native in the
+    // Chinese instruction, English in the English instruction.
     TEST_CHECK(BuildPrompt("hello", "ZH-CN", "JA") ==
                    "将以下日本語文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
-               "R6p4: JA source + ZH target injects 日本語 source hint");
+               "R6p4: JA source + ZH target injects 日本語 source hint (zh branch keeps native)");
     TEST_CHECK(BuildPrompt("hello", "English", "Japanese") ==
-                   "Translate the following 日本語 segment into English, without additional explanation.\n\nhello",
-               "R6p4: known source injects native source name into English branch");
+                   "Translate the following Japanese segment into English, without additional explanation.\n\nhello",
+               "Task 1: known source injects name_en source name into English branch");
+    TEST_CHECK(BuildPrompt("hello", "Korean", "Japanese") ==
+                   "Translate the following Japanese segment into Korean, without additional explanation.\n\nhello",
+               "Task 1: English branch uses name_en on BOTH sides (KO target)");
+    TEST_CHECK(BuildPrompt("hello", "English", "KO") ==
+                   "Translate the following Korean segment into English, without additional explanation.\n\nhello",
+               "Task 1: source code token resolves to name_en in English branch");
+    TEST_CHECK(BuildPrompt("hello", "English", "한국어") ==
+                   "Translate the following Korean segment into English, without additional explanation.\n\nhello",
+               "Task 1: native-form source token also resolves to name_en in English branch");
     // AUTO / empty / unresolvable source -> NO source token (backward compat:
     // byte-identical to the historical two-argument prompts).
     {

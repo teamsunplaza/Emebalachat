@@ -548,24 +548,27 @@ bool IsChineseLanguage(std::string_view lang) {
     return false;
 }
 
-// R6 Phase 4 (B2, architect plan §4.1 item 1): resolve a language token (ISO
-// code / English name / native name) to the name form the Hy-MT2 instruction
-// carries. The plan pins name_native (e.g. 简体中文) instead of name_en: the
-// English name inside a localized instruction is out-of-distribution for the
-// model and degrades non-EN target pairs to English output (B2-H1(a)).
-// Unresolvable tokens are returned RAW with an empty out_code so historical
-// prompts (e.g. the bare word "Chinese") stay byte-identical.
-std::string PromptLanguageName(std::string_view token, std::string& out_code) {
+// R6 Phase 4 (B2, architect plan §4.1 item 1) + Task 1 (session 260910_0004):
+// resolve a language token (ISO code / English name / native name) to its
+// registry entry. BuildPrompt picks the name FORM per instruction template:
+// the Chinese branch keeps name_native (B2-H1: an English name inside the
+// localized 将以下… instruction is out-of-distribution and degraded non-EN
+// targets), while the English branch injects name_en (native names there were
+// code-switching: "into 한국어" / "into Deutsch", which degraded the small
+// local model's translation quality). Returns nullptr for unresolvable tokens
+// with an empty out_code so historical prompts (e.g. the bare word "Chinese")
+// stay byte-identical via raw injection.
+const LanguageInfo* ResolvePromptLanguage(std::string_view token, std::string& out_code) {
     if (const auto* info = FindLanguageByCode(token)) {
         out_code = info->code;
-        return info->name_native;
+        return info;
     }
     if (const auto* info = FindLanguageByName(token)) {
         out_code = info->code;
-        return info->name_native;
+        return info;
     }
     out_code.clear();
-    return std::string(token);
+    return nullptr;
 }
 } // namespace
 
@@ -573,12 +576,20 @@ std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
                         std::string_view source_lang) {
     std::string tgt_code;
-    std::string tgt_name = PromptLanguageName(target_lang, tgt_code);
-    if (tgt_code == "AUTO") {
-        // AUTO is never a translation target; keep the historical raw
-        // injection for this degenerate input instead of the native "자동 감지".
+    const LanguageInfo* tgt_info = ResolvePromptLanguage(target_lang, tgt_code);
+    std::string tgt_native;
+    std::string tgt_en;
+    if (tgt_info != nullptr && tgt_code != "AUTO") {
+        tgt_native = tgt_info->name_native;
+        tgt_en     = tgt_info->name_en;
+    } else {
+        // AUTO or unresolvable token: keep the historical raw injection.
+        // AUTO is never a translation target (its native "자동 감지" must not
+        // leak into the instruction), and unresolvable tokens (e.g. the bare
+        // word "Chinese") preserve their byte-identical historical prompts.
         tgt_code.clear();
-        tgt_name = std::string(target_lang);
+        tgt_native = std::string(target_lang);
+        tgt_en     = tgt_native;
     }
 
     // R6 Phase 4 (B2-H2, plan §4.1 item 2): explicit source hint ONLY when the
@@ -586,11 +597,13 @@ std::string BuildPrompt(std::string_view source_text,
     // sources add no token, so the AUTO prompt stays byte-identical to the
     // historical form (plan §4.2 backward-compatibility requirement).
     std::string src_code;
-    std::string src_name;
+    std::string src_native;
+    std::string src_en;
     if (!source_lang.empty()) {
-        src_name = PromptLanguageName(source_lang, src_code);
-        if (src_code.empty() || src_code == "AUTO") {
-            src_name.clear();
+        const LanguageInfo* src_info = ResolvePromptLanguage(source_lang, src_code);
+        if (src_info != nullptr && src_code != "AUTO") {
+            src_native = src_info->name_native;
+            src_en     = src_info->name_en;
         }
     }
 
@@ -599,28 +612,34 @@ std::string BuildPrompt(std::string_view source_text,
     // BuildPrompt(text, "Chinese") -> untranslated "Chinese" injection).
     const bool zh_instruction =
         (tgt_code == "ZH-CN" || tgt_code == "ZH-TW") ||
-        (tgt_code.empty() && IsChineseLanguage(tgt_name));
+        (tgt_code.empty() && IsChineseLanguage(tgt_native));
 
     if (zh_instruction) {
         // Plan §4.1 template: 将以下[<source>文本]翻译为<target-native>，…
+        // Task 1 (session 260910_0004): this branch KEEPS the native name
+        // forms — its output stays byte-identical to the R6 Phase 4 policy.
         std::string prompt = "将以下";
-        if (!src_name.empty()) {
-            prompt.append(src_name);
+        if (!src_native.empty()) {
+            prompt.append(src_native);
         }
         prompt.append("文本翻译为");
-        prompt.append(tgt_name);
+        prompt.append(tgt_native);
         prompt.append("，注意只需要输出翻译后的结果，不要额外解释：\n\n");
         prompt.append(source_text);
         return prompt;
     }
 
+    // Task 1 (session 260910_0004): the English instruction carries the
+    // ENGLISH name (name_en) on both sides. Injecting name_native here caused
+    // code-switching ("Translate the following segment into 한국어"), which
+    // degraded the small (1.8B) local model's translation quality.
     std::string prompt = "Translate the following ";
-    if (!src_name.empty()) {
-        prompt.append(src_name);
+    if (!src_en.empty()) {
+        prompt.append(src_en);
         prompt.push_back(' ');
     }
     prompt.append("segment into ");
-    prompt.append(tgt_name);
+    prompt.append(tgt_en);
     prompt.append(", without additional explanation.\n\n");
     prompt.append(source_text);
     return prompt;
@@ -643,8 +662,9 @@ std::string BuildPrompt(std::string_view source_text,
 // the EN-side conservative rule for PINNED sources is REMOVED. A pinned
 // source is ground truth (the user declared it), so pair reliability is
 // evaluated on the pair itself: Hy-MT2 is a multilingual model whose registry
-// covers all 37 languages as native source/target names (BuildPrompt injects
-// name_native on both sides), and the user SCOPE DIRECTIVE ("Hy-MT2에서
+// covers all 37 languages as source/target names (BuildPrompt names both sides
+// in the template's form: name_native in the Chinese branch, name_en in the
+// English branch — Task 1, session 260910_0004), and the user SCOPE DIRECTIVE ("Hy-MT2에서
 // 지원하는 모든 언어쌍을 정확하게 100% 지원") forbids an English-centric gate
 // that pushed explicitly pinned non-EN pairs (VI->KO, JA->ZH-CN, KO->JA...)
 // onto the 041 cloud-leak path or the 042 degraded-local route. Result: every

@@ -179,22 +179,28 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
                             new_source, new_target);
 }
 
-// R6 Phase 4 (B2, architect plan §4.1 item 1+2): Formats translation prompt for
-// the Hy-MT2 model.
+// R6 Phase 4 (B2, architect plan §4.1 item 1+2) + Task 1 (session 260910_0004):
+// Formats translation prompt for the Hy-MT2 model.
 //
 // target_lang / source_lang accept ANY form (ISO code, English name, or native
-// name). The language name INJECTED into the instruction is the native name
-// (LanguageInfo::name_native, e.g. 简体中文), NOT the English name: injecting
-// "Chinese Simplified" into the Chinese instruction put the prompt
-// out-of-distribution for non-EN targets (plan B2-H1: JA→ZH degraded to
-// English output). Unresolvable tokens (e.g. the bare word "Chinese", which is
-// not a table entry) are injected raw, preserving the historical behavior.
+// name). The language name INJECTED into the instruction is form-matched to the
+// template: the Chinese branch (将以下…) uses the native name
+// (LanguageInfo::name_native, e.g. 简体中文) — an English name inside the
+// localized instruction put the prompt out-of-distribution for non-EN targets
+// (plan B2-H1: JA→ZH degraded to English output) — while the English branch
+// ("Translate the following … segment into …") uses the English name
+// (LanguageInfo::name_en, e.g. Korean). Native names in the English template
+// caused code-switching ("into 한국어" / "into Deutsch") and degraded the small
+// local model's translation quality (Task 1). Unresolvable tokens (e.g. the
+// bare word "Chinese", which is not a table entry) are injected raw,
+// preserving the historical behavior.
 //
 // source_lang (optional): when it resolves to a real language (non-AUTO), the
-// prompt names it (Chinese branch: 将以下日本語文本翻译为简体中文…; English
-// branch: "Translate the following 日本語 segment into …"). AUTO / empty /
-// unresolvable sources add NO source token, producing byte-identical prompts
-// to the historical behavior (plan §4.2 backward-compatibility requirement).
+// prompt names it in the same per-branch form (Chinese branch: 将以下日本語文本
+// 翻译为简体中文…; English branch: "Translate the following Japanese segment
+// into …"). AUTO / empty / unresolvable sources add NO source token, producing
+// byte-identical prompts to the historical behavior (plan §4.2
+// backward-compatibility requirement).
 std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
                         std::string_view source_lang = {});
