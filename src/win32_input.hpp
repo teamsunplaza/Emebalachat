@@ -178,7 +178,16 @@ bool SelectAll();
 // twice; reading on the first bump would observe an EMPTY clipboard.
 
 // Max wait for the sequence number to move off the pre-Ctrl+C baseline.
-inline constexpr uint32_t kClipboardChangeTimeoutMs = 180;
+// REQ-001 (session 260910_0003, Issue A): shrunk 180 -> 80 ms. The 180 ms
+// budget was tuned for slow Electron clipboard commits, but it also taxes
+// every confirmed-empty copy (Discord empty input: Ctrl+C over an empty
+// selection changes nothing, so the WHOLE chord budget burns before the
+// worker's has_text=0 send-through - the reported 1.55 s freeze). 80 ms
+// stays generous for real commits (field logs: a legit copy moves the
+// sequence within <50 ms) while capping the empty-input penalty. The
+// single-shot callers sharing this default (drag path, double-Ctrl+C
+// handler) accept the same 80 ms timeline (user-approved).
+inline constexpr uint32_t kClipboardChangeTimeoutMs = 80;
 // The sequence must hold this long after the last observed change before reading.
 inline constexpr uint32_t kClipboardStableWindowMs = 16;
 // Poll cadence for the real-clipboard driver (delegation: 5-10 ms).
@@ -202,28 +211,34 @@ inline constexpr uint64_t kClipboardCopyDeadlineMs =
 // (SelectAll / keyboard geometry / EM_SETSEL(last, caret)) is idempotent,
 // and the sequence-wait re-baselines each attempt, so a late commit from an
 // earlier chord is read as a confirmed copy rather than stale text.
-inline constexpr int kClipboardCopyChordAttempts = 3;
+inline constexpr int kClipboardCopyChordAttempts = 2;
 // Settle between chord attempts so the target's input pipeline can drain -
 // a half-processed chord is one drop hypothesis this gap addresses.
 inline constexpr uint32_t kClipboardCopyChordRetryGapMs = 30;
 
-// Option D backoff (session 260910_0001, P1 fix): field logs
-// (emebalachat_260910063910 / emebalachat_260910073906) show ~18 occurrences
-// of WIN32_INPUT/CopySelectionWithSequenceWait/002 "sequence unchanged 180ms"
-// where attempt 1 fails but attempt 2 succeeds - slow target apps (e.g. a
-// Chrome_WidgetWin_1 editor) commit the clipboard copy LATER than the flat
-// 180 ms change budget allows, so a merely-slow copy is refused as stale and
-// the whole 3-attempt budget burns at the identical 180 ms wall. The fix
-// widens the per-attempt timeout ACROSS the retry cycle instead of raising
-// the constant: attempt 1 keeps the established 180 ms budget (zero behavior
-// change for the fast path and for every single-shot caller), attempts 2 and
-// 3 wait 400 ms / 800 ms so a late-but-real commit confirms inside the
-// existing cycle. The stale-read refusal semantics themselves are unchanged:
-// a sequence that never moves is still Failed - only the patience grows.
+// Backoff schedule (REQ-001, session 260910_0003 Issue A; SUPERSEDES the
+// Option D {180, 400, 800} schedule from session 260910_0001): on a
+// non-EM control with an EMPTY input (Discord et al., CategoryA), Ctrl+C
+// legitimately changes nothing, the sequence never moves, and the
+// stale-read refusal burns EVERY attempt at its full timeout - the old
+// schedule stacked 180+400+800 ms (+ Sleep/gap overhead) into a ~1.5 s
+// freeze before the worker's has_text=0 send-through, during which the
+// user's impatient second Enter passed the hook (worker_busy) and the
+// worker's late send-through then delivered BOTH Enters (duplicate Enter).
+// The fix shrinks the whole cycle: attempt 1 waits the (now 80 ms)
+// single-shot budget, attempt 2 waits 120 ms, and the schedule sums to
+// <=200 ms. Real text-bearing copies move the sequence within ~50 ms
+// (field logs: Option D showed attempt-2 confirming 400 ms writes, but
+// those commits were still no-change-at-180 cases on EMPTY-selection
+// targets; an actual text commit is confirmed in the sub-80 ms fast path).
+// The stale-read refusal semantics are unchanged: a sequence that never
+// moves is still Failed - only the patience shrinks.
 inline constexpr uint32_t kClipboardCopyAttemptTimeoutMs[kClipboardCopyChordAttempts] =
-    {180, 400, 800};
+    {80, 120};
 static_assert(kClipboardCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
-              "Option D: attempt 1 must equal the single-shot 180 ms budget");
+              "REQ-001: attempt 1 must equal the single-shot 80 ms budget");
+static_assert(kClipboardCopyAttemptTimeoutMs[0] + kClipboardCopyAttemptTimeoutMs[1] <= 200,
+              "REQ-001: the chord retry schedule must stay within the 200 ms cap");
 
 // 0-based attempt index -> per-attempt change timeout. Out-of-range indices
 // fall back to the attempt-1 budget (the safe, established timeline); the
@@ -255,10 +270,10 @@ enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 // headlessly with synthetic timestamps; see TestClipboardSequencePolling().
 class ClipboardCopyWatcher {
 public:
-    // change_timeout_ms: per-attempt change budget (Option D backoff above).
+    // change_timeout_ms: per-attempt change budget (backoff schedule above).
     // The hard wall-clock deadline is derived as change_timeout_ms +
     // kClipboardStableWindowMs. The default keeps every single-shot caller on
-    // the established 180 ms / 196 ms REQ-R04 timeline.
+    // the single-shot 80 ms / 96 ms REQ-R04 timeline (REQ-001 shrink).
     ClipboardCopyWatcher(uint32_t pre_copy_seq, uint64_t start_ms,
                          uint32_t change_timeout_ms = kClipboardChangeTimeoutMs)
         : pre_seq_(pre_copy_seq), start_ms_(start_ms), last_seq_(pre_copy_seq),
@@ -288,9 +303,9 @@ private:
 // Returns true only when the clipboard provably changed (fresh data is safe to
 // read). Returns false on SendInput failure or timeout: callers MUST NOT read
 // the clipboard afterwards - it would still hold stale content.
-// change_timeout_ms is the per-attempt change budget (see the Option D
-// backoff constants above); the default keeps single-shot callers (main.cpp
-// double-Ctrl+C handler, drag path) on the established 180 ms timeline.
+// change_timeout_ms is the per-attempt change budget (see the backoff
+// constants above); the default keeps single-shot callers (main.cpp
+// double-Ctrl+C handler, drag path) on the same 80 ms timeline as attempt 1.
 bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms = kClipboardChangeTimeoutMs);
 
 // ---- REQ-R13 (overlaps this batch): OpenClipboard contention backoff ----

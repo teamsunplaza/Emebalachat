@@ -65,7 +65,7 @@ constexpr bool EmptyCaptureNeedsHold(bool captured_empty, bool smart_bypass) {
 // Enter fired right after a SUCCESSFUL paste is a re-translation intent, not
 // a "no selection" mistake. The F3 log signature (emebalachat_260907171452
 // L432/563/601): stored offset == caret -> EM_SETSEL(last,last) empty range
-// -> Ctrl+C changes nothing -> 180 ms stale-refuse -> EMPTY capture -> the R5
+// -> Ctrl+C changes nothing -> stale-refuse -> EMPTY capture -> the R5
 // hold above would surface a FALSE TooltipNoSelection notice repeatedly. This
 // pure predicate is the time-window gate applied at the worker's
 // EmptyCaptureNeedsHold entry: inside the window after the last successful

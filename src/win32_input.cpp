@@ -481,7 +481,7 @@ bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms) {
         if (outcome == ClipboardCopyOutcome::Failed) {
             // Log the EFFECTIVE per-attempt timeout, not the constant, so a
             // field log line says which backoff step refused the read
-            // (180 = attempt 1 or a single-shot caller, 400/800 = retry).
+            // (80 = attempt 1 or a single-shot caller, 120 = retry).
             DIAG_F(
                     "WIN32_INPUT/CopySelectionWithSequenceWait/002: clipboard sequence %lu unchanged %ums after Ctrl+C; "
                     "refusing stale read (copy treated as failure)\n",
@@ -1478,10 +1478,10 @@ std::wstring CopySelectedText(HWND hwnd) {
         // REQ-R04: sequence-number polling replaces the old fixed 35 ms wait.
         // On timeout the clipboard provably still holds pre-copy content, so
         // we treat this attempt as failed (never read stale text).
-        // Option D backoff: attempt 1 waits the established 180 ms; attempts
-        // 2/3 wait 400/800 ms so a late-but-real commit from a slow target
-        // app (Chrome_WidgetWin_1 IPC copy) confirms inside this cycle
-        // instead of burning the whole budget at the identical wall.
+        // REQ-001 backoff (260910_0003 Issue A): attempt 1 waits the 80 ms
+        // single-shot budget; attempt 2 waits 120 ms. The whole cycle is
+        // capped <=200 ms so a confirmed-empty copy (Discord empty input)
+        // no longer stacks ~1.5 s before the worker's send-through.
         if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(attempt))) {
             copy_confirmed = true;
             break;

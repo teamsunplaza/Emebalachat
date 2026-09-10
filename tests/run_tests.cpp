@@ -708,18 +708,20 @@ void TestClipboardSequencePolling() {
     std::cout << "[RUN] Testing REQ-R04 Clipboard Sequence Polling..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // 1. Compile-time constant wiring per the delegation: total change budget
-    //    ~150-200 ms, poll cadence 5-10 ms, hard deadline = change + stable.
-    static_assert(kClipboardChangeTimeoutMs >= 150 && kClipboardChangeTimeoutMs <= 200,
-                  "REQ-R04: change timeout must stay in the 150-200 ms band");
+    // 1. Compile-time constant wiring: total change budget ~80 ms (REQ-001
+    //    Issue A shrink: the 150-200 ms band taxed confirmed-empty copies
+    //    with a ~1.5 s freeze before the worker's send-through), poll
+    //    cadence 5-10 ms, hard deadline = change + stable.
+    static_assert(kClipboardChangeTimeoutMs >= 75 && kClipboardChangeTimeoutMs <= 100,
+                  "REQ-R04/REQ-001: change timeout must stay in the 75-100 ms band");
     static_assert(kClipboardPollIntervalMs >= 5 && kClipboardPollIntervalMs <= 10,
                   "REQ-R04: poll interval must stay in the 5-10 ms band");
     static_assert(kClipboardCopyDeadlineMs ==
                       static_cast<uint64_t>(kClipboardChangeTimeoutMs) + kClipboardStableWindowMs,
                   "REQ-R04: hard deadline = change timeout + stable window");
-    static_assert(kClipboardChangeTimeoutMs == 180 && kClipboardPollIntervalMs == 8 &&
-                      kClipboardStableWindowMs == 16 && kClipboardCopyDeadlineMs == 196,
-                  "REQ-R04: constants are 180 ms change cap / 8 ms poll / 16 ms stable / 196 ms deadline");
+    static_assert(kClipboardChangeTimeoutMs == 80 && kClipboardPollIntervalMs == 8 &&
+                      kClipboardStableWindowMs == 16 && kClipboardCopyDeadlineMs == 96,
+                "REQ-R04/REQ-001: constants are 80 ms change cap / 8 ms poll / 16 ms stable / 96 ms deadline");
 
     // 2. REQ-R13 (audit 5 latent item 1): OpenClipboard exponential backoff.
     static_assert(kClipboardOpenMaxAttempts == 5, "REQ-R13: five bounded tries");
@@ -811,60 +813,58 @@ void TestClipboardSequencePolling() {
         }
     }
 
-    // 8. Option D per-attempt backoff (session 260910_0001, P1 fix): the
-    //    CopySelectedText retry cycle widens the change budget across the
-    //    3-attempt cycle (180/400/800 ms) instead of raising the flat
-    //    constant, so a late-but-real commit from a slow target app confirms
-    //    inside the cycle. The Failed verdict is delayed correspondingly; the
-    //    never-changed case still refuses the stale read.
-    static_assert(kClipboardCopyAttemptTimeoutMs[0] == 180 &&
-                      kClipboardCopyAttemptTimeoutMs[1] == 400 &&
-                      kClipboardCopyAttemptTimeoutMs[2] == 800,
-                  "Option D: attempt timeouts are the 180/400/800 ms backoff schedule");
+    // 8. REQ-001 per-attempt backoff (session 260910_0003 Issue A; SUPERSEDES
+    //    Option D's 180/400/800): the CopySelectedText retry cycle caps the
+    //    whole budget at 2 attempts (80/120 ms, sum <=200) so a
+    //    confirmed-empty copy on a non-EM control (Discord empty input)
+    //    finishes in ~250 ms instead of ~1.5 s. The stale-read refusal is
+    //    unchanged: the never-changed case still fails every attempt.
+    static_assert(kClipboardCopyAttemptTimeoutMs[0] == 80 &&
+                      kClipboardCopyAttemptTimeoutMs[1] == 120,
+                   "REQ-001: attempt timeouts are the 80/120 ms capped schedule");
     static_assert(kClipboardCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
-                  "Option D: attempt 1 keeps the established single-shot 180 ms budget");
-    TEST_CHECK(CopyAttemptTimeoutMs(0) == 180 && CopyAttemptTimeoutMs(1) == 400 &&
-                   CopyAttemptTimeoutMs(2) == 800,
-               "Option D: CopyAttemptTimeoutMs maps 0-based attempts to 180/400/800");
+                   "REQ-001: attempt 1 keeps the single-shot 80 ms budget");
+    TEST_CHECK(CopyAttemptTimeoutMs(0) == 80 && CopyAttemptTimeoutMs(1) == 120,
+                "REQ-001: CopyAttemptTimeoutMs maps 0-based attempts to 80/120");
     TEST_CHECK(CopyAttemptTimeoutMs(-1) == kClipboardChangeTimeoutMs &&
-                   CopyAttemptTimeoutMs(kClipboardCopyChordAttempts) == kClipboardChangeTimeoutMs,
-               "Option D: out-of-range attempts fall back to the attempt-1 budget");
+                    CopyAttemptTimeoutMs(kClipboardCopyChordAttempts) == kClipboardChangeTimeoutMs,
+                "REQ-001: out-of-range attempts fall back to the attempt-1 budget");
 
-    // 8a. Longer timeout DELAYS the Failed verdict: at the old 180 ms mark a
-    //     400 ms attempt is still Pending (the slow commit window the field
-    //     logs showed), and Failed only fires at 400 ms.
+    // 8a. The retry attempt's longer timeout DELAYS the Failed verdict: at
+    //     the 80 ms single-shot mark a 120 ms attempt is still Pending, and
+    //     Failed only fires at 120 ms.
     {
         ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(1));
         TEST_CHECK(w.Update(100, kClipboardChangeTimeoutMs) == ClipboardCopyOutcome::Pending,
-                   "Option D: 400 ms attempt still pending at the old 180 ms wall");
-        TEST_CHECK(w.Update(100, 399) == ClipboardCopyOutcome::Pending,
-                   "Option D: pending until the widened timeout expires");
-        TEST_CHECK(w.Update(100, 400) == ClipboardCopyOutcome::Failed,
-                   "Option D: no change by 400 ms -> Failed (stale read still refused)");
+                   "REQ-001: 120 ms attempt still pending at the 80 ms single-shot mark");
+        TEST_CHECK(w.Update(100, 119) == ClipboardCopyOutcome::Pending,
+                   "REQ-001: pending until the retry timeout expires");
+        TEST_CHECK(w.Update(100, 120) == ClipboardCopyOutcome::Failed,
+                   "REQ-001: no change by 120 ms -> Failed (stale read still refused)");
     }
 
-    // 8b. A late Electron-style commit that lands at ~250 ms (after the old
-    //     180 ms wall, inside the attempt-3 window) now CONFIRMS on attempt 3
-    //     instead of being refused: the exact field-log failure mode.
+    // 8b. An Electron-style commit that lands just past the attempt-1 budget
+    //     (80 ms) still has the attempt-2 window to confirm within the cycle:
+    //     a bump at ~90 ms settles Confirmed on the 120 ms retry.
     {
-        ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(2));
-        TEST_CHECK(w.Update(100, 240) == ClipboardCopyOutcome::Pending,
-                   "Option D: attempt 3 pending while the late commit is outstanding");
-        TEST_CHECK(w.Update(101, 250) == ClipboardCopyOutcome::Pending,
-                   "Option D: late bump inside the stable window stays pending");
-        TEST_CHECK(w.Update(101, 266) == ClipboardCopyOutcome::Confirmed,
-                   "Option D: late commit settles Confirmed within the 800 ms attempt");
+        ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(1));
+        TEST_CHECK(w.Update(100, 85) == ClipboardCopyOutcome::Pending,
+                   "REQ-001: retry attempt pending while the late commit is outstanding");
+        TEST_CHECK(w.Update(101, 90) == ClipboardCopyOutcome::Pending,
+                   "REQ-001: late bump inside the stable window stays pending");
+        TEST_CHECK(w.Update(101, 106) == ClipboardCopyOutcome::Confirmed,
+                   "REQ-001: late commit settles Confirmed within the 120 ms attempt");
     }
 
     // 8c. The hard deadline derives from the instance timeout (change +
-    //     stable): an advanced-but-flapping write on a 400 ms attempt
-    //     resolves Confirmed at 416 ms, one tick earlier only pending.
+    //     stable): an advanced-but-flapping write on a 120 ms attempt
+    //     resolves Confirmed at 136 ms, one tick earlier only pending.
     {
         ClipboardCopyWatcher w(100, 0, CopyAttemptTimeoutMs(1));
-        TEST_CHECK(w.Update(101, 415) == ClipboardCopyOutcome::Pending,
-                   "Option D: derived deadline (400+16) not yet reached");
-        TEST_CHECK(w.Update(102, 416) == ClipboardCopyOutcome::Confirmed,
-                   "Option D: flapping-at-deadline branch honors the widened timeout");
+        TEST_CHECK(w.Update(101, 135) == ClipboardCopyOutcome::Pending,
+                   "REQ-001: derived deadline (120+16) not yet reached");
+        TEST_CHECK(w.Update(102, 136) == ClipboardCopyOutcome::Confirmed,
+                   "REQ-001: flapping-at-deadline branch honors the widened timeout");
     }
 
     if (g_failed_count == failures_before) {
@@ -8113,14 +8113,12 @@ void TestReq039ChatWindowEnterCapture() {
     const int failures_before = g_failed_count;
 
     // ---- (a) pure retry-budget predicate matrix ----
-    static_assert(kClipboardCopyChordAttempts == 3,
-                  "REQ-039: three bounded chord attempts (drop + 2 retries)");
+    static_assert(kClipboardCopyChordAttempts == 2,
+                  "REQ-039/REQ-001: two bounded chord attempts (drop + 1 retry)");
     static_assert(CopyChordRetryWarranted(0, false),
                   "REQ-039: first drop with budget left must retry");
-    static_assert(CopyChordRetryWarranted(1, false),
-                  "REQ-039: second drop still inside the budget");
-    static_assert(!CopyChordRetryWarranted(2, false),
-                  "REQ-039: budget exhausted - no retry past the last attempt");
+    static_assert(!CopyChordRetryWarranted(1, false),
+                  "REQ-039/REQ-001: budget exhausted - no retry past the last attempt");
     static_assert(!CopyChordRetryWarranted(9, false),
                   "REQ-039: out-of-range attempt index never retries");
     static_assert(!CopyChordRetryWarranted(0, true),

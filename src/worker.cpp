@@ -405,7 +405,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // REQ-034 F3-B paste-window gate (design 173700_architect §2.2.1), checked
     // BEFORE the hold branch: an empty capture within kPasteEmptySuppressMs of
     // the last SUCCESSFUL paste is the last==caret geometry (empty EM_SETSEL
-    // range -> Ctrl+C changes nothing -> 180 ms stale-refuse -> empty), i.e.
+    // range -> Ctrl+C changes nothing -> stale-refuse -> empty), i.e.
     // the user's re-translation retry, NOT a "no selection" mistake. Suppress
     // the notice and hand Enter to the app exactly like the legacy send-through
     // (ReleaseSelectionOnce + SendEnterKey): the retry Enter line-breaks/sends
