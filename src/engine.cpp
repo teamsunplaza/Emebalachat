@@ -914,7 +914,15 @@ struct TranslationManager::LlamaEngine {
             llama_token token = llama_sampler_sample(smpl, ctx, -1);
             llama_sampler_accept(smpl, token);
 
-            if (llama_vocab_is_eog(vocab, token)) {
+            // REQ-006: EOS double-check. Hy-MT2 GGUF metadata ships with
+            // special_eos_id missing from the eog set, so llama_vocab_is_eog
+            // alone can let generation run past the model's stop token. The
+            // is_eog test stays FIRST (fast path unchanged for well-formed
+            // vocabs); the eos disjunct only catches the malformed-metadata
+            // case. llama_vocab_eos returns -1 for EOS-less vocabs, which
+            // never equals a valid sampled token, so this is a safe no-op
+            // there.
+            if (llama_vocab_is_eog(vocab, token) || token == llama_vocab_eos(vocab)) {
                 break;
             }
 
