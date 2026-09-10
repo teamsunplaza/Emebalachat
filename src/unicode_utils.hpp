@@ -102,4 +102,37 @@ std::string ToUtf8(std::wstring_view wstr);
 // Converts a UTF-8 encoded string to UTF-16 std::wstring.
 std::wstring ToUtf16(std::string_view str);
 
+// Decodes one complete JSON `\uXXXX` escape — including the optional UTF-16
+// surrogate-pair lookahead — straight out of the source buffer, appending the
+// result as UTF-8 to `out`. (REF-3.5, session 260910_0006 T4: shared by
+// config.cpp SimpleJsonReader::ParseString and google_translate.cpp
+// ParseJsonString; config.cpp's I2-defended implementation is the reference.)
+//
+// Preconditions: pos points at the FIRST HEX DIGIT following the 'u' of the
+// escape (the caller's switch already consumed the backslash and 'u'), and
+// pos < src.size() is not required — a truncated tail is the false case.
+//
+// Contract (bit-for-bit the config.cpp reference semantics):
+//   * true  -> exactly one of:
+//       - valid pair (high + `\uXXXX` low): consumes all 12 chars, appends the
+//         4-byte UTF-8 of the astral code point;
+//       - BMP / ASCII escape: consumes 4 hex digits, appends 1-3 byte UTF-8;
+//       - LONE high surrogate (valid pair not formed) or LONE low surrogate:
+//         appends U+FFFD (EF BF BD), NEVER raw surrogate WTF-8 (the I2 fix).
+//         When the pair lookahead consumed a failed candidate (`\u` + bad
+//         hex), pos is ROLLED BACK to the candidate's start so the caller's
+//         main loop re-parses that escape normally as its own `\uXXXX`.
+//   * false -> the 4 hex digits are missing (truncation) or `std::stoul`
+//     throws (non-hex). The caller must fail the whole string parse.
+//   Note: stoul parses a hex PREFIX, so `\u12zz` decodes to U+0012 here —
+//   this permissive behavior is identical in both original parsers and is
+//   preserved deliberately (pin-tested), not silently tightened.
+//
+// The full-case scope (lookahead + rollback + UTF-8 encoder, not just the
+// code-unit-to-UTF-8 step) is intentional: both call sites' `case 'u'` bodies
+// already differed ONLY in the lone-surrogate defense, so sharing the entire
+// case collapses the duplicated hex-reading and encoding tables too.
+bool AppendJsonUnicodeEscape(std::string& out, std::string_view src,
+                             std::size_t& pos);
+
 } // namespace emebalachat

@@ -1158,6 +1158,175 @@ void TestGoogleTranslateModule() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// REF-3.5 (session 260910_0006 T4): differential pins for the shared JSON
+// \uXXXX escape decoder (AppendJsonUnicodeEscape in unicode_utils) and the
+// two call sites that now route through it (config.cpp SimpleJsonReader::
+// ParseString, google_translate.cpp ParseJsonString).
+//
+// Group 1/2 pins freeze PRE-REFACTOR behavior of google_translate's valid
+// paths and must be GREEN against the old parser (written test-first, run
+// green before the call-site refactor). Group 3 pins the NEW-behavior fix:
+// a malformed lone surrogate must yield exactly ONE U+FFFD (EF BF BD in
+// UTF-8, one U+FFFD unit after ToUtf16). Those Group 3 checks are RED
+// against the old parser (it emitted corrupt WTF-8 ED A0 BD / ED B0 80,
+// which Windows MultiByteToWideChar(CP_UTF8,0,...) rejects into TWO U+FFFD
+// units - measured, see T4 report) and turn GREEN only after the call site
+// adopts the shared defense. Group 4 unit-tests the helper's position
+// arithmetic directly, including the config.cpp rollback semantics on a
+// failed pair lookahead. Group 5 extends the config.cpp pins (sections 7a
+// -7f in TestConfigModule already cover pair/BMP/lone cases): truncation,
+// non-hex, permissive stoul prefix, unknown-escape fallback - all preserved
+// bit-for-bit (green before AND after the refactor; config behavior never
+// changes).
+void TestRef35JsonEscapePins() {
+    std::cout << "[RUN] Testing REF-3.5 shared JSON \\u-escape differential pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- Group 1: google_translate ParseJsonString valid paths (GREEN on old code) ----
+    // BMP non-ASCII: \uD55C \uAC00 -> 한 가 (3-byte UTF-8 branch)
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uD55C \\uAC00\", \"en\"]]") == L"한 가",
+               "REF-3.5 GT pin: BMP escapes decode 한 가");
+    // Astral pair beyond the rocket case: \uD801\uDD50 -> U+10550 (4-byte branch)
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uD801\\uDD50\", \"en\"]]") == L"\U00010550",
+               "REF-3.5 GT pin: U+10550 surrogate pair decodes");
+    // Full standard escape set incl. \/ \b \f (Format D only covered \n and \")
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"a\\/b\\bc\\fd\\re\\tf\", \"en\"]]")
+                   == L"a/b\bc\fd\re\tf",
+               "REF-3.5 GT pin: all 8 non-unicode escapes decode");
+    // Unknown escape fallback: default arm copies the escape char verbatim ('\x' -> 'x')
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\x y\", \"en\"]]") == L"x y",
+               "REF-3.5 GT pin: unknown escape falls back to literal char");
+    // Permissive stoul hex-prefix parse: \"\\u12zz\" consumes 4 chars \"12zz\",
+    // decodes to U+0012 (old code did this; the shared helper keeps it).
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\u12zz\", \"en\"]]") == L"\x12",
+               "REF-3.5 GT pin: permissive hex-prefix \\u12zz decodes to U+0012");
+    // Truncated escape: source ENDS inside the 4 hex digits (`AB"]` gives
+    // stoul only the prefix "AB", but the closing quote was consumed, so the
+    // scan runs off the end -> whole string parse fails).
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"ab\\uAB\"]") == L"",
+               "REF-3.5 GT pin: truncated \\u escape fails string");
+    // Non-hex escape: stoul throws -> whole string parse fails.
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uZZZZ\", \"en\"]]") == L"",
+               "REF-3.5 GT pin: non-hex \\uZZZZ fails string");
+    // Backslash as the FINAL character of the source fails (no escape char).
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"ab\\") == L"",
+               "REF-3.5 GT pin: trailing backslash fails string");
+
+    // ---- Group 3 (NEW behavior, RED until google_translate adopts the helper):
+    // malformed lone surrogates must produce exactly one U+FFFD, never the
+    // old corrupt WTF-8 (which ToUtf16 surfaced as two U+FFFD units). ----
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"A\\uD83Dx\", \"en\"]]") == L"A\uFFFDx",
+               "REF-3.5 GT fix: lone high mid-string -> exactly ONE U+FFFD");
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uD83D\\u0041\", \"en\"]]") == L"\uFFFDA",
+               "REF-3.5 GT fix: lone high + non-low escape -> U+FFFD then A, second escape survives");
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uDC00!\", \"en\"]]") == L"\uFFFD!",
+               "REF-3.5 GT fix: lone low surrogate -> exactly ONE U+FFFD");
+    TEST_CHECK(GoogleTranslate::ParseResponseJson("[[\"\\uD83D\", \"en\"]]") == L"\uFFFD",
+               "REF-3.5 GT fix: lone high at end of string -> exactly ONE U+FFFD");
+
+    // ---- Group 4: shared helper direct unit tests (position arithmetic +
+    // rollback semantics, extracted from the config.cpp reference). ----
+    // src is the raw escape text WITHOUT the surrounding quotes; pos starts
+    // at the first hex digit (index 2 = after "\\u").
+    {
+        // Valid pair: consumes all 12 chars (2 + 6 + 4), emits F0 9F 9A 80.
+        std::string src = "\\uD83D\\uDE80";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: pair returns true");
+        TEST_CHECK(out == "\xF0\x9F\x9A\x80", "REF-3.5 helper: pair emits 4-byte UTF-8 rocket");
+        TEST_CHECK(pos == src.size(), "REF-3.5 helper: pair consumes all 12 chars");
+    }
+    {
+        // High + valid-hex-but-NOT-low: rollback. pos lands back on the
+        // '\\' of the second escape (save_pos semantics from config.cpp).
+        std::string src = "\\uD83D\\u0041";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: high+non-low returns true");
+        TEST_CHECK(out == "\xEF\xBF\xBD", "REF-3.5 helper: high+non-low emits U+FFFD");
+        TEST_CHECK(pos == 6, "REF-3.5 helper: failed lookahead rolls pos back to second escape's '\\'");
+    }
+    {
+        // High + non-hex candidate: read_hex4 throws inside the lookahead ->
+        // rollback, U+FFFD, and the caller will fail on the second escape
+        // when it re-parses it (mirrors config.cpp 7e + failure composition).
+        std::string src = "\\uD83D\\uZZ!!";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: high+bad-hex returns true (first escape decoded)");
+        TEST_CHECK(out == "\xEF\xBF\xBD", "REF-3.5 helper: high+bad-hex emits U+FFFD");
+        TEST_CHECK(pos == 6, "REF-3.5 helper: bad-hex lookahead also rolls back");
+    }
+    {
+        // Lone low surrogate: 4 chars consumed, no lookahead attempted.
+        std::string src = "\\uDC00!";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: lone low returns true");
+        TEST_CHECK(out == "\xEF\xBF\xBD", "REF-3.5 helper: lone low emits U+FFFD");
+        TEST_CHECK(pos == 6, "REF-3.5 helper: lone low consumes exactly the 4 hex digits");
+    }
+    {
+        // High at EOS of buffer: lookahead cannot match, no out-of-range read.
+        std::string src = "\\uD83D";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: high at buffer end returns true");
+        TEST_CHECK(out == "\xEF\xBF\xBD", "REF-3.5 helper: high at buffer end emits U+FFFD");
+        TEST_CHECK(pos == 6, "REF-3.5 helper: high at buffer end consumes 4 hex digits");
+    }
+    {
+        // Truncation and non-hex first escape -> false, pos unchanged at
+        // truncation; on stoul-throw pos has ALREADY advanced 4 (read_hex4
+        // advances before parsing - config.cpp reference semantics).
+        std::string src = "\\uAB";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(!AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: truncated escape returns false");
+        TEST_CHECK(pos == 2, "REF-3.5 helper: truncation leaves pos untouched");
+        std::string src2 = "\\uZZZZ";
+        std::string out2;
+        std::size_t pos2 = 2;
+        TEST_CHECK(!AppendJsonUnicodeEscape(out2, src2, pos2), "REF-3.5 helper: non-hex escape returns false");
+    }
+    {
+        // ASCII-range escape: 1-byte emit path.
+        std::string src = "\\u0041";
+        std::string out;
+        std::size_t pos = 2;
+        TEST_CHECK(AppendJsonUnicodeEscape(out, src, pos), "REF-3.5 helper: \\u0041 returns true");
+        TEST_CHECK(out == "A", "REF-3.5 helper: \\u0041 emits 'A'");
+    }
+
+    // ---- Group 5: config.cpp preserved-behavior extension pins (public
+    // FromJsonString seam; green BEFORE and AFTER - config must not change). ----
+    {
+        AppConfig cfg;
+        // Input genuinely ends 2 hex digits after "\\u" (pos_ + 4 > size_),
+        // so read_hex4 fails before stoul's prefix tolerance can apply.
+        TEST_CHECK(!cfg.FromJsonString("{\"drag_hotkey\": \"ab\\uAB"),
+                   "REF-3.5 CFG pin: truncated \\u escape fails config parse");
+        AppConfig cfg2;
+        TEST_CHECK(!cfg2.FromJsonString("{\"drag_hotkey\": \"\\uZZZZ\"}"),
+                   "REF-3.5 CFG pin: non-hex \\uZZZZ fails config parse");
+        AppConfig cfg3;
+        TEST_CHECK(cfg3.FromJsonString("{\"drag_hotkey\": \"\\u12zz\"}") && cfg3.drag_hotkey == "\x12",
+                   "REF-3.5 CFG pin: permissive hex-prefix \\u12zz keeps U+0012 behavior");
+        AppConfig cfg4;
+        TEST_CHECK(cfg4.FromJsonString("{\"drag_hotkey\": \"a\\/b\\x\"}") && cfg4.drag_hotkey == "a/bx",
+                   "REF-3.5 CFG pin: slash + unknown-escape fallback preserved");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REF-3.5 JSON escape pin tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REF-3.5 JSON escape pin tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // ---- REQ-R05: per-endpoint HTTP profile (Chrome UA + 8 s budget) ----
 // HttpGet selects its (UA, timeouts) pair and the Chrome header set from the
 // request path via the pure constexpr GoogleTranslate::RequestProfileForPath /
@@ -9579,6 +9748,7 @@ int main() {
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();
     TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
+    TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
     TestEngineModule();
     TestModelPathValidation();
     TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache

@@ -207,65 +207,17 @@ private:
                     case 'r':  out += '\r'; break;
                     case 't':  out += '\t'; break;
                     case 'u': {
-                        // Reads the next 4 hex digits into out_code; false on
-                        // truncation or non-hex input.
-                        auto read_hex4 = [this](uint32_t& out_code) -> bool {
-                            if (pos_ + 4 > src_.size()) return false;
-                            const std::string hex(src_.substr(pos_, 4));
-                            pos_ += 4;
-                            try {
-                                out_code = std::stoul(hex, nullptr, 16);
-                            } catch (...) {
-                                return false;
-                            }
-                            return true;
-                        };
-
-                        uint32_t code = 0;
-                        if (!read_hex4(code)) return false;
-
-                        // I2 fix: decode UTF-16 surrogate pairs (high D800-DBFF
-                        // followed by low DC00-DFFF) into the real code point,
-                        // matching google_translate.cpp. A LONE surrogate is not
-                        // valid scalar Unicode; encoding it would emit corrupt
-                        // WTF-8 bytes. Replace lone surrogates with U+FFFD so the
-                        // output is always well-formed UTF-8.
-                        if (code >= 0xD800 && code <= 0xDBFF) {
-                            bool paired = false;
-                            if (pos_ + 6 <= src_.size() && src_[pos_] == '\\' && src_[pos_ + 1] == 'u') {
-                                const size_t save_pos = pos_;
-                                pos_ += 2; // step over "\u"
-                                uint32_t low = 0;
-                                if (read_hex4(low) && low >= 0xDC00 && low <= 0xDFFF) {
-                                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                                    paired = true;
-                                } else {
-                                    pos_ = save_pos; // not a valid pair; re-parse next escape normally
-                                }
-                            }
-                            if (!paired) {
-                                code = 0xFFFD;
-                            }
-                        } else if (code >= 0xDC00 && code <= 0xDFFF) {
-                            code = 0xFFFD; // lone low surrogate
-                        }
-
-                        if (code < 0x80) {
-                            out += static_cast<char>(code);
-                        } else if (code < 0x800) {
-                            out += static_cast<char>(0xC0 | (code >> 6));
-                            out += static_cast<char>(0x80 | (code & 0x3F));
-                        } else if (code < 0x10000) {
-                            out += static_cast<char>(0xE0 | (code >> 12));
-                            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-                            out += static_cast<char>(0x80 | (code & 0x3F));
-                        } else {
-                            // 4-byte UTF-8 for supplementary-plane code points
-                            out += static_cast<char>(0xF0 | (code >> 18));
-                            out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
-                            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-                            out += static_cast<char>(0x80 | (code & 0x3F));
-                        }
+                        // REF-3.5 (session 260910_0006 T4): the former inline
+                        // read_hex4 + I2-surrogate-defense + UTF-8 encoder block
+                        // (the reference implementation, behavior unchanged) now
+                        // lives in unicode_utils::AppendJsonUnicodeEscape, shared
+                        // with google_translate.cpp. The helper's contract is a
+                        // line-for-line move of this case: false on truncated /
+                        // non-hex input (propagated to string-parse failure
+                        // exactly as before), lone surrogates -> U+FFFD, valid
+                        // pairs -> astral code point, failed lookahead rolls
+                        // pos_ back so the next escape re-parses normally.
+                        if (!AppendJsonUnicodeEscape(out, src_, pos_)) return false;
                         break;
                     }
                     default:
