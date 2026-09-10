@@ -8,6 +8,17 @@
 #include <string_view>
 #include <windows.h> // DWORD for WaitInferenceIdle
 
+// P7-F2: llama.h is an optional dependency here exactly as in engine.cpp
+// (L21-26). When present, the SetGpuOffloadParams seam below compiles and is
+// unit-tested; when absent (no-llama configuration), both legs fall back to
+// the existing HAVE_LLAMA_CPP-guarded code paths and the seam is not built.
+#if defined(HAVE_LLAMA_CPP) || __has_include("llama.h")
+#ifndef HAVE_LLAMA_CPP
+#define HAVE_LLAMA_CPP 1
+#endif
+#include "llama.h"
+#endif
+
 namespace emebalachat {
 
 // M3 (security): Validates a GGUF model file path before it reaches the llama.cpp
@@ -164,6 +175,44 @@ EngineType PlanTranslationRouting(std::string_view src_code,
 //       documented Auto semantics; startup behavior unchanged)
 bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled,
                              bool model_available);
+
+#ifdef HAVE_LLAMA_CPP
+// P7-F2 (universal GPU, session 260909_0004): pure params-construction seam
+// for the two model-load legs of LlamaEngine::EnsureLoaded. The production
+// call sites pass a llama_model_default_params() struct; this function sets
+// ONLY the three offload-relevant fields and touches nothing else
+// (progress_callback etc. stay caller-owned).
+//   gpu_offload == true  (GPU leg, called BEFORE llama_model_load_from_file):
+//     n_gpu_layers = 99; split_mode = LLAMA_SPLIT_MODE_NONE; main_gpu = 0.
+//     WHY: with GGML_CUDA and GGML_VULKAN both statically linked (REQ-101), a
+//     single NVIDIA card is exposed as TWO devices ("CUDA0" + "Vulkan0") -
+//     llama.cpp adds every GPU device from every backend with no dedup
+//     (build_gputest/_deps/llama_cpp-src/src/llama.cpp L183-190) and b6099's
+//     default split_mode is LLAMA_SPLIT_MODE_LAYER (src/llama-model.cpp
+//     L18521), which interleaves ~half the model's layers onto the typically
+//     slower Vulkan half of the SAME physical card (P5 report F2). NONE makes
+//     llama.cpp keep only devices[main_gpu] (src/llama.cpp L200-213); ggml
+//     registers CUDA before Vulkan (ggml/src/ggml-backend-reg.cpp L168-169 vs
+//     L177-178) and the device list preserves that enumeration order
+//     (src/llama.cpp L175-192), so devices[0] is the CUDA device on NVIDIA
+//     machines - the whole model runs on the fast backend. On AMD/Intel
+//     Vulkan-only boxes exactly one GPU device exists, so the pin is a no-op.
+//   gpu_offload == false (CPU fallback leg, n_gpu_layers=0 retry):
+//     n_gpu_layers = 0; split_mode = LLAMA_SPLIT_MODE_LAYER (b6099 default);
+//     main_gpu unchanged. MUST un-pin: llama.cpp validates split_mode/
+//     main_gpu against the GPU-device list EVEN at n_gpu_layers = 0
+//     (src/llama.cpp L200-213) - NONE + main_gpu = 0 with zero enumerable GPU
+//     devices fails the load outright (LLAMA_SPLIT... "invalid value for
+//     main_gpu", L204-207), which would hard-break the historical CPU
+//     fallback on CPU-only machines. The CPU leg's behavior is therefore
+//     byte-identical to the pre-F2 code.
+//   Invariants (pinned by TestP7F2GpuOffloadParams): devices and
+//   tensor_split stay nullptr on both legs - the whole point of F2 is that
+//   the app never engages multi-device splitting; no RPC/multi-GPU feature
+//   is used.
+void SetGpuOffloadParams(llama_model_params& params, bool gpu_offload);
+#endif
+
 
 class TranslationManager {
 public:

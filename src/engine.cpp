@@ -506,7 +506,53 @@ bool LlamaLoadProgress(float /*progress*/, void* user_data) {
     return !LlamaAbortIfCanceled(user_data);
 }
 
+// P7-F2 compile-time pin: the device-pinning logic in EnsureLoaded relies on
+// the exact b6099 split_mode enum layout (llama.h L184-187: NONE=0, LAYER=1).
+// If a llama.cpp upgrade renumbers the enum, the build fails here instead of
+// silently mis-pinning model devices.
+static_assert(LLAMA_SPLIT_MODE_NONE == 0 && LLAMA_SPLIT_MODE_LAYER == 1,
+              "P7-F2: llama.cpp split_mode enum layout changed; re-verify the "
+              "NONE+main_gpu device pin and the CPU-fallback restore in EnsureLoaded");
+
 } // namespace
+
+// P7-F2: pure params-construction seam declared in src/engine.hpp. Single
+// source of truth for the two model-load legs of EnsureLoaded below; pinned
+// headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp) so the
+// CUDA+Vulkan layer-split prevention can never silently drift from the test.
+void SetGpuOffloadParams(llama_model_params& params, bool gpu_offload) {
+    if (gpu_offload) {
+        // GPU leg: full offload, whole model pinned to device 0. WHY the pin:
+        // with GGML_CUDA + GGML_VULKAN both statically linked, one NVIDIA
+        // card registers as TWO devices with no dedup (llama.cpp L183-190),
+        // and b6099's default LLAMA_SPLIT_MODE_LAYER would interleave ~half
+        // the layers onto the slower Vulkan half of the SAME card (P5 F2).
+        // NONE keeps only devices[main_gpu] (llama.cpp L200-213); ggml
+        // registers CUDA before Vulkan (ggml-backend-reg.cpp L168 vs L177)
+        // and the device list preserves that order, so device 0 = CUDA on
+        // NVIDIA; on AMD/Intel (Vulkan-only) there is a single device and
+        // this is a no-op. Evidence citations: build_gputest/_deps/
+        // llama_cpp-src headers (b6099), session 260909_0004 P5 report.
+        params.n_gpu_layers = 99; // Offload layers to RTX 2070 Turing GPU (sm_75)
+        params.split_mode = LLAMA_SPLIT_MODE_NONE;
+        params.main_gpu = 0;
+    } else {
+        // CPU fallback leg: n_gpu_layers=0 AND restore the b6099 default
+        // split_mode. Un-pinning is NOT optional: llama.cpp validates
+        // split_mode/main_gpu against the GPU-device list even at
+        // n_gpu_layers=0 (llama.cpp L204-207 rejects main_gpu=0 when zero
+        // GPU devices are enumerable), so carrying NONE into this retry would
+        // hard-break the historical CPU fallback on CPU-only machines. With
+        // LAYER + empty device list the load behaves exactly as pre-F2.
+        params.n_gpu_layers = 0;
+        params.split_mode = LLAMA_SPLIT_MODE_LAYER;
+        // params.main_gpu left untouched (b6099 default is already 0).
+    }
+    // Invariant (both legs): no explicit device list and no tensor split -
+    // the app never engages multi-device splitting by design (P7-F2).
+    params.devices = nullptr;
+    params.tensor_split = nullptr;
+}
 
 struct TranslationManager::LlamaEngine {
     llama_model* model = nullptr;
@@ -592,7 +638,12 @@ struct TranslationManager::LlamaEngine {
         }
 
         llama_model_params mparams = llama_model_default_params();
-        mparams.n_gpu_layers = 99; // Offload layers to RTX 2070 Turing GPU (sm_75)
+        // P7-F2 (universal GPU, session 260909_0004): GPU-offload leg pins the
+        // WHOLE model to device 0 (= CUDA on NVIDIA dual-backend boxes) to stop
+        // the CUDA+Vulkan layer split of one physical card. Full contract +
+        // evidence: SetGpuOffloadParams in src/engine.hpp. Seam-tested
+        // headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp).
+        SetGpuOffloadParams(mparams, /*gpu_offload=*/true);
         // REQ-R16: abort an in-progress model load when shutdown is requested.
         mparams.progress_callback = LlamaLoadProgress;
         mparams.progress_callback_user_data =
@@ -607,7 +658,13 @@ struct TranslationManager::LlamaEngine {
                 return false;
             }
             // Fallback to CPU-only load if CUDA load encounters an issue
-            mparams.n_gpu_layers = 0;
+            // P7-F2: this leg MUST un-pin (n_gpu_layers=0 + default
+            // LLAMA_SPLIT_MODE_LAYER, per the seam contract): llama.cpp
+            // validates split_mode/main_gpu against the GPU-device list even
+            // at n_gpu_layers=0 (src/llama.cpp L200-213), so NONE +
+            // main_gpu=0 would fail this retry too on machines with zero
+            // enumerable GPU devices and hard-break the CPU fallback.
+            SetGpuOffloadParams(mparams, /*gpu_offload=*/false);
             model = llama_model_load_from_file(path.c_str(), mparams);
             if (!model) {
                 return false;

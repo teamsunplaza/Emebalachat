@@ -3970,6 +3970,89 @@ void TestReqF4aPreloadGate() {
     }
 }
 
+#ifdef HAVE_LLAMA_CPP
+// P7-F2 (session 260909_0004): SetGpuOffloadParams seam test. The production
+// EnsureLoaded builds llama_model_default_params(), calls this seam once per
+// leg, and hands the struct to llama_model_load_from_file - the split_mode
+// decision that prevents CUDA+Vulkan layer-splitting of one physical NVIDIA
+// card (P5 report F2). No real model (and no GPU) is needed: the seam is pure
+// struct construction, so these assertions pin the EXACT field values llama.h
+// (b6099) defines. The load itself against real hardware remains covered by
+// the manual acceptance matrix - stated honestly per the task directive.
+void TestP7F2GpuOffloadParams() {
+    std::cout << "[RUN] Testing P7-F2 GPU offload params seam..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Enum layout pin (llama.h L184-187): the whole NONE+main_gpu=0 device
+    // selection semantic depends on these numeric values; a llama.cpp bump
+    // that renumbers them must fail here, not silently mis-pin devices.
+    static_assert(LLAMA_SPLIT_MODE_NONE == 0 && LLAMA_SPLIT_MODE_LAYER == 1,
+                  "P7-F2 test: split_mode enum layout changed vs b6099");
+
+    // b6099 default is LAYER (src/llama-model.cpp L18521): the regression
+    // baseline the seam must MOVE AWAY from on the GPU leg.
+    {
+        llama_model_params dflt = llama_model_default_params();
+        TEST_CHECK(dflt.split_mode == LLAMA_SPLIT_MODE_LAYER,
+                   "P7-F2: b6099 default split_mode is LAYER (the F2 hazard the seam defends against)");
+    }
+
+    // GPU leg: full offload, single-device pin, no multi-device surfaces.
+    {
+        llama_model_params p = llama_model_default_params();
+        // sentinel: the seam must preserve caller-owned fields it doesn't own
+        auto sentinel_cb = [](float, void*) { return true; };
+        int marker = 0;
+        p.progress_callback = sentinel_cb;
+        p.progress_callback_user_data = &marker;
+        SetGpuOffloadParams(p, /*gpu_offload=*/true);
+        TEST_CHECK(p.n_gpu_layers == 99, "P7-F2: GPU leg offloads 99 layers");
+        TEST_CHECK(p.split_mode == LLAMA_SPLIT_MODE_NONE,
+                   "P7-F2: GPU leg pins to one device (NONE) - prevents CUDA+Vulkan layer split on NVIDIA");
+        TEST_CHECK(p.main_gpu == 0,
+                   "P7-F2: GPU leg pins device 0 (CUDA registers before Vulkan, ggml-backend-reg.cpp L168 vs L177)");
+        TEST_CHECK(p.devices == nullptr, "P7-F2: GPU leg uses no explicit device list");
+        TEST_CHECK(p.tensor_split == nullptr, "P7-F2: GPU leg uses no tensor split");
+        TEST_CHECK(p.progress_callback == sentinel_cb,
+                   "P7-F2: seam preserves caller-owned progress_callback");
+        TEST_CHECK(p.progress_callback_user_data == &marker,
+                   "P7-F2: seam preserves caller-owned progress_callback_user_data");
+    }
+
+    // CPU fallback leg: zero offload AND un-pinned. NONE+main_gpu=0 with zero
+    // enumerable GPU devices is REJECTED by llama.cpp even at n_gpu_layers=0
+    // (src/llama.cpp L204-207), so leaving the pin here would hard-break the
+    // CPU safety net on CPU-only machines - the historical behavior must
+    // return exactly (b6099 default LAYER).
+    {
+        llama_model_params p = llama_model_default_params();
+        SetGpuOffloadParams(p, /*gpu_offload=*/true);  // first pin like the GPU leg
+        SetGpuOffloadParams(p, /*gpu_offload=*/false); // then the CPU retry un-pins
+        TEST_CHECK(p.n_gpu_layers == 0, "P7-F2: CPU leg offloads zero layers");
+        TEST_CHECK(p.split_mode == LLAMA_SPLIT_MODE_LAYER,
+                   "P7-F2: CPU leg RESTORES default LAYER - NONE would fail llama.cpp main_gpu validation with 0 GPU devices and break the CPU fallback");
+        TEST_CHECK(p.devices == nullptr, "P7-F2: CPU leg uses no explicit device list");
+        TEST_CHECK(p.tensor_split == nullptr, "P7-F2: CPU leg uses no tensor split");
+    }
+
+    // Idempotence: calling the GPU leg twice (e.g. struct reuse) is stable.
+    {
+        llama_model_params p = llama_model_default_params();
+        SetGpuOffloadParams(p, true);
+        SetGpuOffloadParams(p, true);
+        TEST_CHECK(p.split_mode == LLAMA_SPLIT_MODE_NONE && p.main_gpu == 0 && p.n_gpu_layers == 99,
+                   "P7-F2: GPU leg application is idempotent");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] P7-F2 GPU offload params seam tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] P7-F2 GPU offload params seam tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+#endif // HAVE_LLAMA_CPP
+
 // ===========================================================================
 // R6 Phase 1 (B3): single-source-of-truth language sync. Pure planner seam
 // (PlanLanguageSync) + persistence (INV-1/3) + tooltip view refresh + hook
@@ -8986,6 +9069,9 @@ int main() {
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
     TestReqF4aPreloadGate(); // REQ-F4a: startup preload gate (cloud-only skip)
+#ifdef HAVE_LLAMA_CPP
+    TestP7F2GpuOffloadParams(); // P7-F2: CUDA+Vulkan layer-split prevention seam
+#endif
     TestR6P5P6I18n();
     TestDiagLogger();
     TestPhase5AppClassifier();
