@@ -4,13 +4,23 @@ This directory contains the Inno Setup script and assets for building the Emebal
 
 ## Prerequisites
 
-1. **Inno Setup 6.1 or later**
+1. **Inno Setup 6.3 or later** (hard requirement, enforced at compile time)
    Download and install from: https://jrsoftware.org/isinfo.php
+   BOM-less UTF-8 decoding of `.iss`/`.isl` files exists only since 6.3; the
+   official bundled `.isl` translations intentionally ship without a BOM
+   (removed in 6.5), so an older compiler would garble every non-Latin
+   language. `setup.iss` aborts the build with `#error` on pre-6.3 compilers.
 
 2. **Build Emebala_chat.exe first**
    Use CMake to build the application before compiling the installer. The installer expects the built executable at `../build/Emebala_chat.exe` (relative to this directory).
 
 ## How to Compile
+
+> **Encoding gate — run before every installer build (mandatory):**
+> `python tools/check_installer_encoding.py`
+> Verifies every `.iss`/`.isl` text input ISCC consumes is UTF-8-clean
+> (project files BOM'd, bundled translations valid UTF-8, compiler-version
+> guard present). Exits non-zero on any violation; do not build past a FAIL.
 
 ### Option 1: GUI (Inno Setup Compiler)
 

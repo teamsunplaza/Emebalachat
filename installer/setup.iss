@@ -6,9 +6,30 @@
 ; a runtime configuration file.
 ;
 ; Requirements:
-;   - Inno Setup 6.1 or later (for CreateDownloadPage support)
+;   - Inno Setup 6.3 or later (for CreateDownloadPage support AND for correct
+;     UTF-8 decoding of the BOM-less official .isl translation files - see the
+;     compiler-version gate below and tools/check_installer_encoding.py)
 ;   - Build Emebalachat.exe with CMake before compiling this installer
 ; ============================================================================
+
+; ------------------------------------------------------------------------
+; Encoding safety gate (session 260910_0005)
+; ------------------------------------------------------------------------
+; Every text input this compiler consumes is UTF-8:
+;   * this .iss and the two project .isl files carry a UTF-8 BOM, so they are
+;     decoded as UTF-8 by every Inno Setup 6.x compiler;
+;   * the 31 official translation .isl files bundled with Inno Setup ship
+;     WITHOUT a BOM by design (their BOMs were deliberately removed in 6.5).
+;     BOM-less UTF-8 decoding for .iss/.isl was only introduced in 6.3;
+;     older compilers silently fall back to the system ANSI code page, which
+;     garbles every non-Latin language (Korean/Japanese/Chinese/Russian/
+;     Arabic/Hebrew/Thai/Ukrainian/Bulgarian/Armenian/Tamil ...).
+; End-user locale is irrelevant after compilation (strings become UTF-16 in
+; the setup binary), so compile-time decoding is the only exposure. Refuse
+; to build on an old compiler instead of shipping mojibake:
+#if VER < 0x06030000
+  #error This script requires Inno Setup 6.3 or later: BOM-less official .isl files are decoded as UTF-8 only since 6.3 (older compilers mis-decode them as system ANSI and garble all non-Latin languages).
+#endif
 
 ; ------------------------------------------------------------------------
 ; [Setup] - Core installer configuration
