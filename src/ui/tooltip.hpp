@@ -346,6 +346,22 @@ private:
     // target. Without it a driver reset leaves the surface permanently blank.
     void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
+    // C1 (session 260910_0007): the single persistent scratch brush the whole
+    // Render path draws through (SetColor just before every Fill/Draw/DrawText
+    // call). Created at Create() and device-lost recovery - NEVER at render
+    // entry - and released in RecreateAfterDeviceLost (before the old target
+    // is dropped) and Destroy. Null when target creation failed; every draw
+    // site null-guards exactly like the old per-brush `if (brush)` checks.
+    void EnsureScratchBrush();
+    void ReleaseScratchBrush();
+    // C2 (session 260910_0007): measured-layout cache seam. Recomputes
+    // src_tag_width_ / copy_btn_w_ / tts_btn_w_ ONLY when the label strings
+    // feeding them change (content set, UI-locale string switch - detected by
+    // the cached-key comparison; DirectWrite metrics are DPI-independent DIPs
+    // so a DPI crossing needs no recompute). Render consumes the cached
+    // floats; the hit-test rects derive from the same values (lockstep by
+    // construction).
+    void EnsureMeasuredLayouts();
     void InitSapi();
     void CleanupSapi();
     // P4 Batch-3 (REQ-C-002, design §1.2.2 / decision D7): transient "no
@@ -391,6 +407,7 @@ private:
     // Direct2D & DirectWrite
     ID2D1Factory* d2d_factory_ = nullptr;
     ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
+    ID2D1SolidColorBrush* scratch_brush_ = nullptr;   // C1: persistent single brush
     ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* header_format_ = nullptr;
@@ -419,6 +436,14 @@ private:
     D2D1_RECT_F body_viewport_rect_ = {};
     D2D1_RECT_F scrollbar_track_rect_ = {};
     D2D1_RECT_F scrollbar_thumb_rect_ = {};
+
+    // ---- C2 measured-layout cache (DIP widths; keys are the exact label
+    // strings the old per-Render measurement blocks consumed) ----
+    float src_tag_width_ = 44.0f;      // floor == old fixed-size fallback
+    std::wstring src_tag_key_;         // label that produced src_tag_width_
+    float copy_btn_w_ = 88.0f;         // floors == old hardcoded boxes
+    float tts_btn_w_ = 82.0f;
+    std::wstring footer_labels_key_;   // concat of the 3 footer labels measured
 
     int hovered_btn_ = 0; // 0=none, 1=copy, 2=tts, 3=lang, 4=close, 5=src
     bool copied_feedback_ = false;

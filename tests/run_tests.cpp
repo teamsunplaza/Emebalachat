@@ -1221,6 +1221,186 @@ void TestWorkerB1SendThroughPins() {
     }
 }
 
+// W5/C1+C2 (session 260910_0007): source-structure pins for the scratch-brush
+// conversion + measured-layout cache in src/ui/tooltip.cpp and
+// src/ui/about_window.cpp. The brush/measurement behavior is live-D2D only
+// (a real ID2D1DCRenderTarget cannot be exercised headlessly - same non-
+// headless classification as the W1 render-adjacent coverage), so these pins
+// freeze the STRUCTURAL contract per the W2/B1 precedent: a future edit that
+// re-introduces per-frame CreateSolidColorBrush/CreateTextLayout churn, drops
+// the device-lost brush release/recreate ordering (a brush bound to a
+// destroyed target is a use-after-destroy), or bypasses the measured-layout
+// cache fails loudly at test time. Exact-count assertions are deliberate:
+// adding a legitimate draw site means updating the constant in the same commit.
+void TestW5C1C2BrushMeasurePins() {
+    std::cout << "[TEST] W5/C1+C2 tooltip/about brush + measure pins" << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* rel) {
+        std::string out;
+        const char* prefixes[] = {"", "../", "../../"};
+        for (const char* pre : prefixes) {
+            std::ifstream in((std::string(pre) + rel).c_str(), std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+        return out;
+    };
+    auto count_occ = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = hay.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+    // Function body = [marker, first column-0 `}` after it).
+    auto func_body = [](const std::string& src, const std::string& marker) {
+        const size_t i = src.find(marker);
+        if (i == std::string::npos) return std::string();
+        const size_t j = src.find("\n}", i);
+        return src.substr(i, (j == std::string::npos ? src.size() : j) - i);
+    };
+
+    const std::string tip = read_src("src/ui/tooltip.cpp");
+    const std::string abt = read_src("src/ui/about_window.cpp");
+    const std::string tipH = read_src("src/ui/tooltip.hpp");
+    const std::string abtH = read_src("src/ui/about_window.hpp");
+    if (tip.empty() || abt.empty() || tipH.empty() || abtH.empty()) {
+        std::cout << "[SKIP] tooltip/about sources not resolvable from the test CWD; W5 pins skipped." << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] W5/C1+C2 tooltip/about brush + measure pins completed." << std::endl;
+        }
+        return;
+    }
+
+    // ---- C1: file-wide brush-creation budget ----
+    // Exactly ONE CreateSolidColorBrush call survives per file, inside the
+    // EnsureScratchBrush definition. Any re-added churn (render path or else-
+    // where) fails this pin.
+    TEST_CHECK(count_occ(tip, "CreateSolidColorBrush(") == 1,
+               "C1: tooltip.cpp has exactly 1 CreateSolidColorBrush call (EnsureScratchBrush only)");
+    TEST_CHECK(count_occ(abt, "CreateSolidColorBrush(") == 1,
+               "C1: about_window.cpp has exactly 1 CreateSolidColorBrush call (EnsureScratchBrush only)");
+
+    // Render bodies: zero brush creation, zero layout creation; every draw
+    // goes through scratch_brush_ SetColor. Exact SetColor counts (29 tooltip
+    // / 21 about) mirror the old per-draw-site brush inventory.
+    const std::string tipRender = func_body(tip, "void TooltipWindow::Render() {");
+    const std::string abtRender = func_body(abt, "void AboutWindow::Render() {");
+    TEST_CHECK(!tipRender.empty() && !abtRender.empty(), "C1/C2: Render bodies located in both files");
+    TEST_CHECK(count_occ(tipRender, "CreateSolidColorBrush(") == 0,
+               "C1: no CreateSolidColorBrush inside TooltipWindow::Render");
+    TEST_CHECK(count_occ(abtRender, "CreateSolidColorBrush(") == 0,
+               "C1: no CreateSolidColorBrush inside AboutWindow::Render");
+    TEST_CHECK(count_occ(tipRender, "scratch_brush_->SetColor(") == 29,
+               "C1: tooltip Render drives 29 SetColor-just-before-use draw groups");
+    TEST_CHECK(count_occ(abtRender, "scratch_brush_->SetColor(") == 21,
+               "C1: about Render drives 21 SetColor-just-before-use draw groups");
+    TEST_CHECK(count_occ(tipRender, "ID2D1SolidColorBrush*") == 0,
+               "C1: no local brush pointer declarations remain in TooltipWindow::Render");
+    TEST_CHECK(count_occ(abtRender, "ID2D1SolidColorBrush*") == 0,
+               "C1: no local brush pointer declarations remain in AboutWindow::Render");
+
+    // Brush lifetime: created at Create + device-lost recovery (and a one-
+    // shot render-entry self-heal), released at Destroy + device-lost BEFORE
+    // the target drop (a brush holds a reference on its target: releasing the
+    // target first would resurrect the lost device / dangling use).
+    TEST_CHECK(count_occ(tip, "EnsureScratchBrush();") == 3,
+               "C1: tooltip EnsureScratchBrush call sites == Create + Render self-heal + device-lost (3)");
+    TEST_CHECK(count_occ(abt, "EnsureScratchBrush();") == 3,
+               "C1: about EnsureScratchBrush call sites == Create + Render self-heal + device-lost (3)");
+    TEST_CHECK(count_occ(tip, "ReleaseScratchBrush();") == 2,
+               "C1: tooltip ReleaseScratchBrush call sites == Destroy + device-lost (2)");
+    TEST_CHECK(count_occ(abt, "ReleaseScratchBrush();") == 2,
+               "C1: about ReleaseScratchBrush call sites == Destroy + device-lost (2)");
+    const std::string tipLost = func_body(tip, "void TooltipWindow::RecreateAfterDeviceLost() {");
+    const std::string abtLost = func_body(abt, "void AboutWindow::RecreateAfterDeviceLost() {");
+    TEST_CHECK(!tipLost.empty() && !abtLost.empty(), "C1: device-lost handlers located in both files");
+    {
+        const size_t r1 = tipLost.find("ReleaseScratchBrush();");
+        const size_t t1 = tipLost.find("renderer_.ReleaseTarget(");
+        const size_t c1 = tipLost.find("renderer_.CreateTarget(");
+        const size_t e1 = tipLost.find("EnsureScratchBrush();");
+        TEST_CHECK(r1 != std::string::npos && t1 != std::string::npos &&
+                   c1 != std::string::npos && e1 != std::string::npos &&
+                   r1 < t1 && t1 < c1 && c1 < e1,
+                   "C1: tooltip device-lost order is release-brush -> release-target -> create-target -> rebuild-brush");
+        const size_t r2 = abtLost.find("ReleaseScratchBrush();");
+        const size_t t2 = abtLost.find("renderer_.ReleaseTarget(");
+        const size_t c2 = abtLost.find("renderer_.CreateTarget(");
+        const size_t e2 = abtLost.find("EnsureScratchBrush();");
+        TEST_CHECK(r2 != std::string::npos && t2 != std::string::npos &&
+                   c2 != std::string::npos && e2 != std::string::npos &&
+                   r2 < t2 && t2 < c2 && c2 < e2,
+                   "C1: about device-lost order is release-brush -> release-target -> create-target -> rebuild-brush");
+    }
+    const std::string tipDestroy = func_body(tip, "void TooltipWindow::Destroy() {");
+    const std::string abtDestroy = func_body(abt, "void AboutWindow::Destroy() {");
+    TEST_CHECK(tipDestroy.find("ReleaseScratchBrush();") != std::string::npos &&
+                   tipDestroy.find("ReleaseScratchBrush();") < tipDestroy.find("renderer_.ReleaseTarget("),
+               "C1: tooltip Destroy releases the brush before the target");
+    TEST_CHECK(abtDestroy.find("ReleaseScratchBrush();") != std::string::npos &&
+                   abtDestroy.find("ReleaseScratchBrush();") < abtDestroy.find("renderer_.ReleaseTarget("),
+               "C1: about Destroy releases the brush before the target");
+
+    // Header members exist (persistent, per render target).
+    TEST_CHECK(tipH.find("ID2D1SolidColorBrush* scratch_brush_") != std::string::npos,
+               "C1: tooltip.hpp declares scratch_brush_");
+    TEST_CHECK(abtH.find("ID2D1SolidColorBrush* scratch_brush_") != std::string::npos,
+               "C1: about_window.hpp declares scratch_brush_");
+
+    // ---- C2: measured-layout cache ----
+    // Genuine per-frame sites (converted): src-tag pill + 2 footer labels.
+    // EnsureMeasuredLayouts owns exactly the 4 CreateTextLayout measurement
+    // calls; ShowTranslation keeps its 2 content-path body measures (the
+    // catalog mislabeled them as per-frame - they already run at content
+    // granularity and MUST NOT move into Render or the cache).
+    TEST_CHECK(count_occ(tipRender, "CreateTextLayout(") == 0,
+               "C2: no CreateTextLayout inside TooltipWindow::Render (steady-state frames shape zero labels)");
+    const std::string tipMeasure = func_body(tip, "void TooltipWindow::EnsureMeasuredLayouts() {");
+    TEST_CHECK(!tipMeasure.empty(), "C2: EnsureMeasuredLayouts located");
+    TEST_CHECK(count_occ(tipMeasure, "CreateTextLayout(") == 4,
+               "C2: cache owns exactly 4 measurements (src-tag + copy + copied + tts labels)");
+    const std::string tipShow = func_body(tip, "void TooltipWindow::ShowTranslation(");
+    TEST_CHECK(count_occ(tipShow, "CreateTextLayout(") == 2,
+               "C2: ShowTranslation content-path body measures stay at content granularity (2 calls)");
+    // Render consumes the cached floats, and the hit-test rects derive from
+    // the same values in the same pass (single source of truth: stale-cache
+    // click-misroute impossible by construction).
+    TEST_CHECK(tipRender.find("src_tag_width_") != std::string::npos &&
+                   tipRender.find("copy_btn_w_") != std::string::npos &&
+                   tipRender.find("tts_btn_w_") != std::string::npos,
+               "C2: Render reads the cached src_tag_width_/copy_btn_w_/tts_btn_w_");
+    TEST_CHECK(tipRender.find("src_btn_rect_ = D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width,") != std::string::npos,
+               "C2: src_btn_rect_ hit-test rebuilt from the cached width (measure/hit-test lockstep)");
+    TEST_CHECK(tipRender.find("copy_btn_rect_ = D2D1::RectF(14.0f, footer_div_y + 7.0f, 14.0f + copy_btn_w,") != std::string::npos,
+               "C2: copy_btn_rect_ hit-test rebuilt from the cached width");
+    TEST_CHECK(tipRender.find("tts_btn_rect_ = D2D1::RectF(tts_left, footer_div_y + 7.0f, tts_left + tts_btn_w,") != std::string::npos,
+               "C2: tts_btn_rect_ hit-test rebuilt from the cached width");
+    // Invalidation is by label-string key: the cache compares the exact
+    // strings it measured (content/language switches change them; DPI needs
+    // no invalidation because DirectWrite metrics are DPI-independent DIPs).
+    TEST_CHECK(tipMeasure.find("src_tag != src_tag_key_") != std::string::npos,
+               "C2: src-tag cache invalidates on label change");
+    TEST_CHECK(tipMeasure.find("labels_key != footer_labels_key_") != std::string::npos,
+               "C2: footer cache invalidates on any of the 3 label strings changing");
+    TEST_CHECK(tipH.find("float src_tag_width_ = 44.0f;") != std::string::npos &&
+                   tipH.find("float copy_btn_w_ = 88.0f;") != std::string::npos &&
+                   tipH.find("float tts_btn_w_ = 82.0f;") != std::string::npos,
+               "C2: cache members carry the old hardcoded floors (fallback parity)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] W5/C1+C2 tooltip/about brush + measure pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] W5/C1+C2 tooltip/about brush + measure pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // ---- REQ-R04: clipboard sequence-number copy-settle polling ----
 // The Electron IPC delay bug (audit 2.3): BackupClipboard never calls
 // EmptyClipboard, so the old fixed Sleep(35) could read the PREVIOUS clipboard
@@ -10250,6 +10430,7 @@ int main() {
     TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
     TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
     TestRef36LayeredRendererPins(); // REF-3.6: shared renderer ownership + null-degradation + GDI-leak pins
+    TestW5C1C2BrushMeasurePins(); // W5/C1+C2: tooltip/about scratch-brush + measured-layout cache structure pins
     TestEngineModule();
     TestModelPathValidation();
     TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache

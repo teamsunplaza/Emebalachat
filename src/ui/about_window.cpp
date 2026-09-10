@@ -151,6 +151,10 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
+    // C1: the persistent scratch brush lives with the target (created here and
+    // in RecreateAfterDeviceLost, never at render entry).
+    EnsureScratchBrush();
+
     ReallocateBuffer(PhysW(), PhysH());
     LoadLogoBitmap();
 
@@ -251,10 +255,28 @@ void AboutWindow::Destroy() {
     if (version_format_) { version_format_->Release(); version_format_ = nullptr; }
     if (title_format_) { title_format_->Release(); title_format_ = nullptr; }
     if (dwrite_factory_) { dwrite_factory_->Release(); dwrite_factory_ = nullptr; }
+    ReleaseScratchBrush(); // C1: brush released while its target is still alive
     renderer_.ReleaseTarget(&dc_render_target_);
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
 
     renderer_.FreeBuffer(); // also nulls the bits pointer (this site's pBits_ = nullptr)
+}
+
+// C1 (session 260910_0007 hygiene): mirror of TooltipWindow::EnsureScratchBrush
+// - the About card draws through ONE persistent ID2D1SolidColorBrush created at
+// Create()/device-lost recovery instead of 13 create/Release churns per Render.
+void AboutWindow::EnsureScratchBrush() {
+    if (!scratch_brush_ && dc_render_target_) {
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f),
+                                                 &scratch_brush_);
+    }
+}
+
+void AboutWindow::ReleaseScratchBrush() {
+    if (scratch_brush_) {
+        scratch_brush_->Release();
+        scratch_brush_ = nullptr;
+    }
 }
 
 void AboutWindow::LoadLogoBitmap() {
@@ -494,6 +516,15 @@ void AboutWindow::Render() {
     // REQ-R15: DIP layout authored below; BindDC rect is the physical buffer.
     RebindRenderTarget();
 
+    // C1: the single persistent scratch brush is owned by Create()/device-lost
+    // recovery, never churned here. The null-branch retry only fires after a
+    // failed init (one-shot self-heal, not per-frame work). Still null: skip
+    // the frame (old code could only offer a cleared empty card in that case).
+    if (!scratch_brush_) {
+        EnsureScratchBrush();
+        if (!scratch_brush_) return;
+    }
+
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
@@ -502,19 +533,6 @@ void AboutWindow::Render() {
 
     // Outer acrylic card, same container geometry as the tooltip.
     D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f), 10.0f, 10.0f);
-
-    ID2D1SolidColorBrush* bgBrush = nullptr;
-    ID2D1SolidColorBrush* borderBrush = nullptr;
-    ID2D1SolidColorBrush* textBrush = nullptr;
-    ID2D1SolidColorBrush* subTextBrush = nullptr;
-    ID2D1SolidColorBrush* dividerBrush = nullptr;
-    ID2D1SolidColorBrush* accentBrush = nullptr;
-    ID2D1SolidColorBrush* pillBgBrush = nullptr;
-    ID2D1SolidColorBrush* pillBgHoverBrush = nullptr;
-    ID2D1SolidColorBrush* goldBorderBrush = nullptr;
-    ID2D1SolidColorBrush* logoBgBrush = nullptr;
-    ID2D1SolidColorBrush* closeBrush = nullptr;
-    ID2D1SolidColorBrush* closeHoverBrush = nullptr;
 
     // DESIGN-260910 brand pass (session 260910_0005): palette re-anchored to
     // the Emebala brand DNA sampled from assets/ (Brand Logo + Chat Logo +
@@ -527,45 +545,34 @@ void AboutWindow::Render() {
     // 14.8:1, lapis-gray subtext 6.9:1, gold accent 8.8:1 (was 15.5 / 7.0 /
     // 7.0). Close-hover keeps #EF4444 (cross-surface close semantics, same as
     // tooltip.cpp); the logo bitmap itself is untouched brand artwork.
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &bgBrush);      // poster navy (lapis shadow)
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.85f), &borderBrush);  // lapis mid
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &textBrush);     // warm sand-white
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 1.0f), &subTextBrush);  // lapis-gray
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.5f), &dividerBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD9B45A, 1.0f), &accentBrush);   // antique gold (brand star)
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.9f), &pillBgBrush);   // lapis-deep pill
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x22406B, 1.0f), &pillBgHoverBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.85f), &goldBorderBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.9f), &logoBgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 0.8f), &closeBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xEF4444, 1.0f), &closeHoverBrush);
-
-    if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
-    if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
+    // C1 (session 260910_0007): the 12 per-frame CreateSolidColorBrush calls
+    // became SetColor arguments on the single persistent scratch_brush_ -
+    // identical ColorF values, identical draw order. Aliasing audit: the old
+    // code's brushes were each consumed immediately at their draw call
+    // (including the features loop where accent/text alternate per iteration),
+    // so SetColor-just-before-use reproduces every draw byte-for-byte; one
+    // brush is sufficient (no second scratch needed).
+    scratch_brush_->SetColor(D2D1::ColorF(0x0C1830, 0.96f));  // poster navy (lapis shadow)
+    dc_render_target_->FillRoundedRectangle(card, scratch_brush_);
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.85f));  // lapis mid
+    dc_render_target_->DrawRoundedRectangle(card, scratch_brush_, 1.0f);
 
     // DESIGN-260910 (P2 consistency): 1px warm-white top rim light, identical
     // to the tooltip card's (src/ui/tooltip.cpp Render) so both windows read
     // as the same glass material over any host background.
     {
-        ID2D1SolidColorBrush* rimBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(
-            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &rimBrush);
-        if (rimBrush) {
-            dc_render_target_->DrawLine(
-                D2D1::Point2F(9.0f, 1.5f), D2D1::Point2F(w - 9.0f, 1.5f),
-                rimBrush, 1.0f);
-            rimBrush->Release();
-        }
+        scratch_brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
+        dc_render_target_->DrawLine(
+            D2D1::Point2F(9.0f, 1.5f), D2D1::Point2F(w - 9.0f, 1.5f),
+            scratch_brush_, 1.0f);
     }
 
     // 1. Logo: 64x64 squircle, gold border (plan §2.2 layout item 1).
     const D2D1_RECT_F logoFrame = D2D1::RectF((w - 64.0f) / 2.0f, 28.0f, (w + 64.0f) / 2.0f, 92.0f);
-    if (logoBgBrush) {
-        dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(logoFrame, 14.0f, 14.0f), logoBgBrush);
-    }
-    if (goldBorderBrush) {
-        dc_render_target_->DrawRoundedRectangle(D2D1::RoundedRect(logoFrame, 14.0f, 14.0f), goldBorderBrush, 1.2f);
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x14243F, 0.9f));  // lapis-deep logo bg
+    dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(logoFrame, 14.0f, 14.0f), scratch_brush_);
+    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.85f));  // antique gold border
+    dc_render_target_->DrawRoundedRectangle(D2D1::RoundedRect(logoFrame, 14.0f, 14.0f), scratch_brush_, 1.2f);
     const D2D1_RECT_F logoRect = D2D1::RectF(logoFrame.left + 6.0f, logoFrame.top + 6.0f,
                                              logoFrame.right - 6.0f, logoFrame.bottom - 6.0f);
     if (logo_bitmap_) {
@@ -578,14 +585,16 @@ void AboutWindow::Render() {
     // REQ-B-005 (design §1.1.7): localized brand title (previously the fixed
     // English display-name constant); resolved per Render through the i18n seam.
     const std::wstring titleText = I18n::Get(StringId::AppName);
-    if (title_format_ && textBrush) {
+    if (title_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
         dc_render_target_->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.size()),
-                                    title_format_, D2D1::RectF(24.0f, 100.0f, w - 24.0f, 132.0f), textBrush);
+                                    title_format_, D2D1::RectF(24.0f, 100.0f, w - 24.0f, 132.0f), scratch_brush_);
     }
     const std::wstring versionText = L"v" + std::wstring(kAppVersionW);
-    if (version_format_ && subTextBrush) {
+    if (version_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
         dc_render_target_->DrawText(versionText.c_str(), static_cast<UINT32>(versionText.size()),
-                                    version_format_, D2D1::RectF(24.0f, 134.0f, w - 24.0f, 152.0f), subTextBrush);
+                                    version_format_, D2D1::RectF(24.0f, 134.0f, w - 24.0f, 152.0f), scratch_brush_);
     }
 
     // R6 Phase 5: resolve every body string for the CURRENT locale once per
@@ -593,16 +602,16 @@ void AboutWindow::Render() {
     const LocalizedContent content = BuildLocalizedContent();
 
     // 3. Tagline (body 12, wrap, centered).
-    if (tagline_format_ && textBrush) {
+    if (tagline_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
         dc_render_target_->DrawText(content.tagline.c_str(), static_cast<UINT32>(content.tagline.size()),
-                                    tagline_format_, D2D1::RectF(24.0f, 162.0f, w - 24.0f, 208.0f), textBrush);
+                                    tagline_format_, D2D1::RectF(24.0f, 162.0f, w - 24.0f, 208.0f), scratch_brush_);
     }
 
     // Divider 1
-    if (dividerBrush) {
-        dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 218.0f), D2D1::Point2F(w - 24.0f, 218.0f),
-                                    dividerBrush, 1.0f);
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));  // lapis divider
+    dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 218.0f), D2D1::Point2F(w - 24.0f, 218.0f),
+                                scratch_brush_, 1.0f);
 
     // 4. Features: 3 blocks of 42 DIP. DESIGN-260910 (P2 hierarchy): each
     // block gains a 5 DIP emerald marker dot so the section scans as three
@@ -611,34 +620,36 @@ void AboutWindow::Render() {
     // carries RTL for RTL locales; leading alignment starts at the rect's
     // reading edge), so RTL locales get the dot on the right.
     const bool ui_rtl = DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL;
-    if (body_format_ && textBrush && accentBrush) {
+    if (body_format_) {
         for (int i = 0; i < 3; ++i) {
             const float top = 230.0f + static_cast<float>(i) * 42.0f;
             const D2D1_ROUNDED_RECT dot = D2D1::RoundedRect(
                 ui_rtl ? D2D1::RectF(w - 33.0f, top + 7.0f, w - 28.0f, top + 12.0f)
                        : D2D1::RectF(28.0f, top + 7.0f, 33.0f, top + 12.0f),
                 2.5f, 2.5f);
-            dc_render_target_->FillRoundedRectangle(dot, accentBrush);
+            scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold marker
+            dc_render_target_->FillRoundedRectangle(dot, scratch_brush_);
+            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
             dc_render_target_->DrawText(content.features[i].c_str(),
                                         static_cast<UINT32>(content.features[i].size()),
                                         body_format_,
                                         ui_rtl ? D2D1::RectF(28.0f, top, w - 40.0f, top + 40.0f)
                                                : D2D1::RectF(40.0f, top, w - 28.0f, top + 40.0f),
-                                        textBrush);
+                                        scratch_brush_);
         }
     }
 
     // 5. Etymology (italic 11, subtext).
-    if (etymology_format_ && subTextBrush) {
+    if (etymology_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
         dc_render_target_->DrawText(content.etymology.c_str(), static_cast<UINT32>(content.etymology.size()),
-                                    etymology_format_, D2D1::RectF(24.0f, 362.0f, w - 24.0f, 402.0f), subTextBrush);
+                                    etymology_format_, D2D1::RectF(24.0f, 362.0f, w - 24.0f, 402.0f), scratch_brush_);
     }
 
     // Divider 2
-    if (dividerBrush) {
-        dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 414.0f), D2D1::Point2F(w - 24.0f, 414.0f),
-                                    dividerBrush, 1.0f);
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));  // lapis divider
+    dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 414.0f), D2D1::Point2F(w - 24.0f, 414.0f),
+                                scratch_brush_, 1.0f);
 
     // 6. Links row: 3 pill buttons centered (Website / Contact / Reddit).
     const float pill_w = 100.0f;
@@ -652,30 +663,29 @@ void AboutWindow::Render() {
                                      456.0f);
         const bool hover = (hovered_link_ == i);
         const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(link_rects_[i], 4.0f, 4.0f);
-        if (hover && pillBgHoverBrush) {
-            dc_render_target_->FillRoundedRectangle(pill, pillBgHoverBrush);
-        } else if (pillBgBrush) {
-            dc_render_target_->FillRoundedRectangle(pill, pillBgBrush);
-        }
-        if (accentBrush) {
-            dc_render_target_->DrawRoundedRectangle(pill, accentBrush, hover ? 1.4f : 1.0f);
-        }
-        if (link_format_ && textBrush) {
+        scratch_brush_->SetColor(hover ? D2D1::ColorF(0x22406B, 1.0f)     // pill hover
+                                       : D2D1::ColorF(0x14243F, 0.9f));   // lapis-deep pill
+        dc_render_target_->FillRoundedRectangle(pill, scratch_brush_);
+        scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
+        dc_render_target_->DrawRoundedRectangle(pill, scratch_brush_, hover ? 1.4f : 1.0f);
+        if (link_format_) {
+            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
             dc_render_target_->DrawText(content.link_labels[i].c_str(),
                                         static_cast<UINT32>(content.link_labels[i].size()),
-                                        link_format_, link_rects_[i], textBrush);
+                                        link_format_, link_rects_[i], scratch_brush_);
         }
     }
 
     // 7. Contact block (small 10.5, subtext, centered).
-    if (small_format_ && subTextBrush) {
+    if (small_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
         for (int i = 0; i < 3; ++i) {
             const float top = 472.0f + static_cast<float>(i) * 22.0f;
             dc_render_target_->DrawText(content.contacts[i].c_str(),
                                         static_cast<UINT32>(content.contacts[i].size()),
                                         small_format_,
                                         D2D1::RectF(24.0f, top, w - 24.0f, top + 20.0f),
-                                        subTextBrush);
+                                        scratch_brush_);
         }
     }
 
@@ -694,43 +704,30 @@ void AboutWindow::Render() {
         const std::wstring reset_text =
             feedback ? I18n::Get(StringId::AboutResetDone) : content.reset_label;
         const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(reset_rect_, 4.0f, 4.0f);
-        if (hover && pillBgHoverBrush) {
-            dc_render_target_->FillRoundedRectangle(btn, pillBgHoverBrush);
-        } else if (pillBgBrush) {
-            dc_render_target_->FillRoundedRectangle(btn, pillBgBrush);
-        }
-        if (accentBrush) {
-            dc_render_target_->DrawRoundedRectangle(btn, accentBrush, hover ? 1.4f : 1.0f);
-        }
-        if (link_format_ && textBrush) {
+        scratch_brush_->SetColor(hover ? D2D1::ColorF(0x22406B, 1.0f)     // pill hover
+                                       : D2D1::ColorF(0x14243F, 0.9f));   // lapis-deep pill
+        dc_render_target_->FillRoundedRectangle(btn, scratch_brush_);
+        scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
+        dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_, hover ? 1.4f : 1.0f);
+        if (link_format_) {
+            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
             dc_render_target_->DrawText(reset_text.c_str(),
                                         static_cast<UINT32>(reset_text.size()),
-                                        link_format_, reset_rect_, textBrush);
+                                        link_format_, reset_rect_, scratch_brush_);
         }
     }
 
     // 8. Close button top-right (same rect math as the tooltip's).
     close_btn_rect_ = D2D1::RectF(w - 32.0f, 12.0f, w - 12.0f, 32.0f);
     if (header_format_) {
-        ID2D1SolidColorBrush* brush = (hovered_link_ == kHoverClose && closeHoverBrush)
-                                          ? closeHoverBrush : closeBrush;
-        if (brush) {
-            dc_render_target_->DrawText(L"\u2715", 1, header_format_, close_btn_rect_, brush);
-        }
+        scratch_brush_->SetColor((hovered_link_ == kHoverClose)
+                                     ? D2D1::ColorF(0xEF4444, 1.0f)
+                                     : D2D1::ColorF(0x93A3C7, 0.8f));
+        dc_render_target_->DrawText(L"\u2715", 1, header_format_, close_btn_rect_, scratch_brush_);
     }
 
-    if (closeHoverBrush) closeHoverBrush->Release();
-    if (closeBrush) closeBrush->Release();
-    if (logoBgBrush) logoBgBrush->Release();
-    if (goldBorderBrush) goldBorderBrush->Release();
-    if (pillBgHoverBrush) pillBgHoverBrush->Release();
-    if (pillBgBrush) pillBgBrush->Release();
-    if (accentBrush) accentBrush->Release();
-    if (dividerBrush) dividerBrush->Release();
-    if (subTextBrush) subTextBrush->Release();
-    if (textBrush) textBrush->Release();
-    if (borderBrush) borderBrush->Release();
-    if (bgBrush) bgBrush->Release();
+    // C1: the twelve palette brushes used to be released here; the persistent
+    // scratch_brush_ survives the frame (released at Destroy/device-lost).
 
     // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. Without
     // it a driver reset makes every later EndDraw fail and the About card
@@ -746,6 +743,10 @@ void AboutWindow::Render() {
 // target; the logo bitmap was created on the lost device and must be rebuilt.
 void AboutWindow::RecreateAfterDeviceLost() {
     DIAG_F("ABOUT/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    // C1: the scratch brush is device-dependent (bound to the lost target).
+    // Release it BEFORE ReleaseTarget so no brush reference keeps the dead
+    // device alive.
+    ReleaseScratchBrush();
     renderer_.ReleaseTarget(&dc_render_target_);
     if (!d2d_factory_) {
         return; // Create() never finished; all render paths null-guard already
@@ -756,6 +757,7 @@ void AboutWindow::RecreateAfterDeviceLost() {
     }
     ReallocateBuffer(PhysW(), PhysH());
     LoadLogoBitmap();
+    EnsureScratchBrush(); // C1: rebuild the scratch brush on the fresh target
 }
 
 void AboutWindow::UpdateLayered() {

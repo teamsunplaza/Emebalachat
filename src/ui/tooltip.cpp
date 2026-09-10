@@ -257,6 +257,10 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         return false;
     }
 
+    // C1: the persistent scratch brush lives with the target (created here and
+    // in RecreateAfterDeviceLost, never at render entry).
+    EnsureScratchBrush();
+
     // REQ-R15: single buffer allocation AFTER the render target exists so the
     // D2D DPI transform is set in the same step (ReallocateBuffer no-ops its
     // bind when the target is null).
@@ -370,6 +374,7 @@ void TooltipWindow::Destroy() {
     if (body_format_) { body_format_->Release(); body_format_ = nullptr; }
     if (header_format_) { header_format_->Release(); header_format_ = nullptr; }
     if (dwrite_factory_) { dwrite_factory_->Release(); dwrite_factory_ = nullptr; }
+    ReleaseScratchBrush(); // C1: brush released while its target is still alive
     renderer_.ReleaseTarget(&dc_render_target_);
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
 
@@ -386,6 +391,123 @@ void TooltipWindow::LoadLogoBitmap() {
     std::wstring logoPath = FindLogoPath();
     if (!logoPath.empty()) {
         LoadWicBitmap(dc_render_target_, logoPath, &logo_bitmap_);
+    }
+}
+
+// C1 (session 260910_0007 hygiene): the card is drawn through ONE persistent
+// ID2D1SolidColorBrush. Aliasing audit result: the old Render created up to 17
+// brushes per pass but NEVER held two of them alive across each other's color
+// use - every fill/stroke/text consumed its brush immediately, and the only
+// "ternary brush" sites selected between colors at draw time. SetColor-
+// just-before-use discipline is therefore sufficient; a second scratch brush
+// is not needed. The scratch brush is created at Create() and device-lost
+// recovery (NEVER at render entry) and released in RecreateAfterDeviceLost
+// (before the old target is dropped: a device-lost target kept alive by a
+// leaked brush reference would resurrect the broken device) and in Destroy().
+// Null target -> null brush; every draw site keeps the old `if (brush)`
+// discipline via the single early bail in Render().
+void TooltipWindow::EnsureScratchBrush() {
+    if (!scratch_brush_ && dc_render_target_) {
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f),
+                                                 &scratch_brush_);
+    }
+}
+
+void TooltipWindow::ReleaseScratchBrush() {
+    if (scratch_brush_) {
+        scratch_brush_->Release();
+        scratch_brush_ = nullptr;
+    }
+}
+
+// C2 (session 260910_0007): measured-layout cache. Catalog audit verified the
+// src-tag pill width [was inline at Render] and the two footer button widths
+// [was inline at Render] as the ONLY genuinely per-frame CreateTextLayout
+// measurement sites; the ShowTranslation body measures (content path, once
+// per translation) were mislabeled and stay untouched. The label inputs
+// change on content set / language pick / UI-locale string switch only, so
+// the cache keys are the exact label strings; a key match skips all
+// shaping. DirectWrite metrics are DPI-independent DIPs, so a DPI crossing
+// needs no recompute (verified: the old blocks used constant 512 DIP extent
+// constraints with no per-frame width drift). The hit-test rects
+// (src_btn_rect_, copy_btn_rect_, tts_btn_rect_) are rebuilt every Render
+// FROM these cached widths in the same pass, so measure and hit-test cannot
+// disagree (the VP's stale-cache click-misroute hazard is closed by the
+// single source of truth). If measurement is unavailable (no format /
+// factory / layout failure), today's degradation is frozen: widths keep
+// their floors (== the old hardcoded fallback sizes).
+void TooltipWindow::EnsureMeasuredLayouts() {
+    if (!dwrite_factory_) return;
+
+    // --- site 3: source-language pill width (header_format_) ---
+    const std::wstring src_tag_text = source_lang_code_.empty()
+                                          ? I18n::Get(StringId::AutoDetect)
+                                          : ToUtf16(source_lang_code_);
+    const std::wstring src_tag = src_tag_text + L" ▾";
+    if (header_format_ && src_tag != src_tag_key_) {
+        float width = 44.0f; // floor == the pre-F8 fixed-size box (fallback parity)
+        IDWriteTextLayout* src_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_,
+                512.0f, 22.0f, &src_layout)) && src_layout) {
+            DWRITE_TEXT_METRICS src_metrics = {};
+            if (SUCCEEDED(src_layout->GetMetrics(&src_metrics))) {
+                const float measured = src_metrics.width + 16.0f;
+                if (measured > width) width = measured;
+            }
+            src_layout->Release();
+        }
+        src_tag_width_ = width;
+        src_tag_key_ = src_tag;
+    }
+
+    // --- sites 4-6: footer pill widths (button_format_) ---
+    if (button_format_) {
+        const std::wstring copy_label = I18n::Get(StringId::TooltipButtonCopy);
+        const std::wstring copied_label = I18n::Get(StringId::TooltipCopied);
+        const std::wstring tts_label = I18n::Get(StringId::TooltipButtonTts);
+        const std::wstring labels_key = copy_label + L'\0' + copied_label + L'\0' + tts_label;
+        if (labels_key != footer_labels_key_) {
+            float copy_w = 88.0f; // floors == the pre-DESIGN-260910 hardcoded boxes
+            float tts_w = 82.0f;
+            IDWriteTextLayout* lbl_layout = nullptr;
+            DWRITE_TEXT_METRICS lbl_metrics = {};
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    copy_label.c_str(), static_cast<UINT32>(copy_label.size()),
+                    button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+                if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                    copy_w = lbl_metrics.width + 20.0f;
+                    if (copy_w < 88.0f) copy_w = 88.0f;
+                    if (copy_w > 180.0f) copy_w = 180.0f;
+                }
+                lbl_layout->Release();
+            }
+            lbl_layout = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    copied_label.c_str(), static_cast<UINT32>(copied_label.size()),
+                    button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+                if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                    const float w_feedback = lbl_metrics.width + 20.0f;
+                    if (w_feedback > copy_w) copy_w = w_feedback;
+                    if (copy_w > 180.0f) copy_w = 180.0f;
+                }
+                lbl_layout->Release();
+            }
+            lbl_layout = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    tts_label.c_str(), static_cast<UINT32>(tts_label.size()),
+                    button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
+                if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
+                    tts_w = lbl_metrics.width + 20.0f;
+                    if (tts_w < 82.0f) tts_w = 82.0f;
+                    if (tts_w > 150.0f) tts_w = 150.0f;
+                }
+                lbl_layout->Release();
+            }
+            copy_btn_w_ = copy_w;
+            tts_btn_w_ = tts_w;
+            footer_labels_key_ = labels_key;
+        }
     }
 }
 
@@ -1107,6 +1229,20 @@ void TooltipWindow::Render() {
     // REQ-R15: DIP layout authored below; BindDC rect is the physical buffer.
     RebindRenderTarget();
 
+    // C1: the single persistent scratch brush is owned by Create()/device-lost
+    // recovery, never churned here. The null-branch retry only fires after a
+    // failed init (a one-shot self-heal, not per-frame work - once alive the
+    // check is a single predictable branch). Still null == no brush on a live
+    // target: skip the frame (old code could only offer a cleared empty card).
+    if (!scratch_brush_) {
+        EnsureScratchBrush();
+        if (!scratch_brush_) return;
+    }
+
+    // C2: refresh the measured pill widths only when a label string changed;
+    // zero CreateTextLayout calls on steady-state renders (scroll/hover bursts).
+    EnsureMeasuredLayouts();
+
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
@@ -1116,14 +1252,6 @@ void TooltipWindow::Render() {
         10.0f, 10.0f
     );
 
-    ID2D1SolidColorBrush* bgBrush = nullptr;
-    ID2D1SolidColorBrush* borderBrush = nullptr;
-    ID2D1SolidColorBrush* textBrush = nullptr;
-    ID2D1SolidColorBrush* subTextBrush = nullptr;
-    ID2D1SolidColorBrush* dividerBrush = nullptr;
-    ID2D1SolidColorBrush* accentBrush = nullptr;
-    ID2D1SolidColorBrush* btnBgBrush = nullptr;
-
     // DESIGN-260910 brand pass (session 260910_0005): mirrors about_window.cpp
     // — palette re-anchored to the Emebala brand DNA (lapis blue / antique
     // gold / warm sandstone from assets/). Same slot mapping: slate family ->
@@ -1131,15 +1259,16 @@ void TooltipWindow::Render() {
     // #CBD5E1 (last pass's P1 contrast fix) becomes the sand-tinted
     // #D6DCEA at the same WCAG-safe lightness (>= 11:1 on #0C1830). Hover
     // fills, close #EF4444 semantics, and all geometry are untouched.
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &bgBrush);      // poster navy (lapis shadow)
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.85f), &borderBrush);  // lapis mid
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &textBrush);     // warm sand-white
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 1.0f), &subTextBrush);  // lapis-gray
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.5f), &dividerBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD9B45A, 1.0f), &accentBrush);   // antique gold (brand star)
-
-    if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
-    if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
+    // C1 (session 260910_0007): these palette entries are now SetColor
+    // arguments on the single scratch_brush_ instead of 6 per-frame
+    // CreateSolidColorBrush calls - identical ColorF values, identical draw
+    // order. SetColor-just-before-use is safe because the old code consumed
+    // every brush immediately at its draw call (aliasing audit: no site held
+    // two different-color brushes across each other's use).
+    scratch_brush_->SetColor(D2D1::ColorF(0x0C1830, 0.96f));  // poster navy (lapis shadow)
+    dc_render_target_->FillRoundedRectangle(card, scratch_brush_);
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.85f));  // lapis mid
+    dc_render_target_->DrawRoundedRectangle(card, scratch_brush_, 1.0f);
 
     // DESIGN-260910 (P2 glass depth): 1px warm-white rim light inset along the
     // top edge - a Fluent-style specular cue that separates the card from
@@ -1148,25 +1277,21 @@ void TooltipWindow::Render() {
     // the rim is the clipped-safe equivalent of elevation shading. Shared by
     // both the translation card and the message-mode notice below.
     {
-        ID2D1SolidColorBrush* rimBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(
-            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &rimBrush);
-        if (rimBrush) {
-            dc_render_target_->DrawLine(
-                D2D1::Point2F(9.0f, 1.5f),
-                D2D1::Point2F(static_cast<float>(current_width_) - 9.0f, 1.5f),
-                rimBrush, 1.0f);
-            rimBrush->Release();
-        }
+        scratch_brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
+        dc_render_target_->DrawLine(
+            D2D1::Point2F(9.0f, 1.5f),
+            D2D1::Point2F(static_cast<float>(current_width_) - 9.0f, 1.5f),
+            scratch_brush_, 1.0f);
     }
 
     // --- REQ-R08 message mode: compact header + body notice, no action buttons ---
     if (is_message_mode_) {
         D2D1_RECT_F msgHeaderRect = D2D1::RectF(14.0f, 10.0f, static_cast<float>(current_width_) - 14.0f, 36.0f);
-        if (header_format_ && textBrush) {
+        if (header_format_) {
+            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
             dc_render_target_->DrawText(
                 message_header_.c_str(), static_cast<UINT32>(message_header_.size()),
-                header_format_, msgHeaderRect, textBrush);
+                header_format_, msgHeaderRect, scratch_brush_);
         }
         D2D1_RECT_F msgBodyRect = D2D1::RectF(14.0f, 38.0f, static_cast<float>(current_width_) - 14.0f,
                                               static_cast<float>(current_height_) - 10.0f);
@@ -1175,20 +1300,12 @@ void TooltipWindow::Render() {
         // full step below the header hierarchy on the small 11px format.
         // Slate-300 #CBD5E1 keeps the hierarchy and clears WCAG AA at that
         // size on the #0F172A card.
-        ID2D1SolidColorBrush* msgBodyBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD6DCEA, 1.0f), &msgBodyBrush);  // brand pass: lapis-tinted sand body
-        if (small_format_ && msgBodyBrush) {
+        if (small_format_) {
+            scratch_brush_->SetColor(D2D1::ColorF(0xD6DCEA, 1.0f));  // brand pass: lapis-tinted sand body
             dc_render_target_->DrawText(
                 translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),
-                small_format_, msgBodyRect, msgBodyBrush);
+                small_format_, msgBodyRect, scratch_brush_);
         }
-        if (msgBodyBrush) msgBodyBrush->Release();
-        if (accentBrush) accentBrush->Release();
-        if (dividerBrush) dividerBrush->Release();
-        if (subTextBrush) subTextBrush->Release();
-        if (textBrush) textBrush->Release();
-        if (borderBrush) borderBrush->Release();
-        if (bgBrush) bgBrush->Release();
         // R6 Phase 3 (audit item 4, plan §3.1 A3): the unchecked EndDraw was a
         // latent device-lost gap - after a GPU driver reset D2DERR_RECREATE_TARGET
         // made every later BeginDraw/EndDraw silently fail and the tooltip stayed
@@ -1204,17 +1321,10 @@ void TooltipWindow::Render() {
     // --- Header Area ---
     // 1. Emebala Brand Logo (Far Left, 1:1 round/squircle frame without horizontal stretching)
     D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 36.0f, 30.0f), 6.0f, 6.0f);
-    ID2D1SolidColorBrush* logoBgBrush = nullptr;
-    ID2D1SolidColorBrush* goldBorderBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &logoBgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.85f), &goldBorderBrush);
-
-    if (logoBgBrush) {
-        dc_render_target_->FillRoundedRectangle(logoFrame, logoBgBrush);
-    }
-    if (goldBorderBrush) {
-        dc_render_target_->DrawRoundedRectangle(logoFrame, goldBorderBrush, 1.0f);
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x1E293B, 0.9f));
+    dc_render_target_->FillRoundedRectangle(logoFrame, scratch_brush_);
+    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.85f));
+    dc_render_target_->DrawRoundedRectangle(logoFrame, scratch_brush_, 1.0f);
 
     D2D1_RECT_F logoRect = D2D1::RectF(16.0f, 10.0f, 34.0f, 28.0f);
     if (logo_bitmap_) {
@@ -1228,8 +1338,7 @@ void TooltipWindow::Render() {
         DrawTabletLogoVector(dc_render_target_, logoRect, false);
     }
 
-    if (goldBorderBrush) goldBorderBrush->Release();
-    if (logoBgBrush) logoBgBrush->Release();
+    // C1: logo-frame brushes were released here; the scratch brush persists.
 
     // 2. Source language dropdown button (clean layout following 1:1 logo
     // frame). F8 (ADR-A1-4): the source tag is now interactive exactly like
@@ -1242,48 +1351,32 @@ void TooltipWindow::Render() {
                                                           : ToUtf16(source_lang_code_);
     std::wstring src_tag = src_tag_text + L" ▾";
     // F8 (ADR-A1-4): DYNAMIC width - the hardcoded 44.0f box clipped localized
-    // Auto-Detect strings and wider codes (e.g. "ZH-CN"). Measure the label
-    // with header_format_ (the format the text is actually drawn with) and add
-    // horizontal padding so the pill never hugs the glyphs; 44.0f stays the
-    // floor so measurement failure degrades to today's fixed size.
-    float src_tag_width = 44.0f;
-    if (header_format_ && dwrite_factory_) {
-        IDWriteTextLayout* src_layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_,
-                512.0f, 22.0f, &src_layout)) && src_layout) {
-            DWRITE_TEXT_METRICS src_metrics = {};
-            if (SUCCEEDED(src_layout->GetMetrics(&src_metrics))) {
-                const float measured = src_metrics.width + 16.0f;
-                if (measured > src_tag_width) src_tag_width = measured;
-            }
-            src_layout->Release();
-        }
-    }
+    // Auto-Detect strings and wider codes (e.g. "ZH-CN"). C2 (session
+    // 260910_0007): the shaping moved to EnsureMeasuredLayouts (keyed on this
+    // exact label string); Render consumes the cached DIP width. 44.0f stays
+    // the floor there so measurement failure degrades identically.
+    const float src_tag_width = src_tag_width_;
     // F8: persist the button rect as a member for hover/click hit tests.
     src_btn_rect_ = D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f);
     D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(src_btn_rect_, 4.0f, 4.0f);
-    dc_render_target_->CreateSolidColorBrush(
-        (hovered_btn_ == 5) ? D2D1::ColorF(0x334155, 1.0f) : D2D1::ColorF(0x1E293B, 0.9f),
-        &btnBgBrush
-    );
-    if (btnBgBrush) {
-        dc_render_target_->FillRoundedRectangle(srcTagRect, btnBgBrush);
-        // F8: hover highlight mirrors the target button's hovered_btn_==3
-        // pattern - accent border when hovered (tooltip.cpp:1269-1275 model).
-        dc_render_target_->DrawRoundedRectangle(
-            srcTagRect, (hovered_btn_ == 5) ? accentBrush : borderBrush, 1.0f);
-        btnBgBrush->Release();
-        btnBgBrush = nullptr;
-    }
-    if (header_format_ && subTextBrush) {
-        dc_render_target_->DrawText(src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_, srcTagRect.rect, subTextBrush);
+    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0x334155, 1.0f)
+                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    dc_render_target_->FillRoundedRectangle(srcTagRect, scratch_brush_);
+    // F8: hover highlight mirrors the target button's hovered_btn_==3
+    // pattern - accent border when hovered (tooltip.cpp:1269-1275 model).
+    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0xD9B45A, 1.0f)
+                                                 : D2D1::ColorF(0x33507E, 0.85f));
+    dc_render_target_->DrawRoundedRectangle(srcTagRect, scratch_brush_, 1.0f);
+    if (header_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray
+        dc_render_target_->DrawText(src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_, srcTagRect.rect, scratch_brush_);
     }
 
     // 3. Arrow indicator
-    if (header_format_ && subTextBrush) {
+    if (header_format_) {
         D2D1_RECT_F arrowRect = D2D1::RectF(src_tag_x + src_tag_width + 4.0f, 8.0f, src_tag_x + src_tag_width + 24.0f, 30.0f);
-        dc_render_target_->DrawText(L"→", 1, header_format_, arrowRect, subTextBrush);
+        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray
+        dc_render_target_->DrawText(L"→", 1, header_format_, arrowRect, scratch_brush_);
     }
 
     // 4. Target language switcher dropdown button
@@ -1297,43 +1390,32 @@ void TooltipWindow::Render() {
     lang_btn_rect_ = D2D1::RectF(tgt_btn_x, 8.0f, tgt_btn_x + tgt_btn_width, 30.0f);
     D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, 4.0f, 4.0f);
 
-    dc_render_target_->CreateSolidColorBrush(
-        (hovered_btn_ == 3) ? D2D1::ColorF(0x334155, 1.0f) : D2D1::ColorF(0x1E293B, 0.9f),
-        &btnBgBrush
-    );
-    if (btnBgBrush) {
-        dc_render_target_->FillRoundedRectangle(tgtTagRect, btnBgBrush);
-        dc_render_target_->DrawRoundedRectangle(tgtTagRect, accentBrush, 1.0f);
-        btnBgBrush->Release();
-        btnBgBrush = nullptr;
-    }
-    if (button_format_ && textBrush) {
-        dc_render_target_->DrawText(tgt_label.c_str(), static_cast<UINT32>(tgt_label.size()), button_format_, lang_btn_rect_, textBrush);
+    scratch_brush_->SetColor((hovered_btn_ == 3) ? D2D1::ColorF(0x334155, 1.0f)
+                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    dc_render_target_->FillRoundedRectangle(tgtTagRect, scratch_brush_);
+    scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
+    dc_render_target_->DrawRoundedRectangle(tgtTagRect, scratch_brush_, 1.0f);
+    if (button_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+        dc_render_target_->DrawText(tgt_label.c_str(), static_cast<UINT32>(tgt_label.size()), button_format_, lang_btn_rect_, scratch_brush_);
     }
 
     // Close button (top right)
     close_btn_rect_ = D2D1::RectF(static_cast<float>(current_width_) - 32.0f, 8.0f, static_cast<float>(current_width_) - 12.0f, 28.0f);
     if (header_format_) {
-        ID2D1SolidColorBrush* closeBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(
-            (hovered_btn_ == 4) ? D2D1::ColorF(0xEF4444, 1.0f) : D2D1::ColorF(0x94A3B8, 0.8f),
-            &closeBrush
-        );
-        if (closeBrush) {
-            dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, closeBrush);
-            closeBrush->Release();
-        }
+        scratch_brush_->SetColor((hovered_btn_ == 4) ? D2D1::ColorF(0xEF4444, 1.0f)
+                                                     : D2D1::ColorF(0x94A3B8, 0.8f));
+        dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
     }
 
     // Header divider line
-    if (dividerBrush) {
-        dc_render_target_->DrawLine(
-            D2D1::Point2F(14.0f, 37.0f),
-            D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, 37.0f),
-            dividerBrush,
-            1.0f
-        );
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));
+    dc_render_target_->DrawLine(
+        D2D1::Point2F(14.0f, 37.0f),
+        D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, 37.0f),
+        scratch_brush_,
+        1.0f
+    );
 
     // --- Body Area: Translated Text (REQ-002: scrollable viewport) ---
     float body_y = kBodyTopDip;
@@ -1344,7 +1426,8 @@ void TooltipWindow::Render() {
 
     body_viewport_rect_ = D2D1::RectF(14.0f, body_y, 14.0f + max_body_width, body_y + body_height);
 
-    if (!translated_text_.empty() && body_format_ && textBrush) {
+    if (!translated_text_.empty() && body_format_) {
+        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
         // Clip to the viewport and draw the FULL layout (huge layout extent,
         // never trimmed) shifted up by the scroll offset: overflow becomes
         // reachable via scrolling instead of silently clipped (static
@@ -1360,7 +1443,7 @@ void TooltipWindow::Render() {
             static_cast<UINT32>(translated_text_.size()),
             body_format_,
             bodyRect,
-            textBrush
+            scratch_brush_
         );
         dc_render_target_->PopAxisAlignedClip();
     }
@@ -1377,23 +1460,18 @@ void TooltipWindow::Render() {
             body_y, body_height, thumb_h, scroll_offset_dip_, content_height_dip_, body_height);
         scrollbar_thumb_rect_ = D2D1::RectF(track_left, thumb_top, track_left + 8.0f, thumb_top + thumb_h);
 
-        ID2D1SolidColorBrush* trackBrush = nullptr;
-        ID2D1SolidColorBrush* thumbBrush = nullptr;
         const bool thumb_active = thumb_hover_ || dragging_thumb_;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.7f), &trackBrush);
-        dc_render_target_->CreateSolidColorBrush(
-            thumb_active ? D2D1::ColorF(0xF8FAFC, 1.0f) : D2D1::ColorF(0x94A3B8, 1.0f),
-            &thumbBrush);
-        if (trackBrush) {
-            dc_render_target_->FillRoundedRectangle(
-                D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), trackBrush);
-            trackBrush->Release();
-        }
-        if (thumbBrush) {
-            dc_render_target_->FillRoundedRectangle(
-                D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), thumbBrush);
-            thumbBrush->Release();
-        }
+        // C1: track + thumb brushes used to be alive simultaneously (both
+        // created, then each filled once). One scratch brush with SetColor
+        // interleaved keeps the identical draw order (track first, thumb on
+        // top), so the compositing result is unchanged.
+        scratch_brush_->SetColor(D2D1::ColorF(0x1E293B, 0.7f));
+        dc_render_target_->FillRoundedRectangle(
+            D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), scratch_brush_);
+        scratch_brush_->SetColor(thumb_active ? D2D1::ColorF(0xF8FAFC, 1.0f)
+                                              : D2D1::ColorF(0x94A3B8, 1.0f));
+        dc_render_target_->FillRoundedRectangle(
+            D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), scratch_brush_);
     } else {
         scrollbar_track_rect_ = {};
         scrollbar_thumb_rect_ = {};
@@ -1401,106 +1479,60 @@ void TooltipWindow::Render() {
 
     // Footer divider line
     float footer_div_y = static_cast<float>(current_height_) - 40.0f;
-    if (dividerBrush) {
-        dc_render_target_->DrawLine(
-            D2D1::Point2F(14.0f, footer_div_y),
-            D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, footer_div_y),
-            dividerBrush,
-            1.0f
-        );
-    }
+    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));
+    dc_render_target_->DrawLine(
+        D2D1::Point2F(14.0f, footer_div_y),
+        D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, footer_div_y),
+        scratch_brush_,
+        1.0f
+    );
 
     // --- Footer Action Buttons ---
-    // DESIGN-260910 (P1 fit): footer pills now measure their LOCALIZED labels
-    // (37-locale i18n) with the exact button_format_ they are drawn in, so no
-    // locale's Copy / Read-aloud label can clip against the old hardcoded
-    // 88/82 DIP boxes. Floors keep the previous geometry when measurement
-    // fails; caps keep the row inside the 360 DIP card (worst case right
-    // edge: 14 + 180 + 8 + 150 = 352 < 360). The copied-feedback label is
-    // measured too, so the success state can never outgrow its pill.
-    float copy_btn_w = 88.0f;
-    float tts_btn_w = 82.0f;
-    if (button_format_ && dwrite_factory_) {
-        IDWriteTextLayout* lbl_layout = nullptr;
-        DWRITE_TEXT_METRICS lbl_metrics = {};
-        const std::wstring copy_label = I18n::Get(StringId::TooltipButtonCopy);
-        lbl_layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                copy_label.c_str(), static_cast<UINT32>(copy_label.size()),
-                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
-            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                copy_btn_w = lbl_metrics.width + 20.0f;
-                if (copy_btn_w < 88.0f) copy_btn_w = 88.0f;
-                if (copy_btn_w > 180.0f) copy_btn_w = 180.0f;
-            }
-            lbl_layout->Release();
-        }
-        const std::wstring copied_label = I18n::Get(StringId::TooltipCopied);
-        lbl_layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                copied_label.c_str(), static_cast<UINT32>(copied_label.size()),
-                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
-            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                const float w_feedback = lbl_metrics.width + 20.0f;
-                if (w_feedback > copy_btn_w) copy_btn_w = w_feedback;
-                if (copy_btn_w > 180.0f) copy_btn_w = 180.0f;
-            }
-            lbl_layout->Release();
-        }
-        const std::wstring tts_label = I18n::Get(StringId::TooltipButtonTts);
-        lbl_layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                tts_label.c_str(), static_cast<UINT32>(tts_label.size()),
-                button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
-            if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                tts_btn_w = lbl_metrics.width + 20.0f;
-                if (tts_btn_w < 82.0f) tts_btn_w = 82.0f;
-                if (tts_btn_w > 150.0f) tts_btn_w = 150.0f;
-            }
-            lbl_layout->Release();
-        }
-    }
+    // DESIGN-260910 (P1 fit): footer pills size to their LOCALIZED labels
+    // (37-locale i18n) measured with the exact button_format_ they are drawn
+    // in, so no locale's Copy / Read-aloud label can clip against the old
+    // hardcoded 88/82 DIP boxes. Floors keep the previous geometry when
+    // measurement fails; caps keep the row inside the 360 DIP card (worst case
+    // right edge: 14 + 180 + 8 + 150 = 352 < 360). The copied-feedback label
+    // is measured too, so the success state can never outgrow its pill.
+    // C2 (session 260910_0007): the three CreateTextLayout measurements moved
+    // to EnsureMeasuredLayouts (keyed on the concatenated label strings, so a
+    // locale switch re-measures exactly once); Render consumes the cached
+    // DIP widths. copy_btn_rect_/tts_btn_rect_ hit-test rects are rebuilt
+    // here from the same cached values - measure and hit-test share one
+    // source of truth by construction.
+    const float copy_btn_w = copy_btn_w_;
+    const float tts_btn_w = tts_btn_w_;
     // [📋 Copy] button
     copy_btn_rect_ = D2D1::RectF(14.0f, footer_div_y + 7.0f, 14.0f + copy_btn_w, footer_div_y + 31.0f);
     D2D1_ROUNDED_RECT copyBtnRect = D2D1::RoundedRect(copy_btn_rect_, 4.0f, 4.0f);
 
     if (copied_feedback_) {
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x064E3B, 0.95f), &btnBgBrush);
-        if (btnBgBrush) {
-            dc_render_target_->FillRoundedRectangle(copyBtnRect, btnBgBrush);
-            dc_render_target_->DrawRoundedRectangle(copyBtnRect, accentBrush, 1.2f);
-            btnBgBrush->Release();
-            btnBgBrush = nullptr;
-        }
+        scratch_brush_->SetColor(D2D1::ColorF(0x064E3B, 0.95f));
+        dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
+        scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
+        dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.2f);
         if (button_format_) {
-            ID2D1SolidColorBrush* feedbackBrush = nullptr;
-            dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x34D399, 1.0f), &feedbackBrush);
-            if (feedbackBrush) {
-                // R6 Phase 5 (plan §5.3): L"✓ Copied!" literal -> StringId.
-                const std::wstring feedback = I18n::Get(StringId::TooltipCopied);
-                dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copy_btn_rect_, feedbackBrush);
-                feedbackBrush->Release();
-            }
+            // R6 Phase 5 (plan §5.3): L"✓ Copied!" literal -> StringId.
+            const std::wstring feedback = I18n::Get(StringId::TooltipCopied);
+            scratch_brush_->SetColor(D2D1::ColorF(0x34D399, 1.0f));
+            dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copy_btn_rect_, scratch_brush_);
         }
     } else {
-        dc_render_target_->CreateSolidColorBrush(
-            (hovered_btn_ == 1) ? D2D1::ColorF(0x334155, 1.0f) : D2D1::ColorF(0x1E293B, 0.9f),
-            &btnBgBrush
-        );
-        if (btnBgBrush) {
-            dc_render_target_->FillRoundedRectangle(copyBtnRect, btnBgBrush);
-            // DESIGN-260910 (P3 affordance): a hovered pill gains the emerald
-            // accent border, matching the header language buttons' hover so
-            // interactivity reads identically across the card.
-            dc_render_target_->DrawRoundedRectangle(
-                copyBtnRect, (hovered_btn_ == 1) ? accentBrush : borderBrush, 1.0f);
-            btnBgBrush->Release();
-            btnBgBrush = nullptr;
-        }
-        if (button_format_ && textBrush) {
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0x334155, 1.0f)
+                                                     : D2D1::ColorF(0x1E293B, 0.9f));
+        dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
+        // DESIGN-260910 (P3 affordance): a hovered pill gains the accent
+        // border, matching the header language buttons' hover so
+        // interactivity reads identically across the card.
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0xD9B45A, 1.0f)
+                                                     : D2D1::ColorF(0x33507E, 0.85f));
+        dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.0f);
+        if (button_format_) {
             // R6 Phase 5 (plan §5.3): footer button labels -> StringIds.
             const std::wstring label = I18n::Get(StringId::TooltipButtonCopy);
-            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, copy_btn_rect_, textBrush);
+            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, copy_btn_rect_, scratch_brush_);
         }
     }
 
@@ -1509,30 +1541,22 @@ void TooltipWindow::Render() {
     tts_btn_rect_ = D2D1::RectF(tts_left, footer_div_y + 7.0f, tts_left + tts_btn_w, footer_div_y + 31.0f);
     D2D1_ROUNDED_RECT ttsBtnRect = D2D1::RoundedRect(tts_btn_rect_, 4.0f, 4.0f);
 
-    dc_render_target_->CreateSolidColorBrush(
-        (hovered_btn_ == 2) ? D2D1::ColorF(0x334155, 1.0f) : D2D1::ColorF(0x1E293B, 0.9f),
-        &btnBgBrush
-    );
-    if (btnBgBrush) {
-        dc_render_target_->FillRoundedRectangle(ttsBtnRect, btnBgBrush);
-        // DESIGN-260910 (P3 affordance): same accent-on-hover as the Copy pill.
-        dc_render_target_->DrawRoundedRectangle(
-            ttsBtnRect, (hovered_btn_ == 2) ? accentBrush : borderBrush, 1.0f);
-        btnBgBrush->Release();
-        btnBgBrush = nullptr;
-    }
-    if (button_format_ && textBrush) {
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0x334155, 1.0f)
+                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    dc_render_target_->FillRoundedRectangle(ttsBtnRect, scratch_brush_);
+    // DESIGN-260910 (P3 affordance): same accent-on-hover as the Copy pill.
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0xD9B45A, 1.0f)
+                                                 : D2D1::ColorF(0x33507E, 0.85f));
+    dc_render_target_->DrawRoundedRectangle(ttsBtnRect, scratch_brush_, 1.0f);
+    if (button_format_) {
         // R6 Phase 5 (plan §5.3): TTS button label -> StringId.
         const std::wstring label = I18n::Get(StringId::TooltipButtonTts);
-        dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, tts_btn_rect_, textBrush);
+        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+        dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, tts_btn_rect_, scratch_brush_);
     }
 
-    if (accentBrush) accentBrush->Release();
-    if (dividerBrush) dividerBrush->Release();
-    if (subTextBrush) subTextBrush->Release();
-    if (textBrush) textBrush->Release();
-    if (borderBrush) borderBrush->Release();
-    if (bgBrush) bgBrush->Release();
+    // C1: the six palette brushes used to be released here; the persistent
+    // scratch_brush_ survives the frame (released at Destroy/device-lost).
 
     // R6 Phase 3 (audit item 4, plan §3.1 A3): see the message-mode note above
     // - identical device-lost recovery on the normal render path.
@@ -1551,6 +1575,12 @@ void TooltipWindow::Render() {
 // so the recovery is app-safe degradation, not a silent-permanent-blank.
 void TooltipWindow::RecreateAfterDeviceLost() {
     DIAG_F("TOOLTIP/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
+    // C1: the scratch brush is device-dependent (bound to the lost target).
+    // Release it BEFORE ReleaseTarget so no brush keeps the dead device alive
+    // (the leaked per-frame brushes of the old code were only ever reclaimed at
+    // Destroy; this is the one behavior delta of the conversion - the old
+    // in-frame Release churn on a device-lost target is gone by design).
+    ReleaseScratchBrush();
     renderer_.ReleaseTarget(&dc_render_target_);
     if (!d2d_factory_) {
         return; // nothing to rebuild from; all render paths null-guard already
@@ -1563,6 +1593,7 @@ void TooltipWindow::RecreateAfterDeviceLost() {
     // bitmap was created on the lost device and must be rebuilt too.
     ReallocateBuffer(PhysW(), PhysH());
     LoadLogoBitmap();
+    EnsureScratchBrush(); // C1: rebuild the scratch brush on the fresh target
 }
 
 // R6 Phase 3 (audit items 6+8): free every heap payload still queued for this

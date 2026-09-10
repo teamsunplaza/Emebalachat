@@ -117,6 +117,14 @@ private:
     // permanently blank.
     void RecreateAfterDeviceLost();
     void LoadLogoBitmap();
+    // C1 (session 260910_0007): the single persistent scratch brush the whole
+    // Render path draws through (SetColor just before every Fill/Draw/DrawText
+    // call). Created at Create() and device-lost recovery - NEVER at render
+    // entry - and released in RecreateAfterDeviceLost (before the old target
+    // is dropped) and Destroy. Null when target creation failed; Render bails
+    // on a null brush exactly like the old per-brush null guards.
+    void EnsureScratchBrush();
+    void ReleaseScratchBrush();
     // P4 Batch B-5 (session 260907_0002, design §2.2.3): align the
     // UI-locale-dependent text formats with the active I18n locale —
     // body/tagline/etymology reading direction (RTL for AR/FA/UR/HE) plus the
@@ -151,6 +159,7 @@ private:
     // Direct2D & DirectWrite
     ID2D1Factory* d2d_factory_ = nullptr;
     ID2D1DCRenderTarget* dc_render_target_ = nullptr; // alias of renderer_.target()
+    ID2D1SolidColorBrush* scratch_brush_ = nullptr;   // C1: persistent single brush
     ID2D1Bitmap* logo_bitmap_ = nullptr;
     IDWriteFactory* dwrite_factory_ = nullptr;
     IDWriteTextFormat* title_format_ = nullptr;     // 22 SemiBold, centered
