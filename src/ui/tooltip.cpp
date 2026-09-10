@@ -1204,12 +1204,19 @@ void TooltipWindow::Render() {
     ID2D1SolidColorBrush* accentBrush = nullptr;
     ID2D1SolidColorBrush* btnBgBrush = nullptr;
 
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0F172A, 0.96f), &bgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x334155, 0.85f), &borderBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF8FAFC, 1.0f), &textBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x94A3B8, 1.0f), &subTextBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x334155, 0.5f), &dividerBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x10B981, 1.0f), &accentBrush);
+    // DESIGN-260910 brand pass (session 260910_0005): mirrors about_window.cpp
+    // — palette re-anchored to the Emebala brand DNA (lapis blue / antique
+    // gold / warm sandstone from assets/). Same slot mapping: slate family ->
+    // lapis-tinted equivalents, emerald accent -> brand gold. Message-body
+    // #CBD5E1 (last pass's P1 contrast fix) becomes the sand-tinted
+    // #D6DCEA at the same WCAG-safe lightness (>= 11:1 on #0C1830). Hover
+    // fills, close #EF4444 semantics, and all geometry are untouched.
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &bgBrush);      // poster navy (lapis shadow)
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.85f), &borderBrush);  // lapis mid
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &textBrush);     // warm sand-white
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 1.0f), &subTextBrush);  // lapis-gray
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.5f), &dividerBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD9B45A, 1.0f), &accentBrush);   // antique gold (brand star)
 
     if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
     if (borderBrush) dc_render_target_->DrawRoundedRectangle(card, borderBrush, 1.0f);
@@ -1249,7 +1256,7 @@ void TooltipWindow::Render() {
         // Slate-300 #CBD5E1 keeps the hierarchy and clears WCAG AA at that
         // size on the #0F172A card.
         ID2D1SolidColorBrush* msgBodyBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xCBD5E1, 1.0f), &msgBodyBrush);
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD6DCEA, 1.0f), &msgBodyBrush);  // brand pass: lapis-tinted sand body
         if (small_format_ && msgBodyBrush) {
             dc_render_target_->DrawText(
                 translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),

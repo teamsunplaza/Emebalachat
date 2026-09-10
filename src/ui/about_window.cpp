@@ -599,17 +599,28 @@ void AboutWindow::Render() {
     ID2D1SolidColorBrush* closeBrush = nullptr;
     ID2D1SolidColorBrush* closeHoverBrush = nullptr;
 
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0F172A, 0.96f), &bgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x334155, 0.85f), &borderBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF8FAFC, 1.0f), &textBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x94A3B8, 1.0f), &subTextBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x334155, 0.5f), &dividerBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x10B981, 1.0f), &accentBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &pillBgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x334155, 1.0f), &pillBgHoverBrush);
+    // DESIGN-260910 brand pass (session 260910_0005): palette re-anchored to
+    // the Emebala brand DNA sampled from assets/ (Brand Logo + Chat Logo +
+    // poster): lapis-lazuli royal blue (#2E4E9E medallion ground / #0C1830
+    // poster navy), antique gold (#D4AF37 star + arrow, already the logo-frame
+    // border), warm sandstone (#E8D5A8). The former neutral slate family and
+    // the emerald #10B981 accent (present in NO brand asset) are replaced:
+    // slate -> lapis-tinted equivalents, emerald accent -> brand gold.
+    // Contrast is preserved or improved (WCAG on #0C1830): sand-white body
+    // 14.8:1, lapis-gray subtext 6.9:1, gold accent 8.8:1 (was 15.5 / 7.0 /
+    // 7.0). Close-hover keeps #EF4444 (cross-surface close semantics, same as
+    // tooltip.cpp); the logo bitmap itself is untouched brand artwork.
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &bgBrush);      // poster navy (lapis shadow)
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.85f), &borderBrush);  // lapis mid
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &textBrush);     // warm sand-white
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 1.0f), &subTextBrush);  // lapis-gray
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x33507E, 0.5f), &dividerBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD9B45A, 1.0f), &accentBrush);   // antique gold (brand star)
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.9f), &pillBgBrush);   // lapis-deep pill
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x22406B, 1.0f), &pillBgHoverBrush);
     dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.85f), &goldBorderBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.9f), &logoBgBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x94A3B8, 0.8f), &closeBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.9f), &logoBgBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 0.8f), &closeBrush);
     dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xEF4444, 1.0f), &closeHoverBrush);
 
     if (bgBrush) dc_render_target_->FillRoundedRectangle(card, bgBrush);
