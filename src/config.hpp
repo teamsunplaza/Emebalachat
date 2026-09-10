@@ -316,7 +316,12 @@ struct AppConfig {
     std::string hotkey_lang = "Ctrl+F9";
     // REQ-022 (Phase 6): wired to the auto-send-toggle trigger (F-04) via ResolveModeFromConfig at hook Start().
     std::string hotkey_mode = "Ctrl+Shift+Enter";
-    float temperature = 0.7f;
+    // Task 2 (translation tuning): sampling temperature default lowered from the
+    // Tencent-documented 0.7 to 0.3 for the 1.8B model in a real-time messenger
+    // context — 0.7 occasionally picks off-vocabulary particles, 0.0 risks
+    // small-model repetition loops. Tencent's official safety rails below
+    // (top_p 0.6 / top_k 20 / repetition_penalty 1.05) are intentionally kept.
+    float temperature = 0.3f;
     float top_p = 0.6f;
     int top_k = 20;
     float repetition_penalty = 1.05f;

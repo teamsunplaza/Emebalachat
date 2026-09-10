@@ -97,7 +97,7 @@ void TestConfigModule() {
     TEST_CHECK(cfg.drag_to_translate == true, "Default drag_to_translate is true");
     TEST_CHECK(cfg.drag_hotkey == "double_ctrl_c", "Default drag_hotkey is double_ctrl_c");
     TEST_CHECK(cfg.cloud_fallback_enabled == false, "Default cloud_fallback_enabled is false (privacy-first, H2)");
-    TEST_CHECK(std::abs(cfg.temperature - 0.7f) < 0.001f, "Default temperature is 0.7f");
+    TEST_CHECK(std::abs(cfg.temperature - 0.3f) < 0.001f, "Default temperature is 0.3f");
     TEST_CHECK(std::abs(cfg.top_p - 0.6f) < 0.001f, "Default top_p is 0.6f");
     TEST_CHECK(cfg.top_k == 20, "Default top_k is 20");
     TEST_CHECK(std::abs(cfg.repetition_penalty - 1.05f) < 0.001f, "Default repetition_penalty is 1.05f");
@@ -1121,9 +1121,11 @@ void TestEngineModule() {
     TEST_CHECK(mgr.GetTopK() == 30, "SetSamplingParams top_k");
     TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.1f) < 0.001f, "SetSamplingParams repetition_penalty");
 
-    // Reset back to Tencent Hunyuan Lab official parameters (0.7, 0.6, 20, 1.05)
+    // Reset to explicit values (0.7, 0.6, 20, 1.05): Tencent-documented rails with
+    // the historical 0.7 temperature. This checks SetSamplingParams mechanics with
+    // explicit arguments, not app defaults (AppConfig default temperature is 0.3f).
     mgr.SetSamplingParams(0.7f, 0.6f, 20, 1.05f);
-    TEST_CHECK(std::abs(mgr.GetTemperature() - 0.7f) < 0.001f, "Tencent tuned temperature 0.7");
+    TEST_CHECK(std::abs(mgr.GetTemperature() - 0.7f) < 0.001f, "SetSamplingParams explicit temperature 0.7");
     TEST_CHECK(std::abs(mgr.GetTopP() - 0.6f) < 0.001f, "Tencent tuned top_p 0.6");
     TEST_CHECK(mgr.GetTopK() == 20, "Tencent tuned top_k 20");
     TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.05f) < 0.001f, "Tencent tuned repetition_penalty 1.05");

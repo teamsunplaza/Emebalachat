@@ -712,7 +712,7 @@ struct TranslationManager::LlamaEngine {
         std::string_view tgt_name,
         std::string_view src_name,
         const std::string& path,
-        float temperature = 0.7f,
+        float temperature = 0.3f,
         float top_p = 0.6f,
         int top_k = 20,
         float rep_pen = 1.05f
@@ -977,7 +977,7 @@ struct TranslationManager::LlamaEngine {
     bool CancelRequested() const { return false; }
     bool EnsureLoaded(const std::string&) { return false; }
     void Unload() {}
-    std::wstring Translate(std::wstring_view, std::string_view, const std::string&, float = 0.7f, float = 0.6f, int = 20, float = 1.05f) { return {}; }
+    std::wstring Translate(std::wstring_view, std::string_view, const std::string&, float = 0.3f, float = 0.6f, int = 20, float = 1.05f) { return {}; }
 };
 
 #endif
@@ -989,7 +989,7 @@ struct TranslationManager::LlamaEngine {
 // main.cpp owns the one LoadFromFile() call and pushes the loaded values in via
 // the existing public setters (SetSamplingParams / SetCloudFallbackEnabled)
 // AFTER construction; the constructor here keeps pure in-class defaults
-// (0.7 / 0.6 / 20 / 1.05 - identical to AppConfig's defaults) so a
+// (0.3 / 0.6 / 20 / 1.05 - identical to AppConfig's defaults) so a
 // stand-alone constructed manager still behaves as before for tests.
 TranslationManager::TranslationManager(EngineType preferred_type, std::string model_path)
     : preferred_type_(preferred_type), model_path_(std::move(model_path)) {

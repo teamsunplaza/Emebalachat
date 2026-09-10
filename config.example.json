@@ -15,7 +15,7 @@
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
   "_hotkeys_doc": "hotkey_toggle/lang/mode accept 'Mod+Key' (Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, arrows, A-Z, 0-9). Invalid values fall back to defaults. drag_hotkey supports only 'double_ctrl_c'. Overlapping combos fire one action in order: toggle > lang > mode.",
-  "temperature": 0.7,
+  "temperature": 0.3,
   "top_p": 0.6,
   "top_k": 20,
   "repetition_penalty": 1.05,
