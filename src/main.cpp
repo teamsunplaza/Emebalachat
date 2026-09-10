@@ -227,6 +227,21 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     return ::DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+// ---- REQ-005 (session 260910_0003 Task B): drag-icon copy retry backoff ----
+// Settle time between the first CopySelectionWithSequenceWait() failure and the
+// single retry in run_drag_translate. The click lands on our WS_EX_NOACTIVATE
+// drag icon, so the text-source window may need a moment to (re-)acquire the
+// foreground before the re-sent Ctrl+C chord is delivered to it; the field
+// failure theory puts focus-transition latency at ~100-200 ms, and 70 ms sits
+// inside the user's 60-80 ms directive while keeping the worst-case worker
+// budget (80 + 70 + 80 ~= 230 ms) far from the old 180 ms single-shot UX.
+// Sleep granularity (~15 ms) makes 70 vs 60/80 behaviorally equivalent.
+constexpr uint32_t kDragCopyRetryBackoffMs = 70;
+static_assert(kDragCopyRetryBackoffMs >= 60 && kDragCopyRetryBackoffMs <= 80,
+              "REQ-005: drag copy retry backoff must stay inside the 60-80 ms directive");
+static_assert(kClipboardChangeTimeoutMs * 2 + kDragCopyRetryBackoffMs <= 250,
+              "REQ-005: worst-case drag copy cycle (attempt+backoff+retry) stays <= 250 ms");
+
 } // namespace
 
 } // namespace emebalachat
@@ -1313,7 +1328,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // GetClipboardSequenceNumber() polling and returns false instead of
         // exposing stale clipboard text. On the worker thread, its
         // Sleep-polling never freezes the GUI pump.
-        if (!emebalachat::CopySelectionWithSequenceWait()) {
+        //
+        // REQ-005 (session 260910_0003 Task B): one focus-switch retry. The
+        // click that starts this job lands on our WS_EX_NOACTIVATE drag icon,
+        // so the text-source window may not have finished (re-)acquiring the
+        // foreground when the first synthetic Ctrl+C fires; the chord is then
+        // lost and attempt 1 returns false. REQ-001 shrunk the single-shot
+        // budget to 80 ms, which the documented ~100-200 ms focus-transition
+        // latency can exceed - one retry after a short settle converts those
+        // intermittent failures into successes. The retry re-calls
+        // CopySelectionWithSequenceWait(), which re-baselines the clipboard
+        // sequence immediately before its own keystroke (REQ-R04), so a late
+        // commit from the lost chord can never be read as stale text. Worst
+        // case is 80 + kDragCopyRetryBackoffMs + 80 ~= 230 ms on THIS worker
+        // thread; the GUI pump stays free. The double-Ctrl+C path
+        // (MAIN/DoubleCtrlC/001) keeps no retry: it fires only when the USER
+        // physically pressed Ctrl+C, so no icon click displaced the foreground.
+        bool copy_confirmed = emebalachat::CopySelectionWithSequenceWait();
+        if (!copy_confirmed) {
+            DIAG_F("MAIN/DragIconClick/004: copy attempt 1 failed (focus-switch hazard?); retrying after %ums backoff\n",
+                   emebalachat::kDragCopyRetryBackoffMs);
+            // Runs on the drag-translate worker thread - the Sleep never
+            // blocks the GUI pump (same rationale as the seam's polling).
+            ::Sleep(emebalachat::kDragCopyRetryBackoffMs);
+            copy_confirmed = emebalachat::CopySelectionWithSequenceWait();
+            DIAG_F("MAIN/DragIconClick/005: copy retry %s\n",
+                   copy_confirmed ? "confirmed" : "failed");
+        }
+        if (!copy_confirmed) {
             emebalachat::RestoreClipboard(backup);
             DIAG_F("MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
             // REQ-R1(b): failure is now user-visible, not silent.
