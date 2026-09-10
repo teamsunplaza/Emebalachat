@@ -1,5 +1,6 @@
 #include "mouse_hook.hpp"
 #include "diag_logger.hpp"
+#include "hook_thread.hpp"
 #include "win32_input.hpp"
 
 #include <chrono>
@@ -114,35 +115,12 @@ void MouseHook::SetMouseWheelCallback(MouseWheelCallback cb) {
 }
 
 void MouseHook::HookThreadProc() {
-    hook_thread_id_ = ::GetCurrentThreadId();
-    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
-
-    hHook_ = ::SetWindowsHookExW(
-        WH_MOUSE_LL,
-        MouseHook::LowLevelMouseProc,
-        hInst,
-        0
-    );
-
-    if (hReadyEvent_) {
-        ::SetEvent(hReadyEvent_);
-    }
-
-    if (!hHook_) {
-        running_.store(false);
-        return;
-    }
-
-    MSG msg = {};
-    while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
-    }
-
-    if (hHook_) {
-        ::UnhookWindowsHookEx(hHook_);
-        hHook_ = nullptr;
-    }
+    // C4 (session 260910_0007): body extracted verbatim to the shared
+    // RunLowLevelHookPump (src/hook_thread.hpp) — same pump as the keyboard
+    // hook, identical modulo hook id + callback (see the byte-comparison note
+    // and preserved invariants there).
+    RunLowLevelHookPump(WH_MOUSE_LL, MouseHook::LowLevelMouseProc,
+                        hReadyEvent_, running_, hHook_, hook_thread_id_);
 }
 
 // ---- REQ-R09 (audit §3.3): delayed multi-click dispatch, hook-thread-safe ----

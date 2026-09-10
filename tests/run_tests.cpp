@@ -3277,6 +3277,112 @@ void TestPhase6HotkeyWiring() {
     }
 }
 
+// B5 (session 260910_0007, catalog W4): the three duplicated flag-check blocks
+// in LowLevelKeyboardProc are now ONE ordered dispatch table
+// (KeyboardHook::ResolveBoundHotkeyAction). These pins freeze the behavior the
+// blocks had: same key-chord -> same action before/after, and the intentional
+// toggle > lang > mode priority resolved first-match-wins (REQ-022 conflict
+// priority; the table row order IS the old evaluation order). The predicate is
+// pure and headlessly reachable — the hook proc drives it with precompiled
+// specs and the same (vk, ctrl, shift, alt, win) tuple it samples from a real
+// KBDLLHOOKSTRUCT, so synthetic chords exercise exactly the production path.
+void TestBoundHotkeyDispatchOrder() {
+    std::cout << "[RUN] Testing B5 bound-hotkey dispatch order (catalog W4)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    using HK = KeyboardHook;
+    using Action = HK::HotkeyAction;
+
+    // Row-index mapping pin: enum value == table row + 1, in priority order.
+    static_assert(static_cast<uint8_t>(Action::None) == 0, "None stays sentinel 0");
+    static_assert(static_cast<uint8_t>(Action::Toggle) == 1, "Toggle = row 0");
+    static_assert(static_cast<uint8_t>(Action::CycleLanguage) == 2, "Lang = row 1");
+    static_assert(static_cast<uint8_t>(Action::ToggleAutoSend) == 3, "Mode = row 2");
+
+    const HK::HotkeySpec tg = HK::kDefaultToggleHotkey; // bare F9
+    const HK::HotkeySpec lg = HK::kDefaultLangHotkey;   // Ctrl+F9
+    const HK::HotkeySpec md = HK::kDefaultModeHotkey;   // Ctrl+Shift+Enter
+    const HK::HotkeySpec invalid{};
+
+    // Helper reproducing the production table layout from hook.cpp exactly.
+    auto resolve = [&](const HK::HotkeySpec* t, const HK::HotkeySpec* l,
+                       const HK::HotkeySpec* m, UINT vk, bool ctrl, bool shift,
+                       bool alt, bool win) {
+        const HK::HotkeySpec* table[3] = {t, l, m};
+        return HK::ResolveBoundHotkeyAction(table, 3, vk, ctrl, shift, alt, win);
+    };
+
+    // 1. Differential pins: each default chord maps to its own action, matching
+    //    the three old blocks 1:1.
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_F9, false, false, false, false) == Action::Toggle,
+               "B5: bare F9 -> Toggle (old block 1)");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_F9, true, false, false, false) == Action::CycleLanguage,
+               "B5: Ctrl+F9 -> CycleTargetLanguage (old block 2)");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_RETURN, true, true, false, false) == Action::ToggleAutoSend,
+               "B5: Ctrl+Shift+Enter -> ToggleAutoSend (old block 3)");
+
+    // 2. Non-matching chords resolve to None (passthrough preserved: Alt/Win
+    //    blanket branch, ESC/Ctrl+V/double-Ctrl+C and Enter branches unchanged).
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_F10, false, false, false, false) == Action::None,
+               "B5: unrelated F10 -> None");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_F9, false, true, false, false) == Action::None,
+               "B5: Shift+F9 -> None (exact-match set, REQ-R08)");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_F9, false, false, true, false) == Action::None,
+               "B5: Alt+F9 -> None");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_RETURN, true, false, false, false) == Action::None,
+               "B5: Ctrl+Enter -> None (passthrough preserved)");
+    TEST_CHECK(resolve(&tg, &lg, &md, VK_RETURN, false, true, false, false) == Action::None,
+               "B5: Shift+Enter -> None (S2 newline preserved)");
+
+    // 3. Priority pins: a chord that matches MULTIPLE table rows resolves to
+    //    the FIRST row, exactly like the old short-circuit if-chain. The old
+    //    code could never double-fire; the new table cannot either.
+    {
+        const HK::HotkeySpec all_f9 = HK::ParseHotkey("F9"); // bare F9 matches here
+        HK::HotkeySpec dupe_tg = tg;                          // toggle row = bare F9
+        HK::HotkeySpec dupe_lg = all_f9;                      // lang row ALSO bare F9
+        HK::HotkeySpec dupe_md = all_f9;                      // mode row ALSO bare F9
+        TEST_CHECK(resolve(&dupe_tg, &dupe_lg, &dupe_md, VK_F9, false, false, false, false) == Action::Toggle,
+                   "B5: 3-way overlap resolves to toggle (priority toggle first)");
+    }
+    {
+        HK::HotkeySpec dupe_lg = HK::ParseHotkey("Ctrl+F9"); // lang row = Ctrl+F9
+        HK::HotkeySpec dupe_md = dupe_lg;                    // mode row ALSO = Ctrl+F9
+        TEST_CHECK(resolve(&tg, &dupe_lg, &dupe_md, VK_F9, true, false, false, false) == Action::CycleLanguage,
+                   "B5: lang/mode overlap resolves to lang (priority lang > mode)");
+    }
+
+    // 4. Invalid / null rows never match but keep the later rows reachable
+    //    (mirrors compiled spec.valid==false from an unset config, and the
+    //    nullptr-slot contract of the pure helper).
+    TEST_CHECK(resolve(&invalid, &lg, &md, VK_F9, false, false, false, false) == Action::None,
+               "B5: invalid toggle spec never matches");
+    TEST_CHECK(resolve(&invalid, &lg, &md, VK_F9, true, false, false, false) == Action::CycleLanguage,
+               "B5: later rows still reached when row 0 is invalid");
+    TEST_CHECK(resolve(nullptr, nullptr, &md, VK_RETURN, true, true, false, false) == Action::ToggleAutoSend,
+               "B5: null slots skipped; row 2 still fires");
+    TEST_CHECK(resolve(nullptr, nullptr, nullptr, VK_F9, false, false, false, false) == Action::None,
+               "B5: all-null table -> None");
+
+    // 5. Win-bearing custom combos fire before the blanket Alt/Win passthrough
+    //    (old blocks were placed above `if (alt || win)`; the table keeps that
+    //    placement — these chords must NOT resolve to None).
+    {
+        const HK::HotkeySpec winf9 = HK::ParseHotkey("Win+F9");
+        TEST_CHECK(resolve(&winf9, &lg, &md, VK_F9, false, false, false, true) == Action::Toggle,
+                   "B5: Win+F9 toggle combo matched despite Win held (pre-passthrough placement)");
+        const HK::HotkeySpec ctrl_alt_d = HK::ParseHotkey("Ctrl+Alt+D");
+        TEST_CHECK(resolve(&tg, &ctrl_alt_d, &md, 'D', true, false, true, false) == Action::CycleLanguage,
+                   "B5: Alt-bearing lang combo matched (pre-passthrough placement)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] B5 bound-hotkey dispatch order tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] B5 bound-hotkey dispatch order tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-R07 (audit §3.1): active-change callback fires 1:1 with SetActive, and
 // REQ-R06 (audit §2.5): the double-Ctrl+C job runs OFF the caller thread with
 // a non-blocking dispatch seam (measured).
@@ -10160,6 +10266,7 @@ int main() {
     TestTtsVoiceSelectionModule();
     TestHotkeyParsing();
     TestPhase6HotkeyWiring();
+    TestBoundHotkeyDispatchOrder();
     TestKeyboardHookStateSyncAndDispatch();
     TestMouseHookDebounce();
     TestUIMarshaling();

@@ -1,5 +1,6 @@
 #include "hook.hpp"
 #include "diag_logger.hpp"
+#include "hook_thread.hpp"
 #include "sound.hpp"
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
@@ -584,35 +585,13 @@ void KeyboardHook::ToggleAutoSend() {
 }
 
 void KeyboardHook::HookThreadProc() {
-    hook_thread_id_ = ::GetCurrentThreadId();
-    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
-
-    hHook_ = ::SetWindowsHookExW(
-        WH_KEYBOARD_LL,
-        KeyboardHook::LowLevelKeyboardProc,
-        hInst,
-        0
-    );
-
-    if (hReadyEvent_) {
-        ::SetEvent(hReadyEvent_);
-    }
-
-    if (!hHook_) {
-        running_.store(false);
-        return;
-    }
-
-    MSG msg = {};
-    while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
-    }
-
-    if (hHook_) {
-        ::UnhookWindowsHookEx(hHook_);
-        hHook_ = nullptr;
-    }
+    // C4 (session 260910_0007): body extracted verbatim to the shared
+    // RunLowLevelHookPump (src/hook_thread.hpp) after a line-by-line
+    // byte-comparison with MouseHook::HookThreadProc proved the two pumps
+    // identical modulo hook id + callback. SetEvent-before-fail-check and the
+    // WM_QUIT-terminated loop are documented invariants there.
+    RunLowLevelHookPump(WH_KEYBOARD_LL, KeyboardHook::LowLevelKeyboardProc,
+                        hReadyEvent_, running_, hHook_, hook_thread_id_);
 }
 
 LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -695,57 +674,56 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             }
         }
 
-        // REQ-R08: the configured toggle combo (default F9) is matched
-        // FIRST - before the blanket Alt/Win passthrough below - and it only
-        // swallows when the FULL modifier set matches toggle_spec_ exactly
-        // (HotkeyMatches: vk + ctrl + shift + alt + win, pinned by unit tests).
-        // Everything else containing Alt or Win still passes through untouched
-        // (Excel Alt+Enter, game Alt+Enter, native Win shortcuts). Bare F9 is
-        // no longer a toggle by default (audit §3.2), so VS/Excel keep it.
-        if (KeyboardHook::HotkeyMatches(s_instance->toggle_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
-            DIAG_LOG("HOTKEY", "toggle combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleActive",
-                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
-            s_instance->ToggleActive();
+        // B5 (session 260910_0007): the three bound combos - REQ-R08 toggle
+        // (default F9), REQ-022 language-cycle (default Ctrl+F9) and
+        // auto-send-toggle (default Ctrl+Shift+Enter), all compiled ONCE in
+        // Start() - are matched here as ONE ordered table before the blanket
+        // Alt/Win passthrough below, so Alt/Win-bearing combos can still fire
+        // (plan §2.4). Row order IS the intentional conflict priority
+        // toggle > lang > mode: a keydown matching several rows is consumed by
+        // the EARLIER row only (first-match-wins == the old three-if
+        // short-circuit chain, pinned headlessly by
+        // TestBoundHotkeyDispatchOrder). Every row still swallows ONLY when the
+        // FULL modifier set matches its spec exactly (HotkeyMatches, REQ-R08),
+        // so bare F9 stays a passthrough for VS/Excel (audit §3.2), the lang
+        // default reproduces the historical VK_F9 + ctrl && !shift branch 1:1
+        // (C1), and the mode default the old `ctrl && shift` VK_RETURN branch
+        // (C1). Non-Enter mode combos (e.g. Ctrl+F10) keep firing
+        // independently of the VK_RETURN branch below (plan §2.4).
+        const HotkeySpec* const bound_hotkeys[] = {
+            &s_instance->toggle_spec_, // row 0: -> ToggleActive()
+            &s_instance->lang_spec_,   // row 1: -> CycleTargetLanguage()
+            &s_instance->mode_spec_,   // row 2: -> ToggleAutoSend()
+        };
+        static_assert(sizeof(bound_hotkeys) / sizeof(bound_hotkeys[0]) == 3,
+                      "B5 dispatch table = toggle, lang, mode rows in priority order");
+        const HotkeyAction hotkey_action = ResolveBoundHotkeyAction(
+            bound_hotkeys, 3, kbd->vkCode, ctrl, shift, alt, win);
+        if (hotkey_action != HotkeyAction::None) {
+            switch (hotkey_action) {
+                case HotkeyAction::Toggle:
+                    DIAG_LOG("HOTKEY", "toggle combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleActive",
+                             kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+                    s_instance->ToggleActive();
+                    break;
+                case HotkeyAction::CycleLanguage:
+                    DIAG_LOG("HOTKEY", "lang combo matched (vk=0x%02X modifiers=%s%s%s%s) -> CycleTargetLanguage",
+                             kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+                    s_instance->CycleTargetLanguage();
+                    break;
+                case HotkeyAction::ToggleAutoSend:
+                    DIAG_LOG("HOTKEY", "mode combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleAutoSend",
+                             kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+                    s_instance->ToggleAutoSend();
+                    break;
+                case HotkeyAction::None:
+                default:
+                    break; // unreachable: guarded by the != None above
+            }
             if (win) {
                 s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
             }
-            return 1; // Consumed: state change (audio+visual feedback in SetActive)
-        }
-
-        // REQ-022 (Phase 6, plan §3.2(c)/§3.3): the configured language-cycle
-        // combo (default Ctrl+F9, compiled in Start()) is matched right after
-        // the toggle and BEFORE the blanket Alt/Win passthrough below, so
-        // Alt/Win-bearing lang combos can fire (plan §2.4). Conflict priority
-        // toggle > lang > mode holds because a keydown matching both is
-        // consumed by the earlier block. HotkeyMatches is the exact-match
-        // predicate pinned by REQ-R08: default Ctrl+F9 reproduces the old
-        // hardcoded VK_F9 + ctrl && !shift branch 1:1 (C1).
-        if (KeyboardHook::HotkeyMatches(s_instance->lang_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
-            DIAG_LOG("HOTKEY", "lang combo matched (vk=0x%02X modifiers=%s%s%s%s) -> CycleTargetLanguage",
-                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
-            s_instance->CycleTargetLanguage();
-            if (win) {
-                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
-            }
-            return 1; // Consumed
-        }
-
-        // REQ-022 (Phase 6, plan §3.2(d)/§3.3): the configured auto-send-toggle
-        // combo (default Ctrl+Shift+Enter) is matched independently of the
-        // VK_RETURN branch below, so non-Enter mode combos (e.g. Ctrl+F10)
-        // also fire (plan §2.4). Evaluated right after lang and before the
-        // Enter branch; with the default spec the firing condition
-        // (VK_RETURN + ctrl + shift, alt/win excluded by the spec) is
-        // identical to the old `ctrl && shift` block inside the VK_RETURN
-        // branch it replaces (C1).
-        if (KeyboardHook::HotkeyMatches(s_instance->mode_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
-            DIAG_LOG("HOTKEY", "mode combo matched (vk=0x%02X modifiers=%s%s%s%s) -> ToggleAutoSend",
-                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
-            s_instance->ToggleAutoSend();
-            if (win) {
-                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
-            }
-            return 1; // Consumed
+            return 1; // Consumed (toggle: state change with audio+visual feedback in SetActive)
         }
 
         // Always let Alt or Win key combinations pass through immediately

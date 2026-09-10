@@ -401,6 +401,39 @@ public:
         return parsed.valid ? parsed : kDefaultModeHotkey;
     }
 
+    // ---- B5 (session 260910_0007, catalog W4): ordered hotkey dispatch ----
+    //
+    // The three bound combos (toggle / language-cycle / auto-send-toggle) are
+    // evaluated as ONE ordered table whose row order IS the intentional conflict
+    // priority pinned by REQ-022 (toggle > lang > mode): a keydown matching
+    // several rows is consumed by the EARLIER row only (first-match-wins, the
+    // exact short-circuit semantics of the three hand-written if-blocks this
+    // replaces). The enum values are row indices + 1 (mapping kept total);
+    // None means no row matched and evaluation continues past the call site.
+    enum class HotkeyAction : uint8_t {
+        None = 0,
+        Toggle = 1,         // row 0 (toggle_spec_) -> ToggleActive()
+        CycleLanguage = 2,  // row 1 (lang_spec_)   -> CycleTargetLanguage()
+        ToggleAutoSend = 3, // row 2 (mode_spec_)   -> ToggleAutoSend()
+    };
+
+    // Pure first-match-wins resolution over an ordered array of compiled specs
+    // (a nullptr slot never matches; an invalid spec never matches per
+    // HotkeyMatches). Shared by LowLevelKeyboardProc and the unit tests so the
+    // priority order is ONE definition, pinned headlessly
+    // (TestBoundHotkeyDispatchOrder).
+    static constexpr HotkeyAction ResolveBoundHotkeyAction(
+        const HotkeySpec* const* ordered_specs, size_t count,
+        UINT vk, bool ctrl, bool shift, bool alt, bool win) {
+        for (size_t i = 0; i < count; ++i) {
+            const HotkeySpec* spec = ordered_specs[i];
+            if (spec && HotkeyMatches(*spec, vk, ctrl, shift, alt, win)) {
+                return static_cast<HotkeyAction>(i + 1);
+            }
+        }
+        return HotkeyAction::None;
+    }
+
     // ---- REQ-R06 (audit §2.5): async double-Ctrl+C dispatch ----
     // DispatchDoubleCtrlC() is the ONLY thing the LowLevelKeyboardProc does when
     // a double-Ctrl+C is detected. It performs a non-blocking handoff (try_lock
