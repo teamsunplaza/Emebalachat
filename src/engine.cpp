@@ -1223,6 +1223,18 @@ bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled
     return true;
 }
 
+// REQ-004: see the header contract in src/engine.hpp. Pure stateless predicate,
+// pinned headlessly by TestReq004EngineSwitchPreloadGate (same seam-testing
+// discipline as ShouldPreloadLocalModel above): the shipped on_select_engine
+// gate calls THIS function, so the runtime-switch decision can never drift
+// from the tested matrix.
+bool ShouldPreloadOnEngineSwitch(EngineType selected, bool model_available) {
+    if (!model_available) {
+        return false; // nothing to preload (absence was always a silent no-thread path)
+    }
+    return selected == EngineType::LocalLlama;
+}
+
 // 3-arg compatibility form for existing callers (main.cpp tooltip/drag paths).
 // Discards the REQ-R02 status; callers that must react to failure use the
 // status-aware overload below.

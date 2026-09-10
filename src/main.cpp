@@ -23,6 +23,7 @@
 #include <objbase.h>
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
+#include <atomic> // REQ-004: in-flight guard for the tray-switch async preload
 #include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
 #include <cstdio>
 #include <functional> // R6 Phase 1 (B3): language-sync coordinator std::function
@@ -499,9 +500,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // (RefreshActiveEngine keeps active_type_ on GoogleTranslate). The decision
     // lives in the pure, unit-pinned ShouldPreloadLocalModel seam (engine.hpp
     // contract, same discipline as PlanTranslationRouting). Runtime tray
-    // switches to local are unaffected: SetEngineType only creates the llama
-    // engine object and the first local Translate() lazy-loads via
-    // LlamaEngine::EnsureLoaded (existing design, respected).
+    // switches to local now get their own async preload (REQ-004, see
+    // on_select_engine below); the lazy-load fallback via
+    // LlamaEngine::EnsureLoaded on the first local Translate() remains as the
+    // self-healing second path (skip/failed preload, model-missing-then-added).
     std::thread warmup_thread;
     const bool local_model_present = engine.IsLocalModelAvailable();
     if (emebalachat::ShouldPreloadLocalModel(engine_type, config.cloud_fallback_enabled,
@@ -843,6 +845,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         hook.ToggleActive();
     };
 
+    // REQ-004 (session 260910_0003): async background preload when the tray
+    // selects the local engine. The old path only set the engine type and
+    // persisted config, leaving the first local translation to pay the
+    // synchronous ~7 s model load (260910 report). The tray callback runs on
+    // the GUI thread, so the load moves to a dedicated worker thread; the
+    // decision itself lives in the pure, unit-pinned ShouldPreloadOnEngineSwitch
+    // seam (engine.hpp), same discipline as the ShouldPreloadLocalModel startup
+    // gate above.
+    // Lifecycle: `engine_switch_preload_thread` is joined at shutdown next to
+    // warmup_thread (deterministic teardown, REQ-R16), and its in-flight load
+    // is unwound by engine.RequestCancel() via the llama.cpp
+    // progress_callback before that join - so the join is bounded and the
+    // thread can never touch `engine` after main() returns. NO detach.
+    std::thread engine_switch_preload_thread;
+    // Duplicate guard: exchange claims the single in-flight slot. A second
+    // tray pick while a preload is still loading is skipped outright (005);
+    // after a preload finishes, a later switch spawns a fresh thread that
+    // hits LlamaEngine::EnsureLoaded's idempotent fast path (already loaded +
+    // same path -> immediate true), which is cheap and self-healing if a
+    // model path change ever invalidated the resident load. The flag is
+    // cleared by the worker as its LAST action, so join() on a claimed slot
+    // (below) waits only for thread teardown, never for a load.
+    std::atomic<bool> preload_inflight{ false };
+
     trayCallbacks.on_select_engine = [&](int engine_idx) {
         // REQ-029-B (design §2.1 change 4): the tray engine switch was a
         // complete log blind spot (decisions.md 2026-09-07 11:40 item 3 -
@@ -865,6 +891,47 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         refresh_tray();
         DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
                engine.GetActiveEngineName().c_str());
+
+        // REQ-004: switch-to-local triggers the background preload AFTER the
+        // synchronous switch/persist/refresh above (which is fast: locked
+        // setters + config write), so the callback still returns immediately
+        // and the tray menu closes without the 7 s stall. A switch to cloud
+        // deliberately does nothing: a running local model would become dead
+        // weight (the REQ-F4a RAM rule), and UnloadLocalModel has no runtime
+        // caller anywhere today - unloading here would be a NEW behavior
+        // outside this fix's scope.
+        if (engine_idx != 0) {
+            // I4: locked snapshot read; the worker/hook threads cannot mutate
+            // model availability (set only via SetModelPath/RefreshActiveEngine).
+            const bool model_present = engine.IsLocalModelAvailable();
+            if (emebalachat::ShouldPreloadOnEngineSwitch(emebalachat::EngineType::LocalLlama,
+                                                         model_present)) {
+                if (!preload_inflight.exchange(true, std::memory_order_acq_rel)) {
+                    DIAG_F("MAIN/on_select_engine/003: async local model preload dispatched (background)\n");
+                    // Reap the previous completed preload thread before
+                    // reassigning (a joinable std::thread's assignment
+                    // operator calls std::terminate). Bounded per the guard
+                    // contract above: the old worker already finished its load.
+                    if (engine_switch_preload_thread.joinable()) {
+                        engine_switch_preload_thread.join();
+                    }
+                    engine_switch_preload_thread = std::thread(
+                        [&engine, &preload_inflight]() {
+                            const bool ok = engine.PreloadLocalModel();
+                            DIAG_F("MAIN/on_select_engine/004: async local model preload %s\n",
+                                   ok ? "complete" : "FAILED (first local translation will retry)");
+                            preload_inflight.store(false, std::memory_order_release);
+                        });
+                } else {
+                    DIAG_F("MAIN/on_select_engine/005: local preload already in flight; duplicate request skipped\n");
+                }
+            } else {
+                // Model file absent: nothing to preload. Translate() stays
+                // honest via LocalModelMissing (REQ-029-B), same as before
+                // this change; the log makes the skip traceable.
+                DIAG_F("MAIN/on_select_engine/006: local preload skipped reason=model-missing\n");
+            }
+        }
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the
@@ -1903,6 +1970,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::g_apply_language_change = nullptr;
     if (warmup_thread.joinable()) {
         warmup_thread.join(); // bounded: load aborts via progress_callback
+    }
+    // REQ-004: same lifecycle discipline as warmup_thread directly above -
+    // engine.RequestCancel() (latched at the top of this teardown) aborts a
+    // still-running preload via the llama.cpp progress_callback, so this join
+    // is bounded. After it, no thread can touch `engine` before destruction.
+    if (engine_switch_preload_thread.joinable()) {
+        engine_switch_preload_thread.join();
     }
     if (!engine.WaitInferenceIdle(2000)) {
         DIAG_F("MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (decode loop may still be winding down)\n");

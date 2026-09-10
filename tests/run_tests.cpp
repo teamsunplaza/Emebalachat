@@ -4066,6 +4066,55 @@ void TestReqF4aPreloadGate() {
     }
 }
 
+// ===========================================================================
+// REQ-004 (session 260910_0003): selecting engine=local in the tray must
+// trigger an ASYNC background preload so the first translation never pays the
+// synchronous ~7 s model load (260910 report). The wWinMain on_select_engine
+// gate calls the pure ShouldPreloadOnEngineSwitch seam, so this matrix pins
+// the SHIPPED decision (same seam-testing discipline as
+// TestReqF4aPreloadGate above). The async thread plumbing itself (joinable
+// worker + exchange-based in-flight guard + shutdown join) lives inside
+// wWinMain and is not headlessly constructible; it is covered by the manual
+// runtime evidence recorded in the task report.
+// ===========================================================================
+void TestReq004EngineSwitchPreloadGate() {
+    std::cout << "[RUN] Testing REQ-004 engine-switch preload gate (tray local pick)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // 1) No model file on disk -> never preload, under every selection
+    //    (Translate() stays honest via LocalModelMissing; a background load
+    //    could only fail).
+    for (const EngineType sel : { EngineType::Auto, EngineType::GoogleTranslate,
+                                  EngineType::LocalLlama }) {
+        TEST_CHECK(!ShouldPreloadOnEngineSwitch(sel, false),
+                   "REQ-004: absent model file never preloads on an engine switch");
+    }
+
+    // 2) THE fix scenario: explicit switch to LocalLlama + model present ->
+    //    preload, and - unlike the startup gate - WITHOUT any dependence on
+    //    the cloud_fallback consent flag (the seam takes no consent argument;
+    //    the tray pick itself is the local-serving intent).
+    TEST_CHECK(ShouldPreloadOnEngineSwitch(EngineType::LocalLlama, true),
+               "REQ-004: tray switch to local with model present dispatches the async preload");
+
+    // 3) A switch to cloud must not spawn a local load: a resident local
+    //    model would be dead weight (the REQ-F4a RAM rule applied to runtime
+    //    switches). Auto is not offered by the current tray menu; pinning it
+    //    false documents the seam's exact-contract shape (extend together
+    //    with the main.cpp call site if an Auto pick is ever added).
+    TEST_CHECK(!ShouldPreloadOnEngineSwitch(EngineType::GoogleTranslate, true),
+               "REQ-004: switch to google keeps the session cloud-only (no local preload)");
+    TEST_CHECK(!ShouldPreloadOnEngineSwitch(EngineType::Auto, true),
+               "REQ-004: Auto selection does not dispatch the tray-switch preload (menu offers google/local only)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-004 engine-switch preload gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-004 engine-switch preload gate tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 #ifdef HAVE_LLAMA_CPP
 // P7-F2 (session 260909_0004): SetGpuOffloadParams seam test. The production
 // EnsureLoaded builds llama_model_default_params(), calls this seam once per
@@ -9163,6 +9212,7 @@ int main() {
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
     TestReqF4aPreloadGate(); // REQ-F4a: startup preload gate (cloud-only skip)
+    TestReq004EngineSwitchPreloadGate(); // REQ-004: tray switch-to-local async preload gate
 #ifdef HAVE_LLAMA_CPP
     TestP7F2GpuOffloadParams(); // P7-F2: CUDA+Vulkan layer-split prevention seam
 #endif

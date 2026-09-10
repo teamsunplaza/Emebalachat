@@ -198,6 +198,26 @@ EngineType PlanTranslationRouting(std::string_view src_code,
 bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled,
                              bool model_available);
 
+// REQ-004 (session 260910_0003): pure decision seam for the RUNTIME tray
+// switch-to-local warmup in wWinMain's on_select_engine (src/main.cpp). The
+// 260910 report: selecting engine=local from the tray left the model
+// unloaded, so the first translation paid the synchronous load stall (~7 s).
+// Distinct from the startup gate ShouldPreloadLocalModel above: an explicit
+// tray pick of "local" IS the user's local-serving intent, so the
+// cloud_fallback consent plays no role in this decision (the switched-to
+// engine serves regardless of the consent flag). Contract:
+//   * no model file on disk             -> false (nothing to preload; the
+//       historical no-model behavior stays: RefreshActiveEngine reports
+//       "Local (Model Missing)" and Translate() pre-blocks with
+//       LocalModelMissing - a background load could only fail)
+//   * selected == LocalLlama + present  -> true  (spawn the async preload)
+//   * any other selection (Google/Auto) -> false (a switch to cloud must not
+//       pay the local model's RAM - the same dead-weight rule REQ-F4a applies
+//       at startup. The current tray menu offers exactly google/local; if a
+//       runtime Auto pick is ever added, extend this seam, its in-flight
+//       guard, and TestReq004EngineSwitchPreloadGate together.)
+bool ShouldPreloadOnEngineSwitch(EngineType selected, bool model_available);
+
 #ifdef HAVE_LLAMA_CPP
 // P7-F2 (universal GPU, session 260909_0004): pure params-construction seam
 // for the two model-load legs of LlamaEngine::EnsureLoaded. The production
