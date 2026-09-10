@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint> // W6/C3: uint8_t/uint32_t ICO fixture builder
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1397,6 +1398,204 @@ void TestW5C1C2BrushMeasurePins() {
         std::cout << "[PASS] W5/C1+C2 tooltip/about brush + measure pins completed." << std::endl;
     } else {
         std::cout << "[FAIL] W5/C1+C2 tooltip/about brush + measure pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// W6/C3 (session 260910_0007): DP-1 frame-selection pin for the new GDI-side
+// accessor LoadWicIconPixels + tray structure pins. THE BUG: the old hand-
+// rolled decoder in tray.cpp grabbed GetFrame(0) of the 7-frame .ico (directory
+// order: 16/24/32/48/64/128/256), rendering the 16x16 frame upscaled. The fix
+// routes tray.cpp through asset_loader's shared SelectLargestFrameIndex
+// pipeline. Two legs:
+//  A) FUNCTIONAL: a synthetic 2-frame ICO with the SMALL frame FIRST (exact
+//     DP-1 hazard layout) written to temp, decoded through LoadWicIconPixels;
+//     asserts the largest frame was selected and its pixels came through.
+//     A regression that re-introduces GetFrame(0) flips selected==16 and the
+//     color check FAILS headlessly - no GUI needed (WIC is COM, main() already
+//     CoInitializeEx'd).
+//  B) STRUCTURE (W2/B1 + W5 precedent): tray.cpp owns zero WIC decoder calls;
+//     asset_loader.cpp stays the single WIC pixel-decode owner with exactly
+//     one CreateDecoderFromFilename call site and two largest-frame call sites.
+void TestW6C3TrayIconFrameSelection() {
+    std::cout << "[TEST] W6/C3 tray icon DP-1 frame selection + structure pins" << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* rel) {
+        std::string out;
+        const char* prefixes[] = {"", "../", "../../"};
+        for (const char* pre : prefixes) {
+            std::ifstream in((std::string(pre) + rel).c_str(), std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+        return out;
+    };
+    auto count_occ = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = hay.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+
+    // ---- Leg A: synthetic multi-frame ICO (16 first, 32 second) ----
+    // Minimal valid ICO: ICONDIR + 2 ICONDIRENTRY + BMP-DIB frames
+    // (BITMAPINFOHEADER biHeight = 2*h, bottom-up 32bpp BGRA XOR, 1bpp AND
+    // mask zero-padded to 4-byte stride). This is the frame layout the WIC
+    // ICO codec accepts (mirrors the shipped assets/Emebala_Chat_Appicon.ico
+    // directory order where index 0 is the SMALLEST frame).
+    auto make_ico = []() -> std::vector<uint8_t> {
+        auto le32 = [](std::vector<uint8_t>& v, uint32_t x) {
+            v.push_back(x & 0xFF); v.push_back((x >> 8) & 0xFF);
+            v.push_back((x >> 16) & 0xFF); v.push_back((x >> 24) & 0xFF);
+        };
+        auto le16 = [](std::vector<uint8_t>& v, uint16_t x) {
+            v.push_back(x & 0xFF); v.push_back((x >> 8) & 0xFF);
+        };
+        // One DIB frame: flat ARGB color (0xAARRGGBB), w x h (w,h <= 32).
+        auto dib = [&le32, &le16](uint32_t w, uint32_t h, uint32_t argb) {
+            std::vector<uint8_t> f;
+            le32(f, 40);            // biSize
+            le32(f, w);             // biWidth
+            le32(f, h * 2);         // biHeight = XOR + AND
+            le16(f, 1);             // biPlanes
+            le16(f, 32);            // biBitCount
+            le32(f, 0);             // BI_RGB
+            le32(f, 0); le32(f, 0); le32(f, 0); le32(f, 0);
+            const uint8_t b = argb & 0xFF, g = (argb >> 8) & 0xFF,
+                          r = (argb >> 16) & 0xFF, a = (argb >> 24) & 0xFF;
+            for (uint32_t i = 0; i < w * h; ++i) { f.push_back(b); f.push_back(g); f.push_back(r); f.push_back(a); }
+            for (uint32_t y = 0; y < h; ++y) { f.push_back(0); f.push_back(0); f.push_back(0); f.push_back(0); } // AND mask
+            return f;
+        };
+        // NOTE: names avoid `small`/`large` - the Windows SDK rpcndr.h defines
+        // `#define small char`, which corrupts the declaration (build error
+        // C2187 "unexpected 'char'") once <windows.h> is in scope.
+        std::vector<uint8_t> ico;
+        const std::vector<uint8_t> frameSmall = dib(16, 16, 0xFF0000FFu); // blue
+        const std::vector<uint8_t> frameLarge = dib(32, 32, 0xFFFF0000u); // red
+        le16(ico, 0);                       // reserved
+        le16(ico, 1);                       // type = icon
+        le16(ico, 2);                       // count
+        const uint32_t off1 = 6 + 16 + 16;  // after header + 2 entries
+        const uint32_t off2 = off1 + static_cast<uint32_t>(frameSmall.size());
+        ico.push_back(16); ico.push_back(16); ico.push_back(0); ico.push_back(0);
+        le16(ico, 1); le16(ico, 32); le32(ico, static_cast<uint32_t>(frameSmall.size())); le32(ico, off1);
+        ico.push_back(32); ico.push_back(32); ico.push_back(0); ico.push_back(0);
+        le16(ico, 1); le16(ico, 32); le32(ico, static_cast<uint32_t>(frameLarge.size())); le32(ico, off2);
+        ico.insert(ico.end(), frameSmall.begin(), frameSmall.end());
+        ico.insert(ico.end(), frameLarge.begin(), frameLarge.end());
+        return ico;
+    };
+
+    std::error_code ec;
+    const auto icoPath = std::filesystem::temp_directory_path(ec) / "emebala_w6c3_frames.ico";
+    TEST_CHECK(!ec, "W6/C3 fixture: temp path available");
+    {
+        std::ofstream out(icoPath, std::ios::binary | std::ios::trunc);
+        const std::vector<uint8_t> bytes = make_ico();
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        out.close();
+        TEST_CHECK(out.good(), "W6/C3 fixture: synthetic 2-frame ICO written");
+    }
+
+    // Decode at 32: DP-1-correct pipeline selects the 32x32 (RED) frame even
+    // though the 16x16 (blue) frame sits at directory index 0 - the exact
+    // shape of the tray bug (old code would report selected 16 and emit blue).
+    {
+        std::vector<uint32_t> px;
+        UINT selected = 0;
+        const HRESULT hr = LoadWicIconPixels(icoPath.wstring(), 32, px, &selected);
+        TEST_CHECK(SUCCEEDED(hr), "W6/C3: LoadWicIconPixels decodes the synthetic ICO");
+        TEST_CHECK(px.size() == 32u * 32u, "W6/C3: output buffer is 32x32 uint32 pixels");
+        TEST_CHECK(selected == 32u, "W6/C3: DP-1 selects the LARGEST frame despite index-0 being 16x16 (tray bug regression pin)");
+        if (px.size() == 32u * 32u) {
+            TEST_CHECK(px[16 * 32 + 16] == 0xFFFF0000u,
+                       "W6/C3: center pixel is the 32x32 frame's red (premult BGRA @ alpha 255 == 0xFFFF0000), not the upscaled 16x16 blue");
+            TEST_CHECK(px[0] == 0xFFFF0000u && px[32 * 32 - 1] == 0xFFFF0000u,
+                       "W6/C3: corners carry the same frame (flat 32x32 source -> 32x32 target)");
+        }
+        // Upscale request (48) still selects the 32 source frame, not the 16.
+        std::vector<uint32_t> px48;
+        UINT selected48 = 0;
+        const HRESULT hr48 = LoadWicIconPixels(icoPath.wstring(), 48, px48, &selected48);
+        TEST_CHECK(SUCCEEDED(hr48) && px48.size() == 48u * 48u,
+                   "W6/C3: 48px request returns a 48x48 buffer");
+        TEST_CHECK(selected48 == 32u, "W6/C3: frame selection is independent of the requested target size");
+        // Argument contract: empty path / zero size reject without touching out.
+        std::vector<uint32_t> pxBad;
+        TEST_CHECK(FAILED(LoadWicIconPixels(L"", 32, pxBad)), "W6/C3: empty path returns failure");
+        TEST_CHECK(FAILED(LoadWicIconPixels(icoPath.wstring(), 0, pxBad)), "W6/C3: zero target size returns failure");
+    }
+    std::filesystem::remove(icoPath, ec);
+
+    // Real shipped asset: the tray's actual source. If FindAppIconPath resolves
+    // the .ico (it is repo-relative-probed like the app's own lookup), DP-1
+    // must select its 256x256 frame - pre-fix tray decoded frame 0 (16x16).
+    {
+        const std::wstring appIcon = FindAppIconPath();
+        if (appIcon.size() >= 4 && appIcon.substr(appIcon.size() - 4) == L".ico") {
+            std::vector<uint32_t> px;
+            UINT selected = 0;
+            const HRESULT hr = LoadWicIconPixels(appIcon, 32, px, &selected);
+            TEST_CHECK(SUCCEEDED(hr) && px.size() == 32u * 32u,
+                       "W6/C3: shipped Emebala_Chat_Appicon.ico decodes at 32px");
+            TEST_CHECK(selected == 256u,
+                       "W6/C3: shipped .ico resolves to its largest (256px) frame, not frame 0 (16px)");
+        } else {
+            std::cout << "[INFO] W6/C3: app-icon .ico not resolvable from the test CWD; real-asset leg skipped." << std::endl;
+        }
+    }
+
+    // ---- Leg B: structure pins ----
+    const std::string tray = read_src("src/ui/tray.cpp");
+    const std::string al = read_src("src/ui/asset_loader.cpp");
+    if (tray.empty() || al.empty()) {
+        std::cout << "[SKIP] tray/asset_loader sources not resolvable from the test CWD; structure pins skipped." << std::endl;
+    } else {
+        // tray.cpp no longer owns ANY WIC surface: zero decoder/factory calls,
+        // zero IWIC interface mentions, no wincodec include.
+        TEST_CHECK(count_occ(tray, "CreateDecoderFromFilename(") == 0,
+                   "C3: tray.cpp has no direct WIC decoder creation (hand-rolled decoder deleted)");
+        TEST_CHECK(count_occ(tray, "IWIC") == 0,
+                   "C3: tray.cpp references no WIC interface types");
+        TEST_CHECK(tray.find("wincodec.h") == std::string::npos,
+                   "C3: tray.cpp no longer includes <wincodec.h>");
+        // ...and routes through the single shared accessor instead.
+        TEST_CHECK(count_occ(tray, "LoadWicIconPixels(") == 1,
+                   "C3: tray.cpp calls LoadWicIconPixels exactly once");
+        // asset_loader.cpp remains the ONLY WIC pixel-decode owner: its two
+        // CreateDecoderFromFilename call sites are exactly the two public
+        // loaders (D2D LoadWicBitmap + GDI LoadWicIconPixels), and BOTH frame
+        // selections funnel through the single SelectLargestFrameIndex
+        // implementation (1 definition + 2 call sites = 3 mentions) - a third
+        // decoder forked elsewhere, or a re-inlined frame loop, fails this pin.
+        TEST_CHECK(count_occ(al, "CreateDecoderFromFilename(") == 2,
+                   "C3: asset_loader.cpp holds exactly 2 decoder call sites (LoadWicBitmap + LoadWicIconPixels, no more)");
+        TEST_CHECK(count_occ(al, "UINT SelectLargestFrameIndex(IWICBitmapDecoder*") == 1,
+                   "C3: exactly one DP-1 frame-selection definition (shared helper, no fork)");
+        TEST_CHECK(count_occ(al, "SelectLargestFrameIndex(pDecoder") == 2,
+                   "C3: both loaders call the shared selection exactly once each (2 call sites)");
+        TEST_CHECK(count_occ(al, "GetFrameCount(") == 1,
+                   "C3: frame enumeration exists only inside SelectLargestFrameIndex (no duplicated largest-frame loop)");
+        TEST_CHECK(tray.find("dot_cx = 24.5f") != std::string::npos &&
+                   tray.find("dot_cy = 24.5f") != std::string::npos,
+                   "C3: state-dot overlay geometry (32px-space center 24.5/24.5) unchanged by the decode swap");
+        TEST_CHECK(tray.find("0xFF10B981") != std::string::npos &&
+                   tray.find("0xFF64748B") != std::string::npos,
+                   "C3: active emerald / inactive slate dot colors unchanged");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] W6/C3 tray icon DP-1 frame selection + structure pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] W6/C3 tray icon DP-1 frame selection + structure pins: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
@@ -10431,6 +10630,7 @@ int main() {
     TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
     TestRef36LayeredRendererPins(); // REF-3.6: shared renderer ownership + null-degradation + GDI-leak pins
     TestW5C1C2BrushMeasurePins(); // W5/C1+C2: tooltip/about scratch-brush + measured-layout cache structure pins
+    TestW6C3TrayIconFrameSelection(); // W6/C3: tray DP-1 largest-frame selection (functional) + decoder-ownership structure pins
     TestEngineModule();
     TestModelPathValidation();
     TestModelSha256Verification(); // F3: runtime SHA-256 pin + marker cache

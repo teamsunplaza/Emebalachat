@@ -9,6 +9,56 @@ namespace emebalachat {
 
 namespace {
 
+// DP-1 fix (REQ-024 follow-up), W6/C3 extraction: the WIC ICO codec exposes
+// frames in directory order, so GetFrame(0) of Emebala_Chat_Appicon.ico is
+// the 16x16 LOWEST frame, not the highest resolution (B-1 probe: 7 frames
+// 16/24/32/48/64/128/256). For multi-frame containers pick the frame with the
+// largest pixel area; single-frame formats (PNG etc.) keep index 0. Frame-
+// enumeration failures degrade to index 0. Shared by LoadWicBitmap (D2D path)
+// and LoadWicIconPixels (GDI/tray path, W6/C3) so there is exactly ONE
+// frame-selection implementation in the codebase.
+UINT SelectLargestFrameIndex(IWICBitmapDecoder* pDecoder,
+                             UINT* outFrameW,
+                             UINT* outFrameH,
+                             const char* logTag) {
+    UINT selectedIndex = 0;
+    UINT frameCount = 0;
+    if (FAILED(pDecoder->GetFrameCount(&frameCount)) || frameCount <= 1) {
+        if (outFrameW) *outFrameW = 0;
+        if (outFrameH) *outFrameH = 0;
+        return selectedIndex;
+    }
+    UINT64 bestArea = 0;
+    UINT bestWidth = 0;
+    UINT bestHeight = 0;
+    for (UINT i = 0; i < frameCount; ++i) {
+        IWICBitmapFrameDecode* pProbe = nullptr;
+        if (FAILED(pDecoder->GetFrame(i, &pProbe))) {
+            continue; // unreadable frame: skip, keep best-so-far
+        }
+        UINT w = 0;
+        UINT h = 0;
+        const HRESULT hrSize = pProbe->GetSize(&w, &h);
+        pProbe->Release();
+        if (FAILED(hrSize)) {
+            continue;
+        }
+        const UINT64 area = static_cast<UINT64>(w) * h;
+        if (area > bestArea) {
+            bestArea = area;
+            bestWidth = w;
+            bestHeight = h;
+            selectedIndex = i;
+        }
+    }
+    DIAG_LOG("ASSET_LOADER",
+             "%s multi-frame container: frames=%u selected_idx=%u selected=%ux%u",
+             logTag, frameCount, selectedIndex, bestWidth, bestHeight);
+    if (outFrameW) *outFrameW = bestWidth;
+    if (outFrameH) *outFrameH = bestHeight;
+    return selectedIndex;
+}
+
 std::wstring FindAssetPath(const std::vector<std::string>& filenames) {
     std::vector<std::filesystem::path> baseDirs;
 
@@ -91,46 +141,10 @@ HRESULT LoadWicBitmap(
 
     IWICBitmapFrameDecode* pSource = nullptr;
     if (SUCCEEDED(hr)) {
-        // DP-1 fix (REQ-024 follow-up): the WIC ICO codec exposes frames in
-        // directory order, so GetFrame(0) of Emebala_Chat_Appicon.ico is the
-        // 16x16 LOWEST frame, not the highest resolution (B-1 probe: 7 frames
-        // 16/24/32/48/64/128/256). For multi-frame containers pick the frame
-        // with the largest pixel area; single-frame formats (PNG etc.) keep
-        // the original GetFrame(0) path. Frame-enumeration failures degrade
-        // to index 0 and the decode contract is unchanged: any final
-        // failure still returns a null bitmap to the existing callers'
-        // fallback logic.
-        UINT selectedIndex = 0;
-        UINT frameCount = 0;
-        if (SUCCEEDED(pDecoder->GetFrameCount(&frameCount)) && frameCount > 1) {
-            UINT64 bestArea = 0;
-            UINT bestWidth = 0;
-            UINT bestHeight = 0;
-            for (UINT i = 0; i < frameCount; ++i) {
-                IWICBitmapFrameDecode* pProbe = nullptr;
-                if (FAILED(pDecoder->GetFrame(i, &pProbe))) {
-                    continue; // unreadable frame: skip, keep best-so-far
-                }
-                UINT w = 0;
-                UINT h = 0;
-                const HRESULT hrSize = pProbe->GetSize(&w, &h);
-                pProbe->Release();
-                if (FAILED(hrSize)) {
-                    continue;
-                }
-                const UINT64 area = static_cast<UINT64>(w) * h;
-                if (area > bestArea) {
-                    bestArea = area;
-                    bestWidth = w;
-                    bestHeight = h;
-                    selectedIndex = i;
-                }
-            }
-            DIAG_LOG("ASSET_LOADER",
-                     "LoadWicBitmap/001 multi-frame container: frames=%u "
-                     "selected_idx=%u selected=%ux%u",
-                     frameCount, selectedIndex, bestWidth, bestHeight);
-        }
+        // Contract unchanged: any final failure still returns a null bitmap
+        // to the existing callers' fallback logic.
+        const UINT selectedIndex =
+            SelectLargestFrameIndex(pDecoder, nullptr, nullptr, "LoadWicBitmap/001");
         hr = pDecoder->GetFrame(selectedIndex, &pSource);
     }
 
@@ -160,6 +174,109 @@ HRESULT LoadWicBitmap(
     }
 
     if (pConverter) pConverter->Release();
+    if (pSource) pSource->Release();
+    if (pDecoder) pDecoder->Release();
+    if (pWicFactory) pWicFactory->Release();
+
+    return hr;
+}
+
+// W6/C3: see header contract. Same DP-1 frame selection as LoadWicBitmap via
+// SelectLargestFrameIndex; scaler + PBGRA converter mirror the tray's old
+// hand-rolled path minus the frame-0 defect and the D2D render-target bind.
+HRESULT LoadWicIconPixels(
+    const std::wstring& filePath,
+    UINT targetSize,
+    std::vector<uint32_t>& outPixels,
+    UINT* outSelectedFrameSize
+) {
+    if (filePath.empty() || targetSize == 0) {
+        return E_INVALIDARG;
+    }
+    outPixels.clear();
+    if (outSelectedFrameSize) {
+        *outSelectedFrameSize = 0;
+    }
+
+    IWICImagingFactory* pWicFactory = nullptr;
+    HRESULT hr = ::CoCreateInstance(
+        CLSID_WICImagingFactory,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&pWicFactory)
+    );
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    IWICBitmapDecoder* pDecoder = nullptr;
+    hr = pWicFactory->CreateDecoderFromFilename(
+        filePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &pDecoder
+    );
+
+    IWICBitmapFrameDecode* pSource = nullptr;
+    if (SUCCEEDED(hr)) {
+        UINT frameW = 0;
+        UINT frameH = 0;
+        const UINT selectedIndex =
+            SelectLargestFrameIndex(pDecoder, &frameW, &frameH, "LoadWicIconPixels/001");
+        hr = pDecoder->GetFrame(selectedIndex, &pSource);
+        if (SUCCEEDED(hr) && outSelectedFrameSize) {
+            *outSelectedFrameSize = frameW;
+        }
+    }
+
+    IWICBitmapScaler* pScaler = nullptr;
+    if (SUCCEEDED(hr)) {
+        hr = pWicFactory->CreateBitmapScaler(&pScaler);
+    }
+    if (SUCCEEDED(hr)) {
+        hr = pScaler->Initialize(
+            pSource,
+            targetSize,
+            targetSize,
+            WICBitmapInterpolationModeHighQualityCubic
+        );
+    }
+
+    IWICFormatConverter* pConverter = nullptr;
+    if (SUCCEEDED(hr)) {
+        hr = pWicFactory->CreateFormatConverter(&pConverter);
+    }
+    if (SUCCEEDED(hr)) {
+        // Premultiplied 32-bit BGRA: byte order B,G,R,A matches the little-
+        // endian uint32 0xAARRGGBB layout of a 32bpp top-down GDI DIB section.
+        hr = pConverter->Initialize(
+            pScaler,
+            GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            nullptr,
+            0.0f,
+            WICBitmapPaletteTypeMedianCut
+        );
+    }
+
+    if (SUCCEEDED(hr)) {
+        outPixels.resize(static_cast<size_t>(targetSize) * targetSize);
+        const UINT stride = targetSize * sizeof(uint32_t);
+        const UINT bufferSize = stride * targetSize;
+        hr = pConverter->CopyPixels(
+            nullptr,
+            stride,
+            bufferSize,
+            reinterpret_cast<BYTE*>(outPixels.data())
+        );
+        if (FAILED(hr)) {
+            outPixels.clear();
+        }
+    }
+
+    if (pConverter) pConverter->Release();
+    if (pScaler) pScaler->Release();
     if (pSource) pSource->Release();
     if (pDecoder) pDecoder->Release();
     if (pWicFactory) pWicFactory->Release();

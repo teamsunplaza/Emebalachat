@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
 #include <windows.h>
 #include <d2d1.h>
 #include <wincodec.h>
@@ -18,6 +20,23 @@ HRESULT LoadWicBitmap(
     ID2D1RenderTarget* pRenderTarget,
     const std::wstring& filePath,
     ID2D1Bitmap** ppBitmap
+);
+
+// W6/C3 (session 260910_0007): GDI-side sibling of LoadWicBitmap for callers
+// that cannot bind an ID2D1Bitmap (the tray icon is built into a 32bpp DIB
+// section). Decodes the BEST frame of a possibly multi-frame container through
+// the SAME DP-1 largest-frame selection LoadWicBitmap uses, scales it to
+// targetSize x targetSize (WICBitmapInterpolationModeHighQualityCubic) and
+// copies a premultiplied 32bpp BGRA buffer (B in the low byte - GDI DIB
+// layout). outPixels receives targetSize*targetSize uint32 pixels on S_OK.
+// outSelectedFrameSize (optional, may be null) receives the width of the
+// SOURCE frame selected before scaling (0 on failure). This is the single WIC
+// pixel-decode owner: tray.cpp MUST NOT re-roll its own decoder.
+HRESULT LoadWicIconPixels(
+    const std::wstring& filePath,
+    UINT targetSize,
+    std::vector<uint32_t>& outPixels,
+    UINT* outSelectedFrameSize = nullptr
 );
 
 // Fallback vector drawing of the Emebala tablet relief logo

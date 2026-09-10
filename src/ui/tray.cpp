@@ -6,7 +6,6 @@
 #include "../unicode_utils.hpp"
 
 #include <vector>
-#include <wincodec.h>
 
 namespace emebalachat {
 
@@ -78,37 +77,27 @@ HICON SystemTray::CreateStatusIcon(bool active) {
     // Clear transparent
     memset(pixels, 0, size * size * sizeof(uint32_t));
 
+    // W6/C3 (session 260910_0007): decode through asset_loader's single WIC
+    // pixel pipeline. The old hand-rolled decoder here grabbed GetFrame(0) of
+    // Emebala_Chat_Appicon.ico - the 16x16 LOWEST frame of the 7-frame DP-1
+    // container (16/24/32/48/64/128/256, verified against the shipped asset) -
+    // and upscaled it 2x to 32x32, so the tray rendered a blurry blown-up icon.
+    // LoadWicIconPixels applies the same largest-frame selection the D2D
+    // LoadWicBitmap path already used, then HighQualityCubic-scales the largest
+    // frame DOWN to the 32x32 premultiplied-BGRA build buffer below. The
+    // state-dot overlay and inactive-dim loops are untouched: they operate on
+    // the 32x32 buffer, whose coordinate space is unchanged (the dot still
+    // addresses the bottom-right corner in 32px space; Shell_NotifyIcon's
+    // SM_CXSMICON downscale semantics are unchanged since the HICON stays
+    // 32x32).
     bool loaded_icon = false;
     std::wstring iconPath = FindAppIconPath();
     if (!iconPath.empty()) {
-        IWICImagingFactory* pFactory = nullptr;
-        if (SUCCEEDED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory))) && pFactory) {
-            IWICBitmapDecoder* pDecoder = nullptr;
-            if (SUCCEEDED(pFactory->CreateDecoderFromFilename(iconPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &pDecoder)) && pDecoder) {
-                IWICBitmapFrameDecode* pFrame = nullptr;
-                if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame)) && pFrame) {
-                    IWICBitmapScaler* pScaler = nullptr;
-                    if (SUCCEEDED(pFactory->CreateBitmapScaler(&pScaler)) && pScaler) {
-                        if (SUCCEEDED(pScaler->Initialize(pFrame, size, size, WICBitmapInterpolationModeHighQualityCubic))) {
-                            IWICFormatConverter* pConverter = nullptr;
-                            if (SUCCEEDED(pFactory->CreateFormatConverter(&pConverter)) && pConverter) {
-                                if (SUCCEEDED(pConverter->Initialize(pScaler, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeMedianCut))) {
-                                    const UINT stride = size * sizeof(uint32_t);
-                                    const UINT bufferSize = stride * size;
-                                    if (SUCCEEDED(pConverter->CopyPixels(nullptr, stride, bufferSize, reinterpret_cast<BYTE*>(pixels)))) {
-                                        loaded_icon = true;
-                                    }
-                                }
-                                pConverter->Release();
-                            }
-                        }
-                        pScaler->Release();
-                    }
-                    pFrame->Release();
-                }
-                pDecoder->Release();
-            }
-            pFactory->Release();
+        std::vector<uint32_t> basePixels;
+        if (SUCCEEDED(LoadWicIconPixels(iconPath, static_cast<UINT>(size), basePixels)) &&
+            basePixels.size() == static_cast<size_t>(size) * size) {
+            memcpy(pixels, basePixels.data(), basePixels.size() * sizeof(uint32_t));
+            loaded_icon = true;
         }
     }
 
