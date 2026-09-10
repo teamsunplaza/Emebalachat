@@ -345,6 +345,64 @@ french.ConsentNo=Passer - utiliser Google Traduction (gratuit, nécessite intern
 german.ConsentNo=Überspringen - Google Übersetzer verwenden (kostenlos, Internet erforderlich)
 italian.ConsentNo=Ignora - usa Google Traduttore (gratis, richiede internet)
 
+; B-3 (session 260910_0002, architect plan 1.4): About page (shown right after
+; Welcome, every install) and Usage Guide page (shown right after wpInstalling,
+; before Finish, every install). %n = line separator: the [Code] helper
+; MessageLines() converts every literal %n to #13#10 before the memo pages are
+; fed, so the bodies render multi-line regardless of whether the running Inno
+; version expands %n in CustomMessage() results (conversion is a no-op then).
+; Hotkey tokens (F9, Ctrl + F9, Ctrl + Shift + Enter, Double Ctrl + C, 0.4s)
+; and the config filename stay verbatim in ALL languages. Brand naming follows
+; the B-1/B-2 rule: CJK locales use the per-locale brand form, latin locales
+; keep "Emebala Chat".
+english.AboutTitle=About Emebala Chat
+korean.AboutTitle=에메발라 챗 소개
+japanese.AboutTitle=エメバラチャットについて
+chinesesimplified.AboutTitle=关于埃梅巴拉 翻译
+chinesetraditional.AboutTitle=關於埃梅巴拉 翻譯
+spanish.AboutTitle=Acerca de Emebala Chat
+portuguese.AboutTitle=Sobre o Emebala Chat
+brazilianportuguese.AboutTitle=Sobre o Emebala Chat
+french.AboutTitle=À propos d'Emebala Chat
+german.AboutTitle=Über Emebala Chat
+italian.AboutTitle=Informazioni su Emebala Chat
+
+english.AboutBody=Emebala Chat — real-time AI translation that works everywhere you type.%n%nKey features:%n  •  Works in any text box: games, chats, browsers, documents%n  •  Local AI model — your text never leaves your PC (offline mode)%n  •  37 languages supported, auto-detects the source language%n  •  Drag-select text to translate it instantly%n  •  Floating badge with quick controls in your system tray
+korean.AboutBody=에메발라 챗 — 텍스트를 입력하는 모든 곳에서 동작하는 실시간 AI 번역입니다.%n%n핵심 기능:%n  •  모든 텍스트 상자에서 사용 가능: 게임, 채팅, 브라우저, 문서%n  •  로컬 AI 모델 — 텍스트가 PC를 떠나지 않음 (오프라인 모드)%n  •  37개 언어 지원, 원본 언어 자동 감지%n  •  텍스트를 드래그 선택하면 즉시 번역%n  •  시스템 트레이의 플로팅 배지에서 빠른 제어
+japanese.AboutBody=エメバラチャット — テキストを入力するあらゆる場所で動くリアルタイムAI翻訳です。%n%n主な機能：%n  •  あらゆるテキストボックスで使用可能：ゲーム、チャット、ブラウザ、文書%n  •  ローカルAIモデル — テキストがPCから外部に送信されません（オフラインモード）%n  •  37言語対応、原文言語を自動検出%n  •  テキストをドラッグ選択すると即座に翻訳%n  •  システムトレイのフローティングバッジでクイック操作
+chinesesimplified.AboutBody=埃梅巴拉 翻译——在您输入的任何地方都能使用的实时AI翻译。%n%n主要功能：%n  •  适用于任何文本框：游戏、聊天、浏览器、文档%n  •  本地AI模型——文本永远不会离开您的电脑（离线模式）%n  •  支持37种语言，自动检测源语言%n  •  拖动选择文本即可立即翻译%n  •  系统托盘中的浮动徽章提供快捷控制
+chinesetraditional.AboutBody=埃梅巴拉 翻譯——在您輸入的任何地方都能使用的即時AI翻譯。%n%n主要功能：%n  •  適用於任何文字方塊：遊戲、聊天、瀏覽器、文件%n  •  本地AI模型——文字永遠不會離開您的電腦（離線模式）%n  •  支援37種語言，自動偵測來源語言%n  •  拖曳選取文字即可即時翻譯%n  •  系統匣中的浮動徽章提供快速控制
+spanish.AboutBody=Emebala Chat — traducción por IA en tiempo real que funciona dondequiera que escriba.%n%nFunciones principales:%n  •  Funciona en cualquier cuadro de texto: juegos, chats, navegadores, documentos%n  •  Modelo de IA local — su texto nunca sale de su PC (modo sin conexión)%n  •  37 idiomas compatibles, con detección automática del idioma de origen%n  •  Seleccione texto arrastrando para traducirlo al instante%n  •  Insignia flotante con controles rápidos en la bandeja del sistema
+portuguese.AboutBody=O Emebala Chat — tradução por IA em tempo real que funciona em qualquer lugar onde escreva.%n%nFuncionalidades principais:%n  •  Funciona em qualquer caixa de texto: jogos, chats, navegadores, documentos%n  •  Modelo de IA local — o seu texto nunca sai do PC (modo offline)%n  •  37 idiomas suportados, deteta automaticamente o idioma de origem%n  •  Selecione texto arrastando para o traduzir instantaneamente%n  •  Ícone flutuante com controlos rápidos na bandeja do sistema
+brazilianportuguese.AboutBody=O Emebala Chat — tradução de IA em tempo real que funciona em qualquer lugar onde você digita.%n%nPrincipais recursos:%n  •  Funciona em qualquer caixa de texto: jogos, chats, navegadores, documentos%n  •  Modelo de IA local — seu texto nunca sai do PC (modo offline)%n  •  37 idiomas compatíveis, com detecção automática do idioma de origem%n  •  Selecione texto arrastando para traduzi-lo instantaneamente%n  •  Selo flutuante com controles rápidos na bandeja do sistema
+french.AboutBody=Emebala Chat — la traduction IA en temps réel qui fonctionne partout où vous tapez.%n%nFonctionnalités clés :%n  •  Fonctionne dans n'importe quelle zone de texte : jeux, chats, navigateurs, documents%n  •  Modèle IA local — votre texte ne quitte jamais votre PC (mode hors ligne)%n  •  37 langues prises en charge, détection automatique de la langue source%n  •  Sélectionnez du texte en le faisant glisser pour le traduire instantanément%n  •  Badge flottant avec commandes rapides dans la barre d'état système
+german.AboutBody=Emebala Chat — Echtzeit-KI-Übersetzung, die überall funktioniert, wo Sie Text eingeben.%n%nHauptfunktionen:%n  •  Funktioniert in jedem Textfeld: Spiele, Chats, Browser, Dokumente%n  •  Lokales KI-Modell — Ihr Text verlässt nie Ihren PC (Offline-Modus)%n  •  37 Sprachen unterstützt, automatische Erkennung der Quellensprache%n  •  Text per Ziehen auswählen und sofort übersetzen%n  •  Schwebendes Badge mit Schnellsteuerung im Systemtray
+italian.AboutBody=Emebala Chat — traduzione IA in tempo reale che funziona ovunque scriva.%n%nFunzionalità principali:%n  •  Funziona in qualsiasi casella di testo: giochi, chat, browser, documenti%n  •  Modello IA locale — il suo testo non lascia mai il PC (modalità offline)%n  •  37 lingue supportate, rilevamento automatico della lingua di origine%n  •  Selezioni il testo trascinandolo per tradurlo all'istante%n  •  Badge fluttuante con controlli rapidi nell'area di notifica
+
+english.GuideTitle=Quick Start — Hotkeys & Tips
+korean.GuideTitle=빠른 시작 — 단축키 및 팁
+japanese.GuideTitle=クイックスタート — ホットキーとヒント
+chinesesimplified.GuideTitle=快速上手——快捷键与提示
+chinesetraditional.GuideTitle=快速上手——快捷鍵與提示
+spanish.GuideTitle=Inicio rápido — Teclas y consejos
+portuguese.GuideTitle=Início rápido — Teclas e dicas
+brazilianportuguese.GuideTitle=Início rápido — Teclas e dicas
+french.GuideTitle=Démarrage rapide — Raccourcis et astuces
+german.GuideTitle=Schnellstart — Tastenkürzel und Tipps
+italian.GuideTitle=Avvio rapido — Tasti e suggerimenti
+
+english.GuideBody=Hotkeys (configurable in config.json):%n  F9 — toggle translation on/off (also click the floating badge)%n  Ctrl + F9 — cycle the target language%n  Ctrl + Shift + Enter — toggle auto-send mode%n  Double Ctrl + C (within 0.4s) — translate selected text via drag%n%nTips:%n  •  The app runs in your system tray — look for the Emebala icon%n  •  Right-click the tray icon for engine and language settings%n  •  Hold a modifier (Ctrl/Shift/Alt/Win) to type the modifier key itself%n  •  If the AI model was not installed, the free Google Translate engine is used%n%nEnjoy Emebala Chat!
+korean.GuideBody=단축키 (config.json에서 변경 가능):%n  F9 — 번역 켜기/끄기 (플로팅 배지를 클릭해도 동일)%n  Ctrl + F9 — 대상 언어 순환 변경%n  Ctrl + Shift + Enter — 자동 전송 모드 토글%n  Double Ctrl + C (0.4초 이내) — 드래그로 선택한 텍스트 번역%n%n팁:%n  •  앱은 시스템 트레이에서 실행됩니다 — 에메발라 아이콘을 확인하세요%n  •  트레이 아이콘을 마우스 우클릭하면 엔진 및 언어 설정%n  •  수정 키(Ctrl/Shift/Alt/Win)를 누른 채 유지하면 해당 키 자체를 입력할 수 있습니다%n  •  AI 모델을 설치하지 않은 경우 무료 Google 번역 엔진이 사용됩니다%n%n에메발라 챗을 즐겨보세요!
+japanese.GuideBody=ホットキー（config.jsonで変更可能）：%n  F9 — 翻訳のオン/オフ切り替え（フローティングバッジのクリックでも可）%n  Ctrl + F9 — 対象言語を循環切り替え%n  Ctrl + Shift + Enter — 自動送信モードの切り替え%n  Double Ctrl + C（0.4秒以内）— ドラッグで選択したテキストを翻訳%n%nヒント：%n  •  アプリはシステムトレイで実行されます — エメバラアイコンを探してください%n  •  トレイアイコンを右クリックするとエンジンと言語の設定%n  •  修飾キー（Ctrl/Shift/Alt/Win）を押したままにすると、そのキー自体を入力できます%n  •  AIモデルをインストールしなかった場合は、無料のGoogle翻訳エンジンが使用されます%n%nエメバラチャットをお楽しみください！
+chinesesimplified.GuideBody=快捷键（可在 config.json 中配置）：%n  F9 — 开启/关闭翻译（也可点击浮动徽章）%n  Ctrl + F9 — 循环切换目标语言%n  Ctrl + Shift + Enter — 切换自动发送模式%n  Double Ctrl + C（0.4秒内）— 翻译拖动选中的文本%n%n提示：%n  •  应用在系统托盘中运行——请寻找埃梅巴拉图标%n  •  右键单击托盘图标可设置引擎和语言%n  •  按住修饰键（Ctrl/Shift/Alt/Win）可输入该修饰键本身%n  •  如果未安装AI模型，将使用免费的Google翻译引擎%n%n祝您使用埃梅巴拉 翻译愉快！
+chinesetraditional.GuideBody=快捷鍵（可在 config.json 中設定）：%n  F9 — 開啟/關閉翻譯（也可點擊浮動徽章）%n  Ctrl + F9 — 循環切換目標語言%n  Ctrl + Shift + Enter — 切換自動傳送模式%n  Double Ctrl + C（0.4秒內）— 翻譯拖曳選取的文字%n%n提示：%n  •  應用程式在系統匣中執行——請尋找埃梅巴拉圖示%n  •  右鍵點擊系統匣圖示可設定引擎與語言%n  •  按住修飾鍵（Ctrl/Shift/Alt/Win）可輸入該修飾鍵本身%n  •  如果未安裝AI模型，將使用免費的Google翻譯引擎%n%n祝您使用埃梅巴拉 翻譯愉快！
+spanish.GuideBody=Teclas de acceso rápido (configurables en config.json):%n  F9 — activar/desactivar la traducción (también haciendo clic en la insignia flotante)%n  Ctrl + F9 — cambiar de idioma de destino en ciclo%n  Ctrl + Shift + Enter — alternar el modo de envío automático%n  Double Ctrl + C (en menos de 0,4 s) — traducir el texto seleccionado al arrastrar%n%nConsejos:%n  •  La aplicación se ejecuta en la bandeja del sistema — busque el icono de Emebala%n  •  Clic derecho en el icono de la bandeja para ajustar el motor y el idioma%n  •  Mantenga pulsada una tecla modificadora (Ctrl/Shift/Alt/Win) para escribir esa tecla en sí%n  •  Si no se instaló el modelo de IA, se usará el motor gratuito de Google Translate en línea%n%n¡Disfrute de Emebala Chat!
+portuguese.GuideBody=Teclas de atalho (configuráveis em config.json):%n  F9 — ativar/desativar a tradução (também ao clicar no ícone flutuante)%n  Ctrl + F9 — alternar ciclicamente o idioma de destino%n  Ctrl + Shift + Enter — alternar o modo de envio automático%n  Double Ctrl + C (em menos de 0,4 s) — traduzir o texto selecionado ao arrastar%n%nDicas:%n  •  A aplicação funciona na bandeja do sistema — procure o ícone do Emebala%n  •  Clique com o botão direito no ícone da bandeja para definições de motor e idioma%n  •  Mantenha premida uma tecla modificadora (Ctrl/Shift/Alt/Win) para escrever a própria tecla%n  •  Se o modelo de IA não for instalado, é utilizado o Google Tradutor online gratuito%n%nAproveite o Emebala Chat!
+brazilianportuguese.GuideBody=Teclas de atalho (configuráveis em config.json):%n  F9 — ativar/desativar a tradução (também clicando no selo flutuante)%n  Ctrl + F9 — alternar o idioma de destino em ciclo%n  Ctrl + Shift + Enter — alternar o modo de envio automático%n  Double Ctrl + C (em até 0,4 s) — traduzir o texto selecionado ao arrastar%n%nDicas:%n  •  O aplicativo roda na bandeja do sistema — procure o ícone do Emebala%n  •  Clique com o botão direito no ícone da bandeja para configurações de mecanismo e idioma%n  •  Segure uma tecla modificadora (Ctrl/Shift/Alt/Win) para digitar a própria tecla%n  •  Se o modelo de IA não foi instalado, o Google Tradutor online gratuito é usado%n%nAproveite o Emebala Chat!
+french.GuideBody=Raccourcis clavier (configurables dans config.json) :%n  F9 — activer/désactiver la traduction (ou cliquer sur le badge flottant)%n  Ctrl + F9 — faire défiler la langue cible%n  Ctrl + Shift + Enter — basculer le mode d'envoi automatique%n  Double Ctrl + C (en moins de 0,4 s) — traduire le texte sélectionné par glissement%n%nAstuces :%n  •  L'application s'exécute dans la barre d'état système — cherchez l'icône Emebala%n  •  Clic droit sur l'icône de la barre d'état pour les paramètres de moteur et de langue%n  •  Maintenez une touche modificatrice (Ctrl/Shift/Alt/Win) enfoncée pour taper cette touche elle-même%n  •  Si le modèle IA n'a pas été installé, le moteur gratuit Google Traduction en ligne est utilisé%n%nProfitez d'Emebala Chat !
+german.GuideBody=Tastenkürzel (in config.json konfigurierbar):%n  F9 — Übersetzung ein-/ausschalten (auch per Klick auf das schwebende Badge)%n  Ctrl + F9 — Zielsprache durchschalten%n  Ctrl + Shift + Enter — Auto-Send-Modus umschalten%n  Double Ctrl + C (innerhalb von 0,4 s) — per Ziehen ausgewählten Text übersetzen%n%nTipps:%n  •  Die App läuft im Systemtray — suchen Sie das Emebala-Symbol%n  •  Rechtsklick auf das Tray-Symbol für Engine- und Spracheinstellungen%n  •  Halten Sie eine Modifikatortaste (Ctrl/Shift/Alt/Win) gedrückt, um sie selbst zu tippen%n  •  Wenn das KI-Modell nicht installiert wurde, wird der kostenlose Online-Dienst Google Übersetzer verwendet%n%nViel Spaß mit Emebala Chat!
+italian.GuideBody=Scorciatoie da tastiera (configurabili in config.json):%n  F9 — attiva/disattiva la traduzione (anche cliccando sul badge fluttuante)%n  Ctrl + F9 — scorri le lingue di destinazione%n  Ctrl + Shift + Enter — attiva/disattiva la modalità di invio automatico%n  Double Ctrl + C (entro 0,4 s) — traduci il testo selezionato trascinandolo%n%nSuggerimenti:%n  •  L'app funziona nell'area di notifica — cerca l'icona di Emebala%n  •  Clic destro sull'icona nell'area di notifica per le impostazioni di motore e lingua%n  •  Tieni premuto un modificatore (Ctrl/Shift/Alt/Win) per digitare il tasto modificatore stesso%n  •  Se il modello IA non è stato installato, viene usato il motore gratuito Google Traduttore online%n%nGoditi Emebala Chat!
+
 ; ------------------------------------------------------------------------
 ; [Tasks] - Optional user-selectable tasks
 ; ------------------------------------------------------------------------
@@ -417,6 +475,15 @@ const
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
+  // B-3 (session 260910_0002, architect plan 1.4): About page (after
+  // wpWelcome) and Usage Guide page (after wpInstalling, before Finish).
+  // CreateOutputMsgMemoPage returns TOutputMsgMemoWizardPage (NOT the
+  // sibling TOutputMsgWizardPage), so both vars use the memo class.
+  // Shown on every install (user decision: no "first install only" gating);
+  // custom wizard pages are automatically never shown under /SILENT or
+  // /VERYSILENT, so silent installs need no ShouldSkipPage handling.
+  AboutPage: TOutputMsgMemoWizardPage;
+  GuidePage: TOutputMsgMemoWizardPage;
   // B-2 (session 260910_0002): consent page shown after wpReady, before the
   // ~2 GB model download. ModelDeclined is latched from the user's radio
   // choice in ReadConsentChoice() during ssInstall (before any file copy),
@@ -468,10 +535,32 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// MessageLines - B-3: fetch a [CustomMessages] body and guarantee real line
+// breaks for memo pages. Current Inno Setup expands the %n constant when it
+// loads [CustomMessages] (proven by the F2 hash-mismatch questions, which
+// pass CustomMessage() straight to MsgBox multi-line); on such versions the
+// StringChangeEx pass below is a no-op. It is kept as a safety net so the
+// About/Guide memo bodies render multi-line even on a compiler that does not
+// expand %n in CustomMessage results.
+// ------------------------------------------------------------------------
+function MessageLines(const MsgName: String): String;
+begin
+  Result := CustomMessage(MsgName);
+  StringChangeEx(Result, '%n', #13#10, True);
+end;
+
+// ------------------------------------------------------------------------
 // InitializeWizard - Create the download page using built-in API
 // ------------------------------------------------------------------------
 procedure InitializeWizard();
 begin
+  // B-3: About (소개) page — first custom page, right after Welcome.
+  // Signature (verified against local Inno 6.7 Examples\AllPagesExample.iss
+  // line 86): CreateOutputMsgMemoPage(AfterID, ACaption, ADescription,
+  // ASubCaption, AMsg).
+  AboutPage := CreateOutputMsgMemoPage(wpWelcome,
+    CustomMessage('AboutTitle'), '', '', MessageLines('AboutBody'));
+
   DownloadPage := CreateDownloadPage(
     CustomMessage('DownloadingModel'),
     CustomMessage('DownloadingModelDesc'),
@@ -492,6 +581,13 @@ begin
   ConsentPage.Add(CustomMessage('ConsentNo'));   // index 1
   ConsentPage.SelectedValueIndex := 0;
   ModelDeclined := False;
+
+  // B-3: Usage guide (단축키/사용 안내) — created AFTER ConsentPage so the
+  // creation order stays About -> Consent -> Guide. Placed after
+  // wpInstalling: the wizard reaches it once the install (including the
+  // ssPostInstall model download) has finished, right before Finish.
+  GuidePage := CreateOutputMsgMemoPage(wpInstalling,
+    CustomMessage('GuideTitle'), '', '', MessageLines('GuideBody'));
 end;
 
 // ------------------------------------------------------------------------
