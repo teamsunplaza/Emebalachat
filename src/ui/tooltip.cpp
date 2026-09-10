@@ -51,20 +51,13 @@ IDWriteTextFormat* CloneFormatWithLocale(IDWriteFactory* factory, IDWriteTextFor
     return dst;
 }
 
-// ASCII-case-insensitive wide compare. DWrite canonicalizes locale tags on
+// REF-3.1 (session 260910_0006 T2): the former file-local WcsIEqualsAscii was
+// an exact transcription of the shared EqualsIgnoreCaseAscii<wchar_t> template
+// in unicode_utils.hpp (same +32 A-Z fold, verbatim for every other code
+// unit) and has been deleted; call sites below (DWrite locale-tag equality
+// checks) now use the template directly. DWrite canonicalizes locale tags on
 // readback ("zh-CN" is stored and echoed lowercased — B-2 probe datum), so
 // tag equality checks must case-fold or every show would churn a swap.
-bool WcsIEqualsAscii(std::wstring_view a, std::wstring_view b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        wchar_t ca = a[i], cb = b[i];
-        if (ca >= L'A' && ca <= L'Z') ca += 32;
-        if (cb >= L'A' && cb <= L'Z') cb += 32;
-        if (ca != cb) return false;
-    }
-    return true;
-}
-
 std::string GetTokenName(ISpObjectToken* pToken) {
     if (!pToken) return "";
     ISpDataKey* pAttrKey = nullptr;
@@ -724,7 +717,7 @@ void TooltipWindow::ShowTranslation(
             wchar_t cur_locale[64] = {};
             const bool same_locale =
                 SUCCEEDED(body_format_->GetLocaleName(cur_locale, 64)) &&
-                WcsIEqualsAscii(cur_locale, tag);
+                EqualsIgnoreCaseAscii<wchar_t>(cur_locale, tag);
             if (!same_locale) {
                 IDWriteTextFormat* swapped =
                     CloneFormatWithLocale(dwrite_factory_, body_format_, tag.c_str());
@@ -900,7 +893,7 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
             wchar_t cur_locale[64] = {};
             const bool same_locale =
                 SUCCEEDED(small_format_->GetLocaleName(cur_locale, 64)) &&
-                WcsIEqualsAscii(cur_locale, ui_tag);
+                EqualsIgnoreCaseAscii<wchar_t>(cur_locale, ui_tag);
             if (!same_locale) {
                 IDWriteTextFormat* swapped =
                     CloneFormatWithLocale(dwrite_factory_, small_format_, ui_tag.c_str());

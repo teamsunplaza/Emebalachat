@@ -438,6 +438,94 @@ void TestUnicodeSharedHelpers() {
     }
 }
 
+// REF-3.1 (session 260910_0006 T2): pinned behavior tests for the three
+// remaining pure-ASCII case-compare sites migrated to the shared
+// EqualsIgnoreCaseAscii template — config.cpp's file-local EqualsIgnoreCase
+// (exercised through its public callers), and tooltip.cpp / about_window.cpp's
+// file-local WcsIEqualsAscii (exercised on the exact DWrite locale-readback
+// contract those sites compare). Behavior must be identical to the deleted
+// bodies; each pin below documents the old semantics it freezes.
+void TestRef31MigrationPins() {
+    std::cout << "[RUN] Testing REF-3.1 migration pins (config/tooltip/about_window)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) config.cpp former EqualsIgnoreCase, via the public lookup API ---
+    {
+        const LanguageInfo* mixed = FindLanguageByCode("zH-cN");
+        TEST_CHECK(mixed != nullptr && mixed->code == "ZH-CN",
+                   "T2/config: mixed-case code 'zH-cN' finds the ZH-CN row");
+        const LanguageInfo* upname = FindLanguageByName("vIETNAMESE");
+        TEST_CHECK(upname != nullptr && upname->code == "VI",
+                   "T2/config: case-folded name_en 'vIETNAMESE' finds VI");
+        // name_native carries UTF-8 high bytes ("Tiếng" = 54 69 E1 BA AF 6E 67).
+        // The old body folded via tolower(static_cast<unsigned char>) under the
+        // default "C" locale: only 'A'-'Z' folded, bytes >= 0x80 passed through.
+        // A lowercase-ASCII variant with identical high bytes must still match —
+        // exactly what the +32 template preserves.
+        const LanguageInfo* native_lower = FindLanguageByName("tiếng việt");
+        TEST_CHECK(native_lower != nullptr && native_lower->code == "VI",
+                   "T2/config: ASCII-case-folded UTF-8 name_native matches VI (high bytes verbatim)");
+        const LanguageInfo* native_ascii = FindLanguageByName("tieng viet");
+        TEST_CHECK(native_ascii == nullptr,
+                   "T2/config: ASCII-only 'tieng viet' does NOT match (size check first, no transliteration)");
+        TEST_CHECK(NormalizeLanguageCode("chinese simplified") == "ZH-CN",
+                   "T2/config: lowercase 'chinese simplified' normalizes to ZH-CN (name fold via callers)");
+        TEST_CHECK(CycleTargetLanguage("kOREAN") == "Vietnamese",
+                   "T2/config: CycleTargetLanguage folds the token's ASCII case");
+    }
+
+    // ---- 2) config.cpp former IsChineseLanguage path, via BuildPrompt -------
+    // The three EqualsIgnoreCase checks inside IsChineseLanguage are only
+    // reachable through BuildPrompt's legacy raw-token sniff (unresolvable
+    // token -> empty out_code -> IsChineseLanguage(tgt_native)). "zh"/"ZH" are
+    // not registry codes (only ZH-CN/ZH-TW rows exist), so the EqualsIgnoreCase
+    // branch "lang vs \"ZH\"" decides the instruction language.
+    {
+        const std::string p_lower = BuildPrompt("hi", "zh");
+        TEST_CHECK(p_lower.rfind("将以下文本翻译为zh，", 0) == 0,
+                   "T2/config: raw 'zh' token takes the Chinese instruction branch");
+        const std::string p_upper = BuildPrompt("hi", "ZH");
+        TEST_CHECK(p_upper.rfind("将以下文本翻译为ZH，", 0) == 0,
+                   "T2/config: raw 'ZH' token takes the Chinese instruction branch (case-fold equal)");
+        const std::string p_neg = BuildPrompt("hi", "Klingon");
+        TEST_CHECK(p_neg.rfind("Translate the following segment into Klingon", 0) == 0,
+                   "T2/config: non-Chinese unresolvable token stays English branch (negative control)");
+    }
+
+    // ---- 3) tooltip.cpp / about_window.cpp former WcsIEqualsAscii -----------
+    // Both sites compare IDWriteTextFormat::GetLocaleName() read-back against a
+    // ToUtf16(tag) they just passed to CreateTextFormat; DWrite lowercases the
+    // tag on read-back (B-2 probe datum), so the case-folded read-back MUST
+    // equal the canonical tag or every show churns a COM clone-swap. Pinned on
+    // the real registry tags (config.cpp LanguageInfo.bcp47 + I18n GetLocaleCode
+    // outputs) through the exact call-site expression shape.
+    {
+        const std::wstring tag_zhcn = ToUtf16("zh-CN"); // LanguageInfo B-2 row
+        TEST_CHECK(EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"zh-cn"}, tag_zhcn),
+                   "T2/ui: lowercased DWrite read-back 'zh-cn' equals canonical tag 'zh-CN' (no churn)");
+        TEST_CHECK(EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"ZH-CN"}, tag_zhcn),
+                   "T2/ui: uppercased read-back equals tag (fold symmetric)");
+        TEST_CHECK(!EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"zh-TW"}, tag_zhcn),
+                   "T2/ui: different tag rejected — clone-swap must proceed");
+        TEST_CHECK(!EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"zh-C"}, tag_zhcn),
+                   "T2/ui: truncated read-back rejected by the size check (no OOB)");
+        const std::wstring tag_en = ToUtf16("en"); // AUTO pivot / GetLocaleCode fallback
+        TEST_CHECK(EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"EN"}, tag_en),
+                   "T2/ui: pivot tag 'en' compares case-insensitively");
+        // The deleted bodies folded ONLY 'A'-'Z' (L'A'..L'Z' +32) — identical to
+        // the template. É/é (U+00C9/U+00E9) never folded there and must not
+        // fold here (unlike the towlower-based sites left out of scope).
+        TEST_CHECK(!EqualsIgnoreCaseAscii<wchar_t>(std::wstring_view{L"\x00C9"}, std::wstring_view{L"\x00E9"}),
+                   "T2/ui: wide É/é do NOT fold (pure-ASCII semantics of deleted body preserved)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REF-3.1 migration pin tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REF-3.1 migration pin tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 void TestSmartBypassModule() {
     std::cout << "[RUN] Testing Smart Bypass..." << std::endl;
     const int failures_before = g_failed_count;
@@ -9358,6 +9446,7 @@ int main() {
     TestConfigModule();
     TestUnicodeModule();
     TestUnicodeSharedHelpers();
+    TestRef31MigrationPins();
     TestSmartBypassModule();
     TestSelfLanguageBypass();
     TestSoundModule();

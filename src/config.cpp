@@ -18,18 +18,14 @@ namespace emebalachat {
 
 namespace {
 
-// Helper: ASCII case-insensitive comparison
-bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
+// REF-3.1 (session 260910_0006 T2): the former file-local EqualsIgnoreCase
+// (std::tolower(static_cast<unsigned char>(c)) idiom) is replaced at every
+// call site below by the shared EqualsIgnoreCaseAscii<char> template in
+// unicode_utils.hpp. Equivalent under this project's default "C" CRT locale
+// (no setlocale call exists in src/): tolower mapped only 'A'-'Z' there,
+// exactly the template's +32 fold; high bytes (>= 0x80, e.g. the UTF-8
+// name_native values in the table below) pass through both unchanged and
+// compare byte-for-byte.
 // Complete 38-language table (AUTO + 37 translation targets).
 // bcp47 (P4 Batch B-2, design §3 B-2 note): canonical BCP-47 tag fed to
 // DWrite CreateTextFormat(localeName) for script-appropriate font fallback
@@ -314,7 +310,7 @@ const std::vector<LanguageInfo>& GetTargetLanguages() {
 
 const LanguageInfo* FindLanguageByCode(std::string_view code) {
     for (const auto& lang : kAllLanguages) {
-        if (EqualsIgnoreCase(lang.code, code)) {
+        if (EqualsIgnoreCaseAscii<char>(lang.code, code)) {
             return &lang;
         }
     }
@@ -323,7 +319,8 @@ const LanguageInfo* FindLanguageByCode(std::string_view code) {
 
 const LanguageInfo* FindLanguageByName(std::string_view name) {
     for (const auto& lang : kAllLanguages) {
-        if (EqualsIgnoreCase(lang.name_en, name) || EqualsIgnoreCase(lang.name_native, name)) {
+        if (EqualsIgnoreCaseAscii<char>(lang.name_en, name) ||
+            EqualsIgnoreCaseAscii<char>(lang.name_native, name)) {
             return &lang;
         }
     }
@@ -438,9 +435,9 @@ std::string CycleTargetLanguage(std::string_view current_code_or_name) {
     bool found = false;
 
     for (size_t i = 0; i < targets.size(); ++i) {
-        if (EqualsIgnoreCase(targets[i].code, current_code_or_name) ||
-            EqualsIgnoreCase(targets[i].name_en, current_code_or_name) ||
-            EqualsIgnoreCase(targets[i].name_native, current_code_or_name)) {
+        if (EqualsIgnoreCaseAscii<char>(targets[i].code, current_code_or_name) ||
+            EqualsIgnoreCaseAscii<char>(targets[i].name_en, current_code_or_name) ||
+            EqualsIgnoreCaseAscii<char>(targets[i].name_native, current_code_or_name)) {
             current_idx = i;
             found = true;
             break;
@@ -531,7 +528,9 @@ LanguageSyncPlan PlanLanguageSync(LanguageContext /*ctx*/,
 
 namespace {
 bool IsChineseLanguage(std::string_view lang) {
-    if (EqualsIgnoreCase(lang, "ZH") || EqualsIgnoreCase(lang, "ZH-CN") || EqualsIgnoreCase(lang, "ZH-TW")) {
+    if (EqualsIgnoreCaseAscii<char>(lang, "ZH") ||
+        EqualsIgnoreCaseAscii<char>(lang, "ZH-CN") ||
+        EqualsIgnoreCaseAscii<char>(lang, "ZH-TW")) {
         return true;
     }
     std::string lower;

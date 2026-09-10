@@ -4,6 +4,7 @@
 #include "dpi.hpp"
 #include "../bidi_utils.hpp"  // P4 Batch B-5: DirectionForLocale / TextDirection
 #include "../i18n.hpp"
+#include "../unicode_utils.hpp"  // REF-3.1 (session 260910_0006 T2): EqualsIgnoreCaseAscii
 #include "../version.hpp"
 
 #include <memory>
@@ -16,23 +17,13 @@ namespace emebalachat {
 namespace {
 const wchar_t kAboutClassName[] = L"Emebalachat_AboutClass";
 
-// P4 Batch B-5 (session 260907_0002, design §2.2.3 + §2-Q5 verdict A):
-// ASCII-case-insensitive wide compare. DWrite canonicalizes locale tags on
-// readback (B-2 probe datum), so tag equality checks must case-fold or every
-// refresh would churn the COM object. Local copy of tooltip.cpp's
-// WcsIEqualsAscii — see the CloneFormatWithLocale note below for why B-5
-// replicates instead of sharing.
-bool WcsIEqualsAscii(std::wstring_view a, std::wstring_view b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        wchar_t ca = a[i], cb = b[i];
-        if (ca >= L'A' && ca <= L'Z') ca += 32;
-        if (cb >= L'A' && cb <= L'Z') cb += 32;
-        if (ca != cb) return false;
-    }
-    return true;
-}
-
+// REF-3.1 (session 260910_0006 T2): the former file-local WcsIEqualsAscii was
+// an exact transcription of the shared EqualsIgnoreCaseAscii<wchar_t> template
+// in unicode_utils.hpp (same +32 A-Z fold, verbatim for every other code
+// unit) and has been deleted; ApplyFormatLocale below now calls the template
+// directly. DWrite canonicalizes locale tags on readback (B-2 probe datum),
+// so tag equality checks must case-fold or every refresh would churn the COM
+// object.
 // P4 Batch B-5 (design §2-Q5 verdict A): DWrite localeName is CREATION-ONLY
 // (no SetLocaleName at any interface version — B-2 SDK header audit + headless
 // probe), so a locale change is a CLONE-SWAP: family/weight/style/stretch/size
@@ -73,13 +64,13 @@ bool ApplyFormatLocale(IDWriteFactory* factory, IDWriteTextFormat** slot,
                        const std::wstring& tag) {
     if (!factory || !slot || !*slot || tag.empty()) return true; // vacuous
     wchar_t cur[64] = {};
-    if (SUCCEEDED((*slot)->GetLocaleName(cur, 64)) && WcsIEqualsAscii(cur, tag)) {
+    if (SUCCEEDED((*slot)->GetLocaleName(cur, 64)) && EqualsIgnoreCaseAscii<wchar_t>(cur, tag)) {
         return true; // unchanged tag: never churn the COM object (B-2 rule)
     }
     IDWriteTextFormat* swapped = CloneFormatWithLocale(factory, *slot, tag.c_str());
     if (!swapped) return false;
     wchar_t read[64] = {};
-    if (FAILED(swapped->GetLocaleName(read, 64)) || !WcsIEqualsAscii(read, tag)) {
+    if (FAILED(swapped->GetLocaleName(read, 64)) || !EqualsIgnoreCaseAscii<wchar_t>(read, tag)) {
         swapped->Release();
         return false;
     }
