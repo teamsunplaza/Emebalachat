@@ -27,37 +27,76 @@
 #include <atomic> // REQ-004: in-flight guard for the tray-switch async preload
 #include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
 #include <cstdio>
+#include <deque>    // SEC-B5: language-sync request queue (no pointer in LPARAM)
 #include <functional> // R6 Phase 1 (B3): language-sync coordinator std::function
-#include <memory>     // R6 Phase 1 (B3): payload ownership in the sync marshal
-#include <mutex>      // R6 Phase 3 (audit item 7): drag job slot guard
+#include <mutex>      // R6 Phase 3 (audit item 7): drag job slot guard; SEC-B5: queue guard
 #include <string_view>
 #include <thread> // REQ-R1: drag-icon click worker (copy+translate off the GUI thread)
+#include <utility>    // SEC-B5: std::move on the by-value queue transport
 
 namespace emebalachat {
 
 namespace {
 // ---- R6 Phase 1 (B3): cross-thread language-sync marshal ----
 // Phase 3 Batch 2 (plan §2.4): the request now also carries WHICH language
-// pair (LanguageContext) the mutation applies to. wParam contract:
-//   bit0 = cycle request (Ctrl+F9), bit1 = context (0=Type, 1=Drag).
+// pair (LanguageContext) the mutation applies to.
 // Posted to the controller window (GUI thread) by any NON-GUI thread that
 // needs a language mutation applied: the keyboard hook thread's Ctrl+F9
 // cycle (Type context, cycle semantics) and the drag / double-Ctrl+C worker
 // threads when their src==tgt fallback substitutes a new target (Drag
-// context, payload carries the request). LPARAM is a heap LanguageSyncRequest
-// whose ownership transfers to ControllerWndProc (deleted locally on post
-// failure - the same REQ-R10 payload contract the tooltip seams use).
+// context). SEC-B5 (CWE-822 shatter fix, release readiness review
+// 260911_0002): the old contract shipped a heap LanguageSyncRequest* in
+// LPARAM and cycle/context bits in wParam, and ControllerWndProc cast them
+// back blindly. Both windows sharing that handler (the message-only
+// controller AND the top-level power-sink window, discoverable via
+// EnumWindows + the shipped class name) accept WM_APP+0x300 from any
+// same-session process, so an attacker-chosen pointer could be dereferenced
+// and freed. The message is now a PURE NOTIFICATION (wParam = LPARAM = 0,
+// both ignored by the handler) and requests travel BY VALUE through the
+// mutex-guarded deque below. See
+// docs/260911_0002_session_release-public-readiness-review/
+// 234100_verify-sec-blocker5-lparam-pointer.md for the threat model and the
+// remediation spec this implementation follows.
 constexpr UINT kMsgApplyLanguageSync = WM_APP + 0x300;
 struct LanguageSyncRequest {
     LanguageContext context = LanguageContext::Type; // Phase 3: which pair to mutate
     std::string source;      // empty = keep current
     std::string target;      // empty = keep current
+    bool cycle = false;      // Ctrl+F9 target cycle (old wParam bit0; SEC-B5
+                             // moved the payload into the value struct)
     bool play_chime = false;
 };
 // Set once at startup to the wWinMain ApplyLanguageChange coordinator; invoked
 // on the GUI thread from ControllerWndProc. Cleared after hook/mouse stop at
 // shutdown so a late posted message can never call into destroyed state.
 std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bool)> g_apply_language_change;
+// ---- SEC-B5: value-queue transport (replaces the LPARAM pointer contract) ----
+// Producers (hook thread, REQ-R06 double-Ctrl+C worker, drag worker) emplace
+// under the mutex, then PostMessageW the wake trigger. The sole consumer is
+// the GUI thread (ControllerWndProc + the shutdown sweep at the identical old
+// position: producers joined -> drain -> retire coordinator). A plain
+// lock_guard poll-on-message is sufficient - the OS message is the wakeup,
+// no condition_variable needed.
+// TEST COVERAGE NOTE (SEC-B5): this queue lives in main.cpp, which is the
+// GUI entrypoint translation unit and is deliberately NOT linked into
+// run_tests.exe (CMakeLists: run_tests builds tests/run_tests.cpp against
+// Emebalachat_core only). Push/pop-all-FIFO/drain semantics here are
+// therefore pinned by compilation + the Release build + the existing pure-
+// planner seam tests (TestB3LanguageSync et al.) rather than dedicated unit
+// tests; extracting a queue helper into a core TU was rejected as a
+// build-contortion outside the surgical-fix mandate (verification report
+// 234100 §7 leaves it optional). The security property (LPARAM never cast)
+// is enforced structurally: no reinterpret_cast of this message's LPARAM
+// remains anywhere in the repo.
+std::mutex g_lang_sync_mu;
+std::deque<LanguageSyncRequest> g_lang_sync_queue;
+// Moves out ALL pending requests in FIFO order (consumer-side helper).
+std::deque<LanguageSyncRequest> DrainLanguageSyncQueue() {
+    std::deque<LanguageSyncRequest> out;
+    std::lock_guard<std::mutex> lk(g_lang_sync_mu);
+    out.swap(g_lang_sync_queue);
+    return out;
+}
 // Posts a sync request; never blocks (PostMessageW). Safe from hook threads.
 // When the CALLER already is the controller window's GUI thread (e.g. a test
 // invoking KeyboardHook::CycleTargetLanguage directly, or any future same-
@@ -76,18 +115,27 @@ void RequestLanguageSync(HWND hController, LanguageContext ctx,
         g_apply_language_change(ctx, source, target, cycle, play_chime);
         return;
     }
-    auto p = std::make_unique<LanguageSyncRequest>();
-    p->context = ctx;
-    p->source = std::move(source);
-    p->target = std::move(target);
-    p->play_chime = play_chime;
-    const LPARAM lp = reinterpret_cast<LPARAM>(p.release());
-    // Phase 3 (plan §2.4): bit1 = context, bit0 = cycle flag.
-    const WPARAM wp = static_cast<WPARAM>(
-        (ctx == LanguageContext::Drag ? 2u : 0u) | (cycle ? 1u : 0u));
-    if (::PostMessageW(hController, kMsgApplyLanguageSync, wp, lp) == FALSE) {
-        delete reinterpret_cast<LanguageSyncRequest*>(lp);
-        DIAG_F("MAIN/LangSync/002: PostMessage language sync failed (GLE %lu)\n", ::GetLastError());
+    // SEC-B5: the request travels BY VALUE through g_lang_sync_queue; the
+    // posted message is a pure wake-up notification with zero parameters.
+    LanguageSyncRequest req;
+    req.context = ctx;
+    req.source = std::move(source);
+    req.target = std::move(target);
+    req.cycle = cycle;
+    req.play_chime = play_chime;
+    {
+        std::lock_guard<std::mutex> lk(g_lang_sync_mu);
+        g_lang_sync_queue.push_back(std::move(req));
+    }
+    if (::PostMessageW(hController, kMsgApplyLanguageSync, 0, 0) == FALSE) {
+        // Leave the entry queued (drain-safe, cannot leak or apply-after-
+        // retire): the failed post means no NEW wake trigger, but every
+        // later notification (next cycle, or the shutdown drain, which runs
+        // after all producers are joined and BEFORE the coordinator is
+        // retired) pops ALL queued entries, so this one is still consumed
+        // exactly once. Rolling it back here would race with a concurrent
+        // consumer that another producer's successful post already woke.
+        DIAG_F("MAIN/LangSync/002: PostMessage language sync failed (GLE %lu); request left queued\n", ::GetLastError());
     }
 }
 const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
@@ -156,20 +204,31 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     if (msg == kMsgApplyLanguageSync) {
         // R6 Phase 1 (B3, plan §2.3): hook/worker-thread language mutations
         // marshal here so they run on the GUI thread through the same
-        // ApplyLanguageChange coordinator as every other surface. Phase 3
-        // (plan §2.4) wParam encoding: bit0 = target-language cycle request
-        // (payload strings ignored), bit1 = language context (0=Type, 1=Drag).
-        const std::unique_ptr<LanguageSyncRequest> p(
-            reinterpret_cast<LanguageSyncRequest*>(lParam));
-        if (g_apply_language_change) {
-            const LanguageContext ctx =
-                (wParam & 2u) ? LanguageContext::Drag : LanguageContext::Type;
-            g_apply_language_change(
-                ctx,
-                p ? std::string_view{ p->source } : std::string_view{},
-                p ? std::string_view{ p->target } : std::string_view{},
-                (wParam & 1u) != 0,
-                p ? p->play_chime : true);
+        // ApplyLanguageChange coordinator as every other surface.
+        // SEC-B5 (CWE-822 shatter fix): wParam/LPARAM are IGNORED entirely -
+        // the message carries no payload anymore (always 0/0; any value an
+        // external process posts is untrusted by design). Requests travel by
+        // value through g_lang_sync_queue; this handler pops every pending
+        // entry (per-item lock, so entries enqueued while an earlier one is
+        // being applied are still consumed by this same wake-up) and applies
+        // it on the GUI thread. With the coordinator retired (late message
+        // after shutdown reset), entries are discarded — matching the old
+        // free-without-apply semantics.
+        for (;;) {
+            LanguageSyncRequest req;
+            {
+                std::lock_guard<std::mutex> lk(g_lang_sync_mu);
+                if (g_lang_sync_queue.empty()) {
+                    break;
+                }
+                req = std::move(g_lang_sync_queue.front());
+                g_lang_sync_queue.pop_front();
+            }
+            if (g_apply_language_change) {
+                g_apply_language_change(
+                    req.context, std::string_view{ req.source },
+                    std::string_view{ req.target }, req.cycle, req.play_chime);
+            }
         }
         return 0;
     }
@@ -2041,35 +2100,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     retranslate_worker.Join(); // if (joinable()) join()
     // R6 Phase 1 (B3): drain any language-sync requests still queued before
     // the coordinator is retired, so a cycle posted a moment before shutdown
-    // still persists instead of being silently dropped. Peek-only sweep: other
-    // messages (including the WM_QUIT DestroyWindow will post) are left for the
-    // normal teardown path below.
-    {
-        MSG m = {};
-        while (::PeekMessageW(&m, hController, emebalachat::kMsgApplyLanguageSync,
-                              emebalachat::kMsgApplyLanguageSync, PM_REMOVE)) {
-            const std::unique_ptr<emebalachat::LanguageSyncRequest> p(
-                reinterpret_cast<emebalachat::LanguageSyncRequest*>(m.lParam));
-            if (p && emebalachat::g_apply_language_change) {
-                // Same Phase 3 wParam decode as ControllerWndProc (bit1 =
-                // context, bit0 = cycle) so a drained request mutates the
-                // pair it was posted for.
-                const emebalachat::LanguageContext ctx =
-                    (m.wParam & 2u) ? emebalachat::LanguageContext::Drag
-                                    : emebalachat::LanguageContext::Type;
-                emebalachat::g_apply_language_change(
-                    ctx, std::string_view{ p->source }, std::string_view{ p->target },
-                    (m.wParam & 1u) != 0, p->play_chime);
-            }
+    // still persists instead of being silently dropped. SEC-B5: the payloads
+    // now live in g_lang_sync_queue (the message is a parameter-less wake-up,
+    // so no PeekMessageW sweep exists anymore); the same-thread GUI deque
+    // drain at the IDENTICAL old position (all producers joined above,
+    // coordinator retired below) preserves the shutdown ordering: producers
+    // joined -> drain -> retire. Any kMsgApplyLanguageSync notification still
+    // sitting in the message queue is harmless (carries no payload).
+    for (const emebalachat::LanguageSyncRequest& req : emebalachat::DrainLanguageSyncQueue()) {
+        if (emebalachat::g_apply_language_change) {
+            emebalachat::g_apply_language_change(
+                req.context, std::string_view{ req.source },
+                std::string_view{ req.target }, req.cycle, req.play_chime);
         }
     }
     // Retire the coordinator BEFORE the surfaces it writes to are destroyed.
     // The double-Ctrl+C worker (joined by hook.Stop() above) and the drag
     // worker (joined immediately before this block, R6 Phase 3) can no longer
     // post sync requests; the hook thread itself is down. Once unset,
-    // ControllerWndProc frees any still-queued payload without touching
-    // config/engine/badge/tray/tooltip.
+    // ControllerWndProc discards any still-queued requests (pop without
+    // apply) without touching config/engine/badge/tray/tooltip.
     emebalachat::g_apply_language_change = nullptr;
+    // Post-retire verify-empty (SEC-B5, spec 234100 §7.4): with all producers
+    // joined and the drain above already run, the deque is expected to be
+    // empty; the swap-out releases any residue's std::string memory before
+    // teardown continues.
+    emebalachat::DrainLanguageSyncQueue(); // discard any residue
     if (warmup_thread.joinable()) {
         warmup_thread.join(); // bounded: load aborts via progress_callback
     }
