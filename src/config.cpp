@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <windows.h>
@@ -1052,13 +1053,27 @@ bool AppConfig::FromJsonString(std::string_view json) {
         } else if (k == "hotkey_mode") {
             hotkey_mode = v;
         } else if (k == "temperature") {
-            try { temperature = std::stof(v); } catch (...) {}
+            // SEC Batch B (Medium 3 hardening, accepted per 235914 §5): clamp at
+            // the single JSON choke point. std::stof accepts quoted "nan"/"inf"
+            // strings, so std::isfinite + range tests run here; a non-finite or
+            // out-of-range value falls back to the field default (config.hpp
+            // kAllLanguages note at L353-361: 0.3f/0.6f/20/1.05f). Upper-edge
+            // temperature saturates to 2.0 (report spec); 0 stays meaningful
+            // (engine greedy branch, engine.cpp L879).
+            try { float t = std::stof(v);
+                  // (t > 2.0f ? 2.0f : t) saturation instead of std::min:
+                  // <windows.h> above is included without NOMINMAX, so the
+                  // min macro would corrupt the std::min qualified call.
+                  temperature = (std::isfinite(t) && t >= 0.0f) ? (t > 2.0f ? 2.0f : t) : 0.3f; } catch (...) {}
         } else if (k == "top_p") {
-            try { top_p = std::stof(v); } catch (...) {}
+            try { float p = std::stof(v);
+                  top_p = (std::isfinite(p) && p > 0.0f && p <= 1.0f) ? p : 0.6f; } catch (...) {}
         } else if (k == "top_k") {
-            try { top_k = std::stoi(v); } catch (...) {}
+            try { int k_ = std::stoi(v);
+                  top_k = (k_ >= 0 && k_ <= 1000) ? k_ : 20; } catch (...) {}
         } else if (k == "repetition_penalty") {
-            try { repetition_penalty = std::stof(v); } catch (...) {}
+            try { float r = std::stof(v);
+                  repetition_penalty = (std::isfinite(r) && r >= 1.0f && r <= 2.0f) ? r : 1.05f; } catch (...) {}
         }
     }
     // Phase 3 migration (plan §2.1): no new-schema keys => this is a pre-Phase-3

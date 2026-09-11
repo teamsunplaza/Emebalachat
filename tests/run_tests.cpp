@@ -200,6 +200,61 @@ void TestConfigModule() {
     TEST_CHECK(fallback_cfg.target_language == "English", "Corrupted JSON retains default values");
     TEST_CHECK(fallback_cfg.cloud_fallback_enabled == false, "Corrupted JSON retains cloud_fallback_enabled default false");
 
+    // 6b. SEC Batch B (Medium 3 hardening, accepted per verify 235914 §5):
+    //     sampler params clamp at the FromJsonString choke point. strtof
+    //     semantics accept quoted "nan"/"inf" strings, so non-finite and
+    //     out-of-range values must fall back to the field defaults
+    //     (temperature 0.3f, top_p 0.6f, top_k 20, repetition_penalty 1.05f);
+    //     temperature above the rail saturates to 2.0, 0 stays meaningful
+    //     (engine greedy branch, engine.cpp L879).
+    {
+        // NaN/Inf via quoted string values.
+        AppConfig nan_cfg;
+        TEST_CHECK(nan_cfg.FromJsonString(
+                       "{ \"temperature\": \"nan\", \"top_p\": \"inf\", \"repetition_penalty\": \"-inf\" }"),
+                   "SEC-B: NaN/Inf sampler strings parse without failure");
+        TEST_CHECK(std::abs(nan_cfg.temperature - 0.3f) < 0.001f,
+                   "SEC-B: temperature NaN falls back to 0.3 default");
+        TEST_CHECK(std::abs(nan_cfg.top_p - 0.6f) < 0.001f,
+                   "SEC-B: top_p +Inf falls back to 0.6 default");
+        TEST_CHECK(std::abs(nan_cfg.repetition_penalty - 1.05f) < 0.001f,
+                   "SEC-B: repetition_penalty -Inf falls back to 1.05 default");
+
+        // Out-of-range finite values (unquoted, the shape ToJsonString emits).
+        AppConfig edge_cfg;
+        TEST_CHECK(edge_cfg.FromJsonString(
+                       "{ \"temperature\": -1.0, \"top_p\": 0.0, \"top_k\": -5, \"repetition_penalty\": 0.5 }"),
+                   "SEC-B: negative/out-of-range sampler values parse");
+        TEST_CHECK(std::abs(edge_cfg.temperature - 0.3f) < 0.001f,
+                   "SEC-B: negative temperature falls back to default");
+        TEST_CHECK(std::abs(edge_cfg.top_p - 0.6f) < 0.001f,
+                   "SEC-B: top_p 0.0 rejected by open lower bound, falls back");
+        TEST_CHECK(edge_cfg.top_k == 20, "SEC-B: negative top_k falls back to default");
+        TEST_CHECK(std::abs(edge_cfg.repetition_penalty - 1.05f) < 0.001f,
+                   "SEC-B: repetition_penalty below 1.0 falls back to default");
+
+        // Above-range: temperature saturates to 2.0, top_k falls back.
+        AppConfig hi_cfg;
+        TEST_CHECK(hi_cfg.FromJsonString("{ \"temperature\": 9.5, \"top_k\": 5000 }"),
+                   "SEC-B: above-range sampler values parse");
+        TEST_CHECK(std::abs(hi_cfg.temperature - 2.0f) < 0.001f,
+                   "SEC-B: temperature above 2.0 saturates to 2.0");
+        TEST_CHECK(hi_cfg.top_k == 20, "SEC-B: top_k above 1000 falls back to default");
+
+        // In-range boundaries stay accepted (no over-clamping regression).
+        AppConfig sat_cfg;
+        TEST_CHECK(sat_cfg.FromJsonString(
+                       "{ \"temperature\": 0.0, \"top_p\": 1.0, \"top_k\": 1000, \"repetition_penalty\": 2.0 }"),
+                   "SEC-B: boundary-accept sampler values parse");
+        TEST_CHECK(std::abs(sat_cfg.temperature - 0.0f) < 0.001f,
+                   "SEC-B: temperature 0 accepted (greedy convention preserved)");
+        TEST_CHECK(std::abs(sat_cfg.top_p - 1.0f) < 0.001f,
+                   "SEC-B: top_p 1.0 accepted (closed upper bound)");
+        TEST_CHECK(sat_cfg.top_k == 1000, "SEC-B: top_k upper bound 1000 accepted");
+        TEST_CHECK(std::abs(sat_cfg.repetition_penalty - 2.0f) < 0.001f,
+                   "SEC-B: repetition_penalty upper bound 2.0 accepted");
+    }
+
     // 7. I2 fix: \uXXXX surrogate-pair decoding in SimpleJsonReader (tested
     //    through the public FromJsonString seam). Values ride in drag_hotkey
     //    so they hit the ParseString escape path verbatim.
