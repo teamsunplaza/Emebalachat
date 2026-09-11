@@ -244,6 +244,17 @@ std::filesystem::path GetExecutableDir();
 std::string ResolveModelPath(std::string_view raw_path,
                              std::string_view base_dir = {});
 
+// REQ-208/SEC-1 (session 260911_0002 T3, design 144800 §2.3/§2.6 option (i),
+// light-gate 165600/180000 recommendations a/b/c): the pure first-run privacy
+// gate seam. TRUE while the privacy notice is still OUTSTANDING: wWinMain must
+// fire the blocking first-run MessageBoxW, and because that popup sits BEFORE
+// the TranslationManager construction, worker.Start() and hook.Start() in the
+// startup order, no translation can be served until the notice is dismissed.
+// FALSE once AppConfig::privacy_notice_shown was persisted true. Pulled out as
+// a pure predicate so the blocking-popup and serving-block decisions can be
+// pinned headlessly (a modal MessageBox cannot run in the test binary).
+bool PrivacyNoticeOutstanding(bool privacy_notice_shown);
+
 // Application configuration backed by JSON with zero external dependencies.
 //
 // I4 (data-race fix): this object is shared by reference between the UI (main)
@@ -319,6 +330,17 @@ struct AppConfig {
     // content=true with enabled=false still writes NOTHING (enabled is the
     // master switch — design 144800 §2.1 truth table).
     bool diag_log_content = false;
+    // REQ-208/SEC-1 (session 260911_0002 T3): one-shot privacy-notice record.
+    // Default FALSE — the key is absent on every pre-260911 config.json, so a
+    // fresh install fires the first-run privacy popup (the blocking serving
+    // gate; see PrivacyNoticeOutstanding and design 144800 §2.6 option (i)).
+    // main.cpp records TRUE and SaveToFile()s BEFORE showing the popup, so a
+    // crash while the notice is open cannot loop the popup on every launch
+    // (light-gate 180000 recommendation b); a failed save therefore repeats
+    // the notice, never skips it. Startup-only write (before worker/hook
+    // threads exist), like cloud_fallback_enabled: no mutex_ or Snapshot
+    // entry needed.
+    bool privacy_notice_shown = false;
     // REQ-022 (Phase 6): gesture-pattern selector. Only "double_ctrl_c" is supported; other values fall back with a DIAG warning (hook.cpp Start()).
     std::string drag_hotkey = "double_ctrl_c";
     int badge_x = -1;

@@ -641,6 +641,17 @@ bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code) {
     return true; // pinned real pair (identity included, on-device echo): reliable (F5)
 }
 
+// REQ-208/SEC-1 (session 260911_0002 T3, design 144800 §2.6 option (i)): the
+// first-run privacy gate is exactly the negation of the persisted ack record.
+// main.cpp fires the blocking MessageBoxW when this returns true and only then
+// constructs the TranslationManager / starts worker+hook threads, so translation
+// serving is gated on the notice by construction (light-gate 165600 Q4:
+// "disclosure BEFORE any translation"). The predicate lives here, decoupled
+// from the MessageBox, so TestReq208PrivacyNoticeGate pins it headlessly.
+bool PrivacyNoticeOutstanding(bool privacy_notice_shown) {
+    return !privacy_notice_shown;
+}
+
 namespace {
 
 // True when `joined` (already lexically normalised) stays inside `base`
@@ -956,6 +967,7 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
     ss << "  \"diag_log_enabled\": " << (diag_log_enabled ? "true" : "false") << ",\n";
     ss << "  \"diag_log_content\": " << (diag_log_content ? "true" : "false") << ",\n";
+    ss << "  \"privacy_notice_shown\": " << (privacy_notice_shown ? "true" : "false") << ",\n";
     ss << "  \"drag_hotkey\": \"" << EscapeJsonString(drag_hotkey) << "\",\n";
     ss << "  \"hotkey_toggle\": \"" << EscapeJsonString(hotkey_toggle) << "\",\n";
     ss << "  \"hotkey_lang\": \"" << EscapeJsonString(hotkey_lang) << "\",\n";
@@ -1021,6 +1033,12 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // REQ-003: key absent on every pre-260909 config.json => the field
             // keeps its compile-time default false (opt-in content logging).
             diag_log_content = (v == "true");
+        } else if (k == "privacy_notice_shown") {
+            // REQ-208/SEC-1: key absent on every pre-260911 config.json => the
+            // field keeps its compile-time default false, so a fresh install
+            // fires the first-run privacy popup (the blocking serving gate —
+            // design 144800 §2.3/§2.6 option (i)).
+            privacy_notice_shown = (v == "true");
         } else if (k == "drag_hotkey") {
             drag_hotkey = v;
         } else if (k == "badge_x") {

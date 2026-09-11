@@ -447,6 +447,49 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 015/016), so a startup patch on the legacy field would only create a
     // drag/type-vs-legacy inconsistency.
 
+    // REQ-208/SEC-1 (session 260911_0002 T3, design 144800 §2.3/§2.6 option
+    // (i), light-gate 165600 Q4 + 180000 recommendations a/b/c): FIRST-RUN
+    // PRIVACY NOTICE — blocking gate, exactly once per install.
+    //   (a) localization: fires AFTER I18n::Initialize above, so the title and
+    //       body render in the user's configured (or OS-detected auto) locale
+    //       across all 37 supported tables (StringIds shipped by T2, commit
+    //       ba9be65). Unlike the pre-Initialize single-instance boxes, this one
+    //       is never English-only.
+    //   (b) record-then-show: privacy_notice_shown=true is persisted BEFORE the
+    //       modal call, so a crash/kill while the notice is open cannot loop
+    //       the popup on every launch; the failure direction is a REPEATED
+    //       notice (never a skipped disclosure) if the save itself fails.
+    //   (c) serving gate: this point precedes the TranslationManager
+    //       construction (section 5 below), the warmup thread, worker.Start()
+    //       and hook.Start() (section 9) — while the modal MessageBoxW is up,
+    //       no WH_KEYBOARD_LL proc exists, no pipeline worker thread exists
+    //       and the engine serves nothing, so no text can reach Google before
+    //       the disclosure is acknowledged (REQ-209 "disclosure BEFORE any
+    //       translation", closing the SEC-1 installer auto-google gap). The
+    //       GUI thread calls the modal directly; no hook-thread context ever
+    //       blocks (delegation constraint).
+    // MB_OK: the system dialog localizes its own OK button (no extra StringId,
+    // light-gate 180000 Q2). MB_RTLREADING mirrors the Cheat Sheet call per the
+    // §2.2.4 scope discipline (computed per call; owner stays nullptr — the
+    // controller window and tray do not exist yet at this point).
+    if (emebalachat::PrivacyNoticeOutstanding(config.privacy_notice_shown)) {
+        config.privacy_notice_shown = true;
+        const bool notice_persisted = config.SaveToFile();
+        DIAG_LOG("SESSION", "REQ-208 first-run privacy notice firing (blocking gate before engine/worker/hook start); shown-flag persisted=%d",
+                 notice_persisted ? 1 : 0);
+        UINT notice_type = MB_OK | MB_ICONINFORMATION;
+        if (emebalachat::DirectionForLocale(emebalachat::I18n::GetCurrentLocale()) ==
+            emebalachat::TextDirection::RTL) {
+            notice_type |= MB_RTLREADING;
+        }
+        ::MessageBoxW(
+            nullptr,
+            emebalachat::I18n::Get(emebalachat::StringId::PrivacyNoticeBody).c_str(),
+            emebalachat::I18n::Get(emebalachat::StringId::PrivacyNoticeTitle).c_str(),
+            notice_type
+        );
+    }
+
     // 5. Initialize Sound State
     emebalachat::SetSoundEnabled(config.sound_enabled);
 

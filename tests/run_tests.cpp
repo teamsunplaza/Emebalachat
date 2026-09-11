@@ -7800,6 +7800,112 @@ static void TestReq201LogOptIn() {
     }
 }
 
+// REQ-208/SEC-1 (session 260911_0002 T3, design 144800 §2.3/§2.6 option (i)):
+// first-run privacy popup config flag + the pure blocking-gate predicate. The
+// modal MessageBoxW itself cannot run headlessly; what IS pinned here is the
+// decision input it consumes — AppConfig::privacy_notice_shown parse/serialize
+// (same methodology as TestReq201LogOptIn for the sibling diag_log_enabled
+// field) and PrivacyNoticeOutstanding(), the seam whose true verdict makes
+// wWinMain fire the popup BEFORE the TranslationManager construction /
+// worker.Start() / hook.Start() (light-gate 180000 recommendations a/b/c).
+static void TestReq208PrivacyNoticeGate() {
+    std::cout << "[RUN] Testing REQ-208 privacy-notice flag + gate predicate..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // (1) Compile-time default: absent = false => a fresh install (no config,
+    // or a pre-260911 config without the key) fires the first-run popup.
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.privacy_notice_shown == false,
+                   "REQ-208: AppConfig.privacy_notice_shown defaults to false (fresh install fires popup)");
+    }
+
+    // (2) Absent key keeps the compile-time default false (backward compat:
+    // every config.json written before this feature lacks the key). Mirrors
+    // the real load path: default-construct AppConfig then FromJsonString
+    // (absent keys keep their current value — same contract as the sibling
+    // diag_log_enabled / diag_log_content fields).
+    {
+        AppConfig cfg; // default false
+        const bool parsed = cfg.FromJsonString(
+            "{ \"ui_language\": \"auto\", \"engine_type\": \"google\" }");
+        TEST_CHECK(parsed, "REQ-208: legacy JSON (no privacy_notice_shown) parses");
+        TEST_CHECK(cfg.privacy_notice_shown == false,
+                   "REQ-208: absent privacy_notice_shown loads as false (default kept)");
+    }
+
+    // (3) Explicit true/false parsing.
+    {
+        AppConfig t;
+        TEST_CHECK(t.FromJsonString("{ \"privacy_notice_shown\": true }"),
+                   "REQ-208: privacy_notice_shown=true JSON parses");
+        TEST_CHECK(t.privacy_notice_shown == true, "REQ-208: true parsed");
+        AppConfig f;
+        f.privacy_notice_shown = true; // poison
+        TEST_CHECK(f.FromJsonString("{ \"privacy_notice_shown\": false }"),
+                   "REQ-208: privacy_notice_shown=false JSON parses");
+        TEST_CHECK(f.privacy_notice_shown == false, "REQ-208: false parsed");
+    }
+
+    // (4) Save/Load round-trip in both states + serialization presence.
+    {
+        const fs::path tmp = fs::temp_directory_path(ec) / "emebala_cfg208";
+        fs::create_directories(tmp, ec);
+        const fs::path file = tmp / "config.json";
+
+        AppConfig ack;
+        ack.privacy_notice_shown = true; // what record-then-show persists
+        TEST_CHECK(ack.SaveToFile(file), "REQ-208: SaveToFile(shown=true) succeeds");
+        {
+            std::ifstream in(file, std::ios::binary);
+            std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            TEST_CHECK(raw.find("\"privacy_notice_shown\": true") != std::string::npos,
+                       "REQ-208: serialized config carries privacy_notice_shown: true");
+        }
+        AppConfig ack_re;
+        TEST_CHECK(ack_re.LoadFromFile(file), "REQ-208: reload(shown=true) succeeds");
+        TEST_CHECK(ack_re.privacy_notice_shown == true,
+                   "REQ-208: true survives the SaveToFile/LoadFromFile round-trip (no re-popup)");
+
+        AppConfig fresh; // default false
+        TEST_CHECK(fresh.SaveToFile(file), "REQ-208: SaveToFile(shown=false) succeeds");
+        AppConfig fresh_re;
+        fresh_re.privacy_notice_shown = true; // poison
+        TEST_CHECK(fresh_re.LoadFromFile(file), "REQ-208: reload(shown=false) succeeds");
+        TEST_CHECK(fresh_re.privacy_notice_shown == false,
+                   "REQ-208: false survives round-trip (popup stays armed)");
+        fs::remove_all(tmp, ec);
+    }
+
+    // (5) Pure gate predicate: outstanding (serving blocked, popup fires) iff
+    // the ack flag is false. This is the exact condition wWinMain consumes at
+    // the pre-engine construction point, pinning design §2.6 option (i).
+    {
+        TEST_CHECK(PrivacyNoticeOutstanding(false) == true,
+                   "REQ-208 gate: shown=false => notice outstanding => popup fires and serving stays blocked");
+        TEST_CHECK(PrivacyNoticeOutstanding(true) == false,
+                   "REQ-208 gate: shown=true => no popup on later runs, serving proceeds");
+        // Startup-shape equivalence: the predicate is exactly the negation of
+        // the field loaded through the real config path.
+        AppConfig unacked;
+        TEST_CHECK(PrivacyNoticeOutstanding(unacked.privacy_notice_shown) == true,
+                   "REQ-208 gate: default-constructed config => outstanding");
+        AppConfig acknowledged;
+        acknowledged.privacy_notice_shown = true;
+        TEST_CHECK(PrivacyNoticeOutstanding(acknowledged.privacy_notice_shown) == false,
+                   "REQ-208 gate: acknowledged config => not outstanding");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-208 privacy-notice flag + gate predicate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-208 privacy-notice flag + gate predicate tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // Phase 5 (REQ-011, plan §5.2): headless unit tests for the app classifier.
 // The classifier resolves the real process image name (QueryFullProcessImageNameW),
 // so only two layers are verifiable headlessly: (1) fail-open on null/invalid
@@ -11151,6 +11257,7 @@ int main() {
     TestReq040SystemDefaults37();
     TestReq003PiiGating(); // REQ-003: diag_log_content PII logging gate
     TestReq201LogOptIn();  // REQ-201: diag_log_enabled master switch
+    TestReq208PrivacyNoticeGate(); // REQ-208/T3: privacy_notice_shown flag + blocking gate seam
     TestVulkanGuard();     // P5-F1: driverless-machine Vulkan guard (probe+stubs+hook)
     TestD2SingleSlotWorkerSemantics(); // D2: shared worker template slot/stop semantics
 
