@@ -14,15 +14,21 @@ namespace emebalachat {
 namespace {
 
 // ---- 260905 diagnostics: foreground-window info cache (hook-thread safe) ----
-// GetWindowTextW on ANOTHER process's window SendMessage's WM_GETTEXT to that
-// window's thread, so an uncached lookup per keystroke at typing speed is both
-// wasteful and a stall vector. Cache keyed by HWND with a ~200 ms TTL per the
-// VP directive; GetClassNameW is local (no cross-thread send). The cache is
+// GetWindowTextW on ANOTHER process's window does NOT send WM_GETTEXT: per
+// documented Win32 behavior (MS Learn / Raymond Chen) it reads the kernel-side
+// cached caption and cannot block on a hung target thread (WM_GETTEXT is only
+// sent for same-process windows). The lookup is cheap but not free, so an
+// uncached call per keystroke at typing speed remains wasteful on the hook
+// thread. Cache keyed by HWND with a ~200 ms TTL per the VP directive;
+// GetClassNameW is local (no cross-thread send). The cache is
 // only ever touched from the hook thread (LowLevelKeyboardProc), which is a
 // single-threaded context for WH_KEYBOARD_LL delivery.
 struct ForegroundWindowCache {
     HWND hwnd = nullptr;
-    DWORD next_refresh_ms = 0; // GetTickCount64() low-32 semantics
+    // Full 64-bit GetTickCount64() value (audit Blocker 3, CWE-197: this was
+    // DWORD, so the store truncated the tick to its low-32 bits and the TTL
+    // check went permanently-stale after ~49.7 days of system uptime).
+    ULONGLONG next_refresh_ms = 0;
     wchar_t title[120] = L"";
     wchar_t cls[120] = L"";
 };
@@ -38,11 +44,13 @@ HWND RefreshForegroundWindowInfo(std::string& out_title_utf8, std::string& out_c
     const ULONGLONG now = ::GetTickCount64();
     bool stale = true;
     if (hwnd == g_fg_cache.hwnd && hwnd != nullptr) {
-        stale = (now >= static_cast<ULONGLONG>(g_fg_cache.next_refresh_ms));
+        stale = (now >= g_fg_cache.next_refresh_ms);
     }
     if (stale && hwnd) {
         g_fg_cache.hwnd = hwnd;
-        g_fg_cache.next_refresh_ms = static_cast<DWORD>(now + kFgCacheTtlMs);
+        // 64-bit store: no truncating cast (the old static_cast<DWORD> here
+        // defeated the TTL permanently on machines with >2^32 ms uptime).
+        g_fg_cache.next_refresh_ms = now + kFgCacheTtlMs;
         ::GetWindowTextW(hwnd, g_fg_cache.title, 120);
         ::GetClassNameW(hwnd, g_fg_cache.cls, 120);
     }
