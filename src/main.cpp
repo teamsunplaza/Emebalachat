@@ -269,13 +269,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // current working directory from the default DLL search order so a later
     // delay-load of cublas/cublasLt/cudart (CMakeLists /DELAYLOAD) can never be
     // hijacked by an attacker-writable CWD (e.g. explorer "start in" on a temp
-    // folder). PATH and the application directory remain searched, so CUDA
-    // resolution via installed toolkit/driver directories is unaffected.
+    // folder). Exact semantics per MSDN SetDllDirectoryW: an EMPTY STRING (L"")
+    // removes the CWD from the search order, while NULL RESTORES the default
+    // order (i.e. puts the CWD back) - passing nullptr here was a silent no-op
+    // (audit Blocker 1, CWE-427); L"" is the actual hardening. PATH and the
+    // application directory remain searched, so CUDA resolution via installed
+    // toolkit/driver directories is unaffected. A failure is logged, never
+    // swallowed, so this control can never regress silently again.
     // SetDefaultDllDirectories(...) is deliberately NOT called here: it would
     // drop PATH, and the installer ships no CUDA DLLs, so GPU acceleration on
     // toolkit machines resolves through PATH - restricting it breaks the CUDA
     // load chain (deferred; documented in CMakeLists.txt).
-    ::SetDllDirectoryW(nullptr);
+    if (!::SetDllDirectoryW(L"")) {
+        DIAG_F("MAIN/SetDllDirectory/001: SetDllDirectoryW(L\"\") failed "
+               "(err=%lu); CWD remains in the DLL search order\n",
+               ::GetLastError());
+    }
 
     // REQ-203 (session 260911_0002): enforce the 200MB logs cap ONCE at
     // startup, regardless of the opt-in state (a logs folder full of files
@@ -323,9 +332,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 0xC06D007E and kill the process instead of CPU-falling back; the
     // guard's delay-load failure hook substitutes VkResult-error stubs so
     // ggml's existing vk::SystemError catch neutralizes the backend cleanly.
-    // Runs right after SetDllDirectoryW(nullptr) above and diag::Init so the
-    // probe sees the exact same search order the delay-load will use, and
-    // before any thread that could load a model exists.
+    // Runs right after SetDllDirectoryW(L"") above (CWD removed) and diag::Init
+    // so the probe sees the exact same search order the delay-load will use,
+    // and before any thread that could load a model exists.
     (void)emebalachat::EnsureVulkanGuard();
 
     // 1. Single Instance Mutex
@@ -335,7 +344,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // I18n::Initialize (config not loaded yet on the second instance), so
     // they render the English table - behaviorally identical to the old
     // hardcoded literals, but the strings live in exactly one place.
-    HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Global\\Emebalachat_SingleInstance");
+    HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Emebalachat_SingleInstance");
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
         ::MessageBoxW(
             nullptr,

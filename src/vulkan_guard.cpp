@@ -163,8 +163,9 @@ extern "C" FARPROC WINAPI VulkanGuardFailureHook(unsigned dliNotify, PDelayLoadI
 VulkanGuardResult EnsureVulkanGuard() {
     VulkanGuardResult res;
     // Item (b)/(d): default LoadLibraryW probe. main.cpp already applied
-    // SetDllDirectoryW(nullptr) (CWD removed) and SetDefaultDllDirectories is
-    // NOT called anywhere (see CMakeLists L197-205 comment), so the search
+    // SetDllDirectoryW(L"") (empty string removes the CWD from the search
+    // order; NULL would restore it) and SetDefaultDllDirectories is
+    // NOT called anywhere (see CMakeLists hardening comment), so the search
     // order here (app dir -> system dirs -> PATH) is the same order the delay
     // helper uses for vulkan-1.dll — matching item (d) "do NOT restrict
     // search". delayimp itself calls LoadLibraryExW with no flags for bare

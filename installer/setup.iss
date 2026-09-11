@@ -55,7 +55,10 @@ ExtraDiskSpaceRequired=2100000000
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
-AppMutex=Global\Emebalachat_SingleInstance
+; Mutex namespace must stay in sync with src/main.cpp CreateMutexW (audit
+; Blocker 4, CWE-284: Local\ = per-session single instance; Global\ let any
+; other user's session deny launches on multi-user/RDP machines).
+AppMutex=Local\Emebalachat_SingleInstance
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\Emebala_chat.exe

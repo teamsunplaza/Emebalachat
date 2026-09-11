@@ -201,9 +201,12 @@ if (MSVC)
     if (TARGET llama)
         # L3 (security, LOW): CUDA DLLs are delay-loaded, so they resolve through
         # the standard search order at first use. Hardening applied: main.cpp calls
-        # SetDllDirectoryW(nullptr) at startup, removing the CWD hijack vector while
+        # SetDllDirectoryW(L"") at startup - the EMPTY STRING removes the current
+        # directory from the search order, closing the CWD hijack vector, while
         # keeping application-dir + PATH resolution intact (the installer ships no
-        # CUDA DLLs; GPU machines resolve them via PATH). SetDefaultDllDirectories
+        # CUDA DLLs; GPU machines resolve them via PATH). NOTE: passing NULL would
+        # do the opposite (restore the default order incl. CWD) and was the original
+        # silent no-op bug (audit Blocker 1, CWE-427). SetDefaultDllDirectories
         # is intentionally NOT used: it would drop PATH from the search and break
         # the CUDA load chain on toolkit-installed machines (CPU fallback would
         # silently replace GPU inference). Revisit if the installer ever bundles

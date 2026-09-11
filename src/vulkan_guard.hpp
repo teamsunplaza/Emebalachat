@@ -34,9 +34,11 @@
 // MECHANISM (task item b, app-side, zero upstream/CMake edits):
 //   1. A pre-probe at startup (before the warmup thread and any model load):
 //      LoadLibraryW(L"vulkan-1.dll") under the same search order the delay
-//      helper will use (main.cpp already applied SetDllDirectoryW(nullptr);
-//      SetDefaultDllDirectories is NOT called anywhere, and the probe is
-//      deliberately plain LoadLibraryW, matching delayimp's default search).
+//      helper will use (main.cpp already applied SetDllDirectoryW(L"") —
+//      the empty string removes the CWD from the search order; NULL would
+//      restore it; SetDefaultDllDirectories is NOT called anywhere, and the
+//      probe is deliberately plain LoadLibraryW, matching delayimp's default
+//      search).
 //      Success => FreeLibrary immediately, everything proceeds unchanged.
 //   2. A delay-load FAILURE hook (__pfnDliFailureHook2, delayimp.h) armed for
 //      the whole process lifetime. dliFailLoadLib fires ONLY after the OS
