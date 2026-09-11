@@ -76,9 +76,15 @@ public:
     // (D2DERR_WRONG_THREAD, and ShowWindow can block on the GUI thread's pump
     // while it is mid-translation). These seams post the work to the tooltip's
     // own window (main GUI thread) via PostMessageW, which is non-blocking for
-    // the caller. Heap payload + LPARAM ownership transfer: the GUI-thread
-    // WndProc consumes (deletes) the payload; if posting fails the payload is
-    // freed locally, so nothing can leak.
+    // the caller. SEC-ADJ (release readiness 260911_0002, Blocker-5 class):
+    // the transport is NO LONGER a heap pointer in LPARAM (CWE-822 shatter —
+    // any same-session process could post an attacker-chosen address that the
+    // WndProc dereferenced and freed). Payloads travel BY VALUE through the
+    // mutex-guarded deques in tooltip.cpp; the posted WM_APP message is a pure
+    // wake-up notification (wParam = lParam = 0, both ignored by WndProc).
+    // On a failed post the entry stays queued and is consumed by the next
+    // wake-up or by the DrainMarshalQueue() teardown sweep — nothing leaks and
+    // nothing double-applies.
     // R6 Phase 2 (B1-H1): the generation travels INSIDE the payload; the drop
     // decision runs on the GUI thread in ShowTranslation/ShowMessage against
     // latest_request_gen_, so it is immune to both producer-thread races and
@@ -215,8 +221,14 @@ public:
     float ScrollOffsetForTest() const { return scroll_offset_dip_; }
     float ContentHeightForTest() const { return content_height_dip_; }
 
-    // Payloads travel as heap pointers in LPARAM; WndProc wraps them in a
-    // unique_ptr on arrival (single-owner semantics, documented in the seam).
+    // SEC-ADJ (Blocker-5 class fix): these payloads NO LONGER travel as heap
+    // pointers in LPARAM. They are value types enqueued by the posting seams
+    // into the mutex-guarded deques in tooltip.cpp (one deque per payload
+    // type, each with its own mutex so a wake-up on one message id never
+    // blocks on another), and popped one-at-a-time by the WndProc handlers
+    // (per-item lock: entries enqueued while an earlier one is being applied
+    // are still consumed by the same wake-up loop). The struct definitions
+    // are unchanged so every producer/test call site keeps compiling.
     // R6 Phase 2 (B1-H1): both carry the originating request generation
     // (kGenNone default = unmanaged, always renders - existing producers and
     // test payloads that never set it keep their exact behavior).
@@ -236,24 +248,28 @@ public:
         std::wstring body;
         uint64_t generation = kGenNone;
     };
-    // R6 B3: marshaled RefreshTargetLanguageFromConfig payload (heap pointer
-    // in LPARAM, same ownership-transfer contract as the seams above).
+    // R6 B3: marshaled RefreshTargetLanguageFromConfig payload (value-queue
+    // transport, same SEC-ADJ contract as the seams above).
     struct TargetLangPayload {
         std::string target_lang;
     };
-    // Test/inspection seam: same PostMessage path the hook threads use, with a
-    // caller-provided payload pointer (the WndProc takes ownership on success).
-    static bool PostPayloadForTest(HWND hwnd, UINT msg, void* payload) {
-        return hwnd && ::PostMessageW(hwnd, msg, 0, reinterpret_cast<LPARAM>(payload)) == TRUE;
-    }
+    // Test/inspection seam: injects a caller-provided payload VALUE into the
+    // same value queue the hook/worker threads use for `msg`, then posts the
+    // identical parameter-less wake-up notification. The WndProc drains and
+    // applies it on the next pump. `payload` must point at a live Translation/
+    // Message/TargetLangPayload matching `msg` (the seam copies it by value;
+    // ownership never transfers). Returns false on null hwnd, unsupported msg,
+    // or PostMessage failure.
+    static bool PostPayloadForTest(HWND hwnd, UINT msg, const void* payload);
 
-    // R6 Phase 3 (audit items 6+8): drains THIS window's marshal queue before
-    // DestroyWindow, freeing every still-queued heap payload (Translation/
-    // Message/TargetLang). Without it, a shutdown with posted-but-undelivered
-    // payloads leaks them: the OS queue purge drops the LPARAM pointers
-    // without running any destructor. Must run on the owning GUI thread
-    // (message queues are thread-scoped). Returns the number of payloads
-    // freed (test seam for the drain invariant).
+    // R6 Phase 3 (audit items 6+8) / SEC-ADJ: drains the three value queues
+    // (Translation/Message/TargetLang), discarding still-queued payloads.
+    // Destroy() calls it on the GUI thread right before DestroyWindow, and it
+    // replicates the old PeekMessage purge semantics exactly: messages are
+    // REMOVED without running the apply path (discard, not apply). With the
+    // by-value deques there is no heap to free; clearing the deque is what
+    // releases the string memory the old `delete` did. Returns the number of
+    // payloads removed (test seam for the drain invariant).
     int DrainMarshalQueue();
 
     void SetLanguageChangeCallback(LanguageChangeCallback cb) { lang_change_cb_ = std::move(cb); }

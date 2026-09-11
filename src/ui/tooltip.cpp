@@ -12,11 +12,50 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <deque>   // SEC-ADJ: value-queue marshal transport
+#include <mutex>   // SEC-ADJ: guards the marshal deques
 #include <shellapi.h> // P4 Batch-3 (REQ-C-002 / D7): ShellExecuteW ms-settings:speech deep link
 
 #include <cctype>
 
 namespace emebalachat {
+
+// ---- SEC-ADJ (Blocker-5 class shatter fix, release readiness 260911_0002) ---
+// The three cross-thread marshal seams (ShowTranslationThreadSafe,
+// ShowMessageThreadSafe, RefreshTargetLanguageFromConfig) used to heap-
+// allocate a payload and hand the raw pointer to WndProc through
+// PostMessageW's LPARAM. The tooltip is a top-level WS_POPUP with a shipped,
+// guessable class name (kTooltipClassName below) and WM_APP-based message
+// ids, so ANY same-session process could post an attacker-chosen address that
+// the handler then dereferenced (wstring/std::string member reads) and freed
+// (CWE-822; see 173000_verify-sec-adjacent-lparam-seams.md). Transport is now
+// the pattern proven in src/main.cpp for kMsgApplyLanguageSync (commit
+// 46016d3): payloads travel BY VALUE through these mutex-guarded deques (one
+// per message id, each with its own mutex so wake-ups never inter-block), and
+// the window message is a PURE NOTIFICATION (wParam = lParam = 0, both
+// ignored by the handler). Producers enqueue then post; a failed post leaves
+// the entry queued (consumed by the next wake-up or the Destroy() drain) —
+// rolling it back would race with a consumer that another producer's
+// successful post already woke. Sole consumers: the GUI-thread WndProc drain
+// loops and the discard-teardown sweep (DrainMarshalQueue) in Destroy().
+// Queue-scope note: these are file-static, shared across TooltipWindow
+// instances. Destroy() drains all three queues on the GUI thread before
+// DestroyWindow (old purge point), so no entry survives its own window's
+// lifetime in the sequential app/test lifecycle; a producer that races a
+// teardown keeps its entry queued until the next drain instead of being
+// deleted locally — same accepted trade-off as main.cpp's SEC-B5 queue.
+namespace {
+
+std::mutex g_tt_translation_mu;
+std::deque<TooltipWindow::TranslationPayload> g_tt_translation_queue;
+
+std::mutex g_tt_message_mu;
+std::deque<TooltipWindow::MessagePayload> g_tt_message_queue;
+
+std::mutex g_tt_targetlang_mu;
+std::deque<TooltipWindow::TargetLangPayload> g_tt_targetlang_queue;
+
+} // namespace
 
 namespace {
 const wchar_t kTooltipClassName[] = L"Emebalachat_TooltipClass";
@@ -353,11 +392,13 @@ void TooltipWindow::Destroy() {
     CleanupSapi();
 
     if (hwnd_) {
-        // R6 Phase 3 (audit items 6+8): free marshal payloads still sitting in
-        // the thread queue. DestroyWindow purges the queue WITHOUT running any
-        // destructor for LPARAM heap pointers, so a shutdown with posted-but-
-        // undelivered Show/Refresh requests leaked each TranslationPayload /
-        // MessagePayload / TargetLangPayload. GUI-thread-only (queue scope).
+        // R6 Phase 3 (audit items 6+8) / SEC-ADJ: discard marshal payloads
+        // still queued when the window goes away. The old purge point freed the
+        // heap payloads DestroyWindow's queue purge would have leaked; with the
+        // by-value deques the same call releases their string memory and keeps
+        // the discard-without-apply semantics. Stray wake-up notifications
+        // left in the OS queue are harmless (they carry no payload and find
+        // empty deques). GUI-thread-only (queue scope).
         if (::GetCurrentThreadId() == gui_thread_id_) {
             DrainMarshalQueue();
         }
@@ -1005,18 +1046,24 @@ void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header
         ShowMessage(x, y, header, body, generation);
         return;
     }
-    // Heap payload, ownership transferred to WndProc through LPARAM
-    // (documented in tooltip.hpp). Post failure deletes locally: the payload
-    // can never leak in either branch.
-    auto payload = std::make_unique<MessagePayload>();
-    payload->x = x;
-    payload->y = y;
-    payload->header = header;
-    payload->body = body;
-    payload->generation = generation; // R6 B1-H1: travels INSIDE the payload
-    const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
-    if (::PostMessageW(hwnd_, kShowMessageMessage, 0, lparam) == FALSE) {
-        delete reinterpret_cast<MessagePayload*>(lparam);
+    // SEC-ADJ: payload travels BY VALUE through g_tt_message_queue; the posted
+    // message is a pure wake-up notification (0, 0) that the handler reads
+    // neither. On post failure the entry stays queued (drain-safe): the next
+    // wake-up or the Destroy() drain pops it exactly once — see the queue-
+    // scope note at the top of this file.
+    MessagePayload payload;
+    payload.x = x;
+    payload.y = y;
+    payload.header = header;
+    payload.body = body;
+    payload.generation = generation; // R6 B1-H1: travels INSIDE the payload
+    {
+        std::lock_guard<std::mutex> lk(g_tt_message_mu);
+        g_tt_message_queue.push_back(std::move(payload));
+    }
+    if (::PostMessageW(hwnd_, kShowMessageMessage, 0, 0) == FALSE) {
+        DIAG_F("TT/Marshal/001: PostMessage kShowMessage failed (GLE %lu); payload left queued\n",
+               ::GetLastError());
     }
 }
 
@@ -1034,17 +1081,24 @@ void TooltipWindow::ShowTranslationThreadSafe(
                         generation);
         return;
     }
-    auto payload = std::make_unique<TranslationPayload>();
-    payload->x = x;
-    payload->y = y;
-    payload->source_text = source_text;
-    payload->source_lang_code = source_lang_code;
-    payload->target_lang = target_lang;
-    payload->translated_text = translated_text;
-    payload->generation = generation; // R6 B1-H1
-    const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
-    if (::PostMessageW(hwnd_, kShowTranslationMessage, 0, lparam) == FALSE) {
-        delete reinterpret_cast<TranslationPayload*>(lparam);
+    // SEC-ADJ: by-value transport through g_tt_translation_queue; the posted
+    // message is a pure (0, 0) wake-up. Failed post leaves the entry queued
+    // (drain-safe) — same contract as ShowMessageThreadSafe above.
+    TranslationPayload payload;
+    payload.x = x;
+    payload.y = y;
+    payload.source_text = source_text;
+    payload.source_lang_code = source_lang_code;
+    payload.target_lang = target_lang;
+    payload.translated_text = translated_text;
+    payload.generation = generation; // R6 B1-H1
+    {
+        std::lock_guard<std::mutex> lk(g_tt_translation_mu);
+        g_tt_translation_queue.push_back(std::move(payload));
+    }
+    if (::PostMessageW(hwnd_, kShowTranslationMessage, 0, 0) == FALSE) {
+        DIAG_F("TT/Marshal/002: PostMessage kShowTranslation failed (GLE %lu); payload left queued\n",
+               ::GetLastError());
     }
 }
 
@@ -1077,16 +1131,21 @@ void TooltipWindow::DismissThreadSafe() {
 // target_lang_) is refreshed WITHOUT re-translating - the body stays as shown
 // until the next request, per the plan's "view sync, not content churn".
 // Cross-thread calls marshal through kRefreshTargetLangMessage (REQ-R10):
-// heap payload ownership transfers to the WndProc, deleted locally on post
-// failure, same contract as the Show*ThreadSafe seams above.
+// SEC-ADJ — payload travels BY VALUE through g_tt_targetlang_queue; the posted
+// message is a pure (0, 0) wake-up, same contract as the Show*ThreadSafe seams
+// above. Failed post leaves the entry queued (drain-safe).
 void TooltipWindow::RefreshTargetLanguageFromConfig(std::string_view new_target) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() != gui_thread_id_) {
-        auto payload = std::make_unique<TargetLangPayload>();
-        payload->target_lang = new_target;
-        const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
-        if (::PostMessageW(hwnd_, kRefreshTargetLangMessage, 0, lparam) == FALSE) {
-            delete reinterpret_cast<TargetLangPayload*>(lparam);
+        TargetLangPayload payload;
+        payload.target_lang = new_target;
+        {
+            std::lock_guard<std::mutex> lk(g_tt_targetlang_mu);
+            g_tt_targetlang_queue.push_back(std::move(payload));
+        }
+        if (::PostMessageW(hwnd_, kRefreshTargetLangMessage, 0, 0) == FALSE) {
+            DIAG_F("TT/Marshal/003: PostMessage kRefreshTargetLang failed (GLE %lu); payload left queued\n",
+                   ::GetLastError());
         }
         return;
     }
@@ -1596,34 +1655,69 @@ void TooltipWindow::RecreateAfterDeviceLost() {
     EnsureScratchBrush(); // C1: rebuild the scratch brush on the fresh target
 }
 
-// R6 Phase 3 (audit items 6+8): free every heap payload still queued for this
-// window. PeekMessageW's [min,max] filter removes ONLY the three payload-
-// carrying marshal messages; everything else (kDismissMessage, kScrollMessage
-// - no heap, timers, input) is left untouched for the normal teardown path.
+// R6 Phase 3 (audit items 6+8) / SEC-ADJ (Blocker-5 class fix): discard every
+// marshal payload still queued when the window goes away, mirroring the old
+// PeekMessageW purge semantics exactly — REMOVE without applying (the old code
+// deleted the heap payloads; clearing the by-value deques releases the same
+// string memory and keeps the "drained payloads never render" observable).
+// The remaining parameter-less wake-up notifications can still sit in the OS
+// queue at this point: consuming them finds empty deques and is a no-op, so
+// no apply-after-destroy path exists. Everything else (kDismissMessage,
+// kScrollMessage, timers, input) was and stays untouched for the normal
+// teardown path.
 int TooltipWindow::DrainMarshalQueue() {
     if (!hwnd_) return 0;
     int drained = 0;
-    const UINT ids[] = { kShowTranslationMessage, kShowMessageMessage, kRefreshTargetLangMessage };
-    for (const UINT id : ids) {
-        MSG m = {};
-        while (::PeekMessageW(&m, hwnd_, id, id, PM_REMOVE)) {
-            switch (id) {
-                case kShowTranslationMessage:
-                    delete reinterpret_cast<TranslationPayload*>(m.lParam);
-                    break;
-                case kShowMessageMessage:
-                    delete reinterpret_cast<MessagePayload*>(m.lParam);
-                    break;
-                case kRefreshTargetLangMessage:
-                    delete reinterpret_cast<TargetLangPayload*>(m.lParam);
-                    break;
-                default:
-                    break;
-            }
-            ++drained;
-        }
+    {
+        std::lock_guard<std::mutex> lk(g_tt_translation_mu);
+        drained += static_cast<int>(g_tt_translation_queue.size());
+        g_tt_translation_queue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_tt_message_mu);
+        drained += static_cast<int>(g_tt_message_queue.size());
+        g_tt_message_queue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_tt_targetlang_mu);
+        drained += static_cast<int>(g_tt_targetlang_queue.size());
+        g_tt_targetlang_queue.clear();
     }
     return drained;
+}
+
+// Test/inspection seam (SEC-ADJ): enqueue a caller-provided payload VALUE into
+// the queue for `msg` and post the same parameter-less wake-up the real seams
+// use. Ownership never transfers (the entry is copied); unsupported message
+// ids return false WITHOUT posting, matching the old "caller keeps the
+// pointer, deletes locally" test contract at the call sites.
+bool TooltipWindow::PostPayloadForTest(HWND hwnd, UINT msg, const void* payload) {
+    if (!hwnd || !payload) {
+        return false;
+    }
+    switch (msg) {
+        case kShowTranslationMessage: {
+            std::lock_guard<std::mutex> lk(g_tt_translation_mu);
+            g_tt_translation_queue.push_back(
+                *static_cast<const TranslationPayload*>(payload));
+            break;
+        }
+        case kShowMessageMessage: {
+            std::lock_guard<std::mutex> lk(g_tt_message_mu);
+            g_tt_message_queue.push_back(
+                *static_cast<const MessagePayload*>(payload));
+            break;
+        }
+        case kRefreshTargetLangMessage: {
+            std::lock_guard<std::mutex> lk(g_tt_targetlang_mu);
+            g_tt_targetlang_queue.push_back(
+                *static_cast<const TargetLangPayload*>(payload));
+            break;
+        }
+        default:
+            return false;
+    }
+    return ::PostMessageW(hwnd, msg, 0, 0) == TRUE;
 }
 
 void TooltipWindow::UpdateLayered() {
@@ -1649,27 +1743,45 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     switch (msg) {
         // ---- REQ-R10 (audit §3.4) marshaled render requests ----
-        // These run on the GUI thread that owns the D2D target. The unique_ptr
-        // claims the heap payload posted via LPARAM; unconsumed payloads were
-        // already freed by the posting seam when PostMessage failed.
+        // These run on the GUI thread that owns the D2D target. SEC-ADJ
+        // (Blocker-5 class shatter fix): wParam/LPARAM are IGNORED entirely —
+        // the wake-up message carries no payload (producers always post 0/0;
+        // any value an external process posts is untrusted by design). The
+        // handler drains its value deque one entry at a time under a per-item
+        // lock, so entries enqueued while an earlier one is being applied are
+        // still consumed by this same wake-up. R6 B1-H1 generation guard
+        // semantics unchanged: ShowTranslation/ShowMessage drop superseded
+        // payloads on the GUI thread.
         case kShowTranslationMessage: {
-            const std::unique_ptr<TranslationPayload> p(
-                reinterpret_cast<TranslationPayload*>(lParam));
-            if (p) {
-                // R6 B1-H1: the payload carries the originating generation;
-                // ShowTranslation drops it on the GUI thread if superseded.
-                pThis->ShowTranslation(p->x, p->y, p->source_text,
-                                       p->source_lang_code, p->target_lang, p->translated_text,
-                                       p->generation);
+            for (;;) {
+                TranslationPayload p;
+                {
+                    std::lock_guard<std::mutex> lk(g_tt_translation_mu);
+                    if (g_tt_translation_queue.empty()) {
+                        break;
+                    }
+                    p = std::move(g_tt_translation_queue.front());
+                    g_tt_translation_queue.pop_front();
+                }
+                pThis->ShowTranslation(p.x, p.y, p.source_text,
+                                       p.source_lang_code, p.target_lang, p.translated_text,
+                                       p.generation);
             }
             return 0;
         }
 
         case kShowMessageMessage: {
-            const std::unique_ptr<MessagePayload> p(
-                reinterpret_cast<MessagePayload*>(lParam));
-            if (p) {
-                pThis->ShowMessage(p->x, p->y, p->header, p->body, p->generation);
+            for (;;) {
+                MessagePayload p;
+                {
+                    std::lock_guard<std::mutex> lk(g_tt_message_mu);
+                    if (g_tt_message_queue.empty()) {
+                        break;
+                    }
+                    p = std::move(g_tt_message_queue.front());
+                    g_tt_message_queue.pop_front();
+                }
+                pThis->ShowMessage(p.x, p.y, p.header, p.body, p.generation);
             }
             return 0;
         }
@@ -1679,14 +1791,22 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
-        // R6 Phase 1 (B3): marshaled target-language view refresh. The unique_ptr
-        // claims the heap payload posted by RefreshTargetLanguageFromConfig() from
-        // a non-GUI thread; unconsumed payloads were freed by the posting seam.
+        // R6 Phase 1 (B3): marshaled target-language view refresh. Same
+        // SEC-ADJ value-queue drain as the show handlers above. Running
+        // RefreshTargetLanguageFromConfig here is on the GUI thread, so it
+        // takes the inline path (no re-post, no recursion).
         case kRefreshTargetLangMessage: {
-            const std::unique_ptr<TargetLangPayload> p(
-                reinterpret_cast<TargetLangPayload*>(lParam));
-            if (p) {
-                pThis->RefreshTargetLanguageFromConfig(p->target_lang);
+            for (;;) {
+                TargetLangPayload p;
+                {
+                    std::lock_guard<std::mutex> lk(g_tt_targetlang_mu);
+                    if (g_tt_targetlang_queue.empty()) {
+                        break;
+                    }
+                    p = std::move(g_tt_targetlang_queue.front());
+                    g_tt_targetlang_queue.pop_front();
+                }
+                pThis->RefreshTargetLanguageFromConfig(p.target_lang);
             }
             return 0;
         }

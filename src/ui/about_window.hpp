@@ -51,11 +51,40 @@ public:
 
     // Marshaled message IDs — WM_APP+0x300 block: distinct from the tooltip's
     // 0x200 block and the drag icon's 0x100 block (see tooltip.hpp comments).
+    // SEC-ADJ (release readiness 260911_0002, Blocker-5 class): kShowMessage
+    // used to carry a heap ShowPayload* in LPARAM, which WndProc cast back and
+    // freed — a shatter primitive (CWE-822) on this top-level, guessable-class
+    // window. The two-int payload now travels losslessly in the message
+    // parameters themselves (see PackShowX/PackShowY below): no pointer ever
+    // crosses the seam, so attacker-posted values can at most move the card
+    // off-screen (ShowAt clamps it back to the monitor work area anyway);
+    // there is nothing to dereference or free.
     static constexpr UINT kShowMessage   = WM_APP + 0x301;
     static constexpr UINT kDismissMessage = WM_APP + 0x302;
     // R6 Phase 6 (plan §5.2): locale-change re-render request (no heap payload,
     // same ownership contract as kDismissMessage).
     static constexpr UINT kLocaleRefreshMessage = WM_APP + 0x303;
+
+    // Coordinate packing for kShowMessage (SEC-ADJ): x travels in WPARAM, y in
+    // LPARAM, as sign-extended int values — the exact DragIconWindow::RequestShowAt
+    // contract (drag_icon.hpp). MAKELPARAM was deliberately NOT used: it
+    // truncates each coordinate to 16 bits, corrupting large negative
+    // virtual-screen offsets on multi-monitor rigs (Show() is fed cursor
+    // positions, which go below INT16_MIN on left/top secondary monitors);
+    // the pointer-sized parameters round-trip a full 32-bit int on both x64
+    // and x86, keeping today's exact show/move semantics.
+    static constexpr WPARAM PackShowX(int x) {
+        return static_cast<WPARAM>(static_cast<INT_PTR>(x));
+    }
+    static constexpr LPARAM PackShowY(int y) {
+        return static_cast<LPARAM>(static_cast<INT_PTR>(y));
+    }
+    static constexpr int ShowXFromWParam(WPARAM w) {
+        return static_cast<int>(static_cast<INT_PTR>(w));
+    }
+    static constexpr int ShowYFromLParam(LPARAM l) {
+        return static_cast<int>(static_cast<INT_PTR>(l));
+    }
 
     // R6 Phase 6: refresh caption + localized body after a UI-language switch.
     // Thread-safe (marshals like Show/Dismiss). Re-renders only while visible;
@@ -72,10 +101,10 @@ public:
     // construction (same wiring pattern as the tooltip's language callback).
     void SetResetCallback(std::function<void()> cb) { reset_callback_ = std::move(cb); }
 
-    struct ShowPayload {
-        int x;
-        int y;
-    };
+    // (SEC-ADJ: the old heap `struct ShowPayload { int x; int y; }` that
+    // travelled as a raw LPARAM pointer is deleted with the pointer transport —
+    // the coordinates now travel losslessly in the message parameters
+    // (PackShowX/PackShowY above). No test or product code references it.)
 
     // R6 Phase 5 (plan §5.2): pure localized-content snapshot resolved from the
     // i18n tables for the CURRENT locale. Headless test seam (TestR6P5AboutI18n
@@ -95,12 +124,11 @@ public:
     };
     static LocalizedContent BuildLocalizedContent();
 
-    // R6 Phase 3 (audit item 8): drains THIS window's marshal queue before
-    // DestroyWindow, freeing every still-queued heap ShowPayload (the OS queue
-    // purge at window destruction would otherwise drop the LPARAM pointers
-    // without running any destructor). GUI-thread-only (PeekMessage is
-    // thread-queue scoped). Returns the number of payloads freed (test seam).
-    int DrainMarshalQueue();
+    // (Removed with the SEC-ADJ fix: the old DrainMarshalQueue PeekMessageW
+    // sweep existed solely to delete heap ShowPayload pointers the DestroyWindow
+    // queue purge would have leaked. kShowMessage now carries the coordinates
+    // losslessly in WPARAM/LPARAM (PackShowX/PackShowY), so there is nothing
+    // to free; a still-queued show notification at teardown is harmless.)
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

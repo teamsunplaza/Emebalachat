@@ -227,11 +227,12 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
 
 void AboutWindow::Destroy() {
     if (hwnd_) {
-        // R6 Phase 3 (audit item 8): free ShowPayloads still queued on this
-        // thread's message queue (see DrainMarshalQueue note in the header).
-        if (::GetCurrentThreadId() == gui_thread_id_) {
-            DrainMarshalQueue();
-        }
+        // SEC-ADJ (Blocker-5 class fix): the old DrainMarshalQueue PeekMessageW
+        // sweep here deleted heap ShowPayload pointers that the DestroyWindow
+        // queue purge would otherwise have leaked. kShowMessage now carries its
+        // two-int payload losslessly in WPARAM/LPARAM — no heap, no pointer,
+        // nothing to free — so a still-queued show notification at teardown is
+        // harmless (the sweep and the whole helper are deleted with the seam).
         // Phase 4 (REQ-020, plan §2.6): explicit reset-feedback timer teardown
         // before the window goes away. DestroyWindow would drop hwnd-scoped
         // timers anyway, but killing it here keeps the cleanup contract local
@@ -303,18 +304,9 @@ void AboutWindow::RebindRenderTarget() {
     renderer_.Rebind(PhysW(), PhysH(), dpi_, /*set_dpi=*/false);
 }
 
-// R6 Phase 3 (audit item 8): see header note. kDismissMessage carries no heap
-// payload (LParam 0), so only kShowMessage needs ownership handling.
-int AboutWindow::DrainMarshalQueue() {
-    if (!hwnd_) return 0;
-    int drained = 0;
-    MSG m = {};
-    while (::PeekMessageW(&m, hwnd_, kShowMessage, kShowMessage, PM_REMOVE)) {
-        delete reinterpret_cast<ShowPayload*>(m.lParam);
-        ++drained;
-    }
-    return drained;
-}
+// SEC-ADJ (Blocker-5 class fix): the old AboutWindow::DrainMarshalQueue()
+// PeekMessageW sweep that deleted queued heap ShowPayload pointers is deleted
+// with the pointer transport below — there is no heap payload left to free.
 
 void AboutWindow::Show(int x, int y) {
     if (!hwnd_) return;
@@ -322,14 +314,16 @@ void AboutWindow::Show(int x, int y) {
         ShowAt(x, y);
         return;
     }
-    // REQ-R10 marshaling: heap payload through LPARAM, ownership transferred
-    // to WndProc; a failed post frees locally (tooltip.cpp seam contract).
-    auto payload = std::make_unique<ShowPayload>();
-    payload->x = x;
-    payload->y = y;
-    const LPARAM lparam = reinterpret_cast<LPARAM>(payload.release());
-    if (::PostMessageW(hwnd_, kShowMessage, 0, lparam) == FALSE) {
-        delete reinterpret_cast<ShowPayload*>(lparam);
+    // REQ-R10 marshaling, SEC-ADJ: the two-int payload travels LOSSLESSLY in
+    // the message parameters (x in WPARAM, y in LPARAM, sign-extended ints —
+    // the drag_icon RequestShowAt contract; MAKELPARAM's 16-bit truncation was
+    // rejected for the same multi-monitor negative-coordinate reason, see
+    // about_window.hpp). No heap allocation, no pointer crosses the seam, so
+    // nothing can be dereferenced or freed by a forged post; a failed post is
+    // simply "the About card did not show" (nothing to clean up locally).
+    if (::PostMessageW(hwnd_, kShowMessage, PackShowX(x), PackShowY(y)) == FALSE) {
+        DIAG_F("ABOUT/Show/001: PostMessage kShowMessage failed (GLE %lu); About not shown\n",
+               ::GetLastError());
     }
 }
 
@@ -784,11 +778,13 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
     switch (msg) {
         // ---- REQ-R10 marshaled show/dismiss requests (GUI thread runs them) ----
+        // SEC-ADJ (Blocker-5 class fix): kShowMessage unpacks its two-int
+        // payload from the message PARAMETERS (plain sign-extended ints —
+        // never cast to a pointer, so a forged post from another process can
+        // at most choose a position, which ShowAt clamps back to the monitor
+        // work area; no dereference, no free, no memory unsafety).
         case kShowMessage: {
-            const std::unique_ptr<ShowPayload> p(reinterpret_cast<ShowPayload*>(lParam));
-            if (p) {
-                pThis->ShowAt(p->x, p->y);
-            }
+            pThis->ShowAt(ShowXFromWParam(wParam), ShowYFromLParam(lParam));
             return 0;
         }
 

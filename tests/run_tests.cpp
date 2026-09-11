@@ -4347,9 +4347,11 @@ void TestUIMarshaling() {
     TEST_CHECK(!drag_icon.IsVisible(), "R10: marshaled kHideMessage hides the icon");
     drag_icon.Destroy();
 
-    // 3. Real TooltipWindow::WndProc takes heap-payload ownership via LPARAM:
-    //    unique_ptr semantics (WndProc deletes exactly once; the posting seam
-    //    deletes on PostMessage failure). Message mode shows header/body.
+    // 3. Real TooltipWindow::WndProc consumes marshal payloads posted through
+    //    the SEC-ADJ value-queue seam (Blocker-5 class fix: the payload is
+    //    copied by value into the mutex-guarded deque; the message itself is
+    //    a parameter-less wake-up and no pointer ever crosses the seam).
+    //    Message mode shows header/body.
     TooltipWindow tooltip;
     TEST_CHECK(tooltip.Create(hInst), "R10 fixture: TooltipWindow created");
     tooltip.ShowMessage(100, 100, L"F9", L"Emebalachat Active (F9)");
@@ -4358,26 +4360,30 @@ void TestUIMarshaling() {
     tooltip.Dismiss();
     TEST_CHECK(!tooltip.IsVisible(), "R10: Dismiss hides the bubble");
 
-    auto* msg_payload = new TooltipWindow::MessagePayload();
-    msg_payload->x = 150;
-    msg_payload->y = 160;
-    msg_payload->header = L"F9";
-    msg_payload->body = L"Paused";
-    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowMessageMessage, msg_payload),
-               "R10: heap payload posted via LPARAM");
+    TooltipWindow::MessagePayload msg_payload;
+    msg_payload.x = 150;
+    msg_payload.y = 160;
+    msg_payload.header = L"F9";
+    msg_payload.body = L"Paused";
+    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowMessageMessage, &msg_payload),
+               "SEC-ADJ R10: value payload queued, parameter-less wake-up posted");
+    // Unsupported message ids are rejected without posting (the seam never
+    // touches a queue it does not own).
+    TEST_CHECK(!TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kDismissMessage, &msg_payload),
+               "SEC-ADJ R10: PostPayloadForTest rejects non-payload message ids");
     PumpThreadMessagesOnce();
     TEST_CHECK(tooltip.IsVisible() && tooltip.IsMessageMode() && tooltip.GetMessageHeader() == L"F9",
                "R10: WndProc consumed payload and rendered message mode");
 
-    auto* tr_payload = new TooltipWindow::TranslationPayload();
-    tr_payload->x = 120;
-    tr_payload->y = 130;
-    tr_payload->source_text = L"source";
-    tr_payload->source_lang_code = "KO";
-    tr_payload->target_lang = "English";
-    tr_payload->translated_text = L"translated";
-    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowTranslationMessage, tr_payload),
-               "R10: translation payload posted");
+    TooltipWindow::TranslationPayload tr_payload;
+    tr_payload.x = 120;
+    tr_payload.y = 130;
+    tr_payload.source_text = L"source";
+    tr_payload.source_lang_code = "KO";
+    tr_payload.target_lang = "English";
+    tr_payload.translated_text = L"translated";
+    TEST_CHECK(TooltipWindow::PostPayloadForTest(tooltip.GetHwnd(), TooltipWindow::kShowTranslationMessage, &tr_payload),
+               "SEC-ADJ R10: translation payload queued");
     PumpThreadMessagesOnce();
     TEST_CHECK(!tooltip.IsMessageMode() && tooltip.GetSourceText() == L"source" &&
                    tooltip.GetTranslatedText() == L"translated",
@@ -5240,15 +5246,32 @@ void TestBatch2VersionScrollAbout() {
     about.Dismiss();
     TEST_CHECK(!about.IsVisible(), "REQ-005: Dismiss hides the About window");
 
-    auto* show_payload = new AboutWindow::ShowPayload{ 300, 300 };
-    const bool show_posted = ::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage, 0,
-                                            reinterpret_cast<LPARAM>(show_payload)) == TRUE;
-    if (!show_posted) {
-        delete show_payload; // WndProc never took ownership
+    // SEC-ADJ (Blocker-5 class fix): kShowMessage carries the coordinates in
+    // the message parameters (full-int round-trip packing, same contract as
+    // DragIconWindow::RequestShowAt; MAKELPARAM's 16-bit truncation stays
+    // rejected for multi-monitor negative offsets). No heap payload exists
+    // anymore — the seam cannot free an attacker-chosen pointer.
+    static_assert(AboutWindow::ShowXFromWParam(AboutWindow::PackShowX(-54321)) == -54321,
+                  "SEC-ADJ: About X round-trips 16-bit-negative coords");
+    static_assert(AboutWindow::ShowYFromLParam(AboutWindow::PackShowY(INT_MIN)) == INT_MIN,
+                  "SEC-ADJ: About Y round-trips full int range");
+    {
+        const int about_probes[] = { 0, 1, -1, 1024, -54321, 123456, INT_MAX, INT_MIN };
+        bool about_pack_ok = true;
+        for (const int v : about_probes) {
+            if (AboutWindow::ShowXFromWParam(AboutWindow::PackShowX(v)) != v ||
+                AboutWindow::ShowYFromLParam(AboutWindow::PackShowY(v)) != v) {
+                about_pack_ok = false;
+            }
+        }
+        TEST_CHECK(about_pack_ok, "SEC-ADJ: About param packing lossless across full range");
     }
-    TEST_CHECK(show_posted, "REQ-005: marshaled show payload posts");
+    const bool show_posted = ::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage,
+                                            AboutWindow::PackShowX(300),
+                                            AboutWindow::PackShowY(300)) == TRUE;
+    TEST_CHECK(show_posted, "REQ-005: marshaled show (packed params) posts");
     PumpThreadMessagesOnce();
-    TEST_CHECK(about.IsVisible(), "REQ-005: WndProc consumed show payload");
+    TEST_CHECK(about.IsVisible(), "REQ-005: WndProc consumed the packed show request");
     ::PostMessageW(about.GetHwnd(), AboutWindow::kDismissMessage, 0, 0);
     PumpThreadMessagesOnce();
     TEST_CHECK(!about.IsVisible(), "REQ-005: marshaled dismiss message hides it");
@@ -6798,27 +6821,27 @@ void TestB1TooltipStaleness() {
     const uint64_t gA = tooltip.BeginTranslationRequest(); // superseded request
     const uint64_t gB = tooltip.BeginTranslationRequest(); // newest request
 
-    auto* pB = new TT::TranslationPayload();
-    pB->x = 200;
-    pB->y = 200;
-    pB->source_text = L"new selection";
-    pB->source_lang_code = "JA";
-    pB->target_lang = "English";
-    pB->translated_text = L"NEW RESULT";
-    pB->generation = gB;
-    auto* pA = new TT::TranslationPayload();
-    pA->x = 200;
-    pA->y = 200;
-    pA->source_text = L"old selection";
-    pA->source_lang_code = "KO";
-    pA->target_lang = "English";
-    pA->translated_text = L"OLD RESULT"; // what the user saw: the previous translation
-    pA->generation = gA;
+    TT::TranslationPayload pB;
+    pB.x = 200;
+    pB.y = 200;
+    pB.source_text = L"new selection";
+    pB.source_lang_code = "JA";
+    pB.target_lang = "English";
+    pB.translated_text = L"NEW RESULT";
+    pB.generation = gB;
+    TT::TranslationPayload pA;
+    pA.x = 200;
+    pA.y = 200;
+    pA.source_text = L"old selection";
+    pA.source_lang_code = "KO";
+    pA.target_lang = "English";
+    pA.translated_text = L"OLD RESULT"; // what the user saw: the previous translation
+    pA.generation = gA;
 
-    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pB),
-               "B1: newest payload posted");
-    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pA),
-               "B1: stale payload posted AFTER the newest one");
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &pB),
+               "B1: newest payload queued");
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &pA),
+               "B1: stale payload queued AFTER the newest one");
     PumpThreadMessagesOnce();
     TEST_CHECK(tooltip.IsVisible() && tooltip.GetTranslatedText() == L"NEW RESULT",
                "B1: stale delivery arriving last cannot overwrite the newest result");
@@ -6830,26 +6853,26 @@ void TestB1TooltipStaleness() {
 
     // ---- 4) FIFO order (stale FIRST, then newest): stale dropped on arrival ----
     const uint64_t gC = tooltip.BeginTranslationRequest();
-    auto* pStale = new TT::TranslationPayload();
-    pStale->x = 200;
-    pStale->y = 200;
-    pStale->source_text = L"ancient";
-    pStale->source_lang_code = "KO";
-    pStale->target_lang = "English";
-    pStale->translated_text = L"ANCIENT RESULT";
-    pStale->generation = gA; // oldest stamp so far
-    auto* pFresh = new TT::TranslationPayload();
-    pFresh->x = 200;
-    pFresh->y = 200;
-    pFresh->source_text = L"third";
-    pFresh->source_lang_code = "EN";
-    pFresh->target_lang = "Korean";
-    pFresh->translated_text = L"FRESH AGAIN";
-    pFresh->generation = gC;
-    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pStale),
-               "B1: stale payload posted first");
-    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, pFresh),
-               "B1: newest payload posted after");
+    TT::TranslationPayload pStale;
+    pStale.x = 200;
+    pStale.y = 200;
+    pStale.source_text = L"ancient";
+    pStale.source_lang_code = "KO";
+    pStale.target_lang = "English";
+    pStale.translated_text = L"ANCIENT RESULT";
+    pStale.generation = gA; // oldest stamp so far
+    TT::TranslationPayload pFresh;
+    pFresh.x = 200;
+    pFresh.y = 200;
+    pFresh.source_text = L"third";
+    pFresh.source_lang_code = "EN";
+    pFresh.target_lang = "Korean";
+    pFresh.translated_text = L"FRESH AGAIN";
+    pFresh.generation = gC;
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &pStale),
+               "B1: stale payload queued first");
+    TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &pFresh),
+               "B1: newest payload queued after");
     PumpThreadMessagesOnce();
     TEST_CHECK(tooltip.GetTranslatedText() == L"FRESH AGAIN",
                "B1: stale-first queue order still ends on the newest result");
@@ -6969,55 +6992,56 @@ void TestR6P3MemoryLifecycle() {
 
     const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
 
-    // ---- 2) Tooltip marshal-queue drain (items 6+8) ----
-    // Heap payloads posted but NEVER pumped must be freed by the Destroy()
-    // teardown path (DrainMarshalQueue), not left to the OS queue purge (the
-    // confirmed shutdown leak: LPARAM pointers have no destructor attached).
-    // Observable contract: after an explicit drain the messages are gone from
-    // the queue - a following pump renders NOTHING (model stays pristine).
+    // ---- 2) Tooltip marshal-queue drain (items 6+8 / SEC-ADJ) ----
+    // Value payloads queued but NEVER applied must be discarded by the
+    // Destroy() teardown sweep (DrainMarshalQueue), replicating the old
+    // heap-payload purge semantics: removed WITHOUT running the apply path.
+    // Observable contract (unchanged): after an explicit drain a following
+    // pump renders NOTHING - the wake-up notifications find empty deques.
     {
         TT tooltip;
         TEST_CHECK(tooltip.Create(hInst), "P3 fixture: TooltipWindow created");
 
-        auto* p1 = new TT::TranslationPayload();
-        p1->x = 200; p1->y = 200;
-        p1->source_text = L"p3 drain src"; p1->source_lang_code = "KO";
-        p1->target_lang = "English"; p1->translated_text = L"P3 DRAINED";
-        auto* p2 = new TT::MessagePayload();
-        p2->x = 200; p2->y = 200;
-        p2->header = L"P3"; p2->body = L"P3 notice";
-        auto* p3 = new TT::TargetLangPayload();
-        p3->target_lang = "Korean";
+        TT::TranslationPayload p1;
+        p1.x = 200; p1.y = 200;
+        p1.source_text = L"p3 drain src"; p1.source_lang_code = "KO";
+        p1.target_lang = "English"; p1.translated_text = L"P3 DRAINED";
+        TT::MessagePayload p2;
+        p2.x = 200; p2.y = 200;
+        p2.header = L"P3"; p2.body = L"P3 notice";
+        TT::TargetLangPayload p3;
+        p3.target_lang = "Korean";
 
-        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, p1),
-                   "P3: translation payload posted (unpumped)");
-        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowMessageMessage, p2),
-                   "P3: message payload posted (unpumped)");
-        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kRefreshTargetLangMessage, p3),
-                   "P3: target-lang payload posted (unpumped)");
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &p1),
+                   "P3: translation payload queued (unpumped)");
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowMessageMessage, &p2),
+                   "P3: message payload queued (unpumped)");
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kRefreshTargetLangMessage, &p3),
+                   "P3: target-lang payload queued (unpumped)");
 
         const int drained = tooltip.DrainMarshalQueue();
-        TEST_CHECK(drained == 3, "P3: DrainMarshalQueue consumed exactly the 3 queued payloads");
+        TEST_CHECK(drained == 3, "P3: DrainMarshalQueue discarded exactly the 3 queued payloads");
         TEST_CHECK(tooltip.DrainMarshalQueue() == 0, "P3: second drain is a no-op (queue already empty)");
 
         PumpThreadMessagesOnce();
         TEST_CHECK(!tooltip.IsVisible(), "P3: drained payloads do not render after removal");
         TEST_CHECK(tooltip.GetTranslatedText().empty(), "P3: drained translation left no model state");
 
-        // Mixed queue sanity: a non-payload message (kScrollMessage, lParam is
-        // a raw delta, no heap) interleaved with a payload must NOT be counted
-        // or consumed by the drain, and the drained payload must not render.
+        // Mixed queue sanity: a payload-less message (kScrollMessage, lParam
+        // is a raw delta) interleaved with a queued payload must NOT be
+        // counted or consumed by the drain, and the drained payload must not
+        // render (its wake-up notification drains an empty deque).
         tooltip.ShowTranslation(200, 200, L"inline", "EN", "Korean", L"INLINE MODEL");
-        auto* p4 = new TT::TranslationPayload();
-        p4->x = 200; p4->y = 200;
-        p4->source_text = L"gone"; p4->source_lang_code = "EN";
-        p4->target_lang = "Korean"; p4->translated_text = L"DRAINED AWAY";
-        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, p4),
-                   "P3: payload posted before drain");
+        TT::TranslationPayload p4;
+        p4.x = 200; p4.y = 200;
+        p4.source_text = L"gone"; p4.source_lang_code = "EN";
+        p4.target_lang = "Korean"; p4.translated_text = L"DRAINED AWAY";
+        TEST_CHECK(TT::PostPayloadForTest(tooltip.GetHwnd(), TT::kShowTranslationMessage, &p4),
+                   "P3: payload queued before drain");
         TEST_CHECK(::PostMessageW(tooltip.GetHwnd(), TT::kScrollMessage, 0, static_cast<LPARAM>(-120)) == TRUE,
-                   "P3: non-payload message posted alongside");
+                   "P3: payload-less message posted alongside");
         TEST_CHECK(tooltip.DrainMarshalQueue() == 1,
-                   "P3: drain counts only the payload-carrying message (scroll survives untouched)");
+                   "P3: drain counts only the queued payload (scroll message untouched)");
         PumpThreadMessagesOnce();
         TEST_CHECK(tooltip.GetTranslatedText() == L"INLINE MODEL",
                    "P3: drained payload never reaches the model");
@@ -7026,19 +7050,23 @@ void TestR6P3MemoryLifecycle() {
         tooltip.Destroy();
     }
 
-    // ---- 3) About window marshal-queue drain (item 8) ----
+    // ---- 3) About window marshal transport (item 8 / SEC-ADJ) ----
+    // The old block pinned DrainMarshalQueue freeing a queued heap
+    // ShowPayload before DestroyWindow. The pointer transport is GONE
+    // (Blocker-5 class fix): kShowMessage carries its coordinates packed in
+    // the message parameters, so there is no heap to free and no drain
+    // helper. Pinned instead: a posted-but-unpumped show at teardown is
+    // harmless (Destroy cannot leak or crash - nothing owns memory), and
+    // never renders after the window is gone.
     {
         AboutWindow about;
         TEST_CHECK(about.Create(hInst), "P3 fixture: AboutWindow created");
-        auto* payload = new AboutWindow::ShowPayload{ 200, 200 };
-        TEST_CHECK(::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage, 0,
-                                  reinterpret_cast<LPARAM>(payload)) == TRUE,
-                   "P3: About ShowPayload posted (unpumped)");
-        TEST_CHECK(about.DrainMarshalQueue() == 1, "P3: About drain freed the queued ShowPayload");
-        TEST_CHECK(about.DrainMarshalQueue() == 0, "P3: About second drain is a no-op");
-        PumpThreadMessagesOnce();
-        TEST_CHECK(!about.IsVisible(), "P3: drained About show does not render after removal");
-        about.Destroy();
+        TEST_CHECK(::PostMessageW(about.GetHwnd(), AboutWindow::kShowMessage,
+                                  AboutWindow::PackShowX(200),
+                                  AboutWindow::PackShowY(200)) == TRUE,
+                   "P3: About packed-params show posted (unpumped)");
+        about.Destroy(); // no drain needed: the seam owns no memory
+        TEST_CHECK(!about.IsVisible(), "P3: unpumped About show never rendered");
     }
 
     // ---- 4) Clipboard open/close pairing (item 5) ----
