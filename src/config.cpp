@@ -954,6 +954,7 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"sound_enabled\": " << (sound_enabled.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
     ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
+    ss << "  \"diag_log_enabled\": " << (diag_log_enabled ? "true" : "false") << ",\n";
     ss << "  \"diag_log_content\": " << (diag_log_content ? "true" : "false") << ",\n";
     ss << "  \"drag_hotkey\": \"" << EscapeJsonString(drag_hotkey) << "\",\n";
     ss << "  \"hotkey_toggle\": \"" << EscapeJsonString(hotkey_toggle) << "\",\n";
@@ -1011,6 +1012,11 @@ bool AppConfig::FromJsonString(std::string_view json) {
             drag_to_translate = (v == "true");
         } else if (k == "cloud_fallback_enabled") {
             cloud_fallback_enabled = (v == "true");
+        } else if (k == "diag_log_enabled") {
+            // REQ-201: key absent on every pre-260911 config.json => the field
+            // keeps its compile-time default false (opt-in log FILE sink — the
+            // release posture ships with logging OFF).
+            diag_log_enabled = (v == "true");
         } else if (k == "diag_log_content") {
             // REQ-003: key absent on every pre-260909 config.json => the field
             // keeps its compile-time default false (opt-in content logging).

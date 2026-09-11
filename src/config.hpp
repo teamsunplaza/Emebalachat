@@ -297,6 +297,16 @@ struct AppConfig {
     // nor as the auto engine when no local model is installed. Translation returns
     // empty instead (the worker already handles empty gracefully). Default false.
     bool cloud_fallback_enabled = false;
+    // REQ-201/202 (session 260911_0002): MASTER switch for the diagnostic
+    // log FILE itself. Default FALSE — release posture is NO log file at all:
+    // Init() defers the file open and main.cpp applies this field through
+    // diag::SetEnabled() right after LoadFromFile, so an opted-out user never
+    // gets a logs\ file created. Set true to re-enable the full file sink for
+    // debugging (all DIAG_LOG/DIAG_F behavior intact when enabled). Takes
+    // effect on restart like the other startup-applied diag flags; no runtime
+    // UI toggle in scope. Never mutated after threads exist => no mutex_ or
+    // Snapshot entry needed.
+    bool diag_log_enabled = false;
     // REQ-003 (session 260909): opt-in gate for writing USER CONTENT (typed
     // characters, foreground-window titles, captured text bodies, translation
     // output, local prompt bodies) into the diagnostic log. Default FALSE —
@@ -305,7 +315,9 @@ struct AppConfig {
     // handed to diag::SetContentLogging(); changing the value in config.json
     // takes effect on restart (no runtime UI toggle in scope). Like
     // cloud_fallback_enabled it is never mutated after threads exist, so it
-    // needs no mutex_ or Snapshot entry.
+    // needs no mutex_ or Snapshot entry. Independent of diag_log_enabled:
+    // content=true with enabled=false still writes NOTHING (enabled is the
+    // master switch — design 144800 §2.1 truth table).
     bool diag_log_content = false;
     // REQ-022 (Phase 6): gesture-pattern selector. Only "double_ctrl_c" is supported; other values fall back with a DIAG warning (hook.cpp Start()).
     std::string drag_hotkey = "double_ctrl_c";

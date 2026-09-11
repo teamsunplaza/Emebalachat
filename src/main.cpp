@@ -277,11 +277,38 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // load chain (deferred; documented in CMakeLists.txt).
     ::SetDllDirectoryW(nullptr);
 
+    // REQ-203 (session 260911_0002): enforce the 200MB logs cap ONCE at
+    // startup, regardless of the opt-in state (a logs folder full of files
+    // from earlier enabled runs must shrink even after the user flips
+    // diag_log_enabled back to false). Runs before diag::Init so the new
+    // run's own file (not yet existing) is trivially excluded; every
+    // directory it might write to is covered because Init resolves the same
+    // LOCALAPPDATA-first path. Best-effort: locked/foreign files are skipped,
+    // failures are swallowed per file (never a startup blocker).
+    {
+        const std::filesystem::path log_dir = diag::DefaultLogDir();
+        if (!log_dir.empty()) {
+            const uint64_t pruned = diag::PruneLogs(log_dir);
+            if (pruned > 0) {
+                // The logger is not live yet; report through the unconditional
+                // stderr mirror only (DIAG_F keeps file writes off the table
+                // for opted-out users).
+                DIAG_F("MAIN/Diag/002: pruned %llu log file(s) over the 200MB cap\n",
+                       static_cast<unsigned long long>(pruned));
+            }
+        }
+    }
+
     // 260905 diagnostics: initialize the file logger as early as safely
-    // possible (after the DLL hardening, before anything that can fail). The
-    // single-instance early-exit below then still lands its "second instance"
-    // record in this run's own file. Init failure = graceful disable (never
-    // blocks or crashes the app).
+    // possible (after the DLL hardening, before anything that can fail).
+    // REQ-201 (260911_0002): Init no longer OPENS the log file — it resolves
+    // the directory and starts the flush thread only. The file is created
+    // lazily at diag::SetEnabled(true) below (first enabled enqueue), so an
+    // opted-out user never gets a file. The single-instance early-exit below
+    // therefore records its "second instance" line ONLY when a previous
+    // config already enabled logging — which is exactly the correct behavior
+    // per design 144800 §2.1. Init failure = graceful disable (never blocks
+    // or crashes the app).
     const bool diag_ok = diag::Init();
     if (!diag_ok) {
         DIAG_F("MAIN/Diag/001: diag logger init failed (no LOCALAPPDATA and no "
@@ -319,6 +346,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (hMutex) {
             ::CloseHandle(hMutex);
         }
+        // REQ-201 (design 144800 §2.1): this forensic line must land in a
+        // file ONLY when the user enabled logging. The lazy-open makes the
+        // file's existence equal to "enabled", but the normal SetEnabled
+        // application point (below, after the config load) is never reached
+        // on this early exit — so peek the flag through the same loader.
+        // A fresh-install read auto-creates the default config exactly like
+        // the primary path would (flag false there: no file, no change to
+        // opted-out behavior); existing configs are read-only here.
+        {
+            emebalachat::AppConfig early_cfg;
+            early_cfg.LoadFromFile();
+            diag::SetEnabled(early_cfg.diag_log_enabled);
+        }
         DIAG_LOG("SESSION", "second instance detected; exiting");
         diag::Shutdown(); // bounded drain so the record survives the early exit
         return 0;
@@ -349,15 +389,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::AppConfig config;
     const bool config_ok = config.LoadFromFile();
 
+    // REQ-201/202 (session 260911_0002): apply the MASTER log-file opt-in
+    // switch from config exactly once, here after the load and before any
+    // hook/worker thread exists. Default is OFF — a shipped build never
+    // creates a log file unless the user sets diag_log_enabled=true and
+    // restarts. The FIRST SetEnabled(true) transition lazily creates this
+    // run's file and writes the SESSION header lines (diag_logger.cpp);
+    // everything enqueued earlier this run (currently nothing, since the
+    // sink starts disabled) appends after them.
+    diag::SetEnabled(config.diag_log_enabled);
     // REQ-003 (session 260909): apply the opt-in USER-CONTENT logging gate from
     // config exactly once, here after the load and before any hook/worker
     // thread exists (the atomic lives in diag_logger; call sites branch on
     // diag::ContentLoggingEnabled()). Default is OFF — shipped logs stay
     // shape-only. There is no runtime UI toggle: editing diag_log_content in
-    // config.json takes effect on the next start.
+    // config.json takes effect on the next start. content=true with
+    // enabled=false still writes NOTHING — diag_log_enabled is the master
+    // switch (design 144800 §2.1 truth table).
     diag::SetContentLogging(config.diag_log_content);
-    DIAG_LOG("SESSION", "diag_log_content=%d (user-content fields %s)",
+    DIAG_LOG("SESSION", "diag_log_enabled=%d diag_log_content=%d (file sink %s; user-content fields %s)",
+             config.diag_log_enabled ? 1 : 0,
              config.diag_log_content ? 1 : 0,
+             config.diag_log_enabled ? "ENABLED - a log file was just created for this run"
+                                     : "disabled - no log file this run",
              config.diag_log_content ? "ENABLED - keystroke chars, window titles, captured and translated text WILL be recorded"
                                      : "disabled - shape-only logging");
 

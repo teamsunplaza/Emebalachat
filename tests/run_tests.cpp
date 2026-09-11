@@ -7353,13 +7353,44 @@ static void TestDiagLogger() {
     diag::Shutdown(); // double-shutdown / shutdown-while-uninit must not crash
     TEST_CHECK(!fs::exists(dir, ec), "diag: no directory created before Init");
 
+    // ---- REQ-201 (session 260911_0002): Init is lazy. It resolves the dir
+    // and starts the flush thread but must NOT create the log file, and the
+    // sink defaults to DISABLED. While disabled, enqueues are dropped before
+    // the queue, so no file can appear by any path.
     TEST_CHECK(diag::Init(dir), "diag: Init with temp-dir override succeeds");
     TEST_CHECK(diag::IsInitialized(), "diag: initialized after Init");
-    TEST_CHECK(diag::IsEnabled(), "diag: file sink defaults to ON");
-    // Idempotent Init while live returns true without rotating the file.
-    const std::wstring first_path = diag::CurrentLogPath();
+    TEST_CHECK(!diag::IsEnabled(), "diag: file sink defaults to OFF (REQ-201)");
+    TEST_CHECK(diag::CurrentLogPath().empty(), "diag: lazy Init opens no file");
+    diag::Printf("TEST", "while-disabled no file %d", 0);
+    diag::Flush();
+    {
+        std::error_code nec;
+        std::size_t n = 0;
+        for (const auto& e : fs::directory_iterator(dir, fs::directory_options::skip_permission_denied, nec)) {
+            (void)e;
+            ++n;
+        }
+        TEST_CHECK(!nec && n == 0, "diag: disabled sink creates NO file at all (REQ-201)");
+    }
+    // Idempotent Init while live returns true and keeps state (still no file).
     TEST_CHECK(diag::Init(dir), "diag: second Init is idempotent true");
-    TEST_CHECK(diag::CurrentLogPath() == first_path, "diag: idempotent Init keeps the same file");
+    TEST_CHECK(diag::CurrentLogPath().empty(), "diag: idempotent Init still opens no file");
+
+    // SetEnabled(true) = first enable transition -> lazy open creates exactly
+    // one file and the SESSION header lines land in it.
+    diag::SetEnabled(true);
+    const std::wstring first_path = diag::CurrentLogPath();
+    TEST_CHECK(!first_path.empty(), "diag: SetEnabled(true) lazily opens the file");
+    {
+        std::error_code nec;
+        std::size_t n = 0;
+        for (const auto& e : fs::directory_iterator(dir, fs::directory_options::skip_permission_denied, nec)) {
+            (void)e;
+            ++n;
+        }
+        TEST_CHECK(!nec && n == 1, "diag: exactly one file after the lazy open");
+    }
+    diag::Flush();
 
     // File-name pattern: emebalachat_yymmddhhmmss.log (14 local-time digits,
     // user's literal format; optional -N collision suffix).
@@ -7393,6 +7424,25 @@ static void TestDiagLogger() {
     {
         std::ifstream in(first_path, std::ios::binary);
         content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    // REQ-201/202: the lazily-injected SESSION header precedes every user
+    // line (header-first guarantee, diag_logger.cpp OpenLogFileLocked) and
+    // each injected header line is its OWN physical line (terminator bug
+    // found in the app-level verification: entries are written verbatim, so
+    // the injection must carry '\n' itself).
+    {
+        const size_t h1 = content.find("SESSION/==== Emebalachat v");
+        const size_t h2 = content.find("SESSION/log_file=");
+        const size_t u1 = content.find("TEST/hello world 42");
+        TEST_CHECK(h1 != std::string::npos && h2 != std::string::npos,
+                   "diag: lazy open writes the two SESSION header lines");
+        TEST_CHECK(h1 < u1 && h2 < u1, "diag: SESSION header precedes later lines");
+        const size_t eol1 = content.find('\n', h1);
+        TEST_CHECK(eol1 != std::string::npos && content.find("log_file=", h1) > eol1,
+                   "diag: header ver line terminates before the log_file line");
+        const size_t eol0 = content.find('\n');
+        TEST_CHECK(eol0 != std::string::npos && eol0 == eol1,
+                   "diag: first physical line is exactly the session-start header");
     }
     {
         const size_t pos = content.find("TEST/hello world 42");
@@ -7482,7 +7532,12 @@ static void TestDiagLogger() {
         TEST_CHECK(std::count(after.begin(), after.end(), '\n') == lines_before,
                    "diag: disabled sink writes no lines");
     }
+    // Re-enable inside the same run: appends to the SAME already-open file
+    // (the lazy open is a transition-only event; no second file, no second
+    // SESSION header).
     diag::SetEnabled(true);
+    TEST_CHECK(diag::CurrentLogPath() == first_path,
+               "diag: re-enable keeps the same lazily-opened file");
     diag::Printf("TEST", "re-enabled %d", 1);
     diag::Flush();
     {
@@ -7491,6 +7546,12 @@ static void TestDiagLogger() {
         after.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         TEST_CHECK(after.find("TEST/re-enabled 1") != std::string::npos,
                    "diag: re-enable resumes file writing");
+        size_t headers = 0;
+        for (size_t pos = after.find("==== Emebalachat v"); pos != std::string::npos;
+             pos = after.find("==== Emebalachat v", pos + 1)) {
+            ++headers;
+        }
+        TEST_CHECK(headers == 1, "diag: re-enable does not duplicate the SESSION header");
     }
 
     // Shutdown drains everything still queued and closes the file.
@@ -7513,16 +7574,200 @@ static void TestDiagLogger() {
     }
 
     // Re-init cycle (the app-exit tests rely on this only being reachable via
-    // full Shutdown): a second run creates a NEW file, appends nothing to old.
+    // full Shutdown): re-Init is LAZY again (no file until enabled), and the
+    // first enable rotates to a NEW file; the old file is untouched by the
+    // second run's writes.
     TEST_CHECK(diag::Init(dir), "diag: re-Init after Shutdown succeeds");
-    TEST_CHECK(diag::CurrentLogPath() != first_path, "diag: re-Init rotates to a new file");
+    TEST_CHECK(diag::CurrentLogPath().empty(), "diag: re-Init is lazy (no file yet)");
+    const size_t old_lines = std::count(final_content.begin(), final_content.end(), '\n');
+    diag::SetEnabled(true);
+    const std::wstring second_path = diag::CurrentLogPath();
+    TEST_CHECK(!second_path.empty() && second_path != first_path,
+               "diag: re-enabled second run rotates to a new file");
+    diag::Printf("TEST", "second run line");
+    diag::Flush();
     diag::Shutdown();
+    {
+        std::ifstream in(first_path, std::ios::binary);
+        std::string unchanged;
+        unchanged.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_CHECK(static_cast<size_t>(
+                       std::count(unchanged.begin(), unchanged.end(), '\n')) == old_lines,
+                   "diag: second run appended nothing to the first file");
+        std::ifstream in2(second_path, std::ios::binary);
+        std::string second_content;
+        second_content.assign((std::istreambuf_iterator<char>(in2)), std::istreambuf_iterator<char>());
+        TEST_CHECK(second_content.find("TEST/second run line") != std::string::npos,
+                   "diag: second run's line landed in the rotated file");
+    }
 
     fs::remove_all(dir, ec); // cleanup (best-effort; temp dir)
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 260905 diag_logger tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] 260905 diag_logger tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-203 (session 260911_0002): startup prune unit test. PruneLogs is the
+// shared 200MB-cap engine (main.cpp calls it on DefaultLogDir regardless of
+// the opt-in state; the lazy file-open calls it again before each open). The
+// cap is a parameter, so the test seeds small synthetic files and exercises
+// the real algorithm without writing 200MB.
+static void TestReq203LogPrune() {
+    std::cout << "[RUN] Testing REQ-203 200MB log-directory prune..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "emebala_prune_test";
+    fs::remove_all(dir, ec);
+
+    // Missing directory: best-effort zero, never throws.
+    TEST_CHECK(diag::PruneLogs(dir, 1000) == 0, "prune: missing directory returns 0");
+
+    fs::create_directories(dir, ec);
+    TEST_CHECK(!ec, "prune: temp dir created");
+
+    auto seed = [](const fs::path& p, size_t bytes) {
+        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        out.write(std::string(bytes, 'x').data(), static_cast<std::streamsize>(bytes));
+    };
+    // Distinct mtimes (filesystem timestamps are coarse; 1000ms steps keep the
+    // oldest-first ordering deterministic).
+    auto set_mtime = [](const fs::path& p, int ms_from_now) {
+        const auto t = fs::file_time_type(
+            std::chrono::file_clock::now().time_since_epoch() +
+            std::chrono::milliseconds(ms_from_now));
+        std::error_code e2;
+        fs::last_write_time(p, t, e2);
+    };
+
+    // Four in-pattern files, 300B each (total 1200), ages: a=oldest ... d=newest.
+    const fs::path a = dir / L"emebalachat_250101000001.log";
+    const fs::path b = dir / L"emebalachat_250101000002.log";
+    const fs::path c = dir / L"emebalachat_250101000003.log";
+    const fs::path d = dir / L"emebalachat_250101000004.log";
+    seed(a, 300); seed(b, 300); seed(c, 300); seed(d, 300);
+    set_mtime(a, -4000); set_mtime(b, -3000); set_mtime(c, -2000); set_mtime(d, -1000);
+    // A foreign file and a non-log file: never touched by the prune.
+    const fs::path foreign = dir / L"notes.txt";
+    const fs::path other_log = dir / L"otherapp_250101000000.log";
+    seed(foreign, 300); seed(other_log, 300);
+
+    // Cap above the emebalachat_ total: nothing is deleted.
+    TEST_CHECK(diag::PruneLogs(dir, 5000) == 0, "prune: under cap deletes nothing");
+    TEST_CHECK(fs::exists(a) && fs::exists(b) && fs::exists(c) && fs::exists(d),
+               "prune: under-cap run keeps every file");
+
+    // Cap 850 < 1200: delete oldest-first until total <= cap. One delete
+    // leaves 900 (> 850, keep going); two leave 600 (<= 850, stop). Expect
+    // exactly a and b gone, c and d intact — proves both the ordering and
+    // the "stop as soon as the cap holds" rule.
+    TEST_CHECK(diag::PruneLogs(dir, 850) == 2, "prune: over cap deletes oldest-first until cap holds");
+    TEST_CHECK(!fs::exists(a) && !fs::exists(b), "prune: the two oldest were removed");
+    TEST_CHECK(fs::exists(c) && fs::exists(d), "prune: the two newest survive");
+    // Cap 1000 on the remaining 600 (c+d): already under cap, zero deletes.
+    TEST_CHECK(diag::PruneLogs(dir, 1000) == 0, "prune: post-prune directory under cap is stable");
+    TEST_CHECK(fs::exists(foreign) && fs::exists(other_log),
+               "prune: foreign/non-pattern files are never touched");
+
+    // Cap 0: everything in-pattern goes, nothing else.
+    TEST_CHECK(diag::PruneLogs(dir, 0) == 2, "prune: cap 0 removes all pattern files");
+    TEST_CHECK(!fs::exists(c) && !fs::exists(d), "prune: cap 0 left no pattern file");
+    TEST_CHECK(fs::exists(foreign) && fs::exists(other_log),
+               "prune: cap 0 still spares foreign files");
+
+    fs::remove_all(dir, ec);
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-203 log prune tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-203 log prune tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-201 (session 260911_0002): config master-switch field tests, mirroring
+// the REQ-003 suite's methodology for the sibling diag_log_content field.
+static void TestReq201LogOptIn() {
+    std::cout << "[RUN] Testing REQ-201 diag_log_enabled master switch..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // Compile-time default: absent = false (release posture: no log file).
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.diag_log_enabled == false,
+                   "REQ-201: AppConfig.diag_log_enabled defaults to false");
+    }
+
+    // Absent key keeps the compile-time default false (backward compat: every
+    // config.json written before this feature lacks the key). This mirrors
+    // the ONLY real load path: main.cpp default-constructs AppConfig
+    // (diag_log_enabled=false) then LoadFromFile -> FromJsonString, whose
+    // shared contract is "absent keys keep their current value" (same
+    // discipline as REQ-003 (a2) and cloud_fallback_enabled).
+    {
+        AppConfig cfg; // default false
+        const bool parsed = cfg.FromJsonString(
+            "{ \"ui_language\": \"auto\", \"engine_type\": \"google\" }");
+        TEST_CHECK(parsed, "REQ-201: legacy JSON (no diag_log_enabled) parses");
+        TEST_CHECK(cfg.diag_log_enabled == false,
+                   "REQ-201: absent diag_log_enabled loads as false (default kept)");
+    }
+
+    // Explicit true/false parsing.
+    {
+        AppConfig t;
+        TEST_CHECK(t.FromJsonString("{ \"diag_log_enabled\": true }"),
+                   "REQ-201: diag_log_enabled=true JSON parses");
+        TEST_CHECK(t.diag_log_enabled == true, "REQ-201: true parsed");
+        AppConfig f;
+        f.diag_log_enabled = true; // poison
+        TEST_CHECK(f.FromJsonString("{ \"diag_log_enabled\": false }"),
+                   "REQ-201: diag_log_enabled=false JSON parses");
+        TEST_CHECK(f.diag_log_enabled == false, "REQ-201: false parsed");
+    }
+
+    // Save/Load round-trip in both states + serialization presence.
+    {
+        const fs::path tmp = fs::temp_directory_path(ec) / "emebala_cfg201";
+        fs::create_directories(tmp, ec);
+        const fs::path file = tmp / "config.json";
+
+        AppConfig on;
+        on.diag_log_enabled = true;
+        TEST_CHECK(on.SaveToFile(file), "REQ-201: SaveToFile(enabled=true) succeeds");
+        {
+            std::ifstream in(file, std::ios::binary);
+            std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            TEST_CHECK(raw.find("\"diag_log_enabled\": true") != std::string::npos,
+                       "REQ-201: serialized config carries diag_log_enabled: true");
+        }
+        AppConfig on_re;
+        TEST_CHECK(on_re.LoadFromFile(file), "REQ-201: reload(enabled=true) succeeds");
+        TEST_CHECK(on_re.diag_log_enabled == true,
+                   "REQ-201: true survives the SaveToFile/LoadFromFile round-trip");
+
+        AppConfig off; // default false, content=true companion
+        off.diag_log_content = true;
+        TEST_CHECK(off.SaveToFile(file), "REQ-201: SaveToFile(enabled=false) succeeds");
+        AppConfig off_re;
+        off_re.diag_log_enabled = true; // poison
+        TEST_CHECK(off_re.LoadFromFile(file), "REQ-201: reload(enabled=false) succeeds");
+        TEST_CHECK(off_re.diag_log_enabled == false,
+                   "REQ-201: false survives round-trip (master switch stays off)");
+        TEST_CHECK(off_re.diag_log_content == true,
+                   "REQ-201: diag_log_content=true survives with enabled=false (independent fields; "
+                   "enabled remains the master: main applies SetEnabled(false) => no file)");
+        fs::remove_all(tmp, ec);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-201 diag_log_enabled master switch tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-201 diag_log_enabled master switch tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -10461,6 +10706,11 @@ void TestVulkanGuard() {
         const bool diag_was_live = diag::IsInitialized();
         if (!diag_was_live) {
             diag::Init(log_dir);
+            // REQ-201 (session 260911_0002): the file sink now defaults to
+            // OFF (Init no longer turns it on), so this log-proof must enable
+            // it explicitly; the transition lazily opens the file the
+            // guard/003 decision line then lands in.
+            diag::SetEnabled(true);
         }
         diag::Flush();
         const emebalachat::VulkanGuardResult logged = emebalachat::EnsureVulkanGuard();
@@ -10848,6 +11098,7 @@ int main() {
 #endif
     TestR6P5P6I18n();
     TestDiagLogger();
+    TestReq203LogPrune(); // REQ-203: 200MB logs-directory prune engine
     TestPhase5AppClassifier();
     TestPhase8ConsoleGate();
     TestReq027CaretTracker();
@@ -10870,6 +11121,7 @@ int main() {
     TestReq038B5AboutRtl();
     TestReq040SystemDefaults37();
     TestReq003PiiGating(); // REQ-003: diag_log_content PII logging gate
+    TestReq201LogOptIn();  // REQ-201: diag_log_enabled master switch
     TestVulkanGuard();     // P5-F1: driverless-machine Vulkan guard (probe+stubs+hook)
     TestD2SingleSlotWorkerSemantics(); // D2: shared worker template slot/stop semantics
 
