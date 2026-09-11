@@ -6908,6 +6908,32 @@ void TestR6P5P6I18n() {
         I18n::SetLocale(UiLocale::English);
     }
 
+    // ---- 1c) REQ-206 (session 260911_0002 T4): the Cheat Sheet dialog
+    //         assembly (main.cpp on_show_cheat_sheet) appends the config-path
+    //         line after a '\n' separator onto CheatSheetBody. The logic
+    //         lives inline in the tray callback, so we pin the EXACT
+    //         assembly contract here: (a) body + '\n' + path keeps the
+    //         literal %LOCALAPPDATA%\Emebalachat\config.json token
+    //         (no env-var expansion), (b) the path line is separated from
+    //         the body by exactly one '\n', (c) nothing after the path line.
+    {
+        const std::wstring assembled =
+            I18n::Get(StringId::CheatSheetBody) + L"\n" +
+            I18n::Get(StringId::CheatSheetConfigPath);
+        TEST_CHECK(assembled.find(L"%LOCALAPPDATA%\\Emebalachat\\config.json")
+                       != std::wstring::npos,
+                   "T4: assembled cheat-sheet text keeps the verbatim %LOCALAPPDATA% config.json path (no expansion)");
+        TEST_CHECK(assembled.rfind(L"\n") == I18n::Get(StringId::CheatSheetBody).size(),
+                   "T4: config-path line is separated from the cheat-sheet body by exactly one '\\n'");
+        TEST_CHECK(assembled.find(L"Emebalachat\\config.json") >
+                       assembled.find(L"\n"),
+                   "T4: config.json path appears AFTER the '\\n' separator (own line)");
+        TEST_CHECK(assembled.substr(assembled.size() -
+                                    std::wstring(L"config.json").size()) ==
+                       L"config.json",
+                   "T4: the config-path line terminates the cheat-sheet text");
+    }
+
     // ---- 2) FR/DE/RU acceptance (REQ-037 INVERTS the R6 removal) ------------
     // Design §2.1.1 + §Issues: the half-wired removal is superseded by the
     // "all 37" mandate; the tables are now authored, so the codes must

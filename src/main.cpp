@@ -1213,9 +1213,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             emebalachat::TextDirection::RTL) {
             type |= MB_RTLREADING;
         }
+        // REQ-206 (session 260911_0002 T4): the Cheat Sheet must tell users
+        // WHERE config.json lives, as a relative/env-var path. The line is
+        // appended after a '\n' separator so the MessageBox keeps the body
+        // and the path on separate lines; the string stays LITERAL
+        // (%LOCALAPPDATA% token never expanded via ExpandEnvironmentStrings),
+        // per the user's "not an absolute path" requirement.
+        const std::wstring body =
+            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetBody) +
+            L"\n" +
+            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetConfigPath);
         ::MessageBoxW(
             nullptr,
-            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetBody).c_str(),
+            body.c_str(),
             emebalachat::I18n::Get(emebalachat::StringId::CheatSheetTitle).c_str(),
             type
         );
