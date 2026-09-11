@@ -122,6 +122,90 @@ std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side
     return out;
 }
 
+// SEC-B2 (session 260911_0002, verify 233020 §6): pure scrub core. Removes
+// every occurrence of every control-class token text from user-controlled
+// source text BEFORE BuildPrompt embeds it into the prompt. A single linear
+// pass is provably insufficient against split-token reassembly ("<｜hy_"
+// + "<｜hy_User｜>" + "User｜>" -> one naive erase RE-FORMS <｜hy_User｜>),
+// so the pass loop reruns until a full sweep over the whole ordered token set
+// erases nothing. Termination: every iteration of the outer loop either
+// strictly shrinks the buffer (>=1 erase) or returns; the buffer cannot shrink
+// below zero, so no iteration cap is needed and none exists (a cap would be a
+// silent give-up path - unacceptable for a security guard). The post-erase
+// rewind keeps each sweep linear without missing a spliced marker (see the
+// in-loop comment); cross-TOKEN splicing is caught by the outer rescan.
+// The result invariant: it contains no token text from the set anymore.
+// Only allocation failure can escape (documented in engine.hpp) - there is
+// deliberately NO fallback to unsanitized text.
+std::wstring ScrubControlTokenTexts(std::wstring_view text, const std::vector<std::wstring>& tokens) {
+    std::wstring out(text);
+    if (out.empty() || tokens.empty()) {
+        return out;
+    }
+
+    // Longest-first: a shorter marker that is a substring of a longer one must
+    // never block the longer one's removal (mirrors llama.cpp's own
+    // cache_special_tokens sort by decreasing text length).
+    std::vector<const std::wstring*> ordered;
+    ordered.reserve(tokens.size());
+    for (const std::wstring& tok : tokens) {
+        if (!tok.empty()) {
+            ordered.push_back(&tok);
+        }
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [](const std::wstring* a, const std::wstring* b) { return a->size() > b->size(); });
+
+    bool removed_any = true;
+    while (removed_any) {
+        removed_any = false;
+        for (const std::wstring* tok : ordered) {
+            size_t pos = 0;
+            while ((pos = out.find(*tok, pos)) != std::wstring::npos) {
+                out.erase(pos, tok->size());
+                removed_any = true;
+                // Reassembly check without a full restart: deletion only shifts
+                // content left, so a marker newly SPLICED by the erase must
+                // overlap the erase point - its start lies within the last
+                // tok->size()-1 units before it (e.g. "<｜hy_" + "<｜hy_User｜>"
+                // + "User｜>" -> erase leaves "<｜hy_User｜>" starting at 0).
+                // Rewinding the search to that window sees every reassembly
+                // while keeping each sweep linear. Cross-token reassembly
+                // (marker of token A spliced by erasing token B) is caught by
+                // the outer removed_any rescan.
+                const size_t rewind = tok->size() > 0 ? tok->size() - 1 : 0;
+                pos = pos > rewind ? pos - rewind : 0;
+            }
+        }
+    }
+    return out;
+}
+
+#ifdef HAVE_LLAMA_CPP
+// SEC-B2: enumerate the scrub set from the loaded vocab. Matches exactly the
+// attr set llama-vocab.cpp L2396-2402 caches for parse_special=true substring
+// partitioning (CONTROL | USER_DEFINED | UNKNOWN) so the scrub covers 1:1 the
+// tokens the tokenizer would emit as genuine control tokens.
+std::vector<std::wstring> CollectControlTokenTexts(const llama_vocab* vocab) {
+    std::vector<std::wstring> out;
+    if (!vocab) {
+        return out;
+    }
+    const int32_t n = llama_vocab_n_tokens(vocab);
+    out.reserve(static_cast<size_t>(n > 0 ? n : 0));
+    for (llama_token id = 0; id < n; ++id) {
+        const llama_token_attr attr = llama_vocab_get_attr(vocab, id);
+        if (attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED | LLAMA_TOKEN_ATTR_UNKNOWN)) {
+            const char* text = llama_vocab_get_text(vocab, id);
+            if (text && *text) {
+                out.push_back(ToUtf16(text));
+            }
+        }
+    }
+    return out;
+}
+#endif // HAVE_LLAMA_CPP
+
 // M3 (security): fail-closed validation of a GGUF model path before it is handed
 // to the llama.cpp loader. Rejections log an ENGINE/IsValidModelPath/NNN code to
 // stderr (never to a persisted log). The check is purely lexical + regular-file
@@ -573,6 +657,12 @@ struct TranslationManager::LlamaEngine {
     // engine was created without a manager, e.g. in isolation tests - then
     // cancellation is simply unavailable and behavior is the old full-run).
     const std::atomic<bool>* cancel_flag = nullptr;
+    // SEC-B2 (session 260911_0002, verify 233020): vocab-derived control-token
+    // scrub set, built lazily on the first Translate() after a (re)load and
+    // invalidated by Unload(). Translation requests are serialized under
+    // TranslationManager::mutex_, so this cache needs no separate lock.
+    std::vector<std::wstring> control_token_texts;
+    bool control_texts_built = false;
 
     bool CancelRequested() const {
         return cancel_flag && cancel_flag->load(std::memory_order_acquire);
@@ -603,6 +693,12 @@ struct TranslationManager::LlamaEngine {
         }
         vocab = nullptr;
         loaded_path.clear();
+        // SEC-B2: the scrub set belongs to the unloaded vocab - force a rebuild
+        // for whatever model loads next (CollectControlTokenTexts is vocab-
+        // derived, never hardcoded, so an alternative user GGUF is covered by
+        // its own vocabulary).
+        control_token_texts.clear();
+        control_texts_built = false;
     }
 
     bool EnsureLoaded(const std::string& path) {
@@ -732,6 +828,18 @@ struct TranslationManager::LlamaEngine {
             return {};
         }
 
+        // SEC-B2: build the scrub set from the now-loaded vocab (once per model
+        // load). The only way the security guard could silently disappear is an
+        // EMPTY set on a non-null vocab (degenerate/corrupt vocab) - surface
+        // that loudly instead of pretending the scrub is active.
+        if (!control_texts_built) {
+            control_token_texts = CollectControlTokenTexts(vocab);
+            control_texts_built = true;
+            if (vocab && control_token_texts.empty()) {
+                DIAG_F("ENGINE/ScrubControlTokens/001: vocab exposes no control-class tokens; scrub set is empty\n");
+            }
+        }
+
         // Tencent Hy-MT2 instruction format + optional GGUF chat template. Both are
         // rebuilt inside the REQ-R01 shrink loop, so they live in one lambda.
         const char* chat_tmpl = llama_model_chat_template(model, nullptr);
@@ -777,6 +885,11 @@ struct TranslationManager::LlamaEngine {
 
         // Tokenize helper (REQ-R01): fills `out` and returns the token count, or -1
         // on tokenizer failure. Allocation mirrors the original probe-then-size.
+        // SEC-B2 (session 260911_0002, verify 233020 §5): parse_special=true is
+        // load-bearing and MUST stay - it is how the chat-template markers the
+        // app itself spliced in above (begin_of_sentence / hy_User / hy_Assistant)
+        // tokenize as genuine control tokens. The injection channel it opens for
+        // USER text is closed upstream by ScrubControlTokenTexts, not here.
         auto tokenize_prompt = [&](const std::string& p, std::vector<llama_token>& out) -> int32_t {
             if (p.empty()) {
                 return -1;
@@ -803,6 +916,18 @@ struct TranslationManager::LlamaEngine {
         };
 
         std::wstring src_w(text);
+        // SEC-B2 (OWASP LLM01, verify 233020 §6): with parse_special=true the
+        // tokenizer substring-matches EVERY CONTROL/USER_DEFINED/UNKNOWN vocab
+        // text (llama-vocab.cpp L2396-2402, L2603-2635), so a user text
+        // containing "<｜hy_User｜>" (id 120006), "<｜hy_Assistant｜>"
+        // (120007) or the metadata-EOS "<｜hy_place▁holder▁no▁2｜>" (120020)
+        // would be emitted as a GENUINE role-boundary control token -> prompt
+        // injection. Scrub the user-controlled text here - after capture,
+        // BEFORE BuildPrompt's verbatim append and the chat-template wrap, so
+        // the app's own template markers (added inside build_final_prompt
+        // after this point) stay intact. The shrink loop below only re-slices
+        // this already-scrubbed copy, so every rebuild inherits the scrub.
+        src_w = ScrubControlTokenTexts(src_w, control_token_texts);
         std::string prompt = build_final_prompt(src_w);
         std::vector<llama_token> prompt_tokens;
         int32_t n_prompt_tokens = tokenize_prompt(prompt, prompt_tokens);

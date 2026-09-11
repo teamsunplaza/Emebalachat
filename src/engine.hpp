@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector> // SEC-B2: ScrubControlTokenTexts / CollectControlTokenTexts signatures
 #include <windows.h> // DWORD for WaitInferenceIdle
 
 // P7-F2: llama.h is an optional dependency here exactly as in engine.cpp
@@ -113,6 +114,35 @@ inline constexpr int kLlamaPromptTokenBudget =
 // split (a lone surrogate would corrupt the UTF-8 conversion and the tokenizer).
 // Exposed for unit testing; the engine drives it via a token-count binary search.
 std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side);
+
+// SEC-B2 (session 260911_0002, verify 233020): pure control-token scrub.
+// Removes EVERY occurrence of every token text in `tokens` from `text`,
+// re-scanning from the beginning after each removal until a full pass finds
+// no match (bounded at 32 iterations for pathologically adversarial input).
+// The restart guarantees convergence against split-token reassembly: deleting
+// one marker can splice surrounding fragments into a NEW marker
+// (e.g. "<｜hy_<｜hy_User｜>User｜>" collapses to "<｜hy_User｜>" after one
+// naive erase), and a single linear pass would miss it.
+// `tokens` is consumed verbatim: exact, case-sensitive substring matches only;
+// empty token strings are ignored. The function cannot fail except on
+// allocation failure (std::bad_alloc, which unwinds the translation request):
+// there is no fallback-to-unsanitized path by design (verify report §6 - a
+// scrub failure must never restore the injection channel).
+// The engine wires it to the ACTIVE model's vocab via
+// CollectControlTokenTexts below (never a hardcoded list, so a user-selected
+// alternative GGUF is protected by its own vocabulary).
+std::wstring ScrubControlTokenTexts(std::wstring_view text, const std::vector<std::wstring>& tokens);
+
+#ifdef HAVE_LLAMA_CPP
+// SEC-B2: enumerate the scrub set from a loaded llama.cpp vocab. Returns the
+// text of every token whose attr has CONTROL or USER_DEFINED or UNKNOWN set -
+// exactly the class llama-vocab's tokenizer_st_partition substring-matches
+// when parse_special=true (build/_deps/llama_cpp-src/src/llama-vocab.cpp
+// L2396-2411 cache_special_tokens build; b6099 public APIs llama_vocab_n_tokens
+// L496 / llama_vocab_get_attr L1003 / llama_vocab_get_text L999). UNKNOWN is
+// included because llama.cpp partitions those too.
+std::vector<std::wstring> CollectControlTokenTexts(const llama_vocab* vocab);
+#endif
 
 // REQ-R02 (Batch D1): explicit outcome of TranslationManager::Translate.
 // The bare-empty-wstring silent failure (H2 regression, audit §2.1) is replaced
