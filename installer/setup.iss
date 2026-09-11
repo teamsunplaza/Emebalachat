@@ -437,6 +437,11 @@ Name: "autostart"; Description: "{cm:TaskAutoStart}"
 [Files]
 Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; REQ-207/208 (session 260911_0002 T6, design 144800 §2.3): bundle the README so
+; the first-run privacy notice's "re-read this anytime in the README file"
+; guidance is actionable on a clean machine. Full privacy spec lives in
+; {app}\README.md ("Privacy & Data Handling (Technical)" section).
+Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\Emebala_Chat_Appicon.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion
@@ -916,7 +921,16 @@ begin
   AppDir := ExpandConstant('{app}');
   ModelPath := AppDir + '\models\' + MODEL_FILENAME;
 
-  // Choose engine type based on whether the model was downloaded
+  // Choose engine type based on whether the model was downloaded.
+  // SEC-1 (session 260911_0002, design 144800 §2.6 option (i)): writing
+  // 'google' on decline is intentionally KEPT — it preserves out-of-box
+  // translation on a clean machine. Its safety depends on the app-side
+  // blocking first-run privacy notice (main.cpp REQ-208 gate): the notice
+  // discloses the Google transmission and the engine/hook/worker are not
+  // even constructed until it is dismissed, so no text can reach Google
+  // before the user has acknowledged the disclosure. The full statement is
+  // bundled at {app}\README.md ("Privacy & Data Handling" §4). Do not
+  // remove that popup gate without revisiting this line.
   if ModelSkipped then
     EngineType := 'google'
   else

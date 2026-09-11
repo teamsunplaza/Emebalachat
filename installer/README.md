@@ -90,16 +90,28 @@ output\Emebalachat_Setup_0.10.0.exe
 
 ## What the Installer Does
 
-1. Installs `Emebala_chat.exe` to `Program Files\Emebalachat`
+1. Installs `Emebala_chat.exe` to `Program Files\Emebalachat`, together with
+   `LICENSE` and this project's `README.md` (installed as `{app}\README.md` so the
+   app's first-run privacy notice "re-read this anytime in the README file"
+   guidance resolves on a clean machine — REQ-207/208, design 144800 §2.3)
 2. Creates Start Menu shortcuts and (optionally) a desktop shortcut
 3. Optionally registers the app for auto-start with Windows
-4. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (~1.9 GB) from
-   Hugging Face, verifying its SHA-256 against the pinned `EXPECTED_MODEL_SHA256`
-   constant in `setup.iss`
-5. Generates a `config.json` in the install folder (the app one-shot migrates it
-   to `%LOCALAPPDATA%\Emebalachat\config.json` on first launch)
-6. If the model download is skipped, the generated config starts with
-   `engine_type: "google"` instead of `"auto"`
+4. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (file size 1.9 GB;
+   the wizard UI rounds it to "about 2 GB" and declares `ExtraDiskSpaceRequired`
+   = 2.1 GB) from Hugging Face, verifying its SHA-256 against the pinned
+   `EXPECTED_MODEL_SHA256` constant in `setup.iss`
+5. Generates a `config.json` in the install folder during post-install
+   (`CreateConfigFile`); on first launch the app one-shot migrates it to
+   `%LOCALAPPDATA%\Emebalachat\config.json`, which is the canonical location from
+   then on
+6. If the model download is skipped or declined, the generated config starts with
+   `engine_type: "google"` instead of `"auto"`. This is safe by construction: the
+   app's blocking first-run privacy notice discloses the Google transmission
+   before the translation engine, hooks, or worker threads are created, so no
+   text can reach Google until the user acknowledges the notice (SEC-1
+   resolution, design 144800 §2.6 option (i); see `{app}\README.md`
+   "Privacy & Data Handling" §4). The dependency is documented in
+   `CreateConfigFile` in `setup.iss`.
 7. On uninstall, removes the auto-start registry entry and offers to delete the
    user data folder (`%LOCALAPPDATA%\Emebalachat`, settings + diagnostic logs)
 
@@ -155,13 +167,25 @@ changes must be plainly marked as such per license condition 4.
 
 ## Installer UI Languages
 
-Configured in `[Languages]` (plus bundled `.isl` files under `languages\`):
+**32 languages** are registered in `[Languages]` (expanded from 5 in session
+260910_0002, B-1). English, Korean, Japanese and 27 additional official Inno
+Setup translations resolve from `compiler:Languages\`; the two Chinese variants
+use the local files under `languages\`:
 
-- English
-- Korean (한국어)
-- Japanese (日本語)
+- English (`compiler:Default.isl`)
+- Korean (한국어), Japanese (日本語) — official compiler ISL
 - Chinese Simplified (简体中文) — `languages\ChineseSimplified.isl`
 - Chinese Traditional (繁體中文) — `languages\ChineseTraditional.isl`
+- Spanish, Portuguese, Brazilian Portuguese, French, German, Italian, Dutch,
+  Russian, Turkish, Polish, Ukrainian, Arabic, Hebrew, Swedish, Norwegian,
+  Danish, Finnish, Thai, Czech, Hungarian, Catalan, Bulgarian, Slovak,
+  Slovenian, Corsican, Armenian, Tamil — official compiler ISL
 
-> Note: installer UI languages are separate from the 38 translation languages
-> supported by the app itself (see the root README).
+Custom (project-authored) wizard messages are translated for 11 Latin-alphabet
+languages; the rest fall back to English by design to avoid mojibake, while the
+standard wizard chrome (Next/Cancel/etc.) is fully translated by the 32 official
+ISL files.
+
+> Note: installer UI languages are separate from the 37/38 in-app languages
+> (translation targets and UI locales) supported by the app itself (see the root
+> README).

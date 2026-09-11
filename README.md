@@ -46,7 +46,7 @@
   - [Running Unit Tests](#running-unit-tests)
 - [Installer Generation (Inno Setup)](#-installer-generation-inno-setup)
 - [Configuration Reference (`config.json`)](#-configuration-reference-configjson)
-- [Security & Privacy Guarantee](#-security--privacy-guarantee)
+- [Privacy & Data Handling (Technical)](#-privacy--data-handling-technical)
 - [Support & Sponsorship](#-support--sponsorship)
 - [Credits & Acknowledgments](#-credits--acknowledgments)
 - [License](#-license)
@@ -61,7 +61,7 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 - **Instantaneous Native Performance**: Built in pure C++20 with MSVC static runtime (`/MT`), linking directly against Win32, Direct2D, DirectWrite, and WinHTTP.
 - **Dual-Engine Flexibility**:
   - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent.
-  - **Cloud Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**. Cloud use is consent-gated (see [Security & Privacy](#-security--privacy-guarantee)).
+  - **Cloud Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**. Cloud use is consent-gated and structurally disclosed before first serve (see [Privacy & Data Handling](#-privacy--data-handling-technical)).
 - **Invisible In-Place Translation**: Type naturally in your native language, press <kbd>Enter</kbd>, and watch the text instantly transform—working in any chat, form, or document field. By default the translated text only **replaces** what you typed; toggling Auto-Send (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>) makes the app also **send** it for you.
 - **Hardware-Accelerated Minimalist UI**: Non-intrusive floating pill badge rendered via hardware Direct2D displaying real-time translation state and language pairs.
 
@@ -353,8 +353,9 @@ The installer offers:
 - Automatic installation to `%ProgramFiles%\Emebalachat`
 - Optional auto-start with Windows login
 - Automatic download of the `Hy-MT2-1.8B-Q8_0.gguf` model from Hugging Face, verified against the SHA-256 hash pinned in `EXPECTED_MODEL_SHA256` (a pre-existing model file that fails verification triggers an explicit delete-and-redownload / keep decision)
-- A generated `config.json` in the install folder; when the model download is skipped, it starts with `engine_type: "google"`
-- Installer UI languages: English, Korean, Japanese, Chinese (Simplified), Chinese (Traditional)
+- A generated `config.json` in the install folder; when the model download is skipped or declined, it starts with `engine_type: "google"` — cloud mode. This is safe by construction: the app's blocking first-run privacy notice discloses the Google transmission and no translation is served until you acknowledge it (see [Privacy & Data Handling](#-privacy--data-handling-technical) §4).
+- Bundling of this `README.md` into the install folder (`{app}\README.md`), so the first-run notice's "re-read this in the README file" guidance is actionable on a clean machine
+- Installer UI languages: 32 languages registered in `[Languages]` (English, Korean, Japanese, Chinese Simplified/Traditional, plus 27 additional official Inno Setup translations)
 
 ---
 
@@ -373,7 +374,9 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   "sound_enabled": true,
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
+  "diag_log_enabled": false,
   "diag_log_content": false,
+  "privacy_notice_shown": false,
   "drag_hotkey": "double_ctrl_c",
   "hotkey_toggle": "F9",
   "hotkey_lang": "Ctrl+F9",
@@ -401,7 +404,9 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 - `sound_enabled`: Enables synthesized audio tones for hotkey actions.
 - `drag_to_translate`: Master switch for the drag-to-translate (double <kbd>Ctrl</kbd>+<kbd>C</kbd>) feature.
 - `cloud_fallback_enabled`: Privacy consent gate. When `false` (default), a strict `local` engine pin NEVER sends your text to the cloud, even after a local failure. (Selecting `engine_type: "auto"` is itself the documented consent to the seamless cloud fallback.)
-- `diag_log_content`: Diagnostic-log privacy gate. When `false` (default), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** Only enable while actively troubleshooting: your typed content will be written to disk.
+- `diag_log_enabled`: **Master switch** for the diagnostic log FILE. Default `false` — a shipped build writes no log file at all (the file is opened lazily, only on the first enabled write). Set `true` (and restart) to create per-run logs for troubleshooting. See [Privacy & Data Handling](#-privacy--data-handling-technical) §6.
+- `diag_log_content`: Diagnostic-log privacy gate, **subordinate to `diag_log_enabled`**. When `false` (default, and while the master switch is off), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** `content: true` with `enabled: false` still writes nothing. Only enable while actively troubleshooting: your typed content will be written to disk.
+- `privacy_notice_shown`: One-shot record of the blocking first-run privacy notice. Default `false` — a fresh install shows the notice once; dismissing it sets the flag to `true` so it never re-appears. Do not set this by hand unless you understand what the notice says.
 - `drag_hotkey`: Drag-capture gesture pattern; only `"double_ctrl_c"` is supported.
 - `hotkey_toggle` / `hotkey_lang` / `hotkey_mode`: Trigger combos in `Mod+Key` form (defaults `F9`, `Ctrl+F9`, `Ctrl+Shift+Enter`; invalid values fall back to defaults). Restart required.
 - `temperature` / `top_p` / `top_k` / `repetition_penalty`: Sampling parameters for the local llama.cpp engine.
@@ -409,19 +414,172 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 
 ---
 
-## 🔒 Security & Privacy Guarantee
+## 🔒 Privacy & Data Handling (Technical)
 
-- **No Remote Telemetry**: Emebala Chat contains zero tracking, zero telemetry, and zero third-party analytics.
-- **Offline Capable**: In `local` engine mode with `Hy-MT2-1.8B`, all translation runs strictly offline on your local CPU/GPU. No text leaves your machine.
-- **Cloud Consent Gate**: With `engine_type` pinned to `local` and `cloud_fallback_enabled: false` (the default), typed text is never transmitted to Google Translate — even after a local failure. Choosing `engine_type: "auto"` is itself the documented consent to cloud fallback when no local model is available.
-- **Clipboard Isolation**: Temporary text placed on the clipboard is explicitly flagged with Windows privacy exclusions (`CanIncludeInClipboardHistory = 0`), preventing your sensitive messages from appearing in Windows Cloud Clipboard or <kbd>Win</kbd>+<kbd>V</kbd> history.
-- **Model Integrity**: The GGUF model file is SHA-256 verified at install time (hash pinned in `installer/setup.iss`) and again at load time (with an on-disk marker cache), so a tampered model is refused instead of loaded.
+This is the full, technically detailed privacy specification for Emebala Chat. The
+first-run privacy popup is only a digest — it ends with "You can re-read this anytime
+in the README file", and this section is what that pointer refers to. The installer
+ships a copy of this file as `{app}\README.md` (the install folder, typically
+`%ProgramFiles%\Emebalachat\README.md`), so it is present on every machine, even one
+with no internet access.
 
-### Diagnostic Logs (Privacy)
+### 1. Emebala operates NO servers
 
-- **Location**: `%LOCALAPPDATA%\Emebalachat\logs\emebalachat_yymmddhhmmss.log` — one new file per app run.
-- **Released default (`diag_log_content: false`)**: logs contain **no user content** — only shapes: virtual-key codes, modifier flags, window class names, text lengths, engine names, and timings. Typed characters, captured text, translation output, and window titles are NOT written.
-- **Opt-in for troubleshooting**: set `"diag_log_content": true` in `config.json` and restart the app. This additionally records the typed character for each key, the foreground window title, the captured source text, and the translation output. Use it only while actively diagnosing an issue (the logs sit unencrypted on disk), and remove the flag afterwards.
+- There is **no Emebala-run backend** of any kind. Nothing in the app sends data to
+  an Emebala endpoint, because there is no Emebala endpoint to send it to.
+- **Zero telemetry, zero tracking, zero analytics, zero crash reporting, no accounts,
+  no sign-in.** The app never learns who you are.
+- The executable contains exactly **one** outbound network client: the Google
+  Translate WinHTTP client described in §3. A source-level audit of `src/` finds no
+  other socket, HTTP, or download code path. (The About window's three links open
+  your *browser* — the app itself fetches nothing from them.)
+
+### 2. Two translation pipelines — know which one you are on
+
+**(a) Local model → zero egress.** With the `Hy-MT2-1.8B` GGUF model present and the
+engine set to `local` (or `auto`, which prefers the local model when it exists),
+translation runs entirely on your own CPU/GPU via llama.cpp. This path makes
+**zero network calls** — the inference is a pure on-device computation, and no text
+leaves the machine while it serves. CUDA GPU offload falls back automatically to
+CPU-only loading when no compatible GPU is present; the model file is SHA-256
+verified before load (see §7).
+
+**(b) Google web translation → cloud.** The cloud path is a plain HTTPS GET against
+Google's public, keyless web-translation endpoints. It is real translation by a real
+third party (Google): **whatever single text you ask to translate is transmitted to
+Google and processed on Google's servers.** §3 states exactly what leaves, over what
+transport, and to which hosts.
+
+### 3. The cloud (Google) path, precisely
+
+Implemented in [`src/google_translate.cpp`](src/google_translate.cpp):
+
+- **Endpoints (fixed, hardcoded hosts — no configurable destination exists):**
+  - Primary: `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=<src>&tl=<tgt>&q=<text>`
+  - Fallback (used only if the primary fails): `https://translate.googleapis.com/translate_a/single?client=gtx&sl=<src>&tl=<tgt>&dt=t&q=<text>`
+- **Transport:** HTTPS only. The WinHTTP session is opened with
+  `WINHTTP_FLAG_SECURE` (TLS) — there is no plaintext HTTP path in the client.
+- **Data sent per request:** the URL-encoded text of the single string being
+  translated (`q=`), plus the source and target language codes (`sl=`, `tl=`).
+  Nothing else: no machine name, no user identity, no window titles, no clipboard
+  history, no other pending text. One translation = one string.
+- **No API key, no cookies, no OAuth, no account.** These are the same keyless
+  endpoints a Chrome browser hits for in-page translation.
+- **Hardened response handling:** the read loop enforces a 10 MiB cap on the
+  response body (`kMaxResponseBodyBytes`) and fails closed beyond it; request
+  timeouts are pinned per endpoint with a total budget ≤ 8 s, so a hostile or
+  hijacked handler cannot hang or memory-exhaust the process.
+- **Keystrokes are never transmitted.** The keyboard hook is a local trigger
+  mechanism only. In cloud mode, exactly one thing leaves the machine at the moment
+  you commit a translation: the finished source string you asked to translate.
+
+### 4. The automatic-fallback disclosure and consent gate (READ THIS IF YOU DID NOT INSTALL THE LOCAL MODEL)
+
+This is the most important privacy behavior in the app, and it is why the first-run
+popup exists:
+
+- **Installer default:** if you **skip or decline** the ~1.9 GB model download during
+  setup, the installer writes `engine_type: "google"` into the generated
+  `config.json` ([`installer/setup.iss`](installer/setup.iss), `CreateConfigFile`).
+  A clean machine that declined the model therefore operates on the **Google cloud
+  path** — your translated text goes to Google, not to Emebala (there is no Emebala
+  server; see §1).
+- **Auto-engine fallback:** with `engine_type: "auto"` and no local model present,
+  the engine resolves to Google Translate ("Zero-Install") at runtime
+  ([`src/engine.cpp`](src/engine.cpp), `RefreshActiveEngine`). Choosing `auto` is
+  itself the documented consent to this seamless fallback.
+- **The blocking first-run notice:** on the very first launch after install (tracked
+  by the `privacy_notice_shown` flag), the app shows a modal privacy notice in your
+  UI language **before** the translation engine, worker threads, and keyboard hooks
+  are constructed ([`src/main.cpp`](src/main.cpp), REQ-208 block after
+  `I18n::Initialize`). This ordering is a structural gate, not a courtesy: while the
+  popup is up, no hook procedure exists and nothing can be translated, so **no text
+  can reach Google before you have actually seen the disclosure** and dismissed it.
+- **Strict no-egress recipe:** install the local model, pin
+  `engine_type: "local"`, and keep `cloud_fallback_enabled: false` (the default).
+  Then even a local failure never sends text to the cloud — translation returns
+  empty instead ([`src/config.hpp`](src/config.hpp), `cloud_fallback_enabled`).
+  A `local` pin with a missing model honestly reports `Local (Model Missing)` and
+  pre-blocks requests rather than masquerading as cloud.
+
+### 5. End-to-end data flow (nothing is captured that you do not submit)
+
+There is **no screen-capture path in the app** — no screenshot, BitBlt, OCR, or
+region-grab code exists anywhere in `src/`. Text reaches the translator through
+exactly two user-triggered flows:
+
+- **Typing pipeline:** you type (keys are intercepted locally, translated locally,
+  re-emitted locally); on <kbd>Enter</kbd> the text present in the focused field is
+  taken, translated via §2a or §2b, and re-typed in place. Only the final string is
+  ever a candidate for the cloud path — and only in cloud mode.
+- **Drag-to-translate:** double <kbd>Ctrl</kbd>+<kbd>C</kbd> reads the clipboard
+  selection you just made, translates it, and pastes the result on drop. The
+  clipboard read happens only on this explicit gesture.
+- **Clipboard isolation:** temporary clipboard text is flagged with Windows privacy
+  exclusions (`CanIncludeInClipboardHistory = 0`, `CanUploadToCloudClipboard = 0`),
+  so it never appears in <kbd>Win</kbd>+<kbd>V</kbd> history or Cloud Clipboard.
+  Original clipboard contents are snapshotted (RAII) and fully restored after the
+  paste, including non-text formats.
+- **TTS:** speech synthesis uses the local Windows voice engine; audio never leaves
+  the machine.
+
+### 6. Diagnostic logs — OFF by default, opt-in, and honestly bounded
+
+- **Master switch `diag_log_enabled`, default `false`:** a shipped, untouched install
+  writes **no log file at all** — zero file I/O. The logger defers the file open
+  lazily; the first write happens only after you set `diag_log_enabled: true` and
+  restart ([`src/diag_logger.cpp`](src/diag_logger.cpp), `SetEnabled`/`OpenLogFileLocked`).
+- **Location:** `%LOCALAPPDATA%\Emebalachat\logs\emebalachat_yymmddhhmmss.log`
+  (one new file per run), next to `config.json`.
+- **Shape-only by default (`diag_log_content: false`):** with logging enabled but
+  content off, each real keypress records only **metadata**: virtual-key code, scan
+  code, modifier flags (Ctrl/Shift/Alt/Win), IME-composing state, the foreground
+  window handle and **class name**, plus timestamps, text *lengths*, engine names,
+  and pipeline timings in the other log tags. Typed characters, window titles,
+  captured text, and translation output are **not** written
+  ([`src/hook.cpp`](src/hook.cpp), shape-only `KEY` line).
+- **Honest caveat — shape-only is not anonymity:** a logged sequence of
+  (vk code, scan code, modifiers) is **layout-recoverable**. Anyone who knows your
+  keyboard layout can partially reconstruct what was typed from shape-only logs
+  (e.g., an unshifted `A` keypress is almost certainly the letter "a"). What shape
+  logs cannot tell you is where Shift/Caps altered the glyph, IME-composed syllables,
+  or on-screen key remaps. If an adversary can read your `%LOCALAPPDATA%`, treat
+  enabled logs as sensitive even with `diag_log_content: false`.
+- **Storage risk:** logs (and `config.json`) sit **unencrypted** under your user
+  profile. If your account uses OneDrive/backup sync of `%LOCALAPPDATA%`, log files
+  are synced by that service — that is a Windows/OneDrive behavior, not an Emebala
+  transmission, but the practical exposure is similar. Delete the `logs\` folder
+  after troubleshooting.
+- **Content opt-in `diag_log_content`:** a *separate*, second gate. Only when the
+  master switch is on AND this is `true` do typed characters, foreground window
+  titles, captured source text, and translation output get written to disk. This is
+  the troubleshooting mode that can capture PII — enable it only while actively
+  diagnosing, and turn both switches back to `false` afterwards. (`content: true`
+  alone, with `enabled: false`, still writes nothing.)
+- **200 MB cap:** the total `logs\` footprint is pruned automatically — oldest
+  `emebalachat_*.log` files are deleted until the directory is at or below
+  `kLogDirCapBytes` = 200 MiB — at every startup and again at each new-log open
+  ([`src/diag_logger.hpp`](src/diag_logger.hpp)). Pruning is best-effort hygiene and
+  can never delete the file currently being written.
+- **stderr mirror:** debug-format output is additionally mirrored to the process's
+  standard error stream when a console is attached. stderr is not persisted to disk
+  and requires deliberately launching the exe from a terminal; it exists so a
+  developer with the file sink off still has a live debug channel.
+- **The About/Cheat Sheet window** shows the settings path
+  `%LOCALAPPDATA%\Emebalachat\config.json` so both switches above are discoverable
+  without reading this file first.
+
+### 7. Settings & integrity summary
+
+- **`config.json` location:** `%LOCALAPPDATA%\Emebalachat\config.json` (relative,
+  environment-variable form — never hardcode a `C:\Users\<name>` path in docs or
+  scripts). All privacy switches described here (`cloud_fallback_enabled`,
+  `diag_log_enabled`, `diag_log_content`) live in this one file.
+- **Model integrity:** the GGUF model is SHA-256 verified at install time (hash
+  pinned in `installer/setup.iss`) and again at load time (with an on-disk marker
+  cache), so a tampered model is refused instead of loaded.
+- **No remote telemetry:** restated for emphasis — zero tracking, zero telemetry,
+  zero third-party analytics, in any engine mode.
 
 ---
 
