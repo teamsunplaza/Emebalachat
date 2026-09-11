@@ -660,6 +660,20 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
     return true;
 }
 
+// SEC Batch B (Medium 2, confirmed per 235500 §5): per-format cap for the
+// byte-blob backup loop below. Unbounded GlobalSize-driven copies of heavy
+// image formats (CF_DIB/CF_DIBV5 aliases of one screenshot can reach hundreds
+// of MB on photo-editor canvases) held peak RSS across the whole multi-second
+// translation and could throw bad_alloc on the worker thread. Over-cap formats
+// are skipped individually (enumeration continues); RestoreClipboard already
+// tolerates missing formats by construction (it only sets what it has, and
+// text restore rides on the separate out.text captured above), so a skipped
+// giant image degrades gracefully: the user keeps everything else.
+// Rejected alternatives per report §5: unconditional bitmap exclusion (breaks
+// clipboard-preservation fidelity for small images) and a total budget across
+// formats (starvation: one giant format could evict later text formats).
+static constexpr SIZE_T kClipboardBackupFormatCap = 4 * 1024 * 1024; // 4 MiB per format
+
 bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     out.text.reset();
     out.formats.clear();
@@ -694,7 +708,7 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
         }
 
         SIZE_T sz = ::GlobalSize(hData);
-        if (sz > 0) {
+        if (sz > 0 && sz <= kClipboardBackupFormatCap) {
             const void* ptr = ::GlobalLock(hData);
             if (ptr) {
                 std::vector<uint8_t> buffer(sz);
@@ -702,6 +716,9 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
                 out.formats.emplace_back(fmt, std::move(buffer));
                 ::GlobalUnlock(hData);
             }
+        } else if (sz > kClipboardBackupFormatCap) {
+            DIAG_F("WIN32_INPUT/BackupClipboard/001: format %u size %zu exceeds cap %zu; skipping backup of this format\n",
+                   fmt, sz, kClipboardBackupFormatCap);
         }
     }
 
