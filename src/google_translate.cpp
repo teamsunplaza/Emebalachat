@@ -1,6 +1,8 @@
 #include "google_translate.hpp"
 #include "config.hpp"
 #include "diag_logger.hpp"
+#include "engine.hpp" // SEC-M1: TruncateHeadTailWindow (shared head/tail window helper)
+#include "i18n.hpp"   // SEC-M1: TranslateTruncatedNotice (user-facing truncation notice)
 #include "unicode_utils.hpp"
 
 #include <cctype>
@@ -389,6 +391,25 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
     return ToUtf16(accumulated_utf8);
 }
 
+std::pair<std::wstring, bool> GoogleTranslate::ClampCloudQuery(std::wstring_view text) {
+    if (text.size() <= kMaxCloudQueryUnits) {
+        return { std::wstring(text), false };
+    }
+    // Head/tail window keeps BOTH ends of a long message (same semantics as the
+    // llama path, REQ-R01). keep_per_side is sized so head + marker + tail is
+    // STRICTLY within the cap: the "\n…\n" marker costs 3 UTF-16 units, so
+    // 2*748 + 3 = 1,499 <= 1,500. TruncateHeadTailWindow cuts on wchar_t
+    // boundaries and never splits a surrogate pair (its contract,
+    // src/engine.hpp:110-116) - the clamp therefore runs BEFORE any UTF-8
+    // conversion, exactly as the verification report mandates (§4).
+    constexpr size_t kEllipsisMarkerUnits = 3;
+    const size_t keep_per_side = (kMaxCloudQueryUnits - kEllipsisMarkerUnits) / 2;
+    std::wstring clamped = TruncateHeadTailWindow(text, keep_per_side);
+    DIAG_F("GOOGLE_T/Translate/003: input %zu UTF-16 units exceeded %zu cap; head/tail window applied\n",
+           text.size(), kMaxCloudQueryUnits);
+    return { std::move(clamped), true };
+}
+
 std::wstring GoogleTranslate::Translate(
     std::wstring_view text,
     std::string_view src_code,
@@ -398,10 +419,27 @@ std::wstring GoogleTranslate::Translate(
         return {};
     }
 
+    // SEC-M1 (session 260911_0002, verify 235100): single choke-point clamp.
+    // Every cloud feeder (drag-icon, double-Ctrl+C, tooltip re-translate, the
+    // 4096-unit-bounded Enter-translate worker, and the local->cloud fallback)
+    // funnels through here, so this is the only place the URL-query budget must
+    // be enforced. Clamping BEFORE ToUtf8/UrlEncode keeps the GET request line
+    // under the measured ~16 KB endpoint limit even for worst-case Korean
+    // (9x percent-expansion): 1,499 units * 9 = 13,491 B encoded.
+    auto [query, clamped] = ClampCloudQuery(text);
+
     std::string sl = MapLanguageCode(src_code);
     std::string tl = MapLanguageCode(tgt_code);
-    std::string utf8_text = ToUtf8(text);
+    std::string utf8_text = ToUtf8(query);
     std::string encoded_q = UrlEncode(utf8_text);
+
+    // SEC-M1: when the input was clamped, the returned result must say so -
+    // silent truncation is forbidden (verify 235100 §5). Appended to the
+    // translated text on every SUCCESS path; the failure passthrough below
+    // returns the ORIGINAL (untruncated) text and needs no notice.
+    const std::wstring truncation_notice = clamped
+        ? L"\n" + I18n::Get(StringId::TranslateTruncatedNotice)
+        : std::wstring{};
 
     // Primary: clients5.google.com with dict-chrome-ex
     std::string path_a = "/translate_a/t?client=dict-chrome-ex&sl=" + sl + "&tl=" + tl + "&q=" + encoded_q;
@@ -411,6 +449,7 @@ std::wstring GoogleTranslate::Translate(
     if (HttpGet(L"clients5.google.com", wpath_a, response)) {
         std::wstring result = ParseResponseJson(response);
         if (!result.empty()) {
+            result += truncation_notice;
             return result;
         }
     }
@@ -421,6 +460,7 @@ std::wstring GoogleTranslate::Translate(
     if (HttpGet(L"translate.googleapis.com", wpath_b, response)) {
         std::wstring result = ParseResponseJson(response);
         if (!result.empty()) {
+            result += truncation_notice;
             return result;
         }
     }

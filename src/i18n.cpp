@@ -106,6 +106,11 @@ struct LocalizedStrings {
     const wchar_t* privacy_notice_title;
     const wchar_t* privacy_notice_body;
     const wchar_t* cheatsheet_config_path;
+
+    // SEC-M1 (session 260911_0002, verify 235100): cloud-translation
+    // truncation notice. Appended at the end (same trailing-initializer
+    // rule) so all 37 aggregate tables only gained one trailing entry.
+    const wchar_t* translate_truncated_notice;
 };
 
 // 1. Korean (ko)
@@ -186,7 +191,11 @@ const LocalizedStrings kStringsKorean = {
     L"• 텍스트를 클라우드(Google)로 전송하기 원치 않으시면 트레이 아이콘 메뉴의 “번역 엔진 선택”에서 “로컬 LLM”을 선택하세요. 로컬 모델이 설치되지 않았고 클라우드 전환이 꺼져 있으면 번역은 전송 없이 동작하지 않습니다.\n"
     L"\n"
     L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
-    L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다."
 };
 
 // 2. Japanese (ja)
@@ -267,7 +276,11 @@ const LocalizedStrings kStringsJapanese = {
     L"• テキストをクラウド(Google)に送信したくない場合は、トレイアイコンのメニューで「翻訳エンジンの選択」から「ローカル LLM」を選択してください。ローカルモデル未インストールでクラウド切替が無効の場合、翻訳は送信されず動作しません。\n"
     L"\n"
     L"詳細は README ファイルをご覧ください。いつでも再読できます。\n",
-    L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"テキストが長すぎるため、冒頭と末尾のみを翻訳しました。"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -348,7 +361,11 @@ const LocalizedStrings kStringsChineseSimp = {
     L"• 如不希望将文本发送至云端 (Google)，请在系统托盘图标菜单的“选择翻译引擎”中选择“本地 LLM”。若未安装本地模型且已关闭云端回退，翻译将不会被发送，也不会运行。\n"
     L"\n"
     L"完整说明请查看 README 文件，您可随时重新阅读。\n",
-    L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"文本过长，仅翻译了开头和结尾部分。"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -429,7 +446,11 @@ const LocalizedStrings kStringsChineseTrad = {
     L"• 若您不希望將文字傳送至雲端 (Google)，請在系統匣圖示選單的「選擇翻譯引擎」中選取「本地 LLM」。若未安裝本地模型且已關閉雲端退回，翻譯將不會傳送任何資料，也不會執行。\n"
     L"\n"
     L"完整說明請查閱 README 檔案，您可隨時重新閱讀。\n",
-    L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"文字過長，僅翻譯了開頭和結尾部分。"
 };
 
 // 5. Vietnamese (vi)
@@ -510,7 +531,11 @@ const LocalizedStrings kStringsVietnamese = {
     L"• Nếu không muốn gửi văn bản lên đám mây (Google), hãy mở menu biểu tượng ở khay hệ thống, chọn “Chọn công cụ dịch” rồi chọn “Mô hình cục bộ LLM”. Khi chưa cài mô hình cục bộ và tùy chọn chuyển lên đám mây đang tắt, bản dịch sẽ không chạy — không có gì được gửi đi.\n"
     L"\n"
     L"Xem toàn bộ nội dung trong tệp README. Bạn có thể đọc lại bất cứ lúc nào.\n",
-    L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Văn bản quá dài nên chỉ phần đầu và phần cuối được dịch."
 };
 
 // 6. Spanish (es)
@@ -588,7 +613,11 @@ const LocalizedStrings kStringsSpanish = {
     L"• Si no quieres enviar texto a la nube (Google), abre el menú del icono de la bandeja, elige “Motor de traducción” y selecciona “LLM Local”. Sin modelo local instalado y con el modo cloud desactivado, la traducción no se ejecuta y no se envía nada.\n"
     L"\n"
     L"Puedes leer el detalle completo en el archivo README cuando quieras.\n",
-    L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"El texto era demasiado largo: solo se tradujeron el principio y el final."
 };
 
 // 7. English (en) - Default Fallback
@@ -670,7 +699,11 @@ const LocalizedStrings kStringsEnglish = {
     L"• If you do not want your text sent to the cloud (Google), open the tray icon menu, choose \"Translation Engine\" and select \"Local LLM\". With no local model installed and cloud fallback disabled, translation does not run - nothing is sent.\n"
     L"\n"
     L"You can re-read this anytime in the README file.\n",
-    L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"The text was too long, so only its beginning and end were translated."
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -763,7 +796,11 @@ const LocalizedStrings kStringsFrench = {
     L"• Si vous ne souhaitez pas envoyer de texte vers le cloud (Google), ouvrez le menu de l'icône de la barre des tâches, choisissez « Moteur de traduction » puis « LLM local ». Sans modèle local installé et avec le repli cloud désactivé, la traduction ne s'exécute pas : rien n'est envoyé.\n"
     L"\n"
     L"Le détail complet est dans le fichier README, relisible à tout moment.\n",
-    L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Texte trop long : seul le début et la fin ont été traduits."
 };
 
 // 9. German (de)
@@ -844,7 +881,11 @@ const LocalizedStrings kStringsGerman = {
     L"• Wenn Sie keinen Text in die Cloud (Google) senden möchten, öffnen Sie das Menü des Taskleistensymbols, wählen Sie “Übersetzungsengine” und dann “Lokales LLM”. Ohne installiertes lokales Modell und mit deaktiviertem Cloud-Fallback wird nicht übersetzt — es wird nichts gesendet.\n"
     L"\n"
     L"Details stehen in der README-Datei – jederzeit erneut lesbar.\n",
-    L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Der Text war zu lang: Es wurden nur Anfang und Ende übersetzt."
 };
 
 // 10. Russian (ru)
@@ -925,7 +966,11 @@ const LocalizedStrings kStringsRussian = {
     L"• Если вы не хотите отправлять текст в облако (Google), откройте меню значка в системном трее, выберите «Движок перевода» и укажите «Локальная LLM». Без установленной локальной модели и при отключённом облачном резерве перевод не выполняется — ничего не отправляется.\n"
     L"\n"
     L"Полные сведения — в файле README, доступном для чтения в любое время.\n",
-    L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Текст слишком длинный: переведены только начало и конец."
 };
 
 // 11. Portuguese (pt)
@@ -1006,7 +1051,11 @@ const LocalizedStrings kStringsPortuguese = {
     L"• Se não quiser enviar texto para a nuvem (Google), abra o menu do ícone da bandeja, escolha “Mecanismo de tradução” e selecione “LLM local”. Sem modelo local instalado e com o recurso de nuvem desativado, a tradução não é executada — nada é enviado.\n"
     L"\n"
     L"O detalhamento completo está no arquivo README, para reler quando quiser.\n",
-    L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Texto longo demais: apenas o início e o fim foram traduzidos."
 };
 
 // 12. Italian (it)
@@ -1087,7 +1136,11 @@ const LocalizedStrings kStringsItalian = {
     L"• Se non vuoi inviare testo al cloud (Google), apri il menu dell'icona nella barra delle applicazioni, scegli “Motore di traduzione” e seleziona “LLM locale”. Senza modello locale installato e con il fallback cloud disattivato, la traduzione non viene eseguita e non viene inviato nulla.\n"
     L"\n"
     L"Il dettaglio completo è nel file README, rileggibile in qualsiasi momento.\n",
-    L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Testo troppo lungo: sono stati tradotti solo l'inizio e la fine."
 };
 
 // 13. Dutch (nl)
@@ -1168,7 +1221,11 @@ const LocalizedStrings kStringsDutch = {
     L"• Als u geen tekst naar de cloud (Google) wilt sturen, opent u het menu van het systeemvakpictogram, kiest u “Vertaalengine” en vervolgens “Lokale LLM”. Zonder lokaal model en met cloud-omleiding uitgeschakeld wordt er niet vertaald — er wordt niets verzonden.\n"
     L"\n"
     L"Alle details staan in het README-bestand, dat u altijd opnieuw kunt lezen.\n",
-    L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"De tekst was te lang: alleen het begin en het einde zijn vertaald."
 };
 
 // 14. Polish (pl)
@@ -1249,7 +1306,11 @@ const LocalizedStrings kStringsPolish = {
     L"• Jeśli nie chcesz wysyłać tekstu do chmury (Google), otwórz menu ikony w zasobniku systemowym, wybierz “Silnik tłumaczenia” i zaznacz “Lokalny LLM”. Bez zainstalowanego modelu lokalnego i przy wyłączonym przejściu do chmury tłumaczenie nie działa — nic nie jest wysyłane.\n"
     L"\n"
     L"Szczegóły znajdziesz w pliku README — możesz go przeczytać w dowolnej chwili.\n",
-    L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Tekst był zbyt długi: przetłumaczono tylko początek i koniec."
 };
 
 // 15. Czech (cs)
@@ -1330,7 +1391,11 @@ const LocalizedStrings kStringsCzech = {
     L"• Pokud nechcete odesílat text do cloudu (Google), otevřete nabídku ikony v oznamovací oblasti, zvolte “Překladový engine” a vyberte “Lokální LLM”. Bez nainstalovaného lokálního modelu a se zakázaným cloudovým zálohováním překlad neběží — nic se neodesílá.\n"
     L"\n"
     L"Podrobnosti najdete v souboru README, který lze kdykoli znovu přečíst.\n",
-    L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Text byl příliš dlouhý: přeloženy byly pouze začátek a konec."
 };
 
 // 16. Hungarian (hu)
@@ -1411,7 +1476,11 @@ const LocalizedStrings kStringsHungarian = {
     L"• Ha nem szeretné szöveget a felhőbe (Google) küldeni, nyissa meg a tálcaikon menüjét, válassza a “Fordítómotor” pontot, majd a “Helyi LLM” lehetőséget. Ha nincs telepített helyi modell és a felhőtartalék ki van kapcsolva, a fordítás nem fut — semmi sem kerül küldésre.\n"
     L"\n"
     L"A teljes részletezés a README fájlban olvasható, bármikor újra.\n",
-    L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"A szöveg túl hosszú: csak az eleje és a vége lett lefordítva."
 };
 
 // 17. Romanian (ro)
@@ -1492,7 +1561,11 @@ const LocalizedStrings kStringsRomanian = {
     L"• Dacă nu doriți să trimiteți text în cloud (Google), deschideți meniul pictogramei din bara de sistem, alegeți “Motor de traducere” și apoi “LLM local”. Fără model local instalat și cu preluarea în cloud dezactivată, traducerea nu rulează — nimic nu este trimis.\n"
     L"\n"
     L"Detaliile complete sunt în fișierul README, recitibil oricând.\n",
-    L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Textul era prea lung: au fost traduse doar începutul și sfârșitul."
 };
 
 // 18. Swedish (sv)
@@ -1573,7 +1646,11 @@ const LocalizedStrings kStringsSwedish = {
     L"• Om du inte vill skicka text till molnet (Google) öppnar du menyn från aktivitetsikonet, väljer “Översättningsmotor” och sedan “Lokal LLM”. Utan lokal modell och med molnfallback inaktiverat körs ingen översättning — ingenting skickas.\n"
     L"\n"
     L"Alla detaljer finns i README-filen, som du kan läsa om när som helst.\n",
-    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Texten var för lång: endast början och slutet översattes."
 };
 
 // 19. Danish (da)
@@ -1654,7 +1731,11 @@ const LocalizedStrings kStringsDanish = {
     L"• Hvis du ikke vil sende tekst til skyen (Google), skal du åbne menuen fra statusfeltikonet, vælge “Oversættelsesmotor” og derefter “Lokal LLM”. Uden en lokal model og med cloud-backup deaktiveret kører oversættelsen ikke — intet sendes.\n"
     L"\n"
     L"Detaljerne står i README-filen, som du kan læse når som helst.\n",
-    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Teksten var for lang: kun starten og slutningen blev oversat."
 };
 
 // 20. Finnish (fi)
@@ -1735,7 +1816,11 @@ const LocalizedStrings kStringsFinnish = {
     L"• Jos et halua lähettää tekstiä pilveen (Google), avaa tehtäväpalkin kuvakkeen valikko, valitse “Käännösmoottori” ja sitten “Paikallinen LLM”. Ilman paikallista mallia ja kun pilvivarajärjestelmä on pois päältä, käännös ei toimi — mitään ei lähetetä.\n"
     L"\n"
     L"Tarkat tiedot ovat README-tiedostossa, jonka voit lukea milloin tahansa.\n",
-    L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Teksti oli liian pitkä: vain alku ja loppu käännettiin."
 };
 
 // 21. Norwegian (no / nb)
@@ -1816,7 +1901,11 @@ const LocalizedStrings kStringsNorwegian = {
     L"• Hvis du ikke vil sende tekst til skyen (Google), åpne menyen fra systemstatusfeltets ikon, velg “Oversettelsesmotor” og deretter “Lokal LLM”. Uten lokal modell og med sky-reserve deaktivert, kjører ikke oversettelsen — ingenting sendes.\n"
     L"\n"
     L"Detaljene finnes i README-filen, som kan leses på nytt når som helst.\n",
-    L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Teksten var for lang: bare starten og slutten ble oversatt."
 };
 
 // 22. Greek (el)
@@ -1897,7 +1986,11 @@ const LocalizedStrings kStringsGreek = {
     L"• Εάν δεν θέλετε να στείλετε κείμενο στο cloud (Google), ανοίξτε το μενού του εικονιδίου στη γραμμή εργασιών, επιλέξτε «Μηχανή μετάφρασης» και στη συνέχεια «Τοπικό LLM». Χωρίς εγκατεστημένο τοπικό μοντέλο και με απενεργοποιημένη την εφεδρική λειτουργία cloud, η μετάφραση δεν εκτελείται — τίποτα δεν στέλνεται.\n"
     L"\n"
     L"Οι πλήρεις λεπτομέρειες βρίσκονται στο αρχείο README, που διαβάζεται ξανά ανά πάσα στιγμή.\n",
-    L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Το κείμενο είναι πολύ μακρύ: μεταφράστηκαν μόνο η αρχή και το τέλος."
 };
 
 // 23. Turkish (tr)
@@ -1978,7 +2071,11 @@ const LocalizedStrings kStringsTurkish = {
     L"• Metni buluta (Google) göndermek istemiyorsanız sistem tepsisindeki simgenin menüsünü açın, “Çeviri motoru” bölümünden “Yerel LLM” seçeneğini seçin. Yerel model kurulu değilse ve bulut yedeği kapalıysa çeviri çalışmaz — hiçbir şey gönderilmez.\n"
     L"\n"
     L"Tam ayrıntılar README dosyasındadır; istediğiniz zaman tekrar okuyabilirsiniz.\n",
-    L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Metin çok uzun olduğu için yalnızca başı ve sonu çevrildi."
 };
 
 // 24. Ukrainian (uk)
@@ -2059,7 +2156,11 @@ const LocalizedStrings kStringsUkrainian = {
     L"• Якщо не хочете надсилати текст у хмару (Google), відкрийте меню піктограми в системному треї, оберіть «Рушій перекладу» і потім «Локальна LLM». Без встановленої локальної моделі та з вимкненим хмарним резервуванням переклад не виконується — нічого не надсилається.\n"
     L"\n"
     L"Повні відомості — у файлі README, який можна перечитати будь-коли.\n",
-    L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Текст надто довгий: перекладено лише початок і кінець."
 };
 
 // 25. Thai (th)
@@ -2140,7 +2241,11 @@ const LocalizedStrings kStringsThai = {
     L"• หากคุณไม่ต้องการส่งข้อความไปยังคลาวด์ (Google) ให้เปิดเมนูที่ไอคอนถาดระบบ เลือก “ระบบแปลภาษา” แล้วเลือก “LLM ภายในเครื่อง” หากไม่ได้ติดตั้งโมเดลภายในเครื่องและปิดการสลับไปคลาวด์ไว้ การแปลจะไม่ทำงานโดยไม่มีการส่งข้อมูลใดๆ\n"
     L"\n"
     L"ดูรายละเอียดฉบับเต็มในไฟล์ README ซึ่งอ่านซ้ำได้ทุกเมื่อ\n",
-    L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"ข้อความยาวเกินไป จึงแปลเฉพาะส่วนต้นและส่วนท้าย"
 };
 
 // 26. Indonesian (id)
@@ -2221,7 +2326,11 @@ const LocalizedStrings kStringsIndonesian = {
     L"• Jika tidak ingin mengirim teks ke cloud (Google), buka menu ikon di bilah tugas, pilih “Mesin penerjemah” lalu pilih “LLM lokal”. Tanpa model lokal terpasang dan dengan cadangan cloud dinonaktifkan, terjemahan tidak berjalan — tidak ada yang dikirim.\n"
     L"\n"
     L"Detail lengkap ada di berkas README, yang dapat dibaca ulang kapan saja.\n",
-    L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Teks terlalu panjang: hanya bagian awal dan akhir yang diterjemahkan."
 };
 
 // 27. Malay (ms)
@@ -2302,7 +2411,11 @@ const LocalizedStrings kStringsMalay = {
     L"• Jika anda tidak mahu menghantar teks ke awan (Google), buka menu ikon pada tray sistem, pilih “Enjin penterjemah” kemudian “LLM setempat”. Tanpa model setempat dipasang dan dengan fallback awan dimatikan, terjemahan tidak berjalan — tiada apa dihantar.\n"
     L"\n"
     L"Butiran penuh terdapat dalam fail README, yang boleh dibaca semula pada bila-bila masa.\n",
-    L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Teks terlalu panjang: hanya bahagian awal dan akhir diterjemahkan."
 };
 
 // 28. Filipino (fil)
@@ -2385,7 +2498,11 @@ const LocalizedStrings kStringsFilipino = {
     L"• Kung ayaw mong ipadala ang teksto sa cloud (Google), buksan ang menu ng icon sa system tray, piliin ang “Makina ng pagsasalin” at pagkatapos “Lokal na LLM”. Kung walang naka-install na lokal na modelo at nakapatay ang cloud fallback, hindi tumatakbo ang pagsasalin — walang ipinapadala.\n"
     L"\n"
     L"Makikita ang buong detalye sa README file na maaaring babasahin anumang oras.\n",
-    L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"Masyadong mahaba ang teksto: simula at katapusan lang ang isinalin."
 };
 
 // 29. Hindi (hi)
@@ -2466,7 +2583,11 @@ const LocalizedStrings kStringsHindi = {
     L"• यदि आप टेक्स्ट क्लाउड (Google) में नहीं भेजना चाहते, तो सिस्टम ट्रे आइकन मेनू खोलें, “अनुवाद इंजन” चुनें और “स्थानीय LLM” चुनें। यदि स्थानीय मॉडल इंस्टॉल नहीं है और क्लाउड फ़ॉलबैक बंद है, तो अनुवाद नहीं चलेगा — कुछ भी नहीं भेजा जाएगा।\n"
     L"\n"
     L"पूरा विवरण README फ़ाइल में है, जिसे आप कभी भी दोबारा पढ़ सकते हैं।\n",
-    L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"पाठ बहुत लंबा था: केवल शुरुआत और अंत का अनुवाद किया गया।"
 };
 
 // 30. Bengali (bn)
@@ -2547,7 +2668,11 @@ const LocalizedStrings kStringsBengali = {
     L"• আপনি যদি টেক্সট ক্লাউডে (Google) পাঠাতে না চান, সিস্টেম ট্রে আইকনের মেনু খুলুন, “অনুবাদ ইঞ্জিন” থেকে “লোকাল LLM” নির্বাচন করুন। লোকাল মডেল ইনস্টল না থাকলে এবং ক্লাউড ফলব্যাক বন্ধ থাকলে অনুবাদ চলবে না — কিছুই পাঠানো হবে না।\n"
     L"\n"
     L"পূর্ণ বিবরণ README ফাইলে আছে, যেটি যেকোনো সময় আবার পড়া যাবে।\n",
-    L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"পাঠ্যটি খুব দীর্ঘ ছিল: শুধু শুরু এবং শেষ অংশ অনুবাদ করা হয়েছে।"
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -2629,7 +2754,11 @@ const LocalizedStrings kStringsArabic = {
     L"• إذا لم ترغب في إرسال النص إلى السحابة (Google)، افتح قائمة أيقونة شريط المهام واختر “محرك الترجمة” ثم “نموذج محلي LLM”. إذا لم يكن النموذج المحلي مثبتًا وكان التحويل السحابي معطلًا، فلن تعمل الترجمة ولن يُرسل أي شيء.\n"
     L"\n"
     L"التفاصيل الكاملة في ملف README ويمكن قراءته في أي وقت.\n",
-    L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"النص طويل جدًا: تمت ترجمة البداية والنهاية فقط."
 };
 
 // 32. Persian (fa) — RTL
@@ -2710,7 +2839,11 @@ const LocalizedStrings kStringsPersian = {
     L"• اگر نمی‌خواهید متن به ابر (Google) ارسال شود، منوی نماد نوار وظیفه را باز کنید، “موتور ترجمه” و سپس “LLM محلی” را انتخاب کنید. بدون نصب مدل محلی و با غیرفعال بودن جایگزین ابری، ترجمه انجام نمی‌شود — چیزی ارسال نمی‌شود.\n"
     L"\n"
     L"جزئیات کامل در فایل README است و هر زمان قابل خواندن مجدد است.\n",
-    L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"متن بسیار بلند بود: فقط ابتدا و انتها ترجمه شد."
 };
 
 // 33. Urdu (ur) — RTL
@@ -2791,7 +2924,11 @@ const LocalizedStrings kStringsUrdu = {
     L"• اگر آپ متن کلاؤڈ (Google) میں نہیں بھیجنا چاہتے تو سسٹم ٹری آئیکن کا مینو کھولیں، “ترجمہ انجن” میں سے “مقامی LLM” منتخب کریں۔ اگر مقامی ماڈل انسٹال نہیں ہے اور کلاؤڈ فال بیک بند ہے تو ترجمہ نہیں چلے گا — کچھ بھی نہیں بھیجا جائے گا۔\n"
     L"\n"
     L"مکمل تفصیل README فائل میں ہے، جسے آپ کسی بھی وقت دوبارہ پڑھ سکتے ہیں۔\n",
-    L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"متن بہت لمبا تھا: صرف آغاز اور انجام کا ترجمہ کیا گیا۔"
 };
 
 // 34. Hebrew (he) — RTL
@@ -2872,7 +3009,11 @@ const LocalizedStrings kStringsHebrew = {
     L"• אם אינך רוצה לשלוח טקסט לענן (Google), פתח את תפריט סמל מגש המערכת, בחר “מנוע תרגום” ואז “LLM מקומי”. ללא מודל מקומי מותקן ועם גיבוי ענן מושבת, התרגום לא יפעל — שום דבר לא נשלח.\n"
     L"\n"
     L"הפירוט המלא בקובץ README, הניתן לקריאה חוזרת בכל עת.\n",
-    L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"הטקסט ארוך מדי: רק הפתיח והסיום תורגמו."
 };
 
 // 35. Khmer (km)
@@ -2953,7 +3094,11 @@ const LocalizedStrings kStringsKhmer = {
     L"• ប្រសិនបើអ្នកមិនចង់ផ្ញើអត្ថបទទៅ cloud (Google) សូមបើកម៉ឺនុយរូបតំណាងនៅថតការងារ ហើយជ្រើសរើស “ម៉ាស៊ីនបកប្រែ” រួច “LLM ក្នុងម៉ាស៊ីន”។ ប្រសិនបើគ្មានគំរូក្នុងម៉ាស៊ីនត្រូវបានដំឡើង ហើយការបម្រុងទុក cloud ត្រូវបានបិទ ការបកប្រែនឹងមិនដំណើរការទេ — គ្មានអ្វីត្រូវបានផ្ញើឡើយ។\n"
     L"\n"
     L"ព័ត៌មានលម្អិតស្ថិតក្នុងឯកសារ README ដែលអាចអានឡើងវិញពេលណាក៏បាន។\n",
-    L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"អត្ថបទវែងពេក៖ បានបកប្រែតែផ្នែកដើម និងបញ្ចប់ប៉ុណ្ណោះ។"
 };
 
 // 36. Lao (lo)
@@ -3034,7 +3179,11 @@ const LocalizedStrings kStringsLao = {
     L"• ຖ້າທ່ານບໍ່ຕ້ອງສົ່ງຂໍ້ຄວາມໄປຍັງຄລາວ (Google), ໃຫ້ເປີດເມນູໄອຄອນຢູ່ແຖບຮາບພຽງລະບົບ ແລ້ວເລືອກ “ເຄື່ອງຈັກແປ” ຈາກນັ້ນ “LLM ໃນເຄື່ອງ”. ຖ້າບໍ່ມີແບບຈຳລອງໃນເຄື່ອງ ແລະປິດການສະຫຼັບໄປຄລາວໄວ້, ການແປຈະບໍ່ເຮັດວຽກ ໂດຍບໍ່ມີການສົ່ງຂໍ້ມູນ.\n"
     L"\n"
     L"ລາຍລະອຽດເຕັມຢູ່ໃນໄຟລ໌ README ທີ່ສາມາດອ່ານຄືນໄດ້ທຸກເວລາ.\n",
-    L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"ຂໍ້ຄວາມຍາວເກີນໄປ: ແປສະເພາະສ່ວນຕົ້ນແລະສ່ວນທ້າຍເທົ່ານັ້ນ."
 };
 
 // 37. Burmese (my)
@@ -3115,7 +3264,11 @@ const LocalizedStrings kStringsBurmese = {
     L"• အကယ်၍ သင်သည် စာသားကို cloud (Google) သို့ မပို့လိုပါက စနစ်တရေး သင်္ကေတမီနူးကို ဖွင့်၍ “ဘာသာပြန် အင်ဂျင်” တွင် “ဒေသတွင်း LLM” ကို ရွေးချယ်ပါ။ ဒေသတွင်းမော်ဒယ် မတပ်ဆင်ထားပါကနှင့် cloud ပြောင်းလဲခြင်း ပိတ်ထားပါက ဘာသာပြန်သည် စာသားမပို့ဘဲ အလုပ်မလုပ်ပါ။\n"
     L"\n"
     L"အသေးစိတ်ကို README ဖိုင်တွင် ဖတ်နိုင်ပြီး အချိန်မရွေး ပြန်ဖတ်နိုင်သည်။\n",
-    L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json"
+    L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    // SEC-M1 (session 260911_0002): cloud translation truncation notice
+    // (trailing-initializer append; head/tail window applied above the
+    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    L"စာသား အလွန်ရှည်သဖြင့် အစနှင့် အဆုံးကိုသာ ဘာသာပြန်ဆိုပါသည်။"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -3347,6 +3500,7 @@ std::wstring I18n::Get(StringId id) {
         case StringId::PrivacyNoticeTitle: return s.privacy_notice_title;
         case StringId::PrivacyNoticeBody: return s.privacy_notice_body;
         case StringId::CheatSheetConfigPath: return s.cheatsheet_config_path;
+        case StringId::TranslateTruncatedNotice: return s.translate_truncated_notice;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

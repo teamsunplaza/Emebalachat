@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace emebalachat {
 
@@ -79,6 +80,30 @@ public:
 
     // Maps internal language code to Google's ISO/BCP47 code (e.g. "FIL" -> "tl", "ZH-CN" -> "zh-CN").
     static std::string MapLanguageCode(std::string_view code);
+
+    // SEC-M1 (session 260911_0002, verify 235100): hard cap on the UTF-16 code
+    // units fed into the GET query. The endpoint is URL-BYTE bounded (live
+    // probes: 16,200 B OK / 18,000 B -> 400 on both dict-chrome-ex and gtx).
+    // Worst case is Korean: 1 UTF-16 unit -> 3 UTF-8 bytes -> 9 percent-
+    // encoding chars. 1,500 units * 9 = 13,500 B stays under the measured OK
+    // boundary with headroom for the fixed path prefix; 1,500 is also inside
+    // the range the primary endpoint demonstrably translates (1,800 OK).
+    // A plain char-count cap (the audit's 4,000) is wrong-shaped: 4,000
+    // Korean chars = ~36 KB URL would still fail while ASCII is over-clamped.
+    static inline constexpr size_t kMaxCloudQueryUnits = 1500;
+    static_assert(kMaxCloudQueryUnits * 9 < 16200,
+                  "SEC-M1: worst-case Korean encoding must stay under the measured 16,200-byte OK boundary");
+
+    // Pure clamp seam (unit-testable, no network): returns the query text
+    // GoogleTranslate::Translate will send, plus a truncated flag. Text at or
+    // under kMaxCloudQueryUnits passes through UNCHANGED. Over-limit text is
+    // reduced with TruncateHeadTailWindow (keep_per_side = half the cap) so
+    // BOTH ends of the message survive; cuts are surrogate-pair safe by the
+    // helper's contract, and truncation operates on wchar_t units BEFORE any
+    // UTF-8 conversion (verify 235100 §4). The "\n…\n" marker (3 units) can
+    // make the result marginally longer than the cap in exchange for both
+    // halves, which the budget above still absorbs.
+    static std::pair<std::wstring, bool> ClampCloudQuery(std::wstring_view text);
 
     // Encodes UTF-8 string into RFC 3986 percent-encoded format.
     static std::string UrlEncode(std::string_view str);

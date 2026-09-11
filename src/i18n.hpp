@@ -159,6 +159,12 @@ enum class StringId {
     PrivacyNoticeBody,
     CheatSheetConfigPath,
 
+    // SEC-M1 (session 260911_0002, verify 235100): notice appended to a cloud
+    // translation whose input exceeded the URL-safety cap (head/tail window
+    // applied). User-facing: truncation must never be silent. Appended last
+    // so the EnumCount completeness loop covers it automatically (53x37).
+    TranslateTruncatedNotice,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

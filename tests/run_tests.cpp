@@ -1837,6 +1837,136 @@ void TestClipboardSequencePolling() {
     }
 }
 
+// SEC-M1 (session 260911_0002, verify 235100): pure clamp-seam pins for the
+// cloud GET-query URL budget. No network: ClampCloudQuery is the exact
+// function Translate() calls at entry, so these assert the shipped behavior
+// (under-limit passthrough unchanged, over-limit head/tail window with the
+// U+2026 marker, surrogate-pair safety, and the worst-case Korean URL staying
+// under the measured 16,200-byte OK boundary).
+void TestSecM1CloudQueryClamp() {
+    std::cout << "[RUN] Testing SEC-M1 cloud query clamp..." << std::endl;
+    const int failures_before = g_failed_count;
+    const int tests_before = g_test_count;
+
+    auto has_lone_surrogate = [](const std::wstring& s) {
+        for (size_t i = 0; i < s.size(); ++i) {
+            wchar_t c = s[i];
+            if (c >= 0xD800 && c <= 0xDBFF) { // high surrogate must pair with next
+                if (i + 1 >= s.size() || s[i + 1] < 0xDC00 || s[i + 1] > 0xDFFF) {
+                    return true;
+                }
+                ++i;
+            } else if (c >= 0xDC00 && c <= 0xDFFF) { // low surrogate without preceding high
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // 0. Cap constants pinned to the accepted remediation spec. Compile-time
+    // (static_assert) to avoid the C4127 constant-condition warning, same
+    // pattern as the REQ-R01 budget-constant pins: 1,500 exactly, and the
+    // worst-case Korean encoding (9x) under the measured 16,200-B OK boundary.
+    static_assert(GoogleTranslate::kMaxCloudQueryUnits == 1500,
+                  "M1: cap is exactly 1500 UTF-16 units (verify 235100 §3)");
+    static_assert(GoogleTranslate::kMaxCloudQueryUnits * 9 < 16200,
+                  "M1: worst-case Korean stays under the 16,200-B OK boundary");
+
+    // 1. Empty input passes through unclamped.
+    {
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(L"");
+        TEST_CHECK(q.empty() && !clamped, "M1: empty passthrough, not clamped");
+    }
+
+    // 2. Under-limit input is returned byte-identical, clamped == false.
+    {
+        const std::wstring under = std::wstring(1499, L'A');
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(under);
+        TEST_CHECK(!clamped, "M1: 1499 units not clamped");
+        TEST_CHECK(q == under, "M1: under-limit passthrough unchanged");
+    }
+
+    // 3. Exactly-1500 boundary: still passthrough (cap is inclusive).
+    {
+        const std::wstring exact = std::wstring(1500, L'B');
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(exact);
+        TEST_CHECK(!clamped, "M1: exactly 1500 units not clamped (inclusive cap)");
+        TEST_CHECK(q == exact, "M1: exactly-1500 passthrough unchanged");
+    }
+
+    // 4. One over the limit: head+tail window with the U+2026 marker, both
+    //    halves preserved, result within budget, flagged clamped.
+    {
+        std::wstring src;
+        src.reserve(1501);
+        for (size_t i = 0; i < 1501; ++i) {
+            src.push_back(static_cast<wchar_t>(L'a' + (i % 26)));
+        }
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
+        TEST_CHECK(clamped, "M1: 1501 units clamped");
+        TEST_CHECK(q.find(L"\n\u2026\n") != std::wstring::npos,
+                   "M1: ellipsis marker inserted");
+        TEST_CHECK(q.size() <= GoogleTranslate::kMaxCloudQueryUnits,
+                   "M1: clamped query stays within the cap");
+        // keep_per_side = (1500 - 3) / 2 = 748: head and tail are exact.
+        TEST_CHECK(q.compare(0, 748, src, 0, 748) == 0,
+                   "M1: head preserved (first 748 units verbatim)");
+        TEST_CHECK(q.compare(q.size() - 748, 748, src, src.size() - 748, 748) == 0,
+                   "M1: tail preserved (last 748 units verbatim)");
+        TEST_CHECK(!has_lone_surrogate(q), "M1: plain clamp output is valid UTF-16");
+    }
+
+    // 5. Surrogate-pair boundary safety at the HEAD cut (high unit lands
+    //    exactly at the cut edge - it must be dropped, never emitted alone).
+    {
+        std::wstring src;
+        src.reserve(1600);
+        for (size_t i = 0; i < 747; ++i) src.push_back(L'A');
+        src.push_back(wchar_t(0xD83D)); // index 747: high surrogate
+        src.push_back(wchar_t(0xDE80)); // index 748: its low partner (cut away)
+        while (src.size() < 1600) src.push_back(L'B');
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
+        TEST_CHECK(clamped, "M1: surrogate head-cut input clamped");
+        TEST_CHECK(!has_lone_surrogate(q),
+                   "M1: head cut never emits a lone HIGH surrogate");
+    }
+
+    // 6. Surrogate-pair boundary safety at the TAIL cut (low unit sits exactly
+    //    at tail_start - the tail must shift inward past the orphaned low).
+    {
+        std::wstring src;
+        src.reserve(1600);
+        while (src.size() < 748) src.push_back(L'A'); // head region
+        src.push_back(wchar_t(0xD83D));               // high partner (cut away)
+        src.push_back(wchar_t(0xDE80));               // low at tail_start
+        while (src.size() < 1600) src.push_back(L'B');
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
+        TEST_CHECK(clamped, "M1: surrogate tail-cut input clamped");
+        TEST_CHECK(!has_lone_surrogate(q),
+                   "M1: tail cut never emits a lone LOW surrogate");
+    }
+
+    // 7. URL-budget regression: worst-case Korean through the REAL encoding
+    //    chain must stay under the measured 16,200-byte OK boundary (probe
+    //    evidence: 16,200 B -> 200, 18,000 B -> 400).
+    {
+        const std::wstring korean(12000, L'각'); // far over any realistic clipboard
+        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(korean);
+        TEST_CHECK(clamped, "M1: 12,000 Korean units clamped");
+        const std::string encoded = GoogleTranslate::UrlEncode(ToUtf8(q));
+        TEST_CHECK(encoded.size() < 16200,
+                   "M1: worst-case Korean clamped query percent-encodes under the 16,200-B OK boundary");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] SEC-M1 cloud query clamp tests completed ("
+                  << (g_test_count - tests_before) << " checks)." << std::endl;
+    } else {
+        std::cout << "[FAIL] SEC-M1 cloud query clamp tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 void TestGoogleTranslateModule() {
     std::cout << "[RUN] Testing Google Translate Engine..." << std::endl;
     const int failures_before = g_failed_count;
@@ -6985,7 +7115,7 @@ void TestR6P5P6I18n() {
     //         Render - this pins it headlessly).
     int empty_count = 0;
     TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 52x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice; session 260911_0002 T2: +PrivacyNoticeTitle/Body, +CheatSheetConfigPath)");
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 53x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice; session 260911_0002 T2: +PrivacyNoticeTitle/Body, +CheatSheetConfigPath; SEC-M1: +TranslateTruncatedNotice)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -7068,6 +7198,23 @@ void TestR6P5P6I18n() {
                    "T7: the opt-out LLM marker appears exactly once per locale body (no duplication)");
         TEST_CHECK(readme_last_ok == 37,
                    "T7: the README guidance line remains the LAST line of the body in all 37 locales");
+        I18n::SetLocale(UiLocale::English);
+    }
+
+    // ---- 1b'') SEC-M1 (session 260911_0002, verify 235100 §5): the cloud
+    //           translation truncation notice resolves NON-EMPTY in all 37
+    //           locales (the EnumCount loop above forces it; this pins the
+    //           key explicitly with a per-key failure message, same pattern
+    //           as the T2 pins). Truncation must never be silent for the
+    //           public release.
+    {
+        int notice_ok = 0;
+        for (const UiLocale loc : kCompleteLocales) {
+            I18n::SetLocale(loc);
+            if (!I18n::Get(StringId::TranslateTruncatedNotice).empty()) ++notice_ok;
+        }
+        TEST_CHECK(notice_ok == 37,
+                   "M1: TranslateTruncatedNotice non-empty in all 37 locales");
         I18n::SetLocale(UiLocale::English);
     }
 
@@ -11494,6 +11641,7 @@ int main() {
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();
+    TestSecM1CloudQueryClamp(); // SEC-M1: cloud GET-query URL clamp seam
     TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
     TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
     TestRef36LayeredRendererPins(); // REF-3.6: shared renderer ownership + null-degradation + GDI-leak pins
