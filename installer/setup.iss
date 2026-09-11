@@ -556,6 +556,44 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// ToRtf - mojibake fix (session 260911_0001): wrap plain text in hand-built
+// RTF using \uN unicode escapes. CreateOutputMsgMemoPage's TRichEditViewer
+// converts PLAIN text to RTF internally via ANSI hex escapes under the
+// language code page (CP949 for Korean), which mangles every non-ASCII
+// character at display time (proven byte-level in
+// docs/260911_0001_session_installer-mojibake-regression/115200_debug-rootcause-installer-mojibake.md,
+// A/B validated in tools_tmp_mb19_rtf.py). Supplying explicit RTF with \u
+// escapes bypasses that lossy conversion entirely and keeps the memo
+// scrollable. Escapes \ { }, emits \par for CR, \uN? for chars >= 128.
+// ------------------------------------------------------------------------
+function ToRtf(const S: String): String;
+var
+  I: Integer;
+  C: Integer;
+  SB: String;
+begin
+  SB := '{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fnil\fcharset129 Malgun Gothic;}}' +
+         '\uc1\viewscale100\fs16\pard\sa60\slmult1\tx0\tx2268\f0\fs16' + #13#10;
+  for I := 1 to Length(S) do
+  begin
+    C := Ord(S[I]);
+    case C of
+      13: SB := SB + '\par' + #13#10;
+      10: ;
+      92: SB := SB + '\\';
+      123: SB := SB + '\{';
+      125: SB := SB + '\}';
+    else
+      if (C < 128) then
+        SB := SB + S[I]
+      else
+        SB := SB + '\u' + IntToStr(C) + '?';
+    end;
+  end;
+  Result := SB + '}';
+end;
+
+// ------------------------------------------------------------------------
 // MessageLines - B-3: fetch a [CustomMessages] body and guarantee real line
 // breaks for memo pages. Current Inno Setup expands the %n constant when it
 // loads [CustomMessages] (proven by the F2 hash-mismatch questions, which
@@ -563,11 +601,16 @@ end;
 // StringChangeEx pass below is a no-op. It is kept as a safety net so the
 // About/Guide memo bodies render multi-line even on a compiler that does not
 // expand %n in CustomMessage results.
+// The ToRtf() pass (mojibake fix) makes the return value an RTF document:
+// memo pages (CreateOutputMsgMemoPage) detect the leading '{\rtf' and use it
+// verbatim instead of running their lossy plain->RTF conversion. NEVER feed
+// plain non-ASCII text to a memo page.
 // ------------------------------------------------------------------------
 function MessageLines(const MsgName: String): String;
 begin
   Result := CustomMessage(MsgName);
   StringChangeEx(Result, '%n', #13#10, True);
+  Result := ToRtf(Result);
 end;
 
 // ------------------------------------------------------------------------

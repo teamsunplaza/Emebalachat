@@ -22,6 +22,40 @@ This directory contains the Inno Setup script and assets for building the Emebal
 > (project files BOM'd, bundled translations valid UTF-8, compiler-version
 > guard present). Exits non-zero on any violation; do not build past a FAIL.
 
+> **Display-text gate — run before every release build (mandatory):**
+> `python tools/check_installer_display_text.py`
+> Compiles a lowest-privilege probe wizard carrying the REAL
+> `[CustomMessages]` + `MessageLines()` from `setup.iss`, launches it per
+> language (ko/ja/zh-Hans/zh-Hant/en), and reads the About + Guide
+> `TRichEditViewer` memo content back via `WM_GETTEXT`, asserting clean
+> text and no CP949-mojibake signature. The static encoding gate cannot
+> see display-layer corruption — this gate closes that hole (session
+> 260911_0001). Exits non-zero on any failure; do not ship past a FAIL.
+
+## Memo page text MUST go through the RTF-safe `MessageLines()`
+
+**Rule:** Any text passed to `CreateOutputMsgMemoPage` (the About and Guide
+wizard pages) MUST be produced by `MessageLines()` in the `[Code]` section.
+Never assign plain non-ASCII text to a memo page.
+
+**Why:** `CreateOutputMsgMemoPage` renders through `TRichEditViewer`. When
+given a PLAIN string, Inno's internal plain→RTF conversion writes non-ASCII
+characters as ANSI hex escapes under the active language code page (CP949 for
+Korean), so every non-ASCII character is mangled at display time — Korean,
+Japanese, Chinese, accented Latin, and even English em-dashes/bullets garble
+(e.g. `에메발라 챗` rendered as `?먮찓諛쒕씪`), while the underlying compiled
+message data stays clean (root cause documented in
+`docs/260911_0001_session_installer-mojibake-regression/115200_debug-rootcause-installer-mojibake.md`).
+`MessageLines()` expands `%n` line breaks and then wraps the body in
+hand-built RTF (`ToRtf()`) using `\uN` unicode escapes, which
+`TRichEditViewer` consumes verbatim — bypassing the lossy conversion and
+keeping the memo scrollable.
+
+**Regression protection:** `tools/check_installer_display_text.py` extracts
+`ToRtf()`/`MessageLines()` from this file at run time and refuses to run if
+they are missing; remove the RTF wrap and the gate fails on every non-ASCII
+language (verified by negative control `tools_tmp_mb26_negative.py`).
+
 ### Option 1: GUI (Inno Setup Compiler)
 
 1. Open `setup.iss` in **Inno Setup Compiler**
