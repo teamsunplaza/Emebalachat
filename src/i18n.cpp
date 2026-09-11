@@ -97,6 +97,15 @@ struct LocalizedStrings {
     // REQ-C-004 (session 260909_0001 Batch-1): no-voice TTS notice body
     // (Phase C, design §1.2.2). Same trailing-initializer rule.
     const wchar_t* tooltip_no_tts_voice;
+
+    // REQ-206/208 (session 260911_0002 T2, P3 design §2.3/§2.4): first-run
+    // privacy consent popup (title + body, incl. the mandated "re-read the
+    // README anytime" guidance line) and the Cheat Sheet config.json
+    // relative-path line. Appended at the end (same trailing-initializer
+    // rule) so all 37 aggregate tables only gained trailing entries.
+    const wchar_t* privacy_notice_title;
+    const wchar_t* privacy_notice_body;
+    const wchar_t* cheatsheet_config_path;
 };
 
 // 1. Korean (ko)
@@ -164,7 +173,19 @@ const LocalizedStrings kStringsKorean = {
     L"키보드 타이핑",
     L"번역 툴팁",
     L"에메발라 챗",
-    L"이 언어에 설치된 Windows 음성이 없습니다. 🔊를 다시 클릭하면 음성 설정이 열립니다."
+    L"이 언어에 설치된 Windows 음성이 없습니다. 🔊를 다시 클릭하면 음성 설정이 열립니다.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"개인정보 보호 안내",
+    L"에메발라 챗의 개인정보 처리 원칙을 알려드립니다.\n"
+    L"\n"
+    L"• 에메발라 챗은 자체 서버를 운영하지 않습니다.\n"
+    L"• 로컬 모델을 사용하면 번역 내용이 기기를 벗어나지 않습니다.\n"
+    L"• Google 번역 엔진을 선택하거나 자동 전환된 경우, 선택하거나 입력한 텍스트가 에메발라를 거치지 않고 Google로 직접 전송되어 번역에 사용됩니다.\n"
+    L"• 진단 로그는 기본 꺼짐(OFF) 상태이며, 설정에서 켜는 옵트인 기능입니다.\n"
+    L"\n"
+    L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
+    L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 2. Japanese (ja)
@@ -232,7 +253,19 @@ const LocalizedStrings kStringsJapanese = {
     L"キーボード入力",
     L"ドラッグ翻訳ツールチップ",
     L"エメバラチャット",
-    L"この言語用の Windows 音声がインストールされていません。🔊 をもう一度クリックすると音声設定が開きます。"
+    L"この言語用の Windows 音声がインストールされていません。🔊 をもう一度クリックすると音声設定が開きます。",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"プライバシーに関するご案内",
+    L"Emebala Chat のプライバシー方針をご案内します。\n"
+    L"\n"
+    L"• Emebala Chat に独自サーバーはありません。\n"
+    L"• ローカルモデル使用時、翻訳内容はデバイスの外に出ません。\n"
+    L"• Google 翻訳エンジンを選択した場合、または自動切り替えで作動中は、選択・入力したテキストは Emebala を経由せず Google に直接送信され翻訳に使われます。\n"
+    L"• 診断ログは既定で OFF で、設定で ON にするオプトイン機能です。\n"
+    L"\n"
+    L"詳細は README ファイルをご覧ください。いつでも再読できます。\n",
+    L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -300,7 +333,19 @@ const LocalizedStrings kStringsChineseSimp = {
     L"键盘输入",
     L"划译工具提示",
     L"埃梅巴拉 翻译",
-    L"此语言未安装 Windows 语音。再次点击 🔊 可打开语音设置。"
+    L"此语言未安装 Windows 语音。再次点击 🔊 可打开语音设置。",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"隐私保护说明",
+    L"请阅读 Emebala Chat 的隐私处理原则。\n"
+    L"\n"
+    L"• Emebala Chat 不运营任何自有服务器。\n"
+    L"• 使用本地模型时，翻译内容不会离开您的设备。\n"
+    L"• 选择 Google 翻译引擎或自动切换到云端时，所选或输入的文本将直接发送给 Google 进行翻译，不经过 Emebala。\n"
+    L"• 诊断日志默认关闭（OFF），需在设置中手动开启（选择性加入）。\n"
+    L"\n"
+    L"完整说明请查看 README 文件，您可随时重新阅读。\n",
+    L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -368,7 +413,19 @@ const LocalizedStrings kStringsChineseTrad = {
     L"鍵盤輸入",
     L"划譯工具提示",
     L"埃梅巴拉 翻譯",
-    L"此語言未安裝 Windows 語音。再次點擊 🔊 可開啟語音設定。"
+    L"此語言未安裝 Windows 語音。再次點擊 🔊 可開啟語音設定。",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"隱私保護說明",
+    L"請閱讀 Emebala Chat 的隱私處理原則。\n"
+    L"\n"
+    L"• Emebala Chat 不營運任何自有伺服器。\n"
+    L"• 使用本機模型時，翻譯內容不會離開您的裝置。\n"
+    L"• 選擇 Google 翻譯引擎或自動切換至雲端時，所選或輸入的文字將直接傳送至 Google 進行翻譯，不經過 Emebala。\n"
+    L"• 診斷記錄預設關閉（OFF），需在設定中手動開啟（選擇性加入）。\n"
+    L"\n"
+    L"完整說明請查閱 README 檔案，您可隨時重新閱讀。\n",
+    L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 5. Vietnamese (vi)
@@ -436,7 +493,19 @@ const LocalizedStrings kStringsVietnamese = {
     L"Gõ phím",
     L"Dịch khi chọn văn bản",
     L"Emebala Chat",
-    L"Chưa cài đặt giọng nói Windows cho ngôn ngữ này. Nhấp lại 🔊 để mở Cài đặt Nhận dạng và giọng nói."
+    L"Chưa cài đặt giọng nói Windows cho ngôn ngữ này. Nhấp lại 🔊 để mở Cài đặt Nhận dạng và giọng nói.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Thông báo về quyền riêng tư",
+    L"Đây là nguyên tắc xử lý thông tin cá nhân của Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat không vận hành bất kỳ máy chủ riêng nào.\n"
+    L"• Khi dùng mô hình cục bộ, nội dung dịch không rời khỏi máy của bạn.\n"
+    L"• Khi chọn Google Dịch hoặc được tự động chuyển sang đám mây, văn bản bạn chọn hoặc nhập được gửi trực tiếp tới Google để dịch, không qua Emebala.\n"
+    L"• Nhật ký chẩn đoán mặc định TẮT; bạn phải bật trong cài đặt (chọn tham gia).\n"
+    L"\n"
+    L"Xem toàn bộ nội dung trong tệp README. Bạn có thể đọc lại bất cứ lúc nào.\n",
+    L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 6. Spanish (es)
@@ -501,7 +570,19 @@ const LocalizedStrings kStringsSpanish = {
     L"Escritura con teclado",
     L"Tooltip de selección",
     L"Emebala Chat",
-    L"No hay una voz de Windows instalada para este idioma. Haz clic de nuevo en 🔊 para abrir la configuración de Voz."
+    L"No hay una voz de Windows instalada para este idioma. Haz clic de nuevo en 🔊 para abrir la configuración de Voz.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Aviso de privacidad",
+    L"Estos son los principios de privacidad de Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat no opera ningún servidor propio.\n"
+    L"• Con el modelo local, el texto traducido nunca sale de tu dispositivo.\n"
+    L"• Si eliges Google Translate o se activa la nube automáticamente, el texto seleccionado o escrito se envía directamente a Google para su traducción, sin pasar por Emebala.\n"
+    L"• Los registros de diagnóstico están DESACTIVADOS por defecto; debes activarlos en la configuración (opt-in).\n"
+    L"\n"
+    L"Puedes leer el detalle completo en el archivo README cuando quieras.\n",
+    L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 7. English (en) - Default Fallback
@@ -570,7 +651,19 @@ const LocalizedStrings kStringsEnglish = {
     L"Keyboard Typing",
     L"Drag Tooltip",
     L"Emebala Chat",
-    L"No Windows voice installed for this language. Click 🔊 again to open Speech settings."
+    L"No Windows voice installed for this language. Click 🔊 again to open Speech settings.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Privacy Notice",
+    L"How Emebala Chat handles your data:\n"
+    L"\n"
+    L"• Emebala Chat operates no servers of its own.\n"
+    L"• With the local model, translated text never leaves your device.\n"
+    L"• If you choose Google Translate, or the engine switches to cloud automatically, the selected or typed text is sent directly to Google for translation - not through Emebala.\n"
+    L"• Diagnostic logs are OFF by default; enable them in settings (opt-in).\n"
+    L"\n"
+    L"You can re-read this anytime in the README file.\n",
+    L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -650,7 +743,19 @@ const LocalizedStrings kStringsFrench = {
     L"Saisie au clavier",
     L"Infobulle de glissement",
     L"Emebala Chat",
-    L"Aucune voix Windows installée pour cette langue. Cliquez à nouveau sur 🔊 pour ouvrir les paramètres de la Voix."
+    L"Aucune voix Windows installée pour cette langue. Cliquez à nouveau sur 🔊 pour ouvrir les paramètres de la Voix.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Avertissement de confidentialité",
+    L"Voici les principes de confidentialité d’Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat n’exploite aucun serveur propre.\n"
+    L"• Avec le modèle local, le texte traduit ne quitte jamais votre appareil.\n"
+    L"• Si vous choisissez Google Traduction ou si le basculement cloud est automatique, le texte sélectionné ou saisi est envoyé directement à Google pour la traduction, sans transiter par Emebala.\n"
+    L"• Les journaux de diagnostic sont DÉSACTIVÉS par défaut ; activez-les dans la configuration (consentement explicite).\n"
+    L"\n"
+    L"Le détail complet est dans le fichier README, relisible à tout moment.\n",
+    L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 9. German (de)
@@ -718,7 +823,19 @@ const LocalizedStrings kStringsGerman = {
     L"Tastatureingabe",
     L"Drag-Tooltip",
     L"Emebala Chat",
-    L"Für diese Sprache ist keine Windows-Stimme installiert. Klicken Sie erneut auf 🔊, um die Spracheinstellungen zu öffnen."
+    L"Für diese Sprache ist keine Windows-Stimme installiert. Klicken Sie erneut auf 🔊, um die Spracheinstellungen zu öffnen.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Datenschutzhinweis",
+    L"Dies sind die Datenschutzgrundsätze von Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat betreibt keine eigenen Server.\n"
+    L"• Bei Nutzung des lokalen Modells verlässt der übersetzte Text Ihr Gerät nicht.\n"
+    L"• Wenn Sie Google Übersetzen wählen oder automatisch in den Cloud-Modus gewechselt wird, wird der markierte oder eingegebene Text direkt an Google zur Übersetzung gesendet – nicht über Emebala.\n"
+    L"• Diagnostic-Protokolle sind standardmäßig AUS; aktivieren Sie sie in den Einstellungen (Opt-in).\n"
+    L"\n"
+    L"Details stehen in der README-Datei – jederzeit erneut lesbar.\n",
+    L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 10. Russian (ru)
@@ -786,7 +903,19 @@ const LocalizedStrings kStringsRussian = {
     L"Ввод с клавиатуры",
     L"Всплывающая подсказка",
     L"Эмебала Чат",
-    L"Для этого языка не установлен голос Windows. Нажмите 🔊 ещё раз, чтобы открыть параметры распознавания речи."
+    L"Для этого языка не установлен голос Windows. Нажмите 🔊 ещё раз, чтобы открыть параметры распознавания речи.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Уведомление о конфиденциальности",
+    L"Принципы обработки данных в Emebala Chat:\n"
+    L"\n"
+    L"• Emebala Chat не использует собственные серверы.\n"
+    L"• При локальной модели переводимый текст не покидает устройство.\n"
+    L"• Если выбран Google Переводчик или включён автопереход в облако, выделенный или введённый текст отправляется напрямую в Google для перевода, минуя Emebala.\n"
+    L"• Диагностические журналы по умолчанию ВЫКЛЮЧЕНЫ; их можно включить в настройках (по согласию).\n"
+    L"\n"
+    L"Полные сведения — в файле README, доступном для чтения в любое время.\n",
+    L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 11. Portuguese (pt)
@@ -854,7 +983,19 @@ const LocalizedStrings kStringsPortuguese = {
     L"Digitação no teclado",
     L"Dica de ferramenta",
     L"Emebala Chat",
-    L"Não há voz do Windows instalada para este idioma. Clique novamente em 🔊 para abrir as configurações de Fala."
+    L"Não há voz do Windows instalada para este idioma. Clique novamente em 🔊 para abrir as configurações de Fala.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Aviso de privacidade",
+    L"Estes são os princípios de privacidade do Emebala Chat.\n"
+    L"\n"
+    L"• O Emebala Chat não opera servidores próprios.\n"
+    L"• Com o modelo local, o texto traduzido nunca sai do seu dispositivo.\n"
+    L"• Se escolher o Google Tradutor ou houver mudança automática para a nuvem, o texto selecionado ou digitado é enviado diretamente ao Google para tradução, sem passar pelo Emebala.\n"
+    L"• Os registros de diagnóstico estão DESATIVADOS por padrão; ative-os nas configurações (opt-in).\n"
+    L"\n"
+    L"O detalhamento completo está no arquivo README, para reler quando quiser.\n",
+    L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 12. Italian (it)
@@ -922,7 +1063,19 @@ const LocalizedStrings kStringsItalian = {
     L"Digitazione da tastiera",
     L"Tooltip di trascinamento",
     L"Emebala Chat",
-    L"Nessuna voce Windows installata per questa lingua. Fai di nuovo clic su 🔊 per aprire le impostazioni di Riconoscimento vocale."
+    L"Nessuna voce Windows installata per questa lingua. Fai di nuovo clic su 🔊 per aprire le impostazioni di Riconoscimento vocale.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Informativa sulla privacy",
+    L"Ecco i principi sulla privacy di Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat non gestisce alcun server proprio.\n"
+    L"• Con il modello locale, il testo tradotto non lascia il dispositivo.\n"
+    L"• Se scegli Google Traduttore o il passaggio al cloud è automatico, il testo selezionato o digitato viene inviato direttamente a Google per la traduzione, senza passare da Emebala.\n"
+    L"• I log di diagnostica sono DISATTIVATI per impostazione predefinita; attivali nelle impostazioni (opt-in).\n"
+    L"\n"
+    L"Il dettaglio completo è nel file README, rileggibile in qualsiasi momento.\n",
+    L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 13. Dutch (nl)
@@ -990,7 +1143,19 @@ const LocalizedStrings kStringsDutch = {
     L"Typen op toetsenbord",
     L"Sleep-tooltip",
     L"Emebala Chat",
-    L"Er is geen Windows-stem geïnstalleerd voor deze taal. Klik nogmaals op 🔊 om de Spraak-instellingen te openen."
+    L"Er is geen Windows-stem geïnstalleerd voor deze taal. Klik nogmaals op 🔊 om de Spraak-instellingen te openen.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Privacymelding",
+    L"Dit zijn de privacyprincipes van Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat beheert geen eigen servers.\n"
+    L"• Met het lokale model verlaat de vertaalde tekst uw apparaat niet.\n"
+    L"• Als u Google Translate kiest of automatisch naar de cloud schakelt, wordt de geselecteerde of getypte tekst rechtstreeks naar Google verzonden voor vertaling, niet via Emebala.\n"
+    L"• Diagnosticelogboeken zijn standaard UIT; schakel ze in via de instellingen (opt-in).\n"
+    L"\n"
+    L"Alle details staan in het README-bestand, dat u altijd opnieuw kunt lezen.\n",
+    L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 14. Polish (pl)
@@ -1058,7 +1223,19 @@ const LocalizedStrings kStringsPolish = {
     L"Pisanie na klawiaturze",
     L"Etykieta przeciągania",
     L"Emebala Chat",
-    L"Dla tego języka nie zainstalowano głosu Windows. Kliknij ponownie 🔊, aby otworzyć ustawienia Mowy."
+    L"Dla tego języka nie zainstalowano głosu Windows. Kliknij ponownie 🔊, aby otworzyć ustawienia Mowy.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Informacja o prywatności",
+    L"Oto zasady prywatności w Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat nie prowadzi własnych serwerów.\n"
+    L"• Przy modelu lokalnym tłumaczony tekst nie opuszcza urządzenia.\n"
+    L"• Jeśli wybierzesz Tłumacz Google lub nastąpi automatyczne przełączenie w chmurę, zaznaczony lub wpisany tekst jest wysyłany bezpośrednio do Google w celu tłumaczenia, bez pośrednictwa Emebala.\n"
+    L"• Logi diagnostyczne są domyślnie WYŁĄCZONE; włącz je w konfiguracji (zgoda).\n"
+    L"\n"
+    L"Szczegóły znajdziesz w pliku README — możesz go przeczytać w dowolnej chwili.\n",
+    L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 15. Czech (cs)
@@ -1126,7 +1303,19 @@ const LocalizedStrings kStringsCzech = {
     L"Psaní na klávesnici",
     L"Tooltip tažení",
     L"Emebala Chat",
-    L"Pro tento jazyk není nainstalován žádný hlas Windows. Klikněte znovu na 🔊 pro otevření nastavení Rozpoznávání řeči."
+    L"Pro tento jazyk není nainstalován žádný hlas Windows. Klikněte znovu na 🔊 pro otevření nastavení Rozpoznávání řeči.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Oznámení o ochraně soukromí",
+    L"Zde jsou zásady ochrany soukromí aplikace Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat neprovožuje žádné vlastní servery.\n"
+    L"• Při lokálním modelu překládaný text neopouští vaše zařízení.\n"
+    L"• Pokud zvolíte Google Translate nebo dojde k automatickému přepnutí do cloudu, vybraný nebo zadaný text je posílán přímo společnosti Google k přeložení, bez prochzení přes Emebala.\n"
+    L"• Diagnostické protokoly jsou ve výchozím nastavení VYPNUTÉ; zapnete je v nastavení (opt-in).\n"
+    L"\n"
+    L"Podrobnosti najdete v souboru README, který lze kdykoli znovu přečíst.\n",
+    L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 16. Hungarian (hu)
@@ -1194,7 +1383,19 @@ const LocalizedStrings kStringsHungarian = {
     L"Billentyűzetes gépelés",
     L"Húzás tippablak",
     L"Emebala Chat",
-    L"Ehhez a nyelvhez nincs telepítve Windows-hang. Kattintson újra a 🔊 gombra a Beszéd beállításainak megnyitásához."
+    L"Ehhez a nyelvhez nincs telepítve Windows-hang. Kattintson újra a 🔊 gombra a Beszéd beállításainak megnyitásához.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Adatvédelmi tájékoztató",
+    L"Az Emebala Chat adatvédelmi elvei:\n"
+    L"\n"
+    L"• Az Emebala Chat nem üzemeltet saját szervert.\n"
+    L"• Helyi modell használatakor a fordított szöveg nem hagyja el az eszközt.\n"
+    L"• Ha a Google Fordítót választja, vagy automatikusan felhő üzemmódra vált, a kijelölt vagy bevitt szöveg közvetlenül a Google-höz megy a fordításhoz – nem az Emebala-n keresztül.\n"
+    L"• A diagnosztikai naplók alapértelmezés szerint KI vannak kapcsolva; a beállításokban kapcsolhatja be (hozzájulás).\n"
+    L"\n"
+    L"A teljes részletezés a README fájlban olvasható, bármikor újra.\n",
+    L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 17. Romanian (ro)
@@ -1262,7 +1463,19 @@ const LocalizedStrings kStringsRomanian = {
     L"Tastare de la tastatură",
     L"Sfat de glisare",
     L"Emebala Chat",
-    L"Nu există o voce Windows instalată pentru această limbă. Faceți clic din nou pe 🔊 pentru a deschide setările Vocii."
+    L"Nu există o voce Windows instalată pentru această limbă. Faceți clic din nou pe 🔊 pentru a deschide setările Vocii.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Notificare de confidențialitate",
+    L"Iată principiile de confidențialitate ale Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat nu operează niciun server propriu.\n"
+    L"• Cu modelul local, textul tradus nu părăsește dispozitivul.\n"
+    L"• Dacă alegi Google Translate sau se comută automat în cloud, textul selectat sau tastat este trimis direct la Google pentru traducere, fără a trece prin Emebala.\n"
+    L"• Jurnalele de diagnostic sunt IMPLICIT DEZACTIVATE; le activezi din setări (consimțământ).\n"
+    L"\n"
+    L"Detaliile complete sunt în fișierul README, recitibil oricând.\n",
+    L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 18. Swedish (sv)
@@ -1330,7 +1543,19 @@ const LocalizedStrings kStringsSwedish = {
     L"Tangentbordsskrivning",
     L"Dra-tooltip",
     L"Emebala Chat",
-    L"Ingen Windows-röst är installerad för det här språket. Klicka på 🔊 igen för att öppna Tal-inställningarna."
+    L"Ingen Windows-röst är installerad för det här språket. Klicka på 🔊 igen för att öppna Tal-inställningarna.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Integritetsinformation",
+    L"Så här hanterar Emebala Chat din integritet.\n"
+    L"\n"
+    L"• Emebala Chat driver inga egna servrar.\n"
+    L"• Med lokal modell lämnar den översatta texten aldrig enheten.\n"
+    L"• Om du väljer Google Översätt, eller om molnläge aktiveras automatiskt, skickas den markerade eller inmatade texten direkt till Google för översättning – inte via Emebala.\n"
+    L"• Diagnossloggar är AV som standard; du slår på dem i inställningarna (opt-in).\n"
+    L"\n"
+    L"Alla detaljer finns i README-filen, som du kan läsa om när som helst.\n",
+    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 19. Danish (da)
@@ -1398,7 +1623,19 @@ const LocalizedStrings kStringsDanish = {
     L"Tastaturindtastning",
     L"Drag-værktøjstip",
     L"Emebala Chat",
-    L"Der er ikke installeret en Windows-tale til dette sprog. Klik på 🔊 igen for at åbne Tale-indstillingerne."
+    L"Der er ikke installeret en Windows-tale til dette sprog. Klik på 🔊 igen for at åbne Tale-indstillingerne.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Privatlivspolitik",
+    L"Sådan behandler Emebala Chat dine data.\n"
+    L"\n"
+    L"• Emebala Chat driver ingen egen server.\n"
+    L"• Ved lokal model forlader den oversatte tekst ikke din enhed.\n"
+    L"• Hvis du vælger Google Translate, eller der skiftes automatisk til cloud, sendes den markerede eller indtastede tekst direkte til Google til oversættelse – ikke via Emebala.\n"
+    L"• Diagnosedokumentation er SOM STANDARD FRA; du slår den til i indstillingerne (tilvalg).\n"
+    L"\n"
+    L"Detaljerne står i README-filen, som du kan læse når som helst.\n",
+    L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 20. Finnish (fi)
@@ -1466,7 +1703,19 @@ const LocalizedStrings kStringsFinnish = {
     L"Näppäimistökirjoitus",
     L"Veto-työkaluvihje",
     L"Emebala Chat",
-    L"Tälle kielelle ei ole asennettu Windows-ääntä. Napsauta 🔊 uudelleen avataksesi Puhe-asetukset."
+    L"Tälle kielelle ei ole asennettu Windows-ääntä. Napsauta 🔊 uudelleen avataksesi Puhe-asetukset.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Tietosuojailmoitus",
+    L"Nämä ovat Emebala Chatin tietosuojaperiaatteet.\n"
+    L"\n"
+    L"• Emebala Chatilla ei ole omia palvelimia.\n"
+    L"• Paikallista mallia käytettäessä käännettävä teksti ei poistu laitteesta.\n"
+    L"• Jos valitset Google-kääntäjän tai tila vaihtuu automaattisesti pilveen, valittu tai kirjoitettu teksti lähetetään suoraan Googlelle käännöstä varten – ei Emebalan kautta.\n"
+    L"• Vianmäärityslokit ovat oletuksena POIS PAALTA; ota ne käyttöön asetuksissa (valinta).\n"
+    L"\n"
+    L"Tarkat tiedot ovat README-tiedostossa, jonka voit lukea milloin tahansa.\n",
+    L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 21. Norwegian (no / nb)
@@ -1534,7 +1783,19 @@ const LocalizedStrings kStringsNorwegian = {
     L"Tastaturskriving",
     L"Dra-verktøytips",
     L"Emebala Chat",
-    L"Ingen Windows-stemme er installert for dette språket. Klikk på 🔊 igjen for å åpne Tale-innstillingene."
+    L"Ingen Windows-stemme er installert for dette språket. Klikk på 🔊 igjen for å åpne Tale-innstillingene.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Personvernerklæring",
+    L"Dette er personvernprinsippene til Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat driver ingen egne servere.\n"
+    L"• Med lokal modell forlater den oversatte teksten ikke enheten.\n"
+    L"• Hvis du velger Google Oversett, eller det bytter automatisk til sky, sendes markert eller skrevet tekst direkte til Google for oversettelse – ikke via Emebala.\n"
+    L"• Diagnosticslogger er AV som standard; du slår dem på i innstillingene (opt-in).\n"
+    L"\n"
+    L"Detaljene finnes i README-filen, som kan leses på nytt når som helst.\n",
+    L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 22. Greek (el)
@@ -1602,7 +1863,19 @@ const LocalizedStrings kStringsGreek = {
     L"Πληκτρολόγηση",
     L"Υπόδειξη σύρσιμο",
     L"Εμεμπάλα Τσατ",
-    L"Δεν είναι εγκατεστημένη φωνή των Windows για αυτή τη γλώσσα. Κάντε ξανά κλικ στο 🔊 για να ανοίξετε τις ρυθμίσεις Ομιλίας."
+    L"Δεν είναι εγκατεστημένη φωνή των Windows για αυτή τη γλώσσα. Κάντε ξανά κλικ στο 🔊 για να ανοίξετε τις ρυθμίσεις Ομιλίας.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Γνωστοποίηση απορρήτου",
+    L"Αυτές είναι οι αρχές απορρήτου του Emebala Chat.\n"
+    L"\n"
+    L"• Το Emebala Chat δεν λειτουργεί δικούς του διακομιστές.\n"
+    L"• Με τοπικό μοντέλο, το μεταφραζόμενο κείμενο δεν φεύγει από τη συσκευή σας.\n"
+    L"• Αν επιλέξετε τη Μετάφραση Google ή γίνει αυτόματη εναλλαγή στο cloud, το επιλεγμένο ή πληκτρολογημένο κείμενο στέλνεται απευθείας στην Google για μετάφραση, όχι μέσω Emebala.\n"
+    L"• Τα αρχεία διαγνωστικών είναι ΑΠΕΝΕΡΓΟΠΟΙΗΜΕΝΑ από προεπιλογή· ενεργοποιούνται στις ρυθμίσεις (ρητή συναίνεση).\n"
+    L"\n"
+    L"Οι πλήρεις λεπτομέρειες βρίσκονται στο αρχείο README, που διαβάζεται ξανά ανά πάσα στιγμή.\n",
+    L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 23. Turkish (tr)
@@ -1670,7 +1943,19 @@ const LocalizedStrings kStringsTurkish = {
     L"Klavye yazımı",
     L"Sürükle ipucu",
     L"Emebala Chat",
-    L"Bu dil için yüklü bir Windows sesi yok. Konuşma ayarlarını açmak için 🔊 simgesine yeniden tıklayın."
+    L"Bu dil için yüklü bir Windows sesi yok. Konuşma ayarlarını açmak için 🔊 simgesine yeniden tıklayın.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Gizlilik uyarısı",
+    L"Emebala Chat gizlilik ilkeleri şöyledir:\n"
+    L"\n"
+    L"• Emebala Chat kendi sunucularını işletmez.\n"
+    L"• Yerel model kullanıldığında çevrilen metin cihazınızdan çıkmaz.\n"
+    L"• Google Çeviri seçerseniz veya otomatik buluta geçilirse, seçilen ya da yazılan metin çeviri için doğrudan Google’a gönderilir; Emebala üzerinden geçmez.\n"
+    L"• Tanılama günlükleri varsayılan olarak KAPALIDIR; ayarlardan açmanız gerekir (seçmeli onay).\n"
+    L"\n"
+    L"Tam ayrıntılar README dosyasındadır; istediğiniz zaman tekrar okuyabilirsiniz.\n",
+    L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 24. Ukrainian (uk)
@@ -1738,7 +2023,19 @@ const LocalizedStrings kStringsUkrainian = {
     L"Набирання з клавіатури",
     L"Підказка перетягування",
     L"Емебала Чат",
-    L"Для цієї мови не встановлено голос Windows. Натисніть 🔊 ще раз, щоб відкрити параметри мовлення."
+    L"Для цієї мови не встановлено голос Windows. Натисніть 🔊 ще раз, щоб відкрити параметри мовлення.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Повідомлення про конфіденційність",
+    L"Ось принципи обробки даних в Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat не використовує власних серверів.\n"
+    L"• З локальною моделлю текст перекладу не покидає вашого пристрою.\n"
+    L"• Якщо обрано Google Перекладач або відбувається автоматичний перехід у хмару, виділений або надрукований текст надсилається напряму до Google для перекладу, минаючи Emebala.\n"
+    L"• Діагностичні журнали типово ВИМКНЕНО; увімкніть їх у налаштуваннях (за згодою).\n"
+    L"\n"
+    L"Повні відомості — у файлі README, який можна перечитати будь-коли.\n",
+    L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 25. Thai (th)
@@ -1806,7 +2103,19 @@ const LocalizedStrings kStringsThai = {
     L"การพิมพ์ด้วยคีย์บอร์ด",
     L"ทูลทิปแบบลาก",
     L"เอเมบาลา แชท",
-    L"ยังไม่ได้ติดตั้งเสียงของ Windows สำหรับภาษานี้ คลิก 🔊 อีกครั้งเพื่อเปิดการตั้งค่าคำพูด"
+    L"ยังไม่ได้ติดตั้งเสียงของ Windows สำหรับภาษานี้ คลิก 🔊 อีกครั้งเพื่อเปิดการตั้งค่าคำพูด",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"ประกาศด้านความเป็นส่วนตัว",
+    L"หลักเกณฑ์ด้านความเป็นส่วนตัวของ Emebala Chat มีดังนี้\n"
+    L"\n"
+    L"• Emebala Chat ไม่มีเซิร์ฟเวอร์ของตนเอง\n"
+    L"• เมื่อใช้โมเดลในเครื่อง ข้อความที่แปลจะไม่ออกจากอุปกรณ์ของคุณ\n"
+    L"• หากคุณเลือก Google Translate หรือสลับไปใช้ระบบคลาวด์อัตโนมัติ ข้อความที่คุณเลือกหรือพิมพ์จะถูกส่งตรงไปยัง Google เพื่อแปล โดยไม่ผ่าน Emebala\n"
+    L"• บันทึกการวินิจฉัยปิด (OFF) เป็นค่าเริ่มต้น ต้องเปิดในการตั้งค่า (เลือกเข้าร่วม)\n"
+    L"\n"
+    L"ดูรายละเอียดฉบับเต็มในไฟล์ README ซึ่งอ่านซ้ำได้ทุกเมื่อ\n",
+    L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 26. Indonesian (id)
@@ -1874,7 +2183,19 @@ const LocalizedStrings kStringsIndonesian = {
     L"Pengetikan keyboard",
     L"Tooltip seret",
     L"Emebala Chat",
-    L"Tidak ada suara Windows yang terpasang untuk bahasa ini. Klik 🔊 lagi untuk membuka pengaturan Ucapan."
+    L"Tidak ada suara Windows yang terpasang untuk bahasa ini. Klik 🔊 lagi untuk membuka pengaturan Ucapan.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Pemberitahuan privasi",
+    L"Berikut prinsip privasi Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat tidak mengoperasikan server sendiri.\n"
+    L"• Dengan model lokal, teks terjemahan tidak meninggalkan perangkat Anda.\n"
+    L"• Jika Anda memilih Google Translate atau beralih otomatis ke cloud, teks yang dipilih atau diketik dikirim langsung ke Google untuk diterjemahkan, bukan melalui Emebala.\n"
+    L"• Log diagnostik secara default MATI; aktifkan di pengaturan (opt-in).\n"
+    L"\n"
+    L"Detail lengkap ada di berkas README, yang dapat dibaca ulang kapan saja.\n",
+    L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 27. Malay (ms)
@@ -1942,7 +2263,19 @@ const LocalizedStrings kStringsMalay = {
     L"Taipan papan kekunci",
     L"Tooltip seret",
     L"Emebala Chat",
-    L"Tiada suara Windows dipasang untuk bahasa ini. Klik 🔊 sekali lagi untuk membuka tetapan Ucapan."
+    L"Tiada suara Windows dipasang untuk bahasa ini. Klik 🔊 sekali lagi untuk membuka tetapan Ucapan.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Pemberitahuan privasi",
+    L"Berikut adalah prinsip privasi Emebala Chat.\n"
+    L"\n"
+    L"• Emebala Chat tidak mengendalikan pelayan sendiri.\n"
+    L"• Dengan model setempat, teks diterjemahkan tidak meninggalkan peranti anda.\n"
+    L"• Jika anda memilih Google Terjemah atau bertukar ke awan secara automatik, teks yang dipilih atau ditaip dihantar terus kepada Google untuk diterjemahkan, bukan melalui Emebala.\n"
+    L"• Log diagnostik dimatikan secara lalai; aktifkan dalam tetapan (pilihan).\n"
+    L"\n"
+    L"Butiran penuh terdapat dalam fail README, yang boleh dibaca semula pada bila-bila masa.\n",
+    L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 28. Filipino (fil)
@@ -2012,7 +2345,19 @@ const LocalizedStrings kStringsFilipino = {
     L"Pagta-type ng keyboard",
     L"Tooltip ng pagdrag",
     L"Emebala Chat",
-    L"Walang naka-install na Windows voice para sa wikang ito. I-click muli ang 🔊 upang buksan ang mga setting ng Pagsasalita."
+    L"Walang naka-install na Windows voice para sa wikang ito. I-click muli ang 🔊 upang buksan ang mga setting ng Pagsasalita.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"Paalala sa privacy",
+    L"Narito ang mga prinsipyo sa privacy ng Emebala Chat.\n"
+    L"\n"
+    L"• Walang sariling server na pinapatakbo ang Emebala Chat.\n"
+    L"• Sa local na model, hindi lumalabas sa iyong device ang isinalin.\n"
+    L"• Kung pipiliin ang Google Translate o awtomatikong lilipat sa cloud, ang napili o ni-type na teksto ay ipapadala nang direkta sa Google para isalin, hindi sa pamamagitan ng Emebala.\n"
+    L"• Ang diagnostic log ay OFF sa default; i-on sa settings (opt-in).\n"
+    L"\n"
+    L"Makikita ang buong detalye sa README file na maaaring babasahin anumang oras.\n",
+    L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 29. Hindi (hi)
@@ -2080,7 +2425,19 @@ const LocalizedStrings kStringsHindi = {
     L"कीबोर्ड टाइपिंग",
     L"ड्रैग टूलटिप",
     L"एमेबाला चैट",
-    L"इस भाषा के लिए कोई Windows वॉइस इंस्टॉल नहीं है. वॉइस सेटिंग खोलने के लिए 🔊 पर फिर से क्लिक करें."
+    L"इस भाषा के लिए कोई Windows वॉइस इंस्टॉल नहीं है. वॉइस सेटिंग खोलने के लिए 🔊 पर फिर से क्लिक करें.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"गोपनीयता सूचना",
+    L"Emebala Chat की गोपनीयता नीति इस प्रकार है:\n"
+    L"\n"
+    L"• Emebala Chat का कोई अपना सर्वर नहीं है।\n"
+    L"• स्थानीय मॉडल पर अनुवादित पाठ आपके डिवाइस से बाहर नहीं जाता।\n"
+    L"• यदि आप Google Translate चुनते हैं या स्वतः क्लाउड पर स्विच होता है, तो चयनित/लिखा पाठ अनुवाद हेतु सीधे Google भेजा जाता है — Emebala से नहीं।\n"
+    L"• डायग्नोस्टिक लॉग डिफ़ॉल्ट बंद (OFF) हैं; सेटिंग में चालू करें (opt-in)।\n"
+    L"\n"
+    L"पूरा विवरण README फ़ाइल में है, जिसे आप कभी भी दोबारा पढ़ सकते हैं।\n",
+    L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 30. Bengali (bn)
@@ -2148,7 +2505,19 @@ const LocalizedStrings kStringsBengali = {
     L"কীবোর্ড টাইপিং",
     L"ড্র্যাগ টুলটিপ",
     L"এমেবালা চ্যাট",
-    L"এই ভাষার জন্য কোনো Windows ভয়েস ইনস্টল করা নেই. ভয়েস সেটিংস খুলতে 🔊-এ আবার ক্লিক করুন."
+    L"এই ভাষার জন্য কোনো Windows ভয়েস ইনস্টল করা নেই. ভয়েস সেটিংস খুলতে 🔊-এ আবার ক্লিক করুন.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"গোপনীয়তা বিজ্ঞপ্তি",
+    L"Emebala Chat-এর গোপনীয়তা নীতি নিচে দেওয়া হলো:\n"
+    L"\n"
+    L"• Emebala Chat-এর নিজস্ব কোনো সার্ভার নেই।\n"
+    L"• লোকাল মডেল ব্যবহার করলে অনুবাদিত টেক্সট আপনার ডিভাইস ছেড়ে যায় না।\n"
+    L"• আপনি Google Translate নির্বাচন করলে বা স্বয়ংক্রিয়ভাবে ক্লাউডে গেলে, নির্বাচিত/লিখিত টেক্সট অনুবাদের জন্য সরাসরি Google-এ যায় — Emebala-র মাধ্যমে নয়।\n"
+    L"• ডায়াগনস্টিক লগ ডিফল্ট বন্ধ (OFF); সেটিংসে চালু করতে হয় (opt-in)।\n"
+    L"\n"
+    L"পূর্ণ বিবরণ README ফাইলে আছে, যেটি যেকোনো সময় আবার পড়া যাবে।\n",
+    L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -2217,7 +2586,19 @@ const LocalizedStrings kStringsArabic = {
     L"الكتابة بلوحة المفاتيح",
     L"تلميح السحب",
     L"إيميبالا شات",
-    L"لا يوجد صوت Windows مثبت لهذه اللغة. انقر فوق 🔊 مرة أخرى لفتح إعدادات الكلام."
+    L"لا يوجد صوت Windows مثبت لهذه اللغة. انقر فوق 🔊 مرة أخرى لفتح إعدادات الكلام.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"إشعار الخصوصية",
+    L"هذه مبادئ الخصوصية في Emebala Chat.\n"
+    L"\n"
+    L"• لا يشغّل Emebala Chat أي خوادم خاصة به.\n"
+    L"• عند استخدام النموذج المحلي، لا يغادر النص المترجم جهازك.\n"
+    L"• إذا اخترت ترجمة Google أو تم التبديل التلقائي إلى السحابة، يُرسَل النص المحدَّد أو المكتوب مباشرة إلى Google للترجمة، وليس عبر Emebala.\n"
+    L"• سجلات التشخيص معطّلة افتراضيًا؛ تفعّلها من الإعدادات (بموافقتك).\n"
+    L"\n"
+    L"التفاصيل الكاملة في ملف README ويمكن قراءته في أي وقت.\n",
+    L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 32. Persian (fa) — RTL
@@ -2285,7 +2666,19 @@ const LocalizedStrings kStringsPersian = {
     L"تایپ با کیبورد",
     L"راهنمای ابزار کشیدن",
     L"امبالا چت",
-    L"هیچ صدای Windows برای این زبان نصب نشده است. برای باز کردن تنظیمات گفتار، دوباره روی 🔊 کلیک کنید."
+    L"هیچ صدای Windows برای این زبان نصب نشده است. برای باز کردن تنظیمات گفتار، دوباره روی 🔊 کلیک کنید.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"اعلان حریم خصوصی",
+    L"اصول حریم خصوصی در Emebala Chat:\n"
+    L"\n"
+    L"• Emebala Chat سرور اختصاصی ندارد.\n"
+    L"• با مدل محلی، متن ترجمه‌شده از دستگاه شما خارج نمی‌شود.\n"
+    L"• اگر Google Translate را انتخاب کنید یا تبدیل خودکار به ابری رخ دهد، متن انتخابی یا تایپ‌شده برای ترجمه مستقیماً به Google ارسال می‌شود؛ نه از طریق Emebala.\n"
+    L"• گزارش‌های تشخیصی به‌طور پیش‌فرض خاموش‌اند؛ از تنظیمات روشن می‌شوند (با انتخاب شما).\n"
+    L"\n"
+    L"جزئیات کامل در فایل README است و هر زمان قابل خواندن مجدد است.\n",
+    L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 33. Urdu (ur) — RTL
@@ -2353,7 +2746,19 @@ const LocalizedStrings kStringsUrdu = {
     L"کی بورڈ ٹائپنگ",
     L"ڈریگ ٹول ٹپ",
     L"ایمیبالا چیٹ",
-    L"اس زبان کے لیے کوئی Windows وائس انسٹال نہیں ہے۔ اسپیچ سیٹنگز کھولنے کے لیے 🔊 پر دوبارہ کلک کریں۔"
+    L"اس زبان کے لیے کوئی Windows وائس انسٹال نہیں ہے۔ اسپیچ سیٹنگز کھولنے کے لیے 🔊 پر دوبارہ کلک کریں۔",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"رازداری کا اعلان",
+    L"Emebala Chat کے رازداری کے اصول:\n"
+    L"\n"
+    L"• Emebala Chat کا اپنا کوئی سرور نہیں ہے۔\n"
+    L"• لوکل ماڈل پر ترجمہ شدہ متن آپ کے ڈیوائس سے باہر نہیں جاتا۔\n"
+    L"• اگر آپ Google Translate منتخب کریں یا خودکار طور پر کلاؤڈ پر سوئچ ہو، تو منتخب/ٹائپ شدہ متن ترجمے کے لیے براہ راست Google کو جاتا ہے — Emebala کے ذریعے نہیں۔\n"
+    L"• ڈائگناسٹک لاگ ڈیفالٹ طور پر بند (OFF) ہیں؛ سیٹنگز میں آن کریں (opt-in)۔\n"
+    L"\n"
+    L"مکمل تفصیل README فائل میں ہے، جسے آپ کسی بھی وقت دوبارہ پڑھ سکتے ہیں۔\n",
+    L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 34. Hebrew (he) — RTL
@@ -2421,7 +2826,19 @@ const LocalizedStrings kStringsHebrew = {
     L"הקלדה במקלדת",
     L"רמז גרירה",
     L"אמבאלה צ'אט",
-    L"אין קול Windows מותקן עבור שפה זו. לחץ שוב על 🔊 כדי לפתוח את הגדרות הדיבור."
+    L"אין קול Windows מותקן עבור שפה זו. לחץ שוב על 🔊 כדי לפתוח את הגדרות הדיבור.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"הודעת פרטיות",
+    L"עקרונות הפרטיות של Emebala Chat:\n"
+    L"\n"
+    L"• ל־Emebala Chat אין שרתים משלה.\n"
+    L"• במודל מקומי, הטקסט המתורגם אינו עוזב את המכשיר שלך.\n"
+    L"• אם תבחר ב־Google Translate או שהמעבר לענן יתבצע אוטומטית, הטקסט הנבחר או המוקלד נשלח ישירות ל־Google לצורך תרגום, ולא דרך Emebala.\n"
+    L"• יומני אבחון כבויים כברירת מחדל; הפעל אותם בהגדרות (הסכמה מפורשת).\n"
+    L"\n"
+    L"הפירוט המלא בקובץ README, הניתן לקריאה חוזרת בכל עת.\n",
+    L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 35. Khmer (km)
@@ -2489,7 +2906,19 @@ const LocalizedStrings kStringsKhmer = {
     L"ការវាយអក្សរលើក្ដារចុច",
     L"បន្ទាត់ណែនាំពេលអូស",
     L"អេមេបាឡា ឆាត",
-    L"មិនមានសំឡេង Windows ត្រូវបានដំឡើងសម្រាប់ភាសានេះទេ។ ចុច 🔊 ម្តងទៀតដើម្បីបើកការកំណត់ការនិយាយ។"
+    L"មិនមានសំឡេង Windows ត្រូវបានដំឡើងសម្រាប់ភាសានេះទេ។ ចុច 🔊 ម្តងទៀតដើម្បីបើកការកំណត់ការនិយាយ។",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"ការជូនដំណឹងអំពីឯកជនភាព",
+    L"គោលការណ៍ឯកជនភាពរបស់ Emebala Chat មានដូចខាងក្រោម៖\n"
+    L"\n"
+    L"• Emebala Chat មិនដំណើរការសាឺវឺរបស់ខ្លួនទេ។\n"
+    L"• ពេលប្រើម៉ូដែលក្នុងឧបករណ៍ អត្ថបទបកប្រែមិនចេញពីឧបករណ៍របស់អ្នកទេ។\n"
+    L"• បើអ្នកជ្រើស Google Translate ឬប្ដូរទៅពពកដោយស្វ័យប្រវត្តិ អត្ថបទដែលជ្រើស ឬបោះពុម្ពត្រូវផ្ញើទៅ Google ដោយផ្ទាល់ដើម្បីបកប្រែ ដោយមិនឆ្លងកាត់ Emebala ទេ។\n"
+    L"• កំណត់ហេតុធ្វើរោគវិនិច្ឆ័យត្រូវបានបិទដោយលំនាំដើម ហើយត្រូវបើកក្នុងការកំណត់ (ជ្រើសរើសចូលរួម)។\n"
+    L"\n"
+    L"ព័ត៌មានលម្អិតស្ថិតក្នុងឯកសារ README ដែលអាចអានឡើងវិញពេលណាក៏បាន។\n",
+    L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 36. Lao (lo)
@@ -2557,7 +2986,19 @@ const LocalizedStrings kStringsLao = {
     L"ການພິມດ້ວຍແປ້ນພິມ",
     L"ຄຳແນະນຳເມື່ອລາກ",
     L"ເອເມບາລາ ແຊັດ",
-    L"ບໍ່ມີສຽງ Windows ຕິດຕັ້ງສຳລັບພາສານີ້. ຄລິກ 🔊 ອີກເທື່ອໜຶ່ງເພື່ອເປີດການຕັ້ງຄ່າການເວົ້າ."
+    L"ບໍ່ມີສຽງ Windows ຕິດຕັ້ງສຳລັບພາສານີ້. ຄລິກ 🔊 ອີກເທື່ອໜຶ່ງເພື່ອເປີດການຕັ້ງຄ່າການເວົ້າ.",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"ການແຈ້ງເຕືອນດ້ານຄວາມເປັນສ່ວນຕົວ",
+    L"ຫຼັກການດ້ານຄວາມເປັນສ່ວນຕົວຂອງ Emebala Chat ມີດັ່ງນີ້:\n"
+    L"\n"
+    L"• Emebala Chat ບໍ່ມີເຊີເວີຂອງຕົນເອງ.\n"
+    L"• ເມື່ອໃຊ້ແບບຈຳລອງພາຍໃນເຄື່ອງ, ຂໍ້ຄວາມແປຈະບໍ່ອອກຈາກອຸປະກອນຂອງທ່ານ.\n"
+    L"• ຖ້າທ່ານເລືອກ Google Translate ຫຼືສະຫຼັບໄປຄລາວອັດຕະໂນມັດ, ຂໍ້ຄວາມທີ່ເລືອກ ຫຼືພິມ ຈະຖືກສົ່ງໄປ Google ໂດຍກົງ ເພື່ອແປ, ບໍ່ຜ່ານ Emebala.\n"
+    L"• ໄຟລ໌ບັນທຶກການວິນິດໄສຖືກປິດໄວ້ເປັນຄ່າເລີ່ມຕົ້ນ; ເປີດໄດ້ໃນການຕັ້ງຄ່າ (ເລືອກເຂົ້າຮ່ວມ).\n"
+    L"\n"
+    L"ລາຍລະອຽດເຕັມຢູ່ໃນໄຟລ໌ README ທີ່ສາມາດອ່ານຄືນໄດ້ທຸກເວລາ.\n",
+    L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 // 37. Burmese (my)
@@ -2625,7 +3066,19 @@ const LocalizedStrings kStringsBurmese = {
     L"ကီးဘုတ် ရိုက်နှိပ်ခြင်း",
     L"ဆွဲယူမှု ToolTip",
     L"အီမီဘာလာ ချက်",
-    L"ဤဘာသာစကားအတွက် Windows အသံ တပ်ဆင်ထားခြင်း မရှိပါ။ စပီခ် ဆက်တင်များ ဖွင့်ရန် 🔊 ကို ထပ်မံနှိပ်ပါ။"
+    L"ဤဘာသာစကားအတွက် Windows အသံ တပ်ဆင်ထားခြင်း မရှိပါ။ စပီခ် ဆက်တင်များ ဖွင့်ရန် 🔊 ကို ထပ်မံနှိပ်ပါ။",
+    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
+    // config-path line (trailing-initializer append, design §2.4).
+    L"ကိုယ်ရေးအချက်အလက် လုံခြုံရေးကြေညာချက်",
+    L"Emebala Chat ၏ ကိုယ်ရေးလုံခြုံမှု မူဝါဒများမှာ-\n"
+    L"\n"
+    L"• Emebala Chat သည် ကိုယ်ပိုင်ဆာဗာ မလည်ပတ်ပါ။\n"
+    L"• ဒေသတွင်းမော်ဒယ်သုံးပါက ဘာသာပြန်စာသားသည် သင့်စက်မှ မထွက်ပါ။\n"
+    L"• Google Translate ကို ရွေးလိုက်ပါက သို့မဟုတ် တစ်ဆက်တည်း cloud သို့ ပြောင်းလိုက်ပါက ရွေးထား/ရိုက်ထားသော စာသားသည် ဘာသာပြန်ရန် Google သို့ တိုက်ရိုက်ပို့ပြီး Emebala မဖြတ်ပါ။\n"
+    L"• ရောဂါရှာဖွေ log များသည် မူလပိတ်ထားသည်။ ဆက်တင်တွင် ပွင့်အပ် (opt-in)။\n"
+    L"\n"
+    L"အသေးစိတ်ကို README ဖိုင်တွင် ဖတ်နိုင်ပြီး အချိန်မရွေး ပြန်ဖတ်နိုင်သည်။\n",
+    L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -2853,6 +3306,10 @@ std::wstring I18n::Get(StringId id) {
         // REQ-B-001 / REQ-C-004 (session 260909_0001 Batch-1)
         case StringId::AppName: return s.app_name;
         case StringId::TooltipNoTtsVoice: return s.tooltip_no_tts_voice;
+        // REQ-206/208 (session 260911_0002 T2, P3 design §2.3/§2.4)
+        case StringId::PrivacyNoticeTitle: return s.privacy_notice_title;
+        case StringId::PrivacyNoticeBody: return s.privacy_notice_body;
+        case StringId::CheatSheetConfigPath: return s.cheatsheet_config_path;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

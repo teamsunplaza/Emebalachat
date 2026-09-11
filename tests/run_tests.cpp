@@ -6868,7 +6868,7 @@ void TestR6P5P6I18n() {
     //         Render - this pins it headlessly).
     int empty_count = 0;
     TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 49x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice)");
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 52x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice; session 260911_0002 T2: +PrivacyNoticeTitle/Body, +CheatSheetConfigPath)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -6878,6 +6878,35 @@ void TestR6P5P6I18n() {
         }
     }
     TEST_CHECK(empty_count == 0, "P5/P6/B3: every StringId non-empty in all 37 locales");
+
+    // ---- 1b) REQ-206/208 (session 260911_0002 T2): explicit pins for the 3
+    //         new privacy/config-path StringIds. The EnumCount loop above
+    //         already forces non-emptiness; this asserts the REQ-specific
+    //         invariants: (a) each new key resolves non-empty in all 37
+    //         locales (clear per-key failure message), (b) the Cheat Sheet
+    //         config-path line carries the %LOCALAPPDATA%\Emebalachat\
+    //         config.json token VERBATIM in every locale (REQ-206: relative/
+    //         env-var path only, never expanded to an absolute path),
+    //         (c) the privacy body carries the universal "README" guidance
+    //         token in every locale (REQ-208: re-read-the-README line).
+    {
+        int title_ok = 0, body_ok = 0, readme_ok = 0, path_ok = 0;
+        for (const UiLocale loc : kCompleteLocales) {
+            I18n::SetLocale(loc);
+            if (!I18n::Get(StringId::PrivacyNoticeTitle).empty()) ++title_ok;
+            const std::wstring body = I18n::Get(StringId::PrivacyNoticeBody);
+            if (!body.empty()) ++body_ok;
+            if (body.find(L"README") != std::wstring::npos) ++readme_ok;
+            if (I18n::Get(StringId::CheatSheetConfigPath)
+                    .find(L"%LOCALAPPDATA%\\Emebalachat\\config.json")
+                    != std::wstring::npos) ++path_ok;
+        }
+        TEST_CHECK(title_ok == 37, "T2: PrivacyNoticeTitle non-empty in all 37 locales");
+        TEST_CHECK(body_ok == 37, "T2: PrivacyNoticeBody non-empty in all 37 locales");
+        TEST_CHECK(readme_ok == 37, "T2: PrivacyNoticeBody keeps the README guidance token in all 37 locales");
+        TEST_CHECK(path_ok == 37, "T2: CheatSheetConfigPath shows the verbatim %LOCALAPPDATA% token (never expanded) in all 37 locales");
+        I18n::SetLocale(UiLocale::English);
+    }
 
     // ---- 2) FR/DE/RU acceptance (REQ-037 INVERTS the R6 removal) ------------
     // Design §2.1.1 + §Issues: the half-wired removal is superseded by the

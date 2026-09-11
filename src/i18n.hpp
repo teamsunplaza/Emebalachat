@@ -149,6 +149,16 @@ enum class StringId {
     // (Phase C, design §1.2.2 - "No Windows voice installed..." message).
     TooltipNoTtsVoice,
 
+    // REQ-206/208 (session 260911_0002 T2, P3 design §2.3/§2.4): first-run
+    // privacy consent popup (title + body incl. the mandated "re-read the
+    // README anytime" guidance line) and the Cheat Sheet config.json
+    // relative-path line. The popup is a MB_OK MessageBoxW, so its OK button
+    // is system-localized and needs no StringId here. Appended last so the
+    // EnumCount completeness loop covers them automatically (52x37).
+    PrivacyNoticeTitle,
+    PrivacyNoticeBody,
+    CheatSheetConfigPath,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
