@@ -69,6 +69,7 @@ _ul
 tmp_*
 tools/tmp_*
 tools/e2e/tmp_*
+tools/e2e/secadj_*.png
 
 # IDE & OS metadata
 .vs/
