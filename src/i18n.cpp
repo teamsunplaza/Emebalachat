@@ -183,6 +183,7 @@ const LocalizedStrings kStringsKorean = {
     L"• 로컬 모델을 사용하면 번역 내용이 기기를 벗어나지 않습니다.\n"
     L"• Google 번역 엔진을 선택하거나 자동 전환된 경우, 선택하거나 입력한 텍스트가 에메발라를 거치지 않고 Google로 직접 전송되어 번역에 사용됩니다.\n"
     L"• 진단 로그는 기본 꺼짐(OFF) 상태이며, 설정에서 켜는 옵트인 기능입니다.\n"
+    L"• 텍스트를 클라우드(Google)로 전송하기 원치 않으시면 트레이 아이콘 메뉴의 “번역 엔진 선택”에서 “로컬 LLM”을 선택하세요. 로컬 모델이 설치되지 않았고 클라우드 전환이 꺼져 있으면 번역은 전송 없이 동작하지 않습니다.\n"
     L"\n"
     L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
     L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -263,6 +264,7 @@ const LocalizedStrings kStringsJapanese = {
     L"• ローカルモデル使用時、翻訳内容はデバイスの外に出ません。\n"
     L"• Google 翻訳エンジンを選択した場合、または自動切り替えで作動中は、選択・入力したテキストは Emebala を経由せず Google に直接送信され翻訳に使われます。\n"
     L"• 診断ログは既定で OFF で、設定で ON にするオプトイン機能です。\n"
+    L"• テキストをクラウド(Google)に送信したくない場合は、トレイアイコンのメニューで「翻訳エンジンの選択」から「ローカル LLM」を選択してください。ローカルモデル未インストールでクラウド切替が無効の場合、翻訳は送信されず動作しません。\n"
     L"\n"
     L"詳細は README ファイルをご覧ください。いつでも再読できます。\n",
     L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -343,6 +345,7 @@ const LocalizedStrings kStringsChineseSimp = {
     L"• 使用本地模型时，翻译内容不会离开您的设备。\n"
     L"• 选择 Google 翻译引擎或自动切换到云端时，所选或输入的文本将直接发送给 Google 进行翻译，不经过 Emebala。\n"
     L"• 诊断日志默认关闭（OFF），需在设置中手动开启（选择性加入）。\n"
+    L"• 如不希望将文本发送至云端 (Google)，请在系统托盘图标菜单的“选择翻译引擎”中选择“本地 LLM”。若未安装本地模型且已关闭云端回退，翻译将不会被发送，也不会运行。\n"
     L"\n"
     L"完整说明请查看 README 文件，您可随时重新阅读。\n",
     L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -423,6 +426,7 @@ const LocalizedStrings kStringsChineseTrad = {
     L"• 使用本機模型時，翻譯內容不會離開您的裝置。\n"
     L"• 選擇 Google 翻譯引擎或自動切換至雲端時，所選或輸入的文字將直接傳送至 Google 進行翻譯，不經過 Emebala。\n"
     L"• 診斷記錄預設關閉（OFF），需在設定中手動開啟（選擇性加入）。\n"
+    L"• 若您不希望將文字傳送至雲端 (Google)，請在系統匣圖示選單的「選擇翻譯引擎」中選取「本地 LLM」。若未安裝本地模型且已關閉雲端退回，翻譯將不會傳送任何資料，也不會執行。\n"
     L"\n"
     L"完整說明請查閱 README 檔案，您可隨時重新閱讀。\n",
     L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -503,6 +507,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"• Khi dùng mô hình cục bộ, nội dung dịch không rời khỏi máy của bạn.\n"
     L"• Khi chọn Google Dịch hoặc được tự động chuyển sang đám mây, văn bản bạn chọn hoặc nhập được gửi trực tiếp tới Google để dịch, không qua Emebala.\n"
     L"• Nhật ký chẩn đoán mặc định TẮT; bạn phải bật trong cài đặt (chọn tham gia).\n"
+    L"• Nếu không muốn gửi văn bản lên đám mây (Google), hãy mở menu biểu tượng ở khay hệ thống, chọn “Chọn công cụ dịch” rồi chọn “Mô hình cục bộ LLM”. Khi chưa cài mô hình cục bộ và tùy chọn chuyển lên đám mây đang tắt, bản dịch sẽ không chạy — không có gì được gửi đi.\n"
     L"\n"
     L"Xem toàn bộ nội dung trong tệp README. Bạn có thể đọc lại bất cứ lúc nào.\n",
     L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -580,6 +585,7 @@ const LocalizedStrings kStringsSpanish = {
     L"• Con el modelo local, el texto traducido nunca sale de tu dispositivo.\n"
     L"• Si eliges Google Translate o se activa la nube automáticamente, el texto seleccionado o escrito se envía directamente a Google para su traducción, sin pasar por Emebala.\n"
     L"• Los registros de diagnóstico están DESACTIVADOS por defecto; debes activarlos en la configuración (opt-in).\n"
+    L"• Si no quieres enviar texto a la nube (Google), abre el menú del icono de la bandeja, elige “Motor de traducción” y selecciona “LLM Local”. Sin modelo local instalado y con el modo cloud desactivado, la traducción no se ejecuta y no se envía nada.\n"
     L"\n"
     L"Puedes leer el detalle completo en el archivo README cuando quieras.\n",
     L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -661,6 +667,7 @@ const LocalizedStrings kStringsEnglish = {
     L"• With the local model, translated text never leaves your device.\n"
     L"• If you choose Google Translate, or the engine switches to cloud automatically, the selected or typed text is sent directly to Google for translation - not through Emebala.\n"
     L"• Diagnostic logs are OFF by default; enable them in settings (opt-in).\n"
+    L"• If you do not want your text sent to the cloud (Google), open the tray icon menu, choose \"Translation Engine\" and select \"Local LLM\". With no local model installed and cloud fallback disabled, translation does not run - nothing is sent.\n"
     L"\n"
     L"You can re-read this anytime in the README file.\n",
     L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -753,6 +760,7 @@ const LocalizedStrings kStringsFrench = {
     L"• Avec le modèle local, le texte traduit ne quitte jamais votre appareil.\n"
     L"• Si vous choisissez Google Traduction ou si le basculement cloud est automatique, le texte sélectionné ou saisi est envoyé directement à Google pour la traduction, sans transiter par Emebala.\n"
     L"• Les journaux de diagnostic sont DÉSACTIVÉS par défaut ; activez-les dans la configuration (consentement explicite).\n"
+    L"• Si vous ne souhaitez pas envoyer de texte vers le cloud (Google), ouvrez le menu de l'icône de la barre des tâches, choisissez « Moteur de traduction » puis « LLM local ». Sans modèle local installé et avec le repli cloud désactivé, la traduction ne s'exécute pas : rien n'est envoyé.\n"
     L"\n"
     L"Le détail complet est dans le fichier README, relisible à tout moment.\n",
     L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -833,6 +841,7 @@ const LocalizedStrings kStringsGerman = {
     L"• Bei Nutzung des lokalen Modells verlässt der übersetzte Text Ihr Gerät nicht.\n"
     L"• Wenn Sie Google Übersetzen wählen oder automatisch in den Cloud-Modus gewechselt wird, wird der markierte oder eingegebene Text direkt an Google zur Übersetzung gesendet – nicht über Emebala.\n"
     L"• Diagnostic-Protokolle sind standardmäßig AUS; aktivieren Sie sie in den Einstellungen (Opt-in).\n"
+    L"• Wenn Sie keinen Text in die Cloud (Google) senden möchten, öffnen Sie das Menü des Taskleistensymbols, wählen Sie “Übersetzungsengine” und dann “Lokales LLM”. Ohne installiertes lokales Modell und mit deaktiviertem Cloud-Fallback wird nicht übersetzt — es wird nichts gesendet.\n"
     L"\n"
     L"Details stehen in der README-Datei – jederzeit erneut lesbar.\n",
     L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -913,6 +922,7 @@ const LocalizedStrings kStringsRussian = {
     L"• При локальной модели переводимый текст не покидает устройство.\n"
     L"• Если выбран Google Переводчик или включён автопереход в облако, выделенный или введённый текст отправляется напрямую в Google для перевода, минуя Emebala.\n"
     L"• Диагностические журналы по умолчанию ВЫКЛЮЧЕНЫ; их можно включить в настройках (по согласию).\n"
+    L"• Если вы не хотите отправлять текст в облако (Google), откройте меню значка в системном трее, выберите «Движок перевода» и укажите «Локальная LLM». Без установленной локальной модели и при отключённом облачном резерве перевод не выполняется — ничего не отправляется.\n"
     L"\n"
     L"Полные сведения — в файле README, доступном для чтения в любое время.\n",
     L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -993,6 +1003,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"• Com o modelo local, o texto traduzido nunca sai do seu dispositivo.\n"
     L"• Se escolher o Google Tradutor ou houver mudança automática para a nuvem, o texto selecionado ou digitado é enviado diretamente ao Google para tradução, sem passar pelo Emebala.\n"
     L"• Os registros de diagnóstico estão DESATIVADOS por padrão; ative-os nas configurações (opt-in).\n"
+    L"• Se não quiser enviar texto para a nuvem (Google), abra o menu do ícone da bandeja, escolha “Mecanismo de tradução” e selecione “LLM local”. Sem modelo local instalado e com o recurso de nuvem desativado, a tradução não é executada — nada é enviado.\n"
     L"\n"
     L"O detalhamento completo está no arquivo README, para reler quando quiser.\n",
     L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1073,6 +1084,7 @@ const LocalizedStrings kStringsItalian = {
     L"• Con il modello locale, il testo tradotto non lascia il dispositivo.\n"
     L"• Se scegli Google Traduttore o il passaggio al cloud è automatico, il testo selezionato o digitato viene inviato direttamente a Google per la traduzione, senza passare da Emebala.\n"
     L"• I log di diagnostica sono DISATTIVATI per impostazione predefinita; attivali nelle impostazioni (opt-in).\n"
+    L"• Se non vuoi inviare testo al cloud (Google), apri il menu dell'icona nella barra delle applicazioni, scegli “Motore di traduzione” e seleziona “LLM locale”. Senza modello locale installato e con il fallback cloud disattivato, la traduzione non viene eseguita e non viene inviato nulla.\n"
     L"\n"
     L"Il dettaglio completo è nel file README, rileggibile in qualsiasi momento.\n",
     L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1153,6 +1165,7 @@ const LocalizedStrings kStringsDutch = {
     L"• Met het lokale model verlaat de vertaalde tekst uw apparaat niet.\n"
     L"• Als u Google Translate kiest of automatisch naar de cloud schakelt, wordt de geselecteerde of getypte tekst rechtstreeks naar Google verzonden voor vertaling, niet via Emebala.\n"
     L"• Diagnosticelogboeken zijn standaard UIT; schakel ze in via de instellingen (opt-in).\n"
+    L"• Als u geen tekst naar de cloud (Google) wilt sturen, opent u het menu van het systeemvakpictogram, kiest u “Vertaalengine” en vervolgens “Lokale LLM”. Zonder lokaal model en met cloud-omleiding uitgeschakeld wordt er niet vertaald — er wordt niets verzonden.\n"
     L"\n"
     L"Alle details staan in het README-bestand, dat u altijd opnieuw kunt lezen.\n",
     L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1233,6 +1246,7 @@ const LocalizedStrings kStringsPolish = {
     L"• Przy modelu lokalnym tłumaczony tekst nie opuszcza urządzenia.\n"
     L"• Jeśli wybierzesz Tłumacz Google lub nastąpi automatyczne przełączenie w chmurę, zaznaczony lub wpisany tekst jest wysyłany bezpośrednio do Google w celu tłumaczenia, bez pośrednictwa Emebala.\n"
     L"• Logi diagnostyczne są domyślnie WYŁĄCZONE; włącz je w konfiguracji (zgoda).\n"
+    L"• Jeśli nie chcesz wysyłać tekstu do chmury (Google), otwórz menu ikony w zasobniku systemowym, wybierz “Silnik tłumaczenia” i zaznacz “Lokalny LLM”. Bez zainstalowanego modelu lokalnego i przy wyłączonym przejściu do chmury tłumaczenie nie działa — nic nie jest wysyłane.\n"
     L"\n"
     L"Szczegóły znajdziesz w pliku README — możesz go przeczytać w dowolnej chwili.\n",
     L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1313,6 +1327,7 @@ const LocalizedStrings kStringsCzech = {
     L"• Při lokálním modelu překládaný text neopouští vaše zařízení.\n"
     L"• Pokud zvolíte Google Translate nebo dojde k automatickému přepnutí do cloudu, vybraný nebo zadaný text je posílán přímo společnosti Google k přeložení, bez prochzení přes Emebala.\n"
     L"• Diagnostické protokoly jsou ve výchozím nastavení VYPNUTÉ; zapnete je v nastavení (opt-in).\n"
+    L"• Pokud nechcete odesílat text do cloudu (Google), otevřete nabídku ikony v oznamovací oblasti, zvolte “Překladový engine” a vyberte “Lokální LLM”. Bez nainstalovaného lokálního modelu a se zakázaným cloudovým zálohováním překlad neběží — nic se neodesílá.\n"
     L"\n"
     L"Podrobnosti najdete v souboru README, který lze kdykoli znovu přečíst.\n",
     L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1393,6 +1408,7 @@ const LocalizedStrings kStringsHungarian = {
     L"• Helyi modell használatakor a fordított szöveg nem hagyja el az eszközt.\n"
     L"• Ha a Google Fordítót választja, vagy automatikusan felhő üzemmódra vált, a kijelölt vagy bevitt szöveg közvetlenül a Google-höz megy a fordításhoz – nem az Emebala-n keresztül.\n"
     L"• A diagnosztikai naplók alapértelmezés szerint KI vannak kapcsolva; a beállításokban kapcsolhatja be (hozzájulás).\n"
+    L"• Ha nem szeretné szöveget a felhőbe (Google) küldeni, nyissa meg a tálcaikon menüjét, válassza a “Fordítómotor” pontot, majd a “Helyi LLM” lehetőséget. Ha nincs telepített helyi modell és a felhőtartalék ki van kapcsolva, a fordítás nem fut — semmi sem kerül küldésre.\n"
     L"\n"
     L"A teljes részletezés a README fájlban olvasható, bármikor újra.\n",
     L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1473,6 +1489,7 @@ const LocalizedStrings kStringsRomanian = {
     L"• Cu modelul local, textul tradus nu părăsește dispozitivul.\n"
     L"• Dacă alegi Google Translate sau se comută automat în cloud, textul selectat sau tastat este trimis direct la Google pentru traducere, fără a trece prin Emebala.\n"
     L"• Jurnalele de diagnostic sunt IMPLICIT DEZACTIVATE; le activezi din setări (consimțământ).\n"
+    L"• Dacă nu doriți să trimiteți text în cloud (Google), deschideți meniul pictogramei din bara de sistem, alegeți “Motor de traducere” și apoi “LLM local”. Fără model local instalat și cu preluarea în cloud dezactivată, traducerea nu rulează — nimic nu este trimis.\n"
     L"\n"
     L"Detaliile complete sunt în fișierul README, recitibil oricând.\n",
     L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1553,6 +1570,7 @@ const LocalizedStrings kStringsSwedish = {
     L"• Med lokal modell lämnar den översatta texten aldrig enheten.\n"
     L"• Om du väljer Google Översätt, eller om molnläge aktiveras automatiskt, skickas den markerade eller inmatade texten direkt till Google för översättning – inte via Emebala.\n"
     L"• Diagnossloggar är AV som standard; du slår på dem i inställningarna (opt-in).\n"
+    L"• Om du inte vill skicka text till molnet (Google) öppnar du menyn från aktivitetsikonet, väljer “Översättningsmotor” och sedan “Lokal LLM”. Utan lokal modell och med molnfallback inaktiverat körs ingen översättning — ingenting skickas.\n"
     L"\n"
     L"Alla detaljer finns i README-filen, som du kan läsa om när som helst.\n",
     L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1633,6 +1651,7 @@ const LocalizedStrings kStringsDanish = {
     L"• Ved lokal model forlader den oversatte tekst ikke din enhed.\n"
     L"• Hvis du vælger Google Translate, eller der skiftes automatisk til cloud, sendes den markerede eller indtastede tekst direkte til Google til oversættelse – ikke via Emebala.\n"
     L"• Diagnosedokumentation er SOM STANDARD FRA; du slår den til i indstillingerne (tilvalg).\n"
+    L"• Hvis du ikke vil sende tekst til skyen (Google), skal du åbne menuen fra statusfeltikonet, vælge “Oversættelsesmotor” og derefter “Lokal LLM”. Uden en lokal model og med cloud-backup deaktiveret kører oversættelsen ikke — intet sendes.\n"
     L"\n"
     L"Detaljerne står i README-filen, som du kan læse når som helst.\n",
     L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1713,6 +1732,7 @@ const LocalizedStrings kStringsFinnish = {
     L"• Paikallista mallia käytettäessä käännettävä teksti ei poistu laitteesta.\n"
     L"• Jos valitset Google-kääntäjän tai tila vaihtuu automaattisesti pilveen, valittu tai kirjoitettu teksti lähetetään suoraan Googlelle käännöstä varten – ei Emebalan kautta.\n"
     L"• Vianmäärityslokit ovat oletuksena POIS PAALTA; ota ne käyttöön asetuksissa (valinta).\n"
+    L"• Jos et halua lähettää tekstiä pilveen (Google), avaa tehtäväpalkin kuvakkeen valikko, valitse “Käännösmoottori” ja sitten “Paikallinen LLM”. Ilman paikallista mallia ja kun pilvivarajärjestelmä on pois päältä, käännös ei toimi — mitään ei lähetetä.\n"
     L"\n"
     L"Tarkat tiedot ovat README-tiedostossa, jonka voit lukea milloin tahansa.\n",
     L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1793,6 +1813,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"• Med lokal modell forlater den oversatte teksten ikke enheten.\n"
     L"• Hvis du velger Google Oversett, eller det bytter automatisk til sky, sendes markert eller skrevet tekst direkte til Google for oversettelse – ikke via Emebala.\n"
     L"• Diagnosticslogger er AV som standard; du slår dem på i innstillingene (opt-in).\n"
+    L"• Hvis du ikke vil sende tekst til skyen (Google), åpne menyen fra systemstatusfeltets ikon, velg “Oversettelsesmotor” og deretter “Lokal LLM”. Uten lokal modell og med sky-reserve deaktivert, kjører ikke oversettelsen — ingenting sendes.\n"
     L"\n"
     L"Detaljene finnes i README-filen, som kan leses på nytt når som helst.\n",
     L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1873,6 +1894,7 @@ const LocalizedStrings kStringsGreek = {
     L"• Με τοπικό μοντέλο, το μεταφραζόμενο κείμενο δεν φεύγει από τη συσκευή σας.\n"
     L"• Αν επιλέξετε τη Μετάφραση Google ή γίνει αυτόματη εναλλαγή στο cloud, το επιλεγμένο ή πληκτρολογημένο κείμενο στέλνεται απευθείας στην Google για μετάφραση, όχι μέσω Emebala.\n"
     L"• Τα αρχεία διαγνωστικών είναι ΑΠΕΝΕΡΓΟΠΟΙΗΜΕΝΑ από προεπιλογή· ενεργοποιούνται στις ρυθμίσεις (ρητή συναίνεση).\n"
+    L"• Εάν δεν θέλετε να στείλετε κείμενο στο cloud (Google), ανοίξτε το μενού του εικονιδίου στη γραμμή εργασιών, επιλέξτε «Μηχανή μετάφρασης» και στη συνέχεια «Τοπικό LLM». Χωρίς εγκατεστημένο τοπικό μοντέλο και με απενεργοποιημένη την εφεδρική λειτουργία cloud, η μετάφραση δεν εκτελείται — τίποτα δεν στέλνεται.\n"
     L"\n"
     L"Οι πλήρεις λεπτομέρειες βρίσκονται στο αρχείο README, που διαβάζεται ξανά ανά πάσα στιγμή.\n",
     L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -1953,6 +1975,7 @@ const LocalizedStrings kStringsTurkish = {
     L"• Yerel model kullanıldığında çevrilen metin cihazınızdan çıkmaz.\n"
     L"• Google Çeviri seçerseniz veya otomatik buluta geçilirse, seçilen ya da yazılan metin çeviri için doğrudan Google’a gönderilir; Emebala üzerinden geçmez.\n"
     L"• Tanılama günlükleri varsayılan olarak KAPALIDIR; ayarlardan açmanız gerekir (seçmeli onay).\n"
+    L"• Metni buluta (Google) göndermek istemiyorsanız sistem tepsisindeki simgenin menüsünü açın, “Çeviri motoru” bölümünden “Yerel LLM” seçeneğini seçin. Yerel model kurulu değilse ve bulut yedeği kapalıysa çeviri çalışmaz — hiçbir şey gönderilmez.\n"
     L"\n"
     L"Tam ayrıntılar README dosyasındadır; istediğiniz zaman tekrar okuyabilirsiniz.\n",
     L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2033,6 +2056,7 @@ const LocalizedStrings kStringsUkrainian = {
     L"• З локальною моделлю текст перекладу не покидає вашого пристрою.\n"
     L"• Якщо обрано Google Перекладач або відбувається автоматичний перехід у хмару, виділений або надрукований текст надсилається напряму до Google для перекладу, минаючи Emebala.\n"
     L"• Діагностичні журнали типово ВИМКНЕНО; увімкніть їх у налаштуваннях (за згодою).\n"
+    L"• Якщо не хочете надсилати текст у хмару (Google), відкрийте меню піктограми в системному треї, оберіть «Рушій перекладу» і потім «Локальна LLM». Без встановленої локальної моделі та з вимкненим хмарним резервуванням переклад не виконується — нічого не надсилається.\n"
     L"\n"
     L"Повні відомості — у файлі README, який можна перечитати будь-коли.\n",
     L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2113,6 +2137,7 @@ const LocalizedStrings kStringsThai = {
     L"• เมื่อใช้โมเดลในเครื่อง ข้อความที่แปลจะไม่ออกจากอุปกรณ์ของคุณ\n"
     L"• หากคุณเลือก Google Translate หรือสลับไปใช้ระบบคลาวด์อัตโนมัติ ข้อความที่คุณเลือกหรือพิมพ์จะถูกส่งตรงไปยัง Google เพื่อแปล โดยไม่ผ่าน Emebala\n"
     L"• บันทึกการวินิจฉัยปิด (OFF) เป็นค่าเริ่มต้น ต้องเปิดในการตั้งค่า (เลือกเข้าร่วม)\n"
+    L"• หากคุณไม่ต้องการส่งข้อความไปยังคลาวด์ (Google) ให้เปิดเมนูที่ไอคอนถาดระบบ เลือก “ระบบแปลภาษา” แล้วเลือก “LLM ภายในเครื่อง” หากไม่ได้ติดตั้งโมเดลภายในเครื่องและปิดการสลับไปคลาวด์ไว้ การแปลจะไม่ทำงานโดยไม่มีการส่งข้อมูลใดๆ\n"
     L"\n"
     L"ดูรายละเอียดฉบับเต็มในไฟล์ README ซึ่งอ่านซ้ำได้ทุกเมื่อ\n",
     L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2193,6 +2218,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"• Dengan model lokal, teks terjemahan tidak meninggalkan perangkat Anda.\n"
     L"• Jika Anda memilih Google Translate atau beralih otomatis ke cloud, teks yang dipilih atau diketik dikirim langsung ke Google untuk diterjemahkan, bukan melalui Emebala.\n"
     L"• Log diagnostik secara default MATI; aktifkan di pengaturan (opt-in).\n"
+    L"• Jika tidak ingin mengirim teks ke cloud (Google), buka menu ikon di bilah tugas, pilih “Mesin penerjemah” lalu pilih “LLM lokal”. Tanpa model lokal terpasang dan dengan cadangan cloud dinonaktifkan, terjemahan tidak berjalan — tidak ada yang dikirim.\n"
     L"\n"
     L"Detail lengkap ada di berkas README, yang dapat dibaca ulang kapan saja.\n",
     L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2273,6 +2299,7 @@ const LocalizedStrings kStringsMalay = {
     L"• Dengan model setempat, teks diterjemahkan tidak meninggalkan peranti anda.\n"
     L"• Jika anda memilih Google Terjemah atau bertukar ke awan secara automatik, teks yang dipilih atau ditaip dihantar terus kepada Google untuk diterjemahkan, bukan melalui Emebala.\n"
     L"• Log diagnostik dimatikan secara lalai; aktifkan dalam tetapan (pilihan).\n"
+    L"• Jika anda tidak mahu menghantar teks ke awan (Google), buka menu ikon pada tray sistem, pilih “Enjin penterjemah” kemudian “LLM setempat”. Tanpa model setempat dipasang dan dengan fallback awan dimatikan, terjemahan tidak berjalan — tiada apa dihantar.\n"
     L"\n"
     L"Butiran penuh terdapat dalam fail README, yang boleh dibaca semula pada bila-bila masa.\n",
     L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2355,6 +2382,7 @@ const LocalizedStrings kStringsFilipino = {
     L"• Sa local na model, hindi lumalabas sa iyong device ang isinalin.\n"
     L"• Kung pipiliin ang Google Translate o awtomatikong lilipat sa cloud, ang napili o ni-type na teksto ay ipapadala nang direkta sa Google para isalin, hindi sa pamamagitan ng Emebala.\n"
     L"• Ang diagnostic log ay OFF sa default; i-on sa settings (opt-in).\n"
+    L"• Kung ayaw mong ipadala ang teksto sa cloud (Google), buksan ang menu ng icon sa system tray, piliin ang “Makina ng pagsasalin” at pagkatapos “Lokal na LLM”. Kung walang naka-install na lokal na modelo at nakapatay ang cloud fallback, hindi tumatakbo ang pagsasalin — walang ipinapadala.\n"
     L"\n"
     L"Makikita ang buong detalye sa README file na maaaring babasahin anumang oras.\n",
     L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2435,6 +2463,7 @@ const LocalizedStrings kStringsHindi = {
     L"• स्थानीय मॉडल पर अनुवादित पाठ आपके डिवाइस से बाहर नहीं जाता।\n"
     L"• यदि आप Google Translate चुनते हैं या स्वतः क्लाउड पर स्विच होता है, तो चयनित/लिखा पाठ अनुवाद हेतु सीधे Google भेजा जाता है — Emebala से नहीं।\n"
     L"• डायग्नोस्टिक लॉग डिफ़ॉल्ट बंद (OFF) हैं; सेटिंग में चालू करें (opt-in)।\n"
+    L"• यदि आप टेक्स्ट क्लाउड (Google) में नहीं भेजना चाहते, तो सिस्टम ट्रे आइकन मेनू खोलें, “अनुवाद इंजन” चुनें और “स्थानीय LLM” चुनें। यदि स्थानीय मॉडल इंस्टॉल नहीं है और क्लाउड फ़ॉलबैक बंद है, तो अनुवाद नहीं चलेगा — कुछ भी नहीं भेजा जाएगा।\n"
     L"\n"
     L"पूरा विवरण README फ़ाइल में है, जिसे आप कभी भी दोबारा पढ़ सकते हैं।\n",
     L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2515,6 +2544,7 @@ const LocalizedStrings kStringsBengali = {
     L"• লোকাল মডেল ব্যবহার করলে অনুবাদিত টেক্সট আপনার ডিভাইস ছেড়ে যায় না।\n"
     L"• আপনি Google Translate নির্বাচন করলে বা স্বয়ংক্রিয়ভাবে ক্লাউডে গেলে, নির্বাচিত/লিখিত টেক্সট অনুবাদের জন্য সরাসরি Google-এ যায় — Emebala-র মাধ্যমে নয়।\n"
     L"• ডায়াগনস্টিক লগ ডিফল্ট বন্ধ (OFF); সেটিংসে চালু করতে হয় (opt-in)।\n"
+    L"• আপনি যদি টেক্সট ক্লাউডে (Google) পাঠাতে না চান, সিস্টেম ট্রে আইকনের মেনু খুলুন, “অনুবাদ ইঞ্জিন” থেকে “লোকাল LLM” নির্বাচন করুন। লোকাল মডেল ইনস্টল না থাকলে এবং ক্লাউড ফলব্যাক বন্ধ থাকলে অনুবাদ চলবে না — কিছুই পাঠানো হবে না।\n"
     L"\n"
     L"পূর্ণ বিবরণ README ফাইলে আছে, যেটি যেকোনো সময় আবার পড়া যাবে।\n",
     L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2596,6 +2626,7 @@ const LocalizedStrings kStringsArabic = {
     L"• عند استخدام النموذج المحلي، لا يغادر النص المترجم جهازك.\n"
     L"• إذا اخترت ترجمة Google أو تم التبديل التلقائي إلى السحابة، يُرسَل النص المحدَّد أو المكتوب مباشرة إلى Google للترجمة، وليس عبر Emebala.\n"
     L"• سجلات التشخيص معطّلة افتراضيًا؛ تفعّلها من الإعدادات (بموافقتك).\n"
+    L"• إذا لم ترغب في إرسال النص إلى السحابة (Google)، افتح قائمة أيقونة شريط المهام واختر “محرك الترجمة” ثم “نموذج محلي LLM”. إذا لم يكن النموذج المحلي مثبتًا وكان التحويل السحابي معطلًا، فلن تعمل الترجمة ولن يُرسل أي شيء.\n"
     L"\n"
     L"التفاصيل الكاملة في ملف README ويمكن قراءته في أي وقت.\n",
     L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2676,6 +2707,7 @@ const LocalizedStrings kStringsPersian = {
     L"• با مدل محلی، متن ترجمه‌شده از دستگاه شما خارج نمی‌شود.\n"
     L"• اگر Google Translate را انتخاب کنید یا تبدیل خودکار به ابری رخ دهد، متن انتخابی یا تایپ‌شده برای ترجمه مستقیماً به Google ارسال می‌شود؛ نه از طریق Emebala.\n"
     L"• گزارش‌های تشخیصی به‌طور پیش‌فرض خاموش‌اند؛ از تنظیمات روشن می‌شوند (با انتخاب شما).\n"
+    L"• اگر نمی‌خواهید متن به ابر (Google) ارسال شود، منوی نماد نوار وظیفه را باز کنید، “موتور ترجمه” و سپس “LLM محلی” را انتخاب کنید. بدون نصب مدل محلی و با غیرفعال بودن جایگزین ابری، ترجمه انجام نمی‌شود — چیزی ارسال نمی‌شود.\n"
     L"\n"
     L"جزئیات کامل در فایل README است و هر زمان قابل خواندن مجدد است.\n",
     L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2756,6 +2788,7 @@ const LocalizedStrings kStringsUrdu = {
     L"• لوکل ماڈل پر ترجمہ شدہ متن آپ کے ڈیوائس سے باہر نہیں جاتا۔\n"
     L"• اگر آپ Google Translate منتخب کریں یا خودکار طور پر کلاؤڈ پر سوئچ ہو، تو منتخب/ٹائپ شدہ متن ترجمے کے لیے براہ راست Google کو جاتا ہے — Emebala کے ذریعے نہیں۔\n"
     L"• ڈائگناسٹک لاگ ڈیفالٹ طور پر بند (OFF) ہیں؛ سیٹنگز میں آن کریں (opt-in)۔\n"
+    L"• اگر آپ متن کلاؤڈ (Google) میں نہیں بھیجنا چاہتے تو سسٹم ٹری آئیکن کا مینو کھولیں، “ترجمہ انجن” میں سے “مقامی LLM” منتخب کریں۔ اگر مقامی ماڈل انسٹال نہیں ہے اور کلاؤڈ فال بیک بند ہے تو ترجمہ نہیں چلے گا — کچھ بھی نہیں بھیجا جائے گا۔\n"
     L"\n"
     L"مکمل تفصیل README فائل میں ہے، جسے آپ کسی بھی وقت دوبارہ پڑھ سکتے ہیں۔\n",
     L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2836,6 +2869,7 @@ const LocalizedStrings kStringsHebrew = {
     L"• במודל מקומי, הטקסט המתורגם אינו עוזב את המכשיר שלך.\n"
     L"• אם תבחר ב־Google Translate או שהמעבר לענן יתבצע אוטומטית, הטקסט הנבחר או המוקלד נשלח ישירות ל־Google לצורך תרגום, ולא דרך Emebala.\n"
     L"• יומני אבחון כבויים כברירת מחדל; הפעל אותם בהגדרות (הסכמה מפורשת).\n"
+    L"• אם אינך רוצה לשלוח טקסט לענן (Google), פתח את תפריט סמל מגש המערכת, בחר “מנוע תרגום” ואז “LLM מקומי”. ללא מודל מקומי מותקן ועם גיבוי ענן מושבת, התרגום לא יפעל — שום דבר לא נשלח.\n"
     L"\n"
     L"הפירוט המלא בקובץ README, הניתן לקריאה חוזרת בכל עת.\n",
     L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2916,6 +2950,7 @@ const LocalizedStrings kStringsKhmer = {
     L"• ពេលប្រើម៉ូដែលក្នុងឧបករណ៍ អត្ថបទបកប្រែមិនចេញពីឧបករណ៍របស់អ្នកទេ។\n"
     L"• បើអ្នកជ្រើស Google Translate ឬប្ដូរទៅពពកដោយស្វ័យប្រវត្តិ អត្ថបទដែលជ្រើស ឬបោះពុម្ពត្រូវផ្ញើទៅ Google ដោយផ្ទាល់ដើម្បីបកប្រែ ដោយមិនឆ្លងកាត់ Emebala ទេ។\n"
     L"• កំណត់ហេតុធ្វើរោគវិនិច្ឆ័យត្រូវបានបិទដោយលំនាំដើម ហើយត្រូវបើកក្នុងការកំណត់ (ជ្រើសរើសចូលរួម)។\n"
+    L"• ប្រសិនបើអ្នកមិនចង់ផ្ញើអត្ថបទទៅ cloud (Google) សូមបើកម៉ឺនុយរូបតំណាងនៅថតការងារ ហើយជ្រើសរើស “ម៉ាស៊ីនបកប្រែ” រួច “LLM ក្នុងម៉ាស៊ីន”។ ប្រសិនបើគ្មានគំរូក្នុងម៉ាស៊ីនត្រូវបានដំឡើង ហើយការបម្រុងទុក cloud ត្រូវបានបិទ ការបកប្រែនឹងមិនដំណើរការទេ — គ្មានអ្វីត្រូវបានផ្ញើឡើយ។\n"
     L"\n"
     L"ព័ត៌មានលម្អិតស្ថិតក្នុងឯកសារ README ដែលអាចអានឡើងវិញពេលណាក៏បាន។\n",
     L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -2996,6 +3031,7 @@ const LocalizedStrings kStringsLao = {
     L"• ເມື່ອໃຊ້ແບບຈຳລອງພາຍໃນເຄື່ອງ, ຂໍ້ຄວາມແປຈະບໍ່ອອກຈາກອຸປະກອນຂອງທ່ານ.\n"
     L"• ຖ້າທ່ານເລືອກ Google Translate ຫຼືສະຫຼັບໄປຄລາວອັດຕະໂນມັດ, ຂໍ້ຄວາມທີ່ເລືອກ ຫຼືພິມ ຈະຖືກສົ່ງໄປ Google ໂດຍກົງ ເພື່ອແປ, ບໍ່ຜ່ານ Emebala.\n"
     L"• ໄຟລ໌ບັນທຶກການວິນິດໄສຖືກປິດໄວ້ເປັນຄ່າເລີ່ມຕົ້ນ; ເປີດໄດ້ໃນການຕັ້ງຄ່າ (ເລືອກເຂົ້າຮ່ວມ).\n"
+    L"• ຖ້າທ່ານບໍ່ຕ້ອງສົ່ງຂໍ້ຄວາມໄປຍັງຄລາວ (Google), ໃຫ້ເປີດເມນູໄອຄອນຢູ່ແຖບຮາບພຽງລະບົບ ແລ້ວເລືອກ “ເຄື່ອງຈັກແປ” ຈາກນັ້ນ “LLM ໃນເຄື່ອງ”. ຖ້າບໍ່ມີແບບຈຳລອງໃນເຄື່ອງ ແລະປິດການສະຫຼັບໄປຄລາວໄວ້, ການແປຈະບໍ່ເຮັດວຽກ ໂດຍບໍ່ມີການສົ່ງຂໍ້ມູນ.\n"
     L"\n"
     L"ລາຍລະອຽດເຕັມຢູ່ໃນໄຟລ໌ README ທີ່ສາມາດອ່ານຄືນໄດ້ທຸກເວລາ.\n",
     L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json"
@@ -3076,6 +3112,7 @@ const LocalizedStrings kStringsBurmese = {
     L"• ဒေသတွင်းမော်ဒယ်သုံးပါက ဘာသာပြန်စာသားသည် သင့်စက်မှ မထွက်ပါ။\n"
     L"• Google Translate ကို ရွေးလိုက်ပါက သို့မဟုတ် တစ်ဆက်တည်း cloud သို့ ပြောင်းလိုက်ပါက ရွေးထား/ရိုက်ထားသော စာသားသည် ဘာသာပြန်ရန် Google သို့ တိုက်ရိုက်ပို့ပြီး Emebala မဖြတ်ပါ။\n"
     L"• ရောဂါရှာဖွေ log များသည် မူလပိတ်ထားသည်။ ဆက်တင်တွင် ပွင့်အပ် (opt-in)။\n"
+    L"• အကယ်၍ သင်သည် စာသားကို cloud (Google) သို့ မပို့လိုပါက စနစ်တရေး သင်္ကေတမီနူးကို ဖွင့်၍ “ဘာသာပြန် အင်ဂျင်” တွင် “ဒေသတွင်း LLM” ကို ရွေးချယ်ပါ။ ဒေသတွင်းမော်ဒယ် မတပ်ဆင်ထားပါကနှင့် cloud ပြောင်းလဲခြင်း ပိတ်ထားပါက ဘာသာပြန်သည် စာသားမပို့ဘဲ အလုပ်မလုပ်ပါ။\n"
     L"\n"
     L"အသေးစိတ်ကို README ဖိုင်တွင် ဖတ်နိုင်ပြီး အချိန်မရွေး ပြန်ဖတ်နိုင်သည်။\n",
     L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json"

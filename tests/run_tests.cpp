@@ -6908,6 +6908,52 @@ void TestR6P5P6I18n() {
         I18n::SetLocale(UiLocale::English);
     }
 
+    // ---- 1b') T7/SEC-1R (session 260911_0002, re-gate 203100 rec. 1): the
+    //           privacy body carries the opt-out guidance bullet in all 37
+    //           locales. The bullet's universal marker is the ASCII token
+    //           "LLM" - verbatim from each locale's own tray MenuEngineLocal
+    //           label, so popup and menu wording match. Before T7 no privacy
+    //           body contained "LLM" anywhere, hence post-edit the token must
+    //           appear EXACTLY once per body (also guards accidental
+    //           duplication). The REQ-208 README closer must survive as the
+    //           LAST line (the opt-out bullet precedes its blank separator).
+    {
+        int optout_ok = 0, once_ok = 0, readme_last_ok = 0;
+        for (const UiLocale loc : kCompleteLocales) {
+            I18n::SetLocale(loc);
+            const std::wstring body = I18n::Get(StringId::PrivacyNoticeBody);
+            const std::wstring engine_local =
+                I18n::Get(StringId::MenuEngineLocal);
+            // every locale's local-engine label contains "LLM", so a body
+            // sharing the token proves the sentence references the real menu
+            // entry (checked non-empty here; per-locale label equality is
+            // authored in the tables and eyeballed in the T7 report).
+            TEST_CHECK(engine_local.find(L"LLM") != std::wstring::npos,
+                       "T7: MenuEngineLocal label carries the LLM token");
+            size_t first = body.find(L"LLM");
+            if (first != std::wstring::npos) {
+                ++optout_ok;
+                if (body.find(L"LLM", first + 1) == std::wstring::npos)
+                    ++once_ok;  // exactly one occurrence
+            }
+            const size_t readme = body.rfind(L"README");
+            const size_t nl_after = body.find(L'\n', readme);
+            // The stored body ends with one trailing '\n' after the README
+            // line; nothing but that final newline may follow "README".
+            if (readme != std::wstring::npos &&
+                (nl_after == std::wstring::npos ||
+                 nl_after == body.size() - 1))
+                ++readme_last_ok;  // README closer sits on the final line
+        }
+        TEST_CHECK(optout_ok == 37,
+                   "T7: PrivacyNoticeBody carries the opt-out LLM marker in all 37 locales");
+        TEST_CHECK(once_ok == 37,
+                   "T7: the opt-out LLM marker appears exactly once per locale body (no duplication)");
+        TEST_CHECK(readme_last_ok == 37,
+                   "T7: the README guidance line remains the LAST line of the body in all 37 locales");
+        I18n::SetLocale(UiLocale::English);
+    }
+
     // ---- 1c) REQ-206 (session 260911_0002 T4): the Cheat Sheet dialog
     //         assembly (main.cpp on_show_cheat_sheet) appends the config-path
     //         line after a '\n' separator onto CheatSheetBody. The logic

@@ -496,7 +496,10 @@ popup exists:
   popup is up, no hook procedure exists and nothing can be translated, so **no text
   can reach Google before you have actually seen the disclosure** and dismissed it.
 - **Strict no-egress recipe:** install the local model, pin
-  `engine_type: "local"`, and keep `cloud_fallback_enabled: false` (the default).
+  `engine_type: "local"` — equivalently, pick **Local LLM** under
+  **Translation Engine** in the tray icon menu, which is what the first-run
+  privacy popup points to (T7/SEC-1R) — and keep
+  `cloud_fallback_enabled: false` (the default).
   Then even a local failure never sends text to the cloud — translation returns
   empty instead ([`src/config.hpp`](src/config.hpp), `cloud_fallback_enabled`).
   A `local` pin with a missing model honestly reports `Local (Model Missing)` and
