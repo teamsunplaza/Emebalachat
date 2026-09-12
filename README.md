@@ -27,6 +27,14 @@
   <a href="#support--sponsorship">Sponsor</a>
 </p>
 
+<p align="center">
+  <a href="https://youtu.be/dhvRvJWc1L0">
+    <img src="assets/youtube_thumbnail.jpg" alt="Watch Emebala Chat 20s Promo on YouTube" width="90%">
+  </a>
+  <br>
+  <em>🎬 <strong>Watch the 20-Second Product Promo on YouTube (1080p 60fps)</strong></em>
+</p>
+
 ## What it does
 
 Type naturally in your native language, press <kbd>Enter</kbd>, and the text you just typed is erased and replaced with its translation — right where your cursor is.

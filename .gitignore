@@ -71,6 +71,14 @@ tools/tmp_*
 tools/e2e/tmp_*
 tools/e2e/secadj_*.png
 
+# Media production & video renders (local only, promo videos uploaded to YouTube)
+test_out/
+*.mp4
+produce_promo.py
+/youtube_thumbnail.jpg
+!assets/youtube_thumbnail.jpg
+
+
 # IDE & OS metadata
 .vs/
 .vscode/
