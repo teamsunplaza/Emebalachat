@@ -168,69 +168,13 @@ constexpr bool EmptyCapturePromotesToSend(bool captured_empty, bool smart_bypass
 }
 
 // F3 (session 260908_0003, verify 220750 §6 "수정-Ananke" adopted design):
-// block-slice-from-whole-capture. The non-EM CategoryB fallback selection is
-// the WHOLE [0..caret) accumulation; the CURRENT block is the last K+1
-// logical lines, K = the Shift+Enter passthroughs the hook counted since the
-// last bare-Enter capture. Everything before the slice point is earlier
-// (already-translated) content and MUST be preserved verbatim - the worker
-// recomposes [prefix][translation of block] with the SAME machinery as the
-// REQ-F2 PrefixWithTail branch, so 예시1/2/3 hold even when the ledger chain
-// broke (the R2/R4 whole-document destruction path of verify 220750 §2).
-//
-// Pure helper (no Win32 calls, unit-testable headlessly). Input should be
-// CRLF-normalized (ExecuteTask normalizes at the capture seam) but lone-LF /
-// lone-CR separators are tolerated: a \r\n PAIR is one logical newline, and
-// a lone \r or \n is one too. Two ADJACENT terminators ("AAA\r\n\r\nBBB")
-// are TWO boundaries with an empty logical line between them - exactly the
-// split() semantics the "last K+1 LOGICAL lines" contract needs (merging
-// them would under-count Shift+Enters and reach back into translated
-// content). Returns the START INDEX of the current block within `capture`:
-//   - empty capture, negative K, or fewer than K+1 terminators in the text
-//     -> 0 (whole capture is the block: first-block geometry, legacy safe);
-//   - otherwise: the index immediately after the (K+1)-th terminator
-//     counted from the END. A capture ending in a terminator (caret on a
-//     fresh empty line) with K=0 therefore yields index == capture.size() -
-//     the "empty tail" the worker turns into a plain send-through (041)
-//     instead of re-translating the prefix;
-//   - K over-count (fewer terminators than K+1) clamps to 0, never out of
-//     bounds. Word-wrap is irrelevant BY DESIGN: the clipboard capture only
-//     ever contains LOGICAL newlines (the app's own line breaks), never the
-//     display-line folds - exactly why the rejected Shift+Up x K geometry
-//     (verify 220750 §6-(i)) is not needed here.
-// Surrogate safety: 0x0D/0x0A never participate in UTF-16 surrogate pairs,
-// and the returned index always sits immediately after a terminator.
-constexpr size_t FindCurrentBlockStart(std::wstring_view capture, int shift_enter_count) {
-    if (capture.empty() || shift_enter_count < 0) {
-        return 0;
-    }
-    const int want = shift_enter_count + 1; // terminators to cross from the end
-    int crossed = 0;
-    size_t i = capture.size();
-    while (i > 0) {
-        const wchar_t c = capture[i - 1];
-        if (c != L'\r' && c != L'\n') {
-            --i;
-            continue;
-        }
-        // One logical terminator ends at `i`: a \r\n pair (two units) or a
-        // lone \r / \n (one unit). A lone \r BEFORE another \r (or end-of-
-        // scan) is its own line break; the \n of a pair swallows its \r.
-        size_t term_start = i - 1;
-        if (c == L'\n' && term_start > 0 && capture[term_start - 1] == L'\r') {
-            --term_start;
-        }
-        ++crossed;
-        if (crossed == want) {
-            // The block starts right after this terminator (`i` is the index
-            // one past its end). When the capture ENDS in a terminator,
-            // i == capture.size(): the empty-tail shape the worker trims to
-            // a send-through.
-            return i;
-        }
-        i = term_start;
-    }
-    return 0; // fewer than K+1 terminators: the whole capture is the block
-}
+// block-slice-from-whole-capture lives in win32_input.hpp as
+// `FindCurrentBlockStart` (session 260913_0001, debug report 022121 §7
+// Step 2: RELOCATED so the capture seam's slice-before-guard and the
+// worker's F3 slice share the ONE pure definition - see the full contract
+// comment there). This header includes win32_input.hpp above, so the name
+// stays visible to worker.cpp and run_tests.cpp exactly as before; the
+// move changed no semantics.
 
 // REQ-F2: pure decomposition of a capture against the last-paste ledger,
 // shared by worker.cpp and the unit tests (ONE definition discipline). The

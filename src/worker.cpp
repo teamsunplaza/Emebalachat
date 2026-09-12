@@ -247,17 +247,32 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const DWORD clip_seq_at_capture = ::GetClipboardSequenceNumber();
     DIAG_LOG("PIPELINE", "stage=capture begin target_hwnd=%p",
              reinterpret_cast<const void*>(task.target_hwnd));
-    std::wstring line = NormalizeNewlinesToCRLF(CopySelectedText(task.target_hwnd));
+    // Session 260913_0001 (Reddit long-post fix, debug report 022121 §7
+    // Step 1): forward the hook-counted Shift+Enter depth K so the capture
+    // seam's slice-before-guard can bound the non-EM whole-capture by the
+    // CURRENT block instead of aborting the accumulation. capture_result
+    // carries the shape-only seam verdict (Phase B, §8-1) so the end-log
+    // below distinguishes empty-capture causes.
+    EnterCaptureResult capture_result = EnterCaptureResult::Ok;
+    std::wstring line = NormalizeNewlinesToCRLF(
+        CopySelectedText(task.target_hwnd, task.shift_enter_count, &capture_result));
     // REQ-003 (session 260909): the captured body IS the user's text - recorded
     // only when diag_log_content is on (default off). Length and duration
     // metadata stay on both branches (shape-only rule, debugging preserved).
+    // k= and result= are shape-only additions (integer + enum label such as
+    // "guard_abort") - never user content, safe under diag_log_content=false.
     if (diag::ContentLoggingEnabled()) {
-        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu content=\"%s\"",
+        // k=/result= stay AFTER the content= field: the req027 E2E log parser
+        // matches `duration_ms=\d+ content="(.*)"` adjacently, and appending
+        // new fields at the end keeps that regex (and the harness) unchanged.
+        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu content=\"%s\" k=%d result=%s",
                  line.size(), ::GetTickCount64() - t_capture_start,
-                 ToUtf8(line).c_str());
+                 ToUtf8(line).c_str(),
+                 task.shift_enter_count, EnterCaptureResultName(capture_result));
     } else {
-        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu",
-                 line.size(), ::GetTickCount64() - t_capture_start);
+        DIAG_LOG("PIPELINE", "stage=capture end len=%zu duration_ms=%llu k=%d result=%s",
+                 line.size(), ::GetTickCount64() - t_capture_start,
+                 task.shift_enter_count, EnterCaptureResultName(capture_result));
     }
 
     // R5 observability: log the capture/bypass decision so a silent
@@ -419,9 +434,16 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const bool should_translate = !line.empty() && !was_smart_bypassed;
     DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
+    // Session 260913_0001 (Phase B, debug report 022121 §8-1): an empty
+    // capture is no longer one flat `capture_empty` label - the capture
+    // seam's shape-only verdict (guard_abort / copy_chord_failed /
+    // empty_selection / empty_tail / editor_excluded) names the cause,
+    // which is exactly what made the Reddit long-post incident
+    // undiagnosable from the user's description alone.
     DIAG_LOG("PIPELINE", "stage=bypass_decision smart_bypass=%d should_translate=%d reason=%s",
              was_smart_bypassed ? 1 : 0, should_translate ? 1 : 0,
-             line.empty() ? "capture_empty" : (was_smart_bypassed ? "already_target_language" : "translate"));
+             line.empty() ? EnterCaptureResultName(capture_result)
+                          : (was_smart_bypassed ? "already_target_language" : "translate"));
 
     // R5 (Debug-Surgical): the bare-Enter path's empty capture is no longer
     // silent. Gate-11 evidence (R5 report section 2.2): CopySelectedText

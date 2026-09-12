@@ -1429,7 +1429,18 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
            caret, reinterpret_cast<void*>(key.focus_hwnd));
 }
 
-std::wstring CopySelectedText(HWND hwnd) {
+std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
+                              EnterCaptureResult* capture_result) {
+    // Session 260913_0001 (Phase B): report the shape-only verdict of every
+    // seam decision below so the worker's capture log distinguishes empty-
+    // capture causes (guard_abort / copy_chord_failed / empty_selection /
+    // empty_tail) instead of collapsing them all into `capture len=0`.
+    // Default assumption: a copy-confirmed, guard-passing, NON-EMPTY capture
+    // (Ok); the empty-clipboard seam overwrites it with EmptySelection.
+    auto report = [&](EnterCaptureResult r) {
+        if (capture_result) { *capture_result = r; }
+    };
+    report(EnterCaptureResult::Ok);
     // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
     // here. ClassifyAppWindow is consulted once and its category picks the
     // selection primitive directly.
@@ -1466,6 +1477,7 @@ std::wstring CopySelectedText(HWND hwnd) {
     if (category == AppCategory::CategoryB && IsEnterTranslateExcludedApp(hwnd)) {
         DIAG_F("WIN32_INPUT/CopySelectedText/005: editor/IDE app excluded from Enter translate (hwnd=%p category=%d); returning empty\n",
                reinterpret_cast<void*>(hwnd), static_cast<int>(category));
+        report(EnterCaptureResult::EditorExcluded);
         return {};
     }
     bool em_path = false; // REQ-034: self-correction is EM-path only
@@ -1581,6 +1593,7 @@ std::wstring CopySelectedText(HWND hwnd) {
                 "WIN32_INPUT/CopySelectedText/001: copy not confirmed after %d chord attempt(s) (hwnd=%p category=%d sel_send=%d); returning empty\n",
                 attempts_executed,
                 reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
+        report(EnterCaptureResult::CopyChordFailed);
         return {};
     }
 
@@ -1645,12 +1658,69 @@ std::wstring CopySelectedText(HWND hwnd) {
     // long_text E2E (a legitimate 1000-char single line over EM_SETSEL) must
     // keep passing, so the guard only vets SelectAll (CategoryA) and
     // SelectMessageBlock (CategoryB fallback) whole-block captures.
+    // Session 260913_0001 (Reddit long-post root fix, debug report 022121
+    // §3 H-A / §7 Step 3): for the NON-EM whole-capture geometry the guard
+    // now vets the CURRENT BLOCK instead of the [0..caret) accumulation -
+    // slice-before-guard via the pure SliceWholeCaptureToBlock (contract in
+    // win32_input.hpp). Sub-guard captures return byte-identical (Ok); the
+    // slice never engages on them. A block that is itself over-guard keeps
+    // the /006 abort semantics (V3 defense intact), and an empty current
+    // block reports the distinct empty_tail shape (debug report §8-1).
     size_t nl_final = 0;
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl_final; }
+    if (!em_path) {
+        const WholeCaptureSlice slice = SliceWholeCaptureToBlock(text, shift_enter_count);
+        switch (slice.result) {
+            case EnterCaptureResult::Ok:
+                break; // within guard (or empty): the established passthrough
+            case EnterCaptureResult::BlockSliced: {
+                // Shape-only DIAG /007 (R5 rule, same as /002): lengths and K
+                // only - never the captured content. This is the Reddit-
+                // composer recovery: the accumulation is over-guard but the
+                // current block is a normal message-sized capture.
+                size_t nl_block = 0;
+                for (wchar_t c : slice.block) { if (c == L'\n' || c == L'\r') ++nl_block; }
+                DIAG_F("WIN32_INPUT/CopySelectedText/007: whole capture %zu chars over guard; guard re-vetted against current block %zu chars (%zu newline chars, K=%d); whole capture returned (worker F3 owns the prefix/block split)\n",
+                       text.size(), slice.block.size(), nl_block, shift_enter_count);
+                report(EnterCaptureResult::BlockSliced);
+                // P5 review 260913_0001 (corrected): the live selection in the
+                // app is still [0..caret) - the WHOLE accumulation - so the
+                // paste-back span (Ctrl+V replaces the selection) needs a
+                // replacement that covers the whole span. The worker's F3
+                // slice runs on the whole capture and recomposes
+                // [verbatim prefix][translated block]; returning only the block
+                // here would paste a block-only replacement over the whole
+                // live selection and destroy the already-translated prefix.
+                return text;
+            }
+            case EnterCaptureResult::EmptyTail:
+                // Capture ends on a separator run: the current block is empty
+                // (caret on a fresh blank line of an over-long document). The
+                // worker's empty-capture machinery owns this shape (send-
+                // through / R5); distinct DIAG so log triage separates it
+                // from a genuine guard abort (/006).
+                DIAG_F("WIN32_INPUT/CopySelectedText/008: whole capture %zu chars over guard; current block empty (capture ends at a separator run, K=%d); returning empty (reason=empty_tail)\n",
+                       text.size(), shift_enter_count);
+                report(EnterCaptureResult::EmptyTail);
+                return {};
+            case EnterCaptureResult::GuardAbort:
+                break; // falls through to the /006 abort below
+            default:
+                break; // other verdicts originate at the copy/editor seams, not here
+        }
+    }
     if (!em_path && !EnterCaptureWithinGuard(text.size(), nl_final)) {
-        DIAG_F("WIN32_INPUT/CopySelectedText/006: capture exceeds Enter guard (chars=%zu newlines=%zu category=%d); aborting translate\n",
-               text.size(), nl_final, static_cast<int>(category));
+        DIAG_F("WIN32_INPUT/CopySelectedText/006: capture exceeds Enter guard even after block slice (chars=%zu newlines=%zu category=%d K=%d); aborting translate\n",
+               text.size(), nl_final, static_cast<int>(category), shift_enter_count);
+        report(EnterCaptureResult::GuardAbort);
         return {};
+    }
+    if (text.empty()) {
+        // Copy confirmed but the clipboard text is empty: a provably-empty
+        // selection reached the clipboard (the chord legitimately changes
+        // nothing on an empty input). Phase B: report the distinct shape so
+        // the worker log separates it from a chord failure or a guard abort.
+        report(EnterCaptureResult::EmptySelection);
     }
     return text;
 }

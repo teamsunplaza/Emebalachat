@@ -143,6 +143,170 @@ constexpr bool EnterCaptureWithinGuard(size_t chars, size_t newlines) {
            newlines <= kMaxEnterTranslateNewlines;
 }
 
+// ---------------------------------------------------------------------------
+// Session 260913_0001 (Reddit long-post capture fix, debug report 022121 §7
+// Step 2): FindCurrentBlockStart was RELOCATED here from worker.hpp so the
+// capture seam (CopySelectedText slice-before-guard below) and the worker's
+// F3 block slice share the ONE definition (pure-predicate discipline).
+// worker.hpp includes this header, so worker.cpp and run_tests.cpp keep the
+// name visible and compile unchanged - this was a pure move, no semantics.
+// ---------------------------------------------------------------------------
+// F3 (session 260908_0003, verify 220750 §6 "수정-Ananke" adopted design):
+// block-slice-from-whole-capture. The non-EM CategoryB fallback selection is
+// the WHOLE [0..caret) accumulation; the CURRENT block is the last K+1
+// logical lines, K = the Shift+Enter passthroughs the hook counted since the
+// last bare-Enter capture. Everything before the slice point is earlier
+// (already-translated) content and MUST be preserved verbatim - the worker
+// recomposes [prefix][translation of block] with the SAME machinery as the
+// REQ-F2 PrefixWithTail branch, so 예시1/2/3 hold even when the ledger chain
+// broke (the R2/R4 whole-document destruction path of verify 220750 §2).
+//
+// Pure helper (no Win32 calls, unit-testable headlessly). Input should be
+// CRLF-normalized (ExecuteTask normalizes at the capture seam) but lone-LF /
+// lone-CR separators are tolerated: a \r\n PAIR is one logical newline, and
+// a lone \r or \n is one too. Two ADJACENT terminators ("AAA\r\n\r\nBBB")
+// are TWO boundaries with an empty logical line between them - exactly the
+// split() semantics the "last K+1 LOGICAL lines" contract needs (merging
+// them would under-count Shift+Enters and reach back into translated
+// content). Returns the START INDEX of the current block within `capture`:
+//   - empty capture, negative K, or fewer than K+1 terminators in the text
+//     -> 0 (whole capture is the block: first-block geometry, legacy safe);
+//   - otherwise: the index immediately after the (K+1)-th terminator
+//     counted from the END. A capture ending in a terminator (caret on a
+//     fresh empty line) with K=0 therefore yields index == capture.size() -
+//     the "empty tail" the worker turns into a plain send-through (041)
+//     instead of re-translating the prefix;
+//   - K over-count (fewer terminators than K+1) clamps to 0, never out of
+//     bounds. Word-wrap is irrelevant BY DESIGN: the clipboard capture only
+//     ever contains LOGICAL newlines (the app's own line breaks), never the
+//     display-line folds - exactly why the rejected Shift+Up x K geometry
+//     (verify 220750 §6-(i)) is not needed here.
+// Surrogate safety: 0x0D/0x0A never participate in UTF-16 surrogate pairs,
+// and the returned index always sits immediately after a terminator.
+constexpr size_t FindCurrentBlockStart(std::wstring_view capture, int shift_enter_count) {
+    if (capture.empty() || shift_enter_count < 0) {
+        return 0;
+    }
+    const int want = shift_enter_count + 1; // terminators to cross from the end
+    int crossed = 0;
+    size_t i = capture.size();
+    while (i > 0) {
+        const wchar_t c = capture[i - 1];
+        if (c != L'\r' && c != L'\n') {
+            --i;
+            continue;
+        }
+        // One logical terminator ends at `i`: a \r\n pair (two units) or a
+        // lone \r / \n (one unit). A lone \r BEFORE another \r (or end-of-
+        // scan) is its own line break; the \n of a pair swallows its \r.
+        size_t term_start = i - 1;
+        if (c == L'\n' && term_start > 0 && capture[term_start - 1] == L'\r') {
+            --term_start;
+        }
+        ++crossed;
+        if (crossed == want) {
+            // The block starts right after this terminator (`i` is the index
+            // one past its end). When the capture ENDS in a terminator,
+            // i == capture.size(): the empty-tail shape the worker trims to
+            // a send-through.
+            return i;
+        }
+        i = term_start;
+    }
+    return 0; // fewer than K+1 terminators: the whole capture is the block
+}
+
+// Session 260913_0001 (Phase B diagnostics, debug report §8-1): the shape-only
+// verdict of the Enter capture seam. CopySelectedText reports it through the
+// optional out-param so the worker's capture log can distinguish WHY a
+// capture came back empty (guard_abort vs copy_chord_failed vs
+// empty_selection vs empty_tail) or why it differs from the raw selection
+// (block_sliced). The old logs collapsed all of these into one
+// `capture len=0` line, which made the Reddit long-post incident (debug
+// report §3, H-A vs H-B indistinguishable) undiagnosable from the user's
+// description alone. ENUMS AND LENGTHS ONLY - never user content, so every
+// consumer stays compatible with the diag_log_content=false default.
+enum class EnterCaptureResult {
+    Ok,              // non-empty capture returned unchanged (within guard)
+    BlockSliced,     // whole capture over guard; guard re-vetted against the current
+                     // block and the WHOLE capture returned (worker F3 owns the split)
+    GuardAbort,      // single block itself over guard; empty returned (V3 abuse defense)
+    EmptyTail,       // current block empty (capture ends at a separator); empty returned
+    CopyChordFailed, // Ctrl+C not confirmed within the retry budget; empty returned
+    EmptySelection,  // copy confirmed but the clipboard text was empty; empty returned
+    EditorExcluded,  // F4 editor/IDE exclusion backstop (/005); no selection attempted
+};
+
+constexpr const char* EnterCaptureResultName(EnterCaptureResult result) {
+    switch (result) {
+        case EnterCaptureResult::Ok:              return "ok";
+        case EnterCaptureResult::BlockSliced:     return "block_sliced";
+        case EnterCaptureResult::GuardAbort:      return "guard_abort";
+        case EnterCaptureResult::EmptyTail:       return "empty_tail";
+        case EnterCaptureResult::CopyChordFailed: return "copy_chord_failed";
+        case EnterCaptureResult::EmptySelection:  return "empty_selection";
+        case EnterCaptureResult::EditorExcluded:  return "editor_excluded";
+    }
+    return "unknown"; // unreachable; keeps the function total for constexpr use
+}
+
+// Session 260913_0001 root fix (debug report §7 Step 3): slice-before-guard for
+// the NON-EM whole-capture geometry. SelectMessageBlock() selects [0..caret)
+// - the whole accumulation of an editing session - because keyboard geometry
+// cannot address a mid-document block on surfaces without EM_ support
+// (Chrome contenteditable, e.g. the Reddit composer). The capture-size guard
+// was written to vet a BLOCK, not an accumulation, so a long post crossed
+// 4096 chars at roughly the 5th-6th Enter and the guard aborted the CURRENT
+// block's translation together with the accumulation (symptom 2). This pure
+// function re-bounds what the guard measures: under the guard the capture
+// passes through byte-identical (result Ok - the slice NEVER engages, so every
+// currently-working flow is untouched); over it, the current block (last K+1
+// logical lines, leading separator run stripped by the same rule as the
+// worker's F3 slice) is re-vetted instead. A single block that is itself
+// over-guard is still a document-sized abuse shape and keeps the abort
+// semantics (result GuardAbort). NOTE (P5 review 260913_0001, corrected):
+// the slice NEVER changes the live selection in the target app - it stays
+// [0..caret), the whole accumulation - so the seam MUST return the WHOLE
+// capture (block-scoped re-vetting only); returning the block alone would
+// make the worker paste a block-only replacement over the whole live
+// selection and DESTROY the already-translated prefix (the worker can only
+// recompose a prefix it actually received). The worker's F3 slice
+// (FindCurrentBlockStart on the whole capture, its native input shape) then
+// owns the prefix/block split, the engine sees only the block, and the paste
+// recomposes [verbatim prefix][translated block] over the whole selection -
+// byte-identical to the established sub-guard whole-capture flow.
+struct WholeCaptureSlice {
+    EnterCaptureResult result; // Ok | BlockSliced | EmptyTail | GuardAbort
+    std::wstring_view block;   // meaningful when result is Ok or BlockSliced
+};
+
+constexpr WholeCaptureSlice SliceWholeCaptureToBlock(std::wstring_view capture,
+                                                     int shift_enter_count) {
+    size_t nl = 0;
+    for (wchar_t c : capture) { if (c == L'\n' || c == L'\r') ++nl; }
+    if (EnterCaptureWithinGuard(capture.size(), nl)) {
+        return {EnterCaptureResult::Ok, capture}; // sub-limit: byte-identical passthrough
+    }
+    size_t block_start = FindCurrentBlockStart(capture, shift_enter_count);
+    // Move a leading separator run into the verbatim prefix (same rule as the
+    // worker's F3 slice, worker.cpp ExecuteTask: the engine must never see a
+    // leading bare newline, and an all-separator tail is the empty block).
+    while (block_start < capture.size() &&
+           (capture[block_start] == L'\r' || capture[block_start] == L'\n')) {
+        ++block_start;
+    }
+    if (block_start >= capture.size()) {
+        return {EnterCaptureResult::EmptyTail, {}};
+    }
+    const std::wstring_view block = capture.substr(block_start);
+    size_t block_nl = 0;
+    for (wchar_t c : block) { if (c == L'\n' || c == L'\r') ++block_nl; }
+    if (EnterCaptureWithinGuard(block.size(), block_nl)) {
+        return {EnterCaptureResult::BlockSliced, block};
+    }
+    return {EnterCaptureResult::GuardAbort, {}};
+}
+
 // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): true when hwnd belongs to
 // a console/terminal surface where a SYNTHETIC Ctrl+C is interpreted as
 // SIGINT (process interrupt) instead of "copy selection". Detection is by
@@ -634,7 +798,21 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // confirmed copy, never stale text. The provably-empty EM selection (the
 // REQ-034 F3-B paste-window geometry) is exempt (no retry, no latency).
 // Returns empty when the copy could not be confirmed (never stale data).
-std::wstring CopySelectedText(HWND hwnd);
+// shift_enter_count (session 260913_0001, Reddit long-post fix): K = the
+// hook-counted Shift+Enter depth of the CURRENT composition block, exactly
+// the value the worker's F3 slice uses. It is consulted ONLY by the non-EM
+// whole-capture slice-before-guard (SliceWholeCaptureToBlock): when the
+// [0..caret) accumulation crosses the capture-size guard, the guard re-vets
+// the last K+1 logical lines instead of aborting the whole capture. Default
+// 0 keeps any caller without block context source-compatible (and behaves
+// identically for sub-guard captures, where the slice never engages).
+// capture_result (Phase B diagnostics, debug report 022121 §8-1): optional
+// out-param reporting the SHAPE-ONLY verdict of the capture seam
+// (EnterCaptureResult: ok / block_sliced / guard_abort / empty_tail /
+// copy_chord_failed / empty_selection / editor_excluded) so the worker log
+// can distinguish empty-capture causes. Never carries user content.
+std::wstring CopySelectedText(HWND hwnd, int shift_enter_count = 0,
+                              EnterCaptureResult* capture_result = nullptr);
 
 // High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle

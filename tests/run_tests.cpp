@@ -10033,6 +10033,250 @@ void TestReqF3BlockSliceCurrentBlockOnly() {
     }
 }
 
+// SESSION 260913_0001 (Reddit long-post capture fix, debug report 022121 §7
+// Step 5): unit coverage for the slice-before-guard seam executed at the
+// capture site for the NON-EM whole-capture geometry. CopySelectedText itself
+// needs a real focusable window, so the production logic it runs is the pure
+// SliceWholeCaptureToBlock (win32_input.hpp) - exercised here directly, ONE
+// definition, no test-side duplication of the algorithm. The 9-case matrix
+// from the plan: sub-limit passthrough byte-identical; over-limit K=0 last-
+// line slice; over-limit K=2 3-line block; single-line over-guard still
+// aborts (V3 defense); K=64 clamp coherence; idempotence against the worker
+// F3 re-slice; empty tail; CRLF/LF/CR matrix; ledger interplay (block-scoped
+// capture -> NoMatch -> tail-only translate).
+void TestCaptureSliceBeforeGuard() {
+    std::cout << "[TEST] 260913_0001 slice-before-guard (Reddit long-post capture seam)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Build an over-guard [0..caret) whole capture: `prefix_len` filler chars
+    // (a mid-document already-translated block) + one terminator + the block.
+    auto make_over_guard = [](size_t prefix_len, std::wstring_view block) {
+        return std::wstring(prefix_len, L'a') + L"\r\n" + std::wstring(block);
+    };
+
+    // ---- (1) sub-limit capture passes through UNCHANGED (slice never
+    // engages): byte-identical, result Ok. Pin at compile time where the
+    // input is a literal. ----
+    static_assert(SliceWholeCaptureToBlock(L"short single line", 0).result ==
+                      EnterCaptureResult::Ok,
+                  "slice-before-guard: sub-limit capture must never slice");
+    static_assert(SliceWholeCaptureToBlock(L"AAA\r\nBBB", 0).result ==
+                      EnterCaptureResult::Ok,
+                  "slice-before-guard: multi-line sub-limit capture passes through");
+    {
+        const std::wstring cap = L"AAA\r\nBBB\r\nCCC";
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
+        TEST_CHECK(s.result == EnterCaptureResult::Ok,
+                   "slice: sub-limit 3-line capture -> Ok");
+        TEST_CHECK(s.block == std::wstring_view(cap),
+                   "slice: sub-limit passthrough is byte-identical (whole capture)");
+    }
+    // Guard-edge coherence: exactly 4096 chars is IN (passes); one over is
+    // out. Uses the same constants CopySelectedText vets against.
+    {
+        const std::wstring at_limit = std::wstring(kMaxEnterTranslateChars, L'a');
+        TEST_CHECK(SliceWholeCaptureToBlock(at_limit, 0).result == EnterCaptureResult::Ok,
+                   "slice: exactly-at-limit single-line capture passes (guard boundary shared)");
+        const std::wstring over_limit = std::wstring(kMaxEnterTranslateChars + 1, L'a');
+        TEST_CHECK(SliceWholeCaptureToBlock(over_limit, 0).result == EnterCaptureResult::GuardAbort,
+                   "slice: one char over the guard with NO terminator is one block -> abort kept");
+    }
+
+    // ---- (2) over-guard whole capture, K=0 -> LAST logical line only ----
+    {
+        const std::wstring cap = make_over_guard(4100, L"마지막 블록");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
+        TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
+                   "slice: over-guard accumulation K=0 slices instead of aborting (symptom-2 fix)");
+        TEST_CHECK(s.block == std::wstring_view(L"마지막 블록"),
+                   "slice: K=0 block == the last logical line, prefix excluded");
+    }
+
+    // ---- (3) over-guard whole capture, K=2 -> 3-line block intact ----
+    {
+        const std::wstring b1(900, L'b'), b2(900, L'c'), b3(900, L'd');
+        std::wstring cap = std::wstring(2500, L'a') + L"\r\n" + b1 + L"\r\n" + b2 + L"\r\n" + b3;
+        TEST_CHECK(!EnterCaptureWithinGuard(cap.size(), 0),
+                   "slice fixture: the whole accumulation is over the char guard");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 2);
+        TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
+                   "slice: K=2 over-guard accumulation -> 3-line block returned");
+        std::wstring expect = b1 + L"\r\n" + b2 + L"\r\n" + b3;
+        TEST_CHECK(s.block == std::wstring_view(expect),
+                   "slice: K=2 block == last three logical lines INCLUDING internal terminators");
+    }
+
+    // ---- (4) single-line 5000-char capture (no terminators) still aborts:
+    // the V3/CategoryA abuse defense survives the slice (covered above at
+    // the +1 edge; here at the report's 5000 shape). ----
+    {
+        const std::wstring cap(5000, L'x');
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
+        TEST_CHECK(s.result == EnterCaptureResult::GuardAbort && s.block.empty(),
+                   "slice: document-sized single-line capture aborts even after slicing (abuse defense)");
+    }
+
+    // ---- (5) K=64 clamp coherence: fewer terminators than K+1 -> whole
+    // capture from index 0 (FindCurrentBlockStart clamp), so an over-guard
+    // 3-line document slices to ITSELF and keeps the /006 abort. Never out
+    // of bounds, never reaches before the document start. ----
+    {
+        const std::wstring cap = make_over_guard(4100, L"tail");
+        TEST_CHECK(FindCurrentBlockStart(cap, 64) == 0,
+                   "slice: K=64 over-count clamps to 0 on a 2-line capture");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 64);
+        TEST_CHECK(s.result == EnterCaptureResult::GuardAbort && s.block.empty(),
+                   "slice: clamped whole capture is still over guard -> abort (no clamp crash)");
+        // A block that IS within the guard under the same clamp passes:
+        const std::wstring small_cap = L"AAA\r\nBBB";
+        TEST_CHECK(SliceWholeCaptureToBlock(small_cap, 64).block == std::wstring_view(small_cap),
+                   "slice: sub-limit capture unaffected by a clamped K");
+    }
+
+    // ---- (6) idempotence vs the worker F3 re-slice: running
+    // FindCurrentBlockStart on the ALREADY-sliced block with the same K
+    // returns 0 (the block holds exactly K terminators, the slice asks K+1),
+    // so ExecuteTask's F3 never double-slices a block-scoped capture. ----
+    {
+        const std::wstring cap0 = make_over_guard(4100, L"last line");
+        const WholeCaptureSlice s0 = SliceWholeCaptureToBlock(cap0, 0);
+        TEST_CHECK(FindCurrentBlockStart(s0.block, 0) == 0,
+                   "slice idempotence: K=0 block re-slice is a provable no-op (worker F3 safe)");
+        const std::wstring cap2 = std::wstring(2500, L'a') + L"\r\n" + std::wstring(900, L'b') +
+                                  L"\r\n" + std::wstring(900, L'c') + L"\r\n" + std::wstring(900, L'd');
+        const WholeCaptureSlice s2 = SliceWholeCaptureToBlock(cap2, 2);
+        TEST_CHECK(s2.result == EnterCaptureResult::BlockSliced,
+                   "slice idempotence fixture: K=2 slices");
+        TEST_CHECK(FindCurrentBlockStart(s2.block, 2) == 0,
+                   "slice idempotence: K=2 3-line block re-slice is a provable no-op");
+    }
+
+    // ---- (7) empty tail: over-guard capture ending on a separator run ->
+    // distinct EmptyTail verdict (the worker's send-through/R5 machinery
+    // owns the shape; triage separates it from a guard abort). ----
+    {
+        const std::wstring cap_single = std::wstring(4100, L'a') + L"\r\n";
+        TEST_CHECK(SliceWholeCaptureToBlock(cap_single, 0).result == EnterCaptureResult::EmptyTail,
+                   "slice: capture ending on one separator, K=0 -> empty_tail");
+        const std::wstring cap_multi = std::wstring(4100, L'a') + L"\r\n\r\n";
+        const WholeCaptureSlice m = SliceWholeCaptureToBlock(cap_multi, 1);
+        TEST_CHECK(m.result == EnterCaptureResult::EmptyTail && m.block.empty(),
+                   "slice: capture ending on a separator run, K=1 -> empty_tail (strip rule = worker F3)");
+        // Sub-limit empty-tail shapes are untouched (guard never engages):
+        // (named `tail_sub` - `small` collides with the Windows `#define small char`)
+        const std::wstring tail_sub = L"AAA\r\n";
+        TEST_CHECK(SliceWholeCaptureToBlock(tail_sub, 0).result == EnterCaptureResult::Ok,
+                   "slice: sub-limit trailing-separator capture stays Ok (byte-identical passthrough)");
+    }
+
+    // ---- (8) terminator geometry matrix: lone LF / lone CR / mixed forms
+    // slice identically to CRLF (FindCurrentBlockStart's logical-terminator
+    // rule, exercised through the production slice path). ----
+    {
+        const std::wstring pre(4100, L'a');
+        TEST_CHECK(SliceWholeCaptureToBlock(pre + L"\n" + L"tail", 0).block ==
+                       std::wstring_view(L"tail"),
+                   "slice: lone LF terminator slices the last line");
+        TEST_CHECK(SliceWholeCaptureToBlock(pre + L"\r" + L"tail", 0).block ==
+                       std::wstring_view(L"tail"),
+                   "slice: lone CR terminator slices the last line");
+        // Mixed: \r\n pair then content then \n then content, K=1 -> the two
+        // logical lines after the pair boundary (lone \n is one terminator).
+        const std::wstring mixed = pre + L"\r\n" + L"x" + L"\n" + L"y";
+        TEST_CHECK(SliceWholeCaptureToBlock(mixed, 1).block == std::wstring_view(L"x\ny"),
+                   "slice: mixed CRLF+LF capture, K=1 -> last two logical lines");
+        // Adjacent terminators are two boundaries with an empty line between
+        // (split() semantics preserved through the capture seam). K=1 wants
+        // two terminators from the end: the slice point lands on the SECOND
+        // \n, and the leading-separator strip (same rule as the worker F3)
+        // moves it into the verbatim prefix -> block == "z".
+        const std::wstring blank = pre + L"\n\n" + L"z";
+        const WholeCaptureSlice bs = SliceWholeCaptureToBlock(blank, 1);
+        TEST_CHECK(bs.result == EnterCaptureResult::BlockSliced &&
+                       bs.block == std::wstring_view(L"z"),
+                   "slice: blank-line pair = two boundaries; strip moves the empty line into the prefix");
+        // K=2 needs three boundaries (only two exist) -> clamp to 0 -> the
+        // whole over-guard capture is one block -> abort preserved.
+        TEST_CHECK(SliceWholeCaptureToBlock(blank, 2).result == EnterCaptureResult::GuardAbort,
+                   "slice: K over-count on over-guard capture clamps whole -> abort kept");
+    }
+
+    // ---- (9) ledger interplay: a block-scoped capture against the
+    // RECOMPOSED whole-document ledger is NoMatch (the block is mid-document
+    // content the ledger never starts with), so ExecuteTask routes it to
+    // the normal translate arm with the block as untranslated_tail. Pure
+    // string check on the existing predicate - semantics unchanged, pinned
+    // for the new capture shape. ----
+    {
+        const std::wstring cap = make_over_guard(4100, L"second block original");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
+        const std::wstring ledger = std::wstring(4000, L'T') + L"\r\n" + L"first block translated";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(s.block, ledger) == PasteLedgerVerdict::NoMatch,
+                   "slice: block-scoped capture vs recomposed-ledger -> NoMatch (routes to tail-only translate)");
+        // A capture that byte-prefix-matches the ledger still gets the
+        // PrefixWithTail verdict unchanged (the slice does not weaken F2).
+        const std::wstring tail_cap = ledger + L"\r\n" + L"fresh tail";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(tail_cap, ledger) == PasteLedgerVerdict::PrefixWithTail,
+                   "slice: F2 ledger verdicts remain valid predicates on any capture shape");
+    }
+
+    // ---- (10) P5 review 260913_0001 pin (corrected seam contract): on
+    // BlockSliced the seam returns the WHOLE capture (the live selection is
+    // [0..caret)); the worker's F3 slice then re-derives the block the seam
+    // vetted and keeps the prefix verbatim, and the recomposition
+    // [prefix][block translation] covers the whole captured span - the
+    // paste-back can never replace the whole selection with block-only
+    // text (the prefix-destruction failure mode this review caught). ----
+    {
+        const std::wstring cap = make_over_guard(4100, L"마지막 블록");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
+        TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
+                   "seam contract fixture: over-guard K=0 slices (guard re-vet)");
+        // Worker F3 on the whole capture (the seam's corrected return): the
+        // block the seam vetted is exactly the untranslated tail, the prefix
+        // is everything before it (plus the separator run F3 moves verbatim).
+        size_t f3_start = FindCurrentBlockStart(cap, 0);
+        while (f3_start < cap.size() &&
+               (cap[f3_start] == L'\r' || cap[f3_start] == L'\n')) {
+            ++f3_start;
+        }
+        const std::wstring prefix(cap, 0, f3_start);
+        const std::wstring tail(cap, f3_start, cap.size() - f3_start);
+        TEST_CHECK(tail == std::wstring(s.block),
+                   "seam contract: worker F3 on the whole capture re-derives the exact block the seam vetted");
+        TEST_CHECK(prefix.size() == 4100 + 2 && tail == std::wstring(L"마지막 블록"),
+                   "seam contract: prefix preserved verbatim (filler + separator run), engine input = block only");
+        // Recomposition invariant (worker.cpp L599-L611 shape): prefix +
+        // tail covers the whole captured span so the Ctrl+V replacement
+        // wholly consumes the live [0..caret) selection.
+        const std::wstring recomposed = prefix + L"TRANSLATED " + tail;
+        TEST_CHECK(recomposed.size() >= cap.size() &&
+                       recomposed.compare(0, prefix.size(), prefix) == 0,
+                   "seam contract: recomposed replacement keeps the prefix verbatim and covers the capture span");
+    }
+
+    // ---- EnterCaptureResultName: stable, shape-only labels (Phase B log
+    // vocabulary; never user content - compatibility with the
+    // diag_log_content=false default). ----
+    TEST_CHECK(std::string_view(EnterCaptureResultName(EnterCaptureResult::GuardAbort)) == "guard_abort",
+               "diag labels: guard_abort");
+    TEST_CHECK(std::string_view(EnterCaptureResultName(EnterCaptureResult::BlockSliced)) == "block_sliced",
+               "diag labels: block_sliced");
+    TEST_CHECK(std::string_view(EnterCaptureResultName(EnterCaptureResult::EmptyTail)) == "empty_tail",
+               "diag labels: empty_tail");
+    TEST_CHECK(std::string_view(EnterCaptureResultName(EnterCaptureResult::CopyChordFailed)) == "copy_chord_failed",
+               "diag labels: copy_chord_failed");
+    TEST_CHECK(std::string_view(EnterCaptureResultName(EnterCaptureResult::EmptySelection)) == "empty_selection",
+               "diag labels: empty_selection");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260913_0001 slice-before-guard tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260913_0001 slice-before-guard tests: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-F7 (session 260908_0002, log 문제2): the DIAG field `clipboard_restored`
 // printed `pasted ? 0 : 1`, i.e. it logged 0 on every SUCCESSFUL paste even
 // though PasteAndRestore had restored the original clipboard before returning.
@@ -11733,6 +11977,7 @@ int main() {
     TestReqF5EmptyCaptureEnterPromotion();
     TestReqF6LedgerH1AbortPreserve();
     TestReqF3BlockSliceCurrentBlockOnly();
+    TestCaptureSliceBeforeGuard(); // session 260913_0001 (slice-before-guard seam)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
