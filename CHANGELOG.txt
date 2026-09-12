@@ -1,0 +1,43 @@
+﻿Emebala Chat - Changelog
+========================
+
+v0.10.0 - 2026-09-12 (Initial Release)
+======================================
+
+Emebala Chat translates selected text in real time and types the result
+back into the original input field - even over locked screens or inside
+other apps. It runs quietly from the system tray and never interferes
+with the host app's normal typing or autocomplete.
+
+What you can do now
+-------------------
+* Select any text, press the hotkey (or scroll-lock chord), and the
+  translation is reviewed and re-typed into your app automatically.
+* Choose your engine per run: Google Translate (online) or a built-in
+  local LLM (Hy-MT2-1.8B) that keeps work fully offline.
+* Use the app in any of 37 interface languages, switched live from the
+  tray menu.
+* Read the built-in Cheat Sheet (F1-style popup) for shortcuts and the
+  location of config.json.
+* Privacy first: a one-time, 37-language privacy notice explains exactly
+  what can be sent to Google before the first translation runs. Decline
+  to stay offline and use the local engine instead. The technical
+  privacy section in the bundled README.md documents every data path.
+* Opt-in diagnostic logging, off by default, with automatic pruning at
+  200 MB to protect disk space.
+
+Security hardening included in this release
+-------------------------------------------
+* DLL search path hardening prevents drive-by binary planting when the
+  app is launched from shared or downloaded folders.
+* Per-session single-instance handling stops cross-user launch
+  conflicts on shared and remote-desktop machines.
+* Local-LLM prompt assembly scrubs control tokens, so malicious web
+  page text cannot hijack the translation pipeline.
+* Oversized clipboard captures are safely clamped before reaching the
+  online translation engine.
+* Clipboard backups and sampler settings are size- and range-guarded.
+
+Known Issues
+------------
+* None currently tracked.

@@ -445,6 +445,8 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesnte
 ; guidance is actionable on a clean machine. Full privacy spec lives in
 ; {app}\README.md ("Privacy & Data Handling (Technical)" section).
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; v0.10.0 release notes shipped with the app (session 260911_0002).
+Source: "..\CHANGELOG.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\Emebala_Chat_Appicon.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\Emebala_Chat_Appicon_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion
@@ -456,7 +458,10 @@ Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skip
 ; ------------------------------------------------------------------------
 [Icons]
 Name: "{group}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"
-Name: "{group}\{cm:UninstallProgram,{cm:ShortcutName}}"; Filename: "{uninstallexe}"
+; Uninstaller rename bypass: {uninstallexe} would resolve to {app}\unins000.exe,
+; which no longer exists after the [Run] rename below - point the Start Menu
+; shortcut at the friendly renamed uninstaller explicitly.
+Name: "{group}\{cm:UninstallProgram,{cm:ShortcutName}}"; Filename: "{app}\Emebalachat Uninstall.exe"
 Name: "{autodesktop}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
@@ -474,9 +479,27 @@ Type: files; Name: "{app}\config.json"
 Type: filesandordirs; Name: "{app}\assets"
 
 ; ------------------------------------------------------------------------
-; [Run] - Post-install launch option
+; [Run] - Post-install rename + launch option
 ; ------------------------------------------------------------------------
 [Run]
+; Uninstaller rename bypass (Stardock-style):
+; Inno Setup hardcodes the uninstaller filename "unins000.exe"/"unins000.dat".
+; To present a friendlier "Emebalachat Uninstall.exe" to users, we rename BOTH
+; files to the SAME base name. Renaming only the EXE (or only the DAT) breaks
+; uninstall: the Inno uninstaller derives its data-file path from its own EXE
+; path at runtime (issrc Setup.Uninstall.pas, RunUninstaller:
+;   UninstDataFilename := PathChangeExt(UninstExeFilename, '.dat')),
+; so exe and dat must share the base name. With both renamed, the uninstaller
+; also self-deletes its own exe and dat correctly at the end of uninstall,
+; because it resolves them from its own path (DelayDeleteFile(UninstExeFilename)
+; and DeleteFile(UninstDataFilename)).
+; Repeat-install safety: Inno's uninstall-log handshaking only scans files
+; matching "unins???.*" in {app} (issrc Setup.Install.pas, FindFiles), so the
+; previous install's renamed pair is invisible to it and a fresh unins000
+; pair is created; "move /y" then overwrites the stale renamed pair. The
+; "if exist" guards keep these commands non-fatal on any edge case.
+Filename: "{cmd}"; Parameters: "/C if exist ""{app}\unins000.exe"" move /y ""{app}\unins000.exe"" ""{app}\Emebalachat Uninstall.exe"""; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C if exist ""{app}\unins000.dat"" move /y ""{app}\unins000.dat"" ""{app}\Emebalachat Uninstall.dat"""; Flags: runhidden
 Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,{cm:ShortcutName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 ; ========================================================================
@@ -500,6 +523,11 @@ const
   // the models directory, so an attacker-influenced GGUF is never handed
   // to the llama.cpp parser.
   EXPECTED_MODEL_SHA256 = '5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4';
+
+  // Uninstaller rename bypass: fixed ARP uninstall subkey. Must match the
+  // {AppId}_is1 layout Inno derives from AppId in [Setup]; kept as a global
+  // constant because PascalScript does not support local const sections.
+  UNINSTALL_SUBKEY = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}_is1';
 
 var
   DownloadPage: TDownloadWizardPage;
@@ -962,8 +990,40 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// FixRenamedUninstallerRegistry - Uninstaller rename bypass (registry half)
+//
+// Inno Setup writes the Add/Remove Programs "UninstallString" registry value
+// during the install step (issrc Setup.Install.pas, PerformInstall ->
+// RegisterUninstallInfo), which runs BEFORE the [Run] section executes and
+// BEFORE ssDone. It points at the now-hardcoded {app}\unins000.exe, which the
+// [Run] rename above moved to "Emebalachat Uninstall.exe". Without this
+// rewrite the ARP entry would dangle and users could not uninstall from
+// Settings/Apps. Inno has no native directive to change UninstallString, so
+// we rewrite the two values (UninstallString + QuietUninstallString) right
+// after the rename, at ssDone (the last setup step, after [Run]).
+// PrivilegesRequired=admin + 64-bit install mode => the key lives in HKLM
+// under the native (64-bit) registry view, which is Inno's default view for
+// RegWriteStringValue here. Guarded with FileExists so a failed rename
+// (files locked by antivirus, etc.) never leaves ARP pointing at nothing.
+// ------------------------------------------------------------------------
+procedure FixRenamedUninstallerRegistry;
+var
+  ExePath: String;
+begin
+  ExePath := ExpandConstant('{app}') + '\Emebalachat Uninstall.exe';
+  if FileExists(ExePath) and RegKeyExists(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY) then
+  begin
+    RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'UninstallString', '"' + ExePath + '"');
+    RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'QuietUninstallString', '"' + ExePath + '" /SILENT');
+    Log('ARP UninstallString/QuietUninstallString rewritten to renamed uninstaller.');
+  end
+  else
+    Log('Renamed uninstaller not found; leaving Inno default UninstallString.');
+end;
+
+// ------------------------------------------------------------------------
 // CurStepChanged - Latch consent choice pre-install; trigger model download
-// and config creation post-install
+// and config creation post-install; fix renamed-uninstaller ARP entries
 // ------------------------------------------------------------------------
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
@@ -976,6 +1036,10 @@ begin
     DownloadModel();
     CreateConfigFile();
   end;
+  // Uninstaller rename bypass: after [Run] renamed unins000.*, the ARP
+  // registry entry still points at the original path; rewrite it last.
+  if CurStep = ssDone then
+    FixRenamedUninstallerRegistry;
 end;
 
 // ------------------------------------------------------------------------
