@@ -1430,7 +1430,8 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
 }
 
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
-                              EnterCaptureResult* capture_result) {
+                              EnterCaptureResult* capture_result,
+                              bool* select_all_rescued) {
     // Session 260913_0001 (Phase B): report the shape-only verdict of every
     // seam decision below so the worker's capture log distinguishes empty-
     // capture causes (guard_abort / copy_chord_failed / empty_selection /
@@ -1441,6 +1442,17 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
         if (capture_result) { *capture_result = r; }
     };
     report(EnterCaptureResult::Ok);
+    // BUG-003 (session 260913_0002): caller-initialized provenance out-param;
+    // set true when the returned capture came from the SelectAll rescue
+    // below. EffectiveBlockSliceK consumes it for the paste-saturated-K
+    // re-anchor (a whole-document span must not be claimed as "the pasted
+    // block"). Shape-only; never user content.
+    if (select_all_rescued) { *select_all_rescued = false; }
+    bool select_all_rescued_local = false;
+    auto mark_rescued = [&]() {
+        select_all_rescued_local = true;
+        if (select_all_rescued) { *select_all_rescued = true; }
+    };
     // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
     // here. ClassifyAppWindow is consulted once and its category picks the
     // selection primitive directly.
@@ -1597,6 +1609,9 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
             ::Sleep(kChordSelectionSettleMs);
             if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(kClipboardCopyChordAttempts - 1))) {
                 copy_confirmed = true;
+                // BUG-003: whole-document span provenance for the saturated-K
+                // re-anchor at the slice below (EffectiveBlockSliceK).
+                mark_rescued();
                 DIAG_F("WIN32_INPUT/CopySelectedText/009: Home-geometry copy unconfirmed after %d attempt(s) (hwnd=%p category=%d); SelectAll (Ctrl+A) rescue cycle confirmed a clipboard commit\n",
                         attempts_executed, reinterpret_cast<void*>(hwnd), static_cast<int>(category));
             }
@@ -1643,6 +1658,8 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                     DIAG_F("WIN32_INPUT/CopySelectedText/010: copy confirmed but clipboard payload empty; SelectAll (Ctrl+A) rescue captured %zu chars (hwnd=%p category=%d)\n",
                             rescued.size(), reinterpret_cast<void*>(hwnd), static_cast<int>(category));
                     text = std::move(rescued);
+                    // BUG-003: same whole-document span provenance as /009.
+                    mark_rescued();
                 }
             }
         }
@@ -1708,8 +1725,19 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     // block reports the distinct empty_tail shape (debug report §8-1).
     size_t nl_final = 0;
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl_final; }
+    // BUG-003 (session 260913_0002, 23:23 report): a rescued SelectAll capture
+    // is a WHOLE-DOCUMENT span; a paste-saturated K must not claim it as "the
+    // pasted block" (the whole-document re-translation the user reported).
+    // ONE definition (EffectiveBlockSliceK) shared with the worker's F3
+    // slice - see its contract in win32_input.hpp.
+    const int k_block = EffectiveBlockSliceK(shift_enter_count,
+                                             select_all_rescued_local);
+    if (k_block != shift_enter_count) {
+        DIAG_F("WIN32_INPUT/CopySelectedText/011: SelectAll-rescued whole-document capture with paste-saturated K (%d); block anchor re-based to the document-end block (effective K=%d)\n",
+               shift_enter_count, k_block);
+    }
     if (!em_path) {
-        const WholeCaptureSlice slice = SliceWholeCaptureToBlock(text, shift_enter_count);
+        const WholeCaptureSlice slice = SliceWholeCaptureToBlock(text, k_block);
         switch (slice.result) {
             case EnterCaptureResult::Ok:
                 break; // within guard (or empty): the established passthrough
@@ -1721,7 +1749,7 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                 size_t nl_block = 0;
                 for (wchar_t c : slice.block) { if (c == L'\n' || c == L'\r') ++nl_block; }
                 DIAG_F("WIN32_INPUT/CopySelectedText/007: whole capture %zu chars over guard; guard re-vetted against current block %zu chars (%zu newline chars, K=%d); whole capture returned (worker F3 owns the prefix/block split)\n",
-                       text.size(), slice.block.size(), nl_block, shift_enter_count);
+                       text.size(), slice.block.size(), nl_block, k_block);
                 report(EnterCaptureResult::BlockSliced);
                 // P5 review 260913_0001 (corrected): the live selection in the
                 // app is still [0..caret) - the WHOLE accumulation - so the
@@ -1740,7 +1768,7 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                 // through / R5); distinct DIAG so log triage separates it
                 // from a genuine guard abort (/006).
                 DIAG_F("WIN32_INPUT/CopySelectedText/008: whole capture %zu chars over guard; current block empty (capture ends at a separator run, K=%d); returning empty (reason=empty_tail)\n",
-                       text.size(), shift_enter_count);
+                       text.size(), k_block);
                 report(EnterCaptureResult::EmptyTail);
                 return {};
             case EnterCaptureResult::GuardAbort:
@@ -1751,7 +1779,7 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     }
     if (!em_path && !EnterCaptureWithinGuard(text.size(), nl_final)) {
         DIAG_F("WIN32_INPUT/CopySelectedText/006: capture exceeds Enter guard even after block slice (chars=%zu newlines=%zu category=%d K=%d); aborting translate\n",
-               text.size(), nl_final, static_cast<int>(category), shift_enter_count);
+               text.size(), nl_final, static_cast<int>(category), k_block);
         report(EnterCaptureResult::GuardAbort);
         return {};
     }

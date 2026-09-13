@@ -461,6 +461,37 @@ constexpr bool SelectAllRescueWarranted(bool em_path, AppCategory category) {
     return !em_path && category == AppCategory::CategoryB;
 }
 
+// ---- BUG-003 (session 260913_0002, 23:23 report): paste-saturated K on a -----
+// rescued whole-document capture ----------------------------------------------
+// The hook SATURATES K to kMaxEnterTranslateNewlines on a user Ctrl+V
+// (hook.cpp: a paste deposits an unknown number of logical newlines that no
+// Shift+Enter keystroke announced, so the next bare Enter translates the
+// WHOLE capture once - sound for the [0..caret) accumulation geometry the
+// saturation was written for). A SelectAll-rescued capture is a
+// WHOLE-DOCUMENT span by construction, so "whole capture = the pasted block"
+// is provably false there: on a guard-passing capture (<= 32 CRLF boundaries
+// after CRLF normalization) FindCurrentBlockStart can never cross a
+// saturated K+1 = 65 terminators, so block_start stays 0, the worker's F3
+// slice never engages, the engine re-translates every previously translated
+// block, and the paste-back replaces the whole document with it (the user's
+// "위 문단까지 재번역" BUG-003 report; reachable only after the BUG-002
+// rescue made whole-document captures on structured contenteditables
+// succeed at all).
+// Re-anchor a saturated K to the document-end block (K=0 semantics: the last
+// logical line - the one boundary FindCurrentBlockStart can still prove from
+// the capture bytes). This is the F3 design's own safe direction: an
+// under-slice misses text, an over-claimed block DESTROYS already-translated
+// content. Scope: ONLY the rescue's whole-document span; a saturated K on a
+// non-rescue capture (the paste-accumulation geometry that motivated the
+// saturation) keeps its established whole-capture semantics.
+constexpr int EffectiveBlockSliceK(int shift_enter_count, bool select_all_rescued) {
+    if (select_all_rescued &&
+        shift_enter_count >= static_cast<int>(kMaxEnterTranslateNewlines)) {
+        return 0; // document-end block: the last logical line
+    }
+    return shift_enter_count;
+}
+
 enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 
 // Pure, time-parameterized state machine behind CopySelectionWithSequenceWait().
@@ -846,8 +877,17 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // (EnterCaptureResult: ok / block_sliced / guard_abort / empty_tail /
 // copy_chord_failed / empty_selection / editor_excluded) so the worker log
 // can distinguish empty-capture causes. Never carries user content.
+// select_all_rescued (BUG-003, session 260913_0002): optional out-param,
+// initialized false by the seam and set true when the returned capture came
+// from the BUG-002 SelectAll rescue - a WHOLE-DOCUMENT span on the
+// structured-contenteditable class. The worker feeds it into
+// EffectiveBlockSliceK so a paste-saturated K re-anchors the block slice to
+// the document-end block instead of claiming the whole document as the
+// translation block (see the EffectiveBlockSliceK contract above).
+// Shape-only boolean; never carries user content.
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count = 0,
-                              EnterCaptureResult* capture_result = nullptr);
+                              EnterCaptureResult* capture_result = nullptr,
+                              bool* select_all_rescued = nullptr);
 
 // High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle

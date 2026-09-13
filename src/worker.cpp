@@ -254,8 +254,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // carries the shape-only seam verdict (Phase B, §8-1) so the end-log
     // below distinguishes empty-capture causes.
     EnterCaptureResult capture_result = EnterCaptureResult::Ok;
+    bool select_all_rescued = false;
     std::wstring line = NormalizeNewlinesToCRLF(
-        CopySelectedText(task.target_hwnd, task.shift_enter_count, &capture_result));
+        CopySelectedText(task.target_hwnd, task.shift_enter_count, &capture_result,
+                         &select_all_rescued));
     // REQ-003 (session 260909): the captured body IS the user's text - recorded
     // only when diag_log_content is on (default off). Length and duration
     // metadata stay on both branches (shape-only rule, debugging preserved).
@@ -274,6 +276,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  line.size(), ::GetTickCount64() - t_capture_start,
                  task.shift_enter_count, EnterCaptureResultName(capture_result));
     }
+    // BUG-003 (session 260913_0002): the block-slice depth actually used for
+    // this capture. A SelectAll-rescued whole-document capture re-anchors a
+    // paste-saturated K (user Ctrl+V: "unknown paste geometry, translate the
+    // whole capture once") to the document-end block so already-translated
+    // upper content is never re-translated. ONE definition
+    // (EffectiveBlockSliceK, win32_input.hpp) shared with the capture seam.
+    // The capture-end log above keeps the RAW hook K; the block_slice log
+    // below prints this effective value.
+    const int k_block = EffectiveBlockSliceK(task.shift_enter_count, select_all_rescued);
 
     // R5 observability: log the capture/bypass decision so a silent
     // "nothing translated" can be attributed to the exact failing gate
@@ -350,7 +361,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // exactly the current block, which contains exactly K boundaries, and
     // FindCurrentBlockStart wants K+1 -> clamps to 0 (whole block, as-is).
     if (!line.empty() && !pasted_prefix_skip) {
-        size_t block_start = FindCurrentBlockStart(line, task.shift_enter_count);
+        size_t block_start = FindCurrentBlockStart(line, k_block);
         // The switch above fills the (prefix, tail) pair ONLY for the
         // ledger-protected PrefixWithTail arm; a non-empty tail therefore IS
         // the proof the ledger byte-matched as a prefix - the slice can only
@@ -377,7 +388,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // PrefixWithTail (byte-comparison self-invalidation remains the
             // stale-memory guard, same reasoning as the C1 keep).
             DIAG_F("WORKER/ExecuteTask/041: block slice is empty (capture ends at a line separator, K=%d, len=%zu); prefix held verbatim, Enter handed to the app (no re-translation)\n",
-                   task.shift_enter_count, line.size());
+                   k_block, line.size());
             DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
                      ::GetTickCount64() - t_task_start);
             SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
@@ -396,7 +407,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             untranslated_tail.assign(line, block_start, line.size() - block_start);
             DIAG_LOG("PIPELINE", "stage=block_slice%s K=%d capture_len=%zu prefix_len=%zu block_len=%zu",
                      refines_ledger_split ? "_ledger_refine" : "",
-                     task.shift_enter_count, line.size(),
+                     k_block, line.size(),
                      pasted_prefix_text.size(), untranslated_tail.size());
         }
     }

@@ -10384,6 +10384,92 @@ void TestCaptureSliceBeforeGuard() {
     }
 }
 
+// SESSION 260913_0002 (BUG-003, 23:23 report): the SelectAll-rescue whole-
+// document capture must not be sliced with a paste-saturated K. The hook
+// saturates K to kMaxEnterTranslateNewlines on a USER Ctrl+V (the pasted
+// block's internal newlines are unknown; "translate the whole capture once"
+// is sound for the [0..caret) accumulation geometry it was written for).
+// Applied to the rescue's whole-document span, a saturated K claims the
+// ENTIRE document (previously translated blocks included) as the translation
+// block - FindCurrentBlockStart can never cross K+1 = 65 terminators in a
+// guard-passing capture (<= 32 CRLF boundaries), so the worker's F3 slice
+// never engages and the paste-back replaces the whole document with its
+// re-translation (the user's report). The production rule
+// (EffectiveBlockSliceK, win32_input.hpp - ONE definition used by the capture
+// seam and the worker) re-anchors a saturated rescued capture to the
+// document-end block. Pins: (1) the rule matrix; (2) rescue whole-doc +
+// caret-at-end => block = the last line ONLY (not the whole doc); (3) the
+// non-rescue twin keeps the established whole-capture paste semantics; (4)
+// the seam twin: an over-guard rescued document re-vets its last line
+// instead of aborting on "whole document = one block".
+void TestRescueSaturatedKReanchor() {
+    std::cout << "[TEST] 260913_0002 BUG-003 rescue paste-saturated K re-anchor" << std::endl;
+    const int failures_before = g_failed_count;
+
+    constexpr int kSat = static_cast<int>(kMaxEnterTranslateNewlines);
+
+    // ---- (1) the rule matrix (compile-time pins) ----
+    static_assert(EffectiveBlockSliceK(kSat, true) == 0,
+                  "BUG-003: rescue + saturated K -> document-end block (last line)");
+    static_assert(EffectiveBlockSliceK(kSat, false) == kSat,
+                  "BUG-003: non-rescue saturated K keeps the paste whole-capture semantics");
+    static_assert(EffectiveBlockSliceK(0, true) == 0,
+                  "BUG-003: a zero K passes through on the rescue path");
+    static_assert(EffectiveBlockSliceK(2, true) == 2,
+                  "BUG-003: a sane Shift+Enter block depth passes through on the rescue path");
+    static_assert(EffectiveBlockSliceK(0, false) == 0,
+                  "BUG-003: non-rescue zero K unchanged");
+
+    // Runtime twins keep the matrix visible in the pass log.
+    TEST_CHECK(EffectiveBlockSliceK(kSat, true) == 0,
+               "re-anchor: rescue + K=64 -> document-end block (runtime twin)");
+    TEST_CHECK(EffectiveBlockSliceK(kSat, false) == kSat,
+               "re-anchor: geometry-path K=64 untouched (runtime twin)");
+    TEST_CHECK(EffectiveBlockSliceK(1, true) == 1,
+               "re-anchor: a one-line-deep typed block keeps its K on the rescue path");
+
+    // ---- (2) rescue whole-doc + caret-at-end => block = last line ONLY ----
+    {
+        // The incident shape: already-translated upper lines + a fresh last
+        // line (the user typed/pasted at the document end and pressed Enter).
+        const std::wstring doc = L"already translated line one\r\n"
+                                 L"\r\n"
+                                 L"already translated line two\r\n"
+                                 L"\r\n"
+                                 L"freshly typed question";
+        const size_t last_line_at = doc.rfind(L"\r\n") + 2; // start of the fresh line
+        TEST_CHECK(FindCurrentBlockStart(doc, kSat) == 0,
+                   "BUG-003 pre-fix witness: the saturated K claims the WHOLE document as the block");
+        const int k_block = EffectiveBlockSliceK(kSat, /*select_all_rescued*/ true);
+        const size_t bs = FindCurrentBlockStart(doc, k_block);
+        TEST_CHECK(bs == last_line_at && bs > 0,
+                   "BUG-003 fix: rescue + saturated K -> the block starts at the last line, not the whole doc");
+        TEST_CHECK(doc.compare(bs, std::wstring::npos, L"freshly typed question") == 0,
+                   "BUG-003 fix: the block is exactly the fresh last line");
+        // The non-rescue twin keeps the established paste semantics.
+        TEST_CHECK(FindCurrentBlockStart(doc, EffectiveBlockSliceK(kSat, false)) == 0,
+                   "BUG-003 scope: the same K on a NON-rescue capture keeps whole-capture semantics");
+    }
+
+    // ---- (3) the seam twin: an over-guard rescued document slices to its
+    // last line instead of aborting on "whole document = one block" ----
+    {
+        const std::wstring cap = std::wstring(4100, L'a') + L"\r\n\r\n" + L"마지막 줄";
+        TEST_CHECK(SliceWholeCaptureToBlock(cap, kSat).result == EnterCaptureResult::GuardAbort,
+                   "BUG-003 pre-fix witness: over-guard whole doc + saturated K aborts the whole capture");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, EffectiveBlockSliceK(kSat, true));
+        TEST_CHECK(s.result == EnterCaptureResult::BlockSliced &&
+                       s.block == std::wstring_view(L"마지막 줄"),
+                   "BUG-003 fix: the rescued over-guard doc re-vets the document-end block instead of aborting");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260913_0002 BUG-003 rescue K re-anchor tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260913_0002 BUG-003 rescue K re-anchor tests had failures." << std::endl;
+    }
+}
+
 // REQ-F7 (session 260908_0002, log 문제2): the DIAG field `clipboard_restored`
 // printed `pasted ? 0 : 1`, i.e. it logged 0 on every SUCCESSFUL paste even
 // though PasteAndRestore had restored the original clipboard before returning.
@@ -12087,6 +12173,7 @@ int main() {
     TestReqF3BlockSliceCurrentBlockOnly();
     TestCaptureSliceBeforeGuard(); // session 260913_0001 (slice-before-guard seam)
     TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
+    TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
