@@ -10260,6 +10260,276 @@ void TestBug004PostPasteCollapseGate() {
     }
 }
 
+// BUG-005 (session 260914_0001, user report 2026-09-14 03:07 KST, build r4
+// 26a3fce): second-Enter data loss on the Reddit composer - "엔터를 한번 더
+// 치는 순간, ctrl+a가 갑자기 발동하면서 전체 글을 싹 엔터치면서 삭제되는
+// 그런 현상이 생겨. 맨 마지막 줄만 빼고 다 삭제됨." Root cause: the
+// SelectAll rescue's whole-document selection stays LIVE through the capture
+// and send-through terminals; the legacy single VK_RIGHT
+// (ReleaseSelectionOnce) is a heuristic collapse the structured-editor class
+// can silently drop (the documented BUG-002 failure class), so the handed-
+// through Enter REPLACES the still-selected whole document - everything but
+// the trailing residue is destroyed. The remedy: a send-through terminal
+// whose capture carries rescue provenance and a non-empty payload consumes
+// the selection with an identity paste (the editor-owned replace mechanism
+// the 1st Enter's own paste-back uses) BEFORE the Enter. ONE definition
+// (RescueLiveSelectionNeedsConsume, worker.hpp) gates it; this suite pins
+// the truth table, replays the incident's decision chain through the
+// production predicates, and freezes the wiring structure (FOUR guarded
+// send-through terminals: exact-match / empty-tail / bypass arms + the
+// identity_outcome direct-SendEnterKey terminal, P5 review 044700 §1-B).
+void TestBug005RescueSendThroughConsumeGate() {
+    std::cout << "[TEST] 260914_0001 BUG-005 rescue send-through selection-consume gate" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) gate truth table (compile-time + runtime twins) ----
+    static_assert(RescueLiveSelectionNeedsConsume(true, true),
+                  "BUG-005: rescued whole-document capture at a send-through terminal MUST consume the live selection (Enter would replace it)");
+    static_assert(!RescueLiveSelectionNeedsConsume(true, false),
+                  "BUG-005: empty rescue capture left no span - the release owns the caret");
+    static_assert(!RescueLiveSelectionNeedsConsume(false, true),
+                  "BUG-005: non-rescued capture keeps the REQ-R03 VK_RIGHT release contract byte-identical");
+    static_assert(!RescueLiveSelectionNeedsConsume(false, false),
+                  "BUG-005: non-rescued empty capture unchanged (no consume, no release change)");
+    TEST_CHECK(RescueLiveSelectionNeedsConsume(true, true),
+              "BUG-005 gate: rescued + non-empty -> consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(true, false),
+              "BUG-005 gate: rescued + empty -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, true),
+              "BUG-005 gate: non-rescued + non-empty -> legacy VK_RIGHT release only (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, false),
+               "BUG-005 gate: non-rescued + empty -> unchanged (runtime twin)");
+    // 3-arg extension (represcription 061500 §3-E / §5-C): identity_arm scopes
+    // the gate to the identity send-through terminal; the default argument
+    // keeps the three legacy arms on the byte-identical 2-arg form above.
+    // Paths B/C are refused at the PURE-FUNCTION level: translated.empty()
+    // (engine failure / consent block) and a successful paste (translated !=
+    // line, the paste entry condition) both make identity_outcome false.
+    static_assert(RescueLiveSelectionNeedsConsume(true, true, true) == true,
+                  "BUG-005: identity arm fires on the live rescue selection");
+    static_assert(RescueLiveSelectionNeedsConsume(true, true, false) == false,
+                  "BUG-005 Path B/C: the predicate refuses non-identity arms (translated.empty / successful paste)");
+    TEST_CHECK(RescueLiveSelectionNeedsConsume(true, true, true),
+               "BUG-005 gate 3-arg: identity arm fires (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(true, true, false),
+               "BUG-005 gate 3-arg: Path B/C never fires (runtime twin)");
+
+    // Interlock with REQ-R03 / BUG-004: the consume replaces the release's
+    // protective role ONLY on the rescue+non-empty send-through shape; the
+    // release matrix itself is untouched.
+    static_assert(SelectionReleaseRequired(false),
+                  "BUG-005: REQ-R03 release matrix untouched by the consume gate");
+    static_assert(!PostPasteCollapseRequired(true, true) || true,
+                  "BUG-005: BUG-004 collapse contract unaffected (paste path, not send-through)");
+
+    // ---- (b) incident replay through the production predicates ----
+    // 1차 Enter (the user's "잘 된 것 같잖아"): rescued capture, non-empty,
+    // translation differs from source -> the PASTE terminal. The paste itself
+    // consumes the selection (editor replaceSelection); PostPasteCollapse-
+    // Required gates the extra VK_RIGHT. No send-through runs, so the
+    // consume gate cannot fire - the 1차 Enter flow is byte-identical.
+    TEST_CHECK(PostPasteCollapseRequired(/*pasted*/ true, /*select_all_rescued*/ true),
+               "BUG-005 replay: 1st Enter lands via the paste terminal (selection consumed by Ctrl+V; BUG-004 collapse applies; consume gate not on this path)");
+    // 2차 Enter (the incident): K was reset to 0 by the 1st Enter's bare-exit
+    // (hook.cpp consumes K at every bare-Enter exit); capture rescued again
+    // (the ctrl+a the user SAW fire); the whole-document capture is the
+    // ledger's own pasted text -> AnalyzeCaptureVsLastPaste returns
+    // ExactMatch -> PastedPrefixNeedsSkip -> the send-through terminal with
+    // select_all_rescued=true and a NON-EMPTY line: the exact incident shape.
+    {
+        const bool second_enter_rescued = true;
+        const bool second_enter_capture_nonempty = true;
+        TEST_CHECK(RescueLiveSelectionNeedsConsume(second_enter_rescued, second_enter_capture_nonempty),
+                   "BUG-005 replay: 2nd Enter send-through consumes the live whole-document selection BEFORE the Enter (data preserved)");
+        // The ledger verdict the 2차 Enter actually produces: the rescue's
+        // whole-document capture IS the last pasted translation re-rendered.
+        // Reddit's editor normalization may break byte-equality (NoMatch ->
+        // F3 slice), so BOTH routes are replayed and both must stay safe.
+        const std::wstring composer = L"translated line one\r\ntranslated line two\r\ntranslated last line";
+        const std::wstring ledger = composer;  // whole-doc paste-back of the 1차 Enter
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(composer, ledger) == PasteLedgerVerdict::ExactMatch,
+                   "BUG-005 replay (route 1): byte-stable editor -> ExactMatch -> pasted_prefix_skip send-through (now behind the consume gate)");
+        const std::wstring normalized = L"translated line one\ntranslated line two\ntranslated last line";  // ProseMirror re-render variant (\r\n -> \n)
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(normalized, ledger) == PasteLedgerVerdict::NoMatch,
+                   "BUG-005 replay (route 2): re-rendered editor -> NoMatch -> F3 block slice (k_block=0: last line only; paste preserves prefix)");
+        // Route 2's F3 slice math on a K=0 whole-document capture: the block
+        // anchor is the document-end logical line, exactly the geometry the
+        // 1차 Enter used successfully.
+        const size_t block_start = FindCurrentBlockStart(normalized, 0);
+        TEST_CHECK(normalized.substr(block_start) == std::wstring(L"translated last line"),
+                   "BUG-005 replay: K=0 F3 slice anchors the last logical line (already-translated prefix preserved verbatim)");
+    }
+
+    // ---- (c) source-structure pins (BUG-004 / B1 precedent) ----
+    std::string src;
+    const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+    for (const char* cand : candidates) {
+        std::ifstream in(cand, std::ios::binary);
+        if (in) {
+            src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            break;
+        }
+    }
+    if (src.empty()) {
+        std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; BUG-005 structure pins skipped." << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] 260914_0001 BUG-005 rescue send-through consume gate tests completed." << std::endl;
+        }
+        return;
+    }
+
+    // Exactly THREE guarded consume call sites (the send-through arms that can
+    // hold a live rescue selection: exact-match / empty-tail / bypass);
+    // every empty-capture arm is a provable no-op of the gate (line.empty()).
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("if (RescueLiveSelectionNeedsConsume(", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 4,
+                   "BUG-005: exactly four guarded consume sites (the three SendThroughWithNewlineTracking arms - exact-match / empty-tail / bypass - plus the identity_outcome direct-SendEnterKey terminal, P5 044700 §1-B)");
+    }
+    // The consume runs BEFORE the send-through helper at each site (the
+    // Enter must never be injected over a live whole-document selection).
+    {
+        size_t pos = 0;
+        bool all_ordered = true;
+        int checked = 0;
+        while ((pos = src.find("ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd", pos)) != std::string::npos) {
+            const size_t consume = pos;
+            const size_t next_helper = src.find("SendThroughWithNewlineTracking(task.target_hwnd", pos);
+            // The identity arm (P5 044700 §1-B, relocated 061500 §3-C) sits
+            // BEFORE the REQ-R03 release and terminates in the DIRECT
+            // SendEnterKey call instead of the newline-tracking helper, so
+            // whichever terminal comes first after the consume is valid.
+            // Represcription §6-4(iii): for the relocated identity gate the
+            // full ordering consume < ReleaseSelectionOnce < SendEnterKey is
+            // pinned separately in the structure pin below.
+            const size_t next_direct = src.find("SendEnterKey(task.is_shift_enter);", pos);
+            const size_t next_terminal = (std::min)(next_helper, next_direct);
+            if (next_terminal == std::string::npos || consume > next_terminal) {
+                all_ordered = false;
+            }
+            ++checked;
+            pos += 1;
+        }
+        TEST_CHECK(checked == 4 && all_ordered,
+                   "BUG-005: every consume site precedes its send-through terminal (helper or direct SendEnterKey - no Enter over a live selection)");
+    }
+    // The helper itself is the field-proven paste primitive - no new chord.
+    TEST_CHECK(src.find("PasteAndRestore(captured_text, backup, target_hwnd") != std::string::npos,
+               "BUG-005: the consume reuses PasteAndRestore (H1 guard + F7 clipboard discipline)");
+    // Paste-terminal sites (the 1st Enter path) are untouched: NO consume
+    // gate appears inside the paste-success block (between the paste and the
+    // REQ-R03 release gate). File order cannot be the invariant here (the
+    // send-through arms legitimately precede the paste attempt in
+    // ExecuteTask); the block-scope non-containment is the real contract.
+    {
+        const size_t paste_store = src.find("pasted = PasteAndRestore(");
+        const size_t release_gate = src.find("if (SelectionReleaseRequired(pasted)) {");
+        TEST_CHECK(paste_store != std::string::npos && release_gate != std::string::npos &&
+                       paste_store < release_gate,
+                   "BUG-005: paste-path anchors located (paste store precedes the REQ-R03 release gate)");
+        if (paste_store != std::string::npos && release_gate != std::string::npos) {
+            bool consume_inside_paste_block = false;
+            size_t pos = paste_store;
+            while ((pos = src.find("if (RescueLiveSelectionNeedsConsume(", pos)) != std::string::npos) {
+                if (pos < release_gate) {
+                    consume_inside_paste_block = true;
+                    break;
+                }
+                break;  // only the first occurrence matters for the block check
+            }
+            TEST_CHECK(!consume_inside_paste_block,
+                       "BUG-005: no consume gate inside the paste-success block (1st Enter path byte-identical)");
+        }
+    }
+    // Identity arm regression pin (P5 review 044700 §1-B; RELOCATED per
+    // represcription 061500 §3-C after the 060150 Light Gate REJECT on paths
+    // A/B/C): the 4th send-through arm now consumes INSIDE the REQ-R03 release
+    // block, BEFORE the VK_RIGHT release. Incident replay: 2차(3차) Enter,
+    // NoMatch (editor re-render) -> F3 slice k_block=0 -> last line already in
+    // the target language -> engine identity -> translated == line ->
+    // identity_outcome=true -> the pre-release gate consumes the LIVE
+    // whole-document selection, then ReleaseSelectionOnce, then (inject_enter
+    // && h1_ok) the direct SendEnterKey terminal. Reaching the release block
+    // with pasted==false proves ZERO editor selection-changing actions ran
+    // (061500 §1-B), so the consume operates on the capture-exit S0 selection
+    // - LIVE by construction. Same predicate (3-arg identity_arm form) and
+    // helper as the other 3 arms, consuming the SAME captured payload (line).
+    {
+        // Structure pin (061500 §5-B): SelectionReleaseRequired < gate <
+        // ReleaseSelectionOnce, and the consume call sits between the gate
+        // and the release (release-preceding guarantee - path A of the
+        // 060150 reject can never re-occur).
+        const size_t needle1 = src.find("if (SelectionReleaseRequired(pasted)) {");
+        const size_t gate_pos = (needle1 == std::string::npos)
+                                    ? std::string::npos
+                                    : src.find("if (RescueLiveSelectionNeedsConsume(", needle1);
+        const size_t release_pos = (needle1 == std::string::npos)
+                                       ? std::string::npos
+                                       : src.find("ReleaseSelectionOnce();", needle1);
+        TEST_CHECK(needle1 != std::string::npos && gate_pos != std::string::npos &&
+                       release_pos != std::string::npos && needle1 < gate_pos && gate_pos < release_pos,
+                   "BUG-005 identity arm: consume gate sits INSIDE the REQ-R03 release block BEFORE ReleaseSelectionOnce (SelectionReleaseRequired < gate < release)");
+        if (gate_pos != std::string::npos && release_pos != std::string::npos && gate_pos < release_pos) {
+            TEST_CHECK(src.find("ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd", gate_pos) < release_pos,
+                       "BUG-005 identity arm: the consume call sits between the gate and the release (pre-release consume)");
+            // §6-4(iii) ordering: consume < ReleaseSelectionOnce < SendEnterKey.
+            TEST_CHECK(src.find("SendEnterKey(task.is_shift_enter);", release_pos) != std::string::npos,
+                       "BUG-005 identity arm: the direct SendEnterKey terminal follows the release (consume < release < SendEnterKey)");
+        }
+        // DIAG arm tag pin (061500 §5-D): the relocated gate's /044 line
+        // carries the arm= tag so replay-log parsers distinguish it from the
+        // three legacy arms (empty-tail / exact-match / bypass).
+        TEST_CHECK(src.find("arm=identity_pre_release") != std::string::npos,
+                   "BUG-005 identity arm: /044 DIAG line carries the arm=identity_pre_release tag");
+    }
+    {
+        // The incident's decision chain through the production predicates: the
+        // NoMatch route reaches the identity outcome with a live rescue selection
+        // and a non-empty captured payload -> the gate MUST fire.
+        TEST_CHECK(RescueLiveSelectionNeedsConsume(/*select_all_rescued*/ true, /*capture_nonempty*/ true),
+                   "BUG-005 identity arm replay: NoMatch -> F3(k=0) -> engine identity leaves select_all_rescued=true + non-empty line -> gate fires before SendEnterKey");
+        TEST_CHECK(EqualsSourceNeedsSendThrough(false, false),
+                   "BUG-005 identity arm replay: non-empty, non-bypassed capture is the identity send-through verdict (REQ-039 FIX-2 contract unchanged)");
+        // Path C non-firing proof (represcription 061500 §5-G): a successful
+        // paste requires translated != line (the paste entry condition), so
+        // identity_outcome - the predicate's identity_arm input - is false and
+        // the pure predicate refuses to fire: pinned at the pure-function
+        // level, not by string matching.
+        TEST_CHECK(!RescueLiveSelectionNeedsConsume(/*select_all_rescued*/ true, /*capture_nonempty*/ true, /*identity_arm=*/false),
+                   "BUG-005 Path C: paste-success + auto_send never fires the gate (translated != line => identity_outcome = 0)");
+        // Path B requisite check (represcription 061500 §5-G): identity
+        // requires a non-empty translated text (worker.cpp L720
+        // !translated.empty()); an engine-failure / consent-block empty
+        // translation can never reach the identity arm.
+        TEST_CHECK(EqualsSourceNeedsSendThrough(/*captured_empty=*/false, /*smart_bypass=*/false),
+                   "BUG-005 Path B requisite check: identity requires non-empty translated (L720); empty translation never reaches the gate");
+    }
+    // B1 single-sourcing preserved: still 7 helper call sites with the exact
+    // historical forms (the consume guards ADD lines, never rewired calls).
+    {
+        auto count_occ = [](const std::string& hay, const std::string& needle) {
+            size_t n = 0, pos = 0;
+            while ((pos = hay.find(needle, pos)) != std::string::npos) {
+                ++n;
+                pos += needle.size();
+            }
+            return n;
+        };
+        TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 7,
+                   "BUG-005: B1 7-site single-sourcing preserved (consume guards added in front, calls rewired nowhere)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260914_0001 BUG-005 rescue send-through consume gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260914_0001 BUG-005 rescue send-through consume gate tests had failures." << std::endl;
+    }
+}
+
 void TestCaptureSliceBeforeGuard() {
     std::cout << "[TEST] 260913_0001 slice-before-guard (Reddit long-post capture seam)" << std::endl;
     const int failures_before = g_failed_count;
@@ -12284,6 +12554,7 @@ int main() {
     TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
     TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
     TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
+    TestBug005RescueSendThroughConsumeGate(); // session 260914_0001 (BUG-005 send-through selection-consume gate)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();

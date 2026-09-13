@@ -51,6 +51,38 @@ void ReleaseSelectionOnce() {
 // failure value a future caller could pass, and conflating "use this value" with
 // "sample now (and maybe fail)" would be ambiguous; nullopt is the only true
 // "no pre-sample" witness.
+// BUG-005 (session 260914_0001): identity-paste selection consume. The exact
+// mechanism the 1st Enter's successful rescue translation uses (the editor's
+// paste transaction REPLACES the live whole-document selection and lands a
+// collapsed post-paste caret - the ProseMirror replaceSelection contract
+// cited in the BUG-004 analysis §6) is re-used here as the selection
+// normalizer for the send-through terminals whose capture came from the
+// SelectAll rescue: the single VK_RIGHT of ReleaseSelectionOnce is a
+// heuristic collapse that the structured-editor class can silently drop
+// (BUG-002 class), leaving the whole-document selection LIVE when the
+// handed-through Enter arrives - and Enter over a live selection REPLACES
+// it (the exact "맨 마지막 줄만 빼고 다 삭제됨" data loss). The paste of the
+// CAPTURED text back over its own selection is byte-safe by construction:
+// the selection spans exactly [document content captured]. Reuses the
+// field-proven PasteAndRestore primitive (H1 foreground guard included) so
+// no new chord, no new timing constant; clipboard is restored by the same
+// F7 retry discipline. `pasted` must be true for the consume to have
+// completed; on an H1-abort the selection stays live and the caller KEEPS
+// the legacy VK_RIGHT release (the next Enter re-runs the whole gate).
+bool ConsumeRescueSelectionIdentityPaste(std::wstring_view captured_text, HWND target_hwnd,
+                                          const ClipboardBackup& backup,
+                                          bool& restorer_active, bool* restore_ok_out) {
+    if (restore_ok_out) {
+        *restore_ok_out = false;
+    }
+    const bool consume_ok =
+        PasteAndRestore(captured_text, backup, target_hwnd, restore_ok_out);
+    // F7 discipline, same as the paste-success branch: disarms the scope-exit
+    // guard only when the original clipboard was CONFIRMED restored.
+    restorer_active = ClipboardRestorerStaysArmed(consume_ok, restore_ok_out ? *restore_ok_out : false);
+    return consume_ok;
+}
+
 void SendThroughWithNewlineTracking(HWND target_hwnd, bool is_shift_enter,
                                     std::optional<DWORD> pre_sampled_caret = std::nullopt) {
     const DWORD pre_caret = pre_sampled_caret.has_value()
@@ -78,6 +110,16 @@ static_assert(PostPasteCollapseRequired(true, true) == true, "BUG-004: successfu
 static_assert(PostPasteCollapseRequired(true, false) == false, "BUG-004: non-rescue paste success keeps the REQ-R03 no-release contract");
 static_assert(PostPasteCollapseRequired(false, true) == false, "BUG-004: failed paste never collapses - REQ-R03 release owns the caret");
 static_assert(PostPasteCollapseRequired(false, false) == false, "BUG-004: non-rescue failure unchanged (no collapse, no double release)");
+// BUG-005 (represcription 061500 §3-E): the identity arm's 3-arg predicate form
+// adds the arm scope to the SAME ONE definition - identity_outcome is false on
+// path B (translated.empty: L720 requires non-empty) and path C (successful
+// paste: translated != line), so the relocated pre-release gate can only fire
+// on the identity send-through terminal; the default argument keeps the three
+// legacy arms byte-identical.
+static_assert(RescueLiveSelectionNeedsConsume(true, true, true) == true, "BUG-005: identity arm fires on the live rescue selection (pre-release gate)");
+static_assert(RescueLiveSelectionNeedsConsume(true, true, false) == false, "BUG-005: Path B/C (translated empty / successful paste) never fire the identity gate");
+static_assert(RescueLiveSelectionNeedsConsume(true, false, false) == false, "BUG-005: empty rescue capture never consumes regardless of arm");
+static_assert(RescueLiveSelectionNeedsConsume(false, true, false) == false, "BUG-005: non-rescued capture never consumes regardless of arm");
 
 } // namespace
 
@@ -400,6 +442,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                    k_block, line.size());
             DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
                      ::GetTickCount64() - t_task_start);
+            if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+                ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+                DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (empty-tail arm); the Enter cannot replace a live selected span\n");
+            }
             SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
             return;
         }
@@ -428,6 +474,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // Same contract as the smart-bypass send-through below: release the
         // block selection (Ctrl+V of the next task must not clobber it) and
         // hand the intercepted Enter to the app.
+        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+            ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (exact-match arm); the Enter cannot replace a live selected span\n");
+        }
         SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
         // F3 C1 hardening (session 260908_0003, verify 220750 §2 R1->R2 and
         // §7 예시1): the redundant-Enter (send-of-output) NO LONGER clears
@@ -589,6 +639,14 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                              "duration_ms=%llu",
                  line.empty() ? "empty_capture_no_notice" : "smart_bypass",
                  ::GetTickCount64() - t_task_start);
+        // BUG-005: the smart-bypass arm is a send-through terminal that can be
+        // reached with a live rescue-captured whole-document selection (all
+        // capture scripts already in the target language). Same identity-
+        // paste consume as /044 before the intercepted Enter is handed over.
+        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+            ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (bypass arm); the Enter cannot replace a live selected span\n");
+        }
         // No paste will happen on this path: release the block selection before
         // Enter so the (about to be sent) text cannot be clobbered (REQ-R03).
         // REQ-036 FIX-1 (session 260907, debug report): same send-through
@@ -776,6 +834,32 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // single call site below is the guarantee; the constexpr matrix above pins
     // it at compile time.
     if (SelectionReleaseRequired(pasted)) {
+        // BUG-005 4th gate (represcription 061500, Light Gate 060150 REJECT ->
+        // paths A/B/C): placed INSIDE this !pasted-only block, BEFORE the
+        // VK_RIGHT release. Equivalence proof (report 061500 §1-B): reaching
+        // this block with pasted==false means this task injected ZERO editor
+        // selection-changing actions (no Ctrl+V - H1 abort pre-emits nothing;
+        // no Enter - the send gate is below), so the selection here is
+        // IDENTICAL to the capture-exit state S0: a select_all_rescued capture
+        // means a LIVE whole-document selection, provably, regardless of
+        // whether the release below will be honored or silently dropped
+        // (BUG-002 class - unobservable by design). Consuming it here makes
+        // the identity paste a replacement over its own selection (byte-safe
+        // no-op content edit that collapses the selection editor-owned), so
+        // the release below and the send-through Enter can never replace a
+        // live selected span. Scope: the predicate's identity_arm input
+        // (3-arg form, 061500 §3-E) is identity_outcome, which is false on
+        // path B (translated empty: L720 requires non-empty) and path C
+        // (successful paste: translated != line); pasted==true cannot enter
+        // this block at all (L102 static_assert) - the 1st-Enter mainline
+        // rescue paste-back is untouched.
+        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty(), identity_outcome) &&
+            ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste BEFORE the REQ-R03 release (identity arm, pre-release gate); arm=identity_pre_release\n");
+        }
+        // consume failure (H1 abort) falls through to the legacy contract:
+        // the release below runs exactly once (REQ-R03 unchanged), and the
+        // Enter below stays H1-gated. Pre-fix behavior byte-identical.
         ReleaseSelectionOnce();
     }
 

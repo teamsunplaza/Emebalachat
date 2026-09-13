@@ -62,6 +62,48 @@ constexpr bool PostPasteCollapseRequired(bool paste_succeeded, bool select_all_r
     return paste_succeeded && select_all_rescued;
 }
 
+// BUG-005 (session 260914_0001, user report 2026-09-14 03:07 KST, build r4
+// 26a3fce): the SECOND-Enter data loss on the rescue path. The SelectAll
+// rescue's whole-document selection stays LIVE in the editor through the
+// capture (that highlight is what the user saw fire again on the second
+// Enter); a send-through terminal then hands the intercepted Enter to the
+// app with only the single VK_RIGHT release (10 ms settle) standing between
+// the live selection and the Enter. On the structured-contenteditable class
+// the documented failure mode (BUG-002, win32_input.hpp contract block) is
+// that a synthetic caret-motion key can silently fail against the editor's
+// reconciled selection - so the Enter lands on the still-live
+// whole-document selection and REPLACES it: the entire composer except the
+// trailing residue is destroyed (the user's report: only the last line
+// survived). This pure predicate gates the remedy as ONE definition shared
+// by worker.cpp and the unit tests (same discipline as
+// SelectionReleaseRequired / PostPasteCollapseRequired): a send-through
+// terminal whose capture came from the SelectAll rescue (provenance) with a
+// non-empty payload (the live selection has span) MUST consume the
+// selection with the identity-paste mechanism (the editor-owned replace
+// the 1st Enter itself uses) before the Enter is injected. Both inputs must
+// hold: a NON-rescued capture keeps the REQ-R03 VK_RIGHT release contract
+// byte-identical (classic editors, the class the failure paths were
+// field-proven on), and an EMPTY rescue capture left no whole-document
+// span to consume (collapsed/empty payload).
+//
+// BUG-005 3-arg extension (represcription 061500 §3-E, Light Gate 060150
+// REJECT paths B/C): `identity_arm` scopes the gate to the identity
+// send-through terminal only. `identity_outcome` (worker.cpp L720:
+// !translated.empty() && translated == line && EqualsSourceNeedsSendThrough)
+// is FALSE on the two non-identity paths that reach the relocated pre-release
+// gate site: Path B - translated.empty() (engine failure / consent block)
+// fails the !translated.empty() requirement, and Path C - a successful paste
+// requires translated != line (paste entry condition), which contradicts the
+// identity equality. The default `= true` keeps the three legacy arms
+// (empty-tail / exact-match / bypass, 2-arg call sites) byte-identical;
+// only the identity arm passes the third argument. Path C is additionally
+// double-blocked by placement: pasted==true can never enter the
+// SelectionReleaseRequired block (worker.cpp static_assert).
+constexpr bool RescueLiveSelectionNeedsConsume(bool select_all_rescued, bool capture_nonempty,
+                                               bool identity_arm = true) {
+    return select_all_rescued && capture_nonempty && identity_arm;
+}
+
 // R5 (Debug-Surgical): the Enter-path empty-capture verdict, as one pure
 // predicate so worker.cpp and the unit tests assert on ONE definition
 // (same discipline as SelectionReleaseRequired). True = the exact case the
