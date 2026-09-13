@@ -44,6 +44,24 @@ constexpr bool SelectionReleaseRequired(bool paste_succeeded) {
     return !paste_succeeded;
 }
 
+// BUG-004 F2 (session 260913_0002, debug analysis 020300 §7, user approval
+// decisions.md 23:05): the SelectAll rescue leaves a LIVE whole-document
+// selection that the paste consumes, but the editor/browser owns the landing
+// state of a text-height-scale replacement (the documented WebKit paste
+// scroll-to-top class) and REQ-R03 deliberately skips the release on paste
+// success - so nothing re-normalized the caret/selection/scroll and the user
+// saw a lingering "everything selected" state with the viewport at the top.
+// This pure predicate gates the remedy as ONE definition shared by worker.cpp
+// and the unit tests (same discipline as SelectionReleaseRequired): exactly
+// one VK_RIGHT (the same field-proven ReleaseSelectionOnce primitive every
+// failure path runs) strictly AFTER a SUCCESSFUL rescue paste-back. Both
+// inputs must hold - a non-rescue paste success keeps the REQ-R03 no-release
+// contract byte-identical (the selection was consumed and landed fine), and
+// a failed paste keeps the REQ-R03 release (never a collapse on top of it).
+constexpr bool PostPasteCollapseRequired(bool paste_succeeded, bool select_all_rescued) {
+    return paste_succeeded && select_all_rescued;
+}
+
 // R5 (Debug-Surgical): the Enter-path empty-capture verdict, as one pure
 // predicate so worker.cpp and the unit tests assert on ONE definition
 // (same discipline as SelectionReleaseRequired). True = the exact case the

@@ -69,6 +69,15 @@ void SendThroughWithNewlineTracking(HWND target_hwnd, bool is_shift_enter,
 //   (d) successful paste (restorer.active=false, Ctrl+V ate the selection) -> no release.
 static_assert(SelectionReleaseRequired(true) == false, "REQ-R03: successful paste must NOT re-release (Ctrl+V already consumed selection)");
 static_assert(SelectionReleaseRequired(false) == true, "REQ-R03: every non-paste path MUST release the block selection");
+// BUG-004 F2 gate matrix (compile-time proven, same ONE-definition discipline):
+//   rescue paste success  -> collapse (the whole-document landing must be
+//   re-normalized: caret collapse + viewport reveal, debug analysis 020300 §7);
+//   non-rescue success    -> NO collapse (REQ-R03 no-release contract byte-identical);
+//   any paste failure     -> NO collapse (REQ-R03's release owns the caret, exactly once).
+static_assert(PostPasteCollapseRequired(true, true) == true, "BUG-004: successful rescue paste MUST collapse the whole-document selection once");
+static_assert(PostPasteCollapseRequired(true, false) == false, "BUG-004: non-rescue paste success keeps the REQ-R03 no-release contract");
+static_assert(PostPasteCollapseRequired(false, true) == false, "BUG-004: failed paste never collapses - REQ-R03 release owns the caret");
+static_assert(PostPasteCollapseRequired(false, false) == false, "BUG-004: non-rescue failure unchanged (no collapse, no double release)");
 
 } // namespace
 
@@ -716,6 +725,30 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // live caret sits at exactly this offset proves "no edit since
             // the paste" and promotes to send-of-output instead of hold_send.
             last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);
+            // BUG-004 F2 (debug analysis 020300 §7, user approval decisions.md
+            // 23:05): after the rescue's whole-document paste-back the
+            // editor/browser owns the landing - the user saw a lingering
+            // whole-composer "Ctrl+A" selection with the viewport yanked to
+            // the top. One guarded VK_RIGHT (the SAME ReleaseSelectionOnce
+            // primitive every failure path runs - no new chord, no new timing
+            // constant: its 10 ms settle is the field-proven cadence)
+            // collapses any persisted selection toward its end; at the
+            // document end it is a no-op (the caret cannot move past the
+            // end). Strictly AFTER the paste success (an earlier collapse
+            // would turn the replacement into an insertion - duplication);
+            // AFTER the last_paste_end_offset_ sample above so the REQ-F5
+            // paste-end baseline records the paste's own landing geometry,
+            // not the post-collapse caret. The REQ-R03 release gate below is
+            // skipped when pasted==true (SelectionReleaseRequired(true) ==
+            // false, pinned above), so the collapse is the ONLY key event this
+            // path injects. The H1 foreground guard was re-verified inside
+            // PasteAndRestore immediately before its Ctrl+V, milliseconds ago;
+            // a same-window identity collapse after that is the same benign
+            // exposure class as the failure-path release (audit §5-3).
+            if (PostPasteCollapseRequired(pasted, select_all_rescued)) {
+                DIAG_F("WORKER/ExecuteTask/043: SelectAll-rescued paste-back landed; collapsing the whole-document selection (one VK_RIGHT, viewport re-reveals the caret)\n");
+                ReleaseSelectionOnce();
+            }
         }
         // REQ-027 B-6a (design 210000_architect §2.2 option (a)): the offset
         // saved here becomes the START of the NEXT Enter's EM_SETSEL range, so

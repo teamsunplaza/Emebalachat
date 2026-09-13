@@ -1244,10 +1244,12 @@ void TestWorkerB1SendThroughPins() {
                "B1: exactly one raw SendEnterKey(task...) remains - the paste path (must NOT merge)");
 
     // (3) Every direct ReleaseSelectionOnce() use is accounted for: the helper,
-    //     the hold-notice branch (Enter NOT sent there), and the paste-branch
-    //     SelectionReleaseRequired gate. Any unlisted new use fails this pin.
-    TEST_CHECK(count_occ(src, "ReleaseSelectionOnce();") == 3,
-               "B1: ReleaseSelectionOnce inventory == helper + hold-notice + paste-gate (3 sites)");
+    //     the hold-notice branch (Enter NOT sent there), the paste-branch
+    //     SelectionReleaseRequired gate, and the BUG-004 F2 post-paste collapse
+    //     (PostPasteCollapseRequired gate, success-rescue path only). Any
+    //     unlisted new use fails this pin.
+    TEST_CHECK(count_occ(src, "ReleaseSelectionOnce();") == 4,
+               "B1: ReleaseSelectionOnce inventory == helper + hold-notice + paste-gate + BUG-004 collapse (4 sites)");
 
     // (4) Helper body: canonical order SampleCaret-branch → Release → SendEnter
     //     → Notify, and the std::optional pre-sample signature/default.
@@ -10151,6 +10153,113 @@ void TestSelectAllRescueGate() {
     }
 }
 
+// BUG-004 F2 (session 260913_0002, debug analysis 020300 §7, user approval
+// decisions.md 23:05): post-paste collapse gate. The SelectAll rescue leaves a
+// LIVE whole-document selection whose paste-back lands editor-owned (the
+// "Ctrl+A look" + viewport-at-top defect). The remedy is ONE VK_RIGHT strictly
+// AFTER a SUCCESSFUL rescue paste, gated by the pure predicate
+// PostPasteCollapseRequired (worker.hpp, ONE definition shared with worker.cpp
+// - same discipline as SelectionReleaseRequired). Headless coverage:
+//   (a) the full gate truth table (compile-time + runtime twins);
+//   (b) source-structure pins of the single guarded call site: inside the
+//       paste-success block, AFTER the paste-end sample (REQ-F5 baseline keeps
+//       the paste's own landing), BEFORE the REQ-R03 release gate (which is
+//       skipped when pasted==true - no double key event), reusing the
+//       ReleaseSelectionOnce primitive (no new chord).
+// SendInput chords cannot be observed headlessly (established suite
+// convention), so the structural pins freeze the wiring contract per the
+// W2/B1 precedent.
+void TestBug004PostPasteCollapseGate() {
+    std::cout << "[TEST] 260913_0002 BUG-004 post-paste collapse gate (rescue-provenance)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) gate truth table ----
+    // Compile-time pins: both inputs must hold.
+    static_assert(PostPasteCollapseRequired(true, true),
+                  "BUG-004: rescue paste success -> collapse (whole-document landing re-normalized)");
+    static_assert(!PostPasteCollapseRequired(true, false),
+                  "BUG-004: non-rescue paste success -> NO collapse (REQ-R03 no-release contract byte-identical)");
+    static_assert(!PostPasteCollapseRequired(false, true),
+                  "BUG-004: paste failure -> NO collapse (REQ-R03 release owns the caret, exactly once)");
+    static_assert(!PostPasteCollapseRequired(false, false),
+                  "BUG-004: non-rescue failure -> unchanged (no collapse, no double release)");
+
+    // Runtime twins keep the matrix visible in the pass log (the delegation's
+    // three required cases first).
+    TEST_CHECK(PostPasteCollapseRequired(true, true),
+               "BUG-004 gate: rescued + paste ok -> collapse (runtime twin)");
+    TEST_CHECK(!PostPasteCollapseRequired(true, false),
+               "BUG-004 gate: rescued + paste FAILED -> no collapse (REQ-R03 release owns it)");
+    TEST_CHECK(!PostPasteCollapseRequired(false, true),
+               "BUG-004 gate: non-rescue + paste ok -> NO collapse (non-rescue path untouched)");
+    TEST_CHECK(!PostPasteCollapseRequired(false, false),
+               "BUG-004 gate: non-rescue + failure -> unchanged (runtime twin)");
+
+    // REQ-R03 interlock: on a failed paste the release gate still fires and
+    // the collapse gate never does (exactly ONE key event per outcome).
+    static_assert(PostPasteCollapseRequired(true, true) != SelectionReleaseRequired(true),
+                  "BUG-004: paste success collapses XOR releases, never both");
+    static_assert(!PostPasteCollapseRequired(false, true) && SelectionReleaseRequired(false),
+                  "BUG-004: paste failure releases and never collapses - single key event");
+
+    // ---- (b) source-structure pins (W2/B1 precedent) ----
+    std::string src;
+    const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+    for (const char* cand : candidates) {
+        std::ifstream in(cand, std::ios::binary);
+        if (in) {
+            src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            break;
+        }
+    }
+    if (src.empty()) {
+        std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; BUG-004 structure pins skipped." << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] 260913_0002 BUG-004 post-paste collapse gate tests completed." << std::endl;
+        }
+        return;
+    }
+
+    // Exactly ONE guarded collapse call site, reusing the field-proven
+    // primitive (no new chord implementation).
+    TEST_CHECK((src.find("PostPasteCollapseRequired(pasted, select_all_rescued)") != std::string::npos),
+               "BUG-004: the collapse gate consumes (pasted, select_all_rescued) at the wiring site");
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("if (PostPasteCollapseRequired(", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 1,
+                   "BUG-004: exactly one runtime collapse gate in worker.cpp (no stray call sites)");
+    }
+
+    // Ordering: the collapse lives INSIDE the paste-success block, strictly
+    // after the paste (and its paste-end sample) and before the REQ-R03
+    // release gate (a no-op when pasted==true).
+    const size_t paste_store = src.find("pasted = PasteAndRestore(");
+    const size_t paste_end_sample = src.find("last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);");
+    const size_t collapse = src.find("if (PostPasteCollapseRequired(pasted, select_all_rescued)) {");
+    const size_t release_gate = src.find("if (SelectionReleaseRequired(pasted)) {");
+    TEST_CHECK(paste_store != std::string::npos && paste_end_sample != std::string::npos &&
+                   collapse != std::string::npos && release_gate != std::string::npos,
+               "BUG-004: all four paste-path anchors located in worker.cpp");
+    if (collapse != std::string::npos) {
+        TEST_CHECK(paste_store < collapse,
+                   "BUG-004: collapse strictly AFTER the paste attempt (an earlier collapse would turn the replacement into an insertion)");
+        TEST_CHECK(paste_end_sample != std::string::npos && paste_end_sample < collapse,
+                   "BUG-004: collapse AFTER the paste-end sample (REQ-F5 baseline keeps the paste's own landing)");
+        TEST_CHECK(release_gate != std::string::npos && collapse < release_gate,
+                   "BUG-004: collapse BEFORE the REQ-R03 release gate (skipped on pasted==true - pinned above, no double key event)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260913_0002 BUG-004 post-paste collapse gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260913_0002 BUG-004 post-paste collapse gate tests had failures." << std::endl;
+    }
+}
+
 void TestCaptureSliceBeforeGuard() {
     std::cout << "[TEST] 260913_0001 slice-before-guard (Reddit long-post capture seam)" << std::endl;
     const int failures_before = g_failed_count;
@@ -12174,6 +12283,7 @@ int main() {
     TestCaptureSliceBeforeGuard(); // session 260913_0001 (slice-before-guard seam)
     TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
     TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
+    TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
