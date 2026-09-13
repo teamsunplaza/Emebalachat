@@ -1431,7 +1431,7 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
 
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                               EnterCaptureResult* capture_result,
-                              bool* select_all_rescued) {
+                              RescueProvenance* provenance) {
     // Session 260913_0001 (Phase B): report the shape-only verdict of every
     // seam decision below so the worker's capture log distinguishes empty-
     // capture causes (guard_abort / copy_chord_failed / empty_selection /
@@ -1442,16 +1442,19 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
         if (capture_result) { *capture_result = r; }
     };
     report(EnterCaptureResult::Ok);
-    // BUG-003 (session 260913_0002): caller-initialized provenance out-param;
-    // set true when the returned capture came from the SelectAll rescue
+    // BUG-003 (session 260913_0002) + S1 consolidation (260914_0001): the
+    // caller-initialized provenance out-param; reset to the default
+    // (rescued=false, Origin::none) and marked with the originating rescue
+    // site's Origin when the returned capture came from the SelectAll rescue
     // below. EffectiveBlockSliceK consumes it for the paste-saturated-K
     // re-anchor (a whole-document span must not be claimed as "the pasted
     // block"). Shape-only; never user content.
-    if (select_all_rescued) { *select_all_rescued = false; }
-    bool select_all_rescued_local = false;
-    auto mark_rescued = [&]() {
-        select_all_rescued_local = true;
-        if (select_all_rescued) { *select_all_rescued = true; }
+    if (provenance) { *provenance = RescueProvenance{}; }
+    RescueProvenance provenance_local;
+    auto mark_rescued = [&](RescueProvenance::Origin origin) {
+        provenance_local.rescued = true;
+        provenance_local.origin = origin;
+        if (provenance) { *provenance = provenance_local; }
     };
     // Phase 5 (REQ-011): the old SelectTextForTranslation() helper is inlined
     // here. ClassifyAppWindow is consulted once and its category picks the
@@ -1610,8 +1613,9 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
             if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(kClipboardCopyChordAttempts - 1))) {
                 copy_confirmed = true;
                 // BUG-003: whole-document span provenance for the saturated-K
-                // re-anchor at the slice below (EffectiveBlockSliceK).
-                mark_rescued();
+                // re-anchor at the slice below (EffectiveBlockSliceK). S1: the
+                // origin records THIS site (the /009 unconfirmed-chord rescue).
+                mark_rescued(RescueProvenance::Origin::chord_rescue_009);
                 DIAG_F("WIN32_INPUT/CopySelectedText/009: Home-geometry copy unconfirmed after %d attempt(s) (hwnd=%p category=%d); SelectAll (Ctrl+A) rescue cycle confirmed a clipboard commit\n",
                         attempts_executed, reinterpret_cast<void*>(hwnd), static_cast<int>(category));
             }
@@ -1658,8 +1662,9 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                     DIAG_F("WIN32_INPUT/CopySelectedText/010: copy confirmed but clipboard payload empty; SelectAll (Ctrl+A) rescue captured %zu chars (hwnd=%p category=%d)\n",
                             rescued.size(), reinterpret_cast<void*>(hwnd), static_cast<int>(category));
                     text = std::move(rescued);
-                    // BUG-003: same whole-document span provenance as /009.
-                    mark_rescued();
+                    // BUG-003: same whole-document span provenance as /009. S1:
+                    // the origin records THIS site (the /010 empty-payload rescue).
+                    mark_rescued(RescueProvenance::Origin::chord_rescue_010);
                 }
             }
         }
@@ -1731,7 +1736,7 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     // ONE definition (EffectiveBlockSliceK) shared with the worker's F3
     // slice - see its contract in win32_input.hpp.
     const int k_block = EffectiveBlockSliceK(shift_enter_count,
-                                             select_all_rescued_local);
+                                             provenance_local.rescued);
     if (k_block != shift_enter_count) {
         DIAG_F("WIN32_INPUT/CopySelectedText/011: SelectAll-rescued whole-document capture with paste-saturated K (%d); block anchor re-based to the document-end block (effective K=%d)\n",
                shift_enter_count, k_block);

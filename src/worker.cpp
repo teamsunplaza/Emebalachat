@@ -305,10 +305,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // carries the shape-only seam verdict (Phase B, §8-1) so the end-log
     // below distinguishes empty-capture causes.
     EnterCaptureResult capture_result = EnterCaptureResult::Ok;
-    bool select_all_rescued = false;
+    RescueProvenance provenance; // S1: {rescued=false, Origin::none} by default
     std::wstring line = NormalizeNewlinesToCRLF(
         CopySelectedText(task.target_hwnd, task.shift_enter_count, &capture_result,
-                         &select_all_rescued));
+                         &provenance));
     // REQ-003 (session 260909): the captured body IS the user's text - recorded
     // only when diag_log_content is on (default off). Length and duration
     // metadata stay on both branches (shape-only rule, debugging preserved).
@@ -335,7 +335,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // (EffectiveBlockSliceK, win32_input.hpp) shared with the capture seam.
     // The capture-end log above keeps the RAW hook K; the block_slice log
     // below prints this effective value.
-    const int k_block = EffectiveBlockSliceK(task.shift_enter_count, select_all_rescued);
+    const int k_block = EffectiveBlockSliceK(task.shift_enter_count, provenance.rescued);
 
     // R5 observability: log the capture/bypass decision so a silent
     // "nothing translated" can be attributed to the exact failing gate
@@ -442,7 +442,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                    k_block, line.size());
             DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
                      ::GetTickCount64() - t_task_start);
-            if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+            if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty()) &&
                 ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
                 DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (empty-tail arm); the Enter cannot replace a live selected span\n");
             }
@@ -474,7 +474,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // Same contract as the smart-bypass send-through below: release the
         // block selection (Ctrl+V of the next task must not clobber it) and
         // hand the intercepted Enter to the app.
-        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+        if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty()) &&
             ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
             DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (exact-match arm); the Enter cannot replace a live selected span\n");
         }
@@ -643,7 +643,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // reached with a live rescue-captured whole-document selection (all
         // capture scripts already in the target language). Same identity-
         // paste consume as /044 before the intercepted Enter is handed over.
-        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty()) &&
+        if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty()) &&
             ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
             DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (bypass arm); the Enter cannot replace a live selected span\n");
         }
@@ -803,7 +803,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // PasteAndRestore immediately before its Ctrl+V, milliseconds ago;
             // a same-window identity collapse after that is the same benign
             // exposure class as the failure-path release (audit §5-3).
-            if (PostPasteCollapseRequired(pasted, select_all_rescued)) {
+            if (PostPasteCollapseRequired(pasted, provenance.rescued)) {
                 DIAG_F("WORKER/ExecuteTask/043: SelectAll-rescued paste-back landed; collapsing the whole-document selection (one VK_RIGHT, viewport re-reveals the caret)\n");
                 ReleaseSelectionOnce();
             }
@@ -853,7 +853,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // (successful paste: translated != line); pasted==true cannot enter
         // this block at all (L102 static_assert) - the 1st-Enter mainline
         // rescue paste-back is untouched.
-        if (RescueLiveSelectionNeedsConsume(select_all_rescued, !line.empty(), identity_outcome) &&
+        if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty(), identity_outcome) &&
             ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
             DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste BEFORE the REQ-R03 release (identity arm, pre-release gate); arm=identity_pre_release\n");
         }

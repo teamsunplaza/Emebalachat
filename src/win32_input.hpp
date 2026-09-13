@@ -492,6 +492,25 @@ constexpr int EffectiveBlockSliceK(int shift_enter_count, bool select_all_rescue
     return shift_enter_count;
 }
 
+// S1 (session 260914_0001, HANDOFF §2 recommended design): the SelectAll
+// rescue's scattered provenance out-param (bool* select_all_rescued) is
+// consolidated into ONE struct so every consumer reads the same source of
+// truth. ZERO behavior change: `rescued` carries the exact boolean the old
+// out-param carried (false unless a /009 or /010 rescue cycle confirmed the
+// capture), and `origin` records WHICH rescue site confirmed it (shape-only
+// enum, never user content) - the worker's /043 //044 DIAG lines may print
+// it, but the existing needle text stays byte-identical.
+// `explicit operator bool` keeps the condition algebra (`if (provenance)`)
+// equivalent to the old `if (select_all_rescued)` reads; the truth-table
+// pure predicates (PostPasteCollapseRequired / RescueLiveSelectionNeedsConsume)
+// still take plain bool - the struct only tidies the TRANSFER path, the
+// condition algebra is frozen (S0 golden G1/G5).
+struct RescueProvenance {
+    bool rescued = false;
+    enum class Origin { none, chord_rescue_009, chord_rescue_010 } origin = Origin::none;
+    explicit operator bool() const { return rescued; }
+};
+
 enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 
 // Pure, time-parameterized state machine behind CopySelectionWithSequenceWait().
@@ -877,17 +896,21 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // (EnterCaptureResult: ok / block_sliced / guard_abort / empty_tail /
 // copy_chord_failed / empty_selection / editor_excluded) so the worker log
 // can distinguish empty-capture causes. Never carries user content.
-// select_all_rescued (BUG-003, session 260913_0002): optional out-param,
-// initialized false by the seam and set true when the returned capture came
-// from the BUG-002 SelectAll rescue - a WHOLE-DOCUMENT span on the
-// structured-contenteditable class. The worker feeds it into
-// EffectiveBlockSliceK so a paste-saturated K re-anchors the block slice to
-// the document-end block instead of claiming the whole document as the
-// translation block (see the EffectiveBlockSliceK contract above).
-// Shape-only boolean; never carries user content.
+// provenance (S1 consolidation of the BUG-003 select_all_rescued out-param,
+// session 260914_0001): optional out-param, reset by the seam to the default
+// RescueProvenance (rescued=false, Origin::none) and set rescued=true with the
+// originating site's Origin when the returned capture came from the BUG-002
+// SelectAll rescue - a WHOLE-DOCUMENT span on the structured-contenteditable
+// class (Origin::chord_rescue_009 = the /009 unconfirmed-chord rescue cycle;
+// Origin::chord_rescue_010 = the /010 confirmed-but-empty-payload rescue
+// cycle). The worker feeds provenance.rescued into EffectiveBlockSliceK so a
+// paste-saturated K re-anchors the block slice to the document-end block
+// instead of claiming the whole document as the translation block (see the
+// EffectiveBlockSliceK contract above), and may print provenance.origin on
+// the /043 //044 DIAG lines. Shape-only; never carries user content.
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count = 0,
                               EnterCaptureResult* capture_result = nullptr,
-                              bool* select_all_rescued = nullptr);
+                              RescueProvenance* provenance = nullptr);
 
 // High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle

@@ -10222,8 +10222,13 @@ void TestBug004PostPasteCollapseGate() {
 
     // Exactly ONE guarded collapse call site, reusing the field-proven
     // primitive (no new chord implementation).
-    TEST_CHECK((src.find("PostPasteCollapseRequired(pasted, select_all_rescued)") != std::string::npos),
-               "BUG-004: the collapse gate consumes (pasted, select_all_rescued) at the wiring site");
+    // S1 (260914_0001): the rescue provenance out-param was consolidated into
+    // RescueProvenance; provenance.rescued carries the SAME boolean the old
+    // select_all_rescued out-param carried, so the pin is refreshed to the
+    // equivalent expression - the invariant (collapse gate consumes the paste
+    // outcome + the rescue provenance at the wiring site) is unchanged.
+    TEST_CHECK((src.find("PostPasteCollapseRequired(pasted, provenance.rescued)") != std::string::npos),
+               "BUG-004: the collapse gate consumes (pasted, provenance.rescued) at the wiring site (S1: provenance.rescued IS the select_all_rescued boolean)");
     {
         size_t n = 0, pos = 0;
         while ((pos = src.find("if (PostPasteCollapseRequired(", pos)) != std::string::npos) {
@@ -10239,7 +10244,7 @@ void TestBug004PostPasteCollapseGate() {
     // release gate (a no-op when pasted==true).
     const size_t paste_store = src.find("pasted = PasteAndRestore(");
     const size_t paste_end_sample = src.find("last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);");
-    const size_t collapse = src.find("if (PostPasteCollapseRequired(pasted, select_all_rescued)) {");
+    const size_t collapse = src.find("if (PostPasteCollapseRequired(pasted, provenance.rescued)) {");
     const size_t release_gate = src.find("if (SelectionReleaseRequired(pasted)) {");
     TEST_CHECK(paste_store != std::string::npos && paste_end_sample != std::string::npos &&
                    collapse != std::string::npos && release_gate != std::string::npos,
