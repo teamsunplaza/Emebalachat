@@ -10530,6 +10530,434 @@ void TestBug005RescueSendThroughConsumeGate() {
     }
 }
 
+// ============================================================================
+// S0 GOLDEN FREEZE (session 260914_0001, VP delegation: "freeze the entire
+// capture->slice->paste->release decision tables as characterization
+// tests"). ZERO behavior change: this suite pins CURRENT behavior AS-IS -
+// no bug judgment, no behavior-change attempt (src/ untouched by
+// construction). Golden sources:
+//   - 043000_debug-bug005-rootcause-fix-report.md section 7 (tables
+//     7-1 / 7-2 / 7-3 / 7-4)
+//   - 061500_debug-bug005-gate4-represcription.md section 3-E (3-arg
+//     predicate truth table, 8 rows) / section 5 (pin spec)
+//   - 044700_debug-p5-review-bug005.md section 5-2 (the 4 uncovered grid
+//     items: identity arm / H1 fallback / race / 3rd+-Enter re-entry)
+// Grids frozen here:
+//   G1  PostPasteCollapseRequired 4-cell XOR (reference freeze of
+//       TestBug004PostPasteCollapseGate)
+//   G2  SliceWholeCaptureToBlock composed with EffectiveBlockSliceK - the
+//       full 8-cell matrix (rescued/non-rescued x K=sat/unsat x tail
+//       empty/last-line)
+//   G3  SelectionReleaseRequired (REQ-R03) invariant matrix + wiring pins
+//   G4  2nd-Enter expected state-transition tables 7-1/7-2/7-3 (7-2, the
+//       pre-fix accident, expressed as golden-NEGATIVE invariants: the
+//       accident's ordering can never re-occur)
+//   G5  RescueLiveSelectionNeedsConsume 3-arg truth table, ALL 8 rows
+//       (compile-time + runtime twins; row (F,F,F) asserted directly per
+//       the ask 213400 note)
+//   G6  P5 section 5-2 items 1-4: identity-arm replay / H1-abort fallback
+//       attribution / capture->consume race (span-identity model) /
+//       3rd+-Enter consecutive re-entry (the 949a718 last_paste_text_
+//       non-refresh property frozen as goldens)
+// ============================================================================
+void TestBug005S0GoldenDecisionTables() {
+    std::cout << "[TEST] 260914_0001 S0 golden decision tables (capture->slice->paste->release freeze)" << std::endl;
+    const int failures_before = g_failed_count;
+    constexpr int kSat = static_cast<int>(kMaxEnterTranslateNewlines);
+    constexpr int kUnsat = 0; // the 2nd-Enter K: every bare-Enter exit resets K to 0 (hook.cpp)
+
+    // ---- G1: PostPasteCollapseRequired 4-cell XOR (reference freeze of
+    // TestBug004PostPasteCollapseGate; 043000 section 7-1 post-paste row) ----
+    static_assert(PostPasteCollapseRequired(true, true) == true,
+                  "S0 G1 cell (pasted=T, rescued=T): rescue paste success -> collapse (BUG-004)");
+    static_assert(PostPasteCollapseRequired(true, false) == false,
+                  "S0 G1 cell (pasted=T, rescued=F): non-rescue paste success -> no collapse (REQ-R03 no-release contract)");
+    static_assert(PostPasteCollapseRequired(false, true) == false,
+                  "S0 G1 cell (pasted=F, rescued=T): paste failure -> no collapse (REQ-R03 release owns the caret)");
+    static_assert(PostPasteCollapseRequired(false, false) == false,
+                  "S0 G1 cell (pasted=F, rescued=F): non-rescue failure -> unchanged");
+    TEST_CHECK(PostPasteCollapseRequired(true, true),
+               "S0 G1 (T,T) -> collapse (runtime twin)");
+    TEST_CHECK(!PostPasteCollapseRequired(true, false),
+               "S0 G1 (T,F) -> no collapse (runtime twin)");
+    TEST_CHECK(!PostPasteCollapseRequired(false, true),
+               "S0 G1 (F,T) -> no collapse (runtime twin)");
+    TEST_CHECK(!PostPasteCollapseRequired(false, false),
+               "S0 G1 (F,F) -> no collapse (runtime twin)");
+    static_assert(PostPasteCollapseRequired(true, true) != SelectionReleaseRequired(true),
+                  "S0 G1 XOR: paste success collapses XOR releases, never both");
+    static_assert(!PostPasteCollapseRequired(false, true) && SelectionReleaseRequired(false),
+                  "S0 G1 XOR: paste failure releases and never collapses - single key event");
+
+    // ---- G2: SliceWholeCaptureToBlock x EffectiveBlockSliceK, full 8-cell
+    // matrix (rescued in {T,F}) x (K in {kSat, 0}) x (tail in {last line,
+    // empty}). k_eff is the production composition: the worker feeds
+    // EffectiveBlockSliceK(K, select_all_rescued) into the capture seam. ----
+    {
+        const std::wstring g2_pre(4100, L'a'); // alone over the 4096-char guard
+        const std::wstring g2_doc = g2_pre + L"\r\n" + L"last line"; // nonempty tail
+        const std::wstring g2_tailcap = g2_pre + L"\r\n";            // empty tail
+        static_assert(EffectiveBlockSliceK(kSat, true) == 0,
+                      "S0 G2 k_eff: rescue + saturated K re-anchors to 0 (BUG-003 rule)");
+        static_assert(EffectiveBlockSliceK(kSat, false) == kSat,
+                      "S0 G2 k_eff: non-rescue saturated K keeps the paste whole-capture semantics");
+        static_assert(EffectiveBlockSliceK(kUnsat, true) == 0,
+                      "S0 G2 k_eff: rescue + K=0 passes through as 0");
+        static_assert(EffectiveBlockSliceK(kUnsat, false) == 0,
+                      "S0 G2 k_eff: non-rescue K=0 passes through as 0");
+        TEST_CHECK(EffectiveBlockSliceK(kSat, true) == 0,  "S0 G2 k_eff(rescued=T, K=sat) == 0");
+        TEST_CHECK(EffectiveBlockSliceK(kSat, false) == kSat, "S0 G2 k_eff(rescued=F, K=sat) == kSat");
+        TEST_CHECK(EffectiveBlockSliceK(kUnsat, true) == 0, "S0 G2 k_eff(rescued=T, K=0) == 0");
+        TEST_CHECK(EffectiveBlockSliceK(kUnsat, false) == 0, "S0 G2 k_eff(rescued=F, K=0) == 0");
+        // Cell (T, sat, last line): re-anchored document-end block slices.
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_doc, EffectiveBlockSliceK(kSat, true));
+          TEST_CHECK(s.result == EnterCaptureResult::BlockSliced &&
+                         s.block == std::wstring_view(L"last line"),
+                     "S0 G2 cell (rescued, K=sat, tail=last line) -> BlockSliced, block == the last logical line"); }
+        // Cell (T, sat, empty): re-anchored block is the trailing separator -> EmptyTail.
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_tailcap, EffectiveBlockSliceK(kSat, true));
+          TEST_CHECK(s.result == EnterCaptureResult::EmptyTail && s.block.empty(),
+                     "S0 G2 cell (rescued, K=sat, tail empty) -> EmptyTail"); }
+        // Cell (T, 0, last line): K=0 passes through as 0 - same slice geometry.
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_doc, EffectiveBlockSliceK(kUnsat, true));
+          TEST_CHECK(s.result == EnterCaptureResult::BlockSliced &&
+                         s.block == std::wstring_view(L"last line"),
+                     "S0 G2 cell (rescued, K=0, tail=last line) -> BlockSliced, block == the last logical line"); }
+        // Cell (T, 0, empty).
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_tailcap, EffectiveBlockSliceK(kUnsat, true));
+          TEST_CHECK(s.result == EnterCaptureResult::EmptyTail && s.block.empty(),
+                     "S0 G2 cell (rescued, K=0, tail empty) -> EmptyTail"); }
+        // Cell (F, sat, last line): saturated K keeps WHOLE-capture semantics -
+        // FindCurrentBlockStart clamps to 0, the whole capture is one block,
+        // still over the guard -> abort preserved (the non-rescue twin of
+        // the BUG-003 re-anchor: rescue-only scope frozen).
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_doc, EffectiveBlockSliceK(kSat, false));
+          TEST_CHECK(s.result == EnterCaptureResult::GuardAbort,
+                     "S0 G2 cell (non-rescued, K=sat, tail=last line) -> GuardAbort (saturated whole-capture semantics frozen)"); }
+        // Cell (F, sat, empty): the clamp keeps the whole capture (NOT an
+        // empty tail) -> still over the guard -> abort preserved.
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_tailcap, EffectiveBlockSliceK(kSat, false));
+          TEST_CHECK(s.result == EnterCaptureResult::GuardAbort,
+                     "S0 G2 cell (non-rescued, K=sat, tail empty) -> GuardAbort (clamp keeps whole capture, no EmptyTail)"); }
+        // Cell (F, 0, last line): the ordinary unsaturated slice.
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_doc, EffectiveBlockSliceK(kUnsat, false));
+          TEST_CHECK(s.result == EnterCaptureResult::BlockSliced &&
+                         s.block == std::wstring_view(L"last line"),
+                     "S0 G2 cell (non-rescued, K=0, tail=last line) -> BlockSliced, block == the last logical line"); }
+        // Cell (F, 0, empty).
+        { const WholeCaptureSlice s = SliceWholeCaptureToBlock(g2_tailcap, EffectiveBlockSliceK(kUnsat, false));
+          TEST_CHECK(s.result == EnterCaptureResult::EmptyTail && s.block.empty(),
+                     "S0 G2 cell (non-rescued, K=0, tail empty) -> EmptyTail"); }
+    }
+
+    // ---- (loader) source-structure pins follow the BUG-004/BUG-005
+    // precedent: read worker.cpp once, skip the wiring pins when the test
+    // CWD cannot resolve it (the pure-function grids above still ran). ----
+    std::string src;
+    {
+        const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+    }
+    if (src.empty()) {
+        std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; S0 structure pins skipped." << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] 260914_0001 S0 golden decision tables completed." << std::endl;
+        }
+        return;
+    }
+
+    // ---- G3: SelectionReleaseRequired (REQ-R03) invariant matrix + wiring
+    // pins (043000 section 7: the release leg of every transition table) ----
+    static_assert(SelectionReleaseRequired(true) == false,
+                  "S0 G3: successful paste does NOT release (Ctrl+V consumed the selection)");
+    static_assert(SelectionReleaseRequired(false) == true,
+                  "S0 G3: every non-paste outcome releases the block selection exactly once");
+    TEST_CHECK(!SelectionReleaseRequired(true), "S0 G3 matrix (pasted=T) -> no release (runtime twin)");
+    TEST_CHECK(SelectionReleaseRequired(false), "S0 G3 matrix (pasted=F) -> release (runtime twin)");
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("if (SelectionReleaseRequired(pasted)) {", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 1,
+                   "S0 G3: exactly ONE REQ-R03 release gate in worker.cpp (exactly-once contract frozen)");
+    }
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("ReleaseSelectionOnce();", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 4,
+                   "S0 G3: four ReleaseSelectionOnce sites (send-through helper / empty-capture hold / BUG-004 collapse / REQ-R03 release) - one key event per path frozen");
+    }
+
+    // ---- G4: 2nd-Enter expected state-transition tables (043000 section
+    // 7-1 / 7-2 / 7-3) regressed as goldens. 7-2 (the PRE-fix accident) is
+    // expressed as golden-NEGATIVE invariants: the accident's ordering can
+    // never re-occur. ----
+    const std::wstring g4_doc = L"paragraph one\r\nparagraph two\r\nfresh last line";
+    // 7-1: 1st Enter (rescue, translation needed) - the full pipeline.
+    TEST_CHECK(SelectAllRescueWarranted(false, AppCategory::CategoryB),
+               "S0 G4 7-1 capture: Home-geometry failure class rescues via SelectAll (select_all_rescued=true, line=whole document)");
+    TEST_CHECK(EffectiveBlockSliceK(0, true) == 0,
+               "S0 G4 7-1 hook: bare-Enter exit reset K=0 -> k_block = 0 (document-end block)");
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_doc, L"") == PasteLedgerVerdict::NoMatch,
+               "S0 G4 7-1 ledger: fresh content vs empty ledger -> NoMatch (new content, translate arm)");
+    TEST_CHECK(FindCurrentBlockStart(g4_doc, 0) == g4_doc.rfind(L"\r\n") + 2,
+               "S0 G4 7-1 F3 slice: anchors the last logical line (block-only engine input, prefix verbatim)");
+    TEST_CHECK(!SelectionReleaseRequired(true),
+               "S0 G4 7-1 paste terminal: Ctrl+V consumes the selection; REQ-R03 skips the release (BUG-004 collapse owns the landing)");
+    {
+        const size_t paste_store = src.find("pasted = PasteAndRestore(");
+        const size_t release_gate = src.find("if (SelectionReleaseRequired(pasted)) {");
+        const size_t first_gate_after_paste =
+            (paste_store == std::string::npos) ? std::string::npos
+                                               : src.find("if (RescueLiveSelectionNeedsConsume(", paste_store);
+        TEST_CHECK(paste_store != std::string::npos && release_gate != std::string::npos &&
+                       first_gate_after_paste != std::string::npos &&
+                       paste_store < release_gate && first_gate_after_paste > release_gate,
+                   "S0 G4 7-1: the paste-success block contains NO consume gate (the BUG-005 fix has no effect on the 1st-Enter paste terminal)");
+    }
+    // 7-2: 2nd Enter BEFORE the fix (the accident) - golden-negative grid.
+    // The incident route: byte-stable editor -> ExactMatch ->
+    // pasted_prefix_skip send-through, where the pre-fix pipeline ran
+    // release(VK_RIGHT) then Enter over the STILL-LIVE whole-document
+    // selection. The negative invariant: that ordering is unreachable.
+    const std::wstring g4_ledger = g4_doc; // whole-doc paste-back of the 1st Enter
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_doc, g4_ledger) == PasteLedgerVerdict::ExactMatch,
+               "S0 G4 7-2 golden-negative: byte-stable editor -> ExactMatch (the incident's ledger verdict, frozen)");
+    TEST_CHECK(PastedPrefixNeedsSkip(true, false, false),
+               "S0 G4 7-2 golden-negative: ExactMatch routes to the pasted_prefix_skip send-through terminal (the route the accident flowed through)");
+    {
+        const size_t skip_diag = src.find("stage=send_through decision=pasted_prefix_skip");
+        const size_t gate_em = (skip_diag == std::string::npos)
+                                   ? std::string::npos
+                                   : src.find("if (RescueLiveSelectionNeedsConsume(", skip_diag);
+        const size_t helper_em = (gate_em == std::string::npos)
+                                     ? std::string::npos
+                                     : src.find("SendThroughWithNewlineTracking(task.target_hwnd", gate_em);
+        TEST_CHECK(skip_diag != std::string::npos && gate_em != std::string::npos &&
+                       helper_em != std::string::npos && gate_em < helper_em,
+                   "S0 G4 7-2 golden-negative: the exact-match arm's consume precedes the send-through helper (the incident route is now gated)");
+    }
+    {
+        // The accident ordering (release, then Enter over the LIVE
+        // selection) is unreachable on the identity arm: the frozen order is
+        // release-gate < consume-gate < consume < release < Enter.
+        const size_t gate1 = src.find("if (SelectionReleaseRequired(pasted)) {");
+        const size_t gate4 = (gate1 == std::string::npos)
+                                 ? std::string::npos
+                                 : src.find("if (RescueLiveSelectionNeedsConsume(", gate1);
+        const size_t consume4 = (gate4 == std::string::npos)
+                                    ? std::string::npos
+                                    : src.find("ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd", gate4);
+        const size_t rel = (consume4 == std::string::npos)
+                               ? std::string::npos
+                               : src.find("ReleaseSelectionOnce();", consume4);
+        const size_t enter = (rel == std::string::npos)
+                                 ? std::string::npos
+                                 : src.find("SendEnterKey(task.is_shift_enter);", rel);
+        TEST_CHECK(gate1 != std::string::npos && gate4 != std::string::npos && consume4 != std::string::npos &&
+                       rel != std::string::npos && enter != std::string::npos &&
+                       gate1 < gate4 && gate4 < consume4 && consume4 < rel && rel < enter,
+                   "S0 G4 7-2 golden-negative: pre-release consume ordering invariant (gate < consume < release < Enter) - the pre-fix release-then-Enter-over-live-selection order can never re-occur");
+    }
+    // 7-3: 2nd Enter AFTER the fix (expected) - the identity route preserves
+    // the whole document through the terminal.
+    const std::wstring g4_normalized = L"paragraph one\nparagraph two\nfresh last line"; // re-render variant
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_normalized, g4_ledger) == PasteLedgerVerdict::NoMatch,
+               "S0 G4 7-3: re-rendered editor (CRLF->LF) -> NoMatch (the identity route's entry)");
+    TEST_CHECK(g4_normalized.substr(FindCurrentBlockStart(g4_normalized, 0)) == std::wstring(L"fresh last line"),
+               "S0 G4 7-3: K=0 slice isolates the last line (the engine-identity input; prefix preserved verbatim)");
+    TEST_CHECK(RescueLiveSelectionNeedsConsume(true, true, true),
+               "S0 G4 7-3: identity outcome + rescue provenance + non-empty capture -> the pre-release consume fires (selection consumed by the paste transaction)");
+    TEST_CHECK(EqualsSourceNeedsSendThrough(false, false),
+               "S0 G4 7-3 terminal: send-through verdict - the intercepted Enter lands on a consumed (collapsed) selection, whole document preserved");
+
+    // ---- G5: RescueLiveSelectionNeedsConsume 3-arg truth table, ALL 8 rows
+    // (061500 section 3-E; rows (F,*,*) and (T,F,*) complete the residual
+    // cells - row (F,F,F) asserted directly per the ask 213400 note) ----
+    static_assert(RescueLiveSelectionNeedsConsume(true, true, true) == true,
+                  "S0 G5 row 1 (T,T,T): identity arm fires on the live rescue selection");
+    static_assert(RescueLiveSelectionNeedsConsume(true, true, false) == false,
+                  "S0 G5 row 2 (T,T,F): Path B/C refused at the pure-function level");
+    static_assert(RescueLiveSelectionNeedsConsume(true, false, true) == false,
+                  "S0 G5 row 3 (T,F,T): empty rescue capture has no span to consume");
+    static_assert(RescueLiveSelectionNeedsConsume(true, false, false) == false,
+                  "S0 G5 row 4 (T,F,F): empty capture + non-identity arm");
+    static_assert(RescueLiveSelectionNeedsConsume(false, true, true) == false,
+                  "S0 G5 row 5 (F,T,T): non-rescue keeps the REQ-R03 VK_RIGHT contract");
+    static_assert(RescueLiveSelectionNeedsConsume(false, true, false) == false,
+                  "S0 G5 row 6 (F,T,F): non-rescue + non-identity arm");
+    static_assert(RescueLiveSelectionNeedsConsume(false, false, true) == false,
+                  "S0 G5 row 7 (F,F,T): non-rescue empty capture");
+    static_assert(RescueLiveSelectionNeedsConsume(false, false, false) == false,
+                  "S0 G5 row 8 (F,F,F): residual row asserted directly (ask 213400 note)");
+    TEST_CHECK(RescueLiveSelectionNeedsConsume(true, true, true),  "S0 G5 row 1 (T,T,T) -> consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(true, true, false), "S0 G5 row 2 (T,T,F) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(true, false, true), "S0 G5 row 3 (T,F,T) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(true, false, false), "S0 G5 row 4 (T,F,F) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, true, true), "S0 G5 row 5 (F,T,T) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, true, false), "S0 G5 row 6 (F,T,F) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, false, true), "S0 G5 row 7 (F,F,T) -> no consume (runtime twin)");
+    TEST_CHECK(!RescueLiveSelectionNeedsConsume(false, false, false), "S0 G5 row 8 (F,F,F) -> no consume (runtime twin)");
+
+    // ---- G6: P5 review 044700 section 5-2, items 1-4 ----
+    // G6-1: identity-arm replay (the section 1-B counterexample, frozen).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_normalized, g4_ledger) == PasteLedgerVerdict::NoMatch &&
+                   g4_normalized.substr(FindCurrentBlockStart(g4_normalized, 0)) == std::wstring(L"fresh last line") &&
+                   RescueLiveSelectionNeedsConsume(true, true, true),
+               "S0 G6-1 identity-arm replay: NoMatch -> F3(k=0) last line -> engine identity -> the gate fires before SendEnterKey");
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("if (RescueLiveSelectionNeedsConsume(", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 4,
+                   "S0 G6-1: exactly four guarded consume sites (exact-match / empty-tail / bypass arms + the identity pre-release arm, P5 044700 section 1-B closed)");
+    }
+    TEST_CHECK(src.find("arm=identity_pre_release") != std::string::npos,
+               "S0 G6-1: the identity arm's /044 DIAG carries the arm=identity_pre_release tag (061500 section 5-D)");
+    // G6-2: H1-abort fallback attribution - a failed consume (foreground
+    // changed inside PasteAndRestore) falls through to the LEGACY release
+    // contract: the VK_RIGHT release runs unconditionally after the consume
+    // attempt, the Enter stays after it, and the F7 restorer stays armed.
+    TEST_CHECK(ClipboardRestorerStaysArmed(false, false),
+               "S0 G6-2: consume H1-abort (no paste, no confirmed restore) -> scope-exit restorer stays armed (F7 discipline on the consume path)");
+    TEST_CHECK(!ClipboardRestorerStaysArmed(true, true),
+               "S0 G6-2: consume success with confirmed restore -> restorer disarmed (same disarm arithmetic as the main paste)");
+    TEST_CHECK(SelectionReleaseRequired(false),
+               "S0 G6-2: the legacy release contract is unchanged on the fallback (the consume failure never suppresses the REQ-R03 release)");
+    {
+        const size_t gate1 = src.find("if (SelectionReleaseRequired(pasted)) {");
+        const size_t consume4 = (gate1 == std::string::npos)
+                                    ? std::string::npos
+                                    : src.find("ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd", gate1);
+        const size_t diag4 = (consume4 == std::string::npos)
+                                 ? std::string::npos
+                                 : src.find("arm=identity_pre_release", consume4);
+        const size_t rel = (diag4 == std::string::npos)
+                               ? std::string::npos
+                               : src.find("ReleaseSelectionOnce();", diag4);
+        const size_t enter = (rel == std::string::npos)
+                                 ? std::string::npos
+                                 : src.find("SendEnterKey(task.is_shift_enter);", rel);
+        TEST_CHECK(diag4 != std::string::npos && rel != std::string::npos && enter != std::string::npos &&
+                       diag4 < rel && rel < enter,
+                   "S0 G6-2: fall-through structure - the release runs UNCONDITIONALLY after the consume attempt (H1 abort falls to the legacy VK_RIGHT path) and before the Enter");
+    }
+    // G6-3: capture->consume race (P5 section 4) - span-identity model grid.
+    // The consume's payload IS the captured text (structural pin below) and
+    // the rescue selection span == capture span by SelectAll construction,
+    // so the editor-owned replaceSelection semantics give
+    // content' = content[0..sel_begin) + captured + content[sel_end..).
+    {
+        auto span_replace = [](const std::wstring& content, size_t sel_begin, size_t sel_end,
+                               std::wstring_view payload) {
+            return content.substr(0, sel_begin) + std::wstring(payload) + content.substr(sel_end);
+        };
+        const std::wstring g6_span = L"doc body line one\r\ndoc body line two";
+        // (a) unchanged editor: byte-invariant no-op content edit that
+        // consumes (collapses) the selection.
+        TEST_CHECK(span_replace(g6_span, 0, g6_span.size(), g6_span) == g6_span,
+                   "S0 G6-3 (a): identity paste over its own span is byte-invariant (selection consumed, content unchanged)");
+        // (b) in-span edit during the ms-wide race window: ROLLBACK direction
+        // - the captured span is restored verbatim; the user's last-moment
+        // in-span keystrokes are reverted but NO captured data is lost (the
+        // P5 section 4 verdict: loss-free direction, LOW residual).
+        {
+            std::wstring edited = g6_span;
+            edited.replace(edited.size() - 3, 3, L"XXX"); // user edit inside the span
+            TEST_CHECK(span_replace(edited, 0, g6_span.size(), g6_span) == g6_span,
+                       "S0 G6-3 (b): race cell - an in-span edit is ROLLED BACK to the captured text (rollback, not loss)");
+        }
+        // (c) tail typed beyond the span is unreachable on the rescue path
+        // (the SelectAll span IS the whole document); the non-rescue twin
+        // never fires the gate - frozen by the G5 (F,T,*) rows above.
+    }
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 4,
+                   "S0 G6-3: every consume site passes the captured text (line) as the payload - PasteAndRestore transfers the raw capture unmodified (P5 section 4 fact 2)");
+    }
+    // G6-4: 3rd+-Enter consecutive re-entry - the 949a718 property that the
+    // identity-paste consume NEVER refreshes last_paste_text_ (the update
+    // lives only in the main paste-success block), so the 3rd Enter's ledger
+    // verdict is unchanged and re-enters through the gated empty-tail arm.
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("last_paste_text_ = ", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 1,
+                   "S0 G6-4: exactly ONE last_paste_text_ store in worker.cpp (the main paste-success block; the consume never refreshes the ledger)");
+    }
+    {
+        size_t n = 0, pos = 0;
+        while ((pos = src.find("last_paste_text_.clear()", pos)) != std::string::npos) {
+            ++n;
+            pos += 1;
+        }
+        TEST_CHECK(n == 2,
+                   "S0 G6-4: exactly TWO last_paste_text_ clears (has_text=0 fast-path + ledger-maintenance wipe) - the consume path is not among them");
+    }
+    {
+        const size_t helper_begin = src.find("bool ConsumeRescueSelectionIdentityPaste(");
+        const size_t helper_end = (helper_begin == std::string::npos)
+                                      ? std::string::npos
+                                      : src.find("void SendThroughWithNewlineTracking(", helper_begin);
+        const size_t ledger_store = src.find("last_paste_text_ = ");
+        TEST_CHECK(helper_begin != std::string::npos && helper_end != std::string::npos &&
+                       ledger_store != std::string::npos && ledger_store > helper_end,
+                   "S0 G6-4: the only ledger store sits AFTER the consume helper (paste-success block, not the consume path)");
+        if (helper_begin != std::string::npos && helper_end != std::string::npos) {
+            const std::string body = src.substr(helper_begin, helper_end - helper_begin);
+            TEST_CHECK(body.find("last_paste_text_") == std::string::npos,
+                       "S0 G6-4: the consume helper body contains NO ledger access (the 949a718 non-refresh property, frozen)");
+        }
+    }
+    {
+        // 3rd Enter replay (P5 section 2-B): the ledger is still the 1st
+        // Enter's recomposed text; the capture gained one newline tail ->
+        // PrefixWithTail -> the tail is a bare separator -> empty block ->
+        // the /041 empty-tail arm (2-arg gate form) -> the consume re-runs.
+        const std::wstring capture3 = g4_ledger + L"\r\n";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(capture3, g4_ledger) == PasteLedgerVerdict::PrefixWithTail,
+                   "S0 G6-4 3rd Enter: ledger unrefreshed -> PrefixWithTail (newline tail split at the whole-unit boundary)");
+        TEST_CHECK(FindCurrentBlockStart(capture3, 0) == capture3.size(),
+                   "S0 G6-4 3rd Enter: K=0 slice lands on the trailing separator -> empty block -> the /041 empty-tail arm");
+        TEST_CHECK(RescueLiveSelectionNeedsConsume(true, !capture3.empty()),
+                   "S0 G6-4 3rd Enter: the empty-tail arm's 2-arg gate fires on the live rescue selection -> the consume re-runs (document preserved)");
+        // 4th Enter: the same composition one newline deeper - still gated.
+        const std::wstring capture4 = capture3 + L"\r\n";
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(capture4, g4_ledger) == PasteLedgerVerdict::PrefixWithTail &&
+                       FindCurrentBlockStart(capture4, 0) == capture4.size() &&
+                       RescueLiveSelectionNeedsConsume(true, !capture4.empty()),
+                   "S0 G6-4 4th Enter: PrefixWithTail -> empty block -> gated consume re-runs (consecutive re-entry preserves the document, 043000 section 8 step 3)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260914_0001 S0 golden decision tables completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260914_0001 S0 golden decision tables: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 void TestCaptureSliceBeforeGuard() {
     std::cout << "[TEST] 260913_0001 slice-before-guard (Reddit long-post capture seam)" << std::endl;
     const int failures_before = g_failed_count;
@@ -12555,6 +12983,7 @@ int main() {
     TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
     TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
     TestBug005RescueSendThroughConsumeGate(); // session 260914_0001 (BUG-005 send-through selection-consume gate)
+    TestBug005S0GoldenDecisionTables(); // session 260914_0001 (S0 golden freeze: capture->slice->paste->release decision tables)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
