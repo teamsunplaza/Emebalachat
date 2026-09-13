@@ -123,6 +123,70 @@ static_assert(RescueLiveSelectionNeedsConsume(false, true, false) == false, "BUG
 
 } // namespace
 
+// S2 (session 260914_0001, design spec 222500 §1/§6): the ledger canonical
+// form. Definition of the ONE declaration in worker.hpp (shared with the
+// unit tests) - defined in namespace emebalachat (NOT the anonymous one) so
+// the header declaration and this definition are a single entity. The
+// transformation order is the spec §1.2 contract:
+//   1. CRLF -> LF  (before step 2 - the only order-sensitive pair, §1.3:
+//      trailing-space removal must see final line endings or "a \r\nb"
+//      would lose the "\n" entirely)
+//   2. per-line trailing [ \t] removal (NBSP is Unicode White_Space and is
+//      removed here too - order A of §1.3, same result as order B)
+//   3. NBSP (U+00A0) -> SP (U+0020)
+//   4. Unicode NFC (via unicode_utils' NormalizeNFC - same NormalizeString
+//      seam the pipeline already uses; its fallback returns the input copy
+//      on API failure, which IS the spec §6.3 "use the unnormalized string,
+//      log a warning, never crash" path)
+// Steps 1-3 are ASCII-unit transforms and cannot fail; only NFC can.
+std::wstring CanonicalFormForLedger(std::wstring_view input) {
+    // Step 1: CRLF -> LF. A lone '\r' is content (legacy Mac line ending
+    // never produced by ProseMirror) and is deliberately left alone.
+    std::wstring out;
+    out.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        if (input[i] == L'\r' && i + 1 < input.size() && input[i + 1] == L'\n') {
+            continue; // drop the CR; the LF is appended by the next iteration
+        }
+        out.push_back(input[i]);
+    }
+
+    // Step 2: remove trailing [ \t] (and trailing NBSP, see §1.3 order A)
+    // before every LF and at end-of-string.
+    size_t write = 0;
+    for (size_t read = 0; read < out.size();) {
+        if (out[read] != L'\n') {
+            out[write++] = out[read++];
+            continue;
+        }
+        // At a line break: strip the trailing whitespace run of the line
+        // just written.
+        while (write > 0 && (out[write - 1] == L' ' || out[write - 1] == L'\t' ||
+                             out[write - 1] == L'\u00A0')) {
+            --write;
+        }
+        out[write++] = out[read++];
+    }
+    // End-of-string trailing whitespace run of the last line.
+    while (write > 0 && (out[write - 1] == L' ' || out[write - 1] == L'\t' ||
+                         out[write - 1] == L'\u00A0')) {
+        --write;
+    }
+    out.resize(write);
+
+    // Step 3: NBSP -> SP. Step 2 already removed line-trailing NBSPs; this
+    // converts the interior ones ProseMirror replaces with regular spaces.
+    for (wchar_t& ch : out) {
+        if (ch == L'\u00A0') {
+            ch = L' ';
+        }
+    }
+
+    // Step 4: Unicode NFC. NormalizeNFC falls back to its input copy on API
+    // failure (unicode_utils.cpp) - the spec §6.3 confirmed fallback path.
+    return NormalizeNFC(out);
+}
+
 PipelineWorker::PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge)
     : config_(config), engine_(engine), badge_(badge) {}
 
@@ -374,18 +438,36 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     bool pasted_prefix_skip = false;
     std::wstring pasted_prefix_text;   // (ii): the remembered verbatim prefix
     std::wstring untranslated_tail;    // (ii): the newly typed tail to translate
-    if (!line.empty() && last_paste_target_ == task.target_hwnd) {
-        switch (AnalyzeCaptureVsLastPaste(line, last_paste_text_)) {
+    // S2 (session 260914_0001, design spec 222500 §2.3/§2.7): the ledger
+    // verdict runs in CANONICAL space. ProseMirror re-renders the composer
+    // through CRLF->LF / trailing-space trim / NBSP->SP / NFC, which made
+    // the pre-S2 byte comparison non-deterministic on the ExactMatch route
+    // (BUG-005 §9-3). Canonicalizing BOTH sides keeps the comparison strict
+    // byte equality (ADR-001: no fuzzy matching, ever) while making the
+    // verdict editor-normalization-proof. The !last_paste_canonical_.empty()
+    // guard is the spec §2.7 fast-path: when no ledger is active the block
+    // is unreachable anyway, so the first-ever Enter pays no NFC cost. The
+    // lifecycle contract (worker.hpp §7.1.1 comment) guarantees the canonical
+    // twin is never stale w.r.t. last_paste_text_.
+    if (!line.empty() && last_paste_target_ == task.target_hwnd &&
+        !last_paste_canonical_.empty()) {
+        const std::wstring line_canonical = CanonicalFormForLedger(line);
+        switch (AnalyzeCaptureVsLastPaste(line_canonical, last_paste_canonical_)) {
             case PasteLedgerVerdict::ExactMatch:
                 pasted_prefix_skip = PastedPrefixNeedsSkip(true, was_smart_bypassed, false);
                 break;
             case PasteLedgerVerdict::PrefixWithTail:
-                // Tail offset = last_paste_text_.size(): a whole-unit
-                // boundary (last_paste_text_ is a complete stored string),
-                // so the split can never land inside a surrogate pair.
-                pasted_prefix_text = last_paste_text_;
-                untranslated_tail.assign(line, last_paste_text_.size(),
-                                         line.size() - last_paste_text_.size());
+                // S2 v2 re-specified slice (spec §2.3): BOTH the verbatim
+                // prefix source and the tail slice live in CANONICAL space.
+                // Tail offset = last_paste_canonical_.size(): a whole-unit
+                // boundary (last_paste_canonical_ is a complete stored
+                // string), so the split can never land inside a surrogate
+                // pair - and, unlike the pre-S2 original-space offset, it
+                // cannot amputate leading characters of the user's newly
+                // typed tail when CRLF/NFC shifted the lengths (spec §2.4).
+                pasted_prefix_text = last_paste_canonical_;
+                untranslated_tail.assign(line_canonical, last_paste_canonical_.size(),
+                                         line_canonical.size() - last_paste_canonical_.size());
                 break;
             case PasteLedgerVerdict::NoMatch:
                 break;
@@ -412,22 +494,20 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // exactly the current block, which contains exactly K boundaries, and
     // FindCurrentBlockStart wants K+1 -> clamps to 0 (whole block, as-is).
     if (!line.empty() && !pasted_prefix_skip) {
-        size_t block_start = FindCurrentBlockStart(line, k_block);
-        // The switch above fills the (prefix, tail) pair ONLY for the
-        // ledger-protected PrefixWithTail arm; a non-empty tail therefore IS
-        // the proof the ledger byte-matched as a prefix - the slice can only
-        // push the split LATER (never shrink the verbatim prefix below what
-        // the ledger proved).
-        if (!untranslated_tail.empty() && block_start < pasted_prefix_text.size()) {
-            block_start = pasted_prefix_text.size(); // ledger is a proven prefix
-        }
-        // Move a separator run at the block start into the verbatim prefix
-        // (block starts at real content, or is empty).
-        while (block_start < line.size() &&
-               (line[block_start] == L'\r' || line[block_start] == L'\n')) {
-            ++block_start;
-        }
-        if (block_start >= line.size()) {
+        // S2 F1 (adversarial review 080100 Q4b): the F3 refine stage is the
+        // ONE definition shared with the tests (win32_input.hpp
+        // F3BlockSliceRefine) - the regression grid must execute the real
+        // production composition, not a re-derived simulation. line_canonical
+        // is non-empty exactly when the S2 ledger verdict ran above (the
+        // canonical PrefixWithTail split is the refine input); the empty
+        // fast-path keeps the NoMatch/no-ledger arms byte-identical.
+        const std::wstring line_canonical =
+            (untranslated_tail.empty() && pasted_prefix_text.empty())
+                ? std::wstring()
+                : CanonicalFormForLedger(line);
+        const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+            line, k_block, line_canonical, pasted_prefix_text, untranslated_tail);
+        if (f3.empty_block) {
             // Empty current block (capture ends on a separator with nothing
             // typed after it): the prefix is earlier content and MUST NOT be
             // re-translated. Hand the Enter to the app (same send-of-output
@@ -449,7 +529,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
             return;
         }
-        if (block_start > 0) {
+        if (f3.sliced) {
             // Slice owns this capture (NoMatch / foreign / no ledger) or
             // refines the ledger-protected PrefixWithTail split down to the
             // block boundary (block_start was floored at the ledger end
@@ -457,11 +537,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // below what the ledger proved). Either way: verbatim prefix +
             // translated block tail; the recomposition covers the whole
             // captured span exactly.
-            const bool refines_ledger_split = !untranslated_tail.empty();
-            pasted_prefix_text.assign(line, 0, block_start);
-            untranslated_tail.assign(line, block_start, line.size() - block_start);
             DIAG_LOG("PIPELINE", "stage=block_slice%s K=%d capture_len=%zu prefix_len=%zu block_len=%zu",
-                     refines_ledger_split ? "_ledger_refine" : "",
+                     f3.refines_ledger ? "_ledger_refine" : "",
                      k_block, line.size(),
                      pasted_prefix_text.size(), untranslated_tail.size());
         }
@@ -600,6 +677,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // has now been sent, so a fresh accumulation context starts.
         last_paste_target_ = nullptr;
         last_paste_text_.clear();
+        // S2 (spec §7.1.1): the canonical twin clears ADJACENT to the
+        // original - no code path may clear one without the other.
+        last_paste_canonical_.clear();
         last_paste_end_offset_ = kEditCaretUnknown;
         return;
     }
@@ -776,8 +856,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // REQ-F2: remember this paste for the next capture comparison
             // (both sides CRLF-normalized). Failure of the next comparison
             // clears it; see the maintenance block at task end.
+            // S2 (spec §2.3): the canonical twin is written ATOMICALLY with
+            // the original (adjacent statements, same expression sequence);
+            // the reader verdict + tail slice consume the twin, the original
+            // stays for DIAG logging and the F2 original-representation
+            // audit trail (spec §2.6). The original store is the
+            // G6-4-pinned single ledger store and remains untouched.
             last_paste_target_ = task.target_hwnd;
             last_paste_text_ = translated;
+            last_paste_canonical_ = CanonicalFormForLedger(translated);
             // REQ-F5: remember the paste END offset (live caret right after
             // Ctrl+V consumed the selection) so a later EMPTY capture whose
             // live caret sits at exactly this offset proves "no edit since
@@ -1023,6 +1110,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                      clear_reason, reinterpret_cast<const void*>(task.target_hwnd));
             last_paste_target_ = nullptr;
             last_paste_text_.clear();
+            // S2 (spec §7.1.1): the canonical twin clears ADJACENT to the
+            // original - no code path may clear one without the other.
+            last_paste_canonical_.clear();
             last_paste_end_offset_ = kEditCaretUnknown;
         }
     }

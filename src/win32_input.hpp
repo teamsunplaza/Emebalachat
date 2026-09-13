@@ -307,6 +307,115 @@ constexpr WholeCaptureSlice SliceWholeCaptureToBlock(std::wstring_view capture,
     return {EnterCaptureResult::GuardAbort, {}};
 }
 
+// ---------------------------------------------------------------------------
+// S2 F1 (session 260914_0001, adversarial review 080100 Q4b): the F3
+// block-slice REFINE stage as ONE definition shared by worker.cpp
+// ExecuteTask and the unit tests (same pure-helper discipline as
+// FindCurrentBlockStart above - the tests must exercise the real production
+// composition, not a re-derived simulation).
+//
+// Inputs are the ExecuteTask F3 state exactly as the worker holds it:
+//   line              the CRLF-normalized whole capture (worker.cpp capture seam)
+//   k_block           hook-counted Shift+Enters of the current composition
+//   line_canonical    CanonicalFormForLedger(line) when the S2 ledger verdict
+//                     ran (non-empty then), empty otherwise (fast-path: the
+//                     verdict guard never pays NFC without a live ledger)
+//   pasted_prefix_text / untranslated_tail
+//                     the (prefix, tail) pair - filled by the S2 reader for
+//                     the ledger-protected PrefixWithTail arm, both empty
+//                     otherwise
+//
+// Semantics (worker.cpp F3 block contract, transplanted verbatim):
+//   1. block_start = FindCurrentBlockStart(line, k_block) - the raw-space
+//      whole-capture geometry;
+//   2. ledger floor: a non-empty untranslated_tail proves the ledger
+//      byte-matched as a prefix, so the split can only move LATER (never
+//      shrink the verbatim prefix below what the ledger proved);
+//   3. separator sweep: a run of line breaks at the block start joins the
+//      verbatim prefix (the engine never sees a leading bare newline);
+//   4. empty block (capture ends at a separator with nothing typed after):
+//      empty_block=true, the worker hands the Enter to the app (041 arm);
+//   5. otherwise the (prefix, tail) pair is (re)assigned from the capture
+//      (sliced=true) and recomposed downstream as
+//      [verbatim prefix][translated block].
+//
+// Representation note (Q4b): steps 2+5 must agree on WHICH representation
+// they measure. The ledger floor below is stated in canonical units (the
+// reader split is canonical, spec v2 222500 §2.3), while the sweep and the
+// re-slice run on the RAW line. See the F1 fix: the refine case is moved to
+// canonical space so floor and slice share one representation.
+// ---------------------------------------------------------------------------
+struct F3BlockSliceSplit {
+    bool empty_block;     // capture ends at a separator run -> worker /041 arm
+    bool sliced;          // the (prefix, tail) pair was (re)assigned
+    bool refines_ledger;  // the ledger-protected PrefixWithTail split refined
+};
+
+inline F3BlockSliceSplit F3BlockSliceRefine(const std::wstring& line,
+                                            int k_block,
+                                            const std::wstring& line_canonical,
+                                            std::wstring& pasted_prefix_text,
+                                            std::wstring& untranslated_tail) {
+    F3BlockSliceSplit r{false, false, false};
+    const bool ledger_refine = !untranslated_tail.empty() && !line_canonical.empty();
+    // ---- Ledger-protected PrefixWithTail refine: CANONICAL space (S2 F1
+    // fix, adversarial review 080100 Q4b / spec v2 222500 §2.3) ----
+    // The reader proved the capture == canonical(ledger) + canonical tail,
+    // so the only representation in which the prefix boundary is well-defined
+    // is canonical (CRLF -k / NFC -4 destroy the raw byte-prefix invariant).
+    // The refine therefore floors the block start at the canonical ledger
+    // end and re-slices the CANONICAL capture - floor and slice source share
+    // one representation, so no unit of the user's newly typed tail can be
+    // absorbed into the verbatim prefix (the mixed-space amputation this
+    // fix removes). This is exactly the §2.5 adopted option (i): the
+    // raw-space alternative needs the canonical->raw index mapping the spec
+    // rejected.
+    if (ledger_refine) {
+        size_t block_start = FindCurrentBlockStart(line_canonical, k_block);
+        if (block_start < pasted_prefix_text.size()) {
+            block_start = pasted_prefix_text.size(); // ledger is a proven prefix
+        }
+        // Separator sweep + re-slice in the SAME canonical representation.
+        while (block_start < line_canonical.size() &&
+               (line_canonical[block_start] == L'\r' ||
+                line_canonical[block_start] == L'\n')) {
+            ++block_start;
+        }
+        if (block_start >= line_canonical.size()) {
+            r.empty_block = true;
+            return r;
+        }
+        if (block_start > 0) {
+            r.refines_ledger = true;
+            pasted_prefix_text.assign(line_canonical, 0, block_start);
+            untranslated_tail.assign(line_canonical, block_start,
+                                     line_canonical.size() - block_start);
+            r.sliced = true;
+        }
+        return r;
+    }
+    // ---- No-ledger-proved path (NoMatch / foreign / no ledger):
+    // byte-identical to the pre-S2 F3 block slice - raw space IS the only
+    // representation here (no canonical verdict exists to trust).
+    size_t block_start = FindCurrentBlockStart(line, k_block);
+    // Move a separator run at the block start into the verbatim prefix
+    // (block starts at real content, or is empty).
+    while (block_start < line.size() &&
+           (line[block_start] == L'\r' || line[block_start] == L'\n')) {
+        ++block_start;
+    }
+    if (block_start >= line.size()) {
+        r.empty_block = true;
+        return r;
+    }
+    if (block_start > 0) {
+        pasted_prefix_text.assign(line, 0, block_start);
+        untranslated_tail.assign(line, block_start, line.size() - block_start);
+        r.sliced = true;
+    }
+    return r;
+}
+
 // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): true when hwnd belongs to
 // a console/terminal surface where a SYNTHETIC Ctrl+C is interpreted as
 // SIGINT (process interrupt) instead of "copy selection". Detection is by

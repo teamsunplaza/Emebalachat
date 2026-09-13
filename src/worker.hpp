@@ -255,6 +255,40 @@ constexpr bool EmptyCapturePromotesToSend(bool captured_empty, bool smart_bypass
 // Both inputs are already CRLF-normalized by the caller.
 enum class PasteLedgerVerdict { NoMatch, ExactMatch, PrefixWithTail };
 
+// S2 (session 260914_0001, design spec 222500 §1): canonical form for the
+// ledger comparison. ProseMirror re-renders pasted text through a fixed
+// normalization (CRLF -> LF, trailing-whitespace trim per line, NBSP -> SP,
+// Unicode NFC composition), so byte-equality against the raw paste breaks
+// deterministically on re-render and makes the ExactMatch routing
+// non-deterministic (BUG-005 §9-3). Canonicalizing BOTH sides of
+// AnalyzeCaptureVsLastPaste through this function makes the verdict
+// deterministic while preserving exact-match semantics: after the transform
+// set the comparison remains strict UTF-16 byte equality. Fuzzy matching,
+// similarity thresholds, and edit distance are permanently prohibited
+// (docs/adr/ADR-001-ledger-canonical-form-exact-match.md).
+//
+// Transformation order is FIXED (spec §1.2):
+//   1. CRLF -> LF               (must run first: trailing-space removal must
+//                               see final line endings, spec §1.3 U7 pin)
+//   2. trailing [ \t] removal   (per line; NBSP is Unicode White_Space and is
+//                               removed here too - spec §1.3 order analysis)
+//   3. NBSP (U+00A0) -> SP      (ProseMirror converts NBSP in text nodes)
+//   4. Unicode NFC              (composes Korean jamo / accented sequences;
+//                               runs last: steps 1-3 are ASCII-only)
+//
+// Properties (spec §1.4, pinned by TestLedgerCanonicalForm):
+//   - pure: input is unmodified, returns a new string (RVO/NRVO)
+//   - idempotent: canonical(canonical(x)) == canonical(x)
+//   - symmetric: canonical(a) == canonical(b) is an equivalence relation
+//   - never over-normalizes: ZWSP/BOM/fullwidth/ideographic space pass
+//     through (negative grid N7-N10; content-self-invalidation preserved)
+//
+// NFC failure fallback (spec §6.3): NormalizeString failure returns the
+// steps-1-3 result unnormalized. Never crashes, never blocks. One definition
+// shared by worker.cpp and the unit tests (same discipline as
+// AnalyzeCaptureVsLastPaste above).
+std::wstring CanonicalFormForLedger(std::wstring_view input);
+
 inline PasteLedgerVerdict AnalyzeCaptureVsLastPaste(std::wstring_view captured,
                                                     std::wstring_view last_paste) {
     if (last_paste.empty() || captured.empty() ||
@@ -412,6 +446,30 @@ private:
     // last_paste_ms_'s design intent). hwnd==nullptr means "no memory".
     HWND last_paste_target_ = nullptr;
     std::wstring last_paste_text_;
+    // S2 (session 260914_0001, design spec 222500 §2.3/§7.1.1): canonical
+    // twin of last_paste_text_, written ATOMICALLY with the original in the
+    // paste-success block (one adjacent statement pair, same expression
+    // sequence). The ledger verdict and the PrefixWithTail tail slice both
+    // operate in THIS representation (spec §2.3 v2): length-changing
+    // transforms (CRLF -k, NFC jamo -4) destroy the pre-S2 byte-prefix
+    // invariant "last_paste_text_.size() == matching prefix length of line",
+    // so prefix length is only well-defined in canonical space.
+    //
+    // Lifecycle contract (spec §7.1.1; every quiescent point MUST satisfy):
+    //   last_paste_canonical_.empty() == last_paste_text_.empty()
+    //   - init:            both empty (members' default init)
+    //   - successful paste: written adjacent to last_paste_text_ = translated
+    //   - invalidation:    cleared ADJACENT to every last_paste_text_.clear()
+    //                      (both existing sites: the send-through one-shot
+    //                      clear and the ledger_maint wipe) - there must be
+    //                      NO code path that clears one without the other
+    //                      (a stale canonical twin would make the next Enter
+    //                      compare against a DIFFERENT paste's canonical
+    //                      form - the cross-task contamination class BUG-005
+    //                      fixed for the original ledger)
+    //   - tear-down:       same worker destruction as last_paste_text_
+    // Single-worker-thread discipline, same as the ledger pair above.
+    std::wstring last_paste_canonical_;
     // REQ-F5: the pasted text's END offset in the tracked window, sampled
     // (EM_GETSEL) at the moment of the last successful paste - the geometry
     // proof that a later empty capture means "no edit since the paste".

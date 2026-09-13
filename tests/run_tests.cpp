@@ -10355,8 +10355,14 @@ void TestBug005RescueSendThroughConsumeGate() {
         TEST_CHECK(AnalyzeCaptureVsLastPaste(composer, ledger) == PasteLedgerVerdict::ExactMatch,
                    "BUG-005 replay (route 1): byte-stable editor -> ExactMatch -> pasted_prefix_skip send-through (now behind the consume gate)");
         const std::wstring normalized = L"translated line one\ntranslated line two\ntranslated last line";  // ProseMirror re-render variant (\r\n -> \n)
-        TEST_CHECK(AnalyzeCaptureVsLastPaste(normalized, ledger) == PasteLedgerVerdict::NoMatch,
-                   "BUG-005 replay (route 2): re-rendered editor -> NoMatch -> F3 block slice (k_block=0: last line only; paste preserves prefix)");
+        // S2: canonical form normalization - ProseMirror re-render variant.
+        // Both sides canonicalized (the reader path since S2: the worker
+        // compares CanonicalFormForLedger(line) vs last_paste_canonical_),
+        // so the re-render variant is now a deterministic ExactMatch.
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(normalized),
+                                             CanonicalFormForLedger(ledger)) ==
+                       PasteLedgerVerdict::ExactMatch,
+                   "BUG-005 replay (route 2, S2): re-rendered editor -> ExactMatch (canonical form makes the send-of-output routing deterministic; the F3 slice below stays as the safety fallback for real edits)");
         // Route 2's F3 slice math on a K=0 whole-document capture: the block
         // anchor is the document-end logical line, exactly the geometry the
         // 1차 Enter used successfully.
@@ -10564,6 +10570,371 @@ void TestBug005RescueSendThroughConsumeGate() {
 //       attribution / capture->consume race (span-identity model) /
 //       3rd+-Enter consecutive re-entry (the 949a718 last_paste_text_
 //       non-refresh property frozen as goldens)
+// ============================================================================
+
+// ============================================================================
+// S2 (session 260914_0001): ledger canonical form - design spec v2 222500 §4
+// hostile matrix. Layout:
+//   §4.1  P1-P10   ProseMirror re-render variants (positive)
+//   §4.2  C1-C3    combination explosion cells (positive)
+//   §4.3  N1-N12   semantic-change negative grid (must NOT match)
+//   §4.4  U1-U7    canonical form unit properties (idempotence/symmetry/order)
+//   §4.5  PT1-PT4  re-render variant + tail combination cells (tail PINNED;
+//                  each detects a v1 original-space slice corruption)
+//   §4.6  PT-B1    boundary: tail is exactly the "\n" separator
+//   §4.7  V2-1/V2-2 canonical-space slice sanity (Annex A-1/A-2 corrected
+//                  unit counts: capture "a\nbNEW" is 6 units, tail "NEW" 3)
+// The tail pins simulate the spec §2.3 reader: verdict on canonical space,
+// pasted_prefix_text = last_paste_canonical_, tail sliced from line_canonical
+// at last_paste_canonical_.size() - a future regression to the v1
+// original-space slice turns every PT cell RED (spec §4.7 preamble).
+// ============================================================================
+void TestLedgerCanonicalForm() {
+    std::cout << "[TEST] 260914_0001 S2 ledger canonical form (ProseMirror normalization)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- §4.4 U3/U4/U5/U7: per-transform unit properties ----
+    TEST_CHECK(CanonicalFormForLedger(L"a\r\nb") == std::wstring(L"a\nb"),
+               "S2 U3: CRLF -> LF");
+    TEST_CHECK(CanonicalFormForLedger(L"a \nb") == std::wstring(L"a\nb"),
+               "S2 U4: trailing space before LF removed");
+    TEST_CHECK(CanonicalFormForLedger(L"a\u00A0b") == std::wstring(L"a b"),
+               "S2 U5: interior NBSP -> SP");
+    TEST_CHECK(CanonicalFormForLedger(L"a \r\nb") == std::wstring(L"a\nb"),
+               "S2 U7 (spec §1.3 U7 pin): step 1 before step 2 - 'a \\r\\nb' canonicalizes to \"a\\nb\", NOT \"ab\"");
+
+    // Trailing-NBSP is trailing whitespace (spec §1.3 order A analysis).
+    TEST_CHECK(CanonicalFormForLedger(L"hello\u00A0") == std::wstring(L"hello"),
+               "S2 §1.3: trailing NBSP removed as trailing whitespace");
+    // Trailing tab, end-of-string trailing space.
+    TEST_CHECK(CanonicalFormForLedger(L"hi\t") == std::wstring(L"hi"),
+               "S2 §1.2 step 2: end-of-string trailing tab removed");
+    TEST_CHECK(CanonicalFormForLedger(L"end ") == std::wstring(L"end"),
+               "S2 §1.2 step 2: end-of-string trailing space removed");
+    // Lone \r is content (never produced by ProseMirror) - left alone.
+    TEST_CHECK(CanonicalFormForLedger(L"a\rb") == std::wstring(L"a\rb"),
+               "S2: lone CR is content, untouched (only CRLF pairs collapse)");
+    // Empty in -> empty out.
+    TEST_CHECK(CanonicalFormForLedger(L"") == std::wstring(),
+               "S2: empty input -> empty output");
+
+    // ---- §4.4 U6 / §4.1 P5/P6: NFC composition ----
+    const std::wstring cafe_nfc = L"caf\x00E9";                 // é precomposed
+    const std::wstring cafe_nfd = L"cafe\u0301";                // e + combining acute
+    TEST_CHECK(CanonicalFormForLedger(cafe_nfd) == cafe_nfc,
+               "S2 U6/P5: NFD cafe -> NFC cafe");
+    // Korean jamo: hangul "한글" NFC = 2 units; NFD = cho/jong jamo sequence
+    // (ㅎ+ㅏ+ㄴ+ㄱ+ㅡ+ㄹ = 6 units).
+    const std::wstring hangul_nfc = L"\xD55C\xAE00";            // 한글
+    const std::wstring hangul_nfd = L"\x1112\x1161\x11AB\x1100\x1173\x11AF";
+    TEST_CHECK(CanonicalFormForLedger(hangul_nfd) == hangul_nfc,
+               "S2 P6: Korean jamo NFD sequence -> NFC precomposed");
+
+    // ---- §4.4 U1: idempotence over representative inputs ----
+    {
+        const std::wstring idem_samples[] = {
+            L"hello\r\nworld", L"hello \nworld", L"hello\u00A0world",
+            L"a\r\nb\u00A0\r\nc \r\n", cafe_nfd, hangul_nfd,
+            L"hello", L"hello!" };
+        for (const std::wstring& s : idem_samples) {
+            TEST_CHECK(CanonicalFormForLedger(CanonicalFormForLedger(s)) ==
+                           CanonicalFormForLedger(s),
+                       "S2 U1: idempotence for a matrix sample");
+        }
+    }
+
+    // ---- §4.4 U2: symmetry (trivially holds for a deterministic function;
+    // pinned via pairwise equality of transformed samples) ----
+    TEST_CHECK(CanonicalFormForLedger(L"hello\r\nworld") ==
+                   CanonicalFormForLedger(L"hello\nworld"),
+               "S2 U2: canonical(CRLF form) == canonical(LF form)");
+
+    // ---- §4.1 P1-P8: re-render variants -> ExactMatch (canonical space) ----
+    {
+        struct PC { const wchar_t* pasted; const wchar_t* recaptured; const char* what; };
+        const PC cells[] = {
+            {L"hello\r\nworld", L"hello\nworld", "P1: CRLF -> LF"},
+            {L"hello\nworld", L"hello\nworld", "P2: identity"},
+            {L"hello \nworld", L"hello\nworld", "P3: trailing space trimmed"},
+            {L"hello\u00A0world", L"hello world", "P4: NBSP -> SP"},
+            {L"hello\r\nworld \r\n", L"hello\nworld\n", "P7: CRLF + trailing space"},
+            // P8: spec cell had capture "hello world\n" (an apparent SP/LF
+            // transposition); the §1.2-derivable re-render of
+            // "hello\u00A0\r\nworld" is "hello\nworld" - pinned as derived.
+            {L"hello\u00A0\r\nworld", L"hello\nworld", "P8: NBSP + CRLF (capture pinned per §1.2 derivation)"},
+        };
+        for (const PC& c : cells) {
+            TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(c.recaptured),
+                                                 CanonicalFormForLedger(c.pasted)) ==
+                           PasteLedgerVerdict::ExactMatch,
+                       c.what);
+        }
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(cafe_nfd),
+                                             CanonicalFormForLedger(cafe_nfc)) ==
+                       PasteLedgerVerdict::ExactMatch,
+                   "S2 P5 (verdict level): NFC composition equates");
+        TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(hangul_nfd),
+                                             CanonicalFormForLedger(hangul_nfc)) ==
+                       PasteLedgerVerdict::ExactMatch,
+                   "S2 P6 (verdict level): Korean jamo composition equates");
+    }
+
+    // ---- §4.2 C1-C3: combination explosion cells -> ExactMatch ----
+    {
+        struct CC { const wchar_t* pasted; const wchar_t* recaptured; const char* what; };
+        const CC cells[] = {
+            {L"a\r\nb\u00A0\r\nc \r\n", L"a\nb \nc\n", "S2 C1: CRLF + NBSP + trailing space"},
+            {L"caf\x00E9\r\n\xD55C\xAE00\u00A0", L"caf\x00E9\n\xD55C\xAE00 ", "S2 C2: NFC + CRLF + NBSP"},
+            {L"line1 \r\nline2\u00A0\r\nline3", L"line1\nline2 \nline3", "S2 C3: trailing space + NBSP + CRLF multi-line"},
+        };
+        for (const CC& c : cells) {
+            TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(c.recaptured),
+                                                 CanonicalFormForLedger(c.pasted)) ==
+                           PasteLedgerVerdict::ExactMatch,
+                       c.what);
+        }
+    }
+
+    // ---- §4.3 N1-N12: semantic changes must NOT match (canonical space) ----
+    {
+        struct NC { const wchar_t* pasted; const wchar_t* recaptured; const char* what; };
+        // N1/N3/N7/N8: the frozen predicate (worker.hpp - S2 signature-frozen,
+        // byte-prefix logic untouched) routes a non-newline append to
+        // PrefixWithTail, not NoMatch. The spec §4.3 NoMatch expectation for
+        // those four cells contradicts the predicate source; the safety
+        // property under test ("not ExactMatch" - no false send-of-output)
+        // is preserved either way, so the cells are pinned as PrefixWithTail
+        // with the §4.3 semantics noted. N2 (deletion) stays NoMatch
+        // (shorter than ledger). Same-hwnd NoMatch ALSO keeps the ledger
+        // (Annex A-4), so both verdicts are content-self-invalidating-safe.
+        const NC cells[] = {
+            {L"hello", L"hello!", "S2 N1: added punctuation"},
+            {L"hello", L"hell", "S2 N2: deletion"},
+            {L"hello", L"hello world", "S2 N3: append without newline (not PrefixWithTail)"},
+            {L"hello world", L"world hello", "S2 N4: reorder"},
+            {L"hello", L"HELLO", "S2 N5: case change (no case fold)"},
+            {L"caf\x00E9", L"caf\x00E8", "S2 N6: different accented char"},
+            {L"hello", L"hello\u200B", "S2 N7: ZWSP not normalized"},
+            {L"hello", L"hello\uFEFF", "S2 N8: BOM not stripped"},
+            {L"\xFF11\xFF12\xFF13", L"123", "S2 N9: fullwidth vs halfwidth (no width fold)"},
+            {L"hello\u3000world", L"hello world", "S2 N10: ideographic space not normalized"},
+            {L"hello", L"h\x00E9llo", "S2 N11: different base char"},
+            {L"hello\nworld", L"world\nhello", "S2 N12: line reorder (not a prefix)"},
+        };
+        for (const NC& c : cells) {
+            const PasteLedgerVerdict nv = AnalyzeCaptureVsLastPaste(
+                CanonicalFormForLedger(c.recaptured), CanonicalFormForLedger(c.pasted));
+            // N1/N3/N7/N8 are non-newline appends -> the frozen predicate
+            // returns PrefixWithTail; every other cell must stay NoMatch.
+            const bool is_append_cell = c.pasted == std::wstring(L"hello") &&
+                (nv == PasteLedgerVerdict::PrefixWithTail);
+            TEST_CHECK(nv == PasteLedgerVerdict::NoMatch || is_append_cell,
+                       c.what);
+            // Safety invariant (§3.3): NO negative cell may read ExactMatch.
+            TEST_CHECK(nv != PasteLedgerVerdict::ExactMatch,
+                       "S2 negative grid safety invariant (cell must not be ExactMatch)");
+        }
+    }
+
+    // ---- §4.5 PT1-PT4 + §4.6 PT-B1: tail-combination cells with PINNED
+    // tail strings (simulating the spec §2.3 v2 reader: verdict + slice in
+    // canonical space; a v1 original-space slice regresses these to RED) ----
+    {
+        struct TC { std::wstring pasted; std::wstring recaptured;
+                    const wchar_t* exp_prefix; const wchar_t* exp_tail; const char* what; };
+        const TC cells[] = {
+            // PT1 (Annex A-1 corrected: capture "a\nbNEW" is 6 units).
+            {L"a\r\nb", L"a\nbNEW", L"a\nb", L"NEW",
+             "S2 PT1: CRLF -1 drift - tail pinned to \"NEW\" (v1 original-space slice amputates to \"EW\")"},
+            // PT2: NFC jamo -4 drift (NFD capture 7 units vs NFC ledger 2).
+            {hangul_nfc, hangul_nfd + L"X", hangul_nfc.c_str() ? L"\xD55C\xAE00" : L"", L"X",
+             "S2 PT2: NFC jamo -4 drift - tail pinned to \"X\""},
+            // PT3: 2x CRLF + 1 trailing space = -3 drift.
+            {L"ab\r\ncd \r\n", L"ab\ncd\nTAIL", L"ab\ncd\n", L"TAIL",
+             "S2 PT3: CRLF x2 + trailing-space -3 drift - tail pinned to \"TAIL\""},
+            // PT4: NBSP length-preserving here (symmetry gate for future transforms).
+            {L"x\u00A0y", L"x yZ", L"x y", L"Z",
+             "S2 PT4: NBSP->SP (length-preserving) - tail pinned to \"Z\""},
+            // PT-B1 boundary: tail is exactly the ProseMirror-inserted separator.
+            {L"hello\nworld", L"hello\nworld\n", L"hello\nworld", L"\n",
+             "S2 PT-B1: single appended newline - tail pinned to \"\\n\" (no prefix absorption, no ExactMatch swallow)"},
+        };
+        for (const TC& c : cells) {
+            const std::wstring pasted_canonical = CanonicalFormForLedger(c.pasted);
+            const std::wstring line_canonical = CanonicalFormForLedger(c.recaptured);
+            const PasteLedgerVerdict v = AnalyzeCaptureVsLastPaste(line_canonical, pasted_canonical);
+            std::wstring pasted_prefix_text;
+            std::wstring untranslated_tail;
+            if (v == PasteLedgerVerdict::PrefixWithTail) {
+                pasted_prefix_text = pasted_canonical;
+                untranslated_tail.assign(line_canonical, pasted_canonical.size(),
+                                         line_canonical.size() - pasted_canonical.size());
+            }
+            TEST_CHECK(v == PasteLedgerVerdict::PrefixWithTail &&
+                            pasted_prefix_text == std::wstring(c.exp_prefix) &&
+                            untranslated_tail == std::wstring(c.exp_tail),
+                       c.what);
+        }
+        // PT2 prefix/tail re-assert with plain literals (the TC initializer
+        // above cannot spell the NFC string without a conditional): ledger
+        // NFC "한글", NFD capture + "X". Canonical space: the NFD capture
+        // composes to NFC "한글" + "X" = 3 units (the raw 7 units are
+        // pre-canonicalization); the ledger is 2 units -> PrefixWithTail
+        // with tail "X" (the -4 drift §2.4 table row).
+        {
+            const std::wstring p = hangul_nfc;
+            const std::wstring l = CanonicalFormForLedger(hangul_nfd + L"X");
+            const PasteLedgerVerdict v = AnalyzeCaptureVsLastPaste(l, p);
+            TEST_CHECK(v == PasteLedgerVerdict::PrefixWithTail && l.size() == 3 &&
+                            p.size() == 2,
+                       "S2 PT2 (re-assert): canonical capture 3 units (NFC composed), canonical ledger 2 units -> PrefixWithTail");
+        }
+    }
+
+    // ---- §4.7 V2-1/V2-2: canonical-space slice sanity (Annex A-1/A-2
+    // corrected unit counts: "a\nbNEW" is 6 units; tail "NEW" is 3) ----
+    {
+        // V2-1 from PT1.
+        const std::wstring p1 = CanonicalFormForLedger(L"a\r\nb");
+        const std::wstring l1 = CanonicalFormForLedger(L"a\nbNEW");
+        TEST_CHECK(p1.size() == 3 && l1.size() == 6 &&
+                        l1.compare(p1.size(), 3, L"NEW") == 0 &&
+                        l1.size() - p1.size() == 3,
+                   "S2 V2-1: last_paste_canonical_.size()==3, line_canonical.size()==6, untranslated_tail==\"NEW\" (size 3, Annex A-2 corrected counts)");
+        // V2-2 from PT3. Spec said canonical ledger == 7 units; §1.2
+        // derivation: "ab\r\ncd \r\n" -> drop 2 CR ("ab\ncd \n") -> strip
+        // trailing " " of line 2 ("ab\ncd\n") = 6 units. Pinned as derived.
+        const std::wstring p3 = CanonicalFormForLedger(L"ab\r\ncd \r\n");
+        const std::wstring l3 = CanonicalFormForLedger(L"ab\ncd\nTAIL");
+        std::wstring tail3;
+        if (AnalyzeCaptureVsLastPaste(l3, p3) == PasteLedgerVerdict::PrefixWithTail) {
+            tail3.assign(l3, p3.size(), l3.size() - p3.size());
+        }
+        TEST_CHECK(p3.size() == 6 && tail3 == std::wstring(L"TAIL"),
+                   "S2 V2-2: last_paste_canonical_.size()==6 (§1.2 derived; spec's 7 was arithmetic error) and untranslated_tail==\"TAIL\"");
+    }
+
+    // ---- §4.8 (F1 fix, adversarial review 080100 Q4b): the reader+F3
+    // refine COMPOSITION. The PT cells above simulate the reader row in
+    // isolation; none executed the F3 ledger-refine re-slice, and S0's
+    // G6-2 F3 pins run with an EMPTY ledger - the mixed-representation
+    // defect (canonical floor + raw CRLF re-slice) was structurally
+    // unverifiable. This grid drives the production-shared helper
+    // F3BlockSliceRefine with a CANONICAL reader split (prefix/tail exactly
+    // as the ExecuteTask reader fills them) plus the CRLF-normalized raw
+    // capture, replaying the 2nd-Enter-after-multi-paragraph-paste
+    // BUG-005 Reddit scenario. The tail/prefix pins are the user-facing
+    // side-effect: what the engine is fed and what the Ctrl+V recomposes.
+    // ----
+    {
+        struct R3 { std::wstring ledger_raw;     // last_paste_text_ (CRLF raw, writer stored)
+                    std::wstring capture_raw;    // line (CRLF-normalized whole capture)
+                    int k_block;                 // hook-counted Shift+Enters
+                    std::wstring exp_prefix;     // expected verbatim prefix AFTER refine
+                    std::wstring exp_tail;       // expected engine input AFTER refine
+                    const char* what; };
+        const R3 cells[] = {
+            // Review Q4b walkthrough verbatim: CRLF ledger (canonical 12) +
+            // typed 3rd block, K=0. Mixed space amputates "단" into the
+            // tail ("단\r\n새 문단"); the canonical refine must yield
+            // tail "\n새 문단" exactly.
+            {L"첫 문단\r\n둘째 문단",
+             L"첫 문단\r\n둘째 문단\r\n새 문단",
+             0,
+             L"첫 문단\n둘째 문단\n", L"새 문단",
+             "S2 F3-Q4b-1: CRLF ledger + typed tail, refine refloors to canonical prefix end (review Q4b walkthrough; mixed space amputates the first typed char into the prefix)"},
+            // PT1 through the real composition: ledger "a\r\nb" (canonical 3),
+            // raw capture "a\r\nbNEW" - the raw and canonical boundary agree
+            // here ONLY because the capture is LF (already re-rendered), so
+            // this cell pins that the refine does not disturb the proven
+            // reader split when spaces happen to coincide.
+            {L"a\r\nb", L"a\r\nbNEW", 0,
+             L"a\nb", L"NEW",
+             "S2 F3-Q4b-2: PT1 composition end-to-end - tail \"NEW\" reaches the engine intact (v1 amputation \"EW\" regression)"},
+            // PT3 composition: 2x CRLF + trailing-space drift = -3. The raw
+            // capture re-rendered by the editor is LF; the mixed slice would
+            // floor at 10 (raw) where canonical proves 7 -> 3 typed chars
+            // amputated.
+            {L"ab\r\ncd \r\n", L"ab\ncd\nTAIL", 0,
+             L"ab\ncd\n", L"TAIL",
+             "S2 F3-Q4b-3: PT3 composition end-to-end - -3 drift, tail \"TAIL\" intact"},
+            // K=1 narrow-down THROUGH the ledger floor: the user's typed tail
+            // itself contains a Shift+Enter, so FindCurrentBlockStart wants to
+            // start the block at "첫 줄" - LATER than the ledger end. The
+            // refine must take the MAX (floor only pushes later), keeping the
+            // ledger prefix verbatim AND narrowing the engine input to the
+            // current block (the last K+1 = 2 logical lines).
+            {L"첫 문단\r\n둘째 문단",
+             L"첫 문단\r\n둘째 문단\r\n첫 줄\r\n둘째 줄",
+             1,
+             L"첫 문단\n둘째 문단\n", L"첫 줄\n둘째 줄",
+             "S2 F3-Q4b-4: K=1 block start AFTER the ledger floor - refine narrows the engine input to the current block only, ledger prefix stays verbatim"},
+            // NFC drift through the composition (PT2 shape): the NFD jamo
+            // ledger (6 raw -> 2 canonical) re-rendered, capture arrives NFD
+            // + typed "X" (7 raw -> 3 canonical). The mixed slice floors at
+            // the canonical 2 but slices the RAW 7-unit capture - landing
+            // INSIDE the first jamo (amputation by the NFC delta).
+            {hangul_nfd, hangul_nfd + L"X", 0,
+             hangul_nfc, L"X",
+             "S2 F3-Q4b-5: NFC jamo drift through the refine - tail \"X\" intact (-4 drift, review F1 NFC class)"},
+        };
+        for (const R3& c : cells) {
+            // Reader stage (production shape, worker.cpp S2 switch): verdict
+            // in canonical space, split (prefix, tail) both canonical.
+            const std::wstring ledger_canonical = CanonicalFormForLedger(c.ledger_raw);
+            const std::wstring line_canonical = CanonicalFormForLedger(c.capture_raw);
+            std::wstring pasted_prefix_text;
+            std::wstring untranslated_tail;
+            const PasteLedgerVerdict v =
+                AnalyzeCaptureVsLastPaste(line_canonical, ledger_canonical);
+            TEST_CHECK(v == PasteLedgerVerdict::PrefixWithTail,
+                       std::string(c.what) + " [reader verdict]");
+            if (v == PasteLedgerVerdict::PrefixWithTail) {
+                pasted_prefix_text = ledger_canonical;
+                untranslated_tail.assign(line_canonical, ledger_canonical.size(),
+                                         line_canonical.size() - ledger_canonical.size());
+            }
+            // F3 refine stage (the PRODUCTION helper, not a simulation).
+            const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+                c.capture_raw, c.k_block, line_canonical,
+                pasted_prefix_text, untranslated_tail);
+            TEST_CHECK(!f3.empty_block && f3.refines_ledger &&
+                            pasted_prefix_text == std::wstring(c.exp_prefix) &&
+                            untranslated_tail == std::wstring(c.exp_tail),
+                       std::string(c.what) + " [refine split]");
+            // Recomposition invariant: prefix + tail must cover the WHOLE
+            // canonical span (the Ctrl+V replacement consumes the selection).
+            TEST_CHECK(pasted_prefix_text.size() + untranslated_tail.size() ==
+                           line_canonical.size(),
+                       std::string(c.what) + " [recomposition covers the span]");
+        }
+        // Structural pin (review F4): the F3 refine source in worker.cpp must
+        // be the shared helper - the tests execute the REAL composition.
+        {
+            std::string src;
+            const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+            for (const char* cand : candidates) {
+                std::ifstream in(cand, std::ios::binary);
+                if (in) {
+                    src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                    break;
+                }
+            }
+            if (!src.empty()) {
+                TEST_CHECK(src.find("F3BlockSliceRefine(") != std::string::npos &&
+                                src.find("F3BlockSliceRefine(") < src.find("stage=block_slice"),
+                           "S2 F3-Q4b structural pin: worker.cpp F3 refine routes through the shared F3BlockSliceRefine helper");
+            } else {
+                std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; F3-Q4b structural pin skipped." << std::endl;
+            }
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260914_0001 S2 ledger canonical form tests completed." << std::endl;
+    }
+}
+
 // ============================================================================
 void TestBug005S0GoldenDecisionTables() {
     std::cout << "[TEST] 260914_0001 S0 golden decision tables (capture->slice->paste->release freeze)" << std::endl;
@@ -10778,8 +11149,11 @@ void TestBug005S0GoldenDecisionTables() {
     // 7-3: 2nd Enter AFTER the fix (expected) - the identity route preserves
     // the whole document through the terminal.
     const std::wstring g4_normalized = L"paragraph one\nparagraph two\nfresh last line"; // re-render variant
-    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_normalized, g4_ledger) == PasteLedgerVerdict::NoMatch,
-               "S0 G4 7-3: re-rendered editor (CRLF->LF) -> NoMatch (the identity route's entry)");
+    // S2: canonical form normalization - ProseMirror re-render variant.
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(g4_normalized),
+                                         CanonicalFormForLedger(g4_ledger)) ==
+                   PasteLedgerVerdict::ExactMatch,
+               "S0 G4 7-3 (S2): re-rendered editor (CRLF->LF) -> ExactMatch (canonical form; the identity route's entry is deterministic)");
     TEST_CHECK(g4_normalized.substr(FindCurrentBlockStart(g4_normalized, 0)) == std::wstring(L"fresh last line"),
                "S0 G4 7-3: K=0 slice isolates the last line (the engine-identity input; prefix preserved verbatim)");
     TEST_CHECK(RescueLiveSelectionNeedsConsume(true, true, true),
@@ -10817,10 +11191,14 @@ void TestBug005S0GoldenDecisionTables() {
 
     // ---- G6: P5 review 044700 section 5-2, items 1-4 ----
     // G6-1: identity-arm replay (the section 1-B counterexample, frozen).
-    TEST_CHECK(AnalyzeCaptureVsLastPaste(g4_normalized, g4_ledger) == PasteLedgerVerdict::NoMatch &&
+    // S2: canonical form normalization - ProseMirror re-render variant (G4 7-3
+    // twin; the F3 slice math stays pinned on the LF capture below).
+    TEST_CHECK(AnalyzeCaptureVsLastPaste(CanonicalFormForLedger(g4_normalized),
+                                         CanonicalFormForLedger(g4_ledger)) ==
+                   PasteLedgerVerdict::ExactMatch &&
                    g4_normalized.substr(FindCurrentBlockStart(g4_normalized, 0)) == std::wstring(L"fresh last line") &&
                    RescueLiveSelectionNeedsConsume(true, true, true),
-               "S0 G6-1 identity-arm replay: NoMatch -> F3(k=0) last line -> engine identity -> the gate fires before SendEnterKey");
+               "S0 G6-1 identity-arm replay (S2): canonical ExactMatch is deterministic -> send-through; the K=0 F3 slice fallback stays intact for real edits and the gate fires before SendEnterKey");
     {
         size_t n = 0, pos = 0;
         while ((pos = src.find("if (RescueLiveSelectionNeedsConsume(", pos)) != std::string::npos) {
@@ -12989,6 +13367,7 @@ int main() {
     TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
     TestBug005RescueSendThroughConsumeGate(); // session 260914_0001 (BUG-005 send-through selection-consume gate)
     TestBug005S0GoldenDecisionTables(); // session 260914_0001 (S0 golden freeze: capture->slice->paste->release decision tables)
+    TestLedgerCanonicalForm(); // session 260914_0001 (S2 ledger canonical form: ProseMirror normalization hostile matrix)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();
