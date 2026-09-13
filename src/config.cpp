@@ -1057,14 +1057,14 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // the single JSON choke point. std::stof accepts quoted "nan"/"inf"
             // strings, so std::isfinite + range tests run here; a non-finite or
             // out-of-range value falls back to the field default (config.hpp
-            // kAllLanguages note at L353-361: 0.3f/0.6f/20/1.05f). Upper-edge
-            // temperature saturates to 2.0 (report spec); 0 stays meaningful
-            // (engine greedy branch, engine.cpp L879).
+            // sampler note: 0.0f/0.6f/20/1.05f, Batch 2 grid 260913_0002).
+            // Upper-edge temperature saturates to 2.0 (report spec); 0 stays
+            // meaningful (engine greedy branch, engine.cpp L1004).
             try { float t = std::stof(v);
                   // (t > 2.0f ? 2.0f : t) saturation instead of std::min:
                   // <windows.h> above is included without NOMINMAX, so the
                   // min macro would corrupt the std::min qualified call.
-                  temperature = (std::isfinite(t) && t >= 0.0f) ? (t > 2.0f ? 2.0f : t) : 0.3f; } catch (...) {}
+                  temperature = (std::isfinite(t) && t >= 0.0f) ? (t > 2.0f ? 2.0f : t) : 0.0f; } catch (...) {}
         } else if (k == "top_p") {
             try { float p = std::stof(v);
                   top_p = (std::isfinite(p) && p > 0.0f && p <= 1.0f) ? p : 0.6f; } catch (...) {}

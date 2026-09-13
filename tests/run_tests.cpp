@@ -102,7 +102,7 @@ void TestConfigModule() {
     TEST_CHECK(cfg.drag_to_translate == true, "Default drag_to_translate is true");
     TEST_CHECK(cfg.drag_hotkey == "double_ctrl_c", "Default drag_hotkey is double_ctrl_c");
     TEST_CHECK(cfg.cloud_fallback_enabled == false, "Default cloud_fallback_enabled is false (privacy-first, H2)");
-    TEST_CHECK(std::abs(cfg.temperature - 0.3f) < 0.001f, "Default temperature is 0.3f");
+    TEST_CHECK(std::abs(cfg.temperature - 0.0f) < 0.001f, "Default temperature is 0.0f (Batch 2 grid winner: greedy)");
     TEST_CHECK(std::abs(cfg.top_p - 0.6f) < 0.001f, "Default top_p is 0.6f");
     TEST_CHECK(cfg.top_k == 20, "Default top_k is 20");
     TEST_CHECK(std::abs(cfg.repetition_penalty - 1.05f) < 0.001f, "Default repetition_penalty is 1.05f");
@@ -204,17 +204,17 @@ void TestConfigModule() {
     //     sampler params clamp at the FromJsonString choke point. strtof
     //     semantics accept quoted "nan"/"inf" strings, so non-finite and
     //     out-of-range values must fall back to the field defaults
-    //     (temperature 0.3f, top_p 0.6f, top_k 20, repetition_penalty 1.05f);
+    //     (temperature 0.0f, top_p 0.6f, top_k 20, repetition_penalty 1.05f);
     //     temperature above the rail saturates to 2.0, 0 stays meaningful
-    //     (engine greedy branch, engine.cpp L879).
+    //     (engine greedy branch, engine.cpp L1004).
     {
         // NaN/Inf via quoted string values.
         AppConfig nan_cfg;
         TEST_CHECK(nan_cfg.FromJsonString(
                        "{ \"temperature\": \"nan\", \"top_p\": \"inf\", \"repetition_penalty\": \"-inf\" }"),
                    "SEC-B: NaN/Inf sampler strings parse without failure");
-        TEST_CHECK(std::abs(nan_cfg.temperature - 0.3f) < 0.001f,
-                   "SEC-B: temperature NaN falls back to 0.3 default");
+        TEST_CHECK(std::abs(nan_cfg.temperature - 0.0f) < 0.001f,
+                   "SEC-B: temperature NaN falls back to 0.0 default");
         TEST_CHECK(std::abs(nan_cfg.top_p - 0.6f) < 0.001f,
                    "SEC-B: top_p +Inf falls back to 0.6 default");
         TEST_CHECK(std::abs(nan_cfg.repetition_penalty - 1.05f) < 0.001f,
@@ -225,7 +225,7 @@ void TestConfigModule() {
         TEST_CHECK(edge_cfg.FromJsonString(
                        "{ \"temperature\": -1.0, \"top_p\": 0.0, \"top_k\": -5, \"repetition_penalty\": 0.5 }"),
                    "SEC-B: negative/out-of-range sampler values parse");
-        TEST_CHECK(std::abs(edge_cfg.temperature - 0.3f) < 0.001f,
+        TEST_CHECK(std::abs(edge_cfg.temperature - 0.0f) < 0.001f,
                    "SEC-B: negative temperature falls back to default");
         TEST_CHECK(std::abs(edge_cfg.top_p - 0.6f) < 0.001f,
                    "SEC-B: top_p 0.0 rejected by open lower bound, falls back");
@@ -2579,7 +2579,7 @@ void TestEngineModule() {
 
     // Reset to explicit values (0.7, 0.6, 20, 1.05): Tencent-documented rails with
     // the historical 0.7 temperature. This checks SetSamplingParams mechanics with
-    // explicit arguments, not app defaults (AppConfig default temperature is 0.3f).
+    // explicit arguments, not app defaults (AppConfig default temperature is 0.0f).
     mgr.SetSamplingParams(0.7f, 0.6f, 20, 1.05f);
     TEST_CHECK(std::abs(mgr.GetTemperature() - 0.7f) < 0.001f, "SetSamplingParams explicit temperature 0.7");
     TEST_CHECK(std::abs(mgr.GetTopP() - 0.6f) < 0.001f, "Tencent tuned top_p 0.6");

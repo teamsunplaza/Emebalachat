@@ -205,7 +205,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   "hotkey_toggle": "F9",
   "hotkey_lang": "Ctrl+F9",
   "hotkey_mode": "Ctrl+Shift+Enter",
-  "temperature": 0.7,
+  "temperature": 0.0,
   "top_p": 0.6,
   "top_k": 20,
   "repetition_penalty": 1.05,

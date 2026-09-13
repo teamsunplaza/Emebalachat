@@ -390,7 +390,7 @@ private:
     bool local_model_available_ = false;
     bool cloud_fallback_enabled_ = false;
 
-    float temperature_ = 0.3f;
+    float temperature_ = 0.0f;
     float top_p_ = 0.6f;
     int top_k_ = 20;
     float repetition_penalty_ = 1.05f;
