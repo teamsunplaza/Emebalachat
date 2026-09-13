@@ -14,6 +14,7 @@
 #include "win32_input.hpp"
 #include "ui/about_window.hpp"
 #include "ui/badge.hpp"
+#include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
 #include "ui/dpi.hpp"
 #include "ui/tooltip.hpp"
@@ -1625,6 +1626,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                  eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
                  tgt_user_explicit ? 1 : 0);
 
+        // REQ-013 (user ruling 260913 22:02): while THIS drag translation
+        // runs, the badge label briefly shows the DRAG pair (the effective
+        // pair, post-pivot - the same pair the tooltip below displays); on
+        // flow end the guard restores the TYPE pair it reads LIVE at that
+        // moment (Ctrl+F9 during the inference is honored at restore).
+        // Display-only: no config write, no engine-pair change, no persistence.
+        // Placed after every early return (console gate, copy failure, empty
+        // text) so aborted gestures never flicker the label; the remaining
+        // body has a single exit, which this RAII guard restores.
+        emebalachat::TransientDragPairBadge badge_transient(
+            config, badge, emebalachat::ToUtf16(eff_src), emebalachat::ToUtf16(tgt_lang));
+
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         std::wstring translated = engine.Translate(selected, eff_src, tgt_lang);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
@@ -1866,6 +1879,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);
+
+        // REQ-013: same transient badge flip as run_drag_translate - show the
+        // DRAG pair while THIS translation runs, restore the TYPE pair on
+        // flow end (live read at restore time; display-only). Placed after
+        // every early return (feature gate, copy not confirmed, empty
+        // clipboard) so aborted gestures never flicker; the remaining body
+        // has a single exit, which this RAII guard restores.
+        emebalachat::TransientDragPairBadge badge_transient(
+            config, badge, emebalachat::ToUtf16(eff_src), emebalachat::ToUtf16(tgt_lang));
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         std::wstring translated = engine.Translate(copied, eff_src, tgt_lang);

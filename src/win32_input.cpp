@@ -1583,6 +1583,25 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                     reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
         }
     }
+    // BUG-002 (session 260913_0002): the Home-geometry chords cannot confirm
+    // on structured contenteditable targets (the editor's selection
+    // reconciliation erases the synthetic extension before the copy reads
+    // it). Before declaring copy_chord_failed, one rescue cycle with the
+    // editor-owned SelectAll (Ctrl+A) gesture. The sequence wait re-baselines
+    // inside the call, so a late commit from the geometry chord is either
+    // absorbed into the baseline or read as confirmed (REQ-R04 semantics
+    // unchanged). A rescued capture flows through the SAME guard/F3 pipeline
+    // below (no new capture shapes are introduced).
+    if (!copy_confirmed && SelectAllRescueWarranted(em_path, category)) {
+        if (SelectAll()) {
+            ::Sleep(kChordSelectionSettleMs);
+            if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(kClipboardCopyChordAttempts - 1))) {
+                copy_confirmed = true;
+                DIAG_F("WIN32_INPUT/CopySelectedText/009: Home-geometry copy unconfirmed after %d attempt(s) (hwnd=%p category=%d); SelectAll (Ctrl+A) rescue cycle confirmed a clipboard commit\n",
+                        attempts_executed, reinterpret_cast<void*>(hwnd), static_cast<int>(category));
+            }
+        }
+    }
     if (!copy_confirmed) {
         // REQ-F3 (log 260908 F3): report the ACTUAL number of chord attempts
         // executed, not the budget constant. The old message printed the
@@ -1607,6 +1626,27 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
     DIAG_F("WIN32_INPUT/CopySelectedText/002: captured %zu chars (%zu newline chars, category=%d)\n",
             text.size(), nl, static_cast<int>(category));
+
+    // BUG-002 (session 260913_0002): a CONFIRMED copy whose payload is empty
+    // is the sibling failure shape (the structured editor's copy handler
+    // serialized its collapsed model selection and committed an empty
+    // payload; the sequence moved, the text did not). Same rescue gate, same
+    // contract: one SelectAll cycle, and a non-empty result re-enters the
+    // normal pipeline (slice-before-guard re-vet, worker F3 slice, and the
+    // recomposition over the whole live selection).
+    if (text.empty() && SelectAllRescueWarranted(em_path, category)) {
+        if (SelectAll()) {
+            ::Sleep(kChordSelectionSettleMs);
+            if (CopySelectionWithSequenceWait(CopyAttemptTimeoutMs(kClipboardCopyChordAttempts - 1))) {
+                std::wstring rescued = GetClipboardText();
+                if (!rescued.empty()) {
+                    DIAG_F("WIN32_INPUT/CopySelectedText/010: copy confirmed but clipboard payload empty; SelectAll (Ctrl+A) rescue captured %zu chars (hwnd=%p category=%d)\n",
+                            rescued.size(), reinterpret_cast<void*>(hwnd), static_cast<int>(category));
+                    text = std::move(rescued);
+                }
+            }
+        }
+    }
 
     // REQ-036 FIX-2 (design supersession of the F2-B' start=0 self-correct,
     // documented in the debug-surgical report 260907): a stored EM start that

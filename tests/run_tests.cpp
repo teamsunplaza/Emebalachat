@@ -9,6 +9,7 @@
 #include "../src/engine.hpp"
 #include "../src/i18n.hpp"
 #include "../src/ui/badge.hpp"
+#include "../src/ui/badge_transient.hpp" // REQ-013: transient drag-pair badge guard
 #include "../src/ui/drag_icon.hpp"
 #include "../src/ui/dpi.hpp"
 #include "../src/ui/tooltip.hpp"
@@ -3510,6 +3511,72 @@ void TestBadgeDynamicSizing() {
         std::cout << "[PASS] Floating Badge Dynamic Sizing tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] Floating Badge Dynamic Sizing tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-013 (session 260913_0002, user ruling 22:02): TransientDragPairBadge -
+// the badge label shows the DRAG pair while a drag translation runs and
+// restores the TYPE pair when the flow ends. Observable side effects are
+// checked width-based (the same technique TestBadgeDynamicSizing uses; all
+// comparisons are RELATIVE to survive font-metric drift). Lifecycle 2 mutates
+// the config's type pair MID-FLIGHT to prove the restore reads the LIVE
+// config (the re-entrancy decision: a Ctrl+F9 cycle during an in-flight drag
+// is honored at restore), not a stale construction-time snapshot.
+void TestTransientDragPairBadgeGuard() {
+    std::cout << "[RUN] Testing TransientDragPairBadge guard (REQ-013)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    AppConfig cfg; // default type pair "Auto Detect" -> "English"; no disk IO
+
+    // ---- Lifecycle 1: show (wide drag pair) + restore (type pair) ----
+    cfg.SetTypeLanguages("KO", "EN"); // live type pair: compact label
+    {
+        FloatingBadge badge;
+        TEST_CHECK(badge.Create(hInst, L"KO", L"EN"), "REQ-013: badge created (compact type pair)");
+        const int baseline = badge.GetCurrentWidth();
+
+        {
+            emebalachat::TransientDragPairBadge guard(cfg, badge, L"Auto Detect", L"Japanese");
+            const int during = badge.GetCurrentWidth();
+            TEST_CHECK(during > baseline, "REQ-013: badge shows the DRAG pair while the guard is armed");
+        } // guard destroyed = drag-flow end -> restore
+
+        const int restored = badge.GetCurrentWidth();
+        TEST_CHECK(restored == baseline, "REQ-013: badge restored the TYPE pair when the flow ended");
+
+        badge.Destroy();
+    }
+
+    // ---- Lifecycle 2: restore reads the LIVE type pair, not a stale snapshot
+    {
+        cfg.SetTypeLanguages("Auto Detect", "English"); // live type pair: wide label
+        FloatingBadge badge;
+        TEST_CHECK(badge.Create(hInst, L"Auto Detect", L"English"), "REQ-013: badge created (wide type pair)");
+        const int baseline = badge.GetCurrentWidth();
+
+        {
+            emebalachat::TransientDragPairBadge guard(cfg, badge, L"KO", L"EN");
+            const int during = badge.GetCurrentWidth();
+            TEST_CHECK(during < baseline, "REQ-013: badge shows the compact DRAG pair while armed");
+
+            // Ctrl+F9-style mid-flight type-pair change (re-entrancy
+            // scenario): the pair the restore must land on did NOT exist at
+            // construction time.
+            cfg.SetTypeLanguages("KO", "EN");
+        } // destroyed HERE: a stale construction-time snapshot would repaint
+          // the wide pair; a live read repaints KO -> EN (the mid-flight pair).
+
+        const int restored = badge.GetCurrentWidth();
+        TEST_CHECK(restored < baseline, "REQ-013: restore landed on the LIVE type pair (mid-flight change honored)");
+
+        badge.Destroy();
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] TransientDragPairBadge guard tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] TransientDragPairBadge guard tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -10044,6 +10111,46 @@ void TestReqF3BlockSliceCurrentBlockOnly() {
 // aborts (V3 defense); K=64 clamp coherence; idempotence against the worker
 // F3 re-slice; empty tail; CRLF/LF/CR matrix; ledger interplay (block-scoped
 // capture -> NoMatch -> tail-only translate).
+// BUG-002 (session 260913_0002): SelectAll rescue gate for the structured-
+// contenteditable capture class (Reddit composer). ONE definition
+// (SelectAllRescueWarranted, win32_input.hpp) pinned headlessly: the rescue
+// engages ONLY on the non-EM CategoryB path. EM controls keep their
+// synchronous EM_SETSEL geometry and their own dropped-chord retry;
+// CategoryA already uses SelectAll as its primary primitive, so a rescue
+// there would only repeat an identical chord. Any widening of this gate
+// changes which selection primitive a capture class uses mid-flight, so the
+// full matrix is pinned at compile time AND at runtime.
+void TestSelectAllRescueGate() {
+    std::cout << "[TEST] 260913_0002 SelectAll rescue gate (structured contenteditable class)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Compile-time pins: the eligible class and all three exclusions.
+    static_assert(SelectAllRescueWarranted(false, AppCategory::CategoryB),
+                  "rescue: non-EM CategoryB (Home-geometry fallback class) is eligible");
+    static_assert(!SelectAllRescueWarranted(false, AppCategory::CategoryA),
+                  "rescue: CategoryA already uses SelectAll as its primary primitive");
+    static_assert(!SelectAllRescueWarranted(true, AppCategory::CategoryB),
+                  "rescue: EM controls keep their synchronous EM_SETSEL geometry");
+    static_assert(!SelectAllRescueWarranted(true, AppCategory::CategoryA),
+                  "rescue: EM + CategoryA doubly excluded");
+
+    // Runtime twins keep the matrix visible in the pass log.
+    TEST_CHECK(SelectAllRescueWarranted(false, AppCategory::CategoryB),
+               "rescue gate: non-EM CategoryB eligible (runtime twin)");
+    TEST_CHECK(!SelectAllRescueWarranted(false, AppCategory::CategoryA),
+               "rescue gate: CategoryA excluded (runtime twin)");
+    TEST_CHECK(!SelectAllRescueWarranted(true, AppCategory::CategoryB),
+               "rescue gate: EM path excluded (runtime twin)");
+    TEST_CHECK(!SelectAllRescueWarranted(true, AppCategory::CategoryA),
+               "rescue gate: EM + CategoryA excluded (runtime twin)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260913_0002 SelectAll rescue gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260913_0002 SelectAll rescue gate tests had failures." << std::endl;
+    }
+}
+
 void TestCaptureSliceBeforeGuard() {
     std::cout << "[TEST] 260913_0001 slice-before-guard (Reddit long-post capture seam)" << std::endl;
     const int failures_before = g_failed_count;
@@ -11928,6 +12035,7 @@ int main() {
     TestSelectionReleaseMatrix();
     TestMultiLineBlockFix();
     TestBadgeDynamicSizing();
+    TestTransientDragPairBadgeGuard();
     TestI18nModule();
     TestDragToTranslateComponents();
     TestDragIconClickShowsTooltip();
@@ -11978,6 +12086,7 @@ int main() {
     TestReqF6LedgerH1AbortPreserve();
     TestReqF3BlockSliceCurrentBlockOnly();
     TestCaptureSliceBeforeGuard(); // session 260913_0001 (slice-before-guard seam)
+    TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
     TestReqF7ClipboardRestore();
     TestReq039ChatWindowEnterCapture();
     TestBidiUtils();

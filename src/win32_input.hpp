@@ -426,6 +426,41 @@ constexpr bool CopyChordRetryWarranted(int attempt_index, bool selection_provabl
     return (attempt_index + 1 < kClipboardCopyChordAttempts) && !selection_provably_empty;
 }
 
+// ---- BUG-002 (session 260913_0002): SelectAll rescue for structured ---------
+// contenteditable targets (Reddit composer class) -----------------------------
+// The non-EM CategoryB capture selects via the Home-keyboard geometry
+// (SelectMessageBlock). Chromium structured-content editors (Lexical/
+// ProseMirror-class: Reddit, Facebook, Discord web, ...) reconcile their own
+// selection model against the DOM while the user types. Documented failure
+// class: the editor's selectionchange reconciliation replaces the anchor's
+// text node and the NEXT synthetic caret-motion key silently fails to extend
+// the selection (Playwright issue #40986); Chromium's own select-all
+// collapses outright when non-editable elements sit at the editing host's
+// content edges (portabletext/editor PR #2912), which is why these editors
+// bind and re-apply their OWN select-all (ProseMirror Mod-a) instead of
+// trusting native gestures. Net effect on the Enter pipeline: the geometry
+// chord copies an empty/collapsed selection, the clipboard sequence never
+// moves (or commits an empty payload), CopySelectedText returns empty, and
+// the worker's R5 hold surfaces the false 'no selection' notice while the
+// user's Enter is swallowed (BUG-002: '번역할 텍스트가 선택되어있지 않습니다'
+// on Reddit).
+// The rescue re-attempts the capture ONCE with SelectAll (Ctrl+A): the
+// editor-owned gesture structured editors re-apply themselves, and already
+// the field-proven primary primitive for the Chromium/Electron CategoryA
+// chat class (Discord/Slack/Teams). Scope gates (never widen):
+//   - EM path excluded: real EDIT/RichEdit controls keep their synchronous
+//     EM_SETSEL(last, caret) geometry and their own dropped-chord retry.
+//   - CategoryA excluded: SelectAll is already its primary primitive, so a
+//     rescue would only repeat an identical chord.
+// The rescued capture is a whole-input span; the existing slice-before-guard
+// and the worker's F3 recomposition ([prefix verbatim][translated block]
+// covering the whole captured span exactly, worker.cpp ExecuteTask comment)
+// keep the paste-back byte-safe under the same contract as every
+// SelectMessageBlock whole-capture today.
+constexpr bool SelectAllRescueWarranted(bool em_path, AppCategory category) {
+    return !em_path && category == AppCategory::CategoryB;
+}
+
 enum class ClipboardCopyOutcome { Pending, Confirmed, Failed };
 
 // Pure, time-parameterized state machine behind CopySelectionWithSequenceWait().
