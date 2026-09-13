@@ -1,0 +1,9 @@
+@@@RUN id=GREEDY-official pair=FR->AR src=French tgt=Arabic sent=1 temp=0.0 top_p=0.60 top_k=20 rep_pen=1.05
+Le pare-feu bloque désormais le port 8080, et seul le protocole HTTPS reste autorisé sur le serveur de test.
+@@@END
+@@@RUN id=GREEDY-llamagen pair=FR->AR src=French tgt=Arabic sent=1 temp=0.0 top_p=0.95 top_k=40 rep_pen=1.05
+Le pare-feu bloque désormais le port 8080, et seul le protocole HTTPS reste autorisé sur le serveur de test.
+@@@END
+@@@RUN id=GREEDY-tuned1 pair=FR->AR src=French tgt=Arabic sent=1 temp=0.0 top_p=0.80 top_k=20 rep_pen=1.05
+Le pare-feu bloque désormais le port 8080, et seul le protocole HTTPS reste autorisé sur le serveur de test.
+@@@END
