@@ -179,7 +179,7 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
                             new_source, new_target);
 }
 
-// R6 Phase 4 (B2, architect plan §4.1 item 1+2) + Task 1 (session 260910_0004) + Stage 6 (fidelity anchor):
+// R6 Phase 4 (B2, architect plan §4.1 item 1+2) + Task 1 (session 260910_0004) + Condition C (Tencent 100% Official Full SFT template):
 // Formats translation prompt for the Hy-MT2 model.
 //
 // target_lang / source_lang accept ANY form (ISO code, English name, or native
@@ -188,7 +188,7 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
 // (LanguageInfo::name_native, e.g. 简体中文) — an English name inside the
 // localized instruction put the prompt out-of-distribution for non-EN targets
 // (plan B2-H1: JA→ZH degraded to English output) — while the English branch
-// ("Translate the following … text into … accurately, without additional explanation:\n\n") uses the English name
+// ("Translate the following … text into …. Note that you should only output the translated result without any additional explanation:\n\n") uses the English name
 // (LanguageInfo::name_en, e.g. Korean). Native names in the English template
 // caused code-switching ("into 한국어" / "into Deutsch") and degraded the small
 // local model's translation quality (Task 1). Unresolvable tokens (e.g. the
@@ -197,8 +197,8 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
 //
 // source_lang (optional): when it resolves to a real language (non-AUTO), the
 // prompt names it in the same per-branch form (Chinese branch: 将以下日本語文本
-// 准确翻译为简体中文…; English branch: "Translate the following Japanese text
-// into … accurately, without additional explanation:\n\n"). AUTO / empty / unresolvable sources add NO source token, producing
+// 翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\n; English branch: "Translate the following Japanese text
+// into …. Note that you should only output the translated result without any additional explanation:\n\n"). AUTO / empty / unresolvable sources add NO source token, producing
 // byte-identical prompts to the historical behavior (plan §4.2
 // backward-compatibility requirement).
 std::string BuildPrompt(std::string_view source_text,

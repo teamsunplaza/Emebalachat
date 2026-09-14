@@ -567,13 +567,13 @@ std::string BuildPrompt(std::string_view source_text,
         (tgt_code.empty() && IsChineseLanguage(tgt_native));
 
     if (zh_instruction) {
-        // Plan §4.1 template: 将以下[<source>文本]准确翻译为<target-native>，…
-        // Stage 6 fidelity anchor: "准确翻译为" suppresses embellishment.
+        // Plan §4.1 template + Condition C: 将以下[<source>文本]翻译为<target-native>，…
+        // Tencent 100% Official Full SFT template (official Chinese SFT template).
         std::string prompt = "将以下";
         if (!src_native.empty()) {
             prompt.append(src_native);
         }
-        prompt.append("文本准确翻译为");
+        prompt.append("文本翻译为");
         prompt.append(tgt_native);
         prompt.append("，注意只需要输出翻译后的结果，不要额外解释：\n\n");
         prompt.append(source_text);
@@ -582,7 +582,8 @@ std::string BuildPrompt(std::string_view source_text,
 
     // Task 1 (session 260910_0004): the English instruction carries the
     // ENGLISH name (name_en) on both sides.
-    // Stage 6: Align with Tencent standard template ("text into ... accurately, without additional explanation:\n\n").
+    // Condition C: Align with Tencent 100% Official Full SFT template
+    // ("text into ... . Note that you should only output the translated result without any additional explanation:\n\n").
     std::string prompt = "Translate the following ";
     if (!src_en.empty()) {
         prompt.append(src_en);
@@ -590,7 +591,7 @@ std::string BuildPrompt(std::string_view source_text,
     }
     prompt.append("text into ");
     prompt.append(tgt_en);
-    prompt.append(" accurately, without additional explanation:\n\n");
+    prompt.append(". Note that you should only output the translated result without any additional explanation:\n\n");
     prompt.append(source_text);
     return prompt;
 }

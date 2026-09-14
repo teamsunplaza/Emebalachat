@@ -138,11 +138,11 @@ void TestConfigModule() {
 
     // 4. Prompt Builder (Tencent Hy-MT2 format: \n\n paragraph break and Chinese branch)
     std::string prompt_en = BuildPrompt("안녕하세요", "English");
-    TEST_CHECK(prompt_en == "Translate the following text into English accurately, without additional explanation:\n\n안녕하세요",
+    TEST_CHECK(prompt_en == "Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n\n안녕하세요",
                "Prompt formatting matches specification (English default)");
 
     std::string prompt_zh = BuildPrompt("안녕하세요", "Chinese");
-    TEST_CHECK(prompt_zh == "将以下文本准确翻译为Chinese，注意只需要输出翻译后的结果，不要额外解释：\n\n안녕하세요",
+    TEST_CHECK(prompt_zh == "将以下文本翻译为Chinese，注意只需要输出翻译后的结果，不要额外解释：\n\n안녕하세요",
                "Prompt formatting matches specification (Chinese branch)");
 
     // R6 Phase 4 (B2, plan §4.1 item 1): resolvable target tokens now inject
@@ -150,7 +150,7 @@ void TestConfigModule() {
     // "Chinese" above is NOT a table entry, so it keeps the historical raw
     // injection (backward-compatibility pin).
     std::string prompt_zh_cn = BuildPrompt("Hello", "ZH-CN");
-    TEST_CHECK(prompt_zh_cn == "将以下文本准确翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
+    TEST_CHECK(prompt_zh_cn == "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
                "Prompt formatting matches specification (ZH-CN branch injects native name)");
 
     // 5. JSON serialization & parsing roundtrip
@@ -601,10 +601,10 @@ void TestRef31MigrationPins() {
     // branch "lang vs \"ZH\"" decides the instruction language.
     {
         const std::string p_lower = BuildPrompt("hi", "zh");
-        TEST_CHECK(p_lower.rfind("将以下文本准确翻译为zh，", 0) == 0,
+        TEST_CHECK(p_lower.rfind("将以下文本翻译为zh，", 0) == 0,
                    "T2/config: raw 'zh' token takes the Chinese instruction branch");
         const std::string p_upper = BuildPrompt("hi", "ZH");
-        TEST_CHECK(p_upper.rfind("将以下文本准确翻译为ZH，", 0) == 0,
+        TEST_CHECK(p_upper.rfind("将以下文本翻译为ZH，", 0) == 0,
                    "T2/config: raw 'ZH' token takes the Chinese instruction branch (case-fold equal)");
         const std::string p_neg = BuildPrompt("hi", "Klingon");
         TEST_CHECK(p_neg.rfind("Translate the following text into Klingon", 0) == 0,
@@ -5498,13 +5498,13 @@ void TestR6P4LanguageRouting() {
     // The English branch uses name_en (Task 1): "into 한국어" / "into Deutsch"
     // native injection was code-switching that hurt small-model quality.
     TEST_CHECK(BuildPrompt("hello", "ZH-CN") ==
-                   "将以下文本准确翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+                   "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
                "R6p4: ZH-CN target prompt carries native 简体中文 (exact form)");
     TEST_CHECK(BuildPrompt("hello", "ZH-TW") ==
-                   "将以下文本准确翻译为繁體中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+                   "将以下文本翻译为繁體中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
                "R6p4: ZH-TW target prompt carries native 繁體中文 (exact form)");
     TEST_CHECK(BuildPrompt("hello", "English") ==
-                   "Translate the following text into English accurately, without additional explanation:\n\nhello",
+                   "Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n\nhello",
                "R6p4: EN target instruction unchanged (native name == English)");
 
     // Matrix targets (plan §4.2(b)): EN/KO/ZH-CN/ZH-TW/JA/DE/ES/VI.
@@ -5562,19 +5562,19 @@ void TestR6P4LanguageRouting() {
     // Known non-AUTO source -> name in the BRANCH's form: native in the
     // Chinese instruction, English in the English instruction.
     TEST_CHECK(BuildPrompt("hello", "ZH-CN", "JA") ==
-                   "将以下日本語文本准确翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
+                   "将以下日本語文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释：\n\nhello",
                "R6p4: JA source + ZH target injects 日本語 source hint (zh branch keeps native)");
     TEST_CHECK(BuildPrompt("hello", "English", "Japanese") ==
-                   "Translate the following Japanese text into English accurately, without additional explanation:\n\nhello",
+                   "Translate the following Japanese text into English. Note that you should only output the translated result without any additional explanation:\n\nhello",
                "Task 1: known source injects name_en source name into English branch");
     TEST_CHECK(BuildPrompt("hello", "Korean", "Japanese") ==
-                   "Translate the following Japanese text into Korean accurately, without additional explanation:\n\nhello",
+                   "Translate the following Japanese text into Korean. Note that you should only output the translated result without any additional explanation:\n\nhello",
                "Task 1: English branch uses name_en on BOTH sides (KO target)");
     TEST_CHECK(BuildPrompt("hello", "English", "KO") ==
-                   "Translate the following Korean text into English accurately, without additional explanation:\n\nhello",
+                   "Translate the following Korean text into English. Note that you should only output the translated result without any additional explanation:\n\nhello",
                "Task 1: source code token resolves to name_en in English branch");
     TEST_CHECK(BuildPrompt("hello", "English", "한국어") ==
-                   "Translate the following Korean text into English accurately, without additional explanation:\n\nhello",
+                   "Translate the following Korean text into English. Note that you should only output the translated result without any additional explanation:\n\nhello",
                "Task 1: native-form source token also resolves to name_en in English branch");
     // AUTO / empty / unresolvable source -> NO source token (backward compat:
     // byte-identical to the historical two-argument prompts).
