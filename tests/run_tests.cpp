@@ -5155,8 +5155,8 @@ void TestBatch2VersionScrollAbout() {
     const int failures_before = g_failed_count;
 
     // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
-    TEST_CHECK(kAppVersionW == L"0.10.0", "REQ-006: kAppVersionW is 0.10.0 (CMake definition or fallback)");
-    TEST_CHECK(kAppVersionA == "0.10.0", "REQ-006: ASCII version is 0.10.0");
+    TEST_CHECK(kAppVersionW == L"0.10.1", "REQ-006: kAppVersionW is 0.10.1 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.1", "REQ-006: ASCII version is 0.10.1");
     TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
 
     // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----
@@ -11592,6 +11592,222 @@ void TestCaptureSliceBeforeGuard() {
 // non-rescue twin keeps the established whole-capture paste semantics; (4)
 // the seam twin: an over-guard rescued document re-vets its last line
 // instead of aborting on "whole document = one block".
+// ============================================================================
+// REQ-041 (session 260917, Reddit 재번역 사용자 보고): dead-ledger NoMatch에서
+// F3 슬라이스가 사용하는 K를 0으로 강제(EffectiveSliceKForVerdict). 비-EM
+// 캡처([0..caret) 전체)에서 이미 번역된 윗줄 - 사용자의 수동 수정 포함 - 이
+// K의 과다 주장(Shift+Enter K>=1, Ctrl+V 포화 K=64)에 의해 다시 번역되고
+// 붙여넣기로 덮어씌워지던 결함(BUG-003 비-rescue 잔존 분기)을 차단한다.
+// 그리드는 판정 -> k_eff -> F3BlockSliceRefine의 실제 프로덕션 구성을 공유
+// 순수 판정/공유 refine 헬퍼로 직접 재생한다(S2 F1/Q4b 관용: 시뮬레이션
+// 금지). verbatim prefix는 라이브 캡처 바이트에서 온다(F3 raw arm 기존
+// 동작) = 윗줄의 사용자 수정분이 그대로 살아남는다.
+void TestReq041DeadLedgerKCap() {
+    std::cout << "[TEST] REQ-041 dead-ledger NoMatch K-cap (Reddit 재번역 차단)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (1) the rule matrix (compile-time pins) ----
+    static_assert(EffectiveSliceKForVerdict(3, true, PasteLedgerVerdict::NoMatch) == 0,
+                  "REQ-041: dead ledger + NoMatch -> K capped to 0 (last logical line only)");
+    static_assert(EffectiveSliceKForVerdict(static_cast<int>(kMaxEnterTranslateNewlines), true,
+                                            PasteLedgerVerdict::NoMatch) == 0,
+                  "REQ-041: paste-saturated K=64 + dead ledger -> capped (BUG-003 non-rescue arm closed)");
+    static_assert(EffectiveSliceKForVerdict(2, false, PasteLedgerVerdict::NoMatch) == 2,
+                  "REQ-041: NO ledger (fresh composition) -> K trusted unchanged");
+    static_assert(EffectiveSliceKForVerdict(1, true, PasteLedgerVerdict::PrefixWithTail) == 1,
+                  "REQ-041: ledger alive + PrefixWithTail -> refine path, K never capped");
+    static_assert(EffectiveSliceKForVerdict(0, true, PasteLedgerVerdict::ExactMatch) == 0,
+                  "REQ-041: ExactMatch never reaches the slice (skip arm), predicate harmless");
+
+    // Runtime twins keep the matrix visible in the pass log.
+    TEST_CHECK(EffectiveSliceKForVerdict(1, true, PasteLedgerVerdict::NoMatch) == 0,
+               "REQ-041: Shift+Enter K=1 dead-ledger cap (runtime twin)");
+    TEST_CHECK(EffectiveSliceKForVerdict(static_cast<int>(kMaxEnterTranslateNewlines), true,
+                                         PasteLedgerVerdict::NoMatch) == 0,
+               "REQ-041: Ctrl+V saturated K dead-ledger cap (runtime twin)");
+    TEST_CHECK(EffectiveSliceKForVerdict(2, false, PasteLedgerVerdict::NoMatch) == 2,
+               "REQ-041: fresh-composition K passthrough (runtime twin)");
+
+    // ---- (2) the production composition on the user's scenarios ----
+    // Reader (canonical verdict + PrefixWithTail split, worker.cpp S2 switch
+    // shape) -> REQ-041 cap -> the ONE shared F3BlockSliceRefine. exp_engine
+    // is what the worker feeds the engine: the tail when sliced, the whole
+    // capture when the slice never engages, nothing on the empty-block arm.
+    struct C { std::wstring ledger_raw;      // last paste (empty = no ledger)
+               std::wstring capture_raw;     // line (CRLF-normalized whole capture)
+               int k_raw;                    // hook K (post EffectiveBlockSliceK)
+               std::wstring exp_prefix;      // verbatim prefix (paste-back source)
+               std::wstring exp_engine;      // engine input (empty when /041 arm)
+               bool exp_empty;               // empty-block send-through arm
+               const char* what; };
+    const C cells[] = {
+        // The user's exact report: 3-line post, ledger alive from the last
+        // paste, the user EDITED line 1, then Shift+Enter + a fresh Korean
+        // line + Enter (K=1). Pre-fix the raw-arm slice claimed the last
+        // K+1 = 2 lines and re-translated the already-translated line 2
+        // (paste-back clobbered the whole span); post-fix only the fresh
+        // last line reaches the engine and the edited prefix survives
+        // VERBATIM from the live capture bytes.
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two\r\n새 한국어 줄",
+         1,
+         L"edited one\r\ntranslated two\r\n", L"새 한국어 줄",
+         false,
+         "REQ-041 cell A: dead ledger + K=1 -> last line only; the user's line-1 edit stays in the verbatim prefix"},
+        // Reddit Ctrl+V arm: a paste saturated K to 64 and an edit above
+        // broke the ledger. Pre-fix FindCurrentBlockStart(64) clamped to 0 =
+        // the WHOLE capture entered the engine (BUG-003 non-rescue twin,
+        // left open by the BUG-003 scope note); post-fix the cap forces the
+        // last line.
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two\r\npasted block line one\r\npasted block line two",
+         static_cast<int>(kMaxEnterTranslateNewlines),
+         L"edited one\r\ntranslated two\r\npasted block line one\r\n",
+         L"pasted block line two",
+         false,
+         "REQ-041 cell B: dead ledger + K=64 -> last line only (BUG-003 non-rescue arm closed)"},
+        // Fresh composition, NO ledger: the verify 220750 예시1 contract must
+        // hold - Shift+Enter x2 then Enter translates the WHOLE fresh block
+        // (K=2 -> last 3 lines). The cap must NOT engage here.
+        {L"",
+         L"first\r\nsecond\r\nthird",
+         2,
+         L"", L"first\r\nsecond\r\nthird",
+         false,
+         "REQ-041 cell C: no ledger -> K trusted, the whole fresh block still translates"},
+        // Dead ledger + K=0: byte-identical to the pre-REQ-041 behavior
+        // (last line only) - idempotence pin.
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two\r\n새 줄",
+         0,
+         L"edited one\r\ntranslated two\r\n", L"새 줄",
+         false,
+         "REQ-041 cell D: dead ledger + K=0 unchanged (idempotent)"},
+        // Capture ends on a separator (caret on a fresh empty line): the
+        // empty-block arm hands the Enter through; nothing re-translated.
+        {L"translated one",
+         L"edited\r\ntranslated one\r\n",
+         1,
+         L"", L"",
+         true,
+         "REQ-041 cell E: dead ledger + empty tail -> /041 send-through, prefix untouched"},
+    };
+    for (const C& c : cells) {
+        const bool ledger_present = !c.ledger_raw.empty();
+        const std::wstring ledger_canonical = CanonicalFormForLedger(c.ledger_raw);
+        const std::wstring line_canonical_full = CanonicalFormForLedger(c.capture_raw);
+        // Reader stage (worker.cpp S2 switch shape).
+        std::wstring pasted_prefix_text;
+        std::wstring untranslated_tail;
+        PasteLedgerVerdict verdict = PasteLedgerVerdict::NoMatch;
+        if (!c.capture_raw.empty() && ledger_present) {
+            verdict = AnalyzeCaptureVsLastPaste(line_canonical_full, ledger_canonical);
+            if (verdict == PasteLedgerVerdict::PrefixWithTail) {
+                pasted_prefix_text = ledger_canonical;
+                untranslated_tail.assign(line_canonical_full, ledger_canonical.size(),
+                                         line_canonical_full.size() - ledger_canonical.size());
+            }
+        }
+        // REQ-041 cap stage (the predicate under test).
+        const int k_eff = EffectiveSliceKForVerdict(c.k_raw, ledger_present, verdict);
+        if (!ledger_present) {
+            TEST_CHECK(k_eff == c.k_raw,
+                       std::string(c.what) + " [no-ledger K passthrough]");
+        } else if (verdict == PasteLedgerVerdict::NoMatch) {
+            TEST_CHECK(k_eff == 0,
+                       std::string(c.what) + " [dead-ledger K capped]");
+        }
+        // F3 stage: the worker's line_canonical fast-path (empty unless the
+        // reader produced a split) + the ONE shared refine helper.
+        const std::wstring line_canonical =
+            (untranslated_tail.empty() && pasted_prefix_text.empty())
+                ? std::wstring()
+                : line_canonical_full;
+        const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+            c.capture_raw, k_eff, line_canonical, pasted_prefix_text, untranslated_tail);
+        TEST_CHECK(f3.empty_block == c.exp_empty,
+                   std::string(c.what) + " [empty-block arm]");
+        if (!c.exp_empty) {
+            // Engine input: tail when sliced, whole capture otherwise
+            // (worker: engine_input = untranslated_tail.empty() ? line : tail).
+            const std::wstring engine_input =
+                untranslated_tail.empty() ? c.capture_raw : untranslated_tail;
+            TEST_CHECK(engine_input == std::wstring(c.exp_engine),
+                       std::string(c.what) + " [engine input]");
+            TEST_CHECK(pasted_prefix_text == std::wstring(c.exp_prefix),
+                       std::string(c.what) + " [verbatim prefix]");
+            if (f3.sliced) {
+                // Recomposition invariant: prefix + tail cover the whole raw
+                // span the Ctrl+V replaces.
+                TEST_CHECK(pasted_prefix_text.size() + untranslated_tail.size() ==
+                               c.capture_raw.size(),
+                           std::string(c.what) + " [recomposition covers the span]");
+            } else {
+                TEST_CHECK(pasted_prefix_text.empty(),
+                           std::string(c.what) + " [unsliced arm keeps no prefix]");
+            }
+        }
+    }
+
+    // ---- (3) ledger-alive multi-line PASTE refine must stay untouched ----
+    // Regression twin for the cap leaking into the refine branch: the cap
+    // only engages on NoMatch, so a saturated K on a PrefixWithTail paste
+    // still translates the WHOLE pasted block via the ledger floor.
+    {
+        const std::wstring ledger_raw = L"doc line";
+        const std::wstring capture_raw = L"doc line\r\np1\r\np2\r\np3";
+        const std::wstring ledger_canonical = CanonicalFormForLedger(ledger_raw);
+        const std::wstring line_canonical = CanonicalFormForLedger(capture_raw);
+        std::wstring pasted_prefix_text;
+        std::wstring untranslated_tail;
+        const PasteLedgerVerdict v = AnalyzeCaptureVsLastPaste(line_canonical, ledger_canonical);
+        TEST_CHECK(v == PasteLedgerVerdict::PrefixWithTail,
+                   "REQ-041 refine twin: capture == ledger + pasted block -> PrefixWithTail");
+        if (v == PasteLedgerVerdict::PrefixWithTail) {
+            pasted_prefix_text = ledger_canonical;
+            untranslated_tail.assign(line_canonical, ledger_canonical.size(),
+                                     line_canonical.size() - ledger_canonical.size());
+        }
+        const int k_eff = EffectiveSliceKForVerdict(static_cast<int>(kMaxEnterTranslateNewlines),
+                                                    true, v);
+        TEST_CHECK(k_eff == static_cast<int>(kMaxEnterTranslateNewlines),
+                   "REQ-041 refine twin: PrefixWithTail never caps K");
+        const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+            capture_raw, k_eff, line_canonical, pasted_prefix_text, untranslated_tail);
+        TEST_CHECK(!f3.empty_block && f3.refines_ledger &&
+                       pasted_prefix_text == std::wstring(L"doc line\n") &&
+                       untranslated_tail == std::wstring(L"p1\np2\np3"),
+                   "REQ-041 refine twin: the whole pasted block still reaches the engine");
+    }
+
+    // ---- (4) structural pin: worker.cpp routes the slice through k_eff ----
+    {
+        std::string src;
+        const char* candidates[] = {"src/worker.cpp", "../src/worker.cpp", "../../src/worker.cpp"};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                src.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+        if (!src.empty()) {
+            TEST_CHECK(src.find("EffectiveSliceKForVerdict(k_block") != std::string::npos,
+                       "REQ-041 structural pin: worker.cpp computes k_eff via the shared predicate");
+            TEST_CHECK(src.find("line, k_eff, line_canonical") != std::string::npos,
+                       "REQ-041 structural pin: F3BlockSliceRefine receives k_eff, not raw k_block");
+        } else {
+            std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; REQ-041 structural pins skipped." << std::endl;
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-041 dead-ledger K-cap tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-041 dead-ledger K-cap tests had failures." << std::endl;
+    }
+}
+
 void TestRescueSaturatedKReanchor() {
     std::cout << "[TEST] 260913_0002 BUG-003 rescue paste-saturated K re-anchor" << std::endl;
     const int failures_before = g_failed_count;
@@ -13364,6 +13580,7 @@ int main() {
     TestCaptureSliceBeforeGuard(); // session 260913_0001 (slice-before-guard seam)
     TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
     TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
+    TestReq041DeadLedgerKCap(); // session 260917 (REQ-041: dead-ledger NoMatch K-cap, Reddit 재번역 차단)
     TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
     TestBug005RescueSendThroughConsumeGate(); // session 260914_0001 (BUG-005 send-through selection-consume gate)
     TestBug005S0GoldenDecisionTables(); // session 260914_0001 (S0 golden freeze: capture->slice->paste->release decision tables)

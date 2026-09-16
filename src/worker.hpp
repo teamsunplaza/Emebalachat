@@ -309,6 +309,28 @@ inline PasteLedgerVerdict AnalyzeCaptureVsLastPaste(std::wstring_view captured,
                                                 : PasteLedgerVerdict::PrefixWithTail;
 }
 
+// REQ-041 (session 260917, Reddit 재번역 사용자 보고): dead-ledger NoMatch
+// 캡처에서 K를 0으로 강제하는 순수 판정. ledger_present = 이 창에 앱이
+// 붙여넣은 번역문이 아직 기억되어 있음(= 지난 Enter 어딘가에서 번역이
+// 성공했다는 뜻). 이 상태에서 NoMatch = 윗쪽에 사용자 편집이나 에디터
+// 재직렬화가 있었다는 증거이고, 이 순간 키스트로크 회계(K = Shift+Enter
+// 횟수)는 "문서 개행 1개 = 키 1회" 전제가 이미 깨졌으므로 신뢰 근거가
+// 소멸한다(경계 개행 삭제 / 에디터가 합성 Enter 삼킴 / Ctrl+V 포화 등).
+// K를 0으로 강제하면 블록은 "마지막 논리줄"로 제한되고, verbatim prefix는
+// 라이브 캡처 바이트에서 그대로 가져오므로(F3 raw arm 기존 동작) 이미
+// 번역된 윗줄 - 사용자의 수동 수정분 포함 - 이 절대 다시 번역·덮어씌워지지
+// 않는다. under-slice는 텍스트를 놓칠 뿐이고 over-claim은 이미 번역된
+// 내용을 파괴한다는 BUG-003의 안전 방향 원칙(docs/260913_0002
+// 004200_debug-surgical-bug003-report.md §5 scope note)을 그대로 적용.
+// ledger가 없으면(초기 작성/창 전환) K를 그대로 신뢰 — 첫 작성 다중 줄
+// 블록 통째 번역 계약(verify 220750 예시1) 유지, 회귀 없음.
+// One definition shared by worker.cpp and the unit tests (same pure-
+// predicate discipline as AnalyzeCaptureVsLastPaste above).
+constexpr int EffectiveSliceKForVerdict(int k_block, bool ledger_present,
+                                        PasteLedgerVerdict verdict) {
+    return (ledger_present && verdict == PasteLedgerVerdict::NoMatch) ? 0 : k_block;
+}
+
 // F6 (session 260908_0002, verify report 164500 §5/§7, V5 ledger-on-focus-clear
 // defect): the C3 ledger-maintenance `!pasted` arm is subdivided. A paste is
 // ATTEMPTED only when the translation is non-empty and differs from the source

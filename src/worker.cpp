@@ -449,14 +449,22 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // is unreachable anyway, so the first-ever Enter pays no NFC cost. The
     // lifecycle contract (worker.hpp §7.1.1 comment) guarantees the canonical
     // twin is never stale w.r.t. last_paste_text_.
+    // REQ-041: ledger presence/verdict as named state (was an anonymous
+    // inline switch). k_eff below consumes both; the reader no longer
+    // re-derives "was the ledger alive" from side effects.
+    bool ledger_present = false;
+    PasteLedgerVerdict ledger_verdict = PasteLedgerVerdict::NoMatch;
     if (!line.empty() && last_paste_target_ == task.target_hwnd &&
         !last_paste_canonical_.empty()) {
+        ledger_present = true;
         const std::wstring line_canonical = CanonicalFormForLedger(line);
         switch (AnalyzeCaptureVsLastPaste(line_canonical, last_paste_canonical_)) {
             case PasteLedgerVerdict::ExactMatch:
+                ledger_verdict = PasteLedgerVerdict::ExactMatch;
                 pasted_prefix_skip = PastedPrefixNeedsSkip(true, was_smart_bypassed, false);
                 break;
             case PasteLedgerVerdict::PrefixWithTail:
+                ledger_verdict = PasteLedgerVerdict::PrefixWithTail;
                 // S2 v2 re-specified slice (spec §2.3): BOTH the verbatim
                 // prefix source and the tail slice live in CANONICAL space.
                 // Tail offset = last_paste_canonical_.size(): a whole-unit
@@ -473,26 +481,48 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                 break;
         }
     }
+    // REQ-041 (session 260917, Reddit 재번역 사용자 보고): the K the F3 slice
+    // may actually use. ledger_present && NoMatch means this window received
+    // a successful translation paste whose bytes now FAIL to match - proof
+    // that something above the current line changed (user edit, or an editor
+    // re-serialization outside S2's canonical form). At that moment the
+    // keystroke accounting behind K ("one document newline == one Shift+Enter
+    // the hook saw") has lost its premise, so trusting K could reach BACK
+    // into already-translated lines and re-translate (then paste-back
+    // overwrite) them - the exact user report. Cap K to 0 = translate the
+    // last logical line only; the verbatim prefix comes from the live capture
+    // bytes, so edits above survive untouched. No-ledger captures (fresh
+    // composition / window switch) keep the raw K: the whole fresh block
+    // still translates (verify 220750 예시1 contract). The refine branch can
+    // only run on PrefixWithTail (never capped), so passing k_eff there is
+    // identical to k_block by construction. See worker.hpp
+    // EffectiveSliceKForVerdict for the full rationale + rejected alternatives.
+    const int k_eff = EffectiveSliceKForVerdict(k_block, ledger_present, ledger_verdict);
+    if (k_eff != k_block) {
+        DIAG_F("WORKER/ExecuteTask/045: dead-ledger NoMatch; K %d -> %d (last logical line only; prefix held verbatim from live capture)\n",
+               k_block, k_eff);
+    }
     // F3 (session 260908_0003, verify 220750 §6 adopted design): block-slice
     // from whole capture. The CURRENT block is the last K+1 logical lines of
-    // the capture (K = hook-counted Shift+Enters of the current composition);
-    // everything before the slice point is earlier (already-translated or
-    // foreign) content and joins the REQ-F2 PrefixWithTail recomposition
-    // machinery, so the Ctrl+V replacement is [prefix verbatim][block
-    // translated] - earlier blocks keep their text AND their language
-    // (예시1/2/3), and the ledger re-anchors to the recomposed post-replace
-    // state (the successful-paste store IS the design §3 re-anchor). The
-    // slice replaces the legacy whole-capture translation exactly in the
-    // arms that destroyed the examples (R2 NoMatch with an empty/foreign
-    // ledger, R4 after C3 clears). For the ledger-protected PrefixWithTail
-    // arm the ledger end is a LOWER bound of the block start (the pasted
-    // text stays verbatim), and the separator run the send-through Enter
-    // deposited between ledger and new typing is moved into the verbatim
-    // prefix too - the engine never sees a leading bare newline (it churns
-    // or drops it: the line-merge risk the ledger-keep introduced). On EM-
-    // tracked captures the slice is a provable no-op: an EM selection covers
-    // exactly the current block, which contains exactly K boundaries, and
-    // FindCurrentBlockStart wants K+1 -> clamps to 0 (whole block, as-is).
+    // the capture (K = hook-counted Shift+Enters of the current composition,
+    // REQ-041: capped to 0 on dead-ledger NoMatch); everything before the
+    // slice point is earlier (already-translated or foreign) content and
+    // joins the REQ-F2 PrefixWithTail recomposition machinery, so the Ctrl+V
+    // replacement is [prefix verbatim][block translated] - earlier blocks
+    // keep their text AND their language (예시1/2/3), and the ledger
+    // re-anchors to the recomposed post-replace state (the successful-paste
+    // store IS the design §3 re-anchor). The slice replaces the legacy
+    // whole-capture translation exactly in the arms that destroyed the
+    // examples (R2 NoMatch with an empty/foreign ledger, R4 after C3 clears).
+    // For the ledger-protected PrefixWithTail arm the ledger end is a LOWER
+    // bound of the block start (the pasted text stays verbatim), and the
+    // separator run the send-through Enter deposited between ledger and new
+    // typing is moved into the verbatim prefix too - the engine never sees a
+    // leading bare newline (it churns or drops it: the line-merge risk the
+    // ledger-keep introduced). On EM-tracked captures the slice is a
+    // provable no-op: an EM selection covers exactly the current block,
+    // which contains exactly K boundaries, and FindCurrentBlockStart wants
+    // K+1 -> clamps to 0 (whole block, as-is).
     if (!line.empty() && !pasted_prefix_skip) {
         // S2 F1 (adversarial review 080100 Q4b): the F3 refine stage is the
         // ONE definition shared with the tests (win32_input.hpp
@@ -506,7 +536,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                 ? std::wstring()
                 : CanonicalFormForLedger(line);
         const F3BlockSliceSplit f3 = F3BlockSliceRefine(
-            line, k_block, line_canonical, pasted_prefix_text, untranslated_tail);
+            line, k_eff, line_canonical, pasted_prefix_text, untranslated_tail);
         if (f3.empty_block) {
             // Empty current block (capture ends on a separator with nothing
             // typed after it): the prefix is earlier content and MUST NOT be
@@ -519,7 +549,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // PrefixWithTail (byte-comparison self-invalidation remains the
             // stale-memory guard, same reasoning as the C1 keep).
             DIAG_F("WORKER/ExecuteTask/041: block slice is empty (capture ends at a line separator, K=%d, len=%zu); prefix held verbatim, Enter handed to the app (no re-translation)\n",
-                   k_block, line.size());
+                   k_eff, line.size());
             DIAG_LOG("PIPELINE", "stage=send_through decision=f3_empty_block_slice duration_ms=%llu",
                      ::GetTickCount64() - t_task_start);
             if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty()) &&
@@ -537,9 +567,9 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // below what the ledger proved). Either way: verbatim prefix +
             // translated block tail; the recomposition covers the whole
             // captured span exactly.
-            DIAG_LOG("PIPELINE", "stage=block_slice%s K=%d capture_len=%zu prefix_len=%zu block_len=%zu",
+            DIAG_LOG("PIPELINE", "stage=block_slice%s K=%d K_eff=%d cap=%d capture_len=%zu prefix_len=%zu block_len=%zu",
                      f3.refines_ledger ? "_ledger_refine" : "",
-                     k_block, line.size(),
+                     k_block, k_eff, (k_eff != k_block) ? 1 : 0, line.size(),
                      pasted_prefix_text.size(), untranslated_tail.size());
         }
     }
