@@ -1,6 +1,17 @@
 ﻿Emebala Chat - Changelog
 ========================
 
+v0.10.1 - 2026-09-17
+====================
+
+Patch release. What you can do now
+----------------------------------
+* Editing an already-translated line above your cursor (for example on
+  Reddit or other forums) and pressing Enter no longer re-translates that
+  line or overwrites your manual edit - only the newest line is translated.
+* Pasting a sentence or URL into your post and pressing Enter translates
+  just the newly typed line instead of re-translating the whole post.
+
 v0.10.0 - 2026-09-12 (Initial Release)
 ======================================
 

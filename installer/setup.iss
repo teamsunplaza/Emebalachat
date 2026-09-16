@@ -39,12 +39,12 @@ AppId={{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}
 ; Display name rebranded; DefaultDirName/DefaultGroupName intentionally keep
 ; "Emebalachat" for upgrade-path continuity with existing installs (architect plan row #18).
 AppName=Emebala Chat
-AppVersion=0.10.0
+AppVersion=0.10.1
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.0
+OutputBaseFilename=Emebalachat_Setup_0.10.1
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
