@@ -523,6 +523,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // provable no-op: an EM selection covers exactly the current block,
     // which contains exactly K boundaries, and FindCurrentBlockStart wants
     // K+1 -> clamps to 0 (whole block, as-is).
+    // REQ-042: the slice outcome is hoisted so the tail-unchanged
+    // short-circuit below can consult it; the default (slice never ran)
+    // keeps every pre-existing arm byte-identical.
+    F3BlockSliceSplit f3{false, false, false};
     if (!line.empty() && !pasted_prefix_skip) {
         // S2 F1 (adversarial review 080100 Q4b): the F3 refine stage is the
         // ONE definition shared with the tests (win32_input.hpp
@@ -535,7 +539,7 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             (untranslated_tail.empty() && pasted_prefix_text.empty())
                 ? std::wstring()
                 : CanonicalFormForLedger(line);
-        const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+        f3 = F3BlockSliceRefine(
             line, k_eff, line_canonical, pasted_prefix_text, untranslated_tail);
         if (f3.empty_block) {
             // Empty current block (capture ends on a separator with nothing
@@ -572,6 +576,58 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                      k_block, k_eff, (k_eff != k_block) ? 1 : 0, line.size(),
                      pasted_prefix_text.size(), untranslated_tail.size());
         }
+    }
+    // REQ-042 (session 260917_0002, 사용자 Reddit 현장 검증 후속): the
+    // tail-unchanged short-circuit. On the REQ-041-capped arm (dead ledger +
+    // NoMatch -> k_eff=0) the block is the capture's last logical line; when
+    // that line is byte-identical (canonical space, S2 exact-match doctrine -
+    // no fuzzy, ever) to the ledger's own last line, the engine would receive
+    // nothing but our own previous output. Translating it again buys latency
+    // at best and rephrase-churn over the whole paste-back span at worst
+    // (the user's "why are you translating the entire text?" report). Skip
+    // the engine AND the paste entirely: the verbatim prefix (the user's
+    // edits included) already sits live in the target, so the intercepted
+    // Enter is handed over with zero editor transactions.
+    if (f3.sliced && DeadLedgerTailUnchanged(ledger_present, ledger_verdict, k_eff,
+                                             CanonicalFormForLedger(untranslated_tail),
+                                             LastLogicalLine(last_paste_canonical_))) {
+        DIAG_F("WORKER/ExecuteTask/046: dead-ledger NoMatch with the last line byte-identical to the ledger's own last line (capture_len=%zu prefix_len=%zu); no engine call, no re-paste - prefix (user edits included) already live, Enter handed to the app\n",
+               line.size(), pasted_prefix_text.size());
+        DIAG_LOG("PIPELINE", "stage=send_through decision=tail_unchanged_shortcircuit "
+                             "duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        // REQ-042 계획-2: the one silent gap left in this arm - text the user
+        // typed/inserted ABOVE the last line is preserved verbatim but never
+        // reaches the engine (the REQ-041 under-slice, a deliberate safety
+        // direction). When the prefix still holds translatable text, surface
+        // the localized notice (main.cpp -> TooltipWindow::ShowMessageThreadSafe)
+        // so the skip reads as policy, not failure. Pure notification: no
+        // paste/selection/ledger state changes here.
+        const bool residue_translatable =
+            !pasted_prefix_text.empty() &&
+            ShouldTranslate(pasted_prefix_text, snap.type_target_language,
+                            snap.type_source_language);
+        if (UntranslatedResidueNoticeWarranted(true, residue_translatable,
+                                               ClassifyAppWindow(task.target_hwnd) ==
+                                                   AppCategory::CategoryB,
+                                               static_cast<bool>(untranslated_residue_cb_))) {
+            DIAG_F("WORKER/ExecuteTask/047: verbatim prefix still holds translatable text; untranslated-residue notice dispatched (under-slice is policy, not failure)\n");
+            untranslated_residue_cb_();
+        }
+        // BUG-005 contract: a SelectAll-RESCUED capture means a LIVE whole-
+        // document selection in the structured editor - handing the Enter
+        // through over it would REPLACE the document (the exact BUG-005 data
+        // loss). Same identity-paste consume as every other send-through
+        // terminal before the helper runs.
+        if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty()) &&
+            ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (tail-unchanged arm); the Enter cannot replace a live selected span\n");
+        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
+        // Ledger KEPT (same discipline as the /041 arm): nothing was pasted
+        // or edited below the slice point, so the entry still describes the
+        // live tail and self-invalidates by byte comparison on the next task.
+        return;
     }
     if (pasted_prefix_skip) {
         DIAG_F("WORKER/ExecuteTask/038: capture equals last pasted translation (len=%zu); Enter handed to the app (send-of-output, no re-translation)\n",

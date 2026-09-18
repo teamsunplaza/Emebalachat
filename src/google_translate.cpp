@@ -5,6 +5,7 @@
 #include "i18n.hpp"   // SEC-M1: TranslateTruncatedNotice (user-facing truncation notice)
 #include "unicode_utils.hpp"
 
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <iomanip>
@@ -18,6 +19,10 @@
 namespace emebalachat {
 
 namespace {
+
+// REQ-043 (M6 T5 debug): test-only cloud-block flag. See the header for the
+// contract. Defaults to false; only tests engage it. Shape-only.
+std::atomic<bool> g_cloud_blocked_for_testing{false};
 
 // F5 (security, session 260909_0002, audit §F5 MEDIUM): hard upper bound on
 // the accumulated HTTP response body. The WinHttpQueryDataAvailable/
@@ -410,12 +415,29 @@ std::pair<std::wstring, bool> GoogleTranslate::ClampCloudQuery(std::wstring_view
     return { std::move(clamped), true };
 }
 
+void GoogleTranslate::SetCloudBlockedForTesting(bool blocked) {
+    g_cloud_blocked_for_testing.store(blocked, std::memory_order_release);
+}
+
+bool GoogleTranslate::IsCloudBlockedForTesting() {
+    return g_cloud_blocked_for_testing.load(std::memory_order_acquire);
+}
+
 std::wstring GoogleTranslate::Translate(
     std::wstring_view text,
     std::string_view src_code,
     std::string_view tgt_code
 ) {
     if (text.empty()) {
+        return {};
+    }
+
+    // REQ-043 (M6 T5 debug): test-only cloud-block hook. When engaged,
+    // Translate() returns empty (the historical no-network outcome) WITHOUT
+    // touching WinHTTP. This keeps the T5 manager-routing suites hermetic
+    // (no live-network dependency, no WinHTTP stall) while still exercising
+    // the manager->cloud_call() seam end-to-end.
+    if (IsCloudBlockedForTesting()) {
         return {};
     }
 

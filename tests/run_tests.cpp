@@ -22,6 +22,14 @@
 #include "../src/worker.hpp"
 #include "../src/vulkan_guard.hpp" // P5-F1: delay-load SEH guard probe/stub seam
 #include "../src/single_slot_worker.hpp" // D2 (session 260910_0007): shared worker template
+#include "../src/engine_host_protocol.hpp" // REQ-043: frozen shared-host wire protocol helpers
+#include "../src/worker_protocol.hpp"      // REQ-043 (M6 T3): second frozen contract (orchestrator<->worker)
+#include "../src/host_v2_worker_manager.hpp" // REQ-043 (M6 T3): worker lifecycle manager (seam-injectable)
+#include "../src/engine_host_client.hpp"   // REQ-043: self-contained reference client (+ test seam)
+#include "../src/engine_host_registry.hpp"   // REQ-043 (M6 T2): registry.json parser
+#include "../src/engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
+#include "../src/engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
+#include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
@@ -29,10 +37,13 @@
 #include <chrono>
 #include <condition_variable> // D2: SingleSlotWorker harness gate
 #include <cstdint> // W6/C3: uint8_t/uint32_t ICO fixture builder
+#include <cstdio> // REQ-043: swprintf (fake-host pipe names)
 #include <filesystem>
 #include <fstream>
 #include <future> // D2: promise/future seam for the re-entrant Submit deadlock test
 #include <iostream>
+#include <iomanip> // REQ-005 (M6 T6): std::setw/std::setfill in the bootstrap mock hash
+#include <map>     // REQ-005 (M6 T6): MockHash digest map
 #include <sstream> // P5-F1: diag log proof (TestVulkanGuard 3b) reads a log stream
 #include <string>
 #include <thread>
@@ -52,6 +63,32 @@ static int g_failed_count = 0;
             g_failed_count++; \
         } \
     } while (0)
+
+
+// REQ-043 (M6 T2): parser test bodies (m6_engine_host_*.inc files, included
+// directly — they define TestEngineHostRegistry/Manifest/Components and use
+// the TEST_CHECK harness + the std:: facilities included above).
+#include "m6_engine_host_registry_tests.inc"
+#include "m6_engine_host_manifest_components_tests.inc"
+
+// REQ-043 (M6 T3): worker-contract test bodies (staged session .inc file,
+// same staging contract — defines TestWorkerProtocol + TestWorkerManager-
+// StateMachine against the header-only worker_protocol.hpp and the seam-
+// injectable host_v2_worker_manager).
+#include "m6_engine_host_worker_tests.inc"
+
+// REQ-043 (M6 T4): orchestrator-v2 test bodies (staged session .inc file;
+// defines TestHostV2Scheduler/Session/Health/WelcomeGolden against the
+// host_v2_session/scheduler/health modules). The headers they exercise:
+#include "host_v2_session.hpp"
+#include "host_v2_scheduler.hpp"
+#include "host_v2_health.hpp"
+#include "m6_engine_host_orchestrator_tests.inc"
+
+// REQ-005 (M6 T6): repair-bootstrapper test bodies (staged session .inc;
+// defines TestEngineHostBootstrap/TestEngineHostBootstrapHashAndMove against
+// the engine_host_bootstrap_client module).
+#include "m6_engine_host_bootstrap_tests.inc"
 
 // L1 portability helper: resolve a repo-relative fixture (e.g. "assets\\logo.svg")
 // by probing exe-directory and CWD-relative locations up to 2 levels up, mirroring
@@ -1226,12 +1263,15 @@ void TestWorkerB1SendThroughPins() {
         return n;
     };
 
-    // (1) Exactly 7 helper call sites, and the site-5 pre-sampled-caret form
+    // (1) Exactly 8 helper call sites, and the site-5 pre-sampled-caret form
     //     appears exactly once (REQ-F5 promote branch keeps its earlier sample).
-    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 7,
-               "B1: exactly 7 send-through helper call sites in worker.cpp");
-    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter)") == 6,
-               "B1: six sampling call sites (helper owns SampleCaret)");
+    //     REQ-042 (session 260917_0002) added the 8th terminal: the
+    //     tail-unchanged short-circuit hands the Enter through with zero
+    //     editor transactions (same helper, plain two-arg form).
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 8,
+               "B1: exactly 8 send-through helper call sites in worker.cpp (7 legacy + REQ-042 short-circuit)");
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter)") == 7,
+               "B1: seven sampling call sites (helper owns SampleCaret; REQ-042 samples too)");
     TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter, now_caret)") == 1,
                "B1: site 5 passes its pre-sampled caret (no re-sample, /039 baseline preserved)");
 
@@ -5001,9 +5041,22 @@ void TestShiftEnterGate() {
     }
 }
 
-// REQ-R16 (audit §5 latent item 4): llama.cpp shutdown cancellation seam.
+// REQ-R16 shutdown cancellation seam — REDESIGNED for REQ-043 (M6 T5, design
+// §5 (4)): the embedded llama engine is gone, so the old llama drain leg
+// (decode unwind / warmup progress_callback) no longer EXISTS in the Chat
+// app — cancellation is now delivered as pipe cancel/abort FRAMES at the
+// orchestrator level (D-2 chain: client cancel frame -> host g_abort ->
+// worker abort frame -> cancel_flag -> llama_set_abort_callback), whose
+// frame-level contract is pinned by TestEngineHostProtocol's ParseCancel
+// checks (run_tests.cpp L13912-13915) and the worker-protocol suites
+// (tests_tmp_m6t3_worker_tests.inc) — this suite intentionally does NOT
+// duplicate those (orchestrator mapping only, per the design table). What
+// THIS suite still owns is the CLIENT-side latch: RequestCancel must
+// short-circuit every surviving Translate() leg (pure cloud WinHTTP and the
+// engine-host pipe request) and report idle, exactly what main.cpp's
+// shutdown sequence relies on.
 void TestEngineShutdownCancellation() {
-    std::cout << "[RUN] Testing REQ-R16 engine shutdown cancellation..." << std::endl;
+    std::cout << "[RUN] Testing REQ-R16 engine shutdown cancellation (T5 latch contract)..." << std::endl;
     const int failures_before = g_failed_count;
 
     // 1. Fresh manager: cancel is off, idle immediately.
@@ -5022,8 +5075,8 @@ void TestEngineShutdownCancellation() {
     TEST_CHECK(st == TranslationStatus::Canceled, "R16: canceled Translate reports Canceled, not EngineFailed");
     TEST_CHECK(mgr.WaitInferenceIdle(100), "R16: manager idle after short-circuited call");
 
-    // 3. Strict-local manager: cancel short-circuit precedes the H2 consent
-    //    decision (a canceled exit is not a privacy block either).
+    // 3. Strict-local manager: cancel short-circuit precedes the no-local-
+    //    source pre-block (a canceled exit is not a privacy failure either).
     TranslationManager local(EngineType::LocalLlama, "D:\\non_existent_model.gguf");
     local.RequestCancel();
     TranslationStatus lst = TranslationStatus::Ok;
@@ -5031,56 +5084,32 @@ void TestEngineShutdownCancellation() {
     TEST_CHECK(lres.empty() && lst == TranslationStatus::Canceled,
                "R16: explicit-local canceled call reports Canceled");
 
-    // 4. Live model (when the fixture exists): start a long generation on a
-    //    worker thread, request cancellation mid-flight, and assert the
-    //    BOUNDED drain that main.cpp's shutdown sequence relies on: the
-    //    engine must report idle within 15 s of RequestCancel().
-    std::string local_model_path;
-    char env_model[4096] = {0};
-    DWORD env_len = ::GetEnvironmentVariableA(
-        "EMEBALA_MODEL_PATH", env_model, static_cast<DWORD>(sizeof(env_model)) - 1);
-    if (env_len > 0 && env_len < static_cast<DWORD>(sizeof(env_model)) - 1) {
-        local_model_path = env_model;
-    }
-    if (!local_model_path.empty() && std::filesystem::exists(local_model_path)) {
-        std::cout << "  [R16 LIVE] cancel-in-flight drain against Hy-MT2 model..." << std::endl;
-        TranslationManager live(EngineType::LocalLlama, local_model_path);
-        std::wstring filler;
-        filler.reserve(9000);
-        while (filler.size() < 8000) {
-            filler += L"안녕하세요, 만나서 반갑습니다. 오늘 날씨가 아주 좋습니다. 번역 테스트를 위한 긴 문장을 반복해서 채웁니다. ";
+    // 4. A queued engine-host leg also short-circuits: with the host deployed
+    //    (fake exe stat'ed only) but the latch armed, Translate must return
+    //    Canceled BEFORE touching the pipe (no spawn, no WinHTTP).
+    {
+        namespace ehc = emebalachat::engine_host;
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        const std::wstring fake_exe =
+            std::wstring(tmp) + L"eme_r16_host_" +
+            std::to_wstring(GetCurrentProcessId()) + L".exe";
+        {
+            std::ofstream f(fake_exe, std::ios::binary);
+            f << "MZ";
         }
-        std::atomic<TranslationStatus> live_st{TranslationStatus::Ok};
-        std::atomic<bool> done{false};
-        std::jthread inference([&]() {
-            TranslationStatus s = TranslationStatus::Ok;
-            live.Translate(filler, "KO", "English", &s);
-            live_st.store(s, std::memory_order_release);
-            done.store(true, std::memory_order_release);
-        });
-
-        // Give the worker time to pass EnsureLoaded's fast path and enter the
-        // decode loop; then flip the shutdown latch exactly like wWinMain does.
-        ::Sleep(150);
-        const auto cancel_t = std::chrono::steady_clock::now();
-        live.RequestCancel();
-        const bool drained = live.WaitInferenceIdle(15000);
-        const auto drain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - cancel_t).count();
-        TEST_CHECK(drained, "R16: in-flight decode unwinds after RequestCancel (bounded drain)");
-        TEST_CHECK(WaitUntilMs([&]() { return done.load(std::memory_order_acquire); }, 5000),
-                   "R16: inference thread finishes after cancellation");
-        std::cout << "  [R16 LIVE] drain to idle in " << drain_ms << " ms, status "
-                  << static_cast<int>(live_st.load()) << std::endl;
-        // Either the generation completed before the latch (Ok with a result)
-        // or cancellation won (Canceled) - it must NEVER be reported as an
-        // EngineFailed privacy/network failure, and the drain is time-bounded.
-        TEST_CHECK(live_st.load() == TranslationStatus::Canceled ||
-                       live_st.load() == TranslationStatus::Ok,
-                   "R16: canceled-or-completed only; never a spurious failure status");
-        TEST_CHECK(drain_ms < 15000, "R16: shutdown drain stays bounded (no zombie inference)");
-    } else {
-        std::cout << "  [R16 LIVE SKIP] set EMEBALA_MODEL_PATH to exercise cancel-in-flight" << std::endl;
+        ehc::SetPathsForTesting(nullptr, nullptr, fake_exe.c_str());
+        TranslationManager host_mgr(EngineType::LocalLlama, "");
+        host_mgr.SetEngineHostConfig(emebalachat::EngineHostConfig{});
+        host_mgr.RequestCancel();
+        TranslationStatus hst = TranslationStatus::Ok;
+        std::wstring hres = host_mgr.Translate(L"테스트", "KO", "EN", &hst);
+        TEST_CHECK(hres.empty() && hst == TranslationStatus::Canceled,
+                   "R16: latched host-serving call reports Canceled before the pipe is touched");
+        std::error_code ec;
+        std::filesystem::remove(fake_exe, ec);
+        ehc::SetPathsForTesting(nullptr, nullptr,
+                                L"\\\\?\\NONEXISTENT_EME_HOST\\engine.exe");
     }
 
     if (g_failed_count == failures_before) {
@@ -5138,6 +5167,11 @@ void TestEngineFallbackExeDirAnchoring() {
             }
         }
     }
+    // REQ-043 (M6 T5): the legacy model-path migration is removed with the
+    // embedded engine, so the ctor now resolves an empty default WITHOUT the
+    // TryGetCommonModelPath leg — the assertion matrix above (non-empty,
+    // absolute, exe-anchored, CWD-independent) is unchanged because
+    // ResolveModelPath is retained for config-path normalization.
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] D5-F engine fallback anchoring tests completed." << std::endl;
     } else {
@@ -5780,129 +5814,16 @@ void TestR6P4LanguageRouting() {
 }
 
 // ===========================================================================
-// REQ-F4a (Phase 4): cloud-only config must not pay the local LLM startup
-// load. Evidence: 260908 session log L3 (engine=google, cloud_fallback=0) vs
-// L10-11 (Hy-MT2 tokenizer/context loaded anyway, ~1.4 s + model RAM). The
-// wWinMain warmup gate now calls the pure ShouldPreloadLocalModel seam, so
-// this matrix pins the SHIPPED decision (same discipline as the
-// PlanTranslationRouting pins above). Invariants asserted: local-primary
-// configs (auto/local) and the consented google+fallback config keep the
-// historical preload; only the cloud-only combo skips.
+// REQ-043 (M6 T5, design §5 (4)): TestReqF4aPreloadGate and
+// TestReq004EngineSwitchPreloadGate are DELETED with the preload seams
+// (ShouldPreloadLocalModel / ShouldPreloadOnEngineSwitch). There is no
+// resident model to warm up — the shared host's worker spawns on demand —
+// so the gates they pinned no longer exist. The T5 manager-level contract
+// they adjoined (host-only routing, consent gates) is pinned by the new
+// TestEngineHostOnlyRouting / TestEngineCloudConsentRegression suites
+// (tests_tmp_m6t5_embedded_removal_tests.inc). Not a weakening: every
+// deleted check asserted a seam that no longer exists in the binary.
 // ===========================================================================
-void TestReqF4aPreloadGate() {
-    std::cout << "[RUN] Testing REQ-F4a startup preload gate (cloud-only skip)..." << std::endl;
-    const int failures_before = g_failed_count;
-
-    // 1) No model file on disk -> never preload, under every configuration
-    //    (historical: the warmup thread was only spawned when available).
-    for (const EngineType eng : { EngineType::Auto, EngineType::GoogleTranslate,
-                                  EngineType::LocalLlama }) {
-        for (const bool consent : { false, true }) {
-            TEST_CHECK(!ShouldPreloadLocalModel(eng, consent, false),
-                       "F4a: absent model file never preloads (engine + consent matrix)");
-        }
-    }
-
-    // 2) THE defect scenario: explicit google pin WITHOUT cloud-fallback
-    //    consent + model present -> skip. This is the exact 260908 config
-    //    (engine=google cloud_fallback=0 models/Hy-MT2-1.8B-Q8_0.gguf exists).
-    TEST_CHECK(!ShouldPreloadLocalModel(EngineType::GoogleTranslate, false, true),
-               "F4a: engine=google + cloud_fallback=0 + model present skips the startup load (260908 L3/L10-11 scenario)");
-
-    // 3) cloud_fallback=1 keeps the preload: the user declared they want the
-    //    local model as the cloud-failure safety net (requirement: 'fallback
-    //    시 로컬로 폴백해야 하므로 로드를 유지').
-    TEST_CHECK(ShouldPreloadLocalModel(EngineType::GoogleTranslate, true, true),
-               "F4a: engine=google + cloud_fallback=1 keeps the preload (fallback safety net must be resident)");
-
-    // 4) Local-primary behavior is byte-for-byte unchanged: auto/local with
-    //    the model present always preload, with or without consent.
-    for (const EngineType eng : { EngineType::Auto, EngineType::LocalLlama }) {
-        for (const bool consent : { false, true }) {
-            TEST_CHECK(ShouldPreloadLocalModel(eng, consent, true),
-                       "F4a: local-primary engine (auto/local) with model present keeps the preload");
-        }
-    }
-
-    // 5) Runtime-switch path stays lazy-load capable after a skip: an
-    //    explicit-google manager with the (test) model file present reports
-    //    the cloud active engine even with preload skipped, and SetEngineType
-    //    to local re-resolves to a local active name - the design this fix
-    //    depends on (first local Translate() lazy-loads via EnsureLoaded).
-    {
-        const std::filesystem::path model_path =
-            std::filesystem::temp_directory_path() / "emebalachat_f4a_gate.gguf";
-        std::ofstream(model_path) << "not-a-real-gguf"; // existence is the gate's only file requirement
-        TranslationManager mgr(EngineType::GoogleTranslate,
-                               model_path.string());
-        TEST_CHECK(mgr.IsLocalModelAvailable(),
-                   "F4a: model file present is visible to the manager (skip is a policy decision, not availability)");
-        TEST_CHECK(mgr.GetActiveEngineName().find("Google") != std::string::npos,
-                   "F4a: explicit-google pin serves cloud regardless of the model file");
-        mgr.SetEngineType(EngineType::LocalLlama);
-        TEST_CHECK(mgr.GetActiveEngineName().find("Hy-MT2") != std::string::npos,
-                   "F4a: runtime switch to local activates the local engine (lazy-load path intact after a startup skip)");
-        std::error_code ec;
-        std::filesystem::remove(model_path, ec);
-    }
-
-    if (g_failed_count == failures_before) {
-        std::cout << "[PASS] REQ-F4a startup preload gate tests completed." << std::endl;
-    } else {
-        std::cout << "[FAIL] REQ-F4a startup preload gate tests: "
-                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
-    }
-}
-
-// ===========================================================================
-// REQ-004 (session 260910_0003): selecting engine=local in the tray must
-// trigger an ASYNC background preload so the first translation never pays the
-// synchronous ~7 s model load (260910 report). The wWinMain on_select_engine
-// gate calls the pure ShouldPreloadOnEngineSwitch seam, so this matrix pins
-// the SHIPPED decision (same seam-testing discipline as
-// TestReqF4aPreloadGate above). The async thread plumbing itself (joinable
-// worker + exchange-based in-flight guard + shutdown join) lives inside
-// wWinMain and is not headlessly constructible; it is covered by the manual
-// runtime evidence recorded in the task report.
-// ===========================================================================
-void TestReq004EngineSwitchPreloadGate() {
-    std::cout << "[RUN] Testing REQ-004 engine-switch preload gate (tray local pick)..." << std::endl;
-    const int failures_before = g_failed_count;
-
-    // 1) No model file on disk -> never preload, under every selection
-    //    (Translate() stays honest via LocalModelMissing; a background load
-    //    could only fail).
-    for (const EngineType sel : { EngineType::Auto, EngineType::GoogleTranslate,
-                                  EngineType::LocalLlama }) {
-        TEST_CHECK(!ShouldPreloadOnEngineSwitch(sel, false),
-                   "REQ-004: absent model file never preloads on an engine switch");
-    }
-
-    // 2) THE fix scenario: explicit switch to LocalLlama + model present ->
-    //    preload, and - unlike the startup gate - WITHOUT any dependence on
-    //    the cloud_fallback consent flag (the seam takes no consent argument;
-    //    the tray pick itself is the local-serving intent).
-    TEST_CHECK(ShouldPreloadOnEngineSwitch(EngineType::LocalLlama, true),
-               "REQ-004: tray switch to local with model present dispatches the async preload");
-
-    // 3) A switch to cloud must not spawn a local load: a resident local
-    //    model would be dead weight (the REQ-F4a RAM rule applied to runtime
-    //    switches). Auto is not offered by the current tray menu; pinning it
-    //    false documents the seam's exact-contract shape (extend together
-    //    with the main.cpp call site if an Auto pick is ever added).
-    TEST_CHECK(!ShouldPreloadOnEngineSwitch(EngineType::GoogleTranslate, true),
-               "REQ-004: switch to google keeps the session cloud-only (no local preload)");
-    TEST_CHECK(!ShouldPreloadOnEngineSwitch(EngineType::Auto, true),
-               "REQ-004: Auto selection does not dispatch the tray-switch preload (menu offers google/local only)");
-
-    if (g_failed_count == failures_before) {
-        std::cout << "[PASS] REQ-004 engine-switch preload gate tests completed." << std::endl;
-    } else {
-        std::cout << "[FAIL] REQ-004 engine-switch preload gate tests: "
-                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
-    }
-}
-
 #ifdef HAVE_LLAMA_CPP
 // P7-F2 (session 260909_0004): SetGpuOffloadParams seam test. The production
 // EnsureLoaded builds llama_model_default_params(), calls this seam once per
@@ -10389,17 +10310,19 @@ void TestBug005RescueSendThroughConsumeGate() {
         return;
     }
 
-    // Exactly THREE guarded consume call sites (the send-through arms that can
-    // hold a live rescue selection: exact-match / empty-tail / bypass);
-    // every empty-capture arm is a provable no-op of the gate (line.empty()).
+    // Exactly FIVE guarded consume call sites (the send-through arms that can
+    // hold a live rescue selection: exact-match / empty-tail / bypass / the
+    // identity_outcome direct-SendEnterKey terminal, plus the REQ-042
+    // tail-unchanged short-circuit arm); every empty-capture arm is a
+    // provable no-op of the gate (line.empty()).
     {
         size_t n = 0, pos = 0;
         while ((pos = src.find("if (RescueLiveSelectionNeedsConsume(", pos)) != std::string::npos) {
             ++n;
             pos += 1;
         }
-        TEST_CHECK(n == 4,
-                   "BUG-005: exactly four guarded consume sites (the three SendThroughWithNewlineTracking arms - exact-match / empty-tail / bypass - plus the identity_outcome direct-SendEnterKey terminal, P5 044700 §1-B)");
+        TEST_CHECK(n == 5,
+                   "BUG-005: exactly five guarded consume sites (the four pre-REQ-042 terminals + the REQ-042 tail-unchanged arm)");
     }
     // The consume runs BEFORE the send-through helper at each site (the
     // Enter must never be injected over a live whole-document selection).
@@ -10425,8 +10348,8 @@ void TestBug005RescueSendThroughConsumeGate() {
             ++checked;
             pos += 1;
         }
-        TEST_CHECK(checked == 4 && all_ordered,
-                   "BUG-005: every consume site precedes its send-through terminal (helper or direct SendEnterKey - no Enter over a live selection)");
+        TEST_CHECK(checked == 5 && all_ordered,
+                   "BUG-005: every consume site precedes its send-through terminal (helper or direct SendEnterKey - no Enter over a live selection; REQ-042 arm included)");
     }
     // The helper itself is the field-proven paste primitive - no new chord.
     TEST_CHECK(src.find("PasteAndRestore(captured_text, backup, target_hwnd") != std::string::npos,
@@ -10519,8 +10442,9 @@ void TestBug005RescueSendThroughConsumeGate() {
         TEST_CHECK(EqualsSourceNeedsSendThrough(/*captured_empty=*/false, /*smart_bypass=*/false),
                    "BUG-005 Path B requisite check: identity requires non-empty translated (L720); empty translation never reaches the gate");
     }
-    // B1 single-sourcing preserved: still 7 helper call sites with the exact
-    // historical forms (the consume guards ADD lines, never rewired calls).
+    // B1 single-sourcing preserved: still 8 helper call sites with the exact
+    // historical forms (the consume guards ADD lines, never rewired calls;
+    // REQ-042 added the tail-unchanged short-circuit terminal as site 8).
     {
         auto count_occ = [](const std::string& hay, const std::string& needle) {
             size_t n = 0, pos = 0;
@@ -10530,8 +10454,8 @@ void TestBug005RescueSendThroughConsumeGate() {
             }
             return n;
         };
-        TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 7,
-                   "BUG-005: B1 7-site single-sourcing preserved (consume guards added in front, calls rewired nowhere)");
+        TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 8,
+                   "BUG-005: B1 8-site single-sourcing preserved (consume guards added in front, calls rewired nowhere; REQ-042 site 8)");
     }
 
     if (g_failed_count == failures_before) {
@@ -11205,8 +11129,8 @@ void TestBug005S0GoldenDecisionTables() {
             ++n;
             pos += 1;
         }
-        TEST_CHECK(n == 4,
-                   "S0 G6-1: exactly four guarded consume sites (exact-match / empty-tail / bypass arms + the identity pre-release arm, P5 044700 section 1-B closed)");
+        TEST_CHECK(n == 5,
+                   "S0 G6-1: exactly five guarded consume sites (exact-match / empty-tail / bypass arms + the identity pre-release arm + the REQ-042 tail-unchanged arm, P5 044700 section 1-B closed)");
     }
     TEST_CHECK(src.find("arm=identity_pre_release") != std::string::npos,
                "S0 G6-1: the identity arm's /044 DIAG carries the arm=identity_pre_release tag (061500 section 5-D)");
@@ -11273,8 +11197,8 @@ void TestBug005S0GoldenDecisionTables() {
             ++n;
             pos += 1;
         }
-        TEST_CHECK(n == 4,
-                   "S0 G6-3: every consume site passes the captured text (line) as the payload - PasteAndRestore transfers the raw capture unmodified (P5 section 4 fact 2)");
+        TEST_CHECK(n == 5,
+                   "S0 G6-3: every consume site passes the captured text (line) as the payload - PasteAndRestore transfers the raw capture unmodified (P5 section 4 fact 2; REQ-042 arm included)");
     }
     // G6-4: 3rd+-Enter consecutive re-entry - the 949a718 property that the
     // identity-paste consume NEVER refreshes last_paste_text_ (the update
@@ -11805,6 +11729,207 @@ void TestReq041DeadLedgerKCap() {
         std::cout << "[PASS] REQ-041 dead-ledger K-cap tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-041 dead-ledger K-cap tests had failures." << std::endl;
+    }
+}
+
+void TestReq042TailUnchangedShortCircuit() {
+    std::cout << "[TEST] REQ-042 dead-ledger tail-unchanged short-circuit (+ under-slice notice)" << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (1) DeadLedgerTailUnchanged rule matrix (compile-time pins) ----
+    static_assert(DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0, L"same", L"same"),
+                  "REQ-042: dead ledger + NoMatch + tail == ledger last line -> short-circuit");
+    static_assert(!DeadLedgerTailUnchanged(false, PasteLedgerVerdict::NoMatch, 0, L"same", L"same"),
+                  "REQ-042: NO ledger -> never short-circuit");
+    static_assert(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::PrefixWithTail, 2, L"same",
+                                           L"same"),
+                  "REQ-042: PrefixWithTail (a real new tail exists) -> never short-circuit");
+    static_assert(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::ExactMatch, 0, L"same",
+                                           L"same"),
+                  "REQ-042: ExactMatch owns the skip arm upstream");
+    static_assert(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0, L"changed",
+                                           L"same"),
+                  "REQ-042: last line changed -> normal engine path");
+    static_assert(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0, L"", L"same"),
+                  "REQ-042: empty tail -> refuse (the /041 empty-block arm owns that shape)");
+    static_assert(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0, L"same", L""),
+                  "REQ-042: empty ledger last line -> refuse");
+
+    // Runtime twins keep the matrix visible in the pass log.
+    TEST_CHECK(DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0,
+                                       std::wstring_view(L"same"), std::wstring_view(L"same")),
+               "REQ-042: matrix twin (fires)");
+    TEST_CHECK(!DeadLedgerTailUnchanged(true, PasteLedgerVerdict::NoMatch, 0,
+                                        std::wstring_view(L"x"), std::wstring_view(L"same")),
+               "REQ-042: matrix twin (refused)");
+
+    // ---- (2) LastLogicalLine (canonical-space ledger tail extraction) ----
+    TEST_CHECK(LastLogicalLine(L"") == std::wstring_view(L""),
+               "REQ-042: empty canonical text -> empty last line (refuse-safe)");
+    TEST_CHECK(LastLogicalLine(L"one") == std::wstring_view(L"one"),
+               "REQ-042: single line -> whole text");
+    TEST_CHECK(LastLogicalLine(L"one\ntwo") == std::wstring_view(L"two"),
+               "REQ-042: last line after the final LF");
+    TEST_CHECK(LastLogicalLine(L"one\n") == std::wstring_view(L""),
+               "REQ-042: trailing LF -> empty tail (refuse-safe)");
+    TEST_CHECK(LastLogicalLine(L"a\nb\nc") == std::wstring_view(L"c"),
+               "REQ-042: multi-line -> final line only");
+
+    // ---- (3) UntranslatedResidueNoticeWarranted matrix (계획-2 게이트) ----
+    static_assert(UntranslatedResidueNoticeWarranted(true, true, true, true),
+                  "REQ-042: short-circuit + translatable residue + CategoryB + cb -> notice");
+    static_assert(!UntranslatedResidueNoticeWarranted(false, true, true, true),
+                  "REQ-042: no short-circuit -> no notice");
+    static_assert(!UntranslatedResidueNoticeWarranted(true, false, true, true),
+                  "REQ-042: prefix fully translated -> no notice (no residue)");
+    static_assert(!UntranslatedResidueNoticeWarranted(true, true, false, true),
+                  "REQ-042: CategoryA (chat send) -> no notice");
+    static_assert(!UntranslatedResidueNoticeWarranted(true, true, true, false),
+                  "REQ-042: no registered callback -> silent (degrades to plan-1 pure pass-through)");
+
+    // ---- (4) the production composition on the user's scenarios ----
+    // Reader (S2 canonical verdict) -> REQ-041 cap -> F3BlockSliceRefine ->
+    // the predicate under test. exp_sc = the short-circuit fires (worker
+    // returns BEFORE the engine: no paste, Enter handed to the app).
+    struct C { std::wstring ledger_raw;      // last paste (empty = no ledger)
+               std::wstring capture_raw;     // CRLF-normalized whole capture
+               int k_raw;                    // hook K
+               bool exp_sc;                  // tail-unchanged short-circuit fires
+               std::wstring exp_tail;        // engine input when exp_sc == false
+               const char* what; };
+    const C cells[] = {
+        // The user's exact observation-A report: 3-line post, the user EDITED
+        // line 1 (deleted a character), caret back at the bottom, Enter. The
+        // last line is byte-identical to the ledger's own last line -> the
+        // engine would receive only our own previous output; pre-REQ-042 the
+        // engine ran (identity at best, rephrase-churn paste at worst - the
+        // "why are you translating the entire text?" report). Post-REQ-042:
+        // no engine call, no re-paste, Enter passes through.
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two",
+         0,
+         true, L"",
+         "REQ-042 cell A: dead ledger + edit above + unchanged last line -> short-circuit"},
+        // Same but the bottom line is genuinely NEW text: the short-circuit
+        // must NOT fire (the engine path owns it).
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two\r\n새 한국어 줄",
+         0,
+         false, L"새 한국어 줄",
+         "REQ-042 cell B: dead ledger + a new last line -> normal engine path"},
+        // Ledger alive + PrefixWithTail (tail typed after our paste): a real
+        // new tail exists even if its text coincides with the ledger's last
+        // line - verdict != NoMatch, so the predicate must refuse.
+        {L"doc line",
+         L"doc line\r\np1",
+         0,
+         false, L"p1",
+         "REQ-042 cell C: PrefixWithTail never short-circuits"},
+        // Canonical robustness: the live capture carries a trailing space on
+        // the last line (editor re-serialization); canonical comparison must
+        // still recognize it as OUR last line (S2 exact-match doctrine).
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two ",
+         0,
+         true, L"",
+         "REQ-042 cell D: canonical-space equality absorbs editor re-serialization"},
+        // No ledger (fresh composition / window switch): refuse. K=1 with a
+        // 2-line capture keeps the whole capture as the block (FindCurrent-
+        // BlockStart clamps: fewer than K+1 terminators), so the engine
+        // input stays the whole capture - the short-circuit must still refuse.
+        {L"",
+         L"first\r\nsecond",
+         1,
+         false, L"first\r\nsecond",
+         "REQ-042 cell E: no ledger -> no short-circuit"},
+        // K=2 multi-line Shift+Enter block with an unchanged last line: the
+        // REQ-041 cap forces k_eff=0, so the predicate sees the same shape as
+        // cell A (under-slice direction: only the last line is claimed).
+        {L"translated one\r\ntranslated two",
+         L"edited one\r\ntranslated two",
+         2,
+         true, L"",
+         "REQ-042 cell F: dead-ledger K-cap applies before the predicate"},
+    };
+    for (const C& c : cells) {
+        const bool ledger_present = !c.ledger_raw.empty();
+        const std::wstring ledger_canonical = CanonicalFormForLedger(c.ledger_raw);
+        const std::wstring line_canonical_full = CanonicalFormForLedger(c.capture_raw);
+        std::wstring pasted_prefix_text;
+        std::wstring untranslated_tail;
+        PasteLedgerVerdict verdict = PasteLedgerVerdict::NoMatch;
+        if (!c.capture_raw.empty() && ledger_present) {
+            verdict = AnalyzeCaptureVsLastPaste(line_canonical_full, ledger_canonical);
+            if (verdict == PasteLedgerVerdict::PrefixWithTail) {
+                pasted_prefix_text = ledger_canonical;
+                untranslated_tail.assign(line_canonical_full, ledger_canonical.size(),
+                                         line_canonical_full.size() - ledger_canonical.size());
+            }
+        }
+        const int k_eff = EffectiveSliceKForVerdict(c.k_raw, ledger_present, verdict);
+        const std::wstring line_canonical =
+            (untranslated_tail.empty() && pasted_prefix_text.empty())
+                ? std::wstring()
+                : line_canonical_full;
+        const F3BlockSliceSplit f3 = F3BlockSliceRefine(
+            c.capture_raw, k_eff, line_canonical, pasted_prefix_text, untranslated_tail);
+        TEST_CHECK(!f3.empty_block, std::string(c.what) + " [non-empty block]");
+        const bool sc = f3.sliced &&
+                        DeadLedgerTailUnchanged(ledger_present, verdict, k_eff,
+                                                CanonicalFormForLedger(untranslated_tail),
+                                                LastLogicalLine(ledger_canonical));
+        TEST_CHECK(sc == c.exp_sc, std::string(c.what) + " [short-circuit verdict]");
+        if (!c.exp_sc) {
+            const std::wstring engine_input =
+                untranslated_tail.empty() ? c.capture_raw : untranslated_tail;
+            TEST_CHECK(engine_input == std::wstring(c.exp_tail),
+                       std::string(c.what) + " [engine input unchanged]");
+        }
+    }
+
+    // ---- (5) structural pins: worker.cpp/main.cpp wire the REQ-042 arms ----
+    {
+        auto read_src = [](const char* name, std::string& out) {
+            const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                        (std::string("../../") + name).c_str()};
+            for (const char* cand : candidates) {
+                std::ifstream in(cand, std::ios::binary);
+                if (in) {
+                    out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                    return;
+                }
+            }
+        };
+        std::string src;
+        read_src("src/worker.cpp", src);
+        if (!src.empty()) {
+            TEST_CHECK(src.find("DeadLedgerTailUnchanged(ledger_present") != std::string::npos,
+                       "REQ-042 structural pin: worker.cpp gates the short-circuit on the shared predicate");
+            TEST_CHECK(src.find("WORKER/ExecuteTask/046") != std::string::npos,
+                       "REQ-042 structural pin: the /046 DIAG line exists (shape-only log fingerprint)");
+            TEST_CHECK(src.find("UntranslatedResidueNoticeWarranted(") != std::string::npos,
+                       "REQ-042 structural pin: the notice gate uses the shared predicate");
+            TEST_CHECK(src.find("untranslated_residue_cb_()") != std::string::npos,
+                       "REQ-042 structural pin: the notice callback is invoked");
+        } else {
+            std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; REQ-042 structural pins skipped." << std::endl;
+        }
+        std::string main_src;
+        read_src("src/main.cpp", main_src);
+        if (!main_src.empty()) {
+            TEST_CHECK(main_src.find("SetUntranslatedResidueCallback") != std::string::npos,
+                       "REQ-042 structural pin: main.cpp registers the notice callback");
+            TEST_CHECK(main_src.find("TooltipUntranslatedAbove") != std::string::npos,
+                       "REQ-042 structural pin: main.cpp shows the localized notice string");
+        } else {
+            std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; REQ-042 main pins skipped." << std::endl;
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-042 tail-unchanged short-circuit tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-042 tail-unchanged short-circuit tests had failures." << std::endl;
     }
 }
 
@@ -13484,6 +13609,855 @@ void TestSecB2ControlTokenScrub() {
     }
 }
 
+void TestEngineHostProtocol() {
+    std::cout << "[RUN] Testing Engine Host Protocol (REQ-043)..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace eh = emebalachat::enginehost;
+
+    // ---- frames (§4.3): [u32 LE length][UTF-8 JSON], 1 MiB cap ----
+    {
+        std::string frame;
+        TEST_CHECK(eh::FrameEncode("abc", frame) && frame.size() == 7,
+                   "frame: header + body size");
+        TEST_CHECK(static_cast<unsigned char>(frame[0]) == 3 &&
+                   static_cast<unsigned char>(frame[1]) == 0 &&
+                   static_cast<unsigned char>(frame[2]) == 0 &&
+                   static_cast<unsigned char>(frame[3]) == 0 && frame[4] == 'a',
+                   "frame: length prefix is u32 little-endian");
+        std::string out;
+        TEST_CHECK(eh::FrameDecode(frame, out) && out == "abc",
+                   "frame: encode/decode roundtrip");
+
+        TEST_CHECK(eh::FrameEncode("", frame) && frame.size() == 4,
+                   "frame: empty body encodes (zero length)");
+        TEST_CHECK(eh::FrameDecode(frame, out) && out.empty(),
+                   "frame: empty body decodes");
+
+        const std::string big(eh::kMaxFrameBytes, 'x');
+        TEST_CHECK(eh::FrameEncode(big, frame), "frame: exactly 1 MiB encodes");
+        TEST_CHECK(eh::FrameDecode(frame, out) && out == big,
+                   "frame: exactly 1 MiB decodes (cap boundary)");
+        const std::string too_big(eh::kMaxFrameBytes + 1, 'x');
+        TEST_CHECK(!eh::FrameEncode(too_big, frame),
+                   "frame: 1 MiB + 1 refused at encode");
+        std::string forged;
+        forged.push_back(static_cast<char>(0x01));
+        forged.push_back(static_cast<char>(0x00));
+        forged.push_back(static_cast<char>(0x10));
+        forged.push_back(static_cast<char>(0x00)); // 0x00100001 > 1 MiB
+        forged.append(eh::kMaxFrameBytes + 2, 'y');
+        TEST_CHECK(!eh::FrameDecode(forged, out),
+                   "frame: over-cap length prefix rejected");
+
+        const std::string mismatch = std::string("\x05\x00\x00\x00ab", 7);
+        TEST_CHECK(!eh::FrameDecode(mismatch, out),
+                   "frame: header/body size mismatch rejected");
+
+        uint32_t len = 0;
+        const char le[] = {static_cast<char>(0x78), static_cast<char>(0x56),
+                           static_cast<char>(0x34), static_cast<char>(0x12)};
+        eh::FrameReadLengthPrefix(le, len);
+        TEST_CHECK(len == 0x12345678u, "frame: length prefix decodes LE");
+        const char leMax[] = {static_cast<char>(0xFF), static_cast<char>(0xFF),
+                              static_cast<char>(0xFF), static_cast<char>(0xFF)};
+        eh::FrameReadLengthPrefix(leMax, len);
+        TEST_CHECK(len == 0xFFFFFFFFu, "frame: length prefix u32 max boundary");
+    }
+
+    // ---- JSON escape/unescape roundtrips (CJK / RTL / emoji / controls) ----
+    {
+        const std::vector<std::string> cases = {
+            "hello",
+            "한국어 텍스트 with 영어 섞임",          // CJK
+            "العربية ועברית",                        // RTL scripts
+            "\xF0\x9F\x98\x80 x \xF0\x9F\x8E\x89",   // emoji (astral)
+            "quote\"backslash\\nl\nnl\r\ttab\t ctrl\x01\x1f",
+            std::string("mixed 한국어 \xF0\x9F\x98\x80 end"),
+        };
+        for (const auto& s : cases) {
+            const std::string wrapped = std::string("{\"s\":\"") + eh::JsonEscape(s) + "\"}";
+            eh::JsonPairs p;
+            TEST_CHECK(eh::JsonParseObject(wrapped, p),
+                       "json: escaped object parses");
+            const auto* f = eh::detail::FindField(p, "s");
+            TEST_CHECK(f && f->is_string && f->text == s,
+                       "json: escape/unescape roundtrip (CJK/RTL/emoji/control)");
+        }
+        // \uXXXX decode incl. surrogate pair -> astral, lone surrogate -> U+FFFD.
+        // (Fresh pair set per parse: JsonParseObject APPENDS to the caller's
+        // vector, and FindField returns the first match — the config.cpp
+        // SimpleJsonReader convention.)
+        eh::JsonPairs p;
+        TEST_CHECK(eh::JsonParseObject("{\"s\":\"\\ud83d\\ude00\"}", p),
+                   "json: surrogate-pair escape parses");
+        const auto* f = eh::detail::FindField(p, "s");
+        TEST_CHECK(f && f->text == "\xF0\x9F\x98\x80",
+                   "json: \\ud83d\\ude00 decodes to U+1F600");
+        p.clear();
+        TEST_CHECK(eh::JsonParseObject("{\"s\":\"\\ud800\"}", p),
+                   "json: lone high surrogate parses (defense, not failure)");
+        f = eh::detail::FindField(p, "s");
+        TEST_CHECK(f && f->text == "\xEF\xBF\xBD",
+                   "json: lone high surrogate -> U+FFFD (never raw WTF-8)");
+        p.clear();
+        TEST_CHECK(eh::JsonParseObject("{\"s\":\"\\u0041\\u00e9\"}", p),
+                   "json: BMP escapes parse");
+        f = eh::detail::FindField(p, "s");
+        TEST_CHECK(f && f->text == "A\xC3\xA9", "json: BMP escapes decode");
+        p.clear();
+        TEST_CHECK(!eh::JsonParseObject("{\"s\":\"unterminated}", p),
+                   "json: unterminated string rejected");
+    }
+
+    // ---- messages (§4.4): golden bytes + parse roundtrips ----
+    {
+        eh::HelloMsg h;
+        h.protocol = 1;
+        h.token = "0123456789abcdef0123456789abcdef";
+        h.client = "emebala-chat";
+        h.client_version = "0.10.1";
+        const std::string golden =
+            "{\"op\":\"hello\",\"protocol\":1,"
+            "\"token\":\"0123456789abcdef0123456789abcdef\","
+            "\"client\":\"emebala-chat\",\"client_version\":\"0.10.1\"}";
+        TEST_CHECK(eh::BuildHello(h) == golden, "hello: golden bytes (§4.4 shape)");
+        eh::HelloMsg hp;
+        TEST_CHECK(eh::ParseHello(golden, hp) && hp.protocol == 1 &&
+                   hp.token == h.token && hp.client == "emebala-chat" &&
+                   hp.client_version == "0.10.1",
+                   "hello: parse roundtrip");
+        TEST_CHECK(!eh::ParseHello("{\"op\":\"bye\",\"protocol\":1,\"token\":\"x\"}", hp),
+                   "hello: wrong op rejected");
+
+        eh::WelcomeMsg w;
+        w.protocol = 1;
+        w.model = "Hy-MT2-1.8B-Q8_0";
+        w.model_sha256 = std::string(emebalachat::kExpectedModelSha256);
+        w.capabilities = {"translate"};
+        const std::string wj = eh::BuildWelcome(w);
+        eh::WelcomeMsg wp;
+        TEST_CHECK(eh::ParseWelcome(wj, wp) && wp.protocol == 1 &&
+                   wp.model == w.model && wp.model_sha256 == w.model_sha256 &&
+                   wp.capabilities.size() == 1 && wp.capabilities[0] == "translate",
+                   "welcome: parse roundtrip + capabilities array");
+        TEST_CHECK(wj.find("\"capabilities\":[\"translate\"]") != std::string::npos,
+                   "welcome: capabilities serialized as array (§4.4 shape)");
+        TEST_CHECK(!eh::ParseWelcome(
+                       "{\"op\":\"welcome\",\"protocol\":1,\"model\":\"m\","
+                       "\"model_sha256\":\"x\",\"capabilities\":\"translate\"}",
+                       wp),
+                   "welcome: non-array capabilities rejected");
+
+        eh::TranslateMsg t;
+        t.id = 0xFFFFFFFFFFFFFFFFull;
+        t.src = "ko";
+        t.tgt = "en";
+        t.text = "안녕 \"세계\"";
+        t.timeout_ms = 30000;
+        const std::string tj = eh::BuildTranslate(t);
+        eh::TranslateMsg tp;
+        TEST_CHECK(eh::ParseTranslate(tj, tp) && tp.id == t.id && tp.src == "ko" &&
+                   tp.tgt == "en" && tp.text == t.text && tp.timeout_ms == 30000,
+                   "translate: u64-max id + unicode roundtrip");
+        eh::TranslateMsg td;
+        TEST_CHECK(eh::ParseTranslate(
+                       "{\"op\":\"translate\",\"id\":7,\"src\":\"ko\",\"tgt\":\"en\",\"text\":\"x\"}",
+                       td) &&
+                       td.timeout_ms == eh::kDefaultTranslateTimeoutMs && td.text == "x",
+                   "translate: absent timeout_ms converges to the 30000 default");
+        TEST_CHECK(!eh::ParseTranslate(
+                       "{\"op\":\"translate\",\"src\":\"ko\",\"tgt\":\"en\",\"text\":\"x\"}", td),
+                   "translate: missing id rejected");
+
+        const eh::HostStatus all_status[] = {
+            eh::HostStatus::Ok,           eh::HostStatus::EngineFailed,
+            eh::HostStatus::ModelMissing, eh::HostStatus::Timeout,
+            eh::HostStatus::BadRequest,   eh::HostStatus::Busy,
+        };
+        for (eh::HostStatus s : all_status) {
+            eh::ResultMsg r;
+            r.id = 42;
+            r.status = s;
+            r.text = (s == eh::HostStatus::Ok) ? "done" : "";
+            eh::ResultMsg rp;
+            TEST_CHECK(eh::ParseResult(eh::BuildResult(r), rp) && rp.id == 42 &&
+                           rp.status == s,
+                       "result: status roundtrip");
+        }
+        eh::ResultMsg rp;
+        TEST_CHECK(!eh::ParseResult("{\"op\":\"result\",\"id\":1,\"status\":\"garbage\"}", rp),
+                   "result: unknown status converges to parse failure (§4.4)");
+        TEST_CHECK(!eh::ParseResult("{\"op\":\"result\",\"id\":1,\"status\":\"OK\"}", rp),
+                   "result: case-mismatched status rejected (spelling is frozen)");
+
+        eh::ErrorMsg ep;
+        TEST_CHECK(eh::ParseError("{\"op\":\"error\",\"code\":\"unauthorized\"}", ep) &&
+                       ep.code == "unauthorized",
+                   "error: unauthorized parses");
+        TEST_CHECK(eh::ParseError(eh::BuildError("version_mismatch"), ep) &&
+                       ep.code == "version_mismatch",
+                   "error: build/parse roundtrip");
+
+        eh::CancelMsg cp;
+        TEST_CHECK(eh::ParseCancel("{\"op\":\"cancel\",\"id\":99}", cp) && cp.id == 99,
+                   "cancel: parses");
+        TEST_CHECK(!eh::ParseCancel("{\"op\":\"cancel\"}", cp),
+                   "cancel: missing id rejected");
+
+        eh::HostStatus st = eh::HostStatus::Ok;
+        TEST_CHECK(eh::StatusFromString("ok", st) && st == eh::HostStatus::Ok,
+                   "status: ok");
+        TEST_CHECK(eh::StatusFromString("engine_failed", st) && st == eh::HostStatus::EngineFailed,
+                   "status: engine_failed");
+        TEST_CHECK(eh::StatusFromString("model_missing", st) && st == eh::HostStatus::ModelMissing,
+                   "status: model_missing");
+        TEST_CHECK(eh::StatusFromString("timeout", st) && st == eh::HostStatus::Timeout,
+                   "status: timeout");
+        TEST_CHECK(eh::StatusFromString("bad_request", st) && st == eh::HostStatus::BadRequest,
+                   "status: bad_request");
+        TEST_CHECK(eh::StatusFromString("busy", st) && st == eh::HostStatus::Busy,
+                   "status: busy");
+        TEST_CHECK(!eh::StatusFromString("queued", st),
+                   "status: unknown string rejected");
+        TEST_CHECK(eh::StatusToString(eh::HostStatus::ModelMissing) == "model_missing",
+                   "status: ToString spelling matches §4.4");
+    }
+
+    // ---- model pin constants (64 lowercase hex, client copy in sync) ----
+    {
+        auto is64lowerhex = [](std::string_view s) {
+            return s.size() == 64 &&
+                   std::all_of(s.begin(), s.end(), [](char c) {
+                       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                   });
+        };
+        TEST_CHECK(is64lowerhex(std::string_view(emebalachat::kExpectedModelSha256)),
+                   "pin: engine.hpp kExpectedModelSha256 is 64 lowercase hex");
+        TEST_CHECK(is64lowerhex(emebalachat::engine_host::kExpectedModelSha256),
+                   "pin: client kExpectedModelSha256 is 64 lowercase hex");
+        TEST_CHECK(std::string_view(emebalachat::kExpectedModelSha256) ==
+                       emebalachat::engine_host::kExpectedModelSha256,
+                   "pin: client copy in sync with engine.hpp");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Engine host protocol tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Engine host protocol tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+void TestEngineHostConfig() {
+    std::cout << "[RUN] Testing engine_host config block (REQ-043)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Defaults (plan §5.1-2).
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.engine_host.enabled == true, "engine_host: default enabled=true");
+        TEST_CHECK(cfg.engine_host.spawn == true, "engine_host: default spawn=true");
+        TEST_CHECK(cfg.engine_host.idle_exit_ms == 600000,
+                   "engine_host: default idle_exit_ms=600000");
+    }
+
+    // Parse a nested block (new key on an old config keeps every other value).
+    {
+        AppConfig cfg;
+        const bool ok = cfg.FromJsonString(
+            "{\n"
+            "  \"engine_type\": \"local\",\n"
+            "  \"engine_host\": {\n"
+            "    \"enabled\": false,\n"
+            "    \"spawn\": false,\n"
+            "    \"idle_exit_ms\": 12345\n"
+            "  }\n"
+            "}");
+        TEST_CHECK(ok, "engine_host: nested block parses");
+        TEST_CHECK(cfg.engine_type == "local", "engine_host: sibling keys untouched");
+        TEST_CHECK(!cfg.engine_host.enabled, "engine_host: enabled=false parsed");
+        TEST_CHECK(!cfg.engine_host.spawn, "engine_host: spawn=false parsed");
+        TEST_CHECK(cfg.engine_host.idle_exit_ms == 12345,
+                   "engine_host: idle_exit_ms=12345 parsed");
+    }
+
+    // Serialize round trip.
+    {
+        AppConfig cfg;
+        cfg.engine_host.enabled = false;
+        cfg.engine_host.spawn = false;
+        cfg.engine_host.idle_exit_ms = 4242;
+        const std::string json = cfg.ToJsonString();
+        TEST_CHECK(json.find("\"engine_host\"") != std::string::npos,
+                   "engine_host: block serialized");
+        AppConfig back;
+        TEST_CHECK(back.FromJsonString(json), "engine_host: serialized config parses");
+        TEST_CHECK(back.engine_host.enabled == false && back.engine_host.spawn == false &&
+                       back.engine_host.idle_exit_ms == 4242,
+                   "engine_host: round trip preserves values");
+    }
+
+    // idle_exit_ms policy: 0 -> default, negative -> default, huge -> clamp,
+    // garbage -> default (documented in config.cpp ParseEngineHostBlock).
+    {
+        auto parse_idle = [](const char* block_json) {
+            AppConfig cfg;
+            const std::string full = std::string("{\"engine_host\":") + block_json + "}";
+            cfg.FromJsonString(full);
+            return cfg.engine_host.idle_exit_ms;
+        };
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": 0}") == 600000,
+                   "engine_host: idle_exit_ms=0 restores the default policy");
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": -5}") == 600000,
+                   "engine_host: negative idle_exit_ms restores the default");
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": 99999999999}") == 86400000,
+                   "engine_host: idle_exit_ms clamps at the 24h ceiling");
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": abc}") == 600000,
+                   "engine_host: unparseable idle_exit_ms resets to default");
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": 1000}") == 1000,
+                   "engine_host: in-range idle_exit_ms kept verbatim");
+        TEST_CHECK(parse_idle("{\"idle_exit_ms\": 600000}") == 600000,
+                   "engine_host: default value round trips");
+    }
+
+    // Bool parsing uses the (v == "true") convention; any other token is false.
+    {
+        AppConfig cfg;
+        cfg.FromJsonString("{\"engine_host\":{\"enabled\": true, \"spawn\": 1}}");
+        TEST_CHECK(cfg.engine_host.enabled, "engine_host: enabled=true");
+        TEST_CHECK(!cfg.engine_host.spawn, "engine_host: spawn=1 -> false (strict true-only)");
+    }
+
+    // Absent block on a pre-REQ-043 config: defaults survive.
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.FromJsonString("{\"engine_type\": \"auto\"}"),
+                   "engine_host: legacy config parses");
+        TEST_CHECK(cfg.engine_host.enabled && cfg.engine_host.spawn &&
+                       cfg.engine_host.idle_exit_ms == 600000,
+                   "engine_host: absent block keeps defaults");
+    }
+
+    // Malformed nested block: the whole config parse fails (existing policy:
+    // a malformed JSON keeps ALL defaults rather than half-applying).
+    {
+        AppConfig cfg;
+        TEST_CHECK(!cfg.FromJsonString("{\"engine_host\": {\"enabled\": tru"),
+                   "engine_host: unbalanced block fails the parse");
+        TEST_CHECK(cfg.engine_host.enabled && cfg.engine_host.idle_exit_ms == 600000,
+                   "engine_host: failed parse keeps defaults");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] engine_host config tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] engine_host config tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+namespace {
+
+// REQ-043 in-process fake host: one named-pipe connection scripted per §5.4
+// fallback-matrix scenario. It speaks the frozen wire protocol through the
+// same enginehost helpers the real host uses, proving client interop
+// headlessly. Overlapped accept + stop event so tests that never connect can
+// still shut the server thread down (a plain blocking ConnectNamedPipe would
+// deadlock the join).
+class FakeHost {
+public:
+    // hello_mode: 0 = welcome (welcome_sha), 1 = error (hello_error_code).
+    FakeHost(std::wstring pipe_name,
+             int hello_mode,
+             std::string welcome_sha,
+             std::string hello_error_code,
+             std::string translate_status,
+             std::string translate_text,
+             bool close_after_hello)
+        : pipe_name_(std::move(pipe_name))
+        , hello_mode_(hello_mode)
+        , welcome_sha_(std::move(welcome_sha))
+        , hello_error_code_(std::move(hello_error_code))
+        , translate_status_(std::move(translate_status))
+        , translate_text_(std::move(translate_text))
+        , close_after_hello_(close_after_hello) {
+        stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        accept_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        // Create the pipe SYNCHRONOUSLY on the constructing thread: the
+        // instance must exist before Start() returns so the client can never
+        // outrun the server thread's CreateNamedPipe (an early race showed
+        // intermittent ERROR_FILE_NOT_FOUND across the retry window).
+        pipe_ = ::CreateNamedPipeW(
+            pipe_name_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,
+            1, (1u << 20) + 4, (1u << 20) + 4, 0, nullptr);
+        served_ = (pipe_ != INVALID_HANDLE_VALUE);
+    }
+    ~FakeHost() {
+        if (stop_event_) ::CloseHandle(stop_event_);
+        if (accept_event_) ::CloseHandle(accept_event_);
+        if (pipe_ && pipe_ != INVALID_HANDLE_VALUE) ::CloseHandle(pipe_);
+    }
+    FakeHost(const FakeHost&) = delete;
+    FakeHost& operator=(const FakeHost&) = delete;
+
+    void Stop() { if (stop_event_) ::SetEvent(stop_event_); }
+
+    std::thread Start() { return std::thread([this] { Serve(); }); }
+
+    bool served() const { return served_; }
+    bool hello_seen() const { return hello_seen_; }
+    int results_sent() const { return results_sent_; }
+
+private:
+    bool ReadFrame(std::string& json) {
+        static thread_local std::vector<char> buf((1u << 20) + 4);
+        OVERLAPPED ol = {};
+        ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ol.hEvent) return false;
+        DWORD read = 0;
+        BOOL ok = ::ReadFile(pipe_, buf.data(), static_cast<DWORD>(buf.size()), &read, &ol);
+        if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+            ok = ::GetOverlappedResult(pipe_, &ol, &read, TRUE);
+        }
+        ::CloseHandle(ol.hEvent);
+        if (!ok) return false;
+        if (read < 4) return false;
+        uint32_t len = 0;
+        emebalachat::enginehost::FrameReadLengthPrefix(buf.data(), len);
+        if (static_cast<size_t>(len) + 4 != read) return false;
+        json.assign(buf.data() + 4, static_cast<size_t>(len));
+        return true;
+    }
+    bool WriteFrame(const std::string& json) {
+        std::string frame;
+        emebalachat::enginehost::FrameEncode(json, frame);
+        OVERLAPPED ol = {};
+        ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ol.hEvent) return false;
+        DWORD written = 0;
+        BOOL ok = ::WriteFile(pipe_, frame.data(), static_cast<DWORD>(frame.size()), &written, &ol);
+        if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+            ok = ::GetOverlappedResult(pipe_, &ol, &written, TRUE);
+        }
+        ::CloseHandle(ol.hEvent);
+        return ok && written == frame.size();
+    }
+
+    void Serve() {
+        if (!served_) return; // ctor-time CreateNamedPipe failed
+
+        OVERLAPPED ol = {};
+        ol.hEvent = accept_event_;
+        BOOL ok = ::ConnectNamedPipe(pipe_, &ol);
+        if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+            const HANDLE waits[2] = {accept_event_, stop_event_};
+            if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0) {
+                return; // stopped before any client arrived
+            }
+            DWORD dummy = 0;
+            if (!::GetOverlappedResult(pipe_, &ol, &dummy, TRUE)) return;
+        } else if (!ok && ::GetLastError() != ERROR_PIPE_CONNECTED) {
+            return;
+        }
+        hello_seen_ = true;
+
+        std::string frame;
+        if (!ReadFrame(frame)) return;
+        if (hello_mode_ == 1) {
+            WriteFrame(emebalachat::enginehost::BuildError(hello_error_code_));
+            return; // close the "connection" with the handle
+        }
+        emebalachat::enginehost::WelcomeMsg w;
+        w.protocol = 1;
+        w.model = "Hy-MT2-1.8B-Q8_0";
+        w.model_sha256 = welcome_sha_;
+        w.capabilities = {"translate"};
+        if (!WriteFrame(emebalachat::enginehost::BuildWelcome(w))) return;
+        if (close_after_hello_) return; // host-down-mid-request scenario
+
+        for (;;) {
+            if (!ReadFrame(frame)) return;
+            emebalachat::enginehost::JsonPairs fields;
+            if (!emebalachat::enginehost::JsonParseObject(frame, fields)) return;
+            const auto* op = emebalachat::enginehost::detail::FindField(fields, "op");
+            if (!op) return;
+            if (op->text == "translate") {
+                emebalachat::enginehost::TranslateMsg m;
+                if (!emebalachat::enginehost::ParseTranslate(frame, m)) return;
+                emebalachat::enginehost::HostStatus st =
+                    emebalachat::enginehost::HostStatus::EngineFailed;
+                if (!emebalachat::enginehost::StatusFromString(translate_status_, st)) return;
+                emebalachat::enginehost::ResultMsg r;
+                r.id = m.id;
+                r.status = st;
+                r.text = translate_text_;
+                if (!WriteFrame(emebalachat::enginehost::BuildResult(r))) return;
+                ++results_sent_;
+            } else if (op->text == "cancel") {
+                continue; // §4.4: ignored for non-in-flight ids
+            } else {
+                return;
+            }
+        }
+    }
+
+    std::wstring pipe_name_;
+    int hello_mode_;
+    std::string welcome_sha_;
+    std::string hello_error_code_;
+    std::string translate_status_;
+    std::string translate_text_;
+    bool close_after_hello_;
+    HANDLE pipe_ = nullptr;
+    HANDLE stop_event_ = nullptr;
+    HANDLE accept_event_ = nullptr;
+    bool served_ = false;
+    bool hello_seen_ = false;
+    int results_sent_ = 0;
+};
+
+std::wstring TestPipeName(int n) {
+    wchar_t buf[96] = {0};
+    swprintf(buf, sizeof(buf) / sizeof(buf[0]),
+             L"\\\\.\\pipe\\emebala-test-req043-%d-%lu", n,
+             static_cast<unsigned long>(::GetCurrentProcessId()));
+    return buf;
+}
+
+std::filesystem::path TestTokenPath(int n) {
+    return std::filesystem::temp_directory_path() /
+           (std::string("eme_req043_token_") + std::to_string(n));
+}
+
+void WriteTestToken(const std::filesystem::path& p) {
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f << "0123456789abcdef0123456789abcdef\n";
+}
+
+} // namespace
+
+void TestEngineHostClient() {
+    std::cout << "[RUN] Testing Engine Host Client fallback matrix (REQ-043)..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace ehc = emebalachat::engine_host;
+
+    const std::string kGoodPin(emebalachat::kExpectedModelSha256);
+
+    // The client's existence gate (§5.4 row 1) runs BEFORE any pipe I/O, so
+    // every fake-server scenario needs an exe path that EXISTS on disk. The
+    // test binary itself is the safe choice: every scenario below pins
+    // spawn=false, so the path is stat'ed but never executed.
+    wchar_t self_exe[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self_exe, MAX_PATH);
+
+    // Wakes and joins a fake server even when the client never connected (a
+    // plain join would deadlock on the pending overlapped ConnectNamedPipe).
+    auto finish = [](FakeHost& h, std::thread& t) {
+        h.Stop();
+        if (t.joinable()) t.join();
+    };
+
+    // Points the client at a fake deployment; reset() (also the dtor)
+    // restores the production defaults AND closes any cached session.
+    struct OverrideGuard {
+        OverrideGuard(int n, const wchar_t* exe) {
+            ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                    TestTokenPath(n).wstring().c_str(), exe);
+        }
+        void reset() { ehc::SetPathsForTesting(nullptr, nullptr, nullptr); }
+        ~OverrideGuard() { reset(); }
+    };
+
+    // §5.4 happy path: welcome (pin ok) -> translate -> result ok.
+    {
+        OverrideGuard ov(1, self_exe);
+        WriteTestToken(TestTokenPath(1));
+        FakeHost host(TestPipeName(1), 0, kGoodPin, "", "ok", "translated-ok", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "안녕하세요", out, err);
+        TEST_CHECK(ok, "client: ok result returns true (err='" + err + "')");
+        TEST_CHECK(out == "translated-ok", "client: translation text delivered");
+        TEST_CHECK(err.empty(), "client: no error code on success");
+        ov.reset();
+        finish(host, t);
+        TEST_CHECK(host.served(), "client: fake host pipe created (served)");
+        TEST_CHECK(host.hello_seen(), "client: hello reached the host");
+        TEST_CHECK(host.results_sent() == 1, "client: exactly one result requested");
+    }
+
+    // §5.4 row 3: pin mismatch -> false + one shape-only line + fallback.
+    {
+        OverrideGuard ov(2, self_exe);
+        WriteTestToken(TestTokenPath(2));
+        FakeHost host(TestPipeName(2), 0, std::string(64, '0'), "", "ok", "x", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: pin mismatch falls back (false)");
+        TEST_CHECK(err == "pin_mismatch",
+                   "client: pin_mismatch error code (got '" + err + "')");
+        TEST_CHECK(out.empty(), "client: no output on pin mismatch");
+        ov.reset();
+        finish(host, t);
+    }
+
+    // §5.4 row 3: version_mismatch error -> false + code.
+    {
+        OverrideGuard ov(3, self_exe);
+        WriteTestToken(TestTokenPath(3));
+        FakeHost host(TestPipeName(3), 1, kGoodPin, "version_mismatch", "ok", "x", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: version_mismatch falls back (false)");
+        TEST_CHECK(err == "version_mismatch", "client: version_mismatch error code");
+        ov.reset();
+        finish(host, t);
+    }
+
+    // §5.4 row 3: unauthorized (stale token) -> false + code.
+    {
+        OverrideGuard ov(4, self_exe);
+        WriteTestToken(TestTokenPath(4));
+        FakeHost host(TestPipeName(4), 1, kGoodPin, "unauthorized", "ok", "x", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: unauthorized falls back (false)");
+        TEST_CHECK(err == "unauthorized", "client: unauthorized error code");
+        ov.reset();
+        finish(host, t);
+    }
+
+    // §5.4 row 4: busy -> false immediately (queue waiting is forbidden).
+    {
+        OverrideGuard ov(5, self_exe);
+        WriteTestToken(TestTokenPath(5));
+        FakeHost host(TestPipeName(5), 0, kGoodPin, "", "busy", "", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        const auto start = std::chrono::steady_clock::now();
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: busy falls back (false)");
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        TEST_CHECK(err == "busy", "client: busy error code");
+        TEST_CHECK(elapsed < std::chrono::seconds(5),
+                   "client: busy answers immediately (no queue waiting)");
+        ov.reset();
+        finish(host, t);
+    }
+
+    // Result statuses model_missing / engine_failed / timeout / bad_request
+    // surface as the matching error codes.
+    {
+        const char* statuses[] = {"model_missing", "engine_failed", "timeout", "bad_request"};
+        for (int i = 0; i < 4; ++i) {
+            OverrideGuard ov(6 + i, self_exe);
+            WriteTestToken(TestTokenPath(6 + i));
+            FakeHost host(TestPipeName(6 + i), 0, kGoodPin, "", statuses[i], "", false);
+            std::thread t = host.Start();
+            EngineHostConfig cfg;
+            cfg.spawn = false;
+            std::string out, err;
+            TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                       "client: non-ok status falls back (false)");
+            TEST_CHECK(err == statuses[i], "client: error code matches the result status");
+            ov.reset();
+            finish(host, t);
+        }
+    }
+
+    // §5.4 row 5: host dies mid-request -> detected (broken pipe) -> false
+    // ("io"); the session is torn down so the NEXT call would respawn.
+    {
+        OverrideGuard ov(10, self_exe);
+        WriteTestToken(TestTokenPath(10));
+        FakeHost host(TestPipeName(10), 0, kGoodPin, "", "ok", "x",
+                      /*close_after_hello=*/true);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: host down mid-request falls back (false)");
+        TEST_CHECK(err == "io" || err == "timeout",
+                   "client: host down surfaces as io/timeout");
+        ov.reset();
+        finish(host, t);
+    }
+
+    // cfg.enabled=false -> quiet decline (never touches the pipe).
+    {
+        OverrideGuard ov(11, self_exe);
+        WriteTestToken(TestTokenPath(11));
+        FakeHost host(TestPipeName(11), 0, kGoodPin, "", "ok", "x", false);
+        std::thread t = host.Start();
+        EngineHostConfig cfg;
+        cfg.enabled = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: disabled config declines");
+        TEST_CHECK(err == "disabled", "client: disabled error code");
+        ov.reset();
+        finish(host, t); // client never connected: Stop wakes the accept wait
+        TEST_CHECK(!host.hello_seen(), "client: disabled config never connects");
+    }
+
+    // §5.4 row 1: host binary missing -> silent embedded fallback.
+    {
+        OverrideGuard ov(12, L"definitely-not-existing-eme-host.exe");
+        EngineHostConfig cfg;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: missing host binary falls back (false)");
+        TEST_CHECK(err == "no_host_binary", "client: no_host_binary error code");
+    }
+
+    // §5.4 row 2: connection refused + spawn=false -> retry 3x -> connect error.
+    {
+        // exe exists (this very test binary) so the existence gate passes, but
+        // nothing listens on the pipe name and spawn is disabled.
+        wchar_t self[MAX_PATH] = {0};
+        ::GetModuleFileNameW(nullptr, self, MAX_PATH);
+        OverrideGuard ov(13, self);
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: refused connection falls back (false)");
+        TEST_CHECK(err.rfind("connect", 0) == 0,
+                   "client: connect error code after retries (got '" + err + "')");
+    }
+
+    // Token file missing -> no_token decline (the pipe connection itself is
+    // established before the token read; the server thread ends when the
+    // client tears the session down).
+    {
+        OverrideGuard ov(14, self_exe);
+        std::error_code ec;
+        std::filesystem::remove(TestTokenPath(14), ec);
+        FakeHost host(TestPipeName(14), 0, kGoodPin, "", "ok", "x", false);
+        std::thread t = host.Start();
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+                   "client: missing token file falls back (false)");
+        TEST_CHECK(err == "no_token", "client: no_token error code");
+        ov.reset();
+        finish(host, t);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Engine host client fallback-matrix tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Engine host client tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-043 (M6 T5, design §5 (4)): the MIGRATION section is DELETED with
+// MigrateLegacyDefaultModelPath (the embedded-engine path-following helper).
+// What remains is the AVAILABILITY gate only — renamed semantically: the
+// manager's local availability now means "the shared host can serve".
+void TestEngineHostAvailabilityAndMigration() {
+    const int failures_before = g_failed_count;
+    std::cout << "[RUN] Testing engine-host availability gate (REQ-043, T5 host-only)..." << std::endl;
+    namespace ehc = emebalachat::engine_host;
+    using emebalachat::EngineHostConfig;
+    using emebalachat::TranslationManager;
+
+    // ---- IsHostBinaryPresent via the test seam ----
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    const std::wstring pid = std::to_wstring(GetCurrentProcessId());
+    const std::wstring fake_exe = std::wstring(tmp) + L"eme_req043_avail_" + pid + L".exe";
+    ehc::SetPathsForTesting(nullptr, nullptr, fake_exe.c_str());
+    TEST_CHECK(!ehc::IsHostBinaryPresent(), "host binary absent -> not present");
+    {
+        std::ofstream f(fake_exe, std::ios::binary);
+        f << "MZ";
+    }
+    TEST_CHECK(ehc::IsHostBinaryPresent(), "host binary exists -> present");
+
+    // ---- availability drives Auto routing (no embedded model file at all) ----
+    {
+        TranslationManager mgr(emebalachat::EngineType::Auto, "D:\\no_such_dir\\model.gguf");
+        TEST_CHECK(mgr.GetActiveEngineName() == "Hy-MT2-1.8B (Shared Host)",
+                   "auto + deployed host -> local seam active without an embedded model");
+        TEST_CHECK(mgr.GetActiveEngineName().find("Google") == std::string::npos,
+                   "auto + deployed host -> the ACTIVE engine is not cloud");
+        EngineHostConfig off;
+        off.enabled = false;
+        mgr.SetEngineHostConfig(off);
+        TEST_CHECK(mgr.GetActiveEngineName().find("Google Translate") != std::string::npos,
+                   "engine_host disabled -> routing demotes to cloud");
+    }
+    {
+        TranslationManager mgr(emebalachat::EngineType::LocalLlama, "D:\\no_such_dir\\model.gguf");
+        TEST_CHECK(mgr.GetActiveEngineName() == "Hy-MT2-1.8B (Shared Host)",
+                   "strict local + deployed host -> NOT 'Model Missing'");
+    }
+    // strict-local with NO local source anywhere: the honest missing leg stays.
+    {
+        const std::wstring absent = std::wstring(tmp) + L"eme_req043_absent_" + pid + L".exe";
+        ehc::SetPathsForTesting(nullptr, nullptr, absent.c_str());
+        TranslationManager mgr(emebalachat::EngineType::LocalLlama, "D:\\no_such_dir\\model.gguf");
+        TEST_CHECK(mgr.GetActiveEngineName() == "Local (Model Missing)",
+                   "no local source at all -> honest missing leg preserved");
+        ehc::SetPathsForTesting(nullptr, nullptr, fake_exe.c_str());  // restore fake deployment
+    }
+
+    // REQ-043 (M6 T5): SetModelPath is a legacy passthrough — no migration,
+    // no serving decision. Pin the passthrough contract only.
+    {
+        TranslationManager mgr;
+        mgr.SetModelPath("D:\\mine\\custom.gguf");
+        TEST_CHECK(mgr.GetModelPath() == "D:\\mine\\custom.gguf",
+                   "SetModelPath: user-configured path passes through untouched (T5 passthrough)");
+    }
+    std::error_code ec;
+    std::filesystem::remove(fake_exe, ec);
+
+    // restore the process-wide absent sentinels (see main)
+    ehc::SetPathsForTesting(nullptr, nullptr, L"\\\\?\\NONEXISTENT_EME_HOST\\engine.exe");
+    ehc::SetCommonModelPathForTesting(L"\\\\?\\NONEXISTENT_EME_HOST\\model.gguf");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Engine-host availability tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Engine-host availability tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-043 (M6 T5): embedded-engine-removal suites (staged session .inc file;
+// defines TestEngineHostOnlyRouting + TestEngineCloudConsentRegression
+// against the post-T5 TranslationManager host-only routing contract).
+// PLACEMENT: AFTER the FakeHost/TestPipeName/TestTokenPath/WriteTestToken
+// declarations above — the suites' live fake-host legs reference them, and a
+// C++ name must be declared before use (the earlier top-of-file include made
+// the compiler see FakeHost before its definition).
+#include "m6_engine_host_embedded_removal_tests.inc"
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -13494,6 +14468,17 @@ int main() {
     emebalachat::ui::EnsurePerMonitorV2ProcessDpiAwareness();
 
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    // REQ-043: pin the host-client deployment probes to guaranteed-absent
+    // sentinel paths for the whole suite, so TranslationManager availability
+    // and model-path-migration behavior stay deterministic no matter what a
+    // dev machine has installed (this one really has the host binary and the
+    // common model under %LOCALAPPDATA%). Individual tests opt into a fake
+    // deployment via SetPathsForTesting/SetCommonModelPathForTesting.
+    emebalachat::engine_host::SetPathsForTesting(
+        nullptr, nullptr, L"\\\\?\\NONEXISTENT_EME_HOST\\engine.exe");
+    emebalachat::engine_host::SetCommonModelPathForTesting(
+        L"\\\\?\\NONEXISTENT_EME_HOST\\model.gguf");
 
     std::cout << "========================================" << std::endl;
     std::cout << "  Emebalachat C++20 Core Test Suite     " << std::endl;
@@ -13555,8 +14540,8 @@ int main() {
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
-    TestReqF4aPreloadGate(); // REQ-F4a: startup preload gate (cloud-only skip)
-    TestReq004EngineSwitchPreloadGate(); // REQ-004: tray switch-to-local async preload gate
+    // REQ-043 (M6 T5): TestReqF4aPreloadGate / TestReq004EngineSwitchPreloadGate
+    // are DELETED with the preload seams (no resident model to warm up).
 #ifdef HAVE_LLAMA_CPP
     TestP7F2GpuOffloadParams(); // P7-F2: CUDA+Vulkan layer-split prevention seam
 #endif
@@ -13581,6 +14566,7 @@ int main() {
     TestSelectAllRescueGate();     // session 260913_0002 (BUG-002 SelectAll rescue gate)
     TestRescueSaturatedKReanchor(); // session 260913_0002 (BUG-003 rescue saturated-K re-anchor)
     TestReq041DeadLedgerKCap(); // session 260917 (REQ-041: dead-ledger NoMatch K-cap, Reddit 재번역 차단)
+    TestReq042TailUnchangedShortCircuit(); // session 260917_0002 (REQ-042: tail-unchanged short-circuit + under-slice notice)
     TestBug004PostPasteCollapseGate(); // session 260913_0002 (BUG-004 F2 post-paste collapse gate)
     TestBug005RescueSendThroughConsumeGate(); // session 260914_0001 (BUG-005 send-through selection-consume gate)
     TestBug005S0GoldenDecisionTables(); // session 260914_0001 (S0 golden freeze: capture->slice->paste->release decision tables)
@@ -13598,6 +14584,36 @@ int main() {
     TestVulkanGuard();     // P5-F1: driverless-machine Vulkan guard (probe+stubs+hook)
     TestD2SingleSlotWorkerSemantics(); // D2: shared worker template slot/stop semantics
     TestSecB2ControlTokenScrub(); // SEC-B2: prompt control-token injection scrub (verify 233020)
+    TestEngineHostProtocol();   // REQ-043: frozen wire protocol (frames/JSON/messages/status)
+    TestEngineHostConfig();     // REQ-043: engine_host config block (defaults/parse/roundtrip/clamps)
+    TestEngineHostClient();     // REQ-043: reference client fallback matrix (in-process fake host)
+    TestEngineHostAvailabilityAndMigration(); // REQ-043: host-as-local-source routing gate (T5: migration removed)
+    // REQ-043 (M6 T5): embedded-removal suites — host-only routing + failure
+    // UX (repair streak) + cloud-consent regression (registered after the
+    // existing REQ-043 suites, per the end-of-file pattern).
+    TestEngineHostOnlyRouting();
+    TestEngineCloudConsentRegression();
+    // REQ-043 (M6 T2): deployment-data parser suites (design §3.1/§3.2/§3.3)
+    // — registered after the existing tests, per the T2 session directive.
+    // The test bodies are staged as .inc files next to this runner (session
+    // staging contract; the parser targets live in Emebalachat_core).
+    TestEngineHostRegistry();
+    TestEngineHostManifest();
+    TestEngineHostComponents();
+    // REQ-043 (M6 T3): worker-contract suites (design §1.2/§3.4, plan §V2-3)
+    // — registered after the T2 parser suites, per the end-of-file pattern.
+    TestWorkerProtocol();
+    TestWorkerManagerStateMachine();
+    // REQ-043 (M6 T4): orchestrator-v2 suites (§V2-4.3/§V2-4.6/REQ-008) —
+    // registered after the T3 suites, per the end-of-file pattern.
+    TestHostV2Scheduler();
+    TestHostV2Session();
+    TestHostV2Health();
+    TestHostV2WelcomeGolden();
+    // REQ-005 (M6 T6): repair bootstrapper suites (plan §V2-8.3, design §9 R-3b)
+    // — registered after the T4 suites, per the end-of-file pattern.
+    TestEngineHostBootstrap();
+    TestEngineHostBootstrapHashAndMove();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

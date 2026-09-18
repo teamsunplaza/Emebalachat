@@ -165,6 +165,22 @@ enum class StringId {
     // so the EnumCount completeness loop covers it automatically (53x37).
     TranslateTruncatedNotice,
 
+    // REQ-042 (session 260917_0002, 계획-2): notice shown when the Enter path
+    // takes the tail-unchanged short-circuit while the verbatim prefix still
+    // holds translatable text (the REQ-041 under-slice is policy, not
+    // failure). Appended last so the EnumCount completeness loop covers it
+    // automatically (58x37 with the REQ-005 repair trio below).
+    TooltipUntranslatedAbove,
+
+    // REQ-005 (M6 T6, design §6.4, plan §V2-8.6): engine-host repair
+    // guidance. Surfaced when the local engine components are missing and
+    // the silent repair (§V2-8.3) is disabled or failed — the "repair
+    // unavailable" convergence, never a silent failure. Appended last so
+    // the EnumCount completeness loop covers them automatically (57x37).
+    RepairInProgress,   // background repair running (tray/tooltip status)
+    RepairFailedTitle,  // repair-unavailable notice title
+    RepairFailedBody,   // local translation temporarily disabled + cloud-consent guidance
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

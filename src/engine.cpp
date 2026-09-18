@@ -3,89 +3,43 @@
 #include "config.hpp"
 #include "google_translate.hpp"
 #include "unicode_utils.hpp"
+#include "engine_core/translation_common.hpp" // REQ-043: LocalInferenceEngine (M6 T1 move; M6 T5: consumed by the worker exe only)
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include <windows.h>
-#include <bcrypt.h>
-
-#pragma comment(lib, "bcrypt.lib")
-
-#if defined(HAVE_LLAMA_CPP) || __has_include("llama.h")
-#ifndef HAVE_LLAMA_CPP
-#define HAVE_LLAMA_CPP 1
-#endif
-#include "llama.h"
-#endif
 
 namespace emebalachat {
 
-namespace {
-
-// I5 fix (was hardcoded 64 at the sampler-chain call site): repetition-penalty
-// look-back window in tokens, per Tencent Hy-MT2 lab specification. Changing
-// the tuning requires no other edit; behavior is identical to the previous
-// literal 64.
-constexpr int kPenaltyLastN = 64;
-// I5 proof: compile-time assertion pins the lab-spec value (the constant lives
-// in this TU's anonymous namespace, so tests/run_tests.cpp cannot reference it
-// directly; a wrong value now fails the build instead of drifting silently).
-static_assert(kPenaltyLastN == 64, "Hy-MT2 lab spec: repetition penalty last-N window is 64 tokens");
-
-// REQ-R01 proof: the llama context budget must agree with the values EnsureLoaded
-// configures and the arithmetic the unit tests rely on. Wrong values fail the build.
-// P2 (session 260910_0001): re-pinned to the official Hy-MT2 model card plan -
-// n_ctx 4096, generation reserve 2048 (see src/engine.hpp for the KV-cache
-// memory justification and the max_tokens=4096 trade-off analysis).
-static_assert(kLlamaNCtx == 4096, "REQ-R01/P2: n_ctx is 4096 (EnsureLoaded must configure the same)");
-static_assert(kLlamaGenReserve == 2048, "REQ-R01/P2: generation reserve equals max_gen_tokens");
-static_assert(kLlamaPromptTokenBudget == kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin,
-              "REQ-R01: prompt budget = n_ctx - gen reserve - safety margin");
-
-// R6 Phase 4 (B2, architect plan §4.2(b)): opt-in local-prompt observability.
-// The user-machine JA->ZH confirmation needs proof of the EXACT prompt sent to
-// Hy-MT2 (the 040 line only names the routed target). Launch Emebala_chat.exe
-// with EMEBALA_DEBUG_PROMPT=1 in the environment to log every built local
-// prompt (first 240 bytes) to stderr. Off by default: the prompt embeds user
-// text, so capture is strictly user-initiated and stays on local stderr.
-// Cached in a function-local static (thread-safe init since C++11): read once,
-// never races with SetEnvironmentVariable mid-run.
-bool DebugPromptEnabled() {
-    static const bool enabled = [] {
-        wchar_t buf[8] = {0};
-        const DWORD n = ::GetEnvironmentVariableW(L"EMEBALA_DEBUG_PROMPT", buf, 8);
-        return n > 0 && n < 8;
-    }();
-    return enabled;
-}
-static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 4096-2048-16 = 2032");
-
-// A6/W3 (session 260910_0007): the former file-local LowerAscii (lowered COPY
-// for case-insensitive path comparisons; Windows paths are case-insensitive,
-// this project targets Windows only) is removed. Its only three call sites
-// (extension equality, path containment, pinned-filename equality) were ALL
-// comparison-only — no call site ever consumed a lowered string as a value —
-// so each now folds lazily via the shared view helpers in unicode_utils.hpp
-// (EqualsIgnoreCaseAscii / IsPathContainedIgnoreCaseAscii), which use the
-// identical +32 A-Z fold set. Keeping the dead lowercaser would trip /W4
-// C4505 (unreferenced local function).
-} // namespace
+// REQ-043 (M6 T5, design §5 (1), plan §V2-8.6): the EMBEDDED inference path
+// is REMOVED from the Chat app. The former TranslationManager::LlamaEngine
+// shim (a zero-member derivation of engine_core's LocalInferenceEngine), the
+// embedded call block, the preload seams and the legacy model-path migration
+// are all gone. The local source is now EXCLUSIVELY the shared inference
+// host (Emebala.Engine.exe via engine_host::TryTranslate); llama.cpp is
+// linked only by the worker exe (Emebalachat.Engine.ggml-translate.exe) and
+// the engine_core library it consumes. The Chat exe links Emebalachat_core
+// only (CMake T5) and carries no llama symbol.
+//
+// TruncateHeadTailWindow's definition deliberately STAYS in this file
+// (Emebalachat_core): google_translate.cpp (a permanent core member serving
+// the Chat exe's cloud path) calls it, so moving it would pin the Chat exe
+// to engine_core. BuildPrompt/LocalPairReliable stay in config.cpp per
+// translation_common.hpp's own header contract.
 
 // REQ-R01 (Batch D1): pure, model-independent head+tail sliding-window truncation.
 // Keeps the first and last `keep_per_side` UTF-16 code units joined by "\n...\n"
 // (U+2026 ellipsis). Cut points are adjusted so a UTF-16 surrogate pair is never
 // split - a lone surrogate would corrupt the UTF-8 conversion and the tokenizer.
 // Returns the text unchanged when it already fits (text.size() <= 2*keep_per_side).
-// Unit-testable without any model; the llama path drives it with a bounded
-// proportional shrink loop (see LlamaEngine::Translate) so llama_decode NEVER
-// receives a prompt larger than the context window (audit §2.1 root cause).
+// Unit-testable without any model; retained verbatim (REQ-R01) so the cloud
+// path and the config-side budget seams keep their proven helper.
 std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side) {
     if (text.empty()) {
         return {};
@@ -122,998 +76,6 @@ std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side
     return out;
 }
 
-// SEC-B2 (session 260911_0002, verify 233020 §6): pure scrub core. Removes
-// every occurrence of every control-class token text from user-controlled
-// source text BEFORE BuildPrompt embeds it into the prompt. A single linear
-// pass is provably insufficient against split-token reassembly ("<｜hy_"
-// + "<｜hy_User｜>" + "User｜>" -> one naive erase RE-FORMS <｜hy_User｜>),
-// so the pass loop reruns until a full sweep over the whole ordered token set
-// erases nothing. Termination: every iteration of the outer loop either
-// strictly shrinks the buffer (>=1 erase) or returns; the buffer cannot shrink
-// below zero, so no iteration cap is needed and none exists (a cap would be a
-// silent give-up path - unacceptable for a security guard). The post-erase
-// rewind keeps each sweep linear without missing a spliced marker (see the
-// in-loop comment); cross-TOKEN splicing is caught by the outer rescan.
-// The result invariant: it contains no token text from the set anymore.
-// Only allocation failure can escape (documented in engine.hpp) - there is
-// deliberately NO fallback to unsanitized text.
-std::wstring ScrubControlTokenTexts(std::wstring_view text, const std::vector<std::wstring>& tokens) {
-    std::wstring out(text);
-    if (out.empty() || tokens.empty()) {
-        return out;
-    }
-
-    // Longest-first: a shorter marker that is a substring of a longer one must
-    // never block the longer one's removal (mirrors llama.cpp's own
-    // cache_special_tokens sort by decreasing text length).
-    std::vector<const std::wstring*> ordered;
-    ordered.reserve(tokens.size());
-    for (const std::wstring& tok : tokens) {
-        if (!tok.empty()) {
-            ordered.push_back(&tok);
-        }
-    }
-    std::sort(ordered.begin(), ordered.end(),
-              [](const std::wstring* a, const std::wstring* b) { return a->size() > b->size(); });
-
-    bool removed_any = true;
-    while (removed_any) {
-        removed_any = false;
-        for (const std::wstring* tok : ordered) {
-            size_t pos = 0;
-            while ((pos = out.find(*tok, pos)) != std::wstring::npos) {
-                out.erase(pos, tok->size());
-                removed_any = true;
-                // Reassembly check without a full restart: deletion only shifts
-                // content left, so a marker newly SPLICED by the erase must
-                // overlap the erase point - its start lies within the last
-                // tok->size()-1 units before it (e.g. "<｜hy_" + "<｜hy_User｜>"
-                // + "User｜>" -> erase leaves "<｜hy_User｜>" starting at 0).
-                // Rewinding the search to that window sees every reassembly
-                // while keeping each sweep linear. Cross-token reassembly
-                // (marker of token A spliced by erasing token B) is caught by
-                // the outer removed_any rescan.
-                const size_t rewind = tok->size() > 0 ? tok->size() - 1 : 0;
-                pos = pos > rewind ? pos - rewind : 0;
-            }
-        }
-    }
-    return out;
-}
-
-#ifdef HAVE_LLAMA_CPP
-// SEC-B2: enumerate the scrub set from the loaded vocab. Matches exactly the
-// attr set llama-vocab.cpp L2396-2402 caches for parse_special=true substring
-// partitioning (CONTROL | USER_DEFINED | UNKNOWN) so the scrub covers 1:1 the
-// tokens the tokenizer would emit as genuine control tokens.
-std::vector<std::wstring> CollectControlTokenTexts(const llama_vocab* vocab) {
-    std::vector<std::wstring> out;
-    if (!vocab) {
-        return out;
-    }
-    const int32_t n = llama_vocab_n_tokens(vocab);
-    out.reserve(static_cast<size_t>(n > 0 ? n : 0));
-    for (llama_token id = 0; id < n; ++id) {
-        const llama_token_attr attr = llama_vocab_get_attr(vocab, id);
-        if (attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED | LLAMA_TOKEN_ATTR_UNKNOWN)) {
-            const char* text = llama_vocab_get_text(vocab, id);
-            if (text && *text) {
-                out.push_back(ToUtf16(text));
-            }
-        }
-    }
-    return out;
-}
-#endif // HAVE_LLAMA_CPP
-
-// M3 (security): fail-closed validation of a GGUF model path before it is handed
-// to the llama.cpp loader. Rejections log an ENGINE/IsValidModelPath/NNN code to
-// stderr (never to a persisted log). The check is purely lexical + regular-file
-// based, so it is unit-testable without loading any model.
-bool IsValidModelPath(std::string_view path, std::string_view base_dir) {
-    if (path.empty()) {
-        DIAG_F("ENGINE/IsValidModelPath/001: empty model path rejected\n");
-        return false;
-    }
-
-    const std::filesystem::path p{std::string(path)};
-
-    // Extension must be exactly ".gguf" (case-insensitive) so the GGUF parser
-    // never touches arbitrary files chosen via a tampered config.json.
-    // A6/W3: lazy fold on a view; the temporary extension string still
-    // allocates (filesystem::path::extension has no view API), but the
-    // second lowered-copy allocation is gone. The temporary lives until the
-    // end of the full expression, so the view cannot dangle.
-    if (!EqualsIgnoreCaseAscii<char>(p.extension().string(), ".gguf")) {
-        DIAG_F("ENGINE/IsValidModelPath/003: non-.gguf model path rejected: %s\n",
-                std::string(path).c_str());
-        return false;
-    }
-
-    // For relative paths, resolve against base_dir (default: current working
-    // directory) and collapse '.'/'..' components BEFORE any filesystem access,
-    // then verify the resolved target stayed inside base_dir (path-traversal
-    // check). Absolute paths define their own location; containment does not
-    // apply to them. Existence is checked on the resolved target so the loader
-    // (which resolves against the process cwd, i.e. the default base_dir) and
-    // this validation agree on which file is being loaded.
-    std::filesystem::path target = p;
-    if (p.is_relative()) {
-        std::error_code ec;
-        std::filesystem::path base;
-        if (base_dir.empty()) {
-            base = std::filesystem::current_path(ec);
-            if (ec) {
-                DIAG_F("ENGINE/IsValidModelPath/004: cannot resolve base directory; relative model path rejected: %s\n",
-                        std::string(path).c_str());
-                return false;
-            }
-        } else {
-            base = std::filesystem::path{std::string(base_dir)};
-        }
-
-        std::filesystem::path joined = (base / p).lexically_normal();
-        std::filesystem::path norm_base = base.lexically_normal();
-        // A6/W3: the trailing-'/' trim and the equality-or-prefix+boundary
-        // test now live in the shared IsPathContainedIgnoreCaseAscii (byte-
-        // equivalent to the old lowered-string expression: the +32 fold is
-        // idempotent and length-preserving, and '/' is outside the fold set,
-        // so trimming before or after folding makes no difference). Saves two
-        // lowered-copy allocations per validation.
-        const std::string j = joined.generic_string();
-        const std::string b = norm_base.generic_string();
-        const bool contained = IsPathContainedIgnoreCaseAscii<char>(j, b);
-        if (!contained) {
-            DIAG_F("ENGINE/IsValidModelPath/004: relative model path escapes base directory via '..' (path traversal) rejected: %s\n",
-                    std::string(path).c_str());
-            return false;
-        }
-        target = joined;
-    }
-
-    // Must exist as a regular file (not a directory, device, or missing entry).
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(target, ec) || ec) {
-        DIAG_F("ENGINE/IsValidModelPath/002: model file does not exist or is not a regular file: %s\n",
-                std::string(path).c_str());
-        return false;
-    }
-
-    return true;
-}
-
-// F3 (security, session 260909_0002): SHA-256 over an arbitrary file using
-// Windows CNG (bcrypt.dll). Streams in 4 MiB chunks so a 1.91 GB model never
-// loads into memory. BCRYPT_FLAG_ALGSCOPE_EXPLICIT is not needed: BCrypt*
-// signatures below are the exact SDK declarations (SDK 10.0.26100.0,
-// shared/bcrypt.h lines 1213/1522/1535/1545/1591/1303 - verified during
-// implementation; dependency-hallucination-check passed against the header).
-bool ComputeFileSha256(const std::filesystem::path& file, std::string& out_hex) {
-    out_hex.clear();
-
-    HANDLE hFile = ::CreateFileW(file.c_str(), GENERIC_READ,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                 nullptr, OPEN_EXISTING,
-                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-                                 nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        DIAG_F("ENGINE/ComputeFileSha256/010: CreateFileW failed (err=%lu) path=%s\n",
-               ::GetLastError(), file.string().c_str());
-        return false;
-    }
-
-    // RAII guards keep every early-return path handle-and-API leak free.
-    struct HandleGuard {
-        HANDLE h;
-        ~HandleGuard() { if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h); }
-    } file_guard{hFile};
-
-    BCRYPT_ALG_HANDLE hAlg = nullptr;
-    BCRYPT_HASH_HANDLE hHash = nullptr;
-    NTSTATUS st = ::BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    if (st < 0) { // NT_SUCCESS == (st >= 0)
-        DIAG_F("ENGINE/ComputeFileSha256/011: BCryptOpenAlgorithmProvider failed (st=0x%08lx)\n",
-               static_cast<unsigned long>(st));
-        return false;
-    }
-    struct AlgGuard {
-        BCRYPT_ALG_HANDLE* p;
-        ~AlgGuard() { if (p && *p) ::BCryptCloseAlgorithmProvider(*p, 0); }
-    } alg_guard{&hAlg};
-
-    st = ::BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0);
-    if (st < 0) {
-        DIAG_F("ENGINE/ComputeFileSha256/012: BCryptCreateHash failed (st=0x%08lx)\n",
-               static_cast<unsigned long>(st));
-        return false;
-    }
-    struct HashGuard {
-        BCRYPT_HASH_HANDLE* p;
-        ~HashGuard() { if (p && *p) ::BCryptDestroyHash(*p); }
-    } hash_guard{&hHash};
-
-    std::vector<BYTE> chunk(4 * 1024 * 1024);
-    for (;;) {
-        DWORD read = 0;
-        if (!::ReadFile(hFile, chunk.data(), static_cast<DWORD>(chunk.size()), &read, nullptr)) {
-            DIAG_F("ENGINE/ComputeFileSha256/013: ReadFile failed (err=%lu) path=%s\n",
-                   ::GetLastError(), file.string().c_str());
-            return false;
-        }
-        if (read == 0) {
-            break; // EOF
-        }
-        st = ::BCryptHashData(hHash, chunk.data(), read, 0);
-        if (st < 0) {
-            DIAG_F("ENGINE/ComputeFileSha256/014: BCryptHashData failed (st=0x%08lx)\n",
-                   static_cast<unsigned long>(st));
-            return false;
-        }
-    }
-
-    BYTE digest[32] = {};
-    st = ::BCryptFinishHash(hHash, digest, sizeof(digest), 0);
-    if (st < 0) {
-        DIAG_F("ENGINE/ComputeFileSha256/015: BCryptFinishHash failed (st=0x%08lx)\n",
-               static_cast<unsigned long>(st));
-        return false;
-    }
-
-    static const char kHex[] = "0123456789abcdef";
-    out_hex.reserve(64);
-    for (BYTE b : digest) {
-        out_hex.push_back(kHex[b >> 4]);
-        out_hex.push_back(kHex[b & 0x0F]);
-    }
-    return true;
-}
-
-namespace {
-
-// F3 marker cache: the 1.91 GB hash must run at most ONCE per model file.
-// A marker file named "<model>.sha256ok" (next to the model, or in the
-// caller-supplied marker_dir for tests) stores:
-//   line 1: verified SHA-256 hex
-//   line 2: raw last-write mtime (file_clock epoch ticks)
-//   line 3: file size in bytes
-// VerifyModelSha256() skips the full hash when the marker exists AND both
-// mtime and size still match the model on disk - the attacker model behind
-// F2/F3 (tamper the GGUF in place) changes mtime, invalidating the cache.
-// Touching ONLY the mtime without content change is a local-privileged
-// scenario the installer (F2) also cannot distinguish; accepted trade-off,
-// documented here.
-// Production default (marker_dir empty) checks TWO locations because the
-// shipped model lives in {app}\models (Program Files, admin-written by the
-// installer) where a non-elevated app process may not be able to create the
-// marker: first next to the model, then %LOCALAPPDATA%\Emebalachat.
-std::vector<std::filesystem::path> MarkerCandidates(
-        const std::filesystem::path& model_path,
-        const std::filesystem::path& marker_dir) {
-    std::wstring marker_name = model_path.filename().native() + L".sha256ok";
-    std::vector<std::filesystem::path> dirs;
-    if (!marker_dir.empty()) {
-        dirs.push_back(marker_dir);
-    } else {
-        dirs.push_back(model_path.parent_path());
-        // LocalAppData fallback dir: parent of %LOCALAPPDATA%\Emebalachat\config.json
-        const auto cfg = AppConfig::GetLocalAppDataConfigPath();
-        if (!cfg.empty()) {
-            std::filesystem::path la = cfg.parent_path();
-            if (la != dirs.front()) {
-                dirs.push_back(la);
-            }
-        }
-    }
-    std::vector<std::filesystem::path> out;
-    out.reserve(dirs.size());
-    for (const auto& d : dirs) {
-        out.push_back(d / marker_name);
-    }
-    return out;
-}
-
-bool WriteVerifyMarker(const std::filesystem::path& marker,
-                       const std::string& hex,
-                       const std::filesystem::file_time_type& mtime,
-                       uintmax_t size) {
-    // Raw file_clock epoch count (100 ns ticks on Windows). No wall-clock
-    // conversion is needed: the marker only has to be SELF-CONSISTENT with
-    // the values MarkerMatchesFile() recomputes, and the raw count is
-    // stable across runs and locale/timezone changes.
-    const long long stamp = static_cast<long long>(mtime.time_since_epoch().count());
-    std::ofstream out(marker, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return false;
-    }
-    out << hex << '\n' << stamp << '\n' << size << '\n';
-    return static_cast<bool>(out);
-}
-
-bool IsPinnedModelName(const std::filesystem::path& model_path) {
-    // A6/W3: pure equality on views — kPinnedModelFilename is already a
-    // std::string_view, and the filename temporary lives until the end of the
-    // full expression, so no lowered-copy allocations remain here at all
-    // (beyond the unavoidable wide→UTF-8 filename conversion).
-    return EqualsIgnoreCaseAscii<char>(model_path.filename().string(),
-                                       kPinnedModelFilename);
-}
-
-bool MarkerMatchesFile(const std::filesystem::path& marker,
-                       const std::filesystem::path& model_path) {
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(marker, ec) || ec) {
-        return false;
-    }
-    std::ifstream in(marker, std::ios::binary);
-    if (!in) {
-        return false;
-    }
-    std::string hex;
-    long long epoch = -1;
-    unsigned long long size = 0;
-    if (!(in >> hex >> epoch >> size)) {
-        return false;
-    }
-    // A marker authorizes skipping the hash ONLY in the same situations
-    // VerifyModelSha256 itself would authorize: (a) hash equals the pin, or
-    // (b) a consent marker for a non-pinned, user-configured filename. A
-    // marker naming the PINNED file but carrying a different hash (pin
-    // rotation, or a forged consent marker for the pinned name) never hits -
-    // the file must re-hash and be compared against the current pin.
-    if (hex != kExpectedModelSha256 && IsPinnedModelName(model_path)) {
-        return false;
-    }
-    const auto actual_size = static_cast<unsigned long long>(
-        std::filesystem::file_size(model_path, ec));
-    if (ec || actual_size != size) {
-        return false;
-    }
-    const auto mtime = std::filesystem::last_write_time(model_path, ec);
-    if (ec) {
-        return false;
-    }
-    // Same raw file_clock epoch count that WriteVerifyMarker persisted.
-    const auto actual_epoch = static_cast<long long>(mtime.time_since_epoch().count());
-    return actual_epoch == epoch;
-}
-
-} // namespace
-
-bool VerifyModelSha256(const std::filesystem::path& model_path,
-                       const std::filesystem::path& marker_dir) {
-    if (model_path.empty()) {
-        DIAG_F("ENGINE/VerifyModelSha256/001: empty model path rejected\n");
-        return false;
-    }
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(model_path, ec) || ec) {
-        DIAG_F("ENGINE/VerifyModelSha256/002: model file missing or not regular: %s\n",
-               model_path.string().c_str());
-        return false;
-    }
-
-    const auto markers = MarkerCandidates(model_path, marker_dir);
-    for (const auto& marker : markers) {
-        if (MarkerMatchesFile(marker, model_path)) {
-            // Cache hit: the file was fully verified before and neither its
-            // size nor its last-write time changed since. Skip the 1.91 GB hash.
-            return true;
-        }
-    }
-
-    // Capture size+mtime BEFORE hashing and bind the marker to THAT stamp.
-    // Re-stating after the ~2 s hash would let a mid-hash in-place rewrite
-    // pair a stale-content hash with a fresh stamp (marker cache poisoning).
-    // If the file changes during/after hashing, the next run's stamp check
-    // fails and the file simply re-hashes.
-    const auto pre_mtime = std::filesystem::last_write_time(model_path, ec);
-    if (ec) {
-        DIAG_F("ENGINE/VerifyModelSha256/003: cannot stat model file: %s\n",
-               model_path.string().c_str());
-        return false;
-    }
-    const auto pre_size = std::filesystem::file_size(model_path, ec);
-    if (ec) {
-        DIAG_F("ENGINE/VerifyModelSha256/003: cannot size model file: %s\n",
-               model_path.string().c_str());
-        return false;
-    }
-
-    std::string hex;
-    if (!ComputeFileSha256(model_path, hex)) {
-        DIAG_F("ENGINE/VerifyModelSha256/003: hash computation failed: %s\n",
-               model_path.string().c_str());
-        return false;
-    }
-
-    if (hex == kExpectedModelSha256) {
-        // Success: persist the marker (first writable candidate) so the next
-        // launch is instant. A marker write failure is NOT a load failure
-        // (worst case: re-hash next run).
-        bool marker_written = false;
-        for (const auto& marker : markers) {
-            std::error_code mec;
-            std::filesystem::create_directories(marker.parent_path(), mec);
-            if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
-                marker_written = true;
-                break;
-            }
-        }
-        if (!marker_written) {
-            DIAG_F("ENGINE/VerifyModelSha256/004: could not write verification marker for: %s\n",
-                   model_path.string().c_str());
-        }
-        return true;
-    }
-
-    // Mismatch. Strict fail-closed ONLY for the pinned filename (see the
-    // header contract): that exact name is what installer/setup.iss downloads
-    // and what the pin was computed for, so any other bytes are corruption or
-    // tampering. Other filenames are models the user deliberately configured
-    // (e.g. a self-downloaded Q4 quant): consent-by-config, warn and allow.
-    if (IsPinnedModelName(model_path)) {
-        DIAG_F("ENGINE/VerifyModelSha256/006: SHA-256 MISMATCH for pinned model (expected %s, got %s); load blocked: %s\n",
-               kExpectedModelSha256, hex.c_str(), model_path.string().c_str());
-        return false;
-    }
-    // Consent path: persist a marker keyed on the file's OWN hash so the
-    // "once per changed file" rule holds for user models too. MarkerMatchesFile
-    // only accepts a non-pin marker for non-pinned filenames, so this can
-    // never authorize the shipped model.
-    for (const auto& marker : markers) {
-        std::error_code mec;
-        std::filesystem::create_directories(marker.parent_path(), mec);
-        if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
-            break;
-        }
-    }
-    DIAG_F("ENGINE/VerifyModelSha256/005: SHA-256 does not match the shipped-model pin (expected %s, got %s), but the path is a user-configured model name; proceeding on explicit-config consent basis: %s\n",
-           kExpectedModelSha256, hex.c_str(), model_path.string().c_str());
-    return true;
-}
-
-#ifdef HAVE_LLAMA_CPP
-
-namespace {
-
-// REQ-R16 (audit §5 latent item 4): llama.cpp abort callback. ggml calls this
-// between tensor-evaluation chunks of an in-flight llama_decode(); returning
-// true aborts the compute. user_data is the TranslationManager's
-// cancel_requested_ atomic (registered once at engine creation, lives as long
-// as the manager which owns this engine). Documented llama.cpp limitation:
-// CPU execution only - the per-token stop check in the decode loop below
-// covers the GPU path (one forward pass per token, milliseconds each).
-bool LlamaAbortIfCanceled(void* user_data) {
-    if (!user_data) {
-        return false;
-    }
-    const auto* flag = static_cast<const std::atomic<bool>*>(user_data);
-    return flag->load(std::memory_order_acquire);
-}
-
-// REQ-R16: model-load cancellation. llama_progress_callback returns TRUE to
-// CONTINUE loading; returning false aborts llama_model_load_from_file(). This
-// unwinds the startup warmup thread (PreloadLocalModel) during app exit
-// instead of the shutdown path waiting out a multi-second VRAM load - the
-// other half of the "no zombie thread at exit" requirement.
-bool LlamaLoadProgress(float /*progress*/, void* user_data) {
-    return !LlamaAbortIfCanceled(user_data);
-}
-
-// P7-F2 compile-time pin: the device-pinning logic in EnsureLoaded relies on
-// the exact b6099 split_mode enum layout (llama.h L184-187: NONE=0, LAYER=1).
-// If a llama.cpp upgrade renumbers the enum, the build fails here instead of
-// silently mis-pinning model devices.
-static_assert(LLAMA_SPLIT_MODE_NONE == 0 && LLAMA_SPLIT_MODE_LAYER == 1,
-              "P7-F2: llama.cpp split_mode enum layout changed; re-verify the "
-              "NONE+main_gpu device pin and the CPU-fallback restore in EnsureLoaded");
-
-} // namespace
-
-// P7-F2: pure params-construction seam declared in src/engine.hpp. Single
-// source of truth for the two model-load legs of EnsureLoaded below; pinned
-// headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp) so the
-// CUDA+Vulkan layer-split prevention can never silently drift from the test.
-void SetGpuOffloadParams(llama_model_params& params, bool gpu_offload) {
-    if (gpu_offload) {
-        // GPU leg: full offload, whole model pinned to device 0. WHY the pin:
-        // with GGML_CUDA + GGML_VULKAN both statically linked, one NVIDIA
-        // card registers as TWO devices with no dedup (llama.cpp L183-190),
-        // and b6099's default LLAMA_SPLIT_MODE_LAYER would interleave ~half
-        // the layers onto the slower Vulkan half of the SAME card (P5 F2).
-        // NONE keeps only devices[main_gpu] (llama.cpp L200-213); ggml
-        // registers CUDA before Vulkan (ggml-backend-reg.cpp L168 vs L177)
-        // and the device list preserves that order, so device 0 = CUDA on
-        // NVIDIA; on AMD/Intel (Vulkan-only) there is a single device and
-        // this is a no-op. Evidence citations: build_gputest/_deps/
-        // llama_cpp-src headers (b6099), session 260909_0004 P5 report.
-        params.n_gpu_layers = 99; // Offload layers to RTX 2070 Turing GPU (sm_75)
-        params.split_mode = LLAMA_SPLIT_MODE_NONE;
-        params.main_gpu = 0;
-    } else {
-        // CPU fallback leg: n_gpu_layers=0 AND restore the b6099 default
-        // split_mode. Un-pinning is NOT optional: llama.cpp validates
-        // split_mode/main_gpu against the GPU-device list even at
-        // n_gpu_layers=0 (llama.cpp L204-207 rejects main_gpu=0 when zero
-        // GPU devices are enumerable), so carrying NONE into this retry would
-        // hard-break the historical CPU fallback on CPU-only machines. With
-        // LAYER + empty device list the load behaves exactly as pre-F2.
-        params.n_gpu_layers = 0;
-        params.split_mode = LLAMA_SPLIT_MODE_LAYER;
-        // params.main_gpu left untouched (b6099 default is already 0).
-    }
-    // Invariant (both legs): no explicit device list and no tensor split -
-    // the app never engages multi-device splitting by design (P7-F2).
-    params.devices = nullptr;
-    params.tensor_split = nullptr;
-}
-
-struct TranslationManager::LlamaEngine {
-    llama_model* model = nullptr;
-    llama_context* ctx = nullptr;
-    const llama_vocab* vocab = nullptr;
-    std::string loaded_path;
-    // REQ-R16: cancellation flag owned by TranslationManager (null when the
-    // engine was created without a manager, e.g. in isolation tests - then
-    // cancellation is simply unavailable and behavior is the old full-run).
-    const std::atomic<bool>* cancel_flag = nullptr;
-    // SEC-B2 (session 260911_0002, verify 233020): vocab-derived control-token
-    // scrub set, built lazily on the first Translate() after a (re)load and
-    // invalidated by Unload(). Translation requests are serialized under
-    // TranslationManager::mutex_, so this cache needs no separate lock.
-    std::vector<std::wstring> control_token_texts;
-    bool control_texts_built = false;
-
-    bool CancelRequested() const {
-        return cancel_flag && cancel_flag->load(std::memory_order_acquire);
-    }
-
-    LlamaEngine() {
-        llama_log_set([](ggml_log_level level, const char* text, void* /*user_data*/) {
-            if (level >= GGML_LOG_LEVEL_WARN) {
-                DIAG_F("%s", text);
-            }
-        }, nullptr);
-        llama_backend_init();
-    }
-
-    ~LlamaEngine() {
-        Unload();
-        llama_backend_free();
-    }
-
-    void Unload() {
-        if (ctx) {
-            llama_free(ctx);
-            ctx = nullptr;
-        }
-        if (model) {
-            llama_model_free(model);
-            model = nullptr;
-        }
-        vocab = nullptr;
-        loaded_path.clear();
-        // SEC-B2: the scrub set belongs to the unloaded vocab - force a rebuild
-        // for whatever model loads next (CollectControlTokenTexts is vocab-
-        // derived, never hardcoded, so an alternative user GGUF is covered by
-        // its own vocabulary).
-        control_token_texts.clear();
-        control_texts_built = false;
-    }
-
-    bool EnsureLoaded(const std::string& path) {
-        if (model && ctx && loaded_path == path) {
-            return true;
-        }
-
-        Unload();
-
-        // M3 (security): validate the path (non-empty, regular file, .gguf
-        // extension, no '..' traversal for relative paths) BEFORE passing it to
-        // the GGUF loader. Fail-closed with an ENGINE/IsValidModelPath/NNN code
-        // on stderr; the worker treats a false return like any load failure.
-        if (!IsValidModelPath(path)) {
-            return false;
-        }
-
-        // F3 (security, session 260909_0002, audit §F3): content-hash pin at
-        // runtime. The installer verifies the SHA-256 only at download time,
-        // so a GGUF tampered AFTER installation (or restored from backup)
-        // used to reach the llama.cpp parser unchecked. VerifyModelSha256()
-        // streams the file through Windows CNG once and caches the result in
-        // a "<model>.sha256ok" marker keyed on mtime+size, so the 1.91 GB
-        // hash costs at most one full pass per changed file. Fail-closed for
-        // the pinned filename; user-configured alternative names proceed on
-        // explicit-config consent basis (see engine.hpp contract). A false
-        // return here behaves like any load failure: Auto falls back to the
-        // cloud, strict-local surfaces EngineFailed/LocalModelMissing to the
-        // worker, and every rejection carries an ENGINE/VerifyModelSha256/NNN
-        // diagnostic on stderr (DIAG_F mirrors to the diagnostic log).
-        // This also completes the F2 story: an installer run where the user
-        // answered "No" to the mismatch dialog leaves the unverified file in
-        // place, but the app refuses to load it now.
-        if (!VerifyModelSha256(std::filesystem::path{path}, {})) {
-            return false;
-        }
-
-        // REQ-R16: if a shutdown cancellation was requested while we were
-        // queued behind mutex_, do not even start a model load.
-        if (CancelRequested()) {
-            DIAG_F("ENGINE/EnsureLoaded/030: load skipped, shutdown cancellation pending\n");
-            return false;
-        }
-
-        llama_model_params mparams = llama_model_default_params();
-        // P7-F2 (universal GPU, session 260909_0004): GPU-offload leg pins the
-        // WHOLE model to device 0 (= CUDA on NVIDIA dual-backend boxes) to stop
-        // the CUDA+Vulkan layer split of one physical card. Full contract +
-        // evidence: SetGpuOffloadParams in src/engine.hpp. Seam-tested
-        // headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp).
-        SetGpuOffloadParams(mparams, /*gpu_offload=*/true);
-        // REQ-R16: abort an in-progress model load when shutdown is requested.
-        mparams.progress_callback = LlamaLoadProgress;
-        mparams.progress_callback_user_data =
-            const_cast<void*>(static_cast<const void*>(cancel_flag));
-
-        model = llama_model_load_from_file(path.c_str(), mparams);
-        if (!model) {
-            // REQ-R16: a cancel-aborted load is not a CUDA failure; do not
-            // spend another full load attempt on the CPU path afterwards.
-            if (CancelRequested()) {
-                DIAG_F("ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
-                return false;
-            }
-            // Fallback to CPU-only load if CUDA load encounters an issue
-            // P7-F2: this leg MUST un-pin (n_gpu_layers=0 + default
-            // LLAMA_SPLIT_MODE_LAYER, per the seam contract): llama.cpp
-            // validates split_mode/main_gpu against the GPU-device list even
-            // at n_gpu_layers=0 (src/llama.cpp L200-213), so NONE +
-            // main_gpu=0 would fail this retry too on machines with zero
-            // enumerable GPU devices and hard-break the CPU fallback.
-            SetGpuOffloadParams(mparams, /*gpu_offload=*/false);
-            model = llama_model_load_from_file(path.c_str(), mparams);
-            if (!model) {
-                return false;
-            }
-        }
-
-        vocab = llama_model_get_vocab(model);
-
-        llama_context_params cparams = llama_context_default_params();
-        cparams.n_ctx = kLlamaNCtx;             // REQ-R01: budget constants shared with Translate()
-        cparams.n_batch = kLlamaNCtx;
-        cparams.n_ubatch = 512;
-        unsigned int hw_threads = std::thread::hardware_concurrency();
-        cparams.n_threads = hw_threads > 0 ? static_cast<int32_t>(hw_threads) : 4;
-        cparams.n_threads_batch = cparams.n_threads;
-        cparams.flash_attn = true;
-        // REQ-R16: per-chunk abort inside llama_decode (CPU execution path).
-        cparams.abort_callback = LlamaAbortIfCanceled;
-        cparams.abort_callback_data =
-            const_cast<void*>(static_cast<const void*>(cancel_flag));
-
-        ctx = llama_init_from_model(model, cparams);
-        if (!ctx && cparams.flash_attn) {
-            cparams.flash_attn = false;
-            ctx = llama_init_from_model(model, cparams);
-        }
-        if (!ctx) {
-            llama_model_free(model);
-            model = nullptr;
-            vocab = nullptr;
-            return false;
-        }
-
-        loaded_path = path;
-        return true;
-    }
-
-    // R6 Phase 4 (B2, plan §4.1 item 2): src_name is the resolved SOURCE token
-    // for the prompt hint (""/AUTO = no hint, historical behavior).
-    std::wstring Translate(
-        std::wstring_view text,
-        std::string_view tgt_name,
-        std::string_view src_name,
-        const std::string& path,
-        float temperature = 0.0f,
-        float top_p = 0.6f,
-        int top_k = 20,
-        float rep_pen = 1.05f
-    ) {
-        // REQ-R16: a canceled manager short-circuits before touching llama.
-        if (CancelRequested()) {
-            return {};
-        }
-        if (!EnsureLoaded(path)) {
-            return {};
-        }
-
-        // SEC-B2: build the scrub set from the now-loaded vocab (once per model
-        // load). The only way the security guard could silently disappear is an
-        // EMPTY set on a non-null vocab (degenerate/corrupt vocab) - surface
-        // that loudly instead of pretending the scrub is active.
-        if (!control_texts_built) {
-            control_token_texts = CollectControlTokenTexts(vocab);
-            control_texts_built = true;
-            if (vocab && control_token_texts.empty()) {
-                DIAG_F("ENGINE/ScrubControlTokens/001: vocab exposes no control-class tokens; scrub set is empty\n");
-            }
-        }
-
-        // Tencent Hy-MT2 instruction format + optional GGUF chat template. Both are
-        // rebuilt inside the REQ-R01 shrink loop, so they live in one lambda.
-        const char* chat_tmpl = llama_model_chat_template(model, nullptr);
-        auto build_final_prompt = [&](std::wstring_view s) -> std::string {
-            std::string u8 = ToUtf8(s);
-            if (u8.empty()) {
-                return {};
-            }
-            std::string p = BuildPrompt(u8, tgt_name, src_name);
-            if (chat_tmpl) {
-                llama_chat_message msg{"user", p.c_str()};
-                int32_t needed = llama_chat_apply_template(chat_tmpl, &msg, 1, true, nullptr, 0);
-                if (needed > 0) {
-                    std::vector<char> formatted(needed + 1);
-                    int32_t written = llama_chat_apply_template(chat_tmpl, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
-                    if (written > 0) {
-                        p.assign(formatted.data(), written);
-                    }
-                }
-            }
-            // REQ-003 (session 260909) exhaustive-content audit: the built
-            // prompt embeds the user's source text (first 240 bytes printed
-            // below), so it needs BOTH gates - the pre-existing opt-in
-            // EMEBALA_DEBUG_PROMPT env var AND diag_log_content (default off).
-            // With either off, only the byte count is recorded.
-            if (DebugPromptEnabled()) {
-                if (diag::ContentLoggingEnabled()) {
-                    DIAG_F(
-                            "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
-                            static_cast<int>(tgt_name.size()), tgt_name.data(),
-                            static_cast<int>(src_name.size()), src_name.data(),
-                            p.size(), p.c_str());
-                } else {
-                    DIAG_F(
-                            "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu (content logging disabled)\n",
-                            static_cast<int>(tgt_name.size()), tgt_name.data(),
-                            static_cast<int>(src_name.size()), src_name.data(),
-                            p.size());
-                }
-            }
-            return p;
-        };
-
-        // Tokenize helper (REQ-R01): fills `out` and returns the token count, or -1
-        // on tokenizer failure. Allocation mirrors the original probe-then-size.
-        // SEC-B2 (session 260911_0002, verify 233020 §5): parse_special=true is
-        // load-bearing and MUST stay - it is how the chat-template markers the
-        // app itself spliced in above (begin_of_sentence / hy_User / hy_Assistant)
-        // tokenize as genuine control tokens. The injection channel it opens for
-        // USER text is closed upstream by ScrubControlTokenTexts, not here.
-        auto tokenize_prompt = [&](const std::string& p, std::vector<llama_token>& out) -> int32_t {
-            if (p.empty()) {
-                return -1;
-            }
-            int32_t n_alloc = -llama_tokenize(vocab, p.c_str(), static_cast<int32_t>(p.size()), nullptr, 0, true, true);
-            if (n_alloc <= 0) {
-                n_alloc = static_cast<int32_t>(p.size()) + kLlamaTokenSafetyMargin;
-            }
-            out.resize(static_cast<size_t>(n_alloc) + static_cast<size_t>(kLlamaTokenSafetyMargin));
-            int32_t n = llama_tokenize(
-                vocab,
-                p.c_str(),
-                static_cast<int32_t>(p.size()),
-                out.data(),
-                static_cast<int32_t>(out.size()),
-                true,
-                true
-            );
-            if (n <= 0) {
-                return -1;
-            }
-            out.resize(static_cast<size_t>(n));
-            return n;
-        };
-
-        std::wstring src_w(text);
-        // SEC-B2 (OWASP LLM01, verify 233020 §6): with parse_special=true the
-        // tokenizer substring-matches EVERY CONTROL/USER_DEFINED/UNKNOWN vocab
-        // text (llama-vocab.cpp L2396-2402, L2603-2635), so a user text
-        // containing "<｜hy_User｜>" (id 120006), "<｜hy_Assistant｜>"
-        // (120007) or the metadata-EOS "<｜hy_place▁holder▁no▁2｜>" (120020)
-        // would be emitted as a GENUINE role-boundary control token -> prompt
-        // injection. Scrub the user-controlled text here - after capture,
-        // BEFORE BuildPrompt's verbatim append and the chat-template wrap, so
-        // the app's own template markers (added inside build_final_prompt
-        // after this point) stay intact. The shrink loop below only re-slices
-        // this already-scrubbed copy, so every rebuild inherits the scrub.
-        src_w = ScrubControlTokenTexts(src_w, control_token_texts);
-        std::string prompt = build_final_prompt(src_w);
-        std::vector<llama_token> prompt_tokens;
-        int32_t n_prompt_tokens = tokenize_prompt(prompt, prompt_tokens);
-        if (n_prompt_tokens < 0) {
-            return {};
-        }
-
-        // REQ-R01 (audit §2.1): count prompt tokens BEFORE llama_decode. When they
-        // exceed the budget (n_ctx - generation reserve - safety margin), shrink
-        // the SOURCE text with a head+tail sliding window and re-tokenize. Each
-        // iteration targets a proportional size minus 25% headroom, so the loop
-        // makes geometric progress and terminates quickly even when the character
-        // -> token compression ratio differs between iterations.
-        if (n_prompt_tokens > kLlamaPromptTokenBudget) {
-            const int32_t overflow_n = n_prompt_tokens;
-            int shrink_iters = 0;
-            while (n_prompt_tokens > kLlamaPromptTokenBudget && shrink_iters < 16 && src_w.size() > 64) {
-                const double ratio = static_cast<double>(kLlamaPromptTokenBudget) / static_cast<double>(n_prompt_tokens);
-                size_t target_len = static_cast<size_t>(static_cast<double>(src_w.size()) * ratio * 0.75);
-                if (target_len < 64) {
-                    target_len = 64;
-                }
-                if (target_len >= src_w.size()) {
-                    target_len = src_w.size() - 1; // shrink at least one unit per iteration
-                }
-                src_w = TruncateHeadTailWindow(src_w, target_len / 2);
-                prompt = build_final_prompt(src_w);
-                const int32_t n2 = tokenize_prompt(prompt, prompt_tokens);
-                if (n2 < 0) {
-                    DIAG_F("ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
-                    return {};
-                }
-                n_prompt_tokens = n2;
-                ++shrink_iters;
-            }
-            DIAG_F("ENGINE/Translate/010: prompt tokens %d exceeded budget %d; source truncated to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
-                    overflow_n, kLlamaPromptTokenBudget, src_w.size(), n_prompt_tokens, shrink_iters);
-        }
-
-        // Last-resort hard cap: if the shrink loop still could not reach the budget
-        // (pathological template overhead or iteration cap), clip the TOKEN vector
-        // head+tail so llama_decode can never fail on length. Preserves the BOS +
-        // instruction prefix (head) and the sentence-final tokens (tail).
-        if (n_prompt_tokens > kLlamaPromptTokenBudget) {
-            const size_t head_n = static_cast<size_t>(kLlamaPromptTokenBudget) / 2;
-            const size_t tail_n = static_cast<size_t>(kLlamaPromptTokenBudget) - head_n;
-            std::vector<llama_token> kept;
-            kept.reserve(prompt_tokens.size());
-            kept.insert(kept.end(), prompt_tokens.begin(), prompt_tokens.begin() + head_n);
-            kept.insert(kept.end(), prompt_tokens.end() - tail_n, prompt_tokens.end());
-            prompt_tokens.swap(kept);
-            n_prompt_tokens = static_cast<int32_t>(prompt_tokens.size());
-            DIAG_F("ENGINE/Translate/012: hard token-window cap applied, prompt clipped to %d tokens\n", n_prompt_tokens);
-        }
-
-        // The post-generation quote-strip heuristic below compares against the
-        // ORIGINAL source quoting; recompute UTF-8 from the (possibly truncated)
-        // working copy so the comparison reflects what was actually sent.
-        std::string src_u8 = ToUtf8(src_w);
-
-        // Clear KV memory for clean inference sequence
-        llama_memory_clear(llama_get_memory(ctx), true);
-
-        // Process prompt tokens
-        llama_batch batch = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
-        if (llama_decode(ctx, batch) != 0) {
-            DIAG_F("ENGINE/Translate/011: llama_decode failed (%d prompt tokens, budget %d)\n",
-                    n_prompt_tokens, kLlamaPromptTokenBudget);
-            return {};
-        }
-
-        // Initialize sampler according to Tencent Hy-MT2 official specifications
-        llama_sampler* smpl = nullptr;
-        if (temperature <= 0.001f) {
-            smpl = llama_sampler_init_greedy();
-        } else {
-            llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-            smpl = llama_sampler_chain_init(sparams);
-            if (rep_pen > 1.0f) {
-                llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));
-            }
-            if (top_k > 0) {
-                llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
-            }
-            if (top_p > 0.0f && top_p < 1.0f) {
-                llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
-            }
-            llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
-            llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-        }
-        if (!smpl) {
-            return {};
-        }
-
-        std::string output_u8;
-        constexpr int max_gen_tokens = kLlamaGenReserve; // REQ-R01: reserve mirrored from the budget constant
-
-        for (int i = 0; i < max_gen_tokens; ++i) {
-            // REQ-R16: cancellation check BETWEEN DECODE STEPS - the token
-            // loop is the app-level seam: shutdown posts the flag, and at
-            // most one more sampled token (+ its batched decode, the
-            // abort_callback unwinds that from inside) runs before we exit
-            // the loop with the partial output discarded as empty.
-            if (CancelRequested()) {
-                DIAG_F("ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
-                llama_sampler_free(smpl);
-                return {};
-            }
-
-            // Guard against context overflow (REQ-R01: constant now shared with the
-            // budget computed before decode, instead of a second hardcoded 2048).
-            if (static_cast<int>(prompt_tokens.size()) + i + 1 >= kLlamaNCtx) {
-                break;
-            }
-
-            llama_token token = llama_sampler_sample(smpl, ctx, -1);
-            llama_sampler_accept(smpl, token);
-
-            // REQ-006: EOS double-check. Hy-MT2 GGUF metadata ships with
-            // special_eos_id missing from the eog set, so llama_vocab_is_eog
-            // alone can let generation run past the model's stop token. The
-            // is_eog test stays FIRST (fast path unchanged for well-formed
-            // vocabs); the eos disjunct only catches the malformed-metadata
-            // case. llama_vocab_eos returns -1 for EOS-less vocabs, which
-            // never equals a valid sampled token, so this is a safe no-op
-            // there.
-            if (llama_vocab_is_eog(vocab, token) || token == llama_vocab_eos(vocab)) {
-                break;
-            }
-
-            char piece[256] = {};
-            int n_piece = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
-            if (n_piece > 0) {
-                output_u8.append(piece, n_piece);
-            } else if (n_piece < 0) {
-                int needed = -n_piece;
-                std::vector<char> big_piece(needed);
-                int written = llama_token_to_piece(vocab, token, big_piece.data(), needed, 0, false);
-                if (written > 0) {
-                    output_u8.append(big_piece.data(), written);
-                }
-            }
-
-            batch = llama_batch_get_one(&token, 1);
-            if (llama_decode(ctx, batch) != 0) {
-                break;
-            }
-        }
-
-        llama_sampler_free(smpl);
-
-        // Trim leading and trailing whitespace / newlines
-        size_t start = 0;
-        while (start < output_u8.size() && (output_u8[start] == ' ' || output_u8[start] == '\n' || output_u8[start] == '\r' || output_u8[start] == '\t')) {
-            start++;
-        }
-        size_t end = output_u8.size();
-        while (end > start && (output_u8[end - 1] == ' ' || output_u8[end - 1] == '\n' || output_u8[end - 1] == '\r' || output_u8[end - 1] == '\t')) {
-            end--;
-        }
-
-        std::string trimmed_u8 = output_u8.substr(start, end - start);
-
-        // Strip matching outer quotes if model wrapped translation in quotes but source text was not quoted
-        if (trimmed_u8.size() >= 2 && trimmed_u8.front() == '\"' && trimmed_u8.back() == '\"') {
-            if (src_u8.empty() || (src_u8.front() != '\"' && src_u8.back() != '\"')) {
-                trimmed_u8 = trimmed_u8.substr(1, trimmed_u8.size() - 2);
-            }
-        }
-
-        return ToUtf16(trimmed_u8);
-    }
-};
-
-#else
-
-struct TranslationManager::LlamaEngine {
-    const std::atomic<bool>* cancel_flag = nullptr;
-    bool CancelRequested() const { return false; }
-    bool EnsureLoaded(const std::string&) { return false; }
-    void Unload() {}
-    std::wstring Translate(std::wstring_view, std::string_view, const std::string&, float = 0.0f, float = 0.6f, int = 20, float = 1.05f) { return {}; }
-};
-
-#endif
-
 // I3 fix: the constructor no longer performs its own config.json disk load.
 // Previously it created a shadow AppConfig and re-read the file, so every start
 // parsed the config twice and a locked/malformed file could give the engine
@@ -1123,22 +85,19 @@ struct TranslationManager::LlamaEngine {
 // AFTER construction; the constructor here keeps pure in-class defaults
 // (0.0 / 0.6 / 20 / 1.05 - identical to AppConfig's defaults) so a
 // stand-alone constructed manager still behaves as before for tests.
+//
+// REQ-043 (M6 T5): the model_path_ field is retained as a legacy config
+// passthrough (GetModelPath callers) but drives NO serving decision anymore —
+// the local source is the shared host, not a file. The former migration of a
+// legacy exe-relative default to the common location is removed with the
+// embedded engine: the model path is owned by the installer (T7) at the fixed
+// common location.
 TranslationManager::TranslationManager(EngineType preferred_type, std::string model_path)
     : preferred_type_(preferred_type), model_path_(std::move(model_path)) {
     if (model_path_.empty()) {
-        // D5 item F (hardens the D4-flagged issue 1): the in-class AppConfig
-        // default "models/Hy-MT2-1.8B-Q8_0.gguf" is RELATIVE, and the old
-        // fallback left it resolved against the process CWD by downstream
-        // checks (std::filesystem::exists here, IsValidModelPath's default
-        // base, and llama_model_load_from_file inside the engine) - so a
-        // direct-construct caller (tests, future embedding) under a foreign
-        // CWD (Run-registry autostart -> System32) silently lost the local
-        // model. ResolveModelPath anchors the default to the EXECUTABLE
-        // directory: pure path arithmetic, still no file I/O in this
-        // constructor, and identical semantics to the main.cpp REQ-R11
-        // handoff. Explicit absolute model_path arguments keep their
-        // pass-through behavior (ResolveModelPath ignores base for them,
-        // but we only touch the empty-default branch anyway).
+        // D5 item F (historical hardening, kept): anchor an empty default to
+        // the EXECUTABLE directory instead of the process CWD (Run-registry
+        // autostart -> System32). Pure path arithmetic, still no file I/O.
         model_path_ = ResolveModelPath(AppConfig{}.model_path);
     }
     RefreshActiveEngine();
@@ -1159,6 +118,9 @@ EngineType TranslationManager::GetEngineType() const {
 
 void TranslationManager::SetModelPath(std::string_view path) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // REQ-043 (M6 T5): legacy config passthrough only (no migration, no
+    // serving decision). RefreshActiveEngine stays a no-op for the path, but
+    // the call is kept so future path-aware behavior has one entry point.
     model_path_ = std::string(path);
     RefreshActiveEngine();
 }
@@ -1203,6 +165,8 @@ std::string TranslationManager::GetActiveEngineName() const {
 
 bool TranslationManager::IsLocalModelAvailable() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    // REQ-043 (M6 T5) SEMANTIC SHIFT: "a local source can serve" = the shared
+    // host is enabled + deployed. The embedded model file no longer exists.
     return local_model_available_;
 }
 
@@ -1216,25 +180,29 @@ bool TranslationManager::IsCloudFallbackEnabled() const {
     return cloud_fallback_enabled_;
 }
 
-bool TranslationManager::PreloadLocalModel() {
+// REQ-043 (M6 T5): consecutive engine-host failures — the T6 bootstrapper's
+// one-click-repair signal. Client-internal only (see the header contract).
+int TranslationManager::HostFailureStreak() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    EnsureLlamaEngineLocked();
-    return llama_engine_->EnsureLoaded(model_path_);
+    return host_fail_streak_;
 }
 
-// REQ-R16: single creation point wiring the cancellation flag into the llama
-// engine (caller holds mutex_). The engine reads cancel_requested_ lock-free
-// between decode steps and llama.cpp reads it from the abort callback.
-void TranslationManager::EnsureLlamaEngineLocked() {
-    if (!llama_engine_) {
-        llama_engine_ = std::make_unique<LlamaEngine>();
-        llama_engine_->cancel_flag = &cancel_requested_;
-    }
+// REQ-043: main.cpp pushes the persisted engine_host block through this
+// setter right after LoadFromFile (the I3 single-source-of-truth pattern used
+// by SetSamplingParams / SetCloudFallbackEnabled above).
+void TranslationManager::SetEngineHostConfig(const EngineHostConfig& cfg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    engine_host_config_ = cfg;
+    // REQ-043: enabled is a routing input (HostCouldServeLocked) — re-evaluate
+    // the active engine so toggling the block flips availability immediately
+    // instead of after an unrelated refresh.
+    RefreshActiveEngine();
 }
 
+// REQ-R16: shutdown latch — deliberately NOT taking mutex_: an in-flight
+// Translate() (cloud WinHTTP or engine-host pipe) holds it across the whole
+// request; the atomic store is the signal that call observes.
 void TranslationManager::RequestCancel() {
-    // Deliberately NOT taking mutex_: the inference thread holds it across the
-    // whole decode; the atomic store is the signal that thread observes.
     cancel_requested_.store(true, std::memory_order_release);
 }
 
@@ -1243,7 +211,7 @@ bool TranslationManager::IsCancelRequested() {
 }
 
 // REQ-R16 bounded drain: Translate() (and the Auto->cloud fallback) hold mutex_
-// for their whole duration, so acquiring it proves no inference is in flight.
+// for their whole duration, so acquiring it proves no request is in flight.
 // try_lock polling gives a wall-clock-bounded wait for the shutdown sequence.
 bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -1257,55 +225,53 @@ bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
     return false;
 }
 
-void TranslationManager::UnloadLocalModel() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (llama_engine_) {
-        llama_engine_->Unload();
-    }
+// REQ-043 (M6 T5): the host is the ONLY local source. Availability =
+// engine_host.enabled + the fixed host binary present (cheap existence check
+// via the self-contained client). The former HAVE_LLAMA_CPP guard is REMOVED
+// (design §5 (1): a llama-free Chat build must NOT lose its local source —
+// that was the P2 §3(3) hazard; llama now lives only in the worker exe and
+// the engine_core library it links). Every runtime failure still converges
+// through the §V2-8.6 failure UX below.
+bool TranslationManager::HostCouldServeLocked() const {
+    return engine_host_config_.enabled && engine_host::IsHostBinaryPresent();
 }
 
 void TranslationManager::RefreshActiveEngine() {
     std::error_code ec;
-    local_model_available_ = !model_path_.empty() && std::filesystem::exists(model_path_, ec);
+    // REQ-043 (M6 T5) SEMANTIC SHIFT: local_model_available_ no longer probes
+    // a model FILE — it mirrors HostCouldServeLocked() ("the local source,
+    // the shared host, can serve"). RefreshActiveEngine's file-existence
+    // condition is replaced by the host gate (design §5 (3) row 2).
+    local_model_available_ = HostCouldServeLocked();
+    const bool host_available = local_model_available_;  // REQ-043 (M6 T5)
 
     if (preferred_type_ == EngineType::GoogleTranslate) {
         active_type_ = EngineType::GoogleTranslate;
         active_name_ = "Google Translate (Cloud)";
     } else if (preferred_type_ == EngineType::LocalLlama) {
-        if (local_model_available_) {
-#ifdef HAVE_LLAMA_CPP
+        // REQ-043 (M6 T5): "local" = the shared inference host. No embedded
+        // model file exists, so the former (model present -> embedded / host)
+        // split collapses to a single host-serving leg.
+        if (host_available) {
             active_type_ = EngineType::LocalLlama;
-            active_name_ = "Hy-MT2-1.8B (Local)";
-            if (!llama_engine_) {
-                EnsureLlamaEngineLocked();
-            }
-#else
-            active_type_ = EngineType::GoogleTranslate;
-            active_name_ = "Google Translate (Llama Native Not Linked)";
-#endif
+            active_name_ = "Hy-MT2-1.8B (Shared Host)";
         } else {
-            // REQ-029-B: the Google masquerade is gone. A strict-local pick
-            // with an absent model file stays honest: active_type_ remains
-            // LocalLlama (Translate() pre-blocks with LocalModelMissing
-            // before any cloud seam) and the display name carries no
-            // "Google" substring, so the tray checkmark side-effect
-            // (find("Google") on this string) is naturally eliminated too.
+            // REQ-029-B honesty preserved: a strict-local pick with NO local
+            // source stays honest — active_type_ remains LocalLlama
+            // (Translate() pre-blocks with LocalModelMissing before any cloud
+            // seam) and the display name carries no "Google" substring, so
+            // the tray checkmark side-effect (find("Google") on this string)
+            // stays eliminated.
             active_type_ = EngineType::LocalLlama;
             active_name_ = "Local (Model Missing)";
         }
     } else {
         // EngineType::Auto
-        if (local_model_available_) {
-#ifdef HAVE_LLAMA_CPP
+        if (host_available) {
+            // REQ-043: under Auto a deployed host keeps local-first routing
+            // — otherwise every translation would silently go to Google.
             active_type_ = EngineType::LocalLlama;
-            active_name_ = "Hy-MT2-1.8B (CUDA/CPU)";
-            if (!llama_engine_) {
-                EnsureLlamaEngineLocked();
-            }
-#else
-            active_type_ = EngineType::GoogleTranslate;
-            active_name_ = "Google Translate (Cloud Free)";
-#endif
+            active_name_ = "Hy-MT2-1.8B (Shared Host)";
         } else {
             active_type_ = EngineType::GoogleTranslate;
             active_name_ = "Google Translate (Zero-Install)";
@@ -1317,7 +283,8 @@ void TranslationManager::RefreshActiveEngine() {
 // (src/engine.hpp) carries the full contract. No state, no I/O: the whole
 // (source x target x engine x consent) matrix is pinned headlessly by
 // TestR6P4LanguageRouting, so the shipped decision can never drift from the
-// tested one.
+// tested one. REQ-043 (M6 T5): the enum VALUES are unchanged — LocalLlama
+// now means "serve through the shared host" — so this seam is untouched.
 EngineType PlanTranslationRouting(std::string_view src_code,
                                   std::string_view tgt_code,
                                   EngineType engine_type,
@@ -1340,41 +307,6 @@ EngineType PlanTranslationRouting(std::string_view src_code,
     return google_consent ? EngineType::GoogleTranslate : EngineType::LocalLlama;
 }
 
-// REQ-F4a: see the header contract in src/engine.hpp. Pure stateless predicate,
-// pinned headlessly by TestReqF4aPreloadGate (same seam-testing discipline as
-// PlanTranslationRouting above): the shipped wWinMain gate calls THIS function,
-// so the startup decision can never drift from the tested matrix.
-bool ShouldPreloadLocalModel(EngineType engine_type, bool cloud_fallback_enabled,
-                             bool model_available) {
-    if (!model_available) {
-        return false; // nothing to preload (historical behavior unchanged)
-    }
-    if (engine_type == EngineType::GoogleTranslate) {
-        // Cloud-only session unless the user granted fallback consent: under an
-        // explicit google pin RefreshActiveEngine keeps active_type_ on
-        // GoogleTranslate for the whole session, so a resident local model is
-        // pure dead weight (260908 log L10-11). With cloud_fallback_enabled the
-        // user declared they want the local safety net available, so the
-        // historical preload stays.
-        return cloud_fallback_enabled;
-    }
-    // Auto / LocalLlama with the model on disk: local is (or can become, via
-    // pair routing under Auto) the serving engine - keep warming it up.
-    return true;
-}
-
-// REQ-004: see the header contract in src/engine.hpp. Pure stateless predicate,
-// pinned headlessly by TestReq004EngineSwitchPreloadGate (same seam-testing
-// discipline as ShouldPreloadLocalModel above): the shipped on_select_engine
-// gate calls THIS function, so the runtime-switch decision can never drift
-// from the tested matrix.
-bool ShouldPreloadOnEngineSwitch(EngineType selected, bool model_available) {
-    if (!model_available) {
-        return false; // nothing to preload (absence was always a silent no-thread path)
-    }
-    return selected == EngineType::LocalLlama;
-}
-
 // 3-arg compatibility form for existing callers (main.cpp tooltip/drag paths).
 // Discards the REQ-R02 status; callers that must react to failure use the
 // status-aware overload below.
@@ -1386,20 +318,29 @@ std::wstring TranslationManager::Translate(
     return Translate(text, src_code_or_name, tgt_code_or_name, nullptr);
 }
 
-// REQ-R02 (Batch D1, audit §2.1 / §5-C4): the silent bare-{} failure is gone.
-// Every path that produces no translation now reports a TranslationStatus the
-// worker can react to (error tone / tooltip), and the Auto policy is restored
-// to its documented semantics.
+// REQ-R02 (Batch D1, audit §2.1 / §5-C4): every path that produces no
+// translation reports a TranslationStatus the worker can react to (error
+// tone / tooltip), and the Auto policy is restored to its documented
+// semantics.
 //
-// What Auto means NOW (documented per task directive):
-//   engine_type=auto = "use the local Hy-MT2 model when available; seamlessly
-//   fall back to Google Translate when the model is absent OR a local inference
-//   attempt fails". Selecting auto in config IS the user's consent to that
-//   documented cloud fallback, so cloud_fallback_enabled_ does NOT gate the
-//   Auto->cloud paths (it never did per the original EngineType::Auto contract;
-//   H2 had over-tightened it into a silent-failure regression).
-//   engine_type=local stays strictly on-device: after a local failure the cloud
-//   is used only when the user explicitly enabled cloud_fallback_enabled_.
+// What Auto means NOW (REQ-043, M6 T5):
+//   engine_type=auto = "use the shared inference host when it can serve;
+//   seamlessly fall back to Google Translate when the host is absent OR a
+//   host serving attempt fails". Selecting auto in config IS the user's
+//   consent to that documented cloud fallback, so cloud_fallback_enabled_
+//   does NOT gate the Auto->cloud paths.
+//   engine_type=local stays strictly on-device: after a host failure the
+//   cloud is used only when the user explicitly enabled cloud_fallback_enabled_.
+//
+// §V2-8.6 FAILURE UX (convergence chain, no silent failure, no crash):
+//   (a) the engine-host client's spawn leg runs first (cfg.spawn);
+//   (b) on persistent failure the manager records the repair signal
+//       (host_fail_streak_ — consumed by the T6 bootstrapper UI);
+//   (c) cloud path when consented (Auto contract, or explicit-local with the
+//       H2 gate enabled);
+//   (d) no local source + no consent = the honest strict-local failure
+//       (LocalModelMissing / CloudConsentBlocked) — the "feature disabled"
+//       guidance state.
 std::wstring TranslationManager::Translate(
     std::wstring_view text,
     std::string_view src_code_or_name,
@@ -1424,33 +365,26 @@ std::wstring TranslationManager::Translate(
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
     const std::string norm_src = NormalizeLanguageCode(src_code_or_name);
 
-    // REQ-029-B: local pin + missing model file must never leak to the cloud.
-    // Pre-block here, BEFORE the 040 routing log and every cloud seam: the old
-    // path reached line 964 with an active_type_ that had been polluted to
-    // GoogleTranslate, so a "model missing" failure was reported as
-    // CloudConsentBlocked (status=2) - blaming the privacy gate for an absent
-    // file while logs/UI claimed Google. LocalModelMissing separates the cause
-    // and keeps the user's text on-device unconditionally (even with
-    // cloud_fallback_enabled_: consent gates post-inference failures, it does
-    // not resurrect a translation that never started).
-    if (preferred_type_ == EngineType::LocalLlama && !local_model_available_) {
+    // REQ-029-B / REQ-043 (M6 T5): a local pin with NO local source must
+    // never leak to the cloud. Pre-block here, BEFORE the 040 routing log
+    // and every cloud seam (the historical REQ-029-B masquerade guard).
+    if (preferred_type_ == EngineType::LocalLlama && !HostCouldServeLocked()) {
         // REQ-R16 latch outranks this guard: an exit-intent must surface as
-        // Canceled, never as an audible failure (same precedence that kept
-        // the cancel short-circuit ahead of the H2 consent decision).
+        // Canceled, never as an audible failure.
         if (cancel_requested_.load(std::memory_order_acquire)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
-        DIAG_F("ENGINE/Translate/043: preferred=local but model file missing; "
-               "refusing cloud masquerade (model_path=%s)\n", model_path_.c_str());
+        DIAG_F("ENGINE/Translate/043: preferred=local but no local source (host absent/disabled); "
+               "refusing cloud masquerade (legacy model_path=%s)\n", model_path_.c_str());
         set_status(TranslationStatus::LocalModelMissing);
         return {};
     }
 
     // R6 Phase 4 (B2, plan §4.1 item 3): pair routing, decided HERE (before the
     // 040 line) so the observability log reports the engine that will ACTUALLY
-    // serve the request. Meaningful only while the local engine is active;
-    // model availability itself stays RefreshActiveEngine's job.
+    // serve the request. Meaningful only while the local source is active;
+    // availability itself stays RefreshActiveEngine's job.
     EngineType served_engine = active_type_;
     if (active_type_ == EngineType::LocalLlama) {
         served_engine = PlanTranslationRouting(src_code_or_name, tgt_code_or_name,
@@ -1476,24 +410,17 @@ std::wstring TranslationManager::Translate(
         return res;
     };
 
-    if (active_type_ == EngineType::LocalLlama && llama_engine_) {
-        // REQ-R16: cancellation short-circuit BEFORE llama is touched (a
+    // REQ-043 (M6 T5): THE local seam — the shared inference host is the only
+    // local source. Requests the host serves reach this leg (the 041
+    // cloud-routing leg returns below for unsupported pairs). The client
+    // enforces the §4.4 contract (pin/version/token checks, busy, timeout)
+    // and never logs user text.
+    if (served_engine == EngineType::LocalLlama && engine_host_config_.enabled) {
+        // REQ-R16: cancellation short-circuit BEFORE the pipe is touched (a
         // shutdown posted RequestCancel() while this call queued on mutex_).
         if (cancel_requested_.load(std::memory_order_acquire)) {
             set_status(TranslationStatus::Canceled);
             return {};
-        }
-        // R6 Phase 4 (B2, plan §4.1 item 3): unsupported pair policy BEFORE
-        // llama. An outside-the-reliable-set pair never wastes an inference
-        // that degrades to English output; under the Auto consent (or an
-        // explicit cloud fallback consent) it goes straight to Google.
-        if (served_engine != EngineType::LocalLlama) {
-            DIAG_F(
-                    "ENGINE/Translate/041: pair (%s -> %s) outside the Hy-MT2 reliable set; routed to cloud (engine_type=%s, cloud_consent=%d)\n",
-                    norm_src.c_str(), norm_tgt.c_str(),
-                    preferred_type_ == EngineType::Auto ? "auto" : "local",
-                    cloud_fallback_enabled_ ? 1 : 0);
-            return cloud_call();
         }
         if (preferred_type_ == EngineType::LocalLlama &&
             !LocalPairReliable(src_code_or_name, tgt_code_or_name)) {
@@ -1503,34 +430,33 @@ std::wstring TranslationManager::Translate(
                     "ENGINE/Translate/042: pair (%s -> %s) outside the Hy-MT2 reliable set but strict-local pin without cloud consent; staying local (output may degrade)\n",
                     norm_src.c_str(), norm_tgt.c_str());
         }
-        std::wstring res = llama_engine_->Translate(
-            text, tgt_name, src_code_or_name, model_path_,
-            temperature_, top_p_, top_k_, repetition_penalty_
-        );
-        if (!res.empty()) {
+        std::string host_out;
+        std::string host_err;
+        if (engine_host::TryTranslate(engine_host_config_,
+                                      std::string(src_code_or_name), tgt_name,
+                                      ToUtf8(text), host_out, host_err)) {
+            host_fail_streak_ = 0;  // §V2-8.6: success clears the repair signal
             set_status(TranslationStatus::Ok);
-            return res;
+            return ToUtf16(host_out);
         }
-        // REQ-R16: an empty result right after a cancel request is the
-        // shutdown unwind, NOT an engine failure. It must not fall through to
-        // the cloud (would transmit user text mid-exit) and must not surface
-        // a spurious error tone.
-        if (cancel_requested_.load(std::memory_order_acquire)) {
-            set_status(TranslationStatus::Canceled);
-            return {};
-        }
-        // Local inference failed (load/decode/tokenizer/empty output).
-        // Auto: seamless cloud fallback - this is the consented contract above.
+        // §V2-8.6 (b): persistent host failure — record the repair signal for
+        // the T6 bootstrapper (client-internal state, never a protocol
+        // status), then converge through the consented fallback below.
+        ++host_fail_streak_;
+        DIAG_F("ENGINE/Translate/044: engine-host try failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
+               host_err.c_str(), host_fail_streak_);
+        // Local serving failed. Auto: seamless cloud fallback - the consented
+        // contract above.
         if (preferred_type_ == EngineType::Auto) {
-            DIAG_F("ENGINE/Translate/020: local inference failed, Auto policy falling back to cloud\n");
+            DIAG_F("ENGINE/Translate/020: local serving failed, Auto policy falling back to cloud\n");
             return cloud_call();
         }
         // Explicit local: H2 privacy gate still decides.
         if (cloud_fallback_enabled_) {
-            DIAG_F("ENGINE/Translate/021: local inference failed, explicit cloud fallback consent granted\n");
+            DIAG_F("ENGINE/Translate/021: local serving failed, explicit cloud fallback consent granted\n");
             return cloud_call();
         }
-        DIAG_F("ENGINE/Translate/022: local inference failed and cloud fallback consent disabled; surfacing failure to caller\n");
+        DIAG_F("ENGINE/Translate/022: local serving failed and cloud fallback consent disabled; surfacing failure to caller (repair signal armed)\n");
         set_status(TranslationStatus::CloudConsentBlocked);
         return {};
     }
@@ -1545,11 +471,12 @@ std::wstring TranslationManager::Translate(
     }
     // Cloud paths in order of consent strength:
     //  - preferred_type_ == GoogleTranslate: deliberate choice -> always allow.
-    //  - preferred_type_ == Auto: zero-install or model-not-found path -> the
+    //  - preferred_type_ == Auto: zero-install or host-absent path -> the
     //    Auto contract above makes this consented (REQ-R02 policy).
-    //  - preferred_type_ == LocalLlama with no local model: implicit cloud path ->
-    //    respect the H2 gate; empty+CloudConsentBlocked when disabled (strict
-    //    on-device semantics: text must never leave the device silently).
+    //  - preferred_type_ == LocalLlama with no local source: implicit cloud
+    //    path -> respect the H2 gate; empty+CloudConsentBlocked when disabled
+    //    (strict on-device semantics: text must never leave the device
+    //    silently).
     if (preferred_type_ == EngineType::GoogleTranslate ||
         preferred_type_ == EngineType::Auto ||
         cloud_fallback_enabled_) {

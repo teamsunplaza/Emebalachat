@@ -51,6 +51,17 @@ public:
         std::string_view tgt_code = "EN"
     );
 
+    // REQ-043 (M6 T5 debug): test-only cloud-block hook. When engaged,
+    // Translate() short-circuits to empty (simulating an unreachable cloud)
+    // WITHOUT touching WinHTTP. This exists so the T5 manager-routing suites
+    // can exercise the manager->cloud_call() seam deterministically, without
+    // depending on the live network (the original design hung the test
+    // process in a WinHTTP sync call on the second invocation). Production
+    // callers never engage this hook; the flag defaults to false and the
+    // setter is only called from tests. Shape-only: no user text is logged.
+    static void SetCloudBlockedForTesting(bool blocked);
+    static bool IsCloudBlockedForTesting();
+
     // REQ-R05: standard Chrome desktop UA sent on the dict-chrome-ex profile.
     static constexpr std::wstring_view ChromeUserAgent() {
         return kChromeUserAgent;

@@ -331,6 +331,63 @@ constexpr int EffectiveSliceKForVerdict(int k_block, bool ledger_present,
     return (ledger_present && verdict == PasteLedgerVerdict::NoMatch) ? 0 : k_block;
 }
 
+// REQ-042 (session 260917_0002, 사용자 Reddit 현장 검증 후속): dead-ledger
+// NoMatch에서의 "tail-unchanged short-circuit" 순수 판정 계열. 배경: REQ-041이
+// NoMatch를 마지막 논리줄 1줄로 캡(k_eff=0)한 뒤, 그 마지막 줄이 이미 우리가
+// 붙여넣은 번역문 그 자리(=레저의 마지막 줄)와 바이트 동일하면 엔진에 넣을
+// 신규 텍스트가 사실상 없다. 이때도 엔진을 돌리면 (a) identity여도 지연만
+// 추가되고 (b) 모델이 재표현을 바꾸면 이미 받아들인 번역줄이 통째로 치환되는
+// churn이 생긴다(사용자 보고 "왜 전체 텍스트를 다시 번역하나요?"의 원인).
+// 해결: 엔진 호출과 붙여넣기를 생략하고 Enter만 통과시킨다.
+//
+// DeadLedgerTailUnchanged: 캡 경로에서 "블록(=캡처의 마지막 논리줄)이 레저의
+// 마지막 논리줄과 정확히 같음"을 판정. 양쪽 입력은 호출자가 CanonicalFormFor-
+// Ledger를 통과시킨 캐노니컬 표현이어야 한다(S2 계약: ProseMirror 재직렬화의
+// CRLF/NBSP/NFC 변환을 흡수하면서도 여전히 정확한 바이트 비교 — ADR-001의
+// no-fuzzy 원칙 유지). ledger_last_line_canonical은 LastLogicalLine()로 레저
+// 캐노니컬에서 추출. 빈 꼬리/빈 레저 줄은 거짓(정상 흐름 유지).
+//   - ledger_present/verdict/k_eff 조건은 EffectiveSliceKForVerdict와 동일한
+//     전제를 명시적으로 재선언(호출부가 실수로 캡 없는 경로에서 발동하는 것을
+//     방지).
+//   - 윗줄 편집분은 verbatim prefix로 보존(REQ-041 그대로)되므로, 이 판정이
+//     참이어도 사용자 편집은 절대 덮어씌워지지 않는다. under-slice 방향.
+constexpr bool DeadLedgerTailUnchanged(bool ledger_present, PasteLedgerVerdict verdict,
+                                       int k_eff, std::wstring_view tail_canonical,
+                                       std::wstring_view ledger_last_line_canonical) {
+    return ledger_present && verdict == PasteLedgerVerdict::NoMatch && k_eff == 0 &&
+           !tail_canonical.empty() && !ledger_last_line_canonical.empty() &&
+           tail_canonical == ledger_last_line_canonical;
+}
+
+// REQ-042: 캐노니컬 텍스트의 마지막 논리줄 추출(마지막 '\n' 이후 부분).
+// '\n'이 없으면 전체가 마지막 줄. 끝이 '\n'으로 끝나면 빈 뷰(빈 줄) — 호출부
+// 판정이 거짓으로 떨어지는 안전 방향. CanonicalFormForLedger 출력에 대해
+// 사용한다(줄 끝 공백은 이미 트림됨).
+constexpr std::wstring_view LastLogicalLine(std::wstring_view canonical_text) {
+    const size_t pos = canonical_text.rfind(L'\n');
+    return (pos == std::wstring_view::npos) ? canonical_text : canonical_text.substr(pos + 1);
+}
+
+// REQ-042 계획-2: under-slice 피드백 툴팁 발동 판정(순수 조합). 네 조건이
+// 전부 참일 때만 발동:
+//   - tail_unchanged_shortcircuit: 위 DeadLedgerTailUnchanged 판정이 참(=
+//     "위에 편집이 있었고, 마지막 줄은 우리 출력 그대로"라는 정확한 상황 —
+//     위양성을 최소화하는 핵심 게이트),
+//   - residue_translatable: verbatim prefix에 아직 번역 대상이 되는 텍스트가
+//     남아 있음(worker가 ShouldTranslate(prefix)로 계산 — 기존 스마트
+//     바이패스 판정과 동일한 정의),
+//   - category_b: 에디터 계열 창(CategoryA 채팅 전송 직후 팝업은 혼란만
+//     주므로 제외),
+//   - callback_registered: 시작 시 등록된 알림 콜백이 있음(없으면 계획-1의
+//     순수 통과 동작으로 무음 저하 — 새로운 무음 삼킴 경로는 생기지 않음).
+// 발동 시에도 paste/선택/레저 상태는 전혀 건드리지 않는다(순수 알림).
+constexpr bool UntranslatedResidueNoticeWarranted(bool tail_unchanged_shortcircuit,
+                                                  bool residue_translatable, bool category_b,
+                                                  bool callback_registered) {
+    return tail_unchanged_shortcircuit && residue_translatable && category_b &&
+           callback_registered;
+}
+
 // F6 (session 260908_0002, verify report 164500 §5/§7, V5 ledger-on-focus-clear
 // defect): the C3 ledger-maintenance `!pasted` arm is subdivided. A paste is
 // ATTEMPTED only when the translation is non-empty and differs from the source
@@ -433,6 +490,19 @@ public:
         empty_capture_cb_ = std::move(cb);
     }
 
+    // REQ-042 (계획-2): called (on the worker thread) exactly when the Enter
+    // path takes the tail-unchanged short-circuit AND the verbatim prefix
+    // still holds translatable text (see UntranslatedResidueNoticeWarranted).
+    // Same contract as SetEmptyCaptureCallback: registered once at startup
+    // BEFORE Start(), read-only afterwards, so the worker thread reads it
+    // without a lock. main.cpp registers a TooltipWindow::ShowMessageThreadSafe
+    // wrapper (the REQ-R10 seam) that surfaces the localized
+    // StringId::TooltipUntranslatedAbove notice - a pure notification; the
+    // predicate guarantees paste/selection/ledger state is untouched here.
+    void SetUntranslatedResidueCallback(std::function<void()> cb) {
+        untranslated_residue_cb_ = std::move(cb);
+    }
+
 private:
     void WorkerLoop(std::stop_token stop_token);
     void ExecuteTask(const PipelineTask& task);
@@ -451,6 +521,10 @@ private:
 
     // R5: set once at startup via SetEmptyCaptureCallback (see contract there).
     std::function<void()> empty_capture_cb_;
+
+    // REQ-042: set once at startup via SetUntranslatedResidueCallback (see
+    // contract there). Single-worker-thread read inside ExecuteTask.
+    std::function<void()> untranslated_residue_cb_;
 
     // REQ-034 F3-B: GetTickCount64() stamp of the last SUCCESSFUL paste
     // (pasted == true branch in ExecuteTask). Read by the empty-capture

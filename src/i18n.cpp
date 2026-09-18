@@ -111,6 +111,15 @@ struct LocalizedStrings {
     // truncation notice. Appended at the end (same trailing-initializer
     // rule) so all 37 aggregate tables only gained one trailing entry.
     const wchar_t* translate_truncated_notice;
+
+    // REQ-005 (M6 T6, design §6.4): engine-host repair guidance. Appended at
+    // the end (same trailing-initializer rule) so all 37 aggregate tables gain
+    // three trailing entries — field order MUST keep matching the Get() switch
+    // and every locale table below.
+    const wchar_t* tooltip_untranslated_above;
+    const wchar_t* repair_in_progress;
+    const wchar_t* repair_failed_title;
+    const wchar_t* repair_failed_body;
 };
 
 // 1. Korean (ko)
@@ -195,7 +204,11 @@ const LocalizedStrings kStringsKorean = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다."
+    L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다.",
+    L"위쪽에 번역되지 않은 새 텍스트가 있습니다. 그 줄 끝에 커서를 두고 Enter를 누를면 번역됩니다.",
+    L"로컬 엔진 구성 요소를 복구하는 중…",
+    L"로컬 번역을 사용할 수 없습니다",
+    L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요."
 };
 
 // 2. Japanese (ja)
@@ -280,7 +293,11 @@ const LocalizedStrings kStringsJapanese = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"テキストが長すぎるため、冒頭と末尾のみを翻訳しました。"
+    L"テキストが長すぎるため、冒頭と末尾のみを翻訳しました。",
+    L"上に翻訳されていない新しいテキストがあります。その行の末尾にカーソルを置いて Enter を押すと翻訳されます。",
+    L"ローカルエンジンコンポーネントを修復しています…",
+    L"ローカル翻訳を利用できません",
+    L"ローカル翻訳エンジンのファイルが見つからないため、翻訳は一時的に停止しています。クラウド（Google）翻訳に切り替えるには、トレイメニューの「翻訳エンジンの選択」から「Google 翻訳」を選んでください。"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -365,7 +382,11 @@ const LocalizedStrings kStringsChineseSimp = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"文本过长，仅翻译了开头和结尾部分。"
+    L"文本过长，仅翻译了开头和结尾部分。",
+    L"上方有未翻译的新文本。将光标置于该行末尾并按 Enter 即可翻译。",
+    L"正在修复本地引擎组件…",
+    L"本地翻译不可用",
+    L"找不到本地翻译引擎文件，翻译已暂时停止。要切换到云（Google）翻译，请在托盘菜单的“选择翻译引擎”中选择“Google 翻译”。"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -450,7 +471,11 @@ const LocalizedStrings kStringsChineseTrad = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"文字過長，僅翻譯了開頭和結尾部分。"
+    L"文字過長，僅翻譯了開頭和結尾部分。",
+    L"上方有未翻譯的新文字。將游標置於該行末尾並按 Enter 即可翻譯。",
+    L"正在修復本機引擎元件…",
+    L"本機翻譯無法使用",
+    L"找不到本機翻譯引擎檔案，翻譯已暫時停止。若要切換到雲端（Google）翻譯，請在系統匣選單的「選擇翻譯引擎」中選取「Google 翻譯」。"
 };
 
 // 5. Vietnamese (vi)
@@ -535,7 +560,11 @@ const LocalizedStrings kStringsVietnamese = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Văn bản quá dài nên chỉ phần đầu và phần cuối được dịch."
+    L"Văn bản quá dài nên chỉ phần đầu và phần cuối được dịch.",
+    L"Có văn bản mới chưa dịch ở trên. Đặt con trỏ ở cuối dòng đó và nhấn Enter để dịch.",
+    L"Đang sửa chữa các thành phần cục bộ…",
+    L"Không thể dùng bản dịch cục bộ",
+    L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”."
 };
 
 // 6. Spanish (es)
@@ -617,7 +646,11 @@ const LocalizedStrings kStringsSpanish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"El texto era demasiado largo: solo se tradujeron el principio y el final."
+    L"El texto era demasiado largo: solo se tradujeron el principio y el final.",
+    L"Hay texto nuevo sin traducir arriba. Coloca el cursor al final de esa línea y pulsa Enter para traducirlo.",
+    L"Reparando los componentes del motor local…",
+    L"Traducción local no disponible",
+    L"No se encuentran los archivos del motor de traducción local, por lo que la traducción se detuvo temporalmente. Para cambiar a la traducción en la nube (Google), elige “Google Translate” en el menú de la bandeja, “Motor de traducción”."
 };
 
 // 7. English (en) - Default Fallback
@@ -703,7 +736,11 @@ const LocalizedStrings kStringsEnglish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"The text was too long, so only its beginning and end were translated."
+    L"The text was too long, so only its beginning and end were translated.",
+    L"There is new untranslated text above. Place the cursor at the end of that line and press Enter to translate it.",
+    L"Repairing the local engine components…",
+    L"Local translation unavailable",
+    L"The local translation engine files are missing, so translation is paused. To switch to cloud (Google) translation, choose “Google Translate” from the tray menu under “Translation engine”."
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -800,7 +837,11 @@ const LocalizedStrings kStringsFrench = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Texte trop long : seul le début et la fin ont été traduits."
+    L"Texte trop long : seul le début et la fin ont été traduits.",
+    L"Il y a un nouveau texte non traduit au-dessus. Placez le curseur à la fin de cette ligne et appuyez sur Entrée pour le traduire.",
+    L"Restauration des composants du moteur local…",
+    L"Traduction locale indisponible",
+    L"Les fichiers du moteur de traduction locale sont introuvables, la traduction est donc suspendue. Pour passer à la traduction cloud (Google), choisissez « Google Traduction » dans le menu de la barre d’état, « Moteur de traduction »."
 };
 
 // 9. German (de)
@@ -885,7 +926,11 @@ const LocalizedStrings kStringsGerman = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Der Text war zu lang: Es wurden nur Anfang und Ende übersetzt."
+    L"Der Text war zu lang: Es wurden nur Anfang und Ende übersetzt.",
+    L"Oben gibt es neuen unübersetzten Text. Setzen Sie den Cursor an das Ende dieser Zeile und drücken Sie die Eingabetaste, um ihn zu übersetzen.",
+    L"Lokale Engine-Komponenten werden repariert…",
+    L"Lokale Übersetzung nicht verfügbar",
+    L"Die Dateien der lokalen Übersetzungsengine fehlen, daher ist die Übersetzung vorübergehend angehalten. Um auf die Cloud-Übersetzung (Google) zu wechseln, wählen Sie im Tray-Menü unter „Übersetzungsengine“ „Google Übersetzer“."
 };
 
 // 10. Russian (ru)
@@ -970,7 +1015,11 @@ const LocalizedStrings kStringsRussian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Текст слишком длинный: переведены только начало и конец."
+    L"Текст слишком длинный: переведены только начало и конец.",
+    L"Выше есть новый непереведенный текст. Поместите курсор в конец этой строки и нажмите Enter, чтобы перевести.",
+    L"Восстановление компонентов локального движка…",
+    L"Локальный перевод недоступен",
+    L"Файлы локального движка перевода не найдены, поэтому перевод приостановлен. Чтобы переключиться на облачный (Google) перевод, выберите «Google Переводчик» в меню области уведомлений, «Движок перевода»."
 };
 
 // 11. Portuguese (pt)
@@ -1055,7 +1104,11 @@ const LocalizedStrings kStringsPortuguese = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Texto longo demais: apenas o início e o fim foram traduzidos."
+    L"Texto longo demais: apenas o início e o fim foram traduzidos.",
+    L"Há texto novo não traduzido acima. Coloque o cursor no final dessa linha e prima Enter para traduzir.",
+    L"A reparar os componentes do motor local…",
+    L"Tradução local indisponível",
+    L"Os ficheiros do motor de tradução local não foram encontrados, pelo que a tradução foi suspensa. Para mudar para a tradução na nuvem (Google), escolha “Google Tradutor” no menu da bandeja, em “Motor de tradução”."
 };
 
 // 12. Italian (it)
@@ -1140,7 +1193,11 @@ const LocalizedStrings kStringsItalian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Testo troppo lungo: sono stati tradotti solo l'inizio e la fine."
+    L"Testo troppo lungo: sono stati tradotti solo l'inizio e la fine.",
+    L"C'è nuovo testo non tradotto sopra. Posiziona il cursore alla fine di quella riga e premi Invio per tradurlo.",
+    L"Riparazione dei componenti del motore locale…",
+    L"Traduzione locale non disponibile",
+    L"I file del motore di traduzione locale non sono stati trovati, quindi la traduzione è sospesa. Per passare alla traduzione cloud (Google), scegli “Google Traduttore” dal menu dell’area di notifica, “Motore di traduzione”."
 };
 
 // 13. Dutch (nl)
@@ -1225,7 +1282,11 @@ const LocalizedStrings kStringsDutch = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"De tekst was te lang: alleen het begin en het einde zijn vertaald."
+    L"De tekst was te lang: alleen het begin en het einde zijn vertaald.",
+    L"Er staat nieuwe onvertaalde tekst hierboven. Plaats de cursor aan het einde van die regel en druk op Enter om te vertalen.",
+    L"Lokale engine-onderdelen herstellen…",
+    L"Lokale vertaling niet beschikbaar",
+    L"De bestanden van de lokale vertaalengine ontbreken, dus de vertaling is onderbroken. Om over te schakelen naar cloud(Google)-vertaling, kies “Google Vertalen” in het menubalkmenu bij “Vertaalengine”."
 };
 
 // 14. Polish (pl)
@@ -1310,7 +1371,11 @@ const LocalizedStrings kStringsPolish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Tekst był zbyt długi: przetłumaczono tylko początek i koniec."
+    L"Tekst był zbyt długi: przetłumaczono tylko początek i koniec.",
+    L"Powyżej znajduje się nowy nieprzetłumaczony tekst. Umieść kursor na końcu tego wiersza i naciśnij Enter, aby przetłumaczyć.",
+    L"Naprawianie lokalnych składników silnika…",
+    L"Tłumaczenie lokalne niedostępne",
+    L"Nie znaleziono plików lokalnego silnika tłumaczenia, więc tłumaczenie zostało wstrzymane. Aby przełączyć się na tłumaczenie w chmurze (Google), wybierz „Google Translate” w menu zasobnika, „Silnik tłumaczenia”."
 };
 
 // 15. Czech (cs)
@@ -1395,7 +1460,11 @@ const LocalizedStrings kStringsCzech = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Text byl příliš dlouhý: přeloženy byly pouze začátek a konec."
+    L"Text byl příliš dlouhý: přeloženy byly pouze začátek a konec.",
+    L"Nahoře je nový nepřeložený text. Umístěte kurzor na konec tohoto řádku a stisknutím Enteru jej přeložte.",
+    L"Oprava místních součástí enginu…",
+    L"Místní překlad není dostupný",
+    L"Soubory místního překladového enginu chybí, takže je překlad pozastaven. Chcete-li přejít na cloudový (Google) překlad, vyberte v nabídce oznamovací oblasti „Google Překladač“ v části „Překladový engine“."
 };
 
 // 16. Hungarian (hu)
@@ -1480,7 +1549,11 @@ const LocalizedStrings kStringsHungarian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"A szöveg túl hosszú: csak az eleje és a vége lett lefordítva."
+    L"A szöveg túl hosszú: csak az eleje és a vége lett lefordítva.",
+    L"Új, le nem fordított szöveg van fent. Helyezze a kurzort a sor végére, és az Enter megnyomásával fordítsa le.",
+    L"A helyi motor összetevőinek javítása…",
+    L"A helyi fordítás nem érhető el",
+    L"A helyi fordítómotor fájljai hiányoznak, ezért a fordítás szünetel. Az átváltáshoz a felhőalapú (Google) fordításra válassza a „Google Fordító” lehetőséget a tálca „Fordítómotor” menüjében."
 };
 
 // 17. Romanian (ro)
@@ -1565,7 +1638,11 @@ const LocalizedStrings kStringsRomanian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Textul era prea lung: au fost traduse doar începutul și sfârșitul."
+    L"Textul era prea lung: au fost traduse doar începutul și sfârșitul.",
+    L"Există text nou netradus mai sus. Plasați cursorul la sfârșitul acelui rând și apăsați Enter pentru a traduce.",
+    L"Se repară componentele motorului local…",
+    L"Traducerea locală nu este disponibilă",
+    L"Fișierele motorului de traducere local lipsesc, deci traducerea este întreruptă. Pentru a trece la traducerea în cloud (Google), alegeți „Google Translate” din meniul barei de sistem, „Motor de traducere”."
 };
 
 // 18. Swedish (sv)
@@ -1650,7 +1727,11 @@ const LocalizedStrings kStringsSwedish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Texten var för lång: endast början och slutet översattes."
+    L"Texten var för lång: endast början och slutet översattes.",
+    L"Det finns ny oöversatt text ovanför. Placera markören i slutet av den raden och tryck på Enter för att översätta.",
+    L"Reparerar de lokala motorkomponenterna…",
+    L"Lokal översättning är inte tillgänglig",
+    L"Filerna för den lokala översättningsmotorn saknas, så översättningen har pausats. För att byta till molnöversättning (Google), välj “Google Översätt” i menyn för systemfältet, “Översättningsmotor”."
 };
 
 // 19. Danish (da)
@@ -1735,7 +1816,11 @@ const LocalizedStrings kStringsDanish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Teksten var for lang: kun starten og slutningen blev oversat."
+    L"Teksten var for lang: kun starten og slutningen blev oversat.",
+    L"Der er ny uoversat tekst ovenfor. Placer markøren i slutningen af den linje, og tryk på Enter for at oversætte.",
+    L"Reparerer de lokale motorkomponenter…",
+    L"Lokal oversættelse er ikke tilgængelig",
+    L"Filerne til den lokale oversættelsesmotor mangler, så oversættelsen er sat på pause. For at skifte til sky-oversættelse (Google) skal du vælge “Google Oversæt” fra bakkemenuen under “Oversættelsesmotor”."
 };
 
 // 20. Finnish (fi)
@@ -1820,7 +1905,11 @@ const LocalizedStrings kStringsFinnish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Teksti oli liian pitkä: vain alku ja loppu käännettiin."
+    L"Teksti oli liian pitkä: vain alku ja loppu käännettiin.",
+    L"Yläpuolella on uutta kääntämätöntä tekstiä. Aseta kohdistin rivin loppuun ja paina Enter kääntääksesi.",
+    L"Korjataan paikallisia moottorikomponentteja…",
+    L"Paikallinen käännös ei ole käytettävissä",
+    L"Paikallisen käännösmoottorin tiedostoja ei löydy, joten käännös on keskeytetty. Vaihtaaksesi pilvikäännökseen (Google) valitse “Google Kääntäjä” ilmoitusalueen valikosta, “Käännösmoottori”."
 };
 
 // 21. Norwegian (no / nb)
@@ -1905,7 +1994,11 @@ const LocalizedStrings kStringsNorwegian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Teksten var for lang: bare starten og slutten ble oversatt."
+    L"Teksten var for lang: bare starten og slutten ble oversatt.",
+    L"Det er ny uoversatt tekst ovenfor. Plasser markøren på slutten av den linjen og trykk Enter for å oversette.",
+    L"Reparerer de lokale motorkomponentene…",
+    L"Lokal oversettelse er ikke tilgjengelig",
+    L"Filene til den lokale oversettelsesmotoren mangler, så oversettelsen er satt på pause. For å bytte til skyoversettelse (Google), velg “Google Oversetter” fra menyen i systemfeltet, “Oversettelsesmotor”."
 };
 
 // 22. Greek (el)
@@ -1990,7 +2083,11 @@ const LocalizedStrings kStringsGreek = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Το κείμενο είναι πολύ μακρύ: μεταφράστηκαν μόνο η αρχή και το τέλος."
+    L"Το κείμενο είναι πολύ μακρύ: μεταφράστηκαν μόνο η αρχή και το τέλος.",
+    L"Υπάρχει νέο μη μεταφρασμένο κείμενο παραπάνω. Τοποθετήστε τον δείκτη στο τέλος εκείνης της γραμμής και πατήστε Enter για μετάφραση.",
+    L"Επισκευή των τοπικών συστατικών μηχανής…",
+    L"Η τοπική μετάφραση δεν είναι διαθέσιμη",
+    L"Τα αρχεία της τοπικής μηχανής μετάφρασης λείπουν, επομένως η μετάφραση έχει διακοπεί. Για να μεταβείτε σε μετάφραση cloud (Google), επιλέξτε «Google Μετάφραση» από το μενού της περιοχής ειδοποιήσεων, «Μηχανή μετάφρασης»."
 };
 
 // 23. Turkish (tr)
@@ -2075,7 +2172,11 @@ const LocalizedStrings kStringsTurkish = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Metin çok uzun olduğu için yalnızca başı ve sonu çevrildi."
+    L"Metin çok uzun olduğu için yalnızca başı ve sonu çevrildi.",
+    L"Yukarıda çevrilmemiş yeni metin var. Çevirmek için imleci o satırın sonuna getirin ve Enter'a basın.",
+    L"Yerel motor bileşenleri onarılıyor…",
+    L"Yerel çeviri kullanılamıyor",
+    L"Yerel çeviri motoru dosyaları bulunamadığı için çeviri duraklatıldı. Bulut (Google) çevirisine geçmek için tepsi menüsünden “Çeviri motoru” altında “Google Çeviri”yi seçin."
 };
 
 // 24. Ukrainian (uk)
@@ -2160,7 +2261,11 @@ const LocalizedStrings kStringsUkrainian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Текст надто довгий: перекладено лише початок і кінець."
+    L"Текст надто довгий: перекладено лише початок і кінець.",
+    L"Вище є новий неперекладений текст. Поставте курсор у кінець цього рядка та натисніть Enter, щоб перекласти.",
+    L"Відновлення компонентів локального рушія…",
+    L"Локальний переклад недоступний",
+    L"Файли локального рушія перекладу не знайдено, тому переклад призупинено. Щоб перейти на хмарний (Google) переклад, виберіть «Google Перекладач» у меню області сповіщень, «Рушій перекладу»."
 };
 
 // 25. Thai (th)
@@ -2245,7 +2350,11 @@ const LocalizedStrings kStringsThai = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"ข้อความยาวเกินไป จึงแปลเฉพาะส่วนต้นและส่วนท้าย"
+    L"ข้อความยาวเกินไป จึงแปลเฉพาะส่วนต้นและส่วนท้าย",
+    L"มีข้อความใหม่ที่ยังไม่ได้แปลด้านบน วางเคอร์เซอร์ที่ท้ายบรรทัดนั้นแล้วกด Enter เพื่อแปล",
+    L"กำลังซ่อมแซมส่วนประกอบเอนจิ้นในเครื่อง…",
+    L"การแปลในเครื่องไม่พร้อมใช้งาน",
+    L"ไม่พบไฟล์เอนจิ้นแปลในเครื่อง จึงหยุดการแปลชั่วคราว หากต้องการสลับไปใช้การแปลบนคลาวด์ (Google) ให้เลือก “Google แปลภาษา” จากเมนูถาดระบบ ที่ “เอนจิ้นการแปล”"
 };
 
 // 26. Indonesian (id)
@@ -2330,7 +2439,11 @@ const LocalizedStrings kStringsIndonesian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Teks terlalu panjang: hanya bagian awal dan akhir yang diterjemahkan."
+    L"Teks terlalu panjang: hanya bagian awal dan akhir yang diterjemahkan.",
+    L"Ada teks baru yang belum diterjemahkan di atas. Letakkan kursor di akhir baris itu dan tekan Enter untuk menerjemahkan.",
+    L"Memperbaiki komponen mesin lokal…",
+    L"Terjemahan lokal tidak tersedia",
+    L"File mesin terjemahan lokal tidak ditemukan, jadi terjemahan dijeda. Untuk beralih ke terjemahan cloud (Google), pilih “Google Terjemahan” dari menu baki, “Mesin terjemahan”."
 };
 
 // 27. Malay (ms)
@@ -2415,7 +2528,11 @@ const LocalizedStrings kStringsMalay = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Teks terlalu panjang: hanya bahagian awal dan akhir diterjemahkan."
+    L"Teks terlalu panjang: hanya bahagian awal dan akhir diterjemahkan.",
+    L"Terdapat teks baru yang belum diterjemahkan di atas. Letakkan kursor di hujung baris itu dan tekan Enter untuk menterjemah.",
+    L"Membaiki komponen enjin tempatan…",
+    L"Terjemahan tempatan tidak tersedia",
+    L"Fail enjin terjemahan tempatan tidak dijumpai, jadi terjemahan dijeda. Untuk bertukar ke terjemahan awan (Google), pilih “Google Terjemah” dari menu dulang, “Enjin terjemahan”."
 };
 
 // 28. Filipino (fil)
@@ -2502,7 +2619,11 @@ const LocalizedStrings kStringsFilipino = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"Masyadong mahaba ang teksto: simula at katapusan lang ang isinalin."
+    L"Masyadong mahaba ang teksto: simula at katapusan lang ang isinalin.",
+    L"May bagong hindi pa isinaling teksto sa itaas. Ilagay ang cursor sa dulo ng linyang iyon at pindutin ang Enter upang isalin.",
+    L"Kinukumpuni ang mga bahagi ng lokal na makina…",
+    L"Hindi available ang lokal na pagsasalin",
+    L"Nawawala ang mga file ng lokal na makina ng pagsasalin, kaya pansamantalang tumigil ang pagsasalin. Para lumipat sa cloud (Google) na pagsasalin, piliin ang “Google Translate” mula sa menu ng tray, “Makina ng pagsasalin”."
 };
 
 // 29. Hindi (hi)
@@ -2587,7 +2708,11 @@ const LocalizedStrings kStringsHindi = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"पाठ बहुत लंबा था: केवल शुरुआत और अंत का अनुवाद किया गया।"
+    L"पाठ बहुत लंबा था: केवल शुरुआत और अंत का अनुवाद किया गया।",
+    L"ऊपर नया अनअनुवादित टेक्स्ट है। उसे अनुवाद करने के लिए कर्सर को उस पंक्ति के अंत में रखें और Enter दबाएं।",
+    L"लोकल इंजन घटकों की मरम्मत हो रही है…",
+    L"लोकल अनुवाद उपलब्ध नहीं है",
+    L"लोकल अनुवाद इंजन की फ़ाइलें नहीं मिलीं, इसलिए अनुवाद रुका हुआ है। क्लाउड (Google) अनुवाद पर जाने के लिए, ट्रे मेनू से “अनुवाद इंजन” में “Google अनुवाद” चुनें।"
 };
 
 // 30. Bengali (bn)
@@ -2672,7 +2797,11 @@ const LocalizedStrings kStringsBengali = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"পাঠ্যটি খুব দীর্ঘ ছিল: শুধু শুরু এবং শেষ অংশ অনুবাদ করা হয়েছে।"
+    L"পাঠ্যটি খুব দীর্ঘ ছিল: শুধু শুরু এবং শেষ অংশ অনুবাদ করা হয়েছে।",
+    L"উপরে নতুন অনুবাদহীন টেক্সট আছে। এটি অনুবাদ করতে কার্সারটি সেই লাইনের শেষে রাখুন এবং Enter চাপুন।",
+    L"লোকাল ইঞ্জিন উপাদান মেরামত হচ্ছে…",
+    L"লোকাল অনুবাদ পাওয়া যাচ্ছে না",
+    L"লোকাল অনুবাদ ইঞ্জিনের ফাইল পাওয়া যায়নি, তাই অনুবাদ স্থগিত হয়েছে। ক্লাউড (Google) অনুবাদে যেতে, ট্রে মেনু থেকে “অনুবাদ ইঞ্জিন”-এ “Google অনুবাদ” নির্বাচন করুন।"
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -2758,7 +2887,11 @@ const LocalizedStrings kStringsArabic = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"النص طويل جدًا: تمت ترجمة البداية والنهاية فقط."
+    L"النص طويل جدًا: تمت ترجمة البداية والنهاية فقط.",
+    L"يوجد نص جديد غير مترجم في الأعلى. ضع المؤشر في نهاية ذلك السطر واضغط Enter للترجمة.",
+    L"جارٍ إصلاح مكونات المحرك المحلي…",
+    L"الترجمة المحلية غير متاحة",
+    L"ملفات محرك الترجمة المحلي مفقودة، لذا تم إيقاف الترجمة مؤقتًا. للتبديل إلى ترجمة السحابة (Google)، اختر “Google ترجمة” من قائمة الشريط ضمن “محرك الترجمة”."
 };
 
 // 32. Persian (fa) — RTL
@@ -2843,7 +2976,11 @@ const LocalizedStrings kStringsPersian = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"متن بسیار بلند بود: فقط ابتدا و انتها ترجمه شد."
+    L"متن بسیار بلند بود: فقط ابتدا و انتها ترجمه شد.",
+    L"در بالا متن جدیدی بدون ترجمه وجود دارد. برای ترجمه، مکان‌نما را در انتهای آن خط قرار دهید و Enter را بزنید.",
+    L"در حال تعمیر اجزای موتور محلی…",
+    L"ترجمه محلی در دسترس نیست",
+    L"فایل‌های موتور ترجمه محلی پیدا نشدند، بنابراین ترجمه متوقف شده است. برای تغییر به ترجمه ابری (Google)، از منوی سینی، «موتور ترجمه»، «Google ترجمه» را انتخاب کنید."
 };
 
 // 33. Urdu (ur) — RTL
@@ -2928,7 +3065,11 @@ const LocalizedStrings kStringsUrdu = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"متن بہت لمبا تھا: صرف آغاز اور انجام کا ترجمہ کیا گیا۔"
+    L"متن بہت لمبا تھا: صرف آغاز اور انجام کا ترجمہ کیا گیا۔",
+    L"اوپر نیا غیر ترجمہ شدہ متن ہے۔ اس کا ترجمہ کرنے کے لیے کرسر کو اس لائن کے آخر میں رکھیں اور Enter دبائیں۔",
+    L"مقامی انجن اجزا کی مرمت جاری ہے…",
+    L"مقامی ترجمہ دستیاب نہیں ہے",
+    L"مقامی ترجمہ انجن کی فائلیں نہیں ملیں، اس لیے ترجمہ روک دیا گیا ہے۔ کلاؤڈ (Google) ترجمے پر جانے کے لیے، ٹرے مینیو سے “ترجمہ انجن” میں “Google ترجمہ” منتخب کریں۔"
 };
 
 // 34. Hebrew (he) — RTL
@@ -3013,7 +3154,11 @@ const LocalizedStrings kStringsHebrew = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"הטקסט ארוך מדי: רק הפתיח והסיום תורגמו."
+    L"הטקסט ארוך מדי: רק הפתיח והסיום תורגמו.",
+    L"יש טקסט חדש שלא תורגם למעלה. מקם את הסמן בסוף השורה ההיא ולחץ Enter כדי לתרגם.",
+    L"מתקן את רכיבי המנוע המקומי…",
+    L"התרגום המקומי אינו זמין",
+    L"קבצי מנוע התרגום המקומי חסרים, לכן התרגום הושהה. כדי לעבור לתרגום בענן (Google), בחרו “Google תרגום” בתפריט השורה, “מנוע תרגום”."
 };
 
 // 35. Khmer (km)
@@ -3098,7 +3243,11 @@ const LocalizedStrings kStringsKhmer = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"អត្ថបទវែងពេក៖ បានបកប្រែតែផ្នែកដើម និងបញ្ចប់ប៉ុណ្ណោះ។"
+    L"អត្ថបទវែងពេក៖ បានបកប្រែតែផ្នែកដើម និងបញ្ចប់ប៉ុណ្ណោះ។",
+    L"មានអត្ថបទថ្មីមិនទាន់បកប្រែខាងលើ។ ដើម្បីបកប្រែ សូមដាក់កូរ៉េស័រនៅចុងបន្ទាត់នោះ ហើយចុច Enter។",
+    L"កំពុងជួសជុលសមាសភាគម៉ាស៊ីនក្នុងម៉ាស៊ីន…",
+    L"ការបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើបានទេ",
+    L"រកមិនឃើញឯកសារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនទេ ដូច្នេះការបកប្រែត្រូវបានផ្អាកជាបណ្តោះអាសន្ន។ ដើម្បីប្តូរទៅការបកប្រែក្នុងពពក (Google) សូមជ្រើសរើស “Google បកប្រែ” ពីម៉ឺនុយ tray នៅ “ម៉ាស៊ីនបកប្រែ”។"
 };
 
 // 36. Lao (lo)
@@ -3183,7 +3332,11 @@ const LocalizedStrings kStringsLao = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"ຂໍ້ຄວາມຍາວເກີນໄປ: ແປສະເພາະສ່ວນຕົ້ນແລະສ່ວນທ້າຍເທົ່ານັ້ນ."
+    L"ຂໍ້ຄວາມຍາວເກີນໄປ: ແປສະເພາະສ່ວນຕົ້ນແລະສ່ວນທ້າຍເທົ່ານັ້ນ.",
+    L"ມີຂໍ້ຄວາມໃໝ່ທີ່ຍັງບໍ່ໄດ້ແປຢູ່ຂ້າງເທິງ. ເພື່ອແປ, ກະລຸນາວາງເຄີເຊີທີ່ທ້າຍບັນທັດນັ້ນ ແລ້ວກົດ Enter.",
+    L"ກຳລັງສ້ອມແປງອົງປະກອບເຄື່ອງຈັກທ້ອງຖິ່ນ…",
+    L"ການແປພາສາທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້",
+    L"ບໍ່ພົບໄຟລ໌ເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ຈຶ່ງຢຸດການແປພາສາຊົ່ວຄາວ. ເພື່ອປ່ຽນໄປໃຊ້ການແປພາສາຄລາວ (Google), ກະລຸນາເລືອກ “Google ແປພາສາ” ຈາກເມນູ tray, “ເຄື່ອງຈັກແປພາສາ”."
 };
 
 // 37. Burmese (my)
@@ -3268,7 +3421,11 @@ const LocalizedStrings kStringsBurmese = {
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
     // (trailing-initializer append; head/tail window applied above the
     // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"စာသား အလွန်ရှည်သဖြင့် အစနှင့် အဆုံးကိုသာ ဘာသာပြန်ဆိုပါသည်။"
+    L"စာသား အလွန်ရှည်သဖြင့် အစနှင့် အဆုံးကိုသာ ဘာသာပြန်ဆိုပါသည်။",
+    L"အပေါ်တွင် ဘာသာပြန်မထားသော စာသားအသစ်ရှိသည်။ ဘာသာပြန်ရန် ကာဆာကို ထိုစာကြောင်းအဆုံးသို့ ထားပြီး Enter နှိပ်ပါ။",
+    L"ပရိုဂရမ်အင်ဂျင်အစိတ်အပိုင်းများကို ပြုပြင်နေသည်…",
+    L"ဒေသန္တရ ဘာသာပြန်ချက် မရနိုင်ပါ",
+    L"ဒေသန္တရ ဘာသာပြန်အင်ဂျင် ဖိုင်များ မတွေ့ပါသဖြင့် ဘာသာပြန်မှုကို ယာယီရပ်နားထားပါသည်။ ကလောင်(Google) ဘာသာပြန်သို့ ပြောင်းလဲရန်၊ tray မီနူး၏ “ဘာသာပြန်အင်ဂျင်” မှ “Google ဘာသာပြန်” ကို ရွေးပါ။"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -3501,6 +3658,11 @@ std::wstring I18n::Get(StringId id) {
         case StringId::PrivacyNoticeBody: return s.privacy_notice_body;
         case StringId::CheatSheetConfigPath: return s.cheatsheet_config_path;
         case StringId::TranslateTruncatedNotice: return s.translate_truncated_notice;
+        case StringId::TooltipUntranslatedAbove: return s.tooltip_untranslated_above;
+        // REQ-005 (M6 T6, design §6.4): engine-host repair guidance.
+        case StringId::RepairInProgress:  return s.repair_in_progress;
+        case StringId::RepairFailedTitle: return s.repair_failed_title;
+        case StringId::RepairFailedBody:  return s.repair_failed_body;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

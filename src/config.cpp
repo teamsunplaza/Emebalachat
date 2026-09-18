@@ -149,6 +149,38 @@ public:
                 if (!ParseString(value)) return false;
             } else if (src_[pos_] == 't' || src_[pos_] == 'f') {
                 if (!ParseBool(value)) return false;
+            } else if (src_[pos_] == '{' || src_[pos_] == '[') {
+                // REQ-043: nested object/array value (the "engine_host"
+                // block). Capture the balanced group verbatim; the caller
+                // re-parses the substring with a second SimpleJsonReader.
+                const char open = src_[pos_];
+                const char close = open == '{' ? '}' : ']';
+                int depth = 0;
+                const size_t start = pos_;
+                bool in_string = false;
+                while (pos_ < src_.size()) {
+                    const char c = src_[pos_];
+                    if (in_string) {
+                        if (c == '\\') {
+                            ++pos_; // skip the escaped char
+                        } else if (c == '\"') {
+                            in_string = false;
+                        }
+                    } else if (c == '\"') {
+                        in_string = true;
+                    } else if (c == open) {
+                        ++depth;
+                    } else if (c == close) {
+                        --depth;
+                        if (depth == 0) {
+                            ++pos_;
+                            value = std::string(src_.substr(start, pos_ - start));
+                            break;
+                        }
+                    }
+                    ++pos_;
+                }
+                if (depth != 0) return false; // unbalanced -> whole parse fails
             } else {
                 // Read raw primitive (number/null/etc) until comma or brace
                 size_t start = pos_;
@@ -249,6 +281,40 @@ private:
     std::string_view src_;
     size_t pos_;
 };
+
+// REQ-043: parse the nested "engine_host" object captured verbatim by the
+// reader above. Existing-field convention applies: absent keys keep the
+// current (default-initialized) values; a malformed block keeps ALL defaults;
+// idle_exit_ms is validated as an integer — 0/negative restore the default
+// policy, values above the 24h ceiling clamp, unparseable resets to default
+// (the top_k clamp/reset precedent).
+void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
+    SimpleJsonReader reader(raw);
+    std::vector<std::pair<std::string, std::string>> pairs;
+    if (!reader.ParseObject(pairs)) {
+        return; // malformed block: keep defaults
+    }
+    for (const auto& [k, v] : pairs) {
+        if (k == "enabled") {
+            out.enabled = (v == "true");
+        } else if (k == "spawn") {
+            out.spawn = (v == "true");
+        } else if (k == "idle_exit_ms") {
+            try {
+                const long long ms = std::stoll(v);
+                if (ms <= 0) {
+                    out.idle_exit_ms = 600000; // 0 means "use the default policy"
+                } else if (ms > 86400000LL) {
+                    out.idle_exit_ms = 86400000; // 24 h ceiling
+                } else {
+                    out.idle_exit_ms = static_cast<int>(ms);
+                }
+            } catch (...) {
+                out.idle_exit_ms = 600000; // unparseable -> default
+            }
+        }
+    }
+}
 
 } // namespace
 
@@ -965,6 +1031,14 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"sound_enabled\": " << (sound_enabled.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
     ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
+    // REQ-043 (plan §5.1-2): the engine_host block is ALWAYS serialized so a
+    // round trip preserves the values (same sticky-key policy as the Phase 3
+    // language keys).
+    ss << "  \"engine_host\": {\n";
+    ss << "    \"enabled\": " << (engine_host.enabled ? "true" : "false") << ",\n";
+    ss << "    \"spawn\": " << (engine_host.spawn ? "true" : "false") << ",\n";
+    ss << "    \"idle_exit_ms\": " << engine_host.idle_exit_ms << "\n";
+    ss << "  },\n";
     ss << "  \"diag_log_enabled\": " << (diag_log_enabled ? "true" : "false") << ",\n";
     ss << "  \"diag_log_content\": " << (diag_log_content ? "true" : "false") << ",\n";
     ss << "  \"privacy_notice_shown\": " << (privacy_notice_shown ? "true" : "false") << ",\n";
@@ -1024,6 +1098,10 @@ bool AppConfig::FromJsonString(std::string_view json) {
             drag_to_translate = (v == "true");
         } else if (k == "cloud_fallback_enabled") {
             cloud_fallback_enabled = (v == "true");
+        } else if (k == "engine_host") {
+            // REQ-043: nested block captured verbatim by the reader; absent
+            // on every pre-REQ-043 config.json => the defaults survive.
+            ParseEngineHostBlock(v, engine_host);
         } else if (k == "diag_log_enabled") {
             // REQ-201: key absent on every pre-260911 config.json => the field
             // keeps its compile-time default false (opt-in log FILE sink — the

@@ -8,6 +8,10 @@
 #include <string_view>
 #include <vector>
 
+// REQ-043: the persisted engine_host block type (self-contained client
+// header — see engine_host_client.hpp for the copy-into-other-apps contract).
+#include "engine_host_client.hpp"
+
 namespace emebalachat {
 
 // Represents a supported translation language with ISO code and localized names.
@@ -308,6 +312,28 @@ struct AppConfig {
     // nor as the auto engine when no local model is installed. Translation returns
     // empty instead (the worker already handles empty gracefully). Default false.
     bool cloud_fallback_enabled = false;
+    // REQ-043 (plan §5.1-2): shared-inference-host routing block, persisted
+    // as the nested "engine_host" object in config.json:
+    //   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000 }
+    //   * enabled      — host-first routing at the local-engine seam. On ANY
+    //                    host failure the app converges to the §V2-8.6 chain:
+    //                    one-click repair -> consent-gated cloud (when enabled)
+    //                    -> explicit unavailability notice. Default true: with
+    //                    no host binary present local translation is DISABLED
+    //                    (changed behavior — the app no longer silently skips
+    //                    the local seam; §V2-8.6, REQ-043).
+    //   * spawn        — CreateProcess the host on demand after a failed pipe
+    //                    connect (plan §5.1-4), else retry against a running
+    //                    host only.
+    //   * idle_exit_ms — the HOST-side idle-exit budget (plan §4.4; default
+    //                    600000 = 10 min). Protocol v1 has no configuration
+    //                    channel, so the value is persisted here for
+    //                    observability/forward-compat; the host currently
+    //                    applies its own default (hidden --idle-exit-ms test
+    //                    hook). Startup-only write, no Snapshot entry needed
+    //                    (same discipline as cloud_fallback_enabled).
+    EngineHostConfig engine_host;
+
     // REQ-201/202 (session 260911_0002): MASTER switch for the diagnostic
     // log FILE itself. Default FALSE — release posture is NO log file at all:
     // Init() defers the file open and main.cpp applies this field through

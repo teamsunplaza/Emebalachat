@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "diag_logger.hpp"
 #include "engine.hpp"
+#include "engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): startup repair bootstrapper
 #include "vulkan_guard.hpp" // P5-F1: driverless-machine Vulkan pre-probe + stub guard
 #include "hook.hpp"
 #include "i18n.hpp"
@@ -22,6 +23,7 @@
 #include "worker.hpp"
 
 #include <windows.h>
+#include <bcrypt.h>   // REQ-005 (M6 T6): CNG SHA-256 for the repair HashProvider
 #include <objbase.h>
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
@@ -29,11 +31,15 @@
 #include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
 #include <cstdio>
 #include <deque>    // SEC-B5: language-sync request queue (no pointer in LPARAM)
+#include <filesystem> // REQ-005 (M6 T6): CngSha256Hex path
 #include <functional> // R6 Phase 1 (B3): language-sync coordinator std::function
 #include <mutex>      // R6 Phase 3 (audit item 7): drag job slot guard; SEC-B5: queue guard
 #include <string_view>
 #include <thread> // REQ-R1: drag-icon click worker (copy+translate off the GUI thread)
 #include <utility>    // SEC-B5: std::move on the by-value queue transport
+#include <vector> // REQ-005 (M6 T6): CNG hash buffers
+
+#pragma comment(lib, "bcrypt.lib") // REQ-005 (M6 T6): CNG SHA-256 (repair HashProvider)
 
 namespace emebalachat {
 
@@ -154,6 +160,10 @@ SystemTray* g_pTray = nullptr;
 KeyboardHook* g_pHook = nullptr;
 FloatingBadge* g_pBadge = nullptr;
 MouseHook* g_pMouseHook = nullptr; // REQ-R14 resume/unlock re-registration
+// REQ-005 (M6 T6): stable address of the startup-tooltip for the detached
+// repair thread (main() is a fixed frame; the pointer is set right after
+// tooltip.Create and cleared at shutdown, mirroring g_pBadge).
+TooltipWindow* g_pTooltip = nullptr;
 
 // ---- REQ-R14 (audit §5 latent item 2): hook lifecycle timers ----
 // kTimerHookReinstall: debounced (coalesced) reinstall triggered by
@@ -306,6 +316,65 @@ static_assert(kClipboardChangeTimeoutMs * 2 + kDragCopyRetryBackoffMs <= 250,
 } // namespace
 
 } // namespace emebalachat
+
+// REQ-005 (M6 T6): the repair HashProvider wired to Windows CNG. The Chat exe
+// is llama-free (no engine_core link, design §4.2), so it cannot reuse the
+// engine-side ComputeFileSha256 — this local CNG implementation is the app-side
+// hash the bootstrapper's injection seam accepts (design §1.3 note). Global
+// namespace: it is called from main(), outside namespace emebalachat.
+bool CngSha256Hex(const std::filesystem::path& file, std::string& out_hex) {
+    out_hex.clear();
+    const HANDLE h = ::CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE || !h) {
+        return false;
+    }
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = false;
+    std::vector<BYTE> obj;
+    constexpr DWORD kBuf = 64 * 1024;
+    std::vector<BYTE> buf(kBuf);
+    if (::BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                      BCRYPT_HASH_REUSABLE_FLAG) == 0) {
+        DWORD obj_len = 0, data_len = 0;
+        ::BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&obj_len),
+                            sizeof(obj_len), &data_len, 0);
+        obj.resize(obj_len);
+        if (::BCryptCreateHash(alg, &hash, obj.data(), obj_len, nullptr, 0,
+                               BCRYPT_HASH_REUSABLE_FLAG) == 0) {
+            bool read_ok = true;
+            DWORD read = 0;
+            while (::ReadFile(h, buf.data(), kBuf, &read, nullptr) && read > 0) {
+                if (::BCryptHashData(hash, buf.data(), read, 0) != 0) {
+                    read_ok = false;
+                    break;
+                }
+            }
+            // A failed ReadFile whose last error is neither success nor a clean
+            // EOF means the stream was truncated/unreadable; refuse the hash.
+            if (::GetLastError() != ERROR_SUCCESS && ::GetLastError() != ERROR_HANDLE_EOF) {
+                read_ok = false;
+            }
+            if (read_ok) {
+                BYTE digest[32] = {};
+                if (::BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0) {
+                    static const char kHex[] = "0123456789abcdef";
+                    out_hex.reserve(64);
+                    for (BYTE b : digest) {
+                        out_hex.push_back(kHex[b >> 4]);
+                        out_hex.push_back(kHex[b & 0x0F]);
+                    }
+                    ok = true;
+                }
+            }
+        }
+    }
+    if (hash) ::BCryptDestroyHash(hash);
+    if (alg) ::BCryptCloseAlgorithmProvider(alg, 0);
+    ::CloseHandle(h);
+    return ok && out_hex.size() == 64;
+}
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
     (void)hPrevInstance;
@@ -594,6 +663,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // H2 consent gate: propagate the privacy-first cloud_fallback_enabled flag so
     // the engine never silently transmits typed text to Google without consent.
     engine.SetCloudFallbackEnabled(config.cloud_fallback_enabled);
+    // REQ-043: push the persisted engine_host block. No embedded engine:
+    // host-first routing, and on ANY host failure the chain is
+    // spawn -> one-click repair -> consent-gated cloud -> feature-unavailable
+    // notice (plan §V2-8.6); the engine router owns that policy (plan §5.4).
+    engine.SetEngineHostConfig(config.engine_host);
 
     // 6. Create Hidden Controller Window for Tray & Message Pump
     WNDCLASSEXW wc = {};
@@ -673,33 +747,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         config.SaveToFile();
     });
 
-    // Asynchronously warm up local model in background so first translation is instantaneous (< 100ms)
-    //
-    // REQ-F4a: the old gate was file-existence-only, so a cloud-only config
-    // (engine=google + cloud_fallback=0 - 260908 session log L3) still paid the
-    // ~1.4 s llama.cpp tokenizer/context load (L10-11) plus the model's RAM for
-    // a model Translate() can never route to under that explicit pin
-    // (RefreshActiveEngine keeps active_type_ on GoogleTranslate). The decision
-    // lives in the pure, unit-pinned ShouldPreloadLocalModel seam (engine.hpp
-    // contract, same discipline as PlanTranslationRouting). Runtime tray
-    // switches to local now get their own async preload (REQ-004, see
-    // on_select_engine below); the lazy-load fallback via
-    // LlamaEngine::EnsureLoaded on the first local Translate() remains as the
-    // self-healing second path (skip/failed preload, model-missing-then-added).
-    std::thread warmup_thread;
-    const bool local_model_present = engine.IsLocalModelAvailable();
-    if (emebalachat::ShouldPreloadLocalModel(engine_type, config.cloud_fallback_enabled,
-                                             local_model_present)) {
-        warmup_thread = std::thread([&engine]() {
-            engine.PreloadLocalModel();
-        });
-    } else if (local_model_present) {
-        // The skip is only newsworthy when a model file WAS present (absence
-        // was always a silent no-thread path). Startup-only direct field reads
-        // are I4-legal here (no worker/hook thread exists yet).
-        DIAG_LOG("SESSION", "local engine preload skipped reason=cloud-only engine=%s cloud_fallback=%d",
-                 config.engine_type.c_str(), config.cloud_fallback_enabled ? 1 : 0);
-    }
+    // REQ-043 (M6 T5, plan §V2-8.6): the STARTUP WARMUP THREAD is removed with
+    // the embedded engine. There is no resident model to preload — the local
+    // source is the shared inference host (Emebala.Engine.exe), whose worker
+    // process spawns on demand at the first host request. Startup work is now
+    // only a session-shape log line so the 260908-style "what did startup do"
+    // question stays answerable from diagnostics.
+    DIAG_LOG("SESSION", "local serving = shared engine host (embedded engine removed, REQ-043 M6 T5); host_available=%d",
+             engine.IsLocalModelAvailable() ? 1 : 0);
 
     // 8. Initialize System Tray with Callbacks
     emebalachat::SystemTray tray;
@@ -715,6 +770,62 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     emebalachat::TooltipWindow tooltip;
     tooltip.Create(hInstance);
+    emebalachat::g_pTooltip = &tooltip; // REQ-005 (M6 T6): repair-thread access
+
+    // REQ-005 (M6 T6, plan §V2-8.3 + §V2-8.6, design §9 R-3b): engine-host
+    // repair bootstrapper. Runs AFTER the first-run privacy gate (above) and
+    // BEFORE the engine serves anything, but does NOT block startup: the
+    // presence check is a handful of filesystem existence probes, and any
+    // repair is a detached background thread (no UI/worker blocking).
+    //   * all components present  -> nothing to do.
+    //   * missing + a repair URL is compiled in -> silent background repair;
+    //     on success the local source becomes serveable on the next request
+    //     (the host spawns on demand), on failure the transient tooltip
+    //     surfaces the localized "repair unavailable" guidance (never silent).
+    //   * missing + NO URL (the shipped default) -> the same guidance now.
+    // The repair thread is detached and best-effort; it touches no user text.
+    {
+        namespace bs = emebalachat::engine_host_bootstrap;
+        const bs::ComponentCheckResult check = bs::CheckComponents();
+        if (!check.missing.empty()) {
+            DIAG_LOG("ENGINEHOST",
+                     "bootstrap/000: components missing (count=%zu engine_dir=%d models_dir=%d); converging the §V2-8.6 UX chain",
+                     check.missing.size(), check.engine_dir_resolved ? 1 : 0,
+                     check.models_dir_resolved ? 1 : 0);
+            const std::string url(bs::CompiledRepairUrl());
+            if (!url.empty()) {
+                // Silent background repair (§V2-8.3). The hash seam is wired to
+                // the app's client-side SHA-256 (engine_core ComputeFileSha256,
+                // re-exported via engine.hpp); the unit tests inject a mock.
+                std::thread([missing = check.missing, url]() {
+                    const bs::RepairOutcome outcome =
+                        bs::RepairMissingComponents(missing, url, CngSha256Hex);
+                    if (outcome == bs::RepairOutcome::Repaired) {
+                        DIAG_LOG("ENGINEHOST", "bootstrap/016: repair finished; local source serveable");
+                        return; // no notice — the host spawns on the next request
+                    }
+                    // Repair failed (offline / bad pin / disabled): surface the
+                    // localized guidance once on the GUI thread (transient).
+                    POINT cur;
+                    if (!::GetCursorPos(&cur)) cur = {0, 0};
+                    emebalachat::g_pTooltip->ShowMessageThreadSafe(
+                        cur.x, cur.y,
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                }).detach();
+            } else {
+                // No repair URL compiled in (design §9 R-3b: the shipped
+                // default) — "repair unavailable" is the honest answer; surface
+                // the guidance immediately rather than failing silently.
+                POINT cur;
+                if (!::GetCursorPos(&cur)) cur = {0, 0};
+                tooltip.ShowMessageThreadSafe(
+                    cur.x, cur.y,
+                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+            }
+        }
+    }
 
     // R5 (Debug-Surgical): surface the Enter-path empty-capture failure that
     // was previously silent. Same contract as the drag-path failure notice
@@ -733,6 +844,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tooltip.ShowMessageThreadSafe(cur.x, cur.y,
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
+    });
+
+    // REQ-042 (계획-2, session 260917_0002): under-slice feedback notice. The
+    // worker calls this (on the pipeline worker thread) exactly when the Enter
+    // path takes the tail-unchanged short-circuit while the verbatim prefix
+    // still holds translatable text (UntranslatedResidueNoticeWarranted) -
+    // the REQ-041 under-slice surfaced as policy, not a silent failure. Same
+    // contract as SetEmptyCaptureCallback above: registered once BEFORE
+    // worker.Start(), ShowMessageThreadSafe is the REQ-R10 thread-safe seam.
+    worker.SetUntranslatedResidueCallback([&tooltip]() {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipUntranslatedAbove));
     });
 
     // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;
@@ -1027,30 +1155,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         hook.ToggleActive();
     };
 
-    // REQ-004 (session 260910_0003): async background preload when the tray
-    // selects the local engine. The old path only set the engine type and
-    // persisted config, leaving the first local translation to pay the
-    // synchronous ~7 s model load (260910 report). The tray callback runs on
-    // the GUI thread, so the load moves to a dedicated worker thread; the
-    // decision itself lives in the pure, unit-pinned ShouldPreloadOnEngineSwitch
-    // seam (engine.hpp), same discipline as the ShouldPreloadLocalModel startup
-    // gate above.
-    // Lifecycle: `engine_switch_preload_thread` is joined at shutdown next to
-    // warmup_thread (deterministic teardown, REQ-R16), and its in-flight load
-    // is unwound by engine.RequestCancel() via the llama.cpp
-    // progress_callback before that join - so the join is bounded and the
-    // thread can never touch `engine` after main() returns. NO detach.
-    std::thread engine_switch_preload_thread;
-    // Duplicate guard: exchange claims the single in-flight slot. A second
-    // tray pick while a preload is still loading is skipped outright (005);
-    // after a preload finishes, a later switch spawns a fresh thread that
-    // hits LlamaEngine::EnsureLoaded's idempotent fast path (already loaded +
-    // same path -> immediate true), which is cheap and self-healing if a
-    // model path change ever invalidated the resident load. The flag is
-    // cleared by the worker as its LAST action, so join() on a claimed slot
-    // (below) waits only for thread teardown, never for a load.
-    std::atomic<bool> preload_inflight{ false };
-
+    // REQ-043 (M6 T5, plan §V2-8.6): the REQ-004 tray-switch PRELOAD machinery
+    // is removed with the embedded engine. Switching to "local" now only
+    // re-points routing at the shared inference host — the host's worker
+    // process spawns on demand at the first host request, so there is no
+    // resident model to warm up and no preload thread to join at shutdown.
     trayCallbacks.on_select_engine = [&](int engine_idx) {
         // REQ-029-B (design §2.1 change 4): the tray engine switch was a
         // complete log blind spot (decisions.md 2026-09-07 11:40 item 3 -
@@ -1074,46 +1183,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
                engine.GetActiveEngineName().c_str());
 
-        // REQ-004: switch-to-local triggers the background preload AFTER the
-        // synchronous switch/persist/refresh above (which is fast: locked
-        // setters + config write), so the callback still returns immediately
-        // and the tray menu closes without the 7 s stall. A switch to cloud
-        // deliberately does nothing: a running local model would become dead
-        // weight (the REQ-F4a RAM rule), and UnloadLocalModel has no runtime
-        // caller anywhere today - unloading here would be a NEW behavior
-        // outside this fix's scope.
-        if (engine_idx != 0) {
-            // I4: locked snapshot read; the worker/hook threads cannot mutate
-            // model availability (set only via SetModelPath/RefreshActiveEngine).
-            const bool model_present = engine.IsLocalModelAvailable();
-            if (emebalachat::ShouldPreloadOnEngineSwitch(emebalachat::EngineType::LocalLlama,
-                                                         model_present)) {
-                if (!preload_inflight.exchange(true, std::memory_order_acq_rel)) {
-                    DIAG_F("MAIN/on_select_engine/003: async local model preload dispatched (background)\n");
-                    // Reap the previous completed preload thread before
-                    // reassigning (a joinable std::thread's assignment
-                    // operator calls std::terminate). Bounded per the guard
-                    // contract above: the old worker already finished its load.
-                    if (engine_switch_preload_thread.joinable()) {
-                        engine_switch_preload_thread.join();
-                    }
-                    engine_switch_preload_thread = std::thread(
-                        [&engine, &preload_inflight]() {
-                            const bool ok = engine.PreloadLocalModel();
-                            DIAG_F("MAIN/on_select_engine/004: async local model preload %s\n",
-                                   ok ? "complete" : "FAILED (first local translation will retry)");
-                            preload_inflight.store(false, std::memory_order_release);
-                        });
-                } else {
-                    DIAG_F("MAIN/on_select_engine/005: local preload already in flight; duplicate request skipped\n");
-                }
-            } else {
-                // Model file absent: nothing to preload. Translate() stays
-                // honest via LocalModelMissing (REQ-029-B), same as before
-                // this change; the log makes the skip traceable.
-                DIAG_F("MAIN/on_select_engine/006: local preload skipped reason=model-missing\n");
-            }
-        }
+        // REQ-043 (M6 T5): no preload follows the switch. Availability of the
+        // newly selected local source (the shared host) is visible in the
+        // engine name the 002 line already logs; the first local Translate()
+        // spawns the host's worker on demand.
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the
@@ -2085,22 +2158,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //
     // REQ-R16 (audit §5 latent item 4): deterministic, cancellation-first
     // teardown. Order matters:
-    //  a) engine.RequestCancel() latches the llama.cpp stop flag. An in-flight
-    //     decode unwinds at the next token boundary (the decode loop checks
-    //     between steps; the CPU path also aborts mid-batch via
-    //     llama_context_params.abort_callback), and an in-progress model-load
-    //     on the WARMUP thread unwinds via llama_model_params.progress_callback.
-    //     Without this latch, hook.Stop()/worker.Stop() below could block for
-    //     seconds inside a 512-token generation, and the process could exit
-    //     while the warmup thread still held llama.cpp state (zombie thread ->
-    //     leaked CUDA context at process teardown).
-    //  b) The old code NEVER joined warmup_thread: a still-loading thread
-    //     destroyed as joinable std::thread called std::terminate. It is now
-    //     bounded-joined after the cancel latch.
-    //  c) WaitInferenceIdle gives the bounded (2 s) confirmation that no
-    //     llama.cpp call is still on any thread before the backend is freed
-    //     by ~TranslationManager (llama_free/llama_model_free/
-    //     llama_backend_free ordering: ctx before model, both before backend).
+    //  a) engine.RequestCancel() latches the shutdown flag. REQ-043 (M6 T5):
+    //     with the embedded engine gone there is no llama decode/warmup to
+    //     unwind — the latch now short-circuits the surviving engines: an
+    //     in-flight or queued cloud WinHTTP request and an in-flight
+    //     engine-host pipe request report Canceled instead of starting work
+    //     that could transmit user text after an exit intent, and every
+    //     subsequent Translate() short-circuits.
+    //  b) WaitInferenceIdle gives the bounded (2 s) confirmation that no
+    //     Translate() is still in flight (the engine mutex is held across the
+    //     whole cloud/host request) before the manager is destroyed.
     engine.RequestCancel();
     mouse_hook.Stop();
     hook.Stop();
@@ -2148,18 +2215,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // empty; the swap-out releases any residue's std::string memory before
     // teardown continues.
     emebalachat::DrainLanguageSyncQueue(); // discard any residue
-    if (warmup_thread.joinable()) {
-        warmup_thread.join(); // bounded: load aborts via progress_callback
-    }
-    // REQ-004: same lifecycle discipline as warmup_thread directly above -
-    // engine.RequestCancel() (latched at the top of this teardown) aborts a
-    // still-running preload via the llama.cpp progress_callback, so this join
-    // is bounded. After it, no thread can touch `engine` before destruction.
-    if (engine_switch_preload_thread.joinable()) {
-        engine_switch_preload_thread.join();
-    }
+    // REQ-043 (M6 T5): the warmup_thread / engine_switch_preload_thread joins
+    // are removed with the preload machinery — no preload thread exists
+    // anymore, so no join is needed and no thread can touch `engine` before
+    // destruction (all producers joined above via Stop()/Join() calls).
     if (!engine.WaitInferenceIdle(2000)) {
-        DIAG_F("MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (decode loop may still be winding down)\n");
+        DIAG_F("MAIN/Shutdown/004: engine did not report idle within 2 s; forcing teardown (a host/cloud request may still be winding down)\n");
     }
     if (emebalachat::g_hPowerWnd) {
         ::WTSUnRegisterSessionNotification(emebalachat::g_hPowerWnd);
@@ -2181,6 +2242,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::g_pHook = nullptr;
     emebalachat::g_pBadge = nullptr;
     emebalachat::g_pTray = nullptr;
+    emebalachat::g_pTooltip = nullptr; // REQ-005 (M6 T6): release the repair-thread view
     emebalachat::g_hControllerWnd = nullptr;
 
     config.SaveToFile();
