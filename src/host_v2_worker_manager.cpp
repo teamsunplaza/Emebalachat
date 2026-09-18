@@ -654,14 +654,27 @@ void WorkerManager::ShutdownAll() {
             }
         }
     }
-    // Graceful stop outside the lock (it blocks on the child for ≤ timeout).
+    // REQ-043 (M6 fix, session 260918_0001): GracefulStop must run WITHOUT
+    // the manager mutex — it takes the same lock in its step-1 scope and
+    // again in its step-3 scope. With the pre-fix code the mutex was already
+    // held here, so the GracefulStop lock acquisitions self-deadlocked; the
+    // process then hit the CRT's deadlock timeout fail-fast (exit 0xc0000409,
+    // observed 4/5 reproduction runs after a real worker-spawned translate)
+    // instead of the designed exit 0. Each GracefulStop call now fetches its
+    // own handle under a brief lock, stops the child (blocking <= its
+    // timeout), then the orphan guard re-locks for the final sweep (design
+    // §1.1 rule 5 unchanged).
+    for (const auto& family : targets) {
+        WorkerHandle* w = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            w = impl_->FindLocked(family);
+        }
+        if (w) (void)GracefulStop(*w);
+    }
+    // Orphan guard: anything still standing is killed (design §1.1 rule 5).
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
-        for (const auto& family : targets) {
-            WorkerHandle* w = impl_->FindLocked(family);
-            if (w) (void)GracefulStop(*w);
-        }
-        // Orphan guard: anything still standing is killed (design §1.1 rule 5).
         for (auto& w : impl_->workers) {
             impl_->ClosePipeLocked(w);
             if (w.process) {
