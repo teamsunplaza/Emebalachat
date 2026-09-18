@@ -75,6 +75,10 @@
 #include "host_v2_worker_manager.hpp"   // §V2-3 worker lifecycle (T3)
 #include "worker_protocol.hpp"          // second frozen contract (frames)
 #include "engine_host_registry.hpp"     // registry.json (model_id/profile resolution)
+// REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
+// kModelsDirRel / kTokenFilename) — replaces the local definitions that
+// used to live at L119-121 below.
+#include "engine_host_paths.hpp"        // REQ-044: shared path constants
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -116,9 +120,9 @@ namespace {
 
 // ---- constants --------------------------------------------------------------
 constexpr wchar_t kSingleInstanceMutexName[] = L"Local\\EmebalaEngine_Host_SingleInstance";
-constexpr wchar_t kEngineDirRel[] = L"Emebala\\Common\\engine";
-constexpr wchar_t kModelDirRel[] = L"Emebala\\Common\\models";
-constexpr wchar_t kTokenFilename[] = L"token";
+// REQ-044 (P4-2): kEngineDirRel / kModelDirRel / kTokenFilename moved to
+// engine_host_paths.hpp (paths::kEngineDirRel etc.).
+namespace paths = emebalachat::enginehost::paths;
 constexpr size_t kPipeInstanceCount = 4; // §4.1 minimum (PER pipe name)
 constexpr int kIdlePollMs = 250;
 constexpr int64_t kJobWatchdogPollMs = 50;
@@ -182,18 +186,18 @@ std::wstring LocalAppDataDir() {
 
 std::wstring EngineDir() {
     const std::wstring lad = LocalAppDataDir();
-    return lad.empty() ? std::wstring{} : lad + L"\\" + kEngineDirRel;
+    return lad.empty() ? std::wstring{} : lad + L"\\" + paths::kEngineDirRel;
 }
 
 std::wstring TokenPath() {
     const std::wstring dir = EngineDir();
-    return dir.empty() ? std::wstring{} : dir + L"\\" + kTokenFilename;
+    return dir.empty() ? std::wstring{} : dir + L"\\" + paths::kTokenFilename;
 }
 
 std::wstring ModelPathW() {
     const std::wstring lad = LocalAppDataDir();
     if (lad.empty()) return {};
-    return lad + L"\\" + kModelDirRel + L"\\" +
+    return lad + L"\\" + paths::kModelsDirRel + L"\\" +
            std::wstring(kPinnedModelFilename.begin(), kPinnedModelFilename.end());
 }
 

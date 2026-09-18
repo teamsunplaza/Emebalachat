@@ -53,6 +53,9 @@
 #include "diag_logger.hpp"           // shape-only diagnostics
 #include "unicode_utils.hpp"         // ToUtf8 / ToUtf16
 #include "vulkan_guard.hpp"          // P5-F1 driverless-machine guard
+// REQ-044 (P4-2): shared engine-host path constants (kModelsDirRel) —
+// replaces the inline literal that used to be at the model-path site below.
+#include "engine_host_paths.hpp"     // REQ-044: shared path constants
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -258,9 +261,11 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
         lad = known;
         ::CoTaskMemFree(known);
     }
+    // REQ-044 (P4-2): the inline L"Emebala\\Common\\models\\" literal is
+    // now paths::kModelsDirRel (engine_host_paths.hpp).
     const std::string model_path = lad.empty()
         ? std::string{}
-        : emebalachat::ToUtf8(lad + L"\\Emebala\\Common\\models\\" +
+        : emebalachat::ToUtf8(lad + L"\\" + emebalachat::enginehost::paths::kModelsDirRel + L"\\" +
                               std::wstring(emebalachat::kPinnedModelFilename.begin(),
                                            emebalachat::kPinnedModelFilename.end()));
     if (model_path.empty()) {

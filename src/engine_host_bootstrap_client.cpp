@@ -24,6 +24,11 @@
 #include "engine.hpp"               // kPinnedModelFilename (engine_core re-export)
 #include "engine_host_json_util.hpp" // JsonParseObject / FindField (frozen primitives)
 #include "unicode_utils.hpp"        // ToUtf8 / ToUtf16
+// REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
+// kModelsDirRel / kOrchestratorExe / kWorkerExe / kWorkerManifest /
+// kRegistryJson) — replaces the local definitions that used to live at
+// L44-49 below.
+#include "engine_host_paths.hpp"    // REQ-044: shared path constants
 
 // Fallback when the macro is somehow absent (a hand-rolled build that skipped
 // CMake). Mirrors the CMake empty branch: expand to an empty string so the
@@ -40,13 +45,9 @@ namespace engine_host_bootstrap {
 
 namespace {
 
-// ---- the fixed component set (plan §7.1 / host_main.cpp kEngineDirRel) -----
-constexpr wchar_t kEngineDirRel[] = L"Emebala\\Common\\engine";
-constexpr wchar_t kModelsDirRel[] = L"Emebala\\Common\\models";
-constexpr wchar_t kOrchestratorExe[] = L"Emebala.Engine.exe";
-constexpr wchar_t kWorkerExe[] = L"Emebalachat.Engine.ggml-translate.exe";
-constexpr wchar_t kWorkerManifest[] = L"worker.manifest";
-constexpr wchar_t kRegistryJson[] = L"registry.json";
+// REQ-044 (P4-2): the fixed component set (plan §7.1). Path constants moved
+// to engine_host_paths.hpp (paths::kEngineDirRel etc.).
+namespace paths = emebalachat::enginehost::paths;
 
 // The required components, in check order. The model filename comes from the
 // pinned kPinnedModelFilename (engine_core re-export via engine.hpp).
@@ -84,7 +85,7 @@ bool FileExists(const std::filesystem::path& p) {
 }
 
 std::filesystem::path RootDir(RequiredComponent::Root root) {
-    return CommonDir(root == RequiredComponent::Root::Engine ? kEngineDirRel : kModelsDirRel);
+    return CommonDir(root == RequiredComponent::Root::Engine ? paths::kEngineDirRel : paths::kModelsDirRel);
 }
 
 std::string RootPrefix(RequiredComponent::Root root) {
