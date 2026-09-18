@@ -34,6 +34,9 @@ models/
 installer/output/
 *.iss.bak
 
+# Cloudflare wrangler local cache (deploy tooling state, regenerable)
+.wrangler/
+
 # Local runtime configs & temporary files
 config.json
 *.tmp
