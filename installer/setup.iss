@@ -439,6 +439,32 @@ Name: "autostart"; Description: "{cm:TaskAutoStart}"
 ; ------------------------------------------------------------------------
 [Files]
 Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
+; REQ-043 (shared inference host, plan emebala-engine-host-shared-inference
+; §7.1, 2026-09-17 v1.0): bundle the background host Emebala.Engine.exe into
+; the per-user COMMON store (%LOCALAPPDATA%\Emebala\Common\engine) shared by
+; all Emebala apps, so any number of them keep a single GPU-resident model.
+; Install/replace is gated by the ShouldInstallEngineHost() Check (engine.version
+; compare: missing/older => install, equal/newer => skip). uninsneveruninstall
+; is REQUIRED: the file is shared, so Inno's own uninstall must NOT remove it -
+; the plan §7.3 last-app check in [Code] (CurUninstallStepChanged) deletes the
+; common engine/models only when no other Emebala app remains installed.
+; No skipifsourcedoesntexist on purpose: a missing build\Emebala.Engine.exe
+; must fail the compile (the host is a mandatory release component).
+Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineHost
+; REQ-006/M6 (engine-host v2, plan §V2-8.2, design §6.2): bundle the
+; ggml-translate worker exe and its worker.manifest into the SAME per-user
+; COMMON store as the orchestrator. The orchestrator spawns the worker by
+; exe-adjacent lookup only (T4 dispatcher contract), so both files must sit
+; next to Emebala.Engine.exe. Install/replace is gated by the
+; ShouldInstallEngineWorker() Check (components.json 'ggml-translate' rule A
+; decision + no-llama file-absence guard). uninsneveruninstall matches the
+; orchestrator entry: the plan §7.3 last-app check in [Code]
+; (CurUninstallStepChanged) deletes the whole common engine dir only when
+; no other Emebala app remains installed. skipifsourcedoesntexist is the
+; no-llama defense: a build tree without the worker (ENABLE_LLAMA_FETCH=OFF)
+; silently omits the entry (the Check also returns False in that case).
+Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorker
+Source: "..\build\worker.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorker
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; REQ-207/208 (session 260911_0002 T6, design 144800 §2.3): bundle the README so
 ; the first-run privacy notice's "re-read this anytime in the README file"
@@ -524,6 +550,39 @@ const
   // to the llama.cpp parser.
   EXPECTED_MODEL_SHA256 = '5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4';
 
+  // REQ-043 (shared inference host, plan §7.1/§7.2): fixed common-store paths.
+  // All Emebala apps resolve these single locations for the host binary, the
+  // host version stamp and the shared model; the constants keep ExpandConstant
+  // targets in one place.
+  ENGINE_HOST_FILENAME = 'Emebala.Engine.exe';
+  ENGINE_VERSION_FILENAME = 'engine.version';
+  COMMON_ENGINE_DIR = '{localappdata}\Emebala\Common\engine';
+  COMMON_MODELS_DIR = '{localappdata}\Emebala\Common\models';
+  // REQ-043: bundled host version, injected by the ISPP preprocessor from
+  // [Setup] AppVersion at compile time - single source of truth (the Pascal-
+  // script SetupSetting() API is not available on every Inno 6.x compiler).
+  // engine.version records this value for the next Emebala installer.
+  ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}';
+
+  // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
+  // component-model constants for the v2 installer decision rule A.
+  // COMPONENTS_FILENAME: the shared per-user components registry written by
+  //   every v2+ installer (%LOCALAPPDATA%\Emebala\Common\engine\components.json).
+  // WORKER_FILENAME: the ggml-translate worker exe (T3 build artifact).
+  // WORKER_MANIFEST_FILENAME: the worker manifest deployed next to the exe.
+  // ENGINE_*_ABI_VERSION: pinned ABI versions of the bundled orchestrator (2)
+  //   and worker (1). A mismatch or absence of the installed value triggers
+  //   replacement per rule A.
+  // ENGINE_WORKER_ENGINE / ENGINE_WORKER_ENGINE_VERSION: pinned backend identity
+  //   recorded in components.json (design §3.3 schema).
+  COMPONENTS_FILENAME = 'components.json';
+  WORKER_FILENAME = 'Emebalachat.Engine.ggml-translate.exe';
+  WORKER_MANIFEST_FILENAME = 'worker.manifest';
+  ENGINE_ORCHESTRATOR_ABI_VERSION = 2;
+  ENGINE_WORKER_ABI_VERSION = 1;
+  ENGINE_WORKER_ENGINE = 'llama.cpp';
+  ENGINE_WORKER_ENGINE_VERSION = 'b6099';
+
   // Uninstaller rename bypass: fixed ARP uninstall subkey. Must match the
   // {AppId}_is1 layout Inno derives from AppId in [Setup]; kept as a global
   // constant because PascalScript does not support local const sections.
@@ -532,6 +591,13 @@ const
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
+  // REQ-043: set by ShouldInstallEngineHost() when this run installs/replaces
+  // the shared host; consumed at ssPostInstall to (re)write engine.version.
+  EngineHostUpdated: Boolean;
+  // REQ-006/M6: set by ShouldInstallEngineWorker() when this run installs/
+  // replaces the ggml-translate worker exe; consumed at ssPostInstall to
+  // (re)write the worker entry in components.json.
+  EngineWorkerUpdated: Boolean;
   // B-3 (session 260910_0002, architect plan 1.4): About page (after
   // wpWelcome) and Usage Guide page (after wpInstalling, before Finish).
   // CreateOutputMsgMemoPage returns TOutputMsgMemoWizardPage (NOT the
@@ -547,6 +613,910 @@ var
   // and consumed by DownloadModel() in ssPostInstall.
   ConsentPage: TInputOptionWizardPage;
   ModelDeclined: Boolean;
+
+// ------------------------------------------------------------------------
+// CompareVersionText - REQ-043: numeric compare of dotted version stamps
+// such as '0.10.1'. Returns >0 when A > B, 0 when equal, <0 when A < B.
+// Missing components compare as 0 ('0.10' = '0.10.0'); non-numeric garbage
+// parses as 0, which naturally makes an unreadable engine.version stamp
+// "older than anything" (i.e. reinstall the host).
+// ------------------------------------------------------------------------
+function CompareVersionText(const A, B: String): Integer;
+var
+  IA, IB: Integer;
+  NA, NB: Integer;
+begin
+  IA := 1;
+  IB := 1;
+  while (IA <= Length(A)) or (IB <= Length(B)) do
+  begin
+    NA := 0;
+    while (IA <= Length(A)) and (A[IA] <> '.') do
+    begin
+      if (A[IA] >= '0') and (A[IA] <= '9') then
+        NA := NA * 10 + (Ord(A[IA]) - Ord('0'));
+      IA := IA + 1;
+    end;
+    NB := 0;
+    while (IB <= Length(B)) and (B[IB] <> '.') do
+    begin
+      if (B[IB] >= '0') and (B[IB] <= '9') then
+        NB := NB * 10 + (Ord(B[IB]) - Ord('0'));
+      IB := IB + 1;
+    end;
+    if NA <> NB then
+    begin
+      if NA > NB then
+        Result := 1
+      else
+        Result := -1;
+      Exit;
+    end;
+    IA := IA + 1;
+    IB := IB + 1;
+  end;
+  Result := 0;
+end;
+
+// ------------------------------------------------------------------------
+// JsonSkipWs - REQ-006/M6 helper: advance Idx past spaces, tabs, CR and LF.
+// ------------------------------------------------------------------------
+procedure JsonSkipWs(const S: String; var Idx: Integer);
+begin
+  while (Idx <= Length(S)) and ((S[Idx] = ' ') or (S[Idx] = #9) or
+        (S[Idx] = #13) or (S[Idx] = #10)) do
+    Idx := Idx + 1;
+end;
+
+// ------------------------------------------------------------------------
+// JsonParseKey - REQ-006/M6 helper: parse a double-quoted JSON key at Idx.
+// Advances Idx past the closing quote. Returns the raw key text or ''.
+// ------------------------------------------------------------------------
+function JsonParseKey(const S: String; var Idx: Integer): String;
+var
+  SB: String;
+  C: Integer;
+begin
+  Result := '';
+  if (Idx > Length(S)) or (S[Idx] <> '"') then
+    Exit;
+  Idx := Idx + 1;
+  SB := '';
+  while Idx <= Length(S) do
+  begin
+    if S[Idx] = '\' then
+    begin
+      if Idx + 1 > Length(S) then
+        Exit; // dangling escape: unparseable
+      C := Ord(S[Idx + 1]);
+      case C of
+        Ord('"'): SB := SB + '"';
+        Ord('\'): SB := SB + '\';
+        Ord('/'): SB := SB + '/';
+        Ord('b'): SB := SB + #8;
+        Ord('f'): SB := SB + #12;
+        Ord('n'): SB := SB + #10;
+        Ord('r'): SB := SB + #13;
+        Ord('t'): SB := SB + #9;
+      else
+        Exit; // \uXXXX escapes do not appear in our fixed schema: unparseable
+      end;
+      Idx := Idx + 2;
+    end
+    else if S[Idx] = '"' then
+    begin
+      Idx := Idx + 1;
+      Result := SB;
+      Exit;
+    end
+    else
+    begin
+      SB := SB + S[Idx];
+      Idx := Idx + 1;
+    end;
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// JsonParseString - REQ-006/M6 helper: parse a double-quoted JSON string at
+// Idx. Advances Idx past the closing quote. Returns the raw value or ''.
+// ------------------------------------------------------------------------
+function JsonParseString(const S: String; var Idx: Integer): String;
+begin
+  Result := JsonParseKey(S, Idx); // identical production: quoted string
+end;
+
+// ------------------------------------------------------------------------
+// JsonParseInt - REQ-006/M6 helper: parse a JSON integer at Idx. Advances
+// Idx past the last digit. Returns the value, or 0 when no digits follow.
+// (A real 0 is indistinguishable from failure here; the fixed-schema
+//  caller treats 0 as "absent" because every pinned abi_version is >= 1.)
+// ------------------------------------------------------------------------
+function JsonParseInt(const S: String; var Idx: Integer): Integer;
+var
+  N: Integer;
+begin
+  Result := 0;
+  N := 0;
+  while (Idx <= Length(S)) and (S[Idx] >= '0') and (S[Idx] <= '9') do
+  begin
+    if N < 1000000 then
+      N := N * 10 + (Ord(S[Idx]) - Ord('0'));
+    Idx := Idx + 1;
+  end;
+  Result := N;
+end;
+
+// ------------------------------------------------------------------------
+// JsonSkipValue - REQ-006/M6 helper: skip one JSON value (object, array,
+// string, number, true/false/null) starting at Idx. Nested structures are
+// skipped recursively by brace/bracket depth. Idx ends on the first
+// character AFTER the value.
+// ------------------------------------------------------------------------
+procedure JsonSkipValue(const S: String; var Idx: Integer);
+var
+  Depth: Integer;
+begin
+  JsonSkipWs(S, Idx);
+  if Idx > Length(S) then
+    Exit;
+  if S[Idx] = '{' then
+  begin
+    Depth := 0;
+    while Idx <= Length(S) do
+    begin
+      if S[Idx] = '{' then
+        Depth := Depth + 1
+      else if S[Idx] = '}' then
+      begin
+        Depth := Depth - 1;
+        if Depth = 0 then
+        begin
+          Idx := Idx + 1;
+          Exit;
+        end;
+      end;
+      Idx := Idx + 1;
+    end;
+  end
+  else if S[Idx] = '[' then
+  begin
+    Depth := 0;
+    while Idx <= Length(S) do
+    begin
+      if S[Idx] = '[' then
+        Depth := Depth + 1
+      else if S[Idx] = ']' then
+      begin
+        Depth := Depth - 1;
+        if Depth = 0 then
+        begin
+          Idx := Idx + 1;
+          Exit;
+        end;
+      end;
+      Idx := Idx + 1;
+    end;
+  end
+  else if S[Idx] = '"' then
+  begin
+    Idx := Idx + 1;
+    while Idx <= Length(S) do
+    begin
+      if S[Idx] = '\' then
+        Idx := Idx + 1
+      else if S[Idx] = '"' then
+      begin
+        Idx := Idx + 1;
+        Exit;
+      end;
+      Idx := Idx + 1;
+    end;
+  end
+  else
+  begin
+    // number / true / false / null: consume until , } ] or whitespace
+    while (Idx <= Length(S)) and (S[Idx] <> ',') and (S[Idx] <> '}') and
+          (S[Idx] <> ']') and (S[Idx] <> ' ') and (S[Idx] <> #9) and
+          (S[Idx] <> #13) and (S[Idx] <> #10) do
+      Idx := Idx + 1;
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// ComponentNeedsReplace - REQ-006/M6 (plan §V2-8.1 rule A, design §6.1):
+// decide whether ONE component entry in an existing components.json needs
+// replacement by this installer's bundle.
+//
+// Minimal string-search parser (M-3: the installer reads the FIXED key order
+// schema_version -> components -> orchestrator -> version -> abi_version, so
+// the parser presumes that same serialization order - matching the T2 C++
+// parser contract in src/engine_host_components.cpp).
+//
+// Replace = True when ANY of:
+//   * the named entry is absent from components{}
+//   * entry exists but abi_version is absent OR lower than the bundle pin
+//   * abi equal but version string is lexicographically lower than bundled
+// Keep = True when the installed abi is HIGHER than the bundle pin (a newer
+//   generation of the same app family installed it), or abi+version match.
+//
+// Parse failure (malformed JSON, wrong types, unexpected key order) is
+// ALWAYS treated as "needs replace" - fail-closed, matching the C++ parser's
+// fail-closed posture (ENGINEHOST/Components/001..009 codes).
+// ------------------------------------------------------------------------
+function ComponentNeedsReplace(const ComponentsJson, ComponentName: String;
+                               BundledAbi: Integer;
+                               const BundledVersion: String): Boolean;
+var
+  Idx: Integer;
+  Key: String;
+  EntryStart: Integer;
+  EntryEnd: Integer;
+  EntryText: String;
+  EIdx: Integer;
+  EKey: String;
+  HaveAbi: Boolean;
+  AbiVal: Integer;
+  HaveVer: Boolean;
+  VerVal: String;
+begin
+  Result := True; // fail-closed default
+  Idx := 1;
+  JsonSkipWs(ComponentsJson, Idx);
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> '{') then
+  begin
+    Log('REQ-006: components.json not an object - treating all components as absent (rule A-1).');
+    Exit;
+  end;
+  Idx := Idx + 1;
+  JsonSkipWs(ComponentsJson, Idx);
+  // Fixed key order M-3: schema_version first.
+  Key := JsonParseKey(ComponentsJson, Idx);
+  if Key <> 'schema_version' then
+  begin
+    Log('REQ-006: components.json key order mismatch (schema_version first expected) - fail-closed replace.');
+    Exit;
+  end;
+  JsonSkipWs(ComponentsJson, Idx);
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+  begin
+    Log('REQ-006: components.json malformed (no colon after schema_version).');
+    Exit;
+  end;
+  Idx := Idx + 1;
+  JsonSkipWs(ComponentsJson, Idx);
+  if JsonParseInt(ComponentsJson, Idx) <> 1 then
+  begin
+    Log('REQ-006: components.json schema_version != 1 - fail-closed replace.');
+    Exit;
+  end;
+  JsonSkipWs(ComponentsJson, Idx);
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ',') then
+  begin
+    Log('REQ-006: components.json malformed (no comma after schema_version).');
+    Exit;
+  end;
+  Idx := Idx + 1;
+  JsonSkipWs(ComponentsJson, Idx);
+  // Fixed key order M-3: components second.
+  Key := JsonParseKey(ComponentsJson, Idx);
+  if Key <> 'components' then
+  begin
+    Log('REQ-006: components.json key order mismatch (components second expected) - fail-closed replace.');
+    Exit;
+  end;
+  JsonSkipWs(ComponentsJson, Idx);
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+  begin
+    Log('REQ-006: components.json malformed (no colon after components).');
+    Exit;
+  end;
+  Idx := Idx + 1;
+  JsonSkipWs(ComponentsJson, Idx);
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> '{') then
+  begin
+    Log('REQ-006: components.json malformed (components is not an object).');
+    Exit;
+  end;
+  Idx := Idx + 1;
+  // Scan the components{} object for the named entry, tolerating unknown
+  // sibling entries (forward-compatible with future families).
+  while Idx <= Length(ComponentsJson) do
+  begin
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] = '}') then
+    begin
+      // End of components{} without finding the named entry -> absent.
+      Log('REQ-006: component "' + ComponentName + '" not present in components.json (rule A-1: absent entry => replace).');
+      Exit; // Result already True
+    end;
+    Key := JsonParseKey(ComponentsJson, Idx);
+    if Key = '' then
+    begin
+      Log('REQ-006: components.json unparseable key inside components{} - fail-closed replace.');
+      Exit;
+    end;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+    begin
+      Log('REQ-006: components.json malformed (no colon after component key).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    EntryStart := Idx;
+    JsonSkipValue(ComponentsJson, Idx);
+    EntryEnd := Idx - 1;
+    if SameText(Key, ComponentName) then
+    begin
+      // Found the entry: parse its fixed-order inner fields.
+      EntryText := Copy(ComponentsJson, EntryStart, EntryEnd - EntryStart + 1);
+      EIdx := 1;
+      JsonSkipWs(EntryText, EIdx);
+      if (EIdx > Length(EntryText)) or (EntryText[EIdx] <> '{') then
+      begin
+        Log('REQ-006: component "' + ComponentName + '" entry is not an object - fail-closed replace.');
+        Exit;
+      end;
+      EIdx := EIdx + 1;
+      HaveAbi := False;
+      AbiVal := 0;
+      HaveVer := False;
+      VerVal := '';
+      // Fixed key order M-3: version first, then abi_version.
+      JsonSkipWs(EntryText, EIdx);
+      if (EIdx <= Length(EntryText)) and (EntryText[EIdx] = '"') then
+      begin
+        EKey := JsonParseKey(EntryText, EIdx);
+        if EKey <> 'version' then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" key order mismatch (version first expected) - fail-closed replace.');
+          Exit;
+        end;
+        JsonSkipWs(EntryText, EIdx);
+        if (EIdx > Length(EntryText)) or (EntryText[EIdx] <> ':') then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" malformed (no colon after version).');
+          Exit;
+        end;
+        EIdx := EIdx + 1;
+        JsonSkipWs(EntryText, EIdx);
+        if (EIdx > Length(EntryText)) or (EntryText[EIdx] <> '"') then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" version is not a string - fail-closed replace.');
+          Exit;
+        end;
+        VerVal := JsonParseString(EntryText, EIdx);
+        HaveVer := True;
+        JsonSkipWs(EntryText, EIdx);
+        if (EIdx <= Length(EntryText)) and (EntryText[EIdx] = ',') then
+          EIdx := EIdx + 1;
+      end;
+      JsonSkipWs(EntryText, EIdx);
+      if (EIdx <= Length(EntryText)) and (EntryText[EIdx] = '"') then
+      begin
+        EKey := JsonParseKey(EntryText, EIdx);
+        if EKey <> 'abi_version' then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" key order mismatch (abi_version expected after version) - fail-closed replace.');
+          Exit;
+        end;
+        JsonSkipWs(EntryText, EIdx);
+        if (EIdx > Length(EntryText)) or (EntryText[EIdx] <> ':') then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" malformed (no colon after abi_version).');
+          Exit;
+        end;
+        EIdx := EIdx + 1;
+        JsonSkipWs(EntryText, EIdx);
+        AbiVal := JsonParseInt(EntryText, EIdx);
+        if AbiVal <= 0 then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" abi_version is not a positive integer - fail-closed replace.');
+          Exit;
+        end;
+        HaveAbi := True;
+      end;
+      // Entry parse complete: apply rule A-2.
+      if HaveAbi then
+      begin
+        if AbiVal < BundledAbi then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" abi ' +
+              IntToStr(AbiVal) + ' < bundled ' + IntToStr(BundledAbi) +
+              ' => replace.');
+          Exit; // Result already True
+        end;
+        if AbiVal > BundledAbi then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" abi ' +
+              IntToStr(AbiVal) + ' > bundled ' + IntToStr(BundledAbi) +
+              ' => keep (newer generation).');
+          Result := False;
+          Exit;
+        end;
+      end;
+      // abi equal or absent on both sides: compare version when both known.
+      if HaveVer and (VerVal <> '') and (BundledVersion <> '') then
+      begin
+        if CompareVersionText(BundledVersion, VerVal) > 0 then
+        begin
+          Log('REQ-006: component "' + ComponentName + '" version "' + VerVal +
+              '" older than bundled "' + BundledVersion + '" => replace.');
+          Exit; // Result already True
+        end;
+      end;
+      // Installed entry matches or is newer: keep.
+      Result := False;
+      Log('REQ-006: component "' + ComponentName + '" matches or is newer than the bundle => keep.');
+      Exit;
+    end;
+    // Unknown entry: skip to the next key (Idx already past the value).
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx <= Length(ComponentsJson)) and (ComponentsJson[Idx] = ',') then
+      Idx := Idx + 1;
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// ShouldInstallEngineHost - REQ-006/M6 (plan §V2-8.1 rule A, design §6.1):
+// Check function for the bundled [Files] entry of the shared host
+// Emebala.Engine.exe (the v2 orchestrator). The shared common store may
+// already hold a host placed by another Emebala app.
+//
+// Decision rule A (2026-09-18 user decision, plan §V2-8.1):
+//   components.json ABSENT  -> ALWAYS replace (rule A-1: a missing
+//     components file identifies a v1-generation install; the version-string
+//     comparison against engine.version is SKIPPED here so the fixed-version
+//     (0.10.1) equal-skip hole in the v1 rule can never strand a v1 host).
+//   components.json PRESENT -> replace when ComponentNeedsReplace says the
+//     'orchestrator' entry (or, defensively, the 'ggml-translate' entry) is
+//     absent/older than this bundle.
+//
+// The v1 engine.version stamp is STILL written alongside components.json
+// (frozen v1 contract, plan §V2-8.1) - see WriteEngineVersionFile().
+// Side effect: latches EngineHostUpdated for WriteEngineVersionFile() and
+// WriteComponentsFile().
+// ------------------------------------------------------------------------
+function ShouldInstallEngineHost(): Boolean;
+var
+  ComponentsPath: String;
+  // LoadStringFromFile takes an AnsiString var param (Inno 6 Unicode), so the
+  // file is loaded into an AnsiString and converted; the file is ASCII.
+  ComponentsAnsi: AnsiString;
+  ComponentsJson: String;
+begin
+  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  Result := True;
+  if not FileExists(ComponentsPath) then
+  begin
+    // Rule A-1: components.json absent = v1-generation install -> replace
+    // unconditionally. The v1 engine.version comparison is deliberately
+    // skipped (design §6.1 decision A; closes the equal-version skip hole).
+    Log('REQ-006: components.json absent - rule A-1: shared engine host will be (re)installed unconditionally.');
+  end
+  else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
+  begin
+    ComponentsJson := Trim(ComponentsAnsi);
+    Result := ComponentNeedsReplace(ComponentsJson, 'orchestrator',
+                                    ENGINE_ORCHESTRATOR_ABI_VERSION,
+                                    ENGINE_BUNDLED_VERSION)
+           or ComponentNeedsReplace(ComponentsJson, 'ggml-translate',
+                                    ENGINE_WORKER_ABI_VERSION,
+                                    ENGINE_BUNDLED_VERSION);
+    if not Result then
+      Log('REQ-006: components.json present and up-to-date - keeping existing shared engine host.');
+  end
+  else
+  begin
+    // components.json exists but cannot be read: fail-closed, replace.
+    Log('REQ-006: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
+  end;
+  EngineHostUpdated := Result;
+  if Result then
+    Log('REQ-006: shared engine host will be (re)installed.');
+end;
+
+// ------------------------------------------------------------------------
+// ShouldInstallEngineWorker - REQ-006/M6 (plan §V2-8.2): Check function for
+// the bundled [Files] entries of the ggml-translate worker exe and its
+// worker.manifest. Mirrors ShouldInstallEngineHost but targets the
+// 'ggml-translate' component entry only.
+//
+// No-llama defense (design §4.1 / T3 report): when the build tree lacks
+// build\Emebalachat.Engine.ggml-translate.exe (ENABLE_LLAMA_FETCH=OFF), the
+// Check returns False so the [Files] entries are skipped silently - the
+// resulting installation has no local worker, the orchestrator reports
+// 'unavailable' for the translate family, and the app degrades to the
+// cloud-only path (plan §V2-8.2). The ISCC compile itself is unaffected
+// because the matching [Files] entries carry skipifsourcedoesntexist.
+//
+// Side effect: latches EngineWorkerUpdated for WriteComponentsFile().
+// ------------------------------------------------------------------------
+function ShouldInstallEngineWorker(): Boolean;
+var
+  ComponentsPath: String;
+  WorkerExePath: String;
+  ComponentsAnsi: AnsiString;
+  ComponentsJson: String;
+begin
+  EngineWorkerUpdated := False;
+  // No-llama guard: without the worker exe in the build tree there is
+  // nothing to install - skip silently (file absence -> False).
+  WorkerExePath := ExpandConstant('{src}') + '\..\build\' + WORKER_FILENAME;
+  if not FileExists(WorkerExePath) then
+  begin
+    Log('REQ-006: worker exe not present in the build tree (no-llama build) - skipping worker [Files] entries.');
+    Result := False;
+    Exit;
+  end;
+  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  Result := True;
+  if not FileExists(ComponentsPath) then
+  begin
+    // Rule A-1: components.json absent = v1-generation install -> replace.
+    Log('REQ-006: components.json absent - rule A-1: worker will be installed unconditionally.');
+  end
+  else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
+  begin
+    ComponentsJson := Trim(ComponentsAnsi);
+    Result := ComponentNeedsReplace(ComponentsJson, 'ggml-translate',
+                                    ENGINE_WORKER_ABI_VERSION,
+                                    ENGINE_BUNDLED_VERSION);
+    if not Result then
+      Log('REQ-006: components.json present and ggml-translate up-to-date - keeping existing worker.');
+  end
+  else
+  begin
+    Log('REQ-006: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
+  end;
+  EngineWorkerUpdated := Result;
+  if Result then
+    Log('REQ-006: worker will be (re)installed.');
+end;
+
+// ------------------------------------------------------------------------
+// StopRunningEngineHost - REQ-043/REQ-006: best-effort taskkill of a running
+// shared host AND its ggml-translate worker before [Files] replacement so
+// the copy cannot hit a locked exe. The host auto-respawns on the next
+// translation request and any in-flight client falls back to the cloud or
+// to an unavailable notice (M6 embedded removal), so stopping both
+// mid-upgrade is safe. Failure is non-fatal: Inno's file-in-use retry
+// dialog is the backstop.
+//
+// REQ-006/M6: the worker (Emebalachat.Engine.ggml-translate.exe) is spawned
+// on demand by the orchestrator; killing the host alone would leave the
+// worker running with a stale pipe. Both must be stopped.
+// ------------------------------------------------------------------------
+procedure StopRunningEngineHost();
+var
+  ResultCode: Integer;
+begin
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ENGINE_HOST_FILENAME,
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('REQ-043: taskkill ' + ENGINE_HOST_FILENAME + ' issued, exit code ' +
+        IntToStr(ResultCode))
+  else
+    Log('REQ-043: taskkill could not be started; continuing anyway.');
+  // REQ-006/M6: also stop the ggml-translate worker.
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + WORKER_FILENAME,
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('REQ-006: taskkill ' + WORKER_FILENAME + ' issued, exit code ' +
+        IntToStr(ResultCode))
+  else
+    Log('REQ-006: worker taskkill could not be started; continuing anyway.');
+end;
+
+// ------------------------------------------------------------------------
+// WriteEngineVersionFile - REQ-043 (plan §7.1): stamp the common engine dir
+// with the bundled host version (= this app's AppVersion) so the next
+// Emebala installer can apply the same compare rule. Only written when this
+// run actually installed/replaced the host (EngineHostUpdated latch).
+// FROZEN v1 contract: kept alongside WriteComponentsFile() (REQ-006/M6) -
+// plan §V2-8.1: "v1 engine.version 기록/비교 규칙 자체는 동결 유지".
+// ------------------------------------------------------------------------
+procedure WriteEngineVersionFile();
+var
+  VersionPath: String;
+begin
+  if not EngineHostUpdated then
+    Exit;
+  VersionPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + ENGINE_VERSION_FILENAME;
+  if SaveStringToFile(VersionPath, ENGINE_BUNDLED_VERSION, False) then
+    Log('REQ-043: engine.version written: ' + VersionPath + ' = ' +
+        ENGINE_BUNDLED_VERSION)
+  else
+    Log('REQ-043: WARNING could not write ' + VersionPath);
+end;
+
+// ------------------------------------------------------------------------
+// WriteComponentsFile - REQ-006/M6 (plan §V2-8.1, design §6.3): write the
+// components.json document into the common engine dir, recording the
+// versions/ABIs of every component this installer actually (re)installed.
+// Runs in parallel with WriteEngineVersionFile() at ssPostInstall.
+//
+// Partial-update merge (design §6.3 / §V2-8.2): entries belonging to OTHER
+// Emebala apps (future ct2/onnx families installed by Reader, custom user
+// entries) are PRESERVED. When an existing parseable components.json is
+// found, its non-owned entries are carried over verbatim; only the
+// 'orchestrator' and/or 'ggml-translate' entries are rewritten (and only
+// when the corresponding install latch says this run replaced them).
+//
+// SAFE FAILURE PATH (design §6.3): when the existing components.json cannot
+// be parsed (key order deviates from the M-3 fixed order, malformed JSON,
+// wrong types, ...), the procedure REFUSES to overwrite the file with a
+// fresh document - silently dropping another app's entries would corrupt
+// the shared install state. It logs a warning and leaves the file untouched
+// for manual repair. The only case that writes a brand-new document is when
+// no components.json exists at all (fresh install).
+//
+// M-3 fixed key order (matches the T2 C++ parser and the WriteComponentsFile
+// output serializer):
+//   top-level : schema_version, components
+//   entry     : version, abi_version, (worker adds engine, engine_version)
+// The worker entry also records the pinned backend identity per design §3.3:
+//   {"version":"0.10.1","abi_version":1,"engine":"llama.cpp","engine_version":"b6099"}
+//
+// The upgrade-gate record field ("gates": {} — plan §V2-10) is intentionally
+// omitted: the T2 C++ parser ignores unknown fields, but keeping the emitted
+// schema minimal avoids implying an automated gate log that does not yet
+// exist (M6 defers gate recording to a manual procedure).
+// ------------------------------------------------------------------------
+procedure WriteComponentsFile();
+var
+  ComponentsPath: String;
+  ComponentsAnsi: AnsiString;
+  ComponentsJson: String;
+  OutJson: String;
+  Idx: Integer;
+  Key: String;
+  EntryStart: Integer;
+  EntryEnd: Integer;
+  EntryText: String;
+  HaveOrchestrator: Boolean;
+  HaveWorker: Boolean;
+  FirstEntry: Boolean;
+begin
+  if (not EngineHostUpdated) and (not EngineWorkerUpdated) then
+    Exit;
+  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  OutJson := '';
+  if FileExists(ComponentsPath) then
+  begin
+    if not LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
+    begin
+      Log('REQ-006: WARNING existing components.json unreadable; leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    ComponentsJson := Trim(ComponentsAnsi);
+    // ---- parse existing document (fail-closed on any deviation) ----------
+    HaveOrchestrator := False;
+    HaveWorker := False;
+    Idx := 1;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> '{') then
+    begin
+      Log('REQ-006: WARNING existing components.json is not an object; leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    JsonSkipWs(ComponentsJson, Idx);
+    Key := JsonParseKey(ComponentsJson, Idx);
+    if Key <> 'schema_version' then
+    begin
+      Log('REQ-006: WARNING existing components.json key order mismatch (schema_version first expected); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+    begin
+      Log('REQ-006: WARNING existing components.json malformed (no colon after schema_version); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    JsonSkipWs(ComponentsJson, Idx);
+    if JsonParseInt(ComponentsJson, Idx) <> 1 then
+    begin
+      Log('REQ-006: WARNING existing components.json schema_version != 1; leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ',') then
+    begin
+      Log('REQ-006: WARNING existing components.json malformed (no comma after schema_version); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    JsonSkipWs(ComponentsJson, Idx);
+    Key := JsonParseKey(ComponentsJson, Idx);
+    if Key <> 'components' then
+    begin
+      Log('REQ-006: WARNING existing components.json key order mismatch (components second expected); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+    begin
+      Log('REQ-006: WARNING existing components.json malformed (no colon after components); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    JsonSkipWs(ComponentsJson, Idx);
+    if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> '{') then
+    begin
+      Log('REQ-006: WARNING existing components.json malformed (components is not an object); leaving it untouched (safe-failure path).');
+      Exit;
+    end;
+    Idx := Idx + 1;
+    // ---- walk entries, preserving every non-owned entry verbatim ---------
+    OutJson := '{"schema_version":1,"components":{';
+    FirstEntry := True;
+    while Idx <= Length(ComponentsJson) do
+    begin
+      JsonSkipWs(ComponentsJson, Idx);
+      if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] = '}') then
+        break;
+      Key := JsonParseKey(ComponentsJson, Idx);
+      if Key = '' then
+      begin
+        Log('REQ-006: WARNING existing components.json unparseable key inside components{}; leaving it untouched (safe-failure path).');
+        Exit;
+      end;
+      JsonSkipWs(ComponentsJson, Idx);
+      if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then
+      begin
+        Log('REQ-006: WARNING existing components.json malformed (no colon after component key); leaving it untouched (safe-failure path).');
+        Exit;
+      end;
+      Idx := Idx + 1;
+      EntryStart := Idx;
+      JsonSkipValue(ComponentsJson, Idx);
+      EntryEnd := Idx - 1;
+      EntryText := Copy(ComponentsJson, EntryStart, EntryEnd - EntryStart + 1);
+      if SameText(Key, 'orchestrator') then
+        HaveOrchestrator := True
+      else if SameText(Key, 'ggml-translate') then
+        HaveWorker := True
+      else
+      begin
+        // Preserve every non-owned entry verbatim (partial-update merge).
+        if not FirstEntry then
+          OutJson := OutJson + ',';
+        FirstEntry := False;
+        OutJson := OutJson + '"' + Key + '":' + EntryText;
+      end;
+      JsonSkipWs(ComponentsJson, Idx);
+      if (Idx <= Length(ComponentsJson)) and (ComponentsJson[Idx] = ',') then
+        Idx := Idx + 1;
+    end;
+    // ---- overwrite only the components this installer owns ---------------
+    if EngineHostUpdated then
+    begin
+      if not FirstEntry then
+        OutJson := OutJson + ',';
+      FirstEntry := False;
+      OutJson := OutJson + '"orchestrator":{"version":"' + ENGINE_BUNDLED_VERSION +
+                 '","abi_version":' + IntToStr(ENGINE_ORCHESTRATOR_ABI_VERSION) + '}';
+    end;
+    if EngineWorkerUpdated then
+    begin
+      if not FirstEntry then
+        OutJson := OutJson + ',';
+      FirstEntry := False;
+      OutJson := OutJson + '"ggml-translate":{"version":"' + ENGINE_BUNDLED_VERSION +
+                 '","abi_version":' + IntToStr(ENGINE_WORKER_ABI_VERSION) +
+                 ',"engine":"' + ENGINE_WORKER_ENGINE +
+                 '","engine_version":"' + ENGINE_WORKER_ENGINE_VERSION + '"}';
+    end;
+    if not HaveOrchestrator and not HaveWorker then
+      Log('REQ-006: existing components.json carried no owned entries; writing fresh owned entries.');
+    OutJson := OutJson + '}}';
+  end
+  else
+  begin
+    // Fresh install: no components.json exists -> write the full document.
+    OutJson := '{"schema_version":1,"components":{';
+    FirstEntry := False;
+    if EngineHostUpdated then
+    begin
+      OutJson := OutJson + '"orchestrator":{"version":"' + ENGINE_BUNDLED_VERSION +
+                 '","abi_version":' + IntToStr(ENGINE_ORCHESTRATOR_ABI_VERSION) + '}';
+      FirstEntry := True;
+    end;
+    if EngineWorkerUpdated then
+    begin
+      if FirstEntry then
+        OutJson := OutJson + ',';
+      OutJson := OutJson + '"ggml-translate":{"version":"' + ENGINE_BUNDLED_VERSION +
+                 '","abi_version":' + IntToStr(ENGINE_WORKER_ABI_VERSION) +
+                 ',"engine":"' + ENGINE_WORKER_ENGINE +
+                 '","engine_version":"' + ENGINE_WORKER_ENGINE_VERSION + '"}';
+    end;
+    OutJson := OutJson + '}}';
+  end;
+  if SaveStringToFile(ComponentsPath, OutJson, False) then
+    Log('REQ-006: components.json written: ' + ComponentsPath + ' = ' + OutJson)
+  else
+    Log('REQ-006: WARNING could not write ' + ComponentsPath);
+end;
+
+// ------------------------------------------------------------------------
+// DeleteLegacyModel - REQ-043 (M1 decision #2, plan §7.2): the model moved
+// from the per-app {app}\models to the per-user common store. The legacy
+// copy is NEVER migrated: it is deleted at install time regardless of the
+// download outcome; the common path is then pin-checked and re-downloaded
+// when needed. Runs before DownloadModel() at ssPostInstall (covers
+// /SKIPMODEL and consent-decline too).
+// ------------------------------------------------------------------------
+procedure DeleteLegacyModel();
+var
+  LegacyDir: String;
+  LegacyModel: String;
+begin
+  LegacyDir := ExpandConstant('{app}\models');
+  LegacyModel := LegacyDir + '\' + MODEL_FILENAME;
+  if FileExists(LegacyModel) then
+  begin
+    if DeleteFile(LegacyModel) then
+      Log('REQ-043: legacy per-app model deleted: ' + LegacyModel)
+    else
+      Log('REQ-043: WARNING could not delete legacy model: ' + LegacyModel);
+  end;
+  // Best-effort: drop the now-empty legacy directory. RemoveDir only succeeds
+  // when the directory is empty, so unrelated content can never be harmed.
+  if DirExists(LegacyDir) then
+    RemoveDir(LegacyDir);
+end;
+
+// ------------------------------------------------------------------------
+// RegistryHasOtherEmebalaApp - REQ-043 (plan §7.3): scan one uninstall
+// registry hive for a DIFFERENT Emebala-family app (Emebala_Listner, Emebala
+// Reader, ...). Family detection is the DisplayName prefix "Emebala"; our own
+// ARP entry is skipped by its AppId-derived subkey name so an in-progress
+// uninstall of this app cannot count itself.
+// ------------------------------------------------------------------------
+function RegistryHasOtherEmebalaApp(RootKey: Integer): Boolean;
+var
+  SubkeyNames: TArrayOfString;
+  I: Integer;
+  DisplayName: String;
+  BaseKey: String;
+begin
+  Result := False;
+  BaseKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall';
+  if RegGetSubkeyNames(RootKey, BaseKey, SubkeyNames) then
+  begin
+    for I := 0 to GetArrayLength(SubkeyNames) - 1 do
+    begin
+      if not SameText(SubkeyNames[I],
+           '{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}_is1') then
+      begin
+        if RegQueryStringValue(RootKey, BaseKey + '\' + SubkeyNames[I],
+                               'DisplayName', DisplayName) then
+        begin
+          if (Length(DisplayName) >= 7) and
+             SameText(Copy(DisplayName, 1, 7), 'Emebala') then
+          begin
+            Log('REQ-043: other Emebala-family app detected: ' + DisplayName);
+            Result := True;
+            Exit;
+          end;
+        end;
+      end;
+    end;
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// IsOtherEmebalaAppInstalled - REQ-043 (plan §7.3): true when any other
+// Emebala app remains installed. Checks HKLM (native view; this family is
+// x64-only) and HKCU (covers per-user installs).
+// ------------------------------------------------------------------------
+function IsOtherEmebalaAppInstalled(): Boolean;
+begin
+  Result := RegistryHasOtherEmebalaApp(HKEY_LOCAL_MACHINE);
+  if not Result then
+    Result := RegistryHasOtherEmebalaApp(HKEY_CURRENT_USER);
+end;
 
 // ------------------------------------------------------------------------
 // VerifyDownloadedModel - M2 integrity check of the downloaded temp file
@@ -765,7 +1735,13 @@ begin
     Exit;
   end;
 
-  ModelDestDir := ExpandConstant('{app}\models');
+  // REQ-043 (plan §7.2): the model now lives in the per-user COMMON store
+  // (%LOCALAPPDATA%\Emebala\Common\models) shared by all Emebala apps, not
+  // under {app}\models. The legacy per-app copy is deleted by
+  // DeleteLegacyModel() before this runs (M1 decision #2: never migrate).
+  // Everything below (pin check, .download-style temp file in {tmp}, atomic
+  // rename/copy into the destination) is unchanged.
+  ModelDestDir := ExpandConstant(COMMON_MODELS_DIR);
   ModelDestPath := ModelDestDir + '\' + MODEL_FILENAME;
   ModelTmpPath := ExpandConstant('{tmp}\') + MODEL_FILENAME;
 
@@ -862,8 +1838,9 @@ begin
     if DownloadSuccess then
     begin
       // M2: defense-in-depth re-verification of the temp file BEFORE copying
-      // it into {app}\models. A mismatch deletes the temp file and re-enters
-      // the retry/skip/cancel flow, so an unverified model is never installed.
+      // it into the common models directory. A mismatch deletes the temp file
+      // and re-enters the retry/skip/cancel flow, so an unverified model is
+      // never installed.
       try
         HashOk := VerifyDownloadedModel(ModelTmpPath);
       except
@@ -950,7 +1927,15 @@ var
 begin
   ConfigPath := ExpandConstant('{app}\config.json');
   AppDir := ExpandConstant('{app}');
-  ModelPath := AppDir + '\models\' + MODEL_FILENAME;
+  // REQ-043 (plan §7.2) + REQ-006/M6 (embedded removal, T5): the model_path
+  // config key is retained as a legacy passthrough (AppConfig::model_path is
+  // still parsed and handed to TranslationManager::GetModelPath for future
+  // path-aware behavior), but it drives NO serving decision anymore - the
+  // local source is the shared engine host (v2 orchestrator), not a file.
+  // Keeping the absolute common-store path here preserves the contract that
+  // any future consumer of model_path sees the same location the installer
+  // maintains, and it matches the pre-M6 v1.0 installer output (REQ-043).
+  ModelPath := ExpandConstant(COMMON_MODELS_DIR) + '\' + MODEL_FILENAME;
 
   // Choose engine type based on whether the model was downloaded.
   // SEC-1 (session 260911_0002, design 144800 §2.6 option (i)): writing
@@ -1030,11 +2015,25 @@ begin
   // B-2: read the consent choice before file copying starts (download runs
   // later at ssPostInstall, so the decision must be final by then).
   if CurStep = ssInstall then
+  begin
     ReadConsentChoice();
+    // REQ-043: when the engine-version compare says this run replaces the
+    // shared host, stop a running instance first so the [Files] copy cannot
+    // hit a locked exe. Best-effort; the Check re-evaluates the same rule.
+    if ShouldInstallEngineHost() then
+      StopRunningEngineHost();
+  end;
   if CurStep = ssPostInstall then
   begin
+    // REQ-043: legacy per-app model cleanup first (M1 decision #2 - never
+    // migrate), then the common-path pin check / download, then config.
+    DeleteLegacyModel();
     DownloadModel();
     CreateConfigFile();
+    // REQ-043 + REQ-006/M6: stamp the v1 engine.version (frozen contract) and
+    // the v2 components.json in parallel (design §6.3).
+    WriteEngineVersionFile();
+    WriteComponentsFile();
   end;
   // Uninstaller rename bypass: after [Run] renamed unins000.*, the ARP
   // registry entry still points at the original path; rewrite it last.
@@ -1058,6 +2057,8 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   LocalAppData: String;
+  // REQ-043 (plan §7.3): shared common store cleanup on last-app uninstall.
+  CommonDir: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
@@ -1078,6 +2079,23 @@ begin
       end
       else
         Log('User chose to keep settings at: ' + LocalAppData);
+    end;
+
+    // REQ-043 (plan §7.3): each app removes only its own files (the shared
+    // host exe carries uninsneveruninstall for exactly this reason). The
+    // shared engine + model under %LOCALAPPDATA%\Emebala\Common are removed
+    // ONLY when no other Emebala-family app remains installed (ARP scan,
+    // own AppId excluded); otherwise they stay for the remaining apps.
+    if IsOtherEmebalaAppInstalled() then
+      Log('REQ-043: another Emebala app remains installed; shared engine and model kept.')
+    else
+    begin
+      CommonDir := ExpandConstant('{localappdata}\Emebala\Common');
+      if DirExists(CommonDir) then
+      begin
+        DelTree(CommonDir, True, True, True);
+        Log('REQ-043: last Emebala app removed; shared engine and model deleted: ' + CommonDir);
+      end;
     end;
   end;
 end;
