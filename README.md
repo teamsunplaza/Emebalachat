@@ -53,7 +53,7 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 
 - **Instantaneous Native Performance** — Built in pure C++20 with MSVC static runtime (`/MT`), linking directly against Win32, Direct2D, DirectWrite, and WinHTTP.
 - **Dual-Engine Flexibility**:
-  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent.
+  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent. Local translations are served by a shared background engine system installed per-user under `%LOCALAPPDATA%\Emebala\Common\engine\`: an orchestrator process, `Emebala.Engine.exe`, keeps a single GPU-resident copy of the model that every installed Emebala app reuses and delegates each translation job to a dedicated translation worker process.
   - **Cloud Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**. Cloud use is consent-gated and structurally disclosed before first serve (see [Privacy & Data Handling](#privacy--data-handling-technical)).
 - **Invisible In-Place Translation** — Type naturally in your native language, press <kbd>Enter</kbd>, and watch the text instantly transform—working in any chat, form, or document field. By default the translated text only **replaces** what you typed; toggling Auto-Send (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>) makes the app also **send** it for you.
 - **Hardware-Accelerated Minimalist UI** — Non-intrusive floating pill badge rendered via hardware Direct2D displaying real-time translation state and language pairs.
@@ -66,7 +66,8 @@ Download **`Emebalachat_Setup_0.10.1.exe`** from [**Releases**](https://github.c
 
 - Automatic installation to `%ProgramFiles%\Emebalachat`
 - Optional auto-start with Windows login
-- Automatic download of the `Hy-MT2-1.8B-Q8_0.gguf` model from Hugging Face, verified against the SHA-256 hash pinned in `EXPECTED_MODEL_SHA256` (a pre-existing model file that fails verification triggers an explicit delete-and-redownload / keep decision)
+- Automatic download of the `Hy-MT2-1.8B-Q8_0.gguf` model from Hugging Face into the shared per-user store `%LOCALAPPDATA%\Emebala\Common\models\`, verified against the SHA-256 hash pinned in `EXPECTED_MODEL_SHA256` (a pre-existing model file that fails verification triggers an explicit delete-and-redownload / keep decision). When upgrading from 0.10.0 or earlier, the legacy per-app copy in the install folder (`{app}\models\`) is removed — it is not migrated — and is re-downloaded only if the shared store does not already hold the pinned model
+- Silent installation of the shared inference host `Emebala.Engine.exe` into `%LOCALAPPDATA%\Emebala\Common\engine\` (no extra wizard steps); it is replaced only when the installed host is missing or older than this version, and it is removed on uninstall only when no other Emebala app remains installed
 - A generated `config.json` in the install folder; when the model download is skipped or declined, it starts with `engine_type: "google"` — cloud mode. This is safe by construction: the app's blocking first-run privacy notice discloses the Google transmission and no translation is served until you acknowledge it (see [Privacy & Data Handling](#privacy--data-handling-technical) §4).
 - Bundling of this `README.md` into the install folder (`{app}\README.md`), so the first-run notice's "re-read this in the README file" guidance is actionable on a clean machine
 - Installer UI languages: 32 languages registered in `[Languages]` (English, Korean, Japanese, Chinese Simplified/Traditional, plus 27 additional official Inno Setup translations)
@@ -91,6 +92,7 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
   - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 37 target languages listed below.
   - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
   - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size + mtime) before the model is handed to llama.cpp.
+  - **Shared Inference Host (0.10.1+)**: local translations are routed through `Emebala.Engine.exe`, an orchestrator process every Emebala app shares. It loads the model **once** into GPU memory, serves all installed Emebala apps over a local named pipe (current-user ACL + per-boot security token), and hands each job to a dedicated `Emebalachat.Engine.ggml-translate.exe` worker process, so two or three Emebala apps no longer duplicate the model in VRAM and a misbehaving app cannot take the model down. If the engine cannot be used — missing binaries, connection failure, version/token mismatch, busy, timeout — the app does not fail silently: it offers a one-click repair, falls back to the cloud engine under the same consent rules as always (see below), or shows a clear notice that local translation is unavailable. The engine never appears in the Start menu, runs only while needed, and exits by itself after 10 minutes idle (`engine_host.idle_exit_ms`).
   - Pairs outside the model's reliable set are routed to the cloud engine under `auto`, or kept on-device (with a degradation warning) under a strict `local` pin without cloud consent.
 - **Built-in Cloud Engine**:
   - Native asynchronous HTTP client built on `winhttp.dll`.
@@ -164,6 +166,8 @@ Emebala Chat supports full bidirectional translation across **38 language entrie
 
 ## Global Hotkeys & Mouse Gestures
 
+> 💡 **Tip — <kbd>F9</kbd> is the master switch.** Real-time translation runs only while you need it: **press <kbd>F9</kbd> to pause** the moment you don't want translation (typing passwords, code, or plain text in your own language) and **press <kbd>F9</kbd> again to resume** when you do. The floating badge and the tray menu always show whether translation is active or paused, and a chime confirms every toggle — toggle freely, as often as you like.
+
 | Trigger | Action | Description |
 |:--------|:-------|:------------|
 | <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime + on-screen notice (default `hotkey_toggle` value; configurable, see below) |
@@ -179,6 +183,8 @@ Emebala Chat supports full bidirectional translation across **38 language entrie
 | **Badge Left-Drag** | **Reposition Window** | Moves badge across monitors; saves position persistently |
 
 **Customizing hotkeys via `config.json`** — edit `hotkey_toggle` (default `"F9"`), `hotkey_lang` (default `"Ctrl+F9"`), and `hotkey_mode` (default `"Ctrl+Shift+Enter"`); values accept `Mod+Key`: Ctrl/Shift/Alt/Win + F1-F24, Enter, Esc, Tab, Space, Insert, Delete, Home, End, PgUp/PgDn, arrows, A-Z, 0-9. Invalid or empty values fall back to the compiled-in defaults. `drag_hotkey` supports only `"double_ctrl_c"`. When combos overlap, one action fires in order: toggle > lang > mode. Restart the app to apply changes.
+
+**Multi-line posts (forums, editors).** Only the block you are currently typing is translated; lines above your caret are preserved exactly as they are and are never re-translated automatically. If you edited or inserted a line higher up and want just that line translated, place the caret at the end of that line and press <kbd>Enter</kbd> — lines below it stay untouched. When the app intentionally leaves such text untranslated, it shows a one-time notice instead of staying silent. (Selecting text and pressing double <kbd>Ctrl</kbd>+<kbd>C</kbd> shows a read-only translation card at the cursor — it never replaces your text.)
 
 ## Configuration Reference (`config.json`)
 
@@ -198,6 +204,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   "sound_enabled": true,
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
+  "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000 },
   "diag_log_enabled": false,
   "diag_log_content": false,
   "privacy_notice_shown": false,
@@ -224,7 +231,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   - `"auto"` (default): Prefers local LLM if the model exists; falls back to Google Translate when the model is absent or a local attempt fails.
   - `"local"`: Strictly forces the local llama.cpp model. Cloud use then requires `cloud_fallback_enabled: true`.
   - `"google"`: Strictly forces Google Translate via WinHTTP.
-- `model_path`: Relative or absolute path to the `.gguf` model file (relative paths resolve against the executable directory, not the working directory).
+- `model_path`: Legacy key, kept only for migrating older configs. Since 0.10.1 the local engine is the shared engine host, which always loads the pinned model from the shared store (`%LOCALAPPDATA%\Emebala\Common\models\Hy-MT2-1.8B-Q8_0.gguf`); the value of this key drives no serving decision anymore. The installer still records the shared-store absolute path here so existing configs stay valid, but editing it has no effect.
 - `source_language` / `target_language`: Legacy single pair, kept only for migrating older configs. The runtime uses the two context pairs below.
 - `drag_source_language` / `drag_target_language`: Language pair for **drag-to-translate** (tooltip/drag icon). Defaults: source `Auto Detect`, target = your Windows display language.
 - `type_source_language` / `type_target_language`: Language pair for **typing** translation. Defaults: source `Auto Detect`, target `English`.
@@ -232,6 +239,11 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 - `sound_enabled`: Enables synthesized audio tones for hotkey actions.
 - `drag_to_translate`: Master switch for the drag-to-translate (double <kbd>Ctrl</kbd>+<kbd>C</kbd>) feature.
 - `cloud_fallback_enabled`: Privacy consent gate. When `false` (default), a strict `local` engine pin NEVER sends your text to the cloud, even after a local failure. (Selecting `engine_type: "auto"` is itself the documented consent to the seamless cloud fallback.)
+- `engine_host` (0.10.1+): Shared local inference engine (`Emebala.Engine.exe` + its translation worker) settings.
+  - `enabled` (default `true`): route local translations through the shared engine when it is available.
+  - `spawn` (default `true`): start the engine on demand when it is not running (fixed path `%LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe`).
+  - `idle_exit_ms` (default `600000` = 10 minutes): how long the engine stays alive with no connected app before exiting — the next translation request respawns it automatically.
+  Whenever the engine cannot be used (missing binaries, connection failure, version/token mismatch, busy, timeout), translation does not fail silently: the app offers a one-click repair, falls back to the cloud engine under the normal consent rules, or shows a clear notice that local translation is unavailable.
 - `diag_log_enabled`: **Master switch** for the diagnostic log FILE. Default `false` — a shipped build writes no log file at all (the file is opened lazily, only on the first enabled write). Set `true` (and restart) to create per-run logs for troubleshooting. See [Privacy & Data Handling](#privacy--data-handling-technical) §6.
 - `diag_log_content`: Diagnostic-log privacy gate, **subordinate to `diag_log_enabled`**. When `false` (default, and while the master switch is off), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** `content: true` with `enabled: false` still writes nothing. Only enable while actively troubleshooting: your typed content will be written to disk.
 - `privacy_notice_shown`: One-shot record of the blocking first-run privacy notice. Default `false` — a fresh install shows the notice once; dismissing it sets the flag to `true` so it never re-appears. Do not set this by hand unless you understand what the notice says.
@@ -270,7 +282,12 @@ translation runs entirely on your own CPU/GPU via llama.cpp. This path makes
 **zero network calls** — the inference is a pure on-device computation, and no text
 leaves the machine while it serves. CUDA GPU offload falls back automatically to
 CPU-only loading when no compatible GPU is present; the model file is SHA-256
-verified before load (see §7).
+verified before load (see §7). The 0.10.1 shared inference host
+([Key Features §2](#2-dual-translation-engines)) is equally local: it talks to
+the app over a Windows named pipe reachable only from your own user account —
+never over TCP/HTTP — and it follows the same logging policy, shape-only and
+opt-in (§6). The pinned model file itself is only ever replaced together with
+a matching Emebala app update — no background model swap ever happens.
 
 **(b) Google web translation → cloud.** The cloud path is a plain HTTPS GET against
 Google's public, keyless web-translation endpoints. It is real translation by a real
@@ -449,7 +466,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (2,863 checks as of v0.10.1) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (3,388 checks as of v0.10.1) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe
@@ -468,7 +485,7 @@ Expected output (excerpt):
 [RUN] Testing Smart Bypass...
 [PASS] Smart Bypass tests completed.
 ...
-Total Checks: 2863
+Total Checks: 3388
 Failures:     0
 ========================================
 >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<
@@ -479,8 +496,8 @@ Failures:     0
 To package Emebala Chat into a single, self-extracting Windows installer:
 
 1. Download and install [Inno Setup 6.1+](https://jrsoftware.org/isinfo.php).
-2. Ensure `build\Emebala_chat.exe` has been compiled.
-3. Run the Inno Setup compiler:
+2. Ensure `build\Emebala_chat.exe`, `build\Emebala.Engine.exe` (the shared inference host), **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.manifest` (its translation worker — both mandatory bundle components) have been built. The compile of the host target fails without them when the llama.cpp backend is enabled.
+3. Run the installer gates (`python tools\check_installer_encoding.py` and `python tools\check_installer_display_text.py`), then the Inno Setup compiler:
 
 ```powershell
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
@@ -537,7 +554,7 @@ C:\path\to\Emebalachat\
 │       ├── tooltip.hpp/.cpp    # Translation result tooltip card
 │       └── tray.hpp/.cpp       # Shell_NotifyIconW system tray integration
 └── tests\                      # Native unit test suite
-    └── run_tests.cpp           # 2,863 unit checks covering all core modules
+    └── run_tests.cpp           # 3,388 unit checks covering all core modules
 ```
 
 ### Architecture

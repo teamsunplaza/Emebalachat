@@ -8,6 +8,7 @@
   "sound_enabled": true,
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
+  "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000 },
   "diag_log_enabled": false,
   "_diag_log_enabled_doc": "MASTER switch for the diagnostic log file. Default false: the app never creates a log file (privacy-by-default release posture). Set true (and restart) to write logs to %LOCALAPPDATA%\\Emebalachat\\logs\\ for debugging; the whole logs folder is capped at 200MB (oldest files pruned at startup). Only enable while actively troubleshooting.",
   "diag_log_content": false,

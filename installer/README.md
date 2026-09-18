@@ -11,8 +11,10 @@ This directory contains the Inno Setup script and assets for building the Emebal
    (removed in 6.5), so an older compiler would garble every non-Latin
    language. `setup.iss` aborts the build with `#error` on pre-6.3 compilers.
 
-2. **Build Emebala_chat.exe first**
-   Use CMake to build the application before compiling the installer. The installer expects the built executable at `../build/Emebala_chat.exe` (relative to this directory).
+2. **Build the binaries first**
+   Use CMake to build the application before compiling the installer. The installer expects BOTH executables to exist (the compile fails otherwise):
+   - `../build/Emebala_chat.exe` (the application)
+   - `../build/Emebala.Engine.exe` (the shared inference host, bundled into the per-user common store — REQ-043)
 
 ## How to Compile
 
@@ -77,7 +79,7 @@ iscc.exe setup.iss
 After a successful compile, the installer will be created at:
 
 ```
-output\Emebalachat_Setup_0.10.0.exe
+output\Emebalachat_Setup_0.10.1.exe
 ```
 
 ## Optional: Custom Icons and Images
@@ -96,15 +98,33 @@ output\Emebalachat_Setup_0.10.0.exe
    guidance resolves on a clean machine — REQ-207/208, design 144800 §2.3)
 2. Creates Start Menu shortcuts and (optionally) a desktop shortcut
 3. Optionally registers the app for auto-start with Windows
-4. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (file size 1.9 GB;
+4. Bundles the shared inference host `Emebala.Engine.exe` into the per-user
+   common store `%LOCALAPPDATA%\Emebala\Common\engine\` (REQ-043, plan
+   `emebala-engine-host-shared-inference` §7.1). The `[Files]` entry carries a
+   `Check: ShouldInstallEngineHost` gate: it installs/replaces the host only
+   when `engine.version` next to it is missing, unreadable, or **older** than
+   this installer's `AppVersion` (the stamp records the bundled host version =
+   the app version that wrote it); an equal or **newer** stamp (another Emebala
+   app already placed a same/newer host) skips the copy. The flag
+   `uninsneveruninstall` keeps Inno's own uninstaller away from the shared
+   file. No extra wizard page or user choice is added; a running host is
+   stopped best-effort (`taskkill`) before the copy so the exe is not locked.
+5. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (file size 1.9 GB;
    the wizard UI rounds it to "about 2 GB" and declares `ExtraDiskSpaceRequired`
-   = 2.1 GB) from Hugging Face, verifying its SHA-256 against the pinned
-   `EXPECTED_MODEL_SHA256` constant in `setup.iss`
-5. Generates a `config.json` in the install folder during post-install
-   (`CreateConfigFile`); on first launch the app one-shot migrates it to
-   `%LOCALAPPDATA%\Emebalachat\config.json`, which is the canonical location from
-   then on
-6. If the model download is skipped or declined, the generated config starts with
+   = 2.1 GB) from Hugging Face into the **shared common store**
+   `%LOCALAPPDATA%\Emebala\Common\models\`, verifying its SHA-256 against the
+   pinned `EXPECTED_MODEL_SHA256` constant in `setup.iss`. An existing
+   common-store file with a **matching** pin skips the download. The legacy
+   per-app copy `{app}\models\Hy-MT2-1.8B-Q8_0.gguf` from pre-0.10.1 installs
+   is **deleted at install time, never migrated** (M1 decision #2): the delete
+   runs before the download and is independent of its outcome, so the shared
+   store is pin-checked and the model re-downloaded when needed.
+6. Generates a `config.json` in the install folder during post-install
+   (`CreateConfigFile`); its `model_path` points at the shared common store so
+   the embedded fallback engine finds the same model. On first launch the app
+   one-shot migrates the config to `%LOCALAPPDATA%\Emebalachat\config.json`,
+   which is the canonical location from then on
+7. If the model download is skipped or declined, the generated config starts with
    `engine_type: "google"` instead of `"auto"`. This is safe by construction: the
    app's blocking first-run privacy notice discloses the Google transmission
    before the translation engine, hooks, or worker threads are created, so no
@@ -112,8 +132,15 @@ output\Emebalachat_Setup_0.10.0.exe
    resolution, design 144800 §2.6 option (i); see `{app}\README.md`
    "Privacy & Data Handling" §4). The dependency is documented in
    `CreateConfigFile` in `setup.iss`.
-7. On uninstall, removes the auto-start registry entry and offers to delete the
-   user data folder (`%LOCALAPPDATA%\Emebalachat`, settings + diagnostic logs)
+8. On uninstall, removes the auto-start registry entry and offers to delete the
+   user data folder (`%LOCALAPPDATA%\Emebalachat`, settings + diagnostic logs).
+   The shared common store (`%LOCALAPPDATA%\Emebala\Common\` — engine + model)
+   is deleted **only when no other Emebala-family app remains installed**
+   (REQ-043, plan §7.3): `IsOtherEmebalaAppInstalled()` scans the HKLM and HKCU
+   uninstall registry for a different `Emebala*` DisplayName (own AppId
+   excluded); when a sibling app (Emebala_Listner, Emebala Reader, ...) is
+   present the shared engine and model are kept. Add future family apps to the
+   detection simply by their `Emebala` DisplayName prefix.
 
 ## Model Integrity Verification (release procedure)
 
@@ -124,7 +151,8 @@ constant in `setup.iss`:
   `5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4`: the download
   page aborts on any hash mismatch, the temp file is deleted, and the user is
   offered Retry / Skip / Cancel. The hash is re-checked (Inno Setup 6.3+) before
-  the file is copied to `{app}\models`.
+  the file is moved into `%LOCALAPPDATA%\Emebala\Common\models` (REQ-043; the
+  destination was `{app}\models` before 0.10.1).
 - **Empty string** → verification is skipped. Intended only for development builds.
 
 If the exact file hosted at `MODEL_URL` ever changes, recompute the hash and

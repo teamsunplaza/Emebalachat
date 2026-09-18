@@ -1,4 +1,4 @@
-﻿Emebala Chat - Changelog
+Emebala Chat - Changelog
 ========================
 
 v0.10.1 - 2026-09-17
@@ -11,6 +11,36 @@ Patch release. What you can do now
   line or overwrites your manual edit - only the newest line is translated.
 * Pasting a sentence or URL into your post and pressing Enter translates
   just the newly typed line instead of re-translating the whole post.
+* When the newest line is already the translation the app placed there,
+  pressing Enter after an edit higher up now does nothing at all: no engine
+  call, no whole-text re-paste. Your edit stays exactly as you left it and
+  the Enter passes straight through (the old behavior could reword the
+  newest line and re-paste the whole post each time).
+* New text you typed or inserted further up is still intentionally left
+  untranslated (older lines are never re-translated automatically), but the
+  app no longer stays silent about it: a one-time notice tells you to place
+  the cursor at the end of that line and press Enter.
+* The built-in Cheat Sheet and the README now lead with the F9 tip: press
+  F9 whenever you don't need translation, press F9 again to resume.
+* Local translations now run in a small shared engine system instead of
+  inside each app. A background orchestrator, Emebala.Engine.exe, keeps a
+  single GPU-resident copy of the model that every installed Emebala app
+  reuses (two apps no longer duplicate the model in VRAM) and hands each
+  translation job to a dedicated worker process, so app crashes can never
+  take the model down with them. It talks to the apps over a
+  current-user-only local pipe with a per-boot security token and exits by
+  itself after 10 minutes idle. With the host installed, the Auto engine
+  treats it as a first-class local source (it no longer demotes straight
+  to Google just because the app-folder model copy is gone). If the engine
+  cannot be used - missing files, connection failure, busy, or a crash -
+  the app offers a one-click repair, falls back to Google (cloud use stays
+  consent-gated as before), or tells you clearly that local translation is
+  unavailable; it never fails silently. Old apps and configs keep working:
+  the engine answers on the version-independent pipe and the frozen
+  pre-0.10.1 pipe name alike, and the new config block "engine_host"
+  (enabled / spawn / idle_exit_ms) is valid - defaults need no action.
+  Local model files are SHA-256 pinned, so the model itself is only
+  replaced together with a matching Emebala app update.
 
 v0.10.0 - 2026-09-12 (Initial Release)
 ======================================
