@@ -335,6 +335,19 @@ WorkerManager::WorkerRead WorkerManager::ReadFromWorker(const std::wstring& fami
 }
 
 // ---- spawn + handshake (design §1.1 rules 1-2 / §3.4) -----------------------
+// REQ-044 (P4-3, item 5): the blocking ConnectNamedPipe wait + announce
+// ReadPipeFrame below run while impl_->mu is held. This is a deliberate
+// lock convoy, not a self-deadlock (std::mutex is non-recursive and no
+// path from here re-enters mu: FindLocked / ClosePipeLocked /
+// CloseProcessLocked are Impl:: "Locked"-suffix helpers that assume the
+// caller already holds mu, and none of them take a lock_guard). It is
+// safe because handles in Spawning state are not reachable concurrently:
+// SendToWorker / ReadFromWorker early-return on
+// state != Ready/Busy (L304 / L326), and ReaperPass skips states other
+// than Ready/Busy/Spawning (L576), so w->pipe is only ever touched by
+// this thread while the lock is held. The convoy only matters if M7 adds
+// parallel multi-family worker spawns - revisit then with an explicit
+// state-machine design before narrowing the lock scope.
 WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     std::lock_guard<std::mutex> lk(impl_->mu);
     WorkerHandle* w = impl_->FindLocked(family);
