@@ -343,8 +343,8 @@ WorkerManager::WorkerRead WorkerManager::ReadFromWorker(const std::wstring& fami
 // caller already holds mu, and none of them take a lock_guard). It is
 // safe because handles in Spawning state are not reachable concurrently:
 // SendToWorker / ReadFromWorker early-return on
-// state != Ready/Busy (L304 / L326), and ReaperPass skips states other
-// than Ready/Busy/Spawning (L576), so w->pipe is only ever touched by
+// state != Ready/Busy, and ReaperPass skips states other
+// than Ready/Busy/Spawning, so w->pipe is only ever touched by
 // this thread while the lock is held. The convoy only matters if M7 adds
 // parallel multi-family worker spawns - revisit then with an explicit
 // state-machine design before narrowing the lock scope.
