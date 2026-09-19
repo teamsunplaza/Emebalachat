@@ -14493,6 +14493,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // Staged as an .inc next to this runner; registered near the end of main().
 #include "req047_tests.inc"
 
+// REQ-048 P1/P2/P3: device-round2 fixes — boot component grace re-check,
+// OpenAI template serialization byte-walk, and cloud failure signaling.
+// Staged as .inc files next to this runner; registered near the end of main()
+// after the REQ-047 suites, per the end-of-file pattern.
+#include "req048_boot_tests.inc"
+#include "req048_template_tests.inc"
+#include "req048_cloud_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15210,6 +15218,16 @@ int main() {
     TestReq047P5F1LatchDrainOwnership();
     TestReq047P5F2DragPathsStatusWiring();
     TestReq047U1TrayGgufLabels();
+    // REQ-048 P1: boot component-check grace re-check (installer download
+    // window) — registered after the REQ-047 suites, per the end-of-file
+    // pattern.
+    TestReq048BootGraceRecheck();
+    // REQ-048 P2: OpenAI settings template serialization byte-walk (Windows
+    // parser contract) — registered after the P1 suite.
+    TestReq048OpenAiTemplateSerialization();
+    // REQ-048 P3: cloud failure must record EngineFailed, never a silent
+    // identity success — registered after the P2 suite.
+    TestReq048CloudFailureSignaling();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
