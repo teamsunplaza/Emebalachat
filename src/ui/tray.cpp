@@ -27,6 +27,13 @@ enum TrayMenuId : UINT {
     // REQ-045 P4-5 / REQ-046 P4-2: the always-active file-picker row that
     // follows the checkable user-model entry.
     ID_TRAY_BROWSE_GGUF = 2014,
+    // REQ-048 R2-D: the user-model manager row ("모델 관리…") that follows the
+    // registration picker. PLAIN item — deliberately NOT part of the frozen
+    // 4-way radio contract (2010~2014) and below the 2020 control band, so
+    // the radio IDs and the band layout are untouched. Clicking it defers to
+    // the GUI thread via WM_APP+0x501 (same modality contract as the OpenAI
+    // settings' WM_APP+0x500, REQ-047 D3) instead of a tray callback.
+    ID_TRAY_MANAGE_GGUF = 2015,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
     ID_TRAY_SOUND = 2040,
@@ -354,6 +361,12 @@ void SystemTray::ShowContextMenu() {
     // (designer 164500 §2.3, decision #2): it sits BELOW the separator as a
     // separate "등록" action, visually detached from the built-in engines.
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_BROWSE_GGUF, I18n::Get(StringId::MenuBrowseGgufFile).c_str());
+    // REQ-048 R2-D: the manager row — rename/delete the registered user
+    // .gguf models. PLAIN item (no check mark; it opens a dialog, it does not
+    // select an engine), sitting below the file-picker row in the user-model
+    // group, inside the engine submenu.
+    ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_MANAGE_GGUF,
+                  I18n::Get(StringId::MenuManageGgufModels).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 
     // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
@@ -484,6 +497,21 @@ void SystemTray::ShowContextMenu() {
         // REQ-045 P4-5 (item 3a-2): open the .gguf picker + registration
         // pipeline (main.cpp owns the whole flow).
         callbacks_.on_browse_gguf();
+    } else if (cmd == ID_TRAY_MANAGE_GGUF) {
+        // REQ-048 R2-D: open the user-model manager (rename/delete). The
+        // dialog open is DEFERRED to the controller window's GUI thread —
+        // entering a modal synchronously here, while the TrackPopupMenuEx
+        // modality tear-down may still be in flight, is the exact "minimized
+        // window, no input" root cause REQ-047 D3 fixed for the OpenAI
+        // settings (kMsgOpenOpenAiSettings = WM_APP+0x500). Same house
+        // contract: a pure (0,0) wake-up, no payload crosses PostMessageW;
+        // main.cpp owns the dialog + tray refresh. No coalescing latch is
+        // needed: a second dispatch cannot run while the modal dialog blocks
+        // this GUI thread's message handling.
+        if (::PostMessageW(hOwner_, WM_APP + 0x501, 0, 0) == FALSE) {
+            DIAG_F("UI/Tray/001: PostMessage gguf-manager open failed (GLE %lu)\n",
+                   ::GetLastError());
+        }
     } else if (cmd == ID_TRAY_SWAP && callbacks_.on_swap_languages) {
         callbacks_.on_swap_languages();
     } else if (cmd == ID_TRAY_AUTOSEND && callbacks_.on_toggle_auto_send) {

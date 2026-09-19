@@ -16,6 +16,7 @@
 #include "win32_input.hpp"
 #include "ui/about_window.hpp"
 #include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
+#include "ui/gguf_model_manager_window.hpp" // REQ-048 R2-D: user .gguf model manager
 #include "ui/badge.hpp"
 #include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
@@ -351,6 +352,15 @@ std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bo
 // Cleared at shutdown with g_apply_language_change so a late posted
 // kMsgOpenOpenAiSettings can never call into destroyed state.
 std::function<bool(const OpenAiConfig&, bool saved)> g_apply_openai_settings;
+// REQ-048 R2-D: the deferred gguf-model-manager dialog resolves on the GUI
+// thread in ControllerWndProc, which cannot name wWinMain's locals (config /
+// engine / refresh_tray). Set once at startup to a wWinMain lambda that opens
+// the manager dialog on g_hControllerWnd and then refreshes the tray label
+// (rename/delete can move the engine check mark or the user-model stem — the
+// apply_openai_settings cancel-refresh precedent). Cleared at shutdown with
+// g_apply_openai_settings so a late posted kMsgOpenGgufManager can never call
+// into destroyed state.
+std::function<void()> g_open_gguf_model_manager;
 // REQ-047 D3 (design §C.2 안 C-1 권장 저장소 (a), Tech Gate §D3 #2): the
 // deferred OpenAI dialog's GUI-thread state. Lives in namespace emebalachat
 // (NOT the anon namespace) so both ControllerWndProc and the wWinMain tray
@@ -479,6 +489,16 @@ constexpr UINT kMsgEngineUnavailableModal = WM_APP + 0x400;
 // against drag_icon 0x1xx, tooltip 0x2xx, language_sync 0x300, about 0x3xx,
 // engine_modal 0x400.
 constexpr UINT kMsgOpenOpenAiSettings = WM_APP + 0x500;
+
+// ---- REQ-048 R2-D: deferred gguf-model-manager open ------------------------
+// The tray engine submenu's "모델 관리…" row (tray.cpp, plain item) posts this
+// pure (0,0) wake-up after its TrackPopupMenuEx dispatch — the identical
+// modality-avoidance contract as kMsgOpenOpenAiSettings above (REQ-047 D3):
+// the modal dialog opens only after the menu modality has fully torn down.
+// Distinct WM_APP band: 0x501 verified unused (0x500 OpenAI settings, 0x400
+// engine_modal, 0x300 language_sync, 0x3xx about, 0x2xx tooltip, 0x1xx
+// drag_icon).
+constexpr UINT kMsgOpenGgufManager = WM_APP + 0x501;
 
 struct EngineUnavailableModalRequest {
     std::wstring title;
@@ -720,6 +740,24 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (g_apply_openai_settings) {
             g_apply_openai_settings(edited, /*saved=*/true);
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenGgufManager) {
+        // REQ-048 R2-D: open the user-.gguf model manager AFTER the
+        // TrackPopupMenuEx modality has fully torn down. wParam/LPARAM are
+        // IGNORED entirely (pure (0,0) wake-up, same SEC-ADJ contract as
+        // kMsgOpenOpenAiSettings). No coalescing latch is needed (unlike the
+        // OpenAI flow): the only producer is the tray dispatch on this GUI
+        // thread, and a modal dialog blocks that thread's message handling,
+        // so a second open cannot be posted while one is up. The open + tray
+        // refresh travels through g_open_gguf_model_manager (the wWinMain
+        // lambda), so this handler never names config/engine/refresh_tray.
+        // return 0 is MANDATORY by the same contract as the OpenAI handler —
+        // falling through to DefWindowProc would break the modal-open flow.
+        if (g_open_gguf_model_manager) {
+            g_open_gguf_model_manager();
         }
         return 0;
     }
@@ -1673,6 +1711,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
                engine.GetActiveEngineName().c_str());
         return true;
+    };
+
+    // REQ-048 R2-D: publish the gguf-model-manager open for the deferred
+    // kMsgOpenGgufManager handler (the g_apply_openai_settings pattern). The
+    // lambda owns the ONLY call site: modal dialog on g_hControllerWnd, then
+    // a tray refresh — rename/delete can move the engine submenu's check mark
+    // (a deleted active binding falls back to "auto") or the user-model stem
+    // label, so the refresh runs unconditionally (idempotent, like the OpenAI
+    // cancel path).
+    emebalachat::g_open_gguf_model_manager = [&]() {
+        emebalachat::ShowGgufModelManagerDialog(emebalachat::g_hControllerWnd,
+                                                config, engine);
+        refresh_tray();
     };
 
     // R6 Phase 6 (plan §5.4): locale-change propagation coordinator, mirroring
@@ -3015,6 +3066,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-047 D3: retire the OpenAI coordinator with it, so a late posted
     // kMsgOpenOpenAiSettings can never call into destroyed config/engine/tray.
     emebalachat::g_apply_openai_settings = nullptr;
+    // REQ-048 R2-D: retire the gguf-model-manager coordinator with it, so a
+    // late posted kMsgOpenGgufManager can never call into destroyed state.
+    emebalachat::g_open_gguf_model_manager = nullptr;
     // Post-retire verify-empty (SEC-B5, spec 234100 §7.4): with all producers
     // joined and the drain above already run, the deque is expected to be
     // empty; the swap-out releases any residue's std::string memory before

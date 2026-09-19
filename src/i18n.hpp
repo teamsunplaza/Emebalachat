@@ -222,6 +222,25 @@ enum class StringId {
     // so the EnumCount completeness loop covers it automatically (77 -> 78).
     MenuEngineUserGgufEmpty,     // "(미등록)" empty-slot marker for the tray
 
+    // REQ-048 R2-D: registered user-.gguf model manager (rename/delete). Tray
+    // engine-submenu row + the manager dialog (list / empty placeholder /
+    // Rename / Delete / Close), the rename prompt (title/body/invalid), the
+    // delete confirmation (title/body — states the .gguf FILE stays on disk),
+    // and the post-apply notice. Appended last so the EnumCount completeness
+    // loop covers them automatically (78 -> 90).
+    MenuManageGgufModels,          // tray engine submenu: "모델 관리…"
+    GgufManagerTitle,              // manager dialog caption
+    GgufManagerEmpty,              // placeholder when no user model is registered
+    GgufManagerRename,             // "이름 바꾸기…" button
+    GgufManagerDelete,             // "삭제…" button
+    GgufManagerClose,              // "닫기" button
+    GgufManagerDeleteConfirmTitle, // delete confirmation caption
+    GgufManagerDeleteConfirmBody,  // delete confirmation body (file kept on disk)
+    GgufManagerRenameTitle,        // rename prompt caption
+    GgufManagerRenameBody,         // rename prompt instructions
+    GgufManagerRenameInvalid,      // validation error (empty/dup/separator/space/length)
+    GgufManagerDone,               // post-apply completion notice
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

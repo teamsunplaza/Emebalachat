@@ -14523,8 +14523,9 @@ struct Req044LstrMirror {
     // REQ-045 P4-3: 13 OpenAI fields appended (57 -> 70); REQ-045 P4-5
     // (item 3a-2): 6 user-.gguf fields appended (70 -> 76); REQ-047 D2
     // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77);
-    // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78).
-    const wchar_t* f[78];
+    // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78);
+    // REQ-048 R2-D: 12 gguf-manager fields appended (78 -> 90).
+    const wchar_t* f[90];
 };
 
 } // namespace
@@ -14537,22 +14538,22 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 78 (57+13+6+1+1)
-    static_assert(kExpectedFieldCount == 78,
-                   "REQ-044/045/047: LocalizedStrings field count changed - update the "
-                   "i18n.cpp X-macro list, the kStringsKorean designated "
-                   "initializers, AND this mirror");
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 90 (78+12)
+    static_assert(kExpectedFieldCount == 90,
+                   "REQ-044/045/047/048: LocalizedStrings field count changed - update the "
+                   "i18n.cpp X-macro list, the 37 language tables, "
+                   "AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
     // The static_assert above remains the compile-time guard; these two are the
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 78,
-                "REQ-044/045/047: LocalizedStrings field count is 78 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 90,
+                "REQ-044/045/047/048: LocalizedStrings field count is 90 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 78,
-                "REQ-044/045/047: StringId::EnumCount is 78 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 90,
+                "REQ-044/045/047/048: StringId::EnumCount is 90 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15232,6 +15233,9 @@ int main() {
     // REQ-048 R2 (user feedback round 2): worker pinned-path absolutization,
     // tray pick grace, registry BOM tolerance — registered after the P3 suite.
     TestReq048R2ServingPath();
+    // REQ-048 R2-D: registered-model rename/delete manager — registered after
+    // the R2 serving-path suite.
+    TestReq048R2GgufManager();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -110,7 +110,19 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(user_gguf_registered_title) \
     X(user_gguf_registered_body) \
     X(user_gguf_bundled_duplicate_body) \
-    X(menu_engine_user_gguf_empty)
+    X(menu_engine_user_gguf_empty) \
+    X(menu_manage_gguf_models) \
+    X(gguf_manager_title) \
+    X(gguf_manager_empty) \
+    X(gguf_manager_rename) \
+    X(gguf_manager_delete) \
+    X(gguf_manager_close) \
+    X(gguf_manager_delete_confirm_title) \
+    X(gguf_manager_delete_confirm_body) \
+    X(gguf_manager_rename_title) \
+    X(gguf_manager_rename_body) \
+    X(gguf_manager_rename_invalid) \
+    X(gguf_manager_done)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -134,9 +146,10 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // REQ-045 P4-5 (item 3a-2) appended 6 user-.gguf fields, bringing the total
 // to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
 // body (77). REQ-047 U1 (designer 164500 §5.3) appended the tray
-// "(미등록)" empty-slot marker (78). The Get() switch maps exactly these 78
+// "(미등록)" empty-slot marker (78). REQ-048 R2-D appended the 12
+// gguf-model-manager fields (90). The Get() switch maps exactly these 90
 // named fields.
-static_assert(kLocalizedStringsFieldCount == 78,
+static_assert(kLocalizedStringsFieldCount == 90,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -145,6 +158,7 @@ static_assert(kLocalizedStringsFieldCount == 78,
 // reorder/typo is a compile error instead of a silent text shift. The string
 // literals are the SAME bytes as the previous positional aggregate.
 const LocalizedStrings kStringsKorean = {
+
     .menu_status_active = L"상태: 활성 (F9: 일시 정지)",
     .menu_status_paused = L"상태: 일시 정지 (F9: 활성화)",
     .menu_engine = L"번역 엔진 선택",
@@ -251,6 +265,24 @@ const LocalizedStrings kStringsKorean = {
     .user_gguf_bundled_duplicate_body = L"이 모델은 에메발라 챗에 이미 내장되어 있습니다. 별도의 등록은 필요 없습니다. 내장 로컬 번역 엔진을 직접 선택하시면 바로 사용할 수 있습니다.",
     // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
     .menu_engine_user_gguf_empty = L"(미등록)",
+    // REQ-048 R2-D: 등록된 사용자 .gguf 모델 관리(이름 바꾸기/삭제). 삭제 확인
+    // 본문은 .gguf 파일 자체는 디스크에 유지됨을 명시(수 GB 파일 자동 삭제 금지).
+    .menu_manage_gguf_models = L"모델 관리…",
+    .gguf_manager_title = L"사용자 모델 관리",
+    .gguf_manager_empty = L"등록된 사용자 모델이 없습니다.",
+    .gguf_manager_rename = L"이름 바꾸기…",
+    .gguf_manager_delete = L"삭제…",
+    .gguf_manager_close = L"닫기",
+    .gguf_manager_delete_confirm_title = L"모델 등록 삭제",
+    .gguf_manager_delete_confirm_body = L"선택한 모델의 등록이 삭제됩니다.\n"
+    L"\n"
+    L"모델 파일(.gguf)은 디스크에 유지되며 삭제되지 않습니다. 이 모델을 사용 중이었다면 번역 엔진 선택이 자동(Auto)으로 돌아갑니다.\n"
+    L"\n"
+    L"계속하시겠습니까?",
+    .gguf_manager_rename_title = L"모델 이름 바꾸기",
+    .gguf_manager_rename_body = L"새 이름을 입력하세요. (공백 없이 64자 이내)",
+    .gguf_manager_rename_invalid = L"사용할 수 없는 이름입니다. 비어 있지 않고 기존 이름과 다르게, 공백/경로 구분자 없이 64자 이내로 입력하세요.",
+    .gguf_manager_done = L"변경사항이 저장되었습니다.",
 };
 
 // 2. Japanese (ja)
@@ -362,7 +394,26 @@ const LocalizedStrings kStringsJapanese = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"このモデルはEmebala Chatにすでに内蔵されています。登録は必要ありません。内蔵のローカル翻訳エンジンを直接選択してご利用ください。",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(未登録)"
+    L"(未登録)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"モデルの管理…",
+    L"ユーザーモデル管理",
+    L"登録されたユーザーモデルはありません。",
+    L"名前の変更…",
+    L"削除…",
+    L"閉じる",
+    L"モデル登録の削除",
+    L"選択したモデルの登録が削除されます。\n"
+    L"\n"
+    L"モデルファイル(.gguf)はディスクに保持され、削除されません。このモデルを使用中だった場合、翻訳エンジンの選択は自動(Auto)に戻ります。\n"
+    L"\n"
+    L"続行しますか？",
+    L"モデル名の変更",
+    L"新しい名前を入力してください (空白なし64文字以内)。",
+    L"その名前は使用できません。空白やパス区切り文字を含まず、64文字以内で、既存のものと異なる空でない名前を入力してください。",
+    L"変更が保存されました。",
+
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -474,7 +525,26 @@ const LocalizedStrings kStringsChineseSimp = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"该模型已内置在 Emebala Chat 中，无需注册。直接选择内置的本地翻译引擎即可使用。",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(未注册)"
+    L"(未注册)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"管理模型…",
+    L"用户模型管理",
+    L"没有已注册的用户模型。",
+    L"重命名…",
+    L"删除…",
+    L"关闭",
+    L"删除模型注册",
+    L"所选模型的注册将被删除。\n"
+    L"\n"
+    L"模型文件(.gguf)会保留在磁盘上,不会被删除。如果正在使用该模型,翻译引擎选择将自动返回“自动(Auto)”。\n"
+    L"\n"
+    L"是否继续?",
+    L"重命名模型",
+    L"输入新名称(不超过64个字符,不含空格)。",
+    L"该名称无法使用。请输入一个非空、与现有名称不同、不含空格或路径分隔符且不超过64个字符的名称。",
+    L"更改已保存。",
+
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -586,7 +656,26 @@ const LocalizedStrings kStringsChineseTrad = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"此模型已內建於 Emebala Chat，無需註冊。直接選擇內建的本機翻譯引擎即可使用。",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(未註冊)"
+    L"(未註冊)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"管理模型…",
+    L"使用者模型管理",
+    L"沒有已註冊的使用者模型。",
+    L"重新命名…",
+    L"刪除…",
+    L"關閉",
+    L"刪除模型註冊",
+    L"所選模型的註冊將被刪除。\n"
+    L"\n"
+    L"模型檔案(.gguf)會保留在磁碟上,不會被刪除。如果正在使用該模型,翻譯引擎選擇將自動返回「自動(Auto)」。\n"
+    L"\n"
+    L"是否繼續?",
+    L"重新命名模型",
+    L"輸入新名稱(不超過64個字元,不含空格)。",
+    L"該名稱無法使用。請輸入一個非空、與現有名稱不同、不含空格或路徑分隔字元且不超過64個字元的名稱。",
+    L"變更已儲存。",
+
 };
 
 // 5. Vietnamese (vi)
@@ -698,7 +787,26 @@ const LocalizedStrings kStringsVietnamese = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Mô hình này đã được tích hợp sẵn trong Emebala Chat. Bạn không cần đăng ký. Hãy chọn trực tiếp công cụ dịch nội bộ để sử dụng.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(chưa đăng ký)"
+    L"(chưa đăng ký)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Quản lý mô hình…",
+    L"Quản lý mô hình người dùng",
+    L"Chưa có mô hình người dùng nào được đăng ký.",
+    L"Đổi tên…",
+    L"Xóa…",
+    L"Đóng",
+    L"Xóa đăng ký mô hình",
+    L"Đăng ký của mô hình đã chọn sẽ bị xóa.\n"
+    L"\n"
+    L"Tệp mô hình (.gguf) vẫn được giữ trên ổ đĩa và không bị xóa. Nếu đang sử dụng mô hình này, lựa chọn công cụ dịch sẽ quay về Tự động (Auto).\n"
+    L"\n"
+    L"Tiếp tục?",
+    L"Đổi tên mô hình",
+    L"Nhập tên mới (tối đa 64 ký tự, không dấu cách).",
+    L"Không thể sử dụng tên đó. Vui lòng nhập tên không trống, khác với tên hiện có, không chứa dấu cách hoặc dấu phân cách đường dẫn, trong 64 ký tự.",
+    L"Đã lưu thay đổi.",
+
 };
 
 // 6. Spanish (es)
@@ -807,7 +915,26 @@ const LocalizedStrings kStringsSpanish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo ya está integrado en Emebala Chat. No es necesario registrarlo. Puedes seleccionar directamente el motor de traducción local integrado.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(sin registrar)"
+    L"(sin registrar)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Administrar modelos…",
+    L"Administrador de modelos de usuario",
+    L"No hay modelos de usuario registrados.",
+    L"Cambiar nombre…",
+    L"Eliminar…",
+    L"Cerrar",
+    L"Eliminar registro del modelo",
+    L"Se eliminará el registro del modelo seleccionado.\n"
+    L"\n"
+    L"El archivo del modelo (.gguf) se conserva en el disco y no se elimina. Si este modelo estaba en uso, la selección del motor de traducción volverá a Automático (Auto).\n"
+    L"\n"
+    L"¿Continuar?",
+    L"Cambiar nombre del modelo",
+    L"Introduzca un nombre nuevo (máx. 64 caracteres, sin espacios).",
+    L"Ese nombre no se puede usar. Introduzca un nombre no vacío, distinto de los existentes, sin espacios ni separadores de ruta, de hasta 64 caracteres.",
+    L"Cambios guardados.",
+
 };
 
 // 7. English (en) - Default Fallback
@@ -921,7 +1048,26 @@ const LocalizedStrings kStringsEnglish = {
     // selected directly.
     L"This model is already built into Emebala Chat. No registration is needed - the built-in local translation engine can be selected directly.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(not registered)"
+    L"(not registered)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Manage models…",
+    L"User Model Manager",
+    L"No user models registered.",
+    L"Rename…",
+    L"Delete…",
+    L"Close",
+    L"Delete model registration",
+    L"The selected model's registration will be removed.\n"
+    L"\n"
+    L"The model file (.gguf) is KEPT on disk and is not deleted. If this model was in use, the translation engine selection returns to Auto.\n"
+    L"\n"
+    L"Continue?",
+    L"Rename model",
+    L"Enter a new name (up to 64 characters, no spaces).",
+    L"That name cannot be used. Enter a non-empty name that differs from existing ones, without spaces or path separators, within 64 characters.",
+    L"Changes saved.",
+
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1045,7 +1191,26 @@ const LocalizedStrings kStringsFrench = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ce modèle est déjà intégré à Emebala Chat. Aucune inscription n'est nécessaire. Vous pouvez sélectionner directement le moteur de traduction local intégré.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(non enregistré)"
+    L"(non enregistré)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Gérer les modèles…",
+    L"Gestionnaire de modèles utilisateur",
+    L"Aucun modèle utilisateur enregistré.",
+    L"Renommer…",
+    L"Supprimer…",
+    L"Fermer",
+    L"Supprimer l'inscription du modèle",
+    L"L'inscription du modèle sélectionné sera supprimée.\n"
+    L"\n"
+    L"Le fichier du modèle (.gguf) est conservé sur le disque et n'est pas supprimé. Si ce modèle était utilisé, le choix du moteur de traduction reviendra à Auto.\n"
+    L"\n"
+    L"Continuer ?",
+    L"Renommer le modèle",
+    L"Saisissez un nouveau nom (64 caractères max, sans espaces).",
+    L"Ce nom ne peut pas être utilisé. Saisissez un nom non vide, différent des noms existants, sans espaces ni séparateurs de chemin, de 64 caractères maximum.",
+    L"Modifications enregistrées.",
+
 };
 
 // 9. German (de)
@@ -1157,7 +1322,26 @@ const LocalizedStrings kStringsGerman = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dieses Modell ist bereits in Emebala Chat integriert. Eine Registrierung ist nicht erforderlich. Sie können die integrierte lokale Übersetzungsengine direkt auswählen.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(nicht registriert)"
+    L"(nicht registriert)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Modelle verwalten…",
+    L"Benutzermodell-Verwaltung",
+    L"Keine Benutzermodelle registriert.",
+    L"Umbenennen…",
+    L"Löschen…",
+    L"Schließen",
+    L"Modellregistrierung löschen",
+    L"Die Registrierung des ausgewählten Modells wird entfernt.\n"
+    L"\n"
+    L"Die Modelldatei (.gguf) bleibt auf dem Datenträger erhalten und wird nicht gelöscht. Wenn dieses Modell verwendet wurde, kehrt die Auswahl der Übersetzungsengine zu Automatisch (Auto) zurück.\n"
+    L"\n"
+    L"Fortfahren?",
+    L"Modell umbenennen",
+    L"Neuen Namen eingeben (max. 64 Zeichen, ohne Leerzeichen).",
+    L"Dieser Name kann nicht verwendet werden. Bitte einen nicht leeren Namen eingeben, der von vorhandenen abweicht und keine Leerzeichen oder Pfadtrennzeichen enthält (max. 64 Zeichen).",
+    L"Änderungen gespeichert.",
+
 };
 
 // 10. Russian (ru)
@@ -1269,7 +1453,26 @@ const LocalizedStrings kStringsRussian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Эта модель уже встроена в Emebala Chat. Регистрация не требуется. Выберите встроенный локальный движок перевода напрямую.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(не зарегистрировано)"
+    L"(не зарегистрировано)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Управление моделями…",
+    L"Управление моделями пользователя",
+    L"Нет зарегистрированных пользовательских моделей.",
+    L"Переименовать…",
+    L"Удалить…",
+    L"Закрыть",
+    L"Удаление регистрации модели",
+    L"Регистрация выбранной модели будет удалена.\n"
+    L"\n"
+    L"Файл модели (.gguf) остаётся на диске и не удаляется. Если эта модель использовалась, выбор движка перевода вернётся к Авто (Auto).\n"
+    L"\n"
+    L"Продолжить?",
+    L"Переименование модели",
+    L"Введите новое имя (до 64 символов, без пробелов).",
+    L"Такое имя использовать нельзя. Введите непустое имя, отличающееся от существующих, без пробелов и разделителей пути, длиной до 64 символов.",
+    L"Изменения сохранены.",
+
 };
 
 // 11. Portuguese (pt)
@@ -1381,7 +1584,26 @@ const LocalizedStrings kStringsPortuguese = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo já está integrado no Emebala Chat. Não é necessário registrá-lo. Selecione diretamente o mecanismo de tradução local integrado.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(não registrado)"
+    L"(não registrado)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Gerir modelos…",
+    L"Gestor de modelos do utilizador",
+    L"Sem modelos de utilizador registados.",
+    L"Mudar o nome…",
+    L"Eliminar…",
+    L"Fechar",
+    L"Eliminar registo do modelo",
+    L"O registo do modelo selecionado será eliminado.\n"
+    L"\n"
+    L"O ficheiro do modelo (.gguf) é mantido no disco e não é eliminado. Se este modelo estava em utilização, a seleção do motor de tradução voltará a Automático (Auto).\n"
+    L"\n"
+    L"Continuar?",
+    L"Mudar o nome do modelo",
+    L"Introduza um novo nome (máx. 64 caracteres, sem espaços).",
+    L"Esse nome não pode ser utilizado. Introduza um nome não vazio, diferente dos existentes, sem espaços nem separadores de caminho, até 64 caracteres.",
+    L"Alterações guardadas.",
+
 };
 
 // 12. Italian (it)
@@ -1493,7 +1715,26 @@ const LocalizedStrings kStringsItalian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Questo modello è già integrato in Emebala Chat. Non è necessario registrarlo. Puoi selezionare direttamente il motore di traduzione locale integrato.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(non registrato)"
+    L"(non registrato)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Gestisci modelli…",
+    L"Gestione modelli utente",
+    L"Nessun modello utente registrato.",
+    L"Rinomina…",
+    L"Elimina…",
+    L"Chiudi",
+    L"Elimina registrazione modello",
+    L"La registrazione del modello selezionato verrà eliminata.\n"
+    L"\n"
+    L"Il file del modello (.gguf) viene mantenuto sul disco e non viene eliminato. Se questo modello era in uso, la selezione del motore di traduzione tornerà a Automatico (Auto).\n"
+    L"\n"
+    L"Continuare?",
+    L"Rinomina modello",
+    L"Inserisci un nuovo nome (max 64 caratteri, senza spazi).",
+    L"Questo nome non può essere usato. Inserisci un nome non vuoto, diverso da quelli esistenti, senza spazi né separatori di percorso, entro 64 caratteri.",
+    L"Modifiche salvate.",
+
 };
 
 // 13. Dutch (nl)
@@ -1605,7 +1846,26 @@ const LocalizedStrings kStringsDutch = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dit model is al ingebouwd in Emebala Chat. Registratie is niet nodig. Selecteer de ingebouwde lokale vertaalengine direct.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(niet geregistreerd)"
+    L"(niet geregistreerd)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Modellen beheren…",
+    L"Gebruikersmodelbeheer",
+    L"Geen gebruikersmodellen geregistreerd.",
+    L"Hernoemen…",
+    L"Verwijderen…",
+    L"Sluiten",
+    L"Modelregistratie verwijderen",
+    L"De registratie van het geselecteerde model wordt verwijderd.\n"
+    L"\n"
+    L"Het modelbestand (.gguf) blijft op de schijf staan en wordt niet verwijderd. Als dit model in gebruik was, keert de keuze van de vertaalengine terug naar Auto.\n"
+    L"\n"
+    L"Doorgaan?",
+    L"Model hernoemen",
+    L"Voer een nieuwe naam in (max. 64 tekens, geen spaties).",
+    L"Die naam kan niet worden gebruikt. Voer een niet-lege naam in die afwijkt van bestaande namen, zonder spaties of padscheidingstekens, van maximaal 64 tekens.",
+    L"Wijzigingen opgeslagen.",
+
 };
 
 // 14. Polish (pl)
@@ -1717,7 +1977,26 @@ const LocalizedStrings kStringsPolish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ten model jest już wbudowany w Emebala Chat. Rejestracja nie jest potrzebna. Wystarczy bezpośrednio wybrać wbudowany lokalny silnik tłumaczenia.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(niezarejestrowany)"
+    L"(niezarejestrowany)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Zarządzaj modelami…",
+    L"Menedżer modeli użytkownika",
+    L"Brak zarejestrowanych modeli użytkownika.",
+    L"Zmień nazwę…",
+    L"Usuń…",
+    L"Zamknij",
+    L"Usuń rejestrację modelu",
+    L"Rejestracja wybranego modelu zostanie usunięta.\n"
+    L"\n"
+    L"Plik modelu (.gguf) pozostaje na dysku i nie zostanie usunięty. Jeśli ten model był używany, wybór silnika tłumaczenia powróci do Automatyczny (Auto).\n"
+    L"\n"
+    L"Kontynuować?",
+    L"Zmień nazwę modelu",
+    L"Wpisz nową nazwę (maks. 64 znaki, bez spacji).",
+    L"Tej nazwy nie można użyć. Wpisz niepustą nazwę, różną od istniejących, bez spacji i separatorów ścieżki, do 64 znaków.",
+    L"Zapisano zmiany.",
+
 };
 
 // 15. Czech (cs)
@@ -1829,7 +2108,26 @@ const LocalizedStrings kStringsCzech = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tento model je již vestavěný v Emebala Chat. Registrace není potřeba. Vestavěný lokální překladový engine můžete vybrat přímo.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(není registrován)"
+    L"(není registrován)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Spravovat modely…",
+    L"Správa uživatelských modelů",
+    L"Nejsou zaregistrovány žádné uživatelské modely.",
+    L"Přejmenovat…",
+    L"Odstranit…",
+    L"Zavřít",
+    L"Odstranit registraci modelu",
+    L"Registrace vybraného modelu bude odstraněna.\n"
+    L"\n"
+    L"Soubor modelu (.gguf) zůstane na disku a nebude odstraněn. Pokud byl tento model používán, výběr překladového enginu se vrátí na Automaticky (Auto).\n"
+    L"\n"
+    L"Pokračovat?",
+    L"Přejmenovat model",
+    L"Zadejte nový název (max. 64 znaků, bez mezer).",
+    L"Tento název nelze použít. Zadejte neprázdný název, který se liší od existujících, bez mezer a oddělovačů cesty, do 64 znaků.",
+    L"Změny byly uloženy.",
+
 };
 
 // 16. Hungarian (hu)
@@ -1941,7 +2239,26 @@ const LocalizedStrings kStringsHungarian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ez a modell már beépítve van az Emebala Chatbe. Regisztrációra nincs szükség. A beépített helyi fordítómotort közvetlenül kiválaszthatod.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(nincs regisztrálva)"
+    L"(nincs regisztrálva)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Modellek kezelése…",
+    L"Felhasználói modellek kezelése",
+    L"Nincsenek regisztrált felhasználói modellek.",
+    L"Átnevezés…",
+    L"Törlés…",
+    L"Bezárás",
+    L"Modellregisztráció törlése",
+    L"A kiválasztott modell regisztrációja törlődik.\n"
+    L"\n"
+    L"A modellfájl (.gguf) a lemezen marad és nem törlődik. Ha ezt a modellt használta, a fordítómotor választása visszaáll Automatikus (Auto) értékre.\n"
+    L"\n"
+    L"Folytatja?",
+    L"Modell átnevezése",
+    L"Adjon meg új nevet (legfeljebb 64 karakter, szóköz nélkül).",
+    L"Ez a név nem használható. Adj meg egy nem üres, a meglévőktől eltérő, szóközöket és elválasztókat nem tartalmazó, legfeljebb 64 karakteres nevet.",
+    L"Változások mentve.",
+
 };
 
 // 17. Romanian (ro)
@@ -2053,7 +2370,26 @@ const LocalizedStrings kStringsRomanian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Acest model este deja integrat în Emebala Chat. Înregistrarea nu este necesară. Poți selecta direct motorul de traducere local integrat.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(neregistrat)"
+    L"(neregistrat)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Gestionare modele…",
+    L"Manager modele utilizator",
+    L"Nu există modele de utilizator înregistrate.",
+    L"Redenumește…",
+    L"Șterge…",
+    L"Închide",
+    L"Ștergere înregistrare model",
+    L"Înregistrarea modelului selectat va fi ștearsă.\n"
+    L"\n"
+    L"Fișierul modelului (.gguf) rămâne pe disc și nu este șters. Dacă acest model era utilizat, selectarea motorului de traducere revine la Automat (Auto).\n"
+    L"\n"
+    L"Continuați?",
+    L"Redenumește modelul",
+    L"Introduceți un nume nou (max. 64 de caractere, fără spații).",
+    L"Acest nume nu poate fi folosit. Introduceți un nume nevid, diferit de cele existente, fără spații sau separatoare de cale, de maximum 64 de caractere.",
+    L"Modificări salvate.",
+
 };
 
 // 18. Swedish (sv)
@@ -2165,7 +2501,26 @@ const LocalizedStrings kStringsSwedish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Den här modellen är redan inbyggd i Emebala Chat. Ingen registrering behövs. Välj den inbyggda lokala översättningsmotorn direkt.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ej registrerad)"
+    L"(ej registrerad)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Hantera modeller…",
+    L"Hanterare av användarmodeller",
+    L"Inga användarmodeller registrerade.",
+    L"Byt namn…",
+    L"Ta bort…",
+    L"Stäng",
+    L"Ta bort modellregistrering",
+    L"Registreringen av den valda modellen tas bort.\n"
+    L"\n"
+    L"Modellfilen (.gguf) kvarstår på disken och tas inte bort. Om den här modellen användes återgår valet av översättningsmotor till Automatiskt (Auto).\n"
+    L"\n"
+    L"Fortsätta?",
+    L"Byt namn på modell",
+    L"Ange ett nytt namn (max 64 tecken, utan mellanslag).",
+    L"Det namnet kan inte användas. Ange ett icke-tomt namn som skiljer sig från befintliga, utan mellanslag eller sökvägsavgränsare, på högst 64 tecken.",
+    L"Ändringar sparade.",
+
 };
 
 // 19. Danish (da)
@@ -2277,7 +2632,26 @@ const LocalizedStrings kStringsDanish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne model er allerede indbygget i Emebala Chat. Registrering er ikke nødvendig. Vælg den indbyggede lokale oversættelsesmotor direkte.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ikke registreret)"
+    L"(ikke registreret)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Administrer modeller…",
+    L"Administration af brugermodeller",
+    L"Ingen brugermodeller registreret.",
+    L"Omdøb…",
+    L"Slet…",
+    L"Luk",
+    L"Slet modelregistrering",
+    L"Registreringen af den valgte model slettes.\n"
+    L"\n"
+    L"Modelfilen (.gguf) beholdes på disken og slettes ikke. Hvis denne model var i brug, vender valget af oversættelsesmotor tilbage til Automatisk (Auto).\n"
+    L"\n"
+    L"Fortsæt?",
+    L"Omdøb model",
+    L"Indtast et nyt navn (maks. 64 tegn, uden mellemrum).",
+    L"Det navn kan ikke bruges. Indtast et ikke-tomt navn, der adskiller sig fra eksisterende, uden mellemrum eller stiangrænsesymboler, på højst 64 tegn.",
+    L"Ændringer gemt.",
+
 };
 
 // 20. Finnish (fi)
@@ -2389,7 +2763,26 @@ const LocalizedStrings kStringsFinnish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tämä malli on jo sisäänrakennettu Emebala Chatiin. Rekisteröintiä ei tarvita. Valitse sisäänrakennettu paikallinen käännösmoottori suoraan.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ei rekisteröity)"
+    L"(ei rekisteröity)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Hallitse malleja…",
+    L"Käyttäjämallien hallinta",
+    L"Ei rekisteröityjä käyttäjämalleja.",
+    L"Nimeä uudelleen…",
+    L"Poista…",
+    L"Sulje",
+    L"Poista mallin rekisteröinti",
+    L"Valitun mallin rekisteröinti poistetaan.\n"
+    L"\n"
+    L"Mallitiedosto (.gguf) säilyy levyllä eikä poisteta. Jos tätä mallia käytettiin, käännösmoottorin valinta palaa automaattiseen (Auto).\n"
+    L"\n"
+    L"Jatka?",
+    L"Nimeä malli uudelleen",
+    L"Syötä uusi nimi (enintään 64 merkkiä, ei välilyöntejä).",
+    L"Tätä nimeä ei voi käyttää. Syötä nimi, joka ei ole tyhjä, eroaa olemassa olevista eikä sisällä välilyöntejä tai polkuerottimia, enintään 64 merkkiä.",
+    L"Muutokset tallennettu.",
+
 };
 
 // 21. Norwegian (no / nb)
@@ -2501,7 +2894,26 @@ const LocalizedStrings kStringsNorwegian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne modellen er allerede innebygd i Emebala Chat. Registrering er ikke nødvendig. Velg den innebygde lokale oversettelsesmotoren direkte.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ikke registrert)"
+    L"(ikke registrert)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Administrer modeller…",
+    L"Administrasjon av brukermodeller",
+    L"Ingen brukermodeller registrert.",
+    L"Gi nytt navn…",
+    L"Slett…",
+    L"Lukk",
+    L"Slett modellregistrering",
+    L"Registreringen av den valgte modellen slettes.\n"
+    L"\n"
+    L"Modellfilen (.gguf) beholdes på disken og slettes ikke. Hvis denne modellen var i bruk, går valget av oversettelsesmotor tilbake til Automatisk (Auto).\n"
+    L"\n"
+    L"Fortsett?",
+    L"Gi modell nytt navn",
+    L"Skriv inn et nytt navn (maks. 64 tegn, uten mellomrom).",
+    L"Det navnet kan ikke brukes. Skriv inn et navn som ikke er tomt, er forskjellig fra eksisterende, uten mellomrom eller sti-separatorer, opptil 64 tegn.",
+    L"Endringer lagret.",
+
 };
 
 // 22. Greek (el)
@@ -2613,7 +3025,26 @@ const LocalizedStrings kStringsGreek = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Αυτό το μοντέλο είναι ήδη ενσωματωμένο στο Emebala Chat. Δεν απαιτείται εγγραφή. Μπορείτε να επιλέξετε απευθείας τον ενσωματωμένο τοπικό μηχανισμό μετάφρασης.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(μη καταχωρημένο)"
+    L"(μη καταχωρημένο)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Διαχείριση μοντέλων…",
+    L"Διαχείριση μοντέλων χρήστη",
+    L"Δεν υπάρχουν εγγεγραμμένα μοντέλα χρήστη.",
+    L"Μετονομασία…",
+    L"Διαγραφή…",
+    L"Κλείσιμο",
+    L"Διαγραφή καταχώρισης μοντέλου",
+    L"Η καταχώριση του επιλεγμένου μοντέλου θα διαγραφεί.\n"
+    L"\n"
+    L"Το αρχείο μοντέλου (.gguf) διατηρείται στον δίσκο και δεν διαγράφεται. Αν αυτό το μοντέλο ήταν σε χρήση, η επιλογή μηχανής μετάφρασης επιστρέφει σε Αυτόματο (Auto).\n"
+    L"\n"
+    L"Συνέχεια;",
+    L"Μετονομασία μοντέλου",
+    L"Εισαγάγετε νέο όνομα (έως 64 χαρακτήρες, χωρίς κενά).",
+    L"Αυτό το όνομα δεν μπορεί να χρησιμοποιηθεί. Εισαγάγετε ένα μη κενό όνομα, διαφορετικό από τα υπάρχοντα, χωρίς κενά ή διαχωριστικά διαδρομής, έως 64 χαρακτήρες.",
+    L"Οι αλλαγές αποθηκεύτηκαν.",
+
 };
 
 // 23. Turkish (tr)
@@ -2725,7 +3156,26 @@ const LocalizedStrings kStringsTurkish = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Bu model Emebala Chat'e zaten yerleşiktir. Kayıt gerekmez. Yerleşik yerel çeviri motorunu doğrudan seçebilirsiniz.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(kayıtlı değil)"
+    L"(kayıtlı değil)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Modelleri yönet…",
+    L"Kullanıcı Modeli Yöneticisi",
+    L"Kayıtlı kullanıcı modeli yok.",
+    L"Yeniden adlandır…",
+    L"Sil…",
+    L"Kapat",
+    L"Model kaydını sil",
+    L"Seçilen modelin kaydı silinecek.\n"
+    L"\n"
+    L"Model dosyası (.gguf) diskte tutulur ve silinmez. Bu model kullanılıyorsa, çeviri motoru seçimi Otomatik (Auto) olarak döner.\n"
+    L"\n"
+    L"Devam edilsin mi?",
+    L"Modeli yeniden adlandır",
+    L"Yeni bir ad girin (en fazla 64 karakter, boşluksuz).",
+    L"Bu ad kullanılamaz. Boş olmayan, mevcutlardan farklı, boşluk veya yol ayıracı içermeyen, en fazla 64 karakterlik bir ad girin.",
+    L"Değişiklikler kaydedildi.",
+
 };
 
 // 24. Ukrainian (uk)
@@ -2837,7 +3287,26 @@ const LocalizedStrings kStringsUkrainian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ця модель уже вбудована в Emebala Chat. Реєстрація не потрібна. Ви можете напряму вибрати вбудований локальний рушій перекладу.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(не зареєстровано)"
+    L"(не зареєстровано)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Керування моделями…",
+    L"Керування моделями користувача",
+    L"Немає зареєстрованих моделей користувача.",
+    L"Перейменувати…",
+    L"Видалити…",
+    L"Закрити",
+    L"Видалення реєстрації моделі",
+    L"Реєстрацію вибраної моделі буде видалено.\n"
+    L"\n"
+    L"Файл моделі (.gguf) залишається на диску і не видаляється. Якщо цю модель було використано, вибір рушія перекладу повернеться до Авто (Auto).\n"
+    L"\n"
+    L"Продовжити?",
+    L"Перейменування моделі",
+    L"Введіть нову назву (до 64 символів, без пробілів).",
+    L"Цю назву не можна використати. Введіть непорожню назву, що відрізняється від наявних, без пробілів і роздільників шляху, до 64 символів.",
+    L"Зміни збережено.",
+
 };
 
 // 25. Thai (th)
@@ -2949,7 +3418,26 @@ const LocalizedStrings kStringsThai = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"โมเดลนี้มีอยู่ในตัว Emebala Chat อยู่แล้ว ไม่จำเป็นต้องลงทะเบียน เลือกเครื่องยนต์แปลภาษาในตัวได้โดยตรง",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ยังไม่ได้ลงทะเบียน)"
+    L"(ยังไม่ได้ลงทะเบียน)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"จัดการโมเดล…",
+    L"ตัวจัดการโมเดลผู้ใช้",
+    L"ไม่มีโมเดลผู้ใช้ที่ลงทะเบียน",
+    L"เปลี่ยนชื่อ…",
+    L"ลบ…",
+    L"ปิด",
+    L"ลบการลงทะเบียนโมเดล",
+    L"การลงทะเบียนของโมเดลที่เลือกจะถูกลบ\n"
+    L"\n"
+    L"ไฟล์โมเดล (.gguf) ยังคงอยู่บนดิสก์และจะไม่ถูกลบ หากใช้โมเดลนี้อยู่ การเลือกเอนจินแปลจะกลับไปที่อัตโนมัติ (Auto)\n"
+    L"\n"
+    L"ดำเนินการต่อ?",
+    L"เปลี่ยนชื่อโมเดล",
+    L"ป้อนชื่อใหม่ (สูงสุด 64 อักขระ ไม่มีช่องว่าง)",
+    L"ใช้ชื่อนี้ไม่ได้ โปรดป้อนชื่อที่ไม่ว่าง แตกต่างจากที่มีอยู่ ไม่มีช่องว่างหรือตัวคั่นเส้นทาง ไม่เกิน 64 อักขระ",
+    L"บันทึกการเปลี่ยนแปลงแล้ว",
+
 };
 
 // 26. Indonesian (id)
@@ -3061,7 +3549,26 @@ const LocalizedStrings kStringsIndonesian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah tertanam di Emebala Chat. Pendaftaran tidak diperlukan. Pilih langsung mesin penerjemahan lokal bawaan.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(belum terdaftar)"
+    L"(belum terdaftar)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Kelola model…",
+    L"Pengelola Model Pengguna",
+    L"Tidak ada model pengguna yang terdaftar.",
+    L"Ubah nama…",
+    L"Hapus…",
+    L"Tutup",
+    L"Hapus registrasi model",
+    L"Registrasi model yang dipilih akan dihapus.\n"
+    L"\n"
+    L"File model (.gguf) tetap disimpan di disk dan tidak dihapus. Jika model ini sedang digunakan, pemilihan mesin penerjemah akan kembali ke Otomatis (Auto).\n"
+    L"\n"
+    L"Lanjutkan?",
+    L"Ubah nama model",
+    L"Masukkan nama baru (maks. 64 karakter, tanpa spasi).",
+    L"Nama itu tidak dapat digunakan. Masukkan nama yang tidak kosong, berbeda dari yang sudah ada, tanpa spasi atau pemisah jalur, maksimal 64 karakter.",
+    L"Perubahan disimpan.",
+
 };
 
 // 27. Malay (ms)
@@ -3173,7 +3680,26 @@ const LocalizedStrings kStringsMalay = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah terbina dalam Emebala Chat. Pendaftaran tidak diperlukan. Pilih terus enjin terjemahan tempatan terbina dalam.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(belum didaftarkan)"
+    L"(belum didaftarkan)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Urus model…",
+    L"Pengurus Model Pengguna",
+    L"Tiada model pengguna berdaftar.",
+    L"Tukar nama…",
+    L"Padam…",
+    L"Tutup",
+    L"Padam pendaftaran model",
+    L"Pendaftaran model yang dipilih akan dipadamkan.\n"
+    L"\n"
+    L"Fail model (.gguf) kekal pada cakera dan tidak dipadamkan. Jika model ini sedang digunakan, pemilihan enjin terjemahan akan kembali kepada Automatik (Auto).\n"
+    L"\n"
+    L"Teruskan?",
+    L"Tukar nama model",
+    L"Masukkan nama baharu (maks. 64 aksara, tanpa ruang).",
+    L"Nama itu tidak boleh digunakan. Masukkan nama yang tidak kosong, berbeza daripada yang sedia ada, tanpa ruang atau pemisah laluan, sehingga 64 aksara.",
+    L"Perubahan disimpan.",
+
 };
 
 // 28. Filipino (fil)
@@ -3287,7 +3813,26 @@ const LocalizedStrings kStringsFilipino = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ang modelong ito ay nakabuilt-in na sa Emebala Chat. Hindi na kailangan ng pagpaparehistro. Maaari mong direktang piliin ang built-in na lokal na translation engine.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(hindi pa rehistrado)"
+    L"(hindi pa rehistrado)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"Pamahalaan ang mga modelo…",
+    L"Tagapamahala ng Mga Modelo ng Gumagamit",
+    L"Walang nakarehistrong modelong pang-gumagamit.",
+    L"Palitan ang pangalan…",
+    L"Tanggalin…",
+    L"Isara",
+    L"Tanggalin ang rehistro ng modelo",
+    L"Ang rehistro ng napiling modelo ay tatanggalin.\n"
+    L"\n"
+    L"Ang file ng modelo (.gguf) ay mananatili sa disk at hindi tatanggalin. Kung ang modelong ito ay ginagamit, ang pagpili ng makina ng pagsasalin ay babalik sa Awtomatiko (Auto).\n"
+    L"\n"
+    L"Magpatuloy?",
+    L"Palitan ang pangalan ng modelo",
+    L"Maglagay ng bagong pangalan (hanggang 64 na karakter, walang espasyo).",
+    L"Hindi magamit ang pangalang iyan. Maglagay ng di-walang-laman na pangalan, naiiba sa mga umiiral, walang espasyo o pantahip ng landas, hanggang 64 na karakter.",
+    L"Nai-save ang mga pagbabago.",
+
 };
 
 // 29. Hindi (hi)
@@ -3399,7 +3944,26 @@ const LocalizedStrings kStringsHindi = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"यह मॉडल Emebala Chat में पहले से ही अंतर्निहित है। पंजीकरण की आवश्यकता नहीं है। अंतर्निहित लोकल अनुवाद इंजन को सीधे चुनें।",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(पंजीकृत नहीं)"
+    L"(पंजीकृत नहीं)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"मॉडल प्रबंधित करें…",
+    L"उपयोगकर्ता मॉडल प्रबंधक",
+    L"कोई उपयोगकर्ता मॉडल पंजीकृत नहीं है।",
+    L"नाम बदलें…",
+    L"हटाएं…",
+    L"बंद करें",
+    L"मॉडल पंजीकरण हटाएं",
+    L"चयनित मॉडल का पंजीकरण हटाया जाएगा।\n"
+    L"\n"
+    L"मॉडल फ़ाइल (.gguf) डिस्क पर बनी रहती है और नहीं हटती। यदि यह मॉडल प्रयोग में था, तो अनुवाद इंजन चयन स्वतः (Auto) पर लौट आएगा।\n"
+    L"\n"
+    L"जारी रखें?",
+    L"मॉडल का नाम बदलें",
+    L"नया नाम दर्ज करें (अधिकतम 64 वर्ण, बिना रिक्त स्थान)।",
+    L"वह नाम प्रयोग नहीं किया जा सकता। कोई खाली नहीं, मौजूदा से अलग, बिना रिक्त स्थान या पथ विभाजक, 64 वर्णों के भीतर नाम दर्ज करें।",
+    L"परिवर्तन सहेजे गए।",
+
 };
 
 // 30. Bengali (bn)
@@ -3511,7 +4075,26 @@ const LocalizedStrings kStringsBengali = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"এই মডেলটি ইতিমধ্যে Emebala Chat-এ অন্তর্নির্মিত। নিবন্ধনের প্রয়োজন নেই। অন্তর্নির্মিত লোকাল অনুবাদ ইঞ্জিন সরাসরি নির্বাচন করুন।",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(নিবন্ধিত নয়)"
+    L"(নিবন্ধিত নয়)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"মডেল পরিচালনা…",
+    L"ব্যবহারকারী মডেল পরিচালক",
+    L"কোনো ব্যবহারকারী মডেল নথিভুক্ত নেই।",
+    L"নাম পরিবর্তন…",
+    L"মুছুন…",
+    L"বন্ধ করুন",
+    L"মডেল নিবন্ধন মুছুন",
+    L"নির্বাচিত মডেলের নিবন্ধন মুছে ফেলা হবে।\n"
+    L"\n"
+    L"মডেল ফাইল (.gguf) ডিস্কে থাকবে এবং মুছে ফেলা হবে না। এই মডেলটি ব্যবহারে থাকলে, অনুবাদ ইঞ্জিন নির্বাচন স্বয়ংক্রিয় (Auto)-তে ফিরে যাবে।\n"
+    L"\n"
+    L"চালিয়ে যাবেন?",
+    L"মডেলের নাম পরিবর্তন",
+    L"নতুন নাম লিখুন (সর্বোচ্চ ৬৪ অক্ষর, ফাঁক ছাড়া)।",
+    L"সেই নাম ব্যবহার করা যাবে না। খালি নয়, বিদ্যমানগুলো থেকে আলাদা, ফাঁক বা পথ বিভাজক ছাড়া, সর্বোচ্চ ৬৪ অক্ষরের নাম লিখুন।",
+    L"পরিবর্তন সংরক্ষণ করা হয়েছে।",
+
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -3624,7 +4207,26 @@ const LocalizedStrings kStringsArabic = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"هذا النموذج مدمج بالفعل في Emebala Chat. لا حاجة إلى التسجيل. يمكنك اختيار محرك الترجمة المحلي المدمج مباشرةً.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(غير مسجل)"
+    L"(غير مسجل)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"إدارة النماذج…",
+    L"مدير نماذج المستخدم",
+    L"لا توجد نماذج مستخدم مسجّلة.",
+    L"إعادة تسمية…",
+    L"حذف…",
+    L"إغلاق",
+    L"حذف تسجيل النموذج",
+    L"سيتم حذف تسجيل النموذج المحدد.\n"
+    L"\n"
+    L"ملف النموذج (.gguf) يبقى على القرص ولا يُحذف. إذا كان هذا النموذج قيد الاستخدام، فسيعود اختيار محرك الترجمة إلى تلقائي (Auto).\n"
+    L"\n"
+    L"هل تريد المتابعة؟",
+    L"إعادة تسمية النموذج",
+    L"أدخل اسمًا جديدًا (بحد أقصى 64 حرفًا، بدون مسافات).",
+    L"لا يمكن استخدام هذا الاسم. أدخل اسمًا غير فارغ ومختلف عن الأسماء الموجودة، بدون مسافات أو فواصل مسار، وضمن 64 حرفًا.",
+    L"تم حفظ التغييرات.",
+
 };
 
 // 32. Persian (fa) — RTL
@@ -3736,7 +4338,26 @@ const LocalizedStrings kStringsPersian = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"این مدل از قبل در Emebala Chat داخلی شده است. نیازی به ثبت‌نام نیست. می‌توانید موتور ترجمه محلی داخلی را مستقیماً انتخاب کنید.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ثبت نشده)"
+    L"(ثبت نشده)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"مدیریت مدل‌ها…",
+    L"مدیریت مدل‌های کاربر",
+    L"هیچ مدل کاربری ثبت نشده است.",
+    L"تغییر نام…",
+    L"حذف…",
+    L"بستن",
+    L"حذف ثبت مدل",
+    L"ثبت مدل انتخاب‌شده حذف خواهد شد.\n"
+    L"\n"
+    L"فایل مدل (.gguf) روی دیسک باقی می‌ماند و حذف نمی‌شود. اگر از این مدل استفاده می‌شد، انتخاب موتور ترجمه به حالت خودکار (Auto) بازمی‌گردد.\n"
+    L"\n"
+    L"ادامه می‌دهید؟",
+    L"تغییر نام مدل",
+    L"نام جدید را وارد کنید (حداکثر ۶۴ نویسه، بدون فاصله).",
+    L"این نام قابل استفاده نیست. نامی غیرخالی، متفاوت از نام‌های موجود، بدون فاصله یا جداکنندهٔ مسیر و حداکثر ۶۴ نویسه وارد کنید.",
+    L"تغییرات ذخیره شد.",
+
 };
 
 // 33. Urdu (ur) — RTL
@@ -3848,7 +4469,26 @@ const LocalizedStrings kStringsUrdu = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"یہ ماڈل پہلے سے ہی Emebala Chat میں شامل ہے۔ رجسٹریشن کی ضرورت نہیں ہے۔ بلٹ اِن لوکل ترجمہ انجن کو براہ راست منتخب کریں۔",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(رجسٹرڈ نہیں)"
+    L"(رجسٹرڈ نہیں)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"ماڈلز منظم کریں…",
+    L"صارف ماڈل منیجر",
+    L"کوئی صارف ماڈل رجسٹرڈ نہیں۔",
+    L"نام تبدیل کریں…",
+    L"حذف کریں…",
+    L"بند کریں",
+    L"ماڈل رجسٹریشن حذف کریں",
+    L"منتخب ماڈل کی رجسٹریشن حذف کر دی جائے گی۔\n"
+    L"\n"
+    L"ماڈل فائل (.gguf) ڈسک پر محفوظ رہتی ہے اور حذف نہیں ہوتی۔ اگر یہ ماڈل استعمال ہو رہا تھا، تو ترجمہ انجن کا انتخاب خودکار (Auto) پر واپس آ جائے گا۔\n"
+    L"\n"
+    L"جاری رکھیں؟",
+    L"ماڈل کا نام تبدیل کریں",
+    L"نیا نام درج کریں (زیادہ سے زیادہ 64 حروف، بغیر خالی جگہ کے)۔",
+    L"وہ نام استعمال نہیں ہو سکتا۔ کوئی خالی نہیں، موجودہ ناموں سے مختلف، بغیر خالی جگہ یا راستہ جداکننے والے، 64 حروف کے اندر نام درج کریں۔",
+    L"تبدیلیاں محفوظ کر دی گئیں۔",
+
 };
 
 // 34. Hebrew (he) — RTL
@@ -3960,7 +4600,26 @@ const LocalizedStrings kStringsHebrew = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"מודל זה כבר מובנה בתוך Emebala Chat. אין צורך ברישום. ניתן לבחור ישירות את מנוע התרגום המקומי המובנה.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(לא רשום)"
+    L"(לא רשום)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"ניהול מודלים…",
+    L"מנהל מודלים של המשתמש",
+    L"אין מודלים של משתמש רשומים.",
+    L"שינוי שם…",
+    L"מחיקה…",
+    L"סגירה",
+    L"מחיקת רישום המודל",
+    L"רישום המודל שנבחר יימחק.\n"
+    L"\n"
+    L"קובץ המודל (.gguf) נשמר על הדיסק ואינו נמחק. אם המודל היה בשימוש, הבחירה במנוע התרגום תחזור ל־אוטומטי (Auto).\n"
+    L"\n"
+    L"להמשיך?",
+    L"שינוי שם המודל",
+    L"הזן שם חדש (עד 64 תווים, ללא רווחים).",
+    L"אי אפשר להשתמש בשם הזה. הזן שם שאינו ריק, שונה מהקיימים, ללא רווחים או מפרידי נתיב, בעד 64 תווים.",
+    L"השינויים נשמרו.",
+
 };
 
 // 35. Khmer (km)
@@ -4072,7 +4731,26 @@ const LocalizedStrings kStringsKhmer = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ម៉ូដែលនេះមានស្រាប់ក្នុង Emebala Chat រួចហើយ។ មិនចាំបាច់ចុះឈ្មោះទេ។ អ្នកអាចជ្រើសរើសម៉ាស៊ីនបកប្រែក្នុងស្រុកដែលមានស្រាប់ដោយផ្ទាល់។",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(មិនទាន់ចុះឈ្មោះ)"
+    L"(មិនទាន់ចុះឈ្មោះ)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"គ្រប់គ្រងម៉ូដែល…",
+    L"កម្មវិធីគ្រប់គ្រងម៉ូដែលអ្នកប្រើ",
+    L"មិនមានម៉ូដែលអ្នកប្រើដែលបានចុះឈ្មោះទេ។",
+    L"ប្ដូរឈ្មោះ…",
+    L"លុប…",
+    L"បិទ",
+    L"លុបការចុះឈ្មោះម៉ូដែល",
+    L"ការចុះឈ្មោះនៃម៉ូដែលដែលបានជ្រើសរើស នឹងត្រូវលុប។\n"
+    L"\n"
+    L"ឯកសារម៉ូដែល (.gguf) នៅតែស្ថិតនៅលើថាស ហើយមិនត្រូវបានលុបទេ។ ប្រសិនបើម៉ូដែលនេះកំពុងប្រើប្រាស់ ការជ្រើសរើសម៉ាស៊ីនបកប្រែ នឹងត្រលប់ទៅស្វ័យប្រវត្តិ (Auto)។\n"
+    L"\n"
+    L"បន្ត?",
+    L"ប្ដូរឈ្មោះម៉ូដែល",
+    L"បញ្ចូលឈ្មោះថ្មី (អតិបរមា ៦៤ តួអក្សរ គ្មានដកឃ្លា)។",
+    L"មិនអាចប្រើឈ្មោះនោះបានទេ។ សូមបញ្ចូលឈ្មោះមិនទទេ ខុសពីឈ្មោះដែលមានស្រាប់ គ្មានដកឃ្លា ឬសញ្ញាបំបែកផ្លូវ ក្នុងចំណោម ៦៤ តួអក្សរ។",
+    L"បានរក្សាទុកការផ្លាស់ប្ដូរ។",
+
 };
 
 // 36. Lao (lo)
@@ -4184,7 +4862,26 @@ const LocalizedStrings kStringsLao = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ໂມເດວນີ້ແມ່ນມີຢູ່ໃນ Emebala Chat ແລ້ວ. ບໍ່ຈຳເປັນຕ້ອງລົງທະບຽນ. ທ່ານສາມາດເລືອກເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນທີ່ມີຢູ່ໂດຍກົງໄດ້.",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(ຍັງບໍ່ໄດ້ລົງທະບຽນ)"
+    L"(ຍັງບໍ່ໄດ້ລົງທະບຽນ)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"ຈັດການໂມເດລ…",
+    L"ຜູ້ຈັດການໂມເດລຜູ້ໃຊ້",
+    L"ບໍ່ມີໂມເດລຜູ້ໃຊ້ທີ່ລົງທະບຽນ.",
+    L"ປ່ຽນຊື່…",
+    L"ລົບ…",
+    L"ປິດ",
+    L"ລົບການລົງທະບຽນໂມເດລ",
+    L"ການລົງທະບຽນຂອງໂມເດລທີ່ເລືອກ ຈະຖືກລົບ.\n"
+    L"\n"
+    L"ໄຟລ໌ໂມເດລ (.gguf) ຍັງຄົງຢູ່ໃນດິສກ໌ ແລະ ຈະບໍ່ຖືກລົບ. ຖ້າໂມເດລນີ້ຖືກນໍາໃຊ້ຢູ່, ການເລືອກເຄື່ອງຈັກຮຽກຈະກັບໄປທີ່ອັດຕະໂນມັດ (Auto).\n"
+    L"\n"
+    L"ສືບຕໍ່?",
+    L"ປ່ຽນຊື່ໂມເດລ",
+    L"ໃສ່ຊື່ໃໝ່ (ສູງສຸດ 64 ຕົວອັກສອນ, ບໍ່ມີຊ່ອງຫວ່າງ).",
+    L"ບໍ່ສາມາດໃຊ້ຊື່ນັ້ນໄດ້. ກະລຸນາໃສ່ຊື່ທີ່ບໍ່ວ່າງ, ຕ່າງຈາກທີ່ມີຢູ່, ບໍ່ມີຊ່ອງຫວ່າງ ຫຼື ຕົວແຍກເສັ້ນທາງ, ບໍ່ເກີນ 64 ຕົວອັກສອນ.",
+    L"ບັນທຶກການປ່ຽນແປງແລ້ວ.",
+
 };
 
 // 37. Burmese (my)
@@ -4296,7 +4993,26 @@ const LocalizedStrings kStringsBurmese = {
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ဒီမော်ဒယ်က Emebala Chat ထဲမှာ အသင့်ပါပြီးသားဖြစ်ပါတယ်။ မှတ်ပုံတင်စရာမလိုပါဘူး။ ပါရှိပြီးသား ပြည်တွင်းဘာသာပြန်အင်ဂျင်ကို တိုက်ရိုက်ရွေးချယ်နိုင်ပါတယ်။",
 // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
-    L"(မှတ်ပုံတင်မထားပါ)"
+    L"(မှတ်ပုံတင်မထားပါ)",
+    // REQ-048 R2-D: registered user-.gguf model manager (English placeholder
+    // pending per-locale translation; same trailing-initializer discipline).
+    L"မော်ဒယ်များကို စီမံခန့်ခွဲပါ…",
+    L"အသုံးပြုသူ မော်ဒယ် စီမံခန့်ခွဲခန်း",
+    L"စာရင်းသွင်းထားသော အသုံးပြုသူ မော်ဒယ် မရှိပါ။",
+    L"နာမည်ပြောင်းပါ…",
+    L"ဖျက်ပါ…",
+    L"ပိတ်ပါ",
+    L"မော်ဒယ် စာရင်းသွင်းမှုကို ဖျက်ပါ",
+    L"ရွေးချယ်ထားသော မော်ဒယ်၏ စာရင်းသွင်းမှုကို ဖျက်လိုက်ပါမည်။\n"
+    L"\n"
+    L"မော်ဒယ် ဖိုင် (.gguf) ကို ဒစ်စ်ပေါ်တွင် ထားရှိပြီး မဖျက်ပါ။ ဒီ မော်ဒယ်ကို အသုံးပြုနေပါက ဘာသာပြန် အင်ဂျင်ရွေးချယ်မှုကို အလိုအလျောက် (Auto) သို့ ပြန်သွားပါမည်။\n"
+    L"\n"
+    L"ဆက်လက်ပါသလား?",
+    L"မော်ဒယ် နာမည်ပြောင်းပါ",
+    L"နာမည် အသစ်ထည့်ပါ (အများဆုံး 64 အက္ခရာ၊ ဘေးလ်မပါ)။",
+    L"အဲဒီနာမည် အသုံးမပြုနိုင်ပါ။ ဗလာမဟုတ်ပြီး ၆၄ အက္ခရာ အတွင်းနာမည် တစ်ခု ထည့်ပါ။",
+    L"ပြောင်းလဲမှုများ သိမ်းဆည်းပြီး။",
+
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -4565,6 +5281,20 @@ std::wstring I18n::Get(StringId id) {
         // user-model tray entry when no .gguf model has been registered yet.
         case StringId::MenuEngineUserGgufEmpty:
             return s.menu_engine_user_gguf_empty;
+
+        // REQ-048 R2-D: registered user-.gguf model manager (rename/delete).
+        case StringId::MenuManageGgufModels:          return s.menu_manage_gguf_models;
+        case StringId::GgufManagerTitle:              return s.gguf_manager_title;
+        case StringId::GgufManagerEmpty:              return s.gguf_manager_empty;
+        case StringId::GgufManagerRename:             return s.gguf_manager_rename;
+        case StringId::GgufManagerDelete:             return s.gguf_manager_delete;
+        case StringId::GgufManagerClose:              return s.gguf_manager_close;
+        case StringId::GgufManagerDeleteConfirmTitle: return s.gguf_manager_delete_confirm_title;
+        case StringId::GgufManagerDeleteConfirmBody:  return s.gguf_manager_delete_confirm_body;
+        case StringId::GgufManagerRenameTitle:        return s.gguf_manager_rename_title;
+        case StringId::GgufManagerRenameBody:         return s.gguf_manager_rename_body;
+        case StringId::GgufManagerRenameInvalid:      return s.gguf_manager_rename_invalid;
+        case StringId::GgufManagerDone:               return s.gguf_manager_done;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

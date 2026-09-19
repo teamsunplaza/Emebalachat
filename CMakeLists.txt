@@ -229,6 +229,7 @@ add_library(Emebalachat_core STATIC
     src/engine_host_config_reader.cpp
     src/i18n.cpp
     src/ui/about_window.cpp
+    src/ui/gguf_model_manager_window.cpp # REQ-048 R2-D: registered-model rename/delete manager
     src/ui/openai_settings_window.cpp
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
