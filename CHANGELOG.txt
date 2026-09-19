@@ -1,6 +1,36 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.2 - 2026-09-19
+====================
+
+Patch release. What you can do now
+----------------------------------
+* The local translation engine now survives setup hiccups that used to
+  leave it looking "not installed": if the engine's supporting files
+  cannot be deployed during setup, the installer now stops and tells you
+  the install failed instead of quietly continuing, and the model
+  registration file is created automatically so the engine is ready on
+  first launch.
+* When the local translation engine is unavailable, the notice now stays
+  on screen until you close it yourself (it no longer dismisses on its
+  own), and it appears immediately whenever you pick the local LLM from
+  the engine menu, so you always know why a local translation did not
+  happen.
+* You can now point the local engine at any GGUF model you like: tray >
+  Translation engine > User-selected (.gguf) > Browse. After you confirm
+  the quality-not-guaranteed notice and pick a .gguf file, the model is
+  registered and the engine starts using it. Models other than Hy-MT2
+  are not quality-guaranteed.
+* A new cloud engine option, OpenAI Compatible, lets you use any
+  OpenAI-compatible API: open its settings from the engine menu, enter
+  the Base URL and your API key, then either fetch the model list and
+  pick one or type the model name directly. Your API key is protected
+  with Windows user encryption, and only its first 6 characters are
+  ever shown back to you.
+* Uninstall now verifies its registry cleanup, so removing the app
+  leaves no orphaned install records behind.
+
 v0.10.1 - 2026-09-17
 ====================
 
