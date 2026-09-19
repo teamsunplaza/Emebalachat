@@ -34,6 +34,7 @@
 // DIAG: shape-only ENGINEHOST/bootstrap/NNN codes (paths/lengths/hashes only).
 // ---------------------------------------------------------------------------
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -89,6 +90,16 @@ struct ComponentCheckResult {
     bool models_dir_resolved = false;
 };
 ComponentCheckResult CheckComponents();
+
+// REQ-048 P1: bounded grace re-check for boot-time component presence. Calls
+// check() up to `attempts` times — the FIRST call happens immediately (no
+// pre-wait), then `interval` is slept between attempts — and returns true on
+// the first true. Returns false when every attempt is false, or when
+// attempts <= 0 (check is never invoked). The injected seam keeps the wait
+// loop unit-testable without filesystem state; production passes a
+// CheckComponents() re-check lambda.
+bool WaitForComponentsPresent(const std::function<bool()>& check, int attempts,
+                              std::chrono::milliseconds interval);
 
 // ---- repair ------------------------------------------------------------------
 // The caller-injected hash seam: given an absolute file path, write the

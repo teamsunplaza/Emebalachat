@@ -7,11 +7,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cwchar>
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include <shlobj.h>
@@ -301,6 +303,19 @@ std::filesystem::path ResolveTargetPath(const std::string& prefixed_relative) {
     const std::filesystem::path dir = RootDir(root);
     if (dir.empty()) return {};
     return dir / ToUtf16(rel);
+}
+
+bool WaitForComponentsPresent(const std::function<bool()>& check, int attempts,
+                              std::chrono::milliseconds interval) {
+    // REQ-048 P1: first check runs IMMEDIATELY (no pre-wait) so an
+    // already-complete component set returns at once; only the re-checks sleep.
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(interval);
+        }
+        if (check && check()) return true;
+    }
+    return false;
 }
 
 const char* RepairOutcomeToString(RepairOutcome o) {

@@ -32,6 +32,7 @@
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
 #include <atomic> // REQ-004: in-flight guard for the tray-switch async preload
+#include <chrono> // REQ-048 P1: bootstrap grace re-check interval
 #include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
 #include <cctype>  // REQ-045 P4-5: std::tolower (.gguf suffix strip)
 #include <cstdio>
@@ -1277,7 +1278,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //     on success the local source becomes serveable on the next request
     //     (the host spawns on demand), on failure the transient tooltip
     //     surfaces the localized "repair unavailable" guidance (never silent).
-    //   * missing + NO URL (the shipped default) -> the same guidance now.
+    //   * missing + NO URL (the shipped default) -> the same guidance, but
+    //     only after a bounded grace re-check (REQ-048 P1): right after a
+    //     fresh install the installer's model download may still be in
+    //     flight, so an immediate modal is a false alarm.
     // The repair thread is detached and best-effort; it touches no user text.
     {
         namespace bs = emebalachat::engine_host_bootstrap;
@@ -1313,16 +1317,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 }).detach();
             } else {
                 // No repair URL compiled in (design §9 R-3b: the shipped
-                // default) — "repair unavailable" is the honest answer; surface
-                // the guidance immediately rather than failing silently.
-                // REQ-045 P4-8 (item 1, design §B): modal, not the transient
-                // tooltip — the user's Ask Gate condition 1 ("must stay up
-                // until X"). The main thread is the GUI thread here, so
-                // RequestEngineUnavailableModal runs the modal inline.
-                emebalachat::RequestEngineUnavailableModal(
-                    emebalachat::g_hControllerWnd,
-                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                // default) — "repair unavailable" is the honest answer, but
+                // the user-device P1 (REQ-048 P1) showed it firing as a FALSE
+                // ALARM: right after install the installer's model download
+                // is still in flight, so the components land seconds later.
+                // Instead of the immediate inline modal, wait out a bounded
+                // grace window on a DETACHED thread (the main thread stays
+                // non-blocking): 40 re-checks x 3 s = 120 s, first check
+                // immediate. If the components arrive inside the window the
+                // modal is suppressed entirely (bootstrap/017); only a real,
+                // persistent absence converges on the REQ-045 P4-8 modal via
+                // the same SEC-ADJ seam the URL branch uses (this helper is
+                // callable from a detached thread by design).
+                std::thread([]() {
+                    if (bs::WaitForComponentsPresent(
+                            [] { return bs::CheckComponents().missing.empty(); },
+                            40, std::chrono::seconds(3))) {
+                        DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                        return; // installer finished; no notice warranted
+                    }
+                    emebalachat::RequestEngineUnavailableModal(
+                        emebalachat::g_hControllerWnd,
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                }).detach();
             }
         }
     }
