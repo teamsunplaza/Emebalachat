@@ -14458,6 +14458,15 @@ void TestEngineHostAvailabilityAndMigration() {
 // the compiler see FakeHost before its definition).
 #include "m6_engine_host_embedded_removal_tests.inc"
 
+// REQ-044 P4-4: VERBATIM copy sync differential (approach ii — runtime source
+// text differential; approach i nested-namespace include was rejected by a
+// direct compile probe: the client cpp's top-of-file <windows.h>/<shlobj.h>
+// break when parsed inside a wrapper namespace). PLACEMENT: AFTER
+// ResolveRepoFile (L97) — the suite locates both frozen sources through it.
+// Defines TestReq044VerbatimSync; registered in main() after the REQ-043
+// protocol suites it complements.
+#include "m6_engine_host_verbatim_sync_tests.inc"
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -14614,6 +14623,10 @@ int main() {
     // — registered after the T4 suites, per the end-of-file pattern.
     TestEngineHostBootstrap();
     TestEngineHostBootstrapHashAndMove();
+    // REQ-044 P4-4: VERBATIM copy sync differential — proves the client cpp's
+    // JSON helper copy (L57-318) still matches engine_host_protocol.hpp after
+    // any header edit; approach ii (runtime source-text differential).
+    TestReq044VerbatimSync();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
