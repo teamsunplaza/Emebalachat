@@ -429,6 +429,100 @@ french.GuideBody=Raccourcis clavier (configurables dans config.json) :%n  F9 —
 german.GuideBody=Tastenkürzel (in config.json konfigurierbar):%n  F9 — Übersetzung ein-/ausschalten (auch per Klick auf das schwebende Badge)%n  Ctrl + F9 — Zielsprache durchschalten%n  Ctrl + Shift + Enter — Auto-Send-Modus umschalten%n  Double Ctrl + C (innerhalb von 0,4 s) — per Ziehen ausgewählten Text übersetzen%n%nTipps:%n  •  Die App läuft im Systemtray — suchen Sie das Emebala-Symbol%n  •  Rechtsklick auf das Tray-Symbol für Engine- und Spracheinstellungen%n  •  Halten Sie eine Modifikatortaste (Ctrl/Shift/Alt/Win) gedrückt, um sie selbst zu tippen%n  •  Wenn das KI-Modell nicht installiert wurde, wird der kostenlose Online-Dienst Google Übersetzer verwendet%n%nViel Spaß mit Emebala Chat!
 italian.GuideBody=Scorciatoie da tastiera (configurabili in config.json):%n  F9 — attiva/disattiva la traduzione (anche cliccando sul badge fluttuante)%n  Ctrl + F9 — scorri le lingue di destinazione%n  Ctrl + Shift + Enter — attiva/disattiva la modalità di invio automatico%n  Double Ctrl + C (entro 0,4 s) — traduci il testo selezionato trascinandolo%n%nSuggerimenti:%n  •  L'app funziona nell'area di notifica — cerca l'icona di Emebala%n  •  Clic destro sull'icona nell'area di notifica per le impostazioni di motore e lingua%n  •  Tieni premuto un modificatore (Ctrl/Shift/Alt/Win) per digitare il tasto modificatore stesso%n  •  Se il modello IA non è stato installato, viene usato il motore gratuito Google Traduttore online%n%nGoditi Emebala Chat!
 
+; F1 (REQ-048, session 260920): Shared Engine info page — shown right after
+; the About page on every install. Explains that this setup installs (or
+; safely reuses) the Emebala Engine shared with other Emebala products
+; (Reader/Listener), stored in the user data folder, and kept on uninstall
+; while a sibling Emebala product is installed. Same %n/MessageLines()
+; contract and 11-language policy as the B-3 About/Guide pages above.
+english.SharedEngineTitle=Shared Emebala Engine
+korean.SharedEngineTitle=공유 Emebala Engine
+japanese.SharedEngineTitle=共有 Emebala Engine
+chinesesimplified.SharedEngineTitle=共享 Emebala Engine
+chinesetraditional.SharedEngineTitle=共用 Emebala Engine
+
+spanish.SharedEngineTitle=Motor Emebala compartido
+portuguese.SharedEngineTitle=Motor Emebala partilhado
+brazilianportuguese.SharedEngineTitle=Motor Emebala compartilhado
+french.SharedEngineTitle=Moteur Emebala partagé
+german.SharedEngineTitle=Gemeinsame Emebala-Engine
+italian.SharedEngineTitle=Motore Emebala condiviso
+
+english.SharedEngineBody=Emebala Chat translates through the Emebala Engine, a translation engine shared with other Emebala products (Emebala Reader, Emebala Listener).%n%n  •  This setup installs the shared engine, or safely reuses one already installed by another Emebala product%n  •  It is stored in the user data folder (%LOCALAPPDATA%\Emebala\Common), not in the program folder%n  •  Uninstalling this app keeps the shared engine and AI model while another Emebala product is installed
+korean.SharedEngineBody=에메발라 챗은 다른 Emebala 제품(Reader/Listener)과 공유하는 Emebala Engine을 통해 번역합니다.%n%n  •  이 설치본은 공유 엔진을 설치하거나, 다른 Emebala 제품이 이미 설치해 둔 엔진을 안전하게 다시 사용합니다%n  •  공유 엔진은 프로그램 폼더어가 아닌 사용자 데이터 폼더어(%LOCALAPPDATA%\Emebala\Common)에 저장됩니다%n  •  이 앱을 제거해도 다른 Emebala 제품이 설치되어 있으면 공유 엔진과 AI 모델은 그대로 유지됩니다
+japanese.SharedEngineBody=エメバラチャットは、他のEmebala製品（Reader/Listener）と共有するEmebala Engineを通じて翻訳します。%n%n  •  このセットアップは共有エンジンをインストールするか、他のEmebala製品が既にインストールしたエンジンを安全に再利用します%n  •  共有エンジンはプログラムフォルダーではなく、ユーザーデータフォルダー（%LOCALAPPDATA%\Emebala\Common）に保存されます%n  •  このアプリをアンインストールしても、他のEmebala製品がインストールされていれば共有エンジンとAIモデルは保持されます
+chinesesimplified.SharedEngineBody=埃梅巴拉 翻译通过与其他埃梅巴拉产品（Reader/Listener）共享的 Emebala Engine 进行翻译。%n%n  •  本安装程序会安装共享引擎，或安全地重用其他埃梅巴拉产品已安装的引擎%n  •  共享引擎保存在用户数据文件夹（%LOCALAPPDATA%\Emebala\Common），而非程序文件夹%n  •  即使卸载本应用，只要仍安装有其他埃梅巴拉产品，共享引擎和AI模型就会保留
+chinesetraditional.SharedEngineBody=埃梅巴拉 翻譯透過與其他埃梅巴拉產品（Reader/Listener）共用的 Emebala Engine 進行翻譯。%n%n  •  本安裝程式會安裝共用引擎，或安全地重用其他埃梅巴拉產品已安裝的引擎%n  •  共用引擎儲存在使用者資料夾（%LOCALAPPDATA%\Emebala\Common），而非程式資料夾%n  •  即使解除安裝本應用程式，只要仍安裝有其他埃梅巴拉產品，共用引擎和AI模型就會保留
+
+spanish.SharedEngineBody=Emebala Chat traduce a través del motor Emebala, compartido con otros productos Emebala (Emebala Reader, Emebala Listener).%n%n  •  Esta instalación instala el motor compartido, o reutiliza de forma segura uno ya instalado por otro producto Emebala%n  •  Se guarda en la carpeta de datos del usuario (%LOCALAPPDATA%\Emebala\Common), no en la carpeta del programa%n  •  Al desinstalar esta aplicación, el motor compartido y el modelo de IA se conservan mientras haya otro producto Emebala instalado
+portuguese.SharedEngineBody=O Emebala Chat traduz através do motor Emebala, partilhado com outros produtos Emebala (Emebala Reader, Emebala Listener).%n%n  •  Esta instalação instala o motor partilhado, ou reutiliza em segurança um já instalado por outro produto Emebala%n  •  É guardado na pasta de dados do utilizador (%LOCALAPPDATA%\Emebala\Common), não na pasta do programa%n  •  Ao desinstalar esta aplicação, o motor partilhado e o modelo de IA são conservados enquanto outro produto Emebala permanecer instalado
+brazilianportuguese.SharedEngineBody=O Emebala Chat traduz por meio do motor Emebala, compartilhado com outros produtos Emebala (Emebala Reader, Emebala Listener).%n%n  •  Esta instalação instala o motor compartilhado, ou reutiliza com segurança um já instalado por outro produto Emebala%n  •  Ele é salvo na pasta de dados do usuário (%LOCALAPPDATA%\Emebala\Common), não na pasta do programa%n  •  Ao desinstalar este aplicativo, o motor compartilhado e o modelo de IA são mantidos enquanto outro produto Emebala estiver instalado
+french.SharedEngineBody=Emebala Chat traduit via le moteur Emebala, partagé avec d'autres produits Emebala (Emebala Reader, Emebala Listener).%n%n  •  Cette installation installe le moteur partagé, ou réutilise en toute sécurité celui déjà installé par un autre produit Emebala%n  •  Il est stocké dans le dossier de données de l'utilisateur (%LOCALAPPDATA%\Emebala\Common), et non dans le dossier du programme%n  •  En désinstallant cette application, le moteur partagé et le modèle IA sont conservés tant qu'un autre produit Emebala reste installé
+german.SharedEngineBody=Emebala Chat übersetzt über die Emebala-Engine, die mit anderen Emebala-Produkten (Emebala Reader, Emebala Listener) geteilt wird.%n%n  •  Dieses Setup installiert die geteilte Engine, oder nutzt eine bereits von einem anderen Emebala-Produkt installierte Engine sicher weiter%n  •  Sie wird im Benutzerdatenordner (%LOCALAPPDATA%\Emebala\Common) gespeichert, nicht im Programmordner%n  •  Bei der Deinstallation dieser App bleiben die geteilte Engine und das KI-Modell erhalten, solange ein anderes Emebala-Produkt installiert ist
+italian.SharedEngineBody=Emebala Chat traduce tramite il motore Emebala, condiviso con altri prodotti Emebala (Emebala Reader, Emebala Listener).%n%n  •  Questa installazione installa il motore condiviso, oppure riutilizza in sicurezza quello già installato da un altro prodotto Emebala%n  •  È salvato nella cartella dati dell'utente (%LOCALAPPDATA%\Emebala\Common), non nella cartella del programma%n  •  Disinstallando questa app, il motore condiviso e il modello IA vengono conservati finché rimane installato un altro prodotto Emebala
+
+; F3 (REQ-048, session 260920): shared-engine uninstall handling (architect
+; 052600 §F3). SharedEngineKeptInUse* informs the user that the shared
+; engine + model were preserved because another Emebala product is installed
+; or an Emebala process is still running. SharedEngineDeletePrompt* asks for
+; confirmation before deleting the store on last-app uninstall; the
+; SuppressibleMsgBox call passes IDNO as its default (preserve). Same
+; 11-language policy as the F1 pages above; these strings go to MsgBox
+; (plain text, never a memo page), so no ToRtf()/MessageLines() pass is
+; required. %n is expanded by current Inno at CustomMessage() load time
+; (same contract as the F2 hash-mismatch MsgBox questions).
+english.SharedEngineKeptInUseTitle=Shared Emebala Engine Kept
+korean.SharedEngineKeptInUseTitle=공유 Emebala Engine 보존
+japanese.SharedEngineKeptInUseTitle=共有 Emebala Engine は保持されました
+chinesesimplified.SharedEngineKeptInUseTitle=已保留共享 Emebala Engine
+chinesetraditional.SharedEngineKeptInUseTitle=已保留共用 Emebala Engine
+
+spanish.SharedEngineKeptInUseTitle=Motor Emebala compartido conservado
+portuguese.SharedEngineKeptInUseTitle=Motor Emebala partilhado mantido
+brazilianportuguese.SharedEngineKeptInUseTitle=Motor Emebala compartilhado mantido
+french.SharedEngineKeptInUseTitle=Moteur Emebala partagé conservé
+german.SharedEngineKeptInUseTitle=Gemeinsame Emebala-Engine bleibt erhalten
+italian.SharedEngineKeptInUseTitle=Motore Emebala condiviso conservato
+
+english.SharedEngineKeptInUseBody=The shared Emebala Engine and AI model were not removed.%n%nThey are still in use by another Emebala product or process and remain available at %LOCALAPPDATA%\Emebala\Common.
+korean.SharedEngineKeptInUseBody=공유 Emebala Engine과 AI 모델은 삭제되지 않았습니다.%n%n다른 Emebala 제품이나 프로세스에서 여전히 사용 중이므로 %LOCALAPPDATA%\Emebala\Common에 그대로 유지됩니다.
+japanese.SharedEngineKeptInUseBody=共有 Emebala Engine と AI モデルは削除されませんでした。%n%n他の Emebala 製品またはプロセスが引き続き使用しているため、%LOCALAPPDATA%\Emebala\Common にそのまま残ります。
+chinesesimplified.SharedEngineKeptInUseBody=共享 Emebala Engine 和 AI 模型未被删除。%n%n其他埃梅巴拉产品或进程仍在使用它们，因此它们仍保留在 %LOCALAPPDATA%\Emebala\Common 中。
+chinesetraditional.SharedEngineKeptInUseBody=共用 Emebala Engine 和 AI 模型未被刪除。%n%n其他埃梅巴拉產品或程序仍在使用它們，因此它們仍保留在 %LOCALAPPDATA%\Emebala\Common 中。
+
+spanish.SharedEngineKeptInUseBody=El motor Emebala compartido y el modelo de IA no se han eliminado.%n%nOtro producto o proceso de Emebala sigue usándolos; permanecen en %LOCALAPPDATA%\Emebala\Common.
+portuguese.SharedEngineKeptInUseBody=O motor Emebala partilhado e o modelo de IA não foram removidos.%n%nOutro produto ou processo Emebala continua a utilizá-los; permanecem em %LOCALAPPDATA%\Emebala\Common.
+brazilianportuguese.SharedEngineKeptInUseBody=O motor Emebala compartilhado e o modelo de IA não foram removidos.%n%nOutro produto ou processo Emebala ainda os está usando; eles permanecem em %LOCALAPPDATA%\Emebala\Common.
+french.SharedEngineKeptInUseBody=Le moteur Emebala partagé et le modèle IA n'ont pas été supprimés.%n%nUn autre produit ou processus Emebala les utilise encore ; ils restent disponibles dans %LOCALAPPDATA%\Emebala\Common.
+german.SharedEngineKeptInUseBody=Die gemeinsame Emebala-Engine und das KI-Modell wurden nicht entfernt.%n%nEin anderes Emebala-Produkt oder ein Emebala-Prozess verwendet sie noch; sie verbleiben unter %LOCALAPPDATA%\Emebala\Common.
+italian.SharedEngineKeptInUseBody=Il motore Emebala condiviso e il modello IA non sono stati rimossi.%n%nUn altro prodotto o processo Emebala li sta ancora usando; restano disponibili in %LOCALAPPDATA%\Emebala\Common.
+
+english.SharedEngineDeletePromptTitle=Remove Shared Emebala Engine?
+korean.SharedEngineDeletePromptTitle=공유 Emebala Engine을 삭제하시겠습니까?
+japanese.SharedEngineDeletePromptTitle=共有 Emebala Engine を削除しますか？
+chinesesimplified.SharedEngineDeletePromptTitle=要删除共享 Emebala Engine 吗？
+chinesetraditional.SharedEngineDeletePromptTitle=要刪除共用 Emebala Engine 嗎？
+
+spanish.SharedEngineDeletePromptTitle=¿Eliminar el motor Emebala compartido?
+portuguese.SharedEngineDeletePromptTitle=Remover o motor Emebala partilhado?
+brazilianportuguese.SharedEngineDeletePromptTitle=Remover o motor Emebala compartilhado?
+french.SharedEngineDeletePromptTitle=Supprimer le moteur Emebala partagé ?
+german.SharedEngineDeletePromptTitle=Gemeinsame Emebala-Engine entfernen?
+italian.SharedEngineDeletePromptTitle=Rimuovere il motore Emebala condiviso?
+
+english.SharedEngineDeletePromptBody=No other Emebala product is installed and no Emebala process is running.%n%nDo you want to remove the shared Emebala Engine and AI model from %LOCALAPPDATA%\Emebala\Common? They are downloaded again when you reinstall any Emebala product.%n%nRecommendation: keep them (choose No).
+korean.SharedEngineDeletePromptBody=다른 Emebala 제품이 설치되어 있지 않고 실행 중인 Emebala 프로세스도 없습니다.%n%n%LOCALAPPDATA%\Emebala\Common의 공유 Emebala Engine과 AI 모델을 삭제하시겠습니까? Emebala 제품을 다시 설치하면 다시 다운로드됩니다.%n%n권장: 삭제하지 않고 유지(아니요)를 선택하세요.
+japanese.SharedEngineDeletePromptBody=他の Emebala 製品はインストールされておらず、実行中の Emebala プロセスもありません。%n%n%LOCALAPPDATA%\Emebala\Common の共有 Emebala Engine と AI モデルを削除しますか？ Emebala 製品を再インストールすると再度ダウンロードされます。%n%n推奨：削除せず保持する（いいえ）を選択してください。
+chinesesimplified.SharedEngineDeletePromptBody=未安装其他埃梅巴拉产品，也没有正在运行的埃梅巴拉进程。%n%n是否从 %LOCALAPPDATA%\Emebala\Common 删除共享 Emebala Engine 和 AI 模型？重新安装任何埃梅巴拉产品时会重新下载。%n%n建议：选择“否”保留它们。
+chinesetraditional.SharedEngineDeletePromptBody=未安裝其他埃梅巴拉產品，也沒有正在執行的埃梅巴拉程序。%n%n是否從 %LOCALAPPDATA%\Emebala\Common 刪除共用 Emebala Engine 和 AI 模型？重新安裝任何埃梅巴拉產品時會重新下載。%n%n建議：選擇「否」保留它們。
+
+spanish.SharedEngineDeletePromptBody=No hay otro producto Emebala instalado ni ningún proceso de Emebala en ejecución.%n%n¿Desea eliminar el motor Emebala compartido y el modelo de IA de %LOCALAPPDATA%\Emebala\Common? Se volverán a descargar si reinstala cualquier producto Emebala.%n%nRecomendación: consérvelos (elija No).
+portuguese.SharedEngineDeletePromptBody=Não existe outro produto Emebala instalado nem nenhum processo Emebala em execução.%n%nDeseja remover o motor Emebala partilhado e o modelo de IA de %LOCALAPPDATA%\Emebala\Common? Serão novamente transferidos se reinstalar qualquer produto Emebala.%n%nRecomendação: mantenha-os (escolha Não).
+brazilianportuguese.SharedEngineDeletePromptBody=Não há outro produto Emebala instalado nem nenhum processo Emebala em execução.%n%nDeseja remover o motor Emebala compartilhado e o modelo de IA de %LOCALAPPDATA%\Emebala\Common? Eles serão baixados novamente se você reinstalar qualquer produto Emebala.%n%nRecomendação: mantenha-os (escolha Não).
+french.SharedEngineDeletePromptBody=Aucun autre produit Emebala n'est installé et aucun processus Emebala n'est en cours d'exécution.%n%nVoulez-vous supprimer le moteur Emebala partagé et le modèle IA de %LOCALAPPDATA%\Emebala\Common ? Ils seront retéléchargés si vous réinstallez un produit Emebala.%n%nRecommandation : conservez-les (choisissez Non).
+german.SharedEngineDeletePromptBody=Es ist kein anderes Emebala-Produkt installiert und kein Emebala-Prozess aktiv.%n%nMöchten Sie die gemeinsame Emebala-Engine und das KI-Modell aus %LOCALAPPDATA%\Emebala\Common entfernen? Sie werden erneut heruntergeladen, wenn Sie ein Emebala-Produkt erneut installieren.%n%nEmpfehlung: Behalten Sie sie (wählen Sie Nein).
+italian.SharedEngineDeletePromptBody=Non è installato alcun altro prodotto Emebala e nessun processo Emebala è in esecuzione.%n%nVuoi rimuovere il motore Emebala condiviso e il modello IA da %LOCALAPPDATA%\Emebala\Common? Verranno scaricati di nuovo se reinstalli un prodotto Emebala.%n%nRaccomandazione: conservali (scegli No).
+
 ; ------------------------------------------------------------------------
 ; [Tasks] - Optional user-selectable tasks
 ; ------------------------------------------------------------------------
@@ -610,12 +704,15 @@ var
   EngineWorkerUpdated: Boolean;
   // B-3 (session 260910_0002, architect plan 1.4): About page (after
   // wpWelcome) and Usage Guide page (after wpInstalling, before Finish).
+  // F1 (REQ-048) adds the Shared Engine info page right after AboutPage.
   // CreateOutputMsgMemoPage returns TOutputMsgMemoWizardPage (NOT the
   // sibling TOutputMsgWizardPage), so both vars use the memo class.
   // Shown on every install (user decision: no "first install only" gating);
   // custom wizard pages are automatically never shown under /SILENT or
   // /VERYSILENT, so silent installs need no ShouldSkipPage handling.
   AboutPage: TOutputMsgMemoWizardPage;
+  // F1 (REQ-048): shared-engine info page, created right after AboutPage.
+  SharedEnginePage: TOutputMsgMemoWizardPage;
   GuidePage: TOutputMsgMemoWizardPage;
   // B-2 (session 260910_0002): consent page shown after wpReady, before the
   // ~2 GB model download. ModelDeclined is latched from the user's radio
@@ -1530,6 +1627,43 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// IsEmebalaProcessRunning - REQ-048 F3 (architect 052600 §F3): true when
+// any Emebala* process is still running at uninstall time. Queried at
+// usPostUninstall before the shared common store may be deleted: an
+// in-use engine is never removed. WMI via CreateOleObject('WbemScripting.
+// SWbemLocator') -> ConnectServer('.', 'root\cimv2') -> ExecQuery over
+// Win32_Process (the design's 'winmgmts:\\.\root\cimv2' moniker form is
+// NOT usable here: Inno Pascal Script registers no GetObject, compile-
+// verified; SWbemLocator binds the same namespace). COM is already
+// initialized in Inno's uninstaller script host, so no CoInitialize call
+// is needed. FAIL-CLOSED: any exception (WMI service disabled, query
+// failure, ...) leaves Result = True, so a detection problem can never
+// cause a deletion of the shared engine + model.
+// ------------------------------------------------------------------------
+function IsEmebalaProcessRunning(): Boolean;
+var
+  Locator: Variant;
+  Services: Variant;
+  Processes: Variant;
+begin
+  Result := True;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Services := Locator.ConnectServer('.', 'root\cimv2');
+    Processes := Services.ExecQuery(
+      'SELECT Name FROM Win32_Process WHERE Name LIKE ''Emebala%''');
+    Result := Processes.Count > 0;
+  except
+    // WMI unavailable / query failed: preserve the shared engine.
+    Result := True;
+  end;
+  if Result then
+    Log('REQ-048 F3: Emebala process running or detection unavailable; shared engine preserved.')
+  else
+    Log('REQ-048 F3: no Emebala process running.');
+end;
+
+// ------------------------------------------------------------------------
 // VerifyDownloadedModel - M2 integrity check of the downloaded temp file
 // against EXPECTED_MODEL_SHA256. Returns True when no hash is pinned
 // (empty constant = skip, documented above). GetSHA256OfFile is only part
@@ -1642,6 +1776,12 @@ begin
   AboutPage := CreateOutputMsgMemoPage(wpWelcome,
     CustomMessage('AboutTitle'), '', '', MessageLines('AboutBody'));
 
+  // F1 (REQ-048): shared-engine info page — right after About, before the
+  // consent page. Body comes from MessageLines() (RTF-safe), same contract
+  // as About/Guide above.
+  SharedEnginePage := CreateOutputMsgMemoPage(AboutPage.ID,
+    CustomMessage('SharedEngineTitle'), '', '', MessageLines('SharedEngineBody'));
+
   DownloadPage := CreateDownloadPage(
     CustomMessage('DownloadingModel'),
     CustomMessage('DownloadingModelDesc'),
@@ -1664,7 +1804,7 @@ begin
   ModelDeclined := False;
 
   // B-3: Usage guide (단축키/사용 안내) — created AFTER ConsentPage so the
-  // creation order stays About -> Consent -> Guide. Placed after
+  // creation order stays About -> SharedEngine -> Consent -> Guide. Placed after
   // wpInstalling: the wizard reaches it once the install (including the
   // ssPostInstall model download) has finished, right before Finish.
   GuidePage := CreateOutputMsgMemoPage(wpInstalling,
@@ -2148,9 +2288,14 @@ var
   LocalAppData: String;
   // REQ-043 (plan §7.3): shared common store cleanup on last-app uninstall.
   CommonDir: String;
+  // REQ-048 F3: blank separator line inserted between a MsgBox title and
+  // body. A variable (not the literal) is used because a line starting
+  // with '#' is parsed as an ISPP preprocessor directive.
+  Break2: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
+    Break2 := #13#10 + #13#10;
     RegDeleteValue(HKEY_CURRENT_USER,
       'Software\Microsoft\Windows\CurrentVersion\Run',
       'Emebalachat');
@@ -2170,20 +2315,46 @@ begin
         Log('User chose to keep settings at: ' + LocalAppData);
     end;
 
-    // REQ-043 (plan §7.3): each app removes only its own files (the shared
-    // host exe carries uninsneveruninstall for exactly this reason). The
-    // shared engine + model under %LOCALAPPDATA%\Emebala\Common are removed
-    // ONLY when no other Emebala-family app remains installed (ARP scan,
-    // own AppId excluded); otherwise they stay for the remaining apps.
+    // REQ-043 (plan §7.3) + REQ-048 F3 (architect 052600 §F3): each app
+    // removes only its own files (the shared host exe carries
+    // uninsneveruninstall for exactly this reason). The shared engine +
+    // model under %LOCALAPPDATA%\Emebala\Common are removed only when ALL
+    // of the following hold:
+    //   1. no other Emebala-family app remains installed (ARP scan above,
+    //      own AppId excluded) - REQ-043;
+    //   2. no Emebala* process is still running (WMI probe, fail-closed -
+    //      a detection error preserves the engine) - REQ-048 F3;
+    //   3. the user explicitly confirms the deletion: the
+    //      SuppressibleMsgBox defaults to IDNO (preserve), so a silent
+    //      uninstall and a plain Enter/No answer both keep the engine.
+    // In every other case the store is preserved and the user is told why
+    // (SharedEngineKeptInUse* explains the other-product / in-use cases).
+    CommonDir := ExpandConstant('{localappdata}\Emebala\Common');
     if IsOtherEmebalaAppInstalled() then
-      Log('REQ-043: another Emebala app remains installed; shared engine and model kept.')
+    begin
+      Log('REQ-043: another Emebala app remains installed; shared engine and model kept.');
+      MsgBox(CustomMessage('SharedEngineKeptInUseTitle') + Break2 +
+             CustomMessage('SharedEngineKeptInUseBody'), mbInformation, MB_OK);
+    end
+    else if IsEmebalaProcessRunning() then
+    begin
+      Log('REQ-048 F3: an Emebala process is still running; shared engine and model kept.');
+      MsgBox(CustomMessage('SharedEngineKeptInUseTitle') + Break2 +
+             CustomMessage('SharedEngineKeptInUseBody'), mbInformation, MB_OK);
+    end
     else
     begin
-      CommonDir := ExpandConstant('{localappdata}\Emebala\Common');
       if DirExists(CommonDir) then
       begin
-        DelTree(CommonDir, True, True, True);
-        Log('REQ-043: last Emebala app removed; shared engine and model deleted: ' + CommonDir);
+        if SuppressibleMsgBox(CustomMessage('SharedEngineDeletePromptTitle') + Break2 +
+                              CustomMessage('SharedEngineDeletePromptBody'),
+                              mbConfirmation, MB_YESNO, IDNO) = IDYES then
+        begin
+          DelTree(CommonDir, True, True, True);
+          Log('REQ-048 F3: user confirmed; shared engine and model deleted: ' + CommonDir);
+        end
+        else
+          Log('REQ-048 F3: user chose to keep the shared engine and model at: ' + CommonDir);
       end;
     end;
   end;

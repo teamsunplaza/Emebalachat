@@ -17,18 +17,19 @@ What it does
 1. Extracts the REAL [Languages] + [CustomMessages] sections and the actual
    ToRtf()/MessageLines() functions from installer/setup.iss (verbatim code
    transplant) and compiles a lowest-privilege, payload-free probe wizard
-   carrying the same two memo pages as the product installer (About, Guide).
+   carrying the same three memo pages as the product installer (About,
+   SharedEngine, Guide).
 2. For each /LANG in {korean, japanese, chinesesimplified, chinesetraditional,
    english}: launches the probe wizard and dumps every TRichEditViewer child
    via WM_GETTEXT. TRichEditViewer parses its RTF at assignment time inside
-   InitializeWizard, so both memo viewers are fully populated (and the
+   InitializeWizard, so all three memo viewers are fully populated (and the
    display conversion is exercised) without needing page navigation — this is
    exactly the read-back mechanism the debug session used to reproduce the
    bug and validate the fix (tools_tmp_mb17b_dump.py / tools_tmp_mb19_rtf.py).
    Assertions:
-     - both memo pages materialise (2 viewers, distinct content);
-     - About-body and Guide-body clean tokens are present, assigned to the
-       right viewer (about tokens in the viewer WITHOUT guide tokens, etc.);
+     - all three memo pages materialise (3 viewers, distinct content);
+     - About/SharedEngine/Guide-body clean tokens are present, assigned to
+       the right viewer (about tokens in the viewer WITHOUT guide tokens, etc.);
      - no mojibake signature: U+FFFD, nor the CP949-misdecode-of-UTF-8 form
        of each body's own non-ASCII seed (the exact bug output);
      - no raw RTF control words leaked into the rendered text.
@@ -37,8 +38,8 @@ What it does
    alongside tools/check_installer_encoding.py).
 
 Project rule enforced (installer/README.md):
-  - About/Guide memo bodies MUST be produced by the RTF-safe MessageLines();
-    plain non-ASCII text must never reach a memo page.
+  - About/SharedEngine/Guide memo bodies MUST be produced by the RTF-safe
+    MessageLines(); plain non-ASCII text must never reach a memo page.
 
 Usage:
   python tools/check_installer_display_text.py [--langs korean,english]
@@ -92,6 +93,19 @@ EXPECTED_GUIDE = {
     "chinesetraditional": ["快捷鍵（可在 config.json 中設定）", "開啟/關閉翻譯", "\u2014"],
     "english": ["Hotkeys (configurable in config.json)", "F9 \u2014", "\u2014"],
 }
+EXPECTED_SHARED = {
+    "korean": ["다른 Emebala 제품(Reader/Listener)과 공유하는",
+               "(%LOCALAPPDATA%\\Emebala\\Common)", "공유 엔진과 AI 모델은 그대로 유지됩니다"],
+    "japanese": ["他のEmebala製品（Reader/Listener）と共有する",
+                 "（%LOCALAPPDATA%\\Emebala\\Common）", "共有エンジンとAIモデルは保持されます"],
+    "chinesesimplified": ["与其他埃梅巴拉产品（Reader/Listener）共享的",
+                          "（%LOCALAPPDATA%\\Emebala\\Common）", "共享引擎和AI模型就会保留"],
+    "chinesetraditional": ["與其他埃梅巴拉產品（Reader/Listener）共用的",
+                           "（%LOCALAPPDATA%\\Emebala\\Common）", "共用引擎和AI模型就會保留"],
+    "english": ["shared with other Emebala products",
+                "(%LOCALAPPDATA%\\Emebala\\Common)",
+                "keeps the shared engine and AI model"],
+}
 
 # Populated by load_bodies() from the real [CustomMessages] at run time.
 BODIES: dict[str, dict[str, str]] = {}
@@ -143,7 +157,7 @@ def extract_func(raw: str, signature: str) -> str:
     if not m:
         raise SystemExit(
             f"SETUP-ISS-PARSE-ERROR: function '{signature}' not found in "
-            f"{ISS.name}. The About/Guide memo pages require the RTF-safe "
+            f"{ISS.name}. The About/SharedEngine/Guide memo pages require the RTF-safe "
             "MessageLines() (see installer/README.md); gate refuses to run "
             "against an installer without it."
         )
@@ -151,7 +165,8 @@ def extract_func(raw: str, signature: str) -> str:
 
 
 def load_bodies(raw: str) -> None:
-    """Store AboutBody/GuideBody per probed language for mojibake seeding."""
+    """Store AboutBody/SharedEngineBody/GuideBody per probed language for
+    mojibake seeding."""
     cm = extract(raw, "CustomMessages")
     entries: dict[str, str] = {}
     cur: str | None = None
@@ -164,19 +179,21 @@ def load_bodies(raw: str) -> None:
             entries[cur] += line.strip()
     for lang in LANGS_DEFAULT:
         about = entries.get(f"{lang}.AboutBody")
+        shared = entries.get(f"{lang}.SharedEngineBody")
         guide = entries.get(f"{lang}.GuideBody")
-        if not about or not guide:
+        if not about or not shared or not guide:
             raise SystemExit(
-                f"SETUP-ISS-PARSE-ERROR: AboutBody/GuideBody missing for {lang}"
+                f"SETUP-ISS-PARSE-ERROR: AboutBody/SharedEngineBody/GuideBody "
+                f"missing for {lang}"
             )
-        BODIES[lang] = {"about": about, "guide": guide}
+        BODIES[lang] = {"about": about, "shared": shared, "guide": guide}
 
 
 def mojibake_markers(lang: str) -> list[str]:
     """The bug's own output: body non-ASCII seeds re-encoded UTF-8 -> CP949.
     Only non-ASCII fragments are used (an ASCII seed cannot garble this way)."""
     markers = ["\ufffd"]
-    for page in ("about", "guide"):
+    for page in ("about", "shared", "guide"):
         body = BODIES[lang][page].replace("%n", "")
         # all maximal non-ASCII runs of >= 3 chars, first 2 runs per body
         runs = re.findall(r"[^\x00-\x7f]{3,}", body)
@@ -200,12 +217,14 @@ def build_probe(inno_dir: pathlib.Path, workdir: pathlib.Path) -> pathlib.Path:
         + to_rtf
         + "\n\n"
         + msg_lines
-        + "\n\nvar\n  AboutPage: TWizardPage;\n\n"
+        + "\n\nvar\n  AboutPage: TWizardPage;\n  SharedPage: TWizardPage;\n\n"
         "procedure InitializeWizard();\n"
         "begin\n"
         "  AboutPage := CreateOutputMsgMemoPage(wpWelcome,\n"
         "    CustomMessage('AboutTitle'), '', '', MessageLines('AboutBody'));\n"
-        "  CreateOutputMsgMemoPage(AboutPage.ID,\n"
+        "  SharedPage := CreateOutputMsgMemoPage(AboutPage.ID,\n"
+        "    CustomMessage('SharedEngineTitle'), '', '', MessageLines('SharedEngineBody'));\n"
+        "  CreateOutputMsgMemoPage(SharedPage.ID,\n"
         "    CustomMessage('GuideTitle'), '', '', MessageLines('GuideBody'));\n"
         "end;\n"
     )
@@ -333,24 +352,24 @@ def run_language(exe: pathlib.Path, lang: str, failures: list[str]) -> None:
         if wnd is None:
             failures.append(f"{lang}: probe wizard never appeared")
             return
-        # wait until both memo viewers exist (InitializeWizard finished)
+        # wait until all three memo viewers exist (InitializeWizard finished)
         viewers: list[str] = []
         deadline = time.time() + 15
-        while time.time() < deadline and len(viewers) < 2:
+        while time.time() < deadline and len(viewers) < 3:
             errs = error_dialogs(tracked_pids)
             if errs:
                 msg = get_text(errs[0]) or "modal error dialog"
                 failures.append(f"{lang}: setup engine raised an error: {msg[:120]}")
                 return
             viewers = [v for v in memo_viewer_texts(wnd) if v.strip()]
-            if len(viewers) < 2:
+            if len(viewers) < 3:
                 time.sleep(0.5)
 
         print(f"--- {lang} --- ({len(viewers)} memo viewers)")
-        if len(viewers) < 2:
+        if len(viewers) < 3:
             failures.append(
-                f"{lang}: only {len(viewers)} populated memo viewer(s); both "
-                "About and Guide pages must materialise")
+                f"{lang}: only {len(viewers)} populated memo viewer(s); all of "
+                "About, SharedEngine and Guide pages must materialise")
 
         def assign(tokens: list[str]) -> str | None:
             for v in viewers:
@@ -359,8 +378,10 @@ def run_language(exe: pathlib.Path, lang: str, failures: list[str]) -> None:
             return None
 
         about_v = assign(EXPECTED_ABOUT[lang])
+        shared_v = assign(EXPECTED_SHARED[lang])
         guide_v = assign(EXPECTED_GUIDE[lang])
         for page, toks, got in (("about", EXPECTED_ABOUT[lang], about_v),
+                                ("shared", EXPECTED_SHARED[lang], shared_v),
                                 ("guide", EXPECTED_GUIDE[lang], guide_v)):
             for tok in toks:
                 # token must be in the viewer assigned to this page
@@ -432,8 +453,8 @@ def main() -> int:
             for f in failures:
                 print("  -", f)
             return 1
-        print("DISPLAY GATE: PASS - About+Guide memo pages render clean text "
-              "for all probed languages.")
+        print("DISPLAY GATE: PASS - About+SharedEngine+Guide memo pages render "
+              "clean text for all probed languages.")
         return 0
     finally:
         for h, pid in probe_wizards():

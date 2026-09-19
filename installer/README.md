@@ -28,16 +28,26 @@ This directory contains the Inno Setup script and assets for building the Emebal
 > `python tools/check_installer_display_text.py`
 > Compiles a lowest-privilege probe wizard carrying the REAL
 > `[CustomMessages]` + `MessageLines()` from `setup.iss`, launches it per
-> language (ko/ja/zh-Hans/zh-Hant/en), and reads the About + Guide
-> `TRichEditViewer` memo content back via `WM_GETTEXT`, asserting clean
+> language (ko/ja/zh-Hans/zh-Hant/en), and reads the About + SharedEngine +
+> Guide `TRichEditViewer` memo content back via `WM_GETTEXT`, asserting clean
 > text and no CP949-mojibake signature. The static encoding gate cannot
 > see display-layer corruption — this gate closes that hole (session
 > 260911_0001). Exits non-zero on any failure; do not ship past a FAIL.
 
+> **Uninstall-contract gate — run before every release build (mandatory):**
+> `python tools/check_uninstall_contract.py`
+> Statically re-derives the REQ-048 F3 shared-engine uninstall contract from
+> `setup.iss` (triple detection, `DelTree` behind an IDYES-confirmed
+> `SuppressibleMsgBox`, IDNO preserve default, fail-closed WMI probe, kept
+> notice, 11-language message coverage, frozen anchors). Uninstall behavior
+> cannot be exercised on a build machine, so do not ship past a FAIL.
+> Exits non-zero on any violation.
+
 ## Memo page text MUST go through the RTF-safe `MessageLines()`
 
-**Rule:** Any text passed to `CreateOutputMsgMemoPage` (the About and Guide
-wizard pages) MUST be produced by `MessageLines()` in the `[Code]` section.
+**Rule:** Any text passed to `CreateOutputMsgMemoPage` (the About,
+SharedEngine and Guide wizard pages) MUST be produced by `MessageLines()` in
+the `[Code]` section.
 Never assign plain non-ASCII text to a memo page.
 
 **Why:** `CreateOutputMsgMemoPage` renders through `TRichEditViewer`. When
@@ -107,8 +117,10 @@ output\Emebalachat_Setup_0.10.1.exe
    the app version that wrote it); an equal or **newer** stamp (another Emebala
    app already placed a same/newer host) skips the copy. The flag
    `uninsneveruninstall` keeps Inno's own uninstaller away from the shared
-   file. No extra wizard page or user choice is added; a running host is
-   stopped best-effort (`taskkill`) before the copy so the exe is not locked.
+   file. An informational Shared Engine wizard page (shown right after About,
+   REQ-048 F1) explains this install-or-reuse behavior; it adds no user
+   choice. A running host is stopped best-effort (`taskkill`) before the copy
+   so the exe is not locked.
 5. Downloads the AI translation model `Hy-MT2-1.8B-Q8_0.gguf` (file size 1.9 GB;
    the wizard UI rounds it to "about 2 GB" and declares `ExtraDiskSpaceRequired`
    = 2.1 GB) from Hugging Face into the **shared common store**
@@ -135,12 +147,25 @@ output\Emebalachat_Setup_0.10.1.exe
 8. On uninstall, removes the auto-start registry entry and offers to delete the
    user data folder (`%LOCALAPPDATA%\Emebalachat`, settings + diagnostic logs).
    The shared common store (`%LOCALAPPDATA%\Emebala\Common\` — engine + model)
-   is deleted **only when no other Emebala-family app remains installed**
-   (REQ-043, plan §7.3): `IsOtherEmebalaAppInstalled()` scans the HKLM and HKCU
-   uninstall registry for a different `Emebala*` DisplayName (own AppId
-   excluded); when a sibling app (Emebala_Listner, Emebala Reader, ...) is
-   present the shared engine and model are kept. Add future family apps to the
-   detection simply by their `Emebala` DisplayName prefix.
+   is handled per REQ-043 (plan §7.3) + REQ-048 F3 (architect 052600 §F3):
+   - **Kept with notice** when another Emebala-family app remains installed —
+     `IsOtherEmebalaAppInstalled()` scans the HKLM and HKCU uninstall registry
+     for a different `Emebala*` DisplayName (own AppId excluded); when a sibling
+     app (Emebala_Listner, Emebala Reader, ...) is present the shared engine and
+     model stay, and the uninstaller tells the user why
+     (`SharedEngineKeptInUse*` messages). Add future family apps to the
+     detection simply by their `Emebala` DisplayName prefix.
+   - **Kept with notice** when no sibling app is installed but an `Emebala*`
+     process is still running: `IsEmebalaProcessRunning()` probes WMI
+     (`WbemScripting.SWbemLocator` → `root\cimv2` → `Win32_Process` query; the
+     `winmgmts:` moniker form is unavailable in Inno Pascal Script). The probe
+     is **fail-closed** — any WMI error preserves the engine.
+   - **Deleted only on explicit confirmation** when neither holds: a
+     `SuppressibleMsgBox` asks before `DelTree` and defaults to **IDNO
+     (preserve)**, so silent uninstalls and plain "No" answers keep the engine.
+     Reinstalling any Emebala product re-downloads the engine + model.
+   The behavior is statically gated by `tools/check_uninstall_contract.py`;
+   real uninstall verification is a manual QA step.
 
 ## Model Integrity Verification (release procedure)
 
