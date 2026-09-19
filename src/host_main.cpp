@@ -75,6 +75,9 @@
 #include "host_v2_worker_manager.hpp"   // §V2-3 worker lifecycle (T3)
 #include "worker_protocol.hpp"          // second frozen contract (frames)
 #include "engine_host_registry.hpp"     // registry.json (model_id/profile resolution)
+// REQ-045 P4-4 (item 3a-1, tech gate c4): ReadTextFileUtf8 for the minimal
+// config.json user_model_id read (the frozen json primitives stay untouched).
+#include "engine_host_json_util.hpp"    // REQ-045: ReadTextFileUtf8 (frozen reuse)
 // REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
 // kModelsDirRel / kTokenFilename) — replaces the local definitions that
 // used to live at L119-121 below.
@@ -166,6 +169,13 @@ host_v2::Scheduler g_scheduler;
 engine_host_registry::Registry g_registry;
 bool g_registry_loaded = false;
 
+// REQ-045 P4-4 (item 3a-1, design §A 안 i): the user's chosen third-party
+// model id, cached from %LOCALAPPDATA%\Emebalachat\config.json at boot. The
+// v1 one-shot client never sends a model_id, so the v1 dispatcher relays
+// this value to the worker via the existing session_open frame; "" keeps
+// the pinned default (AC-4: byte-identical to the pre-REQ-045 path).
+std::string g_user_model_id;
+
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -216,6 +226,50 @@ bool ModelFileExists() {
     if (w.empty()) return false;
     const DWORD attrs = ::GetFileAttributesW(w.c_str());
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// REQ-045 P4-4 (R9): fast-path existence check for a RESOLVED model id. ""
+// degrades to the pinned ModelPathW (identical to ModelFileExists — the
+// pre-REQ-045 path). A non-empty id resolves through the boot-loaded
+// registry (models_dir + files[0]); unregistered ids degrade to the pinned
+// check, so the fast path can only under-trigger a worker round trip, never
+// wrongly answer model_missing for a present pinned model.
+bool ModelFileExistsFor(const std::string& model_id) {
+    if (model_id.empty()) return ModelFileExists();
+    const engine_host_registry::ModelEntry* entry = g_registry.FindModel(model_id);
+    if (!entry || entry->files.empty()) return ModelFileExists();
+    const std::wstring lad = LocalAppDataDir();
+    if (lad.empty()) return false;
+    const std::wstring w = lad + L"\\" + paths::kModelsDirRel + L"\\" +
+        emebalachat::ToUtf16(entry->files[0]);
+    const DWORD attrs = ::GetFileAttributesW(w.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// REQ-045 P4-4 (item 3a-1): boot-time read of config.json's user_model_id
+// into the host cache. MINIMAL PARSE on purpose (선택 근거): the host links
+// Emebalachat_core so the full AppConfig parser is available, but pulling the
+// whole Config surface into the serving host risks silently adopting Chat-app
+// defaults/semantics it was never reviewed for — the worker-facing contract
+// here is exactly ONE field. We therefore reuse the frozen json primitives
+// (JsonParseObject / FindField — untouched) on the canonical
+// %LOCALAPPDATA%\Emebalachat\config.json only. No runtime reload: the cache
+// is fixed for the host's lifetime; the engine host already exits on idle,
+// so a config edit takes effect on the next natural respawn (bounded staleness,
+// no watcher thread).
+std::string LoadUserModelIdFromConfig() {
+    const std::wstring lad = LocalAppDataDir();
+    if (lad.empty()) return {};
+    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+    std::string text;
+    if (engine_host_json::ReadTextFileUtf8(path, text) != engine_host_json::FileReadOutcome::Ok) {
+        return {}; // absent/unreadable -> the pinned default (AC-4)
+    }
+    enginehost::JsonPairs fields;
+    if (!enginehost::JsonParseObject(text, fields)) return {};
+    const auto* v = enginehost::detail::FindField(fields, "user_model_id");
+    if (!v || !v->is_string) return {};
+    return v->text; // "" (or absent above) keeps the pinned path
 }
 
 // ---- user-only security descriptor (§4.1 pipe ACL / §4.2 token file ACL) ----
@@ -539,6 +593,36 @@ void WatchdogLoop() {
     }
 }
 
+// REQ-045 P4-4 (item 3a-1): relay the active model to the worker with the
+// EXISTING session_open frame (worker_protocol is frozen — no edits). Sent
+// from the dispatcher loop BEFORE the first job, only when the resolved
+// model_id is non-empty; the worker acknowledges "opened" and resolves the
+// id against registry.json per job. An empty model_id keeps the worker's
+// pinned default, so the pre-REQ-045 wire stays byte-identical (AC-4).
+// (tech gate c5/R9: the ModelFileExists fast path below already consults the
+// resolved path, so a selected-but-absent model answers model_missing here.)
+bool EnsureWorkerModelRelayed(host_v2::WorkerManager& wmgr, const std::wstring& family,
+                              const std::string& model_id, bool& relayed) {
+    namespace wp = emebalachat::workerproto;
+    if (model_id.empty() || relayed) return true;
+    if (!wmgr.SendToWorker(family, wp::BuildSessionOpen(0, "translate", model_id, "default"))) {
+        return false;
+    }
+    for (;;) {
+        std::string json;
+        const auto rc = wmgr.ReadFromWorker(family, json, kWorkerAnswerGraceMs);
+        if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
+            std::uint64_t session = 0;
+            if (wp::ParseOpened(json, session)) {
+                relayed = true;
+                return true;
+            }
+            continue; // a stray frame (e.g. heartbeat): keep awaiting "opened"
+        }
+        return false; // timeout or IO error: the caller falls through honestly
+    }
+}
+
 // ---- dispatcher: the FROZEN v1 queue now feeds the ggml-translate WORKER
 // PROCESS (M6 T4, design §1.4; the old in-process InferenceLoop is DELETED).
 // Response semantics are byte-identical to the old loop (§4.4):
@@ -552,6 +636,10 @@ void WatchdogLoop() {
 void DispatcherLoop(host_v2::WorkerManager& wmgr) {
     const std::wstring family(kWorkerFamilyTranslate);
     namespace wp = emebalachat::workerproto;
+    // REQ-045 P4-4: the v1 one-shot client never sends a model_id, so the
+    // dispatcher relays the boot-cached config user_model_id to the worker
+    // once (existing session_open frame; "" -> no relay -> pinned path).
+    bool model_relayed = false;
     for (;;) {
         Job job;
         if (!g_queue.Pop(job)) break; // shutdown
@@ -582,6 +670,15 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
             continue;
+        }
+
+        // REQ-045 P4-4: relay the cached user_model_id BEFORE the first job
+        // (existing session_open frame; the worker resolves it per job). A
+        // failed relay leaves model_relayed=false and falls through — the
+        // worker keeps its pinned default and the job path below answers
+        // honestly (no new failure class).
+        if (!EnsureWorkerModelRelayed(wmgr, family, g_user_model_id, model_relayed)) {
+            model_relayed = false;
         }
 
         // Clear the per-job abort flag BEFORE publishing the job as current,
@@ -731,6 +828,12 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
 void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
     namespace wp = emebalachat::workerproto;
     const std::wstring family(kWorkerFamilyTranslate);
+    // REQ-045 P4-4: last model_id relayed to the worker ("" = pinned). The
+    // v2 session_open carries a model_id per session; the single worker slot
+    // tracks the latest one (tech gate c2: single active model). The boot
+    // config cache seeds the first relay so the common one-shot (v1-shaped)
+    // requests serve the user's chosen model too.
+    std::string relayed_model_id;
     for (;;) {
         host_v2::SchedItem item;
         host_v2::SchedItem expired;
@@ -751,7 +854,16 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         }
         Connection* requester = static_cast<Connection*>(item.user);
         if (!requester) continue;
-        if (!ModelFileExists()) {
+        // REQ-045 P4-4 (R9): the fast path must consult the SESSION's model,
+        // not only the pinned one — else a selected third-party model whose
+        // file is absent would be mis-judged present. Session model wins;
+        // a sessionless job falls back to the boot config cache.
+        std::string model_id = g_user_model_id;
+        host_v2::SessionRecord sess;
+        if (item.session != 0 && g_sessions.Find(item.session, sess) && !sess.model_id.empty()) {
+            model_id = sess.model_id;
+        }
+        if (!ModelFileExistsFor(model_id)) {
             requester->SendResult(0, enginehost::HostStatus::ModelMissing);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             continue;
@@ -761,6 +873,16 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             requester->SendResult(0, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
+        }
+        // REQ-045 P4-4: relay a CHANGED model_id before the job (existing
+        // session_open frame; empty -> no relay -> pinned). A failed relay
+        // leaves relayed_model_id stale and falls through — the worker keeps
+        // its previous model and the job path answers honestly.
+        if (model_id != relayed_model_id) {
+            bool relayed = false;
+            if (EnsureWorkerModelRelayed(wmgr, family, model_id, relayed)) {
+                relayed_model_id = model_id;
+            }
         }
         // The v2 profile forwards the request with a synthetic in-flight id
         // (the client's id space stays untouched — results here answer the
@@ -1329,6 +1451,13 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
         DIAG_LOG("ENGINEHOST", "host/003: registry status=%d models=%zu",
                  static_cast<int>(lr.status), g_registry.models.size());
     }
+
+    // REQ-045 P4-4 (item 3a-1): cache the user's chosen model id for the
+    // dispatcher's session_open relay. Boot-time only (no runtime reload —
+    // the idle-exit respawn bounds staleness; documented at the reader).
+    g_user_model_id = LoadUserModelIdFromConfig();
+    DIAG_LOG("ENGINEHOST", "host/004: user_model_id len=%zu",
+             g_user_model_id.size());
 
     // ---- the worker manager (M6 T3) + the ggml-translate family ----
     // The worker exe sits next to the orchestrator in the build tree and at

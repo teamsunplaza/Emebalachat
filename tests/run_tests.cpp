@@ -14475,6 +14475,12 @@ void TestEngineHostAvailabilityAndMigration() {
 // end-of-file pattern.
 #include "req045_openai_tests.inc"
 
+// REQ-045 P4-4 (design §A 안 i, item 3a-1): third-party .gguf serving core —
+// worker registry resolution + host config user_model_id extraction +
+// frozen session_open model_id round-trip. Staged as an .inc next to this
+// runner; registered near the end of main() per the end-of-file pattern.
+#include "req045_gguf_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14722,6 +14728,11 @@ int main() {
     TestReq045OpenAiDpapi();
     TestReq045OpenAiConfigRoundTrip();
     TestReq045OpenAiI18nPresent();
+    // REQ-045 P4-4 (item 3a-1): third-party .gguf serving core — registered
+    // after the P4-3 OpenAI suites, per the end-of-file pattern.
+    TestReq045GgufRegistryResolution();
+    TestReq045GgufHostConfigIdParse();
+    TestReq045GgufSessionOpenRoundTrip();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -56,6 +56,11 @@
 // REQ-044 (P4-2): shared engine-host path constants (kModelsDirRel) —
 // replaces the inline literal that used to be at the model-path site below.
 #include "engine_host_paths.hpp"     // REQ-044: shared path constants
+// REQ-045 P4-4 (item 3a-1, design §A 안 i): the worker resolves a client
+// model_id against registry.json itself (bare-filename files[] resolve
+// against the fixed Common\models dir). The parser is already linked via
+// Emebalachat_core — only the call is new (tech gate c4).
+#include "engine_host_registry.hpp"  // REQ-045: registry.json (model_id -> files[])
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -125,6 +130,52 @@ WorkerArgs ParseArgs(const wchar_t* cmd) {
         }
     }
     return out;
+}
+
+// REQ-045 P4-4 (item 3a-1, design §A 안 i): pure model_id -> model-file
+// resolution against the registry. `model_id` comes from the session_open
+// relay (or "" for the pinned default). Returns the pinned filename when
+// model_id is empty or cannot be resolved; an empty string when a non-empty
+// model_id is validly referenced but its file is absent (the caller maps
+// that to the honest model_missing path). `models_dir` is the resolved
+// Common\models directory (empty when LOCALAPPDATA is unavailable).
+//
+// Policy notes folded in from the P3 tech gate:
+//  * (c2) The worker holds ONE model at a time — "single active model" is the
+//    standing assumption (interleaved multi-model v2 sessions are out of
+//    scope for P3; the dispatcher relays the latest session_open and any
+//    mid-stream swap pays one EnsureLoaded Unload+reload).
+//  * (c3) registry.json absent/unparseable + a non-empty model_id degrades to
+//    the pinned path — the caller surfaces a one-time notice (the honest
+//    fallback, pinned 경로 + 1회 로그 공지).
+//  * The registry parser ALREADY enforces bare filenames in files[]
+//    (IsBareFilename rejects separators/escapes), so no path-injection escape
+//    is possible here — we only concatenate onto the fixed models dir.
+std::string ResolveModelFile(const std::string& models_dir,
+                             const emebalachat::engine_host_registry::Registry& registry,
+                             const std::string& model_id,
+                             bool* resolved /* out: false -> pinned fallback */) {
+    if (resolved) *resolved = true;
+    if (model_id.empty()) {
+        return std::string(emebalachat::kPinnedModelFilename.begin(),
+                           emebalachat::kPinnedModelFilename.end());
+    }
+    const emebalachat::engine_host_registry::ModelEntry* entry = registry.FindModel(model_id);
+    if (!entry || entry->files.empty()) {
+        // Unregistered id, or a registry we could not load: fall back to the
+        // pinned model and flag it so the caller can log the one-time notice.
+        if (resolved) *resolved = false;
+        return std::string(emebalachat::kPinnedModelFilename.begin(),
+                           emebalachat::kPinnedModelFilename.end());
+    }
+    if (models_dir.empty()) return std::string{};
+    const std::wstring w = emebalachat::ToUtf16(models_dir) + L"\\" +
+        emebalachat::ToUtf16(entry->files[0]);
+    const DWORD attrs = ::GetFileAttributesW(w.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return std::string{}; // referenced but absent -> model_missing
+    }
+    return emebalachat::ToUtf8(w);
 }
 
 // ---- pipe client (§1.2: the worker is the CLIENT) ---------------------------
@@ -253,8 +304,11 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
     auto engine = std::make_unique<LocalInferenceEngine>();
     engine->cancel_flag = &g_cancel; // address-stability contract (D-2)
 
-    // Model path: the fixed common location (same as the host; the worker
-    // owns EnsureLoaded incl. the SHA pin + marker cache + CUDA->CPU retry).
+    // REQ-045 P4-4 (item 3a-1): the models directory + registry.json are
+    // resolved ONCE at frame-loop start (same common location as the host;
+    // the worker owns EnsureLoaded incl. the SHA pin + marker cache +
+    // CUDA->CPU retry). The per-job model PATH is decided dynamically from
+    // the latest session_open model_id — see the job branch below.
     PWSTR known = nullptr;
     std::wstring lad;
     if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known)) && known) {
@@ -263,19 +317,45 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
     }
     // REQ-044 (P4-2): the inline L"Emebala\\Common\\models\\" literal is
     // now paths::kModelsDirRel (engine_host_paths.hpp).
-    const std::string model_path = lad.empty()
-        ? std::string{}
-        : emebalachat::ToUtf8(lad + L"\\" + emebalachat::enginehost::paths::kModelsDirRel + L"\\" +
-                              std::wstring(emebalachat::kPinnedModelFilename.begin(),
-                                           emebalachat::kPinnedModelFilename.end()));
-    if (model_path.empty()) {
+    const std::wstring models_dir_w =
+        lad.empty() ? std::wstring{}
+                    : lad + L"\\" + emebalachat::enginehost::paths::kModelsDirRel;
+    const std::string models_dir = models_dir_w.empty() ? std::string{}
+                                                        : emebalachat::ToUtf8(models_dir_w);
+    if (models_dir.empty()) {
         DIAG_F("ENGINEHOST/worker/020: cannot resolve the common model path; jobs answer model_missing\n");
     }
-    auto model_file_exists = [&]() {
-        if (model_path.empty()) return false;
-        const std::wstring w = emebalachat::ToUtf16(model_path);
-        const DWORD attrs = ::GetFileAttributesW(w.c_str());
-        return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    // REQ-045 (c3): a missing/unparseable registry is NOT fatal — a set
+    // model_id then degrades to the pinned model (the resolver flags it and
+    // we surface the one-time notice below).
+    emebalachat::engine_host_registry::Registry registry;
+    bool registry_loaded = false;
+    {
+        const auto lr = emebalachat::engine_host_registry::LoadDefaultRegistry();
+        if (lr.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
+            registry = std::move(lr.registry);
+            registry_loaded = true;
+        }
+    }
+    // Latest model_id relayed by the orchestrator's session_open ("" until
+    // the first one — the pinned default). Single-slot: one worker process
+    // serves ONE model at a time (tech gate c2 — interleaved multi-model v2
+    // sessions are out of scope for P3).
+    std::string active_model_id;
+    // Lazily-reported fallback notice (c3): set on the first unresolved
+    // model_id, logged once, then cleared.
+    bool fallback_notice_pending = false;
+    auto resolve_active_model = [&]() -> std::string {
+        bool resolved = true;
+        const std::string path = ResolveModelFile(models_dir, registry, active_model_id, &resolved);
+        if (!resolved && !fallback_notice_pending) {
+            fallback_notice_pending = true; // one-time pinned-path notice (c3)
+            DIAG_LOG("ENGINEHOST",
+                     "worker/030: model_id '%s' unresolved (registry_loaded=%d); "
+                     "falling back to the pinned model",
+                     active_model_id.c_str(), registry_loaded ? 1 : 0);
+        }
+        return path;
     };
 
     // ---- announce (§3.4): worker.manifest content + the echoed token as the
@@ -332,14 +412,31 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // can never kill the next job (v1 InferenceLoop discipline).
             g_cancel.store(false, std::memory_order_release);
 
-            const bool model_ok = model_file_exists();
+            // REQ-045 P4-4: resolve the model for THIS job from the latest
+            // session_open model_id ("" -> pinned; unresolvable -> pinned with
+            // the one-time notice; referenced-but-absent -> model_missing).
+            const std::string model_path = resolve_active_model();
+            const bool model_ok = !model_path.empty();
             bool loaded = false;
             std::wstring out;
-            if (model_ok && !model_path.empty()) {
+            if (model_ok) {
                 // Load BEFORE inferencing: a missing/corrupt/undecodable GGUF
                 // maps to model_missing (plan §8); a decode-time failure after
                 // a SUCCESSFUL load stays engine_failed. A cancel-aborted load
                 // surfaces through the abort check below (timeout precedence).
+                //
+                // REQ-045 (tech gate c1): a mid-stream model SWAP is validated
+                // HERE, before the job is answered. EnsureLoaded unloads the
+                // previous model and reloads the resolved one; when that
+                // reload FAILS the worker stays alive on its previous model
+                // (loaded_path is left pointing at the last good load) and
+                // this job alone answers the honest model_missing — no
+                // half-loaded state is acked. If the reload CRASHES the
+                // process instead, the orchestrator maps the pipe IO error to
+                // EngineFailed + respawn backoff (the existing §V2-8.6 chain);
+                // the next request re-attempts the load. Non-HyMT models run
+                // through the fixed hymt2-official prompt either way (§A.4:
+                // 번역 품질 미보장), so a bad swap degrades honestly.
                 loaded = engine->EnsureLoaded(model_path);
                 if (loaded) {
                     // Prompt parity with the embedded/host path: the target
@@ -397,8 +494,12 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                 (void)WriteFrame(pipe, wp::BuildError("unavailable"));
                 continue;
             }
-            // M6: ggml-translate owns exactly the pinned translate model — the
-            // session opens unconditionally (the model resolves inside jobs).
+            // REQ-045 P4-4: the session opens unconditionally still, but the
+            // relayed model_id now BECOMES the active model for subsequent
+            // jobs (resolved per job against the registry inside the job
+            // branch — see resolve_active_model). An empty model_id keeps the
+            // pinned default (the pre-REQ-045 behavior, byte-identical).
+            active_model_id = msg.model_id;
             if (!WriteFrame(pipe, wp::BuildOpened(msg.session))) {
                 return 3;
             }
