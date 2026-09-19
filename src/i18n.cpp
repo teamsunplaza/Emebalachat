@@ -26,122 +26,116 @@ const wchar_t kRunRegistryKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion
 // orphan (duplicate) existing auto-start entries on upgrade. Not user-visible.
 const wchar_t kRunValueName[] = L"Emebalachat";
 
+// REQ-044 (P3 item 4, option b — Tech Gate E-3a): single-source the field
+// list with an X-macro so the struct layout and its field count can never
+// drift apart. One entry per field, IN DECLARATION ORDER. The struct and
+// kLocalizedStringsFieldCount below are both generated FROM this list, so
+// adding/removing a field here is the ONLY edit needed and the
+// static_assert keeps all 37 locale tables honest.
+#define EMEBALA_LSTR_FIELDS(X) \
+    X(menu_status_active) \
+    X(menu_status_paused) \
+    X(menu_engine) \
+    X(menu_engine_google) \
+    X(menu_engine_local) \
+    X(menu_source_lang) \
+    X(menu_target_lang) \
+    X(menu_swap_langs) \
+    X(menu_auto_send) \
+    X(menu_sound_feedback) \
+    X(menu_show_badge) \
+    X(menu_start_with_windows) \
+    X(menu_cheatsheet) \
+    X(menu_exit) \
+    X(menu_about) \
+    X(cheatsheet_title) \
+    X(cheatsheet_body) \
+    X(about_title) \
+    X(badge_active) \
+    X(badge_translating) \
+    X(badge_paused) \
+    X(tooltip_title) \
+    X(tooltip_copy_failed) \
+    X(tooltip_no_selection) \
+    X(auto_detect) \
+    X(app_already_running) \
+    X(app_com_failed) \
+    X(about_tagline) \
+    X(about_feature0) \
+    X(about_feature1) \
+    X(about_feature2) \
+    X(about_etymology) \
+    X(about_link_website) \
+    X(about_link_contact) \
+    X(about_link_reddit) \
+    X(about_contact_org) \
+    X(about_contact_phone) \
+    X(about_contact_lead) \
+    X(tooltip_copied) \
+    X(tooltip_button_copy) \
+    X(tooltip_button_tts) \
+    X(menu_ui_language) \
+    X(menu_ui_language_auto) \
+    X(about_reset_button) \
+    X(about_reset_done) \
+    X(menu_typing_group) \
+    X(menu_tooltip_group) \
+    X(app_name) \
+    X(tooltip_no_tts_voice) \
+    X(privacy_notice_title) \
+    X(privacy_notice_body) \
+    X(cheatsheet_config_path) \
+    X(translate_truncated_notice) \
+    X(tooltip_untranslated_above) \
+    X(repair_in_progress) \
+    X(repair_failed_title) \
+    X(repair_failed_body)
+
 struct LocalizedStrings {
-    const wchar_t* menu_status_active;
-    const wchar_t* menu_status_paused;
-    const wchar_t* menu_engine;
-    const wchar_t* menu_engine_google;
-    const wchar_t* menu_engine_local;
-    const wchar_t* menu_source_lang;
-    const wchar_t* menu_target_lang;
-    const wchar_t* menu_swap_langs;
-    const wchar_t* menu_auto_send;
-    const wchar_t* menu_sound_feedback;
-    const wchar_t* menu_show_badge;
-    const wchar_t* menu_start_with_windows;
-    const wchar_t* menu_cheatsheet;
-    const wchar_t* menu_exit;
-    const wchar_t* menu_about;
-
-    const wchar_t* cheatsheet_title;
-    const wchar_t* cheatsheet_body;
-    const wchar_t* about_title;
-
-    const wchar_t* badge_active;
-    const wchar_t* badge_translating;
-    const wchar_t* badge_paused;
-
-    const wchar_t* tooltip_title;
-    // REQ-R1 (session 260905_0001): drag-icon click failure notices.
-    const wchar_t* tooltip_copy_failed;
-    const wchar_t* tooltip_no_selection;
-    const wchar_t* auto_detect;
-
-    // ---- R6 Phase 5/6 (plan §5.2-§5.4): About body, migrated literals,
-    // UI-language selector. Field order below MUST match the Get() switch and
-    // every locale table (aggregate initialization). ----
-    const wchar_t* app_already_running;
-    const wchar_t* app_com_failed;
-    const wchar_t* about_tagline;
-    const wchar_t* about_feature0;
-    const wchar_t* about_feature1;
-    const wchar_t* about_feature2;
-    const wchar_t* about_etymology;
-    const wchar_t* about_link_website;
-    const wchar_t* about_link_contact;
-    const wchar_t* about_link_reddit;
-    const wchar_t* about_contact_org;
-    const wchar_t* about_contact_phone;
-    const wchar_t* about_contact_lead;
-    const wchar_t* tooltip_copied;
-    const wchar_t* tooltip_button_copy;
-    const wchar_t* tooltip_button_tts;
-    const wchar_t* menu_ui_language;
-    const wchar_t* menu_ui_language_auto;
-
-    // Phase 4 (REQ-020, plan §1.4/§2.5): About-window "Reset to system
-    // defaults" button label + its transient post-click confirmation label.
-    // Appended at the end so every aggregate table below only gains trailing
-    // initializers (field order MUST keep matching table order).
-    const wchar_t* about_reset_button;
-    const wchar_t* about_reset_done;
-
-    // REQ-025 (Phase A §2.1.A3-25): tray language-picker group headers.
-    // Appended at the end (same trailing-initializer rule as above).
-    const wchar_t* menu_typing_group;
-    const wchar_t* menu_tooltip_group;
-
-    // REQ-B-001 (session 260909_0001 Batch-1): per-locale brand display
-    // name. Appended at the end (same trailing-initializer rule as above).
-    const wchar_t* app_name;
-    // REQ-C-004 (session 260909_0001 Batch-1): no-voice TTS notice body
-    // (Phase C, design §1.2.2). Same trailing-initializer rule.
-    const wchar_t* tooltip_no_tts_voice;
-
-    // REQ-206/208 (session 260911_0002 T2, P3 design §2.3/§2.4): first-run
-    // privacy consent popup (title + body, incl. the mandated "re-read the
-    // README anytime" guidance line) and the Cheat Sheet config.json
-    // relative-path line. Appended at the end (same trailing-initializer
-    // rule) so all 37 aggregate tables only gained trailing entries.
-    const wchar_t* privacy_notice_title;
-    const wchar_t* privacy_notice_body;
-    const wchar_t* cheatsheet_config_path;
-
-    // SEC-M1 (session 260911_0002, verify 235100): cloud-translation
-    // truncation notice. Appended at the end (same trailing-initializer
-    // rule) so all 37 aggregate tables only gained one trailing entry.
-    const wchar_t* translate_truncated_notice;
-
-    // REQ-005 (M6 T6, design §6.4): engine-host repair guidance. Appended at
-    // the end (same trailing-initializer rule) so all 37 aggregate tables gain
-    // three trailing entries — field order MUST keep matching the Get() switch
-    // and every locale table below.
-    const wchar_t* tooltip_untranslated_above;
-    const wchar_t* repair_in_progress;
-    const wchar_t* repair_failed_title;
-    const wchar_t* repair_failed_body;
+#define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
+    EMEBALA_LSTR_FIELDS(EMEBALA_LSTR_FIELD)
+#undef EMEBALA_LSTR_FIELD
 };
 
-// 1. Korean (ko)
-const LocalizedStrings kStringsKorean = {
-    L"상태: 활성 (F9: 일시 정지)",
-    L"상태: 일시 정지 (F9: 활성화)",
-    L"번역 엔진 선택",
-    L"Google 번역 (무료 / 무설치 / 실시간)",
-    L"로컬 LLM (Hy-MT2-1.8B 오프라인 모델)",
-    L"출발 언어 (입력 언어)",
-    L"도착 언어 (번역 대상)",
-    L"출발어 ⇄ 도착어 맞교환 (더블클릭)",
-    L"엔터 시 자동 전송 (Auto-Send)",
-    L"알림음 효과 (Tones)",
-    L"화면 플로팅 뱃지 표시",
-    L"Windows 시작 시 자동 실행",
-    L"단축키 안내 및 사용법 (도움말)...",
-    L"에메발라 챗 종료",
-    L"에메발라 챗 소개…",
+// Compile-time field count — generated from the SAME X-macro list above,
+// so it can never disagree with the struct layout. Fires the moment a
+// field is added or removed (Tech Gate E-3a pattern).
+inline constexpr std::size_t kLocalizedStringsFieldCount =
+    [] { std::size_t n = 0;
+#define EMEBALA_LSTR_COUNT(name) ++n;
+         EMEBALA_LSTR_FIELDS(EMEBALA_LSTR_COUNT)
+#undef EMEBALA_LSTR_COUNT
+         return n; }();
+// REQ-044: 57 == StringId::EnumCount. The design doc/Tech Gate cited 53,
+// but that predates REQ-042's tooltip_untranslated_above (field 54); the
+// enum's own running-total comment reads "57x37 with the REQ-005 repair
+// trio". The Get() switch maps exactly these 57 named fields.
+static_assert(kLocalizedStringsFieldCount == 57,
+    "LocalizedStrings field count changed - update all 37 locale tables");
 
-    L"에메발라 챗 단축키 및 사용 안내",
-    L"에메발라 챗 단축키 및 간편 사용법:\n\n"
+// 1. Korean (ko)
+// REQ-044 (P3 item 4, option b — Tech Gate E-3b): designated-initializer
+// pilot table. All 57 fields are named, in declaration order, so a future
+// reorder/typo is a compile error instead of a silent text shift. The string
+// literals are the SAME bytes as the previous positional aggregate.
+const LocalizedStrings kStringsKorean = {
+    .menu_status_active = L"상태: 활성 (F9: 일시 정지)",
+    .menu_status_paused = L"상태: 일시 정지 (F9: 활성화)",
+    .menu_engine = L"번역 엔진 선택",
+    .menu_engine_google = L"Google 번역 (무료 / 무설치 / 실시간)",
+    .menu_engine_local = L"로컬 LLM (Hy-MT2-1.8B 오프라인 모델)",
+    .menu_source_lang = L"출발 언어 (입력 언어)",
+    .menu_target_lang = L"도착 언어 (번역 대상)",
+    .menu_swap_langs = L"출발어 ⇄ 도착어 맞교환 (더블클릭)",
+    .menu_auto_send = L"엔터 시 자동 전송 (Auto-Send)",
+    .menu_sound_feedback = L"알림음 효과 (Tones)",
+    .menu_show_badge = L"화면 플로팅 뱃지 표시",
+    .menu_start_with_windows = L"Windows 시작 시 자동 실행",
+    .menu_cheatsheet = L"단축키 안내 및 사용법 (도움말)...",
+    .menu_exit = L"에메발라 챗 종료",
+    .menu_about = L"에메발라 챗 소개…",
+    .cheatsheet_title = L"에메발라 챗 단축키 및 사용 안내",
+    .cheatsheet_body = L"에메발라 챗 단축키 및 간편 사용법:\n\n"
     L"  • F9 : 활성화 / 일시 정지 토글 (마우스 클릭으로도 가능)\n"
     L"  • Ctrl + F9 : 도착어(번역 대상 언어) 순환 변경\n"
     L"  • Ctrl + Shift + Enter : 자동 전송 모드 토글\n"
@@ -153,45 +147,40 @@ const LocalizedStrings kStringsKorean = {
     L"동작 모드:\n"
     L"  • 일반 모드 (자동 전송 꺼짐): 번역문으로 문장을 치환 후 확인하고 엔터 전송.\n"
     L"  • 자동 전송 모드 (자동 전송 켜짐): 번역문으로 치환 후 즉시 자동 전송.",
-    L"에메발라 챗 소개",
-
-    L"활성",
-    L"번역 중...",
-    L"일시 정지",
-
-    L"에메발라 챗",
-    L"선택한 텍스트를 복사하지 못했습니다. 대상 앱을 확인하고 다시 시도하세요.",
-    L"번역할 텍스트가 선택되어 있지 않습니다.",
-    L"자동 감지",
-
-    L"에메발라 챗이 백그라운드에서 이미 실행 중입니다.\n시스템 알림 트레이를 확인하세요.",
-    L"COM 초기화에 실패했습니다.\n플로팅 배지와 음성 읽기(TTS)는 사용할 수 없지만,\n번역, 단축키, 트레이, 알림음은 계속 동작합니다.",
-    L"복사·붙여넣기는 이제 그만. 모국어로 자연스럽게 입력하면 어떤 Windows 앱에서든 실시간으로 번역문이 타이핑을 대체합니다.",
-    L"⚡ 드래그 번역 — 어떤 앱에서든 텍스트를 선택하면 플로팅 아이콘이 즉시 번역합니다.",
-    L"🔊 뉴럴 TTS — Windows 음성팩 연동 시 37개 전 언어 발음 지원.",
-    L"🔒 100% 온디바이스·프라이빗 — 단축키를 누르는 동안만 작동하며 클립보드는 건드리지 않습니다.",
-    L"기원전 2000년, 메소포타미아 서기들은 언어로 세계를 잇는 자들을 '에메-발라(Eme-bala)'라 불렀습니다.",
-    L"웹사이트",
-    L"문의",
-    L"Reddit",
-    L"Team Sunplaza · 서울 영등포 (영중로 65, 219호)",
-    L"+82 2 575 0414 · 업무시간 10:00–19:00 KST",
-    L"총괄 아키텍트: Yongtai Kim",
-    L"✓ 복사됨!",
-    L"📋 복사",
-    L"🔊 음성",
-    L"인터페이스 언어",
-    L"자동 (시스템 언어)",
-    L"시스템 기본값으로 리셋",
-    L"기본값으로 복원됨",
-    L"키보드 타이핑",
-    L"번역 툴팁",
-    L"에메발라 챗",
-    L"이 언어에 설치된 Windows 음성이 없습니다. 🔊를 다시 클릭하면 음성 설정이 열립니다.",
-    // REQ-206/208 (session 260911_0002 T2): privacy notice popup +
-    // config-path line (trailing-initializer append, design §2.4).
-    L"개인정보 보호 안내",
-    L"에메발라 챗의 개인정보 처리 원칙을 알려드립니다.\n"
+    .about_title = L"에메발라 챗 소개",
+    .badge_active = L"활성",
+    .badge_translating = L"번역 중...",
+    .badge_paused = L"일시 정지",
+    .tooltip_title = L"에메발라 챗",
+    .tooltip_copy_failed = L"선택한 텍스트를 복사하지 못했습니다. 대상 앱을 확인하고 다시 시도하세요.",
+    .tooltip_no_selection = L"번역할 텍스트가 선택되어 있지 않습니다.",
+    .auto_detect = L"자동 감지",
+    .app_already_running = L"에메발라 챗이 백그라운드에서 이미 실행 중입니다.\n시스템 알림 트레이를 확인하세요.",
+    .app_com_failed = L"COM 초기화에 실패했습니다.\n플로팅 배지와 음성 읽기(TTS)는 사용할 수 없지만,\n번역, 단축키, 트레이, 알림음은 계속 동작합니다.",
+    .about_tagline = L"복사·붙여넣기는 이제 그만. 모국어로 자연스럽게 입력하면 어떤 Windows 앱에서든 실시간으로 번역문이 타이핑을 대체합니다.",
+    .about_feature0 = L"⚡ 드래그 번역 — 어떤 앱에서든 텍스트를 선택하면 플로팅 아이콘이 즉시 번역합니다.",
+    .about_feature1 = L"🔊 뉴럴 TTS — Windows 음성팩 연동 시 37개 전 언어 발음 지원.",
+    .about_feature2 = L"🔒 100% 온디바이스·프라이빗 — 단축키를 누르는 동안만 작동하며 클립보드는 건드리지 않습니다.",
+    .about_etymology = L"기원전 2000년, 메소포타미아 서기들은 언어로 세계를 잇는 자들을 '에메-발라(Eme-bala)'라 불렀습니다.",
+    .about_link_website = L"웹사이트",
+    .about_link_contact = L"문의",
+    .about_link_reddit = L"Reddit",
+    .about_contact_org = L"Team Sunplaza · 서울 영등포 (영중로 65, 219호)",
+    .about_contact_phone = L"+82 2 575 0414 · 업무시간 10:00–19:00 KST",
+    .about_contact_lead = L"총괄 아키텍트: Yongtai Kim",
+    .tooltip_copied = L"✓ 복사됨!",
+    .tooltip_button_copy = L"📋 복사",
+    .tooltip_button_tts = L"🔊 음성",
+    .menu_ui_language = L"인터페이스 언어",
+    .menu_ui_language_auto = L"자동 (시스템 언어)",
+    .about_reset_button = L"시스템 기본값으로 리셋",
+    .about_reset_done = L"기본값으로 복원됨",
+    .menu_typing_group = L"키보드 타이핑",
+    .menu_tooltip_group = L"번역 툴팁",
+    .app_name = L"에메발라 챗",
+    .tooltip_no_tts_voice = L"이 언어에 설치된 Windows 음성이 없습니다. 🔊를 다시 클릭하면 음성 설정이 열립니다.",
+    .privacy_notice_title = L"개인정보 보호 안내",
+    .privacy_notice_body = L"에메발라 챗의 개인정보 처리 원칙을 알려드립니다.\n"
     L"\n"
     L"• 에메발라 챗은 자체 서버를 운영하지 않습니다.\n"
     L"• 로컬 모델을 사용하면 번역 내용이 기기를 벗어나지 않습니다.\n"
@@ -200,15 +189,12 @@ const LocalizedStrings kStringsKorean = {
     L"• 텍스트를 클라우드(Google)로 전송하기 원치 않으시면 트레이 아이콘 메뉴의 “번역 엔진 선택”에서 “로컬 LLM”을 선택하세요. 로컬 모델이 설치되지 않았고 클라우드 전환이 꺼져 있으면 번역은 전송 없이 동작하지 않습니다.\n"
     L"\n"
     L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
-    L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
-    L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다.",
-    L"위쪽에 번역되지 않은 새 텍스트가 있습니다. 그 줄 끝에 커서를 두고 Enter를 누를면 번역됩니다.",
-    L"로컬 엔진 구성 요소를 복구하는 중…",
-    L"로컬 번역을 사용할 수 없습니다",
-    L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요."
+    .cheatsheet_config_path = L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json",
+    .translate_truncated_notice = L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다.",
+    .tooltip_untranslated_above = L"위쪽에 번역되지 않은 새 텍스트가 있습니다. 그 줄 끝에 커서를 두고 Enter를 누를면 번역됩니다.",
+    .repair_in_progress = L"로컬 엔진 구성 요소를 복구하는 중…",
+    .repair_failed_title = L"로컬 번역을 사용할 수 없습니다",
+    .repair_failed_body = L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요."
 };
 
 // 2. Japanese (ja)

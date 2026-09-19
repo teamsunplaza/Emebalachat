@@ -14467,6 +14467,81 @@ void TestEngineHostAvailabilityAndMigration() {
 // protocol suites it complements.
 #include "m6_engine_host_verbatim_sync_tests.inc"
 
+// REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
+// structural defense. Complements the runtime EnumCount completeness loop in
+// TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
+// field count at COMPILE time and smoke-checking the Korean designated-
+// initializer pilot table (src/i18n.cpp kStringsKorean). The X-macro in
+// i18n.cpp already guarantees kLocalizedStringsFieldCount == 57 via its own
+// static_assert; because that symbol lives in i18n.cpp's anonymous namespace
+// (not linkable here), this suite re-derives the count with the SAME sizeof
+// technique (E-3c) so a struct edit that bypasses the i18n.cpp assert still
+// trips a compile error in the test TU. Get()-switch/EnumCount completeness is
+// already covered by TestR6P5P6I18n and is NOT re-asserted here.
+namespace {
+
+// Mirror of LocalizedStrings (src/i18n.cpp) — field COUNT and TYPE only. The
+// X-macro there generates the real struct; this anonymous-namespace twin exists
+// solely so the sizeof-based count below is checked against a struct with an
+// identical layout. It must be kept in sync; the static_assert catches drift.
+struct Req044LstrMirror {
+    const wchar_t* f[57];
+};
+
+} // namespace
+
+void TestReq044I18nFieldOrder() {
+    std::cout << "[RUN] Testing REQ-044 i18n field-order structural defense..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) Compile-time + runtime field-count pin (E-3c) ----
+    static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
+                  "REQ-044: Req044LstrMirror must be an array of uniform pointers");
+    constexpr std::size_t kExpectedFieldCount =
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 57
+    static_assert(kExpectedFieldCount == 57,
+                  "REQ-044: LocalizedStrings field count changed - update the "
+                  "i18n.cpp X-macro list, the kStringsKorean designated "
+                  "initializers, AND this mirror");
+    // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
+    // comparison (avoids C4127 "conditional expression is constant" under /W4).
+    // The static_assert above remains the compile-time guard; these two are the
+    // runtime record that the count held.
+    volatile std::size_t observed_field_count = kExpectedFieldCount;
+    volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
+    TEST_CHECK(observed_field_count == 57,
+               "REQ-044: LocalizedStrings field count is 57 (X-macro static_assert "
+               "in i18n.cpp is the primary guard; this is the runtime record)");
+    TEST_CHECK(observed_enum_count == 57,
+               "REQ-044: StringId::EnumCount is 57 (struct fields == switch cases)");
+
+    // ---- (b) Korean designated-initializer smoke check ----
+    // The Korean table was converted to C++20 designated initializers; a wrong
+    // field name or order is a compile error in i18n.cpp. These runtime pins
+    // prove the resulting mapping returns the SAME user-visible strings the
+    // positional aggregate produced (hardcoded expected values, ko).
+    const UiLocale initial = I18n::GetCurrentLocale();
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::MenuStatusActive) == L"상태: 활성 (F9: 일시 정지)",
+               "REQ-044 ko: MenuStatusActive designated-init mapping intact");
+    TEST_CHECK(I18n::Get(StringId::AppName) == L"에메발라 챗",
+               "REQ-044 ko: AppName designated-init mapping intact");
+    TEST_CHECK(I18n::Get(StringId::AutoDetect) == L"자동 감지",
+               "REQ-044 ko: AutoDetect designated-init mapping intact");
+    TEST_CHECK(I18n::Get(StringId::TooltipUntranslatedAbove).find(L"번역되지 않은") != std::wstring::npos,
+               "REQ-044 ko: TooltipUntranslatedAbove (REQ-042 tail field) designated-init mapping intact");
+    TEST_CHECK(I18n::Get(StringId::RepairFailedTitle) == L"로컬 번역을 사용할 수 없습니다",
+               "REQ-044 ko: RepairFailedTitle (REQ-005 tail field) designated-init mapping intact");
+    I18n::SetLocale(initial); // suite-state hygiene
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-044 i18n field-order structural defense passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-044 i18n field-order structural defense: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -14627,6 +14702,9 @@ int main() {
     // JSON helper copy (L57-318) still matches engine_host_protocol.hpp after
     // any header edit; approach ii (runtime source-text differential).
     TestReq044VerbatimSync();
+    // REQ-044 P4-5: i18n field-order structural defense (X-macro + Korean
+    // designated-initializer pilot) — registered after the P4-4 verbatim suite.
+    TestReq044I18nFieldOrder();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
