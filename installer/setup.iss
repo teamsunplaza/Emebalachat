@@ -1150,20 +1150,17 @@ end;
 function ShouldInstallEngineWorker(): Boolean;
 var
   ComponentsPath: String;
-  WorkerExePath: String;
   ComponentsAnsi: AnsiString;
   ComponentsJson: String;
 begin
   EngineWorkerUpdated := False;
-  // No-llama guard: without the worker exe in the build tree there is
-  // nothing to install - skip silently (file absence -> False).
-  WorkerExePath := ExpandConstant('{src}') + '\..\build\' + WORKER_FILENAME;
-  if not FileExists(WorkerExePath) then
-  begin
-    Log('REQ-006: worker exe not present in the build tree (no-llama build) - skipping worker [Files] entries.');
-    Result := False;
-    Exit;
-  end;
+  // REQ-046 P4-1: the old no-llama guard probed {src}\..\build\<worker exe>.
+  // {src} resolves on the INSTALLING machine, so on any end-user box it always
+  // pointed at a non-existent dev build tree -> FileExists=False -> the worker
+  // [Files] entries were silently skipped (P2 192430 H1 confirmed). A no-llama
+  // build is already blocked at ISCC compile time (policy 7b171a0: the L471-472
+  // worker Source entries have no skipifsourcedoesntexist), so the runtime
+  // guard is removed and version/abi gating (below) decides installation.
   ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
   Result := True;
   if not FileExists(ComponentsPath) then
