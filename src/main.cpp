@@ -374,6 +374,90 @@ void RequestLanguageSync(HWND hController, LanguageContext ctx,
         DIAG_F("MAIN/LangSync/002: PostMessage language sync failed (GLE %lu); request left queued\n", ::GetLastError());
     }
 }
+
+// ---- REQ-045 P4-8 (item 1, design §B + Tech Gate Item 6): modal helper ----
+// "Local engine unavailable" guidance as a MODAL (MessageBoxW MB_OK|MB_ICONINFORMATION|
+// MB_TOPMOST). The user's Ask Gate condition 1 wording — "the first time it
+// appears, it must stay up until the user clicks X" — rules out the transient
+// tooltip that auto-hides after kMessageAutohideMs; a MessageBoxW has no
+// auto-dismiss and stays up until the user clicks OK or the X caption button
+// (A1: not auto-dismissible; A3: explicit close). MB_TOPMOST mirrors the §2.2.4
+// cheat-sheet / P4-5 quality-gate modal so the notice is not hidden behind a
+// maximized editor. Both call sites run AFTER the first-run privacy gate
+// (main L845), so the modal can never precede privacy consent.
+//
+// Threading (Tech Gate Item 6 correction): the detached repair-thread path
+// (bootstrap §V2-8.6 with a repair URL) is NOT on the GUI thread, so it cannot
+// call MessageBoxW directly. Rev2 §B's "strdup title/body into LPARAM" was
+// rejected by Tech Gate Item 6 — it would re-introduce the CWE-822 shatter
+// the repo's SEC-ADJ / SEC-B5 fixes removed (any same-session process can
+// post an attacker-chosen address to a window with a shipped class name; see
+// tooltip.cpp L24-29 and the kMsgApplyLanguageSync block above). The house
+// pattern is reused verbatim: the payload (title+body) travels BY VALUE in
+// a mutex-guarded deque, and the posted message is a PURE (0,0) wake-up.
+// No heap pointer crosses PostMessageW. The consumer is the GUI-thread
+// ControllerWndProc handler below, plus the shutdown drain that mirrors the
+// language-sync discipline (producers joined -> drain -> retire).
+void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view body) {
+    UINT type = MB_OK | MB_ICONINFORMATION | MB_TOPMOST;
+    if (DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL) {
+        type |= MB_RTLREADING; // mirror the REQ-208 privacy-notice RTL policy
+    }
+    ::MessageBoxW(nullptr, std::wstring(body).c_str(), std::wstring(title).c_str(), type);
+}
+
+// ---- REQ-045 P4-8: SEC-ADJ modal-request marshal (mirrors SEC-B5) ----
+// Distinct WM_APP band: tooltip owns 0x2xx, drag_icon 0x1xx, about 0x3xx,
+// language-sync owns 0x300. 0x400 is free (verified against src/ui/*.hpp).
+constexpr UINT kMsgEngineUnavailableModal = WM_APP + 0x400;
+struct EngineUnavailableModalRequest {
+    std::wstring title;
+    std::wstring body;
+};
+std::mutex g_engine_modal_mu;
+std::deque<EngineUnavailableModalRequest> g_engine_modal_queue;
+// Consumer-side drain helper: swaps out ALL pending requests in FIFO order.
+std::deque<EngineUnavailableModalRequest> DrainEngineModalQueue() {
+    std::deque<EngineUnavailableModalRequest> out;
+    std::lock_guard<std::mutex> lk(g_engine_modal_mu);
+    out.swap(g_engine_modal_queue);
+    return out;
+}
+// Posts a modal request from any thread; never blocks (PostMessageW). The
+// posted message is a pure (0,0) wake-up; the request itself travels by value
+// through g_engine_modal_queue. On post failure the entry stays queued
+// (drain-safe) — the same accepted trade-off as RequestLanguageSync.
+void RequestEngineUnavailableModal(HWND hController, std::wstring title, std::wstring body) {
+    if (!hController) {
+        DIAG_F("MAIN/EngineModal/000: no controller window; modal request dropped\n");
+        return;
+    }
+    const DWORD gui_tid = ::GetWindowThreadProcessId(hController, nullptr);
+    if (gui_tid == ::GetCurrentThreadId()) {
+        // Caller is already the GUI thread (e.g. the tray on_select_engine
+        // path and the bootstrap main-thread branch): run the modal inline,
+        // matching RequestLanguageSync's same-thread fast path.
+        ShowLocalEngineUnavailableModal(title, body);
+        return;
+    }
+    EngineUnavailableModalRequest req;
+    req.title = std::move(title);
+    req.body = std::move(body);
+    {
+        std::lock_guard<std::mutex> lk(g_engine_modal_mu);
+        g_engine_modal_queue.push_back(std::move(req));
+    }
+    if (::PostMessageW(hController, kMsgEngineUnavailableModal, 0, 0) == FALSE) {
+        // Leave the entry queued (drain-safe, cannot leak or apply-after-
+        // retire): the shutdown drain below runs after all producers are
+        // joined and pops ALL queued entries. Rolling back here would race
+        // with a concurrent consumer that another producer's successful post
+        // already woke — same contract as RequestLanguageSync.
+        DIAG_F("MAIN/EngineModal/002: PostMessage engine-unavailable modal failed (GLE %lu); request left queued\n",
+               ::GetLastError());
+    }
+}
+
 const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
 // REQ-R14: WM_POWERBROADCAST is sent ONLY to top-level windows - a
 // message-only window never receives power broadcasts. This tiny hidden
@@ -469,6 +553,31 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     req.context, std::string_view{ req.source },
                     std::string_view{ req.target }, req.cycle, req.play_chime);
             }
+        }
+        return 0;
+    }
+
+    if (msg == kMsgEngineUnavailableModal) {
+        // REQ-045 P4-8 (item 1, design §B + Tech Gate Item 6): the detached
+        // bootstrap repair thread (and any other non-GUI producer) marshals the
+        // "local engine unavailable" modal here so MessageBoxW runs on the GUI
+        // thread. SEC-ADJ: wParam/LPARAM are IGNORED entirely (the wake-up
+        // carries no payload — always 0/0; any value an external process posts
+        // is untrusted by design). Requests travel by value through
+        // g_engine_modal_queue; this handler pops every pending entry (per-item
+        // lock, so entries enqueued while an earlier one is being applied are
+        // still consumed by this same wake-up).
+        for (;;) {
+            EngineUnavailableModalRequest req;
+            {
+                std::lock_guard<std::mutex> lk(g_engine_modal_mu);
+                if (g_engine_modal_queue.empty()) {
+                    break;
+                }
+                req = std::move(g_engine_modal_queue.front());
+                g_engine_modal_queue.pop_front();
+            }
+            ShowLocalEngineUnavailableModal(req.title, req.body);
         }
         return 0;
     }
@@ -1042,12 +1151,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                         DIAG_LOG("ENGINEHOST", "bootstrap/016: repair finished; local source serveable");
                         return; // no notice — the host spawns on the next request
                     }
-                    // Repair failed (offline / bad pin / disabled): surface the
-                    // localized guidance once on the GUI thread (transient).
-                    POINT cur;
-                    if (!::GetCursorPos(&cur)) cur = {0, 0};
-                    emebalachat::g_pTooltip->ShowMessageThreadSafe(
-                        cur.x, cur.y,
+                    // REQ-045 P4-8 (item 1, design §B): repair failed (offline /
+                    // bad pin / disabled) — surface the "local engine
+                    // unavailable" guidance as a MODAL that stays up until the
+                    // user clicks OK or X. This thread is detached (not the
+                    // GUI thread), so the modal is marshaled through the SEC-ADJ
+                    // value-queue + pure (0,0) wake-up seam (Tech Gate Item 6
+                    // correction — no heap pointer crosses PostMessageW).
+                    emebalachat::RequestEngineUnavailableModal(
+                        emebalachat::g_hControllerWnd,
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
                 }).detach();
@@ -1055,10 +1167,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // No repair URL compiled in (design §9 R-3b: the shipped
                 // default) — "repair unavailable" is the honest answer; surface
                 // the guidance immediately rather than failing silently.
-                POINT cur;
-                if (!::GetCursorPos(&cur)) cur = {0, 0};
-                tooltip.ShowMessageThreadSafe(
-                    cur.x, cur.y,
+                // REQ-045 P4-8 (item 1, design §B): modal, not the transient
+                // tooltip — the user's Ask Gate condition 1 ("must stay up
+                // until X"). The main thread is the GUI thread here, so
+                // RequestEngineUnavailableModal runs the modal inline.
+                emebalachat::RequestEngineUnavailableModal(
+                    emebalachat::g_hControllerWnd,
                     emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
                     emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
             }
@@ -1445,6 +1559,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // newly selected local source (the shared host) is visible in the
         // engine name the 002 line already logs; the first local Translate()
         // spawns the host's worker on demand.
+
+        // REQ-045 P4-8 (item 1, design §B): when the user explicitly picks
+        // "Local LLM", surface the "engine unavailable" modal EVERY TIME the
+        // local components are missing (no session once_flag — the user's Ask
+        // Gate condition 1 wording: "번역 엔진 선택 > 로컬LLM 선택 했을 때에도
+        // 역시 이 메시지가 뜨도록"). The pick itself is the explicit user action,
+        // so re-exposure is policy, not UX spam. This callback runs on the GUI
+        // thread (tray menu commands are dispatched synchronously on the
+        // message-loop thread), so the modal helper runs inline — Tech Gate
+        // Item 6 confirmed GUI-thread safety.
+        if (engine_idx == 1) {
+            namespace bs = emebalachat::engine_host_bootstrap;
+            const bs::ComponentCheckResult check = bs::CheckComponents();
+            if (!check.missing.empty()) {
+                DIAG_F("MAIN/on_select_engine/004: local engine selected but %zu component(s) missing; showing unavailable modal\n",
+                       check.missing.size());
+                emebalachat::RequestEngineUnavailableModal(
+                    emebalachat::g_hControllerWnd,
+                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+            }
+        }
     };
 
     // REQ-045 P4-5 (item 3a-2): the engine submenu's "사용자 선택(.gguf)… >
@@ -2482,6 +2618,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // empty; the swap-out releases any residue's std::string memory before
     // teardown continues.
     emebalachat::DrainLanguageSyncQueue(); // discard any residue
+    // REQ-045 P4-8 (item 1): drain any still-queued "engine unavailable" modal
+    // requests at the identical shutdown position (all producers joined above,
+    // no new posts possible). The queue holds std::wstring payloads whose
+    // memory is released by the swap-out; the drain prevents an apply-after-
+    // destroy path on the surfaces the modal parents to. Any
+    // kMsgEngineUnavailableModal notification still sitting in the OS queue is
+    // harmless (carries no payload — pure (0,0) wake-up).
+    emebalachat::DrainEngineModalQueue();
     // REQ-043 (M6 T5): the warmup_thread / engine_switch_preload_thread joins
     // are removed with the preload machinery — no preload thread exists
     // anymore, so no join is needed and no thread can touch `engine` before

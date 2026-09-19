@@ -14558,6 +14558,64 @@ void TestReq044I18nFieldOrder() {
     }
 }
 
+// REQ-045 P4-8 (item 1, design §B + Tech Gate Item 6): structural pins for
+// the "local engine unavailable" modal helper and the SEC-ADJ (0,0) marshal
+// seam in main.cpp. main.cpp is the GUI entrypoint TU and is deliberately
+// NOT linked into run_tests.exe (per the SEC-B5 note in main.cpp itself), so
+// the security property (no heap pointer crosses PostMessageW) and the
+// trigger wiring are pinned by source inspection, following the TestReq042
+// structural-pin precedent.
+void TestReq045EngineUnavailableModal() {
+    std::cout << "[TEST] REQ-045 P4-8 engine-unavailable modal structural pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; REQ-045 P4-8 pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // The modal helper exists and is called from both trigger sites.
+    TEST_CHECK(main_src.find("ShowLocalEngineUnavailableModal") != std::string::npos,
+               "REQ-045 P4-8 structural pin: ShowLocalEngineUnavailableModal helper defined in main.cpp");
+    TEST_CHECK(main_src.find("RequestEngineUnavailableModal") != std::string::npos,
+               "REQ-045 P4-8 structural pin: RequestEngineUnavailableModal marshal seam defined in main.cpp");
+
+    // The CheckComponents call site fires on the local-LLM tray pick.
+    TEST_CHECK(main_src.find("bs::CheckComponents()") != std::string::npos,
+               "REQ-045 P4-8 structural pin: CheckComponents() called from the tray on_select_engine path");
+
+    // SEC-ADJ (Tech Gate Item 6): the modal marshal posts a PURE (0,0) wake-up
+    // — no heap pointer in LPARAM. Pin the exact PostMessageW call shape.
+    TEST_CHECK(main_src.find("PostMessageW(hController, kMsgEngineUnavailableModal, 0, 0)") != std::string::npos,
+               "REQ-045 P4-8 SEC-ADJ pin: the modal marshal posts a pure (0,0) wake-up — no heap pointer in LPARAM");
+
+    // The modal uses MB_OK|MB_ICONINFORMATION|MB_TOPMOST (A1: no auto-dismiss,
+    // A3: explicit close, mirrors the P4-5 quality-gate TOPMOST policy).
+    TEST_CHECK(main_src.find("MB_OK | MB_ICONINFORMATION | MB_TOPMOST") != std::string::npos,
+               "REQ-045 P4-8 structural pin: modal is MB_OK|MB_ICONINFORMATION|MB_TOPMOST (no auto-dismiss)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-045 P4-8 engine-unavailable modal structural pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-045 P4-8 engine-unavailable modal structural pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -14740,6 +14798,10 @@ int main() {
     TestReq045GgufRegistrationIdDedup();
     TestReq045GgufWriterRoundTrip();
     TestReq045GgufConfigUserModelIdPersist();
+    // REQ-045 P4-8 (item 1): engine-unavailable modal — structural pins
+    // proving the helper, the CheckComponents call site, and the SEC-ADJ
+    // (0,0) marshal exist in main.cpp. Registered after the P4-5 suites.
+    TestReq045EngineUnavailableModal();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
