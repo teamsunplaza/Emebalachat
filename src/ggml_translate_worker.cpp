@@ -156,17 +156,27 @@ std::string ResolveModelFile(const std::string& models_dir,
                              const std::string& model_id,
                              bool* resolved /* out: false -> pinned fallback */) {
     if (resolved) *resolved = true;
+    // REQ-048 R2: the pinned branches must return the SAME ABSOLUTE shape as
+    // the registry branch below. The bare filename used to make the load
+    // resolve against the worker's cwd (the engine dir, via the inherited
+    // CreateProcessW lpCurrentDirectory=nullptr), so a present bundled model
+    // answered model_missing on every translate - the user-device "local
+    // engine never serves" root cause.
+    const std::string pinned_name(emebalachat::kPinnedModelFilename.begin(),
+                                  emebalachat::kPinnedModelFilename.end());
+    auto pinned_abs = [&]() -> std::string {
+        if (models_dir.empty()) return std::string{};
+        return models_dir + "\\" + pinned_name;
+    };
     if (model_id.empty()) {
-        return std::string(emebalachat::kPinnedModelFilename.begin(),
-                           emebalachat::kPinnedModelFilename.end());
+        return pinned_abs();
     }
     const emebalachat::engine_host_registry::ModelEntry* entry = registry.FindModel(model_id);
     if (!entry || entry->files.empty()) {
         // Unregistered id, or a registry we could not load: fall back to the
         // pinned model and flag it so the caller can log the one-time notice.
         if (resolved) *resolved = false;
-        return std::string(emebalachat::kPinnedModelFilename.begin(),
-                           emebalachat::kPinnedModelFilename.end());
+        return pinned_abs();
     }
     if (models_dir.empty()) return std::string{};
     const std::wstring w = emebalachat::ToUtf16(models_dir) + L"\\" +

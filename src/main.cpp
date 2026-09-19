@@ -1897,12 +1897,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             namespace bs = emebalachat::engine_host_bootstrap;
             const bs::ComponentCheckResult check = bs::CheckComponents();
             if (!check.missing.empty()) {
-                DIAG_F("MAIN/on_select_engine/004: local engine selected but %zu component(s) missing; showing unavailable modal\n",
+                // REQ-048 R2: same false-alarm exposure as the boot path —
+                // the installer's model download may still be in flight when
+                // the user picks the local engine. Wait out the bounded grace
+                // window on a DETACHED thread (identical contract to the boot
+                // block) and suppress the modal entirely if the components
+                // land inside it; only a persistent absence re-exposes the
+                // REQ-045 P4-8 modal.
+                DIAG_F("MAIN/on_select_engine/004: local engine selected but %zu component(s) missing; converging on the grace re-check\n",
                        check.missing.size());
-                emebalachat::RequestEngineUnavailableModal(
-                    emebalachat::g_hControllerWnd,
-                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                    emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                std::thread([]() {
+                    if (bs::WaitForComponentsPresent(
+                            [] { return bs::CheckComponents().missing.empty(); },
+                            40, std::chrono::seconds(3))) {
+                        DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                        return;
+                    }
+                    emebalachat::RequestEngineUnavailableModal(
+                        emebalachat::g_hControllerWnd,
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                }).detach();
             }
         }
     };

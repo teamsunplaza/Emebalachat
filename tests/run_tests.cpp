@@ -14500,6 +14500,7 @@ void TestEngineHostAvailabilityAndMigration() {
 #include "req048_boot_tests.inc"
 #include "req048_template_tests.inc"
 #include "req048_cloud_tests.inc"
+#include "req048_r2_tests.inc"
 
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
@@ -15228,6 +15229,9 @@ int main() {
     // REQ-048 P3: cloud failure must record EngineFailed, never a silent
     // identity success — registered after the P2 suite.
     TestReq048CloudFailureSignaling();
+    // REQ-048 R2 (user feedback round 2): worker pinned-path absolutization,
+    // tray pick grace, registry BOM tolerance — registered after the P3 suite.
+    TestReq048R2ServingPath();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

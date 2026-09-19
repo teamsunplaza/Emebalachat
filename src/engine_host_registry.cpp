@@ -306,6 +306,15 @@ bool ParseModelItem(std::string_view raw_item, ModelEntry& out) {
 }
 
 LoadResult ParseRegistryJson(std::string_view json) {
+    // REQ-048 R2: tolerate a leading UTF-8 BOM — setup.iss writes registry.json
+    // WITH one, and a BOM would otherwise reject the whole document (NotJson),
+    // silently downgrading user-model resolution to the pinned fallback on
+    // every real install.
+    if (json.size() >= 3 && static_cast<unsigned char>(json[0]) == 0xEF &&
+        static_cast<unsigned char>(json[1]) == 0xBB &&
+        static_cast<unsigned char>(json[2]) == 0xBF) {
+        json.remove_prefix(3);
+    }
     LoadResult result;
     enginehost::JsonPairs doc;
     if (!enginehost::JsonParseObject(json, doc)) {
