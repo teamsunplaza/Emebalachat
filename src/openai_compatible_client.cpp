@@ -387,6 +387,15 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
     ::WinHttpSetTimeouts(hSession.get(), profile.resolve_ms, profile.connect_ms,
                          profile.send_ms, profile.receive_ms);
 
+    // REQ-045 security follow-up: disable redirects so the Authorization: Bearer
+    // header can never be replayed to a redirect target (https→http downgrade /
+    // host hop). OpenAI-compatible servers must not need redirects.
+    // WINHTTP_REDIRECT_POLICY_DISABLE == 0 (not exposed by the project's Windows
+    // SDK winhttp.h, so the literal 0 is used per MS docs).
+    DWORD redirect_policy_disable = 0;
+    ::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,
+                       &redirect_policy_disable, sizeof(redirect_policy_disable));
+
     ScopedHInternet hConnect(::WinHttpConnect(hSession.get(), host.c_str(), port, 0));
     if (!hConnect) return 0;
 
