@@ -108,6 +108,14 @@ def check_contract(text: str) -> list[str]:
             failures.append(
                 "CHECK 1: IsEmebalaProcessRunning issues no Win32_Process "
                 "ExecQuery")
+        # REQ-048 P6 R4: pin the filter itself — narrowing the LIKE pattern
+        # (e.g. to an exact exe name) would blind the in-use detection while
+        # the WMI plumbing checks above still passed. Inno Pascal doubles
+        # single quotes inside string literals.
+        if "LIKE ''Emebala%''" not in probe:
+            failures.append(
+                "CHECK 1: IsEmebalaProcessRunning narrowed the process filter "
+                "(expected Win32_Process Name LIKE ''Emebala%'')")
 
     # -- CHECK 2: DelTree behind an explicit IDYES confirmation ------------
     uninstall = extract_procedure(text, "CurUninstallStepChanged")

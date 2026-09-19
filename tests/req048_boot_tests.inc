@@ -98,6 +98,12 @@ void TestReq048BootGraceRecheck() {
                        "suppressing repair-unavailable modal") != std::string::npos,
                    "REQ-048 P1 structural pin: grace-window suppression logs ENGINEHOST/bootstrap/017");
 
+        // REQ-048 P6 R3: the grace budget is pinned too — a window shrink
+        // (e.g. 40 -> 2 attempts) would gut the anti-false-alarm property
+        // while every semantic check above still passed.
+        TEST_CHECK(main_src.find("40, std::chrono::seconds(3)") != std::string::npos,
+                   "REQ-048 P1 structural pin: grace window is 40 re-checks x 3 s (bounded 120 s)");
+
         // Regression guards — the pre-existing structural pins must survive
         // this edit (TestReq045EngineUnavailableModal pins the same strings).
         TEST_CHECK(main_src.find("ShowLocalEngineUnavailableModal") != std::string::npos,
