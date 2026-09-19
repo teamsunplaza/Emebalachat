@@ -490,11 +490,14 @@ Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skip
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
 [Icons]
+; REQ-047 D4: the Start Menu uninstaller shortcut is REMOVED. The previous
+; rename-bypass build pointed it at "{app}\Emebalachat Uninstall.exe", which
+; no longer exists once the rename is dropped. Windows' supported uninstall
+; surfaces (Settings > Apps and Control Panel ARP) do not need it, and
+; exposing an uninstaller shortcut in the Start Menu is explicitly
+; discouraged by Microsoft. Removal also drops the {cm:UninstallProgram}
+; key, so no .isl / [CustomMessages] entry is required for it.
 Name: "{group}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"
-; Uninstaller rename bypass: {uninstallexe} would resolve to {app}\unins000.exe,
-; which no longer exists after the [Run] rename below - point the Start Menu
-; shortcut at the friendly renamed uninstaller explicitly.
-Name: "{group}\{cm:UninstallProgram,{cm:ShortcutName}}"; Filename: "{app}\Emebalachat Uninstall.exe"
 Name: "{autodesktop}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"; Tasks: desktopicon
 
 ; ------------------------------------------------------------------------
@@ -512,27 +515,25 @@ Type: files; Name: "{app}\config.json"
 Type: filesandordirs; Name: "{app}\assets"
 
 ; ------------------------------------------------------------------------
-; [Run] - Post-install rename + launch option
+; [Run] - Post-install launch option
 ; ------------------------------------------------------------------------
 [Run]
-; Uninstaller rename bypass (Stardock-style):
-; Inno Setup hardcodes the uninstaller filename "unins000.exe"/"unins000.dat".
-; To present a friendlier "Emebalachat Uninstall.exe" to users, we rename BOTH
-; files to the SAME base name. Renaming only the EXE (or only the DAT) breaks
-; uninstall: the Inno uninstaller derives its data-file path from its own EXE
-; path at runtime (issrc Setup.Uninstall.pas, RunUninstaller:
-;   UninstDataFilename := PathChangeExt(UninstExeFilename, '.dat')),
-; so exe and dat must share the base name. With both renamed, the uninstaller
-; also self-deletes its own exe and dat correctly at the end of uninstall,
-; because it resolves them from its own path (DelayDeleteFile(UninstExeFilename)
-; and DeleteFile(UninstDataFilename)).
-; Repeat-install safety: Inno's uninstall-log handshaking only scans files
-; matching "unins???.*" in {app} (issrc Setup.Install.pas, FindFiles), so the
-; previous install's renamed pair is invisible to it and a fresh unins000
-; pair is created; "move /y" then overwrites the stale renamed pair. The
-; "if exist" guards keep these commands non-fatal on any edge case.
-Filename: "{cmd}"; Parameters: "/C if exist ""{app}\unins000.exe"" move /y ""{app}\unins000.exe"" ""{app}\Emebalachat Uninstall.exe"""; Flags: runhidden
-Filename: "{cmd}"; Parameters: "/C if exist ""{app}\unins000.dat"" move /y ""{app}\unins000.dat"" ""{app}\Emebalachat Uninstall.dat"""; Flags: runhidden
+; REQ-047 D4: rename-bypass ABOLISHED - unins000.exe stays the fixed name
+; (Ask Light Gate REJECT of Rev1 §D, reflected in the P3 Rev2 design §2.2(a)).
+; Why the rename is gone, citing the external verification facts:
+;   - The Inno uninstaller filename is hardcoded ("unins%.3d", issrc
+;     Install.pas GenerateUninstallInfoFilename) and is not officially
+;     renameable - renaming breaks the reference in Add/Remove Programs and
+;     prevents a later upgrade from merging the previous install's
+;     uninstall log, leaving a future uninstall incomplete.
+;   - Windows resolves app removal through unins000.exe: Settings > Apps
+;     surfaces "unins000.exe not found" (observed in the field) and leaves a
+;     ghost ARP entry. The renamed pair was never reachable from that path.
+;   - With the rename gone, Inno's default ARP UninstallString
+;     ("{app}\unins000.exe") needs no [Code] rewrite, and the leftover
+;     renamed pair from any previous 0.10.x install is auto-removed by the
+;     ssDone guard in CurStepChanged (state B-2 repair of the P3 Rev2
+;     endpoint table).
 Filename: "{app}\Emebala_chat.exe"; Description: "{cm:LaunchProgram,{cm:ShortcutName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 ; ========================================================================
@@ -590,19 +591,15 @@ const
   ENGINE_WORKER_ENGINE = 'llama.cpp';
   ENGINE_WORKER_ENGINE_VERSION = 'b6099';
 
-  // Uninstaller rename bypass: fixed ARP uninstall subkey. Must match the
-  // {AppId}_is1 layout Inno derives from AppId in [Setup]; kept as a global
-  // constant because PascalScript does not support local const sections.
-  UNINSTALL_SUBKEY = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}_is1';
-
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
-  // REQ-045 (P4-2, item 4): global failure flag for the uninstaller rename
-  // bypass guard chain. Set by FixRenamedUninstallerRegistry when any ARP
-  // rewrite or guard check fails, and by the ssDone self-verification when
-  // the ARP target file is missing. Consumed at ssDone to show the user a
-  // single, aggregated warning MsgBox after install completes.
+  // REQ-045 (P4-2, item 4) + REQ-047 D4: global failure flag for the
+  // uninstaller registration guard chain. REQ-047 D4 abolished the
+  // FixRenamedUninstallerRegistry rewrite, so the only writers left are the
+  // ssDone self-verification guards in CurStepChanged (stale renamed-pair
+  // cleanup failure and unins000.exe absence). Consumed at ssDone to show
+  // the user a single, aggregated warning MsgBox after install completes.
   UninstallGuardFailed: Boolean;
   // REQ-043: set by ShouldInstallEngineHost() when this run installs/replaces
   // the shared host; consumed at ssPostInstall to (re)write engine.version.
@@ -2049,70 +2046,14 @@ begin
 end;
 
 // ------------------------------------------------------------------------
-// FixRenamedUninstallerRegistry - Uninstaller rename bypass (registry half)
-//
-// Inno Setup writes the Add/Remove Programs "UninstallString" registry value
-// during the install step (issrc Setup.Install.pas, PerformInstall ->
-// RegisterUninstallInfo), which runs BEFORE the [Run] section executes and
-// BEFORE ssDone. It points at the now-hardcoded {app}\unins000.exe, which the
-// [Run] rename above moved to "Emebalachat Uninstall.exe". Without this
-// rewrite the ARP entry would dangle and users could not uninstall from
-// Settings/Apps. Inno has no native directive to change UninstallString, so
-// we rewrite the two values (UninstallString + QuietUninstallString) right
-// after the rename, at ssDone (the last setup step, after [Run]).
-// PrivilegesRequired=admin + 64-bit install mode => the key lives in HKLM
-// under the native (64-bit) registry view, which is Inno's default view for
-// RegWriteStringValue here. Guarded with FileExists so a failed rename
-// (files locked by antivirus, etc.) never leaves ARP pointing at nothing.
-// ------------------------------------------------------------------------
-procedure FixRenamedUninstallerRegistry;
-var
-  ExePath: String;
-begin
-  ExePath := ExpandConstant('{app}') + '\Emebalachat Uninstall.exe';
-  if FileExists(ExePath) and RegKeyExists(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY) then
-  begin
-    // REQ-045 (P4-2, item 4): loud-fail guard. Each RegWriteStringValue call
-    // returns Boolean; failure means ARP still points at the old (or no)
-    // uninstaller path, which would break Settings/Apps uninstall later.
-    // We log loudly AND set the global flag so ssDone shows one warning.
-    if not RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'UninstallString', '"' + ExePath + '"') then
-    begin
-      Log('REQ-045 ERROR: Failed to rewrite ARP UninstallString to: ' + ExePath);
-      UninstallGuardFailed := True;
-    end;
-    if not RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'QuietUninstallString', '"' + ExePath + '" /SILENT') then
-    begin
-      Log('REQ-045 ERROR: Failed to rewrite ARP QuietUninstallString to: ' + ExePath);
-      UninstallGuardFailed := True;
-    end;
-    if not UninstallGuardFailed then
-      Log('ARP UninstallString/QuietUninstallString rewritten to renamed uninstaller.')
-    else
-      Log('REQ-045 WARNING: One or both ARP rewrites failed; uninstall registration may be broken.');
-  end
-  else
-  begin
-    // REQ-045 (P4-2, item 4): previously silent-skip. This branch means the
-    // renamed uninstaller exe is missing or the ARP subkey is absent — either
-    // way the user will not be able to uninstall from Settings/Apps. Loud now.
-    Log('REQ-045 ERROR: Renamed uninstaller or ARP subkey not found; ARP rewrite skipped.');
-    if FileExists(ExePath) then
-      Log('  ExePath=' + ExePath + '  FileExists=True')
-    else
-      Log('  ExePath=' + ExePath + '  FileExists=False');
-    if RegKeyExists(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY) then
-      Log('  RegKeyExists=True')
-    else
-      Log('  RegKeyExists=False');
-    UninstallGuardFailed := True;
-  end;
-end;
-
-// ------------------------------------------------------------------------
 // CurStepChanged - Latch consent choice pre-install; trigger model download
-// and config creation post-install; fix renamed-uninstaller ARP entries
+// and config creation post-install; uninstaller registration guard (ssDone)
 // ------------------------------------------------------------------------
+// REQ-047 D4: FixRenamedUninstallerRegistry was REMOVED. With the [Run]
+// rename abolished, Inno's install step already records the default ARP
+// UninstallString ("{app}\unins000.exe", issrc Setup.Install.pas
+// PerformInstall -> RegisterUninstallInfo), so there is nothing left to
+// rewrite and no ARP subkey probing is needed here.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // B-2: read the consent choice before file copying starts (download runs
@@ -2143,41 +2084,46 @@ begin
     WriteEngineVersionFile();
     WriteComponentsFile();
   end;
-  // Uninstaller rename bypass: after [Run] renamed unins000.*, the ARP
-  // registry entry still points at the original path; rewrite it last.
   if CurStep = ssDone then
   begin
-    FixRenamedUninstallerRegistry;
-
-    // REQ-045 (P4-2, item 4): [Run] rename-failure detection. The [Run]
-    // commands use "if exist" guards, so a failed rename (or AV quarantine)
-    // leaves unins000.exe behind and no renamed exe. That combination is
-    // detected here: if the original is still present but the renamed file
-    // is absent, the rename failed. Log loudly and set the failure flag.
-    if FileExists(ExpandConstant('{app}') + '\unins000.exe') and
-       not FileExists(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
+    // REQ-047 D4 (P3 Rev2 design §2.2(d), guard 1 of 2): stale renamed-pair
+    // cleanup. Setups before this build renamed unins000.exe/.dat to
+    // "Emebalachat Uninstall.exe/.dat"; that pair is unreachable from
+    // Settings > Apps and breaks the ARP entry (state B-2 of the endpoint
+    // table). Inno has already created a fresh unins000.exe/.dat in {app}
+    // during this install, so deleting the renamed pair cannot lose
+    // uninstall capability. DeleteFile is log-only: a missed cleanup is
+    // retried on the next reinstall and is not fatal.
+    if FileExists(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
     begin
-      Log('REQ-045 ERROR: [Run] rename failed — unins000.exe still present but renamed uninstaller missing.');
+      Log('REQ-047 D4: stale renamed uninstaller pair detected from a previous install; removing it.');
+      if not DeleteFile(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
+        Log('REQ-047 D4 WARNING: could not remove "{app}\Emebalachat Uninstall.exe" (in use?); will retry on next reinstall.');
+      if not DeleteFile(ExpandConstant('{app}') + '\Emebalachat Uninstall.dat') then
+        Log('REQ-047 D4 WARNING: could not remove "{app}\Emebalachat Uninstall.dat" (in use?); will retry on next reinstall.');
+    end;
+
+    // REQ-045 (P4-2, item 4) + REQ-047 D4 (P3 Rev2 design §2.2(d), guard 2
+    // of 2): ssDone self-verification that the uninstaller exists under its
+    // fixed name. The old guard checked the renamed target; with the rename
+    // abolished the target is {app}\unins000.exe, the very file Windows
+    // Settings > Apps resolves app removal through. Its absence (AV
+    // quarantine, etc.) means no uninstall path can work, so flag it.
+    if not FileExists(ExpandConstant('{app}') + '\unins000.exe') then
+    begin
+      Log('REQ-047 ERROR: unins000.exe missing after install — Settings/Apps and Control Panel uninstall will fail.');
       UninstallGuardFailed := True;
     end;
 
-    // REQ-045 (P4-2, item 4): ssDone self-verification — the [Run] rename
-    // guard above is silent when both unins000.exe and the renamed exe are
-    // missing (e.g. antivirus quarantined both, or the rename move failed).
-    // Check that the ARP UninstallString target actually exists on disk.
-    // If not, Settings/Apps uninstall will be broken. We warn the user once.
-    if not FileExists(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
-    begin
-      Log('REQ-045 ERROR: ARP uninstall target missing after install: ' + ExpandConstant('{app}') + '\Emebalachat Uninstall.exe');
-      UninstallGuardFailed := True;
-    end;
-
-    // REQ-045 (P4-2, item 4): surface one aggregated warning to the user if
-    // any guard in the chain failed. MsgBox at ssDone is acceptable because
-    // install has completed; a blocking popup during ssPostInstall would be
-    // worse (setup not yet finished). English default per project convention.
+    // REQ-045 (P4-2, item 4) + REQ-047 D4: surface one aggregated warning
+    // to the user if any guard in the chain failed. MsgBox at ssDone is
+    // acceptable because install has completed; a blocking popup during
+    // ssPostInstall would be worse (setup not yet finished). The message
+    // names unins000.exe explicitly because that is the fixed file every
+    // uninstall path (Settings > Apps, Control Panel ARP, quiet string)
+    // resolves removal through. English default per project convention.
     if UninstallGuardFailed then
-      MsgBox('Warning: the uninstaller registration could not be verified.' + #13#10 +
+      MsgBox('Warning: the uninstaller registration could not be verified (unins000.exe missing).' + #13#10 +
              'You may not be able to remove this app from Settings > Apps.' + #13#10 +
              'Please re-run the installer to repair.',
              mbError, MB_OK);
