@@ -460,11 +460,16 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; decision + no-llama file-absence guard). uninsneveruninstall matches the
 ; orchestrator entry: the plan §7.3 last-app check in [Code]
 ; (CurUninstallStepChanged) deletes the whole common engine dir only when
-; no other Emebala app remains installed. skipifsourcedoesntexist is the
-; no-llama defense: a build tree without the worker (ENABLE_LLAMA_FETCH=OFF)
-; silently omits the entry (the Check also returns False in that case).
-Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorker
-Source: "..\build\worker.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorker
+; no other Emebala app remains installed.
+; REQ-045 (P4-1, item 2a): skipifsourcedoesntexist was REMOVED from both
+; worker entries. It used to silently omit the worker on a no-llama build
+; tree (ENABLE_LLAMA_FETCH=OFF), which let a "local-LLM-capable" release ship
+; with no inference worker (root cause of REQ-045 item 2). The worker is a
+; mandatory release component, so a missing build\Emebalachat.Engine.ggml-
+; translate.exe must now FAIL the compile exactly like the orchestrator
+; entry above (the "missing must fail compile" policy, L451-452).
+Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
+Source: "..\build\worker.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; REQ-207/208 (session 260911_0002 T6, design 144800 §2.3): bundle the README so
 ; the first-run privacy notice's "re-read this anytime in the README file"
@@ -1122,13 +1127,17 @@ end;
 // worker.manifest. Mirrors ShouldInstallEngineHost but targets the
 // 'ggml-translate' component entry only.
 //
-// No-llama defense (design §4.1 / T3 report): when the build tree lacks
-// build\Emebalachat.Engine.ggml-translate.exe (ENABLE_LLAMA_FETCH=OFF), the
-// Check returns False so the [Files] entries are skipped silently - the
-// resulting installation has no local worker, the orchestrator reports
-// 'unavailable' for the translate family, and the app degrades to the
-// cloud-only path (plan §V2-8.2). The ISCC compile itself is unaffected
-// because the matching [Files] entries carry skipifsourcedoesntexist.
+// No-llama guard (REQ-006 design §4.1 / T3 report), REQ-045 (P4-1, item 2a)
+// loud-fail: when the build tree lacks build\Emebalachat.Engine.ggml-
+// translate.exe (ENABLE_LLAMA_FETCH=OFF), the Check returns False. no-llama
+// is a VERIFICATION-ONLY build config; a release MUST be a llama build. Since
+// REQ-045 item 2a removed skipifsourcedoesntexist from the worker [Files]
+// entries, a missing worker exe now makes ISCC FAIL the compile (the same
+// "missing must fail compile" policy as the orchestrator entry) instead of
+// silently shipping a cloud-only install that still advertises local-LLM
+// support. The no-llama path therefore only ever runs when the [Files]
+// entry is absent, which is now a compile error - this guard documents the
+// intent and keeps the Check returning False defensively.
 //
 // Side effect: latches EngineWorkerUpdated for WriteComponentsFile().
 // ------------------------------------------------------------------------
@@ -1915,6 +1924,66 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// WriteRegistryFile - REQ-045 (P4-1, item 2b): write the v1 model registry
+// ------------------------------------------------------------------------
+// The app's bootstrap gate (engine_host_bootstrap_client.cpp kRequired[])
+// treats %LOCALAPPDATA%\Emebala\Common\models\registry.json as a REQUIRED
+// component: its absence is read as "local engine not installed", even
+// though the orchestrator itself can fall back to a v1 hardcoded path when
+// the file is missing (host_main.cpp). Before REQ-045 the installer never
+// wrote registry.json, so every install landed in that gap: the model was
+// present but the app still reported the local engine as missing.
+//
+// This procedure writes the fixed v1 registry document for the bundled
+// hy-mt2-1.8b-q8 model into the common models dir right after DownloadModel.
+// IDEMPOTENT / NON-DESTRUCTIVE: when registry.json already exists it is left
+// completely untouched, so a user's custom model registrations are never
+// overwritten. Only a missing file is created (fresh install, or repair of
+// a pre-REQ-045 install). Runs unconditionally at ssPostInstall - even when
+// the model download was skipped or declined - because the registry is a
+// contract about the model SLOT, not the downloaded bytes, and a missing
+// registry must never again read as "not installed".
+//
+// Document shape matches the tests/m6_engine_host_registry_tests.inc golden
+// (schema_version 1) and design 124500 §2b. files[] holds the bare filename
+// only (engine_host_registry.cpp rejects path escapes as tampering). The
+// emitted "priority" is the already-clamped 9 (the golden writes 10 and the
+// parser clamps 10->9 to the 0..9 scheduler scale; emitting 9 keeps the
+// on-disk value equal to the effective value). UTF-8, no BOM: SaveStringsTo
+// UTF8File satisfies the installer encoding gate, matching CreateConfigFile.
+// ------------------------------------------------------------------------
+procedure WriteRegistryFile();
+var
+  RegistryPath: String;
+  Lines: TArrayOfString;
+begin
+  RegistryPath := ExpandConstant(COMMON_MODELS_DIR) + '\registry.json';
+  if FileExists(RegistryPath) then
+  begin
+    Log('REQ-045: registry.json already exists - leaving it untouched (idempotent, preserves user registrations).');
+    Exit;
+  end;
+  SetArrayLength(Lines, 15);
+  Lines[0]  := '{';
+  Lines[1]  := '  "schema_version": 1,';
+  Lines[2]  := '  "models": [{';
+  Lines[3]  := '    "id": "hy-mt2-1.8b-q8",';
+  Lines[4]  := '    "family": "ggml-translate",';
+  Lines[5]  := '    "files": ["Hy-MT2-1.8B-Q8_0.gguf"],';
+  Lines[6]  := '    "capabilities": ["translate"],';
+  Lines[7]  := '    "origin": "bundled",';
+  Lines[8]  := '    "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9},';
+  Lines[9]  := '    "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}},';
+  Lines[10] := '    "lang_pairs": ["*"]';
+  Lines[11] := '  }]';
+  Lines[12] := '}';
+  if SaveStringsToUTF8File(RegistryPath, Lines, False) then
+    Log('REQ-045: registry.json created at: ' + RegistryPath)
+  else
+    Log('REQ-045: WARNING failed to create registry.json at: ' + RegistryPath);
+end;
+
+// ------------------------------------------------------------------------
 // CreateConfigFile - Generate config.json with proper settings
 // ------------------------------------------------------------------------
 procedure CreateConfigFile();
@@ -2029,6 +2098,11 @@ begin
     // migrate), then the common-path pin check / download, then config.
     DeleteLegacyModel();
     DownloadModel();
+    // REQ-045 (P4-1, item 2b): ensure the v1 model registry exists so the
+    // app's kRequired[] bootstrap gate no longer reads "local engine not
+    // installed" on a machine that does have the model. Idempotent: only a
+    // missing registry.json is created; an existing one is never touched.
+    WriteRegistryFile();
     CreateConfigFile();
     // REQ-043 + REQ-006/M6: stamp the v1 engine.version (frozen contract) and
     // the v2 components.json in parallel (design §6.3).
