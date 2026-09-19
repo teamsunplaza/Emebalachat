@@ -15200,6 +15200,7 @@ int main() {
     // Registered after the P4-3 OpenAI suites, per the end-of-file pattern.
     TestReq047BundledReuseRejection();
     TestReq047BundledDuplicateI18n();
+    TestReq047OpenAiDeferredOpen();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -1,5 +1,6 @@
 #include "openai_settings_window.hpp"
 
+#include "../diag_logger.hpp" // REQ-047 D3 §C.4: control-creation verification logging
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
@@ -55,6 +56,21 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_INITDIALOG: {
         st = reinterpret_cast<OpenAiDialogState*>(lp);
         ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
+        // template itself is proven-good (8 controls), but if any edit/combo
+        // control failed to materialize the dialog would look like the
+        // reported "API input field missing" symptom. Surface a distinct log
+        // line per missing control so a future regression separates "window
+        // failed to activate" (D3 root cause) from "control failed to create".
+        if (!::GetDlgItem(dlg, IDC_BASE_URL)) {
+            DIAG_F("UI/OpenAiSettings/001: IDC_BASE_URL control missing after dialog init\n");
+        }
+        if (!::GetDlgItem(dlg, IDC_API_KEY)) {
+            DIAG_F("UI/OpenAiSettings/002: IDC_API_KEY control missing after dialog init\n");
+        }
+        if (!::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
+            DIAG_F("UI/OpenAiSettings/003: IDC_MODEL_COMBO control missing after dialog init\n");
+        }
         SetCtrlText(dlg, IDC_BASE_URL, ToUtf16(st->cfg->base_url));
         SetCtrlText(dlg, IDC_MODEL_COMBO, ToUtf16(st->cfg->model));
         if (!st->cfg->api_key_dpapi.empty()) {

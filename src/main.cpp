@@ -39,6 +39,7 @@
 #include <filesystem> // REQ-005 (M6 T6): CngSha256Hex path
 #include <functional> // R6 Phase 1 (B3): language-sync coordinator std::function
 #include <mutex>      // R6 Phase 3 (audit item 7): drag job slot guard; SEC-B5: queue guard
+#include <optional>   // REQ-047 D3: single-slot pending OpenAiConfig for the deferred dialog open
 #include <string_view>
 #include <thread> // REQ-R1: drag-icon click worker (copy+translate off the GUI thread)
 #include <utility>    // SEC-B5: std::move on the by-value queue transport
@@ -338,6 +339,28 @@ struct LanguageSyncRequest {
 // on the GUI thread from ControllerWndProc. Cleared after hook/mouse stop at
 // shutdown so a late posted message can never call into destroyed state.
 std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bool)> g_apply_language_change;
+
+// REQ-047 D3 (design §C.2 안 C-1): the deferred OpenAI settings dialog resolves
+// on the GUI thread in ControllerWndProc, which cannot name wWinMain's locals
+// (config / engine / refresh_tray). Set once at startup to a wWinMain lambda
+// holding the SAME save/switch body that used to run inline in
+// on_select_engine(2); invoked on the GUI thread with the edited config when
+// the dialog saved. Called with saved=true and the edited config on Save
+// (returns true), or saved=false on Cancel (returns false, engine untouched).
+// Cleared at shutdown with g_apply_language_change so a late posted
+// kMsgOpenOpenAiSettings can never call into destroyed state.
+std::function<bool(const OpenAiConfig&, bool saved)> g_apply_openai_settings;
+// REQ-047 D3 (design §C.2 안 C-1 권장 저장소 (a), Tech Gate §D3 #2): the
+// deferred OpenAI dialog's GUI-thread state. Lives in namespace emebalachat
+// (NOT the anon namespace) so both ControllerWndProc and the wWinMain tray
+// lambda can name it. Both producers/consumers run on the GUI thread, so a
+// plain bool + std::optional slot is race-free without a mutex — the same
+// reasoning as the SEC-ADJ (0,0) wake-up contract. s_openai_dialog_pending
+// latches ONE deferred open (a second tray pick while one is already posted
+// is coalesced); s_pending_openai_cfg carries the config snapshot the dialog
+// edits in/out.
+bool s_openai_dialog_pending = false;
+std::optional<OpenAiConfig> s_pending_openai_cfg;
 // ---- SEC-B5: value-queue transport (replaces the LPARAM pointer contract) ----
 // Producers (hook thread, REQ-R06 double-Ctrl+C worker, drag worker) emplace
 // under the mutex, then PostMessageW the wake trigger. The sole consumer is
@@ -442,6 +465,20 @@ void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view 
 // Distinct WM_APP band: tooltip owns 0x2xx, drag_icon 0x1xx, about 0x3xx,
 // language-sync owns 0x300. 0x400 is free (verified against src/ui/*.hpp).
 constexpr UINT kMsgEngineUnavailableModal = WM_APP + 0x400;
+
+// ---- REQ-047 D3 (design §C.2 안 C-1, Tech Gate §D3 #1): deferred OpenAI
+// settings-dialog open. The tray cmd dispatch runs while the TrackPopupMenuEx
+// modality tear-down may still be in flight (the WM_NULL at tray.cpp is an
+// ASYNC release signal), so entering DialogBoxIndirectParamW synchronously
+// from on_select_engine(2) produced the "minimized window, no input" symptom
+// (P2 root cause). The dialog open is therefore deferred to the ControllerWndProc
+// handler below via a pure (0,0) wake-up — the same SEC-ADJ house pattern as
+// kMsgEngineUnavailableModal (payload travels in a GUI-thread store, no heap
+// pointer crosses PostMessageW). Distinct WM_APP band: 0x500 verified unused
+// against drag_icon 0x1xx, tooltip 0x2xx, language_sync 0x300, about 0x3xx,
+// engine_modal 0x400.
+constexpr UINT kMsgOpenOpenAiSettings = WM_APP + 0x500;
+
 struct EngineUnavailableModalRequest {
     std::wstring title;
     std::wstring body;
@@ -610,6 +647,34 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 g_engine_modal_queue.pop_front();
             }
             ShowLocalEngineUnavailableModal(req.title, req.body);
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenOpenAiSettings) {
+        // REQ-047 D3 (design §C.2 안 C-1, Tech Gate §D3 #4): open the OpenAI
+        // settings dialog AFTER the TrackPopupMenuEx modality has fully torn
+        // down. wParam/LPARAM are IGNORED entirely (pure (0,0) wake-up, same
+        // SEC-ADJ contract as kMsgEngineUnavailableModal — any value an
+        // external process posts is untrusted by design); the pending config
+        // snapshot travels in the GUI-thread store s_pending_openai_cfg.
+        // return 0 is MANDATORY (Tech Gate 반영사항 #4) — falling through to
+        // DefWindowProc would break the modal-open contract.
+        emebalachat::s_openai_dialog_pending = false;   // release the latch FIRST so a
+                                                        // re-post during the dialog is legal
+        OpenAiConfig edited = emebalachat::s_pending_openai_cfg.value_or(OpenAiConfig{});
+        emebalachat::s_pending_openai_cfg.reset();
+        if (!emebalachat::ShowOpenAiSettingsDialog(
+                /*parent=*/emebalachat::g_hControllerWnd, edited)) {
+            // Cancel: engine untouched, refresh the tray check mark back.
+            DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
+            if (g_apply_openai_settings) {
+                g_apply_openai_settings(edited, /*saved=*/false);
+            }
+            return 0;
+        }
+        if (g_apply_openai_settings) {
+            g_apply_openai_settings(edited, /*saved=*/true);
         }
         return 0;
     }
@@ -1452,6 +1517,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Publish for the controller WndProc (hook/worker-thread marshal target).
     emebalachat::g_apply_language_change = ApplyLanguageChange;
 
+    // REQ-047 D3 (design §C.2 안 C-1): publish the OpenAI save/switch body for
+    // the deferred kMsgOpenOpenAiSettings handler. This is the SAME logic that
+    // used to run inline in on_select_engine(2) — moved, not rewritten. On
+    // save it persists the config, re-points the runtime engine, and refreshes
+    // the tray (gated on the switch actually applying); on cancel it only
+    // refreshes the tray, leaving the previous engine untouched.
+    emebalachat::g_apply_openai_settings = [&](const emebalachat::OpenAiConfig& edited,
+                                               bool saved) -> bool {
+        if (!saved) {
+            refresh_tray();
+            return false;
+        }
+        config.openai = edited;
+        engine.SetOpenAiConfig(config.openai);
+        engine.SetEngineType(emebalachat::EngineType::OpenAi);
+        config.SetEngineTypeName("openai");
+        config.SaveToFile();
+        refresh_tray();
+        DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
+               engine.GetActiveEngineName().c_str());
+        return true;
+    };
+
     // R6 Phase 6 (plan §5.4): locale-change propagation coordinator, mirroring
     // the ApplyLanguageChange pattern above. After I18n::SetLocale, re-render
     // every surface in the plan's order (tray -> badge -> tooltip -> About).
@@ -1583,29 +1671,40 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
             config.SetEngineTypeName("local");
         } else if (engine_idx == 2) {
-            // REQ-046 P4-2 (C3): the OpenAI branch is now EXPLICIT
-            // (previously the else-terminator, which would have misrouted a
-            // future index==3 into the OpenAI dialog). OpenAI: open the
-            // settings dialog first so the user can wire (or review) base
-            // URL / key / model; only switch the engine when the dialog
-            // saved. Cancel leaves the previous engine untouched.
-            emebalachat::OpenAiConfig edited = config.openai;
-            // REQ-046 P4-3 (Rev2 C-1, Tech Gate §4 ①): parent must be a valid
-            // HWND. A null parent lets the dialog come up owned by nothing,
-            // which is what produced the "minimized window, no input" symptom
-            // (the dialog never got foreground/activation). g_hControllerWnd
-            // is the HWND_MESSAGE controller created at L1027-1034 — a valid
-            // top-level HWND per the Rev2 gate measurement.
-            if (!emebalachat::ShowOpenAiSettingsDialog(
-                    /*parent=*/emebalachat::g_hControllerWnd, edited)) {
-                DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
-                refresh_tray();
+            // REQ-047 D3 (design §C.2 안 C-1, Tech Gate §D3 #3): the OpenAI
+            // branch is now EXPLICIT (previously the else-terminator). The
+            // settings dialog open is DEFERRED to the GUI thread's
+            // ControllerWndProc via kMsgOpenOpenAiSettings — entering the
+            // dialog box synchronously here, while the
+            // TrackPopupMenuEx modality may still be tearing down, produced the
+            // "minimized window, no input" symptom (P2 root cause, 235020).
+            // The SEC-ADJ house pattern is reused: the pending config snapshot
+            // travels in the GUI-thread store s_pending_openai_cfg, and the
+            // posted message is a PURE (0,0) wake-up. A latch coalesces a
+            // second pick while one open is already posted. The actual
+            // save/switch body now lives in g_apply_openai_settings (set at
+            // startup); cancel leaves the previous engine untouched.
+            if (emebalachat::s_openai_dialog_pending) {
+                DIAG_F("MAIN/on_select_engine/007: openai settings open already deferred; coalesced\n");
                 return;
             }
-            config.openai = edited;
-            engine.SetOpenAiConfig(config.openai);
-            engine.SetEngineType(emebalachat::EngineType::OpenAi);
-            config.SetEngineTypeName("openai");
+            emebalachat::s_openai_dialog_pending = true;
+            emebalachat::s_pending_openai_cfg = config.openai;
+            if (::PostMessageW(emebalachat::g_hControllerWnd,
+                               emebalachat::kMsgOpenOpenAiSettings, 0, 0) == FALSE) {
+                // Post failed: roll the latch back so the user can retry; the
+                // pending snapshot is dropped with it.
+                emebalachat::s_openai_dialog_pending = false;
+                emebalachat::s_pending_openai_cfg.reset();
+                DIAG_F("MAIN/on_select_engine/008: PostMessage openai-settings open failed (GLE %lu)\n",
+                       ::GetLastError());
+                return;
+            }
+            // The dialog open + engine switch now resolve in the
+            // kMsgOpenOpenAiSettings handler on the GUI thread (after the menu
+            // modality has fully torn down). SaveToFile / refresh_tray run
+            // there via g_apply_openai_settings.
+            return;
         } else if (engine_idx == 3) {
             // REQ-046 P4-2 (Rev2 §B-3): user_gguf routes through the SAME
             // shared-host LocalLlama path, with the host relaying
@@ -2711,6 +2810,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // ControllerWndProc discards any still-queued requests (pop without
     // apply) without touching config/engine/badge/tray/tooltip.
     emebalachat::g_apply_language_change = nullptr;
+    // REQ-047 D3: retire the OpenAI coordinator with it, so a late posted
+    // kMsgOpenOpenAiSettings can never call into destroyed config/engine/tray.
+    emebalachat::g_apply_openai_settings = nullptr;
     // Post-retire verify-empty (SEC-B5, spec 234100 §7.4): with all producers
     // joined and the drain above already run, the deque is expected to be
     // empty; the swap-out releases any residue's std::string memory before

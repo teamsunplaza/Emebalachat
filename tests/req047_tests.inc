@@ -172,3 +172,153 @@ void TestReq047BundledDuplicateI18n() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// ---------------------------------------------------------------------------
+// REQ-047 D3 (design §C, Tech Gate §D3, diagnosis 235020): tray -> OpenAI
+// settings dialog DEFERRED open. The P2 root cause was entering
+// DialogBoxIndirectParamW synchronously from on_select_engine(2) while the
+// TrackPopupMenuEx modality was still tearing down, with owner=HWND_MESSAGE
+// providing no visual restore point -> "minimized window, no input". The fix
+// defers the dialog open to the ControllerWndProc via kMsgOpenOpenAiSettings
+// (WM_APP + 0x500, pure (0,0) SEC-ADJ wake-up; payload in the GUI-thread
+// store s_pending_openai_cfg guarded by the s_openai_dialog_pending latch).
+//
+// main.cpp is the GUI entrypoint TU and is deliberately NOT linked into
+// run_tests.exe, so the deferred-open wiring is pinned by source inspection
+// (TestReq047BundledReuseRejection precedent), while the WM_APP band
+// uniqueness is asserted numerically against the known occupants.
+// ---------------------------------------------------------------------------
+
+void TestReq047OpenAiDeferredOpen() {
+    std::cout << "[RUN] Testing REQ-047 D3 deferred OpenAI settings open..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) WM_APP band uniqueness: 0x500 free, 0x100~0x400 occupied ------
+    // WM_APP is 0x8000. The deferred-open message must not collide with any
+    // existing house band (drag_icon 0x1xx, tooltip 0x2xx, language_sync
+    // 0x300, about 0x3xx, engine_modal 0x400).
+    constexpr UINT kBase = 0x8000; // WM_APP
+    constexpr UINT kMsgOpenOpenAiSettings = kBase + 0x500;
+    // The known WM_APP-band occupants (Tech Gate §D3 #1): drag_icon 0x1xx,
+    // tooltip 0x2xx, language_sync 0x300, about 0x3xx, engine_modal 0x400.
+    // Sampled at each band's lower bound; 0x500 must equal NONE of them and
+    // sit strictly above the highest (0x400). The array keeps the comparison
+    // non-constant (avoids C4127) and self-documents the occupied set.
+    const UINT occupied_bands[] = {
+        kBase + 0x100, // drag_icon lower bound
+        kBase + 0x201, // tooltip lower bound
+        kBase + 0x300, // language_sync
+        kBase + 0x301, // about lower bound
+        kBase + 0x400, // engine_modal
+    };
+    bool band_occupied_0x500 = false;
+    UINT highest_occupied = 0;
+    for (UINT band : occupied_bands) {
+        if (band == kMsgOpenOpenAiSettings) band_occupied_0x500 = true;
+        if (band > highest_occupied) highest_occupied = band;
+    }
+    TEST_CHECK(!band_occupied_0x500,
+               "REQ-047 D3 (a): WM_APP+0x500 is unique vs the 0x100~0x400 occupants");
+    TEST_CHECK(kMsgOpenOpenAiSettings > highest_occupied,
+               "REQ-047 D3 (a): WM_APP+0x500 is above the highest occupied band (0x400)");
+
+    // ---- (b) main.cpp structural pins (GUI TU not linked here) --------------
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    std::string osw_src;
+    read_src("src/ui/openai_settings_window.cpp", osw_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; REQ-047 D3 structural pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // The deferred-open message constant is declared in the 0x500 band.
+    TEST_CHECK(main_src.find("kMsgOpenOpenAiSettings = WM_APP + 0x500") != std::string::npos,
+               "REQ-047 D3 structural pin: kMsgOpenOpenAiSettings is WM_APP + 0x500");
+
+    // The whole on_select_engine(2) body must NOT call ShowOpenAiSettingsDialog
+    // (nor DialogBoxIndirect directly) — the immediate call was the P2 root
+    // cause. It must instead PostMessage the deferred-open message.
+    {
+        // Isolate the index-2 branch: from its opening comment marker to the
+        // next "} else if (engine_idx == 3)" branch.
+        const size_t branch_pos = main_src.find("} else if (engine_idx == 2) {");
+        const size_t next_pos = main_src.find("} else if (engine_idx == 3) {", branch_pos);
+        TEST_CHECK(branch_pos != std::string::npos && next_pos != std::string::npos &&
+                       next_pos > branch_pos,
+                   "REQ-047 D3 structural pin: on_select_engine index-2 branch is locatable");
+        if (branch_pos != std::string::npos && next_pos != std::string::npos &&
+            next_pos > branch_pos) {
+            const std::string branch = main_src.substr(branch_pos, next_pos - branch_pos);
+            TEST_CHECK(branch.find("ShowOpenAiSettingsDialog") == std::string::npos,
+                       "REQ-047 D3 structural pin: index-2 branch does NOT call ShowOpenAiSettingsDialog");
+            TEST_CHECK(branch.find("DialogBoxIndirect") == std::string::npos,
+                       "REQ-047 D3 structural pin: index-2 branch enters NO dialog box synchronously");
+            TEST_CHECK(branch.find("PostMessageW") != std::string::npos &&
+                           branch.find("kMsgOpenOpenAiSettings") != std::string::npos,
+                       "REQ-047 D3 structural pin: index-2 branch defers via PostMessageW(kMsgOpenOpenAiSettings)");
+            // The latch guards against a double-post while one open is pending.
+            TEST_CHECK(branch.find("s_openai_dialog_pending") != std::string::npos,
+                       "REQ-047 D3 structural pin: index-2 branch latches s_openai_dialog_pending");
+        }
+    }
+
+    // The ControllerWndProc handler exists and returns 0 (Tech Gate 반영사항 #4).
+    {
+        const size_t handler_pos = main_src.find("if (msg == kMsgOpenOpenAiSettings) {");
+        TEST_CHECK(handler_pos != std::string::npos,
+                   "REQ-047 D3 structural pin: ControllerWndProc handles kMsgOpenOpenAiSettings");
+        if (handler_pos != std::string::npos) {
+            // The handler must open the dialog (parent = g_hControllerWnd, owner
+            // contract unchanged per §C.3) and route the save/switch through
+            // the coordinator.
+            const size_t window = main_src.find("WM_TIMER", handler_pos);
+            const std::string handler = main_src.substr(
+                handler_pos, (window == std::string::npos ? main_src.size() : window) - handler_pos);
+            TEST_CHECK(handler.find("ShowOpenAiSettingsDialog") != std::string::npos,
+                       "REQ-047 D3 structural pin: handler opens ShowOpenAiSettingsDialog");
+            TEST_CHECK(handler.find("g_hControllerWnd") != std::string::npos,
+                       "REQ-047 D3 structural pin: handler keeps parent=g_hControllerWnd (§C.3 owner contract)");
+            TEST_CHECK(handler.find("g_apply_openai_settings") != std::string::npos,
+                       "REQ-047 D3 structural pin: handler routes save/switch via g_apply_openai_settings");
+            TEST_CHECK(handler.find("return 0;") != std::string::npos,
+                       "REQ-047 D3 structural pin: handler returns 0 (Tech Gate #4)");
+            // Latch is released before the dialog opens (re-entry safety).
+            TEST_CHECK(handler.find("s_openai_dialog_pending = false;") != std::string::npos,
+                       "REQ-047 D3 structural pin: handler releases the latch before opening");
+        }
+    }
+
+    // The startup publishes the save/switch body and shutdown retires it.
+    TEST_CHECK(main_src.find("g_apply_openai_settings = [&]") != std::string::npos,
+               "REQ-047 D3 structural pin: startup publishes g_apply_openai_settings");
+    TEST_CHECK(main_src.find("g_apply_openai_settings = nullptr;") != std::string::npos,
+               "REQ-047 D3 structural pin: shutdown retires g_apply_openai_settings");
+
+    // ---- (c) §C.4 control-creation verification lives in the dialog proc ----
+    if (!osw_src.empty()) {
+        TEST_CHECK(osw_src.find("IDC_API_KEY control missing") != std::string::npos,
+                   "REQ-047 D3 §C.4: dialog proc logs a missing IDC_API_KEY control");
+        TEST_CHECK(osw_src.find("GetDlgItem(dlg, IDC_API_KEY)") != std::string::npos,
+                   "REQ-047 D3 §C.4: dialog proc verifies IDC_API_KEY via GetDlgItem");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-047 D3 deferred OpenAI settings open passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-047 D3 deferred OpenAI settings open: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
