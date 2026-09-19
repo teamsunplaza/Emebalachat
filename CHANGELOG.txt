@@ -1,10 +1,12 @@
 Emebala Chat - Changelog
 ========================
 
-v0.10.2 - 2026-09-19
-====================
+v0.10.1 (rerelease) - 2026-09-19
+================================
 
-Patch release. What you can do now
+This rerelease of v0.10.1 ships the fixes below under the same version
+number - the version is intentionally unchanged. Patch update. What you
+can do now
 ----------------------------------
 * The local translation engine now survives setup hiccups that used to
   leave it looking "not installed": if the engine's supporting files
