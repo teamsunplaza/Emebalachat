@@ -869,6 +869,31 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  ::GetTickCount64() - t_translate_start, translated.size());
     }
 
+    // REQ-047 D1 (design §A-1, Tech Gate §D1): surface a strict local failure
+    // (CloudConsentBlocked / LocalModelMissing) to the user through the modal
+    // seam, and reset the modal streak latch on success. Both signals travel
+    // through the SAME callback; main.cpp's wrapper decides per-status:
+    //   * strict failure -> marshal RequestEngineUnavailableModal through the
+    //     SEC-ADJ value queue (GUI thread latch applied at the drain site).
+    //   * success (non-empty result) -> clear the GUI-thread latch so a later
+    //     recurrence re-arms the modal. The wrapper performs the GUI hop; the
+    //     worker thread never touches the latch itself (Tech Gate #2).
+    // Auto-path EngineFailed (the cloud waterfall also failed) is deliberately
+    // NOT surfaced here — design §A.2 keeps the existing silence for that case.
+    if (engine_unavailable_cb_) {
+        if (status == TranslationStatus::CloudConsentBlocked ||
+            status == TranslationStatus::LocalModelMissing) {
+            DIAG_F("WORKER/ExecuteTask/030: strict local failure status=%d; "
+                   "signaling engine-unavailable modal\n",
+                   static_cast<int>(status));
+            engine_unavailable_cb_(status);
+        } else if (!translated.empty()) {
+            // Translation produced output — the streak that gated the modal is
+            // over. Signal the reset through the same marshaled seam.
+            engine_unavailable_cb_(TranslationStatus::Ok);
+        }
+    }
+
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
 

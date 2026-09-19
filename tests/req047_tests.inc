@@ -322,3 +322,176 @@ void TestReq047OpenAiDeferredOpen() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// ---------------------------------------------------------------------------
+// REQ-047 D1 (design §A, Tech Gate §D1, diagnosis 235000): restore the
+// engine-unavailable modal on a strict local translation failure. The P2 root
+// cause was REQ-046 d4d5108 deleting the translate-time modal trigger — after
+// engine.cpp:504 sets CloudConsentBlocked (or :397 sets LocalModelMissing) the
+// worker logged the status and dropped it, so the user saw "Enter pressed,
+// nothing translated, no notice". The fix adds a worker callback fired on the
+// two strict statuses, marshaled through the existing SEC-ADJ modal seam with
+// a GUI-thread streak latch (every-trigger + streak-latch, design §A.4).
+//
+// main.cpp is the GUI entrypoint TU and is deliberately NOT linked into
+// run_tests.exe, so the wiring is pinned by source inspection (D2/D3
+// precedent), while the status-branch predicate and the latch policy are
+// re-derived here against the real TranslationStatus enum.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The exact branch predicate worker.cpp applies after Translate() returns
+// (design §A.2): only the two strict local statuses surface the modal; every
+// other status (Ok, InputEmpty, EngineFailed on the Auto cloud waterfall,
+// Canceled) keeps the existing silence. `produced_output` mirrors the
+// `!translated.empty()` success gate so an Ok status with output resets the
+// latch while an Ok status with empty output (defensive — Translate()
+// contractually returns non-empty on Ok) does not.
+bool Req047StrictFailureSurfacesModal(TranslationStatus status, bool produced_output) {
+    if (status == TranslationStatus::CloudConsentBlocked ||
+        status == TranslationStatus::LocalModelMissing) {
+        return true;
+    }
+    return status == TranslationStatus::Ok && produced_output;
+}
+
+// Whether the status should RESET the GUI-thread streak latch (the success
+// signal the worker sends as an Ok-with-output callback).
+bool Req047StatusResetsLatch(TranslationStatus status, bool produced_output) {
+    return status == TranslationStatus::Ok && produced_output;
+}
+
+} // namespace
+
+void TestReq047EngineUnavailableModal() {
+    std::cout << "[RUN] Testing REQ-047 D1 engine-unavailable modal trigger..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) strict-failure branch predicate --------------------------------
+    TEST_CHECK(Req047StrictFailureSurfacesModal(TranslationStatus::CloudConsentBlocked, false),
+               "REQ-047 D1 (a): CloudConsentBlocked surfaces the modal");
+    TEST_CHECK(Req047StrictFailureSurfacesModal(TranslationStatus::LocalModelMissing, false),
+               "REQ-047 D1 (a): LocalModelMissing surfaces the modal");
+    // Auto-path cloud waterfall failure (EngineFailed) keeps the existing
+    // silence — design §A.2 explicitly excludes it.
+    TEST_CHECK(!Req047StrictFailureSurfacesModal(TranslationStatus::EngineFailed, false),
+               "REQ-047 D1 (a): Auto-path EngineFailed stays silent (design §A.2)");
+    TEST_CHECK(!Req047StrictFailureSurfacesModal(TranslationStatus::InputEmpty, false),
+               "REQ-047 D1 (a): InputEmpty stays silent");
+    TEST_CHECK(!Req047StrictFailureSurfacesModal(TranslationStatus::Canceled, false),
+               "REQ-047 D1 (a): Canceled stays silent");
+    TEST_CHECK(Req047StrictFailureSurfacesModal(TranslationStatus::Ok, true),
+               "REQ-047 D1 (a): Ok with output signals the latch reset");
+    TEST_CHECK(!Req047StrictFailureSurfacesModal(TranslationStatus::Ok, false),
+               "REQ-047 D1 (a): Ok WITHOUT output does not signal (defensive)");
+
+    // ---- (b) latch policy simulation (GUI-thread state machine) -------------
+    // Mirrors g_engine_modal_latched's lifecycle: set when a strict-failure
+    // modal is enqueued, cleared when the success sentinel drains. The
+    // simulation runs on one thread — the real flag is GUI-thread-only by
+    // contract (Tech Gate §D1 #2), which this single-threaded model captures.
+    {
+        bool latched = false; // initial state at startup
+        int modal_count = 0;
+
+        auto on_strict_failure = [&]() {
+            if (latched) return; // suppressed re-arm
+            latched = true;
+            ++modal_count;
+        };
+        auto on_success = [&]() { latched = false; };
+
+        // Three consecutive failures -> exactly ONE modal (streak-latch).
+        on_strict_failure();
+        on_strict_failure();
+        on_strict_failure();
+        TEST_CHECK(modal_count == 1,
+                   "REQ-047 D1 (b): 3 consecutive strict failures produce 1 modal (latch)");
+        // Success resets -> the next failure re-arms.
+        on_success();
+        on_strict_failure();
+        TEST_CHECK(modal_count == 2,
+                   "REQ-047 D1 (b): success resets the latch; a later failure re-arms");
+        // Two more failures while latched -> still suppressed.
+        on_strict_failure();
+        on_strict_failure();
+        TEST_CHECK(modal_count == 2,
+                   "REQ-047 D1 (b): further latched failures stay suppressed");
+        // Recovery again.
+        on_success();
+        TEST_CHECK(!latched, "REQ-047 D1 (b): latch cleared after the second recovery");
+    }
+
+    // ---- (c) structural pins: worker.cpp branch, main.cpp wiring ------------
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string worker_src;
+    read_src("src/worker.cpp", worker_src);
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    std::string engine_src;
+    read_src("src/engine.cpp", engine_src);
+    if (worker_src.empty() || main_src.empty()) {
+        std::cout << "[SKIP] src/worker.cpp / src/main.cpp not resolvable from the test CWD; "
+                     "REQ-047 D1 structural pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // worker.cpp: the status branch distinguishes the two strict statuses.
+    TEST_CHECK(worker_src.find("status == TranslationStatus::CloudConsentBlocked") !=
+                       std::string::npos &&
+                   worker_src.find("status == TranslationStatus::LocalModelMissing") !=
+                       std::string::npos,
+               "REQ-047 D1 structural pin: worker.cpp branches on both strict statuses");
+    TEST_CHECK(worker_src.find("SetEngineUnavailableCallback") != std::string::npos ||
+                   worker_src.find("engine_unavailable_cb_") != std::string::npos,
+               "REQ-047 D1 structural pin: worker.cpp fires the engine-unavailable callback");
+    // The callback is fired with Ok on the success path (latch reset signal).
+    TEST_CHECK(worker_src.find("engine_unavailable_cb_(TranslationStatus::Ok)") !=
+                   std::string::npos,
+               "REQ-047 D1 structural pin: worker.cpp signals Ok on the success path");
+
+    // main.cpp: registration + latch + drain-handler management.
+    TEST_CHECK(main_src.find("SetEngineUnavailableCallback") != std::string::npos,
+               "REQ-047 D1 structural pin: main.cpp registers SetEngineUnavailableCallback");
+    TEST_CHECK(main_src.find("g_engine_modal_latched") != std::string::npos,
+               "REQ-047 D1 structural pin: main.cpp owns the GUI-thread streak latch");
+    TEST_CHECK(main_src.find("RequestEngineUnavailableModal") != std::string::npos,
+               "REQ-047 D1 structural pin: main.cpp marshals through the SEC-ADJ modal seam");
+    // The drain handler manages the latch (set on show, clear on success).
+    TEST_CHECK(main_src.find("g_engine_modal_latched = true") != std::string::npos &&
+                   main_src.find("g_engine_modal_latched = false") != std::string::npos,
+               "REQ-047 D1 structural pin: drain handler sets and clears the latch");
+    // The strict-failure wording reuses the existing RepairFailed* pair
+    // (design §A.5: reuse first, no new i18n key).
+    TEST_CHECK(main_src.find("StringId::RepairFailedTitle") != std::string::npos &&
+                   main_src.find("StringId::RepairFailedBody") != std::string::npos,
+               "REQ-047 D1 structural pin: strict-failure modal reuses RepairFailedTitle/Body");
+
+    // engine.cpp MUST stay untouched (A-2 rejection: router purity). The
+    // status branch that triggers the modal lives in worker.cpp, NOT engine.cpp.
+    if (!engine_src.empty()) {
+        TEST_CHECK(engine_src.find("RequestEngineUnavailableModal") == std::string::npos,
+                   "REQ-047 D1 structural pin: engine.cpp stays UI-free (no modal call)");
+        TEST_CHECK(engine_src.find("SetEngineUnavailableCallback") == std::string::npos,
+                   "REQ-047 D1 structural pin: engine.cpp has no worker-callback wiring");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-047 D1 engine-unavailable modal trigger passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-047 D1 engine-unavailable modal trigger: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}

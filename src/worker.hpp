@@ -503,6 +503,22 @@ public:
         untranslated_residue_cb_ = std::move(cb);
     }
 
+    // REQ-047 D1 (design §A-1, Tech Gate §D1 #2/#3): called on the worker
+    // thread exactly when ExecuteTask's Translate() surfaces a strict local
+    // failure (TranslationStatus::CloudConsentBlocked or
+    // TranslationStatus::LocalModelMissing) OR a successful translation
+    // (TranslationStatus::Ok with a non-empty result). Same contract as the
+    // other SetXxxCallback seams: registered once at startup BEFORE Start(),
+    // read-only afterwards, so the worker thread reads it without a lock.
+    // main.cpp registers a wrapper that marshals the strict failure through
+    // the SEC-ADJ value-queue modal seam (RequestEngineUnavailableModal) with
+    // a GUI-thread streak latch; the success signal resets that latch so a
+    // later recurrence re-arms the modal. The callback runs on the worker
+    // thread - the registered wrapper itself performs the GUI-thread hop.
+    void SetEngineUnavailableCallback(std::function<void(TranslationStatus)> cb) {
+        engine_unavailable_cb_ = std::move(cb);
+    }
+
 private:
     void WorkerLoop(std::stop_token stop_token);
     void ExecuteTask(const PipelineTask& task);
@@ -525,6 +541,10 @@ private:
     // REQ-042: set once at startup via SetUntranslatedResidueCallback (see
     // contract there). Single-worker-thread read inside ExecuteTask.
     std::function<void()> untranslated_residue_cb_;
+
+    // REQ-047 D1: set once at startup via SetEngineUnavailableCallback (see
+    // contract there). Single-worker-thread read inside ExecuteTask.
+    std::function<void(TranslationStatus)> engine_unavailable_cb_;
 
     // REQ-034 F3-B: GetTickCount64() stamp of the last SUCCESSFUL paste
     // (pasted == true branch in ExecuteTask). Read by the empty-capture

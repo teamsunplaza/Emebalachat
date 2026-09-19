@@ -485,6 +485,20 @@ struct EngineUnavailableModalRequest {
 };
 std::mutex g_engine_modal_mu;
 std::deque<EngineUnavailableModalRequest> g_engine_modal_queue;
+
+// ---- REQ-047 D1 (design §A.4, Tech Gate §D1 #2): streak latch --------------
+// GUI-THREAD-ONLY state (every read/write happens on the GUI thread — either
+// in ControllerWndProc's kMsgEngineUnavailableModal drain handler or inside
+// RequestEngineUnavailableModal's same-thread fast path, which runs inline on
+// the GUI thread when called from the worker callback wrapper). The latch
+// suppresses re-arming the modal while a previously surfaced failure is still
+// unresolved: a strict-failure signal sets it when the modal is enqueued, and
+// a success signal (TranslationStatus::Ok from the worker's success path)
+// clears it so a LATER recurrence re-arms the modal. Because the only writers
+// are GUI-thread sites, no cross-thread synchronization is needed — the
+// worker thread never touches this flag (it signals through the already
+// marshaled RequestEngineUnavailableModal seam).
+bool g_engine_modal_latched = false;
 // Consumer-side drain helper: swaps out ALL pending requests in FIFO order.
 std::deque<EngineUnavailableModalRequest> DrainEngineModalQueue() {
     std::deque<EngineUnavailableModalRequest> out;
@@ -636,6 +650,13 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // g_engine_modal_queue; this handler pops every pending entry (per-item
         // lock, so entries enqueued while an earlier one is being applied are
         // still consumed by this same wake-up).
+        //
+        // REQ-047 D1 (design §A.4, Tech Gate §D1 #2): the streak latch lives
+        // HERE — the only GUI-thread drain site — so the worker thread never
+        // touches it. A success signal (TranslationStatus::Ok) clears the
+        // latch WITHOUT enqueuing a modal; a strict-failure signal sets the
+        // latch when its modal request is enqueued, suppressing re-arms until
+        // the next success.
         for (;;) {
             EngineUnavailableModalRequest req;
             {
@@ -646,6 +667,15 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 req = std::move(g_engine_modal_queue.front());
                 g_engine_modal_queue.pop_front();
             }
+            if (req.title.empty() && req.body.empty()) {
+                // Success sentinel: the translation path recovered (a non-empty
+                // result arrived after a streak of strict local failures).
+                // Clear the latch so a LATER recurrence re-arms the modal.
+                emebalachat::g_engine_modal_latched = false;
+                DIAG_F("MAIN/EngineModal/010: translation recovered; streak latch cleared\n");
+                continue;
+            }
+            emebalachat::g_engine_modal_latched = true; // modal about to show
             ShowLocalEngineUnavailableModal(req.title, req.body);
         }
         return 0;
@@ -1317,6 +1347,51 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tooltip.ShowMessageThreadSafe(cur.x, cur.y,
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipUntranslatedAbove));
+    });
+
+    // REQ-047 D1 (design §A-1/A.4, Tech Gate §D1): surface the strict local
+    // failure that REQ-046 d4d5108 deleted — the "Enter pressed, nothing
+    // translated, no notice" symptom. The worker thread calls this on exactly
+    // two outcomes (see the worker.cpp site):
+    //   * TranslationStatus::CloudConsentBlocked / LocalModelMissing — the
+    //     strict local path failed with the H2 consent gate closed or no local
+    //     source at all. Marshal the existing RepairFailed* modal through the
+    //     SEC-ADJ value-queue seam (RequestEngineUnavailableModal is
+    //     thread-safe from any thread; Tech Gate Item 6).
+    //   * TranslationStatus::Ok with a non-empty result — the streak that
+    //     gated the modal is over. Send the EMPTY-title sentinel through the
+    //     SAME seam; the kMsgEngineUnavailableModal drain handler recognizes
+    //     it and clears the GUI-thread latch so a later recurrence re-arms.
+    // The GUI-thread streak latch (g_engine_modal_latched) suppresses re-arms
+    // while the failure is still unresolved — every-trigger WITH streak-latch,
+    // per design §A.4. It is read/written ONLY on the GUI thread (the drain
+    // handler and this wrapper's inline-GUI fast path); the worker thread
+    // never touches it (Tech Gate §D1 #2).
+    worker.SetEngineUnavailableCallback([](emebalachat::TranslationStatus status) {
+        if (status == emebalachat::TranslationStatus::Ok) {
+            // Success sentinel: no title/body — the drain handler treats an
+            // empty request as the latch-reset signal.
+            emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
+                                                       std::wstring(), std::wstring());
+            return;
+        }
+        if (emebalachat::g_engine_modal_latched) {
+            // The failure this modal describes is still unresolved — suppress
+            // the re-arm (design §A.4 every-trigger + streak-latch).
+            return;
+        }
+        DIAG_F("MAIN/EngineModal/020: strict local failure status=%d; "
+               "requesting engine-unavailable modal\n",
+               static_cast<int>(status));
+        // The strict-failure wording reuses the existing RepairFailedTitle /
+        // RepairFailedBody pair (design §A.5: reuse first). Both strict states
+        // describe the same user-facing condition — the local engine cannot
+        // serve this translation — so one wording covers them; the status is
+        // shape-logged above for triage without surfacing user text.
+        emebalachat::RequestEngineUnavailableModal(
+            emebalachat::g_hControllerWnd,
+            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
     });
 
     // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;

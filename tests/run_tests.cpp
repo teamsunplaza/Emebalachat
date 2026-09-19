@@ -15201,6 +15201,7 @@ int main() {
     TestReq047BundledReuseRejection();
     TestReq047BundledDuplicateI18n();
     TestReq047OpenAiDeferredOpen();
+    TestReq047EngineUnavailableModal();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
