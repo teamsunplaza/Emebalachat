@@ -457,8 +457,9 @@ std::wstring GoogleTranslate::Translate(
 
     // SEC-M1: when the input was clamped, the returned result must say so -
     // silent truncation is forbidden (verify 235100 §5). Appended to the
-    // translated text on every SUCCESS path; the failure passthrough below
-    // returns the ORIGINAL (untruncated) text and needs no notice.
+    // translated text on every SUCCESS path. REQ-048 P3: every FAILURE path
+    // now returns empty (see below), so no truncation notice exists there
+    // either — nothing is returned to the caller at all on failure.
     const std::wstring truncation_notice = clamped
         ? L"\n" + I18n::Get(StringId::TranslateTruncatedNotice)
         : std::wstring{};
@@ -487,8 +488,17 @@ std::wstring GoogleTranslate::Translate(
         }
     }
 
-    // Return original text if network translation fails
-    return std::wstring(text);
+    // REQ-048 P3: both endpoints failed — return EMPTY as the failure signal.
+    // engine.cpp's cloud_call treats any non-empty result as
+    // TranslationStatus::Ok, so returning the original text here made the
+    // worker see "translation == source" and silently skip the paste (no
+    // failure sound, no modal) while also clearing the success sentinel that
+    // latches the modal — the user-device P3 무번역 root cause. A network
+    // failure MUST instead converge on the EngineFailed path (failure sound +
+    // modal); silent identity passthrough is forbidden. The SUCCESS contract
+    // above is unchanged: any non-empty parse still returns the translated
+    // text (plus the SEC-M1 truncation notice).
+    return {};
 }
 
 } // namespace emebalachat

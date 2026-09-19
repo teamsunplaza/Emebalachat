@@ -44,7 +44,8 @@ inline constexpr std::wstring_view kProductUserAgent =
 class GoogleTranslate {
 public:
     // Translates text using Google Translate free endpoint via native WinHTTP.
-    // Returns translated std::wstring, or original/empty on network failure.
+    // Returns translated std::wstring, or EMPTY on network failure (REQ-048 P3:
+    // an identity passthrough used to masquerade failures as successes).
     static std::wstring Translate(
         std::wstring_view text,
         std::string_view src_code = "AUTO",
