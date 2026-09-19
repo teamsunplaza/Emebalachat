@@ -12,7 +12,10 @@ class SystemTray {
 public:
     struct Callbacks {
         std::function<void()> on_toggle_active;
-        std::function<void(int engine_idx)> on_select_engine; // 0 = Google Translate, 1 = Local LLM
+        // REQ-045 P4-3: engine_idx 0 = Google Translate, 1 = Local LLM,
+        // 2 = OpenAI Compatible. Appended (not renumbered) so existing
+        // main.cpp call sites keep their meaning.
+        std::function<void(int engine_idx)> on_select_engine;
         std::function<void(std::string_view code)> on_select_source_lang;
         std::function<void(std::string_view code)> on_select_target_lang;
         // REQ-025 (Phase A §2.1.A3-25): "번역툴팁"(drag) language pair selectors,
@@ -53,12 +56,14 @@ public:
     // drag_src/drag_tgt drive ONLY the new drag submenu check marks - the tip
     // always keeps displaying the type pair (Phase A §2.1.A3-25 design).
     //
-    // REQ-029-B (design §2.1 change 2): preferred_engine_google is the single
-    // source of truth for the Engine submenu check mark. It carries the USER'S
-    // configured preference (config engine_type != "local"), so the check can
-    // no longer lie when the local model is missing and the engine honestly
-    // reports "Local (Model Missing)". active_engine above stays a DISPLAY-ONLY
-    // string (tooltip + tray_update log); it is never used for check decisions.
+    // REQ-029-B (design §2.1 change 2): preferred_engine is the single source
+    // of truth for the Engine submenu check mark. 0 = Google (also covers
+    // "auto", which is Google-family for display), 1 = Local LLM, 2 = OpenAI
+    // Compatible (REQ-045 P4-3). It carries the USER'S configured preference
+    // (config engine_type), so the check can no longer lie when the local model
+    // is missing and the engine honestly reports "Local (Model Missing)".
+    // active_engine above stays a DISPLAY-ONLY string (tooltip + tray_update
+    // log); it is never used for check decisions.
     void UpdateStatus(
         bool active,
         std::string_view active_engine,
@@ -69,7 +74,7 @@ public:
         bool auto_send,
         bool sound_enabled,
         bool badge_visible,
-        bool preferred_engine_google
+        int preferred_engine
     );
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
@@ -96,11 +101,12 @@ private:
     // REQ-029-B: display-only engine name (tooltip + tray_update log). The
     // Engine submenu check mark NO LONGER reads this string.
     std::string active_engine_ = "Google Translate";
-    // REQ-029-B (design §2.1 change 2): preferred engine as configured by the
-    // user. true = Google (also covers "auto", which is Google-family for
-    // display purposes), false = Local. Default true matches the pre-existing
-    // active_engine_ default so the menu is coherent before the first refresh.
-    bool preferred_engine_google_ = true;
+    // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: preferred engine as
+    // configured by the user. 0 = Google (also covers "auto", Google-family
+    // for display), 1 = Local, 2 = OpenAI Compatible. Default 0 matches the
+    // pre-existing active_engine_ default so the menu is coherent before the
+    // first refresh.
+    int preferred_engine_ = 0;
     std::string src_code_ = "AUTO";
     std::string tgt_code_ = "EN";
     // REQ-025: drag-pair check-mark state for the "번역툴팁" submenus.

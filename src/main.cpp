@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "diag_logger.hpp"
 #include "engine.hpp"
+#include "openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible config block
 #include "engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): startup repair bootstrapper
 #include "vulkan_guard.hpp" // P5-F1: driverless-machine Vulkan pre-probe + stub guard
 #include "hook.hpp"
@@ -14,6 +15,7 @@
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
 #include "ui/about_window.hpp"
+#include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
 #include "ui/badge.hpp"
 #include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
@@ -637,6 +639,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         engine_type = emebalachat::EngineType::GoogleTranslate;
     } else if (config.engine_type == "local") {
         engine_type = emebalachat::EngineType::LocalLlama;
+    } else if (config.engine_type == "openai") {
+        // REQ-045 P4-3 (design §3b): OpenAI Compatible explicit pick.
+        engine_type = emebalachat::EngineType::OpenAi;
     }
     // REQ-R11 (audit §4 M3): normalize a relative model_path against the
     // EXECUTABLE directory, not the CWD. Run-registry autostart launches with
@@ -668,6 +673,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // spawn -> one-click repair -> consent-gated cloud -> feature-unavailable
     // notice (plan §V2-8.6); the engine router owns that policy (plan §5.4).
     engine.SetEngineHostConfig(config.engine_host);
+    // REQ-045 P4-3 (design §3b): push the persisted OpenAI Compatible block
+    // into the router (same I3 pattern as SetEngineHostConfig above).
+    engine.SetOpenAiConfig(config.openai);
 
     // 6. Create Hidden Controller Window for Tray & Message Pump
     WNDCLASSEXW wc = {};
@@ -888,11 +896,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-025 (Phase A §2.1.A3-25): the drag pair is passed through as
         // well, but ONLY drives the new "번역툴팁" submenu check marks - the
         // hover tip keeps showing the type pair.
-        // REQ-029-B (design §2.1 change 2): the Engine submenu check mark is
-        // driven by the USER'S preference (config engine_type), not the
-        // displayed engine name. Rule: "local" -> Local checked; "google" and
-        // "auto" -> Google checked (Auto is Google-family for display; the
-        // flag never affects routing - SetEngineType is untouched).
+        // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: the Engine submenu
+        // check mark is driven by the USER'S preference (config engine_type),
+        // not the displayed engine name. Rule: "local" -> Local (1);
+        // "openai" -> OpenAI (2); "google" and "auto" -> Google (0, Auto is
+        // Google-family for display; the flag never affects routing -
+        // SetEngineType is untouched).
+        const std::string& prefEngine = snap.engine_type;
+        const int preferred_engine =
+            (prefEngine == "local") ? 1 : (prefEngine == "openai") ? 2 : 0;
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),          // display-only (tooltip + log)
@@ -903,7 +915,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             snap.auto_send,
             snap.sound_enabled,
             badge.IsVisible(),
-            /* preferred_engine_google = */ (snap.engine_type != "local")
+            preferred_engine
         );
     };
 
@@ -1166,7 +1178,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // "why did it go back to local" was untraceable). 001 records the
         // user's request against the PREVIOUS persisted config; 002 confirms
         // the switch persisted and what the engine now honestly reports.
-        const char* requested = (engine_idx == 0) ? "google" : "local";
+        // REQ-045 P4-3: 0 = Google, 1 = Local, 2 = OpenAI Compatible.
+        const char* requested = (engine_idx == 0) ? "google"
+                                : (engine_idx == 1) ? "local" : "openai";
         DIAG_F("MAIN/on_select_engine/001: user selected engine=%s (prev config=%s)\n",
                requested, config.GetSnapshot().engine_type.c_str());
         // I4: runtime mutations go through the locked setters because the hook
@@ -1174,9 +1188,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (engine_idx == 0) {
             engine.SetEngineType(emebalachat::EngineType::GoogleTranslate);
             config.SetEngineTypeName("google");
-        } else {
+        } else if (engine_idx == 1) {
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
             config.SetEngineTypeName("local");
+        } else {
+            // OpenAI: open the settings dialog first so the user can wire (or
+            // review) base URL / key / model; only switch the engine when the
+            // dialog saved. Cancel leaves the previous engine untouched.
+            emebalachat::OpenAiConfig edited = config.openai;
+            if (!emebalachat::ShowOpenAiSettingsDialog(/*parent=*/nullptr, edited)) {
+                DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
+                refresh_tray();
+                return;
+            }
+            config.openai = edited;
+            engine.SetOpenAiConfig(config.openai);
+            engine.SetEngineType(emebalachat::EngineType::OpenAi);
+            config.SetEngineTypeName("openai");
         }
         config.SaveToFile();
         refresh_tray();

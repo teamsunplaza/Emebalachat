@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "config.hpp"
 #include "google_translate.hpp"
+#include "openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible cloud engine
 #include "unicode_utils.hpp"
 #include "engine_core/translation_common.hpp" // REQ-043: LocalInferenceEngine (M6 T1 move; M6 T5: consumed by the worker exe only)
 
@@ -199,6 +200,16 @@ void TranslationManager::SetEngineHostConfig(const EngineHostConfig& cfg) {
     RefreshActiveEngine();
 }
 
+// REQ-045 P4-3 (design §3b, item 3b): pushes the persisted OpenAI Compatible
+// block into the manager. Startup-only write (main.cpp applies it after
+// LoadFromFile); re-evaluates the active engine so selecting OpenAi flips the
+// displayed engine name immediately.
+void TranslationManager::SetOpenAiConfig(const OpenAiConfig& cfg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    openai_config_ = cfg;
+    RefreshActiveEngine();
+}
+
 // REQ-R16: shutdown latch — deliberately NOT taking mutex_: an in-flight
 // Translate() (cloud WinHTTP or engine-host pipe) holds it across the whole
 // request; the atomic store is the signal that call observes.
@@ -248,6 +259,12 @@ void TranslationManager::RefreshActiveEngine() {
     if (preferred_type_ == EngineType::GoogleTranslate) {
         active_type_ = EngineType::GoogleTranslate;
         active_name_ = "Google Translate (Cloud)";
+    } else if (preferred_type_ == EngineType::OpenAi) {
+        // REQ-045 P4-3 (design §3b): OpenAI Compatible cloud engine. Always
+        // active (the request itself may still fail — surfaced via
+        // EngineFailed, never a silent masquerade).
+        active_type_ = EngineType::OpenAi;
+        active_name_ = "OpenAI Compatible (Cloud)";
     } else if (preferred_type_ == EngineType::LocalLlama) {
         // REQ-043 (M6 T5): "local" = the shared inference host. No embedded
         // model file exists, so the former (model present -> embedded / host)
@@ -409,6 +426,33 @@ std::wstring TranslationManager::Translate(
         set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
         return res;
     };
+
+    // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible seam. Selecting
+    // engine_type=openai IS the consent (the user wires their OWN credentials),
+    // so — unlike the google cloud seam — this leg is NOT gated by the H2
+    // cloud_fallback_enabled/google_consent gate. A request that produces
+    // nothing records EngineFailed exactly like the google leg; the failure is
+    // surfaced as an OpenAI failure, never masqueraded as a local/google one.
+    auto openai_call = [&]() -> std::wstring {
+        std::wstring res = OpenAiCompatibleClient::ChatCompletion(
+            openai_config_, src_code_or_name, tgt_code_or_name, text);
+        set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
+        return res;
+    };
+
+    // REQ-045 P4-3: OpenAI explicit pick short-circuits every other leg — the
+    // user's deliberate engine choice is honored verbatim (REQ-R16 latch
+    // first so an exit intent never starts a new WinHTTP request).
+    if (preferred_type_ == EngineType::OpenAi) {
+        if (cancel_requested_.load(std::memory_order_acquire)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        DIAG_F("ENGINE/Translate/045: served=openai (base_url set=%d, model set=%d)\n",
+               openai_config_.base_url.empty() ? 0 : 1,
+               openai_config_.model.empty() ? 0 : 1);
+        return openai_call();
+    }
 
     // REQ-043 (M6 T5): THE local seam — the shared inference host is the only
     // local source. Requests the host serves reach this leg (the 041

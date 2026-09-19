@@ -12,6 +12,10 @@
 // header — see engine_host_client.hpp for the copy-into-other-apps contract).
 #include "engine_host_client.hpp"
 
+// REQ-045 P4-3 (design §3b, item 3b): the persisted OpenAI Compatible block
+// (base_url / model / DPAPI key blob / integrity digest / http consent).
+#include "openai_compatible_client.hpp"
+
 namespace emebalachat {
 
 // Represents a supported translation language with ISO code and localized names.
@@ -333,6 +337,14 @@ struct AppConfig {
     //                    hook). Startup-only write, no Snapshot entry needed
     //                    (same discipline as cloud_fallback_enabled).
     EngineHostConfig engine_host;
+
+    // REQ-045 P4-3 (design §3b, item 3b): the persisted "openai" block —
+    // OpenAI Compatible cloud engine (base_url / model / DPAPI-protected key
+    // blob + SHA-256 integrity digest / plaintext-http consent). Written at
+    // startup and by the settings dialog, read by the worker thread through
+    // the engine; like cloud_fallback_enabled it is never mutated after
+    // threads exist, so it needs no mutex or Snapshot entry.
+    OpenAiConfig openai;
 
     // REQ-201/202 (session 260911_0002): MASTER switch for the diagnostic
     // log FILE itself. Default FALSE — release posture is NO log file at all:

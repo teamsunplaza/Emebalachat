@@ -14,6 +14,10 @@
 // (Win32 + STL only) so the other Emebala workspaces can copy it verbatim.
 #include "engine_host_client.hpp"
 
+// REQ-045 P4-3 (design §3b, item 3b): the persisted OpenAI Compatible block
+// (OpenAiConfig) referenced by SetOpenAiConfig / the openai_config_ member.
+#include "openai_compatible_client.hpp"
+
 // REQ-043 (M6 T1, design §4.2/D-1): the llama-independent pure helpers and
 // pins (IsValidModelPath, ComputeFileSha256/VerifyModelSha256 + marker cache
 // contract, kExpectedModelSha256/kPinnedModelFilename, kLlama* budget
@@ -89,7 +93,13 @@ enum class EngineType {
     // host (Emebala.Engine.exe)" — the embedded llama.cpp engine was removed
     // from the Chat app (plan §V2-8.6). The config string
     // engine_type="local" is unchanged; only the serving source moved.
-    LocalLlama
+    LocalLlama,
+    // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible cloud engine.
+    // User-supplied base URL + API key; deliberately picking "openai" IS the
+    // consent (the user wires their OWN credentials), distinct from the
+    // google_consent/cloud_fallback H2 gate. Appended AFTER LocalLlama so the
+    // existing values keep their integer order (0..2).
+    OpenAi
 };
 
 // R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam for
@@ -149,6 +159,15 @@ public:
     // failure the §V2-8.6 UX chain applies (cloud when consented, honest
     // failure otherwise — there is no embedded fallback anymore).
     void SetEngineHostConfig(const EngineHostConfig& cfg);
+
+    // REQ-045 P4-3 (design §3b, item 3b): pushes the persisted OpenAI
+    // Compatible block (base_url / model / DPAPI key blob + integrity digest /
+    // http consent) into the manager. main.cpp applies it right after
+    // LoadFromFile (the I3 pattern, same as SetEngineHostConfig). Translate()
+    // consults it when preferred_type_ == EngineType::OpenAi; the user
+    // selecting "openai" IS the consent (their own credentials), distinct
+    // from the google_consent/cloud_fallback H2 gate.
+    void SetOpenAiConfig(const OpenAiConfig& cfg);
 
     // Returns user-facing name of the currently active engine
     std::string GetActiveEngineName() const;
@@ -257,6 +276,11 @@ private:
     // Translate(); the block is a startup-only write (like
     // cloud_fallback_enabled_) so it needs no Snapshot entry.
     EngineHostConfig engine_host_config_;
+
+    // REQ-045 P4-3 (design §3b): the persisted OpenAI Compatible block that
+    // drives the OpenAi serving leg of Translate(). Startup-only write (same
+    // discipline as engine_host_config_), so it needs no Snapshot entry.
+    OpenAiConfig openai_config_;
 
     float temperature_ = 0.0f;
     float top_p_ = 0.6f;

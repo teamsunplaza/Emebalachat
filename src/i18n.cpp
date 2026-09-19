@@ -89,7 +89,20 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(tooltip_untranslated_above) \
     X(repair_in_progress) \
     X(repair_failed_title) \
-    X(repair_failed_body)
+    X(repair_failed_body) \
+    X(menu_engine_openai) \
+    X(openai_settings_title) \
+    X(openai_settings_action) \
+    X(openai_base_url_label) \
+    X(openai_api_key_label) \
+    X(openai_model_label) \
+    X(openai_fetch_models) \
+    X(openai_fetch_failed) \
+    X(openai_http_warning_title) \
+    X(openai_http_warning_body) \
+    X(openai_saved) \
+    X(openai_key_masked) \
+    X(openai_invalid_base_url)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -109,8 +122,9 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // REQ-044: 57 == StringId::EnumCount. The design doc/Tech Gate cited 53,
 // but that predates REQ-042's tooltip_untranslated_above (field 54); the
 // enum's own running-total comment reads "57x37 with the REQ-005 repair
-// trio". The Get() switch maps exactly these 57 named fields.
-static_assert(kLocalizedStringsFieldCount == 57,
+// trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields, bringing the
+// total to 70. The Get() switch maps exactly these 70 named fields.
+static_assert(kLocalizedStringsFieldCount == 70,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -194,7 +208,20 @@ const LocalizedStrings kStringsKorean = {
     .tooltip_untranslated_above = L"위쪽에 번역되지 않은 새 텍스트가 있습니다. 그 줄 끝에 커서를 두고 Enter를 누를면 번역됩니다.",
     .repair_in_progress = L"로컬 엔진 구성 요소를 복구하는 중…",
     .repair_failed_title = L"로컬 번역을 사용할 수 없습니다",
-    .repair_failed_body = L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 에메발라 챗을 재설치하면 로컬 엔진을 복구할 수 있습니다. 또는 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요."
+    .repair_failed_body = L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 에메발라 챗을 재설치하면 로컬 엔진을 복구할 수 있습니다. 또는 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요.",
+    .menu_engine_openai = L"OpenAI 호환 (사용자 지정 서버)",
+    .openai_settings_title = L"OpenAI 호환 엔진 설정",
+    .openai_settings_action = L"OpenAI 호환 엔진 설정…",
+    .openai_base_url_label = L"기본 URL (Base URL)",
+    .openai_api_key_label = L"API 키",
+    .openai_model_label = L"모델 (Model)",
+    .openai_fetch_models = L"모델 목록 가져오기",
+    .openai_fetch_failed = L"모델 목록을 가져오지 못했습니다. 모델 이름을 직접 입력할 수 있습니다.",
+    .openai_http_warning_title = L"보안되지 않은 연결 (HTTP)",
+    .openai_http_warning_body = L"기본 URL이 HTTP(암호화되지 않음)입니다. API 키와 텍스트가 평문으로 전송됩니다. 계속하시겠습니까?",
+    .openai_saved = L"OpenAI 호환 설정이 저장되었습니다.",
+    .openai_key_masked = L"저장된 키: ",
+    .openai_invalid_base_url = L"기본 URL이 올바르지 않습니다. 예: https://api.openai.com",
 };
 
 // 2. Japanese (ja)
@@ -283,7 +310,20 @@ const LocalizedStrings kStringsJapanese = {
     L"上に翻訳されていない新しいテキストがあります。その行の末尾にカーソルを置いて Enter を押すと翻訳されます。",
     L"ローカルエンジンコンポーネントを修復しています…",
     L"ローカル翻訳を利用できません",
-    L"ローカル翻訳エンジンのファイルが見つからないため、翻訳は一時的に停止しています。Emebala Chat を再インストールするとローカルエンジンを復元できます。または、クラウド（Google）翻訳に切り替えるには、トレイメニューの「翻訳エンジンの選択」から「Google 翻訳」を選んでください。"
+    L"ローカル翻訳エンジンのファイルが見つからないため、翻訳は一時的に停止しています。Emebala Chat を再インストールするとローカルエンジンを復元できます。または、クラウド（Google）翻訳に切り替えるには、トレイメニューの「翻訳エンジンの選択」から「Google 翻訳」を選んでください。",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -372,7 +412,20 @@ const LocalizedStrings kStringsChineseSimp = {
     L"上方有未翻译的新文本。将光标置于该行末尾并按 Enter 即可翻译。",
     L"正在修复本地引擎组件…",
     L"本地翻译不可用",
-    L"找不到本地翻译引擎文件，翻译已暂时停止。重新安装 Emebala Chat 可恢复本地引擎，或者要切换到云（Google）翻译，请在托盘菜单的“选择翻译引擎”中选择“Google 翻译”。"
+    L"找不到本地翻译引擎文件，翻译已暂时停止。重新安装 Emebala Chat 可恢复本地引擎，或者要切换到云（Google）翻译，请在托盘菜单的“选择翻译引擎”中选择“Google 翻译”。",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -461,7 +514,20 @@ const LocalizedStrings kStringsChineseTrad = {
     L"上方有未翻譯的新文字。將游標置於該行末尾並按 Enter 即可翻譯。",
     L"正在修復本機引擎元件…",
     L"本機翻譯無法使用",
-    L"找不到本機翻譯引擎檔案，翻譯已暫時停止。重新安裝 Emebala Chat 可還原本機引擎，或者若要切換到雲端（Google）翻譯，請在系統匣選單的「選擇翻譯引擎」中選取「Google 翻譯」。"
+    L"找不到本機翻譯引擎檔案，翻譯已暫時停止。重新安裝 Emebala Chat 可還原本機引擎，或者若要切換到雲端（Google）翻譯，請在系統匣選單的「選擇翻譯引擎」中選取「Google 翻譯」。",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 5. Vietnamese (vi)
@@ -550,7 +616,20 @@ const LocalizedStrings kStringsVietnamese = {
     L"Có văn bản mới chưa dịch ở trên. Đặt con trỏ ở cuối dòng đó và nhấn Enter để dịch.",
     L"Đang sửa chữa các thành phần cục bộ…",
     L"Không thể dùng bản dịch cục bộ",
-    L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Cài đặt lại Emebala Chat để khôi phục cục bộ, hoặc để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”."
+    L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Cài đặt lại Emebala Chat để khôi phục cục bộ, hoặc để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 6. Spanish (es)
@@ -636,7 +715,20 @@ const LocalizedStrings kStringsSpanish = {
     L"Hay texto nuevo sin traducir arriba. Coloca el cursor al final de esa línea y pulsa Enter para traducirlo.",
     L"Reparando los componentes del motor local…",
     L"Traducción local no disponible",
-    L"No se encuentran los archivos del motor de traducción local, por lo que la traducción se detuvo temporalmente. Reinstala Emebala Chat para restaurar el motor local, o para cambiar a la traducción en la nube (Google), elige “Google Translate” en el menú de la bandeja, “Motor de traducción”."
+    L"No se encuentran los archivos del motor de traducción local, por lo que la traducción se detuvo temporalmente. Reinstala Emebala Chat para restaurar el motor local, o para cambiar a la traducción en la nube (Google), elige “Google Translate” en el menú de la bandeja, “Motor de traducción”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 7. English (en) - Default Fallback
@@ -726,7 +818,20 @@ const LocalizedStrings kStringsEnglish = {
     L"There is new untranslated text above. Place the cursor at the end of that line and press Enter to translate it.",
     L"Repairing the local engine components…",
     L"Local translation unavailable",
-    L"The local translation engine files are missing, so translation is paused. Reinstall Emebala Chat to restore the local engine, or switch to cloud (Google) translation by choosing “Google Translate” under “Translation engine” in the tray menu."
+    L"The local translation engine files are missing, so translation is paused. Reinstall Emebala Chat to restore the local engine, or switch to cloud (Google) translation by choosing “Google Translate” under “Translation engine” in the tray menu.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -827,7 +932,20 @@ const LocalizedStrings kStringsFrench = {
     L"Il y a un nouveau texte non traduit au-dessus. Placez le curseur à la fin de cette ligne et appuyez sur Entrée pour le traduire.",
     L"Restauration des composants du moteur local…",
     L"Traduction locale indisponible",
-    L"Les fichiers du moteur de traduction locale sont introuvables, la traduction est donc suspendue. Réinstallez Emebala Chat pour restaurer le moteur local, ou passez à la traduction cloud (Google) en choisissant « Google Traduction » dans le menu de la barre d’état, « Moteur de traduction »."
+    L"Les fichiers du moteur de traduction locale sont introuvables, la traduction est donc suspendue. Réinstallez Emebala Chat pour restaurer le moteur local, ou passez à la traduction cloud (Google) en choisissant « Google Traduction » dans le menu de la barre d’état, « Moteur de traduction ».",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 9. German (de)
@@ -916,7 +1034,20 @@ const LocalizedStrings kStringsGerman = {
     L"Oben gibt es neuen unübersetzten Text. Setzen Sie den Cursor an das Ende dieser Zeile und drücken Sie die Eingabetaste, um ihn zu übersetzen.",
     L"Lokale Engine-Komponenten werden repariert…",
     L"Lokale Übersetzung nicht verfügbar",
-    L"Die Dateien der lokalen Übersetzungsengine fehlen, daher ist die Übersetzung vorübergehend angehalten. Installieren Sie Emebala Chat erneut, um die lokale Engine wiederherzustellen, oder wechseln Sie im Tray-Menü unter „Übersetzungsengine“ zu „Google Übersetzer“."
+    L"Die Dateien der lokalen Übersetzungsengine fehlen, daher ist die Übersetzung vorübergehend angehalten. Installieren Sie Emebala Chat erneut, um die lokale Engine wiederherzustellen, oder wechseln Sie im Tray-Menü unter „Übersetzungsengine“ zu „Google Übersetzer“.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 10. Russian (ru)
@@ -1005,7 +1136,20 @@ const LocalizedStrings kStringsRussian = {
     L"Выше есть новый непереведенный текст. Поместите курсор в конец этой строки и нажмите Enter, чтобы перевести.",
     L"Восстановление компонентов локального движка…",
     L"Локальный перевод недоступен",
-    L"Файлы локального движка перевода не найдены, поэтому перевод приостановлен. Переустановите Emebala Chat, чтобы восстановить локальный движок, или переключитесь на облачный (Google) перевод, выбрав «Google Переводчик» в меню области уведомлений, «Движок перевода»."
+    L"Файлы локального движка перевода не найдены, поэтому перевод приостановлен. Переустановите Emebala Chat, чтобы восстановить локальный движок, или переключитесь на облачный (Google) перевод, выбрав «Google Переводчик» в меню области уведомлений, «Движок перевода».",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 11. Portuguese (pt)
@@ -1094,7 +1238,20 @@ const LocalizedStrings kStringsPortuguese = {
     L"Há texto novo não traduzido acima. Coloque o cursor no final dessa linha e prima Enter para traduzir.",
     L"A reparar os componentes do motor local…",
     L"Tradução local indisponível",
-    L"Os ficheiros do motor de tradução local não foram encontrados, pelo que a tradução foi suspensa. Reinstale o Emebala Chat para restaurar o motor local, ou mude para a tradução na nuvem (Google) escolhendo “Google Tradutor” no menu da bandeja, em “Motor de tradução”."
+    L"Os ficheiros do motor de tradução local não foram encontrados, pelo que a tradução foi suspensa. Reinstale o Emebala Chat para restaurar o motor local, ou mude para a tradução na nuvem (Google) escolhendo “Google Tradutor” no menu da bandeja, em “Motor de tradução”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 12. Italian (it)
@@ -1183,7 +1340,20 @@ const LocalizedStrings kStringsItalian = {
     L"C'è nuovo testo non tradotto sopra. Posiziona il cursore alla fine di quella riga e premi Invio per tradurlo.",
     L"Riparazione dei componenti del motore locale…",
     L"Traduzione locale non disponibile",
-    L"I file del motore di traduzione locale non sono stati trovati, quindi la traduzione è sospesa. Reinstalla Emebala Chat per ripristinare il motore locale, oppure passa alla traduzione cloud (Google) scegliendo “Google Traduttore” dal menu dell’area di notifica, “Motore di traduzione”."
+    L"I file del motore di traduzione locale non sono stati trovati, quindi la traduzione è sospesa. Reinstalla Emebala Chat per ripristinare il motore locale, oppure passa alla traduzione cloud (Google) scegliendo “Google Traduttore” dal menu dell’area di notifica, “Motore di traduzione”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 13. Dutch (nl)
@@ -1272,7 +1442,20 @@ const LocalizedStrings kStringsDutch = {
     L"Er staat nieuwe onvertaalde tekst hierboven. Plaats de cursor aan het einde van die regel en druk op Enter om te vertalen.",
     L"Lokale engine-onderdelen herstellen…",
     L"Lokale vertaling niet beschikbaar",
-    L"De bestanden van de lokale vertaalengine ontbreken, dus de vertaling is onderbroken. Installeer Emebala Chat opnieuw om de lokale engine te herstellen, of schakel over naar cloud(Google)-vertaling door “Google Vertalen” te kiezen in het menubalkmenu bij “Vertaalengine”."
+    L"De bestanden van de lokale vertaalengine ontbreken, dus de vertaling is onderbroken. Installeer Emebala Chat opnieuw om de lokale engine te herstellen, of schakel over naar cloud(Google)-vertaling door “Google Vertalen” te kiezen in het menubalkmenu bij “Vertaalengine”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 14. Polish (pl)
@@ -1361,7 +1544,20 @@ const LocalizedStrings kStringsPolish = {
     L"Powyżej znajduje się nowy nieprzetłumaczony tekst. Umieść kursor na końcu tego wiersza i naciśnij Enter, aby przetłumaczyć.",
     L"Naprawianie lokalnych składników silnika…",
     L"Tłumaczenie lokalne niedostępne",
-    L"Nie znaleziono plików lokalnego silnika tłumaczenia, więc tłumaczenie zostało wstrzymane. Zainstaluj ponownie Emebala Chat, aby przywrócić lokalny silnik, lub przełącz się na tłumaczenie w chmurze (Google), wybierając „Google Translate” w menu zasobnika, „Silnik tłumaczenia”."
+    L"Nie znaleziono plików lokalnego silnika tłumaczenia, więc tłumaczenie zostało wstrzymane. Zainstaluj ponownie Emebala Chat, aby przywrócić lokalny silnik, lub przełącz się na tłumaczenie w chmurze (Google), wybierając „Google Translate” w menu zasobnika, „Silnik tłumaczenia”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 15. Czech (cs)
@@ -1450,7 +1646,20 @@ const LocalizedStrings kStringsCzech = {
     L"Nahoře je nový nepřeložený text. Umístěte kurzor na konec tohoto řádku a stisknutím Enteru jej přeložte.",
     L"Oprava místních součástí enginu…",
     L"Místní překlad není dostupný",
-    L"Soubory místního překladového enginu chybí, takže je překlad pozastaven. Pro obnovení místního enginu přeinstalujte Emebala Chat, nebo pro přechod na cloudový (Google) překlad vyberte v nabídce oznamovací oblasti „Google Překladač“ v části „Překladový engine“."
+    L"Soubory místního překladového enginu chybí, takže je překlad pozastaven. Pro obnovení místního enginu přeinstalujte Emebala Chat, nebo pro přechod na cloudový (Google) překlad vyberte v nabídce oznamovací oblasti „Google Překladač“ v části „Překladový engine“.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 16. Hungarian (hu)
@@ -1539,7 +1748,20 @@ const LocalizedStrings kStringsHungarian = {
     L"Új, le nem fordított szöveg van fent. Helyezze a kurzort a sor végére, és az Enter megnyomásával fordítsa le.",
     L"A helyi motor összetevőinek javítása…",
     L"A helyi fordítás nem érhető el",
-    L"A helyi fordítómotor fájljai hiányoznak, ezért a fordítás szünetel. A helyi motor helyreállításához telepítse újra az Emebala Chatet, vagy váltson a felhőalapú (Google) fordításra a „Google Fordító” választásával a tálca „Fordítómotor” menüjében."
+    L"A helyi fordítómotor fájljai hiányoznak, ezért a fordítás szünetel. A helyi motor helyreállításához telepítse újra az Emebala Chatet, vagy váltson a felhőalapú (Google) fordításra a „Google Fordító” választásával a tálca „Fordítómotor” menüjében.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 17. Romanian (ro)
@@ -1628,7 +1850,20 @@ const LocalizedStrings kStringsRomanian = {
     L"Există text nou netradus mai sus. Plasați cursorul la sfârșitul acelui rând și apăsați Enter pentru a traduce.",
     L"Se repară componentele motorului local…",
     L"Traducerea locală nu este disponibilă",
-    L"Fișierele motorului de traducere local lipsesc, deci traducerea este întreruptă. Reinstalați Emebala Chat pentru a restabili motorul local, sau treceți la traducerea în cloud (Google) alegând „Google Translate” din meniul barei de sistem, „Motor de traducere”."
+    L"Fișierele motorului de traducere local lipsesc, deci traducerea este întreruptă. Reinstalați Emebala Chat pentru a restabili motorul local, sau treceți la traducerea în cloud (Google) alegând „Google Translate” din meniul barei de sistem, „Motor de traducere”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 18. Swedish (sv)
@@ -1717,7 +1952,20 @@ const LocalizedStrings kStringsSwedish = {
     L"Det finns ny oöversatt text ovanför. Placera markören i slutet av den raden och tryck på Enter för att översätta.",
     L"Reparerar de lokala motorkomponenterna…",
     L"Lokal översättning är inte tillgänglig",
-    L"Filerna för den lokala översättningsmotorn saknas, så översättningen har pausats. Installera om Emebala Chat för att återställa den lokala motorn, eller byt till molnöversättning (Google) genom att välja “Google Översätt” i menyn för systemfältet, “Översättningsmotor”."
+    L"Filerna för den lokala översättningsmotorn saknas, så översättningen har pausats. Installera om Emebala Chat för att återställa den lokala motorn, eller byt till molnöversättning (Google) genom att välja “Google Översätt” i menyn för systemfältet, “Översättningsmotor”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 19. Danish (da)
@@ -1806,7 +2054,20 @@ const LocalizedStrings kStringsDanish = {
     L"Der er ny uoversat tekst ovenfor. Placer markøren i slutningen af den linje, og tryk på Enter for at oversætte.",
     L"Reparerer de lokale motorkomponenter…",
     L"Lokal oversættelse er ikke tilgængelig",
-    L"Filerne til den lokale oversættelsesmotor mangler, så oversættelsen er sat på pause. Geninstaller Emebala Chat for at gendanne den lokale motor, eller skift til sky-oversættelse (Google) ved at vælge “Google Oversæt” fra bakkemenuen under “Oversættelsesmotor”."
+    L"Filerne til den lokale oversættelsesmotor mangler, så oversættelsen er sat på pause. Geninstaller Emebala Chat for at gendanne den lokale motor, eller skift til sky-oversættelse (Google) ved at vælge “Google Oversæt” fra bakkemenuen under “Oversættelsesmotor”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 20. Finnish (fi)
@@ -1895,7 +2156,20 @@ const LocalizedStrings kStringsFinnish = {
     L"Yläpuolella on uutta kääntämätöntä tekstiä. Aseta kohdistin rivin loppuun ja paina Enter kääntääksesi.",
     L"Korjataan paikallisia moottorikomponentteja…",
     L"Paikallinen käännös ei ole käytettävissä",
-    L"Paikallisen käännösmoottorin tiedostoja ei löydy, joten käännös on keskeytetty. Asenna Emebala Chat uudelleen palauttaaksesi paikallisen moottorin, tai vaihda pilvikäännökseen (Google) valitsemalla “Google Kääntäjä” ilmoitusalueen valikosta, “Käännösmoottori”."
+    L"Paikallisen käännösmoottorin tiedostoja ei löydy, joten käännös on keskeytetty. Asenna Emebala Chat uudelleen palauttaaksesi paikallisen moottorin, tai vaihda pilvikäännökseen (Google) valitsemalla “Google Kääntäjä” ilmoitusalueen valikosta, “Käännösmoottori”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 21. Norwegian (no / nb)
@@ -1984,7 +2258,20 @@ const LocalizedStrings kStringsNorwegian = {
     L"Det er ny uoversatt tekst ovenfor. Plasser markøren på slutten av den linjen og trykk Enter for å oversette.",
     L"Reparerer de lokale motorkomponentene…",
     L"Lokal oversettelse er ikke tilgjengelig",
-    L"Filene til den lokale oversettelsesmotoren mangler, så oversettelsen er satt på pause. Installer Emebala Chat på nytt for å gjenopprette den lokale motoren, eller bytt til skyoversettelse (Google) ved å velge “Google Oversetter” fra menyen i systemfeltet, “Oversettelsesmotor”."
+    L"Filene til den lokale oversettelsesmotoren mangler, så oversettelsen er satt på pause. Installer Emebala Chat på nytt for å gjenopprette den lokale motoren, eller bytt til skyoversettelse (Google) ved å velge “Google Oversetter” fra menyen i systemfeltet, “Oversettelsesmotor”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 22. Greek (el)
@@ -2073,7 +2360,20 @@ const LocalizedStrings kStringsGreek = {
     L"Υπάρχει νέο μη μεταφρασμένο κείμενο παραπάνω. Τοποθετήστε τον δείκτη στο τέλος εκείνης της γραμμής και πατήστε Enter για μετάφραση.",
     L"Επισκευή των τοπικών συστατικών μηχανής…",
     L"Η τοπική μετάφραση δεν είναι διαθέσιμη",
-    L"Τα αρχεία της τοπικής μηχανής μετάφρασης λείπουν, επομένως η μετάφραση έχει διακοπεί. Εγκαταστήστε ξανά το Emebala Chat για να επαναφέρετε την τοπική μηχανή, ή μεταβείτε σε μετάφραση cloud (Google) επιλέγοντας «Google Μετάφραση» από το μενού της περιοχής ειδοποιήσεων, «Μηχανή μετάφρασης»."
+    L"Τα αρχεία της τοπικής μηχανής μετάφρασης λείπουν, επομένως η μετάφραση έχει διακοπεί. Εγκαταστήστε ξανά το Emebala Chat για να επαναφέρετε την τοπική μηχανή, ή μεταβείτε σε μετάφραση cloud (Google) επιλέγοντας «Google Μετάφραση» από το μενού της περιοχής ειδοποιήσεων, «Μηχανή μετάφρασης».",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 23. Turkish (tr)
@@ -2162,7 +2462,20 @@ const LocalizedStrings kStringsTurkish = {
     L"Yukarıda çevrilmemiş yeni metin var. Çevirmek için imleci o satırın sonuna getirin ve Enter'a basın.",
     L"Yerel motor bileşenleri onarılıyor…",
     L"Yerel çeviri kullanılamıyor",
-    L"Yerel çeviri motoru dosyaları bulunamadığı için çeviri duraklatıldı. Yerel motoru geri yüklemek için Emebala Chat’i yeniden yükleyin veya bulut (Google) çevirisine geçmek için tepsi menüsünden “Çeviri motoru” altında “Google Çeviri” seçin."
+    L"Yerel çeviri motoru dosyaları bulunamadığı için çeviri duraklatıldı. Yerel motoru geri yüklemek için Emebala Chat’i yeniden yükleyin veya bulut (Google) çevirisine geçmek için tepsi menüsünden “Çeviri motoru” altında “Google Çeviri” seçin.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 24. Ukrainian (uk)
@@ -2251,7 +2564,20 @@ const LocalizedStrings kStringsUkrainian = {
     L"Вище є новий неперекладений текст. Поставте курсор у кінець цього рядка та натисніть Enter, щоб перекласти.",
     L"Відновлення компонентів локального рушія…",
     L"Локальний переклад недоступний",
-    L"Файли локального рушія перекладу не знайдено, тому переклад призупинено. Переустановіть Emebala Chat, щоб відновити локальний рушій, або перейдіть на хмарний (Google) переклад, вибравши «Google Перекладач» у меню області сповіщень, «Рушій перекладу»."
+    L"Файли локального рушія перекладу не знайдено, тому переклад призупинено. Переустановіть Emebala Chat, щоб відновити локальний рушій, або перейдіть на хмарний (Google) переклад, вибравши «Google Перекладач» у меню області сповіщень, «Рушій перекладу».",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 25. Thai (th)
@@ -2340,7 +2666,20 @@ const LocalizedStrings kStringsThai = {
     L"มีข้อความใหม่ที่ยังไม่ได้แปลด้านบน วางเคอร์เซอร์ที่ท้ายบรรทัดนั้นแล้วกด Enter เพื่อแปล",
     L"กำลังซ่อมแซมส่วนประกอบเอนจิ้นในเครื่อง…",
     L"การแปลในเครื่องไม่พร้อมใช้งาน",
-    L"ไม่พบไฟล์เอนจิ้นแปลในเครื่อง จึงหยุดการแปลชั่วคราว ติดตั้ง Emebala Chat อีกครั้งเพื่อกู้คืนเอนจิ้นในเครื่อง หรือหากต้องการสลับไปใช้การแปลบนคลาวด์ (Google) ให้เลือก “Google แปลภาษา” จากเมนูถาดระบบ ที่ “เอนจิ้นการแปล”"
+    L"ไม่พบไฟล์เอนจิ้นแปลในเครื่อง จึงหยุดการแปลชั่วคราว ติดตั้ง Emebala Chat อีกครั้งเพื่อกู้คืนเอนจิ้นในเครื่อง หรือหากต้องการสลับไปใช้การแปลบนคลาวด์ (Google) ให้เลือก “Google แปลภาษา” จากเมนูถาดระบบ ที่ “เอนจิ้นการแปล”",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 26. Indonesian (id)
@@ -2429,7 +2768,20 @@ const LocalizedStrings kStringsIndonesian = {
     L"Ada teks baru yang belum diterjemahkan di atas. Letakkan kursor di akhir baris itu dan tekan Enter untuk menerjemahkan.",
     L"Memperbaiki komponen mesin lokal…",
     L"Terjemahan lokal tidak tersedia",
-    L"File mesin terjemahan lokal tidak ditemukan, jadi terjemahan dijeda. Instal ulang Emebala Chat untuk memulihkan mesin lokal, atau untuk beralih ke terjemahan cloud (Google), pilih “Google Terjemahan” dari menu baki, “Mesin terjemahan”."
+    L"File mesin terjemahan lokal tidak ditemukan, jadi terjemahan dijeda. Instal ulang Emebala Chat untuk memulihkan mesin lokal, atau untuk beralih ke terjemahan cloud (Google), pilih “Google Terjemahan” dari menu baki, “Mesin terjemahan”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 27. Malay (ms)
@@ -2518,7 +2870,20 @@ const LocalizedStrings kStringsMalay = {
     L"Terdapat teks baru yang belum diterjemahkan di atas. Letakkan kursor di hujung baris itu dan tekan Enter untuk menterjemah.",
     L"Membaiki komponen enjin tempatan…",
     L"Terjemahan tempatan tidak tersedia",
-    L"Fail enjin terjemahan tempatan tidak dijumpai, jadi terjemahan dijeda. Pasang semula Emebala Chat untuk memulihkan enjin tempatan, atau untuk bertukar ke terjemahan awan (Google), pilih “Google Terjemah” dari menu dulang, “Enjin terjemahan”."
+    L"Fail enjin terjemahan tempatan tidak dijumpai, jadi terjemahan dijeda. Pasang semula Emebala Chat untuk memulihkan enjin tempatan, atau untuk bertukar ke terjemahan awan (Google), pilih “Google Terjemah” dari menu dulang, “Enjin terjemahan”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 28. Filipino (fil)
@@ -2609,7 +2974,20 @@ const LocalizedStrings kStringsFilipino = {
     L"May bagong hindi pa isinaling teksto sa itaas. Ilagay ang cursor sa dulo ng linyang iyon at pindutin ang Enter upang isalin.",
     L"Kinukumpuni ang mga bahagi ng lokal na makina…",
     L"Hindi available ang lokal na pagsasalin",
-    L"Nawawala ang mga file ng lokal na makina ng pagsasalin, kaya pansamantalang tumigil ang pagsasalin. I-install muli ang Emebala Chat para maibalik ang lokal na makina, o para lumipat sa cloud (Google) na pagsasalin, piliin ang “Google Translate” mula sa menu ng tray, “Makina ng pagsasalin”."
+    L"Nawawala ang mga file ng lokal na makina ng pagsasalin, kaya pansamantalang tumigil ang pagsasalin. I-install muli ang Emebala Chat para maibalik ang lokal na makina, o para lumipat sa cloud (Google) na pagsasalin, piliin ang “Google Translate” mula sa menu ng tray, “Makina ng pagsasalin”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 29. Hindi (hi)
@@ -2698,7 +3076,20 @@ const LocalizedStrings kStringsHindi = {
     L"ऊपर नया अनअनुवादित टेक्स्ट है। उसे अनुवाद करने के लिए कर्सर को उस पंक्ति के अंत में रखें और Enter दबाएं।",
     L"लोकल इंजन घटकों की मरम्मत हो रही है…",
     L"लोकल अनुवाद उपलब्ध नहीं है",
-    L"लोकल अनुवाद इंजन की फ़ाइलें नहीं मिलीं, इसलिए अनुवाद रुका हुआ है। लोकल इंजन को पुनर्स्थापित करने के लिए Emebala Chat को पुनः इंस्टॉल करें, या क्लाउड (Google) अनुवाद पर जाने के लिए, ट्रे मेनू से “अनुवाद इंजन” में “Google अनुवाद” चुनें।"
+    L"लोकल अनुवाद इंजन की फ़ाइलें नहीं मिलीं, इसलिए अनुवाद रुका हुआ है। लोकल इंजन को पुनर्स्थापित करने के लिए Emebala Chat को पुनः इंस्टॉल करें, या क्लाउड (Google) अनुवाद पर जाने के लिए, ट्रे मेनू से “अनुवाद इंजन” में “Google अनुवाद” चुनें।",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 30. Bengali (bn)
@@ -2787,7 +3178,20 @@ const LocalizedStrings kStringsBengali = {
     L"উপরে নতুন অনুবাদহীন টেক্সট আছে। এটি অনুবাদ করতে কার্সারটি সেই লাইনের শেষে রাখুন এবং Enter চাপুন।",
     L"লোকাল ইঞ্জিন উপাদান মেরামত হচ্ছে…",
     L"লোকাল অনুবাদ পাওয়া যাচ্ছে না",
-    L"লোকাল অনুবাদ ইঞ্জিনের ফাইল পাওয়া যায়নি, তাই অনুবাদ স্থগিত হয়েছে। লোকাল ইঞ্জিন পুনরুদ্ধার করতে Emebala Chat পুনরায় ইনস্টল করুন, অথবা ক্লাউড (Google) অনুবাদে যেতে, ট্রে মেনু থেকে “অনুবাদ ইঞ্জিন”-এ “Google অনুবাদ” নির্বাচন করুন।"
+    L"লোকাল অনুবাদ ইঞ্জিনের ফাইল পাওয়া যায়নি, তাই অনুবাদ স্থগিত হয়েছে। লোকাল ইঞ্জিন পুনরুদ্ধার করতে Emebala Chat পুনরায় ইনস্টল করুন, অথবা ক্লাউড (Google) অনুবাদে যেতে, ট্রে মেনু থেকে “অনুবাদ ইঞ্জিন”-এ “Google অনুবাদ” নির্বাচন করুন।",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -2877,7 +3281,20 @@ const LocalizedStrings kStringsArabic = {
     L"يوجد نص جديد غير مترجم في الأعلى. ضع المؤشر في نهاية ذلك السطر واضغط Enter للترجمة.",
     L"جارٍ إصلاح مكونات المحرك المحلي…",
     L"الترجمة المحلية غير متاحة",
-    L"ملفات محرك الترجمة المحلي مفقودة، لذا تم إيقاف الترجمة مؤقتًا. أعد تثبيت Emebala Chat لاستعادة المحرك المحلي، أو للتبديل إلى ترجمة السحابة (Google)، اختر “Google ترجمة” من قائمة الشريط ضمن “محرك الترجمة”."
+    L"ملفات محرك الترجمة المحلي مفقودة، لذا تم إيقاف الترجمة مؤقتًا. أعد تثبيت Emebala Chat لاستعادة المحرك المحلي، أو للتبديل إلى ترجمة السحابة (Google)، اختر “Google ترجمة” من قائمة الشريط ضمن “محرك الترجمة”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 32. Persian (fa) — RTL
@@ -2966,7 +3383,20 @@ const LocalizedStrings kStringsPersian = {
     L"در بالا متن جدیدی بدون ترجمه وجود دارد. برای ترجمه، مکان‌نما را در انتهای آن خط قرار دهید و Enter را بزنید.",
     L"در حال تعمیر اجزای موتور محلی…",
     L"ترجمه محلی در دسترس نیست",
-    L"فایل‌های موتور ترجمه محلی پیدا نشدند، بنابراین ترجمه متوقف شده است. برای بازیابی موتور محلی، Emebala Chat را دوباره نصب کنید، یا برای تغییر به ترجمه ابری (Google)، از منوی سینی، «موتور ترجمه»، «Google ترجمه» را انتخاب کنید."
+    L"فایل‌های موتور ترجمه محلی پیدا نشدند، بنابراین ترجمه متوقف شده است. برای بازیابی موتور محلی، Emebala Chat را دوباره نصب کنید، یا برای تغییر به ترجمه ابری (Google)، از منوی سینی، «موتور ترجمه»، «Google ترجمه» را انتخاب کنید.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 33. Urdu (ur) — RTL
@@ -3055,7 +3485,20 @@ const LocalizedStrings kStringsUrdu = {
     L"اوپر نیا غیر ترجمہ شدہ متن ہے۔ اس کا ترجمہ کرنے کے لیے کرسر کو اس لائن کے آخر میں رکھیں اور Enter دبائیں۔",
     L"مقامی انجن اجزا کی مرمت جاری ہے…",
     L"مقامی ترجمہ دستیاب نہیں ہے",
-    L"مقامی ترجمہ انجن کی فائلیں نہیں ملیں، اس لیے ترجمہ روک دیا گیا ہے۔ مقامی انجن کو بحال کرنے کے لیے Emebala Chat کو دوبارہ انسٹال کریں، یا کلاؤڈ (Google) ترجمے پر جانے کے لیے، ٹرے مینیو سے “ترجمہ انجن” میں “Google ترجمہ” منتخب کریں۔"
+    L"مقامی ترجمہ انجن کی فائلیں نہیں ملیں، اس لیے ترجمہ روک دیا گیا ہے۔ مقامی انجن کو بحال کرنے کے لیے Emebala Chat کو دوبارہ انسٹال کریں، یا کلاؤڈ (Google) ترجمے پر جانے کے لیے، ٹرے مینیو سے “ترجمہ انجن” میں “Google ترجمہ” منتخب کریں۔",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 34. Hebrew (he) — RTL
@@ -3144,7 +3587,20 @@ const LocalizedStrings kStringsHebrew = {
     L"יש טקסט חדש שלא תורגם למעלה. מקם את הסמן בסוף השורה ההיא ולחץ Enter כדי לתרגם.",
     L"מתקן את רכיבי המנוע המקומי…",
     L"התרגום המקומי אינו זמין",
-    L"קבצי מנוע התרגום המקומי חסרים, לכן התרגום הושהה. התקינו מחדש את Emebala Chat כדי לשחזר את המנוע המקומי, או כדי לעבור לתרגום בענן (Google), בחרו “Google תרגום” בתפריט השורה, “מנוע תרגום”."
+    L"קבצי מנוע התרגום המקומי חסרים, לכן התרגום הושהה. התקינו מחדש את Emebala Chat כדי לשחזר את המנוע המקומי, או כדי לעבור לתרגום בענן (Google), בחרו “Google תרגום” בתפריט השורה, “מנוע תרגום”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 35. Khmer (km)
@@ -3233,7 +3689,20 @@ const LocalizedStrings kStringsKhmer = {
     L"មានអត្ថបទថ្មីមិនទាន់បកប្រែខាងលើ។ ដើម្បីបកប្រែ សូមដាក់កូរ៉េស័រនៅចុងបន្ទាត់នោះ ហើយចុច Enter។",
     L"កំពុងជួសជុលសមាសភាគម៉ាស៊ីនក្នុងម៉ាស៊ីន…",
     L"ការបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើបានទេ",
-    L"រកមិនឃើញឯកសារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនទេ ដូច្នេះការបកប្រែត្រូវបានផ្អាកជាបណ្តោះអាសន្ន។ ដើម្បីស្តារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនឡើងវិញ សូមដំឡើង Emebala Chat ម្តងទៀត ឬដើម្បីប្តូរទៅការបកប្រែក្នុងពពក (Google) សូមជ្រើសរើស “Google បកប្រែ” ពីម៉ឺនុយ tray នៅ “ម៉ាស៊ីនបកប្រែ”។"
+    L"រកមិនឃើញឯកសារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនទេ ដូច្នេះការបកប្រែត្រូវបានផ្អាកជាបណ្តោះអាសន្ន។ ដើម្បីស្តារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនឡើងវិញ សូមដំឡើង Emebala Chat ម្តងទៀត ឬដើម្បីប្តូរទៅការបកប្រែក្នុងពពក (Google) សូមជ្រើសរើស “Google បកប្រែ” ពីម៉ឺនុយ tray នៅ “ម៉ាស៊ីនបកប្រែ”។",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 36. Lao (lo)
@@ -3322,7 +3791,20 @@ const LocalizedStrings kStringsLao = {
     L"ມີຂໍ້ຄວາມໃໝ່ທີ່ຍັງບໍ່ໄດ້ແປຢູ່ຂ້າງເທິງ. ເພື່ອແປ, ກະລຸນາວາງເຄີເຊີທີ່ທ້າຍບັນທັດນັ້ນ ແລ້ວກົດ Enter.",
     L"ກຳລັງສ້ອມແປງອົງປະກອບເຄື່ອງຈັກທ້ອງຖິ່ນ…",
     L"ການແປພາສາທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້",
-    L"ບໍ່ພົບໄຟລ໌ເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ຈຶ່ງຢຸດການແປພາສາຊົ່ວຄາວ. ເພື່ອຟື້ນຟູເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ກະລຸນາຕິດຕັ້ງ Emebala Chat ອີກຄັ້ງ, ຫຼື ເພື່ອປ່ຽນໄປໃຊ້ການແປພາສາຄລາວ (Google), ກະລຸນາເລືອກ “Google ແປພາສາ” ຈາກເມນູ tray, “ເຄື່ອງຈັກແປພາສາ”."
+    L"ບໍ່ພົບໄຟລ໌ເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ຈຶ່ງຢຸດການແປພາສາຊົ່ວຄາວ. ເພື່ອຟື້ນຟູເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ກະລຸນາຕິດຕັ້ງ Emebala Chat ອີກຄັ້ງ, ຫຼື ເພື່ອປ່ຽນໄປໃຊ້ການແປພາສາຄລາວ (Google), ກະລຸນາເລືອກ “Google ແປພາສາ” ຈາກເມນູ tray, “ເຄື່ອງຈັກແປພາສາ”.",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 // 37. Burmese (my)
@@ -3411,7 +3893,20 @@ const LocalizedStrings kStringsBurmese = {
     L"အပေါ်တွင် ဘာသာပြန်မထားသော စာသားအသစ်ရှိသည်။ ဘာသာပြန်ရန် ကာဆာကို ထိုစာကြောင်းအဆုံးသို့ ထားပြီး Enter နှိပ်ပါ။",
     L"ပရိုဂရမ်အင်ဂျင်အစိတ်အပိုင်းများကို ပြုပြင်နေသည်…",
     L"ဒေသန္တရ ဘာသာပြန်ချက် မရနိုင်ပါ",
-    L"ဒေသန္တရ ဘာသာပြန်အင်ဂျင် ဖိုင်များ မတွေ့ပါသဖြင့် ဘာသာပြန်မှုကို ယာယီရပ်နားထားပါသည်။ ဒေသန္တရ အင်ဂျင်ကို ပြန်လည်ရရှိရန် Emebala Chat ကို ပြန်လည်ထည့်သွင်းပါ၊ သို့မဟုတ် ကလောင်(Google) ဘာသာပြန်သို့ ပြောင်းလဲရန်၊ tray မီနူး၏ “ဘာသာပြန်အင်ဂျင်” မှ “Google ဘာသာပြန်” ကို ရွေးပါ။"
+    L"ဒေသန္တရ ဘာသာပြန်အင်ဂျင် ဖိုင်များ မတွေ့ပါသဖြင့် ဘာသာပြန်မှုကို ယာယီရပ်နားထားပါသည်။ ဒေသန္တရ အင်ဂျင်ကို ပြန်လည်ရရှိရန် Emebala Chat ကို ပြန်လည်ထည့်သွင်းပါ၊ သို့မဟုတ် ကလောင်(Google) ဘာသာပြန်သို့ ပြောင်းလဲရန်၊ tray မီနူး၏ “ဘာသာပြန်အင်ဂျင်” မှ “Google ဘာသာပြန်” ကို ရွေးပါ။",
+    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible Engine Settings",
+    L"OpenAI Compatible engine settings…",
+    L"Base URL",
+    L"API Key",
+    L"Model",
+    L"Fetch model list",
+    L"Could not fetch the model list. You can type a model name directly.",
+    L"Insecure connection (HTTP)",
+    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
+    L"OpenAI Compatible settings saved.",
+    L"Saved key: ",
+    L"The base URL is not valid. Example: https://api.openai.com",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -3650,9 +4145,25 @@ std::wstring I18n::Get(StringId id) {
         case StringId::RepairFailedTitle: return s.repair_failed_title;
         case StringId::RepairFailedBody:  return s.repair_failed_body;
 
+        // REQ-045 P4-3 (design §3b): OpenAI Compatible engine UI strings.
+        case StringId::MenuEngineOpenAi:        return s.menu_engine_openai;
+        case StringId::OpenAiSettingsTitle:     return s.openai_settings_title;
+        case StringId::OpenAiSettingsAction:    return s.openai_settings_action;
+        case StringId::OpenAiBaseUrlLabel:      return s.openai_base_url_label;
+        case StringId::OpenAiApiKeyLabel:       return s.openai_api_key_label;
+        case StringId::OpenAiModelLabel:        return s.openai_model_label;
+        case StringId::OpenAiFetchModels:       return s.openai_fetch_models;
+        case StringId::OpenAiFetchFailed:       return s.openai_fetch_failed;
+        case StringId::OpenAiHttpWarningTitle:  return s.openai_http_warning_title;
+        case StringId::OpenAiHttpWarningBody:   return s.openai_http_warning_body;
+        case StringId::OpenAiSaved:             return s.openai_saved;
+        case StringId::OpenAiKeyMasked:         return s.openai_key_masked;
+        case StringId::OpenAiInvalidBaseUrl:    return s.openai_invalid_base_url;
+
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it
     }
+    // unreachable
 }
 
 std::wstring I18n::GetLanguageDisplayName(std::string_view lang_code) {

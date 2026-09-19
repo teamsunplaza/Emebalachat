@@ -6,6 +6,7 @@
 #include "../src/sound.hpp"
 #include "../src/win32_input.hpp"
 #include "../src/google_translate.hpp"
+#include "../src/openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible engine
 #include "../src/engine.hpp"
 #include "../src/i18n.hpp"
 #include "../src/ui/badge.hpp"
@@ -14467,6 +14468,13 @@ void TestEngineHostAvailabilityAndMigration() {
 // protocol suites it complements.
 #include "m6_engine_host_verbatim_sync_tests.inc"
 
+// REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine — pure
+// security/policy helper tests (URL classification, SHA-256 digest, masking,
+// DPAPI round-trip, config round-trip, i18n presence). Test bodies staged as
+// an .inc next to this runner; registered near the end of main() per the
+// end-of-file pattern.
+#include "req045_openai_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14485,7 +14493,8 @@ namespace {
 // solely so the sizeof-based count below is checked against a struct with an
 // identical layout. It must be kept in sync; the static_assert catches drift.
 struct Req044LstrMirror {
-    const wchar_t* f[57];
+    // REQ-045 P4-3: 13 OpenAI fields appended to LocalizedStrings (57 -> 70).
+    const wchar_t* f[70];
 };
 
 } // namespace
@@ -14498,9 +14507,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 57
-    static_assert(kExpectedFieldCount == 57,
-                  "REQ-044: LocalizedStrings field count changed - update the "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 70 (REQ-045: 57+13)
+    static_assert(kExpectedFieldCount == 70,
+                  "REQ-044/045: LocalizedStrings field count changed - update the "
                   "i18n.cpp X-macro list, the kStringsKorean designated "
                   "initializers, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -14509,11 +14518,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 57,
-               "REQ-044: LocalizedStrings field count is 57 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 70,
+               "REQ-044/045: LocalizedStrings field count is 70 (X-macro static_assert "
                "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 57,
-               "REQ-044: StringId::EnumCount is 57 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 70,
+               "REQ-044/045: StringId::EnumCount is 70 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -14705,6 +14714,14 @@ int main() {
     // REQ-044 P4-5: i18n field-order structural defense (X-macro + Korean
     // designated-initializer pilot) — registered after the P4-4 verbatim suite.
     TestReq044I18nFieldOrder();
+    // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine suites —
+    // registered after the REQ-044 i18n suite, per the end-of-file pattern.
+    TestReq045OpenAiUrlSecurity();
+    TestReq045OpenAiSha256();
+    TestReq045OpenAiMasking();
+    TestReq045OpenAiDpapi();
+    TestReq045OpenAiConfigRoundTrip();
+    TestReq045OpenAiI18nPresent();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

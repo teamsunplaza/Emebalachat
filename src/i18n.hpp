@@ -181,6 +181,24 @@ enum class StringId {
     RepairFailedTitle,  // repair-unavailable notice title
     RepairFailedBody,   // local translation temporarily disabled + cloud-consent guidance
 
+    // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine. Tray
+    // entry + the settings dialog (base URL / key / model / fetch list /
+    // http warning / save confirmation / validation errors). Appended last
+    // so the EnumCount completeness loop covers them automatically (68x37).
+    MenuEngineOpenAi,          // tray engine submenu: "OpenAI Compatible"
+    OpenAiSettingsTitle,       // dialog caption
+    OpenAiSettingsAction,      // tray/settings entry that opens the dialog
+    OpenAiBaseUrlLabel,        // Base URL edit label
+    OpenAiApiKeyLabel,         // API Key edit label
+    OpenAiModelLabel,          // Model combo label
+    OpenAiFetchModels,         // "Fetch model list" button
+    OpenAiFetchFailed,         // notice when the model list could not be fetched
+    OpenAiHttpWarningTitle,    // plaintext-http consent dialog title
+    OpenAiHttpWarningBody,     // plaintext-http consent dialog body
+    OpenAiSaved,               // post-save confirmation
+    OpenAiKeyMasked,           // masked key read-back display
+    OpenAiInvalidBaseUrl,      // validation error when the base URL is unusable
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

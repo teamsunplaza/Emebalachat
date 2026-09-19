@@ -316,6 +316,32 @@ void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
     }
 }
 
+// REQ-045 P4-3 (design §3b): parse the nested "openai" object captured
+// verbatim by the reader (same convention as ParseEngineHostBlock above).
+// Absent keys keep the default-initialized values; a malformed block keeps
+// ALL defaults. The key is stored DPAPI-protected (never cleartext); the
+// digest is expected to be exactly 64 lowercase hex chars when present.
+void ParseOpenAiBlock(const std::string& raw, OpenAiConfig& out) {
+    SimpleJsonReader reader(raw);
+    std::vector<std::pair<std::string, std::string>> pairs;
+    if (!reader.ParseObject(pairs)) {
+        return; // malformed block: keep defaults
+    }
+    for (const auto& [k, v] : pairs) {
+        if (k == "base_url") {
+            out.base_url = v;
+        } else if (k == "model") {
+            out.model = v;
+        } else if (k == "api_key_dpapi") {
+            out.api_key_dpapi = v;
+        } else if (k == "api_key_sha256") {
+            out.api_key_sha256 = v;
+        } else if (k == "http_consent_given") {
+            out.http_consent_given = (v == "true");
+        }
+    }
+}
+
 } // namespace
 
 const std::vector<LanguageInfo>& GetSupportedLanguages() {
@@ -1039,6 +1065,16 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "    \"spawn\": " << (engine_host.spawn ? "true" : "false") << ",\n";
     ss << "    \"idle_exit_ms\": " << engine_host.idle_exit_ms << "\n";
     ss << "  },\n";
+    // REQ-045 P4-3 (design §3b): the openai block is ALWAYS serialized so a
+    // round trip preserves the values (same sticky-key policy as engine_host).
+    // The key is written DPAPI-protected, never in cleartext.
+    ss << "  \"openai\": {\n";
+    ss << "    \"base_url\": \"" << EscapeJsonString(openai.base_url) << "\",\n";
+    ss << "    \"model\": \"" << EscapeJsonString(openai.model) << "\",\n";
+    ss << "    \"api_key_dpapi\": \"" << EscapeJsonString(openai.api_key_dpapi) << "\",\n";
+    ss << "    \"api_key_sha256\": \"" << EscapeJsonString(openai.api_key_sha256) << "\",\n";
+    ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << "\n";
+    ss << "  },\n";
     ss << "  \"diag_log_enabled\": " << (diag_log_enabled ? "true" : "false") << ",\n";
     ss << "  \"diag_log_content\": " << (diag_log_content ? "true" : "false") << ",\n";
     ss << "  \"privacy_notice_shown\": " << (privacy_notice_shown ? "true" : "false") << ",\n";
@@ -1102,6 +1138,10 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // REQ-043: nested block captured verbatim by the reader; absent
             // on every pre-REQ-043 config.json => the defaults survive.
             ParseEngineHostBlock(v, engine_host);
+        } else if (k == "openai") {
+            // REQ-045 P4-3: nested block captured verbatim by the reader;
+            // absent on every pre-REQ-045 config.json => the defaults survive.
+            ParseOpenAiBlock(v, openai);
         } else if (k == "diag_log_enabled") {
             // REQ-201: key absent on every pre-260911 config.json => the field
             // keeps its compile-time default false (opt-in log FILE sink — the

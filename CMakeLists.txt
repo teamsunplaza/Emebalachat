@@ -196,6 +196,11 @@ add_library(Emebalachat_core STATIC
     src/win32_input.cpp
     src/google_translate.cpp
     src/engine.cpp
+    # REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible cloud engine —
+    # WinHTTP client (google_translate pattern) + DPAPI key protect/unprotect
+    # + CNG SHA-256 integrity digest + display masking. Chat exe links this
+    # (core), so bcrypt/crypt32 are added to the core link set below.
+    src/openai_compatible_client.cpp
     # REQ-043 (M6 T1, design §4.2/D-1): translation_common.cpp moved out to
     # Emebalachat_engine_core (physical move). The llama-adjacent pure helpers
     # moved to src/engine_core/engine_core_helpers.cpp; TruncateHeadTailWindow
@@ -216,6 +221,7 @@ add_library(Emebalachat_core STATIC
     src/engine_host_bootstrap_client.cpp
     src/i18n.cpp
     src/ui/about_window.cpp
+    src/ui/openai_settings_window.cpp
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
     src/ui/dpi.cpp
@@ -276,6 +282,10 @@ target_link_libraries(Emebalachat_core PUBLIC
     winmm
     winhttp
     wtsapi32
+    # REQ-045 P4-3 (design §3b): bcrypt = CNG SHA-256 (key integrity digest,
+    # openai_compatible_client); crypt32 = DPAPI CryptProtectData key storage.
+    bcrypt
+    crypt32
     d2d1
     dwrite
     dxgi

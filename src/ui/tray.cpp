@@ -15,6 +15,10 @@ enum TrayMenuId : UINT {
     ID_TRAY_STATUS = 2001,
     ID_TRAY_ENGINE_GOOGLE = 2010,
     ID_TRAY_ENGINE_LOCAL = 2011,
+    // REQ-045 P4-3 (design §3b): OpenAI Compatible engine. Uses the next
+    // free slot in the engine band (2010/2011/2012) — no collision with the
+    // 2020+ control band.
+    ID_TRAY_ENGINE_OPENAI = 2012,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
     ID_TRAY_SOUND = 2040,
@@ -240,15 +244,16 @@ void SystemTray::UpdateStatus(
     bool auto_send,
     bool sound_enabled,
     bool badge_visible,
-    bool preferred_engine_google
+    int preferred_engine
 ) {
     bool iconChanged = (is_active_ != active);
     is_active_ = active;
     // REQ-029-B: display-only capture (tooltip + tray_update log below); the
-    // Engine submenu check mark now reads preferred_engine_google_ instead.
+    // Engine submenu check mark now reads preferred_engine_ instead.
     active_engine_ = active_engine;
-    // REQ-029-B (design §2.1 change 2): single source of truth for the check.
-    preferred_engine_google_ = preferred_engine_google;
+    // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: single source of truth
+    // for the check (0 = Google, 1 = Local, 2 = OpenAI Compatible).
+    preferred_engine_ = preferred_engine;
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
@@ -300,9 +305,11 @@ void SystemTray::ShowContextMenu() {
     // appeared checked while Local was configured. active_engine_ remains
     // display-only.
     HMENU hEngineMenu = ::CreatePopupMenu();
-    bool isGoogle = preferred_engine_google_;
-    ::AppendMenuW(hEngineMenu, MF_STRING | (isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
-    ::AppendMenuW(hEngineMenu, MF_STRING | (!isGoogle ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
+    // REQ-045 P4-3: 3-way check (0 = Google, 1 = Local, 2 = OpenAI).
+    const int pref = preferred_engine_;
+    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 0 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
+    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 1 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
+    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 2 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_OPENAI, I18n::Get(StringId::MenuEngineOpenAi).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 
     // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
@@ -422,6 +429,9 @@ void SystemTray::ShowContextMenu() {
         callbacks_.on_select_engine(0);
     } else if (cmd == ID_TRAY_ENGINE_LOCAL && callbacks_.on_select_engine) {
         callbacks_.on_select_engine(1);
+    } else if (cmd == ID_TRAY_ENGINE_OPENAI && callbacks_.on_select_engine) {
+        // REQ-045 P4-3: index 2 = OpenAI Compatible.
+        callbacks_.on_select_engine(2);
     } else if (cmd == ID_TRAY_SWAP && callbacks_.on_swap_languages) {
         callbacks_.on_swap_languages();
     } else if (cmd == ID_TRAY_AUTOSEND && callbacks_.on_toggle_auto_send) {
