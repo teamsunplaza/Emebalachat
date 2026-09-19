@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Emebalachat VERSION 0.10.1 LANGUAGES C CXX RC)
+project(Emebalachat VERSION 0.10.2 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -245,7 +245,7 @@ endif()
 # REQ-006 (plan §2.4): single source of truth for the runtime version string.
 # src/version.hpp stringizes this token (EMBALA_VERSION_STR two-level macro),
 # so the value MUST be passed UNQUOTED: quoting it here would double-stringize
-# into "\"0.10.1\"" at preprocessing. PUBLIC: every consumer of the core lib
+# into "\"0.10.2\"" at preprocessing. PUBLIC: every consumer of the core lib
 # (Emebalachat exe, run_tests) sees the same value.
 target_compile_definitions(Emebalachat_core PUBLIC EMEBALACHAT_VERSION_STR=${PROJECT_VERSION})
 

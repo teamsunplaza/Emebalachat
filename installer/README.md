@@ -79,7 +79,7 @@ iscc.exe setup.iss
 After a successful compile, the installer will be created at:
 
 ```
-output\Emebalachat_Setup_0.10.1.exe
+output\Emebalachat_Setup_0.10.2.exe
 ```
 
 ## Optional: Custom Icons and Images
