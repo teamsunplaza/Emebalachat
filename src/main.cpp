@@ -3006,12 +3006,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // teardown continues.
     emebalachat::DrainLanguageSyncQueue(); // discard any residue
     // REQ-045 P4-8 (item 1): drain any still-queued "engine unavailable" modal
-    // requests at the identical shutdown position (all producers joined above,
-    // no new posts possible). The queue holds std::wstring payloads whose
-    // memory is released by the swap-out; the drain prevents an apply-after-
-    // destroy path on the surfaces the modal parents to. Any
-    // kMsgEngineUnavailableModal notification still sitting in the OS queue is
-    // harmless (carries no payload — pure (0,0) wake-up).
+    // requests at the identical shutdown position (all producers joined above).
+    // REQ-048 P1 note: the detached bootstrap grace thread (up to 120 s) is NOT
+    // a joined producer — it may still PostMessageW after this drain; a post to
+    // an already-destroyed controller HWND fails harmlessly (FALSE return, no
+    // payload — pure (0,0) wake-up), same accepted trade-off as the REQ-045
+    // repair thread. The queue itself holds std::wstring payloads whose memory
+    // is released by the swap-out; the drain prevents an apply-after-destroy
+    // path on the surfaces the modal parents to. Any kMsgEngineUnavailableModal
+    // notification still sitting in the OS queue is harmless.
     emebalachat::DrainEngineModalQueue();
     // REQ-043 (M6 T5): the warmup_thread / engine_switch_preload_thread joins
     // are removed with the preload machinery — no preload thread exists

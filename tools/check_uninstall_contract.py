@@ -24,6 +24,10 @@ from the script source on every run:
            installer languages intentionally fall back to english.
   CHECK 6  Frozen anchors are still present (AppId GUID, pinned model
            SHA-256, unins000 fixed names, F1 SharedEngine page wiring).
+  CHECK 7  Call-site visibility (P5 review #5): IsEmebalaProcessRunning() is
+           actually invoked inside CurUninstallStepChanged, and BOTH preserve
+           branches show the kept-notice box — deleting an else-if branch or
+           the probe call must trip this gate even when CHECKs 1-4 pass.
 
 Exit code 0 = PASS, non-zero = violation (usable as a pre-build gate).
 
@@ -165,6 +169,23 @@ def check_contract(text: str) -> list[str]:
     for label, pattern in FROZEN:
         if not re.search(pattern, text):
             failures.append(f"CHECK 6: frozen anchor lost: {label}")
+
+    # -- CHECK 7: call-site visibility (P5 review #5) ----------------------
+    # The detectors must not only EXIST but be WIRED into the uninstall flow:
+    # deleting the else-if branch or the probe call entirely must trip this
+    # gate even though CHECKs 1-4 still pass.
+    if uninstall:
+        if not re.search(r"IsEmebalaProcessRunning\(\)", uninstall):
+            failures.append(
+                "CHECK 7: IsEmebalaProcessRunning() is never called inside "
+                "CurUninstallStepChanged (unwired detector)")
+        kept_notices = len(re.findall(
+            r"(?:Suppressible)?MsgBox\(\s*CustomMessage\('SharedEngineKeptInUseTitle'\)",
+            uninstall))
+        if kept_notices < 2:
+            failures.append(
+                f"CHECK 7: expected a kept-notice box in BOTH preserve branches, "
+                f"found {kept_notices}")
 
     return failures
 

@@ -494,7 +494,8 @@ std::wstring GoogleTranslate::Translate(
     // worker see "translation == source" and silently skip the paste (no
     // failure sound, no modal) while also clearing the success sentinel that
     // latches the modal — the user-device P3 무번역 root cause. A network
-    // failure MUST instead converge on the EngineFailed path (failure sound +
+    // failure MUST instead be recorded as EngineFailed (worker surfaces the
+    // failure sound; the strict-local paths also re-arm the engine-unavailable
     // modal); silent identity passthrough is forbidden. The SUCCESS contract
     // above is unchanged: any non-empty parse still returns the translated
     // text (plus the SEC-M1 truncation notice).
