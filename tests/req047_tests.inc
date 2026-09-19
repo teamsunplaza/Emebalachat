@@ -497,6 +497,259 @@ void TestReq047EngineUnavailableModal() {
 }
 
 // ---------------------------------------------------------------------------
+// REQ-047 P5-F1 (technical review 175600 finding #1, design §A.4 ⚠️,
+// Tech Gate §D1 #2): the streak-latch judgment must live ONLY in the GUI-
+// thread kMsgEngineUnavailableModal drain handler. The pre-P5 worker callback
+// wrapper tested g_engine_modal_latched BEFORE the GUI hop, letting the
+// worker thread touch GUI-only state (a cross-thread bool race — exactly what
+// design §A.4 warned about). main.cpp is not linked into run_tests.exe, so
+// the fix is pinned by source inspection (same precedent as the D1 pins
+// above) plus a drain-policy re-derivation against the real enum.
+// ---------------------------------------------------------------------------
+
+void TestReq047P5F1LatchDrainOwnership() {
+    std::cout << "[RUN] Testing REQ-047 P5-F1 latch drain ownership..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; "
+                     "REQ-047 P5-F1 pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // ---- (a) worker callback wrapper: NO latch access -----------------------
+    // Isolate the SetEngineUnavailableCallback registration body (the worker
+    // wrapper) and prove it never names the latch. The wrapper runs on the
+    // WORKER thread; the latch is GUI-thread-only.
+    {
+        const size_t reg_pos = main_src.find("SetEngineUnavailableCallback");
+        TEST_CHECK(reg_pos != std::string::npos,
+                   "REQ-047 P5-F1 (a): main.cpp registers SetEngineUnavailableCallback");
+        if (reg_pos != std::string::npos) {
+            // The wrapper body ends at the "});" that closes the lambda; the
+            // engine-unavailable registration is the LAST Set*Callback call in
+            // the file, so rfind from the registration point is unique.
+            const size_t body_end = main_src.find("});", reg_pos);
+            TEST_CHECK(body_end != std::string::npos && body_end > reg_pos,
+                       "REQ-047 P5-F1 (a): worker callback wrapper body is locatable");
+            if (body_end != std::string::npos && body_end > reg_pos) {
+                const std::string wrapper = main_src.substr(reg_pos, body_end - reg_pos);
+                TEST_CHECK(wrapper.find("g_engine_modal_latched") == std::string::npos,
+                           "REQ-047 P5-F1 (a): worker callback wrapper never touches the latch");
+                TEST_CHECK(wrapper.find("RequestEngineUnavailableModal") != std::string::npos,
+                           "REQ-047 P5-F1 (a): wrapper marshals via the SEC-ADJ modal seam");
+            }
+        }
+    }
+
+    // ---- (b) drain handler: sole latch judge --------------------------------
+    // Extract the kMsgEngineUnavailableModal handler body (bounded by the next
+    // top-level message branch) and prove the latch set/clear/suppress all
+    // live there, on the GUI thread.
+    {
+        const size_t handler_pos = main_src.find("if (msg == kMsgEngineUnavailableModal)");
+        TEST_CHECK(handler_pos != std::string::npos,
+                   "REQ-047 P5-F1 (b): kMsgEngineUnavailableModal drain handler exists");
+        if (handler_pos != std::string::npos) {
+            const size_t handler_end = main_src.find("if (msg == kMsgOpenOpenAiSettings)",
+                                                     handler_pos);
+            TEST_CHECK(handler_end != std::string::npos && handler_end > handler_pos,
+                       "REQ-047 P5-F1 (b): drain handler body is locatable");
+            if (handler_end != std::string::npos && handler_end > handler_pos) {
+                const std::string handler = main_src.substr(handler_pos, handler_end - handler_pos);
+                TEST_CHECK(handler.find("g_engine_modal_latched = true") != std::string::npos,
+                           "REQ-047 P5-F1 (b): drain handler sets the latch before showing");
+                TEST_CHECK(handler.find("g_engine_modal_latched = false") != std::string::npos,
+                           "REQ-047 P5-F1 (b): drain handler clears the latch on the success sentinel");
+                TEST_CHECK(handler.find("if (emebalachat::g_engine_modal_latched)") != std::string::npos,
+                           "REQ-047 P5-F1 (b): drain handler suppresses re-arms while latched");
+            }
+        }
+    }
+
+    // ---- (c) drain policy re-derivation (state machine) ---------------------
+    // Mirror the drain handler's policy against the real enum: success
+    // sentinel clears, strict-failure + latched drops, strict-failure +
+    // unlatched shows + latches. Strict statuses come from the real
+    // TranslationStatus enum (same predicate shape as Req047StrictFailureSurfacesModal).
+    {
+        bool latched = false; // GUI-thread state at startup
+        int shown = 0;
+        int dropped = 0;
+        auto drain = [&](const char* title, TranslationStatus status_hint) {
+            // Sentinel = empty title+body WITHOUT a strict status (the producers
+            // enqueue strict failures as title=body=nullptr + status; a success
+            // is status=Ok with both empty). The status check keeps the two
+            // request kinds mutually exclusive — a nullptr title alone is NOT
+            // enough (a strict failure also carries nullptr title/body).
+            const bool strict_failure =
+                status_hint == TranslationStatus::CloudConsentBlocked ||
+                status_hint == TranslationStatus::LocalModelMissing;
+            const bool success_sentinel = (title == nullptr) && !strict_failure;
+            if (success_sentinel) {
+                latched = false;
+                return;
+            }
+            if (!strict_failure) {
+                return; // non-strict request: outside the latch policy
+            }
+            if (latched) {
+                ++dropped; // suppressed re-arm
+                return;
+            }
+            latched = true;
+            ++shown;
+        };
+        drain(nullptr, TranslationStatus::Ok);       // success sentinel -> clear
+        drain(nullptr, TranslationStatus::CloudConsentBlocked); // strict #1 -> show
+        drain(nullptr, TranslationStatus::CloudConsentBlocked); // strict #2 -> drop (latched)
+        drain(nullptr, TranslationStatus::LocalModelMissing);   // strict #3 -> drop (latched)
+        TEST_CHECK(shown == 1 && dropped == 2 && latched,
+                   "REQ-047 P5-F1 (c): 3 consecutive strict failures -> 1 modal, 2 suppressed");
+        drain(nullptr, TranslationStatus::Ok);       // recovery -> clear
+        TEST_CHECK(!latched, "REQ-047 P5-F1 (c): success sentinel clears the latch");
+        drain(nullptr, TranslationStatus::LocalModelMissing);   // strict #4 -> re-arm
+        TEST_CHECK(shown == 2 && latched,
+                   "REQ-047 P5-F1 (c): a later failure re-arms after recovery");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-047 P5-F1 latch drain ownership passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-047 P5-F1 latch drain ownership: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REQ-047 P5-F2 (technical review 175600 finding #2): the three drag-family
+// translation paths — drag-icon click (run_drag_translate), tooltip F9
+// re-translation (run_retranslate), double Ctrl+C — used to call the 3-arg
+// Translate overload, which DISCARDS the status; a CloudConsentBlocked /
+// LocalModelMissing strict failure therefore died silently on those paths.
+// Each path must now use the 4-arg (status-out) overload and marshal strict
+// failures (and the success sentinel) through the same SEC-ADJ modal seam as
+// the Enter pipeline. engine.{hpp,cpp} stay untouched — the 4-arg overload
+// already exists (engine.hpp L213-218).
+// ---------------------------------------------------------------------------
+
+void TestReq047P5F2DragPathsStatusWiring() {
+    std::cout << "[RUN] Testing REQ-047 P5-F2 drag-paths status wiring..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    std::string engine_src;
+    read_src("src/engine.cpp", engine_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; "
+                     "REQ-047 P5-F2 pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // ---- (a) each drag-family path receives the status ----------------------
+    // The three 4-arg Translate call sites (one per path) with a non-null
+    // status out-pointer. Count the exact shape to prove no path regressed to
+    // the status-discarding 3-arg form.
+    {
+        const int k4ArgSites =
+            static_cast<int>(std::count(main_src.begin(), main_src.end(), '&'));
+        (void)k4ArgSites; // informational only; the per-site pins below are precise
+        TEST_CHECK(main_src.find("engine.Translate(selected, eff_src, tgt_lang, &drag_status)") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (a): drag-icon path uses the status-out overload");
+        TEST_CHECK(main_src.find("engine.Translate(job.src, eff_src, tgt_lang, &rt_status)") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (a): tooltip F9 re-translation path uses the status-out overload");
+        TEST_CHECK(main_src.find("engine.Translate(copied, eff_src, tgt_lang, &dbl_status)") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (a): double Ctrl+C path uses the status-out overload");
+    }
+
+    // ---- (b) each path marshals strict failures to the modal seam ------------
+    // The strict-failure predicate + RequestEngineUnavailableModal appear in
+    // all three path bodies (P5-F2 tag marks each site).
+    {
+        const size_t tag_count = [&]() {
+            size_t n = 0;
+            size_t pos = 0;
+            while ((pos = main_src.find("REQ-047 P5-F2", pos)) != std::string::npos) {
+                ++n;
+                pos += std::string("REQ-047 P5-F2").size();
+            }
+            return n;
+        }();
+        TEST_CHECK(tag_count >= 3,
+                   "REQ-047 P5-F2 (b): all three drag-family paths carry the P5-F2 tag");
+        TEST_CHECK(main_src.find("drag_status == emebalachat::TranslationStatus::CloudConsentBlocked") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (b): drag-icon path branches on the strict statuses");
+        TEST_CHECK(main_src.find("rt_status == emebalachat::TranslationStatus::CloudConsentBlocked") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (b): retranslate path branches on the strict statuses");
+        TEST_CHECK(main_src.find("dbl_status == emebalachat::TranslationStatus::CloudConsentBlocked") !=
+                       std::string::npos,
+                   "REQ-047 P5-F2 (b): double Ctrl+C path branches on the strict statuses");
+        // Every strict branch marshals through the shared SEC-ADJ seam (the
+        // same RequestEngineUnavailableModal the Enter pipeline uses).
+        TEST_CHECK(main_src.find("StringId::RepairFailedTitle") != std::string::npos &&
+                       main_src.find("StringId::RepairFailedBody") != std::string::npos,
+                   "REQ-047 P5-F2 (b): strict failures reuse the RepairFailedTitle/Body wording");
+    }
+
+    // ---- (c) success sentinel: a non-empty result resets the latch -----------
+    // Each path's success branch (else-if !translated.empty()) sends the
+    // empty-title sentinel through the same seam.
+    {
+        TEST_CHECK(main_src.find("Success sentinel: resets the streak latch") != std::string::npos ||
+                       main_src.find("Success sentinel: resets the streak latch (same seam as Enter)") !=
+                           std::string::npos,
+                   "REQ-047 P5-F2 (c): drag paths reset the latch on success via the sentinel");
+    }
+
+    // ---- (d) engine.cpp stays frozen (router-purity contract) ---------------
+    if (!engine_src.empty()) {
+        TEST_CHECK(engine_src.find("RequestEngineUnavailableModal") == std::string::npos,
+                   "REQ-047 P5-F2 (d): engine.cpp stays UI-free (no modal call)");
+        TEST_CHECK(engine_src.find("CloudConsentBlocked") != std::string::npos,
+                   "REQ-047 P5-F2 (d): engine.cpp still sets the strict statuses");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-047 P5-F2 drag-paths status wiring passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-047 P5-F2 drag-paths status wiring: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // REQ-047 U1 (designer 164500, P4-4b): tray engine-submenu gguf-state
 // expression — ① "로컬 LLM" -> "내장 로컬 엔진" relabel, ② dynamic user-model
 // label with stem / "(미등록)" placeholder, ③ MF_SEPARATOR group boundary

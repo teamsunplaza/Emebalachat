@@ -15207,6 +15207,8 @@ int main() {
     TestReq047BundledDuplicateI18n();
     TestReq047OpenAiDeferredOpen();
     TestReq047EngineUnavailableModal();
+    TestReq047P5F1LatchDrainOwnership();
+    TestReq047P5F2DragPathsStatusWiring();
     TestReq047U1TrayGgufLabels();
 
     std::cout << "========================================" << std::endl;

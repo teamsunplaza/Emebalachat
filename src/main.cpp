@@ -487,17 +487,19 @@ std::mutex g_engine_modal_mu;
 std::deque<EngineUnavailableModalRequest> g_engine_modal_queue;
 
 // ---- REQ-047 D1 (design §A.4, Tech Gate §D1 #2): streak latch --------------
-// GUI-THREAD-ONLY state (every read/write happens on the GUI thread — either
-// in ControllerWndProc's kMsgEngineUnavailableModal drain handler or inside
-// RequestEngineUnavailableModal's same-thread fast path, which runs inline on
-// the GUI thread when called from the worker callback wrapper). The latch
-// suppresses re-arming the modal while a previously surfaced failure is still
-// unresolved: a strict-failure signal sets it when the modal is enqueued, and
-// a success signal (TranslationStatus::Ok from the worker's success path)
-// clears it so a LATER recurrence re-arms the modal. Because the only writers
-// are GUI-thread sites, no cross-thread synchronization is needed — the
-// worker thread never touches this flag (it signals through the already
-// marshaled RequestEngineUnavailableModal seam).
+// GUI-THREAD-ONLY state — REQ-047 P5-F1 (technical review 175600 finding #1,
+// design §A.4 ⚠️): EVERY read/write of the latch now happens inside the
+// kMsgEngineUnavailableModal drain handler below (the GUI thread). The
+// pre-P5 worker callback wrapper used to test the latch BEFORE the GUI hop,
+// which let the worker thread touch GUI-only state — the exact race design
+// §A.4 warned about. The latch suppresses re-arming the modal while a
+// previously surfaced failure is still unresolved: the drain handler sets it
+// when a strict-failure modal is about to show, and clears it when the
+// success sentinel (empty title+body) drains so a LATER recurrence re-arms
+// the modal. Non-GUI producers (worker thread, drag/retranslate/dbl-Ctrl+C
+// workers, detached repair thread) only ever ENQUEUE through
+// RequestEngineUnavailableModal — the latch judgment itself lives exclusively
+// in the drain handler, so no cross-thread synchronization is needed.
 bool g_engine_modal_latched = false;
 // Consumer-side drain helper: swaps out ALL pending requests in FIFO order.
 std::deque<EngineUnavailableModalRequest> DrainEngineModalQueue() {
@@ -651,12 +653,16 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // lock, so entries enqueued while an earlier one is being applied are
         // still consumed by this same wake-up).
         //
-        // REQ-047 D1 (design §A.4, Tech Gate §D1 #2): the streak latch lives
-        // HERE — the only GUI-thread drain site — so the worker thread never
-        // touches it. A success signal (TranslationStatus::Ok) clears the
-        // latch WITHOUT enqueuing a modal; a strict-failure signal sets the
-        // latch when its modal request is enqueued, suppressing re-arms until
-        // the next success.
+        // REQ-047 D1 (design §A.4, Tech Gate §D1 #2) + P5-F1 (technical review
+        // 175600 finding #1): the streak latch judgment lives HERE — the only
+        // GUI-thread drain site — so producer threads (worker, drag icon,
+        // tooltip re-translation, double Ctrl+C) never touch it. Producers
+        // enqueue unconditionally; the drain applies the policy:
+        //   * success sentinel (empty title+body)  -> clear the latch
+        //     (a later recurrence re-arms the modal)
+        //   * strict-failure request + latch clear -> show + latch
+        //   * strict-failure request + latch set   -> drop (suppressed re-arm)
+        // every-trigger WITH streak-latch, per design §A.4.
         for (;;) {
             EngineUnavailableModalRequest req;
             {
@@ -673,6 +679,14 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 // Clear the latch so a LATER recurrence re-arms the modal.
                 emebalachat::g_engine_modal_latched = false;
                 DIAG_F("MAIN/EngineModal/010: translation recovered; streak latch cleared\n");
+                continue;
+            }
+            if (emebalachat::g_engine_modal_latched) {
+                // REQ-047 P5-F1: the failure this modal describes is still
+                // unresolved — suppress the re-arm (design §A.4 every-trigger
+                // + streak-latch). Judged HERE, on the GUI thread; producers
+                // enqueue unconditionally.
+                DIAG_F("MAIN/EngineModal/030: strict failure while latched; modal suppressed\n");
                 continue;
             }
             emebalachat::g_engine_modal_latched = true; // modal about to show
@@ -1349,10 +1363,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipUntranslatedAbove));
     });
 
-    // REQ-047 D1 (design §A-1/A.4, Tech Gate §D1): surface the strict local
-    // failure that REQ-046 d4d5108 deleted — the "Enter pressed, nothing
-    // translated, no notice" symptom. The worker thread calls this on exactly
-    // two outcomes (see the worker.cpp site):
+    // REQ-047 D1 (design §A-1/A.4, Tech Gate §D1) + P5-F1 (technical review
+    // 175600 finding #1): surface the strict local failure that REQ-046
+    // d4d5108 deleted — the "Enter pressed, nothing translated, no notice"
+    // symptom. The worker thread calls this on exactly two outcomes (see the
+    // worker.cpp site):
     //   * TranslationStatus::CloudConsentBlocked / LocalModelMissing — the
     //     strict local path failed with the H2 consent gate closed or no local
     //     source at all. Marshal the existing RepairFailed* modal through the
@@ -1362,22 +1377,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //     gated the modal is over. Send the EMPTY-title sentinel through the
     //     SAME seam; the kMsgEngineUnavailableModal drain handler recognizes
     //     it and clears the GUI-thread latch so a later recurrence re-arms.
-    // The GUI-thread streak latch (g_engine_modal_latched) suppresses re-arms
-    // while the failure is still unresolved — every-trigger WITH streak-latch,
-    // per design §A.4. It is read/written ONLY on the GUI thread (the drain
-    // handler and this wrapper's inline-GUI fast path); the worker thread
-    // never touches it (Tech Gate §D1 #2).
+    // P5-F1: the wrapper NO LONGER reads g_engine_modal_latched. The latch
+    // judgment (suppress-when-latched) moved into the kMsgEngineUnavailableModal
+    // drain handler — the only GUI-thread site — so this callback, which runs
+    // on the WORKER thread, never touches GUI-only state (design §A.4 ⚠️,
+    // Tech Gate §D1 #2: no cross-thread bool sharing).
     worker.SetEngineUnavailableCallback([](emebalachat::TranslationStatus status) {
         if (status == emebalachat::TranslationStatus::Ok) {
             // Success sentinel: no title/body — the drain handler treats an
             // empty request as the latch-reset signal.
             emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
                                                        std::wstring(), std::wstring());
-            return;
-        }
-        if (emebalachat::g_engine_modal_latched) {
-            // The failure this modal describes is still unresolved — suppress
-            // the re-arm (design §A.4 every-trigger + streak-latch).
             return;
         }
         DIAG_F("MAIN/EngineModal/020: strict local failure status=%d; "
@@ -2419,8 +2429,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config, badge, emebalachat::ToUtf16(eff_src), emebalachat::ToUtf16(tgt_lang));
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(selected, eff_src, tgt_lang);
+        // REQ-047 P5-F2 (technical review 175600 finding #2): receive the
+        // status instead of discarding it — the 3-arg overload swallowed
+        // CloudConsentBlocked / LocalModelMissing, so a strict local failure
+        // on this path died silently. Feed the outcome through the same
+        // engine-unavailable seam the Enter pipeline uses (the drain handler
+        // applies the streak-latch policy on the GUI thread).
+        emebalachat::TranslationStatus drag_status = emebalachat::TranslationStatus::Ok;
+        std::wstring translated = engine.Translate(selected, eff_src, tgt_lang, &drag_status);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
+        if (drag_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
+            drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            emebalachat::RequestEngineUnavailableModal(
+                emebalachat::g_hControllerWnd,
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+        } else if (!translated.empty()) {
+            // Success sentinel: resets the streak latch so a later strict
+            // failure re-arms the modal (same path as the Enter pipeline).
+            emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
+                                                       std::wstring(), std::wstring());
+        }
 
         // Worker thread, so marshal the D2D render to the GUI thread via the
         // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
@@ -2530,8 +2559,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                  tgt_user_explicit ? 1 : 0);
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang);
+        // REQ-047 P5-F2 (technical review 175600 finding #2): same strict-
+        // failure surfacing as the drag path above — the 3-arg overload used
+        // to discard the status, leaving a strict local failure silent.
+        emebalachat::TranslationStatus rt_status = emebalachat::TranslationStatus::Ok;
+        std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang, &rt_status);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
+        if (rt_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
+            rt_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            emebalachat::RequestEngineUnavailableModal(
+                emebalachat::g_hControllerWnd,
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+            return; // existing content kept (ADR-A1-5); the modal carries the notice
+        }
+        if (!translated.empty()) {
+            // Success sentinel: resets the streak latch (same seam as Enter).
+            emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
+                                                       std::wstring(), std::wstring());
+        }
 
         if (translated.empty()) {
             DIAG_LOG("UI", "retranslate_skip_empty gen=%llu existing_content_kept=1",
@@ -2670,8 +2716,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config, badge, emebalachat::ToUtf16(eff_src), emebalachat::ToUtf16(tgt_lang));
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
-        std::wstring translated = engine.Translate(copied, eff_src, tgt_lang);
+        // REQ-047 P5-F2 (technical review 175600 finding #2): same strict-
+        // failure surfacing as the other two drag-family paths — the 3-arg
+        // overload used to discard the status, leaving a strict local failure
+        // silent.
+        emebalachat::TranslationStatus dbl_status = emebalachat::TranslationStatus::Ok;
+        std::wstring translated = engine.Translate(copied, eff_src, tgt_lang, &dbl_status);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
+        if (dbl_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
+            dbl_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            emebalachat::RequestEngineUnavailableModal(
+                emebalachat::g_hControllerWnd,
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+        } else if (!translated.empty()) {
+            // Success sentinel: resets the streak latch (same seam as Enter).
+            emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
+                                                       std::wstring(), std::wstring());
+        }
 
         // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI
         // thread instead of calling ShowTranslation() directly (audit §3.4).
