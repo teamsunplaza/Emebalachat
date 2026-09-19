@@ -82,7 +82,14 @@ public:
         bool auto_send,
         bool sound_enabled,
         bool badge_visible,
-        int preferred_engine
+        int preferred_engine,
+        // REQ-047 U1 (designer 164500 §5.2.1): stem of the registered user
+        // .gguf model (files[0] minus ".gguf"), shown after the "사용자 지정
+        // 모델 (.gguf)" label when that engine is checked. Empty -> the
+        // MenuEngineUserGgufEmpty "(미등록)" placeholder is appended instead.
+        // Defaults keep the hook.cpp call sites (which don't track the model
+        // registry) untouched.
+        std::string_view user_model_stem = ""
     );
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
@@ -115,6 +122,9 @@ private:
     // pre-existing active_engine_ default so the menu is coherent before the
     // first refresh.
     int preferred_engine_ = 0;
+    // REQ-047 U1 (designer 164500 §5.2.1): cached stem for the dynamic
+    // user-model tray label (empty = no model registered).
+    std::string user_model_stem_;
     std::string src_code_ = "AUTO";
     std::string tgt_code_ = "EN";
     // REQ-025: drag-pair check-mark state for the "번역툴팁" submenus.

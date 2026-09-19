@@ -7177,15 +7177,20 @@ void TestR6P5P6I18n() {
         I18n::SetLocale(UiLocale::English);
     }
 
-    // ---- 1b') T7/SEC-1R (session 260911_0002, re-gate 203100 rec. 1): the
-    //           privacy body carries the opt-out guidance bullet in all 37
-    //           locales. The bullet's universal marker is the ASCII token
-    //           "LLM" - verbatim from each locale's own tray MenuEngineLocal
-    //           label, so popup and menu wording match. Before T7 no privacy
-    //           body contained "LLM" anywhere, hence post-edit the token must
-    //           appear EXACTLY once per body (also guards accidental
-    //           duplication). The REQ-208 README closer must survive as the
-    //           LAST line (the opt-out bullet precedes its blank separator).
+    // ---- 1b') T7/SEC-1R (session 260911_0002, re-gate 203100 rec. 1;
+    //           terminology re-pointed by REQ-047 U1, designer 164500 §3.3):
+    //           the privacy body carries the opt-out guidance bullet in all
+    //           37 locales. The bullet names the built-in local engine with
+    //           the SAME core wording as the tray MenuEngineLocal label — the
+    //           popup quotes the label's engine name (everything before the
+    //           " (Hy-MT2-1.8B …)" model-size parenthetical, per the D2
+    //           modal's Rev2 §6 softening precedent), so popup and menu
+    //           wording match by construction. The body must contain that
+    //           core EXACTLY once (guards accidental duplication). Deriving
+    //           the core from the label at runtime keeps this check
+    //           order-independent of the selector's locale ordering. The
+    //           REQ-208 README closer must survive as the LAST line (the
+    //           opt-out bullet precedes its blank separator).
     {
         int optout_ok = 0, once_ok = 0, readme_last_ok = 0;
         for (const UiLocale loc : kCompleteLocales) {
@@ -7193,16 +7198,15 @@ void TestR6P5P6I18n() {
             const std::wstring body = I18n::Get(StringId::PrivacyNoticeBody);
             const std::wstring engine_local =
                 I18n::Get(StringId::MenuEngineLocal);
-            // every locale's local-engine label contains "LLM", so a body
-            // sharing the token proves the sentence references the real menu
-            // entry (checked non-empty here; per-locale label equality is
-            // authored in the tables and eyeballed in the T7 report).
-            TEST_CHECK(engine_local.find(L"LLM") != std::wstring::npos,
-                       "T7: MenuEngineLocal label carries the LLM token");
-            size_t first = body.find(L"LLM");
+            // Engine name proper = the label minus the model-size suffix.
+            const std::wstring core =
+                engine_local.substr(0, engine_local.find(L" (Hy-MT2"));
+            TEST_CHECK(!core.empty() && core != engine_local,
+                       "T7: MenuEngineLocal label carries the built-in engine name + model-size suffix (REQ-047 U1 relabel)");
+            size_t first = body.find(core);
             if (first != std::wstring::npos) {
                 ++optout_ok;
-                if (body.find(L"LLM", first + 1) == std::wstring::npos)
+                if (body.find(core, first + 1) == std::wstring::npos)
                     ++once_ok;  // exactly one occurrence
             }
             const size_t readme = body.rfind(L"README");
@@ -7215,9 +7219,9 @@ void TestR6P5P6I18n() {
                 ++readme_last_ok;  // README closer sits on the final line
         }
         TEST_CHECK(optout_ok == 37,
-                   "T7: PrivacyNoticeBody carries the opt-out LLM marker in all 37 locales");
+                   "T7: PrivacyNoticeBody names the built-in local engine (opt-out bullet) in all 37 locales");
         TEST_CHECK(once_ok == 37,
-                   "T7: the opt-out LLM marker appears exactly once per locale body (no duplication)");
+                   "T7: the built-in engine name appears exactly once per locale body (no duplication)");
         TEST_CHECK(readme_last_ok == 37,
                    "T7: the README guidance line remains the LAST line of the body in all 37 locales");
         I18n::SetLocale(UiLocale::English);
@@ -14509,8 +14513,9 @@ namespace {
 struct Req044LstrMirror {
     // REQ-045 P4-3: 13 OpenAI fields appended (57 -> 70); REQ-045 P4-5
     // (item 3a-2): 6 user-.gguf fields appended (70 -> 76); REQ-047 D2
-    // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77).
-    const wchar_t* f[77];
+    // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77);
+    // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78).
+    const wchar_t* f[78];
 };
 
 } // namespace
@@ -14523,8 +14528,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 77 (57+13+6+1)
-    static_assert(kExpectedFieldCount == 77,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 78 (57+13+6+1+1)
+    static_assert(kExpectedFieldCount == 78,
                    "REQ-044/045/047: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the kStringsKorean designated "
                    "initializers, AND this mirror");
@@ -14534,11 +14539,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 77,
-               "REQ-044/045/047: LocalizedStrings field count is 77 (X-macro static_assert "
-               "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 77,
-               "REQ-044/045/047: StringId::EnumCount is 77 (struct fields == switch cases)");
+    TEST_CHECK(observed_field_count == 78,
+                "REQ-044/045/047: LocalizedStrings field count is 78 (X-macro static_assert "
+                "in i18n.cpp is the primary guard; this is the runtime record)");
+    TEST_CHECK(observed_enum_count == 78,
+                "REQ-044/045/047: StringId::EnumCount is 78 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15202,6 +15207,7 @@ int main() {
     TestReq047BundledDuplicateI18n();
     TestReq047OpenAiDeferredOpen();
     TestReq047EngineUnavailableModal();
+    TestReq047U1TrayGgufLabels();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

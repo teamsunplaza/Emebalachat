@@ -109,7 +109,8 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(user_gguf_quality_body) \
     X(user_gguf_registered_title) \
     X(user_gguf_registered_body) \
-    X(user_gguf_bundled_duplicate_body)
+    X(user_gguf_bundled_duplicate_body) \
+    X(menu_engine_user_gguf_empty)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -132,8 +133,10 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields (70), and
 // REQ-045 P4-5 (item 3a-2) appended 6 user-.gguf fields, bringing the total
 // to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
-// body (77). The Get() switch maps exactly these 77 named fields.
-static_assert(kLocalizedStringsFieldCount == 77,
+// body (77). REQ-047 U1 (designer 164500 §5.3) appended the tray
+// "(미등록)" empty-slot marker (78). The Get() switch maps exactly these 78
+// named fields.
+static_assert(kLocalizedStringsFieldCount == 78,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -146,7 +149,7 @@ const LocalizedStrings kStringsKorean = {
     .menu_status_paused = L"상태: 일시 정지 (F9: 활성화)",
     .menu_engine = L"번역 엔진 선택",
     .menu_engine_google = L"Google 번역 (무료 / 무설치 / 실시간)",
-    .menu_engine_local = L"로컬 LLM (Hy-MT2-1.8B 오프라인 모델)",
+    .menu_engine_local = L"내장 로컬 엔진 (Hy-MT2-1.8B 오프라인)",
     .menu_source_lang = L"출발 언어 (입력 언어)",
     .menu_target_lang = L"도착 언어 (번역 대상)",
     .menu_swap_langs = L"출발어 ⇄ 도착어 맞교환 (더블클릭)",
@@ -209,7 +212,7 @@ const LocalizedStrings kStringsKorean = {
     L"• 로컬 모델을 사용하면 번역 내용이 기기를 벗어나지 않습니다.\n"
     L"• Google 번역 엔진을 선택하거나 자동 전환된 경우, 선택하거나 입력한 텍스트가 에메발라를 거치지 않고 Google로 직접 전송되어 번역에 사용됩니다.\n"
     L"• 진단 로그는 기본 꺼짐(OFF) 상태이며, 설정에서 켜는 옵트인 기능입니다.\n"
-    L"• 텍스트를 클라우드(Google)로 전송하기 원치 않으시면 트레이 아이콘 메뉴의 “번역 엔진 선택”에서 “로컬 LLM”을 선택하세요. 로컬 모델이 설치되지 않았고 클라우드 전환이 꺼져 있으면 번역은 전송 없이 동작하지 않습니다.\n"
+    L"• 텍스트를 클라우드(Google)로 전송하기 원치 않으시면 트레이 아이콘 메뉴의 “번역 엔진 선택”에서 “내장 로컬 엔진”을 선택하세요. 로컬 모델이 설치되지 않았고 클라우드 전환이 꺼져 있으면 번역은 전송 없이 동작하지 않습니다.\n"
     L"\n"
     L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
     .cheatsheet_config_path = L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -218,7 +221,7 @@ const LocalizedStrings kStringsKorean = {
     .repair_in_progress = L"로컬 엔진 구성 요소를 복구하는 중…",
     .repair_failed_title = L"로컬 번역을 사용할 수 없습니다",
     .repair_failed_body = L"로컬 번역 엔진 파일이 없어 번역이 일시 중단되었습니다. 에메발라 챗을 재설치하면 로컬 엔진을 복구할 수 있습니다. 또는 클라우드(Google) 번역으로 전환하려면 트레이 메뉴의 \"번역 엔진 선택\"에서 \"Google 번역\"을 선택하세요.",
-    .menu_engine_openai = L"OpenAI 호환 (사용자 지정 서버)",
+    .menu_engine_openai = L"OpenAI 호환 (사용자 지정 서버)…",
     .openai_settings_title = L"OpenAI 호환 엔진 설정",
     .openai_settings_action = L"OpenAI 호환 엔진 설정…",
     .openai_base_url_label = L"기본 URL (Base URL)",
@@ -232,8 +235,10 @@ const LocalizedStrings kStringsKorean = {
     .openai_key_masked = L"저장된 키: ",
     .openai_invalid_base_url = L"기본 URL이 올바르지 않습니다. 예: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    .menu_engine_user_gguf = L"사용자 선택(.gguf)…",
-    .menu_browse_gguf_file = L"파일찾기(.gguf)…",
+    // REQ-047 U1 (designer 164500): dynamic labels — "지정" wording, no "…"
+    // on the checkable entry; the browse row is an action ("등록").
+    .menu_engine_user_gguf = L"사용자 지정 모델 (.gguf)",
+    .menu_browse_gguf_file = L"다른 .gguf 모델 등록…",
     .user_gguf_quality_title = L"번역 품질 안내",
     .user_gguf_quality_body = L"선택한 모델은 Hy-MT2가 아닙니다. 현재 버전은 Hy-MT2 전용 프롬프트를 사용하므로, 이 모델의 번역 품질은 보장되지 않습니다. 계속하시겠습니까?",
     // REQ-046 P4-2 (Rev2 §B-5, C2): '로컬 LLM 선택' 안내 제거(등록으로
@@ -244,6 +249,8 @@ const LocalizedStrings kStringsKorean = {
     // REQ-047 D2 (design §B.3, Rev2 §6 용어 완화): '로컬 LLM' 직접 인용
     // 없이 기능 서술 — 내장 로컬 번역 엔진을 직접 선택하라는 안내.
     .user_gguf_bundled_duplicate_body = L"이 모델은 에메발라 챗에 이미 내장되어 있습니다. 별도의 등록은 필요 없습니다. 내장 로컬 번역 엔진을 직접 선택하시면 바로 사용할 수 있습니다.",
+    // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    .menu_engine_user_gguf_empty = L"(미등록)",
 };
 
 // 2. Japanese (ja)
@@ -252,7 +259,7 @@ const LocalizedStrings kStringsJapanese = {
     L"状態: 一時停止 (F9: 再開)",
     L"翻訳エンジンの選択",
     L"Google 翻訳 (無料 / インストール不要)",
-    L"ローカル LLM (Hy-MT2-1.8B オフライン)",
+    L"内蔵ローカルエンジン (Hy-MT2-1.8B オフライン)",
     L"元の言語 (入力)",
     L"翻訳先言語 (ターゲット)",
     L"言語を入れ替える (ダブルクリック)",
@@ -263,7 +270,6 @@ const LocalizedStrings kStringsJapanese = {
     L"ショートカット案内とヘルプ...",
     L"エメバラチャット を終了",
     L"エメバラチャット について…",
-
     L"エメバラチャット ショートカットと使用案内",
     L"エメバラチャット ショートカットと使用案内:\n\n"
     L"  • F9 : 有効 / 一時停止の切り替え\n"
@@ -278,16 +284,13 @@ const LocalizedStrings kStringsJapanese = {
     L"  • 置換のみ (自動送信OFF): 入力行を翻訳文に置き換え、確認後にEnterで送信できます。\n"
     L"  • 自動送信 (自動送信ON): 翻訳文に置き換えた直後、自動的にEnterを送信します。",
     L"エメバラチャット について",
-
     L"有効",
     L"翻訳中...",
     L"一時停止",
-
     L"エメバラチャット",
     L"選択したテキストをコピーできませんでした。対象アプリを確認して再試行してください。",
     L"翻訳するテキストが選択されていません。",
     L"自動検出",
-
     L"エメバラチャット はすでにバックグラウンドで実行中です。\nシステムトレイを確認してください。",
     L"COM の初期化に失敗しました。\nフローティングバッジと音声読み上げは利用できませんが、\n翻訳・ショートカット・トレイ・効果音は引き続き動作します。",
     L"コピー＆ペーストはもう不要。母語で自然に入力すると、あらゆる Windows アプリの中で打鍵がリアルタイムに翻訳へ置きわります。",
@@ -321,7 +324,7 @@ const LocalizedStrings kStringsJapanese = {
     L"• ローカルモデル使用時、翻訳内容はデバイスの外に出ません。\n"
     L"• Google 翻訳エンジンを選択した場合、または自動切り替えで作動中は、選択・入力したテキストは Emebala を経由せず Google に直接送信され翻訳に使われます。\n"
     L"• 診断ログは既定で OFF で、設定で ON にするオプトイン機能です。\n"
-    L"• テキストをクラウド(Google)に送信したくない場合は、トレイアイコンのメニューで「翻訳エンジンの選択」から「ローカル LLM」を選択してください。ローカルモデル未インストールでクラウド切替が無効の場合、翻訳は送信されず動作しません。\n"
+    L"• テキストをクラウド(Google)に送信したくない場合は、トレイアイコンのメニューで「翻訳エンジンの選択」から「内蔵ローカルエンジン」を選択してください。ローカルモデル未インストールでクラウド切替が無効の場合、翻訳は送信されず動作しません。\n"
     L"\n"
     L"詳細は README ファイルをご覧ください。いつでも再読できます。\n",
     L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -333,7 +336,7 @@ const LocalizedStrings kStringsJapanese = {
     L"ローカルエンジンコンポーネントを修復しています…",
     L"ローカル翻訳を利用できません",
     L"ローカル翻訳エンジンのファイルが見つからないため、翻訳は一時的に停止しています。Emebala Chat を再インストールするとローカルエンジンを復元できます。または、クラウド（Google）翻訳に切り替えるには、トレイメニューの「翻訳エンジンの選択」から「Google 翻訳」を選んでください。",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI 互換 (ユーザー指定サーバー)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -347,8 +350,8 @@ const LocalizedStrings kStringsJapanese = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"ユーザー指定モデル (.gguf)",
+    L"別の .gguf モデルを登録…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -358,6 +361,8 @@ const LocalizedStrings kStringsJapanese = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"このモデルはEmebala Chatにすでに内蔵されています。登録は必要ありません。内蔵のローカル翻訳エンジンを直接選択してご利用ください。",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(未登録)"
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -366,7 +371,7 @@ const LocalizedStrings kStringsChineseSimp = {
     L"状态: 已暂停 (F9: 启用)",
     L"选择翻译引擎",
     L"Google 翻译 (免费 / 免安装 / 极速)",
-    L"本地 LLM (Hy-MT2-1.8B 离线模型)",
+    L"内置本地引擎 (Hy-MT2-1.8B 离线)",
     L"源语言 (输入语言)",
     L"目标语言 (翻译目标)",
     L"源语言 ⇄ 目标语言 互换 (双击)",
@@ -377,7 +382,6 @@ const LocalizedStrings kStringsChineseSimp = {
     L"快捷键与使用说明 (帮助)...",
     L"退出 埃梅巴拉 翻译",
     L"关于 埃梅巴拉 翻译…",
-
     L"埃梅巴拉 翻译 快捷键与使用说明",
     L"埃梅巴拉 翻译 快捷键与使用说明:\n\n"
     L"  • F9 : 启用 / 暂停 切换 (或点击悬浮徽章)\n"
@@ -392,16 +396,13 @@ const LocalizedStrings kStringsChineseSimp = {
     L"  • 仅替换模式 (自动发送关闭): 替换为译文并保留光标，方便发送前检查。\n"
     L"  • 自动发送模式 (自动发送开启): 替换为译文后自动模拟按下 Enter 发送。",
     L"关于 埃梅巴拉 翻译",
-
     L"运行中",
     L"翻译中...",
     L"已暂停",
-
     L"埃梅巴拉 翻译",
     L"无法复制所选文本。请检查目标应用后重试。",
     L"未选择要翻译的文本。",
     L"自动检测",
-
     L"埃梅巴拉 翻译 已在后台运行。\n请查看系统通知托盘。",
     L"COM 初始化失败。\n悬浮徽章和语音朗读将不可用，\n但翻译、快捷键、托盘和提示音仍可正常使用。",
     L"告别复制粘贴。用母语自然输入，译文会在任何 Windows 应用中实时替换你的键入。",
@@ -435,7 +436,7 @@ const LocalizedStrings kStringsChineseSimp = {
     L"• 使用本地模型时，翻译内容不会离开您的设备。\n"
     L"• 选择 Google 翻译引擎或自动切换到云端时，所选或输入的文本将直接发送给 Google 进行翻译，不经过 Emebala。\n"
     L"• 诊断日志默认关闭（OFF），需在设置中手动开启（选择性加入）。\n"
-    L"• 如不希望将文本发送至云端 (Google)，请在系统托盘图标菜单的“选择翻译引擎”中选择“本地 LLM”。若未安装本地模型且已关闭云端回退，翻译将不会被发送，也不会运行。\n"
+    L"• 如不希望将文本发送至云端 (Google)，请在系统托盘图标菜单的“选择翻译引擎”中选择“内置本地引擎”。若未安装本地模型且已关闭云端回退，翻译将不会被发送，也不会运行。\n"
     L"\n"
     L"完整说明请查看 README 文件，您可随时重新阅读。\n",
     L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -447,7 +448,7 @@ const LocalizedStrings kStringsChineseSimp = {
     L"正在修复本地引擎组件…",
     L"本地翻译不可用",
     L"找不到本地翻译引擎文件，翻译已暂时停止。重新安装 Emebala Chat 可恢复本地引擎，或者要切换到云（Google）翻译，请在托盘菜单的“选择翻译引擎”中选择“Google 翻译”。",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI 兼容 (用户自定义服务器)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -461,8 +462,8 @@ const LocalizedStrings kStringsChineseSimp = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"用户自定义模型 (.gguf)",
+    L"注册其他 .gguf 模型…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -472,6 +473,8 @@ const LocalizedStrings kStringsChineseSimp = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"该模型已内置在 Emebala Chat 中，无需注册。直接选择内置的本地翻译引擎即可使用。",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(未注册)"
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -480,7 +483,7 @@ const LocalizedStrings kStringsChineseTrad = {
     L"狀態: 已暫停 (F9: 啟用)",
     L"選擇翻譯引擎",
     L"Google 翻譯 (免費 / 免安裝 / 線上)",
-    L"本地 LLM (Hy-MT2-1.8B 離線模型)",
+    L"內建本機引擎 (Hy-MT2-1.8B 離線)",
     L"來源語言 (輸入語言)",
     L"目標語言 (翻譯目標)",
     L"來源語言 ⇄ 目標語言 對調 (雙擊)",
@@ -491,7 +494,6 @@ const LocalizedStrings kStringsChineseTrad = {
     L"快捷鍵與使用說明 (說明)...",
     L"結束 埃梅巴拉 翻譯",
     L"關於 埃梅巴拉 翻譯…",
-
     L"埃梅巴拉 翻譯 快捷鍵與使用說明",
     L"埃梅巴拉 翻譯 快捷鍵與使用說明:\n\n"
     L"  • F9 : 啟用 / 暫停 切換\n"
@@ -506,16 +508,13 @@ const LocalizedStrings kStringsChineseTrad = {
     L"  • 僅替換模式 (自動發送關閉): 替換為譯文供確認後發送。\n"
     L"  • 自動發送模式 (自動發送開啟): 替換為譯文後自動發送。",
     L"關於 埃梅巴拉 翻譯",
-
     L"運行中",
     L"翻譯中...",
     L"已暫停",
-
     L"埃梅巴拉 翻譯",
     L"無法複製所選文字。請檢查目標應用程式後重試。",
     L"尚未選取要翻譯的文字。",
     L"自動檢測",
-
     L"埃梅巴拉 翻譯 已在背景執行。\n請檢視系統通知列。",
     L"COM 初始化失敗。\n懸浮徽章與語音朗讀將不可用，\n但翻譯、快捷鍵、系統匣與提示音仍可正常使用。",
     L"告別複製貼上。用母語自然輸入，譯文會在任何 Windows 應用程式中即時取代你的鍵入。",
@@ -549,7 +548,7 @@ const LocalizedStrings kStringsChineseTrad = {
     L"• 使用本機模型時，翻譯內容不會離開您的裝置。\n"
     L"• 選擇 Google 翻譯引擎或自動切換至雲端時，所選或輸入的文字將直接傳送至 Google 進行翻譯，不經過 Emebala。\n"
     L"• 診斷記錄預設關閉（OFF），需在設定中手動開啟（選擇性加入）。\n"
-    L"• 若您不希望將文字傳送至雲端 (Google)，請在系統匣圖示選單的「選擇翻譯引擎」中選取「本地 LLM」。若未安裝本地模型且已關閉雲端退回，翻譯將不會傳送任何資料，也不會執行。\n"
+    L"• 若您不希望將文字傳送至雲端 (Google)，請在系統匣圖示選單的「選擇翻譯引擎」中選取「內建本機引擎」。若未安裝本地模型且已關閉雲端退回，翻譯將不會傳送任何資料，也不會執行。\n"
     L"\n"
     L"完整說明請查閱 README 檔案，您可隨時重新閱讀。\n",
     L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -561,7 +560,7 @@ const LocalizedStrings kStringsChineseTrad = {
     L"正在修復本機引擎元件…",
     L"本機翻譯無法使用",
     L"找不到本機翻譯引擎檔案，翻譯已暫時停止。重新安裝 Emebala Chat 可還原本機引擎，或者若要切換到雲端（Google）翻譯，請在系統匣選單的「選擇翻譯引擎」中選取「Google 翻譯」。",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI 相容 (使用者自訂伺服器)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -575,8 +574,8 @@ const LocalizedStrings kStringsChineseTrad = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"使用者自訂模型 (.gguf)",
+    L"註冊其他 .gguf 模型…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -586,6 +585,8 @@ const LocalizedStrings kStringsChineseTrad = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"此模型已內建於 Emebala Chat，無需註冊。直接選擇內建的本機翻譯引擎即可使用。",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(未註冊)"
 };
 
 // 5. Vietnamese (vi)
@@ -594,7 +595,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"Trạng thái: Tạm dừng (F9: Bật lại)",
     L"Chọn công cụ dịch",
     L"Google Dịch (Miễn phí / Trực tuyến)",
-    L"Mô hình cục bộ LLM (Hy-MT2-1.8B)",
+    L"Công cụ cục bộ tích hợp (Hy-MT2-1.8B ngoại tuyến)",
     L"Ngôn ngữ nguồn (Nhập)",
     L"Ngôn ngữ đích (Dịch sang)",
     L"Hoán đổi nguồn ⇄ đích (Nhấp đúp)",
@@ -605,7 +606,6 @@ const LocalizedStrings kStringsVietnamese = {
     L"Hướng dẫn phím tắt (Trợ giúp)...",
     L"Thoát Emebala Chat",
     L"Giới thiệu Emebala Chat…",
-
     L"Hướng dẫn sử dụng Emebala Chat",
     L"Phím tắt & Hướng dẫn sử dụng Emebala Chat:\n\n"
     L"  • F9 : Bật / Tạm dừng dịch\n"
@@ -620,16 +620,13 @@ const LocalizedStrings kStringsVietnamese = {
     L"  • Chỉ thay thế (Tắt tự động gửi): Thay văn bản dịch để bạn kiểm tra trước khi gửi.\n"
     L"  • Tự động gửi (Bật tự động gửi): Tự động nhấn Enter gửi tin nhắn sau khi dịch.",
     L"Giới thiệu Emebala Chat",
-
     L"Đang bật",
     L"Đang dịch...",
     L"Tạm dừng",
-
     L"Emebala Chat",
     L"Không thể sao chép văn bản đã chọn. Hãy kiểm tra ứng dụng đích rồi thử lại.",
     L"Chưa chọn văn bản nào để dịch.",
     L"Tự động phát hiện",
-
     L"Emebala Chat đang chạy ngầm.\nHãy kiểm tra khay thông báo hệ thống.",
     L"Khởi tạo COM thất bại.\nHuy hiệu nổi và đọc văn bản sẽ không khả dụng,\nnhưng dịch, phím tắt, khay hệ thống và âm thanh vẫn hoạt động.",
     L"Không còn copy-paste. Gõ tự nhiên bằng tiếng mẹ đẻ — bản dịch thay thế ngay câu bạn gõ trong mọi ứng dụng Windows.",
@@ -663,7 +660,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"• Khi dùng mô hình cục bộ, nội dung dịch không rời khỏi máy của bạn.\n"
     L"• Khi chọn Google Dịch hoặc được tự động chuyển sang đám mây, văn bản bạn chọn hoặc nhập được gửi trực tiếp tới Google để dịch, không qua Emebala.\n"
     L"• Nhật ký chẩn đoán mặc định TẮT; bạn phải bật trong cài đặt (chọn tham gia).\n"
-    L"• Nếu không muốn gửi văn bản lên đám mây (Google), hãy mở menu biểu tượng ở khay hệ thống, chọn “Chọn công cụ dịch” rồi chọn “Mô hình cục bộ LLM”. Khi chưa cài mô hình cục bộ và tùy chọn chuyển lên đám mây đang tắt, bản dịch sẽ không chạy — không có gì được gửi đi.\n"
+    L"• Nếu không muốn gửi văn bản lên đám mây (Google), hãy mở menu biểu tượng ở khay hệ thống, chọn “Chọn công cụ dịch” rồi chọn “Công cụ cục bộ tích hợp”. Khi chưa cài mô hình cục bộ và tùy chọn chuyển lên đám mây đang tắt, bản dịch sẽ không chạy — không có gì được gửi đi.\n"
     L"\n"
     L"Xem toàn bộ nội dung trong tệp README. Bạn có thể đọc lại bất cứ lúc nào.\n",
     L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -675,7 +672,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"Đang sửa chữa các thành phần cục bộ…",
     L"Không thể dùng bản dịch cục bộ",
     L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Cài đặt lại Emebala Chat để khôi phục cục bộ, hoặc để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”.",
-    L"OpenAI Compatible (custom server)",
+    L"Tương thích OpenAI (máy chủ do ngườ dùng chỉ định)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -689,8 +686,8 @@ const LocalizedStrings kStringsVietnamese = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Mô hình do ngườ dùng chỉ định (.gguf)",
+    L"Đăng ký mô hình .gguf khác…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -700,6 +697,8 @@ const LocalizedStrings kStringsVietnamese = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Mô hình này đã được tích hợp sẵn trong Emebala Chat. Bạn không cần đăng ký. Hãy chọn trực tiếp công cụ dịch nội bộ để sử dụng.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(chưa đăng ký)"
 };
 
 // 6. Spanish (es)
@@ -708,7 +707,7 @@ const LocalizedStrings kStringsSpanish = {
     L"Estado: Pausado (F9: Activar)",
     L"Motor de traducción",
     L"Google Translate (Gratuito / En línea)",
-    L"LLM Local (Hy-MT2-1.8B Offline)",
+    L"Motor local integrado (Hy-MT2-1.8B sin conexión)",
     L"Idioma de origen (Entrada)",
     L"Idioma de destino (Traducción)",
     L"Intercambiar idiomas (Doble clic)",
@@ -719,7 +718,6 @@ const LocalizedStrings kStringsSpanish = {
     L"Guía de atajos de teclado...",
     L"Salir de Emebala Chat",
     L"Acerca de Emebala Chat…",
-
     L"Guía de atajos de Emebala Chat",
     L"Guía de uso y atajos de Emebala Chat:\n\n"
     L"  • F9 : Activar / Pausar\n"
@@ -731,16 +729,13 @@ const LocalizedStrings kStringsSpanish = {
     L"  • Doble clic : Intercambiar origen ⇄ destino\n"
     L"  • Clic derecho : Abrir menú de opciones",
     L"Acerca de Emebala Chat",
-
     L"Activo",
     L"Traduciendo...",
     L"Pausado",
-
     L"Emebala Chat",
     L"No se pudo copiar el texto seleccionado. Revisa la aplicación de destino e inténtalo de nuevo.",
     L"No hay texto seleccionado para traducir.",
     L"Detectar automáticamente",
-
     L"Emebala Chat ya se está ejecutando en segundo plano.\nRevisa la bandeja de notificaciones.",
     L"Error al iniciar COM.\nLa insignia flotante y la voz no estarán disponibles,\npero la traducción, los atajos, la bandeja y los sonidos siguen funcionando.",
     L"Nunca más copiar y pegar. Escribe con naturalidad en tu idioma: la traducción reemplaza tu texto en tiempo real en cualquier aplicación de Windows.",
@@ -774,7 +769,7 @@ const LocalizedStrings kStringsSpanish = {
     L"• Con el modelo local, el texto traducido nunca sale de tu dispositivo.\n"
     L"• Si eliges Google Translate o se activa la nube automáticamente, el texto seleccionado o escrito se envía directamente a Google para su traducción, sin pasar por Emebala.\n"
     L"• Los registros de diagnóstico están DESACTIVADOS por defecto; debes activarlos en la configuración (opt-in).\n"
-    L"• Si no quieres enviar texto a la nube (Google), abre el menú del icono de la bandeja, elige “Motor de traducción” y selecciona “LLM Local”. Sin modelo local instalado y con el modo cloud desactivado, la traducción no se ejecuta y no se envía nada.\n"
+    L"• Si no quieres enviar texto a la nube (Google), abre el menú del icono de la bandeja, elige “Motor de traducción” y selecciona “Motor local integrado”. Sin modelo local instalado y con el modo cloud desactivado, la traducción no se ejecuta y no se envía nada.\n"
     L"\n"
     L"Puedes leer el detalle completo en el archivo README cuando quieras.\n",
     L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -786,7 +781,7 @@ const LocalizedStrings kStringsSpanish = {
     L"Reparando los componentes del motor local…",
     L"Traducción local no disponible",
     L"No se encuentran los archivos del motor de traducción local, por lo que la traducción se detuvo temporalmente. Reinstala Emebala Chat para restaurar el motor local, o para cambiar a la traducción en la nube (Google), elige “Google Translate” en el menú de la bandeja, “Motor de traducción”.",
-    L"OpenAI Compatible (custom server)",
+    L"Compatible con OpenAI (servidor personalizado)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -800,8 +795,8 @@ const LocalizedStrings kStringsSpanish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Modelo personalizado (.gguf)",
+    L"Registrar otro modelo .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -811,6 +806,8 @@ const LocalizedStrings kStringsSpanish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo ya está integrado en Emebala Chat. No es necesario registrarlo. Puedes seleccionar directamente el motor de traducción local integrado.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(sin registrar)"
 };
 
 // 7. English (en) - Default Fallback
@@ -819,7 +816,7 @@ const LocalizedStrings kStringsEnglish = {
     L"Status: Paused (F9: Resume)",
     L"Translation Engine",
     L"Google Translate (Free / Zero-Install)",
-    L"Local LLM (Hy-MT2-1.8B GGUF Offline)",
+    L"Built-in Local Engine (Hy-MT2-1.8B Offline)",
     L"Source Language (Input)",
     L"Target Language (Output)",
     L"Swap Source ⇄ Target (Double-click)",
@@ -830,7 +827,6 @@ const LocalizedStrings kStringsEnglish = {
     L"Hotkey Cheat Sheet & Help...",
     L"Exit Emebala Chat",
     L"About Emebala Chat…",
-
     L"Emebala Chat Hotkeys & Usage Guide",
     L"Emebala Chat Hotkeys & Usage Guide:\n\n"
     L"  • F9 : Toggle Active / Paused\n"
@@ -845,16 +841,13 @@ const LocalizedStrings kStringsEnglish = {
     L"  • Replace-Only (Auto-Send OFF): Replaces line with translation for review.\n"
     L"  • Auto-Send (Auto-Send ON): Replaces line and immediately presses Enter.",
     L"About Emebala Chat",
-
     L"Active",
     L"Translating...",
     L"Paused",
-
     L"Emebala Chat",
     L"Could not copy the selected text. Check the target app and try again.",
     L"No text is selected to translate.",
     L"Auto Detect",
-
     L"Emebala Chat is already running in the background.\nCheck the system notification tray.",
     L"COM initialization failed.\nThe floating badge and text-to-speech will be unavailable,\nbut translation, hotkeys, tray and sounds still work.",
     L"Never copy-paste again. Type naturally in your native tongue \u2014 "
@@ -889,7 +882,7 @@ const LocalizedStrings kStringsEnglish = {
     L"• With the local model, translated text never leaves your device.\n"
     L"• If you choose Google Translate, or the engine switches to cloud automatically, the selected or typed text is sent directly to Google for translation - not through Emebala.\n"
     L"• Diagnostic logs are OFF by default; enable them in settings (opt-in).\n"
-    L"• If you do not want your text sent to the cloud (Google), open the tray icon menu, choose \"Translation Engine\" and select \"Local LLM\". With no local model installed and cloud fallback disabled, translation does not run - nothing is sent.\n"
+    L"• If you do not want your text sent to the cloud (Google), open the tray icon menu, choose \"Translation Engine\" and select \"Built-in Local Engine\". With no local model installed and cloud fallback disabled, translation does not run - nothing is sent.\n"
     L"\n"
     L"You can re-read this anytime in the README file.\n",
     L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -901,7 +894,7 @@ const LocalizedStrings kStringsEnglish = {
     L"Repairing the local engine components…",
     L"Local translation unavailable",
     L"The local translation engine files are missing, so translation is paused. Reinstall Emebala Chat to restore the local engine, or switch to cloud (Google) translation by choosing “Google Translate” under “Translation engine” in the tray menu.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI Compatible (custom server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -915,8 +908,8 @@ const LocalizedStrings kStringsEnglish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"User-specified model (.gguf)",
+    L"Register another .gguf model…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -927,6 +920,8 @@ const LocalizedStrings kStringsEnglish = {
     // describe the capability — the built-in local translation engine can be
     // selected directly.
     L"This model is already built into Emebala Chat. No registration is needed - the built-in local translation engine can be selected directly.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(not registered)"
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -947,7 +942,7 @@ const LocalizedStrings kStringsFrench = {
     L"Statut : en pause (F9 : reprendre)",
     L"Moteur de traduction",
     L"Google Traduction (gratuit / sans installation)",
-    L"LLM local (Hy-MT2-1.8B hors ligne)",
+    L"Moteur local intégré (Hy-MT2-1.8B hors ligne)",
     L"Langue source (entrée)",
     L"Langue cible (sortie)",
     L"Inverser source ⇄ cible (double-clic)",
@@ -958,7 +953,6 @@ const LocalizedStrings kStringsFrench = {
     L"Aide-mémoire des raccourcis et aide...",
     L"Quitter Emebala Chat",
     L"À propos d'Emebala Chat…",
-
     L"Emebala Chat — Raccourcis et guide d'utilisation",
     L"Raccourcis et guide d'Emebala Chat :\n\n"
     L"  • F9 : activer / mettre en pause\n"
@@ -973,16 +967,13 @@ const LocalizedStrings kStringsFrench = {
     L"  • Remplacement seul (envoi auto désactivé) : remplace la ligne par la traduction pour relecture.\n"
     L"  • Envoi auto activé : remplace la ligne puis appuie immédiatement sur Entrée.",
     L"À propos d'Emebala Chat",
-
     L"Actif",
     L"Traduction...",
     L"En pause",
-
     L"Emebala Chat",
     L"Impossible de copier le texte sélectionné. Vérifiez l'application cible et réessayez.",
     L"Aucun texte sélectionné à traduire.",
     L"Détection auto",
-
     L"Emebala Chat est déjà exécuté en arrière-plan.\nVérifiez la zone de notification système.",
     L"L'initialisation COM a échoué.\nLe badge flottant et la synthèse vocale seront indisponibles,\nmais la traduction, les raccourcis, la barre d'état et les sons fonctionnent toujours.",
     L"Fini le copier-coller. Tapez naturellement dans votre langue maternelle — la traduction remplace votre frappe en temps réel dans n'importe quelle application Windows.",
@@ -1016,7 +1007,7 @@ const LocalizedStrings kStringsFrench = {
     L"• Avec le modèle local, le texte traduit ne quitte jamais votre appareil.\n"
     L"• Si vous choisissez Google Traduction ou si le basculement cloud est automatique, le texte sélectionné ou saisi est envoyé directement à Google pour la traduction, sans transiter par Emebala.\n"
     L"• Les journaux de diagnostic sont DÉSACTIVÉS par défaut ; activez-les dans la configuration (consentement explicite).\n"
-    L"• Si vous ne souhaitez pas envoyer de texte vers le cloud (Google), ouvrez le menu de l'icône de la barre des tâches, choisissez « Moteur de traduction » puis « LLM local ». Sans modèle local installé et avec le repli cloud désactivé, la traduction ne s'exécute pas : rien n'est envoyé.\n"
+    L"• Si vous ne souhaitez pas envoyer de texte vers le cloud (Google), ouvrez le menu de l'icône de la barre des tâches, choisissez « Moteur de traduction » puis « Moteur local intégré ». Sans modèle local installé et avec le repli cloud désactivé, la traduction ne s'exécute pas : rien n'est envoyé.\n"
     L"\n"
     L"Le détail complet est dans le fichier README, relisible à tout moment.\n",
     L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1028,7 +1019,7 @@ const LocalizedStrings kStringsFrench = {
     L"Restauration des composants du moteur local…",
     L"Traduction locale indisponible",
     L"Les fichiers du moteur de traduction locale sont introuvables, la traduction est donc suspendue. Réinstallez Emebala Chat pour restaurer le moteur local, ou passez à la traduction cloud (Google) en choisissant « Google Traduction » dans le menu de la barre d’état, « Moteur de traduction ».",
-    L"OpenAI Compatible (custom server)",
+    L"Compatible OpenAI (serveur personnalisé)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1042,8 +1033,8 @@ const LocalizedStrings kStringsFrench = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Modèle spécifié par l'utilisateur (.gguf)",
+    L"Enregistrer un autre modèle .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1053,6 +1044,8 @@ const LocalizedStrings kStringsFrench = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ce modèle est déjà intégré à Emebala Chat. Aucune inscription n'est nécessaire. Vous pouvez sélectionner directement le moteur de traduction local intégré.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(non enregistré)"
 };
 
 // 9. German (de)
@@ -1061,7 +1054,7 @@ const LocalizedStrings kStringsGerman = {
     L"Status: Pausiert (F9: Fortsetzen)",
     L"Übersetzungsengine",
     L"Google Übersetzen (kostenlos / ohne Installation)",
-    L"Lokales LLM (Hy-MT2-1.8B offline)",
+    L"Eingebaute lokale Engine (Hy-MT2-1.8B offline)",
     L"Ausgangssprache (Eingabe)",
     L"Zielsprache (Ausgabe)",
     L"Ausgangssprache ⇄ Zielsprache tauschen (Doppelklick)",
@@ -1072,7 +1065,6 @@ const LocalizedStrings kStringsGerman = {
     L"Tastenkürzel-Spickzettel und Hilfe...",
     L"Emebala Chat beenden",
     L"Über Emebala Chat…",
-
     L"Emebala Chat — Tastenkürzel und Anleitung",
     L"Tastenkürzel und Anleitung für Emebala Chat:\n\n"
     L"  • F9 : Aktivieren / Pausieren\n"
@@ -1087,16 +1079,13 @@ const LocalizedStrings kStringsGerman = {
     L"  • Nur Ersetzen (Auto-Send aus): ersetzt die Zeile durch die Übersetzung zur Kontrolle.\n"
     L"  • Auto-Send (ein): ersetzt die Zeile und drückt sofort Enter.",
     L"Über Emebala Chat",
-
     L"Aktiv",
     L"Übersetze...",
     L"Pausiert",
-
     L"Emebala Chat",
     L"Der markierte Text konnte nicht kopiert werden. Prüfen Sie die Ziel-App und versuchen Sie es erneut.",
     L"Es ist kein Text zum Übersetzen ausgewählt.",
     L"Automatisch erkennen",
-
     L"Emebala Chat läuft bereits im Hintergrund.\nPrüfen Sie das Benachrichtigungsfeld.",
     L"COM-Initialisierung fehlgeschlagen.\nSchwebendes Badge und Sprachausgabe sind nicht verfügbar,\naber Übersetzung, Tastenkürzel, Tray und Sounds funktionieren weiterhin.",
     L"Schluss mit Kopieren und Einfügen. Tippen Sie natürlich in Ihrer Muttersprache — die Übersetzung ersetzt Ihre Eingabe in Echtzeit in jeder Windows-Anwendung.",
@@ -1130,7 +1119,7 @@ const LocalizedStrings kStringsGerman = {
     L"• Bei Nutzung des lokalen Modells verlässt der übersetzte Text Ihr Gerät nicht.\n"
     L"• Wenn Sie Google Übersetzen wählen oder automatisch in den Cloud-Modus gewechselt wird, wird der markierte oder eingegebene Text direkt an Google zur Übersetzung gesendet – nicht über Emebala.\n"
     L"• Diagnostic-Protokolle sind standardmäßig AUS; aktivieren Sie sie in den Einstellungen (Opt-in).\n"
-    L"• Wenn Sie keinen Text in die Cloud (Google) senden möchten, öffnen Sie das Menü des Taskleistensymbols, wählen Sie “Übersetzungsengine” und dann “Lokales LLM”. Ohne installiertes lokales Modell und mit deaktiviertem Cloud-Fallback wird nicht übersetzt — es wird nichts gesendet.\n"
+    L"• Wenn Sie keinen Text in die Cloud (Google) senden möchten, öffnen Sie das Menü des Taskleistensymbols, wählen Sie “Übersetzungsengine” und dann “Eingebaute lokale Engine”. Ohne installiertes lokales Modell und mit deaktiviertem Cloud-Fallback wird nicht übersetzt — es wird nichts gesendet.\n"
     L"\n"
     L"Details stehen in der README-Datei – jederzeit erneut lesbar.\n",
     L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1142,7 +1131,7 @@ const LocalizedStrings kStringsGerman = {
     L"Lokale Engine-Komponenten werden repariert…",
     L"Lokale Übersetzung nicht verfügbar",
     L"Die Dateien der lokalen Übersetzungsengine fehlen, daher ist die Übersetzung vorübergehend angehalten. Installieren Sie Emebala Chat erneut, um die lokale Engine wiederherzustellen, oder wechseln Sie im Tray-Menü unter „Übersetzungsengine“ zu „Google Übersetzer“.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-kompatibel (benutzerdefinierter Server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1156,8 +1145,8 @@ const LocalizedStrings kStringsGerman = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Benutzerdefiniertes Modell (.gguf)",
+    L"Anderes .gguf-Modell registrieren…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1167,6 +1156,8 @@ const LocalizedStrings kStringsGerman = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dieses Modell ist bereits in Emebala Chat integriert. Eine Registrierung ist nicht erforderlich. Sie können die integrierte lokale Übersetzungsengine direkt auswählen.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(nicht registriert)"
 };
 
 // 10. Russian (ru)
@@ -1175,7 +1166,7 @@ const LocalizedStrings kStringsRussian = {
     L"Состояние: пауза (F9: возобновить)",
     L"Движок перевода",
     L"Google Переводчик (бесплатно / без установки)",
-    L"Локальная LLM (Hy-MT2-1.8B офлайн)",
+    L"Встроенный локальный движок (Hy-MT2-1.8B офлайн)",
     L"Исходный язык (ввод)",
     L"Язык перевода (вывод)",
     L"Поменять исходный ⇄ целевой (двойной клик)",
@@ -1186,7 +1177,6 @@ const LocalizedStrings kStringsRussian = {
     L"Шпаргалка горячих клавиш и помощь...",
     L"Выйти из Эмебала Чат",
     L"Об Эмебала Чат…",
-
     L"Эмебала Чат: горячие клавиши и руководство",
     L"Горячие клавиши и руководство Эмебала Чат:\n\n"
     L"  • F9 : включить / пауза\n"
@@ -1201,16 +1191,13 @@ const LocalizedStrings kStringsRussian = {
     L"  • Только замена (автоотправка выкл): заменяет строку переводом для проверки.\n"
     L"  • Автоотправка (вкл): заменяет строку и сразу нажимает Enter.",
     L"Об Эмебала Чат",
-
     L"Активно",
     L"Перевод...",
     L"Пауза",
-
     L"Эмебала Чат",
     L"Не удалось скопировать выделенный текст. Проверьте целевое приложение и повторите попытку.",
     L"Текст для перевода не выбран.",
     L"Определять автоматически",
-
     L"Эмебала Чат уже запущен в фоновом режиме.\nПроверьте область уведомлений.",
     L"Сбой инициализации COM.\nПлавающий бейдж и озвучивание текста будут недоступны,\nно перевод, горячие клавиши, трей и звуки продолжат работать.",
     L"Хватит копировать и вставлять. Печатайте естественно на родном языке — перевод заменяет ваш ввод в реальном времени в любом приложении Windows.",
@@ -1244,7 +1231,7 @@ const LocalizedStrings kStringsRussian = {
     L"• При локальной модели переводимый текст не покидает устройство.\n"
     L"• Если выбран Google Переводчик или включён автопереход в облако, выделенный или введённый текст отправляется напрямую в Google для перевода, минуя Emebala.\n"
     L"• Диагностические журналы по умолчанию ВЫКЛЮЧЕНЫ; их можно включить в настройках (по согласию).\n"
-    L"• Если вы не хотите отправлять текст в облако (Google), откройте меню значка в системном трее, выберите «Движок перевода» и укажите «Локальная LLM». Без установленной локальной модели и при отключённом облачном резерве перевод не выполняется — ничего не отправляется.\n"
+    L"• Если вы не хотите отправлять текст в облако (Google), откройте меню значка в системном трее, выберите «Движок перевода» и укажите «Встроенный локальный движок». Без установленной локальной модели и при отключённом облачном резерве перевод не выполняется — ничего не отправляется.\n"
     L"\n"
     L"Полные сведения — в файле README, доступном для чтения в любое время.\n",
     L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1256,7 +1243,7 @@ const LocalizedStrings kStringsRussian = {
     L"Восстановление компонентов локального движка…",
     L"Локальный перевод недоступен",
     L"Файлы локального движка перевода не найдены, поэтому перевод приостановлен. Переустановите Emebala Chat, чтобы восстановить локальный движок, или переключитесь на облачный (Google) перевод, выбрав «Google Переводчик» в меню области уведомлений, «Движок перевода».",
-    L"OpenAI Compatible (custom server)",
+    L"Совместимо с OpenAI (пользовательский сервер)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1270,8 +1257,8 @@ const LocalizedStrings kStringsRussian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Модель, указанная пользователем (.gguf)",
+    L"Зарегистрировать другую модель .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1281,6 +1268,8 @@ const LocalizedStrings kStringsRussian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Эта модель уже встроена в Emebala Chat. Регистрация не требуется. Выберите встроенный локальный движок перевода напрямую.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(не зарегистрировано)"
 };
 
 // 11. Portuguese (pt)
@@ -1289,7 +1278,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"Estado: pausado (F9: retomar)",
     L"Mecanismo de tradução",
     L"Google Tradutor (grátis / sem instalação)",
-    L"LLM local (Hy-MT2-1.8B offline)",
+    L"Motor local integrado (Hy-MT2-1.8B offline)",
     L"Idioma de origem (entrada)",
     L"Idioma de destino (saída)",
     L"Trocar origem ⇄ destino (clique duplo)",
@@ -1300,7 +1289,6 @@ const LocalizedStrings kStringsPortuguese = {
     L"Resumo de atalhos e ajuda...",
     L"Sair do Emebala Chat",
     L"Sobre o Emebala Chat…",
-
     L"Emebala Chat — Atalhos e guia de uso",
     L"Atalhos e guia de uso do Emebala Chat:\n\n"
     L"  • F9 : ativar / pausar\n"
@@ -1315,16 +1303,13 @@ const LocalizedStrings kStringsPortuguese = {
     L"  • Substituir apenas (envio automático desativado): substitui a linha pela tradução para revisão.\n"
     L"  • Envio automático ativado: substitui a linha e pressiona Enter imediatamente.",
     L"Sobre o Emebala Chat",
-
     L"Ativo",
     L"Traduzindo...",
     L"Pausado",
-
     L"Emebala Chat",
     L"Não foi possível copiar o texto selecionado. Verifique o aplicativo de destino e tente novamente.",
     L"Nenhum texto selecionado para traduzir.",
     L"Detecção automática",
-
     L"O Emebala Chat já está em execução em segundo plano.\nVerifique a bandeja de notificações.",
     L"Falha na inicialização do COM.\nO selo flutuante e a leitura de voz ficarão indisponíveis,\nmas tradução, atalhos, bandeja e sons continuam funcionando.",
     L"Chega de copiar e colar. Digite naturalmente no seu idioma nativo — a tradução substitui sua digitação em tempo real em qualquer aplicativo do Windows.",
@@ -1358,7 +1343,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"• Com o modelo local, o texto traduzido nunca sai do seu dispositivo.\n"
     L"• Se escolher o Google Tradutor ou houver mudança automática para a nuvem, o texto selecionado ou digitado é enviado diretamente ao Google para tradução, sem passar pelo Emebala.\n"
     L"• Os registros de diagnóstico estão DESATIVADOS por padrão; ative-os nas configurações (opt-in).\n"
-    L"• Se não quiser enviar texto para a nuvem (Google), abra o menu do ícone da bandeja, escolha “Mecanismo de tradução” e selecione “LLM local”. Sem modelo local instalado e com o recurso de nuvem desativado, a tradução não é executada — nada é enviado.\n"
+    L"• Se não quiser enviar texto para a nuvem (Google), abra o menu do ícone da bandeja, escolha “Mecanismo de tradução” e selecione “Motor local integrado”. Sem modelo local instalado e com o recurso de nuvem desativado, a tradução não é executada — nada é enviado.\n"
     L"\n"
     L"O detalhamento completo está no arquivo README, para reler quando quiser.\n",
     L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1370,7 +1355,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"A reparar os componentes do motor local…",
     L"Tradução local indisponível",
     L"Os ficheiros do motor de tradução local não foram encontrados, pelo que a tradução foi suspensa. Reinstale o Emebala Chat para restaurar o motor local, ou mude para a tradução na nuvem (Google) escolhendo “Google Tradutor” no menu da bandeja, em “Motor de tradução”.",
-    L"OpenAI Compatible (custom server)",
+    L"Compatível com OpenAI (servidor personalizado)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1384,8 +1369,8 @@ const LocalizedStrings kStringsPortuguese = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Modelo especificado pelo usuário (.gguf)",
+    L"Registrar outro modelo .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1395,6 +1380,8 @@ const LocalizedStrings kStringsPortuguese = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo já está integrado no Emebala Chat. Não é necessário registrá-lo. Selecione diretamente o mecanismo de tradução local integrado.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(não registrado)"
 };
 
 // 12. Italian (it)
@@ -1403,7 +1390,7 @@ const LocalizedStrings kStringsItalian = {
     L"Stato: in pausa (F9: riprendi)",
     L"Motore di traduzione",
     L"Google Traduttore (gratis / senza installazione)",
-    L"LLM locale (Hy-MT2-1.8B offline)",
+    L"Motore locale integrato (Hy-MT2-1.8B offline)",
     L"Lingua di origine (input)",
     L"Lingua di destinazione (output)",
     L"Scambia origine ⇄ destinazione (doppio clic)",
@@ -1414,7 +1401,6 @@ const LocalizedStrings kStringsItalian = {
     L"Promemoria scorciatoie e guida...",
     L"Esci da Emebala Chat",
     L"Informazioni su Emebala Chat…",
-
     L"Emebala Chat — scorciatoie e guida",
     L"Scorciatoie e guida all'uso di Emebala Chat:\n\n"
     L"  • F9 : attiva / metti in pausa\n"
@@ -1429,16 +1415,13 @@ const LocalizedStrings kStringsItalian = {
     L"  • Solo sostituzione (invio automatico OFF): sostituisce la riga con la traduzione per la revisione.\n"
     L"  • Invio automatico (ON): sostituisce la riga e preme subito Invio.",
     L"Informazioni su Emebala Chat",
-
     L"Attivo",
     L"Traduzione...",
     L"In pausa",
-
     L"Emebala Chat",
     L"Impossibile copiare il testo selezionato. Controlla l'app di destinazione e riprova.",
     L"Nessun testo selezionato da tradurre.",
     L"Rilevamento automatico",
-
     L"Emebala Chat è già in esecuzione in background.\nControlla l'area di notifica.",
     L"Inizializzazione COM non riuscita.\nIl badge fluttuante e la sintesi vocale non saranno disponibili,\nma traduzione, scorciatoie, tray e suoni continueranno a funzionare.",
     L"Basta copiare e incollare. Scrivi naturalmente nella tua lingua madre: la traduzione sostituisce la tua digitazione in tempo reale in qualsiasi app Windows.",
@@ -1472,7 +1455,7 @@ const LocalizedStrings kStringsItalian = {
     L"• Con il modello locale, il testo tradotto non lascia il dispositivo.\n"
     L"• Se scegli Google Traduttore o il passaggio al cloud è automatico, il testo selezionato o digitato viene inviato direttamente a Google per la traduzione, senza passare da Emebala.\n"
     L"• I log di diagnostica sono DISATTIVATI per impostazione predefinita; attivali nelle impostazioni (opt-in).\n"
-    L"• Se non vuoi inviare testo al cloud (Google), apri il menu dell'icona nella barra delle applicazioni, scegli “Motore di traduzione” e seleziona “LLM locale”. Senza modello locale installato e con il fallback cloud disattivato, la traduzione non viene eseguita e non viene inviato nulla.\n"
+    L"• Se non vuoi inviare testo al cloud (Google), apri il menu dell'icona nella barra delle applicazioni, scegli “Motore di traduzione” e seleziona “Motore locale integrato”. Senza modello locale installato e con il fallback cloud disattivato, la traduzione non viene eseguita e non viene inviato nulla.\n"
     L"\n"
     L"Il dettaglio completo è nel file README, rileggibile in qualsiasi momento.\n",
     L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1484,7 +1467,7 @@ const LocalizedStrings kStringsItalian = {
     L"Riparazione dei componenti del motore locale…",
     L"Traduzione locale non disponibile",
     L"I file del motore di traduzione locale non sono stati trovati, quindi la traduzione è sospesa. Reinstalla Emebala Chat per ripristinare il motore locale, oppure passa alla traduzione cloud (Google) scegliendo “Google Traduttore” dal menu dell’area di notifica, “Motore di traduzione”.",
-    L"OpenAI Compatible (custom server)",
+    L"Compatibile con OpenAI (server personalizzato)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1498,8 +1481,8 @@ const LocalizedStrings kStringsItalian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Modello specificato dall'utente (.gguf)",
+    L"Registra un altro modello .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1509,6 +1492,8 @@ const LocalizedStrings kStringsItalian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Questo modello è già integrato in Emebala Chat. Non è necessario registrarlo. Puoi selezionare direttamente il motore di traduzione locale integrato.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(non registrato)"
 };
 
 // 13. Dutch (nl)
@@ -1517,7 +1502,7 @@ const LocalizedStrings kStringsDutch = {
     L"Status: gepauzeerd (F9: hervatten)",
     L"Vertaalengine",
     L"Google Vertalen (gratis / zonder installatie)",
-    L"Lokale LLM (Hy-MT2-1.8B offline)",
+    L"Ingebouwde lokale engine (Hy-MT2-1.8B offline)",
     L"Brontaal (invoer)",
     L"Doeltaal (uitvoer)",
     L"Bron ⇄ doel wisselen (dubbelklik)",
@@ -1528,7 +1513,6 @@ const LocalizedStrings kStringsDutch = {
     L"Sneltoetsenoverzicht en hulp...",
     L"Emebala Chat afsluiten",
     L"Over Emebala Chat…",
-
     L"Emebala Chat — sneltoetsen en handleiding",
     L"Sneltoetsen en handleiding voor Emebala Chat:\n\n"
     L"  • F9 : activeren / pauzeren\n"
@@ -1543,16 +1527,13 @@ const LocalizedStrings kStringsDutch = {
     L"  • Alleen vervangen (automatisch verzenden uit): vervangt de regel door de vertaling ter controle.\n"
     L"  • Automatisch verzenden (aan): vervangt de regel en drukt meteen op Enter.",
     L"Over Emebala Chat",
-
     L"Actief",
     L"Vertalen...",
     L"Gepauzeerd",
-
     L"Emebala Chat",
     L"Kon de geselecteerde tekst niet kopiëren. Controleer de doel-app en probeer het opnieuw.",
     L"Er is geen tekst geselecteerd om te vertalen.",
     L"Automatisch herkennen",
-
     L"Emebala Chat wordt al uitgevoerd op de achtergrond.\nControleer het meldingsvak.",
     L"COM-initialisatie mislukt.\nHet zwevende badge en voorlezen zijn niet beschikbaar,\nmaar vertalen, sneltoetsen, tray en geluiden werken nog steeds.",
     L"Nooit meer kopiëren en plakken. Typ natuurlijk in je moedertaal — de vertaling vervangt je getynde tekst realtime in elke Windows-app.",
@@ -1586,7 +1567,7 @@ const LocalizedStrings kStringsDutch = {
     L"• Met het lokale model verlaat de vertaalde tekst uw apparaat niet.\n"
     L"• Als u Google Translate kiest of automatisch naar de cloud schakelt, wordt de geselecteerde of getypte tekst rechtstreeks naar Google verzonden voor vertaling, niet via Emebala.\n"
     L"• Diagnosticelogboeken zijn standaard UIT; schakel ze in via de instellingen (opt-in).\n"
-    L"• Als u geen tekst naar de cloud (Google) wilt sturen, opent u het menu van het systeemvakpictogram, kiest u “Vertaalengine” en vervolgens “Lokale LLM”. Zonder lokaal model en met cloud-omleiding uitgeschakeld wordt er niet vertaald — er wordt niets verzonden.\n"
+    L"• Als u geen tekst naar de cloud (Google) wilt sturen, opent u het menu van het systeemvakpictogram, kiest u “Vertaalengine” en vervolgens “Ingebouwde lokale engine”. Zonder lokaal model en met cloud-omleiding uitgeschakeld wordt er niet vertaald — er wordt niets verzonden.\n"
     L"\n"
     L"Alle details staan in het README-bestand, dat u altijd opnieuw kunt lezen.\n",
     L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1598,7 +1579,7 @@ const LocalizedStrings kStringsDutch = {
     L"Lokale engine-onderdelen herstellen…",
     L"Lokale vertaling niet beschikbaar",
     L"De bestanden van de lokale vertaalengine ontbreken, dus de vertaling is onderbroken. Installeer Emebala Chat opnieuw om de lokale engine te herstellen, of schakel over naar cloud(Google)-vertaling door “Google Vertalen” te kiezen in het menubalkmenu bij “Vertaalengine”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-compatibel (aangepaste server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1612,8 +1593,8 @@ const LocalizedStrings kStringsDutch = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Door gebruiker gespecificeerd model (.gguf)",
+    L"Ander .gguf-model registreren…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1623,6 +1604,8 @@ const LocalizedStrings kStringsDutch = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dit model is al ingebouwd in Emebala Chat. Registratie is niet nodig. Selecteer de ingebouwde lokale vertaalengine direct.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(niet geregistreerd)"
 };
 
 // 14. Polish (pl)
@@ -1631,7 +1614,7 @@ const LocalizedStrings kStringsPolish = {
     L"Status: wstrzymany (F9: wznow)",
     L"Silnik tłumaczenia",
     L"Tłumacz Google (darmowy / bez instalacji)",
-    L"Lokalny LLM (Hy-MT2-1.8B offline)",
+    L"Wbudowany silnik lokalny (Hy-MT2-1.8B offline)",
     L"Język źródłowy (wejście)",
     L"Język docelowy (wyjście)",
     L"Zamień źródło ⇄ cel (dwuklik)",
@@ -1642,7 +1625,6 @@ const LocalizedStrings kStringsPolish = {
     L"Ściąga skrótów i pomoc...",
     L"Zamknij Emebala Chat",
     L"O Emebala Chat…",
-
     L"Emebala Chat — skróty i przewodnik",
     L"Skróty i przewodnik po Emebala Chat:\n\n"
     L"  • F9 : włącz / pauza\n"
@@ -1657,16 +1639,13 @@ const LocalizedStrings kStringsPolish = {
     L"  • Tylko zamiana (auto-wysyłanie wył): zastępuje linię tłumaczeniem do sprawdzenia.\n"
     L"  • Auto-wysyłanie (wł): zastępuje linię i od razu naciska Enter.",
     L"O Emebala Chat",
-
     L"Aktywny",
     L"Tłumaczenie...",
     L"Wstrzymany",
-
     L"Emebala Chat",
     L"Nie udało się skopiować zaznaczonego tekstu. Sprawdź aplikację docelową i spróbuj ponownie.",
     L"Nie wybrano tekstu do przetłumaczenia.",
     L"Wykryj automatycznie",
-
     L"Emebala Chat jest już uruchomiony w tle.\nSprawdź zasobnik powiadomień.",
     L"Inicjalizacja COM nie powiodła się.\nPływająca odznaka i czytanie na głos będą niedostępne,\nale tłumaczenie, skróty, zasobnik i dźwięki nadal działają.",
     L"Koniec z kopiowaniem i wklejaniem. Pis naturalnie w swoim języku ojczystym — tłumaczenie zastępuje Twoje wpisy w czasie rzeczywistym w każdej aplikacji Windows.",
@@ -1700,7 +1679,7 @@ const LocalizedStrings kStringsPolish = {
     L"• Przy modelu lokalnym tłumaczony tekst nie opuszcza urządzenia.\n"
     L"• Jeśli wybierzesz Tłumacz Google lub nastąpi automatyczne przełączenie w chmurę, zaznaczony lub wpisany tekst jest wysyłany bezpośrednio do Google w celu tłumaczenia, bez pośrednictwa Emebala.\n"
     L"• Logi diagnostyczne są domyślnie WYŁĄCZONE; włącz je w konfiguracji (zgoda).\n"
-    L"• Jeśli nie chcesz wysyłać tekstu do chmury (Google), otwórz menu ikony w zasobniku systemowym, wybierz “Silnik tłumaczenia” i zaznacz “Lokalny LLM”. Bez zainstalowanego modelu lokalnego i przy wyłączonym przejściu do chmury tłumaczenie nie działa — nic nie jest wysyłane.\n"
+    L"• Jeśli nie chcesz wysyłać tekstu do chmury (Google), otwórz menu ikony w zasobniku systemowym, wybierz “Silnik tłumaczenia” i zaznacz “Wbudowany silnik lokalny”. Bez zainstalowanego modelu lokalnego i przy wyłączonym przejściu do chmury tłumaczenie nie działa — nic nie jest wysyłane.\n"
     L"\n"
     L"Szczegóły znajdziesz w pliku README — możesz go przeczytać w dowolnej chwili.\n",
     L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1712,7 +1691,7 @@ const LocalizedStrings kStringsPolish = {
     L"Naprawianie lokalnych składników silnika…",
     L"Tłumaczenie lokalne niedostępne",
     L"Nie znaleziono plików lokalnego silnika tłumaczenia, więc tłumaczenie zostało wstrzymane. Zainstaluj ponownie Emebala Chat, aby przywrócić lokalny silnik, lub przełącz się na tłumaczenie w chmurze (Google), wybierając „Google Translate” w menu zasobnika, „Silnik tłumaczenia”.",
-    L"OpenAI Compatible (custom server)",
+    L"Zgodne z OpenAI (serwer użytkownika)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1726,8 +1705,8 @@ const LocalizedStrings kStringsPolish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Model określony przez użytkownika (.gguf)",
+    L"Zarejestruj inny model .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1737,6 +1716,8 @@ const LocalizedStrings kStringsPolish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ten model jest już wbudowany w Emebala Chat. Rejestracja nie jest potrzebna. Wystarczy bezpośrednio wybrać wbudowany lokalny silnik tłumaczenia.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(niezarejestrowany)"
 };
 
 // 15. Czech (cs)
@@ -1745,7 +1726,7 @@ const LocalizedStrings kStringsCzech = {
     L"Stav: pozastaveno (F9: pokračovat)",
     L"Překladový engine",
     L"Google Překladač (zdarma / bez instalace)",
-    L"Lokální LLM (Hy-MT2-1.8B offline)",
+    L"Vestavěný lokální engine (Hy-MT2-1.8B offline)",
     L"Zdrojový jazyk (vstup)",
     L"Cílový jazyk (výstup)",
     L"Prohodit zdroj ⇄ cíl (dvojklik)",
@@ -1756,7 +1737,6 @@ const LocalizedStrings kStringsCzech = {
     L"Přehled klávesových zkratek a nápověda...",
     L"Ukončit Emebala Chat",
     L"O Emebala Chat…",
-
     L"Emebala Chat — klávesové zkratky a průvodce",
     L"Klávesové zkratky a průvodce Emebala Chat:\n\n"
     L"  • F9 : zapnout / pauza\n"
@@ -1771,16 +1751,13 @@ const LocalizedStrings kStringsCzech = {
     L"  • Pouze nahrazení (auto-odesílání vypnuto): nahradí řádek překladem ke kontrole.\n"
     L"  • Automatické odesílání (zapnuto): nahradí řádek a ihned stiskne Enter.",
     L"O Emebala Chat",
-
     L"Aktivní",
     L"Překládám...",
     L"Pozastaveno",
-
     L"Emebala Chat",
     L"Vybraný text nelze zkopírovat. Zkontrolujte cílovou aplikaci a zkuste to znovu.",
     L"Nebyl vybrán žádný text k překladu.",
     L"Automaticky rozpoznat",
-
     L"Emebala Chat již běží na pozadí.\nZkontrolujte oznamovací oblast.",
     L"Inicializace COM se nezdařila.\nPlovoucí odznak a převod textu na řeč budou nedostupné,\nale překlad, klávesové zkratky, tray a zvuky stále fungují.",
     L"Konec kopírování a vkládání. Pište přirozeně ve svém rodném jazyce — překlad nahrazuje váš psaní v reálném čase v libovolné aplikaci Windows.",
@@ -1814,7 +1791,7 @@ const LocalizedStrings kStringsCzech = {
     L"• Při lokálním modelu překládaný text neopouští vaše zařízení.\n"
     L"• Pokud zvolíte Google Translate nebo dojde k automatickému přepnutí do cloudu, vybraný nebo zadaný text je posílán přímo společnosti Google k přeložení, bez prochzení přes Emebala.\n"
     L"• Diagnostické protokoly jsou ve výchozím nastavení VYPNUTÉ; zapnete je v nastavení (opt-in).\n"
-    L"• Pokud nechcete odesílat text do cloudu (Google), otevřete nabídku ikony v oznamovací oblasti, zvolte “Překladový engine” a vyberte “Lokální LLM”. Bez nainstalovaného lokálního modelu a se zakázaným cloudovým zálohováním překlad neběží — nic se neodesílá.\n"
+    L"• Pokud nechcete odesílat text do cloudu (Google), otevřete nabídku ikony v oznamovací oblasti, zvolte “Překladový engine” a vyberte “Vestavěný lokální engine”. Bez nainstalovaného lokálního modelu a se zakázaným cloudovým zálohováním překlad neběží — nic se neodesílá.\n"
     L"\n"
     L"Podrobnosti najdete v souboru README, který lze kdykoli znovu přečíst.\n",
     L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1826,7 +1803,7 @@ const LocalizedStrings kStringsCzech = {
     L"Oprava místních součástí enginu…",
     L"Místní překlad není dostupný",
     L"Soubory místního překladového enginu chybí, takže je překlad pozastaven. Pro obnovení místního enginu přeinstalujte Emebala Chat, nebo pro přechod na cloudový (Google) překlad vyberte v nabídce oznamovací oblasti „Google Překladač“ v části „Překladový engine“.",
-    L"OpenAI Compatible (custom server)",
+    L"Kompatibilní s OpenAI (uživatelský server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1840,8 +1817,8 @@ const LocalizedStrings kStringsCzech = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Model určený uživatelem (.gguf)",
+    L"Zaregistrovat jiný model .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1851,6 +1828,8 @@ const LocalizedStrings kStringsCzech = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tento model je již vestavěný v Emebala Chat. Registrace není potřeba. Vestavěný lokální překladový engine můžete vybrat přímo.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(není registrován)"
 };
 
 // 16. Hungarian (hu)
@@ -1859,7 +1838,7 @@ const LocalizedStrings kStringsHungarian = {
     L"Állapot: szünetel (F9: folytatás)",
     L"Fordítómotor",
     L"Google Fordító (ingyenes / telepítés nélkül)",
-    L"Helyi LLM (Hy-MT2-1.8B offline)",
+    L"Beépített helyi motor (Hy-MT2-1.8B offline)",
     L"Forrásnyelv (bemenet)",
     L"Célnyelv (kimenet)",
     L"Forrás ⇄ cél felcserélése (dupla kattintás)",
@@ -1870,7 +1849,6 @@ const LocalizedStrings kStringsHungarian = {
     L"Gyorsbillentyű-súgó és súgó...",
     L"Emebala Chat bezárása",
     L"Az Emebala Chat névjegye…",
-
     L"Emebala Chat — gyorsbillentyűk és útmutató",
     L"Gyorsbillentyűk és útmutató az Emebala Chathez:\n\n"
     L"  • F9 : bekapcsolás / szünet\n"
@@ -1885,16 +1863,13 @@ const LocalizedStrings kStringsHungarian = {
     L"  • Csere csak (auto-küldés ki): a sort a fordításra cseréli ellenőrzésre.\n"
     L"  • Automatikus küldés (be): cserél és azonnal Entert nyom.",
     L"Az Emebala Chat névjegye",
-
     L"Aktív",
     L"Fordítás...",
     L"Szünetel",
-
     L"Emebala Chat",
     L"Nem sikerült kimásolni a kijelölt szöveget. Ellenőrizze a célalkalmazást, és próbálja újra.",
     L"Nincs fordításra kijelölt szöveg.",
     L"Automatikus felismerés",
-
     L"Az Emebala Chat már fut a háttérben.\nEllenőrizze az értesítési tálcát.",
     L"A COM inicializálása sikertelen.\nA lebegő jelvény és a felolvasás nem lesz elérhető,\nde a fordítás, gyorsbillentyűk, tálca és hangok tovább működnek.",
     L"Kopírozás és beillesztés többé nem kell. Gépeljen természetesen az anyanyelvén — a fordítás valós időben felváltja a gépelést bármely Windows-alkalmazásban.",
@@ -1928,7 +1903,7 @@ const LocalizedStrings kStringsHungarian = {
     L"• Helyi modell használatakor a fordított szöveg nem hagyja el az eszközt.\n"
     L"• Ha a Google Fordítót választja, vagy automatikusan felhő üzemmódra vált, a kijelölt vagy bevitt szöveg közvetlenül a Google-höz megy a fordításhoz – nem az Emebala-n keresztül.\n"
     L"• A diagnosztikai naplók alapértelmezés szerint KI vannak kapcsolva; a beállításokban kapcsolhatja be (hozzájulás).\n"
-    L"• Ha nem szeretné szöveget a felhőbe (Google) küldeni, nyissa meg a tálcaikon menüjét, válassza a “Fordítómotor” pontot, majd a “Helyi LLM” lehetőséget. Ha nincs telepített helyi modell és a felhőtartalék ki van kapcsolva, a fordítás nem fut — semmi sem kerül küldésre.\n"
+    L"• Ha nem szeretné szöveget a felhőbe (Google) küldeni, nyissa meg a tálcaikon menüjét, válassza a “Fordítómotor” pontot, majd a “Beépített helyi motor” lehetőséget. Ha nincs telepített helyi modell és a felhőtartalék ki van kapcsolva, a fordítás nem fut — semmi sem kerül küldésre.\n"
     L"\n"
     L"A teljes részletezés a README fájlban olvasható, bármikor újra.\n",
     L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -1940,7 +1915,7 @@ const LocalizedStrings kStringsHungarian = {
     L"A helyi motor összetevőinek javítása…",
     L"A helyi fordítás nem érhető el",
     L"A helyi fordítómotor fájljai hiányoznak, ezért a fordítás szünetel. A helyi motor helyreállításához telepítse újra az Emebala Chatet, vagy váltson a felhőalapú (Google) fordításra a „Google Fordító” választásával a tálca „Fordítómotor” menüjében.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-kompatibilis (egyéni szerver)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -1954,8 +1929,8 @@ const LocalizedStrings kStringsHungarian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Felhasználó által megadott modell (.gguf)",
+    L"Más .gguf modell regisztrálása…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -1965,6 +1940,8 @@ const LocalizedStrings kStringsHungarian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ez a modell már beépítve van az Emebala Chatbe. Regisztrációra nincs szükség. A beépített helyi fordítómotort közvetlenül kiválaszthatod.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(nincs regisztrálva)"
 };
 
 // 17. Romanian (ro)
@@ -1973,7 +1950,7 @@ const LocalizedStrings kStringsRomanian = {
     L"Stare: întrerupt (F9: reia)",
     L"Motor de traducere",
     L"Google Translate (gratuit / fără instalare)",
-    L"LLM local (Hy-MT2-1.8B offline)",
+    L"Motor local încorporat (Hy-MT2-1.8B offline)",
     L"Limba sursă (intrare)",
     L"Limba țintă (ieșire)",
     L"Schimbă sursa ⇄ ținta (dublu clic)",
@@ -1984,7 +1961,6 @@ const LocalizedStrings kStringsRomanian = {
     L"Ghid de scurtături și ajutor...",
     L"Închide Emebala Chat",
     L"Despre Emebala Chat…",
-
     L"Emebala Chat — scurtături și ghid",
     L"Scurtături și ghid de utilizare pentru Emebala Chat:\n\n"
     L"  • F9 : activează / întrerupe\n"
@@ -1999,16 +1975,13 @@ const LocalizedStrings kStringsRomanian = {
     L"  • Doar înlocuire (trimitere auto oprită): înlocuiește linia cu traducerea pentru verificare.\n"
     L"  • Trimitere automată (pornită): înlocuiește linia și apasă imediat Enter.",
     L"Despre Emebala Chat",
-
     L"Activ",
     L"Se traduce...",
     L"Întrerupt",
-
     L"Emebala Chat",
     L"Nu s-a putut copia textul selectat. Verificați aplicația țintă și încercați din nou.",
     L"Nu este selectat niciun text de tradus.",
     L"Detectare automată",
-
     L"Emebala Chat rulează deja în fundal.\nVerificați zona de notificări.",
     L"Inicializarea COM a eșuat.\nInsigna flotantă și citirea textului vor fi indisponibile,\ndar traducerea, scurtăturile, tava și sunetele continuă să funcționeze.",
     L"Gata cu copierea și lipirea. Tastați natural în limba maternă — traducerea vă înlocuiește tastarea în timp real în orice aplicație Windows.",
@@ -2042,7 +2015,7 @@ const LocalizedStrings kStringsRomanian = {
     L"• Cu modelul local, textul tradus nu părăsește dispozitivul.\n"
     L"• Dacă alegi Google Translate sau se comută automat în cloud, textul selectat sau tastat este trimis direct la Google pentru traducere, fără a trece prin Emebala.\n"
     L"• Jurnalele de diagnostic sunt IMPLICIT DEZACTIVATE; le activezi din setări (consimțământ).\n"
-    L"• Dacă nu doriți să trimiteți text în cloud (Google), deschideți meniul pictogramei din bara de sistem, alegeți “Motor de traducere” și apoi “LLM local”. Fără model local instalat și cu preluarea în cloud dezactivată, traducerea nu rulează — nimic nu este trimis.\n"
+    L"• Dacă nu doriți să trimiteți text în cloud (Google), deschideți meniul pictogramei din bara de sistem, alegeți “Motor de traducere” și apoi “Motor local încorporat”. Fără model local instalat și cu preluarea în cloud dezactivată, traducerea nu rulează — nimic nu este trimis.\n"
     L"\n"
     L"Detaliile complete sunt în fișierul README, recitibil oricând.\n",
     L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2054,7 +2027,7 @@ const LocalizedStrings kStringsRomanian = {
     L"Se repară componentele motorului local…",
     L"Traducerea locală nu este disponibilă",
     L"Fișierele motorului de traducere local lipsesc, deci traducerea este întreruptă. Reinstalați Emebala Chat pentru a restabili motorul local, sau treceți la traducerea în cloud (Google) alegând „Google Translate” din meniul barei de sistem, „Motor de traducere”.",
-    L"OpenAI Compatible (custom server)",
+    L"Compatibil OpenAI (server personalizat)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2068,8 +2041,8 @@ const LocalizedStrings kStringsRomanian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Model specificat de utilizator (.gguf)",
+    L"Înregistrează alt model .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2079,6 +2052,8 @@ const LocalizedStrings kStringsRomanian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Acest model este deja integrat în Emebala Chat. Înregistrarea nu este necesară. Poți selecta direct motorul de traducere local integrat.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(neregistrat)"
 };
 
 // 18. Swedish (sv)
@@ -2087,7 +2062,7 @@ const LocalizedStrings kStringsSwedish = {
     L"Status: pausad (F9: återuppta)",
     L"Översättningsmotor",
     L"Google Översätt (gratis / utan installation)",
-    L"Lokal LLM (Hy-MT2-1.8B offline)",
+    L"Inbyggd lokal motor (Hy-MT2-1.8B offline)",
     L"Källspråk (inmatning)",
     L"Målspråk (utmatning)",
     L"Byt källa ⇄ mål (dubbelklick)",
@@ -2098,7 +2073,6 @@ const LocalizedStrings kStringsSwedish = {
     L"Snabbtangentsguide och hjälp...",
     L"Avsluta Emebala Chat",
     L"Om Emebala Chat…",
-
     L"Emebala Chat — snabbtangenter och guide",
     L"Snabbtangenter och guide för Emebala Chat:\n\n"
     L"  • F9 : aktivera / pausa\n"
@@ -2113,16 +2087,13 @@ const LocalizedStrings kStringsSwedish = {
     L"  • Endast ersätt (autosänd av): ersätter raden med översättningen för granskning.\n"
     L"  • Autosänd (på): ersätter raden och trycker direkt på Enter.",
     L"Om Emebala Chat",
-
     L"Aktiv",
     L"Översätter...",
     L"Pausad",
-
     L"Emebala Chat",
     L"Kunde inte kopiera den markerade texten. Kontrollera målappen och försök igen.",
     L"Ingen text är markerad att översätta.",
     L"Identifiera automatiskt",
-
     L"Emebala Chat körs redan i bakgrunden.\nKontrollera meddelandefältet.",
     L"COM-initieringen misslyckades.\nDen flytande brickan och uppläsning är inte tillgängliga,\nmen översättning, snabbtangenter, aktivitetsfält och ljud fungerar fortfarande.",
     L"Inget mer kopierande. Skriv naturligt på ditt modersmål — översättningen ersätter din inskrift i realtid i alla Windows-appar.",
@@ -2156,7 +2127,7 @@ const LocalizedStrings kStringsSwedish = {
     L"• Med lokal modell lämnar den översatta texten aldrig enheten.\n"
     L"• Om du väljer Google Översätt, eller om molnläge aktiveras automatiskt, skickas den markerade eller inmatade texten direkt till Google för översättning – inte via Emebala.\n"
     L"• Diagnossloggar är AV som standard; du slår på dem i inställningarna (opt-in).\n"
-    L"• Om du inte vill skicka text till molnet (Google) öppnar du menyn från aktivitetsikonet, väljer “Översättningsmotor” och sedan “Lokal LLM”. Utan lokal modell och med molnfallback inaktiverat körs ingen översättning — ingenting skickas.\n"
+    L"• Om du inte vill skicka text till molnet (Google) öppnar du menyn från aktivitetsikonet, väljer “Översättningsmotor” och sedan “Inbyggd lokal motor”. Utan lokal modell och med molnfallback inaktiverat körs ingen översättning — ingenting skickas.\n"
     L"\n"
     L"Alla detaljer finns i README-filen, som du kan läsa om när som helst.\n",
     L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2168,7 +2139,7 @@ const LocalizedStrings kStringsSwedish = {
     L"Reparerar de lokala motorkomponenterna…",
     L"Lokal översättning är inte tillgänglig",
     L"Filerna för den lokala översättningsmotorn saknas, så översättningen har pausats. Installera om Emebala Chat för att återställa den lokala motorn, eller byt till molnöversättning (Google) genom att välja “Google Översätt” i menyn för systemfältet, “Översättningsmotor”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-kompatibel (anpassad server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2182,8 +2153,8 @@ const LocalizedStrings kStringsSwedish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Användarspecificerad modell (.gguf)",
+    L"Registrera en annan .gguf-modell…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2193,6 +2164,8 @@ const LocalizedStrings kStringsSwedish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Den här modellen är redan inbyggd i Emebala Chat. Ingen registrering behövs. Välj den inbyggda lokala översättningsmotorn direkt.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ej registrerad)"
 };
 
 // 19. Danish (da)
@@ -2201,7 +2174,7 @@ const LocalizedStrings kStringsDanish = {
     L"Status: pause (F9: genoptag)",
     L"Oversættelsesmotor",
     L"Google Oversæt (gratis / uden installation)",
-    L"Lokal LLM (Hy-MT2-1.8B offline)",
+    L"Indbygget lokal motor (Hy-MT2-1.8B offline)",
     L"Kildesprog (input)",
     L"Formsprog (output)",
     L"Byt kilde ⇄ mål (dobbeltklik)",
@@ -2212,7 +2185,6 @@ const LocalizedStrings kStringsDanish = {
     L"Genvejs oversigt og hjælp...",
     L"Afslut Emebala Chat",
     L"Om Emebala Chat…",
-
     L"Emebala Chat — genveje og guide",
     L"Genveje og guide til Emebala Chat:\n\n"
     L"  • F9 : aktiver / pause\n"
@@ -2227,16 +2199,13 @@ const LocalizedStrings kStringsDanish = {
     L"  • Kun erstatning (auto-send fra): erstatter linjen med oversættelsen til gennemse.\n"
     L"  • Auto-send (til): erstatter linjen og trykker straks Enter.",
     L"Om Emebala Chat",
-
     L"Aktiv",
     L"Oversætter...",
     L"Pause",
-
     L"Emebala Chat",
     L"Kunne ikke kopiere den markerede tekst. Tjek målappen, og prøv igen.",
     L"Der er ikke markeret tekst at oversætte.",
     L"Registrér automatisk",
-
     L"Emebala Chat kører allerede i baggrunden.\nTjek notifikationsområdet.",
     L"COM-initialisering mislykkedes.\nDen flydende badge og oplæsning er utilgængelige,\nmen oversættelse, genveje, bakke og lyde fungerer stadig.",
     L"Stop med at kopiere og indsætte. Skriv naturligt på dit modersmål — oversættelsen erstatter din indtastning i realtid i enhver Windows-app.",
@@ -2270,7 +2239,7 @@ const LocalizedStrings kStringsDanish = {
     L"• Ved lokal model forlader den oversatte tekst ikke din enhed.\n"
     L"• Hvis du vælger Google Translate, eller der skiftes automatisk til cloud, sendes den markerede eller indtastede tekst direkte til Google til oversættelse – ikke via Emebala.\n"
     L"• Diagnosedokumentation er SOM STANDARD FRA; du slår den til i indstillingerne (tilvalg).\n"
-    L"• Hvis du ikke vil sende tekst til skyen (Google), skal du åbne menuen fra statusfeltikonet, vælge “Oversættelsesmotor” og derefter “Lokal LLM”. Uden en lokal model og med cloud-backup deaktiveret kører oversættelsen ikke — intet sendes.\n"
+    L"• Hvis du ikke vil sende tekst til skyen (Google), skal du åbne menuen fra statusfeltikonet, vælge “Oversættelsesmotor” og derefter “Indbygget lokal motor”. Uden en lokal model og med cloud-backup deaktiveret kører oversættelsen ikke — intet sendes.\n"
     L"\n"
     L"Detaljerne står i README-filen, som du kan læse når som helst.\n",
     L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2282,7 +2251,7 @@ const LocalizedStrings kStringsDanish = {
     L"Reparerer de lokale motorkomponenter…",
     L"Lokal oversættelse er ikke tilgængelig",
     L"Filerne til den lokale oversættelsesmotor mangler, så oversættelsen er sat på pause. Geninstaller Emebala Chat for at gendanne den lokale motor, eller skift til sky-oversættelse (Google) ved at vælge “Google Oversæt” fra bakkemenuen under “Oversættelsesmotor”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-kompatibel (brugerdefineret server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2296,8 +2265,8 @@ const LocalizedStrings kStringsDanish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Brugerspecificeret model (.gguf)",
+    L"Registrér en anden .gguf-model…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2307,6 +2276,8 @@ const LocalizedStrings kStringsDanish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne model er allerede indbygget i Emebala Chat. Registrering er ikke nødvendig. Vælg den indbyggede lokale oversættelsesmotor direkte.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ikke registreret)"
 };
 
 // 20. Finnish (fi)
@@ -2315,7 +2286,7 @@ const LocalizedStrings kStringsFinnish = {
     L"Tila: keskeytetty (F9: jatka)",
     L"Käännösmoottori",
     L"Google Kääntäjä (ilmainen / ei asennusta)",
-    L"Paikallinen LLM (Hy-MT2-1.8B offline)",
+    L"Sisäänrakennettu paikallinen moottori (Hy-MT2-1.8B offline)",
     L"Lähd kieli (syöte)",
     L"Koh kieli (tuloste)",
     L"Vaihda lähde ⇄ kohde (kaksoiskautistus)",
@@ -2326,7 +2297,6 @@ const LocalizedStrings kStringsFinnish = {
     L"Pikanäppäinopas ja ohje...",
     L"Sulje Emebala Chat",
     L"Tietoja Emebala Chatista…",
-
     L"Emebala Chat — pikanäppäimet ja opas",
     L"Emebala Chatin pikanäppäimet ja käyttöopas:\n\n"
     L"  • F9 : ota käyttöön / tauko\n"
@@ -2341,16 +2311,13 @@ const LocalizedStrings kStringsFinnish = {
     L"  • Vain korvaus (automaattilähetys pois): korvaa rivin käännöksellä tarkistettavaksi.\n"
     L"  • Automaattinen lähetys (päällä): korvaa rivin ja painaa heti Enteriä.",
     L"Tietoja Emebala Chatista",
-
     L"Aktiivinen",
     L"Kääntää...",
     L"Keskeytetty",
-
     L"Emebala Chat",
     L"Valitun tekstin kopiointi epäonnistui. Tarkista kohdesovellus ja yritä uudelleen.",
     L"Käännettävää tekstiä ei ole valittu.",
     L"Tunnista automaattisesti",
-
     L"Emebala Chat on jo käynnissä taustalla.\nTarkista ilmoitusalue.",
     L"COM-käynnistys epäonnistui.\nKelluva merkki ja puheentuotto eivät ole käytettävissä,\nmutta käännös, pikanäppäimet, palkki ja äänet toimivat edelleen.",
     L"Liitä kopiointi ja liittäminen luonnollisesti aidolla kielelläsi — käännös korvaa kirjoituksesi reaaliajassa missä tahansa Windows-sovelluksessa.",
@@ -2384,7 +2351,7 @@ const LocalizedStrings kStringsFinnish = {
     L"• Paikallista mallia käytettäessä käännettävä teksti ei poistu laitteesta.\n"
     L"• Jos valitset Google-kääntäjän tai tila vaihtuu automaattisesti pilveen, valittu tai kirjoitettu teksti lähetetään suoraan Googlelle käännöstä varten – ei Emebalan kautta.\n"
     L"• Vianmäärityslokit ovat oletuksena POIS PAALTA; ota ne käyttöön asetuksissa (valinta).\n"
-    L"• Jos et halua lähettää tekstiä pilveen (Google), avaa tehtäväpalkin kuvakkeen valikko, valitse “Käännösmoottori” ja sitten “Paikallinen LLM”. Ilman paikallista mallia ja kun pilvivarajärjestelmä on pois päältä, käännös ei toimi — mitään ei lähetetä.\n"
+    L"• Jos et halua lähettää tekstiä pilveen (Google), avaa tehtäväpalkin kuvakkeen valikko, valitse “Käännösmoottori” ja sitten “Sisäänrakennettu paikallinen moottori”. Ilman paikallista mallia ja kun pilvivarajärjestelmä on pois päältä, käännös ei toimi — mitään ei lähetetä.\n"
     L"\n"
     L"Tarkat tiedot ovat README-tiedostossa, jonka voit lukea milloin tahansa.\n",
     L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2396,7 +2363,7 @@ const LocalizedStrings kStringsFinnish = {
     L"Korjataan paikallisia moottorikomponentteja…",
     L"Paikallinen käännös ei ole käytettävissä",
     L"Paikallisen käännösmoottorin tiedostoja ei löydy, joten käännös on keskeytetty. Asenna Emebala Chat uudelleen palauttaaksesi paikallisen moottorin, tai vaihda pilvikäännökseen (Google) valitsemalla “Google Kääntäjä” ilmoitusalueen valikosta, “Käännösmoottori”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-yhteensopiva (mukautettu palvelin)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2410,8 +2377,8 @@ const LocalizedStrings kStringsFinnish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Käyttäjän määrittämä malli (.gguf)",
+    L"Rekisteröi toinen .gguf-malli…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2421,6 +2388,8 @@ const LocalizedStrings kStringsFinnish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tämä malli on jo sisäänrakennettu Emebala Chatiin. Rekisteröintiä ei tarvita. Valitse sisäänrakennettu paikallinen käännösmoottori suoraan.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ei rekisteröity)"
 };
 
 // 21. Norwegian (no / nb)
@@ -2429,7 +2398,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"Status: pause (F9: gjenoppta)",
     L"Oversettelsesmotor",
     L"Google Oversetter (gratis / uten installasjon)",
-    L"Lokal LLM (Hy-MT2-1.8B offline)",
+    L"Innebygd lokal motor (Hy-MT2-1.8B offline)",
     L"Kildespråk (inndata)",
     L"Målspråk (utdata)",
     L"Bytt kilde ⇄ mål (dobbeltklikk)",
@@ -2440,7 +2409,6 @@ const LocalizedStrings kStringsNorwegian = {
     L"Snarveisveiledning og hjelp...",
     L"Avslutt Emebala Chat",
     L"Om Emebala Chat…",
-
     L"Emebala Chat — snarveier og veiledning",
     L"Snarveier og veiledning for Emebala Chat:\n\n"
     L"  • F9 : aktiver / pause\n"
@@ -2455,16 +2423,13 @@ const LocalizedStrings kStringsNorwegian = {
     L"  • Bare erstatt (autosending av): erstatter linjen med oversettelsen for gjennomgang.\n"
     L"  • Autosending (på): erstatter linjen og trykker Enter med en gang.",
     L"Om Emebala Chat",
-
     L"Aktiv",
     L"Oversetter...",
     L"Pause",
-
     L"Emebala Chat",
     L"Kunne ikke kopiere den valgte teksten. Sjekk målappen og prøv igjen.",
     L"Ingen tekst er valgt for oversettelse.",
     L"Oppdag automatisk",
-
     L"Emebala Chat kjører allerede i bakgrunnen.\nSjekk varslingsfeltet.",
     L"COM-initialisering mislyktes.\nDet svevende merket og taleavspilling er utilgjengelige,\nmen oversettelse, snarveier, varleske og lyder fungerer fortsatt.",
     L"Slutt å kopiere og lime inn. Skriv naturally på morsmålet ditt — oversettelsen erstatter tastene dine i sanntid i enhver Windows-app.",
@@ -2498,7 +2463,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"• Med lokal modell forlater den oversatte teksten ikke enheten.\n"
     L"• Hvis du velger Google Oversett, eller det bytter automatisk til sky, sendes markert eller skrevet tekst direkte til Google for oversettelse – ikke via Emebala.\n"
     L"• Diagnosticslogger er AV som standard; du slår dem på i innstillingene (opt-in).\n"
-    L"• Hvis du ikke vil sende tekst til skyen (Google), åpne menyen fra systemstatusfeltets ikon, velg “Oversettelsesmotor” og deretter “Lokal LLM”. Uten lokal modell og med sky-reserve deaktivert, kjører ikke oversettelsen — ingenting sendes.\n"
+    L"• Hvis du ikke vil sende tekst til skyen (Google), åpne menyen fra systemstatusfeltets ikon, velg “Oversettelsesmotor” og deretter “Innebygd lokal motor”. Uten lokal modell og med sky-reserve deaktivert, kjører ikke oversettelsen — ingenting sendes.\n"
     L"\n"
     L"Detaljene finnes i README-filen, som kan leses på nytt når som helst.\n",
     L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2510,7 +2475,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"Reparerer de lokale motorkomponentene…",
     L"Lokal oversettelse er ikke tilgjengelig",
     L"Filene til den lokale oversettelsesmotoren mangler, så oversettelsen er satt på pause. Installer Emebala Chat på nytt for å gjenopprette den lokale motoren, eller bytt til skyoversettelse (Google) ved å velge “Google Oversetter” fra menyen i systemfeltet, “Oversettelsesmotor”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-kompatibel (tilpasset server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2524,8 +2489,8 @@ const LocalizedStrings kStringsNorwegian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Brukerspesifisert modell (.gguf)",
+    L"Registrer en annen .gguf-modell…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2535,6 +2500,8 @@ const LocalizedStrings kStringsNorwegian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne modellen er allerede innebygd i Emebala Chat. Registrering er ikke nødvendig. Velg den innebygde lokale oversettelsesmotoren direkte.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ikke registrert)"
 };
 
 // 22. Greek (el)
@@ -2543,7 +2510,7 @@ const LocalizedStrings kStringsGreek = {
     L"Κατάσταση: σε παύση (F9: συνέχεια)",
     L"Μηχανή μετάφρασης",
     L"Google Μετάφραση (δωρεάν / χωρίς εγκατάσταση)",
-    L"Τοπικό LLM (Hy-MT2-1.8B εκτός σύνδεσης)",
+    L"Ενσωματωμένη τοπική μηχανή (Hy-MT2-1.8B εκτός σύνδεσης)",
     L"Γλώσσα πηγής (είσοδος)",
     L"Γλώσταση προορισμού (έξοδος)",
     L"Εναλλαγή πηγής ⇄ προορισμού (διπλό κλικ)",
@@ -2554,7 +2521,6 @@ const LocalizedStrings kStringsGreek = {
     L"Οδηγός συντομεύσεων και βοήθεια...",
     L"Έξοδος από το Εμεμπάλα Τσατ",
     L"Σχετικά με το Εμεμπάλα Τσατ…",
-
     L"Εμεμπάλα Τσατ — συντομεύσεις και οδηγός",
     L"Συντομεύσεις και οδηγός χρήσης του Εμεμπάλα Τσατ:\n\n"
     L"  • F9 : ενεργοποίηση / παύση\n"
@@ -2569,16 +2535,13 @@ const LocalizedStrings kStringsGreek = {
     L"  • Αντικατάσταση μόνο (αυτόματη αποστολή off): αντικαθιστά τη γραμμή με τη μετάφραση για έλεγχο.\n"
     L"  • Αυτόματη αποστολή (on): αντικαθιστά τη γραμμή και πατά αμέσως Enter.",
     L"Σχετικά με το Εμεμπάλα Τσατ",
-
     L"Ενεργό",
     L"Μετάφραση...",
     L"Σε παύση",
-
     L"Εμεμπάλα Τσατ",
     L"Δεν ήταν δυνατή η αντιγραφή του επιλεγμένου κειμένου. Ελέγξτε την εφαρμογή προορισμού και δοκιμάστε ξανά.",
     L"Δεν υπάρχει επιλεγμένο κείμενο για μετάφραση.",
     L"Αυτόματος εντοπισμός",
-
     L"Το Εμεμπάλα Τσατ εκτελείται ήδη στο παρασκήνιο.\nΕλέγξτε το πεδίο ειδοποιήσεων.",
     L"Η αρχικοποίηση COM απέτυχε.\nΤο πloating σήμα και η συνθετική ομιλία δεν θα είναι διαθέσιμα,\nαλλά η μετάφραση, οι συντομεύσεις, το εικονίδιο και οι ήχοι συνεχίζουν να λειτουργούν.",
     L"Σταματήστε το αντιγραφή-επικόλληση. Πληκτρολογήστε φυσικά στη μητρική σας γλώσσα — η μετάφραση αντικαθιστά την πληκτρολόγησή σας σε πραγματικό χρόνο σε οποιαδήποτε εφαρμογή Windows.",
@@ -2612,7 +2575,7 @@ const LocalizedStrings kStringsGreek = {
     L"• Με τοπικό μοντέλο, το μεταφραζόμενο κείμενο δεν φεύγει από τη συσκευή σας.\n"
     L"• Αν επιλέξετε τη Μετάφραση Google ή γίνει αυτόματη εναλλαγή στο cloud, το επιλεγμένο ή πληκτρολογημένο κείμενο στέλνεται απευθείας στην Google για μετάφραση, όχι μέσω Emebala.\n"
     L"• Τα αρχεία διαγνωστικών είναι ΑΠΕΝΕΡΓΟΠΟΙΗΜΕΝΑ από προεπιλογή· ενεργοποιούνται στις ρυθμίσεις (ρητή συναίνεση).\n"
-    L"• Εάν δεν θέλετε να στείλετε κείμενο στο cloud (Google), ανοίξτε το μενού του εικονιδίου στη γραμμή εργασιών, επιλέξτε «Μηχανή μετάφρασης» και στη συνέχεια «Τοπικό LLM». Χωρίς εγκατεστημένο τοπικό μοντέλο και με απενεργοποιημένη την εφεδρική λειτουργία cloud, η μετάφραση δεν εκτελείται — τίποτα δεν στέλνεται.\n"
+    L"• Εάν δεν θέλετε να στείλετε κείμενο στο cloud (Google), ανοίξτε το μενού του εικονιδίου στη γραμμή εργασιών, επιλέξτε «Μηχανή μετάφρασης» και στη συνέχεια «Ενσωματωμένη τοπική μηχανή». Χωρίς εγκατεστημένο τοπικό μοντέλο και με απενεργοποιημένη την εφεδρική λειτουργία cloud, η μετάφραση δεν εκτελείται — τίποτα δεν στέλνεται.\n"
     L"\n"
     L"Οι πλήρεις λεπτομέρειες βρίσκονται στο αρχείο README, που διαβάζεται ξανά ανά πάσα στιγμή.\n",
     L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2624,7 +2587,7 @@ const LocalizedStrings kStringsGreek = {
     L"Επισκευή των τοπικών συστατικών μηχανής…",
     L"Η τοπική μετάφραση δεν είναι διαθέσιμη",
     L"Τα αρχεία της τοπικής μηχανής μετάφρασης λείπουν, επομένως η μετάφραση έχει διακοπεί. Εγκαταστήστε ξανά το Emebala Chat για να επαναφέρετε την τοπική μηχανή, ή μεταβείτε σε μετάφραση cloud (Google) επιλέγοντας «Google Μετάφραση» από το μενού της περιοχής ειδοποιήσεων, «Μηχανή μετάφρασης».",
-    L"OpenAI Compatible (custom server)",
+    L"Συμβατό με OpenAI (προσαρμοσμένος διακομιστής)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2638,8 +2601,8 @@ const LocalizedStrings kStringsGreek = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Μοντέλο καθορισμένο από τον χρήστη (.gguf)",
+    L"Καταχώριση άλλου μοντέλου .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2649,6 +2612,8 @@ const LocalizedStrings kStringsGreek = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Αυτό το μοντέλο είναι ήδη ενσωματωμένο στο Emebala Chat. Δεν απαιτείται εγγραφή. Μπορείτε να επιλέξετε απευθείας τον ενσωματωμένο τοπικό μηχανισμό μετάφρασης.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(μη καταχωρημένο)"
 };
 
 // 23. Turkish (tr)
@@ -2657,7 +2622,7 @@ const LocalizedStrings kStringsTurkish = {
     L"Durum: duraklatıldı (F9: devam et)",
     L"Çeviri motoru",
     L"Google Çeviri (ücretsiz / kurulum gerektirmez)",
-    L"Yerel LLM (Hy-MT2-1.8B çevrimdışı)",
+    L"Yerleşik yerel motor (Hy-MT2-1.8B çevrimdışı)",
     L"Kaynak dil (giriş)",
     L"Hedef dil (çıkış)",
     L"Kaynak ⇄ hedef değiştir (çift tık)",
@@ -2668,7 +2633,6 @@ const LocalizedStrings kStringsTurkish = {
     L"Kısayol rehberi ve yardım...",
     L"Emebala Chat'ten çık",
     L"Emebala Chat hakkında…",
-
     L"Emebala Chat — kısayollar ve rehber",
     L"Emebala Chat kısayolları ve kullanım rehberi:\n\n"
     L"  • F9 : etkinleştir / duraklat\n"
@@ -2683,16 +2647,13 @@ const LocalizedStrings kStringsTurkish = {
     L"  • Yalnızca değiştir (otomatik gönderim kapalı): satırı incelenmek üzere çeviriyle değiştirir.\n"
     L"  • Otomatik gönderim (açık): satırı değiştirir ve hemen Enter'a basar.",
     L"Emebala Chat hakkında",
-
     L"Etkin",
     L"Çevriliyor...",
     L"Duraklatıldı",
-
     L"Emebala Chat",
     L"Seçili metin kopyalanamadı. Hedef uygulamayı denetleyip yeniden deneyin.",
     L"Çevrilecek metin seçilmedi.",
     L"Otomatik algıla",
-
     L"Emebala Chat arka planda zaten çalışıyor.\nSistem bildirim tepsisini denetleyin.",
     L"COM başlatma başarısız.\nYüzen rozet ve metinden sese kullanılamayacak,\nancak çeviri, kısayollar, tepsi ve sesler çalışmaya devam ediyor.",
     L"Kopyala-yapıştırı bırakın. Ana dilinizde doğal yazın — çeviri, herhangi bir Windows uygulamasında yazdıklarınızı gerçek zamanlı değiştirir.",
@@ -2726,7 +2687,7 @@ const LocalizedStrings kStringsTurkish = {
     L"• Yerel model kullanıldığında çevrilen metin cihazınızdan çıkmaz.\n"
     L"• Google Çeviri seçerseniz veya otomatik buluta geçilirse, seçilen ya da yazılan metin çeviri için doğrudan Google’a gönderilir; Emebala üzerinden geçmez.\n"
     L"• Tanılama günlükleri varsayılan olarak KAPALIDIR; ayarlardan açmanız gerekir (seçmeli onay).\n"
-    L"• Metni buluta (Google) göndermek istemiyorsanız sistem tepsisindeki simgenin menüsünü açın, “Çeviri motoru” bölümünden “Yerel LLM” seçeneğini seçin. Yerel model kurulu değilse ve bulut yedeği kapalıysa çeviri çalışmaz — hiçbir şey gönderilmez.\n"
+    L"• Metni buluta (Google) göndermek istemiyorsanız sistem tepsisindeki simgenin menüsünü açın, “Çeviri motoru” bölümünden “Yerleşik yerel motor” seçeneğini seçin. Yerel model kurulu değilse ve bulut yedeği kapalıysa çeviri çalışmaz — hiçbir şey gönderilmez.\n"
     L"\n"
     L"Tam ayrıntılar README dosyasındadır; istediğiniz zaman tekrar okuyabilirsiniz.\n",
     L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2738,7 +2699,7 @@ const LocalizedStrings kStringsTurkish = {
     L"Yerel motor bileşenleri onarılıyor…",
     L"Yerel çeviri kullanılamıyor",
     L"Yerel çeviri motoru dosyaları bulunamadığı için çeviri duraklatıldı. Yerel motoru geri yüklemek için Emebala Chat’i yeniden yükleyin veya bulut (Google) çevirisine geçmek için tepsi menüsünden “Çeviri motoru” altında “Google Çeviri” seçin.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI uyumlu (özel sunucu)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2752,8 +2713,8 @@ const LocalizedStrings kStringsTurkish = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Kullanıcı tarafından belirtilen model (.gguf)",
+    L"Başka bir .gguf modeli kaydet…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2763,6 +2724,8 @@ const LocalizedStrings kStringsTurkish = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Bu model Emebala Chat'e zaten yerleşiktir. Kayıt gerekmez. Yerleşik yerel çeviri motorunu doğrudan seçebilirsiniz.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(kayıtlı değil)"
 };
 
 // 24. Ukrainian (uk)
@@ -2771,7 +2734,7 @@ const LocalizedStrings kStringsUkrainian = {
     L"Стан: призупинено (F9: відновити)",
     L"Рушій перекладу",
     L"Google Перекладач (безкоштовно / без встановлення)",
-    L"Локальна LLM (Hy-MT2-1.8B офлайн)",
+    L"Вбудований локальний рушій (Hy-MT2-1.8B офлайн)",
     L"Мова джерела (вхід)",
     L"Цільова мова (вихід)",
     L"Помняти джерело ⇄ ціль (подвійний клік)",
@@ -2782,7 +2745,6 @@ const LocalizedStrings kStringsUkrainian = {
     L"Гарячі клавіші та довідка...",
     L"Вийти з Емебала Чат",
     L"Про Емебала Чат…",
-
     L"Емебала Чат — гарячі клавіші та посібник",
     L"Гарячі клавіші та посібник Емебала Чат:\n\n"
     L"  • F9 : увімкнути / пауза\n"
@@ -2797,16 +2759,13 @@ const LocalizedStrings kStringsUkrainian = {
     L"  • Лише заміна (автонадсилання вимк): замінює рядок перекладом для перевірки.\n"
     L"  • Автонадсилання (увімк): замінює рядок і одразу натискає Enter.",
     L"Про Емебала Чат",
-
     L"Активний",
     L"Переклад...",
     L"Призупинено",
-
     L"Емебала Чат",
     L"Не вдалося скопіювати вибраний текст. Перевірте цільовий застосунок і спробуйте ще раз.",
     L"Не вибрано тексту для перекладу.",
     L"Визначати автоматично",
-
     L"Емебала Чат уже працює у фоні.\nПеревірте область сповіщень.",
     L"Помилка ініціалізації COM.\nПлаваюча відзнака й озвучення тексту будуть недоступні,\nале переклад, гарячі клавіші, трей і звуки продовжують працювати.",
     L"Геть копіювання та вставляння. Друкуйте природно рідною мовою — переклад замінює ваш набір у реальному часі в будь-якій програмі Windows.",
@@ -2840,7 +2799,7 @@ const LocalizedStrings kStringsUkrainian = {
     L"• З локальною моделлю текст перекладу не покидає вашого пристрою.\n"
     L"• Якщо обрано Google Перекладач або відбувається автоматичний перехід у хмару, виділений або надрукований текст надсилається напряму до Google для перекладу, минаючи Emebala.\n"
     L"• Діагностичні журнали типово ВИМКНЕНО; увімкніть їх у налаштуваннях (за згодою).\n"
-    L"• Якщо не хочете надсилати текст у хмару (Google), відкрийте меню піктограми в системному треї, оберіть «Рушій перекладу» і потім «Локальна LLM». Без встановленої локальної моделі та з вимкненим хмарним резервуванням переклад не виконується — нічого не надсилається.\n"
+    L"• Якщо не хочете надсилати текст у хмару (Google), відкрийте меню піктограми в системному треї, оберіть «Рушій перекладу» і потім «Вбудований локальний рушій». Без встановленої локальної моделі та з вимкненим хмарним резервуванням переклад не виконується — нічого не надсилається.\n"
     L"\n"
     L"Повні відомості — у файлі README, який можна перечитати будь-коли.\n",
     L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2852,7 +2811,7 @@ const LocalizedStrings kStringsUkrainian = {
     L"Відновлення компонентів локального рушія…",
     L"Локальний переклад недоступний",
     L"Файли локального рушія перекладу не знайдено, тому переклад призупинено. Переустановіть Emebala Chat, щоб відновити локальний рушій, або перейдіть на хмарний (Google) переклад, вибравши «Google Перекладач» у меню області сповіщень, «Рушій перекладу».",
-    L"OpenAI Compatible (custom server)",
+    L"Сумісно з OpenAI (користувацький сервер)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2866,8 +2825,8 @@ const LocalizedStrings kStringsUkrainian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Модель, вказана користувачем (.gguf)",
+    L"Зареєструвати іншу модель .gguf…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2877,6 +2836,8 @@ const LocalizedStrings kStringsUkrainian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ця модель уже вбудована в Emebala Chat. Реєстрація не потрібна. Ви можете напряму вибрати вбудований локальний рушій перекладу.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(не зареєстровано)"
 };
 
 // 25. Thai (th)
@@ -2885,7 +2846,7 @@ const LocalizedStrings kStringsThai = {
     L"สถานะ: หยุดชั่วคราว (F9: ทำงานต่อ)",
     L"ระบบแปลภาษา",
     L"Google แปลภาษา (ฟรี / ไม่ต้องติดตั้ง)",
-    L"LLM ภายในเครื่อง (Hy-MT2-1.8B ออฟไลน์)",
+    L"เครื่องยนต์ในตัวแบบออฟไลน์ (Hy-MT2-1.8B ออฟไลน์)",
     L"ภาษาต้นทาง (อินพุต)",
     L"ภาษาปลายทาง (เอาต์พุต)",
     L"สลับต้นทาง ⇄ ปลายทาง (ดับเบิลคลิก)",
@@ -2896,7 +2857,6 @@ const LocalizedStrings kStringsThai = {
     L"สรุปคีย์ลัดและวิธีใช้...",
     L"ออกจาก เอเมบาลา แชท",
     L"เกี่ยวกับ เอเมบาลา แชท…",
-
     L"เอเมบาลา แชท — คีย์ลัดและคู่มือการใช้งาน",
     L"คีย์ลัดและคู่มือการใช้งาน เอเมบาลา แชท:\n\n"
     L"  • F9 : เปิดใช้งาน / หยุดชั่วคราว\n"
@@ -2911,16 +2871,13 @@ const LocalizedStrings kStringsThai = {
     L"  • แทนที่อย่างเดียว (ส่งอัตโนมัติปิด): แทนที่บรรทัดด้วยการแปลเพื่อตรวจสอบก่อน\n"
     L"  • ส่งอัตโนมัติ (เปิด): แทนที่บรรทัดแล้วกด Enter ทันที",
     L"เกี่ยวกับ เอเมบาลา แชท",
-
     L"ใช้งานอยู่",
     L"กำลังแปล...",
     L"หยุดชั่วคราว",
-
     L"เอเมบาลา แชท",
     L"คัดลอกข้อความที่เลือกไม่ได้ โปรดตรวจสอบแอปปลายทางแล้วลองอีกครั้ง",
     L"ยังไม่ได้เลือกข้อความสำหรับแปล",
     L"ตรวจจับอัตโนมัติ",
-
     L"เอเมบาลา แชท ทำงานอยู่แล้วในพื้นหลัง\nโปรดตรวจสอบถาดการแจ้งเตือนของระบบ",
     L"ไม่สามารถเริ่มการทำงาน COM ได้\nป้ายลอยและการอ่านออกเสียงจะไม่สามารถใช้งานได้\nแต่การแปล คีย์ลัด ถาดระบบ และเสียงจะยังทำงานตามปกติ",
     L"เลิกลั่บการคัดลอกวาง พิมพ์ตามธรรมชาติในภาษาแม่ของคุณ แล้วคำแปลจะมาแทนที่สิ่งที่คุณพิมพ์แบบเรียลไทม์ในทุกแอปของ Windows",
@@ -2954,7 +2911,7 @@ const LocalizedStrings kStringsThai = {
     L"• เมื่อใช้โมเดลในเครื่อง ข้อความที่แปลจะไม่ออกจากอุปกรณ์ของคุณ\n"
     L"• หากคุณเลือก Google Translate หรือสลับไปใช้ระบบคลาวด์อัตโนมัติ ข้อความที่คุณเลือกหรือพิมพ์จะถูกส่งตรงไปยัง Google เพื่อแปล โดยไม่ผ่าน Emebala\n"
     L"• บันทึกการวินิจฉัยปิด (OFF) เป็นค่าเริ่มต้น ต้องเปิดในการตั้งค่า (เลือกเข้าร่วม)\n"
-    L"• หากคุณไม่ต้องการส่งข้อความไปยังคลาวด์ (Google) ให้เปิดเมนูที่ไอคอนถาดระบบ เลือก “ระบบแปลภาษา” แล้วเลือก “LLM ภายในเครื่อง” หากไม่ได้ติดตั้งโมเดลภายในเครื่องและปิดการสลับไปคลาวด์ไว้ การแปลจะไม่ทำงานโดยไม่มีการส่งข้อมูลใดๆ\n"
+    L"• หากคุณไม่ต้องการส่งข้อความไปยังคลาวด์ (Google) ให้เปิดเมนูที่ไอคอนถาดระบบ เลือก “ระบบแปลภาษา” แล้วเลือก “เครื่องยนต์ในตัวแบบออฟไลน์” หากไม่ได้ติดตั้งโมเดลภายในเครื่องและปิดการสลับไปคลาวด์ไว้ การแปลจะไม่ทำงานโดยไม่มีการส่งข้อมูลใดๆ\n"
     L"\n"
     L"ดูรายละเอียดฉบับเต็มในไฟล์ README ซึ่งอ่านซ้ำได้ทุกเมื่อ\n",
     L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -2966,7 +2923,7 @@ const LocalizedStrings kStringsThai = {
     L"กำลังซ่อมแซมส่วนประกอบเอนจิ้นในเครื่อง…",
     L"การแปลในเครื่องไม่พร้อมใช้งาน",
     L"ไม่พบไฟล์เอนจิ้นแปลในเครื่อง จึงหยุดการแปลชั่วคราว ติดตั้ง Emebala Chat อีกครั้งเพื่อกู้คืนเอนจิ้นในเครื่อง หรือหากต้องการสลับไปใช้การแปลบนคลาวด์ (Google) ให้เลือก “Google แปลภาษา” จากเมนูถาดระบบ ที่ “เอนจิ้นการแปล”",
-    L"OpenAI Compatible (custom server)",
+    L"เข้ากันได้กับ OpenAI (เซิร์ฟเวอร์ที่ผู้ใช้กำหนด)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -2980,8 +2937,8 @@ const LocalizedStrings kStringsThai = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"โมเดลที่ผู้ใช้กำหนด (.gguf)",
+    L"ลงทะเบียนโมเดล .gguf อื่น…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -2991,6 +2948,8 @@ const LocalizedStrings kStringsThai = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"โมเดลนี้มีอยู่ในตัว Emebala Chat อยู่แล้ว ไม่จำเป็นต้องลงทะเบียน เลือกเครื่องยนต์แปลภาษาในตัวได้โดยตรง",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ยังไม่ได้ลงทะเบียน)"
 };
 
 // 26. Indonesian (id)
@@ -2999,7 +2958,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"Status: dijeda (F9: lanjutkan)",
     L"Mesin penerjemah",
     L"Google Translate (gratis / tanpa instalasi)",
-    L"LLM lokal (Hy-MT2-1.8B luring)",
+    L"Mesin lokal bawaan (Hy-MT2-1.8B offline)",
     L"Bahasa sumber (masukan)",
     L"Bahasa tujuan (keluaran)",
     L"Tukar sumber ⇄ tujuan (klik ganda)",
@@ -3010,7 +2969,6 @@ const LocalizedStrings kStringsIndonesian = {
     L"Lembar contekan pintasan dan bantuan...",
     L"Keluar dari Emebala Chat",
     L"Tentang Emebala Chat…",
-
     L"Emebala Chat — pintasan dan panduan",
     L"Pintasan dan panduan penggunaan Emebala Chat:\n\n"
     L"  • F9 : aktif / jeda\n"
@@ -3025,16 +2983,13 @@ const LocalizedStrings kStringsIndonesian = {
     L"  • Ganti saja (kirim otomatis mati): mengganti baris dengan terjemahan untuk ditinjau.\n"
     L"  • Kirim otomatis (nyala): mengganti baris lalu menekan Enter seketika.",
     L"Tentang Emebala Chat",
-
     L"Aktif",
     L"Menerjemahkan...",
     L"Terdahenti",
-
     L"Emebala Chat",
     L"Tidak dapat menyalin teks yang dipilih. Periksa aplikasi tujuan lalu coba lagi.",
     L"Tidak ada teks yang dipilih untuk diterjemahkan.",
     L"Deteksi otomatis",
-
     L"Emebala Chat sudah berjalan di latar belakang.\nPeriksa baki notifikasi sistem.",
     L"Inisialisasi COM gagal.\nLambang mengambang dan teks-ke-suara tidak tersedia,\ntapi terjemahan, pintasan, baki, dan suara tetap berfungsi.",
     L"Lupakan salin-tempel. Ketik secara alami dalam bahasa ibu Anda — terjemahan menggantikan ketikan Anda secara langsung di aplikasi Windows mana pun.",
@@ -3068,7 +3023,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"• Dengan model lokal, teks terjemahan tidak meninggalkan perangkat Anda.\n"
     L"• Jika Anda memilih Google Translate atau beralih otomatis ke cloud, teks yang dipilih atau diketik dikirim langsung ke Google untuk diterjemahkan, bukan melalui Emebala.\n"
     L"• Log diagnostik secara default MATI; aktifkan di pengaturan (opt-in).\n"
-    L"• Jika tidak ingin mengirim teks ke cloud (Google), buka menu ikon di bilah tugas, pilih “Mesin penerjemah” lalu pilih “LLM lokal”. Tanpa model lokal terpasang dan dengan cadangan cloud dinonaktifkan, terjemahan tidak berjalan — tidak ada yang dikirim.\n"
+    L"• Jika tidak ingin mengirim teks ke cloud (Google), buka menu ikon di bilah tugas, pilih “Mesin penerjemah” lalu pilih “Mesin lokal bawaan”. Tanpa model lokal terpasang dan dengan cadangan cloud dinonaktifkan, terjemahan tidak berjalan — tidak ada yang dikirim.\n"
     L"\n"
     L"Detail lengkap ada di berkas README, yang dapat dibaca ulang kapan saja.\n",
     L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3080,7 +3035,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"Memperbaiki komponen mesin lokal…",
     L"Terjemahan lokal tidak tersedia",
     L"File mesin terjemahan lokal tidak ditemukan, jadi terjemahan dijeda. Instal ulang Emebala Chat untuk memulihkan mesin lokal, atau untuk beralih ke terjemahan cloud (Google), pilih “Google Terjemahan” dari menu baki, “Mesin terjemahan”.",
-    L"OpenAI Compatible (custom server)",
+    L"Kompatibel OpenAI (server khusus)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3094,8 +3049,8 @@ const LocalizedStrings kStringsIndonesian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Model yang ditentukan pengguna (.gguf)",
+    L"Daftarkan model .gguf lainnya…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3105,6 +3060,8 @@ const LocalizedStrings kStringsIndonesian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah tertanam di Emebala Chat. Pendaftaran tidak diperlukan. Pilih langsung mesin penerjemahan lokal bawaan.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(belum terdaftar)"
 };
 
 // 27. Malay (ms)
@@ -3113,7 +3070,7 @@ const LocalizedStrings kStringsMalay = {
     L"Status: dijeda (F9: sambung)",
     L"Enjin penterjemah",
     L"Google Terjemah (percuma / tanpa pemasangan)",
-    L"LLM setempat (Hy-MT2-1.8B luar talian)",
+    L"Enjin setempat terbina dalam (Hy-MT2-1.8B luar talian)",
     L"Bahasa sumber (input)",
     L"Bahasa sasaran (output)",
     L"Tukar sumber ⇄ sasaran (klik dua kali)",
@@ -3124,7 +3081,6 @@ const LocalizedStrings kStringsMalay = {
     L"Contehan pintasan dan bantuan...",
     L"Keluar Emebala Chat",
     L"Perihal Emebala Chat…",
-
     L"Emebala Chat — pintasan dan panduan",
     L"Pintasan dan panduan penggunaan Emebala Chat:\n\n"
     L"  • F9 : aktif / jeda\n"
@@ -3139,16 +3095,13 @@ const LocalizedStrings kStringsMalay = {
     L"  • Ganti sahaja (hantar-automatik mati): menggantikan baris dengan terjemahan untuk semakan.\n"
     L"  • Hantar automatik (hidup): menggantikan baris dan menekan Enter dengan serta-merta.",
     L"Perihal Emebala Chat",
-
     L"Aktif",
     L"Menterjemah...",
     L"Dijeda",
-
     L"Emebala Chat",
     L"Tidak dapat menyalin teks terpilih. Periksa apl sasaran dan cuba lagi.",
     L"Tiada teks dipilih untuk diterjemah.",
     L"Kesan automatik",
-
     L"Emebala Chat sudah berjalan di latar belakang.\nPapar dulang pemberitahuan sistem.",
     L"Permulaan COM gagal.\nLambang terapung dan teks-ke-suara tidak tersedia,\ntetapi terjemahan, pintasan, dulang dan bunyi masih berfungsi.",
     L"Berhenti menyalin dan menampal. Taip secara semula jadi dalam bahasa ibunda anda — terjemahan menggantikan taipan anda secara masa nyata dalam mana-mana apl Windows.",
@@ -3182,7 +3135,7 @@ const LocalizedStrings kStringsMalay = {
     L"• Dengan model setempat, teks diterjemahkan tidak meninggalkan peranti anda.\n"
     L"• Jika anda memilih Google Terjemah atau bertukar ke awan secara automatik, teks yang dipilih atau ditaip dihantar terus kepada Google untuk diterjemahkan, bukan melalui Emebala.\n"
     L"• Log diagnostik dimatikan secara lalai; aktifkan dalam tetapan (pilihan).\n"
-    L"• Jika anda tidak mahu menghantar teks ke awan (Google), buka menu ikon pada tray sistem, pilih “Enjin penterjemah” kemudian “LLM setempat”. Tanpa model setempat dipasang dan dengan fallback awan dimatikan, terjemahan tidak berjalan — tiada apa dihantar.\n"
+    L"• Jika anda tidak mahu menghantar teks ke awan (Google), buka menu ikon pada tray sistem, pilih “Enjin penterjemah” kemudian “Enjin setempat terbina dalam”. Tanpa model setempat dipasang dan dengan fallback awan dimatikan, terjemahan tidak berjalan — tiada apa dihantar.\n"
     L"\n"
     L"Butiran penuh terdapat dalam fail README, yang boleh dibaca semula pada bila-bila masa.\n",
     L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3194,7 +3147,7 @@ const LocalizedStrings kStringsMalay = {
     L"Membaiki komponen enjin tempatan…",
     L"Terjemahan tempatan tidak tersedia",
     L"Fail enjin terjemahan tempatan tidak dijumpai, jadi terjemahan dijeda. Pasang semula Emebala Chat untuk memulihkan enjin tempatan, atau untuk bertukar ke terjemahan awan (Google), pilih “Google Terjemah” dari menu dulang, “Enjin terjemahan”.",
-    L"OpenAI Compatible (custom server)",
+    L"Serasi OpenAI (pelayan tersuai)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3208,8 +3161,8 @@ const LocalizedStrings kStringsMalay = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Model yang ditentukan pengguna (.gguf)",
+    L"Daftarkan model .gguf lain…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3219,6 +3172,8 @@ const LocalizedStrings kStringsMalay = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah terbina dalam Emebala Chat. Pendaftaran tidak diperlukan. Pilih terus enjin terjemahan tempatan terbina dalam.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(belum didaftarkan)"
 };
 
 // 28. Filipino (fil)
@@ -3229,7 +3184,7 @@ const LocalizedStrings kStringsFilipino = {
     L"Katayuan: Nakahinto (F9: Ipagpatuloy)",
     L"Makina ng pagsasalin",
     L"Google Translate (Libre / walang i-install)",
-    L"Lokal na LLM (Hy-MT2-1.8B offline)",
+    L"Built-in na lokal na makina (Hy-MT2-1.8B offline)",
     L"Pinagmulang wika (input)",
     L"Target na wika (output)",
     L"Palitan ang pinagmulan ⇄ target (i-double click)",
@@ -3240,7 +3195,6 @@ const LocalizedStrings kStringsFilipino = {
     L"Cheat sheet ng mga shortcut at tulong...",
     L"Lumabas sa Emebala Chat",
     L"Tungkol sa Emebala Chat…",
-
     L"Emebala Chat — mga shortcut at gabay",
     L"Mga shortcut at gabay sa Emebala Chat:\n\n"
     L"  • F9 : i-aktibo / i-pause\n"
@@ -3255,16 +3209,13 @@ const LocalizedStrings kStringsFilipino = {
     L"  • Palitan lamang (kasara ang auto-send): pinapalitan ang linya ng salin para sa pagsusuri.\n"
     L"  • Awtomatikong pagpadala (bukas): pinapalitan ang linya at agad pinipindot ang Enter.",
     L"Tungkol sa Emebala Chat",
-
     L"Aktibo",
     L"Nagsasalin...",
     L"Nakahinto",
-
     L"Emebala Chat",
     L"Hindi maikopya ang napiling teksto. Suriin ang target app at subukang muli.",
     L"Walang napiling teksto na isasalin.",
     L"Kusang pagtukoy",
-
     L"Gumagana na ang Emebala Chat sa background.\nTingnan ang notification tray.",
     L"Nabigong i-initialize ang COM.\nHindi magagamit ang lumulutang badge at text-to-speech,\nngunit patuloy pa ring gumagana ang pagsasalin, shortcuts, tray at mga tunog.",
     L"Tigilan na ang kopya-at-idikit. Mag-type nang natural sa iyong katutubong wika — pinapalitan ng salin ang iyong pagta-type sa real time sa kahit aning app ng Windows.",
@@ -3298,7 +3249,7 @@ const LocalizedStrings kStringsFilipino = {
     L"• Sa local na model, hindi lumalabas sa iyong device ang isinalin.\n"
     L"• Kung pipiliin ang Google Translate o awtomatikong lilipat sa cloud, ang napili o ni-type na teksto ay ipapadala nang direkta sa Google para isalin, hindi sa pamamagitan ng Emebala.\n"
     L"• Ang diagnostic log ay OFF sa default; i-on sa settings (opt-in).\n"
-    L"• Kung ayaw mong ipadala ang teksto sa cloud (Google), buksan ang menu ng icon sa system tray, piliin ang “Makina ng pagsasalin” at pagkatapos “Lokal na LLM”. Kung walang naka-install na lokal na modelo at nakapatay ang cloud fallback, hindi tumatakbo ang pagsasalin — walang ipinapadala.\n"
+    L"• Kung ayaw mong ipadala ang teksto sa cloud (Google), buksan ang menu ng icon sa system tray, piliin ang “Makina ng pagsasalin” at pagkatapos “Built-in na lokal na makina”. Kung walang naka-install na lokal na modelo at nakapatay ang cloud fallback, hindi tumatakbo ang pagsasalin — walang ipinapadala.\n"
     L"\n"
     L"Makikita ang buong detalye sa README file na maaaring babasahin anumang oras.\n",
     L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3310,7 +3261,7 @@ const LocalizedStrings kStringsFilipino = {
     L"Kinukumpuni ang mga bahagi ng lokal na makina…",
     L"Hindi available ang lokal na pagsasalin",
     L"Nawawala ang mga file ng lokal na makina ng pagsasalin, kaya pansamantalang tumigil ang pagsasalin. I-install muli ang Emebala Chat para maibalik ang lokal na makina, o para lumipat sa cloud (Google) na pagsasalin, piliin ang “Google Translate” mula sa menu ng tray, “Makina ng pagsasalin”.",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI-compatible (custom server)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3324,8 +3275,8 @@ const LocalizedStrings kStringsFilipino = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"Modelong tinukoy ng user (.gguf)",
+    L"Magrehistro ng ibang .gguf model…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3335,6 +3286,8 @@ const LocalizedStrings kStringsFilipino = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ang modelong ito ay nakabuilt-in na sa Emebala Chat. Hindi na kailangan ng pagpaparehistro. Maaari mong direktang piliin ang built-in na lokal na translation engine.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(hindi pa rehistrado)"
 };
 
 // 29. Hindi (hi)
@@ -3343,7 +3296,7 @@ const LocalizedStrings kStringsHindi = {
     L"स्थिति: रुका हुआ (F9: जारी रखें)",
     L"अनुवाद इंजन",
     L"Google अनुवाद (मुफ़्त / इंस्टॉलेशन नहीं)",
-    L"स्थानीय LLM (Hy-MT2-1.8B ऑफ़लाइन)",
+    L"अंतर्निहित लोकल इंजन (Hy-MT2-1.8B ऑफ़लाइन)",
     L"स्रोत भाषा (इनपुट)",
     L"लक्ष्य भाषा (आउटपुट)",
     L"स्रोत ⇄ लक्ष्य अदला-बदली (डबल-क्लिक)",
@@ -3354,7 +3307,6 @@ const LocalizedStrings kStringsHindi = {
     L"शॉर्टकट चीट-शीट और सहायता...",
     L"एमेबाला चैट से बाहर निकलें",
     L"एमेबाला चैट के बारे में…",
-
     L"एमेबाला चैट — शॉर्टकट और उपयोग गाइड",
     L"एमेबाला चैट शॉर्टकट और उपयोग गाइड:\n\n"
     L"  • F9 : चालू / रोकें\n"
@@ -3369,16 +3321,13 @@ const LocalizedStrings kStringsHindi = {
     L"  • केवल प्रतिस्थापन (स्वतः-भेजें बंद): जाँच हेतु पंक्ति को अनुवाद से बदलता है।\n"
     L"  • स्वतः-भेजें (चालू): पंक्ति बदलकर तुरंत Enter दबाता है।",
     L"एमेबाला चैट के बारे में",
-
     L"सक्रिय",
     L"अनुवाद हो रहा...",
     L"रुका हुआ",
-
     L"एमेबाला चैट",
     L"चयनित पाठ कॉपी नहीं हो सका। लक्ष्य ऐप जाँचें और फिर कोशिश करें।",
     L"अनुवाद हेतु कोई पाठ चयनित नहीं है।",
     L"स्वतः पहचान",
-
     L"एमेबाला चैट पहले से पृष्ठभूमि में चल रहा है।\nसूचना ट्रे देखें।",
     L"COM आरंभ विफल।\nफ़्लोटिंग बैज और वाचन अनुपलब्ध रहेंगे,\nपर अनुवाद, शॉर्टकट, ट्रे और ध्वनियाँ काम करती रहेंगी।",
     L"कापी-पेस्ट की ज़रूरत नहीं। अपनी मातृभाषा में सहज टाइप करें — अनुवाद किसी भी Windows ऐप में आपकी टाइपिंग को रीयल-टाइम में बदल देता है।",
@@ -3412,7 +3361,7 @@ const LocalizedStrings kStringsHindi = {
     L"• स्थानीय मॉडल पर अनुवादित पाठ आपके डिवाइस से बाहर नहीं जाता।\n"
     L"• यदि आप Google Translate चुनते हैं या स्वतः क्लाउड पर स्विच होता है, तो चयनित/लिखा पाठ अनुवाद हेतु सीधे Google भेजा जाता है — Emebala से नहीं।\n"
     L"• डायग्नोस्टिक लॉग डिफ़ॉल्ट बंद (OFF) हैं; सेटिंग में चालू करें (opt-in)।\n"
-    L"• यदि आप टेक्स्ट क्लाउड (Google) में नहीं भेजना चाहते, तो सिस्टम ट्रे आइकन मेनू खोलें, “अनुवाद इंजन” चुनें और “स्थानीय LLM” चुनें। यदि स्थानीय मॉडल इंस्टॉल नहीं है और क्लाउड फ़ॉलबैक बंद है, तो अनुवाद नहीं चलेगा — कुछ भी नहीं भेजा जाएगा।\n"
+    L"• यदि आप टेक्स्ट क्लाउड (Google) में नहीं भेजना चाहते, तो सिस्टम ट्रे आइकन मेनू खोलें, “अनुवाद इंजन” चुनें और “अंतर्निहित लोकल इंजन” चुनें। यदि स्थानीय मॉडल इंस्टॉल नहीं है और क्लाउड फ़ॉलबैक बंद है, तो अनुवाद नहीं चलेगा — कुछ भी नहीं भेजा जाएगा।\n"
     L"\n"
     L"पूरा विवरण README फ़ाइल में है, जिसे आप कभी भी दोबारा पढ़ सकते हैं।\n",
     L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3424,7 +3373,7 @@ const LocalizedStrings kStringsHindi = {
     L"लोकल इंजन घटकों की मरम्मत हो रही है…",
     L"लोकल अनुवाद उपलब्ध नहीं है",
     L"लोकल अनुवाद इंजन की फ़ाइलें नहीं मिलीं, इसलिए अनुवाद रुका हुआ है। लोकल इंजन को पुनर्स्थापित करने के लिए Emebala Chat को पुनः इंस्टॉल करें, या क्लाउड (Google) अनुवाद पर जाने के लिए, ट्रे मेनू से “अनुवाद इंजन” में “Google अनुवाद” चुनें।",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI संगत (उपयोगकर्ता-परिभाषित सर्वर)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3438,8 +3387,8 @@ const LocalizedStrings kStringsHindi = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"उपयोगकर्ता-परिभाषित मॉडल (.gguf)",
+    L"कोई अन्य .gguf मॉडल पंजीकृत करें…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3449,6 +3398,8 @@ const LocalizedStrings kStringsHindi = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"यह मॉडल Emebala Chat में पहले से ही अंतर्निहित है। पंजीकरण की आवश्यकता नहीं है। अंतर्निहित लोकल अनुवाद इंजन को सीधे चुनें।",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(पंजीकृत नहीं)"
 };
 
 // 30. Bengali (bn)
@@ -3457,7 +3408,7 @@ const LocalizedStrings kStringsBengali = {
     L"স্ট্যাটাস: বিরতিপ্রাপ্ত (F9: পুনরায় চালু)",
     L"অনুবাদ ইঞ্জিন",
     L"Google Translate (বিনামূল্যে / ইনস্টল ছাড়াই)",
-    L"লোকাল LLM (Hy-MT2-1.8B অফলাইন)",
+    L"অন্তর্নির্মিত লোকাল ইঞ্জিন (Hy-MT2-1.8B অফলাইন)",
     L"উৎস ভাষা (ইনপুট)",
     L"লক্ষ্য ভাষা (আউটপুট)",
     L"উৎস ⇄ লক্ষ্য অদলবদল (ডাবল-ক্লিক)",
@@ -3468,7 +3419,6 @@ const LocalizedStrings kStringsBengali = {
     L"শর্টকাট চিট-শিট ও সহায়তা...",
     L"এমেবালা চ্যাট প্রস্থান",
     L"এমেবালা চ্যাট সম্পর্কে…",
-
     L"এমেবালা চ্যাট — শর্টকাট ও ব্যবহার গাইড",
     L"এমেবালা চ্যাট শর্টকাট ও ব্যবহার গাইড:\n\n"
     L"  • F9 : চালু / বিরতি\n"
@@ -3483,16 +3433,13 @@ const LocalizedStrings kStringsBengali = {
     L"  • শুধু প্রতিস্থাপন (স্বয়ং-প্রেরণ বন্ধ): পর্যালোচনার জন্য লাইনটি অনুবাদ দিয়ে বদলায়।\n"
     L"  • স্বয়ং-প্রেরণ (চালু): লাইন বদলে সঙ্গে সঙ্গে Enter চাপে।",
     L"এমেবালা চ্যাট সম্পর্কে",
-
     L"সক্রিয়",
     L"অনুবাদ হচ্ছে...",
     L"বিরতি",
-
     L"এমেবালা চ্যাট",
     L"নির্বাচিত লেখা কপি করা যায়নি। লক্ষ্য অ্যাপ দেখে আবার চেষ্টা করুন।",
     L"অনুবাদের জন্য কোনো লেখা নির্বাচন করা হয়নি।",
     L"স্বয়ংক্রিয় শনাক্ত",
-
     L"এমেবালা চ্যাট ইতিমধ্যে পটভূমিতে চলছে।\nসিস্টেম নোটিফিকেশন ট্রে দেখুন।",
     L"COM আরম্ভ বিফল।\nফ্লোটিং ব্যাজ ও টেক্সট-টু-স্পিচ পাওয়া যাবে না,\nতবে অনুবাদ, শর্টকাট, ট্রে ও শব্দ কাজ করবে।",
     L"আর কপি-পেস্ট নয়। মাতৃভাষায় স্বাভাবিকভাবে লিখুন — যেকোনো Windows অ্যাপে আপনার টাইপিং রিয়েল-টাইমে অনুবাদে বদলে যায়।",
@@ -3526,7 +3473,7 @@ const LocalizedStrings kStringsBengali = {
     L"• লোকাল মডেল ব্যবহার করলে অনুবাদিত টেক্সট আপনার ডিভাইস ছেড়ে যায় না।\n"
     L"• আপনি Google Translate নির্বাচন করলে বা স্বয়ংক্রিয়ভাবে ক্লাউডে গেলে, নির্বাচিত/লিখিত টেক্সট অনুবাদের জন্য সরাসরি Google-এ যায় — Emebala-র মাধ্যমে নয়।\n"
     L"• ডায়াগনস্টিক লগ ডিফল্ট বন্ধ (OFF); সেটিংসে চালু করতে হয় (opt-in)।\n"
-    L"• আপনি যদি টেক্সট ক্লাউডে (Google) পাঠাতে না চান, সিস্টেম ট্রে আইকনের মেনু খুলুন, “অনুবাদ ইঞ্জিন” থেকে “লোকাল LLM” নির্বাচন করুন। লোকাল মডেল ইনস্টল না থাকলে এবং ক্লাউড ফলব্যাক বন্ধ থাকলে অনুবাদ চলবে না — কিছুই পাঠানো হবে না।\n"
+    L"• আপনি যদি টেক্সট ক্লাউডে (Google) পাঠাতে না চান, সিস্টেম ট্রে আইকনের মেনু খুলুন, “অনুবাদ ইঞ্জিন” থেকে “অন্তর্নির্মিত লোকাল ইঞ্জিন” নির্বাচন করুন। লোকাল মডেল ইনস্টল না থাকলে এবং ক্লাউড ফলব্যাক বন্ধ থাকলে অনুবাদ চলবে না — কিছুই পাঠানো হবে না।\n"
     L"\n"
     L"পূর্ণ বিবরণ README ফাইলে আছে, যেটি যেকোনো সময় আবার পড়া যাবে।\n",
     L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3538,7 +3485,7 @@ const LocalizedStrings kStringsBengali = {
     L"লোকাল ইঞ্জিন উপাদান মেরামত হচ্ছে…",
     L"লোকাল অনুবাদ পাওয়া যাচ্ছে না",
     L"লোকাল অনুবাদ ইঞ্জিনের ফাইল পাওয়া যায়নি, তাই অনুবাদ স্থগিত হয়েছে। লোকাল ইঞ্জিন পুনরুদ্ধার করতে Emebala Chat পুনরায় ইনস্টল করুন, অথবা ক্লাউড (Google) অনুবাদে যেতে, ট্রে মেনু থেকে “অনুবাদ ইঞ্জিন”-এ “Google অনুবাদ” নির্বাচন করুন।",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI সামঞ্জস্যপূর্ণ (ব্যবহারকারী-সংজ্ঞায়িত সার্ভার)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3552,8 +3499,8 @@ const LocalizedStrings kStringsBengali = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"ব্যবহারকারী-সংজ্ঞায়িত মডেল (.gguf)",
+    L"অন্য .gguf মডেল নিবন্ধন করুন…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3563,6 +3510,8 @@ const LocalizedStrings kStringsBengali = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"এই মডেলটি ইতিমধ্যে Emebala Chat-এ অন্তর্নির্মিত। নিবন্ধনের প্রয়োজন নেই। অন্তর্নির্মিত লোকাল অনুবাদ ইঞ্জিন সরাসরি নির্বাচন করুন।",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(নিবন্ধিত নয়)"
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -3572,7 +3521,7 @@ const LocalizedStrings kStringsArabic = {
     L"الحالة: متوقف مؤقتًا (F9: استئناف)",
     L"محرك الترجمة",
     L"ترجمة Google (مجاني / بدون تثبيت)",
-    L"نموذج محلي LLM (Hy-MT2-1.8B دون اتصال)",
+    L"محرك الترجمة المحلي المدمج (Hy-MT2-1.8B دون اتصال)",
     L"لغة المصدر (الإدخال)",
     L"لغة الهدف (الإخراج)",
     L"تبديل المصدر ⇄ الهدف (نقر مزدوج)",
@@ -3583,7 +3532,6 @@ const LocalizedStrings kStringsArabic = {
     L"مرجع اختصارات لوحة المفاتيح والمساعدة...",
     L"إنهاء إيميبالا شات",
     L"حول إيميبالا شات…",
-
     L"إيميبالا شات — اختصارات ودليل الاستخدام",
     L"اختصارات إيميبالا شات ودليل الاستخدام:\n\n"
     L"  • F9 : تبديل التشغيل / الإيقاف المؤقت\n"
@@ -3598,16 +3546,13 @@ const LocalizedStrings kStringsArabic = {
     L"  • الاستبدال فقط (الإرسال التلقائي متوقف): يستبدل السطر بالترجمة للمراجعة.\n"
     L"  • الإرسال التلقائي (مُفعّل): يستبدل السطر ويضغط Enter فورًا.",
     L"حول إيميبالا شات",
-
     L"نشِط",
     L"جارٍ الترجمة...",
     L"متوقف مؤقتًا",
-
     L"إيميبالا شات",
     L"تعذّر نسخ النص المحدد. تحقق من التطبيق الهدف وأعد المحاولة.",
     L"لم يتم تحديد أي نص لترجمته.",
     L"كشف تلقائي",
-
     L"إيميبالا شات يعمل بالفعل في الخلفية.\nتحقق من منطقة إشعارات النظام.",
     L"فشل تهيئة COM.\nلن تتوافر الشارة العائمة وقراءة النص بصوت مسموع،\nلكن الترجمة والاختصارات والإشعارات والأصوات ستواصل العمل.",
     L"ودِّع النسخ واللصق. اكتب بلغتك الأم بطبيعتك — تحل الترجمة محل كتابتك في الوقت الفعلي داخل أي تطبيق من تطبيقات Windows.",
@@ -3641,7 +3586,7 @@ const LocalizedStrings kStringsArabic = {
     L"• عند استخدام النموذج المحلي، لا يغادر النص المترجم جهازك.\n"
     L"• إذا اخترت ترجمة Google أو تم التبديل التلقائي إلى السحابة، يُرسَل النص المحدَّد أو المكتوب مباشرة إلى Google للترجمة، وليس عبر Emebala.\n"
     L"• سجلات التشخيص معطّلة افتراضيًا؛ تفعّلها من الإعدادات (بموافقتك).\n"
-    L"• إذا لم ترغب في إرسال النص إلى السحابة (Google)، افتح قائمة أيقونة شريط المهام واختر “محرك الترجمة” ثم “نموذج محلي LLM”. إذا لم يكن النموذج المحلي مثبتًا وكان التحويل السحابي معطلًا، فلن تعمل الترجمة ولن يُرسل أي شيء.\n"
+    L"• إذا لم ترغب في إرسال النص إلى السحابة (Google)، افتح قائمة أيقونة شريط المهام واختر “محرك الترجمة” ثم “محرك الترجمة المحلي المدمج”. إذا لم يكن النموذج المحلي مثبتًا وكان التحويل السحابي معطلًا، فلن تعمل الترجمة ولن يُرسل أي شيء.\n"
     L"\n"
     L"التفاصيل الكاملة في ملف README ويمكن قراءته في أي وقت.\n",
     L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3653,7 +3598,7 @@ const LocalizedStrings kStringsArabic = {
     L"جارٍ إصلاح مكونات المحرك المحلي…",
     L"الترجمة المحلية غير متاحة",
     L"ملفات محرك الترجمة المحلي مفقودة، لذا تم إيقاف الترجمة مؤقتًا. أعد تثبيت Emebala Chat لاستعادة المحرك المحلي، أو للتبديل إلى ترجمة السحابة (Google)، اختر “Google ترجمة” من قائمة الشريط ضمن “محرك الترجمة”.",
-    L"OpenAI Compatible (custom server)",
+    L"متوافق مع OpenAI (خادم مخصص)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3667,8 +3612,8 @@ const LocalizedStrings kStringsArabic = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"النموذج المحدد من قبل المستخدم (.gguf)",
+    L"تسجيل نموذج .gguf آخر…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3678,6 +3623,8 @@ const LocalizedStrings kStringsArabic = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"هذا النموذج مدمج بالفعل في Emebala Chat. لا حاجة إلى التسجيل. يمكنك اختيار محرك الترجمة المحلي المدمج مباشرةً.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(غير مسجل)"
 };
 
 // 32. Persian (fa) — RTL
@@ -3686,7 +3633,7 @@ const LocalizedStrings kStringsPersian = {
     L"وضعیت: متوقف (F9: ادامه)",
     L"موتور ترجمه",
     L"Google Translate (رایگان / بدون نصب)",
-    L"LLM محلی (Hy-MT2-1.8B آفلاین)",
+    L"موتور ترجمه محلی داخلی (Hy-MT2-1.8B آفلاین)",
     L"زبان مبدأ (ورودی)",
     L"زبان مقصد (خروجی)",
     L"تعویض مبدأ ⇄ مقصد (دوبار کلیک)",
@@ -3697,7 +3644,6 @@ const LocalizedStrings kStringsPersian = {
     L"برگه تقلبی کلیدهای میان‌بر و راهنما...",
     L"خروج از امبالا چت",
     L"دربارهٔ امبالا چت…",
-
     L"کلیدهای میان‌بر و راهنمای امبالا چت",
     L"کلیدهای میان‌بر و راهنمای استفاده از امبالا چت:\n\n"
     L"  • F9 : فعال / توقف موقت\n"
@@ -3712,16 +3658,13 @@ const LocalizedStrings kStringsPersian = {
     L"  • فقط جای‌گزینی (ارسال خودکار خاموش): خط را برای بازبینی با ترجمه جای‌گزین می‌کند.\n"
     L"  • ارسال خودکار (روشن): خط را جای‌گزین و فوراً Enter را می‌فشارد.",
     L"دربارهٔ امبالا چت",
-
     L"فعال",
     L"در حال ترجمه...",
     L"متوقف",
-
     L"امبالا چت",
     L"متن انتخابی کپی نشد. برنامهٔ مقصد را بررسی کنید و دوباره تلاش کنید.",
     L"متنی برای ترجمه انتخاب نشده است.",
     L"تشخیص خودکار",
-
     L"امبالا چت هم‌اکنون در پس‌زمینه در حال اجراست.\nسینی اعلان‌های سیستم را بررسی کنید.",
     L"مقداردهی COM ناموفق بود.\nنشان شناور و متن‌به‌کلام در دسترس نخواهند بود،\nاما ترجمه، میان‌برها، سینی و صداها همچنان کار می‌کنند.",
     L"کپی-پیست را فراموش کنید. به زبان مادری‌تان طبیعی تایپ کنید — ترجمه در هر برنامهٔ ویندوزی در زمان واقعی جای تایپ شما می‌نشیند.",
@@ -3755,7 +3698,7 @@ const LocalizedStrings kStringsPersian = {
     L"• با مدل محلی، متن ترجمه‌شده از دستگاه شما خارج نمی‌شود.\n"
     L"• اگر Google Translate را انتخاب کنید یا تبدیل خودکار به ابری رخ دهد، متن انتخابی یا تایپ‌شده برای ترجمه مستقیماً به Google ارسال می‌شود؛ نه از طریق Emebala.\n"
     L"• گزارش‌های تشخیصی به‌طور پیش‌فرض خاموش‌اند؛ از تنظیمات روشن می‌شوند (با انتخاب شما).\n"
-    L"• اگر نمی‌خواهید متن به ابر (Google) ارسال شود، منوی نماد نوار وظیفه را باز کنید، “موتور ترجمه” و سپس “LLM محلی” را انتخاب کنید. بدون نصب مدل محلی و با غیرفعال بودن جایگزین ابری، ترجمه انجام نمی‌شود — چیزی ارسال نمی‌شود.\n"
+    L"• اگر نمی‌خواهید متن به ابر (Google) ارسال شود، منوی نماد نوار وظیفه را باز کنید، “موتور ترجمه” و سپس “موتور ترجمه محلی داخلی” را انتخاب کنید. بدون نصب مدل محلی و با غیرفعال بودن جایگزین ابری، ترجمه انجام نمی‌شود — چیزی ارسال نمی‌شود.\n"
     L"\n"
     L"جزئیات کامل در فایل README است و هر زمان قابل خواندن مجدد است.\n",
     L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3767,7 +3710,7 @@ const LocalizedStrings kStringsPersian = {
     L"در حال تعمیر اجزای موتور محلی…",
     L"ترجمه محلی در دسترس نیست",
     L"فایل‌های موتور ترجمه محلی پیدا نشدند، بنابراین ترجمه متوقف شده است. برای بازیابی موتور محلی، Emebala Chat را دوباره نصب کنید، یا برای تغییر به ترجمه ابری (Google)، از منوی سینی، «موتور ترجمه»، «Google ترجمه» را انتخاب کنید.",
-    L"OpenAI Compatible (custom server)",
+    L"سازگار با OpenAI (سرور سفارشی)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3781,8 +3724,8 @@ const LocalizedStrings kStringsPersian = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"مدل تعیین شده توسط کاربر (.gguf)",
+    L"ثبت مدل .gguf دیگر…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3792,6 +3735,8 @@ const LocalizedStrings kStringsPersian = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"این مدل از قبل در Emebala Chat داخلی شده است. نیازی به ثبت‌نام نیست. می‌توانید موتور ترجمه محلی داخلی را مستقیماً انتخاب کنید.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ثبت نشده)"
 };
 
 // 33. Urdu (ur) — RTL
@@ -3800,7 +3745,7 @@ const LocalizedStrings kStringsUrdu = {
     L"حالت: وقفے میں (F9: جاری رکھیں)",
     L"ترجمہ انجن",
     L"Google ٹرانسلیٹ (مفت / بغیر تنصیب)",
-    L"مقامی LLM (Hy-MT2-1.8B آف لائن)",
+    L"بلٹ اِن مقامی انجن (Hy-MT2-1.8B آف لائن)",
     L"ماخذ زبان (ان پٹ)",
     L"ہدف زبان (آؤٹ پٹ)",
     L"ماخذ ⇄ ہدف بدلیں (ڈبل کلک)",
@@ -3811,7 +3756,6 @@ const LocalizedStrings kStringsUrdu = {
     L"شارٹ کٹ چِٹ شیٹ اور مدد...",
     L"ایمیبالا چیٹ سے باہر نکلیں",
     L"ایمیبالا چیٹ کے بارے میں…",
-
     L"ایمیبالا چیٹ — شارٹ کٹس اور استعمال گائیڈ",
     L"ایمیبالا چیٹ شارٹ کٹس اور استعمال گائیڈ:\n\n"
     L"  • F9 : فعال / وقفہ سوئچ کریں\n"
@@ -3826,16 +3770,13 @@ const LocalizedStrings kStringsUrdu = {
     L"  • صرف متبادل (خودکار ارسال بند): سطر کو جائزے کے لیے ترجمے سے بدل دیتا ہے۔\n"
     L"  • خودکار ارسال (چالو): سطر بدل کر فوراً Enter دبا دیتا ہے۔",
     L"ایمیبالا چیٹ کے بارے میں",
-
     L"فعال",
     L"ترجمہ جاری...",
     L"وقفہ",
-
     L"ایمیبالا چیٹ",
     L"منتخب متن کاپی نہیں ہو سکا۔ ہدف ایپ چیک کریں اور دوبارہ کوشش کریں۔",
     L"ترجمے کے لیے کوئی متن منتخب نہیں ہے۔",
     L"خودکار شناخت",
-
     L"ایمیبالا چیٹ پہلے سے پس منظر میں چل رہا ہے۔\nسسٹم نوٹیفکیشن ٹرے کو دیکھیں۔",
     L"COM آغاز ناکام۔\nفلوٹنگ بیج اور متن از آواز دستیاب نہیں ہوں گے،\nلیکن ترجمہ، شارٹ کٹس، ٹرے اور آوازیں چلتی رہیں گی۔",
     L"کاپی پیسٹ کی ضرورت ختم۔ اپنی مادری زبان میں قدرتی ٹائپ کریں — ترجمہ کسی بھی Windows ایپ میں آپ کی ٹائپنگ کو وقتی طور پر بدل دیتا ہے۔",
@@ -3869,7 +3810,7 @@ const LocalizedStrings kStringsUrdu = {
     L"• لوکل ماڈل پر ترجمہ شدہ متن آپ کے ڈیوائس سے باہر نہیں جاتا۔\n"
     L"• اگر آپ Google Translate منتخب کریں یا خودکار طور پر کلاؤڈ پر سوئچ ہو، تو منتخب/ٹائپ شدہ متن ترجمے کے لیے براہ راست Google کو جاتا ہے — Emebala کے ذریعے نہیں۔\n"
     L"• ڈائگناسٹک لاگ ڈیفالٹ طور پر بند (OFF) ہیں؛ سیٹنگز میں آن کریں (opt-in)۔\n"
-    L"• اگر آپ متن کلاؤڈ (Google) میں نہیں بھیجنا چاہتے تو سسٹم ٹری آئیکن کا مینو کھولیں، “ترجمہ انجن” میں سے “مقامی LLM” منتخب کریں۔ اگر مقامی ماڈل انسٹال نہیں ہے اور کلاؤڈ فال بیک بند ہے تو ترجمہ نہیں چلے گا — کچھ بھی نہیں بھیجا جائے گا۔\n"
+    L"• اگر آپ متن کلاؤڈ (Google) میں نہیں بھیجنا چاہتے تو سسٹم ٹری آئیکن کا مینو کھولیں، “ترجمہ انجن” میں سے “بلٹ اِن مقامی انجن” منتخب کریں۔ اگر مقامی ماڈل انسٹال نہیں ہے اور کلاؤڈ فال بیک بند ہے تو ترجمہ نہیں چلے گا — کچھ بھی نہیں بھیجا جائے گا۔\n"
     L"\n"
     L"مکمل تفصیل README فائل میں ہے، جسے آپ کسی بھی وقت دوبارہ پڑھ سکتے ہیں۔\n",
     L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3881,7 +3822,7 @@ const LocalizedStrings kStringsUrdu = {
     L"مقامی انجن اجزا کی مرمت جاری ہے…",
     L"مقامی ترجمہ دستیاب نہیں ہے",
     L"مقامی ترجمہ انجن کی فائلیں نہیں ملیں، اس لیے ترجمہ روک دیا گیا ہے۔ مقامی انجن کو بحال کرنے کے لیے Emebala Chat کو دوبارہ انسٹال کریں، یا کلاؤڈ (Google) ترجمے پر جانے کے لیے، ٹرے مینیو سے “ترجمہ انجن” میں “Google ترجمہ” منتخب کریں۔",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI مطابقت (صارف کی وضاحت کردہ سرور)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -3895,8 +3836,8 @@ const LocalizedStrings kStringsUrdu = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"صارف کی وضاحت کردہ ماڈل (.gguf)",
+    L"کوئی اور .gguf ماڈل رجسٹر کریں…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -3906,6 +3847,8 @@ const LocalizedStrings kStringsUrdu = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"یہ ماڈل پہلے سے ہی Emebala Chat میں شامل ہے۔ رجسٹریشن کی ضرورت نہیں ہے۔ بلٹ اِن لوکل ترجمہ انجن کو براہ راست منتخب کریں۔",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(رجسٹرڈ نہیں)"
 };
 
 // 34. Hebrew (he) — RTL
@@ -3914,7 +3857,7 @@ const LocalizedStrings kStringsHebrew = {
     L"סטטוס: מושהה (F9: המשך)",
     L"מנוע תרגום",
     L"Google Translate (חינם / ללא התקנה)",
-    L"LLM מקומי (Hy-MT2-1.8B לא מקוון)",
+    L"מנוע תרגום מקומי מובנה (Hy-MT2-1.8B לא מקוון)",
     L"שפת מקור (קלט)",
     L"שפת יעד (פלט)",
     L"החלפת מקור ⇄ יעד (לחיצה כפולה)",
@@ -3925,7 +3868,6 @@ const LocalizedStrings kStringsHebrew = {
     L"מדריך קיצורי מקשים ועזרה...",
     L"צא מ-אמבאלה צ'אט",
     L"אודות אמבאלה צ'אט…",
-
     L"אמבאלה צ'אט — קיצורי מקשים ומדריך שימוש",
     L"קיצורי המקשים ומדריך השימוש של אמבאלה צ'אט:\n\n"
     L"  • F9 : הפעלה / השהיה\n"
@@ -3940,16 +3882,13 @@ const LocalizedStrings kStringsHebrew = {
     L"  • החלפה בלבד (שליחה אוטומטית כבויה): מחליף את השורה בתרגום לסקירה.\n"
     L"  • שליחה אוטומטית (דלוקה): מחליף את השורה ולוחץ Enter מיד.",
     L"אודות אמבאלה צ'אט",
-
     L"פעיל",
     L"מתרגם...",
     L"מושהה",
-
     L"אמבאלה צ'אט",
     L"לא ניתן להעתיק את הטקסט הנבחר. בדוק את אפליקציית היעד ונסה שוב.",
     L"לא נבחר טקסט לתרגום.",
     L"זיהוי אוטומטי",
-
     L"אמבאלה צ'אט כבר פועל ברקע.\nבדוק את מגש ההודעות.",
     L"אתחול COM נכשל.\nהתג הצף והקראת טקסט לא יהיו זמינים,\nאך תרגום, קיצורי מקשים, מגש וצלילים ימשיכו לפעול.",
     L"להיפרד מהעתקה והדבקה. הקלדו בטבעיות בשפת האם — התרגום מחליף את ההקלדה בזמן אמת בכל אפליקציית Windows.",
@@ -3983,7 +3922,7 @@ const LocalizedStrings kStringsHebrew = {
     L"• במודל מקומי, הטקסט המתורגם אינו עוזב את המכשיר שלך.\n"
     L"• אם תבחר ב־Google Translate או שהמעבר לענן יתבצע אוטומטית, הטקסט הנבחר או המוקלד נשלח ישירות ל־Google לצורך תרגום, ולא דרך Emebala.\n"
     L"• יומני אבחון כבויים כברירת מחדל; הפעל אותם בהגדרות (הסכמה מפורשת).\n"
-    L"• אם אינך רוצה לשלוח טקסט לענן (Google), פתח את תפריט סמל מגש המערכת, בחר “מנוע תרגום” ואז “LLM מקומי”. ללא מודל מקומי מותקן ועם גיבוי ענן מושבת, התרגום לא יפעל — שום דבר לא נשלח.\n"
+    L"• אם אינך רוצה לשלוח טקסט לענן (Google), פתח את תפריט סמל מגש המערכת, בחר “מנוע תרגום” ואז “מנוע תרגום מקומי מובנה”. ללא מודל מקומי מותקן ועם גיבוי ענן מושבת, התרגום לא יפעל — שום דבר לא נשלח.\n"
     L"\n"
     L"הפירוט המלא בקובץ README, הניתן לקריאה חוזרת בכל עת.\n",
     L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -3995,7 +3934,7 @@ const LocalizedStrings kStringsHebrew = {
     L"מתקן את רכיבי המנוע המקומי…",
     L"התרגום המקומי אינו זמין",
     L"קבצי מנוע התרגום המקומי חסרים, לכן התרגום הושהה. התקינו מחדש את Emebala Chat כדי לשחזר את המנוע המקומי, או כדי לעבור לתרגום בענן (Google), בחרו “Google תרגום” בתפריט השורה, “מנוע תרגום”.",
-    L"OpenAI Compatible (custom server)",
+    L"תואם OpenAI (שרת מותאם אישית)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -4009,8 +3948,8 @@ const LocalizedStrings kStringsHebrew = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"מודל שצוין על ידי המשתמש (.gguf)",
+    L"רישום מודל .gguf אחר…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -4020,6 +3959,8 @@ const LocalizedStrings kStringsHebrew = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"מודל זה כבר מובנה בתוך Emebala Chat. אין צורך ברישום. ניתן לבחור ישירות את מנוע התרגום המקומי המובנה.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(לא רשום)"
 };
 
 // 35. Khmer (km)
@@ -4028,7 +3969,7 @@ const LocalizedStrings kStringsKhmer = {
     L"ស្ថានភាព៖ បានផ្អាក (F9៖ បន្ត)",
     L"ម៉ាស៊ីនបកប្រែ",
     L"Google បកប្រែ (ឥតគិតថ្លៃ / គ្មានការដំឡើង)",
-    L"LLM ក្នុងម៉ាស៊ីន (Hy-MT2-1.8B ក្រៅបណ្ដាញ)",
+    L"ម៉ាស៊ីនក្នុងស្រាប់ (Hy-MT2-1.8B ក្រៅបណ្តាញ)",
     L"ភាសាប្រភព (បញ្ចូល)",
     L"ភាសាគោលដៅ (បញ្ចេញ)",
     L"ប្ដូរប្រភព ⇄ គោលដៅ (ចុចទ្វេដង)",
@@ -4039,7 +3980,6 @@ const LocalizedStrings kStringsKhmer = {
     L"តារាងគន្លឹះក្ដារចុច និងជំនួយ...",
     L"ចាកចេញពី អេមេបាឡា ឆាត",
     L"អំពី អេមេបាឡា ឆាត…",
-
     L"គន្លឹះ និងការណ៍នាំប្រើ អេមេបាឡា ឆាត",
     L"គន្លឹះ និងការណ៍នាំប្រើ អេមេបាឡា ឆាត:\n\n"
     L"  • F9 : បើក / ផ្អាក\n"
@@ -4054,16 +3994,13 @@ const LocalizedStrings kStringsKhmer = {
     L"  • ជំនួសតែប៉ុណ្ណោះ (ផ្ញើស្វ័យប្រវត្តិបិទ)៖ ជំនួសបន្ទាត់ដោយការបកប្រែសម្រាប់ពិនិត្យ។\n"
     L"  • ផ្ញើស្វ័យប្រវត្តិ (បើក)៖ ជំនួសបន្ទាត់ រួចចុច Enter ភ្លាម។",
     L"អំពី អេមេបាឡា ឆាត",
-
     L"សកម្ម",
     L"កំពុងបកប្រែ...",
     L"បានផ្អាក",
-
     L"អេមេបាឡា ឆាត",
     L"មិនអាចចម្លងអត្ថបទដែលបានជ្រើសរើសទេ។ សូមពិនិត្យកម្មវិធីគោលដៅ ហើយព្យាយាមម្ដងទៀត។",
     L"គ្មានអត្ថបទត្រូវបានជ្រើសសម្រាប់បកប្រែទេ។",
     L"កំណត់ស្វ័យប្រវត្តិ",
-
     L"អេមេបាឡា ឆាត កំពុងដំណើរការក្នុងផ្ទៃខាងក្រោយរួចជាស្រេច។\nសូមពិនិត្យតំបន់ជូនដំណឹងរបស់ប្រព័ន្ធ។",
     L"ការដំណើរការ COM បានបរាជ័យ។\nផ្លាកអណ្ដែត និងការអានអត្ថបទជាសំឡេងនឹងមិនអាចប្រើបានទេ\nប៉ុន្តែការបកប្រែ គន្លឹះ តំបន់ជូនដំណឹង និងសំឡេង នៅតែដំណើរការ។",
     L"ឈប់ចម្លងបិទភ្ជាប់។ សរសេរដោយធម្មជាតិជាភាសាកំណើតរបស់អ្នក — ការបកប្រែនឹងជំនួសអក្សរដែលអ្នកបោះ ជានិច្ចកាលនៅក្នុងកម្មវិធី Windows ណាក៏បាន។",
@@ -4097,7 +4034,7 @@ const LocalizedStrings kStringsKhmer = {
     L"• ពេលប្រើម៉ូដែលក្នុងឧបករណ៍ អត្ថបទបកប្រែមិនចេញពីឧបករណ៍របស់អ្នកទេ។\n"
     L"• បើអ្នកជ្រើស Google Translate ឬប្ដូរទៅពពកដោយស្វ័យប្រវត្តិ អត្ថបទដែលជ្រើស ឬបោះពុម្ពត្រូវផ្ញើទៅ Google ដោយផ្ទាល់ដើម្បីបកប្រែ ដោយមិនឆ្លងកាត់ Emebala ទេ។\n"
     L"• កំណត់ហេតុធ្វើរោគវិនិច្ឆ័យត្រូវបានបិទដោយលំនាំដើម ហើយត្រូវបើកក្នុងការកំណត់ (ជ្រើសរើសចូលរួម)។\n"
-    L"• ប្រសិនបើអ្នកមិនចង់ផ្ញើអត្ថបទទៅ cloud (Google) សូមបើកម៉ឺនុយរូបតំណាងនៅថតការងារ ហើយជ្រើសរើស “ម៉ាស៊ីនបកប្រែ” រួច “LLM ក្នុងម៉ាស៊ីន”។ ប្រសិនបើគ្មានគំរូក្នុងម៉ាស៊ីនត្រូវបានដំឡើង ហើយការបម្រុងទុក cloud ត្រូវបានបិទ ការបកប្រែនឹងមិនដំណើរការទេ — គ្មានអ្វីត្រូវបានផ្ញើឡើយ។\n"
+    L"• ប្រសិនបើអ្នកមិនចង់ផ្ញើអត្ថបទទៅ cloud (Google) សូមបើកម៉ឺនុយរូបតំណាងនៅថតការងារ ហើយជ្រើសរើស “ម៉ាស៊ីនបកប្រែ” រួច “ម៉ាស៊ីនក្នុងស្រាប់”។ ប្រសិនបើគ្មានគំរូក្នុងម៉ាស៊ីនត្រូវបានដំឡើង ហើយការបម្រុងទុក cloud ត្រូវបានបិទ ការបកប្រែនឹងមិនដំណើរការទេ — គ្មានអ្វីត្រូវបានផ្ញើឡើយ។\n"
     L"\n"
     L"ព័ត៌មានលម្អិតស្ថិតក្នុងឯកសារ README ដែលអាចអានឡើងវិញពេលណាក៏បាន។\n",
     L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -4109,7 +4046,7 @@ const LocalizedStrings kStringsKhmer = {
     L"កំពុងជួសជុលសមាសភាគម៉ាស៊ីនក្នុងម៉ាស៊ីន…",
     L"ការបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើបានទេ",
     L"រកមិនឃើញឯកសារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនទេ ដូច្នេះការបកប្រែត្រូវបានផ្អាកជាបណ្តោះអាសន្ន។ ដើម្បីស្តារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនឡើងវិញ សូមដំឡើង Emebala Chat ម្តងទៀត ឬដើម្បីប្តូរទៅការបកប្រែក្នុងពពក (Google) សូមជ្រើសរើស “Google បកប្រែ” ពីម៉ឺនុយ tray នៅ “ម៉ាស៊ីនបកប្រែ”។",
-    L"OpenAI Compatible (custom server)",
+    L"ស្រប OpenAI (ម៉ាស៊ីនមេដែលអ្នកប្រើប្រាស់កំណត់)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -4123,8 +4060,8 @@ const LocalizedStrings kStringsKhmer = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"ម៉ូដែលដែលអ្នកប្រើប្រាស់កំណត់ (.gguf)",
+    L"ចុះឈ្មោះម៉ូដែល .gguf ផ្សេងទៀត…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -4134,6 +4071,8 @@ const LocalizedStrings kStringsKhmer = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ម៉ូដែលនេះមានស្រាប់ក្នុង Emebala Chat រួចហើយ។ មិនចាំបាច់ចុះឈ្មោះទេ។ អ្នកអាចជ្រើសរើសម៉ាស៊ីនបកប្រែក្នុងស្រុកដែលមានស្រាប់ដោយផ្ទាល់។",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(មិនទាន់ចុះឈ្មោះ)"
 };
 
 // 36. Lao (lo)
@@ -4142,7 +4081,7 @@ const LocalizedStrings kStringsLao = {
     L"ສະຖານະ: ຢຸດຊົ່ວຄາວ (F9: ສືບຕໍ່)",
     L"ເຄື່ອງຈັກແປ",
     L"Google ແປ (ຟຣີ / ບໍ່ຕ້ອງຕິດຕັ້ງ)",
-    L"LLM ໃນເຄື່ອງ (Hy-MT2-1.8B ບໍ່ອອນລາຍ)",
+    L"ເຄື່ອງຈັກພາຍໃນທ້ອງຖິ່ນ (Hy-MT2-1.8B ອັອບໄລນ໌)",
     L"ພາສາຕົ້ນສະບັບ (ຂໍ້ມູນເຂົ້າ)",
     L"ພາສາເປົ້າໝາຍ (ຂໍ້ມູນອອກ)",
     L"ສັບປ່ຽນຕົ້ນ ⇄ ເປົ້າໝາຍ (ກລິກສອງຄັ້ງ)",
@@ -4153,7 +4092,6 @@ const LocalizedStrings kStringsLao = {
     L"ຄີດທາງລັດ ແລະ ຄູ່ມືຊ່ວຍເຫຼືອ...",
     L"ອອກຈາກ ເອເມບາລາ ແຊັດ",
     L"ກ່ຽວກັບ ເອເມບາລາ ແຊັດ…",
-
     L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ ເອເມບາລາ ແຊັດ",
     L"ຄີດທາງລັດ ແລະ ຄູ່ມືການໃຊ້ ເອເມບາລາ ແຊັດ:\n\n"
     L"  • F9 : ເປີດ / ຢຸດຊົ່ວຄາວ\n"
@@ -4168,16 +4106,13 @@ const LocalizedStrings kStringsLao = {
     L"  • ແທນທີ່ເທົ່ານັ້ນ (ສົ່ງອັດຕະໂນມັດປິດ): ແທນອັນລະເພາະດ້ວຍຄຳແປເພື່ອກວດສອບ.\n"
     L"  • ສົ່ງອັດຕະໂນມັດ (ເປີດ): ແທນແລ້ວກົດ Enter ທັນທີ.",
     L"ກ່ຽວກັບ ເອເມບາລາ ແຊັດ",
-
     L"ເປີດໃຊ້",
     L"ກຳລັງແປ...",
     L"ຢຸດຊົ່ວຄາວ",
-
     L"ເອເມບາລາ ແຊັດ",
     L"ບໍ່ສາມາດລອກເອົາຂໍ້ຄວາມທີ່ເລືອກໄດ້. ກະລຸນາກວດສອບແອັບເປົ້າໝາຍ ແລ້ວລອງໃໝ່.",
     L"ຍັງບໍ່ໄດ້ເລືອກຂໍ້ຄວາມສຳລັບແປ.",
     L"ກວດຈັບອັດຕະໂນມັດ",
-
     L"ເອເມບາລາ ແຊັດ ກຳລັງປະຕິບັດຢູ່ພື້ນຫຼັງແລ້ວ.\nກະລຸນາກວດເບິ່ງຖາດແຈ້ງເຕືອນຂອງລະບົບ.",
     L"ການເລີ່ມຕົ້ນ COM ລົ້ມເຫຼວ.\nແຖບປ້າຍລອຍ ແລະ ການອ່ານຂໍ້ຄວາມຈະໃຊ້ບໍ່ໄດ້,\nແຕ່ການແປ, ຄີດທາງລັດ, ຖາດ ແລະ ສຽງຍັງເຮັດວຽກຕາມປົກກະຕິ.",
     L"ພໍໄດ້ກັບການລອກແຜ່. ພິມຢ່າງທຳມະຊາດເປັນພາສາແມ່ຂອງທ່ານ — ຄຳແປຈະແທນການພິມຂອງທ່ານທັນທີໃນທຸກແອັບ Windows.",
@@ -4211,7 +4146,7 @@ const LocalizedStrings kStringsLao = {
     L"• ເມື່ອໃຊ້ແບບຈຳລອງພາຍໃນເຄື່ອງ, ຂໍ້ຄວາມແປຈະບໍ່ອອກຈາກອຸປະກອນຂອງທ່ານ.\n"
     L"• ຖ້າທ່ານເລືອກ Google Translate ຫຼືສະຫຼັບໄປຄລາວອັດຕະໂນມັດ, ຂໍ້ຄວາມທີ່ເລືອກ ຫຼືພິມ ຈະຖືກສົ່ງໄປ Google ໂດຍກົງ ເພື່ອແປ, ບໍ່ຜ່ານ Emebala.\n"
     L"• ໄຟລ໌ບັນທຶກການວິນິດໄສຖືກປິດໄວ້ເປັນຄ່າເລີ່ມຕົ້ນ; ເປີດໄດ້ໃນການຕັ້ງຄ່າ (ເລືອກເຂົ້າຮ່ວມ).\n"
-    L"• ຖ້າທ່ານບໍ່ຕ້ອງສົ່ງຂໍ້ຄວາມໄປຍັງຄລາວ (Google), ໃຫ້ເປີດເມນູໄອຄອນຢູ່ແຖບຮາບພຽງລະບົບ ແລ້ວເລືອກ “ເຄື່ອງຈັກແປ” ຈາກນັ້ນ “LLM ໃນເຄື່ອງ”. ຖ້າບໍ່ມີແບບຈຳລອງໃນເຄື່ອງ ແລະປິດການສະຫຼັບໄປຄລາວໄວ້, ການແປຈະບໍ່ເຮັດວຽກ ໂດຍບໍ່ມີການສົ່ງຂໍ້ມູນ.\n"
+    L"• ຖ້າທ່ານບໍ່ຕ້ອງສົ່ງຂໍ້ຄວາມໄປຍັງຄລາວ (Google), ໃຫ້ເປີດເມນູໄອຄອນຢູ່ແຖບຮາບພຽງລະບົບ ແລ້ວເລືອກ “ເຄື່ອງຈັກແປ” ຈາກນັ້ນ “ເຄື່ອງຈັກພາຍໃນທ້ອງຖິ່ນ”. ຖ້າບໍ່ມີແບບຈຳລອງໃນເຄື່ອງ ແລະປິດການສະຫຼັບໄປຄລາວໄວ້, ການແປຈະບໍ່ເຮັດວຽກ ໂດຍບໍ່ມີການສົ່ງຂໍ້ມູນ.\n"
     L"\n"
     L"ລາຍລະອຽດເຕັມຢູ່ໃນໄຟລ໌ README ທີ່ສາມາດອ່ານຄືນໄດ້ທຸກເວລາ.\n",
     L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -4223,7 +4158,7 @@ const LocalizedStrings kStringsLao = {
     L"ກຳລັງສ້ອມແປງອົງປະກອບເຄື່ອງຈັກທ້ອງຖິ່ນ…",
     L"ການແປພາສາທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້",
     L"ບໍ່ພົບໄຟລ໌ເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ຈຶ່ງຢຸດການແປພາສາຊົ່ວຄາວ. ເພື່ອຟື້ນຟູເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ກະລຸນາຕິດຕັ້ງ Emebala Chat ອີກຄັ້ງ, ຫຼື ເພື່ອປ່ຽນໄປໃຊ້ການແປພາສາຄລາວ (Google), ກະລຸນາເລືອກ “Google ແປພາສາ” ຈາກເມນູ tray, “ເຄື່ອງຈັກແປພາສາ”.",
-    L"OpenAI Compatible (custom server)",
+    L"ຖັດກັນກັບ OpenAI (ເຄື່ອງແມ່ຂ່າຍທີ່ຜູ້ໃຊ້ກຳນົດ)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -4237,8 +4172,8 @@ const LocalizedStrings kStringsLao = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"ໂມເດວທີ່ຜູ້ໃຊ້ກຳນົດ (.gguf)",
+    L"ລົງທະບຽນໂມເດວ .gguf ອື່ນ…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -4248,6 +4183,8 @@ const LocalizedStrings kStringsLao = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ໂມເດວນີ້ແມ່ນມີຢູ່ໃນ Emebala Chat ແລ້ວ. ບໍ່ຈຳເປັນຕ້ອງລົງທະບຽນ. ທ່ານສາມາດເລືອກເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນທີ່ມີຢູ່ໂດຍກົງໄດ້.",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(ຍັງບໍ່ໄດ້ລົງທະບຽນ)"
 };
 
 // 37. Burmese (my)
@@ -4256,7 +4193,7 @@ const LocalizedStrings kStringsBurmese = {
     L"အခြေအနေ: ခေတ္တရပ်ထား (F9: ပြန်စ)",
     L"ဘာသာပြန် အင်ဂျင်",
     L"Google Translate (အခမဲ့ / မတပ်ဆင်ရ)",
-    L"ဒေသတွင်း LLM (Hy-MT2-1.8B offline)",
+    L"အတွင်းသွင်းပြင်ပအင်ဂျင် (Hy-MT2-1.8B အင်တာနက်မဲ့)",
     L"မူလဘာသာစကား (ထည့်သွင်းမှု)",
     L"ပစ်မှတ်ဘာသာစကား (ထုတ်လွှင့်မှု)",
     L"မူလ ⇄ ပစ်မှတ် လှလှယ် (နှစ်ချက်နှိပ်)",
@@ -4267,7 +4204,6 @@ const LocalizedStrings kStringsBurmese = {
     L"ရှော့တ်ကတ် လမ်းညွှန်နှင့် အကူအညီ...",
     L"အီမီဘာလာ ချက် မှ ထွက်မည်",
     L"အီမီဘာလာ ချက် အကြောင်း…",
-
     L"အီမီဘာလာ ချက် ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်",
     L"အီမီဘာလာ ချက် ရှော့တ်ကတ်နှင့် အသုံးပြုနည်း လမ်းညွှန်:\n\n"
     L"  • F9 : ဖွင့် / ခေတ္တရပ် ပြောင်းလဲရန်\n"
@@ -4282,16 +4218,13 @@ const LocalizedStrings kStringsBurmese = {
     L"  • အစားထိုးသာ (အလိုအလျောက်ပို့ ပိတ်): စာကြောင်းကို ပြန်ဆိုချက်ဖြင့် စိစစ်ရန် အစားထိုးသည်။\n"
     L"  • အလိုအလျောက်ပို့ (ပွင့်): အစားထိုးပြီး ချက်ချင်း Enter နှိပ်သည်။",
     L"အီမီဘာလာ ချက် အကြောင်း",
-
     L"လုပ်ဆောင်နေ",
     L"ပြန်ဆိုနေ...",
     L"ခေတ္တရပ်",
-
     L"အီမီဘာလာ ချက်",
     L"ရွေးချယ်ထားသော စာသားကို ကူးယူ၍မရပါ။ ပစ်မှတ်အက်ပ်ကို စစ်ဆေးပြီး ပြန်ကြိုးစားပါ။",
     L"ပြန်ဆိုရန် စာသား မရွေးချယ်ရသေးပါ။",
     L"အလိုအလျောက် ဖော်ထုတ်",
-
     L"အီမီဘာလာ ချက် သည် နောက်ခံတွင် စတင်လည်ပတ်နေပြီ ဖြစ်သည်။\nစနစ်အသိပေးချက် တရေးကို ကြည့်ပါ။",
     L"COM စတင်ခြင်း မအောင်မြင်ပါ။\nပေါ်လောတံဆိပ်နှင့် စာသားအသံဖတ်ခြင်း မရတော့သော်လည်း၊\nဘာသာပြန်ခြင်း၊ ရှော့တ်ကတ်များ၊ တရေးနှင့် အသံများ ဆက်လက်လည်ပတ်နေမည်။",
     L"ကူးတိပ် ပွဲတိပ်များကို မလုပ်တော့ပါနဲ့။ သင့်မိခင်ဘာသာဖြင့် သဘာဝကျ ရိုက်နှိပ်ပါ — Windows အက်ပ်များအတွင်း သင့်ရိုက်နှိပ်မှုများကို ဘာသာပြန်က ချက်ချင်း အစားထိုးပေးမည်။",
@@ -4325,7 +4258,7 @@ const LocalizedStrings kStringsBurmese = {
     L"• ဒေသတွင်းမော်ဒယ်သုံးပါက ဘာသာပြန်စာသားသည် သင့်စက်မှ မထွက်ပါ။\n"
     L"• Google Translate ကို ရွေးလိုက်ပါက သို့မဟုတ် တစ်ဆက်တည်း cloud သို့ ပြောင်းလိုက်ပါက ရွေးထား/ရိုက်ထားသော စာသားသည် ဘာသာပြန်ရန် Google သို့ တိုက်ရိုက်ပို့ပြီး Emebala မဖြတ်ပါ။\n"
     L"• ရောဂါရှာဖွေ log များသည် မူလပိတ်ထားသည်။ ဆက်တင်တွင် ပွင့်အပ် (opt-in)။\n"
-    L"• အကယ်၍ သင်သည် စာသားကို cloud (Google) သို့ မပို့လိုပါက စနစ်တရေး သင်္ကေတမီနူးကို ဖွင့်၍ “ဘာသာပြန် အင်ဂျင်” တွင် “ဒေသတွင်း LLM” ကို ရွေးချယ်ပါ။ ဒေသတွင်းမော်ဒယ် မတပ်ဆင်ထားပါကနှင့် cloud ပြောင်းလဲခြင်း ပိတ်ထားပါက ဘာသာပြန်သည် စာသားမပို့ဘဲ အလုပ်မလုပ်ပါ။\n"
+    L"• အကယ်၍ သင်သည် စာသားကို cloud (Google) သို့ မပို့လိုပါက စနစ်တရေး သင်္ကေတမီနူးကို ဖွင့်၍ “ဘာသာပြန် အင်ဂျင်” တွင် “အတွင်းသွင်းပြင်ပအင်ဂျင်” ကို ရွေးချယ်ပါ။ ဒေသတွင်းမော်ဒယ် မတပ်ဆင်ထားပါကနှင့် cloud ပြောင်းလဲခြင်း ပိတ်ထားပါက ဘာသာပြန်သည် စာသားမပို့ဘဲ အလုပ်မလုပ်ပါ။\n"
     L"\n"
     L"အသေးစိတ်ကို README ဖိုင်တွင် ဖတ်နိုင်ပြီး အချိန်မရွေး ပြန်ဖတ်နိုင်သည်။\n",
     L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json",
@@ -4337,7 +4270,7 @@ const LocalizedStrings kStringsBurmese = {
     L"ပရိုဂရမ်အင်ဂျင်အစိတ်အပိုင်းများကို ပြုပြင်နေသည်…",
     L"ဒေသန္တရ ဘာသာပြန်ချက် မရနိုင်ပါ",
     L"ဒေသန္တရ ဘာသာပြန်အင်ဂျင် ဖိုင်များ မတွေ့ပါသဖြင့် ဘာသာပြန်မှုကို ယာယီရပ်နားထားပါသည်။ ဒေသန္တရ အင်ဂျင်ကို ပြန်လည်ရရှိရန် Emebala Chat ကို ပြန်လည်ထည့်သွင်းပါ၊ သို့မဟုတ် ကလောင်(Google) ဘာသာပြန်သို့ ပြောင်းလဲရန်၊ tray မီနူး၏ “ဘာသာပြန်အင်ဂျင်” မှ “Google ဘာသာပြန်” ကို ရွေးပါ။",
-    L"OpenAI Compatible (custom server)",
+    L"OpenAI နှင့်သဟဇာတ (အသုံးပြုသူသတ်မှတ်ချက်စက်များ)…",
     L"OpenAI Compatible Engine Settings",
     L"OpenAI Compatible engine settings…",
     L"Base URL",
@@ -4351,8 +4284,8 @@ const LocalizedStrings kStringsBurmese = {
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    L"User model (.gguf)…",
-    L"Browse for .gguf file…",
+    L"အသုံးပြုသူသတ်မှတ်ထားသော မော်ဒယ် (.gguf)",
+    L"အခြား .gguf မော်ဒယ်ကို မှတ်ပုံတင်ပါ…",
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
@@ -4362,6 +4295,8 @@ const LocalizedStrings kStringsBurmese = {
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ဒီမော်ဒယ်က Emebala Chat ထဲမှာ အသင့်ပါပြီးသားဖြစ်ပါတယ်။ မှတ်ပုံတင်စရာမလိုပါဘူး။ ပါရှိပြီးသား ပြည်တွင်းဘာသာပြန်အင်ဂျင်ကို တိုက်ရိုက်ရွေးချယ်နိုင်ပါတယ်။",
+// REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker.
+    L"(မှတ်ပုံတင်မထားပါ)"
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -4625,6 +4560,11 @@ std::wstring I18n::Get(StringId id) {
         // REQ-047 D2 (design §B.3): bundled-origin reuse-path rejection notice.
         case StringId::UserGgufBundledDuplicateBody:
             return s.user_gguf_bundled_duplicate_body;
+
+        // REQ-047 U1 (designer 164500 §5.3): "(미등록)" placeholder for the
+        // user-model tray entry when no .gguf model has been registered yet.
+        case StringId::MenuEngineUserGgufEmpty:
+            return s.menu_engine_user_gguf_empty;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

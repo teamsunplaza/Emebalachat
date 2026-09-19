@@ -1432,6 +1432,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             : (prefEngine == "openai") ? 2
             : (prefEngine == "user_gguf") ? 3
             : 0;
+
+        // REQ-047 U1 (designer 164500 §5.4.1, decision #1): resolve the
+        // user-model stem for the tray's dynamic label. Only consulted when
+        // the user-model engine is the preferred one; a registry miss falls
+        // back to showing the raw config id so the label never lies. The
+        // registry load mirrors RegisterUserGgufModel's loader (same
+        // LoadDefaultRegistry entry point). user_model_id is read directly
+        // (not via the snapshot): per the config.hpp contract it is a
+        // GUI-thread-only field never touched by hook/worker threads — the
+        // same direct-read precedent as the engine-select coordinator below.
+        std::string user_model_stem;
+        if (snap.engine_type == "user_gguf" && !config.user_model_id.empty()) {
+            auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
+            if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
+                if (const auto* m = reg.registry.FindModel(config.user_model_id)) {
+                    if (!m->files.empty()) {
+                        // stem = files[0] minus a trailing ".gguf" suffix.
+                        user_model_stem = m->files[0];
+                        const auto dot = user_model_stem.rfind(".gguf");
+                        if (dot != std::string::npos &&
+                            dot + 5 == user_model_stem.size()) {
+                            user_model_stem.resize(dot);
+                        }
+                    }
+                }
+            }
+            if (user_model_stem.empty()) {
+                user_model_stem = config.user_model_id;  // fallback: show the id
+            }
+        }
+
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),          // display-only (tooltip + log)
@@ -1442,7 +1473,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             snap.auto_send,
             snap.sound_enabled,
             badge.IsVisible(),
-            preferred_engine
+            preferred_engine,
+            user_model_stem                        // REQ-047 U1
         );
     };
 

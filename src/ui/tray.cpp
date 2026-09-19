@@ -252,7 +252,8 @@ void SystemTray::UpdateStatus(
     bool auto_send,
     bool sound_enabled,
     bool badge_visible,
-    int preferred_engine
+    int preferred_engine,
+    std::string_view user_model_stem
 ) {
     bool iconChanged = (is_active_ != active);
     is_active_ = active;
@@ -262,6 +263,9 @@ void SystemTray::UpdateStatus(
     // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: single source of truth
     // for the check (0 = Google, 1 = Local, 2 = OpenAI Compatible).
     preferred_engine_ = preferred_engine;
+    // REQ-047 U1 (designer 164500 §5.2.1): cache the user-model stem so the
+    // context-menu rebuild below can append it to the checkable entry.
+    user_model_stem_ = user_model_stem;
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
@@ -321,11 +325,34 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 0 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 1 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 2 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_OPENAI, I18n::Get(StringId::MenuEngineOpenAi).c_str());
-    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_USER_GGUF, I18n::Get(StringId::MenuEngineUserGguf).c_str());
+
+    // REQ-047 U1 (designer 164500 §1.2 Layer 3, decision #1): visual boundary
+    // between the "built-in engines" group (Google / Built-in Local / OpenAI)
+    // and the "user-provided model" group below. A separator is NOT a menu
+    // item — the 4-way radio contract (REQ-046) and the 2010~2014 ID band
+    // are untouched.
+    ::AppendMenuW(hEngineMenu, MF_SEPARATOR, 0, nullptr);
+
+    // REQ-047 U1 (designer 164500 §1.2 Layer 2, decision #1): dynamic label —
+    // when the user-model engine is checked, append the registered model's
+    // stem ("사용자 지정 모델 (.gguf) — Mistral-7B-v0.1"); when nothing is
+    // registered, append the localized "(미등록)" placeholder instead. Other
+    // engines keep the plain label so the menu stays compact.
+    std::wstring user_gguf_label = I18n::Get(StringId::MenuEngineUserGguf);
+    if (pref == 3) {
+        if (!user_model_stem_.empty()) {
+            user_gguf_label += L" — " + ToUtf16(user_model_stem_);
+        } else {
+            user_gguf_label += L" — " + I18n::Get(StringId::MenuEngineUserGgufEmpty);
+        }
+    }
+    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
     // REQ-046 P4-2 (Rev2 §B-3): the file picker stays a PLAIN row (no check —
     // it opens a dialog; checking a dialog row would lie about a persisted
-    // state). Clicking "사용자 선택(.gguf)" with no model registered routes
-    // into the same picker via main.cpp's INV-B3 policy.
+    // state). Clicking "사용자 지정 모델 (.gguf)" with no model registered
+    // routes into the same picker via main.cpp's INV-B3 policy. REQ-047 U1
+    // (designer 164500 §2.3, decision #2): it sits BELOW the separator as a
+    // separate "등록" action, visually detached from the built-in engines.
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_BROWSE_GGUF, I18n::Get(StringId::MenuBrowseGgufFile).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 

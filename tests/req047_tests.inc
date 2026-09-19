@@ -495,3 +495,128 @@ void TestReq047EngineUnavailableModal() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// ---------------------------------------------------------------------------
+// REQ-047 U1 (designer 164500, P4-4b): tray engine-submenu gguf-state
+// expression — ① "로컬 LLM" -> "내장 로컬 엔진" relabel, ② dynamic user-model
+// label with stem / "(미등록)" placeholder, ③ MF_SEPARATOR group boundary
+// between built-in engines and the user model, ④ file-picker row relabelled
+// "다른 .gguf 모델 등록…" and placed below the separator, ⑤ OpenAI "…" suffix.
+// The 4-way radio contract (REQ-046) and the 2010~2014 ID band are pinned
+// unchanged; the separator carries no ID (designer §5.2.3).
+// ---------------------------------------------------------------------------
+
+void TestReq047U1TrayGgufLabels() {
+    std::cout << "[RUN] Testing REQ-047 U1 tray gguf labels + separator..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) i18n: the 5 designer strings resolve in all 37 locales --------
+    // The EnumCount completeness loop in TestR6P5P6I18n covers every key;
+    // these pins name the U1 keys explicitly (TestReq047BundledDuplicateI18n
+    // precedent) and verify the designer's exact Korean wording.
+    const UiLocale initial = I18n::GetCurrentLocale();
+    int blank = 0;
+    for (int li = static_cast<int>(UiLocale::Korean);
+         li <= static_cast<int>(UiLocale::Burmese); ++li) {
+        I18n::SetLocale(static_cast<UiLocale>(li));
+        if (I18n::Get(StringId::MenuEngineUserGgufEmpty).empty()) ++blank;
+        if (I18n::Get(StringId::MenuEngineLocal).empty()) ++blank;
+        if (I18n::Get(StringId::MenuEngineOpenAi).empty()) ++blank;
+        if (I18n::Get(StringId::MenuEngineUserGguf).empty()) ++blank;
+        if (I18n::Get(StringId::MenuBrowseGgufFile).empty()) ++blank;
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(blank == 0,
+               "REQ-047 U1 (a): the 5 touched StringIds are non-empty in all 37 locales");
+
+    // Designer-exact Korean pins (decisions #1-#4, spec §6).
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::MenuEngineLocal) == L"내장 로컬 엔진 (Hy-MT2-1.8B 오프라인)",
+               "REQ-047 U1 (a): ko MenuEngineLocal is the designer's relabel");
+    TEST_CHECK(I18n::Get(StringId::MenuEngineOpenAi) == L"OpenAI 호환 (사용자 지정 서버)…",
+               "REQ-047 U1 (a): ko MenuEngineOpenAi carries the '…' suffix");
+    TEST_CHECK(I18n::Get(StringId::MenuEngineUserGguf) == L"사용자 지정 모델 (.gguf)",
+               "REQ-047 U1 (a): ko MenuEngineUserGguf is the dynamic-label base");
+    TEST_CHECK(I18n::Get(StringId::MenuBrowseGgufFile) == L"다른 .gguf 모델 등록…",
+               "REQ-047 U1 (a): ko MenuBrowseGgufFile is the registration action");
+    TEST_CHECK(I18n::Get(StringId::MenuEngineUserGgufEmpty) == L"(미등록)",
+               "REQ-047 U1 (a): ko MenuEngineUserGgufEmpty is the '(미등록)' placeholder");
+    I18n::SetLocale(initial);
+
+    // ---- (b) tray.cpp structural pins (GUI TU inspected, not linked) -------
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string tray_src;
+    read_src("src/ui/tray.cpp", tray_src);
+    std::string tray_hdr;
+    read_src("src/ui/tray.hpp", tray_hdr);
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (tray_src.empty() || tray_hdr.empty()) {
+        std::cout << "[SKIP] src/ui/tray.* not resolvable from the test CWD; "
+                     "REQ-047 U1 structural pins skipped." << std::endl;
+        return;
+    }
+
+    // MF_SEPARATOR group boundary between the built-in engines and the user
+    // model (designer decision #1, Layer 3).
+    TEST_CHECK(tray_src.find("MF_SEPARATOR, 0, nullptr") != std::string::npos,
+               "REQ-047 U1 (b): tray.cpp inserts an MF_SEPARATOR into the engine submenu");
+    // Dynamic label: stem appended when present, "(미등록)" placeholder when
+    // empty (designer decision #1, Layer 2). The em-dash join is the spec's.
+    TEST_CHECK(tray_src.find("user_model_stem_") != std::string::npos &&
+                   tray_src.find("StringId::MenuEngineUserGgufEmpty") != std::string::npos,
+               "REQ-047 U1 (b): tray.cpp appends the stem / '(미등록)' placeholder dynamically");
+    TEST_CHECK(tray_src.find("L\" — \"") != std::string::npos,
+               "REQ-047 U1 (b): tray.cpp joins the dynamic label with the em-dash separator");
+    // UpdateStatus carries the new parameter with an empty default (designer
+    // §5.2.1) so the hook.cpp call sites stay source-compatible.
+    TEST_CHECK(tray_hdr.find("user_model_stem") != std::string::npos,
+               "REQ-047 U1 (b): tray.hpp UpdateStatus declares the user_model_stem parameter");
+
+    // ---- (c) REQ-046 contract pins: ID band 2010~2014 + 4-way radio --------
+    // (regression guard — the separator must NOT consume an ID or a slot).
+    TEST_CHECK(tray_src.find("ID_TRAY_ENGINE_GOOGLE = 2010") != std::string::npos &&
+                   tray_src.find("ID_TRAY_ENGINE_LOCAL = 2011") != std::string::npos &&
+                   tray_src.find("ID_TRAY_ENGINE_OPENAI = 2012") != std::string::npos &&
+                   tray_src.find("ID_TRAY_ENGINE_USER_GGUF = 2013") != std::string::npos &&
+                   tray_src.find("ID_TRAY_BROWSE_GGUF = 2014") != std::string::npos,
+               "REQ-047 U1 (c): the engine ID band 2010~2014 is unchanged");
+    TEST_CHECK(tray_src.find("pref == 0 ? MF_CHECKED") != std::string::npos &&
+                   tray_src.find("pref == 1 ? MF_CHECKED") != std::string::npos &&
+                   tray_src.find("pref == 2 ? MF_CHECKED") != std::string::npos &&
+                   tray_src.find("pref == 3 ? MF_CHECKED") != std::string::npos,
+               "REQ-047 U1 (c): the 4-way radio check structure is preserved");
+
+    // ---- (d) main.cpp stem-resolution wiring -------------------------------
+    if (!main_src.empty()) {
+        TEST_CHECK(main_src.find("user_model_stem") != std::string::npos &&
+                       main_src.find("FindModel(config.user_model_id)") != std::string::npos,
+                   "REQ-047 U1 (d): main.cpp resolves the stem via the default registry");
+        TEST_CHECK(main_src.find("rfind(\".gguf\")") != std::string::npos,
+                   "REQ-047 U1 (d): main.cpp strips the '.gguf' suffix into the stem");
+        // Ordering: the stem resolution lives inside refresh_tray, before the
+        // UpdateStatus call it feeds.
+        const size_t stem_pos = main_src.find("std::string user_model_stem;");
+        const size_t call_pos = main_src.find("tray.UpdateStatus(");
+        TEST_CHECK(stem_pos != std::string::npos && call_pos != std::string::npos &&
+                       stem_pos < call_pos,
+                   "REQ-047 U1 (d): stem resolution precedes the UpdateStatus call");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-047 U1 tray gguf labels + separator passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-047 U1 tray gguf labels + separator: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}

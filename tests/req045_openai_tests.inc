@@ -159,13 +159,14 @@ void TestReq045OpenAiI18nPresent() {
         StringId::OpenAiInvalidBaseUrl,
     };
     // EnumCount advanced by 13 (57 -> 70) in P4-3, by 6 more (70 -> 76)
-    // in REQ-045 P4-5 (item 3a-2, the user-.gguf registration strings), and
-    // by 1 more (76 -> 77) in REQ-047 D2 (the bundled-duplicate notice body).
-    // Read through a volatile to keep the runtime comparison (avoids C4127
-    // on the constant expression).
+    // in REQ-045 P4-5 (item 3a-2, the user-.gguf registration strings), by
+    // 1 more (76 -> 77) in REQ-047 D2 (the bundled-duplicate notice body),
+    // and by 1 more (77 -> 78) in REQ-047 U1 (designer 164500: the tray
+    // "(미등록)" empty-slot marker). Read through a volatile to keep the
+    // runtime comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 77,
-               "StringId::EnumCount is 77 after the 13+6+1 field appends");
+    TEST_CHECK(enum_count == 78,
+                "StringId::EnumCount is 78 after the 13+6+1+1 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }

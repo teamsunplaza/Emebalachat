@@ -491,7 +491,8 @@ void KeyboardHook::SetActive(bool active) {
             snap.auto_send,
             snap.sound_enabled,
             badge_.IsVisible(),
-            /* preferred_engine_google = */ (snap.engine_type != "local")
+            /* preferred_engine_google = */ (snap.engine_type != "local"),
+            ""  // REQ-047 U1: hook paths don't track the user-model registry
         );
         // REQ-R08 visual feedback: the floating badge above IS the visual
         // state indicator (green=active/gray=disabled, and it renders even
@@ -559,7 +560,8 @@ void KeyboardHook::CycleTargetLanguage() {
         snap.auto_send,
         snap.sound_enabled,
         badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local")
+        /* preferred_engine_google = */ (snap.engine_type != "local"),
+        ""  // REQ-047 U1: hook paths don't track the user-model registry
     );
     PlayLangChange();
 }
@@ -587,7 +589,8 @@ void KeyboardHook::ToggleAutoSend() {
         next,
         snap.sound_enabled,
         badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local")
+        /* preferred_engine_google = */ (snap.engine_type != "local"),
+        ""  // REQ-047 U1: hook paths don't track the user-model registry
     );
     PlayModeChange();
 }
