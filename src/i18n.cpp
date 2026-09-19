@@ -102,7 +102,13 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(openai_http_warning_body) \
     X(openai_saved) \
     X(openai_key_masked) \
-    X(openai_invalid_base_url)
+    X(openai_invalid_base_url) \
+    X(menu_engine_user_gguf) \
+    X(menu_browse_gguf_file) \
+    X(user_gguf_quality_title) \
+    X(user_gguf_quality_body) \
+    X(user_gguf_registered_title) \
+    X(user_gguf_registered_body)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -122,9 +128,10 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // REQ-044: 57 == StringId::EnumCount. The design doc/Tech Gate cited 53,
 // but that predates REQ-042's tooltip_untranslated_above (field 54); the
 // enum's own running-total comment reads "57x37 with the REQ-005 repair
-// trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields, bringing the
-// total to 70. The Get() switch maps exactly these 70 named fields.
-static_assert(kLocalizedStringsFieldCount == 70,
+// trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields (70), and
+// REQ-045 P4-5 (item 3a-2) appended 6 user-.gguf fields, bringing the total
+// to 76. The Get() switch maps exactly these 76 named fields.
+static_assert(kLocalizedStringsFieldCount == 76,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -222,6 +229,13 @@ const LocalizedStrings kStringsKorean = {
     .openai_saved = L"OpenAI 호환 설정이 저장되었습니다.",
     .openai_key_masked = L"저장된 키: ",
     .openai_invalid_base_url = L"기본 URL이 올바르지 않습니다. 예: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    .menu_engine_user_gguf = L"사용자 선택(.gguf)…",
+    .menu_browse_gguf_file = L"파일찾기(.gguf)…",
+    .user_gguf_quality_title = L"번역 품질 안내",
+    .user_gguf_quality_body = L"선택한 모델은 Hy-MT2가 아닙니다. 현재 버전은 Hy-MT2 전용 프롬프트를 사용하므로, 이 모델의 번역 품질은 보장되지 않습니다. 계속하시겠습니까?",
+    .user_gguf_registered_title = L"모델 등록 완료",
+    .user_gguf_registered_body = L"선택한 모델이 로컬 엔진에 등록되었습니다.\n\n이 모델을 사용하려면:\n1. 트레이 메뉴에서 \"번역 엔진 선택\" > \"로컬 LLM\"을 선택하세요.\n2. 로컬 엔진 서비스는 대기 후 자동 종료되므로, 잠시 기다리거나 앱을 재시작하면 새 모델이 반영됩니다.",
 };
 
 // 2. Japanese (ja)
@@ -324,6 +338,13 @@ const LocalizedStrings kStringsJapanese = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -426,6 +447,13 @@ const LocalizedStrings kStringsChineseSimp = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -528,6 +556,13 @@ const LocalizedStrings kStringsChineseTrad = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 5. Vietnamese (vi)
@@ -630,6 +665,13 @@ const LocalizedStrings kStringsVietnamese = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 6. Spanish (es)
@@ -729,6 +771,13 @@ const LocalizedStrings kStringsSpanish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 7. English (en) - Default Fallback
@@ -832,6 +881,13 @@ const LocalizedStrings kStringsEnglish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.\n\nTo use this model:\n1. Open the tray menu, choose \"Translation Engine\" > \"Local LLM\".\n2. The local engine service exits when idle; wait a moment or restart the app for the new model to take effect.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -946,6 +1002,13 @@ const LocalizedStrings kStringsFrench = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 9. German (de)
@@ -1048,6 +1111,13 @@ const LocalizedStrings kStringsGerman = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 10. Russian (ru)
@@ -1150,6 +1220,13 @@ const LocalizedStrings kStringsRussian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 11. Portuguese (pt)
@@ -1252,6 +1329,13 @@ const LocalizedStrings kStringsPortuguese = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 12. Italian (it)
@@ -1354,6 +1438,13 @@ const LocalizedStrings kStringsItalian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 13. Dutch (nl)
@@ -1456,6 +1547,13 @@ const LocalizedStrings kStringsDutch = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 14. Polish (pl)
@@ -1558,6 +1656,13 @@ const LocalizedStrings kStringsPolish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 15. Czech (cs)
@@ -1660,6 +1765,13 @@ const LocalizedStrings kStringsCzech = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 16. Hungarian (hu)
@@ -1762,6 +1874,13 @@ const LocalizedStrings kStringsHungarian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 17. Romanian (ro)
@@ -1864,6 +1983,13 @@ const LocalizedStrings kStringsRomanian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 18. Swedish (sv)
@@ -1966,6 +2092,13 @@ const LocalizedStrings kStringsSwedish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 19. Danish (da)
@@ -2068,6 +2201,13 @@ const LocalizedStrings kStringsDanish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 20. Finnish (fi)
@@ -2170,6 +2310,13 @@ const LocalizedStrings kStringsFinnish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 21. Norwegian (no / nb)
@@ -2272,6 +2419,13 @@ const LocalizedStrings kStringsNorwegian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 22. Greek (el)
@@ -2374,6 +2528,13 @@ const LocalizedStrings kStringsGreek = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 23. Turkish (tr)
@@ -2476,6 +2637,13 @@ const LocalizedStrings kStringsTurkish = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 24. Ukrainian (uk)
@@ -2578,6 +2746,13 @@ const LocalizedStrings kStringsUkrainian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 25. Thai (th)
@@ -2680,6 +2855,13 @@ const LocalizedStrings kStringsThai = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 26. Indonesian (id)
@@ -2782,6 +2964,13 @@ const LocalizedStrings kStringsIndonesian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 27. Malay (ms)
@@ -2884,6 +3073,13 @@ const LocalizedStrings kStringsMalay = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 28. Filipino (fil)
@@ -2988,6 +3184,13 @@ const LocalizedStrings kStringsFilipino = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 29. Hindi (hi)
@@ -3090,6 +3293,13 @@ const LocalizedStrings kStringsHindi = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 30. Bengali (bn)
@@ -3192,6 +3402,13 @@ const LocalizedStrings kStringsBengali = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -3295,6 +3512,13 @@ const LocalizedStrings kStringsArabic = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 32. Persian (fa) — RTL
@@ -3397,6 +3621,13 @@ const LocalizedStrings kStringsPersian = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -3499,6 +3730,13 @@ const LocalizedStrings kStringsUrdu = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 34. Hebrew (he) — RTL
@@ -3601,6 +3839,13 @@ const LocalizedStrings kStringsHebrew = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 35. Khmer (km)
@@ -3703,6 +3948,13 @@ const LocalizedStrings kStringsKhmer = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 36. Lao (lo)
@@ -3805,6 +4057,13 @@ const LocalizedStrings kStringsLao = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 // 37. Burmese (my)
@@ -3907,6 +4166,13 @@ const LocalizedStrings kStringsBurmese = {
     L"OpenAI Compatible settings saved.",
     L"Saved key: ",
     L"The base URL is not valid. Example: https://api.openai.com",
+    // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+    L"User model (.gguf)…",
+    L"Browse for .gguf file…",
+    L"Translation quality notice",
+    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
+    L"Model registered",
+    L"The selected model has been registered with the local engine.",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -4159,6 +4425,14 @@ std::wstring I18n::Get(StringId id) {
         case StringId::OpenAiSaved:             return s.openai_saved;
         case StringId::OpenAiKeyMasked:         return s.openai_key_masked;
         case StringId::OpenAiInvalidBaseUrl:    return s.openai_invalid_base_url;
+
+        // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
+        case StringId::MenuEngineUserGguf:      return s.menu_engine_user_gguf;
+        case StringId::MenuBrowseGgufFile:      return s.menu_browse_gguf_file;
+        case StringId::UserGgufQualityTitle:    return s.user_gguf_quality_title;
+        case StringId::UserGgufQualityBody:     return s.user_gguf_quality_body;
+        case StringId::UserGgufRegisteredTitle: return s.user_gguf_registered_title;
+        case StringId::UserGgufRegisteredBody:  return s.user_gguf_registered_body;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

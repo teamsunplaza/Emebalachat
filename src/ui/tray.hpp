@@ -40,6 +40,11 @@ public:
         // spellings live in i18n.cpp kLocaleMappings). main.cpp
         // validates/persists via PlanUiLocaleChange.
         std::function<void(std::string_view code)> on_select_ui_language;
+        // REQ-045 P4-5 (item 3a-2, design §A.3): the engine submenu's
+        // "사용자 선택(.gguf)… > 파일찾기(.gguf)" pick. main.cpp opens the
+        // GetOpenFileNameW dialog and runs the copy + registry-writer +
+        // config.user_model_id registration pipeline.
+        std::function<void()> on_browse_gguf;
     };
 
     SystemTray();

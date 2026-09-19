@@ -287,6 +287,14 @@ struct AppConfig {
     std::string ui_language = "auto";
     std::string engine_type = "auto";
     std::string model_path = "models/Hy-MT2-1.8B-Q8_0.gguf";
+    // REQ-045 P4-5 (item 3a-2, design §A.3): the registry id of the user's
+    // third-party .gguf model ("" = the pinned Hy-MT2 default). Written ONLY by
+    // the tray "사용자 선택(.gguf)…" registration pipeline (main.cpp) and read
+    // by the engine host at ITS boot time (host_main.cpp g_user_model_id) —
+    // never read by the Chat worker threads, so like cloud_fallback_enabled it
+    // needs no mutex_ or Snapshot entry (startup/registration-time write,
+    // read-only afterwards).
+    std::string user_model_id = "";
     std::string source_language = "Auto Detect";
     std::string target_language = "English";
     // Phase 3 (REQ-006/007/015/016): context-separated language pairs.
@@ -442,6 +450,12 @@ struct AppConfig {
     // R6 Phase 6: locked mutator for the tray UI-language selector (same
     // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
     void SetUiLanguage(std::string value);
+    // REQ-045 P4-5 (item 3a-2): locked mutator for the third-party .gguf
+    // registry id (same discipline as SetEngineTypeName; SaveToFile()
+    // serializes under mutex_). Written by the tray registration pipeline on
+    // the GUI thread; read by the engine host at ITS boot (never by the Chat
+    // worker threads), so no Snapshot entry is needed.
+    void SetUserModelId(std::string value);
 
     // Returns standard default config path: %LOCALAPPDATA%\Emebalachat\config.json
     // (REQ-029-B single-source-of-truth), falling back to the executable dir /

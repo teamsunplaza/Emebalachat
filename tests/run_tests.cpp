@@ -14499,8 +14499,9 @@ namespace {
 // solely so the sizeof-based count below is checked against a struct with an
 // identical layout. It must be kept in sync; the static_assert catches drift.
 struct Req044LstrMirror {
-    // REQ-045 P4-3: 13 OpenAI fields appended to LocalizedStrings (57 -> 70).
-    const wchar_t* f[70];
+    // REQ-045 P4-3: 13 OpenAI fields appended (57 -> 70); REQ-045 P4-5
+    // (item 3a-2): 6 user-.gguf fields appended (70 -> 76).
+    const wchar_t* f[76];
 };
 
 } // namespace
@@ -14513,8 +14514,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 70 (REQ-045: 57+13)
-    static_assert(kExpectedFieldCount == 70,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 76 (57+13+6)
+    static_assert(kExpectedFieldCount == 76,
                   "REQ-044/045: LocalizedStrings field count changed - update the "
                   "i18n.cpp X-macro list, the kStringsKorean designated "
                   "initializers, AND this mirror");
@@ -14524,11 +14525,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 70,
-               "REQ-044/045: LocalizedStrings field count is 70 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 76,
+               "REQ-044/045: LocalizedStrings field count is 76 (X-macro static_assert "
                "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 70,
-               "REQ-044/045: StringId::EnumCount is 70 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 76,
+               "REQ-044/045: StringId::EnumCount is 76 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -14733,6 +14734,12 @@ int main() {
     TestReq045GgufRegistryResolution();
     TestReq045GgufHostConfigIdParse();
     TestReq045GgufSessionOpenRoundTrip();
+    // REQ-045 P4-5 (item 3a-2): registration pipeline — writer round-trip,
+    // id dedup policy, config user_model_id persist. Registered after the
+    // P4-4 suites, per the end-of-file pattern.
+    TestReq045GgufRegistrationIdDedup();
+    TestReq045GgufWriterRoundTrip();
+    TestReq045GgufConfigUserModelIdPersist();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

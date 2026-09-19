@@ -158,11 +158,13 @@ void TestReq045OpenAiI18nPresent() {
         StringId::OpenAiSaved, StringId::OpenAiKeyMasked,
         StringId::OpenAiInvalidBaseUrl,
     };
-    // EnumCount advanced by 13 (57 -> 70). Read through a volatile to keep
-    // the runtime comparison (avoids C4127 on the constant expression).
+    // EnumCount advanced by 13 (57 -> 70) in P4-3 and by 6 more (70 -> 76)
+    // in REQ-045 P4-5 (item 3a-2, the user-.gguf registration strings).
+    // Read through a volatile to keep the runtime comparison (avoids C4127
+    // on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 70,
-               "StringId::EnumCount is 70 after the 13-field append");
+    TEST_CHECK(enum_count == 76,
+               "StringId::EnumCount is 76 after the 13+6 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }

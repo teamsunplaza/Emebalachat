@@ -117,6 +117,15 @@ struct LoadResult {
 // Parse a registry document from an in-memory UTF-8 JSON string. Never throws.
 LoadResult ParseRegistryJson(std::string_view json);
 
+// REQ-045 P4-5 (item 3a-2, design §A.3): the registry WRITER. Serializes a
+// Registry back to the UTF-8 JSON document shape the parser accepts
+// (schema_version + models[] with id/family/files[]/origin and the optional
+// blocks). Every string is re-escaped; every files[] entry is re-checked with
+// IsBareFilename (the writer refuses to emit a path-escape just as the parser
+// refuses to read one). The output is byte-stable for a fixed input, so
+// write→parse round-trips are identity-checked by the unit tests.
+std::string SerializeRegistry(const Registry& registry);
+
 // Parse + report a single model item (exposed for tests). Returns false when
 // the item is rejected (missing id/files, non-string fields, path escape in
 // files[]); a rejected item does NOT abort the whole document parse.

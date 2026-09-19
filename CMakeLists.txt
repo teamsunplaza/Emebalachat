@@ -282,6 +282,8 @@ target_link_libraries(Emebalachat_core PUBLIC
     winmm
     winhttp
     wtsapi32
+    # REQ-045 P4-5 (item 3a-2): GetOpenFileNameW (.gguf picker, main.cpp).
+    comdlg32
     # REQ-045 P4-3 (design §3b): bcrypt = CNG SHA-256 (key integrity digest,
     # openai_compatible_client); crypt32 = DPAPI CryptProtectData key storage.
     bcrypt

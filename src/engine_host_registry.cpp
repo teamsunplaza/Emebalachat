@@ -8,6 +8,7 @@
 #include "engine_host_registry.hpp"
 
 #include <cstdlib>
+#include <sstream>
 
 #include "diag_logger.hpp"
 
@@ -124,7 +125,122 @@ bool ParseProfilesObject(std::string_view raw, std::map<std::string, SamplingPro
     return true;
 }
 
+// REQ-045 P4-5 (item 3a-2): writer-side JSON escaping. Mirrors the frozen
+// engine_host_protocol.hpp Escape (byte-identical semantics to the config.cpp
+// EscapeJsonString the whole codebase already uses): control chars < 0x20 ->
+// \uXXXX short forms for \b \f \n \r \t, \" and \\ escaped; everything else
+// (including UTF-8 multibyte) passes through verbatim. Kept file-local so the
+// frozen protocol header stays untouched.
+std::string EscapeJson(std::string_view s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        switch (c) {
+            case '\"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    static const char* kHex = "0123456789abcdef";
+                    out += "\\u00";
+                    out += kHex[(c >> 4) & 0xF];
+                    out += kHex[c & 0xF];
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
+
+void WriteJsonStringArray(std::ostringstream& ss, const std::vector<std::string>& items) {
+    ss << "[";
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i) ss << ", ";
+        ss << "\"" << EscapeJson(items[i]) << "\"";
+    }
+    ss << "]";
+}
+
+void WriteSamplingProfiles(std::ostringstream& ss,
+                           const std::map<std::string, SamplingProfile>& profiles) {
+    ss << "{";
+    bool first = true;
+    for (const auto& [name, prof] : profiles) {
+        if (!first) ss << ", ";
+        first = false;
+        ss << "\"" << EscapeJson(name) << "\": {";
+        // Emit the known keys the parser round-trips. Numbers use raw text
+        // (ostringstream default formatting is exact for the int fields and
+        // round-trip-stable for the double fields at registry precision).
+        ss << "\"temperature\": " << prof.temperature;
+        ss << ", \"top_p\": " << prof.top_p;
+        ss << ", \"top_k\": " << prof.top_k;
+        ss << ", \"rep_pen\": " << prof.rep_pen;
+        if (!prof.prompt_template_ref.empty()) {
+            ss << ", \"prompt_template_ref\": \"" << EscapeJson(prof.prompt_template_ref) << "\"";
+        }
+        ss << "}";
+    }
+    ss << "}";
+}
+
 } // namespace
+
+std::string SerializeRegistry(const Registry& registry) {
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "  \"schema_version\": " << registry.schema_version << ",\n";
+    ss << "  \"models\": [";
+    for (size_t i = 0; i < registry.models.size(); ++i) {
+        const ModelEntry& m = registry.models[i];
+        if (i) ss << ",";
+        ss << "\n    {\n";
+        ss << "      \"id\": \"" << EscapeJson(m.id) << "\",\n";
+        ss << "      \"family\": \"" << EscapeJson(m.family) << "\",\n";
+        // REQ-045 P4-5 (item 3a-2): the writer enforces the SAME bare-filename
+        // contract the parser does — a path escape refuses to serialize (the
+        // caller surfaces this as a loud registration failure, never a
+        // tampered document on disk).
+        for (const auto& f : m.files) {
+            if (!engine_host_json::IsBareFilename(f)) {
+                DIAG_F("ENGINEHOST/Registry/100: writer refused to serialize a non-bare "
+                       "filename (model id=%s, len=%zu)\n", m.id.c_str(), f.size());
+                return {};
+            }
+        }
+        ss << "      \"files\": ";
+        WriteJsonStringArray(ss, m.files);
+        ss << ",\n";
+        ss << "      \"capabilities\": ";
+        WriteJsonStringArray(ss, m.capabilities);
+        ss << ",\n";
+        ss << "      \"origin\": \"" << EscapeJson(m.origin) << "\",\n";
+        ss << "      \"resource\": {\n";
+        ss << "        \"vram_mb\": " << m.resource.vram_mb << ",\n";
+        ss << "        \"ctx\": " << m.resource.ctx << ",\n";
+        ss << "        \"max_sessions\": " << m.resource.max_sessions << ",\n";
+        ss << "        \"residency\": \"" << EscapeJson(m.resource.residency) << "\",\n";
+        ss << "        \"eviction\": \"" << EscapeJson(m.resource.eviction) << "\",\n";
+        ss << "        \"priority\": " << m.resource.priority << "\n";
+        ss << "      },\n";
+        ss << "      \"profiles\": ";
+        WriteSamplingProfiles(ss, m.profiles);
+        ss << ",\n";
+        ss << "      \"lang_pairs\": ";
+        WriteJsonStringArray(ss, m.lang_pairs);
+        ss << "\n    }";
+    }
+    if (!registry.models.empty()) ss << "\n  ";
+    ss << "]\n";
+    ss << "}\n";
+    return ss.str();
+}
 
 bool ParseModelItem(std::string_view raw_item, ModelEntry& out) {
     enginehost::JsonPairs p;

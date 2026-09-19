@@ -23,14 +23,17 @@
 #include "ui/tooltip.hpp"
 #include "ui/tray.hpp"
 #include "worker.hpp"
+#include "engine_host_registry.hpp" // REQ-045 P4-5: registry writer for user .gguf registration
 
 #include <windows.h>
+#include <commdlg.h> // REQ-045 P4-5: GetOpenFileNameW (.gguf picker)
 #include <bcrypt.h>   // REQ-005 (M6 T6): CNG SHA-256 for the repair HashProvider
 #include <objbase.h>
 #include <wtsapi32.h> // WTSRegisterSessionNotification (REQ-R14)
 
 #include <atomic> // REQ-004: in-flight guard for the tray-switch async preload
 #include <condition_variable> // R6 Phase 3 (audit item 7): joinable drag worker
+#include <cctype>  // REQ-045 P4-5: std::tolower (.gguf suffix strip)
 #include <cstdio>
 #include <deque>    // SEC-B5: language-sync request queue (no pointer in LPARAM)
 #include <filesystem> // REQ-005 (M6 T6): CngSha256Hex path
@@ -42,11 +45,235 @@
 #include <vector> // REQ-005 (M6 T6): CNG hash buffers
 
 #pragma comment(lib, "bcrypt.lib") // REQ-005 (M6 T6): CNG SHA-256 (repair HashProvider)
+#pragma comment(lib, "comdlg32.lib") // REQ-045 P4-5: GetOpenFileNameW (.gguf picker)
 
 namespace emebalachat {
 
 namespace {
+// ---------------------------------------------------------------------------
+// REQ-045 P4-5 (item 3a-2, design §A.3/A.4): third-party .gguf registration.
+// Invoked on the GUI thread from the tray engine submenu's
+// "사용자 선택(.gguf)… > 파일찾기(.gguf)" pick. Steps:
+//   1. §A.4 quality-not-guaranteed consent gate (once per app run).
+//   2. GetOpenFileNameW (.gguf filter).
+//   3. Copy the file to %LOCALAPPDATA%\Emebala\Common\models\ (bare filename,
+//      "_2"/"_3"… suffix on collision; the SOURCE file is never moved/deleted).
+//   4. Load registry.json, append an origin:"user" ModelEntry (id = the bare
+//      filename stem; "_2" suffix when the id is taken by a DIFFERENT file),
+//      write it back through SerializeRegistry (failures are LOUD — a damaged
+//      or schema-rejected registry is NEVER overwritten).
+//   5. Persist config.user_model_id (the engine host reads it at ITS next
+//      boot; the user's engine choice itself is left untouched — the
+//      completion notice tells the user to pick "Local LLM" and that an idle
+//      host restart picks the new model up).
+// ---------------------------------------------------------------------------
+void RegisterUserGgufModel(AppConfig& config) {
+    // (1) §A.4 quality gate — once per app run (the pick itself is the
+    // explicit user action, matching the §B "로컬LLM 명시 선택" trigger spirit).
+    static bool s_quality_gate_shown = false;
+    if (!s_quality_gate_shown) {
+        const int consent = ::MessageBoxW(
+            nullptr,
+            I18n::Get(StringId::UserGgufQualityBody).c_str(),
+            I18n::Get(StringId::UserGgufQualityTitle).c_str(),
+            MB_YESNO | MB_ICONWARNING);
+        if (consent != IDYES) {
+            DIAG_F("MAIN/RegisterUserGguf/000: quality gate declined; registration aborted\n");
+            return;
+        }
+        s_quality_gate_shown = true;
+    }
+
+    // (2) File picker.
+    wchar_t file_buf[MAX_PATH] = {};
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = nullptr;
+    ofn.lpstrFile = file_buf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"GGUF Model (*.gguf)\0*.gguf\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrTitle = I18n::Get(StringId::MenuBrowseGgufFile).c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!::GetOpenFileNameW(&ofn)) {
+        // Cancel (or a commdlg error we do not distinguish — cancel is the
+        // overwhelmingly common path; no loud failure on a plain dismiss).
+        DIAG_F("MAIN/RegisterUserGguf/001: file picker cancelled or failed (commdlg err=%lu)\n",
+               ::CommDlgExtendedError());
+        return;
+    }
+    const std::filesystem::path src_path(file_buf);
+
+    // (3) Resolve the destination: %LOCALAPPDATA%\Emebala\Common\models\.
+    const std::filesystem::path models_dir =
+        engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        ::MessageBoxW(nullptr,
+                      L"%LOCALAPPDATA% is unavailable; cannot locate the shared models directory.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/002: LOCALAPPDATA missing; registration aborted\n");
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(models_dir, ec);
+    if (ec) {
+        ::MessageBoxW(nullptr,
+                      L"The shared models directory could not be created.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/003: create_directories failed (ec=%d)\n", ec.value());
+        return;
+    }
+
+    // Bare destination filename: stem + ".gguf"; on collision try _2, _3…
+    // (same policy for the registry id so file<->id stay 1:1).
+    const std::string bare_utf8 = ToUtf8(src_path.filename().wstring());
+    std::string stem = bare_utf8;
+    const std::string kGgufExt = ".gguf";
+    // Case-insensitive .gguf suffix strip (the file picker filter already
+    // restricts to *.gguf, but OFN_ALLOWMULTISELECT-less manual paths can
+    // still arrive with any casing).
+    if (stem.size() > kGgufExt.size()) {
+        const std::string tail = stem.substr(stem.size() - kGgufExt.size());
+        bool gguf_tail = true;
+        for (size_t ci = 0; ci < kGgufExt.size(); ++ci) {
+            if (std::tolower(static_cast<unsigned char>(tail[ci])) !=
+                std::tolower(static_cast<unsigned char>(kGgufExt[ci]))) {
+                gguf_tail = false;
+                break;
+            }
+        }
+        if (gguf_tail) stem.resize(stem.size() - kGgufExt.size());
+    }
+    if (!engine_host_json::IsBareFilename(bare_utf8)) {
+        ::MessageBoxW(nullptr,
+                      L"The chosen filename is not usable as a bare model filename.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/004: non-bare source filename (len=%zu)\n",
+               bare_utf8.size());
+        return;
+    }
+
+    // (4) Load the existing registry FIRST — a damaged/schema-rejected
+    // document is a LOUD failure and is NEVER overwritten (위임 2c).
+    auto reg_result = engine_host_registry::LoadDefaultRegistry();
+    if (reg_result.status != engine_host_registry::LoadStatus::Ok &&
+        reg_result.status != engine_host_registry::LoadStatus::Missing) {
+        ::MessageBoxW(nullptr,
+                      L"registry.json is damaged or has an unsupported schema. It was NOT modified. Fix or remove it, then retry.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/005: registry load status=%d; refusing to overwrite\n",
+               static_cast<int>(reg_result.status));
+        return;
+    }
+    engine_host_registry::Registry& registry = reg_result.registry;
+    if (reg_result.status == engine_host_registry::LoadStatus::Missing) {
+        registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
+    }
+
+    // Re-selecting the SAME file reuses its existing entry (no duplicate id).
+    for (const auto& m : registry.models) {
+        if (!m.files.empty() && m.files[0] == bare_utf8) {
+            config.SetUserModelId(m.id);
+            config.SaveToFile();
+            DIAG_F("MAIN/RegisterUserGguf/006: existing entry reused (id=%s)\n", m.id.c_str());
+            ::MessageBoxW(nullptr,
+                          I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
+                          I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                          MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+    }
+
+    // Fresh registration: pick a non-conflicting (bare filename, id) pair.
+    std::string dest_bare = bare_utf8;
+    std::string model_id = "user-" + stem;
+    for (int suffix = 2;; ++suffix) {
+        const bool file_taken =
+            std::filesystem::exists(models_dir / ToUtf16(dest_bare), ec);
+        const bool id_taken = (registry.FindModel(model_id) != nullptr);
+        if (!file_taken && !id_taken) break;
+        // Same-id-different-file: bump the id. File collision alone: bump the
+        // file name (and keep the ids unique alongside).
+        dest_bare = stem + "_" + std::to_string(suffix) + kGgufExt;
+        model_id = "user-" + stem + "_" + std::to_string(suffix);
+        if (suffix > 1000) { // runaway guard (practically unreachable)
+            DIAG_F("MAIN/RegisterUserGguf/007: suffix runaway; registration aborted\n");
+            return;
+        }
+    }
+
+    // Copy (never move): the user's original stays where it was.
+    const std::filesystem::path dest_path = models_dir / ToUtf16(dest_bare);
+    std::filesystem::copy_file(src_path, dest_path,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        ::MessageBoxW(nullptr,
+                      L"The model file could not be copied into the shared models directory.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/008: copy_file failed (ec=%d)\n", ec.value());
+        return;
+    }
+
+    // Append the origin:"user" entry and write the registry back.
+    engine_host_registry::ModelEntry entry;
+    entry.id = model_id;
+    entry.family = "ggml-translate";
+    entry.files = { dest_bare };
+    entry.origin = "user";
+    registry.models.push_back(std::move(entry));
+    const std::string serialized =
+        engine_host_registry::SerializeRegistry(registry);
+    if (serialized.empty()) {
+        ::MessageBoxW(nullptr,
+                      L"The registry could not be serialized (a filename was rejected). The model file was copied but NOT registered.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/009: SerializeRegistry refused (non-bare filename)\n");
+        return;
+    }
+    const std::filesystem::path registry_path = models_dir / L"registry.json";
+    {
+        std::ofstream out(registry_path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            ::MessageBoxW(nullptr,
+                          L"registry.json could not be written. The model file was copied but NOT registered.",
+                          I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                          MB_OK | MB_ICONERROR);
+            DIAG_F("MAIN/RegisterUserGguf/010: registry.json open-for-write failed\n");
+            return;
+        }
+        out << serialized;
+        out.close();
+        if (!out) {
+            ::MessageBoxW(nullptr,
+                          L"registry.json could not be written completely.",
+                          I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                          MB_OK | MB_ICONERROR);
+            DIAG_F("MAIN/RegisterUserGguf/011: registry.json write failed mid-stream\n");
+            return;
+        }
+    }
+
+    // (5) Persist the pick; the engine host reads it at ITS next boot.
+    config.SetUserModelId(model_id);
+    config.SaveToFile();
+    DIAG_F("MAIN/RegisterUserGguf/012: registered id=%s file=%s (origin=user)\n",
+           model_id.c_str(), dest_bare.c_str());
+    ::MessageBoxW(nullptr,
+                  I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
+                  I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                  MB_OK | MB_ICONINFORMATION);
+}
+
 // ---- R6 Phase 1 (B3): cross-thread language-sync marshal ----
+// (everything below this line is inside the file-top `namespace {` which is
+// inside `namespace emebalachat`; the anon namespace closes at the old
+// "} // namespace" + "} // namespace emebalachat" pair further down)
 // Phase 3 Batch 2 (plan §2.4): the request now also carries WHICH language
 // pair (LanguageContext) the mutation applies to.
 // Posted to the controller window (GUI thread) by any NON-GUI thread that
@@ -315,7 +542,10 @@ static_assert(kDragCopyRetryBackoffMs >= 60 && kDragCopyRetryBackoffMs <= 80,
 static_assert(kClipboardChangeTimeoutMs * 2 + kDragCopyRetryBackoffMs <= 250,
               "REQ-005: worst-case drag copy cycle (attempt+backoff+retry) stays <= 250 ms");
 
-} // namespace
+} // namespace (anon)
+
+// REQ-045 P4-5 note: `RegisterUserGgufModel` above lives in this anon
+// namespace (inside namespace emebalachat), so wWinMain below sees it.
 
 } // namespace emebalachat
 
@@ -1215,6 +1445,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // newly selected local source (the shared host) is visible in the
         // engine name the 002 line already logs; the first local Translate()
         // spawns the host's worker on demand.
+    };
+
+    // REQ-045 P4-5 (item 3a-2): the engine submenu's "사용자 선택(.gguf)… >
+    // 파일찾기(.gguf)" pick routes to the registration pipeline. The helper
+    // lives in the anon namespace INSIDE namespace emebalachat (closed at the
+    // file's "} // namespace emebalachat" just above wWinMain), so it is
+    // referenced fully-qualified here from the GLOBAL-scope wWinMain.
+    trayCallbacks.on_browse_gguf = [&config]() {
+        emebalachat::RegisterUserGgufModel(config);
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the

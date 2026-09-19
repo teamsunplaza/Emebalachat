@@ -199,6 +199,19 @@ enum class StringId {
     OpenAiKeyMasked,           // masked key read-back display
     OpenAiInvalidBaseUrl,      // validation error when the base URL is unusable
 
+    // REQ-045 P4-5 (item 3a-2, design §A.3/A.4): third-party .gguf user-model
+    // registration. Tray "사용자 선택(.gguf)…" submenu + browse entry, the
+    // quality-not-guaranteed consent gate (§A.4, shown once per app run before
+    // the file picker), and the post-registration notice (incl. the
+    // local-engine-selection / host-restart guidance). Appended last so the
+    // EnumCount completeness loop covers them automatically (70x37 -> 76x37).
+    MenuEngineUserGguf,        // tray engine submenu: "사용자 선택(.gguf)…"
+    MenuBrowseGgufFile,        // nested entry: "파일찾기(.gguf)"
+    UserGgufQualityTitle,      // quality-gate dialog title
+    UserGgufQualityBody,       // quality-gate dialog body (Hy-MT2 미보장 안내)
+    UserGgufRegisteredTitle,   // post-registration dialog title
+    UserGgufRegisteredBody,    // post-registration body (사용 방법 + 호스트 재기동 안내)
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

@@ -994,6 +994,14 @@ void AppConfig::SetUiLanguage(std::string value) {
     ui_language = std::move(value);
 }
 
+// REQ-045 P4-5 (item 3a-2): locked write of the third-party .gguf registry id
+// (same I4 discipline as SetUiLanguage; the field is serialized by
+// ToJsonStringLocked under the same mutex).
+void AppConfig::SetUserModelId(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    user_model_id = std::move(value);
+}
+
 void AppConfig::SetSourceLanguage(std::string value) {
     std::lock_guard<std::mutex> lock(mutex_);
     source_language = std::move(value);
@@ -1043,6 +1051,9 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"ui_language\": \"" << EscapeJsonString(ui_language) << "\",\n";
     ss << "  \"engine_type\": \"" << EscapeJsonString(engine_type) << "\",\n";
     ss << "  \"model_path\": \"" << EscapeJsonString(model_path) << "\",\n";
+    // REQ-045 P4-5 (item 3a-2): ALWAYS serialized so a round trip preserves
+    // the user's third-party model pick (same sticky-key policy as model_path).
+    ss << "  \"user_model_id\": \"" << EscapeJsonString(user_model_id) << "\",\n";
     ss << "  \"source_language\": \"" << EscapeJsonString(source_language) << "\",\n";
     ss << "  \"target_language\": \"" << EscapeJsonString(target_language) << "\",\n";
     // Phase 3 (plan §2.3): the four context keys are ALWAYS serialized; the
@@ -1108,6 +1119,11 @@ bool AppConfig::FromJsonString(std::string_view json) {
             engine_type = v;
         } else if (k == "model_path") {
             model_path = v;
+        } else if (k == "user_model_id") {
+            // REQ-045 P4-5 (item 3a-2): key absent on every pre-REQ-045
+            // config.json => the field keeps its compile-time default ""
+            // (the pinned Hy-MT2 model keeps serving, AC-4).
+            user_model_id = v;
         } else if (k == "source_language") {
             source_language = v;      // legacy
         } else if (k == "target_language") {
