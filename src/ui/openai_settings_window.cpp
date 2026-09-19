@@ -156,57 +156,66 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
-// ---- In-memory dialog template builder ----
-// Serializes a DLGTEMPLATE + DLGITEMTEMPLATEs into a byte buffer with correct
-// 4-byte alignment (per the Win32 dialog-template contract).
-class TemplateBuilder {
-public:
-    void Begin(std::wstring_view title, short w, short h, WORD itemCount) {
-        // Pad to a 4-byte boundary before the (DWORD-aligned) DLGTEMPLATE.
-        while (buf_.size() % 4 != 0) buf_.push_back(0);
-        dtpl_ = buf_.size();
-        EmitDword(WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT | DS_MODALFRAME);
-        EmitDword(0);                       // dwExtendedStyle
-        EmitWord(0); EmitWord(0);           // x, y
-        EmitWord(w); EmitWord(h);           // cx, cy
-        EmitWord(itemCount);                // cdit
-        EmitWord(0);                        // menu (none)
-        EmitWord(0);                        // windowClass (none)
-        EmitStr(title);
-        EmitWord(9);                        // pointsize
-        EmitStr(L"Segoe UI");
-    }
-    void AddItem(DWORD style, short x, short y, short cx, short cy,
-                 WORD id, WORD clsAtom, std::wstring_view text) {
-        // Each DLGITEMTEMPLATE must be 4-byte aligned relative to the start
-        // of the DLGTEMPLATE.
-        while ((buf_.size() - dtpl_) % 4 != 0) buf_.push_back(0);
-        EmitDword(style);
-        EmitDword(0);                       // dwExtendedStyle
-        EmitWord(x); EmitWord(y); EmitWord(cx); EmitWord(cy);
-        EmitWord(id); EmitWord(0);          // id (+ WORD padding -> DWORD align)
-        EmitWord(clsAtom);
-        EmitStr(text);
-        EmitWord(0);                        // extraData count = 0
-    }
-    const DLGTEMPLATE* Get() const {
-        return reinterpret_cast<const DLGTEMPLATE*>(buf_.data() + dtpl_);
-    }
-private:
-    void EmitWord(WORD w) {
-        buf_.push_back(static_cast<BYTE>(w & 0xFF));
-        buf_.push_back(static_cast<BYTE>((w >> 8) & 0xFF));
-    }
-    void EmitDword(DWORD d) { EmitWord(LOWORD(d)); EmitWord(HIWORD(d)); }
-    void EmitStr(std::wstring_view s) {
-        for (wchar_t ch : s) EmitWord(static_cast<WORD>(ch));
-        EmitWord(0);
-    }
-    std::vector<BYTE> buf_;
-    size_t dtpl_ = 0;
-};
-
 } // namespace
+
+// ---- In-memory dialog template builder ----
+// REQ-046 P4-3 (Tech Gate 필수-5): class declaration moved to
+// openai_settings_window.hpp (public emebalachat symbol) so the unit suite can
+// pin the template style bits without entering the modal loop. The method
+// implementations stay here. Serializes a DLGTEMPLATE + DLGITEMTEMPLATEs into
+// a byte buffer with correct 4-byte alignment (per the Win32 dialog-template
+// contract).
+void TemplateBuilder::Begin(std::wstring_view title, short w, short h, WORD itemCount) {
+    // Pad to a 4-byte boundary before the (DWORD-aligned) DLGTEMPLATE.
+    while (buf_.size() % 4 != 0) buf_.push_back(0);
+    dtpl_ = buf_.size();
+    // REQ-046 P4-3 (Rev2 §C, Tech Gate 권고-6): WS_VISIBLE makes the dialog
+    // actually show (without it the dialog came up as a minimized/invisible
+    // shell — the reported "최소화된 창" symptom); DS_CENTER centers it on the
+    // owner screen; DS_SETFOREGROUND forces foreground so it does not open
+    // behind other windows.
+    EmitDword(WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT | DS_MODALFRAME |
+              WS_VISIBLE | DS_CENTER | DS_SETFOREGROUND);
+    EmitDword(0);                       // dwExtendedStyle
+    EmitWord(0); EmitWord(0);           // x, y
+    EmitWord(w); EmitWord(h);           // cx, cy
+    EmitWord(itemCount);                // cdit
+    EmitWord(0);                        // menu (none)
+    EmitWord(0);                        // windowClass (none)
+    EmitStr(title);
+    EmitWord(9);                        // pointsize
+    EmitStr(L"Segoe UI");
+}
+
+void TemplateBuilder::AddItem(DWORD style, short x, short y, short cx, short cy,
+                              WORD id, WORD clsAtom, std::wstring_view text) {
+    // Each DLGITEMTEMPLATE must be 4-byte aligned relative to the start
+    // of the DLGTEMPLATE.
+    while ((buf_.size() - dtpl_) % 4 != 0) buf_.push_back(0);
+    EmitDword(style);
+    EmitDword(0);                       // dwExtendedStyle
+    EmitWord(x); EmitWord(y); EmitWord(cx); EmitWord(cy);
+    EmitWord(id); EmitWord(0);          // id (+ WORD padding -> DWORD align)
+    EmitWord(clsAtom);
+    EmitStr(text);
+    EmitWord(0);                        // extraData count = 0
+}
+
+const DLGTEMPLATE* TemplateBuilder::Get() const {
+    return reinterpret_cast<const DLGTEMPLATE*>(buf_.data() + dtpl_);
+}
+
+void TemplateBuilder::EmitWord(WORD w) {
+    buf_.push_back(static_cast<BYTE>(w & 0xFF));
+    buf_.push_back(static_cast<BYTE>((w >> 8) & 0xFF));
+}
+
+void TemplateBuilder::EmitDword(DWORD d) { EmitWord(LOWORD(d)); EmitWord(HIWORD(d)); }
+
+void TemplateBuilder::EmitStr(std::wstring_view s) {
+    for (wchar_t ch : s) EmitWord(static_cast<WORD>(ch));
+    EmitWord(0);
+}
 
 bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
     OpenAiDialogState st{&cfg, false};

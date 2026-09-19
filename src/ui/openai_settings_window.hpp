@@ -15,12 +15,35 @@
 // the AppConfig the caller passes, and persists via SaveToFile.
 
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <windows.h>
 
 #include "../openai_compatible_client.hpp"
 
 namespace emebalachat {
+
+// REQ-046 P4-3 (Tech Gate 필수-5): the in-memory DLGTEMPLATE builder is a
+// public symbol so the unit suite can instantiate it directly and pin the
+// template style bits (WS_VISIBLE/DS_CENTER/DS_SETFOREGROUND) WITHOUT entering
+// the modal DialogBoxIndirectParamW loop (which would block the headless test
+// runner forever). Declaration lives here; implementation stays in the .cpp.
+// The buffer layout follows the Win32 dialog-template contract (4-byte
+// alignment of DLGTEMPLATE + each DLGITEMTEMPLATE).
+class TemplateBuilder {
+public:
+    void Begin(std::wstring_view title, short w, short h, WORD itemCount);
+    void AddItem(DWORD style, short x, short y, short cx, short cy,
+                 WORD id, WORD clsAtom, std::wstring_view text);
+    const DLGTEMPLATE* Get() const;
+private:
+    void EmitWord(WORD w);
+    void EmitDword(DWORD d);
+    void EmitStr(std::wstring_view s);
+    std::vector<BYTE> buf_;
+    size_t dtpl_ = 0;
+};
 
 // Shows the modal settings dialog. `parent` is the owner HWND (may be null).
 // `cfg` is the current persisted openai block (read to pre-fill); on OK it is

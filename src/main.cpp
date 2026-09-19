@@ -1575,7 +1575,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // URL / key / model; only switch the engine when the dialog
             // saved. Cancel leaves the previous engine untouched.
             emebalachat::OpenAiConfig edited = config.openai;
-            if (!emebalachat::ShowOpenAiSettingsDialog(/*parent=*/nullptr, edited)) {
+            // REQ-046 P4-3 (Rev2 C-1, Tech Gate §4 ①): parent must be a valid
+            // HWND. A null parent lets the dialog come up owned by nothing,
+            // which is what produced the "minimized window, no input" symptom
+            // (the dialog never got foreground/activation). g_hControllerWnd
+            // is the HWND_MESSAGE controller created at L1027-1034 — a valid
+            // top-level HWND per the Rev2 gate measurement.
+            if (!emebalachat::ShowOpenAiSettingsDialog(
+                    /*parent=*/emebalachat::g_hControllerWnd, edited)) {
                 DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
                 refresh_tray();
                 return;

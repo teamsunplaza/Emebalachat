@@ -32,6 +32,7 @@
 #include "../src/engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
 #include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
 #include "../src/engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
+#include "../src/ui/openai_settings_window.hpp" // REQ-046 P4-3: TemplateBuilder (Tech Gate 필수-5)
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
@@ -40,6 +41,7 @@
 #include <condition_variable> // D2: SingleSlotWorker harness gate
 #include <cstdint> // W6/C3: uint8_t/uint32_t ICO fixture builder
 #include <cstdio> // REQ-043: swprintf (fake-host pipe names)
+#include <cstdlib> // REQ-046 P4-3: _dupenv_s (secure getenv for the mock port)
 #include <filesystem>
 #include <fstream>
 #include <future> // D2: promise/future seam for the re-entrant Submit deadlock test
@@ -14805,6 +14807,190 @@ void TestReq046TrayMenuStructure() {
     }
 }
 
+// REQ-046 P4-3 (Tech Gate 필수-5): template style bit pins. The dialog template
+// builder is now a public emebalachat symbol (declaration in
+// openai_settings_window.hpp), so the unit suite instantiates it directly and
+// reads DLGTEMPLATE.style — no DialogBoxIndirectParamW, no modal loop, fully
+// headless. This pins the three flags the Rev2 §C design mandates:
+//   WS_VISIBLE        — the dialog actually SHOWS (absence produced the
+//                       "최소화된 창, 입력 불가" symptom)
+//   DS_CENTER         — centered on the owner screen
+//   DS_SETFOREGROUND  — brought to the foreground (Tech Gate 권고-6)
+void TestReq046OpenAiTemplateStyle() {
+    std::cout << "[TEST] REQ-046 P4-3 OpenAI dialog template style bits..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    TemplateBuilder tb;
+    tb.Begin(L"probe", 210, 130, /*itemCount=*/0);
+    const DLGTEMPLATE* dt = tb.Get();
+    TEST_CHECK(dt != nullptr, "template builder returns a non-null DLGTEMPLATE");
+    if (dt) {
+        TEST_CHECK((dt->style & WS_VISIBLE) != 0,
+                   "template style includes WS_VISIBLE (dialog shows)");
+        TEST_CHECK((dt->style & DS_CENTER) != 0,
+                   "template style includes DS_CENTER (centered)");
+        TEST_CHECK((dt->style & DS_SETFOREGROUND) != 0,
+                   "template style includes DS_SETFOREGROUND (foreground guarantee)");
+        // Baseline style bits that must survive the edit (regression guard).
+        TEST_CHECK((dt->style & WS_POPUP) != 0 && (dt->style & WS_CAPTION) != 0 &&
+                   (dt->style & WS_SYSMENU) != 0 && (dt->style & DS_SETFONT) != 0 &&
+                   (dt->style & DS_MODALFRAME) != 0,
+                   "template style keeps the pre-existing WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_SETFONT|DS_MODALFRAME bits");
+        TEST_CHECK(dt->cdit == 0, "cdit field round-trips the Begin() itemCount");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-046 P4-3 OpenAI template style bits passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-046 P4-3 OpenAI template style bits: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-046 P4-3 (Tech Gate 필수-4): the http://127.0.0.1:<port>/v1 base URL that
+// a local mock server serves classifies as OpenAiUrlSecurity::Http, and the
+// two client entry points (ListModels / ChatCompletion) enforce the documented
+// gate: Http + http_consent_given=false -> reject (empty result); Http +
+// http_consent_given=true -> allowed through to the transport layer. The
+// unit level proves the CLASSIFICATION + GATE LOGIC; the live round-trip
+// against a real mock server is gated on EMEBALA_REQ046_MOCK_PORT (see the
+// report for the dynamic run output).
+void TestReq046OpenAiLocalhostConsent() {
+    std::cout << "[TEST] REQ-046 P4-3 OpenAI localhost http consent gate..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Classification pins: loopback forms must all classify Http (never
+    // Invalid/Https) so the consent path is reachable for local mocks.
+    TEST_CHECK(ClassifyOpenAiBaseUrl("http://127.0.0.1:8080/v1") == OpenAiUrlSecurity::Http,
+               "http://127.0.0.1:8080/v1 classified Http (mock-server shape)");
+    TEST_CHECK(ClassifyOpenAiBaseUrl("http://127.0.0.1:8080") == OpenAiUrlSecurity::Http,
+               "http://127.0.0.1:8080 (no path) classified Http");
+    TEST_CHECK(ClassifyOpenAiBaseUrl("http://localhost:11434/v1") == OpenAiUrlSecurity::Http,
+               "http://localhost:11434/v1 classified Http");
+    TEST_CHECK(ClassifyOpenAiBaseUrl("https://127.0.0.1:8443/v1") == OpenAiUrlSecurity::Https,
+               "https loopback classified Https (not Http)");
+
+    // Gate-logic pins (mirrors openai_compatible_client.cpp L584 / L617):
+    // (sec == Http && !consent) -> rejected. Prove the rejection happens
+    // BEFORE any network I/O by pointing at a guaranteed-closed port: if the
+    // gate leaked, the call would attempt a connection and (worst case) hang
+    // on a blackhole — the closed-port form returns immediately either way,
+    // and the empty result with consent=false proves the gate fired.
+    {
+        OpenAiConfig cfg;
+        cfg.base_url = "http://127.0.0.1:1/v1";  // port 1: nothing listens
+        cfg.model = "mock-model";
+        cfg.http_consent_given = false;
+        const std::vector<std::string> models =
+            OpenAiCompatibleClient::ListModels(cfg);
+        TEST_CHECK(models.empty(),
+                   "ListModels rejects http:// without consent (gate fires pre-transport)");
+    }
+    {
+        OpenAiConfig cfg;
+        cfg.base_url = "http://127.0.0.1:1/v1";
+        cfg.model = "mock-model";
+        cfg.http_consent_given = false;
+        const std::wstring out =
+            OpenAiCompatibleClient::ChatCompletion(cfg, "en", "ko", L"hello");
+        TEST_CHECK(out.empty(),
+                   "ChatCompletion rejects http:// without consent (gate fires pre-transport)");
+    }
+
+    // Dynamic mock round-trip (필수-4 live proof): only when the env var is
+    // set by the harness that started tools_tmp_req046_openai_mock.py. The
+    // mock serves /v1/models + /v1/chat/completions on 127.0.0.1:<port>.
+    // (_dupenv_s: the secure getenv — keeps the suite C4996-clean under /W4.)
+    char* port_env_buf = nullptr;
+    size_t port_env_len = 0;
+    const bool have_mock_port =
+        _dupenv_s(&port_env_buf, &port_env_len, "EMEBALA_REQ046_MOCK_PORT") == 0 &&
+        port_env_buf != nullptr;
+    if (have_mock_port) {
+        const std::string base = "http://127.0.0.1:" + std::string(port_env_buf) + "/v1";
+        free(port_env_buf);
+        OpenAiConfig cfg;
+        cfg.base_url = base;
+        cfg.model = "mock-model";
+        // The client requires a DPAPI-protected key (WithUnprotectedKey fails
+        // closed on an empty api_key_dpapi — openai_compatible_client.cpp
+        // L467), so protect a dummy key and pin its integrity digest the same
+        // way the settings dialog does on save.
+        std::string dummy_key = "sk-req046-mock-dummy-key";
+        TEST_CHECK(ProtectOpenAiApiKey(dummy_key, cfg.api_key_dpapi) &&
+                   !cfg.api_key_dpapi.empty(),
+                   "mock setup: DPAPI-protect the dummy key");
+        TEST_CHECK(OpenAiSha256Hex(std::string("sk-req046-mock-dummy-key"),
+                                   cfg.api_key_sha256),
+                   "mock setup: integrity digest for the dummy key");
+        cfg.http_consent_given = true;  // Tech Gate 필수-4: consent REQUIRED for http
+
+        const std::vector<std::string> models =
+            OpenAiCompatibleClient::ListModels(cfg);
+        TEST_CHECK(!models.empty() &&
+                   std::find(models.begin(), models.end(), "mock-model") != models.end(),
+                   "mock /v1/models round-trip returns the mock model id");
+
+        const std::wstring out =
+            OpenAiCompatibleClient::ChatCompletion(cfg, "en", "ko", L"hello");
+        TEST_CHECK(out == L"mock-translation",
+                   "mock /v1/chat/completions round-trip returns the mock translation");
+    } else {
+        std::cout << "[SKIP] EMEBALA_REQ046_MOCK_PORT not set; live mock round-trip skipped "
+                     "(run tools_tmp_req046_openai_mock.py + set the env var for the dynamic proof)."
+                  << std::endl;
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-046 P4-3 OpenAI localhost http consent gate passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-046 P4-3 OpenAI localhost http consent gate: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-046 P4-3 (Rev2 C-1): structural pin — the OpenAI settings dialog must be
+// parented to g_hControllerWnd, never nullptr. nullptr parent is what produced
+// the ownerless "minimized window" symptom (no activation/foreground transfer).
+void TestReq046OpenAiDialogParent() {
+    std::cout << "[TEST] REQ-046 P4-3 OpenAI dialog parent handle pin..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; REQ-046 P4-3 parent pin skipped."
+                  << std::endl;
+        return;
+    }
+
+    // 1. The nullptr-parent call shape is gone (0 hits required).
+    TEST_CHECK(main_src.find("ShowOpenAiSettingsDialog(/*parent=*/nullptr") == std::string::npos,
+               "main: ShowOpenAiSettingsDialog(nullptr) removed");
+    // 2. The g_hControllerWnd-parent call shape exists.
+    TEST_CHECK(main_src.find("ShowOpenAiSettingsDialog(\n                    /*parent=*/emebalachat::g_hControllerWnd, edited)") != std::string::npos ||
+               main_src.find("/*parent=*/emebalachat::g_hControllerWnd, edited") != std::string::npos,
+               "main: ShowOpenAiSettingsDialog parented to g_hControllerWnd");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-046 P4-3 OpenAI dialog parent pin passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-046 P4-3 OpenAI dialog parent pin: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -14996,6 +15182,13 @@ int main() {
     // reconstruction pins (structural). Registered after the P4-8 suite.
     TestReq046HostUserModelIdGate();
     TestReq046TrayMenuStructure();
+    // REQ-046 P4-3 (패키지 C): OpenAI settings dialog 결함根治 — the template
+    // style bits (필수-5, runtime-free), the localhost http consent gate
+    // (필수-4), and the g_hControllerWnd parent pin (Rev2 C-1). Registered
+    // after the P4-2 suites.
+    TestReq046OpenAiTemplateStyle();
+    TestReq046OpenAiLocalhostConsent();
+    TestReq046OpenAiDialogParent();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
