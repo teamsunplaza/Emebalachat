@@ -180,6 +180,21 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
     // Re-selecting the SAME file reuses its existing entry (no duplicate id).
     for (const auto& m : registry.models) {
         if (!m.files.empty() && m.files[0] == bare_utf8) {
+            // REQ-047 D2 (design §B.3, diagnosis 235010): the registry match on
+            // a BUNDLED file (e.g. the built-in Hy-MT2-1.8B-Q8_0.gguf) is the
+            // reuse path that silently re-pointed config at the bundled id,
+            // so the user's newly registered model never took effect. Reject
+            // the pick with an informational notice; config / registry /
+            // engine routing are left UNTOUCHED (early return).
+            if (m.origin == "bundled") {
+                DIAG_F("MAIN/RegisterUserGguf/006b: bundled entry re-pick refused (id=%s)\n",
+                       m.id.c_str());
+                ::MessageBoxW(nullptr,
+                              I18n::Get(StringId::UserGgufBundledDuplicateBody).c_str(),
+                              I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                              MB_OK | MB_ICONINFORMATION);
+                return;
+            }
             // REQ-046 P4-2 (Tech Gate 결함-2, reuse path): the SAME engine
             // switch as the fresh-registration path below — config id + type
             // + runtime routing + persist.

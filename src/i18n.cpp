@@ -108,7 +108,8 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(user_gguf_quality_title) \
     X(user_gguf_quality_body) \
     X(user_gguf_registered_title) \
-    X(user_gguf_registered_body)
+    X(user_gguf_registered_body) \
+    X(user_gguf_bundled_duplicate_body)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -130,8 +131,9 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // enum's own running-total comment reads "57x37 with the REQ-005 repair
 // trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields (70), and
 // REQ-045 P4-5 (item 3a-2) appended 6 user-.gguf fields, bringing the total
-// to 76. The Get() switch maps exactly these 76 named fields.
-static_assert(kLocalizedStringsFieldCount == 76,
+// to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
+// body (77). The Get() switch maps exactly these 77 named fields.
+static_assert(kLocalizedStringsFieldCount == 77,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -239,6 +241,9 @@ const LocalizedStrings kStringsKorean = {
     // 엔진 종료 후 자동 반영).
     .user_gguf_registered_title = L"모델 등록 완료",
     .user_gguf_registered_body = L"선택한 모델이 로컬 엔진에 등록되었습니다.\n\n이 모델은 \"번역 엔진 선택 > 사용자 선택(.gguf)\"으로 선택하면 번역에 사용됩니다.\n\n적용 시점: 등록 후 최대 약 1분(엔진 유휴 종료 후)에 새 모델이 적용됩니다. 이전 번역 요청까지는 기존 모델이 사용될 수 있습니다.",
+    // REQ-047 D2 (design §B.3, Rev2 §6 용어 완화): '로컬 LLM' 직접 인용
+    // 없이 기능 서술 — 내장 로컬 번역 엔진을 직접 선택하라는 안내.
+    .user_gguf_bundled_duplicate_body = L"이 모델은 에메발라 챗에 이미 내장되어 있습니다. 별도의 등록은 필요 없습니다. 내장 로컬 번역 엔진을 직접 선택하시면 바로 사용할 수 있습니다.",
 };
 
 // 2. Japanese (ja)
@@ -350,6 +355,9 @@ const LocalizedStrings kStringsJapanese = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"このモデルはEmebala Chatにすでに内蔵されています。登録は必要ありません。内蔵のローカル翻訳エンジンを直接選択してご利用ください。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -461,6 +469,9 @@ const LocalizedStrings kStringsChineseSimp = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"该模型已内置在 Emebala Chat 中，无需注册。直接选择内置的本地翻译引擎即可使用。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -572,6 +583,9 @@ const LocalizedStrings kStringsChineseTrad = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"此模型已內建於 Emebala Chat，無需註冊。直接選擇內建的本機翻譯引擎即可使用。",
 };
 
 // 5. Vietnamese (vi)
@@ -683,6 +697,9 @@ const LocalizedStrings kStringsVietnamese = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Mô hình này đã được tích hợp sẵn trong Emebala Chat. Bạn không cần đăng ký. Hãy chọn trực tiếp công cụ dịch nội bộ để sử dụng.",
 };
 
 // 6. Spanish (es)
@@ -791,6 +808,9 @@ const LocalizedStrings kStringsSpanish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Este modelo ya está integrado en Emebala Chat. No es necesario registrarlo. Puedes seleccionar directamente el motor de traducción local integrado.",
 };
 
 // 7. English (en) - Default Fallback
@@ -903,6 +923,10 @@ const LocalizedStrings kStringsEnglish = {
     // REQ-046 P4-2 (Rev2 §B-5, C2): drop the "pick Local LLM" instruction and
     // state the apply bound (up to ~1 minute, after the idle engine exits).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design §B.3, Rev2 §6 wording): no direct 'local LLM' quote;
+    // describe the capability — the built-in local translation engine can be
+    // selected directly.
+    L"This model is already built into Emebala Chat. No registration is needed - the built-in local translation engine can be selected directly.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1026,6 +1050,9 @@ const LocalizedStrings kStringsFrench = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Ce modèle est déjà intégré à Emebala Chat. Aucune inscription n'est nécessaire. Vous pouvez sélectionner directement le moteur de traduction local intégré.",
 };
 
 // 9. German (de)
@@ -1137,6 +1164,9 @@ const LocalizedStrings kStringsGerman = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Dieses Modell ist bereits in Emebala Chat integriert. Eine Registrierung ist nicht erforderlich. Sie können die integrierte lokale Übersetzungsengine direkt auswählen.",
 };
 
 // 10. Russian (ru)
@@ -1248,6 +1278,9 @@ const LocalizedStrings kStringsRussian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Эта модель уже встроена в Emebala Chat. Регистрация не требуется. Выберите встроенный локальный движок перевода напрямую.",
 };
 
 // 11. Portuguese (pt)
@@ -1359,6 +1392,9 @@ const LocalizedStrings kStringsPortuguese = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Este modelo já está integrado no Emebala Chat. Não é necessário registrá-lo. Selecione diretamente o mecanismo de tradução local integrado.",
 };
 
 // 12. Italian (it)
@@ -1470,6 +1506,9 @@ const LocalizedStrings kStringsItalian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Questo modello è già integrato in Emebala Chat. Non è necessario registrarlo. Puoi selezionare direttamente il motore di traduzione locale integrato.",
 };
 
 // 13. Dutch (nl)
@@ -1581,6 +1620,9 @@ const LocalizedStrings kStringsDutch = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Dit model is al ingebouwd in Emebala Chat. Registratie is niet nodig. Selecteer de ingebouwde lokale vertaalengine direct.",
 };
 
 // 14. Polish (pl)
@@ -1692,6 +1734,9 @@ const LocalizedStrings kStringsPolish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Ten model jest już wbudowany w Emebala Chat. Rejestracja nie jest potrzebna. Wystarczy bezpośrednio wybrać wbudowany lokalny silnik tłumaczenia.",
 };
 
 // 15. Czech (cs)
@@ -1803,6 +1848,9 @@ const LocalizedStrings kStringsCzech = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Tento model je již vestavěný v Emebala Chat. Registrace není potřeba. Vestavěný lokální překladový engine můžete vybrat přímo.",
 };
 
 // 16. Hungarian (hu)
@@ -1914,6 +1962,9 @@ const LocalizedStrings kStringsHungarian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Ez a modell már beépítve van az Emebala Chatbe. Regisztrációra nincs szükség. A beépített helyi fordítómotort közvetlenül kiválaszthatod.",
 };
 
 // 17. Romanian (ro)
@@ -2025,6 +2076,9 @@ const LocalizedStrings kStringsRomanian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Acest model este deja integrat în Emebala Chat. Înregistrarea nu este necesară. Poți selecta direct motorul de traducere local integrat.",
 };
 
 // 18. Swedish (sv)
@@ -2136,6 +2190,9 @@ const LocalizedStrings kStringsSwedish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Den här modellen är redan inbyggd i Emebala Chat. Ingen registrering behövs. Välj den inbyggda lokala översättningsmotorn direkt.",
 };
 
 // 19. Danish (da)
@@ -2247,6 +2304,9 @@ const LocalizedStrings kStringsDanish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Denne model er allerede indbygget i Emebala Chat. Registrering er ikke nødvendig. Vælg den indbyggede lokale oversættelsesmotor direkte.",
 };
 
 // 20. Finnish (fi)
@@ -2358,6 +2418,9 @@ const LocalizedStrings kStringsFinnish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Tämä malli on jo sisäänrakennettu Emebala Chatiin. Rekisteröintiä ei tarvita. Valitse sisäänrakennettu paikallinen käännösmoottori suoraan.",
 };
 
 // 21. Norwegian (no / nb)
@@ -2469,6 +2532,9 @@ const LocalizedStrings kStringsNorwegian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Denne modellen er allerede innebygd i Emebala Chat. Registrering er ikke nødvendig. Velg den innebygde lokale oversettelsesmotoren direkte.",
 };
 
 // 22. Greek (el)
@@ -2580,6 +2646,9 @@ const LocalizedStrings kStringsGreek = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Αυτό το μοντέλο είναι ήδη ενσωματωμένο στο Emebala Chat. Δεν απαιτείται εγγραφή. Μπορείτε να επιλέξετε απευθείας τον ενσωματωμένο τοπικό μηχανισμό μετάφρασης.",
 };
 
 // 23. Turkish (tr)
@@ -2691,6 +2760,9 @@ const LocalizedStrings kStringsTurkish = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Bu model Emebala Chat'e zaten yerleşiktir. Kayıt gerekmez. Yerleşik yerel çeviri motorunu doğrudan seçebilirsiniz.",
 };
 
 // 24. Ukrainian (uk)
@@ -2802,6 +2874,9 @@ const LocalizedStrings kStringsUkrainian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Ця модель уже вбудована в Emebala Chat. Реєстрація не потрібна. Ви можете напряму вибрати вбудований локальний рушій перекладу.",
 };
 
 // 25. Thai (th)
@@ -2913,6 +2988,9 @@ const LocalizedStrings kStringsThai = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"โมเดลนี้มีอยู่ในตัว Emebala Chat อยู่แล้ว ไม่จำเป็นต้องลงทะเบียน เลือกเครื่องยนต์แปลภาษาในตัวได้โดยตรง",
 };
 
 // 26. Indonesian (id)
@@ -3024,6 +3102,9 @@ const LocalizedStrings kStringsIndonesian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Model ini sudah tertanam di Emebala Chat. Pendaftaran tidak diperlukan. Pilih langsung mesin penerjemahan lokal bawaan.",
 };
 
 // 27. Malay (ms)
@@ -3135,6 +3216,9 @@ const LocalizedStrings kStringsMalay = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Model ini sudah terbina dalam Emebala Chat. Pendaftaran tidak diperlukan. Pilih terus enjin terjemahan tempatan terbina dalam.",
 };
 
 // 28. Filipino (fil)
@@ -3248,6 +3332,9 @@ const LocalizedStrings kStringsFilipino = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"Ang modelong ito ay nakabuilt-in na sa Emebala Chat. Hindi na kailangan ng pagpaparehistro. Maaari mong direktang piliin ang built-in na lokal na translation engine.",
 };
 
 // 29. Hindi (hi)
@@ -3359,6 +3446,9 @@ const LocalizedStrings kStringsHindi = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"यह मॉडल Emebala Chat में पहले से ही अंतर्निहित है। पंजीकरण की आवश्यकता नहीं है। अंतर्निहित लोकल अनुवाद इंजन को सीधे चुनें।",
 };
 
 // 30. Bengali (bn)
@@ -3470,6 +3560,9 @@ const LocalizedStrings kStringsBengali = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"এই মডেলটি ইতিমধ্যে Emebala Chat-এ অন্তর্নির্মিত। নিবন্ধনের প্রয়োজন নেই। অন্তর্নির্মিত লোকাল অনুবাদ ইঞ্জিন সরাসরি নির্বাচন করুন।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -3582,6 +3675,9 @@ const LocalizedStrings kStringsArabic = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"هذا النموذج مدمج بالفعل في Emebala Chat. لا حاجة إلى التسجيل. يمكنك اختيار محرك الترجمة المحلي المدمج مباشرةً.",
 };
 
 // 32. Persian (fa) — RTL
@@ -3693,6 +3789,9 @@ const LocalizedStrings kStringsPersian = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"این مدل از قبل در Emebala Chat داخلی شده است. نیازی به ثبت‌نام نیست. می‌توانید موتور ترجمه محلی داخلی را مستقیماً انتخاب کنید.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -3804,6 +3903,9 @@ const LocalizedStrings kStringsUrdu = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"یہ ماڈل پہلے سے ہی Emebala Chat میں شامل ہے۔ رجسٹریشن کی ضرورت نہیں ہے۔ بلٹ اِن لوکل ترجمہ انجن کو براہ راست منتخب کریں۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -3915,6 +4017,9 @@ const LocalizedStrings kStringsHebrew = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"מודל זה כבר מובנה בתוך Emebala Chat. אין צורך ברישום. ניתן לבחור ישירות את מנוע התרגום המקומי המובנה.",
 };
 
 // 35. Khmer (km)
@@ -4026,6 +4131,9 @@ const LocalizedStrings kStringsKhmer = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"ម៉ូដែលនេះមានស្រាប់ក្នុង Emebala Chat រួចហើយ។ មិនចាំបាច់ចុះឈ្មោះទេ។ អ្នកអាចជ្រើសរើសម៉ាស៊ីនបកប្រែក្នុងស្រុកដែលមានស្រាប់ដោយផ្ទាល់។",
 };
 
 // 36. Lao (lo)
@@ -4137,6 +4245,9 @@ const LocalizedStrings kStringsLao = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"ໂມເດວນີ້ແມ່ນມີຢູ່ໃນ Emebala Chat ແລ້ວ. ບໍ່ຈຳເປັນຕ້ອງລົງທະບຽນ. ທ່ານສາມາດເລືອກເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນທີ່ມີຢູ່ໂດຍກົງໄດ້.",
 };
 
 // 37. Burmese (my)
@@ -4248,6 +4359,9 @@ const LocalizedStrings kStringsBurmese = {
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
     L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+    // REQ-047 D2 (design section B.3): built-in model notice, appended tail
+    // positional (same trailing-initializer discipline as SEC-M1).
+    L"ဒီမော်ဒယ်က Emebala Chat ထဲမှာ အသင့်ပါပြီးသားဖြစ်ပါတယ်။ မှတ်ပုံတင်စရာမလိုပါဘူး။ ပါရှိပြီးသား ပြည်တွင်းဘာသာပြန်အင်ဂျင်ကို တိုက်ရိုက်ရွေးချယ်နိုင်ပါတယ်။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -4508,6 +4622,9 @@ std::wstring I18n::Get(StringId id) {
         case StringId::UserGgufQualityBody:     return s.user_gguf_quality_body;
         case StringId::UserGgufRegisteredTitle: return s.user_gguf_registered_title;
         case StringId::UserGgufRegisteredBody:  return s.user_gguf_registered_body;
+        // REQ-047 D2 (design §B.3): bundled-origin reuse-path rejection notice.
+        case StringId::UserGgufBundledDuplicateBody:
+            return s.user_gguf_bundled_duplicate_body;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

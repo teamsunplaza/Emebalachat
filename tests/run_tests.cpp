@@ -14484,6 +14484,11 @@ void TestEngineHostAvailabilityAndMigration() {
 // runner; registered near the end of main() per the end-of-file pattern.
 #include "req045_gguf_tests.inc"
 
+// REQ-047 D2 (design §B.3): bundled-origin reuse-path rejection — decision
+// predicate + main.cpp structural pins + the new i18n key across 37 locales.
+// Staged as an .inc next to this runner; registered near the end of main().
+#include "req047_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14503,8 +14508,9 @@ namespace {
 // identical layout. It must be kept in sync; the static_assert catches drift.
 struct Req044LstrMirror {
     // REQ-045 P4-3: 13 OpenAI fields appended (57 -> 70); REQ-045 P4-5
-    // (item 3a-2): 6 user-.gguf fields appended (70 -> 76).
-    const wchar_t* f[76];
+    // (item 3a-2): 6 user-.gguf fields appended (70 -> 76); REQ-047 D2
+    // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77).
+    const wchar_t* f[77];
 };
 
 } // namespace
@@ -14517,22 +14523,22 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 76 (57+13+6)
-    static_assert(kExpectedFieldCount == 76,
-                  "REQ-044/045: LocalizedStrings field count changed - update the "
-                  "i18n.cpp X-macro list, the kStringsKorean designated "
-                  "initializers, AND this mirror");
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 77 (57+13+6+1)
+    static_assert(kExpectedFieldCount == 77,
+                   "REQ-044/045/047: LocalizedStrings field count changed - update the "
+                   "i18n.cpp X-macro list, the kStringsKorean designated "
+                   "initializers, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
     // The static_assert above remains the compile-time guard; these two are the
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 76,
-               "REQ-044/045: LocalizedStrings field count is 76 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 77,
+               "REQ-044/045/047: LocalizedStrings field count is 77 (X-macro static_assert "
                "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 76,
-               "REQ-044/045: StringId::EnumCount is 76 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 77,
+               "REQ-044/045/047: StringId::EnumCount is 77 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15189,6 +15195,11 @@ int main() {
     TestReq046OpenAiTemplateStyle();
     TestReq046OpenAiLocalhostConsent();
     TestReq046OpenAiDialogParent();
+    // REQ-047 D2 (design §B.3): bundled-origin reuse-path rejection — decision
+    // predicate + main.cpp structural pins + 37-locale i18n coverage.
+    // Registered after the P4-3 OpenAI suites, per the end-of-file pattern.
+    TestReq047BundledReuseRejection();
+    TestReq047BundledDuplicateI18n();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

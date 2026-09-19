@@ -211,6 +211,10 @@ enum class StringId {
     UserGgufQualityBody,       // quality-gate dialog body (Hy-MT2 미보장 안내)
     UserGgufRegisteredTitle,   // post-registration dialog title
     UserGgufRegisteredBody,    // post-registration body (사용 방법 + 호스트 재기동 안내)
+    // REQ-047 D2 (design §B.3): informational body for the bundled-origin
+    // reuse-path rejection (re-picking the built-in .gguf through the user
+    // registration picker). Title reuses UserGgufRegisteredTitle.
+    UserGgufBundledDuplicateBody, // "already built in" notice (76 -> 77)
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
