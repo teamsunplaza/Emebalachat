@@ -31,6 +31,7 @@
 #include "../src/engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
 #include "../src/engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
 #include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
+#include "../src/engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
 #include <atomic>
@@ -14616,6 +14617,194 @@ void TestReq045EngineUnavailableModal() {
     }
 }
 
+// REQ-046 P4-2 (Rev2 §B-4 + §C-1, Ask Light Gate C1): functional pins for the
+// host's boot-time config reader. The reader was extracted to
+// engine_host_config_reader.cpp (Emebalachat_core) precisely so this suite can
+// link it (Debug Tech Gate §2 조건-1). INV-B1b is the C1 headline: a stale
+// user_model_id persisted under engine_type="local" must NOT reach the host
+// cache — the pinned Hy-MT2 path has to keep serving.
+void TestReq046HostUserModelIdGate() {
+    std::cout << "[TEST] REQ-046 P4-2 host user_model_id C1 gate (INV-B1b~B1g)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // Fixture-hygiene guard: if the temp root cannot be prepared, every
+    // check below would be meaningless — count ONE failure and bail.
+    auto fixture_fail = [&]() {
+        TEST_CHECK(false, "REQ-046 fixture: temp config directory unavailable");
+    };
+    const fs::path root = fs::temp_directory_path(ec) / L"emebala_req046_gate_test";
+    if (ec) { fixture_fail(); return; }
+    fs::remove_all(root, ec); // clean slate (also clears stale leftovers)
+    ec.clear();
+    fs::create_directories(root / L"Emebalachat", ec);
+    if (ec) { fixture_fail(); return; }
+    const std::wstring lad = root.wstring();
+
+    auto write_config = [&](const std::string& body) {
+        std::ofstream out(root / L"Emebalachat" / L"config.json",
+                          std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) { fixture_fail(); return false; }
+        out << body;
+        out.close();
+        if (!out) { fixture_fail(); return false; }
+        return true;
+    };
+
+    // INV-B1b (C1 headline): "local" + a stale user_model_id -> "" so the
+    // pinned Hy-MT2 path serves (the user's "터치하면 안 됨" contract).
+    write_config("{\"engine_type\": \"local\", \"user_model_id\": \"user-test\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "INV-B1b: engine_type=local + user_model_id set -> \"\" (pinned Hy-MT2 serves)");
+
+    // INV-B1c: "user_gguf" + id -> the id is cached.
+    write_config("{\"engine_type\": \"user_gguf\", \"user_model_id\": \"user-test\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad) == "user-test",
+               "INV-B1c: engine_type=user_gguf -> user_model_id returned");
+
+    // INV-B1d: "user_gguf" + empty id -> "" (nothing to relay).
+    write_config("{\"engine_type\": \"user_gguf\", \"user_model_id\": \"\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "INV-B1d: engine_type=user_gguf + empty id -> \"\"");
+
+    // INV-B1e: engine_type ABSENT -> "" (a pre-REQ-046 config can never arm
+    // the user-model relay).
+    write_config("{\"user_model_id\": \"user-test\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "INV-B1e: engine_type absent -> \"\"");
+
+    // INV-B1f: any other engine_type ("google" here; "auto"/unknown share the
+    // path) -> "".
+    write_config("{\"engine_type\": \"google\", \"user_model_id\": \"user-test\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "INV-B1f: engine_type=google -> \"\"");
+
+    // INV-B1g: config.json itself ABSENT -> "" (pre-existing behavior).
+    fs::remove(root / L"Emebalachat" / L"config.json", ec);
+    ec.clear();
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "INV-B1g: config.json absent -> \"\"");
+
+    // user_gguf round-trip through the REAL AppConfig persistence path
+    // (SaveToFile/LoadFromFile) — proves the app's own writer emits the two
+    // keys the host's minimal parser reads back.
+    {
+        AppConfig cfg;
+        cfg.SetEngineTypeName("user_gguf");
+        cfg.SetUserModelId("user-roundtrip");
+        const fs::path cfg_path = root / L"roundtrip.json";
+        if (!cfg.SaveToFile(cfg_path)) {
+            fixture_fail();
+        } else {
+            AppConfig re;
+            if (!re.LoadFromFile(cfg_path)) {
+                fixture_fail();
+            } else {
+                // user_model_id is a direct field (deliberately no Snapshot
+                // entry — never read by the hook/worker threads, config.hpp).
+                TEST_CHECK(re.GetSnapshot().engine_type == "user_gguf" &&
+                           re.user_model_id == "user-roundtrip",
+                           "user_gguf round-trip: AppConfig persists + reloads engine_type/user_model_id");
+                // The reader only reads <lad>/Emebalachat/config.json, so a
+                // sibling file must stay unread (canonical name only).
+                TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+                           "reader: unrelated config path in the lad root stays unread (canonical name only)");
+                // Stage the round-tripped file at the canonical spot to
+                // assert the writer's output is parse-compatible with the
+                // reader.
+                fs::copy_file(cfg_path, root / L"Emebalachat" / L"config.json",
+                              fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    fixture_fail();
+                    ec.clear();
+                } else {
+                    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad) == "user-roundtrip",
+                               "user_gguf round-trip: the reader parses AppConfig's own serialized output");
+                    fs::remove(root / L"Emebalachat" / L"config.json", ec);
+                    ec.clear();
+                }
+            }
+        }
+    }
+
+    // Unknown engine_type + user_model_id -> "" (the fallback policy: any
+    // value outside the exact "user_gguf" keeps the pinned path).
+    write_config("{\"engine_type\": \"something_new\", \"user_model_id\": \"user-test\"}");
+    TEST_CHECK(enginehost::LoadUserModelIdFromConfig(lad).empty(),
+               "unknown engine_type -> \"\" (fallback to pinned path)");
+
+    fs::remove_all(root, ec);
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-046 P4-2 host user_model_id C1 gate passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-046 P4-2 host user_model_id C1 gate: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-046 P4-2 (Rev2 §B-3 + §C-3, Ask Light Gate C3): structural pins for the
+// tray 4-way menu + the main.cpp on_select_engine reconstruction. main.cpp /
+// tray.cpp are GUI TUs not linked into run_tests.exe, so the properties are
+// pinned by source inspection (the TestReq045EngineUnavailableModal
+// precedent: read the TU text from the test CWD and assert the required
+// shapes exist / the removed shapes do not).
+void TestReq046TrayMenuStructure() {
+    std::cout << "[TEST] REQ-046 P4-2 tray 4-way menu structural pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string tray_src;
+    read_src("src/ui/tray.cpp", tray_src);
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (tray_src.empty() || main_src.empty()) {
+        std::cout << "[SKIP] tray.cpp/main.cpp not resolvable from the test CWD; REQ-046 P4-2 pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // 1. The checkable 사용자 선택(.gguf) entry exists with the pref==3 rule.
+    TEST_CHECK(tray_src.find("pref == 3 ? MF_CHECKED : MF_UNCHECKED") != std::string::npos &&
+               tray_src.find("ID_TRAY_ENGINE_USER_GGUF") != std::string::npos,
+               "tray: 사용자 선택(.gguf) is a checkable engine item (pref==3, ID_TRAY_ENGINE_USER_GGUF)");
+
+    // 2. The file picker is a separate MF_STRING row (no check geometry).
+    TEST_CHECK(tray_src.find("MF_STRING, ID_TRAY_BROWSE_GGUF") != std::string::npos,
+               "tray: 파일찾기(.gguf) is a plain MF_STRING row (no check mark)");
+
+    // 3. The nested POPUP is gone (0 hits required).
+    TEST_CHECK(tray_src.find("hUserGgufMenu") == std::string::npos,
+               "tray: nested hUserGgufMenu POPUP removed");
+
+    // 4. refresh_tray maps "user_gguf" -> 3.
+    TEST_CHECK(main_src.find("(prefEngine == \"user_gguf\") ? 3") != std::string::npos,
+               "main: refresh_tray maps engine_type \"user_gguf\" -> preferred_engine 3");
+
+    // 5. on_select_engine is the explicit 4-way chain: engine_idx==3 branch,
+    //    OpenAI demoted from else-terminator to else if (engine_idx == 2).
+    TEST_CHECK(main_src.find("} else if (engine_idx == 2) {") != std::string::npos &&
+               main_src.find("} else if (engine_idx == 3) {") != std::string::npos,
+               "main: on_select_engine explicit 4-way (else if (engine_idx == 2/3))");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-046 P4-2 tray 4-way menu structural pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-046 P4-2 tray 4-way menu structural pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -14802,6 +14991,11 @@ int main() {
     // proving the helper, the CheckComponents call site, and the SEC-ADJ
     // (0,0) marshal exist in main.cpp. Registered after the P4-5 suites.
     TestReq045EngineUnavailableModal();
+    // REQ-046 P4-2 (Rev2 §B-4/B-3): the C1 host config-reader gate
+    // (INV-B1b~B1g, functional) + the tray 4-way menu / on_select_engine
+    // reconstruction pins (structural). Registered after the P4-8 suite.
+    TestReq046HostUserModelIdGate();
+    TestReq046TrayMenuStructure();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

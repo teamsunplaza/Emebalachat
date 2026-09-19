@@ -75,9 +75,11 @@
 #include "host_v2_worker_manager.hpp"   // §V2-3 worker lifecycle (T3)
 #include "worker_protocol.hpp"          // second frozen contract (frames)
 #include "engine_host_registry.hpp"     // registry.json (model_id/profile resolution)
-// REQ-045 P4-4 (item 3a-1, tech gate c4): ReadTextFileUtf8 for the minimal
-// config.json user_model_id read (the frozen json primitives stay untouched).
-#include "engine_host_json_util.hpp"    // REQ-045: ReadTextFileUtf8 (frozen reuse)
+// REQ-046 P4-2 (Rev2 §B-4, Tech Gate 조건-1): the minimal config.json
+// user_model_id read moved OUT to engine_host_config_reader (linked into
+// Emebalachat_core so run_tests can link it); the host keeps calling the
+// same logic through the header. The frozen json primitives stay untouched.
+#include "engine_host_config_reader.hpp"  // REQ-046 P4-2: LoadUserModelIdFromConfig (C1 gate)
 // REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
 // kModelsDirRel / kTokenFilename) — replaces the local definitions that
 // used to live at L119-121 below.
@@ -246,31 +248,12 @@ bool ModelFileExistsFor(const std::string& model_id) {
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-// REQ-045 P4-4 (item 3a-1): boot-time read of config.json's user_model_id
-// into the host cache. MINIMAL PARSE on purpose (선택 근거): the host links
-// Emebalachat_core so the full AppConfig parser is available, but pulling the
-// whole Config surface into the serving host risks silently adopting Chat-app
-// defaults/semantics it was never reviewed for — the worker-facing contract
-// here is exactly ONE field. We therefore reuse the frozen json primitives
-// (JsonParseObject / FindField — untouched) on the canonical
-// %LOCALAPPDATA%\Emebalachat\config.json only. No runtime reload: the cache
-// is fixed for the host's lifetime; the engine host already exits on idle,
-// so a config edit takes effect on the next natural respawn (bounded staleness,
-// no watcher thread).
-std::string LoadUserModelIdFromConfig() {
-    const std::wstring lad = LocalAppDataDir();
-    if (lad.empty()) return {};
-    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
-    std::string text;
-    if (engine_host_json::ReadTextFileUtf8(path, text) != engine_host_json::FileReadOutcome::Ok) {
-        return {}; // absent/unreadable -> the pinned default (AC-4)
-    }
-    enginehost::JsonPairs fields;
-    if (!enginehost::JsonParseObject(text, fields)) return {};
-    const auto* v = enginehost::detail::FindField(fields, "user_model_id");
-    if (!v || !v->is_string) return {};
-    return v->text; // "" (or absent above) keeps the pinned path
-}
+// REQ-046 P4-2 (Rev2 §B-4): the boot-time config.json reader moved to
+// engine_host_config_reader (Emebalachat_core) so run_tests can link it —
+// see the reader's header for the C1 contract (engine_type=="user_gguf"
+// gate). Behavior at this call site is unchanged: boot-time only, minimal
+// parse on the canonical %LOCALAPPDATA%\Emebalachat\config.json, no runtime
+// reload (the idle-exit respawn bounds staleness; no watcher thread).
 
 // ---- user-only security descriptor (§4.1 pipe ACL / §4.2 token file ACL) ----
 // Builds "D:P(A;;GA;;;<owner-sid>)" — the P flag is SE_DACL_PROTECTED (inheritance
@@ -1452,12 +1435,16 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
                  static_cast<int>(lr.status), g_registry.models.size());
     }
 
-    // REQ-045 P4-4 (item 3a-1): cache the user's chosen model id for the
-    // dispatcher's session_open relay. Boot-time only (no runtime reload —
-    // the idle-exit respawn bounds staleness; documented at the reader).
-    g_user_model_id = LoadUserModelIdFromConfig();
-    DIAG_LOG("ENGINEHOST", "host/004: user_model_id len=%zu",
-             g_user_model_id.size());
+    // REQ-045 P4-4 (item 3a-1) + REQ-046 P4-2 (Rev2 §B-4, C1): cache the
+    // user's chosen model id for the dispatcher's session_open relay — ONLY
+    // when config's engine_type=="user_gguf" (the reader gates it). Boot-time
+    // only (no runtime reload — the idle-exit respawn bounds staleness).
+    g_user_model_id = enginehost::LoadUserModelIdFromConfig({});
+    // REQ-046 P4-2 (Rev2 §B-4): shape-only DIAG with the C1 discriminator —
+    // the model id's CONTENT is never logged (privacy: shape-only logs).
+    DIAG_LOG("ENGINEHOST", "host/004: user_model_id len=%zu (engine_type=%s)",
+             g_user_model_id.size(),
+             g_user_model_id.empty() ? "pinned" : "user_gguf");
 
     // ---- the worker manager (M6 T3) + the ggml-translate family ----
     // The worker exe sits next to the orchestrator in the build tree and at

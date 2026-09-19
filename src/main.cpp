@@ -62,12 +62,15 @@ namespace {
 //      filename stem; "_2" suffix when the id is taken by a DIFFERENT file),
 //      write it back through SerializeRegistry (failures are LOUD — a damaged
 //      or schema-rejected registry is NEVER overwritten).
-//   5. Persist config.user_model_id (the engine host reads it at ITS next
-//      boot; the user's engine choice itself is left untouched — the
-//      completion notice tells the user to pick "Local LLM" and that an idle
-//      host restart picks the new model up).
+//   5. Persist config.user_model_id AND switch the active engine to the
+//      user-.gguf state (REQ-046 P4-2, Rev2 §B-2 + Tech Gate 결함-1/결함-2):
+//      engine_type="user_gguf" + the runtime TranslationManager re-pointed at
+//      LocalLlama IMMEDIATELY (the enum is resolved once at startup, so a
+//      config-only write would leave routing on the previous engine). The
+//      host reads engine_type/user_model_id at ITS next boot (idle-exit
+//      respawn); the completion notice states that bound (C2).
 // ---------------------------------------------------------------------------
-void RegisterUserGgufModel(AppConfig& config) {
+void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
     // (1) §A.4 quality gate — once per app run (the pick itself is the
     // explicit user action, matching the §B "로컬LLM 명시 선택" trigger spirit).
     static bool s_quality_gate_shown = false;
@@ -177,7 +180,12 @@ void RegisterUserGgufModel(AppConfig& config) {
     // Re-selecting the SAME file reuses its existing entry (no duplicate id).
     for (const auto& m : registry.models) {
         if (!m.files.empty() && m.files[0] == bare_utf8) {
+            // REQ-046 P4-2 (Tech Gate 결함-2, reuse path): the SAME engine
+            // switch as the fresh-registration path below — config id + type
+            // + runtime routing + persist.
             config.SetUserModelId(m.id);
+            config.SetEngineTypeName("user_gguf");
+            engine.SetEngineType(EngineType::LocalLlama);
             config.SaveToFile();
             DIAG_F("MAIN/RegisterUserGguf/006: existing entry reused (id=%s)\n", m.id.c_str());
             ::MessageBoxW(nullptr,
@@ -259,8 +267,17 @@ void RegisterUserGgufModel(AppConfig& config) {
         }
     }
 
-    // (5) Persist the pick; the engine host reads it at ITS next boot.
+    // (5) REQ-046 P4-2 (Rev2 §B-2 + Tech Gate 결함-1): persist the pick AND
+    // switch the active engine to the user-.gguf state immediately —
+    // engine_type="user_gguf" for the host's boot-time C1 gate + the host's
+    // user_model_id relay, and the runtime TranslationManager re-pointed at
+    // LocalLlama NOW (the config->enum resolution happens once at startup,
+    // so config-only persistence would leave routing on the previous
+    // engine). The host applies the new model at its next boot (idle-exit
+    // respawn, bounded by the C2 notice text).
     config.SetUserModelId(model_id);
+    config.SetEngineTypeName("user_gguf");
+    engine.SetEngineType(EngineType::LocalLlama);
     config.SaveToFile();
     DIAG_F("MAIN/RegisterUserGguf/012: registered id=%s file=%s (origin=user)\n",
            model_id.c_str(), dest_bare.c_str());
@@ -981,6 +998,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     } else if (config.engine_type == "openai") {
         // REQ-045 P4-3 (design §3b): OpenAI Compatible explicit pick.
         engine_type = emebalachat::EngineType::OpenAi;
+    } else if (config.engine_type == "user_gguf") {
+        // REQ-046 P4-2 (Rev2 §B-4): the user-.gguf state rides the SAME
+        // host-mediated LocalLlama routing — the host's C1-gated boot cache
+        // supplies the user's model id to the worker. Enum stays frozen
+        // (동결 계약: no EngineType extension); the state lives in the
+        // config's engine_type string + user_model_id.
+        engine_type = emebalachat::EngineType::LocalLlama;
     }
     // REQ-R11 (audit §4 M3): normalize a relative model_path against the
     // EXECUTABLE directory, not the CWD. Run-registry autostart launches with
@@ -1240,15 +1264,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-025 (Phase A §2.1.A3-25): the drag pair is passed through as
         // well, but ONLY drives the new "번역툴팁" submenu check marks - the
         // hover tip keeps showing the type pair.
-        // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: the Engine submenu
-        // check mark is driven by the USER'S preference (config engine_type),
-        // not the displayed engine name. Rule: "local" -> Local (1);
-        // "openai" -> OpenAI (2); "google" and "auto" -> Google (0, Auto is
-        // Google-family for display; the flag never affects routing -
-        // SetEngineType is untouched).
+        // REQ-029-B (design §2.1 change 2), REQ-045 P4-3, REQ-046 P4-2
+        // (Rev2 §B-3): the Engine submenu check mark is driven by the USER'S
+        // preference (config engine_type), not the displayed engine name.
+        // Rule: "local" -> Local (1); "openai" -> OpenAI (2);
+        // "user_gguf" -> 사용자 선택(.gguf) (3); "google"/"auto"/unknown ->
+        // Google (0, Auto is Google-family for display; the flag never
+        // affects routing - SetEngineType is untouched).
         const std::string& prefEngine = snap.engine_type;
         const int preferred_engine =
-            (prefEngine == "local") ? 1 : (prefEngine == "openai") ? 2 : 0;
+            (prefEngine == "local") ? 1
+            : (prefEngine == "openai") ? 2
+            : (prefEngine == "user_gguf") ? 3
+            : 0;
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),          // display-only (tooltip + log)
@@ -1523,8 +1551,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // user's request against the PREVIOUS persisted config; 002 confirms
         // the switch persisted and what the engine now honestly reports.
         // REQ-045 P4-3: 0 = Google, 1 = Local, 2 = OpenAI Compatible.
+        // REQ-046 P4-2 (Rev2 §B-3, C3): 4-way log string + "unknown" fallback
+        // so a stray index never silently logs a wrong engine name.
         const char* requested = (engine_idx == 0) ? "google"
-                                : (engine_idx == 1) ? "local" : "openai";
+                                : (engine_idx == 1) ? "local"
+                                : (engine_idx == 2) ? "openai"
+                                : (engine_idx == 3) ? "user_gguf" : "unknown";
         DIAG_F("MAIN/on_select_engine/001: user selected engine=%s (prev config=%s)\n",
                requested, config.GetSnapshot().engine_type.c_str());
         // I4: runtime mutations go through the locked setters because the hook
@@ -1535,10 +1567,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         } else if (engine_idx == 1) {
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
             config.SetEngineTypeName("local");
-        } else {
-            // OpenAI: open the settings dialog first so the user can wire (or
-            // review) base URL / key / model; only switch the engine when the
-            // dialog saved. Cancel leaves the previous engine untouched.
+        } else if (engine_idx == 2) {
+            // REQ-046 P4-2 (C3): the OpenAI branch is now EXPLICIT
+            // (previously the else-terminator, which would have misrouted a
+            // future index==3 into the OpenAI dialog). OpenAI: open the
+            // settings dialog first so the user can wire (or review) base
+            // URL / key / model; only switch the engine when the dialog
+            // saved. Cancel leaves the previous engine untouched.
             emebalachat::OpenAiConfig edited = config.openai;
             if (!emebalachat::ShowOpenAiSettingsDialog(/*parent=*/nullptr, edited)) {
                 DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
@@ -1549,6 +1584,39 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             engine.SetOpenAiConfig(config.openai);
             engine.SetEngineType(emebalachat::EngineType::OpenAi);
             config.SetEngineTypeName("openai");
+        } else if (engine_idx == 3) {
+            // REQ-046 P4-2 (Rev2 §B-3): user_gguf routes through the SAME
+            // shared-host LocalLlama path, with the host relaying
+            // config.user_model_id to the worker at ITS next boot (C1 gates
+            // the cache on engine_type=="user_gguf"). Hy-MT2 "local" stays
+            // untouched: picking index 1 sets engine_type="local", which the
+            // host's C1 gate maps back to the pinned model.
+            // user_model_id is read directly (not via GetSnapshot): like
+            // cloud_fallback_enabled it is never consumed by the hook/worker
+            // threads, so it intentionally has no Snapshot entry (config.hpp).
+            // This callback runs on the GUI thread, same as the config.openai
+            // direct read below.
+            if (config.user_model_id.empty()) {
+                // INV-B3 (Rev2 §B-3 선택안 "파일찾기 유도"): nothing is
+                // registered yet, so open the registration pipeline instead
+                // of parking a checked-but-empty state. Cancel keeps the
+                // previous engine.
+                DIAG_F("MAIN/on_select_engine/005: user_gguf selected but no model registered; opening file picker\n");
+                // Fully qualified: the helper lives in the anon namespace
+                // inside namespace emebalachat, closed above wWinMain (the
+                // existing on_browse_gguf site uses the same qualification).
+                emebalachat::RegisterUserGgufModel(config, engine);
+                refresh_tray();
+                return;
+            }
+            engine.SetEngineType(emebalachat::EngineType::LocalLlama);
+            config.SetEngineTypeName("user_gguf");
+        } else {
+            // REQ-046 P4-2 (C3): defensive guard — an unknown index must
+            // never fall through into a persisted engine switch.
+            DIAG_F("MAIN/on_select_engine/006: unknown engine_idx=%d ignored\n", engine_idx);
+            refresh_tray();
+            return;
         }
         config.SaveToFile();
         refresh_tray();
@@ -1588,8 +1656,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // lives in the anon namespace INSIDE namespace emebalachat (closed at the
     // file's "} // namespace emebalachat" just above wWinMain), so it is
     // referenced fully-qualified here from the GLOBAL-scope wWinMain.
-    trayCallbacks.on_browse_gguf = [&config]() {
-        emebalachat::RegisterUserGgufModel(config);
+    // REQ-046 P4-2: refresh_tray is captured explicitly (the other tray
+    // callbacks use plain [&], but keeping the capture list explicit here
+    // documents the two state objects the pipeline touches).
+    trayCallbacks.on_browse_gguf = [&config, &engine, &refresh_tray]() {
+        // REQ-046 P4-2: refresh_tray() after the pipeline so the engine
+        // submenu's check mark moves to "사용자 선택(.gguf)" (pref==3) when
+        // the registration switched engine_type — without it the menu would
+        // keep showing the previous engine until the next unrelated update.
+        emebalachat::RegisterUserGgufModel(config, engine);
+        refresh_tray();
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the

@@ -219,6 +219,10 @@ add_library(Emebalachat_core STATIC
     src/engine_host_manifest.cpp
     src/engine_host_components.cpp
     src/engine_host_bootstrap_client.cpp
+    # REQ-046 P4-2 (Rev2 §B-4, Tech Gate 조건-1): the host's boot-time
+    # config.json reader (C1 engine_type=="user_gguf" gate). Lives in core
+    # (not host_main.cpp) so run_tests.exe can link + test it.
+    src/engine_host_config_reader.cpp
     src/i18n.cpp
     src/ui/about_window.cpp
     src/ui/openai_settings_window.cpp

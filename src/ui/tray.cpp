@@ -19,12 +19,13 @@ enum TrayMenuId : UINT {
     // free slot in the engine band (2010/2011/2012) — no collision with the
     // 2020+ control band.
     ID_TRAY_ENGINE_OPENAI = 2012,
-    // REQ-045 P4-5 (item 3a-2, design §A.3): the engine submenu's nested
-    // "사용자 선택(.gguf)…" submenu (its only leaf is 파일찾기 below). Sits in
-    // the 2010-band (2013), far below the 2020 control band and the 2400
-    // DRAG band — no collision (F7 실측 layout preserved).
+    // REQ-045 P4-5 (item 3a-2) + REQ-046 P4-2 (Rev2 §B-3): index 3 of the
+    // engine submenu — flat checkable "사용자 선택(.gguf)" entry (the nested
+    // POPUP is gone; ID unchanged). Sits in the 2010-band (2013), far below
+    // the 2020 control band and the 2400 DRAG band — no collision.
     ID_TRAY_ENGINE_USER_GGUF = 2013,
-    // REQ-045 P4-5: the single leaf of the user-model submenu.
+    // REQ-045 P4-5 / REQ-046 P4-2: the always-active file-picker row that
+    // follows the checkable user-model entry.
     ID_TRAY_BROWSE_GGUF = 2014,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
@@ -312,18 +313,20 @@ void SystemTray::ShowContextMenu() {
     // appeared checked while Local was configured. active_engine_ remains
     // display-only.
     HMENU hEngineMenu = ::CreatePopupMenu();
-    // REQ-045 P4-3: 3-way check (0 = Google, 1 = Local, 2 = OpenAI).
+    // REQ-045 P4-3 + REQ-046 P4-2 (Rev2 §B-3): flat 4-way check (0 = Google,
+    // 1 = Local, 2 = OpenAI, 3 = 사용자 선택(.gguf)). The nested POPUP from
+    // REQ-045 P4-5 is replaced by a CHECKABLE engine entry (the state the
+    // user actually selects) plus a separate always-active file-picker row.
     const int pref = preferred_engine_;
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 0 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 1 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 2 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_OPENAI, I18n::Get(StringId::MenuEngineOpenAi).c_str());
-    // REQ-045 P4-5 (item 3a-2): the third-party .gguf registration entry is a
-    // NESTED submenu (the picker itself cannot carry a check mark — it opens a
-    // file dialog). It sits AFTER the three engine choices so the 3-way check
-    // geometry of P4-3 is untouched.
-    HMENU hUserGgufMenu = ::CreatePopupMenu();
-    ::AppendMenuW(hUserGgufMenu, MF_STRING, ID_TRAY_BROWSE_GGUF, I18n::Get(StringId::MenuBrowseGgufFile).c_str());
-    ::AppendMenuW(hEngineMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUserGgufMenu), I18n::Get(StringId::MenuEngineUserGguf).c_str());
+    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_USER_GGUF, I18n::Get(StringId::MenuEngineUserGguf).c_str());
+    // REQ-046 P4-2 (Rev2 §B-3): the file picker stays a PLAIN row (no check —
+    // it opens a dialog; checking a dialog row would lie about a persisted
+    // state). Clicking "사용자 선택(.gguf)" with no model registered routes
+    // into the same picker via main.cpp's INV-B3 policy.
+    ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_BROWSE_GGUF, I18n::Get(StringId::MenuBrowseGgufFile).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 
     // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
@@ -446,6 +449,10 @@ void SystemTray::ShowContextMenu() {
     } else if (cmd == ID_TRAY_ENGINE_OPENAI && callbacks_.on_select_engine) {
         // REQ-045 P4-3: index 2 = OpenAI Compatible.
         callbacks_.on_select_engine(2);
+    } else if (cmd == ID_TRAY_ENGINE_USER_GGUF && callbacks_.on_select_engine) {
+        // REQ-046 P4-2 (Rev2 §B-3): index 3 = 사용자 선택(.gguf). main.cpp
+        // handles the no-model-registered case by routing into the picker.
+        callbacks_.on_select_engine(3);
     } else if (cmd == ID_TRAY_BROWSE_GGUF && callbacks_.on_browse_gguf) {
         // REQ-045 P4-5 (item 3a-2): open the .gguf picker + registration
         // pipeline (main.cpp owns the whole flow).

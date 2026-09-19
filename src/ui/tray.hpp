@@ -12,9 +12,10 @@ class SystemTray {
 public:
     struct Callbacks {
         std::function<void()> on_toggle_active;
-        // REQ-045 P4-3: engine_idx 0 = Google Translate, 1 = Local LLM,
-        // 2 = OpenAI Compatible. Appended (not renumbered) so existing
-        // main.cpp call sites keep their meaning.
+        // REQ-045 P4-3 + REQ-046 P4-2 (Rev2 §B-3): engine_idx 0 = Google
+        // Translate, 1 = Local LLM, 2 = OpenAI Compatible, 3 = 사용자 선택
+        // (.gguf). Appended (not renumbered) so existing main.cpp call sites
+        // keep their meaning.
         std::function<void(int engine_idx)> on_select_engine;
         std::function<void(std::string_view code)> on_select_source_lang;
         std::function<void(std::string_view code)> on_select_target_lang;
@@ -40,10 +41,11 @@ public:
         // spellings live in i18n.cpp kLocaleMappings). main.cpp
         // validates/persists via PlanUiLocaleChange.
         std::function<void(std::string_view code)> on_select_ui_language;
-        // REQ-045 P4-5 (item 3a-2, design §A.3): the engine submenu's
-        // "사용자 선택(.gguf)… > 파일찾기(.gguf)" pick. main.cpp opens the
-        // GetOpenFileNameW dialog and runs the copy + registry-writer +
-        // config.user_model_id registration pipeline.
+        // REQ-045 P4-5 (item 3a-2, design §A.3) + REQ-046 P4-2 (Rev2 §B-3):
+        // the engine submenu's separate "파일찾기(.gguf)…" row (flat, no
+        // check). main.cpp opens the GetOpenFileNameW dialog and runs the
+        // copy + registry-writer + config.user_model_id + engine_type
+        // switch registration pipeline.
         std::function<void()> on_browse_gguf;
     };
 
@@ -64,11 +66,12 @@ public:
     // REQ-029-B (design §2.1 change 2): preferred_engine is the single source
     // of truth for the Engine submenu check mark. 0 = Google (also covers
     // "auto", which is Google-family for display), 1 = Local LLM, 2 = OpenAI
-    // Compatible (REQ-045 P4-3). It carries the USER'S configured preference
-    // (config engine_type), so the check can no longer lie when the local model
-    // is missing and the engine honestly reports "Local (Model Missing)".
-    // active_engine above stays a DISPLAY-ONLY string (tooltip + tray_update
-    // log); it is never used for check decisions.
+    // Compatible (REQ-045 P4-3), 3 = 사용자 선택(.gguf) (REQ-046 P4-2). It
+    // carries the USER'S configured preference (config engine_type), so the
+    // check can no longer lie when the local model is missing and the engine
+    // honestly reports "Local (Model Missing)". active_engine above stays a
+    // DISPLAY-ONLY string (tooltip + tray_update log); it is never used for
+    // check decisions.
     void UpdateStatus(
         bool active,
         std::string_view active_engine,

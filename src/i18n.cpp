@@ -234,8 +234,11 @@ const LocalizedStrings kStringsKorean = {
     .menu_browse_gguf_file = L"파일찾기(.gguf)…",
     .user_gguf_quality_title = L"번역 품질 안내",
     .user_gguf_quality_body = L"선택한 모델은 Hy-MT2가 아닙니다. 현재 버전은 Hy-MT2 전용 프롬프트를 사용하므로, 이 모델의 번역 품질은 보장되지 않습니다. 계속하시겠습니까?",
+    // REQ-046 P4-2 (Rev2 §B-5, C2): '로컬 LLM 선택' 안내 제거(등록으로
+    // 즉시 user_gguf 상태가 되므로) + 적용 지연 상한 명시(최대 1분, 유휴
+    // 엔진 종료 후 자동 반영).
     .user_gguf_registered_title = L"모델 등록 완료",
-    .user_gguf_registered_body = L"선택한 모델이 로컬 엔진에 등록되었습니다.\n\n이 모델을 사용하려면:\n1. 트레이 메뉴에서 \"번역 엔진 선택\" > \"로컬 LLM\"을 선택하세요.\n2. 로컬 엔진 서비스는 대기 후 자동 종료되므로, 잠시 기다리거나 앱을 재시작하면 새 모델이 반영됩니다.",
+    .user_gguf_registered_body = L"선택한 모델이 로컬 엔진에 등록되었습니다.\n\n이 모델은 \"번역 엔진 선택 > 사용자 선택(.gguf)\"으로 선택하면 번역에 사용됩니다.\n\n적용 시점: 등록 후 최대 약 1분(엔진 유휴 종료 후)에 새 모델이 적용됩니다. 이전 번역 요청까지는 기존 모델이 사용될 수 있습니다.",
 };
 
 // 2. Japanese (ja)
@@ -344,7 +347,9 @@ const LocalizedStrings kStringsJapanese = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -453,7 +458,9 @@ const LocalizedStrings kStringsChineseSimp = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -562,7 +569,9 @@ const LocalizedStrings kStringsChineseTrad = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 5. Vietnamese (vi)
@@ -671,7 +680,9 @@ const LocalizedStrings kStringsVietnamese = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 6. Spanish (es)
@@ -777,7 +788,9 @@ const LocalizedStrings kStringsSpanish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 7. English (en) - Default Fallback
@@ -887,7 +900,9 @@ const LocalizedStrings kStringsEnglish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.\n\nTo use this model:\n1. Open the tray menu, choose \"Translation Engine\" > \"Local LLM\".\n2. The local engine service exits when idle; wait a moment or restart the app for the new model to take effect.",
+    // REQ-046 P4-2 (Rev2 §B-5, C2): drop the "pick Local LLM" instruction and
+    // state the apply bound (up to ~1 minute, after the idle engine exits).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1008,7 +1023,9 @@ const LocalizedStrings kStringsFrench = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 9. German (de)
@@ -1117,7 +1134,9 @@ const LocalizedStrings kStringsGerman = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 10. Russian (ru)
@@ -1226,7 +1245,9 @@ const LocalizedStrings kStringsRussian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 11. Portuguese (pt)
@@ -1335,7 +1356,9 @@ const LocalizedStrings kStringsPortuguese = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 12. Italian (it)
@@ -1444,7 +1467,9 @@ const LocalizedStrings kStringsItalian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 13. Dutch (nl)
@@ -1553,7 +1578,9 @@ const LocalizedStrings kStringsDutch = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 14. Polish (pl)
@@ -1662,7 +1689,9 @@ const LocalizedStrings kStringsPolish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 15. Czech (cs)
@@ -1771,7 +1800,9 @@ const LocalizedStrings kStringsCzech = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 16. Hungarian (hu)
@@ -1880,7 +1911,9 @@ const LocalizedStrings kStringsHungarian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 17. Romanian (ro)
@@ -1989,7 +2022,9 @@ const LocalizedStrings kStringsRomanian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 18. Swedish (sv)
@@ -2098,7 +2133,9 @@ const LocalizedStrings kStringsSwedish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 19. Danish (da)
@@ -2207,7 +2244,9 @@ const LocalizedStrings kStringsDanish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 20. Finnish (fi)
@@ -2316,7 +2355,9 @@ const LocalizedStrings kStringsFinnish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 21. Norwegian (no / nb)
@@ -2425,7 +2466,9 @@ const LocalizedStrings kStringsNorwegian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 22. Greek (el)
@@ -2534,7 +2577,9 @@ const LocalizedStrings kStringsGreek = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 23. Turkish (tr)
@@ -2643,7 +2688,9 @@ const LocalizedStrings kStringsTurkish = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 24. Ukrainian (uk)
@@ -2752,7 +2799,9 @@ const LocalizedStrings kStringsUkrainian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 25. Thai (th)
@@ -2861,7 +2910,9 @@ const LocalizedStrings kStringsThai = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 26. Indonesian (id)
@@ -2970,7 +3021,9 @@ const LocalizedStrings kStringsIndonesian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 27. Malay (ms)
@@ -3079,7 +3132,9 @@ const LocalizedStrings kStringsMalay = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 28. Filipino (fil)
@@ -3190,7 +3245,9 @@ const LocalizedStrings kStringsFilipino = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 29. Hindi (hi)
@@ -3299,7 +3356,9 @@ const LocalizedStrings kStringsHindi = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 30. Bengali (bn)
@@ -3408,7 +3467,9 @@ const LocalizedStrings kStringsBengali = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -3518,7 +3579,9 @@ const LocalizedStrings kStringsArabic = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 32. Persian (fa) — RTL
@@ -3627,7 +3690,9 @@ const LocalizedStrings kStringsPersian = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -3736,7 +3801,9 @@ const LocalizedStrings kStringsUrdu = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 34. Hebrew (he) — RTL
@@ -3845,7 +3912,9 @@ const LocalizedStrings kStringsHebrew = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 35. Khmer (km)
@@ -3954,7 +4023,9 @@ const LocalizedStrings kStringsKhmer = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 36. Lao (lo)
@@ -4063,7 +4134,9 @@ const LocalizedStrings kStringsLao = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 // 37. Burmese (my)
@@ -4172,7 +4245,9 @@ const LocalizedStrings kStringsBurmese = {
     L"Translation quality notice",
     L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
     L"Model registered",
-    L"The selected model has been registered with the local engine.",
+    // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
+    // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
+    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
