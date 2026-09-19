@@ -596,6 +596,12 @@ const
 var
   DownloadPage: TDownloadWizardPage;
   ModelSkipped: Boolean;
+  // REQ-045 (P4-2, item 4): global failure flag for the uninstaller rename
+  // bypass guard chain. Set by FixRenamedUninstallerRegistry when any ARP
+  // rewrite or guard check fails, and by the ssDone self-verification when
+  // the ARP target file is missing. Consumed at ssDone to show the user a
+  // single, aggregated warning MsgBox after install completes.
+  UninstallGuardFailed: Boolean;
   // REQ-043: set by ShouldInstallEngineHost() when this run installs/replaces
   // the shared host; consumed at ssPostInstall to (re)write engine.version.
   EngineHostUpdated: Boolean;
@@ -2067,12 +2073,41 @@ begin
   ExePath := ExpandConstant('{app}') + '\Emebalachat Uninstall.exe';
   if FileExists(ExePath) and RegKeyExists(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY) then
   begin
-    RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'UninstallString', '"' + ExePath + '"');
-    RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'QuietUninstallString', '"' + ExePath + '" /SILENT');
-    Log('ARP UninstallString/QuietUninstallString rewritten to renamed uninstaller.');
+    // REQ-045 (P4-2, item 4): loud-fail guard. Each RegWriteStringValue call
+    // returns Boolean; failure means ARP still points at the old (or no)
+    // uninstaller path, which would break Settings/Apps uninstall later.
+    // We log loudly AND set the global flag so ssDone shows one warning.
+    if not RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'UninstallString', '"' + ExePath + '"') then
+    begin
+      Log('REQ-045 ERROR: Failed to rewrite ARP UninstallString to: ' + ExePath);
+      UninstallGuardFailed := True;
+    end;
+    if not RegWriteStringValue(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY, 'QuietUninstallString', '"' + ExePath + '" /SILENT') then
+    begin
+      Log('REQ-045 ERROR: Failed to rewrite ARP QuietUninstallString to: ' + ExePath);
+      UninstallGuardFailed := True;
+    end;
+    if not UninstallGuardFailed then
+      Log('ARP UninstallString/QuietUninstallString rewritten to renamed uninstaller.')
+    else
+      Log('REQ-045 WARNING: One or both ARP rewrites failed; uninstall registration may be broken.');
   end
   else
-    Log('Renamed uninstaller not found; leaving Inno default UninstallString.');
+  begin
+    // REQ-045 (P4-2, item 4): previously silent-skip. This branch means the
+    // renamed uninstaller exe is missing or the ARP subkey is absent — either
+    // way the user will not be able to uninstall from Settings/Apps. Loud now.
+    Log('REQ-045 ERROR: Renamed uninstaller or ARP subkey not found; ARP rewrite skipped.');
+    if FileExists(ExePath) then
+      Log('  ExePath=' + ExePath + '  FileExists=True')
+    else
+      Log('  ExePath=' + ExePath + '  FileExists=False');
+    if RegKeyExists(HKEY_LOCAL_MACHINE, UNINSTALL_SUBKEY) then
+      Log('  RegKeyExists=True')
+    else
+      Log('  RegKeyExists=False');
+    UninstallGuardFailed := True;
+  end;
 end;
 
 // ------------------------------------------------------------------------
@@ -2112,7 +2147,42 @@ begin
   // Uninstaller rename bypass: after [Run] renamed unins000.*, the ARP
   // registry entry still points at the original path; rewrite it last.
   if CurStep = ssDone then
+  begin
     FixRenamedUninstallerRegistry;
+
+    // REQ-045 (P4-2, item 4): [Run] rename-failure detection. The [Run]
+    // commands use "if exist" guards, so a failed rename (or AV quarantine)
+    // leaves unins000.exe behind and no renamed exe. That combination is
+    // detected here: if the original is still present but the renamed file
+    // is absent, the rename failed. Log loudly and set the failure flag.
+    if FileExists(ExpandConstant('{app}') + '\unins000.exe') and
+       not FileExists(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
+    begin
+      Log('REQ-045 ERROR: [Run] rename failed — unins000.exe still present but renamed uninstaller missing.');
+      UninstallGuardFailed := True;
+    end;
+
+    // REQ-045 (P4-2, item 4): ssDone self-verification — the [Run] rename
+    // guard above is silent when both unins000.exe and the renamed exe are
+    // missing (e.g. antivirus quarantined both, or the rename move failed).
+    // Check that the ARP UninstallString target actually exists on disk.
+    // If not, Settings/Apps uninstall will be broken. We warn the user once.
+    if not FileExists(ExpandConstant('{app}') + '\Emebalachat Uninstall.exe') then
+    begin
+      Log('REQ-045 ERROR: ARP uninstall target missing after install: ' + ExpandConstant('{app}') + '\Emebalachat Uninstall.exe');
+      UninstallGuardFailed := True;
+    end;
+
+    // REQ-045 (P4-2, item 4): surface one aggregated warning to the user if
+    // any guard in the chain failed. MsgBox at ssDone is acceptable because
+    // install has completed; a blocking popup during ssPostInstall would be
+    // worse (setup not yet finished). English default per project convention.
+    if UninstallGuardFailed then
+      MsgBox('Warning: the uninstaller registration could not be verified.' + #13#10 +
+             'You may not be able to remove this app from Settings > Apps.' + #13#10 +
+             'Please re-run the installer to repair.',
+             mbError, MB_OK);
+  end;
 end;
 
 // ------------------------------------------------------------------------
