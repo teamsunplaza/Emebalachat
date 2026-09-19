@@ -37,6 +37,7 @@ public:
     void AddItem(DWORD style, short x, short y, short cx, short cy,
                  WORD id, WORD clsAtom, std::wstring_view text);
     const DLGTEMPLATE* Get() const;
+    size_t size() const; // REQ-048 P2: whole-buffer byte count (test byte-walk)
 private:
     void EmitWord(WORD w);
     void EmitDword(DWORD d);
@@ -50,5 +51,12 @@ private:
 // replaced with the edited values AND the key is DPAPI-protected in-place.
 // Returns true when the user saved (caller persists via AppConfig::SaveToFile).
 bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg);
+
+// REQ-048 P2: emits the production OpenAI-settings item set into `tb` (Begin
+// must already have been called with the matching item count). Split out of
+// ShowOpenAiSettingsDialog so the unit suite can serialize the exact
+// production template and byte-walk it against the Windows DLGTEMPLATE/DLG-
+// ITEMTEMPLATE parser contract without entering the modal loop.
+void BuildOpenAiTemplate(TemplateBuilder& tb);
 
 } // namespace emebalachat

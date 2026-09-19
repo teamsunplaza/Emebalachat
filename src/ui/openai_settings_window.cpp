@@ -57,8 +57,9 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         st = reinterpret_cast<OpenAiDialogState*>(lp);
         ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
-        // template itself is proven-good (8 controls), but if any edit/combo
-        // control failed to materialize the dialog would look like the
+        // template itself is proven-good (10 controls incl. OK/Cancel), but
+        // if any edit/combo control failed to materialize the dialog would
+        // look like the
         // reported "API input field missing" symptom. Surface a distinct log
         // line per missing control so a future regression separates "window
         // failed to activate" (D3 root cause) from "control failed to create".
@@ -193,9 +194,15 @@ void TemplateBuilder::Begin(std::wstring_view title, short w, short h, WORD item
     EmitDword(WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT | DS_MODALFRAME |
               WS_VISIBLE | DS_CENTER | DS_SETFOREGROUND);
     EmitDword(0);                       // dwExtendedStyle
+    // REQ-048 P2: cdit must follow dwExtendedStyle — the Win32 DLGTEMPLATE
+    // contract orders the header style, dwExtendedStyle, cdit, x, y, cx, cy.
+    // The pre-P2 layout emitted x,y,cx,cy first, so the loader read cx as the
+    // item count and cdit as cy (an 8-DLU caption strip with zero parsed
+    // items — the byte-level root cause of the device symptom "title + X
+    // only, no input fields").
+    EmitWord(itemCount);                // cdit
     EmitWord(0); EmitWord(0);           // x, y
     EmitWord(w); EmitWord(h);           // cx, cy
-    EmitWord(itemCount);                // cdit
     EmitWord(0);                        // menu (none)
     EmitWord(0);                        // windowClass (none)
     EmitStr(title);
@@ -211,7 +218,14 @@ void TemplateBuilder::AddItem(DWORD style, short x, short y, short cx, short cy,
     EmitDword(style);
     EmitDword(0);                       // dwExtendedStyle
     EmitWord(x); EmitWord(y); EmitWord(cx); EmitWord(cy);
-    EmitWord(id); EmitWord(0);          // id (+ WORD padding -> DWORD align)
+    EmitWord(id);
+    // REQ-048 P2: the fixed DLGITEMTEMPLATE part ends at id (18 bytes total:
+    // style 4 + exstyle 4 + x/y/cx/cy 8 + id 2); the class array follows
+    // immediately. A leading 0xFFFF WORD marks the next WORD as a system-
+    // class ordinal (0x0080..0x0085). The pre-P2 fake pad WORD after id and
+    // the missing prefix desynced the parser walk, so every control after
+    // the first was misparsed.
+    EmitWord(0xFFFF);
     EmitWord(clsAtom);
     EmitStr(text);
     EmitWord(0);                        // extraData count = 0
@@ -220,6 +234,11 @@ void TemplateBuilder::AddItem(DWORD style, short x, short y, short cx, short cy,
 const DLGTEMPLATE* TemplateBuilder::Get() const {
     return reinterpret_cast<const DLGTEMPLATE*>(buf_.data() + dtpl_);
 }
+
+// REQ-048 P2: whole-buffer byte count. For a freshly constructed builder
+// dtpl_ == 0, so size() is exactly the serialized template length the test
+// byte-walk consumes to.
+size_t TemplateBuilder::size() const { return buf_.size(); }
 
 void TemplateBuilder::EmitWord(WORD w) {
     buf_.push_back(static_cast<BYTE>(w & 0xFF));
@@ -233,13 +252,13 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
     EmitWord(0);
 }
 
-bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
-    OpenAiDialogState st{&cfg, false};
-
-    const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
-    TemplateBuilder tb;
-    tb.Begin(title, 210, 130, /*itemCount=*/8);
-
+// REQ-048 P2: production item-set emission, split out of
+// ShowOpenAiSettingsDialog so the unit suite serializes the exact bytes the
+// dialog hands to DialogBoxIndirectParamW. The control IDs (IDC_*) live in
+// the anonymous namespace above; a namespace-scope definition in this same
+// TU can reference them. itemCount must match the AddItem calls below:
+// 8 app controls + IDOK + IDCANCEL = 10.
+void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
     const DWORD COMBO = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | CBS_DROPDOWN;
@@ -263,6 +282,15 @@ bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
     tb.AddItem(LBL, 8, 54, 120, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
     tb.AddItem(BTN | BS_DEFPUSHBUTTON, 96, 70, 50, 13, IDOK, BTN_CLS, L"OK");
     tb.AddItem(BTN, 152, 70, 50, 13, IDCANCEL, BTN_CLS, L"Cancel");
+}
+
+bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
+    OpenAiDialogState st{&cfg, false};
+
+    const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
+    TemplateBuilder tb;
+    tb.Begin(title, 210, 130, /*itemCount=*/10);
+    BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(
         ::GetModuleHandleW(nullptr), tb.Get(), parent, OpenAiSettingsProc,
