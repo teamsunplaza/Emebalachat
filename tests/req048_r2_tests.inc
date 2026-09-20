@@ -96,7 +96,7 @@ void TestReq048R2ServingPath() {
 // REQ-048 R2-D: the registered user-.gguf model manager (rename/delete UI).
 // User request: "다른 gguf 모델을 할 거면 이름이라도 수정할 수 있던가, 등록한
 // 모델을 삭제라도 할 수 있던가". Five layers:
-//   (a) i18n field-count mirror with the NEW total (90) — the same sizeof
+//   (a) i18n field-count mirror with the NEW total (95) — the same sizeof
 //       technique as TestReq044I18nFieldOrder; that suite's mirror in
 //       run_tests.cpp is frozen at 78 by the editing mandate, so the R2-D
 //       total is pinned here instead;
@@ -130,9 +130,9 @@ namespace req048_r2d_detail {
 // with the REQ-048 R2-D total (78 pre-R2-D fields + 12 gguf-manager fields).
 // TestReq044I18nFieldOrder pins the count at 78 with the identical sizeof
 // technique; its copy lives in run_tests.cpp and is frozen by the editing
-// mandate, so the new 90-field total is asserted here.
+// mandate, so the new 95-field total is asserted here.
 struct Req048R2LstrMirror {
-    const wchar_t* f[90];
+    const wchar_t* f[95];
 };
 
 } // namespace req048_r2d_detail
@@ -141,22 +141,22 @@ void TestReq048R2GgufManager() {
     std::cout << "[RUN] Testing REQ-048 R2-D gguf model manager..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- (a) i18n field-count mirror (new total 90) ---------------------
+    // ---- (a) i18n field-count mirror (new total 95) ---------------------
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 90
-    static_assert(kR2dFieldCount == 90,
-                  "REQ-048 R2-D: LocalizedStrings field count is 90 (78 + 12) - "
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 95
+    static_assert(kR2dFieldCount == 95,
+                  "REQ-048 R2-D: LocalizedStrings field count is 95 (78 + 12 + 5) - "
                   "update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 90,
-               "REQ-048 R2-D (a): LocalizedStrings field count is 90");
-    TEST_CHECK(observed_enum_count == 90,
-               "REQ-048 R2-D (a): StringId::EnumCount is 90 (78 + 12 manager strings)");
+    TEST_CHECK(observed_field_count == 95,
+               "REQ-048 R2-D (a): LocalizedStrings field count is 95");
+    TEST_CHECK(observed_enum_count == 95,
+               "REQ-048 R2-D (a): StringId::EnumCount is 95 (78 + 12 + 5 manager strings)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.
@@ -346,6 +346,51 @@ void TestReq048R2GgufManager() {
         std::cout << "[PASS] REQ-048 R2-D gguf model manager checks passed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-048 R2-D gguf model manager checks: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// REQ-048 R2-F (user directive): the 17 most-recent StringIds (the gguf
+// manager family, indices 78..94) must be REAL translations in every one of
+// the 37 supported locales — no English passthrough. Language-level English
+// fallback exists only for UNSUPPORTED languages; a supported locale that
+// shows English for a shipped string is a defect (the REQ-045/047 backlog
+// shipped exactly that way, which this gate now prevents from recurring).
+// ---------------------------------------------------------------------------
+
+void TestReq048R2I18nCoverage() {
+    std::cout << "[RUN] Testing REQ-048 R2 recent-field translation coverage..." << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+
+    I18n::SetLocale(UiLocale::English);
+    std::wstring en[17];
+    const int first = static_cast<int>(StringId::MenuManageGgufModels);
+    const int last = static_cast<int>(StringId::GgufManagerErrRegistryDamaged);
+    for (int id = first; id <= last; ++id) {
+        en[id - first] = I18n::Get(static_cast<StringId>(id));
+    }
+
+    int english_copy = 0;
+    for (int li = static_cast<int>(UiLocale::Korean);
+         li <= static_cast<int>(UiLocale::Burmese); ++li) {
+        if (li == static_cast<int>(UiLocale::English)) continue; // the reference itself
+        I18n::SetLocale(static_cast<UiLocale>(li));
+        for (int id = first; id <= last; ++id) {
+            if (I18n::Get(static_cast<StringId>(id)) == en[id - first]) ++english_copy;
+        }
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(english_copy == 0,
+               "REQ-048 R2-F: the 17 gguf-manager strings are translated in all 37 "
+               "locales (zero English-identical fields)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-048 R2 recent-field translation coverage passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-048 R2 i18n coverage: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

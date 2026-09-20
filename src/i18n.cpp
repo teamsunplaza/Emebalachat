@@ -122,7 +122,12 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(gguf_manager_rename_title) \
     X(gguf_manager_rename_body) \
     X(gguf_manager_rename_invalid) \
-    X(gguf_manager_done)
+    X(gguf_manager_done) \
+    X(gguf_manager_err_serialize) \
+    X(gguf_manager_err_no_localappdata) \
+    X(gguf_manager_err_write) \
+    X(gguf_manager_err_write_partial) \
+    X(gguf_manager_err_registry_damaged)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -147,9 +152,9 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
 // body (77). REQ-047 U1 (designer 164500 §5.3) appended the tray
 // "(미등록)" empty-slot marker (78). REQ-048 R2-D appended the 12
-// gguf-model-manager fields (90). The Get() switch maps exactly these 90
+// gguf-manager fields (95). The Get() switch maps exactly these 95
 // named fields.
-static_assert(kLocalizedStringsFieldCount == 90,
+static_assert(kLocalizedStringsFieldCount == 95,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -283,6 +288,11 @@ const LocalizedStrings kStringsKorean = {
     .gguf_manager_rename_body = L"새 이름을 입력하세요. (공백 없이 64자 이내)",
     .gguf_manager_rename_invalid = L"사용할 수 없는 이름입니다. 비어 있지 않고 기존 이름과 다르게, 공백/경로 구분자 없이 64자 이내로 입력하세요.",
     .gguf_manager_done = L"변경사항이 저장되었습니다.",
+    .gguf_manager_err_serialize = L"registry.json을 직렬화할 수 없습니다(파일명이 거부됨). 변경된 것은 없습니다.",
+    .gguf_manager_err_no_localappdata = L"%LOCALAPPDATA%를 사용할 수 없어 공유 모델 폴드를 찾을 수 없습니다.",
+    .gguf_manager_err_write = L"registry.json을 쓸 수 없습니다.",
+    .gguf_manager_err_write_partial = L"registry.json을 끝까지 쓰지 못했습니다.",
+    .gguf_manager_err_registry_damaged = L"registry.json이 손상되었거나 지원하지 않는 스키마입니다. 수정하지 않았습니다. 복구하거나 삭제한 후 다시 시도하세요.",
 };
 
 // 2. Japanese (ja)
@@ -369,27 +379,31 @@ const LocalizedStrings kStringsJapanese = {
     L"ローカル翻訳を利用できません",
     L"ローカル翻訳エンジンのファイルが見つからないため、翻訳は一時的に停止しています。Emebala Chat を再インストールするとローカルエンジンを復元できます。または、クラウド（Google）翻訳に切り替えるには、トレイメニューの「翻訳エンジンの選択」から「Google 翻訳」を選んでください。",
     L"OpenAI 互換 (ユーザー指定サーバー)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI 互換エンジン設定",
+        L"OpenAI 互換エンジン設定…",
+        L"ベース URL",
+        L"API キー",
+        L"モデル",
+        L"モデル一覧を取得",
+        L"モデル一覧を取得できませんでした。モデル名を直接入力できます。",
+        L"安全でない接続 (HTTP)",
+        L"ベース URL が HTTP (暗号化なし) です。API キーとテキストが平文で送信されます。続行しますか？",
+        L"OpenAI 互換設定が保存されました。",
+        L"保存済みキー: ",
+        L"ベース URL が正しくありません。例: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"ユーザー指定モデル (.gguf)",
     L"別の .gguf モデルを登録…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"翻訳品質の案内",
+        L"選択したモデルは Hy-MT2 ではありません。現在のバージョンは Hy-MT2 専用のプロンプトを使用するため、このモデルの翻訳品質は保証されません。続行しますか？",
+        L"モデル登録完了",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"選択したモデルがローカルエンジンに登録されました。\n"
+    L"\n"
+    L"このモデルは「翻訳エンジン選択 > ユーザー選択 (.gguf)」で選択すると翻訳に使用されます。\n"
+    L"\n"
+    L"反映時刻: 登録後、最大約 1 分 (エンジンがアイドル終了してから)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"このモデルはEmebala Chatにすでに内蔵されています。登録は必要ありません。内蔵のローカル翻訳エンジンを直接選択してご利用ください。",
@@ -414,6 +428,11 @@ const LocalizedStrings kStringsJapanese = {
     L"その名前は使用できません。空白やパス区切り文字を含まず、64文字以内で、既存のものと異なる空でない名前を入力してください。",
     L"変更が保存されました。",
 
+    L"registry.json をシリアライズできません(ファイル名が拒否されました)。変更はありません。",
+    L"%LOCALAPPDATA% を使用できず、共有モデルフォルダーが見つかりません。",
+    L"registry.json を書き込めません。",
+    L"registry.json の書き込みが完了しませんでした。",
+    L"registry.json が破損しているか、サポートされていないスキーマです。変更は加えていません。修復するか削除してから再試行してください。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -500,27 +519,31 @@ const LocalizedStrings kStringsChineseSimp = {
     L"本地翻译不可用",
     L"找不到本地翻译引擎文件，翻译已暂时停止。重新安装 Emebala Chat 可恢复本地引擎，或者要切换到云（Google）翻译，请在托盘菜单的“选择翻译引擎”中选择“Google 翻译”。",
     L"OpenAI 兼容 (用户自定义服务器)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI 兼容引擎设置",
+        L"OpenAI 兼容引擎设置…",
+        L"Base URL",
+        L"API 密钥",
+        L"模型",
+        L"获取模型列表",
+        L"无法获取模型列表。您可以直接输入模型名称。",
+        L"不安全的连接 (HTTP)",
+        L"Base URL 使用 HTTP(未加密)。您的 API 密钥和文本将以明文发送。是否继续？",
+        L"OpenAI 兼容设置已保存。",
+        L"已保存的密钥: ",
+        L"Base URL 无效。示例: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"用户自定义模型 (.gguf)",
     L"注册其他 .gguf 模型…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"翻译质量提示",
+        L"所选模型不是 Hy-MT2。当前版本使用 Hy-MT2 专用提示词,因此此模型的翻译质量不予保证。是否继续？",
+        L"模型注册完成",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"所选模型已注册到本地引擎。\n"
+    L"\n"
+    L"在“翻译引擎选择 > 用户选择 (.gguf)”中选择此模型后,即可用于翻译。\n"
+    L"\n"
+    L"生效时间: 注册后最多约 1 分钟(引擎空闲退出后)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"该模型已内置在 Emebala Chat 中，无需注册。直接选择内置的本地翻译引擎即可使用。",
@@ -545,6 +568,11 @@ const LocalizedStrings kStringsChineseSimp = {
     L"该名称无法使用。请输入一个非空、与现有名称不同、不含空格或路径分隔符且不超过64个字符的名称。",
     L"更改已保存。",
 
+    L"无法序列化 registry.json(文件名被拒绝)。未做任何更改。",
+    L"%LOCALAPPDATA% 不可用,找不到共享模型文件夹。",
+    L"无法写入 registry.json。",
+    L"registry.json 未能完整写入。",
+    L"registry.json 已损坏或架构不受支持。未做修改。请修复或删除后重试。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -631,27 +659,31 @@ const LocalizedStrings kStringsChineseTrad = {
     L"本機翻譯無法使用",
     L"找不到本機翻譯引擎檔案，翻譯已暫時停止。重新安裝 Emebala Chat 可還原本機引擎，或者若要切換到雲端（Google）翻譯，請在系統匣選單的「選擇翻譯引擎」中選取「Google 翻譯」。",
     L"OpenAI 相容 (使用者自訂伺服器)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI 相容引擎設定",
+        L"OpenAI 相容引擎設定…",
+        L"Base URL",
+        L"API 金鑰",
+        L"模型",
+        L"取得模型列表",
+        L"無法取得模型列表。您可以直接輸入模型名稱。",
+        L"不安全的連線 (HTTP)",
+        L"Base URL 使用 HTTP(未加密)。您的 API 金鑰和文字將以明文傳送。是否繼續？",
+        L"OpenAI 相容設定已儲存。",
+        L"已儲存的金鑰: ",
+        L"Base URL 無效。範例: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"使用者自訂模型 (.gguf)",
     L"註冊其他 .gguf 模型…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"翻譯品質提示",
+        L"所選模型不是 Hy-MT2。目前版本使用 Hy-MT2 專用提示詞,因此此模型的翻譯品質不予保證。是否繼續？",
+        L"模型註冊完成",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"所選模型已註冊到本機引擎。\n"
+    L"\n"
+    L"在「翻譯引擎選擇 > 使用者選擇 (.gguf)」中選擇此模型後,即可用於翻譯。\n"
+    L"\n"
+    L"生效時間: 註冊後最多約 1 分鐘(引擎閒置結束後)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"此模型已內建於 Emebala Chat，無需註冊。直接選擇內建的本機翻譯引擎即可使用。",
@@ -676,6 +708,11 @@ const LocalizedStrings kStringsChineseTrad = {
     L"該名稱無法使用。請輸入一個非空、與現有名稱不同、不含空格或路徑分隔字元且不超過64個字元的名稱。",
     L"變更已儲存。",
 
+    L"無法序列化 registry.json(檔名被拒絕)。未做任何變更。",
+    L"%LOCALAPPDATA% 不可用,找不到共用模型資料夾。",
+    L"無法寫入 registry.json。",
+    L"registry.json 未能完整寫入。",
+    L"registry.json 已損毀或結構不受支援。未做修改。請修復或刪除後重試。",
 };
 
 // 5. Vietnamese (vi)
@@ -762,27 +799,31 @@ const LocalizedStrings kStringsVietnamese = {
     L"Không thể dùng bản dịch cục bộ",
     L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Cài đặt lại Emebala Chat để khôi phục cục bộ, hoặc để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”.",
     L"Tương thích OpenAI (máy chủ do ngườ dùng chỉ định)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Cài đặt công cụ tương thích OpenAI",
+        L"Cài đặt công cụ tương thích OpenAI…",
+        L"Base URL",
+        L"API Key",
+        L"Mô hình",
+        L"Lấy danh sách mô hình",
+        L"Không thể lấy danh sách mô hình. Bạn có thể nhập tên mô hình trực tiếp.",
+        L"Kết nối không an toàn (HTTP)",
+        L"Base URL sử dụng HTTP (không mã hóa). API key và văn bản của bạn sẽ được gửi dạng plaintext. Tiếp tục?",
+        L"Đã lưu cài đặt tương thích OpenAI.",
+        L"Khóa đã lưu: ",
+        L"Base URL không hợp lệ. Ví dụ: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Mô hình do ngườ dùng chỉ định (.gguf)",
     L"Đăng ký mô hình .gguf khác…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Thông báo chất lượng dịch",
+        L"Mô hình đã chọn không phải Hy-MT2. Phiên bản hiện tại chỉ dùng prompt dành riêng cho Hy-MT2, vì vậy chất lượng dịch của mô hình này không được đảm bảo. Tiếp tục?",
+        L"Đăng ký mô hình hoàn tất",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Mô hình đã chọn đã được đăng ký với công cụ cục bộ.\n"
+    L"\n"
+    L"Mô hình này được dùng để dịch khi bạn chọn \"Chọn công cụ dịch > Người dùng tự chọn (.gguf)\".\n"
+    L"\n"
+    L"Thời điểm áp dụng: tối đa khoảng 1 phút sau khi đăng ký (sau khi công cụ kết thúc nhàn rỗi)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Mô hình này đã được tích hợp sẵn trong Emebala Chat. Bạn không cần đăng ký. Hãy chọn trực tiếp công cụ dịch nội bộ để sử dụng.",
@@ -807,6 +848,11 @@ const LocalizedStrings kStringsVietnamese = {
     L"Không thể sử dụng tên đó. Vui lòng nhập tên không trống, khác với tên hiện có, không chứa dấu cách hoặc dấu phân cách đường dẫn, trong 64 ký tự.",
     L"Đã lưu thay đổi.",
 
+    L"Không thể tuần tự hóa registry.json (tên tệp bị từ chối). Không có gì thay đổi.",
+    L"%LOCALAPPDATA% không khả dụng; không thể định vị thư mục mô hình dùng chung.",
+    L"Không thể ghi registry.json.",
+    L"Không thể ghi registry.json hoàn chỉnh.",
+    L"registry.json bị hỏng hoặc có lược đồ không được hỗ trợ. Nó KHÔNG bị sửa đổi. Hãy khắc phục hoặc xóa rồi thử lại.",
 };
 
 // 6. Spanish (es)
@@ -890,27 +936,31 @@ const LocalizedStrings kStringsSpanish = {
     L"Traducción local no disponible",
     L"No se encuentran los archivos del motor de traducción local, por lo que la traducción se detuvo temporalmente. Reinstala Emebala Chat para restaurar el motor local, o para cambiar a la traducción en la nube (Google), elige “Google Translate” en el menú de la bandeja, “Motor de traducción”.",
     L"Compatible con OpenAI (servidor personalizado)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Ajustes del motor compatible con OpenAI",
+        L"Ajustes del motor compatible con OpenAI…",
+        L"URL base",
+        L"Clave de API",
+        L"Modelo",
+        L"Obtener lista de modelos",
+        L"No se pudo obtener la lista de modelos. Puede escribir el nombre del modelo directamente.",
+        L"Conexión no segura (HTTP)",
+        L"La URL base usa HTTP (sin cifrar). Su clave de API y el texto se enviarán en texto plano. ¿Continuar?",
+        L"Ajustes compatibles con OpenAI guardados.",
+        L"Clave guardada: ",
+        L"La URL base no es válida. Ejemplo: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Modelo personalizado (.gguf)",
     L"Registrar otro modelo .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Aviso sobre la calidad de la traducción",
+        L"El modelo seleccionado no es Hy-MT2. La versión actual usa el prompt exclusivo de Hy-MT2, por lo que la calidad de traducción con este modelo no está garantizada. ¿Continuar?",
+        L"Modelo registrado",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"El modelo seleccionado se ha registrado en el motor local.\n"
+    L"\n"
+    L"Este modelo se usa para traducir cuando elige \"Selección de motor de traducción > Selección del usuario (.gguf)\".\n"
+    L"\n"
+    L"Cuándo surte efecto: hasta aproximadamente 1 minuto después del registro (tras la salida por inactividad del motor)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo ya está integrado en Emebala Chat. No es necesario registrarlo. Puedes seleccionar directamente el motor de traducción local integrado.",
@@ -935,6 +985,11 @@ const LocalizedStrings kStringsSpanish = {
     L"Ese nombre no se puede usar. Introduzca un nombre no vacío, distinto de los existentes, sin espacios ni separadores de ruta, de hasta 64 caracteres.",
     L"Cambios guardados.",
 
+    L"No se pudo serializar registry.json (se rechazó un nombre de archivo). No se cambió nada.",
+    L"%LOCALAPPDATA% no está disponible; no se puede ubicar el directorio de modelos compartido.",
+    L"No se pudo escribir registry.json.",
+    L"No se pudo escribir registry.json por completo.",
+    L"registry.json está dañado o tiene un esquema no compatible. NO se modificó. Repárelo o elimínelo y vuelva a intentarlo.",
 };
 
 // 7. English (en) - Default Fallback
@@ -1068,6 +1123,11 @@ const LocalizedStrings kStringsEnglish = {
     L"That name cannot be used. Enter a non-empty name that differs from existing ones, without spaces or path separators, within 64 characters.",
     L"Changes saved.",
 
+    L"registry.json could not be serialized (a filename was rejected). Nothing was changed.",
+    L"%LOCALAPPDATA% is unavailable; cannot locate the shared models directory.",
+    L"registry.json could not be written.",
+    L"registry.json could not be written completely.",
+    L"registry.json is damaged or has an unsupported schema. It was NOT modified. Fix or remove it, then retry.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1166,27 +1226,31 @@ const LocalizedStrings kStringsFrench = {
     L"Traduction locale indisponible",
     L"Les fichiers du moteur de traduction locale sont introuvables, la traduction est donc suspendue. Réinstallez Emebala Chat pour restaurer le moteur local, ou passez à la traduction cloud (Google) en choisissant « Google Traduction » dans le menu de la barre d’état, « Moteur de traduction ».",
     L"Compatible OpenAI (serveur personnalisé)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Paramètres du moteur compatible OpenAI",
+        L"Paramètres du moteur compatible OpenAI…",
+        L"URL de base",
+        L"Clé API",
+        L"Modèle",
+        L"Récupérer la liste des modèles",
+        L"Impossible de récupérer la liste des modèles. Vous pouvez saisir un nom de modèle directement.",
+        L"Connexion non sécurisée (HTTP)",
+        L"L'URL de base utilise HTTP (non chiffré). Votre clé API et votre texte seront envoyés en clair. Continuer ?",
+        L"Paramètres compatibles OpenAI enregistrés.",
+        L"Clé enregistrée : ",
+        L"L'URL de base n'est pas valide. Exemple : https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Modèle spécifié par l'utilisateur (.gguf)",
     L"Enregistrer un autre modèle .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Avis sur la qualité de la traduction",
+        L"Le modèle sélectionné n'est pas Hy-MT2. La version actuelle utilise le prompt réservé à Hy-MT2 ; la qualité de traduction avec ce modèle n'est donc pas garantie. Continuer ?",
+        L"Modèle enregistré",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Le modèle sélectionné a été enregistré auprès du moteur local.\n"
+    L"\n"
+    L"Ce modèle est utilisé pour la traduction lorsque vous choisissez « Sélection du moteur de traduction > Choix de l'utilisateur (.gguf) ».\n"
+    L"\n"
+    L"Prise d'effet : au maximum environ 1 minute après l'enregistrement (après la sortie du moteur par inactivité)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ce modèle est déjà intégré à Emebala Chat. Aucune inscription n'est nécessaire. Vous pouvez sélectionner directement le moteur de traduction local intégré.",
@@ -1211,6 +1275,11 @@ const LocalizedStrings kStringsFrench = {
     L"Ce nom ne peut pas être utilisé. Saisissez un nom non vide, différent des noms existants, sans espaces ni séparateurs de chemin, de 64 caractères maximum.",
     L"Modifications enregistrées.",
 
+    L"Impossible de sérialiser registry.json (un nom de fichier a été refusé). Rien n'a été modifié.",
+    L"%LOCALAPPDATA% est indisponible ; impossible de localiser le dossier de modèles partagé.",
+    L"Impossible d'écrire registry.json.",
+    L"registry.json n'a pas pu être écrit complètement.",
+    L"registry.json est endommagé ou utilise un schéma non pris en charge. Il n'a PAS été modifié. Réparez-le ou supprimez-le, puis réessayez.",
 };
 
 // 9. German (de)
@@ -1297,27 +1366,31 @@ const LocalizedStrings kStringsGerman = {
     L"Lokale Übersetzung nicht verfügbar",
     L"Die Dateien der lokalen Übersetzungsengine fehlen, daher ist die Übersetzung vorübergehend angehalten. Installieren Sie Emebala Chat erneut, um die lokale Engine wiederherzustellen, oder wechseln Sie im Tray-Menü unter „Übersetzungsengine“ zu „Google Übersetzer“.",
     L"OpenAI-kompatibel (benutzerdefinierter Server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-kompatible Engine-Einstellungen",
+        L"OpenAI-kompatible Engine-Einstellungen…",
+        L"Basis-URL",
+        L"API-Schlüssel",
+        L"Modell",
+        L"Modellliste abrufen",
+        L"Die Modellliste konnte nicht abgerufen werden. Sie können einen Modellnamen direkt eingeben.",
+        L"Unsichere Verbindung (HTTP)",
+        L"Die Basis-URL verwendet HTTP (unverschlüsselt). Ihr API-Schlüssel und Ihr Text werden im Klartext gesendet. Fortfahren?",
+        L"OpenAI-kompatible Einstellungen gespeichert.",
+        L"Gespeicherter Schlüssel: ",
+        L"Die Basis-URL ist ungültig. Beispiel: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Benutzerdefiniertes Modell (.gguf)",
     L"Anderes .gguf-Modell registrieren…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Hinweis zur Übersetzungsqualität",
+        L"Das ausgewählte Modell ist nicht Hy-MT2. Die aktuelle Version verwendet den Hy-MT2-spezifischen Prompt, daher ist die Übersetzungsqualität mit diesem Modell nicht garantiert. Fortfahren?",
+        L"Modell registriert",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Das ausgewählte Modell wurde bei der lokalen Engine registriert.\n"
+    L"\n"
+    L"Dieses Modell wird für die Übersetzung verwendet, wenn Sie \"Übersetzungsengine wählen > Benutzerauswahl (.gguf)\" wählen.\n"
+    L"\n"
+    L"Wann wirksam: bis zu etwa 1 Minute nach der Registrierung (nach dem Leerlaufende der Engine)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dieses Modell ist bereits in Emebala Chat integriert. Eine Registrierung ist nicht erforderlich. Sie können die integrierte lokale Übersetzungsengine direkt auswählen.",
@@ -1342,6 +1415,11 @@ const LocalizedStrings kStringsGerman = {
     L"Dieser Name kann nicht verwendet werden. Bitte einen nicht leeren Namen eingeben, der von vorhandenen abweicht und keine Leerzeichen oder Pfadtrennzeichen enthält (max. 64 Zeichen).",
     L"Änderungen gespeichert.",
 
+    L"registry.json konnte nicht serialisiert werden (ein Dateiname wurde abgelehnt). Es wurde nichts geändert.",
+    L"%LOCALAPPDATA% ist nicht verfügbar; das freigegebene Modellverzeichnis kann nicht gefunden werden.",
+    L"registry.json konnte nicht geschrieben werden.",
+    L"registry.json konnte nicht vollständig geschrieben werden.",
+    L"registry.json ist beschädigt oder hat ein nicht unterstütztes Schema. Es wurde NICHT geändert. Reparieren oder entfernen Sie es und versuchen Sie es erneut.",
 };
 
 // 10. Russian (ru)
@@ -1428,27 +1506,31 @@ const LocalizedStrings kStringsRussian = {
     L"Локальный перевод недоступен",
     L"Файлы локального движка перевода не найдены, поэтому перевод приостановлен. Переустановите Emebala Chat, чтобы восстановить локальный движок, или переключитесь на облачный (Google) перевод, выбрав «Google Переводчик» в меню области уведомлений, «Движок перевода».",
     L"Совместимо с OpenAI (пользовательский сервер)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Настройки совместимого с OpenAI движка",
+        L"Настройки совместимого с OpenAI движка…",
+        L"Base URL",
+        L"API-ключ",
+        L"Модель",
+        L"Получить список моделей",
+        L"Не удалось получить список моделей. Вы можете ввести имя модели вручную.",
+        L"Незащищённое соединение (HTTP)",
+        L"Base URL использует HTTP (без шифрования). Ваш API-ключ и текст будут отправлены в открытом виде. Продолжить?",
+        L"Совместимые с OpenAI настройки сохранены.",
+        L"Сохранённый ключ: ",
+        L"Недопустимый Base URL. Пример: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Модель, указанная пользователем (.gguf)",
     L"Зарегистрировать другую модель .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Уведомление о качестве перевода",
+        L"Выбранная модель не Hy-MT2. Текущая версия использует промпт только для Hy-MT2, поэтому качество перевода этой моделью не гарантируется. Продолжить?",
+        L"Модель зарегистрирована",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Выбранная модель зарегистрирована в локальном движке.\n"
+    L"\n"
+    L"Эта модель используется для перевода, когда вы выбираете «Выбор движка перевода > Выбор пользователя (.gguf)».\n"
+    L"\n"
+    L"Когда вступает в силу: не более примерно 1 минуты после регистрации (после выхода движка из простоя)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Эта модель уже встроена в Emebala Chat. Регистрация не требуется. Выберите встроенный локальный движок перевода напрямую.",
@@ -1473,6 +1555,11 @@ const LocalizedStrings kStringsRussian = {
     L"Такое имя использовать нельзя. Введите непустое имя, отличающееся от существующих, без пробелов и разделителей пути, длиной до 64 символов.",
     L"Изменения сохранены.",
 
+    L"Не удалось сериализовать registry.json (имя файла отклонено). Ничего не изменено.",
+    L"%LOCALAPPDATA% недоступен; не удаётся найти общий каталог моделей.",
+    L"Не удалось записать registry.json.",
+    L"Не удалось полностью записать registry.json.",
+    L"registry.json повреждён или имеет неподдерживаемую схему. Он НЕ был изменён. Исправьте или удалите его и повторите попытку.",
 };
 
 // 11. Portuguese (pt)
@@ -1559,27 +1646,31 @@ const LocalizedStrings kStringsPortuguese = {
     L"Tradução local indisponível",
     L"Os ficheiros do motor de tradução local não foram encontrados, pelo que a tradução foi suspensa. Reinstale o Emebala Chat para restaurar o motor local, ou mude para a tradução na nuvem (Google) escolhendo “Google Tradutor” no menu da bandeja, em “Motor de tradução”.",
     L"Compatível com OpenAI (servidor personalizado)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Definições do motor compatível com OpenAI",
+        L"Definições do motor compatível com OpenAI…",
+        L"URL base",
+        L"Chave de API",
+        L"Modelo",
+        L"Obter lista de modelos",
+        L"Não foi possível obter a lista de modelos. Pode introduzir o nome do modelo diretamente.",
+        L"Ligação insegura (HTTP)",
+        L"O URL base utiliza HTTP (não encriptado). A sua chave de API e o texto serão enviados em texto simples. Continuar?",
+        L"Definições compatíveis com OpenAI guardadas.",
+        L"Chave guardada: ",
+        L"O URL base não é válido. Exemplo: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Modelo especificado pelo usuário (.gguf)",
     L"Registrar outro modelo .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Aviso sobre a qualidade da tradução",
+        L"O modelo selecionado não é Hy-MT2. A versão atual utiliza o prompt exclusivo do Hy-MT2, pelo que a qualidade da tradução com este modelo não é garantida. Continuar?",
+        L"Modelo registado",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"O modelo selecionado foi registado no motor local.\n"
+    L"\n"
+    L"Este modelo é utilizado para tradução quando escolhe \"Seleção do motor de tradução > Escolha do utilizador (.gguf)\".\n"
+    L"\n"
+    L"Quando surte efeito: até cerca de 1 minuto após o registo (após a saída do motor por inatividade)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Este modelo já está integrado no Emebala Chat. Não é necessário registrá-lo. Selecione diretamente o mecanismo de tradução local integrado.",
@@ -1604,6 +1695,11 @@ const LocalizedStrings kStringsPortuguese = {
     L"Esse nome não pode ser utilizado. Introduza um nome não vazio, diferente dos existentes, sem espaços nem separadores de caminho, até 64 caracteres.",
     L"Alterações guardadas.",
 
+    L"Não foi possível serializar registry.json (um nome de ficheiro foi rejeitado). Nada foi alterado.",
+    L"%LOCALAPPDATA% está indisponível; não foi possível localizar a pasta de modelos partilhada.",
+    L"Não foi possível escrever registry.json.",
+    L"registry.json não foi completamente escrito.",
+    L"registry.json está danificado ou tem um esquema não suportado. NÃO foi modificado. Corrija-o ou remova-o e tente novamente.",
 };
 
 // 12. Italian (it)
@@ -1690,27 +1786,31 @@ const LocalizedStrings kStringsItalian = {
     L"Traduzione locale non disponibile",
     L"I file del motore di traduzione locale non sono stati trovati, quindi la traduzione è sospesa. Reinstalla Emebala Chat per ripristinare il motore locale, oppure passa alla traduzione cloud (Google) scegliendo “Google Traduttore” dal menu dell’area di notifica, “Motore di traduzione”.",
     L"Compatibile con OpenAI (server personalizzato)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Impostazioni motore compatibile OpenAI",
+        L"Impostazioni motore compatibile OpenAI…",
+        L"URL base",
+        L"Chiave API",
+        L"Modello",
+        L"Recupera elenco modelli",
+        L"Impossibile recuperare l'elenco dei modelli. Puoi digitare direttamente il nome del modello.",
+        L"Connessione non sicura (HTTP)",
+        L"L'URL base usa HTTP (non crittografato). La chiave API e il testo verranno inviati in chiaro. Continuare?",
+        L"Impostazioni compatibili OpenAI salvate.",
+        L"Chiave salvata: ",
+        L"L'URL base non è valido. Esempio: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Modello specificato dall'utente (.gguf)",
     L"Registra un altro modello .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Avviso sulla qualità della traduzione",
+        L"Il modello selezionato non è Hy-MT2. La versione attuale usa il prompt esclusivo di Hy-MT2, quindi la qualità della traduzione con questo modello non è garantita. Continuare?",
+        L"Modello registrato",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Il modello selezionato è stato registrato nel motore locale.\n"
+    L"\n"
+    L"Questo modello viene usato per la traduzione quando scegli \"Selezione motore di traduzione > Scelta utente (.gguf)\".\n"
+    L"\n"
+    L"Quando ha effetto: al massimo circa 1 minuto dopo la registrazione (dopo l'uscita del motore per inattività)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Questo modello è già integrato in Emebala Chat. Non è necessario registrarlo. Puoi selezionare direttamente il motore di traduzione locale integrato.",
@@ -1735,6 +1835,11 @@ const LocalizedStrings kStringsItalian = {
     L"Questo nome non può essere usato. Inserisci un nome non vuoto, diverso da quelli esistenti, senza spazi né separatori di percorso, entro 64 caratteri.",
     L"Modifiche salvate.",
 
+    L"Impossibile serializzare registry.json (un nome file è stato rifiutato). Non è stato modificato nulla.",
+    L"%LOCALAPPDATA% non disponibile; impossibile trovare la cartella dei modelli condivisa.",
+    L"Impossibile scrivere registry.json.",
+    L"registry.json non è stato scritto completamente.",
+    L"registry.json è danneggiato o ha uno schema non supportato. NON è stato modificato. Riparalo o rimuovilo e riprova.",
 };
 
 // 13. Dutch (nl)
@@ -1821,27 +1926,31 @@ const LocalizedStrings kStringsDutch = {
     L"Lokale vertaling niet beschikbaar",
     L"De bestanden van de lokale vertaalengine ontbreken, dus de vertaling is onderbroken. Installeer Emebala Chat opnieuw om de lokale engine te herstellen, of schakel over naar cloud(Google)-vertaling door “Google Vertalen” te kiezen in het menubalkmenu bij “Vertaalengine”.",
     L"OpenAI-compatibel (aangepaste server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-compatibele engine-instellingen",
+        L"OpenAI-compatibele engine-instellingen…",
+        L"Basis-URL",
+        L"API-sleutel",
+        L"Model",
+        L"Modellenlijst ophalen",
+        L"De modellenlijst kon niet worden opgehaald. U kunt een modelnaam direct typen.",
+        L"Onbeveiligde verbinding (HTTP)",
+        L"De basis-URL gebruikt HTTP (niet versleuteld). Uw API-sleutel en tekst worden als leesbare tekst verzonden. Doorgaan?",
+        L"OpenAI-compatibele instellingen opgeslagen.",
+        L"Opgeslagen sleutel: ",
+        L"De basis-URL is ongeldig. Voorbeeld: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Door gebruiker gespecificeerd model (.gguf)",
     L"Ander .gguf-model registreren…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Mededeling over vertaalkwaliteit",
+        L"Het geselecteerde model is geen Hy-MT2. De huidige versie gebruikt de alleen-voor-Hy-MT2 prompt, dus de vertaalkwaliteit met dit model is niet gegarandeerd. Doorgaan?",
+        L"Model geregistreerd",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Het geselecteerde model is geregistreerd bij de lokale engine.\n"
+    L"\n"
+    L"Dit model wordt gebruikt voor vertaling wanneer u \"Vertaalengine selecteren > Keuze van gebruiker (.gguf)\" kiest.\n"
+    L"\n"
+    L"Wanneer van kracht: tot ongeveer 1 minuut na registratie (na het beëindigen van de engine door inactiviteit)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Dit model is al ingebouwd in Emebala Chat. Registratie is niet nodig. Selecteer de ingebouwde lokale vertaalengine direct.",
@@ -1866,6 +1975,11 @@ const LocalizedStrings kStringsDutch = {
     L"Die naam kan niet worden gebruikt. Voer een niet-lege naam in die afwijkt van bestaande namen, zonder spaties of padscheidingstekens, van maximaal 64 tekens.",
     L"Wijzigingen opgeslagen.",
 
+    L"registry.json kon niet worden geserialiseerd (een bestandsnaam is afgewezen). Er is niets gewijzigd.",
+    L"%LOCALAPPDATA% is niet beschikbaar; de gedeelde modellenmap kan niet worden gevonden.",
+    L"registry.json kon niet worden weggeschreven.",
+    L"registry.json kon niet volledig worden weggeschreven.",
+    L"registry.json is beschadigd of heeft een niet-ondersteund schema. Het is NIET gewijzigd. Herstel of verwijder het en probeer het opnieuw.",
 };
 
 // 14. Polish (pl)
@@ -1952,27 +2066,31 @@ const LocalizedStrings kStringsPolish = {
     L"Tłumaczenie lokalne niedostępne",
     L"Nie znaleziono plików lokalnego silnika tłumaczenia, więc tłumaczenie zostało wstrzymane. Zainstaluj ponownie Emebala Chat, aby przywrócić lokalny silnik, lub przełącz się na tłumaczenie w chmurze (Google), wybierając „Google Translate” w menu zasobnika, „Silnik tłumaczenia”.",
     L"Zgodne z OpenAI (serwer użytkownika)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Ustawienia silnika zgodnego z OpenAI",
+        L"Ustawienia silnika zgodnego z OpenAI…",
+        L"Base URL",
+        L"Klucz API",
+        L"Model",
+        L"Pobierz listę modeli",
+        L"Nie udało się pobrać listy modeli. Możesz wpisać nazwę modelu bezpośrednio.",
+        L"Niezabezpieczone połączenie (HTTP)",
+        L"Base URL używa HTTP (bez szyfrowania). Twój klucz API i tekst zostaną wysłane jako zwykły tekst. Kontynuować?",
+        L"Zapisano ustawienia zgodne z OpenAI.",
+        L"Zapisany klucz: ",
+        L"Base URL jest nieprawidłowy. Przykład: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Model określony przez użytkownika (.gguf)",
     L"Zarejestruj inny model .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Informacja o jakości tłumaczenia",
+        L"Wybrany model nie jest Hy-MT2. Bieżąca wersja używa promptu wyłącznie dla Hy-MT2, więc jakość tłumaczenia tym modelem nie jest gwarantowana. Kontynuować?",
+        L"Model zarejestrowany",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Wybrany model został zarejestrowany w lokalnym silniku.\n"
+    L"\n"
+    L"Model ten jest używany do tłumaczenia po wybraniu \"Wybór silnika tłumaczenia > Wybór użytkownika (.gguf)\".\n"
+    L"\n"
+    L"Kiedy zaczyna obowiązywać: do około 1 minuty po rejestracji (po zakończeniu działania silnika z powodu bezczynności)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ten model jest już wbudowany w Emebala Chat. Rejestracja nie jest potrzebna. Wystarczy bezpośrednio wybrać wbudowany lokalny silnik tłumaczenia.",
@@ -1997,6 +2115,11 @@ const LocalizedStrings kStringsPolish = {
     L"Tej nazwy nie można użyć. Wpisz niepustą nazwę, różną od istniejących, bez spacji i separatorów ścieżki, do 64 znaków.",
     L"Zapisano zmiany.",
 
+    L"Nie można zserializować registry.json (nazwa pliku została odrzucona). Nic nie zmieniono.",
+    L"%LOCALAPPDATA% jest niedostępny; nie można zlokalizować folderu wspólnych modeli.",
+    L"Nie można zapisać registry.json.",
+    L"Nie można w pełni zapisać registry.json.",
+    L"registry.json jest uszkodzony lub ma nieobsługiwaną strukturę. NIE został zmieniony. Napraw go lub usuń i spróbuj ponownie.",
 };
 
 // 15. Czech (cs)
@@ -2083,27 +2206,31 @@ const LocalizedStrings kStringsCzech = {
     L"Místní překlad není dostupný",
     L"Soubory místního překladového enginu chybí, takže je překlad pozastaven. Pro obnovení místního enginu přeinstalujte Emebala Chat, nebo pro přechod na cloudový (Google) překlad vyberte v nabídce oznamovací oblasti „Google Překladač“ v části „Překladový engine“.",
     L"Kompatibilní s OpenAI (uživatelský server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Nastavení enginu kompatibilního s OpenAI",
+        L"Nastavení enginu kompatibilního s OpenAI…",
+        L"Základní URL",
+        L"API klíč",
+        L"Model",
+        L"Načíst seznam modelů",
+        L"Seznam modelů se nepodařilo načíst. Název modelu můžete zadat přímo.",
+        L"Nezabezpečené připojení (HTTP)",
+        L"Základní URL používá HTTP (nešifrované). Váš API klíč a text budou odeslány v nešifrované podobě. Pokračovat?",
+        L"Nastavení kompatibilní s OpenAI uložena.",
+        L"Uložený klíč: ",
+        L"Základní URL není platná. Příklad: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Model určený uživatelem (.gguf)",
     L"Zaregistrovat jiný model .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Upozornění na kvalitu překladu",
+        L"Vybraný model není Hy-MT2. Aktuální verze používá výhradně prompt pro Hy-MT2, takže kvalita překladu s tímto modelem není zaručena. Pokračovat?",
+        L"Model zaregistrován",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Vybraný model byl zaregistrován v lokálním enginu.\n"
+    L"\n"
+    L"Tento model se používá k překladu, když zvolíte \"Výběr překladového enginu > Volba uživatele (.gguf)\".\n"
+    L"\n"
+    L"Kdy se projeví: nejpozději přibližně 1 minutu po registraci (po ukončení enginu z důvodu nečinnosti)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tento model je již vestavěný v Emebala Chat. Registrace není potřeba. Vestavěný lokální překladový engine můžete vybrat přímo.",
@@ -2128,6 +2255,11 @@ const LocalizedStrings kStringsCzech = {
     L"Tento název nelze použít. Zadejte neprázdný název, který se liší od existujících, bez mezer a oddělovačů cesty, do 64 znaků.",
     L"Změny byly uloženy.",
 
+    L"registry.json se nepodařilo serializovat (název souboru byl odmítnut). Nic se nezměnilo.",
+    L"%LOCALAPPDATA% není k dispozici; nelze najít sdílenou složku modelů.",
+    L"registry.json se nepodařilo zapsat.",
+    L"registry.json se nepodařilo zapsat celý.",
+    L"registry.json je poškozený nebo má nepodporované schéma. Nebyl změněn. Opravte ho nebo ho odstraňte a zkuste to znovu.",
 };
 
 // 16. Hungarian (hu)
@@ -2214,27 +2346,31 @@ const LocalizedStrings kStringsHungarian = {
     L"A helyi fordítás nem érhető el",
     L"A helyi fordítómotor fájljai hiányoznak, ezért a fordítás szünetel. A helyi motor helyreállításához telepítse újra az Emebala Chatet, vagy váltson a felhőalapú (Google) fordításra a „Google Fordító” választásával a tálca „Fordítómotor” menüjében.",
     L"OpenAI-kompatibilis (egyéni szerver)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-kompatibilis motor beállításai",
+        L"OpenAI-kompatibilis motor beállításai…",
+        L"Alap-URL",
+        L"API-kulcs",
+        L"Modell",
+        L"Modelllista lekérése",
+        L"A modelllista lekérése nem sikerült. Modellnevet közvetlenül is beírhat.",
+        L"Nem biztonságos kapcsolat (HTTP)",
+        L"Az alap-URL HTTP-et használ (titkosítás nélkül). API-kulcsa és szövege titkosítatlanul lesz elküldve. Folytatja?",
+        L"OpenAI-kompatibilis beállítások mentve.",
+        L"Mentett kulcs: ",
+        L"Az alap-URL érvénytelen. Példa: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Felhasználó által megadott modell (.gguf)",
     L"Más .gguf modell regisztrálása…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Tájékoztatás a fordítás minőségéről",
+        L"A kiválasztott modell nem Hy-MT2. A jelenlegi verzió csak Hy-MT2-höz készült promptot használ, ezért a fordítás minősége ezzel a modellel nem garantált. Folytatja?",
+        L"Modell regisztrálva",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"A kiválasztott modell regisztrálva lett a helyi motorban.\n"
+    L"\n"
+    L"Ez a modell akkor használható fordításhoz, amikor a \"Fordítómotor választása > Felhasználói választás (.gguf)\" lehetőséget választja.\n"
+    L"\n"
+    L"Mikor lép hatályba: regisztráció után legfeljebb kb. 1 perc (a motor inaktivitás miatti leállása után)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ez a modell már beépítve van az Emebala Chatbe. Regisztrációra nincs szükség. A beépített helyi fordítómotort közvetlenül kiválaszthatod.",
@@ -2259,6 +2395,11 @@ const LocalizedStrings kStringsHungarian = {
     L"Ez a név nem használható. Adj meg egy nem üres, a meglévőktől eltérő, szóközöket és elválasztókat nem tartalmazó, legfeljebb 64 karakteres nevet.",
     L"Változások mentve.",
 
+    L"A registry.json nem szerializálható (egy fájlnév elutasítva). Semmi sem változott.",
+    L"A %LOCALAPPDATA% nem érhető el; a megosztott modellmappa nem található.",
+    L"A registry.json nem írható.",
+    L"A registry.json nem írható teljesen.",
+    L"A registry.json sérült vagy nem támogatott sémájú. NEM lett módosítva. Javítsa ki vagy távolítsa el, majd próbálja újra.",
 };
 
 // 17. Romanian (ro)
@@ -2345,27 +2486,31 @@ const LocalizedStrings kStringsRomanian = {
     L"Traducerea locală nu este disponibilă",
     L"Fișierele motorului de traducere local lipsesc, deci traducerea este întreruptă. Reinstalați Emebala Chat pentru a restabili motorul local, sau treceți la traducerea în cloud (Google) alegând „Google Translate” din meniul barei de sistem, „Motor de traducere”.",
     L"Compatibil OpenAI (server personalizat)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Setări motor compatibil OpenAI",
+        L"Setări motor compatibil OpenAI…",
+        L"URL de bază",
+        L"Cheie API",
+        L"Model",
+        L"Preia lista de modele",
+        L"Lista de modele nu a putut fi preluată. Puteți tasta direct numele modelului.",
+        L"Conexiune nesecurizată (HTTP)",
+        L"URL-ul de bază folosește HTTP (necriptat). Cheia API și textul dvs. vor fi trimise în clar. Continuați?",
+        L"Setări compatibile OpenAI salvate.",
+        L"Cheie salvată: ",
+        L"URL-ul de bază nu este valid. Exemplu: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Model specificat de utilizator (.gguf)",
     L"Înregistrează alt model .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Notă despre calitatea traducerii",
+        L"Modelul selectat nu este Hy-MT2. Versiunea actuală folosește promptul exclusiv Hy-MT2, deci calitatea traducerii cu acest model nu este garantată. Continuați?",
+        L"Model înregistrat",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Modelul selectat a fost înregistrat la motorul local.\n"
+    L"\n"
+    L"Acest model este folosit pentru traducere când alegeți \"Selectarea motorului de traducere > Alegerea utilizatorului (.gguf)\".\n"
+    L"\n"
+    L"Când intră în vigoare: cel mult aproximativ 1 minut după înregistrare (după ieșirea motorului din inactivitate)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Acest model este deja integrat în Emebala Chat. Înregistrarea nu este necesară. Poți selecta direct motorul de traducere local integrat.",
@@ -2390,6 +2535,11 @@ const LocalizedStrings kStringsRomanian = {
     L"Acest nume nu poate fi folosit. Introduceți un nume nevid, diferit de cele existente, fără spații sau separatoare de cale, de maximum 64 de caractere.",
     L"Modificări salvate.",
 
+    L"registry.json nu a putut fi serializat (un nume de fișier a fost respins). Nu s-a modificat nimic.",
+    L"%LOCALAPPDATA% nu este disponibil; nu se poate localiza directorul de modele partajat.",
+    L"registry.json nu a putut fi scris.",
+    L"registry.json nu a putut fi scris complet.",
+    L"registry.json este deteriorat sau are un schemă neacceptată. NU a fost modificat. Reparați-l sau eliminați-l și încercați din nou.",
 };
 
 // 18. Swedish (sv)
@@ -2476,27 +2626,31 @@ const LocalizedStrings kStringsSwedish = {
     L"Lokal översättning är inte tillgänglig",
     L"Filerna för den lokala översättningsmotorn saknas, så översättningen har pausats. Installera om Emebala Chat för att återställa den lokala motorn, eller byt till molnöversättning (Google) genom att välja “Google Översätt” i menyn för systemfältet, “Översättningsmotor”.",
     L"OpenAI-kompatibel (anpassad server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Inställningar för OpenAI-kompatibel motor",
+        L"Inställningar för OpenAI-kompatibel motor…",
+        L"Bas-URL",
+        L"API-nyckel",
+        L"Modell",
+        L"Hämta modellista",
+        L"Modellistan kunde inte hämtas. Du kan skriva modellnamnet direkt.",
+        L"Oskyddad anslutning (HTTP)",
+        L"Bas-URL:en använder HTTP (okrypterat). Din API-nyckel och text skickas i klartext. Fortsätt?",
+        L"OpenAI-kompatibla inställningar sparade.",
+        L"Sparad nyckel: ",
+        L"Bas-URL:en är ogiltig. Exempel: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Användarspecificerad modell (.gguf)",
     L"Registrera en annan .gguf-modell…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Meddelande om översättningskvalitet",
+        L"Den valda modellen är inte Hy-MT2. Den aktuella versionen använder prompten endast för Hy-MT2, så översättningskvaliteten med den här modellen garanteras inte. Fortsätt?",
+        L"Modell registrerad",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Den valda modellen har registrerats hos den lokala motorn.\n"
+    L"\n"
+    L"Den här modellen används för översättning när du väljer \"Välj översättningsmotor > Användarval (.gguf)\".\n"
+    L"\n"
+    L"När den träder i kraft: högst cirka 1 minut efter registreringen (efter att motorn avslutats vid inaktivitet)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Den här modellen är redan inbyggd i Emebala Chat. Ingen registrering behövs. Välj den inbyggda lokala översättningsmotorn direkt.",
@@ -2521,6 +2675,11 @@ const LocalizedStrings kStringsSwedish = {
     L"Det namnet kan inte användas. Ange ett icke-tomt namn som skiljer sig från befintliga, utan mellanslag eller sökvägsavgränsare, på högst 64 tecken.",
     L"Ändringar sparade.",
 
+    L"registry.json kunde inte serialiseras (ett filnamn avvisades). Inget har ändrats.",
+    L"%LOCALAPPDATA% är inte tillgängligt; den delade modellmappen kunde inte hittas.",
+    L"registry.json kunde inte skrivas.",
+    L"registry.json kunde inte skrivas fullständigt.",
+    L"registry.json är skadad eller har ett schema som inte stöds. Den har INTE ändrats. Reparera eller ta bort den och försök igen.",
 };
 
 // 19. Danish (da)
@@ -2607,27 +2766,31 @@ const LocalizedStrings kStringsDanish = {
     L"Lokal oversættelse er ikke tilgængelig",
     L"Filerne til den lokale oversættelsesmotor mangler, så oversættelsen er sat på pause. Geninstaller Emebala Chat for at gendanne den lokale motor, eller skift til sky-oversættelse (Google) ved at vælge “Google Oversæt” fra bakkemenuen under “Oversættelsesmotor”.",
     L"OpenAI-kompatibel (brugerdefineret server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Indstillinger for OpenAI-kompatibel motor",
+        L"Indstillinger for OpenAI-kompatibel motor…",
+        L"Basis-URL",
+        L"API-nøgle",
+        L"Model",
+        L"Hent modelliste",
+        L"Modellisten kunne ikke hentes. Du kan skrive modelnavnet direkte.",
+        L"Usikker forbindelse (HTTP)",
+        L"Basis-URL'en bruger HTTP (ukrypteret). Din API-nøgle og tekst sendes i klartekst. Fortsæt?",
+        L"OpenAI-kompatible indstillinger gemt.",
+        L"Gemt nøgle: ",
+        L"Basis-URL'en er ugyldig. Eksempel: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Brugerspecificeret model (.gguf)",
     L"Registrér en anden .gguf-model…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Meddelelse om oversættelseskvalitet",
+        L"Den valgte model er ikke Hy-MT2. Den aktuelle version bruger kun prompten til Hy-MT2, så oversættelseskvaliteten med denne model kan ikke garanteres. Fortsæt?",
+        L"Model registreret",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Den valgte model er registreret hos den lokale motor.\n"
+    L"\n"
+    L"Denne model bruges til oversættelse, når du vælger \"Valg af oversættelsesmotor > Brugervalgt (.gguf)\".\n"
+    L"\n"
+    L"Hvornår den træder i kraft: senest ca. 1 minut efter registreringen (efter motorens afslutning ved inaktivitet)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne model er allerede indbygget i Emebala Chat. Registrering er ikke nødvendig. Vælg den indbyggede lokale oversættelsesmotor direkte.",
@@ -2652,6 +2815,11 @@ const LocalizedStrings kStringsDanish = {
     L"Det navn kan ikke bruges. Indtast et ikke-tomt navn, der adskiller sig fra eksisterende, uden mellemrum eller stiangrænsesymboler, på højst 64 tegn.",
     L"Ændringer gemt.",
 
+    L"registry.json kunne ikke serialiseres (et filnavn blev afvist). Intet blev ændret.",
+    L"%LOCALAPPDATA% er ikke tilgængelig; den delte modelmappe kunne ikke findes.",
+    L"registry.json kunne ikke skrives.",
+    L"registry.json kunne ikke skrives færdig.",
+    L"registry.json er beskadiget eller har et ikke-understøttet skema. Den er IKKE ændret. Reparér eller fjern den, og prøv igen.",
 };
 
 // 20. Finnish (fi)
@@ -2738,27 +2906,31 @@ const LocalizedStrings kStringsFinnish = {
     L"Paikallinen käännös ei ole käytettävissä",
     L"Paikallisen käännösmoottorin tiedostoja ei löydy, joten käännös on keskeytetty. Asenna Emebala Chat uudelleen palauttaaksesi paikallisen moottorin, tai vaihda pilvikäännökseen (Google) valitsemalla “Google Kääntäjä” ilmoitusalueen valikosta, “Käännösmoottori”.",
     L"OpenAI-yhteensopiva (mukautettu palvelin)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-yhteensopivan moottorin asetukset",
+        L"OpenAI-yhteensopivan moottorin asetukset…",
+        L"Perus-URL",
+        L"API-avain",
+        L"Malli",
+        L"Hae malliluettelo",
+        L"Malliluetteloa ei voitu hakea. Voit kirjoittaa mallin nimen suoraan.",
+        L"Suojaamaton yhteys (HTTP)",
+        L"Perus-URL käyttää HTTP:tä (salaamaton). API-avaimesi ja tekstisi lähetetään salaamattomana. Jatketaanko?",
+        L"OpenAI-yhteensopivat asetukset tallennettu.",
+        L"Tallennettu avain: ",
+        L"Perus-URL on virheellinen. Esimerkki: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Käyttäjän määrittämä malli (.gguf)",
     L"Rekisteröi toinen .gguf-malli…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Huomautus käännöksen laadusta",
+        L"Valittu malli ei ole Hy-MT2. Nykyinen versio käyttää vain Hy-MT2:lle tarkoitettua promptia, joten tämän mallin käännöksen laatua ei taata. Jatketaanko?",
+        L"Malli rekisteröity",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Valittu malli on rekisteröity paikalliseen moottoriin.\n"
+    L"\n"
+    L"Tätä mallia käytetään kääntämiseen, kun valitset \"Käännösmoottorin valinta > Käyttäjän valinta (.gguf)\".\n"
+    L"\n"
+    L"Milloin voimaan: viimeistään noin 1 minuutin kuluttua rekisteröinnistä (moottorin ollessa sulkeutunut toimettomuuden vuoksi)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Tämä malli on jo sisäänrakennettu Emebala Chatiin. Rekisteröintiä ei tarvita. Valitse sisäänrakennettu paikallinen käännösmoottori suoraan.",
@@ -2783,6 +2955,11 @@ const LocalizedStrings kStringsFinnish = {
     L"Tätä nimeä ei voi käyttää. Syötä nimi, joka ei ole tyhjä, eroaa olemassa olevista eikä sisällä välilyöntejä tai polkuerottimia, enintään 64 merkkiä.",
     L"Muutokset tallennettu.",
 
+    L"registry.jsonia ei voitu serialisoida (tiedostonimi hylättiin). Mitään ei muutettu.",
+    L"%LOCALAPPDATA% ei ole käytettävissä; jaettua mallikansiota ei löydy.",
+    L"registry.jsonia ei voitu kirjoittaa.",
+    L"registry.jsonia ei voitu kirjoittaa loppuun.",
+    L"registry.json on vioittunut tai sen skeemaa ei tueta. Sitä EI muutettu. Korjaa tai poista se ja yritä uudelleen.",
 };
 
 // 21. Norwegian (no / nb)
@@ -2869,27 +3046,31 @@ const LocalizedStrings kStringsNorwegian = {
     L"Lokal oversettelse er ikke tilgjengelig",
     L"Filene til den lokale oversettelsesmotoren mangler, så oversettelsen er satt på pause. Installer Emebala Chat på nytt for å gjenopprette den lokale motoren, eller bytt til skyoversettelse (Google) ved å velge “Google Oversetter” fra menyen i systemfeltet, “Oversettelsesmotor”.",
     L"OpenAI-kompatibel (tilpasset server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Innstillinger for OpenAI-kompatibel motor",
+        L"Innstillinger for OpenAI-kompatibel motor…",
+        L"Basis-URL",
+        L"API-nøkkel",
+        L"Modell",
+        L"Hent modelliste",
+        L"Modellisten kunne ikke hentes. Du kan skrive modellnavnet direkte.",
+        L"Usikker tilkobling (HTTP)",
+        L"Basis-URL-en bruker HTTP (ukryptert). API-nøkkelen og teksten din sendes i klartekst. Fortsette?",
+        L"OpenAI-kompatible innstillinger lagret.",
+        L"Lagret nøkkel: ",
+        L"Basis-URL-en er ugyldig. Eksempel: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Brukerspesifisert modell (.gguf)",
     L"Registrer en annen .gguf-modell…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Varsel om oversettelseskvalitet",
+        L"Den valgte modellen er ikke Hy-MT2. Denne versjonen bruker prompten kun for Hy-MT2, så oversettelseskvaliteten med denne modellen kan ikke garanteres. Fortsette?",
+        L"Modell registrert",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Den valgte modellen er registrert hos den lokale motoren.\n"
+    L"\n"
+    L"Denne modellen brukes til oversettelse når du velger \"Velg oversettelsesmotor > Brukervalg (.gguf)\".\n"
+    L"\n"
+    L"Når den trer i kraft: innen cirka 1 minutt etter registreringen (etter at motoren avsluttes ved inaktivitet)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Denne modellen er allerede innebygd i Emebala Chat. Registrering er ikke nødvendig. Velg den innebygde lokale oversettelsesmotoren direkte.",
@@ -2914,6 +3095,11 @@ const LocalizedStrings kStringsNorwegian = {
     L"Det navnet kan ikke brukes. Skriv inn et navn som ikke er tomt, er forskjellig fra eksisterende, uten mellomrom eller sti-separatorer, opptil 64 tegn.",
     L"Endringer lagret.",
 
+    L"registry.json kunne ikke serialiseres (et filnavn ble avvist). Ingenting ble endret.",
+    L"%LOCALAPPDATA% er ikke tilgjengelig; den delte modellmappen ble ikke funnet.",
+    L"registry.json kunne ikke skrives.",
+    L"registry.json kunne ikke skrives fullstendig.",
+    L"registry.json er skadet eller har et schema som ikke støttes. Den har IKKE blitt endret. Reparer eller fjern den, og prøv igjen.",
 };
 
 // 22. Greek (el)
@@ -3000,27 +3186,31 @@ const LocalizedStrings kStringsGreek = {
     L"Η τοπική μετάφραση δεν είναι διαθέσιμη",
     L"Τα αρχεία της τοπικής μηχανής μετάφρασης λείπουν, επομένως η μετάφραση έχει διακοπεί. Εγκαταστήστε ξανά το Emebala Chat για να επαναφέρετε την τοπική μηχανή, ή μεταβείτε σε μετάφραση cloud (Google) επιλέγοντας «Google Μετάφραση» από το μενού της περιοχής ειδοποιήσεων, «Μηχανή μετάφρασης».",
     L"Συμβατό με OpenAI (προσαρμοσμένος διακομιστής)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Ρυθμίσεις συμβατής μηχανής OpenAI",
+        L"Ρυθμίσεις συμβατής μηχανής OpenAI…",
+        L"Base URL",
+        L"Κλειδί API",
+        L"Μοντέλο",
+        L"Λήψη λίστας μοντέλων",
+        L"Δεν ήταν δυνατή η λήψη της λίστας μοντέλων. Μπορείτε να πληκτρολογήσετε το όνομα του μοντέλου απευθείας.",
+        L"Μη ασφαλής σύνδεση (HTTP)",
+        L"Το Base URL χρησιμοποιεί HTTP (μη κρυπτογραφημένο). Το κλειδί API και το κείμενό σας θα σταλούν σε απλή μορφή. Συνέχεια;",
+        L"Οι συμβατές ρυθμίσεις OpenAI αποθηκεύτηκαν.",
+        L"Αποθηκευμένο κλειδί: ",
+        L"Το Base URL δεν είναι έγκυρο. Παράδειγμα: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Μοντέλο καθορισμένο από τον χρήστη (.gguf)",
     L"Καταχώριση άλλου μοντέλου .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Ειδοποίηση ποιότητας μετάφρασης",
+        L"Το επιλεγμένο μοντέλο δεν είναι Hy-MT2. Η τρέχουσα έκδοση χρησιμοποιεί το prompt μόνο για Hy-MT2, επομένως η ποιότητα μετάφρασης με αυτό το μοντέλο δεν είναι εγγυημένη. Συνέχεια;",
+        L"Το μοντέλο καταχωρήθηκε",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Το επιλεγμένο μοντέλο καταχωρήθηκε στην τοπική μηχανή.\n"
+    L"\n"
+    L"Αυτό το μοντέλο χρησιμοποιείται για μετάφραση όταν επιλέγετε «Επιλογή μηχανής μετάφρασης > Επιλογή χρήστη (.gguf)».\n"
+    L"\n"
+    L"Πότε ισχύει: έως περίπου 1 λεπτό μετά την καταχώρηση (μετά τον τερματισμό της μηχανής λόγω αδράνειας)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Αυτό το μοντέλο είναι ήδη ενσωματωμένο στο Emebala Chat. Δεν απαιτείται εγγραφή. Μπορείτε να επιλέξετε απευθείας τον ενσωματωμένο τοπικό μηχανισμό μετάφρασης.",
@@ -3045,6 +3235,11 @@ const LocalizedStrings kStringsGreek = {
     L"Αυτό το όνομα δεν μπορεί να χρησιμοποιηθεί. Εισαγάγετε ένα μη κενό όνομα, διαφορετικό από τα υπάρχοντα, χωρίς κενά ή διαχωριστικά διαδρομής, έως 64 χαρακτήρες.",
     L"Οι αλλαγές αποθηκεύτηκαν.",
 
+    L"Δεν ήταν δυνατή η σειριοποίηση του registry.json (απορρίφθηκε ένα όνομα αρχείου). Δεν άλλαξε τίποτα.",
+    L"Το %LOCALAPPDATA% δεν είναι διαθέσιμο· δεν είναι δυνατός ο εντοπισμός του κοινόχρηστου φακέλου μοντέλων.",
+    L"Δεν ήταν δυνατή η εγγραφή του registry.json.",
+    L"Το registry.json δεν εγγράφηκε πλήρως.",
+    L"Το registry.json είναι κατεστραμμένο ή έχει μη υποστηριζόμενο σχήμα. ΔΕΝ τροποποιήθηκε. Επισκευάστε το ή αφαιρέστε το και δοκιμάστε ξανά.",
 };
 
 // 23. Turkish (tr)
@@ -3131,27 +3326,31 @@ const LocalizedStrings kStringsTurkish = {
     L"Yerel çeviri kullanılamıyor",
     L"Yerel çeviri motoru dosyaları bulunamadığı için çeviri duraklatıldı. Yerel motoru geri yüklemek için Emebala Chat’i yeniden yükleyin veya bulut (Google) çevirisine geçmek için tepsi menüsünden “Çeviri motoru” altında “Google Çeviri” seçin.",
     L"OpenAI uyumlu (özel sunucu)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI Uyumlu Motor Ayarları",
+        L"OpenAI Uyumlu Motor Ayarları…",
+        L"Temel URL",
+        L"API Anahtarı",
+        L"Model",
+        L"Model listesini getir",
+        L"Model listesi alınamadı. Model adını doğrudan yazabilirsiniz.",
+        L"Güvenli olmayan bağlantı (HTTP)",
+        L"Temel URL HTTP kullanıyor (şifrelenmemiş). API anahtarınız ve metniniz düz metin olarak gönderilecek. Devam edilsin mi?",
+        L"OpenAI uyumlu ayarlar kaydedildi.",
+        L"Kaydedilen anahtar: ",
+        L"Temel URL geçersiz. Örnek: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Kullanıcı tarafından belirtilen model (.gguf)",
     L"Başka bir .gguf modeli kaydet…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Çeviri kalitesi bildirimi",
+        L"Seçilen model Hy-MT2 değil. Mevcut sürüm yalnızca Hy-MT2'ye özel istem kullandığından, bu modelle çeviri kalitesi garanti edilmez. Devam edilsin mi?",
+        L"Model kaydedildi",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Seçilen model yerel motora kaydedildi.\n"
+    L"\n"
+    L"Bu model, \"Çeviri motorunu seç > Kullanıcı seçimi (.gguf)\" seçtiğinizde çeviri için kullanılır.\n"
+    L"\n"
+    L"Ne zaman etkili olur: kayıttan sonra en çok yaklaşık 1 dakika (motorun boşta kalma sonrası kapanmasından sonra)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Bu model Emebala Chat'e zaten yerleşiktir. Kayıt gerekmez. Yerleşik yerel çeviri motorunu doğrudan seçebilirsiniz.",
@@ -3176,6 +3375,11 @@ const LocalizedStrings kStringsTurkish = {
     L"Bu ad kullanılamaz. Boş olmayan, mevcutlardan farklı, boşluk veya yol ayıracı içermeyen, en fazla 64 karakterlik bir ad girin.",
     L"Değişiklikler kaydedildi.",
 
+    L"registry.json serileştirilemedi (bir dosya adı reddedildi). Hiçbir şey değiştirilmedi.",
+    L"%LOCALAPPDATA% kullanılamıyor; paylaşılan modeller klasörü bulunamıyor.",
+    L"registry.json yazılamadı.",
+    L"registry.json tamamen yazılamadı.",
+    L"registry.json hasarlı veya desteklenmeyen bir şemaya sahip. DeğiştirilMEdi. Düzeltin veya kaldırın ve yeniden deneyin.",
 };
 
 // 24. Ukrainian (uk)
@@ -3262,27 +3466,31 @@ const LocalizedStrings kStringsUkrainian = {
     L"Локальний переклад недоступний",
     L"Файли локального рушія перекладу не знайдено, тому переклад призупинено. Переустановіть Emebala Chat, щоб відновити локальний рушій, або перейдіть на хмарний (Google) переклад, вибравши «Google Перекладач» у меню області сповіщень, «Рушій перекладу».",
     L"Сумісно з OpenAI (користувацький сервер)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Налаштування сумісного з OpenAI рушія",
+        L"Налаштування сумісного з OpenAI рушія…",
+        L"Base URL",
+        L"Ключ API",
+        L"Модель",
+        L"Отримати список моделей",
+        L"Не вдалося отримати список моделей. Ви можете ввести назву моделі безпосередньо.",
+        L"Незахищене з'єднання (HTTP)",
+        L"Base URL використовує HTTP (без шифрування). Ваш ключ API і текст будуть надіслані у відкритому вигляді. Продовжити?",
+        L"Сумісні з OpenAI налаштування збережено.",
+        L"Збережений ключ: ",
+        L"Неприпустимий Base URL. Приклад: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Модель, вказана користувачем (.gguf)",
     L"Зареєструвати іншу модель .gguf…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Повідомлення про якість перекладу",
+        L"Вибрана модель не Hy-MT2. Поточна версія використовує промпт лише для Hy-MT2, тому якість перекладу цією моделлю не гарантується. Продовжити?",
+        L"Модель зареєстровано",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Вибрану модель зареєстровано в локальному рушії.\n"
+    L"\n"
+    L"Ця модель використовується для перекладу, коли ви вибираєте «Вибір рушія перекладу > Вибір користувача (.gguf)».\n"
+    L"\n"
+    L"Коли набирає чинності: не більше приблизно 1 хвилини після реєстрації (після завершення роботи рушія через бездіяльність)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ця модель уже вбудована в Emebala Chat. Реєстрація не потрібна. Ви можете напряму вибрати вбудований локальний рушій перекладу.",
@@ -3307,6 +3515,11 @@ const LocalizedStrings kStringsUkrainian = {
     L"Цю назву не можна використати. Введіть непорожню назву, що відрізняється від наявних, без пробілів і роздільників шляху, до 64 символів.",
     L"Зміни збережено.",
 
+    L"Не вдалося серіалізувати registry.json (назву файлу відхилено). Нічого не змінено.",
+    L"%LOCALAPPDATA% недоступний; не вдається знайти спільну папку моделей.",
+    L"Не вдалося записати registry.json.",
+    L"Не вдалося повністю записати registry.json.",
+    L"registry.json пошкоджено або має непідтримувану схему. Він НЕ змінений. Відновіть його або видаліть і повторіть спробу.",
 };
 
 // 25. Thai (th)
@@ -3393,27 +3606,31 @@ const LocalizedStrings kStringsThai = {
     L"การแปลในเครื่องไม่พร้อมใช้งาน",
     L"ไม่พบไฟล์เอนจิ้นแปลในเครื่อง จึงหยุดการแปลชั่วคราว ติดตั้ง Emebala Chat อีกครั้งเพื่อกู้คืนเอนจิ้นในเครื่อง หรือหากต้องการสลับไปใช้การแปลบนคลาวด์ (Google) ให้เลือก “Google แปลภาษา” จากเมนูถาดระบบ ที่ “เอนจิ้นการแปล”",
     L"เข้ากันได้กับ OpenAI (เซิร์ฟเวอร์ที่ผู้ใช้กำหนด)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"การตั้งค่าเอนจินแบบ OpenAI",
+        L"การตั้งค่าเอนจินแบบ OpenAI…",
+        L"Base URL",
+        L"คีย์ API",
+        L"โมเดล",
+        L"ดึงรายการโมเดล",
+        L"ไม่สามารถดึงรายการโมเดลได้ คุณสามารถพิมพ์ชื่อโมเดลโดยตรง",
+        L"การเชื่อมต่อที่ไม่ปลอดภัย (HTTP)",
+        L"Base URL ใช้ HTTP (ไม่ได้เข้ารหัส) คีย์ API และข้อความของคุณจะถูกส่งแบบไม่เข้ารหัส ดำเนินการต่อ?",
+        L"บันทึกการตั้งค่าแบบ OpenAI แล้ว",
+        L"คีย์ที่บันทึก: ",
+        L"Base URL ไม่ถูกต้อง ตัวอย่าง: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"โมเดลที่ผู้ใช้กำหนด (.gguf)",
     L"ลงทะเบียนโมเดล .gguf อื่น…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"ประกาศเกี่ยวกับคุณภาพการแปล",
+        L"โมเดลที่เลือกไม่ใช่ Hy-MT2 เวอร์ชันปัจจุบันใช้พรอมต์เฉพาะสำหรับ Hy-MT2 ดังนั้นคุณภาพการแปลด้วยโมเดลนี้จึงไม่ได้รับประกัน ดำเนินการต่อ?",
+        L"ลงทะเบียนโมเดลแล้ว",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"ลงทะเบียนโมเดลที่เลือกกับเอนจินในเครื่องแล้ว\n"
+    L"\n"
+    L"โมเดลนี้จะถูกใช้แปลเมื่อคุณเลือก \"เลือกเอนจินแปล > ผู้ใช้เลือก (.gguf)\"\n"
+    L"\n"
+    L"เมื่อมีผล: ภายในไม่เกินประมาณ 1 นาทีหลังลงทะเบียน (หลังเอนจินหยุดทำงานจากการไม่ได้ใช้งาน)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"โมเดลนี้มีอยู่ในตัว Emebala Chat อยู่แล้ว ไม่จำเป็นต้องลงทะเบียน เลือกเครื่องยนต์แปลภาษาในตัวได้โดยตรง",
@@ -3438,6 +3655,11 @@ const LocalizedStrings kStringsThai = {
     L"ใช้ชื่อนี้ไม่ได้ โปรดป้อนชื่อที่ไม่ว่าง แตกต่างจากที่มีอยู่ ไม่มีช่องว่างหรือตัวคั่นเส้นทาง ไม่เกิน 64 อักขระ",
     L"บันทึกการเปลี่ยนแปลงแล้ว",
 
+    L"ไม่สามารถ serialize registry.json ได้ (ชื่อไฟล์ถูกปฏิเสธ) ไม่มีการเปลี่ยนแปลงใดๆ",
+    L"%LOCALAPPDATA% ไม่พร้อมใช้งาน ไม่พบโฟลเดอร์โมเดลที่แชร์",
+    L"ไม่สามารถเขียน registry.json ได้",
+    L"เขียน registry.json ไม่เสร็จสมบูรณ์",
+    L"registry.json เสียหายหรือมี schema ที่ไม่รองรับ ไม่ได้ถูกแก้ไข โปรดซ่อมแซมหรือลบแล้วลองใหม่",
 };
 
 // 26. Indonesian (id)
@@ -3524,27 +3746,31 @@ const LocalizedStrings kStringsIndonesian = {
     L"Terjemahan lokal tidak tersedia",
     L"File mesin terjemahan lokal tidak ditemukan, jadi terjemahan dijeda. Instal ulang Emebala Chat untuk memulihkan mesin lokal, atau untuk beralih ke terjemahan cloud (Google), pilih “Google Terjemahan” dari menu baki, “Mesin terjemahan”.",
     L"Kompatibel OpenAI (server khusus)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Pengaturan mesin kompatibel OpenAI",
+        L"Pengaturan mesin kompatibel OpenAI…",
+        L"URL dasar",
+        L"Kunci API",
+        L"Model",
+        L"Ambil daftar model",
+        L"Daftar model tidak dapat diambil. Anda dapat mengetik nama model secara langsung.",
+        L"Koneksi tidak aman (HTTP)",
+        L"URL dasar menggunakan HTTP (tidak terenkripsi). Kunci API dan teks Anda akan dikirim tanpa enkripsi. Lanjutkan?",
+        L"Pengaturan kompatibel OpenAI disimpan.",
+        L"Kunci tersimpan: ",
+        L"URL dasar tidak valid. Contoh: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Model yang ditentukan pengguna (.gguf)",
     L"Daftarkan model .gguf lainnya…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Pemberitahuan kualitas terjemahan",
+        L"Model yang dipilih bukan Hy-MT2. Versi saat ini menggunakan prompt khusus Hy-MT2, sehingga kualitas terjemahan dengan model ini tidak dijamin. Lanjutkan?",
+        L"Model terdaftar",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Model yang dipilih telah didaftarkan ke mesin lokal.\n"
+    L"\n"
+    L"Model ini digunakan untuk terjemahan saat Anda memilih \"Pemilihan mesin terjemahan > Pilihan pengguna (.gguf)\".\n"
+    L"\n"
+    L"Kapan berlaku: paling lama sekitar 1 menit setelah pendaftaran (setelah mesin berhenti karena tidak aktif)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah tertanam di Emebala Chat. Pendaftaran tidak diperlukan. Pilih langsung mesin penerjemahan lokal bawaan.",
@@ -3569,6 +3795,11 @@ const LocalizedStrings kStringsIndonesian = {
     L"Nama itu tidak dapat digunakan. Masukkan nama yang tidak kosong, berbeda dari yang sudah ada, tanpa spasi atau pemisah jalur, maksimal 64 karakter.",
     L"Perubahan disimpan.",
 
+    L"registry.json tidak dapat diserialisasi (nama file ditolak). Tidak ada yang berubah.",
+    L"%LOCALAPPDATA% tidak tersedia; folder model bersama tidak dapat ditemukan.",
+    L"registry.json tidak dapat ditulis.",
+    L"registry.json tidak dapat ditulis sepenuhnya.",
+    L"registry.json rusak atau memiliki skema yang tidak didukung. File TIDAK diubah. Perbaiki atau hapus, lalu coba lagi.",
 };
 
 // 27. Malay (ms)
@@ -3655,27 +3886,31 @@ const LocalizedStrings kStringsMalay = {
     L"Terjemahan tempatan tidak tersedia",
     L"Fail enjin terjemahan tempatan tidak dijumpai, jadi terjemahan dijeda. Pasang semula Emebala Chat untuk memulihkan enjin tempatan, atau untuk bertukar ke terjemahan awan (Google), pilih “Google Terjemah” dari menu dulang, “Enjin terjemahan”.",
     L"Serasi OpenAI (pelayan tersuai)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Tetapan enjin serasi OpenAI",
+        L"Tetapan enjin serasi OpenAI…",
+        L"URL asas",
+        L"Kunci API",
+        L"Model",
+        L"Ambil senarai model",
+        L"Senarai model tidak dapat diambil. Anda boleh menaip nama model secara langsung.",
+        L"Sambungan tidak selamat (HTTP)",
+        L"URL asas menggunakan HTTP (tidak disulitkan). Kunci API dan teks anda akan dihantar tanpa sulitan. Teruskan?",
+        L"Tetapan serasi OpenAI disimpan.",
+        L"Kunci disimpan: ",
+        L"URL asas tidak sah. Contoh: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Model yang ditentukan pengguna (.gguf)",
     L"Daftarkan model .gguf lain…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Nota kualiti terjemahan",
+        L"Model yang dipilih bukan Hy-MT2. Versi semasa menggunakan prompt khas Hy-MT2, jadi kualiti terjemahan dengan model ini tidak dijamin. Teruskan?",
+        L"Model didaftarkan",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Model yang dipilih telah didaftarkan dengan enjin tempatan.\n"
+    L"\n"
+    L"Model ini digunakan untuk terjemahan apabila anda memilih \"Pemilihan enjin terjemahan > Pilihan pengguna (.gguf)\".\n"
+    L"\n"
+    L"Bila berkuat kuasa: paling lambat kira-kira 1 minit selepas pendaftaran (selepas enjin berhenti kerana tidak aktif)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Model ini sudah terbina dalam Emebala Chat. Pendaftaran tidak diperlukan. Pilih terus enjin terjemahan tempatan terbina dalam.",
@@ -3700,6 +3935,11 @@ const LocalizedStrings kStringsMalay = {
     L"Nama itu tidak boleh digunakan. Masukkan nama yang tidak kosong, berbeza daripada yang sedia ada, tanpa ruang atau pemisah laluan, sehingga 64 aksara.",
     L"Perubahan disimpan.",
 
+    L"registry.json tidak dapat disirikan (nama fail ditolak). Tiada apa yang berubah.",
+    L"%LOCALAPPDATA% tidak tersedia; folder model kongsi tidak dapat ditemui.",
+    L"registry.json tidak dapat ditulis.",
+    L"registry.json tidak dapat ditulis dengan lengkap.",
+    L"registry.json rosak atau mempunyai skema tidak disokong. Ia TIDAK diubah suai. Baiki atau padamkannya, kemudian cuba lagi.",
 };
 
 // 28. Filipino (fil)
@@ -3788,27 +4028,31 @@ const LocalizedStrings kStringsFilipino = {
     L"Hindi available ang lokal na pagsasalin",
     L"Nawawala ang mga file ng lokal na makina ng pagsasalin, kaya pansamantalang tumigil ang pagsasalin. I-install muli ang Emebala Chat para maibalik ang lokal na makina, o para lumipat sa cloud (Google) na pagsasalin, piliin ang “Google Translate” mula sa menu ng tray, “Makina ng pagsasalin”.",
     L"OpenAI-compatible (custom server)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"Mga setting ng OpenAI-compatible na engine",
+        L"Mga setting ng OpenAI-compatible na engine…",
+        L"Base URL",
+        L"API Key",
+        L"Modelo",
+        L"Kunin ang listahan ng modelo",
+        L"Hindi nakuha ang listahan ng modelo. Maaari kang mag-type ng pangalan ng modelo nang direkta.",
+        L"Di-ligtas na koneksyon (HTTP)",
+        L"Ginagamit ng Base URL ang HTTP (hindi naka-encrypt). Ang iyong API key at teksto ay ipapadala nang walang encryption. Magpatuloy?",
+        L"Nai-save ang mga OpenAI-compatible na setting.",
+        L"Nai-save na key: ",
+        L"Hindi wasto ang Base URL. Halimbawa: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"Modelong tinukoy ng user (.gguf)",
     L"Magrehistro ng ibang .gguf model…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"Paalala sa kalidad ng pagsasalin",
+        L"Ang napiling modelo ay hindi Hy-MT2. Ang kasalukuyang bersyon ay gumagamit ng prompt na para lamang sa Hy-MT2, kaya hindi ginagarantiyahan ang kalidad ng pagsasalin ng modelong ito. Magpatuloy?",
+        L"Nakarehistro ang modelo",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"Ang napiling modelo ay nakarehistro sa lokal na engine.\n"
+    L"\n"
+    L"Ang modelong ito ay ginagamit sa pagsasalin kapag pinili mo ang \"Pagpili ng engine ng pagsasalin > Pagpili ng gumagamit (.gguf)\".\n"
+    L"\n"
+    L"Kailan magiging epektibo: hindi hihigit sa mga 1 minuto pagkatapos ng rehistro (pagkatapos umalis ng engine dahil sa kawalan ng aktibidad)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"Ang modelong ito ay nakabuilt-in na sa Emebala Chat. Hindi na kailangan ng pagpaparehistro. Maaari mong direktang piliin ang built-in na lokal na translation engine.",
@@ -3833,6 +4077,11 @@ const LocalizedStrings kStringsFilipino = {
     L"Hindi magamit ang pangalang iyan. Maglagay ng di-walang-laman na pangalan, naiiba sa mga umiiral, walang espasyo o pantahip ng landas, hanggang 64 na karakter.",
     L"Nai-save ang mga pagbabago.",
 
+    L"Hindi mai-serialize ang registry.json (tinanggihan ang isang pangalan ng file). Walang nagbago.",
+    L"Hindi available ang %LOCALAPPDATA%; hindi mahanap ang ibinahaging folder ng mga modelo.",
+    L"Hindi maisulat ang registry.json.",
+    L"Hindi lubos na nasulat ang registry.json.",
+    L"Sira ang registry.json o may hindi suportadong schema. HINDI ito binago. Ayusin o tanggalin ito, at subukan muli.",
 };
 
 // 29. Hindi (hi)
@@ -3919,27 +4168,31 @@ const LocalizedStrings kStringsHindi = {
     L"लोकल अनुवाद उपलब्ध नहीं है",
     L"लोकल अनुवाद इंजन की फ़ाइलें नहीं मिलीं, इसलिए अनुवाद रुका हुआ है। लोकल इंजन को पुनर्स्थापित करने के लिए Emebala Chat को पुनः इंस्टॉल करें, या क्लाउड (Google) अनुवाद पर जाने के लिए, ट्रे मेनू से “अनुवाद इंजन” में “Google अनुवाद” चुनें।",
     L"OpenAI संगत (उपयोगकर्ता-परिभाषित सर्वर)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-संगत इंजन सेटिंग्स",
+        L"OpenAI-संगत इंजन सेटिंग्स…",
+        L"बेस URL",
+        L"API कुंजी",
+        L"मॉडल",
+        L"मॉडल सूची प्राप्त करें",
+        L"मॉडल सूची प्राप्त नहीं हो सकी। आप मॉडल का नाम सीधे टाइप कर सकते हैं।",
+        L"असुरक्षित कनेक्शन (HTTP)",
+        L"बेस URL HTTP (अनएन्क्रिप्टेड) उपयोग करता है। आपकी API कुंजी और टेक्स्ट सादे टेक्स्ट में भेजे जाएंगे। जारी रखें?",
+        L"OpenAI-संगत सेटिंग्स सहेजी गईं।",
+        L"सहेजी गई कुंजी: ",
+        L"बेस URL मान्य नहीं है। उदाहरण: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"उपयोगकर्ता-परिभाषित मॉडल (.gguf)",
     L"कोई अन्य .gguf मॉडल पंजीकृत करें…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"अनुवाद गुणवत्ता सूचना",
+        L"चयनित मॉडल Hy-MT2 नहीं है। वर्तमान संस्करण केवल Hy-MT2 के लिए प्रॉम्प्ट का उपयोग करता है, इसलिए इस मॉडल से अनुवाद की गुणवत्ता की गारंटी नहीं है। जारी रखें?",
+        L"मॉडल पंजीकृत",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"चयनित मॉडल स्थानीय इंजन में पंजीकृत हो गया है।\n"
+    L"\n"
+    L"इस मॉडल का उपयोग तब अनुवाद के लिए होता है जब आप \"अनुवाद इंजन चयन > उपयोगकर्ता चयन (.gguf)\" चुनते हैं।\n"
+    L"\n"
+    L"कब लागू: पंजीकरण के बाद अधिकतम लगभग 1 मिनट (इंजन के निष्क्रिय समापन के बाद)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"यह मॉडल Emebala Chat में पहले से ही अंतर्निहित है। पंजीकरण की आवश्यकता नहीं है। अंतर्निहित लोकल अनुवाद इंजन को सीधे चुनें।",
@@ -3964,6 +4217,11 @@ const LocalizedStrings kStringsHindi = {
     L"वह नाम प्रयोग नहीं किया जा सकता। कोई खाली नहीं, मौजूदा से अलग, बिना रिक्त स्थान या पथ विभाजक, 64 वर्णों के भीतर नाम दर्ज करें।",
     L"परिवर्तन सहेजे गए।",
 
+    L"registry.json को सीरियलाइज़ नहीं किया जा सका (फ़ाइल नाम अस्वीकृत)। कुछ भी नहीं बदला गया।",
+    L"%LOCALAPPDATA% अनुपलब्ध है; साझा मॉडल फ़ोल्डर नहीं मिल सका।",
+    L"registry.json नहीं लिखा जा सका।",
+    L"registry.json पूरी तरह नहीं लिखा जा सका।",
+    L"registry.json क्षतिग्रस्त है या उसका स्कीमा unsupported है। इसमें कोई बदलाव नहीं किया गया। इसे ठीक करें या हटाएं, फिर पुनः प्रयास करें।",
 };
 
 // 30. Bengali (bn)
@@ -4050,27 +4308,31 @@ const LocalizedStrings kStringsBengali = {
     L"লোকাল অনুবাদ পাওয়া যাচ্ছে না",
     L"লোকাল অনুবাদ ইঞ্জিনের ফাইল পাওয়া যায়নি, তাই অনুবাদ স্থগিত হয়েছে। লোকাল ইঞ্জিন পুনরুদ্ধার করতে Emebala Chat পুনরায় ইনস্টল করুন, অথবা ক্লাউড (Google) অনুবাদে যেতে, ট্রে মেনু থেকে “অনুবাদ ইঞ্জিন”-এ “Google অনুবাদ” নির্বাচন করুন।",
     L"OpenAI সামঞ্জস্যপূর্ণ (ব্যবহারকারী-সংজ্ঞায়িত সার্ভার)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI-সংযুক্ত ইঞ্জিন সেটিংস",
+        L"OpenAI-সংযুক্ত ইঞ্জিন সেটিংস…",
+        L"বেস URL",
+        L"API কী",
+        L"মডেল",
+        L"মডেল তালিকা আনুন",
+        L"মডেল তালিকা আনা যায়নি। আপনি সরাসরি মডেলের নাম লিখতে পারেন।",
+        L"অনিরাপদ সংযোগ (HTTP)",
+        L"বেস URL HTTP (এনক্রিপ্ট করা নয়) ব্যবহার করে। আপনার API কী এবং টেক্সট সাদা টেক্সট হিসেবে পাঠানো হবে। চালিয়ে যাবেন?",
+        L"OpenAI-সংযুক্ত সেটিংস সংরক্ষণ করা হয়েছে।",
+        L"সংরক্ষিত কী: ",
+        L"বেস URL অবৈধ। উদাহরণ: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"ব্যবহারকারী-সংজ্ঞায়িত মডেল (.gguf)",
     L"অন্য .gguf মডেল নিবন্ধন করুন…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"অনুবাদের মান সম্পর্কে নোটিশ",
+        L"নির্বাচিত মডেল Hy-MT2 নয়। বর্তমান সংস্করণ শুধু Hy-MT2-এর জন্য প্রম্পট ব্যবহার করে, তাই এই মডেলের অনুবাদের মান নিশ্চিত করা যায় না। চালিয়ে যাবেন?",
+        L"মডেল নিবন্ধিত",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"নির্বাচিত মডেলটি লোকাল ইঞ্জিনে নিবন্ধিত হয়েছে।\n"
+    L"\n"
+    L"আপনি \"অনুবাদ ইঞ্জিন নির্বাচন > ব্যবহারকারীর পছন্দ (.gguf)\" বেছে নিলে এই মডেলটি অনুবাদে ব্যবহৃত হয়।\n"
+    L"\n"
+    L"কখন কার্যকর: নিবন্ধনের পর সর্বোচ্চ প্রায় ১ মিনিট (ইঞ্জিন নিষ্ক্রিয় সমাপ্তির পর)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"এই মডেলটি ইতিমধ্যে Emebala Chat-এ অন্তর্নির্মিত। নিবন্ধনের প্রয়োজন নেই। অন্তর্নির্মিত লোকাল অনুবাদ ইঞ্জিন সরাসরি নির্বাচন করুন।",
@@ -4095,6 +4357,11 @@ const LocalizedStrings kStringsBengali = {
     L"সেই নাম ব্যবহার করা যাবে না। খালি নয়, বিদ্যমানগুলো থেকে আলাদা, ফাঁক বা পথ বিভাজক ছাড়া, সর্বোচ্চ ৬৪ অক্ষরের নাম লিখুন।",
     L"পরিবর্তন সংরক্ষণ করা হয়েছে।",
 
+    L"registry.json সিরিয়ালাইজ করা যায়নি (একটি ফাইলনাম প্রত্যাখ্যাত)। কিছুই পরিবর্তন করা হয়নি।",
+    L"%LOCALAPPDATA% অনুপলব্ধ; ভাগ করা মডেল ফোল্ডার খুঁজে পাওয়া যায়নি।",
+    L"registry.json লেখা যায়নি।",
+    L"registry.json সম্পূর্ণভাবে লেখা যায়নি।",
+    L"registry.json ক্ষতিগ্রস্ত বা এর স্কিমা সমর্থিত নয়। এটি পরিবর্তন করা হয়নি। এটি মেরামত করুন বা মুছুন, তারপর আবার চেষ্টা করুন।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -4182,27 +4449,31 @@ const LocalizedStrings kStringsArabic = {
     L"الترجمة المحلية غير متاحة",
     L"ملفات محرك الترجمة المحلي مفقودة، لذا تم إيقاف الترجمة مؤقتًا. أعد تثبيت Emebala Chat لاستعادة المحرك المحلي، أو للتبديل إلى ترجمة السحابة (Google)، اختر “Google ترجمة” من قائمة الشريط ضمن “محرك الترجمة”.",
     L"متوافق مع OpenAI (خادم مخصص)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"إعدادات المحرك المتوافق مع OpenAI",
+        L"إعدادات المحرك المتوافق مع OpenAI…",
+        L"عنوان URL الأساسي",
+        L"مفتاح API",
+        L"النموذج",
+        L"جلب قائمة النماذج",
+        L"تعذر جلب قائمة النماذج. يمكنك كتابة اسم النموذج مباشرة.",
+        L"اتصال غير آمن (HTTP)",
+        L"يستخدم عنوان URL الأساسي HTTP (غير مشفر). سيتم إرسال مفتاح API والنص بشكل غير مشفر. هل تريد المتابعة؟",
+        L"تم حفظ الإعدادات المتوافقة مع OpenAI.",
+        L"المفتاح المحفوظ: ",
+        L"عنوان URL الأساسي غير صالح. مثال: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"النموذج المحدد من قبل المستخدم (.gguf)",
     L"تسجيل نموذج .gguf آخر…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"إشعار بشأن جودة الترجمة",
+        L"النموذج المحدد ليس Hy-MT2. تستخدم النسخة الحالية موجه (prompt) خاصًا بـ Hy-MT2 فقط، لذا لا تُضمن جودة الترجمة بهذا النموذج. هل تريد المتابعة؟",
+        L"تم تسجيل النموذج",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"تم تسجيل النموذج المحدد في المحرك المحلي.\n"
+    L"\n"
+    L"يُستخدم هذا النموذج للترجمة عند اختيار \"اختيار محرك الترجمة > اختيار المستخدم (.gguf)\".\n"
+    L"\n"
+    L"متى يسري: خلال دقيقة واحدة تقريبًا كحد أقصى بعد التسجيل (بعد خروج المحرك بسبب الخمول)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"هذا النموذج مدمج بالفعل في Emebala Chat. لا حاجة إلى التسجيل. يمكنك اختيار محرك الترجمة المحلي المدمج مباشرةً.",
@@ -4227,6 +4498,11 @@ const LocalizedStrings kStringsArabic = {
     L"لا يمكن استخدام هذا الاسم. أدخل اسمًا غير فارغ ومختلف عن الأسماء الموجودة، بدون مسافات أو فواصل مسار، وضمن 64 حرفًا.",
     L"تم حفظ التغييرات.",
 
+    L"تعذر تسلسل registry.json (تم رفض اسم ملف). لم يتغير شيء.",
+    L"%LOCALAPPDATA% غير متاح؛ لا يمكن تحديد موقع مجلد النماذج المشترك.",
+    L"تعذر كتابة registry.json.",
+    L"تعذر كتابة registry.json بالكامل.",
+    L"registry.json تالف أو يحتوي على مخطط غير مدعوم. لم يتم تعديله. أصلحه أو احذفه ثم أعد المحاولة.",
 };
 
 // 32. Persian (fa) — RTL
@@ -4313,27 +4589,31 @@ const LocalizedStrings kStringsPersian = {
     L"ترجمه محلی در دسترس نیست",
     L"فایل‌های موتور ترجمه محلی پیدا نشدند، بنابراین ترجمه متوقف شده است. برای بازیابی موتور محلی، Emebala Chat را دوباره نصب کنید، یا برای تغییر به ترجمه ابری (Google)، از منوی سینی، «موتور ترجمه»، «Google ترجمه» را انتخاب کنید.",
     L"سازگار با OpenAI (سرور سفارشی)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"تنظیمات موتور سازگار با OpenAI",
+        L"تنظیمات موتور سازگار با OpenAI…",
+        L"آدرس پایه",
+        L"کلید API",
+        L"مدل",
+        L"دریافت فهرست مدل‌ها",
+        L"دریافت فهرست مدل‌ها ناموفق بود. می‌توانید نام مدل را مستقیماً تایپ کنید.",
+        L"اتصال ناامن (HTTP)",
+        L"آدرس پایه از HTTP (رمزنگاری‌نشده) استفاده می‌کند. کلید API و متن شما به‌صورت رمزنگاری‌نشده ارسال خواهد شد. ادامه می‌دهید؟",
+        L"تنظیمات سازگار با OpenAI ذخیره شد.",
+        L"کلید ذخیره‌شده: ",
+        L"آدرس پایه معتبر نیست. مثال: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"مدل تعیین شده توسط کاربر (.gguf)",
     L"ثبت مدل .gguf دیگر…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"اطلاعیه درباره کیفیت ترجمه",
+        L"مدل انتخاب‌شده Hy-MT2 نیست. نسخه فعلی از پرامپت مخصوص Hy-MT2 استفاده می‌کند، بنابراین کیفیت ترجمه با این مدل تضمین نمی‌شود. ادامه می‌دهید؟",
+        L"مدل ثبت شد",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"مدل انتخاب‌شده در موتور محلی ثبت شد.\n"
+    L"\n"
+    L"این مدل هنگامی برای ترجمه استفاده می‌شود که \"انتخاب موتور ترجمه > انتخاب کاربر (.gguf)\" را برگزینید.\n"
+    L"\n"
+    L"چه زمانی اعمال می‌شود: حداکثر حدود ۱ دقیقه پس از ثبت (پس از خروج موتور به دلیل عدم فعالیت)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"این مدل از قبل در Emebala Chat داخلی شده است. نیازی به ثبت‌نام نیست. می‌توانید موتور ترجمه محلی داخلی را مستقیماً انتخاب کنید.",
@@ -4358,6 +4638,11 @@ const LocalizedStrings kStringsPersian = {
     L"این نام قابل استفاده نیست. نامی غیرخالی، متفاوت از نام‌های موجود، بدون فاصله یا جداکنندهٔ مسیر و حداکثر ۶۴ نویسه وارد کنید.",
     L"تغییرات ذخیره شد.",
 
+    L"registry.json قابل سریال‌سازی نیست (نام فایل رد شد). هیچ چیز تغییر نکرد.",
+    L"%LOCALAPPDATA% در دسترس نیست؛ پوشه مشترک مدل‌ها پیدا نشد.",
+    L"registry.json نوشته نشد.",
+    L"registry.json به‌طور کامل نوشته نشد.",
+    L"registry.json آسیب دیده یا دارای طرح پشتیبانی‌نشده است. تغییر داده نشده است. آن را تعمیر یا حذف کنید و دوباره تلاش کنید.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -4444,27 +4729,31 @@ const LocalizedStrings kStringsUrdu = {
     L"مقامی ترجمہ دستیاب نہیں ہے",
     L"مقامی ترجمہ انجن کی فائلیں نہیں ملیں، اس لیے ترجمہ روک دیا گیا ہے۔ مقامی انجن کو بحال کرنے کے لیے Emebala Chat کو دوبارہ انسٹال کریں، یا کلاؤڈ (Google) ترجمے پر جانے کے لیے، ٹرے مینیو سے “ترجمہ انجن” میں “Google ترجمہ” منتخب کریں۔",
     L"OpenAI مطابقت (صارف کی وضاحت کردہ سرور)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI مطابق انجن سیٹنگز",
+        L"OpenAI مطابق انجن سیٹنگز…",
+        L"بیس URL",
+        L"API کلید",
+        L"ماڈل",
+        L"ماڈل فہرست حاصل کریں",
+        L"ماڈل فہرست حاصل نہ ہو سکی۔ آپ ماڈل کا نام براہ راست لکھ سکتے ہیں۔",
+        L"غیر محفوظ کنکشن (HTTP)",
+        L"بیس URL HTTP (غیر خفیہ) استعمال کرتا ہے۔ آپ کی API کلید اور متن سادہ متن میں بھیجا جائے گا۔ جاری رکھیں؟",
+        L"OpenAI مطابق سیٹنگز محفوظ کر دی گئیں۔",
+        L"محفوظ کلید: ",
+        L"بیس URL درست نہیں۔ مثال: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"صارف کی وضاحت کردہ ماڈل (.gguf)",
     L"کوئی اور .gguf ماڈل رجسٹر کریں…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"ترجمے کے معیار کا نوٹس",
+        L"منتخب ماڈل Hy-MT2 نہیں ہے۔ موجودہ ورژن صرف Hy-MT2 کے لیے پرامپٹ استعمال کرتا ہے، اس لیے اس ماڈل کے ترجمے کی کوالٹی ضمانت نہیں۔ جاری رکھیں؟",
+        L"ماڈل رجسٹر ہو گیا",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"منتخب ماڈل لوکل انجن میں رجسٹر کر دیا گیا ہے۔\n"
+    L"\n"
+    L"جب آپ \"ترجمہ انجن کا انتخاب > صارف کا انتخاب (.gguf)\" چنتے ہیں تو اس ماڈل کا ترجمے میں استعمال ہوتا ہے۔\n"
+    L"\n"
+    L"کب لاگو: رجسٹریشن کے بعد زیادہ سے زیادہ تقریباً 1 منٹ (انجن کے غیر فعال ہونے کے بعد)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"یہ ماڈل پہلے سے ہی Emebala Chat میں شامل ہے۔ رجسٹریشن کی ضرورت نہیں ہے۔ بلٹ اِن لوکل ترجمہ انجن کو براہ راست منتخب کریں۔",
@@ -4489,6 +4778,11 @@ const LocalizedStrings kStringsUrdu = {
     L"وہ نام استعمال نہیں ہو سکتا۔ کوئی خالی نہیں، موجودہ ناموں سے مختلف، بغیر خالی جگہ یا راستہ جداکننے والے، 64 حروف کے اندر نام درج کریں۔",
     L"تبدیلیاں محفوظ کر دی گئیں۔",
 
+    L"registry.json کو سیریلائز نہیں کیا جا سکا (فائل کا نام مسترد کر دیا گیا)۔ کچھ نہیں بدلا۔",
+    L"%LOCALAPPDATA% دستیاب نہیں؛ مشترکہ ماڈل فولڈر نہیں مل سکا۔",
+    L"registry.json نہیں لکھی جا سکی۔",
+    L"registry.json مکمل نہیں لکھی جا سکی۔",
+    L"registry.json خراب ہے یا اس کا اسکیما معاونت یافتہ نہیں۔ اسے تبدیل نہیں کیا گیا۔ اسے ٹھیک کریں یا حذف کریں اور دوبارہ کوشش کریں۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -4575,27 +4869,31 @@ const LocalizedStrings kStringsHebrew = {
     L"התרגום המקומי אינו זמין",
     L"קבצי מנוע התרגום המקומי חסרים, לכן התרגום הושהה. התקינו מחדש את Emebala Chat כדי לשחזר את המנוע המקומי, או כדי לעבור לתרגום בענן (Google), בחרו “Google תרגום” בתפריט השורה, “מנוע תרגום”.",
     L"תואם OpenAI (שרת מותאם אישית)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"הגדרות מנוע תואם OpenAI",
+        L"הגדרות מנוע תואם OpenAI…",
+        L"כתובת בסיס",
+        L"מפתח API",
+        L"מודל",
+        L"משוך רשימת מודלים",
+        L"לא ניתן למשוך את רשימת המודלים. אפשר להקליד שם מודל ישירות.",
+        L"חיבור לא מאובטח (HTTP)",
+        L"כתובת הבסיס משתמשת ב־HTTP (לא מוצפן). מפתח ה־API והטקסט שלך יישלחו כטקסט גלוי. להמשיך?",
+        L"הגדרות תואמות OpenAI נשמרו.",
+        L"מפתח שמור: ",
+        L"כתובת הבסיס אינה חוקית. דוגמה: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"מודל שצוין על ידי המשתמש (.gguf)",
     L"רישום מודל .gguf אחר…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"הודעה על איכות התרגום",
+        L"המודל שנבחר אינו Hy-MT2. הגרסה הנוכחית משתמשת בפרומפט ייעודי ל־Hy-MT2 בלבד, ולכן איכות התרגום עם מודל זה אינה מובטחת. להמשיך?",
+        L"המודל נרשם",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"המודל שנבחר נרשם במנוע המקומי.\n"
+    L"\n"
+    L"מודל זה משמש לתרגום כאשר בוחרים \"בחירת מנוע תרגום > בחירת משתמש (.gguf)\".\n"
+    L"\n"
+    L"מתי זה נכנס לתוקף: עד כדקה אחת לאחר ההרשמה (לאחר סיום פעולת המנוע עקב חוסר פעילות)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"מודל זה כבר מובנה בתוך Emebala Chat. אין צורך ברישום. ניתן לבחור ישירות את מנוע התרגום המקומי המובנה.",
@@ -4620,6 +4918,11 @@ const LocalizedStrings kStringsHebrew = {
     L"אי אפשר להשתמש בשם הזה. הזן שם שאינו ריק, שונה מהקיימים, ללא רווחים או מפרידי נתיב, בעד 64 תווים.",
     L"השינויים נשמרו.",
 
+    L"לא ניתן היה לסריאליזם את registry.json (שם קובץ נדחה). לא שונה דבר.",
+    L"%LOCALAPPDATA% אינו זמין; לא ניתן לאתר את תיקיית המודלים המשותפת.",
+    L"לא ניתן היה לכתוב את registry.json.",
+    L"registry.json לא נכתב במלואו.",
+    L"registry.json פגום או בעל סכימה לא נתמכת. הוא לא שונה. תקנו או הסירו אותו ונסו שוב.",
 };
 
 // 35. Khmer (km)
@@ -4706,27 +5009,31 @@ const LocalizedStrings kStringsKhmer = {
     L"ការបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើបានទេ",
     L"រកមិនឃើញឯកសារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនទេ ដូច្នេះការបកប្រែត្រូវបានផ្អាកជាបណ្តោះអាសន្ន។ ដើម្បីស្តារម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនឡើងវិញ សូមដំឡើង Emebala Chat ម្តងទៀត ឬដើម្បីប្តូរទៅការបកប្រែក្នុងពពក (Google) សូមជ្រើសរើស “Google បកប្រែ” ពីម៉ឺនុយ tray នៅ “ម៉ាស៊ីនបកប្រែ”។",
     L"ស្រប OpenAI (ម៉ាស៊ីនមេដែលអ្នកប្រើប្រាស់កំណត់)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"ការកំណត់ម៉ាស៊ីនឆបែល OpenAI",
+        L"ការកំណត់ម៉ាស៊ីនឆបែល OpenAI…",
+        L"Base URL",
+        L"កូនសោ API",
+        L"ម៉ូដែល",
+        L"ទាញយកបញ្ជីម៉ូដែល",
+        L"មិនអាចទាញយកបញ្ជីម៉ូដែលបានទេ។ អ្នកអាចវាយឈ្មោះម៉ូដែលដោយផ្ទាល់។",
+        L"ការតភ្ជាប់មិនសុវត្ថិភាព (HTTP)",
+        L"Base URL ប្រើ HTTP (មិនបានអ៊ិនគ្រីប)។ កូនសោ API និងអត្ថបទរបស់អ្នកនឹងត្រូវផ្ញើជាអក្សរធម្មតា។ បន្ត?",
+        L"បានរក្សាទុកការកំណត់ឆបែល OpenAI។",
+        L"កូនសោដែលបានរក្សាទុក៖ ",
+        L"Base URL មិនត្រឹមត្រូវ។ ឧទាហរណ៍៖ https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"ម៉ូដែលដែលអ្នកប្រើប្រាស់កំណត់ (.gguf)",
     L"ចុះឈ្មោះម៉ូដែល .gguf ផ្សេងទៀត…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"សេចក្ដីជូនដំណឹងអំពីគុណភាពបកប្រែ",
+        L"ម៉ូដែលដែលបានជ្រើសរើសមិនមែនជា Hy-MT2 ទេ។ កំណែបច្ចុប្បន្នប្រើប្រាស់ prompt សម្រាប់តែ Hy-MT2 ដូច្នេះគុណភាពបកប្រែជាមួយម៉ូដែលនេះមិនត្រូវបានធានាទេ។ បន្ត?",
+        L"បានចុះឈ្មោះម៉ូដែល",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"បានចុះឈ្មោះម៉ូដែលដែលបានជ្រើសរើសជាមួយម៉ាស៊ីនក្នុងសៀ។\n"
+    L"\n"
+    L"ម៉ូដែលនេះត្រូវបានប្រើសម្រាប់បកប្រែនៅពេលអ្នកជ្រើសរើស \"ការជ្រើសរើសម៉ាស៊ីនបកប្រែ > ជម្រើសរបស់អ្នកប្រើ (.gguf)\"។\n"
+    L"\n"
+    L"ពេលវេលាមישប្រើៈ យ៉ាងយូរប្រហែល 1 នាទីក្រោយពេលចុះឈ្មោះ (បន្ទាប់ពីម៉ាស៊ីនបញ្ចប់ដោយសារអសកម្ម)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ម៉ូដែលនេះមានស្រាប់ក្នុង Emebala Chat រួចហើយ។ មិនចាំបាច់ចុះឈ្មោះទេ។ អ្នកអាចជ្រើសរើសម៉ាស៊ីនបកប្រែក្នុងស្រុកដែលមានស្រាប់ដោយផ្ទាល់។",
@@ -4751,6 +5058,11 @@ const LocalizedStrings kStringsKhmer = {
     L"មិនអាចប្រើឈ្មោះនោះបានទេ។ សូមបញ្ចូលឈ្មោះមិនទទេ ខុសពីឈ្មោះដែលមានស្រាប់ គ្មានដកឃ្លា ឬសញ្ញាបំបែកផ្លូវ ក្នុងចំណោម ៦៤ តួអក្សរ។",
     L"បានរក្សាទុកការផ្លាស់ប្ដូរ។",
 
+    L"មិនអាច serialize registry.json បានទេ (ឈ្មោះឯកសារត្រូវបានបដិសេធ)។ មិនមានអ្វីត្រូវបានផ្លាស់ប្ដូរទេ។",
+    L"%LOCALAPPDATA% មិនអាចប្រើប្រាស់បានទេ; រកថតម៉ូដែលរួមមិនឃើញ។",
+    L"មិនអាចសរសេរ registry.json បានទេ។",
+    L"registry.json មិនត្រូវបានសរសេរពេញលេញទេ។",
+    L"registry.json ខូចឬមានស្គីមាមិនត្រូវបានគាំទ្រ។ វាមិនត្រូវបានកែប្រាងទេ។ ជួសជុលឬលុបវាចេញ រួចព្យាយាមម្ដងទៀត។",
 };
 
 // 36. Lao (lo)
@@ -4837,27 +5149,31 @@ const LocalizedStrings kStringsLao = {
     L"ການແປພາສາທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້",
     L"ບໍ່ພົບໄຟລ໌ເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ຈຶ່ງຢຸດການແປພາສາຊົ່ວຄາວ. ເພື່ອຟື້ນຟູເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນ, ກະລຸນາຕິດຕັ້ງ Emebala Chat ອີກຄັ້ງ, ຫຼື ເພື່ອປ່ຽນໄປໃຊ້ການແປພາສາຄລາວ (Google), ກະລຸນາເລືອກ “Google ແປພາສາ” ຈາກເມນູ tray, “ເຄື່ອງຈັກແປພາສາ”.",
     L"ຖັດກັນກັບ OpenAI (ເຄື່ອງແມ່ຂ່າຍທີ່ຜູ້ໃຊ້ກຳນົດ)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"ການຕັ້ງຄ່າເຄື່ອງຈັກທີ່ເຂົ້າກັນໄດ້ກັບ OpenAI",
+        L"ການຕັ້ງຄ່າເຄື່ອງຈັກທີ່ເຂົ້າກັນໄດ້ກັບ OpenAI…",
+        L"Base URL",
+        L"ລະຫັດ API",
+        L"ໂມເດລ",
+        L"ດຶງລາຍການໂມເດລ",
+        L"ບໍ່ສາມາດດຶງລາຍການໂມເດລໄດ້. ທ່ານສາມາດພິມຊື່ໂມເດລໂດຍກົງໄດ້.",
+        L"ການເຊື່ອມຕໍ່ທີ່ບໍ່ປອດໄພ (HTTP)",
+        L"Base URL ໃຊ້ HTTP (ບໍ່ໄດ້ເຂົ້າລະຫັດ). ລະຫັດ API ແລະ ຂໍ້ຄວາມຂອງທ່ານຈະຖືກສົ່ງແບບບໍ່ເຂົ້າລະຫັດ. ສືບຕໍ່?",
+        L"ບັນທຶກການຕັ້ງຄ່າທີ່ເຂົ້າກັນໄດ້ກັບ OpenAI ແລ້ວ.",
+        L"ລະຫັດທີ່ບັນທຶກ: ",
+        L"Base URL ບໍ່ຖືກຕ້ອງ. ຕົວຢ່າງ: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"ໂມເດວທີ່ຜູ້ໃຊ້ກຳນົດ (.gguf)",
     L"ລົງທະບຽນໂມເດວ .gguf ອື່ນ…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"ແຈ້ງການກ່ຽວກັບຄຸນນະພາບການແປ",
+        L"ໂມເດລທີ່ເລືອກບໍ່ແມ່ນ Hy-MT2. ເວີຊັນປັດຈຸບັນໃຊ້ prompt ສຳລັບສະເພາະ Hy-MT2 ເທົ່ານັ້ນ, ດັ່ງນັ້ນຄຸນນະພາບການແປດ້ວຍໂມເດລນີ້ຈຶ່ງບໍ່ໄດ້ຮັບການຮັບປະກັນ. ສືບຕໍ່?",
+        L"ລົງທະບຽນໂມເດລແລ້ວ",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"ໂມເດລທີ່ເລືອກໄດ້ຖືກລົງທະບຽນກັບເຄື່ອງຈັກທ້ອງຖິ່ນແລ້ວ.\n"
+    L"\n"
+    L"ໂມເດລນີ້ຖືກໃຊ້ສຳລັບການແປເມື່ອທ່ານເລືອກ \"ການເລືອກເຄື່ອງຈັກແປ > ທາງເລືອກຂອງຜູ້ໃຊ້ (.gguf)\".\n"
+    L"\n"
+    L"ເມື່ອໃຊ້ໄດ້: ພາຍໃນ 1 ນາທີຫຼັງຈາກລົງທະບຽນ (ຫຼັງຈາກເຄື່ອງຈັກຢຸດເພາະບໍ່ໄດ້ໃຊ້ງານ)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ໂມເດວນີ້ແມ່ນມີຢູ່ໃນ Emebala Chat ແລ້ວ. ບໍ່ຈຳເປັນຕ້ອງລົງທະບຽນ. ທ່ານສາມາດເລືອກເຄື່ອງຈັກແປພາສາທ້ອງຖິ່ນທີ່ມີຢູ່ໂດຍກົງໄດ້.",
@@ -4882,6 +5198,11 @@ const LocalizedStrings kStringsLao = {
     L"ບໍ່ສາມາດໃຊ້ຊື່ນັ້ນໄດ້. ກະລຸນາໃສ່ຊື່ທີ່ບໍ່ວ່າງ, ຕ່າງຈາກທີ່ມີຢູ່, ບໍ່ມີຊ່ອງຫວ່າງ ຫຼື ຕົວແຍກເສັ້ນທາງ, ບໍ່ເກີນ 64 ຕົວອັກສອນ.",
     L"ບັນທຶກການປ່ຽນແປງແລ້ວ.",
 
+    L"ບໍ່ສາມາດ serialize registry.json ໄດ້ (ຊື່ໄຟລ໌ຖືກປະຕິເສດ). ບໍ່ມີຫຍັງປ່ຽນແປງ.",
+    L"%LOCALAPPDATA% ບໍ່ສາມາດໃຊ້ໄດ້; ບໍ່ພົບໂຟນເດີໂມເດລທີ່ແບ່ງປັນ.",
+    L"ບໍ່ສາມາດຂຽນ registry.json ໄດ້.",
+    L"registry.json ບໍ່ໄດ້ຖືກຂຽນໃຫ້ສົມບູນ.",
+    L"registry.json ເສຍຫາຍ ຫຼື ມີ schema ທີ່ບໍ່ຮອງຮັບ. ມັນບໍ່ໄດ້ຖືກດັດແປງ. ສ້ອມແປງ ຫຼື ລຶບມັນອອກ ແລ້ວລອງໃໝ່.",
 };
 
 // 37. Burmese (my)
@@ -4968,27 +5289,31 @@ const LocalizedStrings kStringsBurmese = {
     L"ဒေသန္တရ ဘာသာပြန်ချက် မရနိုင်ပါ",
     L"ဒေသန္တရ ဘာသာပြန်အင်ဂျင် ဖိုင်များ မတွေ့ပါသဖြင့် ဘာသာပြန်မှုကို ယာယီရပ်နားထားပါသည်။ ဒေသန္တရ အင်ဂျင်ကို ပြန်လည်ရရှိရန် Emebala Chat ကို ပြန်လည်ထည့်သွင်းပါ၊ သို့မဟုတ် ကလောင်(Google) ဘာသာပြန်သို့ ပြောင်းလဲရန်၊ tray မီနူး၏ “ဘာသာပြန်အင်ဂျင်” မှ “Google ဘာသာပြန်” ကို ရွေးပါ။",
     L"OpenAI နှင့်သဟဇာတ (အသုံးပြုသူသတ်မှတ်ချက်စက်များ)…",
-    L"OpenAI Compatible Engine Settings",
-    L"OpenAI Compatible engine settings…",
-    L"Base URL",
-    L"API Key",
-    L"Model",
-    L"Fetch model list",
-    L"Could not fetch the model list. You can type a model name directly.",
-    L"Insecure connection (HTTP)",
-    L"The base URL uses HTTP (not encrypted). Your API key and text will be sent in plaintext. Continue?",
-    L"OpenAI Compatible settings saved.",
-    L"Saved key: ",
-    L"The base URL is not valid. Example: https://api.openai.com",
+        L"OpenAI နှင့် ကိုက်ညီသော အင်ဂျင် ဆက်တင်များ",
+        L"OpenAI နှင့် ကိုက်ညီသော အင်ဂျင် ဆက်တင်များ…",
+        L"ပင်မ URL",
+        L"API ကီး",
+        L"မော်ဒယ်",
+        L"မော်ဒယ် စာရင်း ရယူပါ",
+        L"မော်ဒယ် စာရင်းကို ရယူ၍ မရပါ။ မော်ဒယ်အမည်ကို တိုက်ရိုက် ရိုက်ထည့်နိုင်ပါသည်။",
+        L"လုံခြုံမှုမရှိသော ချိတ်ဆက်မှု (HTTP)",
+        L"ပင်မ URL သည် HTTP (စာဝှက်မထားပါ) ကို အသုံးပြုပါသည်။ သင်၏ API ကီးနှင့် စာသားကို စာသားအဖြစ် ပေးပို့ပါမည်။ ဆက်လက်ပါသလား?",
+        L"OpenAI နှင့် ကိုက်ညီသော ဆက်တင်များကို သိမ်းဆည်းပြီး။",
+        L"သိမ်းဆည်းထားသော ကီး: ",
+        L"ပင်မ URL မမှန်ကန်ပါ။ ဥပမာ: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
     L"အသုံးပြုသူသတ်မှတ်ထားသော မော်ဒယ် (.gguf)",
     L"အခြား .gguf မော်ဒယ်ကို မှတ်ပုံတင်ပါ…",
-    L"Translation quality notice",
-    L"The selected model is not Hy-MT2. The current version uses the Hy-MT2-only prompt, so translation quality with this model is not guaranteed. Continue?",
-    L"Model registered",
+        L"ဘာသာပြန် အရည်အသွေး သတိပေးချက်",
+        L"ရွေးချယ်ထားသော မော်ဒယ်သည် Hy-MT2 မဟုတ်ပါ။ လက်ရှိ ဗားရှင်းသည် Hy-MT2 အတွက်သာ prompt ကို အသုံးပြုပါသည်၊ ထို့ကြောင့် ဒီမော်ဒယ်ဖြင့် ဘာသာပြန် အရည်အသွေးကို အာမခံ၍ မရပါ။ ဆက်လက်ပါသလား?",
+        L"မော်ဒယ်စာရင်း သွင်းပြီး",
     // REQ-046 P4-2 (Rev2 section B-5, C2): same meaning as the Korean table -
     // no Local-LLM pick instruction; apply bound stated (about 1 minute max).
-    L"The selected model has been registered with the local engine.\n\nThis model is used for translation when you choose \"Translation Engine > User model (.gguf)\".\n\nWhen it applies: the new model takes effect within about 1 minute at most (after the idle engine exits). Requests made before then may still use the previous model.",
+        L"ရွေးချယ်ထားသော မော်ဒယ်ကို ဒေသတွင်း အင်ဂျင်သို့ စာရင်းသွင်းပြီးပါပြီ။\n"
+    L"\n"
+    L"သင် \"ဘာသာပြန် အင်ဂျင် ရွေးချယ်မှု > အသုံးပြုသူ ရွေးချယ်မှု (.gguf)\" ကို ရွေးချယ်သောအခါ ဒီမော်ဒယ်ကို ဘာသာပြန်ရန် အသုံးပြုပါတယ်။\n"
+    L"\n"
+    L"ဘယ်အချိန် သက်ရောက်သလဲ: စာရင်းသွင်းပြီးနောက် အများဆုံး ခန့် 1 မိနစ် (အင်ဂျင် အလုပ်မလုပ်ဘဲ အဆုံးသတ်ပြီးနောက်)",
     // REQ-047 D2 (design section B.3): built-in model notice, appended tail
     // positional (same trailing-initializer discipline as SEC-M1).
     L"ဒီမော်ဒယ်က Emebala Chat ထဲမှာ အသင့်ပါပြီးသားဖြစ်ပါတယ်။ မှတ်ပုံတင်စရာမလိုပါဘူး။ ပါရှိပြီးသား ပြည်တွင်းဘာသာပြန်အင်ဂျင်ကို တိုက်ရိုက်ရွေးချယ်နိုင်ပါတယ်။",
@@ -5013,6 +5338,11 @@ const LocalizedStrings kStringsBurmese = {
     L"အဲဒီနာမည် အသုံးမပြုနိုင်ပါ။ ဗလာမဟုတ်ပြီး ၆၄ အက္ခရာ အတွင်းနာမည် တစ်ခု ထည့်ပါ။",
     L"ပြောင်းလဲမှုများ သိမ်းဆည်းပြီး။",
 
+    L"registry.json ကို serialize မလုပ်နိုင်ပါ (ဖိုင်နစ်မည်တစ်ခုကို ပယ်ချခံရ). ပြောင်းလဲမှုမရှိပါ။",
+    L"%LOCALAPPDATA% မရနိုင်ပါ။ မော်ဒယ် ဖိုင် မတွေ့ပါ။",
+    L"registry.json ကို မရေးနိုင်ပါ။",
+    L"registry.json ကို အပြည့်အဝ မရေးနိုင်ပါ။",
+    L"registry.json ပျက်စီးနေပါသည် သို့မဟုတ် မပံ့ပိုးသော schema ရှိပါသည်။ ၎င်းကို မပြောင်းလဲပါ။ ပြုပြင်ပါ သို့မဟုတ် ဖျက်ပြီး ထပ်စဉ်းစားပါ။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -5295,6 +5625,11 @@ std::wstring I18n::Get(StringId id) {
         case StringId::GgufManagerRenameBody:         return s.gguf_manager_rename_body;
         case StringId::GgufManagerRenameInvalid:      return s.gguf_manager_rename_invalid;
         case StringId::GgufManagerDone:               return s.gguf_manager_done;
+        case StringId::GgufManagerErrSerialize: return s.gguf_manager_err_serialize;
+        case StringId::GgufManagerErrNoLocalappdata: return s.gguf_manager_err_no_localappdata;
+        case StringId::GgufManagerErrWrite: return s.gguf_manager_err_write;
+        case StringId::GgufManagerErrWritePartial: return s.gguf_manager_err_write_partial;
+        case StringId::GgufManagerErrRegistryDamaged: return s.gguf_manager_err_registry_damaged;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

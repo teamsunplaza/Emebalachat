@@ -113,17 +113,14 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
     const std::wstring title = I18n::Get(StringId::GgufManagerTitle);
     const std::string serialized = engine_host_registry::SerializeRegistry(registry);
     if (serialized.empty()) {
-        ::MessageBoxW(owner,
-                      L"registry.json could not be serialized (a filename was rejected). "
-                      L"Nothing was changed.",
+        ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrSerialize).c_str(),
                       title.c_str(), MB_OK | MB_ICONERROR);
         DIAG_F("UI/GgufManager/001: SerializeRegistry refused (non-bare filename)\n");
         return false;
     }
     const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
     if (models_dir.empty()) {
-        ::MessageBoxW(owner,
-                      L"%LOCALAPPDATA% is unavailable; cannot locate the shared models directory.",
+        ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrNoLocalappdata).c_str(),
                       title.c_str(), MB_OK | MB_ICONERROR);
         DIAG_F("UI/GgufManager/002: LOCALAPPDATA missing; registry not written\n");
         return false;
@@ -132,7 +129,7 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
     {
         std::ofstream out(registry_path, std::ios::binary | std::ios::trunc);
         if (!out) {
-            ::MessageBoxW(owner, L"registry.json could not be written.",
+            ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrWrite).c_str(),
                           title.c_str(), MB_OK | MB_ICONERROR);
             DIAG_F("UI/GgufManager/003: registry.json open-for-write failed\n");
             return false;
@@ -140,7 +137,7 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
         out << serialized;
         out.close();
         if (!out) {
-            ::MessageBoxW(owner, L"registry.json could not be written completely.",
+            ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrWritePartial).c_str(),
                           title.c_str(), MB_OK | MB_ICONERROR);
             DIAG_F("UI/GgufManager/004: registry.json write failed mid-stream\n");
             return false;
@@ -277,9 +274,7 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         auto res = engine_host_registry::LoadDefaultRegistry();
         if (res.status != engine_host_registry::LoadStatus::Ok &&
             res.status != engine_host_registry::LoadStatus::Missing) {
-            ::MessageBoxW(dlg,
-                          L"registry.json is damaged or has an unsupported schema. "
-                          L"It was NOT modified. Fix or remove it, then retry.",
+            ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrRegistryDamaged).c_str(),
                           I18n::Get(StringId::GgufManagerTitle).c_str(),
                           MB_OK | MB_ICONERROR);
             DIAG_F("UI/GgufManager/012: registry load status=%d; manager refused to open\n",

@@ -241,6 +241,12 @@ enum class StringId {
     GgufManagerRenameInvalid,      // validation error (empty/dup/separator/space/length)
     GgufManagerDone,               // post-apply completion notice
 
+    GgufManagerErrSerialize,
+    GgufManagerErrNoLocalappdata,
+    GgufManagerErrWrite,
+    GgufManagerErrWritePartial,
+    GgufManagerErrRegistryDamaged,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
