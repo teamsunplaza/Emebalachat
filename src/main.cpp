@@ -1717,16 +1717,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return true;
     };
 
-    // REQ-048 R2-D: publish the gguf-model-manager open for the deferred
-    // kMsgOpenGgufManager handler (the g_apply_openai_settings pattern). The
-    // lambda owns the ONLY call site: modal dialog on g_hControllerWnd, then
-    // a tray refresh — rename/delete can move the engine submenu's check mark
-    // (a deleted active binding falls back to "auto") or the user-model stem
-    // label, so the refresh runs unconditionally (idempotent, like the OpenAI
-    // cancel path).
-    emebalachat::g_open_gguf_model_manager = [&]() {
-        emebalachat::ShowGgufModelManagerDialog(emebalachat::g_hControllerWnd,
-                                                config, engine);
+    // REQ-048 R2-D + REQ-050: publish the gguf-model-manager open for the
+    // deferred kMsgOpenGgufManager handler (the g_apply_openai_settings
+    // pattern). The lambda owns the ONLY call site: modal dialog on
+    // g_hControllerWnd, then a tray refresh — rename/delete can move the
+    // engine submenu's check mark (a deleted active binding falls back to
+    // "auto") or the user-model stem label, so the refresh runs
+    // unconditionally (idempotent, like the OpenAI cancel path). REQ-050:
+    // the manager's [파일에서 추가…] button runs the SAME registration
+    // pipeline body the old on_browse_gguf tray callback used
+    // (RegisterUserGgufModel + refresh_tray), passed in as the
+    // add_from_file argument; the helper lives in this TU's anon namespace
+    // (fully qualified — wWinMain is global scope) and is deliberately not
+    // linked into Emebalachat_core, which is why it travels as a callback.
+    emebalachat::g_open_gguf_model_manager = [&config, &engine, &refresh_tray]() {
+        emebalachat::ShowGgufModelManagerDialog(
+            emebalachat::g_hControllerWnd, config, engine,
+            [&config, &engine, &refresh_tray]() {
+                emebalachat::RegisterUserGgufModel(config, engine);
+                refresh_tray();
+            });
         refresh_tray();
     };
 
@@ -1908,16 +1918,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // This callback runs on the GUI thread, same as the config.openai
             // direct read below.
             if (config.user_model_id.empty()) {
-                // INV-B3 (Rev2 §B-3 선택안 "파일찾기 유도"): nothing is
-                // registered yet, so open the registration pipeline instead
-                // of parking a checked-but-empty state. Cancel keeps the
-                // previous engine.
-                DIAG_F("MAIN/on_select_engine/005: user_gguf selected but no model registered; opening file picker\n");
-                // Fully qualified: the helper lives in the anon namespace
-                // inside namespace emebalachat, closed above wWinMain (the
-                // existing on_browse_gguf site uses the same qualification).
-                emebalachat::RegisterUserGgufModel(config, engine);
-                refresh_tray();
+                // INV-B3 (Rev2 §B-3 선택안 "파일찾기 유도"), REQ-050 revision:
+                // nothing is registered yet, so open the MERGED model
+                // manager (add-from-file / add-from-Hugging-Face / rename /
+                // delete) instead of the bare file picker. The open is
+                // DEFERRED past the TrackPopupMenuEx teardown via the same
+                // pure (0,0) wake-up as the manager row (REQ-048 R2-D) —
+                // entering a modal synchronously here is the REQ-047 D3
+                // "minimized window, no input" root cause. Cancel keeps the
+                // previous engine (engine_type is never touched on this
+                // path; the check mark only moves when a registration in
+                // the manager actually switches it).
+                DIAG_F("MAIN/on_select_engine/005: user_gguf selected but no model registered; opening model manager\n");
+                if (::PostMessageW(emebalachat::g_hControllerWnd,
+                                   emebalachat::kMsgOpenGgufManager, 0, 0) == FALSE) {
+                    DIAG_F("MAIN/on_select_engine/009: PostMessage gguf-manager open failed (GLE %lu)\n",
+                           ::GetLastError());
+                }
                 return;
             }
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
@@ -1975,23 +1992,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 }).detach();
             }
         }
-    };
-
-    // REQ-045 P4-5 (item 3a-2): the engine submenu's "사용자 선택(.gguf)… >
-    // 파일찾기(.gguf)" pick routes to the registration pipeline. The helper
-    // lives in the anon namespace INSIDE namespace emebalachat (closed at the
-    // file's "} // namespace emebalachat" just above wWinMain), so it is
-    // referenced fully-qualified here from the GLOBAL-scope wWinMain.
-    // REQ-046 P4-2: refresh_tray is captured explicitly (the other tray
-    // callbacks use plain [&], but keeping the capture list explicit here
-    // documents the two state objects the pipeline touches).
-    trayCallbacks.on_browse_gguf = [&config, &engine, &refresh_tray]() {
-        // REQ-046 P4-2: refresh_tray() after the pipeline so the engine
-        // submenu's check mark moves to "사용자 선택(.gguf)" (pref==3) when
-        // the registration switched engine_type — without it the menu would
-        // keep showing the previous engine until the next unrelated update.
-        emebalachat::RegisterUserGgufModel(config, engine);
-        refresh_tray();
     };
 
     // R6 Phase 1 (B3): tray source/target submenu picks are REQUESTS to the

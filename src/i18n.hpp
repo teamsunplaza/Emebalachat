@@ -250,10 +250,25 @@ enum class StringId {
     TooltipTranslateFailed,      // drag-path failure notice (stale-tooltip fix)
     RepairTransientBody,         // strict-local TRANSIENT failure wording (vs missing-files)
 
-    // REQ-050: localized dialog push-button labels (OK/Cancel). Appended last
-    // so the EnumCount completeness loop covers them automatically (99x37).
+    // REQ-050: localized dialog push-button labels (OK/Cancel). Appended
+    // before the HF block below so the EnumCount completeness loop covers
+    // them automatically.
     DialogOk,
     DialogCancel,
+
+    // REQ-050 (merged gguf manager): the manager window's two add-methods row
+    // ([파일에서 추가…] routes into the existing file-picker registration
+    // pipeline; [Hugging Face에서 추가…] opens the download dialog below) plus
+    // the Hugging Face add dialog strings. Appended at the tail so the
+    // EnumCount completeness loop covers them automatically (107x37).
+    GgufManagerAddFile, // "파일에서 추가…" top-row button
+    GgufManagerAddHf,   // "Hugging Face에서 추가…" top-row button
+    HfAddTitle,         // HF add dialog caption
+    HfUrlLabel,         // "모델 URL" edit label
+    HfDownloading,      // "다운로드 중…" status text
+    HfFailed,           // generic download/move failure status text
+    HfInvalidUrl,       // fail-closed URL rejection notice
+    HfDone,             // post-registration completion notice
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales

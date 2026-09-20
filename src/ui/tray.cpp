@@ -25,14 +25,19 @@ enum TrayMenuId : UINT {
     // the 2020 control band and the 2400 DRAG band — no collision.
     ID_TRAY_ENGINE_USER_GGUF = 2013,
     // REQ-045 P4-5 / REQ-046 P4-2: the always-active file-picker row that
-    // follows the checkable user-model entry.
+    // used to follow the checkable user-model entry. REQ-050: that row is
+    // MERGED into the single manager row below (2015) — the constant stays
+    // defined (and never renumbered) so the frozen engine ID band 2010~2014
+    // remains intact; nothing appends it to a menu anymore.
     ID_TRAY_BROWSE_GGUF = 2014,
-    // REQ-048 R2-D: the user-model manager row ("모델 관리…") that follows the
-    // registration picker. PLAIN item — deliberately NOT part of the frozen
-    // 4-way radio contract (2010~2014) and below the 2020 control band, so
-    // the radio IDs and the band layout are untouched. Clicking it defers to
-    // the GUI thread via WM_APP+0x501 (same modality contract as the OpenAI
-    // settings' WM_APP+0x500, REQ-047 D3) instead of a tray callback.
+    // REQ-048 R2-D + REQ-050: the single user-model manager row ("모델 관리…")
+    // — the ONE entry point for everything user-model: add-from-file,
+    // add-from-Hugging-Face, rename, delete. PLAIN item — deliberately NOT
+    // part of the frozen 4-way radio contract (2010~2014) and below the 2020
+    // control band, so the radio IDs and the band layout are untouched.
+    // Clicking it defers to the GUI thread via WM_APP+0x501 (same modality
+    // contract as the OpenAI settings' WM_APP+0x500, REQ-047 D3) instead of a
+    // tray callback.
     ID_TRAY_MANAGE_GGUF = 2015,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
@@ -354,17 +359,16 @@ void SystemTray::ShowContextMenu() {
         }
     }
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
-    // REQ-046 P4-2 (Rev2 §B-3): the file picker stays a PLAIN row (no check —
-    // it opens a dialog; checking a dialog row would lie about a persisted
-    // state). Clicking "사용자 지정 모델 (.gguf)" with no model registered
-    // routes into the same picker via main.cpp's INV-B3 policy. REQ-047 U1
-    // (designer 164500 §2.3, decision #2): it sits BELOW the separator as a
-    // separate "등록" action, visually detached from the built-in engines.
-    ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_BROWSE_GGUF, I18n::Get(StringId::MenuBrowseGgufFile).c_str());
-    // REQ-048 R2-D: the manager row — rename/delete the registered user
-    // .gguf models. PLAIN item (no check mark; it opens a dialog, it does not
-    // select an engine), sitting below the file-picker row in the user-model
-    // group, inside the engine submenu.
+    // REQ-050: the former two plain rows — "다른 .gguf 모델 등록…"
+    // (ID_TRAY_BROWSE_GGUF) and "모델 관리…" (ID_TRAY_MANAGE_GGUF) — are merged
+    // into ONE manager row. The manager window offers both add methods
+    // ([파일에서 추가…] routes into the exact file-picker registration
+    // pipeline; [Hugging Face에서 추가…] downloads from a resolve URL) above
+    // the registered-model list (rename/delete). PLAIN item (it opens a
+    // dialog; no check geometry), sitting below the separator in the
+    // user-model group. Clicking "사용자 지정 모델 (.gguf)" with no model
+    // registered also opens this manager (main.cpp INV-B3, deferred via
+    // WM_APP+0x501 like this row's dispatch below).
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_MANAGE_GGUF,
                   I18n::Get(StringId::MenuManageGgufModels).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
@@ -491,14 +495,12 @@ void SystemTray::ShowContextMenu() {
         callbacks_.on_select_engine(2);
     } else if (cmd == ID_TRAY_ENGINE_USER_GGUF && callbacks_.on_select_engine) {
         // REQ-046 P4-2 (Rev2 §B-3): index 3 = 사용자 선택(.gguf). main.cpp
-        // handles the no-model-registered case by routing into the picker.
+        // handles the no-model-registered case by routing into the merged
+        // model manager (REQ-050).
         callbacks_.on_select_engine(3);
-    } else if (cmd == ID_TRAY_BROWSE_GGUF && callbacks_.on_browse_gguf) {
-        // REQ-045 P4-5 (item 3a-2): open the .gguf picker + registration
-        // pipeline (main.cpp owns the whole flow).
-        callbacks_.on_browse_gguf();
     } else if (cmd == ID_TRAY_MANAGE_GGUF) {
-        // REQ-048 R2-D: open the user-model manager (rename/delete). The
+        // REQ-048 R2-D + REQ-050: open the merged user-model manager
+        // (add-from-file / add-from-Hugging-Face / rename / delete). The
         // dialog open is DEFERRED to the controller window's GUI thread —
         // entering a modal synchronously here, while the TrackPopupMenuEx
         // modality tear-down may still be in flight, is the exact "minimized

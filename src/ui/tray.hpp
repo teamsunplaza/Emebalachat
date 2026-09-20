@@ -41,12 +41,10 @@ public:
         // spellings live in i18n.cpp kLocaleMappings). main.cpp
         // validates/persists via PlanUiLocaleChange.
         std::function<void(std::string_view code)> on_select_ui_language;
-        // REQ-045 P4-5 (item 3a-2, design §A.3) + REQ-046 P4-2 (Rev2 §B-3):
-        // the engine submenu's separate "파일찾기(.gguf)…" row (flat, no
-        // check). main.cpp opens the GetOpenFileNameW dialog and runs the
-        // copy + registry-writer + config.user_model_id + engine_type
-        // switch registration pipeline.
-        std::function<void()> on_browse_gguf;
+        // REQ-050: REMOVED — the engine submenu's file-picker row is merged
+        // into the single manager row (ID_TRAY_MANAGE_GGUF). The manager's
+        // [파일에서 추가…] button consumes main.cpp's registration pipeline
+        // through the callback passed to ShowGgufModelManagerDialog instead.
     };
 
     SystemTray();

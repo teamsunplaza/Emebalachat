@@ -131,7 +131,15 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(tooltip_translate_failed) \
     X(repair_transient_body) \
     X(dialog_ok) \
-    X(dialog_cancel)
+    X(dialog_cancel) \
+    X(gguf_manager_add_file) \
+    X(gguf_manager_add_hf) \
+    X(hf_add_title) \
+    X(hf_url_label) \
+    X(hf_downloading) \
+    X(hf_failed) \
+    X(hf_invalid_url) \
+    X(hf_done)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -148,18 +156,15 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
          EMEBALA_LSTR_FIELDS(EMEBALA_LSTR_COUNT)
 #undef EMEBALA_LSTR_COUNT
          return n; }();
-// REQ-044: 57 == StringId::EnumCount. The design doc/Tech Gate cited 53,
-// but that predates REQ-042's tooltip_untranslated_above (field 54); the
-// enum's own running-total comment reads "57x37 with the REQ-005 repair
-// trio". REQ-045 P4-3 (design §3b) appended 13 OpenAI fields (70), and
-// REQ-045 P4-5 (item 3a-2) appended 6 user-.gguf fields, bringing the total
-// to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
-// body (77). REQ-047 U1 (designer 164500 §5.3) appended the tray
-// "(미등록)" empty-slot marker (78). REQ-048 R2-D appended the 12
-// gguf-manager fields (97). REQ-050 appended the dialog OK/Cancel button
-// labels (99). The Get() switch maps exactly these 99
-// named fields.
-static_assert(kLocalizedStringsFieldCount == 99,
+// Running total: 57 base fields (REQ-044) + 13 OpenAI (REQ-045 P4-3, 70)
+// + 6 user-.gguf (REQ-045 P4-5, 76) + 1 bundled-duplicate body (REQ-047 D2,
+// 77) + 1 "(미등록)" tray marker (REQ-047 U1, 78) + 17 gguf-manager family
+// (REQ-048 R2-D: 12 manager strings + 5 manager-error strings, 95)
+// + tooltip_translate_failed + repair_transient_body (97) + dialog OK/Cancel
+// (REQ-050, 99) + the merged-manager Hugging Face block (REQ-050: 2 add-
+// method buttons + 6 HF dialog strings, 107). The Get() switch maps exactly
+// these 107 named fields.
+static_assert(kLocalizedStringsFieldCount == 107,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -303,6 +308,17 @@ const LocalizedStrings kStringsKorean = {
     // REQ-050: 대화상자 공통 버튼 레이블(확인/취소).
     .dialog_ok = L"확인",
     .dialog_cancel = L"취소",
+    // REQ-050: 통합 모델 관리자 — 상단 추가 방법 2종(파일 / Hugging Face)과
+    // HF 추가 대화상자 문자열. 취소 버튼은 dialog_cancel 재사용, 쓰기/폴드
+    // 오류는 기존 gguf_manager_err_* 재사용.
+    .gguf_manager_add_file = L"파일에서 추가…",
+    .gguf_manager_add_hf = L"Hugging Face에서 추가…",
+    .hf_add_title = L"Hugging Face 모델 추가",
+    .hf_url_label = L"모델 URL",
+    .hf_downloading = L"다운로드 중…",
+    .hf_failed = L"다운로드에 실패했습니다.",
+    .hf_invalid_url = L"huggingface.co 모델 주소를 입력하세요 (…/resolve/… 형식)",
+    .hf_done = L"등록되었습니다.",
 };
 
 // 2. Japanese (ja)
@@ -448,6 +464,15 @@ const LocalizedStrings kStringsJapanese = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"決定",
     L"キャンセル",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"ファイルから追加…",
+    L"Hugging Face から追加…",
+    L"Hugging Face モデルを追加",
+    L"モデル URL",
+    L"ダウンロード中…",
+    L"ダウンロードに失敗しました。",
+    L"huggingface.co のモデル URL を入力してください (…/resolve/… 形式)",
+    L"登録しました。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -593,6 +618,15 @@ const LocalizedStrings kStringsChineseSimp = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"确定",
     L"取消",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"从文件添加…",
+    L"从 Hugging Face 添加…",
+    L"添加 Hugging Face 模型",
+    L"模型 URL",
+    L"正在下载…",
+    L"下载失败。",
+    L"请输入 huggingface.co 模型地址（…/resolve/… 格式）",
+    L"已注册。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -738,6 +772,15 @@ const LocalizedStrings kStringsChineseTrad = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"確定",
     L"取消",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"從檔案新增…",
+    L"從 Hugging Face 新增…",
+    L"新增 Hugging Face 模型",
+    L"模型 URL",
+    L"正在下載…",
+    L"下載失敗。",
+    L"請輸入 huggingface.co 模型網址（…/resolve/… 格式）",
+    L"已註冊。",
 };
 
 // 5. Vietnamese (vi)
@@ -883,6 +926,15 @@ const LocalizedStrings kStringsVietnamese = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Đồng ý",
     L"Hủy",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Thêm từ tệp…",
+    L"Thêm từ Hugging Face…",
+    L"Thêm mô hình Hugging Face",
+    L"URL mô hình",
+    L"Đang tải xuống…",
+    L"Tải xuống thất bại.",
+    L"Nhập URL mô hình huggingface.co (dạng …/resolve/…)",
+    L"Đã đăng ký.",
 };
 
 // 6. Spanish (es)
@@ -1025,6 +1077,15 @@ const LocalizedStrings kStringsSpanish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Aceptar",
     L"Cancelar",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Añadir desde archivo…",
+    L"Añadir desde Hugging Face…",
+    L"Añadir modelo de Hugging Face",
+    L"URL del modelo",
+    L"Descargando…",
+    L"Error al descargar.",
+    L"Introduce la URL del modelo en huggingface.co (formato …/resolve/…)",
+    L"Registrado.",
 };
 
 // 7. English (en) - Default Fallback
@@ -1168,6 +1229,15 @@ const LocalizedStrings kStringsEnglish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"OK",
     L"Cancel",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Add from file…",
+    L"Add from Hugging Face…",
+    L"Add Hugging Face model",
+    L"Model URL",
+    L"Downloading…",
+    L"Download failed.",
+    L"Enter a huggingface.co model URL (…/resolve/… format)",
+    L"Registered.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1325,6 +1395,15 @@ const LocalizedStrings kStringsFrench = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Valider",
     L"Annuler",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Ajouter depuis un fichier…",
+    L"Ajouter depuis Hugging Face…",
+    L"Ajouter un modèle Hugging Face",
+    L"URL du modèle",
+    L"Téléchargement en cours…",
+    L"Échec du téléchargement.",
+    L"Saisissez l'URL du modèle huggingface.co (format …/resolve/…)",
+    L"Enregistré.",
 };
 
 // 9. German (de)
@@ -1470,6 +1549,15 @@ const LocalizedStrings kStringsGerman = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Bestätigen",
     L"Abbrechen",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Aus Datei hinzufügen…",
+    L"Von Hugging Face hinzufügen…",
+    L"Hugging-Face-Modell hinzufügen",
+    L"Modell-URL",
+    L"Wird heruntergeladen…",
+    L"Download fehlgeschlagen.",
+    L"Geben Sie die huggingface.co-Modell-URL ein (Format …/resolve/…)",
+    L"Registriert.",
 };
 
 // 10. Russian (ru)
@@ -1615,6 +1703,15 @@ const LocalizedStrings kStringsRussian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Подтвердить",
     L"Отмена",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Добавить из файла…",
+    L"Добавить из Hugging Face…",
+    L"Добавить модель Hugging Face",
+    L"URL модели",
+    L"Загрузка…",
+    L"Сбой загрузки.",
+    L"Введите URL модели huggingface.co (формат …/resolve/…)",
+    L"Зарегистрировано.",
 };
 
 // 11. Portuguese (pt)
@@ -1760,6 +1857,15 @@ const LocalizedStrings kStringsPortuguese = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Confirmar",
     L"Cancelar",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Adicionar de arquivo…",
+    L"Adicionar do Hugging Face…",
+    L"Adicionar modelo do Hugging Face",
+    L"URL do modelo",
+    L"Baixando…",
+    L"Falha no download.",
+    L"Insira o URL do modelo no huggingface.co (formato …/resolve/…)",
+    L"Registrado.",
 };
 
 // 12. Italian (it)
@@ -1905,6 +2011,15 @@ const LocalizedStrings kStringsItalian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Conferma",
     L"Annulla",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Aggiungi da file…",
+    L"Aggiungi da Hugging Face…",
+    L"Aggiungi modello da Hugging Face",
+    L"URL del modello",
+    L"Download in corso…",
+    L"Download non riuscito.",
+    L"Inserisci l'URL del modello huggingface.co (formato …/resolve/…)",
+    L"Registrato.",
 };
 
 // 13. Dutch (nl)
@@ -2050,6 +2165,15 @@ const LocalizedStrings kStringsDutch = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Bevestigen",
     L"Annuleren",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Toevoegen vanuit bestand…",
+    L"Toevoegen vanuit Hugging Face…",
+    L"Hugging Face-model toevoegen",
+    L"Model-URL",
+    L"Bezig met downloaden…",
+    L"Downloaden mislukt.",
+    L"Voer de huggingface.co-model-URL in (formaat …/resolve/…)",
+    L"Geregistreerd.",
 };
 
 // 14. Polish (pl)
@@ -2195,6 +2319,15 @@ const LocalizedStrings kStringsPolish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Potwierdź",
     L"Anuluj",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Dodaj z pliku…",
+    L"Dodaj z Hugging Face…",
+    L"Dodaj model Hugging Face",
+    L"Adres URL modelu",
+    L"Pobieranie…",
+    L"Pobieranie nie powiodło się.",
+    L"Podaj adres URL modelu huggingface.co (format …/resolve/…)",
+    L"Zarejestrowano.",
 };
 
 // 15. Czech (cs)
@@ -2340,6 +2473,15 @@ const LocalizedStrings kStringsCzech = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Potvrdit",
     L"Storno",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Přidat ze souboru…",
+    L"Přidat z Hugging Face…",
+    L"Přidat model Hugging Face",
+    L"URL modelu",
+    L"Stahování…",
+    L"Stažení se nezdařilo.",
+    L"Zadejte URL modelu huggingface.co (formát …/resolve/…)",
+    L"Zaregistrováno.",
 };
 
 // 16. Hungarian (hu)
@@ -2485,6 +2627,15 @@ const LocalizedStrings kStringsHungarian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Rendben",
     L"Mégsem",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Hozzáadás fájlból…",
+    L"Hozzáadás a Hugging Face-ről…",
+    L"Hugging Face-modell hozzáadása",
+    L"Modell URL-címe",
+    L"Letöltés folyamatban…",
+    L"A letöltés nem sikerült.",
+    L"Adja meg a huggingface.co modell URL-jét (…/resolve/… formátum)",
+    L"Regisztrálva.",
 };
 
 // 17. Romanian (ro)
@@ -2630,6 +2781,15 @@ const LocalizedStrings kStringsRomanian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Confirmare",
     L"Anulare",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Adaugă din fișier…",
+    L"Adaugă de pe Hugging Face…",
+    L"Adaugă model de pe Hugging Face",
+    L"URL-ul modelului",
+    L"Se descarcă…",
+    L"Descărcarea a eșuat.",
+    L"Introduceți URL-ul modelului de pe huggingface.co (format …/resolve/…)",
+    L"Înregistrat.",
 };
 
 // 18. Swedish (sv)
@@ -2775,6 +2935,15 @@ const LocalizedStrings kStringsSwedish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Bekräfta",
     L"Avbryt",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Lägg till från fil…",
+    L"Lägg till från Hugging Face…",
+    L"Lägg till en Hugging Face-modell",
+    L"Modell-URL",
+    L"Laddar ner…",
+    L"Nedladdningen misslyckades.",
+    L"Ange modell-URL från huggingface.co (format …/resolve/…)",
+    L"Registrerad.",
 };
 
 // 19. Danish (da)
@@ -2920,6 +3089,15 @@ const LocalizedStrings kStringsDanish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Bekræft",
     L"Annuller",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Tilføj fra fil…",
+    L"Tilføj fra Hugging Face…",
+    L"Tilføj en Hugging Face-model",
+    L"Model-URL",
+    L"Download i gang…",
+    L"Download mislykkedes.",
+    L"Indtast model-URL'en fra huggingface.co (format …/resolve/…)",
+    L"Registreret.",
 };
 
 // 20. Finnish (fi)
@@ -3065,6 +3243,15 @@ const LocalizedStrings kStringsFinnish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Vahvista",
     L"Peruuta",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Lisää tiedostosta…",
+    L"Lisää Hugging Facesta…",
+    L"Lisää Hugging Face -malli",
+    L"Mallin URL-osoite",
+    L"Ladataan…",
+    L"Lataus epäonnistui.",
+    L"Syötä huggingface.co-mallin URL-osoite (muoto …/resolve/…)",
+    L"Rekisteröity.",
 };
 
 // 21. Norwegian (no / nb)
@@ -3210,6 +3397,15 @@ const LocalizedStrings kStringsNorwegian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Bekreft",
     L"Avbryt",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Legg til fra fil…",
+    L"Legg til fra Hugging Face…",
+    L"Legg til en Hugging Face-modell",
+    L"Modell-URL",
+    L"Laster ned…",
+    L"Nedlastingen mislyktes.",
+    L"Skriv inn modell-URL fra huggingface.co (format …/resolve/…)",
+    L"Registrert.",
 };
 
 // 22. Greek (el)
@@ -3355,6 +3551,15 @@ const LocalizedStrings kStringsGreek = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Εντάξει",
     L"Άκυρο",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Προσθήκη από αρχείο…",
+    L"Προσθήκη από το Hugging Face…",
+    L"Προσθήκη μοντέλου Hugging Face",
+    L"URL μοντέλου",
+    L"Λήψη σε εξέλιξη…",
+    L"Η λήψη απέτυχε.",
+    L"Εισαγάγετε το URL μοντέλου από το huggingface.co (μορφή …/resolve/…)",
+    L"Καταχωρήθηκε.",
 };
 
 // 23. Turkish (tr)
@@ -3500,6 +3705,15 @@ const LocalizedStrings kStringsTurkish = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Tamam",
     L"İptal",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Dosyadan ekle…",
+    L"Hugging Face'den ekle…",
+    L"Hugging Face modeli ekle",
+    L"Model URL'si",
+    L"İndiriliyor…",
+    L"İndirme başarısız oldu.",
+    L"huggingface.co model URL'sini girin (…/resolve/… biçimi)",
+    L"Kaydedildi.",
 };
 
 // 24. Ukrainian (uk)
@@ -3645,6 +3859,15 @@ const LocalizedStrings kStringsUkrainian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Підтвердити",
     L"Скасувати",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Додати з файлу…",
+    L"Додати з Hugging Face…",
+    L"Додати модель Hugging Face",
+    L"URL-адреса моделі",
+    L"Завантаження…",
+    L"Не вдалося завантажити.",
+    L"Введіть URL-адресу моделі huggingface.co (формат …/resolve/…)",
+    L"Зареєстровано.",
 };
 
 // 25. Thai (th)
@@ -3790,6 +4013,15 @@ const LocalizedStrings kStringsThai = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"ตกลง",
     L"ยกเลิก",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"เพิ่มจากไฟล์…",
+    L"เพิ่มจาก Hugging Face…",
+    L"เพิ่มโมเดล Hugging Face",
+    L"URL ของโมเดล",
+    L"กำลังดาวน์โหลด…",
+    L"ดาวน์โหลดไม่สำเร็จ",
+    L"ป้อน URL โมเดลจาก huggingface.co (รูปแบบ …/resolve/…)",
+    L"ลงทะเบียนแล้ว",
 };
 
 // 26. Indonesian (id)
@@ -3935,6 +4167,15 @@ const LocalizedStrings kStringsIndonesian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Oke",
     L"Batal",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Tambah dari file…",
+    L"Tambah dari Hugging Face…",
+    L"Tambah model Hugging Face",
+    L"URL model",
+    L"Mengunduh…",
+    L"Unduhan gagal.",
+    L"Masukkan URL model huggingface.co (format …/resolve/…)",
+    L"Terdaftar.",
 };
 
 // 27. Malay (ms)
@@ -4080,6 +4321,15 @@ const LocalizedStrings kStringsMalay = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Setuju",
     L"Batal",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Tambah daripada fail…",
+    L"Tambah daripada Hugging Face…",
+    L"Tambah model Hugging Face",
+    L"URL model",
+    L"Memuat turun…",
+    L"Muat turun gagal.",
+    L"Masukkan URL model huggingface.co (format …/resolve/…)",
+    L"Telah didaftarkan.",
 };
 
 // 28. Filipino (fil)
@@ -4227,6 +4477,15 @@ const LocalizedStrings kStringsFilipino = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"Oo",
     L"Kanselahin",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"Magdagdag mula sa file…",
+    L"Magdagdag mula sa Hugging Face…",
+    L"Magdagdag ng Hugging Face model",
+    L"URL ng model",
+    L"Nagda-download…",
+    L"Nabigo ang pag-download.",
+    L"Ilagay ang URL ng model mula sa huggingface.co (format …/resolve/…)",
+    L"Naka-register na.",
 };
 
 // 29. Hindi (hi)
@@ -4372,6 +4631,15 @@ const LocalizedStrings kStringsHindi = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"ठीक है",
     L"रद्द करें",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"फ़ाइल से जोड़ें…",
+    L"Hugging Face से जोड़ें…",
+    L"Hugging Face मॉडल जोड़ें",
+    L"मॉडल URL",
+    L"डाउनलोड हो रहा है…",
+    L"डाउनलोड विफल रहा।",
+    L"huggingface.co का मॉडल URL दर्ज करें (…/resolve/… प्रारूप)",
+    L"पंजीकृत हो गया।",
 };
 
 // 30. Bengali (bn)
@@ -4517,6 +4785,15 @@ const LocalizedStrings kStringsBengali = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"ঠিক আছে",
     L"বাতিল",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"ফাইল থেকে যোগ করুন…",
+    L"Hugging Face থেকে যোগ করুন…",
+    L"Hugging Face মডেল যোগ করুন",
+    L"মডেলের URL",
+    L"ডাউনলোড হচ্ছে…",
+    L"ডাউনলোড ব্যর্থ হয়েছে।",
+    L"huggingface.co মডেলের URL লিখুন (…/resolve/… বিন্যাস)",
+    L"নিবন্ধিত হয়েছে।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -4663,6 +4940,15 @@ const LocalizedStrings kStringsArabic = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"موافق",
     L"إلغاء",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"إضافة من ملف…",
+    L"إضافة من Hugging Face…",
+    L"إضافة نموذج من Hugging Face",
+    L"عنوان URL للنموذج",
+    L"جارٍ التنزيل…",
+    L"فشل التنزيل.",
+    L"أدخل عنوان URL للنموذج من huggingface.co (بصيغة …/resolve/…)",
+    L"تم التسجيل.",
 };
 
 // 32. Persian (fa) — RTL
@@ -4808,6 +5094,15 @@ const LocalizedStrings kStringsPersian = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"تأیید",
     L"انصراف",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"افزودن از فایل…",
+    L"افزودن از Hugging Face…",
+    L"افزودن مدل Hugging Face",
+    L"URL مدل",
+    L"در حال دانلود…",
+    L"دانلود ناموفق بود.",
+    L"URL مدل huggingface.co را وارد کنید (قالب …/resolve/…)",
+    L"ثبت شد.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -4953,6 +5248,15 @@ const LocalizedStrings kStringsUrdu = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"ٹھیک ہے",
     L"منسوخ",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"فائل سے شامل کریں…",
+    L"Hugging Face سے شامل کریں…",
+    L"Hugging Face ماڈل شامل کریں",
+    L"ماڈل کا URL",
+    L"ڈاؤن لوڈ ہو رہا ہے…",
+    L"ڈاؤن لوڈ ناکام ہوا۔",
+    L"huggingface.co کا ماڈل URL درج کریں (…/resolve/… فارمیٹ)",
+    L"رجسٹر ہو گیا۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -5098,6 +5402,15 @@ const LocalizedStrings kStringsHebrew = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"אישור",
     L"ביטול",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"הוספה מקובץ…",
+    L"הוספה מ-Hugging Face…",
+    L"הוספת מודל Hugging Face",
+    L"כתובת URL של המודל",
+    L"מוריד…",
+    L"ההורדה נכשלה.",
+    L"הזן את כתובת ה-URL של המודל מ-huggingface.co (בפורמט …/resolve/…)",
+    L"נרשם.",
 };
 
 // 35. Khmer (km)
@@ -5243,6 +5556,15 @@ const LocalizedStrings kStringsKhmer = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"យល់ព្រម",
     L"បោះបង់",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"បន្ថែមពីឯកសារ…",
+    L"បន្ថែមពី Hugging Face…",
+    L"បន្ថែមម៉ូដែល Hugging Face",
+    L"URL របស់ម៉ូដែល",
+    L"កំពុងទាញយក…",
+    L"ការទាញយកបរាជ័យ។",
+    L"បញ្ចូល URL ម៉ូដែលពី huggingface.co (ទ្រង់ទ្រាយ …/resolve/…)",
+    L"បានចុះឈ្មោះ។",
 };
 
 // 36. Lao (lo)
@@ -5388,6 +5710,15 @@ const LocalizedStrings kStringsLao = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"ຕົກລົງ",
     L"ຍົກເລີກ",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"ເພີ່ມຈາກໄຟລ໌…",
+    L"ເພີ່ມຈາກ Hugging Face…",
+    L"ເພີ່ມໂມເດລ Hugging Face",
+    L"URL ຂອງໂມເດລ",
+    L"ກຳລັງດາວໂຫລດ…",
+    L"ການດາວໂຫລດລົ້ມເຫຼວ.",
+    L"ໃສ່ URL ໂມເດລຈາກ huggingface.co (ຮູບແບບ …/resolve/…)",
+    L"ລົງທະບຽນແລ້ວ.",
 };
 
 // 37. Burmese (my)
@@ -5533,6 +5864,15 @@ const LocalizedStrings kStringsBurmese = {
     // REQ-050: dialog OK/Cancel push-button labels.
     L"အိုကေ",
     L"ပယ်ဖျက်ပါ",
+    // REQ-050: merged manager add-methods + Hugging Face download dialog.
+    L"ဖိုင်မှ ထည့်ရန်…",
+    L"Hugging Face မှ ထည့်ရန်…",
+    L"Hugging Face မော်ဒယ်ထည့်ရန်",
+    L"မော်ဒယ် URL",
+    L"ဒေါင်းလုဒ်လုပ်နေသည်…",
+    L"ဒေါင်းလုဒ်လုပ်ရန်မအောင်မြင်ပါ။",
+    L"huggingface.co မှ မော်ဒယ် URL ထည့်ပါ (…/resolve/… ပုံစံ)",
+    L"စာရင်းသွင်းပြီးပါပြီ။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -5826,6 +6166,18 @@ std::wstring I18n::Get(StringId id) {
         // dialog and future dialogs); real translations in all 37 locales.
         case StringId::DialogOk:                    return s.dialog_ok;
         case StringId::DialogCancel:                return s.dialog_cancel;
+
+        // REQ-050: merged gguf-model manager — the two top-row add methods
+        // plus the Hugging Face add-dialog strings (cancel reuses
+        // DialogCancel; write/dir failures reuse the manager-error strings).
+        case StringId::GgufManagerAddFile: return s.gguf_manager_add_file;
+        case StringId::GgufManagerAddHf:   return s.gguf_manager_add_hf;
+        case StringId::HfAddTitle:         return s.hf_add_title;
+        case StringId::HfUrlLabel:         return s.hf_url_label;
+        case StringId::HfDownloading:      return s.hf_downloading;
+        case StringId::HfFailed:           return s.hf_failed;
+        case StringId::HfInvalidUrl:       return s.hf_invalid_url;
+        case StringId::HfDone:             return s.hf_done;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

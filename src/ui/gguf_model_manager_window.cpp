@@ -1,14 +1,26 @@
 #include "gguf_model_manager_window.hpp"
 
 #include "../diag_logger.hpp" // REQ-047 D3 §C.4-style control/IO verification logging
+#include "../engine_host_json_util.hpp" // REQ-050: IsBareFilename (HF filename gate)
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <commctrl.h>
+#include <winhttp.h>
+
+#pragma comment(lib, "winhttp.lib")  // REQ-050: HF download (the bootstrap/google_translate discipline)
+#pragma comment(lib, "comctl32.lib") // REQ-050: progress bar (msctls_progress32)
 
 namespace emebalachat {
 
@@ -21,6 +33,9 @@ enum : WORD {
     IDC_MGR_EMPTY,
     IDC_MGR_RENAME,
     IDC_MGR_DELETE,
+    // REQ-050: the top-row add methods.
+    IDC_MGR_ADD_FILE,
+    IDC_MGR_ADD_HF,
     // IDCANCEL doubles as the Close button (Esc == Close, Win32 default).
 };
 
@@ -30,9 +45,34 @@ enum : WORD {
     IDC_RENAME_EDIT,
 };
 
+// Control IDs (REQ-050 Hugging Face add dialog).
+enum : WORD {
+    IDC_HF_URL_LABEL = 4300,
+    IDC_HF_URL_EDIT,
+    IDC_HF_STATUS,
+    // IDC_HF_PROGRESS is created at runtime (msctls_progress32 has no system
+    // ordinal for the TemplateBuilder); the ID labels the HWND's HMENU.
+    IDC_HF_PROGRESS = 4303,
+};
+
+// REQ-050: value-only worker->dialog messages (SEC-ADJ house contract: no
+// heap pointer crosses PostMessageW; the payloads are small integers).
+// kHfMsgProgress: wParam = percent (0..100, or (WORD)-1 when the server gave
+// no Content-Length -> marquee), LPARAM = bytes received so far.
+// kHfMsgDone:     wParam = 0 download complete / 1 failed / 2 cancelled.
+constexpr UINT kHfMsgProgress = WM_APP + 0x10;
+constexpr UINT kHfMsgDone = WM_APP + 0x11;
+
+// REQ-050: 20 GB sanity cap for a user-provided model download (a resolve
+// URL that claims more is almost certainly wrong or hostile; the bootstrap
+// repair client uses the same bounded-body discipline, sized for manifests).
+constexpr unsigned long long kHfMaxDownloadBytes = 20ull * 1024 * 1024 * 1024;
+
 struct ManagerDialogState {
     AppConfig* config = nullptr;          // REQ-048 R2-D: user_model_id tracking
     TranslationManager* engine = nullptr; // REQ-048 R2-D: delete -> Auto re-point
+    // REQ-050: the file-picker registration pipeline (main.cpp callback).
+    std::function<void()> add_from_file;
     engine_host_registry::Registry registry;
     std::vector<std::string> user_ids; // ListBox row i -> registry user-model id
     bool registry_changed = false;
@@ -143,6 +183,31 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
             return false;
         }
     }
+    return true;
+}
+
+// REQ-050: shared registry loader for the manager dialog — used by
+// WM_INITDIALOG AND the post-add reloads ([파일에서 추가…] / [Hugging
+// Face에서 추가…] can both append/reuse an entry on disk, so the in-memory
+// copy is refreshed from the file before the ListBox is rebuilt). Same
+// loader discipline as RegisterUserGgufModel: a damaged/schema-rejected
+// registry is a LOUD failure and is NEVER opened for editing. Returns false
+// when the dialog must abort (the message was already shown).
+bool LoadManagerRegistry(HWND dlg, ManagerDialogState* st) {
+    auto res = engine_host_registry::LoadDefaultRegistry();
+    if (res.status != engine_host_registry::LoadStatus::Ok &&
+        res.status != engine_host_registry::LoadStatus::Missing) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrRegistryDamaged).c_str(),
+                      I18n::Get(StringId::GgufManagerTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("UI/GgufManager/012: registry load status=%d; manager refused to open\n",
+               static_cast<int>(res.status));
+        return false;
+    }
+    if (res.status == engine_host_registry::LoadStatus::Missing) {
+        res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
+    }
+    st->registry = std::move(res.registry);
     return true;
 }
 
@@ -258,6 +323,563 @@ bool RunRenameFlow(HWND dlg, ManagerDialogState* st, const std::string& old_id,
     }
 }
 
+// ==================== REQ-050: Hugging Face add dialog =====================
+
+struct HfAddDialogState {
+    AppConfig* config = nullptr;
+    TranslationManager* engine = nullptr;
+    // The download pumps on a worker thread; joined on EVERY dialog exit path
+    // before EndDialog, so this state (the caller's stack) can never dangle.
+    std::atomic<bool> cancel{false};
+    std::thread worker;
+    bool worker_running = false;
+    bool registered = false; // out: a model was registered (or reused)
+    // Written by the worker before its final kHfMsgDone post; read by the GUI
+    // thread only after the join (join is the happens-before edge).
+    std::wstring worker_url;
+    std::filesystem::path worker_tmp;
+    std::string worker_filename;
+};
+
+void HfJoinWorker(HfAddDialogState* st) {
+    if (st->worker.joinable()) {
+        st->worker.join();
+    }
+    st->worker_running = false;
+}
+
+struct HfScopedHandleDeleter {
+    void operator()(HINTERNET h) const {
+        if (h) ::WinHttpCloseHandle(h);
+    }
+};
+using HfScopedHInternet = std::unique_ptr<void, HfScopedHandleDeleter>;
+
+// REQ-050: https-only, host-pinned download worker (the
+// engine_host_bootstrap_client::HttpsDownloadToFile discipline, extended for
+// multi-GB model files: Content-Length progress, a 20 GB sanity cap, cancel
+// polling, generous per-call io timeouts). Runs entirely on the worker
+// thread; reports through VALUE-ONLY kHfMsgProgress / kHfMsgDone posts (no
+// pointer crosses PostMessageW — the SEC-ADJ house contract) and never
+// touches GUI objects or config. The temp <target>.download is deleted on
+// every failure AND cancel path; the GUI thread moves it to the final name
+// after a verified-complete exit.
+//
+// Redirect note: huggingface.co resolve URLs answer 302 -> the HF CDN, and
+// WinHTTP's DEFAULT redirect policy follows up to 5 hops while REFUSING
+// https->http downgrades — exactly the safe shape for this flow, so no
+// explicit option is set.
+void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
+    int code = 1; // 0 complete / 1 failed / 2 cancelled by the user
+    unsigned long long got = 0;
+    unsigned long long advertised = 0;
+
+    std::error_code ec;
+    std::filesystem::remove(st->worker_tmp, ec); // clear any stale temp
+
+    { // stream scope: the ofstream must close before the completion post
+        std::ofstream out(st->worker_tmp, std::ios::binary | std::ios::trunc);
+        bool ok = static_cast<bool>(out);
+        if (!ok) {
+            DIAG_F("UI/HfAdd/001: temp file open failed (path_len=%zu)\n",
+                   st->worker_tmp.wstring().size());
+        } else {
+            // The validator pinned the URL to this exact prefix, so the
+            // remainder is the request path (<repo>/resolve/<rev>/<file>).
+            constexpr std::size_t kPrefixLen = 23; // "https://huggingface.co/"
+            static_assert(kPrefixLen == std::wstring_view(L"https://huggingface.co/").size());
+            const wchar_t* path = st->worker_url.c_str() + kPrefixLen;
+            HfScopedHInternet session(::WinHttpOpen(
+                L"EmebalaChat/1.0 (gguf-model-manager)",
+                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+            if (session) {
+                // Multi-GB models need generous per-call budgets (the
+                // bootstrap's 15s receive timeout suits small manifests
+                // only): resolve/connect 10s, send 30s, receive 60s.
+                ::WinHttpSetTimeouts(session.get(), 10000, 10000, 30000, 60000);
+            }
+            HfScopedHInternet connect;
+            if (session) {
+                connect.reset(::WinHttpConnect(session.get(), L"huggingface.co",
+                                               INTERNET_DEFAULT_HTTPS_PORT, 0));
+            }
+            HfScopedHInternet request;
+            if (connect) {
+                request.reset(::WinHttpOpenRequest(connect.get(), L"GET", path,
+                                                   nullptr, WINHTTP_NO_REFERER,
+                                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                   WINHTTP_FLAG_SECURE));
+            }
+            ok = request != nullptr;
+            if (ok) {
+                ok = ::WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS,
+                                          0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) != FALSE;
+            }
+            if (ok) {
+                ok = ::WinHttpReceiveResponse(request.get(), nullptr) != FALSE;
+            }
+            if (ok) {
+                DWORD status = 0;
+                DWORD sz = sizeof(status);
+                ::WinHttpQueryHeaders(request.get(),
+                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
+                if (status != 200) {
+                    DIAG_F("UI/HfAdd/002: HF download HTTP %lu (path_len=%zu)\n",
+                           status, st->worker_url.size());
+                    ok = false;
+                }
+            }
+            if (ok) {
+                // Content-Length is optional (chunked/CDN): when unknown the
+                // dialog keeps the marquee and shows the byte count instead.
+                DWORD len = 0;
+                DWORD lsz = sizeof(len);
+                if (::WinHttpQueryHeaders(request.get(),
+                        WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &len, &lsz,
+                        WINHTTP_NO_HEADER_INDEX)) {
+                    advertised = len;
+                    if (advertised > kHfMaxDownloadBytes) {
+                        DIAG_F("UI/HfAdd/003: advertised length %llu exceeds the %llu-byte cap\n",
+                               advertised, kHfMaxDownloadBytes);
+                        ok = false;
+                    }
+                }
+            }
+            if (ok) {
+                auto last_report = std::chrono::steady_clock::now() -
+                                   std::chrono::milliseconds(400);
+                for (;;) {
+                    if (st->cancel.load(std::memory_order_relaxed)) {
+                        code = 2;
+                        break;
+                    }
+                    DWORD avail = 0;
+                    if (!::WinHttpQueryDataAvailable(request.get(), &avail)) {
+                        ok = false;
+                        break;
+                    }
+                    if (avail == 0) {
+                        break; // end of stream
+                    }
+                    if (got + static_cast<unsigned long long>(avail) >
+                        kHfMaxDownloadBytes) {
+                        DIAG_F("UI/HfAdd/004: streamed body exceeded the %llu-byte cap\n",
+                               kHfMaxDownloadBytes);
+                        ok = false;
+                        break;
+                    }
+                    char buf[64 * 1024];
+                    const DWORD want = avail < sizeof(buf)
+                        ? avail : static_cast<DWORD>(sizeof(buf));
+                    DWORD read = 0;
+                    if (!::WinHttpReadData(request.get(), buf, want, &read)) {
+                        ok = false;
+                        break;
+                    }
+                    if (read == 0) {
+                        break;
+                    }
+                    out.write(buf, static_cast<std::streamsize>(read));
+                    if (!out) {
+                        ok = false;
+                        break;
+                    }
+                    got += read;
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_report >= std::chrono::milliseconds(200)) {
+                        last_report = now;
+                        const int pct = advertised
+                            ? static_cast<int>(got * 100ull / advertised) : -1;
+                        ::PostMessageW(dlg, kHfMsgProgress,
+                            static_cast<WPARAM>(static_cast<WORD>(pct)),
+                            static_cast<LPARAM>(got));
+                    }
+                }
+                if (ok && got == 0) {
+                    ok = false; // an empty body is a failure, not a model
+                }
+            }
+        }
+        if (ok && code != 2) {
+            code = 0; // the full body landed in the temp file
+        }
+        if (!ok && code != 2) {
+            code = 1;
+        }
+        out.close(); // flush + release the temp before the completion post
+    }
+    if (code != 0) {
+        // Every failure AND cancel path deletes the temp file.
+        std::error_code ec2;
+        std::filesystem::remove(st->worker_tmp, ec2);
+    }
+    ::PostMessageW(dlg, kHfMsgDone, static_cast<WPARAM>(code), 0);
+}
+
+// REQ-050: pre-download guards, run on the GUI thread BEFORE the worker
+// starts so a multi-GB download is never wasted:
+//   * LOCALAPPDATA / models dir (loud, reuses the manager-error strings)
+//   * registry freshness (damaged -> loud refusal)
+//   * filename already registered -> bundled refusal or user-entry reuse
+//     (switch config to the existing entry; the file-picker pipeline's §4
+//     semantics, so both add methods behave identically)
+//   * filename present on disk but unregistered -> refuse to overwrite
+enum class HfPreFlightResult { Proceed, Handled, Refused };
+
+HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
+                              const std::string& filename) {
+    const std::wstring title = I18n::Get(StringId::HfAddTitle);
+    const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrNoLocalappdata).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        return HfPreFlightResult::Refused;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(models_dir, ec);
+    if (ec) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrWrite).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        DIAG_F("UI/HfAdd/008: models dir create_directories failed (ec=%d)\n",
+               ec.value());
+        return HfPreFlightResult::Refused;
+    }
+    auto res = engine_host_registry::LoadDefaultRegistry();
+    if (res.status != engine_host_registry::LoadStatus::Ok &&
+        res.status != engine_host_registry::LoadStatus::Missing) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrRegistryDamaged).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        DIAG_F("UI/HfAdd/009: registry load status=%d; refusing to download\n",
+               static_cast<int>(res.status));
+        return HfPreFlightResult::Refused;
+    }
+    if (res.status == engine_host_registry::LoadStatus::Missing) {
+        res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
+    }
+    for (const auto& m : res.registry.models) {
+        if (m.files.empty() || m.files[0] != filename) {
+            continue;
+        }
+        if (m.origin == "bundled") {
+            // REQ-047 D2 guard, HF edition: the URL names the built-in model.
+            ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufBundledDuplicateBody).c_str(),
+                          title.c_str(), MB_OK | MB_ICONINFORMATION);
+            DIAG_F("UI/HfAdd/010: URL filename matches the bundled model; refused (id=%s)\n",
+                   m.id.c_str());
+            return HfPreFlightResult::Refused;
+        }
+        // Already registered -> switch the engine binding to the existing
+        // entry and report the reuse (no download, no duplicate entry).
+        st->config->SetUserModelId(m.id);
+        st->config->SetEngineTypeName("user_gguf");
+        st->engine->SetEngineType(EngineType::LocalLlama);
+        st->config->SaveToFile();
+        ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
+                      title.c_str(), MB_OK | MB_ICONINFORMATION);
+        DIAG_F("UI/HfAdd/011: URL model already registered; reusing id=%s\n",
+               m.id.c_str());
+        st->registered = true;
+        return HfPreFlightResult::Handled;
+    }
+    // Orphan-file collision: an unregistered file with this name already
+    // sits in the models dir. Refuse-with-message (the task-mandated honest
+    // policy) rather than silently suffixing or overwriting.
+    if (std::filesystem::exists(models_dir / ToUtf16(filename), ec)) {
+        if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+            ::SetWindowTextW(s, I18n::Get(StringId::HfFailed).c_str());
+        }
+        DIAG_F("UI/HfAdd/012: target file already exists on disk; refusing (file=%s)\n",
+               filename.c_str());
+        return HfPreFlightResult::Refused;
+    }
+    return HfPreFlightResult::Proceed;
+}
+
+// REQ-050: post-download registration, ALWAYS on the GUI thread (called from
+// the kHfMsgDone handler after the worker joined). Re-runs the reuse/bundle
+// checks (the download took minutes — the registry may have changed), moves
+// the temp to the final bare filename (refusing any collision), appends the
+// origin:"user" entry and persists through WriteRegistryLoud, then switches
+// config.user_model_id + engine_type + the runtime engine exactly like the
+// file-picker pipeline (RegisterUserGgufModel §5).
+bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
+    const std::wstring title = I18n::Get(StringId::HfAddTitle);
+    auto discard_tmp = [&]() {
+        std::error_code ec;
+        std::filesystem::remove(st->worker_tmp, ec);
+    };
+    const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrNoLocalappdata).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        discard_tmp();
+        return false;
+    }
+    const std::filesystem::path final_path = models_dir / ToUtf16(st->worker_filename);
+    auto res = engine_host_registry::LoadDefaultRegistry();
+    if (res.status != engine_host_registry::LoadStatus::Ok &&
+        res.status != engine_host_registry::LoadStatus::Missing) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrRegistryDamaged).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        DIAG_F("UI/HfAdd/013: registry load status=%d after download; registration refused\n",
+               static_cast<int>(res.status));
+        discard_tmp();
+        return false;
+    }
+    if (res.status == engine_host_registry::LoadStatus::Missing) {
+        res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
+    }
+    for (const auto& m : res.registry.models) {
+        if (m.files.empty() || m.files[0] != st->worker_filename) {
+            continue;
+        }
+        discard_tmp(); // the bytes are already on disk under this entry
+        if (m.origin == "bundled") {
+            ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufBundledDuplicateBody).c_str(),
+                          title.c_str(), MB_OK | MB_ICONINFORMATION);
+            DIAG_F("UI/HfAdd/014: downloaded file matches a bundled entry; refused (id=%s)\n",
+                   m.id.c_str());
+            return false;
+        }
+        st->config->SetUserModelId(m.id);
+        st->config->SetEngineTypeName("user_gguf");
+        st->engine->SetEngineType(EngineType::LocalLlama);
+        st->config->SaveToFile();
+        ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
+                      title.c_str(), MB_OK | MB_ICONINFORMATION);
+        DIAG_F("UI/HfAdd/015: downloaded model already registered; reusing id=%s\n",
+               m.id.c_str());
+        st->registered = true;
+        return true;
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(final_path, ec)) {
+        discard_tmp();
+        if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+            ::SetWindowTextW(s, I18n::Get(StringId::HfFailed).c_str());
+        }
+        DIAG_F("UI/HfAdd/016: target file appeared during the download; refusing (file=%s)\n",
+               st->worker_filename.c_str());
+        return false;
+    }
+    // Move temp -> final. std::filesystem::rename refuses to overwrite an
+    // existing destination on Windows, so a mid-download collision can never
+    // clobber a file.
+    std::error_code ec_move;
+    std::filesystem::rename(st->worker_tmp, final_path, ec_move);
+    if (ec_move) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::HfFailed).c_str(), title.c_str(),
+                      MB_OK | MB_ICONWARNING);
+        DIAG_F("UI/HfAdd/017: temp->final move failed (ec=%d)\n", ec_move.value());
+        discard_tmp();
+        return false;
+    }
+    // Fresh registration — the file-picker pipeline's id policy: user-<stem>,
+    // "_2"/"_3"… suffixes on id collision (the filename itself is fixed).
+    const std::string kGgufExt = ".gguf";
+    std::string stem = st->worker_filename;
+    if (stem.size() > kGgufExt.size()) {
+        const std::string tail = stem.substr(stem.size() - kGgufExt.size());
+        bool gguf_tail = true;
+        for (size_t ci = 0; ci < kGgufExt.size(); ++ci) {
+            if (std::tolower(static_cast<unsigned char>(tail[ci])) !=
+                std::tolower(static_cast<unsigned char>(kGgufExt[ci]))) {
+                gguf_tail = false;
+                break;
+            }
+        }
+        if (gguf_tail) {
+            stem.resize(stem.size() - kGgufExt.size());
+        }
+    }
+    std::string model_id = "user-" + stem;
+    for (int suffix = 2;
+         res.registry.FindModel(model_id) != nullptr && suffix <= 1000;
+         ++suffix) {
+        model_id = "user-" + stem + "_" + std::to_string(suffix);
+    }
+    engine_host_registry::ModelEntry entry;
+    entry.id = model_id;
+    entry.family = "ggml-translate";
+    entry.files = { st->worker_filename };
+    entry.origin = "user";
+    res.registry.models.push_back(std::move(entry));
+    if (!WriteRegistryLoud(dlg, res.registry)) {
+        // The file landed but the registry did not; it stays on disk exactly
+        // like the file-picker pipeline's copy-then-write-failure case.
+        return false;
+    }
+    st->config->SetUserModelId(model_id);
+    st->config->SetEngineTypeName("user_gguf");
+    st->engine->SetEngineType(EngineType::LocalLlama);
+    st->config->SaveToFile();
+    DIAG_F("UI/HfAdd/018: registered HF model id=%s file=%s (origin=user)\n",
+           model_id.c_str(), st->worker_filename.c_str());
+    return true;
+}
+
+// Re-enable the form after a failed download so the user can fix the URL
+// (or cancel); the status line already carries the reason.
+void HfResetForRetry(HWND dlg, HfAddDialogState* st) {
+    (void)st;
+    if (HWND e = ::GetDlgItem(dlg, IDC_HF_URL_EDIT)) {
+        ::EnableWindow(e, TRUE);
+    }
+    if (HWND b = ::GetDlgItem(dlg, IDOK)) {
+        ::EnableWindow(b, TRUE);
+    }
+}
+
+INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* st = reinterpret_cast<HfAddDialogState*>(
+        ::GetWindowLongPtrW(dlg, GWLP_USERDATA));
+    switch (msg) {
+    case WM_INITDIALOG: {
+        st = reinterpret_cast<HfAddDialogState*>(lp);
+        ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        if (!::GetDlgItem(dlg, IDC_HF_URL_EDIT)) {
+            DIAG_F("UI/HfAdd/005: IDC_HF_URL_EDIT control missing after dialog init\n");
+        }
+        if (!::GetDlgItem(dlg, IDC_HF_STATUS)) {
+            DIAG_F("UI/HfAdd/006: IDC_HF_STATUS control missing after dialog init\n");
+        }
+        // REQ-050: the progress bar is created at runtime — the
+        // TemplateBuilder only emits system-class ordinals and
+        // "msctls_progress32" has none.
+        static bool s_comctl_initialized = false;
+        if (!s_comctl_initialized) {
+            INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_PROGRESS_CLASS };
+            ::InitCommonControlsEx(&icc);
+            s_comctl_initialized = true;
+        }
+        HWND prog = ::CreateWindowExW(
+            0, PROGRESS_CLASSW, nullptr,
+            WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+            8, 35, 240, 12, dlg,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HF_PROGRESS)),
+            ::GetModuleHandleW(nullptr), nullptr);
+        if (!prog) {
+            DIAG_F("UI/HfAdd/007: progress bar creation failed (GLE %lu)\n",
+                   ::GetLastError());
+        } else {
+            ::SendMessageW(prog, PBM_SETMARQUEE, TRUE, 50);
+        }
+        return TRUE;
+    }
+    case kHfMsgProgress: {
+        const int percent = static_cast<int>(static_cast<WORD>(wp));
+        const auto bytes = static_cast<unsigned long long>(lp);
+        if (HWND prog = ::GetDlgItem(dlg, IDC_HF_PROGRESS)) {
+            if (percent < 0) {
+                ::SendMessageW(prog, PBM_SETMARQUEE, TRUE, 50);
+            } else {
+                ::SendMessageW(prog, PBM_SETMARQUEE, FALSE, 0);
+                ::SendMessageW(prog, PBM_SETRANGE32, 0, 100);
+                ::SendMessageW(prog, PBM_SETPOS, static_cast<WPARAM>(percent), 0);
+            }
+        }
+        std::wstring status = I18n::Get(StringId::HfDownloading);
+        if (percent >= 0) {
+            status += L" (" + std::to_wstring(percent) + L"%)";
+        } else if (bytes > 0) {
+            status += L" (" + std::to_wstring(bytes / (1024 * 1024)) + L" MB)";
+        }
+        if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+            ::SetWindowTextW(s, status.c_str());
+        }
+        return TRUE;
+    }
+    case kHfMsgDone: {
+        const int code = static_cast<int>(wp);
+        HfJoinWorker(st); // join first: the worker is finished, this is cheap
+        if (HWND prog = ::GetDlgItem(dlg, IDC_HF_PROGRESS)) {
+            ::SendMessageW(prog, PBM_SETMARQUEE, FALSE, 0);
+        }
+        if (code == 0) {
+            // Registration runs HERE, on the GUI thread — never on the
+            // worker (it touches config, MessageBox and the registry).
+            if (HfRegisterDownloaded(dlg, st)) {
+                ::MessageBoxW(dlg, I18n::Get(StringId::HfDone).c_str(),
+                              I18n::Get(StringId::HfAddTitle).c_str(),
+                              MB_OK | MB_ICONINFORMATION);
+                ::EndDialog(dlg, IDOK);
+            } else {
+                HfResetForRetry(dlg, st);
+            }
+        } else if (code == 2) {
+            ::EndDialog(dlg, IDCANCEL); // user cancel: temp already deleted
+        } else {
+            if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+                ::SetWindowTextW(s, I18n::Get(StringId::HfFailed).c_str());
+            }
+            HfResetForRetry(dlg, st);
+        }
+        return TRUE;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDOK: { // [다운로드] — validate + guard, then spawn the worker
+            if (st->worker_running) {
+                return TRUE; // a download is already in flight
+            }
+            const std::string url = ToUtf8(GetCtrlText(dlg, IDC_HF_URL_EDIT));
+            std::string filename;
+            if (!IsHfResolveUrl(url) || !HfResolveFilename(url, &filename)) {
+                if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+                    ::SetWindowTextW(s, I18n::Get(StringId::HfInvalidUrl).c_str());
+                }
+                DIAG_F("UI/HfAdd/019: URL rejected (len=%zu valid_shape=%d)\n",
+                       url.size(), IsHfResolveUrl(url) ? 1 : 0);
+                return TRUE;
+            }
+            switch (HfPreFlight(dlg, st, filename)) {
+            case HfPreFlightResult::Handled:
+                ::EndDialog(dlg, IDOK); // reuse path registered + noticed
+                return TRUE;
+            case HfPreFlightResult::Refused:
+                return TRUE; // the guard already surfaced why
+            case HfPreFlightResult::Proceed:
+                break;
+            }
+            st->cancel.store(false);
+            st->worker_url = ToUtf16(url);
+            st->worker_filename = std::move(filename);
+            st->worker_tmp = engine_host_registry::DefaultModelsDir() /
+                             (ToUtf16(st->worker_filename) + L".download");
+            st->worker = std::thread(HfDownloadWorker, dlg, st);
+            st->worker_running = true;
+            // Freeze the form for the download duration.
+            if (HWND e = ::GetDlgItem(dlg, IDC_HF_URL_EDIT)) {
+                ::EnableWindow(e, FALSE);
+            }
+            if (HWND b = ::GetDlgItem(dlg, IDOK)) {
+                ::EnableWindow(b, FALSE);
+            }
+            // Kick the marquee + status immediately.
+            ::SendMessageW(dlg, kHfMsgProgress,
+                           static_cast<WPARAM>(static_cast<WORD>(-1)), 0);
+            return TRUE;
+        }
+        case IDCANCEL:
+            if (st->worker_running) {
+                // Ask the worker to stop and wait for it (bounded by the
+                // per-call io timeouts between cancel polls). If it actually
+                // finished in the meantime, the completed temp is discarded —
+                // the user explicitly asked to cancel.
+                st->cancel.store(true);
+                HfJoinWorker(st);
+            }
+            ::EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        return FALSE;
+    }
+    return FALSE;
+}
+
 INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<ManagerDialogState*>(
         ::GetWindowLongPtrW(dlg, GWLP_USERDATA));
@@ -268,29 +890,59 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (!::GetDlgItem(dlg, IDC_MGR_LIST)) {
             DIAG_F("UI/GgufManager/011: IDC_MGR_LIST control missing after dialog init\n");
         }
+        if (!::GetDlgItem(dlg, IDC_MGR_ADD_FILE)) {
+            DIAG_F("UI/GgufManager/015: IDC_MGR_ADD_FILE control missing after dialog init\n");
+        }
+        if (!::GetDlgItem(dlg, IDC_MGR_ADD_HF)) {
+            DIAG_F("UI/GgufManager/016: IDC_MGR_ADD_HF control missing after dialog init\n");
+        }
+        if (HWND b = ::GetDlgItem(dlg, IDC_MGR_ADD_FILE)) {
+            // REQ-050: without the main.cpp pipeline callback the button has
+            // nothing to run — disable rather than dead-click.
+            ::EnableWindow(b, st->add_from_file ? TRUE : FALSE);
+        }
         // REQ-048 R2-D: same loader discipline as RegisterUserGgufModel — a
         // damaged/schema-rejected registry is NEVER opened for editing; the
         // manager aborts loudly instead of offering a destructive no-op.
-        auto res = engine_host_registry::LoadDefaultRegistry();
-        if (res.status != engine_host_registry::LoadStatus::Ok &&
-            res.status != engine_host_registry::LoadStatus::Missing) {
-            ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrRegistryDamaged).c_str(),
-                          I18n::Get(StringId::GgufManagerTitle).c_str(),
-                          MB_OK | MB_ICONERROR);
-            DIAG_F("UI/GgufManager/012: registry load status=%d; manager refused to open\n",
-                   static_cast<int>(res.status));
+        if (!LoadManagerRegistry(dlg, st)) {
             ::EndDialog(dlg, IDCANCEL);
             return TRUE;
         }
-        if (res.status == engine_host_registry::LoadStatus::Missing) {
-            res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
-        }
-        st->registry = std::move(res.registry);
         RebuildManagerList(dlg, st);
         return TRUE;
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_MGR_ADD_FILE: {
+            // REQ-050: [파일에서 추가…] runs the app's existing file-picker
+            // registration pipeline (main.cpp's RegisterUserGgufModel, passed
+            // in as this callback). Nested modal loops on the GUI thread are
+            // safe; afterwards the on-disk registry may have a new/reused
+            // entry, so reload + rebuild (the pipeline shows its own notices
+            // and switches config itself when it registers).
+            if (!st->add_from_file) return TRUE;
+            st->add_from_file();
+            st->registry_changed = true;
+            if (!LoadManagerRegistry(dlg, st)) {
+                ::EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            RebuildManagerList(dlg, st);
+            return TRUE;
+        }
+        case IDC_MGR_ADD_HF: {
+            // REQ-050: [Hugging Face에서 추가…] — paste-a-resolve-URL dialog;
+            // on a registration it returns true and the list is rebuilt.
+            if (ShowHfAddDialog(dlg, *st->config, *st->engine)) {
+                st->registry_changed = true;
+                if (!LoadManagerRegistry(dlg, st)) {
+                    ::EndDialog(dlg, IDCANCEL);
+                    return TRUE;
+                }
+                RebuildManagerList(dlg, st);
+            }
+            return TRUE;
+        }
         case IDC_MGR_RENAME: {
             const int idx = SelectedUserIndex(dlg, st);
             if (idx < 0) return TRUE;
@@ -446,11 +1098,93 @@ bool RemoveUserModelEntry(engine_host_registry::Registry& registry,
     return false;
 }
 
-// REQ-048 R2-D: production manager item-set emission, split out of
+// ---- REQ-050: Hugging Face resolve-URL gate (pure, headless-testable) -----
+
+bool IsHfResolveUrl(std::string_view url) {
+    // Scheme + host pinned, case-sensitive: a lookalike host or casing can
+    // never reach WinHTTP (fail-closed).
+    constexpr std::string_view kPrefix = "https://huggingface.co/";
+    if (url.rfind(kPrefix, 0) != 0) {
+        return false;
+    }
+    // Query/fragment tricks are rejected outright.
+    if (url.find_first_of("?#") != std::string_view::npos) {
+        return false;
+    }
+    const std::string_view rest = url.substr(kPrefix.size());
+    const size_t resolve_pos = rest.find("/resolve/");
+    if (resolve_pos == std::string_view::npos || resolve_pos == 0) {
+        return false; // missing marker, or an empty repo segment
+    }
+    const std::string_view after =
+        rest.substr(resolve_pos + std::string_view("/resolve/").size());
+    const size_t slash = after.find('/');
+    if (slash == std::string_view::npos || slash == 0) {
+        return false; // a file path with a non-empty revision is required
+    }
+    const std::string_view path = after.substr(slash + 1);
+    if (path.empty() || path.back() == '/') {
+        return false; // empty file path / empty last segment
+    }
+    // Every remaining segment must be non-empty and free of dot-segments.
+    size_t seg_start = 0;
+    for (;;) {
+        const size_t seg_end = path.find('/', seg_start);
+        const std::string_view seg = path.substr(
+            seg_start, seg_end == std::string_view::npos
+                           ? std::string_view::npos
+                           : seg_end - seg_start);
+        if (seg.empty() || seg == "." || seg == "..") {
+            return false;
+        }
+        if (seg_end == std::string_view::npos) {
+            break;
+        }
+        seg_start = seg_end + 1;
+    }
+    return true;
+}
+
+// REQ-050: filename length ceiling. NTFS allows 255, but the models dir
+// prefix + this name must stay comfortably inside the classic MAX_PATH for
+// every consumer (worker, registry writer, installer), so the derived name
+// is capped well below the filesystem limit.
+inline constexpr std::size_t kHfMaxFilenameLen = 200;
+
+bool HfResolveFilename(std::string_view url, std::string* out_filename) {
+    if (out_filename) {
+        out_filename->clear();
+    }
+    if (!out_filename || !IsHfResolveUrl(url)) {
+        return false;
+    }
+    const size_t last_slash = url.find_last_of('/');
+    const std::string_view last = url.substr(last_slash + 1);
+    if (last.empty() || last == "." || last == ".." ||
+        last.size() > kHfMaxFilenameLen) {
+        return false;
+    }
+    // IsBareFilename covers separators / drive colon / control chars; Windows
+    // filenames additionally forbid these.
+    if (!engine_host_json::IsBareFilename(last)) {
+        return false;
+    }
+    if (last.find_first_of("<>\"|?*") != std::string_view::npos) {
+        return false;
+    }
+    *out_filename = std::string(last);
+    return true;
+}
+
+// REQ-048 R2-D + REQ-050: production manager item-set emission, split out of
 // ShowGgufModelManagerDialog so the unit suite serializes the exact bytes the
 // dialog hands to DialogBoxIndirectParamW (BuildOpenAiTemplate precedent).
-// itemCount must match the AddItem calls below: list + empty placeholder +
-// Rename + Delete + Close(IDCANCEL) = 5.
+// itemCount must match the AddItem calls below. REQ-050 added the top-row
+// add-method buttons ([파일에서 추가…] / [Hugging Face에서 추가…]) and shifted
+// the list + action row down by 16 DLU (dialog 210x96 -> 242x112, widened so
+// the longer add-button labels do not clip):
+//   add-file + add-HF + list + empty placeholder + Rename + Delete +
+//   Close(IDCANCEL) = 7.
 void BuildGgufManagerTemplate(TemplateBuilder& tb) {
     const DWORD LBX = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP |
                       WS_VSCROLL | LBS_NOTIFY;
@@ -460,27 +1194,35 @@ void BuildGgufManagerTemplate(TemplateBuilder& tb) {
     const WORD BTN_CLS    = 0x0080;  // "BUTTON"
     const WORD LIST_CLS   = 0x0083;  // "LISTBOX"
 
-    tb.AddItem(LBX, 8, 6, 194, 58, IDC_MGR_LIST, LIST_CLS, L"");
-    tb.AddItem(LBL, 8, 6, 194, 58, IDC_MGR_EMPTY, STATIC_CLS,
+    // REQ-050: top row — the two add methods.
+    tb.AddItem(BTN, 8, 5, 110, 13, IDC_MGR_ADD_FILE, BTN_CLS,
+               I18n::Get(StringId::GgufManagerAddFile));
+    tb.AddItem(BTN, 124, 5, 110, 13, IDC_MGR_ADD_HF, BTN_CLS,
+               I18n::Get(StringId::GgufManagerAddHf));
+    // REQ-050: shifted 6 -> 22 DLU (below the add row).
+    tb.AddItem(LBX, 8, 22, 226, 58, IDC_MGR_LIST, LIST_CLS, L"");
+    tb.AddItem(LBL, 8, 22, 226, 58, IDC_MGR_EMPTY, STATIC_CLS,
                I18n::Get(StringId::GgufManagerEmpty));
-    tb.AddItem(BTN, 8, 70, 60, 13, IDC_MGR_RENAME, BTN_CLS,
+    tb.AddItem(BTN, 8, 86, 60, 13, IDC_MGR_RENAME, BTN_CLS,
                I18n::Get(StringId::GgufManagerRename));
-    tb.AddItem(BTN, 74, 70, 60, 13, IDC_MGR_DELETE, BTN_CLS,
+    tb.AddItem(BTN, 80, 86, 60, 13, IDC_MGR_DELETE, BTN_CLS,
                I18n::Get(StringId::GgufManagerDelete));
     // Close doubles as IDCANCEL so Esc dismisses the dialog (Win32 default).
-    tb.AddItem(BTN, 148, 70, 54, 13, IDCANCEL, BTN_CLS,
+    tb.AddItem(BTN, 172, 86, 62, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::GgufManagerClose));
 }
 
 bool ShowGgufModelManagerDialog(HWND parent, AppConfig& config,
-                                TranslationManager& engine) {
+                                TranslationManager& engine,
+                                const std::function<void()>& add_from_file) {
     ManagerDialogState st;
     st.config = &config;
     st.engine = &engine;
+    st.add_from_file = add_from_file;
 
     const std::wstring title = I18n::Get(StringId::GgufManagerTitle);
     TemplateBuilder tb;
-    tb.Begin(title, 210, 96, /*itemCount=*/5);
+    tb.Begin(title, 242, 112, /*itemCount=*/7);
     BuildGgufManagerTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(
@@ -488,6 +1230,51 @@ bool ShowGgufModelManagerDialog(HWND parent, AppConfig& config,
         reinterpret_cast<LPARAM>(&st));
     (void)rc; // IDCANCEL vs IDOK carries no extra meaning; registry_changed does
     return st.registry_changed;
+}
+
+// REQ-050: the Hugging Face add-dialog item set (split out for the unit
+// suite, the BuildGgufManagerTemplate precedent). itemCount must match the
+// AddItem calls below: URL label + URL edit + status static + Download(IDOK)
+// + Cancel(IDCANCEL) = 5. The progress bar is NOT a template item (see the
+// header note); the dialog proc creates msctls_progress32 at runtime.
+void BuildHfAddTemplate(TemplateBuilder& tb) {
+    const DWORD LBL = WS_CHILD | WS_VISIBLE;
+    const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
+    const DWORD BTN = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+    const WORD STATIC_CLS = 0x0082;  // "STATIC"
+    const WORD EDIT_CLS   = 0x0081;  // "EDIT"
+    const WORD BTN_CLS    = 0x0080;  // "BUTTON"
+
+    tb.AddItem(LBL, 8, 6, 120, 9, IDC_HF_URL_LABEL, STATIC_CLS,
+               I18n::Get(StringId::HfUrlLabel));
+    tb.AddItem(EDT, 8, 17, 240, 12, IDC_HF_URL_EDIT, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 52, 240, 9, IDC_HF_STATUS, STATIC_CLS, L"");
+    // [다운로드] doubles as IDOK (Enter in the edit starts the download);
+    // the label reuses DialogOk — the action-button half of the OK/Cancel
+    // pair — per the REQ-050 string budget (cancel reuses DialogCancel).
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 66, 64, 13, IDOK, BTN_CLS,
+               I18n::Get(StringId::DialogOk));
+    tb.AddItem(BTN, 182, 66, 64, 13, IDCANCEL, BTN_CLS,
+               I18n::Get(StringId::DialogCancel));
+}
+
+bool ShowHfAddDialog(HWND parent, AppConfig& config, TranslationManager& engine) {
+    HfAddDialogState st;
+    st.config = &config;
+    st.engine = &engine;
+
+    const std::wstring title = I18n::Get(StringId::HfAddTitle);
+    TemplateBuilder tb;
+    tb.Begin(title, 256, 88, /*itemCount=*/5);
+    BuildHfAddTemplate(tb);
+
+    const INT_PTR rc = ::DialogBoxIndirectParamW(
+        ::GetModuleHandleW(nullptr), tb.Get(), parent, HfAddProc,
+        reinterpret_cast<LPARAM>(&st));
+    (void)rc; // registered carries the meaning
+    // The worker is joined on every exit path (cancel + done handlers)
+    // BEFORE EndDialog, so no thread can outlive this stack state.
+    return st.registered;
 }
 
 } // namespace emebalachat

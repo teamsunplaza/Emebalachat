@@ -297,6 +297,9 @@ target_link_libraries(Emebalachat_core PUBLIC
     # openai_compatible_client); crypt32 = DPAPI CryptProtectData key storage.
     bcrypt
     crypt32
+    # REQ-050: the gguf-manager Hugging Face add dialog creates a
+    # msctls_progress32 progress bar at runtime (InitCommonControlsEx).
+    comctl32
     d2d1
     dwrite
     dxgi

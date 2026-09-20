@@ -14524,9 +14524,11 @@ struct Req044LstrMirror {
     // (item 3a-2): 6 user-.gguf fields appended (70 -> 76); REQ-047 D2
     // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77);
     // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78);
-    // REQ-048 R2-D: 12 gguf-manager fields appended (78 -> 90);
-    // REQ-050: 2 dialog OK/Cancel labels appended (97 -> 99).
-    const wchar_t* f[99];
+    // REQ-048 R2-D: 17 gguf-manager family fields appended (78 -> 95);
+    // REQ-050: 2 dialog OK/Cancel labels (95 -> 97) plus tooltip/repair-
+    // transient (97 -> 99) and the merged-manager Hugging Face block
+    // (99 -> 107: 2 add-method buttons + 6 HF dialog strings).
+    const wchar_t* f[107];
 };
 
 } // namespace
@@ -14539,8 +14541,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 99 (78+12+5+2+2)
-    static_assert(kExpectedFieldCount == 99,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 107
+    static_assert(kExpectedFieldCount == 107,
                    "REQ-044/045/047/048/050: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
@@ -14550,11 +14552,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 99,
-                "REQ-044/045/047/048/050: LocalizedStrings field count is 99 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 107,
+                "REQ-044/045/047/048/050: LocalizedStrings field count is 107 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 99,
-                "REQ-044/045/047/048/050: StringId::EnumCount is 99 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 107,
+                "REQ-044/045/047/048/050: StringId::EnumCount is 107 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -14803,9 +14805,13 @@ void TestReq046TrayMenuStructure() {
                tray_src.find("ID_TRAY_ENGINE_USER_GGUF") != std::string::npos,
                "tray: 사용자 선택(.gguf) is a checkable engine item (pref==3, ID_TRAY_ENGINE_USER_GGUF)");
 
-    // 2. The file picker is a separate MF_STRING row (no check geometry).
-    TEST_CHECK(tray_src.find("MF_STRING, ID_TRAY_BROWSE_GGUF") != std::string::npos,
-               "tray: 파일찾기(.gguf) is a plain MF_STRING row (no check mark)");
+    // 2. REQ-050: the standalone file-picker row is merged into the single
+    //    manager row (ID_TRAY_MANAGE_GGUF, plain MF_STRING); the browse row
+    //    append is gone (its ID constant stays defined for the frozen band).
+    TEST_CHECK(tray_src.find("MF_STRING, ID_TRAY_BROWSE_GGUF") == std::string::npos,
+               "tray (REQ-050): the standalone 파일찾기(.gguf) row is removed");
+    TEST_CHECK(tray_src.find("MF_STRING, ID_TRAY_MANAGE_GGUF") != std::string::npos,
+               "tray (REQ-050): the single merged manager row is a plain MF_STRING item");
 
     // 3. The nested POPUP is gone (0 hits required).
     TEST_CHECK(tray_src.find("hUserGgufMenu") == std::string::npos,
@@ -15281,6 +15287,9 @@ int main() {
     // REQ-048 R2-F: the recent gguf-manager strings must be real translations
     // in all 37 locales (hard gate against English passthrough).
     TestReq048R2I18nCoverage();
+    // REQ-050: the Hugging Face resolve-URL gate + filename derivation —
+    // the headless-logic proof for the merged manager's HF add path.
+    TestReq050HfUrlGate();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

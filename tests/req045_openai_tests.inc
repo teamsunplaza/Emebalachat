@@ -162,13 +162,16 @@ void TestReq045OpenAiI18nPresent() {
     // in REQ-045 P4-5 (item 3a-2, the user-.gguf registration strings), by
     // 1 more (76 -> 77) in REQ-047 D2 (the bundled-duplicate notice body),
     // and by 1 more (77 -> 78) in REQ-047 U1 (designer 164500: the tray
-    // "(미등록)" empty-slot marker), and by 12 more (78 -> 90) in REQ-048
-    // R2-D (the gguf model-manager strings), and by 2 more (97 -> 99) in
-    // REQ-050 (the dialog OK/Cancel labels). Read through a volatile to keep
-    // the runtime comparison (avoids C4127 on the constant expression).
+    // "(미등록)" empty-slot marker), and by 17 more (78 -> 95) in REQ-048
+    // R2-D (the gguf model-manager strings + manager-error strings), by 4
+    // more (95 -> 99) for tooltip_translate_failed / repair_transient_body
+    // and the REQ-050 dialog OK/Cancel labels, and by 8 more (99 -> 107) in
+    // the REQ-050 merged-manager Hugging Face block. Read through a volatile
+    // to keep the runtime comparison (avoids C4127 on the constant
+    // expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 99,
-                "StringId::EnumCount is 99 after the 13+6+1+1+12+5+2+2 field appends");
+    TEST_CHECK(enum_count == 107,
+                "StringId::EnumCount is 107 after the 13+6+1+1+17+4+8 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
