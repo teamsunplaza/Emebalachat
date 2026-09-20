@@ -14524,8 +14524,9 @@ struct Req044LstrMirror {
     // (item 3a-2): 6 user-.gguf fields appended (70 -> 76); REQ-047 D2
     // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77);
     // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78);
-    // REQ-048 R2-D: 12 gguf-manager fields appended (78 -> 90).
-    const wchar_t* f[97];
+    // REQ-048 R2-D: 12 gguf-manager fields appended (78 -> 90);
+    // REQ-050: 2 dialog OK/Cancel labels appended (97 -> 99).
+    const wchar_t* f[99];
 };
 
 } // namespace
@@ -14538,9 +14539,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 97 (78+12+5+2)
-    static_assert(kExpectedFieldCount == 97,
-                   "REQ-044/045/047/048: LocalizedStrings field count changed - update the "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 99 (78+12+5+2+2)
+    static_assert(kExpectedFieldCount == 99,
+                   "REQ-044/045/047/048/050: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -14549,11 +14550,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 97,
-                "REQ-044/045/047/048: LocalizedStrings field count is 97 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 99,
+                "REQ-044/045/047/048/050: LocalizedStrings field count is 99 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 97,
-                "REQ-044/045/047/048: StringId::EnumCount is 97 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 99,
+                "REQ-044/045/047/048/050: StringId::EnumCount is 99 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -14928,8 +14929,12 @@ void TestReq046OpenAiLocalhostConsent() {
         _dupenv_s(&port_env_buf, &port_env_len, "EMEBALA_REQ046_MOCK_PORT") == 0 &&
         port_env_buf != nullptr;
     if (have_mock_port) {
-        const std::string base = "http://127.0.0.1:" + std::string(port_env_buf) + "/v1";
+        // Copy the port out BEFORE freeing the env buffer — REQ-050's second
+        // leg (bare-host base) needs it too (reading it after free() was a
+        // use-after-free that produced a garbage base URL).
+        const std::string mock_port = port_env_buf;
         free(port_env_buf);
+        const std::string base = "http://127.0.0.1:" + mock_port + "/v1";
         OpenAiConfig cfg;
         cfg.base_url = base;
         cfg.model = "mock-model";
@@ -14954,8 +14959,36 @@ void TestReq046OpenAiLocalhostConsent() {
 
         const std::wstring out =
             OpenAiCompatibleClient::ChatCompletion(cfg, "en", "ko", L"hello");
-        TEST_CHECK(out == L"mock-translation",
+        // REQ-050: the req050 mock (tools_tmp_req050/openai_mock_server.py)
+        // returns "MOCK-TRANSLATED"; the stale req046 tmp mock returned
+        // "mock-translation". The req050 mock is the canonical one now.
+        TEST_CHECK(out == L"MOCK-TRANSLATED",
                    "mock /v1/chat/completions round-trip returns the mock translation");
+
+        // REQ-050: the second confirmed root cause was the DOUBLE /v1 path
+        // (base ".../v1" + "/v1/models" -> ".../v1/v1/models" -> 404). The
+        // live proof therefore exercises BOTH canonical base forms: with and
+        // without the /v1 prefix. (The mock matches on path SUFFIX, so the
+        // old buggy join could still pass that leg — the req050 mock probe
+        // under tools_tmp_req050/ pins the exact paths; here we prove the
+        // base-URL forms end-to-end.) The /v1 leg above already covers the
+        // prefixed form; this leg covers the bare-host form.
+        const std::string base_no_v1 = "http://127.0.0.1:" + mock_port;
+        OpenAiConfig cfg2;
+        cfg2.base_url = base_no_v1;  // no /v1 prefix: client must assume /v1
+        cfg2.model = "mock-model";
+        cfg2.api_key_dpapi = cfg.api_key_dpapi;
+        cfg2.api_key_sha256 = cfg.api_key_sha256;
+        cfg2.http_consent_given = true;
+        const std::vector<std::string> models2 =
+            OpenAiCompatibleClient::ListModels(cfg2);
+        TEST_CHECK(!models2.empty() &&
+                   std::find(models2.begin(), models2.end(), "mock-model") != models2.end(),
+                   "REQ-050: mock round-trip with base http://host:port (no /v1) succeeds");
+        const std::wstring out2 =
+            OpenAiCompatibleClient::ChatCompletion(cfg2, "en", "ko", L"hello");
+        TEST_CHECK(out2 == L"MOCK-TRANSLATED",
+                   "REQ-050: chat round-trip with base http://host:port (no /v1) succeeds");
     } else {
         std::cout << "[SKIP] EMEBALA_REQ046_MOCK_PORT not set; live mock round-trip skipped "
                      "(run tools_tmp_req046_openai_mock.py + set the env var for the dynamic proof)."
@@ -15188,6 +15221,10 @@ int main() {
     TestReq045OpenAiDpapi();
     TestReq045OpenAiConfigRoundTrip();
     TestReq045OpenAiI18nPresent();
+    // REQ-050: OpenAI endpoint-join fix (double-/v1 404), fetch-probe http
+    // consent, widened dialog + i18n'd OK/Cancel — registered after the
+    // P4-3 OpenAI suites, per the end-of-file pattern.
+    TestReq050OpenAiEndpointJoin();
     // REQ-045 P4-4 (item 3a-1): third-party .gguf serving core — registered
     // after the P4-3 OpenAI suites, per the end-of-file pattern.
     TestReq045GgufRegistryResolution();

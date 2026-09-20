@@ -163,12 +163,101 @@ void TestReq045OpenAiI18nPresent() {
     // 1 more (76 -> 77) in REQ-047 D2 (the bundled-duplicate notice body),
     // and by 1 more (77 -> 78) in REQ-047 U1 (designer 164500: the tray
     // "(미등록)" empty-slot marker), and by 12 more (78 -> 90) in REQ-048
-    // R2-D (the gguf model-manager strings). Read through a volatile to keep
+    // R2-D (the gguf model-manager strings), and by 2 more (97 -> 99) in
+    // REQ-050 (the dialog OK/Cancel labels). Read through a volatile to keep
     // the runtime comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 97,
-                "StringId::EnumCount is 97 after the 13+6+1+1+12+5+2 field appends");
+    TEST_CHECK(enum_count == 99,
+                "StringId::EnumCount is 99 after the 13+6+1+1+12+5+2+2 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
+    }
+}
+
+// ---- REQ-050: endpoint-join fix + fetch-probe consent + dialog geometry ----
+// DecomposeBaseUrl lives in an anonymous namespace inside
+// openai_compatible_client.cpp, so the unit suite cannot call it directly;
+// the live path-shape proof rides the env-var-gated mock round-trip in
+// TestReq046OpenAiLocalhostConsent (extended for REQ-050) and the exact-path
+// mock probe under tools_tmp_req050/. This suite pins the fix STRUCTURALLY
+// (source-text differential, the TestReq044VerbatimSync / REQ-048 R2-D (e)
+// precedent): the endpoint must be appended DIRECTLY onto the base path, and
+// "/v1" assumed only when the base has no path. That single join rule is what
+// makes base "http://h/v1" -> "/v1/models", base "http://h" -> "/v1/models",
+// and base "http://h/api/v1" -> "/api/v1/models" (NEVER "/api/v1/v1/models").
+void TestReq050OpenAiEndpointJoin() {
+    std::cout << "[RUN] Testing REQ-050 OpenAI endpoint join + consent + geometry pins..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    const std::filesystem::path client_cpp = ResolveRepoFile(L"src\\openai_compatible_client.cpp");
+    if (client_cpp.empty()) {
+        std::cout << "[SKIP] src/openai_compatible_client.cpp not resolvable; "
+                     "REQ-050 endpoint pins skipped." << std::endl;
+    } else {
+        std::ifstream in(client_cpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        // The fixed joins: the endpoint is appended DIRECTLY onto the base
+        // path prefix; "/v1" appears only in the no-prefix default branch.
+        // These literal pins cover all three base shapes at once
+        // ("http://h/v1" -> "/v1/models", "http://h" -> "/v1/models",
+        // "http://h/api/v1" -> "/api/v1/models").
+        TEST_CHECK(src.find("prefix.empty() ? L\"/v1/models\" : prefix + L\"/models\"")
+                       != std::string::npos,
+                   "REQ-050: ListModels joins /models onto the base path prefix");
+        TEST_CHECK(src.find("prefix.empty() ? L\"/v1/chat/completions\"") != std::string::npos &&
+                   src.find(": prefix + L\"/chat/completions\"") != std::string::npos,
+                   "REQ-050: ChatCompletion joins /chat/completions onto the base path prefix");
+        // The confirmed-buggy double-prefix joins must be gone.
+        TEST_CHECK(src.find("prefix + L\"/v1/models\"") == std::string::npos,
+                   "REQ-050: the double-/v1 ListModels join (.../v1/v1/models) is gone");
+        TEST_CHECK(src.find("prefix + L\"/v1/chat/completions\"") == std::string::npos,
+                   "REQ-050: the double-/v1 ChatCompletion join is gone");
+    }
+
+    // REQ-050 (B): the pre-save fetch button must ask the SAME http consent
+    // question as IDOK instead of letting the probe default to
+    // http_consent_given=false (the fetch consent gap).
+    const std::filesystem::path settings_cpp =
+        ResolveRepoFile(L"src\\ui\\openai_settings_window.cpp");
+    if (settings_cpp.empty()) {
+        std::cout << "[SKIP] src/ui/openai_settings_window.cpp not resolvable; "
+                     "REQ-050 consent/geometry pins skipped." << std::endl;
+    } else {
+        std::ifstream in(settings_cpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        const std::string::size_type fetch_at = src.find("case IDC_FETCH_BTN");
+        const std::string::size_type ok_at = src.find("case IDOK");
+        TEST_CHECK(fetch_at != std::string::npos && ok_at != std::string::npos &&
+                   fetch_at < ok_at,
+                   "REQ-050: fetch handler precedes the IDOK handler");
+        if (fetch_at != std::string::npos && ok_at != std::string::npos && fetch_at < ok_at) {
+            const std::string fetch_block = src.substr(fetch_at, ok_at - fetch_at);
+            TEST_CHECK(fetch_block.find("OpenAiUrlSecurity::Http && !st->cfg->http_consent_given")
+                           != std::string::npos,
+                       "REQ-050 (B): the fetch probe re-checks http consent before ListModels");
+            TEST_CHECK(fetch_block.find("probe.http_consent_given = true") != std::string::npos,
+                       "REQ-050 (B): a YES answer sets probe.http_consent_given");
+            TEST_CHECK(fetch_block.find("StringId::OpenAiHttpWarningTitle") != std::string::npos,
+                       "REQ-050 (B): the fetch probe reuses the IDOK consent MessageBox strings");
+        }
+        // REQ-050 (C/E): widened dialog + i18n'd OK/Cancel buttons.
+        TEST_CHECK(src.find("tb.Begin(title, 262, 130") != std::string::npos,
+                   "REQ-050 (C): the dialog template is 262 x 130 DLU");
+        TEST_CHECK(src.find("I18n::Get(StringId::DialogOk)") != std::string::npos &&
+                   src.find("I18n::Get(StringId::DialogCancel)") != std::string::npos,
+                   "REQ-050 (E): OK/Cancel buttons use the i18n dialog strings");
+        TEST_CHECK(src.find("L\"OK\"") == std::string::npos &&
+                   src.find("L\"Cancel\"") == std::string::npos,
+                   "REQ-050 (E): no hardcoded L\"OK\"/L\"Cancel\" labels remain");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-050 OpenAI endpoint join checks passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-050 OpenAI endpoint join checks: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

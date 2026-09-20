@@ -99,6 +99,22 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);
             }
             SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+            // REQ-050: the pre-save fetch hit the same http consent gate as
+            // IDOK, but the probe never set http_consent_given, so an http://
+            // base URL was always rejected before any network I/O. Mirror the
+            // IDOK flow: ask the SAME consent question when the probed base
+            // URL is http and no consent is on record; abort the fetch on NO.
+            const OpenAiUrlSecurity probe_sec = ClassifyOpenAiBaseUrl(probe.base_url);
+            if (probe_sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
+                const int rc = ::MessageBoxW(
+                    dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
+                    I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
+                    MB_YESNO | MB_ICONWARNING);
+                if (rc != IDYES) return TRUE; // user declined: abort the fetch
+                probe.http_consent_given = true;
+            } else {
+                probe.http_consent_given = st->cfg->http_consent_given;
+            }
             const std::vector<std::string> models =
                 OpenAiCompatibleClient::ListModels(probe);
             if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
@@ -268,20 +284,29 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const WORD BTN_CLS    = 0x0080;  // "BUTTON"
     const WORD COMBO_CLS  = 0x0085;  // "COMBOBOX"
 
-    tb.AddItem(LBL, 8, 6, 44, 9, IDC_STATIC_BASE, STATIC_CLS,
+    // REQ-050: dialog widened 210->262 DLU and the label/edit columns
+    // realigned (labels 44->56, edits 148->186) so the fetch button label
+    // ("모델 목록 가져오기" / "Fetch model list") no longer clips in any
+    // locale; OK/Cancel moved right and widened 50->64 to match.
+    tb.AddItem(LBL, 8, 6, 56, 9, IDC_STATIC_BASE, STATIC_CLS,
                I18n::Get(StringId::OpenAiBaseUrlLabel));
-    tb.AddItem(EDT, 54, 5, 148, 12, IDC_BASE_URL, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 22, 44, 9, IDC_STATIC_KEY, STATIC_CLS,
+    tb.AddItem(EDT, 68, 5, 186, 12, IDC_BASE_URL, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 22, 56, 9, IDC_STATIC_KEY, STATIC_CLS,
                I18n::Get(StringId::OpenAiApiKeyLabel));
-    tb.AddItem(EDT | ES_PASSWORD, 54, 21, 148, 12, IDC_API_KEY, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 38, 44, 9, IDC_STATIC_MODEL, STATIC_CLS,
+    tb.AddItem(EDT | ES_PASSWORD, 68, 21, 186, 12, IDC_API_KEY, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 38, 56, 9, IDC_STATIC_MODEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiModelLabel));
-    tb.AddItem(COMBO, 54, 37, 100, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
-    tb.AddItem(BTN, 158, 37, 44, 12, IDC_FETCH_BTN, BTN_CLS,
+    tb.AddItem(COMBO, 68, 37, 118, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
+    tb.AddItem(BTN, 190, 37, 64, 12, IDC_FETCH_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiFetchModels));
-    tb.AddItem(LBL, 8, 54, 120, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 96, 70, 50, 13, IDOK, BTN_CLS, L"OK");
-    tb.AddItem(BTN, 152, 70, 50, 13, IDCANCEL, BTN_CLS, L"Cancel");
+    tb.AddItem(LBL, 8, 54, 240, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
+    // REQ-050: OK/Cancel are real i18n strings now (StringId::DialogOk /
+    // DialogCancel), not hardcoded English — the 37-locale tables carry the
+    // conventional native button label for each locale.
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 70, 64, 13, IDOK, BTN_CLS,
+               I18n::Get(StringId::DialogOk));
+    tb.AddItem(BTN, 182, 70, 64, 13, IDCANCEL, BTN_CLS,
+               I18n::Get(StringId::DialogCancel));
 }
 
 bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
@@ -289,7 +314,7 @@ bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
 
     const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
     TemplateBuilder tb;
-    tb.Begin(title, 210, 130, /*itemCount=*/10);
+    tb.Begin(title, 262, 130, /*itemCount=*/10);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(

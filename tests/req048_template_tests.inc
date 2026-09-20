@@ -25,6 +25,7 @@ struct ItemExpectation {
     WORD ordinal;
     bool has_title;
     std::wstring title;
+    short x, y, cx, cy; // REQ-050: pin the production geometry too
 };
 
 // Production constants mirrored from openai_settings_window.cpp (enum starts
@@ -34,17 +35,20 @@ constexpr WORD kEditCls   = 0x0081;
 constexpr WORD kBtnCls    = 0x0080;
 constexpr WORD kComboCls  = 0x0085;
 
+// REQ-050: geometry matches BuildOpenAiTemplate exactly (262x130 dialog;
+// labels w=56; edits x=68 w=186; combo x=68 w=118; fetch x=190 w=64;
+// masked label w=240; OK x=110 w=64; Cancel x=182 w=64 — all h/y per spec).
 const ItemExpectation kExpected[] = {
-    {100, kStaticCls, false, L""},   // IDC_STATIC_BASE
-    {101, kEditCls,   true,  L""},   // IDC_BASE_URL
-    {102, kStaticCls, false, L""},   // IDC_STATIC_KEY
-    {103, kEditCls,   true,  L""},   // IDC_API_KEY
-    {104, kStaticCls, false, L""},   // IDC_STATIC_MODEL
-    {105, kComboCls,  true,  L""},   // IDC_MODEL_COMBO
-    {106, kBtnCls,    false, L""},   // IDC_FETCH_BTN (i18n title)
-    {107, kStaticCls, true,  L""},   // IDC_MASKED_LABEL
-    {IDOK,     kBtnCls, true, L"OK"},
-    {IDCANCEL, kBtnCls, true, L"Cancel"},
+    {100, kStaticCls, false, L"",   8,   6, 56,  9},  // IDC_STATIC_BASE
+    {101, kEditCls,   true,  L"",   68,  5, 186, 12}, // IDC_BASE_URL
+    {102, kStaticCls, false, L"",   8,   22, 56,  9}, // IDC_STATIC_KEY
+    {103, kEditCls,   true,  L"",   68,  21, 186, 12},// IDC_API_KEY
+    {104, kStaticCls, false, L"",   8,   38, 56,  9}, // IDC_STATIC_MODEL
+    {105, kComboCls,  true,  L"",   68,  37, 118, 64},// IDC_MODEL_COMBO
+    {106, kBtnCls,    false, L"",   190, 37, 64,  12},// IDC_FETCH_BTN (i18n title)
+    {107, kStaticCls, true,  L"",   8,   54, 240, 9}, // IDC_MASKED_LABEL
+    {IDOK,     kBtnCls, true, L"OK",     110, 70, 64, 13},
+    {IDCANCEL, kBtnCls, true, L"Cancel", 182, 70, 64, 13},
 };
 
 // Little-endian WORD/DWORD readers over the raw template buffer.
@@ -76,7 +80,8 @@ void TestReq048OpenAiTemplateSerialization() {
     // ---- (a) Header offset pin -------------------------------------------
     {
         TemplateBuilder tb;
-        tb.Begin(L"probe", 210, 130, /*itemCount=*/7);
+        // REQ-050: probe carries the production geometry (262 x 130).
+        tb.Begin(L"probe", 262, 130, /*itemCount=*/7);
         const auto* base = reinterpret_cast<const BYTE*>(tb.Get());
         TEST_CHECK(base != nullptr, "REQ-048 P2 (a): Begin() returns a template");
         if (base) {
@@ -92,8 +97,8 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (a): byte offset 10 == x (0)");
             TEST_CHECK(req048_detail::ReadWord(base, 12) == 0,
                        "REQ-048 P2 (a): byte offset 12 == y (0)");
-            TEST_CHECK(req048_detail::ReadWord(base, 14) == 210,
-                       "REQ-048 P2 (a): byte offset 14 == cx (210)");
+            TEST_CHECK(req048_detail::ReadWord(base, 14) == 262,
+                       "REQ-048 P2 (a): byte offset 14 == cx (262)");
             TEST_CHECK(req048_detail::ReadWord(base, 16) == 130,
                        "REQ-048 P2 (a): byte offset 16 == cy (130)");
         }
@@ -104,7 +109,7 @@ void TestReq048OpenAiTemplateSerialization() {
     // must keep the struct-view contract identical.
     {
         TemplateBuilder tb;
-        tb.Begin(L"probe", 210, 130, /*itemCount=*/0);
+        tb.Begin(L"probe", 262, 130, /*itemCount=*/0);
         const auto* dt = tb.Get();
         TEST_CHECK(dt != nullptr && dt->cdit == 0,
                    "REQ-048 P2 (c): itemCount=0 still round-trips to cdit==0 "
@@ -112,10 +117,16 @@ void TestReq048OpenAiTemplateSerialization() {
     }
 
     // ---- (b) Production byte-walk ----------------------------------------
+    // REQ-050: the OK/Cancel button titles are i18n strings now
+    // (StringId::DialogOk/DialogCancel), so pin the locale to English for the
+    // title comparison and restore afterwards (suite-state hygiene).
+    const UiLocale req050_initial_locale = I18n::GetCurrentLocale();
+    I18n::SetLocale(UiLocale::English);
     {
         using namespace req048_detail;
         TemplateBuilder tb;
-        tb.Begin(L"production", 210, 130, /*itemCount=*/10);
+        // REQ-050: production dialog is 262 x 130 DLU.
+        tb.Begin(L"production", 262, 130, /*itemCount=*/10);
         BuildOpenAiTemplate(tb);
         const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
         const size_t tpl_base = 0; // buffer origin == template origin for a fresh builder
@@ -158,6 +169,16 @@ void TestReq048OpenAiTemplateSerialization() {
             if (i >= 10) break;
             const ItemExpectation& exp = kExpected[i];
             TEST_CHECK(id == exp.id, "REQ-048 P2 (b): item id matches production constant");
+            // REQ-050: geometry pin — x/y/cx/cy must match the production
+            // AddItem coordinates exactly (labels w=56, edits x=68 w=186,
+            // fetch x=190 w=64, OK x=110 w=64, Cancel x=182 w=64).
+            // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18,
+            // so x/y/cx/cy live at off+8..off+15 (id is off+16).
+            TEST_CHECK(ReadWord(base, off + 8) == static_cast<WORD>(exp.x) &&
+                       ReadWord(base, off + 10) == static_cast<WORD>(exp.y) &&
+                       ReadWord(base, off + 12) == static_cast<WORD>(exp.cx) &&
+                       ReadWord(base, off + 14) == static_cast<WORD>(exp.cy),
+                       "REQ-050: item x/y/cx/cy match the new dialog geometry");
             off += 18;
             // Class array: 0xFFFF prefix WORD + ordinal WORD.
             TEST_CHECK(ReadWord(base, off) == 0xFFFF,
@@ -183,6 +204,7 @@ void TestReq048OpenAiTemplateSerialization() {
         TEST_CHECK(off == tb.size(),
                    "REQ-048 P2 (b): parser consumed exactly cdit items and ends at size()");
     }
+    I18n::SetLocale(req050_initial_locale); // REQ-050: restore pre-test locale
 
     std::cout << "[DONE] REQ-048 P2 checks: " << (g_test_count - failures_before)
               << ", failures: " << (g_failed_count - failures_before) << std::endl;

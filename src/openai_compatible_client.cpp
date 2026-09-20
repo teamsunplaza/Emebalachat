@@ -215,6 +215,14 @@ std::vector<std::string> ParseModelsJson(std::string_view json) {
                         SkipWs(json, pos);
                         if (pos < json.size() && json[pos] == ',') ++pos;
                     }
+                    // REQ-050: NextKey stops AT the model object's closing
+                    // '}' without consuming it; the array loop below only
+                    // advances on '{', ']' or ',' and SkipValue stalls on '}'
+                    // (its scalar branch stops at a close delimiter), so the
+                    // unconsumed '}' spins the walker into an infinite loop on
+                    // EVERY successful /v1/models response (confirmed live:
+                    // the req046 mock run hung exactly here). Consume it.
+                    if (pos < json.size() && json[pos] == '}') ++pos;
                     if (!id.empty()) ids.push_back(std::move(id));
                 } else {
                     SkipValue(json, pos);
@@ -599,7 +607,12 @@ std::vector<std::string> OpenAiCompatibleClient::ListModels(const OpenAiConfig& 
     bool https = false;
     if (!DecomposeBaseUrl(cfg.base_url, host, port, https, prefix)) return {};
 
-    const std::wstring path = prefix.empty() ? L"/v1/models" : prefix + L"/v1/models";
+    // REQ-050: OpenAI-compatible convention — the user-supplied base URL
+    // already carries the version prefix (e.g. "https://api.openai.com/v1"),
+    // so the endpoint is appended DIRECTLY onto the base path; "/v1" is
+    // assumed only when the base has no path at all. Appending another
+    // "/v1" double-prefixes (…/v1/v1/models) — the confirmed 404 root cause.
+    const std::wstring path = prefix.empty() ? L"/v1/models" : prefix + L"/models";
     std::string body;
     std::string response;
     const DWORD status = HttpRequest(https, host, port, L"GET", path, key, body,
@@ -657,8 +670,10 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
                                " to " + tgt_name + ". Output only the translation.";
     const std::string body = BuildChatBody(cfg.model, system, ToUtf8(input));
 
+    // REQ-050: same join rule as ListModels — append onto the base path;
+    // "/v1" is assumed only when the base carries no path prefix.
     const std::wstring path = prefix.empty() ? L"/v1/chat/completions"
-                                             : prefix + L"/v1/chat/completions";
+                                             : prefix + L"/chat/completions";
     std::string response;
     const DWORD status = HttpRequest(https, host, port, L"POST", path, key, body,
                                      kChatProfile, response);

@@ -250,6 +250,11 @@ enum class StringId {
     TooltipTranslateFailed,      // drag-path failure notice (stale-tooltip fix)
     RepairTransientBody,         // strict-local TRANSIENT failure wording (vs missing-files)
 
+    // REQ-050: localized dialog push-button labels (OK/Cancel). Appended last
+    // so the EnumCount completeness loop covers them automatically (99x37).
+    DialogOk,
+    DialogCancel,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
