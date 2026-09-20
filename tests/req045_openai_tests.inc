@@ -116,6 +116,44 @@ void TestReq045OpenAiDpapi() {
     TEST_CHECK(OpenAiSha256Hex(recovered2, digest3) && digest3 == digest2,
                "REQ-050: digest taken before protect matches the decrypted-key re-hash");
     SecureZeroMemory(recovered2.data(), recovered2.size());
+
+    // REQ-050 (corrupt-pair recovery): the dialog-open integrity helper must
+    // accept a digest-before-protect pair and refuse the pre-REQ-050 corrupt
+    // shape (digest persisted AFTER protect == SHA-256 of the scrubbed,
+    // all-zero cleartext buffer), so the settings dialog can force a one-time
+    // re-entry instead of reusing a pair WithUnprotectedKey refuses forever.
+    std::string key4 = "sk-initdialog-check-0123456789";
+    const std::string original4 = key4;
+    std::string digest4;
+    TEST_CHECK(OpenAiSha256Hex(key4, digest4) && digest4.size() == 64,
+               "REQ-050: digest computable for the integrity-helper key");
+    std::string blob4;
+    TEST_CHECK(ProtectOpenAiApiKey(key4, blob4) && !blob4.empty(),
+               "REQ-050: protect succeeds for the integrity-helper key");
+    OpenAiConfig good_pair;
+    good_pair.api_key_dpapi = blob4;
+    good_pair.api_key_sha256 = digest4;
+    TEST_CHECK(OpenAiKeyPairIntegrityOk(good_pair),
+               "REQ-050: a digest-before-protect pair passes the dialog-open check");
+    // The pre-REQ-050 corruption shape: the digest was taken after protect,
+    // i.e. over the in-place-zeroed cleartext buffer (same length as the key).
+    OpenAiConfig corrupt_pair;
+    corrupt_pair.api_key_dpapi = blob4;
+    TEST_CHECK(OpenAiSha256Hex(std::string(original4.size(), '\0'),
+                               corrupt_pair.api_key_sha256),
+               "REQ-050: the zeroed-buffer digest models the old corruption");
+    TEST_CHECK(!OpenAiKeyPairIntegrityOk(corrupt_pair),
+               "REQ-050: the zeroed-buffer digest pair is refused (forced re-entry)");
+    // A blob that no longer unprotects is equally unusable (fail closed).
+    OpenAiConfig garbage_pair;
+    garbage_pair.api_key_dpapi = "!!!not-base64!!!";
+    garbage_pair.api_key_sha256 = digest4;
+    TEST_CHECK(!OpenAiKeyPairIntegrityOk(garbage_pair),
+               "REQ-050: an ununprotectable blob fails the dialog-open check");
+    // No key on record is not "ok" — there is nothing to reuse.
+    OpenAiConfig empty_pair;
+    TEST_CHECK(!OpenAiKeyPairIntegrityOk(empty_pair),
+               "REQ-050: an empty pair is not integrity-ok");
 }
 
 // ---- config round-trip for the openai{} block ----
@@ -179,6 +217,8 @@ void TestReq045OpenAiI18nPresent() {
         StringId::OpenAiHttpWarningTitle, StringId::OpenAiHttpWarningBody,
         StringId::OpenAiSaved, StringId::OpenAiKeyMasked,
         StringId::OpenAiInvalidBaseUrl,
+        // REQ-050: the OpenAI settings cue-banner hints (edit placeholders).
+        StringId::OpenAiBaseUrlHint, StringId::OpenAiApiKeyHint,
     };
     // EnumCount advanced by 13 (57 -> 70) in P4-3, by 6 more (70 -> 76)
     // in REQ-045 P4-5 (item 3a-2, the user-.gguf registration strings), by
@@ -187,13 +227,14 @@ void TestReq045OpenAiI18nPresent() {
     // "(미등록)" empty-slot marker), and by 17 more (78 -> 95) in REQ-048
     // R2-D (the gguf model-manager strings + manager-error strings), by 4
     // more (95 -> 99) for tooltip_translate_failed / repair_transient_body
-    // and the REQ-050 dialog OK/Cancel labels, and by 8 more (99 -> 107) in
-    // the REQ-050 merged-manager Hugging Face block. Read through a volatile
-    // to keep the runtime comparison (avoids C4127 on the constant
+    // and the REQ-050 dialog OK/Cancel labels, by 8 more (99 -> 107) in
+    // the REQ-050 merged-manager Hugging Face block, and by 2 more
+    // (107 -> 109) for the REQ-050 OpenAI cue-banner hints. Read through a
+    // volatile to keep the runtime comparison (avoids C4127 on the constant
     // expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 107,
-                "StringId::EnumCount is 107 after the 13+6+1+1+17+4+8 field appends");
+    TEST_CHECK(enum_count == 109,
+                "StringId::EnumCount is 109 after the 13+6+1+1+17+4+8+2 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
@@ -260,13 +301,44 @@ void TestReq050OpenAiEndpointJoin() {
                    "REQ-050: fetch handler precedes the IDOK handler");
         if (fetch_at != std::string::npos && ok_at != std::string::npos && fetch_at < ok_at) {
             const std::string fetch_block = src.substr(fetch_at, ok_at - fetch_at);
-            TEST_CHECK(fetch_block.find("OpenAiUrlSecurity::Http && !st->cfg->http_consent_given")
+            // REQ-050 (auto-fetch): the button handler is now a thin wrapper —
+            // it drives the shared DoFetchModels helper and KEEPS the failure
+            // notice (the silent auto path must not reference it).
+            TEST_CHECK(fetch_block.find("DoFetchModels(dlg, st)") != std::string::npos &&
+                       fetch_block.find("OpenAiFetchFailed") != std::string::npos,
+                       "REQ-050 (B): the manual fetch button drives DoFetchModels "
+                       "and keeps its failure notice");
+        }
+
+        // REQ-050 (B/auto-fetch): the consent gate + probe digest + ListModels
+        // + combo refill live in the shared DoFetchModels helper (defined
+        // before the dialog proc), factored out of the former IDC_FETCH_BTN
+        // body so the debounced auto-fetch reuses the exact same path.
+        const std::string::size_type dofetch_at =
+            src.find("std::vector<std::string> DoFetchModels");
+        const std::string::size_type proc_at = src.find("INT_PTR CALLBACK OpenAiSettingsProc");
+        TEST_CHECK(dofetch_at != std::string::npos && proc_at != std::string::npos &&
+                   dofetch_at < proc_at,
+                   "REQ-050: DoFetchModels (consent + ListModels + combo refill) "
+                   "precedes the dialog proc");
+        if (dofetch_at != std::string::npos && proc_at != std::string::npos &&
+            dofetch_at < proc_at) {
+            const std::string dofetch_src = src.substr(dofetch_at, proc_at - dofetch_at);
+            TEST_CHECK(dofetch_src.find("OpenAiUrlSecurity::Http && !st->cfg->http_consent_given")
                            != std::string::npos,
                        "REQ-050 (B): the fetch probe re-checks http consent before ListModels");
-            TEST_CHECK(fetch_block.find("probe.http_consent_given = true") != std::string::npos,
+            TEST_CHECK(dofetch_src.find("probe.http_consent_given = true") != std::string::npos,
                        "REQ-050 (B): a YES answer sets probe.http_consent_given");
-            TEST_CHECK(fetch_block.find("StringId::OpenAiHttpWarningTitle") != std::string::npos,
+            TEST_CHECK(dofetch_src.find("StringId::OpenAiHttpWarningTitle") != std::string::npos,
                        "REQ-050 (B): the fetch probe reuses the IDOK consent MessageBox strings");
+            // The shared helper keeps the digest-BEFORE-protect order (it
+            // moved out of the button case with the refactor).
+            const std::string::size_type sha_pos = dofetch_src.find("OpenAiSha256Hex(keyUtf8");
+            const std::string::size_type protect_pos =
+                dofetch_src.find("ProtectOpenAiApiKey(keyUtf8");
+            TEST_CHECK(sha_pos != std::string::npos && protect_pos != std::string::npos &&
+                       sha_pos < protect_pos,
+                       "REQ-050: the shared fetch hashes the key BEFORE protect scrubs it");
         }
         // REQ-050 (C/E): widened dialog + i18n'd OK/Cancel buttons.
         TEST_CHECK(src.find("tb.Begin(title, 262, 130") != std::string::npos,
@@ -287,15 +359,6 @@ void TestReq050OpenAiEndpointJoin() {
         // every saved key (live proof: OPENAI/WithUnprotectedKey/002).
         // Source-order pins per the REQ-048 R2-D (e) precedent above.
         const std::string::size_type idcancel_at = src.find("case IDCANCEL");
-        if (fetch_at != std::string::npos && ok_at != std::string::npos && fetch_at < ok_at) {
-            const std::string fetch_src = src.substr(fetch_at, ok_at - fetch_at);
-            const std::string::size_type sha_pos = fetch_src.find("OpenAiSha256Hex(keyUtf8");
-            const std::string::size_type protect_pos =
-                fetch_src.find("ProtectOpenAiApiKey(keyUtf8");
-            TEST_CHECK(sha_pos != std::string::npos && protect_pos != std::string::npos &&
-                       sha_pos < protect_pos,
-                       "REQ-050: fetch probe hashes the key BEFORE protect scrubs it");
-        }
         if (ok_at != std::string::npos && idcancel_at != std::string::npos &&
             ok_at < idcancel_at) {
             const std::string ok_src = src.substr(ok_at, idcancel_at - ok_at);
@@ -305,6 +368,82 @@ void TestReq050OpenAiEndpointJoin() {
             TEST_CHECK(sha_pos != std::string::npos && protect_pos != std::string::npos &&
                        sha_pos < protect_pos,
                        "REQ-050: IDOK save hashes the key BEFORE protect scrubs it");
+        }
+
+        // REQ-050 (single-line edit limits): both single-line EDITs must
+        // carry ES_AUTOHSCROLL — without it the control rejects input past
+        // its visible width (device-confirmed on the HF dialog's URL edit,
+        // same latent hazard here for base URLs / API keys).
+        TEST_CHECK(src.find("EDT | ES_AUTOHSCROLL") != std::string::npos,
+                   "REQ-050: OpenAI dialog single-line edits carry ES_AUTOHSCROLL");
+
+        // REQ-050 (corrupt-pair recovery): WM_INITDIALOG must verify the
+        // persisted pair headlessly and clear BOTH fields on mismatch, so an
+        // upgraded corrupt pair (digest == SHA-256 of the protect-scrubbed
+        // zero buffer) can never reach the masked-placeholder reuse path
+        // (IDC_FETCH_BTN / IDOK) again. The check must live in the INIT
+        // block, before WM_COMMAND, and log shape-only.
+        const std::string::size_type initdialog_at = src.find("case WM_INITDIALOG");
+        const std::string::size_type wmcommand_at = src.find("case WM_COMMAND");
+        TEST_CHECK(initdialog_at != std::string::npos &&
+                   wmcommand_at != std::string::npos && initdialog_at < wmcommand_at,
+                   "REQ-050: WM_INITDIALOG block precedes WM_COMMAND");
+        if (initdialog_at != std::string::npos && wmcommand_at != std::string::npos &&
+            initdialog_at < wmcommand_at) {
+            const std::string init_src =
+                src.substr(initdialog_at, wmcommand_at - initdialog_at);
+            TEST_CHECK(init_src.find("OpenAiKeyPairIntegrityOk") != std::string::npos,
+                       "REQ-050: dialog open verifies the persisted key pair headlessly");
+            TEST_CHECK(init_src.find("api_key_dpapi.clear()") != std::string::npos &&
+                       init_src.find("api_key_sha256.clear()") != std::string::npos,
+                       "REQ-050: a failed pair check clears BOTH fields (forced re-entry)");
+            TEST_CHECK(init_src.find("UI/OpenAiSettings/004") != std::string::npos,
+                       "REQ-050: the recovery logs a shape-only UI/OpenAiSettings/004 line");
+            // REQ-050 (cue banners): both single-line edits get a gray
+            // EM_SETCUEBANNER placeholder from the two new tail StringIds.
+            TEST_CHECK(init_src.find("EM_SETCUEBANNER") != std::string::npos &&
+                       init_src.find("StringId::OpenAiBaseUrlHint") != std::string::npos &&
+                       init_src.find("StringId::OpenAiApiKeyHint") != std::string::npos,
+                       "REQ-050: WM_INITDIALOG sets cue banners from the two hint StringIds");
+            // REQ-050 (auto-fetch): reopening a saved dialog arms the debounce
+            // timer when both values are already present.
+            TEST_CHECK(init_src.find("SetTimer") != std::string::npos &&
+                       init_src.find("KeyAvailableForFetch") != std::string::npos,
+                       "REQ-050: WM_INITDIALOG arms the auto-fetch timer when both "
+                       "values are already present");
+        }
+
+        // REQ-050 (auto-fetch): EN_CHANGE on either edit debounces through
+        // SetTimer/KillTimer, gated to https; the WM_TIMER case kills the
+        // timer and drives DoFetchModels; and the auto path is SILENT —
+        // it must not reference the failure notice the manual button keeps.
+        const std::string::size_type enchange_at = src.find("HIWORD(wp) == EN_CHANGE");
+        const std::string::size_type idswitch_at = src.find("switch (LOWORD(wp))");
+        TEST_CHECK(enchange_at != std::string::npos && idswitch_at != std::string::npos &&
+                   enchange_at < idswitch_at,
+                   "REQ-050: the EN_CHANGE debounce block precedes the command-id switch");
+        if (enchange_at != std::string::npos && idswitch_at != std::string::npos &&
+            enchange_at < idswitch_at) {
+            const std::string enchange_src = src.substr(enchange_at, idswitch_at - enchange_at);
+            TEST_CHECK(enchange_src.find("SetTimer") != std::string::npos &&
+                       enchange_src.find("KillTimer") != std::string::npos &&
+                       enchange_src.find("OpenAiUrlSecurity::Https") != std::string::npos,
+                       "REQ-050: EN_CHANGE arms/kills the debounce timer, https-gated");
+            TEST_CHECK(enchange_src.find("MessageBox") == std::string::npos &&
+                       enchange_src.find("OpenAiHttpWarningTitle") == std::string::npos,
+                       "REQ-050: typing never triggers consent popups or notices");
+        }
+        const std::string::size_type wmtimer_at = src.find("case WM_TIMER");
+        TEST_CHECK(wmtimer_at != std::string::npos && wmtimer_at < wmcommand_at,
+                   "REQ-050: the WM_TIMER auto-fetch case precedes WM_COMMAND");
+        if (wmtimer_at != std::string::npos && wmcommand_at != std::string::npos &&
+            wmtimer_at < wmcommand_at) {
+            const std::string timer_src = src.substr(wmtimer_at, wmcommand_at - wmtimer_at);
+            TEST_CHECK(timer_src.find("KillTimer") != std::string::npos &&
+                       timer_src.find("DoFetchModels") != std::string::npos,
+                       "REQ-050: WM_TIMER kills the timer then drives DoFetchModels");
+            TEST_CHECK(timer_src.find("OpenAiFetchFailed") == std::string::npos,
+                       "REQ-050: the auto-fetch path stays silent (no failure box)");
         }
     }
 

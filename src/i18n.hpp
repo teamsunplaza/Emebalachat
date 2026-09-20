@@ -261,7 +261,8 @@ enum class StringId {
     // ([파일에서 추가…] routes into the existing file-picker registration
     // pipeline; [Hugging Face에서 추가…] opens the download dialog below) plus
     // the Hugging Face add dialog strings. Appended at the tail so the
-    // EnumCount completeness loop covers them automatically (107x37).
+    // EnumCount completeness loop covers them automatically (109x37 after
+    // the two OpenAI cue-banner hints appended below).
     GgufManagerAddFile, // "파일에서 추가…" top-row button
     GgufManagerAddHf,   // "Hugging Face에서 추가…" top-row button
     HfAddTitle,         // HF add dialog caption
@@ -270,6 +271,12 @@ enum class StringId {
     HfFailed,           // generic download/move failure status text
     HfInvalidUrl,       // fail-closed URL rejection notice
     HfDone,             // post-registration completion notice
+
+    // REQ-050 (OpenAI settings cue banners): gray placeholder hints on the
+    // two single-line edits (EM_SETCUEBANNER). Appended at the tail so the
+    // EnumCount completeness loop covers them automatically (109x37).
+    OpenAiBaseUrlHint,  // "e.g. https://api.openai.com/v1"
+    OpenAiApiKeyHint,   // "sk-..."
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales

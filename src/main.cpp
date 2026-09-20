@@ -54,6 +54,47 @@ namespace emebalachat {
 
 namespace {
 // ---------------------------------------------------------------------------
+// REQ-050 Q2 (real-device findings): shared user-model stem helpers. The GUI
+// entry TU is deliberately NOT linked into run_tests.exe, so both helpers are
+// pinned by source inspection + a re-derived mirror predicate in the unit
+// suite (TestReq047BundledReuseRejection precedent).
+// ---------------------------------------------------------------------------
+
+// files[0] -> stem: strip a trailing ".gguf" (the same case-sensitive rfind
+// policy refresh_tray has always used; our registry writer only emits
+// lowercase ".gguf", and a hand-edited casing difference degrades to a
+// missed reuse, never a wrong reuse).
+std::string GgufFileStem(std::string name) {
+    const auto dot = name.rfind(".gguf");
+    if (dot != std::string::npos && dot + 5 == name.size()) {
+        name.resize(dot);
+    }
+    return name;
+}
+
+// Normalized reuse predicate for RegisterUserGgufModel's registry scan
+// (duplicate-copies fix): the exact m.files[0] == bare_utf8 match missed our
+// OWN collision-suffix convention, so re-adding a source after a suffix-bump
+// (registered "MiLMMT…_2.gguf" vs re-picked source "MiLMMT….gguf") copied
+// the multi-GB file again on every re-add (the reporter accumulated _2 AND
+// _3). The entry is the SAME model when its stem equals the source stem, or
+// the source stem + "_<digits>" (the _2/_3… bump this TU hands out). The
+// bundled-origin gate inside the loop still runs first for bundled matches.
+bool IsSameUserGgufStem(const std::string& entry_file, const std::string& source_stem) {
+    const std::string entry_stem = GgufFileStem(entry_file);
+    if (entry_stem == source_stem) return true;
+    if (entry_stem.size() > source_stem.size() + 1 &&
+        entry_stem.compare(0, source_stem.size(), source_stem) == 0 &&
+        entry_stem[source_stem.size()] == '_') {
+        for (size_t i = source_stem.size() + 1; i < entry_stem.size(); ++i) {
+            if (entry_stem[i] < '0' || entry_stem[i] > '9') return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // REQ-045 P4-5 (item 3a-2, design §A.3/A.4): third-party .gguf registration.
 // Invoked on the GUI thread from the tray engine submenu's
 // "사용자 선택(.gguf)… > 파일찾기(.gguf)" pick. Steps:
@@ -180,9 +221,14 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
         registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
     }
 
-    // Re-selecting the SAME file reuses its existing entry (no duplicate id).
+    // Re-selecting the SAME model reuses its existing entry (no duplicate
+    // id, no second copy). REQ-050 Q2 (real-device finding — duplicate
+    // copies): the match is STEM-NORMALIZED (IsSameUserGgufStem above), so a
+    // suffix-bumped registration (registered "MiLMMT…_2.gguf" vs the
+    // re-picked source "MiLMMT….gguf") reuses the entry instead of copying
+    // the multi-GB file again (the reporter accumulated _2 AND _3).
     for (const auto& m : registry.models) {
-        if (!m.files.empty() && m.files[0] == bare_utf8) {
+        if (!m.files.empty() && IsSameUserGgufStem(m.files[0], stem)) {
             // REQ-047 D2 (design §B.3, diagnosis 235010): the registry match on
             // a BUNDLED file (e.g. the built-in Hy-MT2-1.8B-Q8_0.gguf) is the
             // reuse path that silently re-pointed config at the bundled id,
@@ -1515,24 +1561,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // the config.hpp contract it is a GUI-thread-only field never touched
         // by hook/worker threads — the same direct-read precedent as the
         // engine-select coordinator below.
+        // REQ-050 Q2 (real-device finding, one-shot entry): the bound id
+        // wins, but an EMPTY binding (config reset/deleted, or cleared after
+        // registration) must NOT hide the entry while a REGISTERED
+        // origin=="user" model still exists — 3-1's conditional append keys
+        // on this stem, so gate on it and fall back to the FIRST origin==
+        // "user" registry entry in that case (same fallback the engine-select
+        // coordinator below binds with).
         std::string user_model_stem;
-        if (!config.user_model_id.empty()) {
+        {
             auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
             if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
-                if (const auto* m = reg.registry.FindModel(config.user_model_id)) {
-                    if (!m->files.empty()) {
-                        // stem = files[0] minus a trailing ".gguf" suffix.
-                        user_model_stem = m->files[0];
-                        const auto dot = user_model_stem.rfind(".gguf");
-                        if (dot != std::string::npos &&
-                            dot + 5 == user_model_stem.size()) {
-                            user_model_stem.resize(dot);
+                if (!config.user_model_id.empty()) {
+                    if (const auto* m = reg.registry.FindModel(config.user_model_id)) {
+                        if (!m->files.empty()) {
+                            user_model_stem = emebalachat::GgufFileStem(m->files[0]);
+                        }
+                    }
+                    if (user_model_stem.empty()) {
+                        user_model_stem = config.user_model_id;  // fallback: show the id
+                    }
+                } else {
+                    for (const auto& m : reg.registry.models) {
+                        if (m.origin == "user" && !m.files.empty()) {
+                            user_model_stem = emebalachat::GgufFileStem(m.files[0]);
+                            break;
                         }
                     }
                 }
-            }
-            if (user_model_stem.empty()) {
-                user_model_stem = config.user_model_id;  // fallback: show the id
             }
         }
 
@@ -1921,6 +1977,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // This callback runs on the GUI thread, same as the config.openai
             // direct read below.
             if (config.user_model_id.empty()) {
+                // REQ-050 Q2 (real-device finding, one-shot entry): an EMPTY
+                // binding is not "no model" — a REGISTERED origin=="user"
+                // entry may still exist (config reset after registration, or
+                // a binding cleared by the manager). Bind to the FIRST such
+                // entry — the same fallback refresh_tray resolves the stem
+                // through — so the checkable entry is selectable; only with
+                // NO registered user model at all does the INV-B3 manager
+                // open below run. The bind mirrors the RegisterUserGgufModel
+                // reuse branch (REQ-046 P4-2): config id + type + runtime
+                // routing + persist.
+                std::string fallback_id;
+                auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
+                if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
+                    for (const auto& m : reg.registry.models) {
+                        if (m.origin == "user" && !m.files.empty()) {
+                            fallback_id = m.id;
+                            break;
+                        }
+                    }
+                }
+                if (!fallback_id.empty()) {
+                    config.SetUserModelId(fallback_id);
+                    config.SetEngineTypeName("user_gguf");
+                    engine.SetEngineType(emebalachat::EngineType::LocalLlama);
+                    config.SaveToFile();
+                    refresh_tray();
+                    DIAG_F("MAIN/on_select_engine/010: user_gguf bound to the first registered model (id=%s)\n",
+                           fallback_id.c_str());
+                    return;
+                }
                 // INV-B3 (Rev2 §B-3 선택안 "파일찾기 유도"), REQ-050 revision:
                 // nothing is registered yet, so open the MERGED model
                 // manager (add-from-file / add-from-Hugging-Face / rename /

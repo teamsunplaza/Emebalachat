@@ -22,6 +22,33 @@ bool Req047IsBundledReject(const engine_host_registry::ModelEntry& m) {
     return m.origin == "bundled";
 }
 
+// REQ-050 Q2 mirror of main.cpp's GgufFileStem/IsSameUserGgufStem (the GUI
+// TU is not linked here): the reuse predicate must treat the entry stem
+// equal to the source stem, or to the source stem + "_<digits>" (this
+// TU's own collision-suffix convention), as the SAME model — re-adding a
+// source after a suffix-bump must reuse the entry, not copy the file again.
+std::string Req050MirrorGgufFileStem(std::string name) {
+    const auto dot = name.rfind(".gguf");
+    if (dot != std::string::npos && dot + 5 == name.size()) {
+        name.resize(dot);
+    }
+    return name;
+}
+bool Req050MirrorSameUserGgufStem(const std::string& entry_file,
+                                  const std::string& source_stem) {
+    const std::string entry_stem = Req050MirrorGgufFileStem(entry_file);
+    if (entry_stem == source_stem) return true;
+    if (entry_stem.size() > source_stem.size() + 1 &&
+        entry_stem.compare(0, source_stem.size(), source_stem) == 0 &&
+        entry_stem[source_stem.size()] == '_') {
+        for (size_t i = source_stem.size() + 1; i < entry_stem.size(); ++i) {
+            if (entry_stem[i] < '0' || entry_stem[i] > '9') return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 void TestReq047BundledReuseRejection() {
@@ -82,6 +109,31 @@ void TestReq047BundledReuseRejection() {
         }
     }
 
+    // (a-4) REQ-050 Q2 (duplicate-copies fix): the normalized stem predicate
+    // re-derived above against the real cases from the field report — an
+    // exact re-pick, a suffix-bumped re-pick (_2, multi-digit _23), and the
+    // near-misses that must stay FRESH registrations.
+    TEST_CHECK(Req050MirrorSameUserGgufStem("MiLMMT-Latest-4.gguf", "MiLMMT-Latest-4"),
+               "REQ-050 Q2 (a): exact stem match reuses the entry (no second copy)");
+    TEST_CHECK(Req050MirrorSameUserGgufStem("MiLMMT-Latest-4_2.gguf", "MiLMMT-Latest-4"),
+               "REQ-050 Q2 (a): '_2'-suffixed entry matches the re-picked source stem");
+    TEST_CHECK(Req050MirrorSameUserGgufStem("model_23.gguf", "model"),
+               "REQ-050 Q2 (a): multi-digit '_23' suffix matches the source stem");
+    TEST_CHECK(!Req050MirrorSameUserGgufStem("model_2.GGUF", "model"),
+               "REQ-050 Q2 (a): an uppercase .GGUF tail is NOT stripped (case-sensitive "
+               "rfind policy, GgufFileStem) -> degrades to a missed reuse, never a wrong one");
+    TEST_CHECK(!Req050MirrorSameUserGgufStem("model_v2.gguf", "model"),
+               "REQ-050 Q2 (a): a non-digit suffix is NOT our bump -> fresh registration");
+    TEST_CHECK(!Req050MirrorSameUserGgufStem("model_2x.gguf", "model"),
+               "REQ-050 Q2 (a): a digit-then-letter suffix is NOT our bump");
+    TEST_CHECK(!Req050MirrorSameUserGgufStem("model.gguf", "model_2"),
+               "REQ-050 Q2 (a): the reverse direction (entry shorter) does NOT match");
+    TEST_CHECK(!Req050MirrorSameUserGgufStem("other.gguf", "MiLMMT-Latest-4"),
+               "REQ-050 Q2 (a): an unrelated stem does NOT match");
+    TEST_CHECK(Req050MirrorSameUserGgufStem("Hy-MT2-1.8B-Q8_0.gguf", "Hy-MT2-1.8B-Q8"),
+               "REQ-050 Q2 (a): a '_0'-suffixed look-alike of the bundled stem matches, "
+               "so the bundled gate below is what rejects it");
+
     // ---- (b) main.cpp structural pins (GUI TU not linked here) ------------
     auto read_src = [](const char* name, std::string& out) {
         const char* candidates[] = {name, (std::string("../") + name).c_str(),
@@ -121,6 +173,26 @@ void TestReq047BundledReuseRejection() {
         TEST_CHECK(gate_pos != std::string::npos && reuse_pos != std::string::npos &&
                        gate_pos < reuse_pos,
                    "REQ-047 D2 structural pin: bundled gate precedes the config Set* reuse writes");
+    }
+    // REQ-050 Q2 (duplicate-copies fix): the reuse loop matches on the
+    // STEM-NORMALIZED predicate (source stem passed pre-stripped, the same
+    // 'stem' the fresh path feeds the id/file bump), so a suffix-bumped
+    // entry reuses instead of re-copying. The bundled gate is INSIDE the
+    // widened match — predicate < gate < reuse writes.
+    TEST_CHECK(main_src.find("bool IsSameUserGgufStem(const std::string& entry_file, const std::string& source_stem)") !=
+                   std::string::npos &&
+                   main_src.find("std::string GgufFileStem(std::string name)") != std::string::npos,
+               "REQ-050 Q2 structural pin: main.cpp defines the GgufFileStem/IsSameUserGgufStem helpers");
+    TEST_CHECK(main_src.find("IsSameUserGgufStem(m.files[0], stem)") != std::string::npos,
+               "REQ-050 Q2 structural pin: the reuse loop matches on the normalized stem predicate");
+    {
+        const size_t pred_pos = main_src.find("IsSameUserGgufStem(m.files[0], stem)");
+        const size_t gate_pos = main_src.find("m.origin == \"bundled\"");
+        const size_t reuse_pos = main_src.find("config.SetUserModelId(m.id)");
+        TEST_CHECK(pred_pos != std::string::npos && gate_pos != std::string::npos &&
+                       reuse_pos != std::string::npos && pred_pos < gate_pos &&
+                       gate_pos < reuse_pos,
+                   "REQ-050 Q2 structural pin: normalized predicate < bundled gate < reuse writes");
     }
 
     if (g_failed_count == failures_before) {

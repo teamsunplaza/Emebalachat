@@ -98,7 +98,7 @@ void TestReq048R2ServingPath() {
 // Hugging Face resolve-URL download dialog).
 // User request: "다른 gguf 모델을 할 거면 이름이라도 수정할 수 있던가, 등록한
 // 모델을 삭제라도 할 수 있던가". Five layers:
-//   (a) i18n field-count mirror with the NEW total (107) — the same sizeof
+//   (a) i18n field-count mirror with the NEW total (109) — the same sizeof
 //       technique as TestReq044I18nFieldOrder; that suite's mirror in
 //       run_tests.cpp is frozen at the pre-REQ-050 count by the editing
 //       mandate, so the REQ-050 total is pinned here instead;
@@ -137,11 +137,11 @@ namespace req048_r2d_detail {
 // Mirror of LocalizedStrings (src/i18n.cpp) — field COUNT and TYPE only,
 // with the REQ-050 total (78 pre-R2-D fields + 17 gguf-manager family fields
 // + tooltip/repair-transient pair + the REQ-050 dialog OK/Cancel pair + the
-// 8 merged-manager/HF fields). TestReq044I18nFieldOrder pins the count with
+// 8 merged-manager/HF fields + the 2 OpenAI cue-banner hints). TestReq044I18nFieldOrder pins the count with
 // the identical sizeof technique; its copy lives in run_tests.cpp and is
-// frozen by the editing mandate, so the 107-field total is asserted here.
+// frozen by the editing mandate, so the 109-field total is asserted here.
 struct Req048R2LstrMirror {
-    const wchar_t* f[107];
+    const wchar_t* f[109];
 };
 
 } // namespace req048_r2d_detail
@@ -150,23 +150,23 @@ void TestReq048R2GgufManager() {
     std::cout << "[RUN] Testing REQ-048 R2-D gguf model manager..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- (a) i18n field-count mirror (REQ-050 total 107) ----------------
+    // ---- (a) i18n field-count mirror (REQ-050 total 109) ----------------
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 107
-    static_assert(kR2dFieldCount == 107,
-                  "REQ-048 R2-D/REQ-050: LocalizedStrings field count is 107 (78 + 17 + 2 + "
-                  "2 + 8) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 109
+    static_assert(kR2dFieldCount == 109,
+                  "REQ-048 R2-D/REQ-050: LocalizedStrings field count is 109 (78 + 17 + 2 + "
+                  "2 + 8 + 2) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 107,
-               "REQ-048 R2-D/REQ-050 (a): LocalizedStrings field count is 107");
-    TEST_CHECK(observed_enum_count == 107,
-               "REQ-048 R2-D/REQ-050 (a): StringId::EnumCount is 107 (struct fields == "
-               "switch cases, through HfDone)");
+    TEST_CHECK(observed_field_count == 109,
+               "REQ-048 R2-D/REQ-050 (a): LocalizedStrings field count is 109");
+    TEST_CHECK(observed_enum_count == 109,
+               "REQ-048 R2-D/REQ-050 (a): StringId::EnumCount is 109 (struct fields == "
+               "switch cases, through OpenAiApiKeyHint)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.
@@ -369,9 +369,18 @@ void TestReq048R2GgufManager() {
             off += 2;
             off += 2 * (1 + std::wstring(L"Segoe UI").size());
             bool walk_ok = true;
+            bool scroll_ok = true;
             for (WORD iItem = 0; iItem < 5; ++iItem) {
                 off += (4 - off % 4) % 4;
                 const Exp& e = kExp[iItem];
+                // REQ-050 (single-line edit limits): the URL EDIT (4301) must
+                // carry ES_AUTOHSCROLL (0x0080) — without it a single-line
+                // EDIT rejects input beyond its visible width (device-
+                // confirmed: a 110-char URL truncated at ~76 on paste).
+                // EDT style DWORD = 0x50810000 (+0x0080 -> 0x50810080).
+                if (e.id == 4301) {
+                    scroll_ok = req048_detail::ReadDword(base, off) == 0x50810080u;
+                }
                 if (ReadWord(base, off + 16) != e.id ||
                     ReadWord(base, off + 20) != e.cls ||
                     static_cast<short>(ReadWord(base, off + 8)) != e.x ||
@@ -391,6 +400,9 @@ void TestReq048R2GgufManager() {
             TEST_CHECK(walk_ok,
                        "REQ-050 (c2): HF add template items 1:1 — URL edit w=246, "
                        "Download(IDOK)/Cancel reuse DialogOk/DialogCancel");
+            TEST_CHECK(scroll_ok,
+                       "REQ-050 (c2): the URL edit carries ES_AUTOHSCROLL (0x50810080) "
+                       "so long model URLs paste in full");
             TEST_CHECK(off == tb.size(),
                        "REQ-050 (c2): HF add template walk consumed exactly size() bytes");
         }
@@ -530,6 +542,40 @@ void TestReq048R2GgufManager() {
                            std::string::npos,
                    "REQ-050 (e) 3-1/3-2: main.cpp resolves the stem for any registered user model "
                    "(engine_type gate dropped)");
+        // REQ-050 Q2 (real-device finding, one-shot entry): with the binding
+        // EMPTY (config reset/deleted, or cleared after registration) the
+        // stem falls back to the FIRST origin=="user" registry entry — both
+        // in refresh_tray (so 3-1's conditional append keeps the checkable
+        // entry visible) and in the engine-select coordinator (so clicking
+        // it BINDS via SetUserModelId(fallback_id) + the user_gguf switch);
+        // the INV-B3 manager open only runs when NO user model is registered
+        // at all (the "no model registered" log is reached solely after the
+        // fallback scan came up empty).
+        TEST_CHECK(src.find("emebalachat::GgufFileStem(m.files[0]);") != std::string::npos,
+                   "REQ-050 (e) Q2: refresh_tray falls back to the first origin==\"user\" entry "
+                   "for the stem when the binding is empty");
+        {
+            size_t scan_pos = src.find("m.origin == \"user\" && !m.files.empty()");
+            int scans = 0;
+            while (scan_pos != std::string::npos) {
+                ++scans;
+                scan_pos = src.find("m.origin == \"user\" && !m.files.empty()", scan_pos + 1);
+            }
+            TEST_CHECK(scans == 2,
+                       "REQ-050 (e) Q2: the origin==\"user\" fallback scan exists in BOTH "
+                       "refresh_tray and the engine-select coordinator");
+        }
+        TEST_CHECK(src.find("config.SetUserModelId(fallback_id)") != std::string::npos,
+                   "REQ-050 (e) Q2: clicking the checkable entry with an empty binding binds the "
+                   "first registered user model (SetUserModelId)");
+        {
+            const size_t bind_pos = src.find("config.SetUserModelId(fallback_id)");
+            const size_t invb3_log = src.find("user_gguf selected but no model registered");
+            TEST_CHECK(bind_pos != std::string::npos && invb3_log != std::string::npos &&
+                           bind_pos < invb3_log,
+                       "REQ-050 (e) Q2: the fallback bind precedes the INV-B3 manager-open log "
+                       "(manager only when NO user model is registered)");
+        }
     }
 
     const std::filesystem::path mgr_cpp = ResolveRepoFile(L"src\\ui\\gguf_model_manager_window.cpp");
@@ -576,8 +622,9 @@ void TestReq048R2GgufManager() {
 // ---------------------------------------------------------------------------
 // REQ-048 R2-F (user directive) + REQ-050 tail extension: the most-recent
 // StringIds (the gguf manager family + the REQ-050 dialog OK/Cancel pair +
-// the 8 merged-manager/HF strings, indices 78..106) must be REAL translations
-// in every one of the 37 supported locales — no English passthrough.
+// the 8 merged-manager/HF strings + the 2 OpenAI cue-banner hints, indices
+// 78..108) must be REAL translations in every one of the 37 supported
+// locales — no English passthrough.
 // Language-level English fallback exists only for UNSUPPORTED languages; a
 // supported locale that shows English for a shipped string is a defect (the
 // REQ-045/047 backlog shipped exactly that way, which this gate now prevents
@@ -590,9 +637,9 @@ void TestReq048R2I18nCoverage() {
     const UiLocale initial = I18n::GetCurrentLocale();
 
     I18n::SetLocale(UiLocale::English);
-    std::wstring en[29];
+    std::wstring en[31];
     const int first = static_cast<int>(StringId::MenuManageGgufModels);
-    const int last = static_cast<int>(StringId::HfDone); // REQ-050 tail (through hf_done)
+    const int last = static_cast<int>(StringId::OpenAiApiKeyHint); // REQ-050 tail (through the cue-banner hints)
     for (int id = first; id <= last; ++id) {
         en[id - first] = I18n::Get(static_cast<StringId>(id));
     }
@@ -608,8 +655,8 @@ void TestReq048R2I18nCoverage() {
     }
     I18n::SetLocale(initial); // suite-state hygiene
     TEST_CHECK(english_copy == 0,
-               "REQ-048 R2-F/R4 + REQ-050: the 29 recent strings (manager family through "
-               "HfDone) are translated in all 37 locales (zero English-identical fields)");
+               "REQ-048 R2-F/R4 + REQ-050: the 31 recent strings (manager family through "
+               "OpenAiApiKeyHint) are translated in all 37 locales (zero English-identical fields)");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-048 R2 recent-field translation coverage passed." << std::endl;

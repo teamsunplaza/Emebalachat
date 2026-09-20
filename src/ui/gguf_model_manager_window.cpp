@@ -1451,7 +1451,11 @@ void BuildHfAddTemplate(TemplateBuilder& tb) {
 
     tb.AddItem(LBL, 8, 6, 140, 9, IDC_HF_URL_LABEL, STATIC_CLS,
                I18n::Get(StringId::HfUrlLabel));
-    tb.AddItem(EDT, 8, 17, 246, 12, IDC_HF_URL_EDIT, EDIT_CLS, L"");
+    // REQ-050 (single-line edit limits): a single-line EDIT without
+    // ES_AUTOHSCROLL rejects any input beyond its visible width (device-
+    // confirmed: a 110-char model URL was truncated at ~76 chars on paste),
+    // so the URL edit must scroll horizontally.
+    tb.AddItem(EDT | ES_AUTOHSCROLL, 8, 17, 246, 12, IDC_HF_URL_EDIT, EDIT_CLS, L"");
     tb.AddItem(LBL, 8, 52, 246, 9, IDC_HF_STATUS, STATIC_CLS, L"");
     // [다운로드] doubles as IDOK (Enter in the edit starts the download);
     // the label reuses DialogOk — the action-button half of the OK/Cancel

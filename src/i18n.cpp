@@ -139,7 +139,9 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(hf_downloading) \
     X(hf_failed) \
     X(hf_invalid_url) \
-    X(hf_done)
+    X(hf_done) \
+    X(openai_base_url_hint) \
+    X(openai_api_key_hint)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -162,9 +164,10 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // (REQ-048 R2-D: 12 manager strings + 5 manager-error strings, 95)
 // + tooltip_translate_failed + repair_transient_body (97) + dialog OK/Cancel
 // (REQ-050, 99) + the merged-manager Hugging Face block (REQ-050: 2 add-
-// method buttons + 6 HF dialog strings, 107). The Get() switch maps exactly
-// these 107 named fields.
-static_assert(kLocalizedStringsFieldCount == 107,
+// method buttons + 6 HF dialog strings, 107) + the OpenAI settings cue-banner
+// hints (REQ-050: base-URL + API-key edit placeholders, 109). The Get()
+// switch maps exactly these 109 named fields.
+static_assert(kLocalizedStringsFieldCount == 109,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -319,6 +322,9 @@ const LocalizedStrings kStringsKorean = {
     .hf_failed = L"다운로드에 실패했습니다.",
     .hf_invalid_url = L"huggingface.co 모델 주소를 입력하세요 (…/resolve/main/파일.gguf 또는 모델 페이지 주소)",
     .hf_done = L"등록되었습니다.",
+    // REQ-050: OpenAI settings cue banners (edit placeholder hints).
+    .openai_base_url_hint = L"예: https://api.openai.com/v1",
+    .openai_api_key_hint = L"API 키",
 };
 
 // 2. Japanese (ja)
@@ -473,6 +479,8 @@ const LocalizedStrings kStringsJapanese = {
     L"ダウンロードに失敗しました。",
     L"huggingface.co のモデル URL を入力してください (resolve、blob、またはモデルページ)",
     L"登録しました。",
+    L"例: https://api.openai.com/v1",
+    L"APIキー",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -627,6 +635,8 @@ const LocalizedStrings kStringsChineseSimp = {
     L"下载失败。",
     L"请输入 huggingface.co 模型地址（resolve、blob 链接或模型页面）",
     L"已注册。",
+    L"例如: https://api.openai.com/v1",
+    L"API 密钥",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -781,6 +791,8 @@ const LocalizedStrings kStringsChineseTrad = {
     L"下載失敗。",
     L"請輸入 huggingface.co 模型網址（resolve、blob 連結或模型頁面）",
     L"已註冊。",
+    L"例如: https://api.openai.com/v1",
+    L"API 金鑰",
 };
 
 // 5. Vietnamese (vi)
@@ -935,6 +947,8 @@ const LocalizedStrings kStringsVietnamese = {
     L"Tải xuống thất bại.",
     L"Nhập URL mô hình huggingface.co (resolve, blob hoặc trang mô hình)",
     L"Đã đăng ký.",
+    L"VD: https://api.openai.com/v1",
+    L"Khóa API",
 };
 
 // 6. Spanish (es)
@@ -1086,6 +1100,8 @@ const LocalizedStrings kStringsSpanish = {
     L"Error al descargar.",
     L"Introduce la URL del modelo en huggingface.co (resolve, blob o página del modelo)",
     L"Registrado.",
+    L"es.: https://api.openai.com/v1",
+    L"Clave de API",
 };
 
 // 7. English (en) - Default Fallback
@@ -1238,6 +1254,8 @@ const LocalizedStrings kStringsEnglish = {
     L"Download failed.",
     L"Enter a huggingface.co model URL (resolve, blob, or model page)",
     L"Registered.",
+    L"e.g. https://api.openai.com/v1",
+    L"sk-...",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1404,6 +1422,8 @@ const LocalizedStrings kStringsFrench = {
     L"Échec du téléchargement.",
     L"Saisissez l'URL du modèle huggingface.co (resolve, blob ou page du modèle)",
     L"Enregistré.",
+    L"par ex. : https://api.openai.com/v1",
+    L"Clé API",
 };
 
 // 9. German (de)
@@ -1558,6 +1578,8 @@ const LocalizedStrings kStringsGerman = {
     L"Download fehlgeschlagen.",
     L"Geben Sie die huggingface.co-Modell-URL ein (resolve, blob oder Modellseite)",
     L"Registriert.",
+    L"z. B. https://api.openai.com/v1",
+    L"API-Schlüssel",
 };
 
 // 10. Russian (ru)
@@ -1712,6 +1734,8 @@ const LocalizedStrings kStringsRussian = {
     L"Сбой загрузки.",
     L"Введите URL модели huggingface.co (resolve, blob или страница модели)",
     L"Зарегистрировано.",
+    L"напр.: https://api.openai.com/v1",
+    L"Ключ API",
 };
 
 // 11. Portuguese (pt)
@@ -1866,6 +1890,8 @@ const LocalizedStrings kStringsPortuguese = {
     L"Falha no download.",
     L"Insira o URL do modelo no huggingface.co (resolve, blob ou página do modelo)",
     L"Registrado.",
+    L"ex.: https://api.openai.com/v1",
+    L"Chave de API",
 };
 
 // 12. Italian (it)
@@ -2020,6 +2046,8 @@ const LocalizedStrings kStringsItalian = {
     L"Download non riuscito.",
     L"Inserisci l'URL del modello huggingface.co (resolve, blob o pagina del modello)",
     L"Registrato.",
+    L"es.: https://api.openai.com/v1",
+    L"Chiave API",
 };
 
 // 13. Dutch (nl)
@@ -2174,6 +2202,8 @@ const LocalizedStrings kStringsDutch = {
     L"Downloaden mislukt.",
     L"Voer de huggingface.co-model-URL in (resolve, blob of modelpagina)",
     L"Geregistreerd.",
+    L"bijv.: https://api.openai.com/v1",
+    L"API-sleutel",
 };
 
 // 14. Polish (pl)
@@ -2328,6 +2358,8 @@ const LocalizedStrings kStringsPolish = {
     L"Pobieranie nie powiodło się.",
     L"Podaj adres URL modelu huggingface.co (resolve, blob lub strona modelu)",
     L"Zarejestrowano.",
+    L"np.: https://api.openai.com/v1",
+    L"Klucz API",
 };
 
 // 15. Czech (cs)
@@ -2482,6 +2514,8 @@ const LocalizedStrings kStringsCzech = {
     L"Stažení se nezdařilo.",
     L"Zadejte URL modelu huggingface.co (resolve, blob nebo stránka modelu)",
     L"Zaregistrováno.",
+    L"např.: https://api.openai.com/v1",
+    L"API klíč",
 };
 
 // 16. Hungarian (hu)
@@ -2636,6 +2670,8 @@ const LocalizedStrings kStringsHungarian = {
     L"A letöltés nem sikerült.",
     L"Adja meg a huggingface.co modell URL-jét (resolve, blob vagy modelloldal)",
     L"Regisztrálva.",
+    L"pl.: https://api.openai.com/v1",
+    L"API-kulcs",
 };
 
 // 17. Romanian (ro)
@@ -2790,6 +2826,8 @@ const LocalizedStrings kStringsRomanian = {
     L"Descărcarea a eșuat.",
     L"Introduceți URL-ul modelului de pe huggingface.co (resolve, blob sau pagina modelului)",
     L"Înregistrat.",
+    L"ex.: https://api.openai.com/v1",
+    L"Cheie API",
 };
 
 // 18. Swedish (sv)
@@ -2944,6 +2982,8 @@ const LocalizedStrings kStringsSwedish = {
     L"Nedladdningen misslyckades.",
     L"Ange modell-URL från huggingface.co (resolve, blob eller modellsida)",
     L"Registrerad.",
+    L"t.ex. https://api.openai.com/v1",
+    L"API-nyckel",
 };
 
 // 19. Danish (da)
@@ -3098,6 +3138,8 @@ const LocalizedStrings kStringsDanish = {
     L"Download mislykkedes.",
     L"Indtast model-URL'en fra huggingface.co (resolve, blob eller modelside)",
     L"Registreret.",
+    L"f.eks. https://api.openai.com/v1",
+    L"API-nøgle",
 };
 
 // 20. Finnish (fi)
@@ -3252,6 +3294,8 @@ const LocalizedStrings kStringsFinnish = {
     L"Lataus epäonnistui.",
     L"Syötä huggingface.co-mallin URL-osoite (resolve, blob tai mallisivu)",
     L"Rekisteröity.",
+    L"esim. https://api.openai.com/v1",
+    L"API-avain",
 };
 
 // 21. Norwegian (no / nb)
@@ -3406,6 +3450,8 @@ const LocalizedStrings kStringsNorwegian = {
     L"Nedlastingen mislyktes.",
     L"Skriv inn modell-URL fra huggingface.co (resolve, blob eller modellside)",
     L"Registrert.",
+    L"f.eks. https://api.openai.com/v1",
+    L"API-nøkkel",
 };
 
 // 22. Greek (el)
@@ -3560,6 +3606,8 @@ const LocalizedStrings kStringsGreek = {
     L"Η λήψη απέτυχε.",
     L"Εισαγάγετε το URL μοντέλου από το huggingface.co (resolve, blob ή σελίδα μοντέλου)",
     L"Καταχωρήθηκε.",
+    L"π.χ. https://api.openai.com/v1",
+    L"Κλειδί API",
 };
 
 // 23. Turkish (tr)
@@ -3714,6 +3762,8 @@ const LocalizedStrings kStringsTurkish = {
     L"İndirme başarısız oldu.",
     L"huggingface.co model URL'sini girin (resolve, blob veya model sayfası)",
     L"Kaydedildi.",
+    L"örn. https://api.openai.com/v1",
+    L"API anahtarı",
 };
 
 // 24. Ukrainian (uk)
@@ -3868,6 +3918,8 @@ const LocalizedStrings kStringsUkrainian = {
     L"Не вдалося завантажити.",
     L"Введіть URL-адресу моделі huggingface.co (resolve, blob або сторінка моделі)",
     L"Зареєстровано.",
+    L"напр.: https://api.openai.com/v1",
+    L"Ключ API",
 };
 
 // 25. Thai (th)
@@ -4022,6 +4074,8 @@ const LocalizedStrings kStringsThai = {
     L"ดาวน์โหลดไม่สำเร็จ",
     L"ป้อน URL โมเดลจาก huggingface.co (resolve, blob หรือหน้าโมเดล)",
     L"ลงทะเบียนแล้ว",
+    L"เช่น https://api.openai.com/v1",
+    L"คีย์ API",
 };
 
 // 26. Indonesian (id)
@@ -4176,6 +4230,8 @@ const LocalizedStrings kStringsIndonesian = {
     L"Unduhan gagal.",
     L"Masukkan URL model huggingface.co (resolve, blob, atau halaman model)",
     L"Terdaftar.",
+    L"mis.: https://api.openai.com/v1",
+    L"Kunci API",
 };
 
 // 27. Malay (ms)
@@ -4330,6 +4386,8 @@ const LocalizedStrings kStringsMalay = {
     L"Muat turun gagal.",
     L"Masukkan URL model huggingface.co (resolve, blob atau halaman model)",
     L"Telah didaftarkan.",
+    L"cth.: https://api.openai.com/v1",
+    L"Kunci API",
 };
 
 // 28. Filipino (fil)
@@ -4486,6 +4544,8 @@ const LocalizedStrings kStringsFilipino = {
     L"Nabigo ang pag-download.",
     L"Ilagay ang URL ng model mula sa huggingface.co (resolve, blob o pahina ng model)",
     L"Naka-register na.",
+    L"hal.: https://api.openai.com/v1",
+    L"Susi ng API",
 };
 
 // 29. Hindi (hi)
@@ -4640,6 +4700,8 @@ const LocalizedStrings kStringsHindi = {
     L"डाउनलोड विफल रहा।",
     L"huggingface.co का मॉडल URL दर्ज करें (resolve, blob या मॉडल पेज)",
     L"पंजीकृत हो गया।",
+    L"उदा.: https://api.openai.com/v1",
+    L"API कुंजी",
 };
 
 // 30. Bengali (bn)
@@ -4794,6 +4856,8 @@ const LocalizedStrings kStringsBengali = {
     L"ডাউনলোড ব্যর্থ হয়েছে।",
     L"huggingface.co মডেলের URL লিখুন (resolve, blob বা মডেল পেজ)",
     L"নিবন্ধিত হয়েছে।",
+    L"উদা.: https://api.openai.com/v1",
+    L"API কী",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -4949,6 +5013,8 @@ const LocalizedStrings kStringsArabic = {
     L"فشل التنزيل.",
     L"أدخل عنوان URL للنموذج من huggingface.co (resolve أو blob أو صفحة النموذج)",
     L"تم التسجيل.",
+    L"مثال: https://api.openai.com/v1",
+    L"مفتاح API",
 };
 
 // 32. Persian (fa) — RTL
@@ -5103,6 +5169,8 @@ const LocalizedStrings kStringsPersian = {
     L"دانلود ناموفق بود.",
     L"URL مدل huggingface.co را وارد کنید (resolve، blob یا صفحه مدل)",
     L"ثبت شد.",
+    L"مثلاً: https://api.openai.com/v1",
+    L"کلید API",
 };
 
 // 33. Urdu (ur) — RTL
@@ -5257,6 +5325,8 @@ const LocalizedStrings kStringsUrdu = {
     L"ڈاؤن لوڈ ناکام ہوا۔",
     L"huggingface.co کا ماڈل URL درج کریں (resolve، blob یا ماڈل صفحہ)",
     L"رجسٹر ہو گیا۔",
+    L"مثال: https://api.openai.com/v1",
+    L"API کلید",
 };
 
 // 34. Hebrew (he) — RTL
@@ -5411,6 +5481,8 @@ const LocalizedStrings kStringsHebrew = {
     L"ההורדה נכשלה.",
     L"הזן את כתובת ה-URL של המודל מ-huggingface.co (resolve, blob או דף המודל)",
     L"נרשם.",
+    L"לדוגמה: https://api.openai.com/v1",
+    L"מפתח API",
 };
 
 // 35. Khmer (km)
@@ -5565,6 +5637,8 @@ const LocalizedStrings kStringsKhmer = {
     L"ការទាញយកបរាជ័យ។",
     L"បញ្ចូល URL ម៉ូដែលពី huggingface.co (resolve, blob ឬទំព័រម៉ូដែល)",
     L"បានចុះឈ្មោះ។",
+    L"ឧ. https://api.openai.com/v1",
+    L"កូនសោ API",
 };
 
 // 36. Lao (lo)
@@ -5719,6 +5793,8 @@ const LocalizedStrings kStringsLao = {
     L"ການດາວໂຫລດລົ້ມເຫຼວ.",
     L"ໃສ່ URL ໂມເດລຈາກ huggingface.co (resolve, blob ຫຼື ໜ້າໂມເດລ)",
     L"ລົງທະບຽນແລ້ວ.",
+    L"ຕົວຢ່າງ: https://api.openai.com/v1",
+    L"ລະຫັດ API",
 };
 
 // 37. Burmese (my)
@@ -5873,6 +5949,8 @@ const LocalizedStrings kStringsBurmese = {
     L"ဒေါင်းလုဒ်လုပ်ရန်မအောင်မြင်ပါ။",
     L"huggingface.co မှ မော်ဒယ် URL ထည့်ပါ (resolve, blob သို့မဟုတ် မော်ဒယ်စာမျက်နှာ)",
     L"စာရင်းသွင်းပြီးပါပြီ။",
+    L"ဥပမာ: https://api.openai.com/v1",
+    L"API ကီးပါ",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -6178,6 +6256,11 @@ std::wstring I18n::Get(StringId id) {
         case StringId::HfFailed:           return s.hf_failed;
         case StringId::HfInvalidUrl:       return s.hf_invalid_url;
         case StringId::HfDone:             return s.hf_done;
+
+        // REQ-050: OpenAI settings cue banners — gray placeholder hints on
+        // the base-URL / API-key single-line edits (EM_SETCUEBANNER).
+        case StringId::OpenAiBaseUrlHint:  return s.openai_base_url_hint;
+        case StringId::OpenAiApiKeyHint:   return s.openai_api_key_hint;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

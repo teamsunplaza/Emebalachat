@@ -179,6 +179,18 @@ void TestReq048OpenAiTemplateSerialization() {
                        ReadWord(base, off + 12) == static_cast<WORD>(exp.cx) &&
                        ReadWord(base, off + 14) == static_cast<WORD>(exp.cy),
                        "REQ-050: item x/y/cx/cy match the new dialog geometry");
+            // REQ-050 (single-line edit limits): the two EDIT items must
+            // carry ES_AUTOHSCROLL (0x0080) — a single-line EDIT without it
+            // rejects input beyond its visible width (device-confirmed on the
+            // HF add dialog's URL edit, same latent hazard here). Styles:
+            // WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000, +0x0080 =
+            // 0x50810080, +ES_PASSWORD (0x0020) = 0x508100A0.
+            if (exp.id == 101 || exp.id == 103) {
+                TEST_CHECK(ReadDword(base, off) ==
+                               (exp.id == 101 ? 0x50810080u : 0x508100A0u),
+                           "REQ-050: single-line edits carry ES_AUTOHSCROLL "
+                           "(IDC_BASE_URL/IDC_API_KEY)");
+            }
             off += 18;
             // Class array: 0xFFFF prefix WORD + ordinal WORD.
             TEST_CHECK(ReadWord(base, off) == 0xFFFF,

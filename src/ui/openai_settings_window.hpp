@@ -59,4 +59,14 @@ bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg);
 // ITEMTEMPLATE parser contract without entering the modal loop.
 void BuildOpenAiTemplate(TemplateBuilder& tb);
 
+// REQ-050 (corrupt-pair recovery): headless integrity check of a persisted
+// OpenAiConfig key pair — unprotects the DPAPI blob, re-hashes the cleartext,
+// and compares against the persisted api_key_sha256. Returns true only when
+// unprotect succeeds AND the digests match; the cleartext buffer is zeroed
+// before return and never logged. The dialog proc calls this at WM_INITDIALOG
+// and clears both key fields on false (the pre-REQ-050 builds persisted
+// SHA-256 of the protect-scrubbed zero buffer, a pair WithUnprotectedKey
+// refuses forever). Side-effect free, so the unit suite can drive it directly.
+bool OpenAiKeyPairIntegrityOk(const OpenAiConfig& cfg);
+
 } // namespace emebalachat

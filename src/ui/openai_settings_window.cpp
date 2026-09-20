@@ -8,6 +8,14 @@
 #include <string_view>
 #include <vector>
 
+// REQ-050 (cue banners): EM_SETCUEBANNER (0x1501, ECM_FIRST + 1) ships in the
+// Vista+ SDK headers; define it defensively so the cue-banner sends below
+// survive an older/minimal windows.h. It only works under the UNICODE build
+// (the project compiles /DUNICODE) — which is also why SendMessageW is used.
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER 0x1501
+#endif
+
 namespace emebalachat {
 
 namespace {
@@ -49,6 +57,78 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
     return keyUtf8.size() > 3 && keyUtf8.compare(keyUtf8.size() - 3, 3, "***") == 0;
 }
 
+// REQ-050 (auto-fetch): debounce timer for the model-list auto-fetch. The
+// timer id lives in the Win32 timer namespace (no clash with the control IDs
+// 100..107 above). Re-arming an existing id via SetTimer is a silent
+// kill+restart, which is exactly the debounce semantics the EN_CHANGE
+// handler wants.
+constexpr UINT_PTR kFetchTimerId = 101;
+constexpr UINT kFetchDebounceMs = 800;
+
+// REQ-050 (auto-fetch): a key is "available" for the debounced fetch when
+// the edit holds anything (a typed key or the masked placeholder of the
+// stored pair) or the stored pair itself survived the WM_INITDIALOG
+// integrity check (a mismatch clears both fields, so a non-empty blob here
+// is a verified pair).
+bool KeyAvailableForFetch(HWND dlg, const OpenAiConfig* cfg) {
+    if (!GetCtrlText(dlg, IDC_API_KEY).empty()) return true;
+    return !cfg->api_key_dpapi.empty();
+}
+
+// REQ-050 (auto-fetch): the model-list fetch shared by the manual "Fetch
+// model list" button and the debounced auto-fetch. Owns the probe
+// composition (digest BEFORE protect), the http consent gate, the
+// synchronous ListModels call (10 s budget, GUI thread — same as the
+// pre-factor button body), and the combo refill; the RESULT NOTICE stays
+// with the caller (the button shows the failure box on an empty result, the
+// auto-fetch path stays silent). Returns the fetched ids — empty when the
+// fetch was declined or failed — so the caller can tell "ran, got nothing"
+// apart from "declined, combo untouched".
+std::vector<std::string> DoFetchModels(HWND dlg, OpenAiDialogState* st) {
+    OpenAiConfig probe;
+    probe.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
+    std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
+    if (IsMaskedPlaceholder(keyUtf8)) {
+        probe.api_key_dpapi = st->cfg->api_key_dpapi;
+        probe.api_key_sha256 = st->cfg->api_key_sha256;
+    } else if (!keyUtf8.empty()) {
+        // REQ-050: digest BEFORE protect — ProtectOpenAiApiKey scrubs
+        // the caller's cleartext buffer in place, so hashing after it
+        // persisted SHA-256(zero buffer) and the probed key never
+        // matched the saved digest.
+        OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);
+        ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
+    }
+    SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+    // REQ-050: the pre-save fetch hit the same http consent gate as
+    // IDOK, but the probe never set http_consent_given, so an http://
+    // base URL was always rejected before any network I/O. Mirror the
+    // IDOK flow: ask the SAME consent question when the probed base
+    // URL is http and no consent is on record; abort the fetch on NO.
+    const OpenAiUrlSecurity probe_sec = ClassifyOpenAiBaseUrl(probe.base_url);
+    if (probe_sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
+        const int rc = ::MessageBoxW(
+            dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
+            I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
+            MB_YESNO | MB_ICONWARNING);
+        if (rc != IDYES) return {}; // user declined: abort the fetch
+        probe.http_consent_given = true;
+    } else {
+        probe.http_consent_given = st->cfg->http_consent_given;
+    }
+    const std::vector<std::string> models =
+        OpenAiCompatibleClient::ListModels(probe);
+    if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
+        ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        for (const auto& m : models) {
+            ::SendMessageW(combo, CB_ADDSTRING, 0,
+                           reinterpret_cast<LPARAM>(ToUtf16(m).c_str()));
+        }
+        if (!models.empty()) ::SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    }
+    return models;
+}
+
 INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<OpenAiDialogState*>(
         ::GetWindowLongPtrW(dlg, GWLP_USERDATA));
@@ -72,8 +152,37 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (!::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
             DIAG_F("UI/OpenAiSettings/003: IDC_MODEL_COMBO control missing after dialog init\n");
         }
+        // REQ-050 (cue banners): gray placeholder hints on both single-line
+        // edits while they are empty (EM_SETCUEBANNER — see the define above;
+        // works on Vista+ under the UNICODE build).
+        if (HWND base_edit = ::GetDlgItem(dlg, IDC_BASE_URL)) {
+            ::SendMessageW(base_edit, EM_SETCUEBANNER, TRUE,
+                           reinterpret_cast<LPARAM>(
+                               I18n::Get(StringId::OpenAiBaseUrlHint).c_str()));
+        }
+        if (HWND key_edit = ::GetDlgItem(dlg, IDC_API_KEY)) {
+            ::SendMessageW(key_edit, EM_SETCUEBANNER, TRUE,
+                           reinterpret_cast<LPARAM>(
+                               I18n::Get(StringId::OpenAiApiKeyHint).c_str()));
+        }
         SetCtrlText(dlg, IDC_BASE_URL, ToUtf16(st->cfg->base_url));
         SetCtrlText(dlg, IDC_MODEL_COMBO, ToUtf16(st->cfg->model));
+        // REQ-050 (corrupt-pair recovery): upgraders from the pre-REQ-050
+        // build carry api_key_sha256 = SHA-256 of a ZEROED buffer (the old
+        // dialog hashed after ProtectOpenAiApiKey scrubbed the cleartext), so
+        // the masked-placeholder path would keep reusing a pair
+        // WithUnprotectedKey refuses forever (live: OPENAI/WithUnprotectedKey/
+        // 002). Verify the persisted pair headlessly at dialog open; on
+        // mismatch — or an unprotect failure, which is equally unusable —
+        // clear BOTH fields in this in-memory copy so the user is forced to
+        // re-enter the key once and the digest-before-protect save path
+        // stores a valid pair. Shape-only: no key material is logged.
+        if (!st->cfg->api_key_dpapi.empty() && !OpenAiKeyPairIntegrityOk(*st->cfg)) {
+            st->cfg->api_key_dpapi.clear();
+            st->cfg->api_key_sha256.clear();
+            DIAG_F("UI/OpenAiSettings/004: persisted API-key pair failed the integrity "
+                   "check; fields cleared for re-entry\n");
+        }
         if (!st->cfg->api_key_dpapi.empty()) {
             std::string key;
             if (UnprotectOpenAiApiKey(st->cfg->api_key_dpapi, key)) {
@@ -83,52 +192,53 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         ::SetDlgItemTextW(dlg, IDC_MASKED_LABEL,
                           I18n::Get(StringId::OpenAiKeyMasked).c_str());
+        // REQ-050 (auto-fetch): reopening a saved dialog repopulates the
+        // model combo — both values already present (https base URL + a
+        // usable key) arms the same debounce timer the EN_CHANGE handler
+        // uses, so the list arrives without a button click.
+        if (ClassifyOpenAiBaseUrl(ToUtf8(GetCtrlText(dlg, IDC_BASE_URL))) ==
+                OpenAiUrlSecurity::Https &&
+            KeyAvailableForFetch(dlg, st->cfg)) {
+            ::SetTimer(dlg, kFetchTimerId, kFetchDebounceMs, nullptr);
+        }
         return TRUE;
     }
+    case WM_TIMER:
+        // REQ-050 (auto-fetch): debounce timer expired. Kill it BEFORE the
+        // synchronous fetch — ListModels blocks the GUI thread so no timer
+        // can fire during it, and the kill also cancels any timer an
+        // in-flight keystroke batch re-armed. The auto path stays SILENT:
+        // DoFetchModels refills the combo but never shows the failure box.
+        if (wp == kFetchTimerId) {
+            ::KillTimer(dlg, kFetchTimerId);
+            DoFetchModels(dlg, st);
+            return TRUE;
+        }
+        return FALSE;
     case WM_COMMAND:
+        // REQ-050 (auto-fetch): debounce model-list fetches while the user
+        // types. https-only — an http:// base must NEVER auto-fetch (the
+        // consent question may appear only on explicit button/OK actions,
+        // never as a popup mid-typing), so the timer is killed whenever the
+        // base URL drops out of the https shape or no key is available.
+        if (HIWORD(wp) == EN_CHANGE &&
+            (LOWORD(wp) == IDC_BASE_URL || LOWORD(wp) == IDC_API_KEY)) {
+            if (ClassifyOpenAiBaseUrl(ToUtf8(GetCtrlText(dlg, IDC_BASE_URL))) ==
+                    OpenAiUrlSecurity::Https &&
+                KeyAvailableForFetch(dlg, st->cfg)) {
+                ::SetTimer(dlg, kFetchTimerId, kFetchDebounceMs, nullptr);
+            } else {
+                ::KillTimer(dlg, kFetchTimerId);
+            }
+            return TRUE;
+        }
         switch (LOWORD(wp)) {
         case IDC_FETCH_BTN: {
-            OpenAiConfig probe;
-            probe.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
-            std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
-            if (IsMaskedPlaceholder(keyUtf8)) {
-                probe.api_key_dpapi = st->cfg->api_key_dpapi;
-                probe.api_key_sha256 = st->cfg->api_key_sha256;
-            } else if (!keyUtf8.empty()) {
-                // REQ-050: digest BEFORE protect — ProtectOpenAiApiKey scrubs
-                // the caller's cleartext buffer in place, so hashing after it
-                // persisted SHA-256(zero buffer) and the probed key never
-                // matched the saved digest.
-                OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);
-                ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
-            }
-            SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
-            // REQ-050: the pre-save fetch hit the same http consent gate as
-            // IDOK, but the probe never set http_consent_given, so an http://
-            // base URL was always rejected before any network I/O. Mirror the
-            // IDOK flow: ask the SAME consent question when the probed base
-            // URL is http and no consent is on record; abort the fetch on NO.
-            const OpenAiUrlSecurity probe_sec = ClassifyOpenAiBaseUrl(probe.base_url);
-            if (probe_sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
-                const int rc = ::MessageBoxW(
-                    dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
-                    I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
-                    MB_YESNO | MB_ICONWARNING);
-                if (rc != IDYES) return TRUE; // user declined: abort the fetch
-                probe.http_consent_given = true;
-            } else {
-                probe.http_consent_given = st->cfg->http_consent_given;
-            }
-            const std::vector<std::string> models =
-                OpenAiCompatibleClient::ListModels(probe);
-            if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
-                ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-                for (const auto& m : models) {
-                    ::SendMessageW(combo, CB_ADDSTRING, 0,
-                                   reinterpret_cast<LPARAM>(ToUtf16(m).c_str()));
-                }
-                if (!models.empty()) ::SendMessageW(combo, CB_SETCURSEL, 0, 0);
-            }
+            // REQ-050 (auto-fetch): the fetch itself (probe + consent gate +
+            // ListModels + combo refill) lives in DoFetchModels, shared with
+            // the debounced auto-fetch; the button keeps the failure notice
+            // the silent auto path must not show.
+            const std::vector<std::string> models = DoFetchModels(dlg, st);
             if (models.empty()) {
                 ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
                               I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
@@ -201,6 +311,25 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 } // namespace
+
+// REQ-050 (corrupt-pair recovery): headless integrity check of a persisted
+// key pair — unprotects the DPAPI blob, re-hashes the cleartext, and compares
+// against the persisted digest. The cleartext is zeroed before return; it is
+// never logged. Returns false on ANY failure or mismatch, including an
+// empty/missing digest, so a pair this app cannot vouch for never reaches the
+// masked-placeholder reuse path (IDC_FETCH_BTN / IDOK). Namespace scope (not
+// the anonymous block above) so the unit suite exercises the exact helper the
+// dialog proc calls.
+bool OpenAiKeyPairIntegrityOk(const OpenAiConfig& cfg) {
+    if (cfg.api_key_dpapi.empty()) return false;
+    std::string key;
+    std::string digest;
+    const bool ok = UnprotectOpenAiApiKey(cfg.api_key_dpapi, key) &&
+                    OpenAiSha256Hex(key, digest) &&
+                    digest == cfg.api_key_sha256;
+    SecureZeroMemory(key.data(), key.size());
+    return ok;
+}
 
 // ---- In-memory dialog template builder ----
 // REQ-046 P4-3 (Tech Gate 필수-5): class declaration moved to
@@ -301,10 +430,15 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // locale; OK/Cancel moved right and widened 50->64 to match.
     tb.AddItem(LBL, 8, 6, 56, 9, IDC_STATIC_BASE, STATIC_CLS,
                I18n::Get(StringId::OpenAiBaseUrlLabel));
-    tb.AddItem(EDT, 68, 5, 186, 12, IDC_BASE_URL, EDIT_CLS, L"");
+    // REQ-050 (single-line edit limits): single-line EDITs without
+    // ES_AUTOHSCROLL reject input beyond their visible width (device-confirmed
+    // on the HF add dialog's URL edit, same latent hazard here) — base URLs
+    // and API keys are routinely longer than the 186-DLU edit, so both scroll.
+    tb.AddItem(EDT | ES_AUTOHSCROLL, 68, 5, 186, 12, IDC_BASE_URL, EDIT_CLS, L"");
     tb.AddItem(LBL, 8, 22, 56, 9, IDC_STATIC_KEY, STATIC_CLS,
                I18n::Get(StringId::OpenAiApiKeyLabel));
-    tb.AddItem(EDT | ES_PASSWORD, 68, 21, 186, 12, IDC_API_KEY, EDIT_CLS, L"");
+    tb.AddItem(EDT | ES_AUTOHSCROLL | ES_PASSWORD, 68, 21, 186, 12, IDC_API_KEY,
+               EDIT_CLS, L"");
     tb.AddItem(LBL, 8, 38, 56, 9, IDC_STATIC_MODEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiModelLabel));
     tb.AddItem(COMBO, 68, 37, 118, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");

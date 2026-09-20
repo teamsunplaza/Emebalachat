@@ -215,10 +215,19 @@ void TestReq050HfAddDialog() {
             off += 2 * (1 + std::wstring(L"Segoe UI").size());
             bool walk_ok = true;
             bool margins_ok = true;
+            bool scroll_ok = true;
             short prev_top = 0;
             for (WORD iItem = 0; iItem < 5; ++iItem) {
                 off += (4 - off % 4) % 4;
                 const Exp& e = kExp[iItem];
+                // REQ-050 (single-line edit limits): the URL EDIT (4301) must
+                // carry ES_AUTOHSCROLL (0x0080) — without it a single-line
+                // EDIT rejects input beyond its visible width (device-
+                // confirmed: a 110-char URL truncated at ~76 on paste).
+                // EDT style DWORD = 0x50810000 (+0x0080 -> 0x50810080).
+                if (e.id == 4301) {
+                    scroll_ok = ReadDword(base, off) == 0x50810080u;
+                }
                 const short x = static_cast<short>(ReadWord(base, off + 8));
                 const short y = static_cast<short>(ReadWord(base, off + 10));
                 const short cx = static_cast<short>(ReadWord(base, off + 12));
@@ -251,6 +260,9 @@ void TestReq050HfAddDialog() {
             TEST_CHECK(walk_ok,
                        "REQ-050 2-2: HF template items 1:1 — label(8,6,140,9) "
                        "edit(8,17,246,12) status(8,52,246,9) buttons(118/190,68,64,13)");
+            TEST_CHECK(scroll_ok,
+                       "REQ-050 2-2: the URL edit carries ES_AUTOHSCROLL (0x50810080) "
+                       "so long model URLs paste in full");
             TEST_CHECK(margins_ok,
                        "REQ-050 2-2: every template control sits inside the client rect "
                        "with >= 6 DLU margins on all sides, in y-order");
@@ -287,6 +299,11 @@ void TestReq050HfAddDialog() {
                        src.find("kHfProgressRectDlu") != std::string::npos,
                    "REQ-050 2-2: the progress bar is created through MapDialogRect "
                    "from kHfProgressRectDlu");
+        // 2-2 (edit limits): the URL edit passes EDT | ES_AUTOHSCROLL — a
+        // single-line EDIT without it rejects input beyond its visible width
+        // (device-confirmed: a 110-char URL truncated at ~76 on paste).
+        TEST_CHECK(src.find("EDT | ES_AUTOHSCROLL") != std::string::npos,
+                   "REQ-050 2-2: the HF URL edit passes EDT | ES_AUTOHSCROLL");
         TEST_CHECK(src.find("tb.Begin(title, 262, 92") != std::string::npos,
                    "REQ-050 2-2: ShowHfAddDialog builds the 262x92 template");
         // 2-1: the download path normalizes before WinHTTP.
