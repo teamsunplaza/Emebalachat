@@ -15158,6 +15158,11 @@ int main() {
     // — registered after the T2 parser suites, per the end-of-file pattern.
     TestWorkerProtocol();
     TestWorkerManagerStateMachine();
+    // REQ-049: job-wait frame classifier — heartbeat frames are consumed, never
+    // job answers (root cause of the intermittent 'first request after idle ->
+    // engine_failed'). Registered after the T3 suites, per the end-of-file
+    // pattern.
+    TestJobWaitFrameClassifier();
     // REQ-043 (M6 T4): orchestrator-v2 suites (§V2-4.3/§V2-4.6/REQ-008) —
     // registered after the T3 suites, per the end-of-file pattern.
     TestHostV2Scheduler();

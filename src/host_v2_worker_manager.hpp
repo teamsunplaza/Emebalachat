@@ -51,6 +51,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -128,6 +129,39 @@ struct WorkerHandle {
     int64_t jobs_failed_on_crash = 0;
 };
 
+// ---- job-wait frame classifier (REQ-049) -----------------------------------
+// REQ-049: one shared definition of how a job-wait loop classifies an inbound
+// worker frame. The worker legitimately interleaves heartbeat frames (§1.2
+// cadence) with events; a heartbeat must never fail a job (the root cause of
+// the intermittent 'first request after idle -> engine_failed' defect).
+enum class JobWaitFrame : unsigned char {
+    Final,     // event kind=final -> terminal success
+    Error,     // event kind=error -> terminal failure (code mapped by caller)
+    Progress,  // event kind=partial|token|eos -> consume, keep waiting
+    Heartbeat, // op=heartbeat -> consume, keep waiting
+    Malformed, // anything else -> fail-closed protocol violation
+};
+
+// Fills `ev` only for the event classes; returns the classification.
+inline JobWaitFrame ClassifyJobWaitFrame(std::string_view json, workerproto::EventMsg& ev) {
+    // Cheap op check first: the idle cadence makes a heartbeat the most common
+    // stray frame on a pipe the dispatcher left idle.
+    enginehost::JsonPairs p;
+    if (enginehost::JsonParseObject(json, p)) {
+        const auto* op = enginehost::detail::FindField(p, "op");
+        if (op && op->is_string && op->text == "heartbeat") return JobWaitFrame::Heartbeat;
+    }
+    if (!wp::ParseEvent(json, ev)) return JobWaitFrame::Malformed;
+    switch (ev.kind) {
+        case wp::EventKind::Final:            return JobWaitFrame::Final;
+        case wp::EventKind::Error:            return JobWaitFrame::Error;
+        case wp::EventKind::Partial:
+        case wp::EventKind::Token:
+        case wp::EventKind::Eos:              return JobWaitFrame::Progress;
+    }
+    return JobWaitFrame::Malformed; // unreachable (kind is a closed enum)
+}
+
 // ---- the manager (one instance per orchestrator; families registered) ------
 class WorkerManager {
 public:
@@ -167,6 +201,13 @@ public:
     enum class WorkerRead : unsigned char { Ok, Timeout, IoError };
     WorkerRead ReadFromWorker(const std::wstring& family, std::string& json,
                               int timeout_ms);
+
+    // REQ-049: non-blocking drain of frames queued on the family pipe while
+    // the dispatcher was idle (worker heartbeats, or a stray final left by a
+    // timed-out previous job). Called right before publishing a new job so a
+    // stale frame can never be misattributed to the new job (events carry no
+    // job id). Returns the number of drained frames; bounded by max_frames.
+    int DrainWorkerPipe(const std::wstring& family, int max_frames = 128);
 
     // M-2 graceful stop of ONE family: shutdown -> wait shutdown_ack/EOF ->
     // close. Returns after the pipe is closed. Safe on a dead worker.

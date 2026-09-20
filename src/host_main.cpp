@@ -655,6 +655,11 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             continue;
         }
 
+        // REQ-049: drain frames the worker queued while this dispatcher was idle
+        // (heartbeat cadence + stray finals) so the job's answer cannot be
+        // misattributed. Non-blocking; bounded.
+        (void)wmgr.DrainWorkerPipe(family);
+
         // REQ-045 P4-4: relay the cached user_model_id BEFORE the first job
         // (existing session_open frame; the worker resolves it per job). A
         // failed relay leaves model_relayed=false and falls through — the
@@ -728,20 +733,25 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             const auto rc = wmgr.ReadFromWorker(family, json, 250);
             if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
                 wp::EventMsg ev;
-                if (!wp::ParseEvent(json, ev)) {
-                    // Malformed frame on the 난부 pipe: protocol violation ->
-                    // job fails (fail-closed, §V2-12-2).
-                    status = enginehost::HostStatus::EngineFailed;
-                    answered = true;
-                    break;
+                const host_v2::JobWaitFrame frame = host_v2::ClassifyJobWaitFrame(json, ev);
+                if (frame == host_v2::JobWaitFrame::Heartbeat ||
+                    frame == host_v2::JobWaitFrame::Progress) {
+                    // REQ-049: the idle worker's heartbeat cadence (§1.2)
+                    // legitimately interleaves heartbeat frames with events; a
+                    // heartbeat must never fail a job (the confirmed root cause
+                    // of the intermittent 'first request after idle ->
+                    // engine_failed'). Consume, keep waiting. partial/token/eos
+                    // are progress-only: not emitted by the one-shot translate
+                    // worker, but consumed the same way.
+                    continue;
                 }
-                if (ev.kind == wp::EventKind::Final) {
+                if (frame == host_v2::JobWaitFrame::Final) {
                     status = enginehost::HostStatus::Ok;
                     out_text = ev.text;
                     answered = true;
                     break;
                 }
-                if (ev.kind == wp::EventKind::Error) {
+                if (frame == host_v2::JobWaitFrame::Error) {
                     // §4.4 mapping (T3 contract, unchanged):
                     //   timeout       -> status=timeout (cancel/watchdog)
                     //   model_missing -> status=model_missing
@@ -756,9 +766,11 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                     answered = true;
                     break;
                 }
-                // partial/token/eos: not emitted by the one-shot translate
-                // worker; consume and keep waiting.
-                continue;
+                // Malformed frame on the pipe: protocol violation ->
+                // job fails (fail-closed, §V2-12-2).
+                status = enginehost::HostStatus::EngineFailed;
+                answered = true;
+                break;
             }
             if (rc == host_v2::WorkerManager::WorkerRead::IoError) {
                 status = enginehost::HostStatus::EngineFailed; // worker gone
@@ -771,8 +783,9 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             if (aborted || past_deadline) {
                 // D-2 chain across the process boundary: order the worker to
                 // unwind (abort frame). Its event, if it still arrives, is a
-                // stray the NEXT job's read loop never sees (this pipe is
-                // quiesced by the crash/respawn or GracefulStop paths).
+                // stray the next job must never read as its own answer —
+                // REQ-049 drains such strays (DrainWorkerPipe) before the
+                // next job frame is published.
                 (void)wmgr.SendToWorker(family, wp::BuildAbort(0));
                 status = enginehost::HostStatus::Timeout;
                 answered = true;
@@ -857,6 +870,10 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
+        // REQ-049: drain frames the worker queued while this dispatcher was idle
+        // (heartbeat cadence + stray finals) so the job's answer cannot be
+        // misattributed. Non-blocking; bounded.
+        (void)wmgr.DrainWorkerPipe(family);
         // REQ-045 P4-4: relay a CHANGED model_id before the job (existing
         // session_open frame; empty -> no relay -> pinned). A failed relay
         // leaves relayed_model_id stale and falls through — the worker keeps
@@ -895,22 +912,28 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             const auto rc = wmgr.ReadFromWorker(family, json, 250);
             if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
                 wp::EventMsg ev;
-                if (!wp::ParseEvent(json, ev)) {
-                    status = enginehost::HostStatus::EngineFailed;
-                    break;
+                const host_v2::JobWaitFrame frame = host_v2::ClassifyJobWaitFrame(json, ev);
+                if (frame == host_v2::JobWaitFrame::Heartbeat ||
+                    frame == host_v2::JobWaitFrame::Progress) {
+                    // REQ-049: idle-cadence heartbeats (and any partial/token/
+                    // eos progress frames) are consumed, never job answers.
+                    continue;
                 }
-                if (ev.kind == wp::EventKind::Final) {
+                if (frame == host_v2::JobWaitFrame::Final) {
                     status = enginehost::HostStatus::Ok;
                     out_text = ev.text;
                     break;
                 }
-                if (ev.kind == wp::EventKind::Error) {
+                if (frame == host_v2::JobWaitFrame::Error) {
                     if (ev.code == "timeout") status = enginehost::HostStatus::Timeout;
                     else if (ev.code == "model_missing") status = enginehost::HostStatus::ModelMissing;
                     else status = enginehost::HostStatus::EngineFailed;
                     break;
                 }
-                continue;
+                // Malformed frame on the pipe: protocol violation ->
+                // job fails (fail-closed, §V2-12-2).
+                status = enginehost::HostStatus::EngineFailed;
+                break;
             }
             if (rc == host_v2::WorkerManager::WorkerRead::IoError) {
                 status = enginehost::HostStatus::EngineFailed;

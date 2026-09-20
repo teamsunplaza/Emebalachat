@@ -351,6 +351,102 @@ void TestWorkerProtocol() {
     }
 }
 
+void TestJobWaitFrameClassifier() {
+    std::cout << "[RUN] Testing job-wait frame classifier (REQ-049)..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace hv2 = emebalachat::host_v2;
+    namespace wp = emebalachat::workerproto;
+
+    // REQ-049: the classifier is the single definition of how both dispatcher
+    // wait loops classify an inbound worker frame. Root cause pinned here: an
+    // idle-cadence heartbeat frame must classify as Heartbeat (consume, keep
+    // waiting), NEVER Malformed — the pre-fix dispatchers failed the job on
+    // the heartbeat and left the real final queued for the NEXT job to
+    // misread as its own answer.
+
+    // ---- 1. Heartbeat frames (the §1.2 idle cadence) ----
+    {
+        wp::EventMsg ev;
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"heartbeat\",\"ts\":123}", ev) ==
+                       hv2::JobWaitFrame::Heartbeat,
+                   "jobwait: literal heartbeat frame -> Heartbeat");
+        TEST_CHECK(hv2::ClassifyJobWaitFrame(wp::BuildHeartbeat(123), ev) ==
+                       hv2::JobWaitFrame::Heartbeat,
+                   "jobwait: BuildHeartbeat roundtrip -> Heartbeat");
+    }
+
+    // ---- 2. Terminal event frames (text/code preserved for the caller) ----
+    {
+        wp::EventMsg fin;
+        fin.session = 0;
+        fin.kind = wp::EventKind::Final;
+        fin.seq = 7;
+        fin.text = "hello world";
+        wp::EventMsg ev; // scratch the classifier fills
+        TEST_CHECK(hv2::ClassifyJobWaitFrame(wp::BuildEvent(fin), ev) ==
+                       hv2::JobWaitFrame::Final,
+                   "jobwait: final event -> Final");
+        TEST_CHECK(ev.kind == wp::EventKind::Final && ev.text == "hello world" &&
+                       ev.seq == 7,
+                   "jobwait: final event text/seq preserved");
+
+        wp::EventMsg err;
+        err.kind = wp::EventKind::Error;
+        err.code = "engine_failed";
+        TEST_CHECK(hv2::ClassifyJobWaitFrame(wp::BuildEvent(err), ev) ==
+                       hv2::JobWaitFrame::Error,
+                   "jobwait: error event -> Error");
+        TEST_CHECK(ev.code == "engine_failed",
+                   "jobwait: error code preserved for the caller's mapping");
+    }
+
+    // ---- 3. Progress event frames (partial/token/eos) ----
+    {
+        for (wp::EventKind k : {wp::EventKind::Partial, wp::EventKind::Token,
+                                wp::EventKind::Eos}) {
+            wp::EventMsg m;
+            m.kind = k;
+            wp::EventMsg ev;
+            TEST_CHECK(hv2::ClassifyJobWaitFrame(wp::BuildEvent(m), ev) ==
+                           hv2::JobWaitFrame::Progress,
+                       "jobwait: partial/token/eos event -> Progress");
+        }
+    }
+
+    // ---- 4. Fail-closed Malformed pins ----
+    {
+        wp::EventMsg ev;
+        // Unknown event kind (§V2-12-2: unknown kinds fail to parse).
+        TEST_CHECK(hv2::ClassifyJobWaitFrame(
+                       "{\"op\":\"event\",\"session\":0,\"kind\":\"bogus\",\"seq\":1}",
+                       ev) == hv2::JobWaitFrame::Malformed,
+                   "jobwait: unknown event kind -> Malformed");
+        // Non-JSON garbage.
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("not json", ev) ==
+                       hv2::JobWaitFrame::Malformed,
+                   "jobwait: non-JSON -> Malformed");
+        // Non-event ops must NOT be mistaken for a job answer: an 'opened' ack
+        // or a bare orchestrator-style error frame on the worker pipe is a
+        // protocol violation for a job-wait loop, not a terminal event.
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"opened\",\"session\":0}", ev) ==
+                       hv2::JobWaitFrame::Malformed,
+                   "jobwait: 'opened' op -> Malformed (non-event op)");
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"error\",\"code\":\"bad_request\"}",
+                                             ev) == hv2::JobWaitFrame::Malformed,
+                   "jobwait: bare 'error' op -> Malformed (non-event op)");
+        // Empty frame.
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("", ev) == hv2::JobWaitFrame::Malformed,
+                   "jobwait: empty frame -> Malformed");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Job-wait frame classifier tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Job-wait frame classifier tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 void TestWorkerManagerStateMachine() {
     std::cout << "[RUN] Testing worker manager state machine (REQ-043 M6 T3)..." << std::endl;
     const int failures_before = g_failed_count;

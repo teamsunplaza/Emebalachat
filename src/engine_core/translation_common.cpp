@@ -515,7 +515,13 @@ std::wstring LocalInferenceEngine::Translate(
 
         batch = llama_batch_get_one(&token, 1);
         if (llama_decode(ctx, batch) != 0) {
-            break;
+            // REQ-049: a mid-generation decode failure used to fall through
+            // with the partial output masquerading as a successful
+            // translation; answer honestly (empty -> engine_failed) like the
+            // prompt-decode failure above.
+            DIAG_F("ENGINE/Translate/014: llama_decode failed mid-generation at token %d; answering engine_failed\n", i);
+            llama_sampler_free(smpl);
+            return {};
         }
     }
 

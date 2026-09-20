@@ -334,6 +334,27 @@ WorkerManager::WorkerRead WorkerManager::ReadFromWorker(const std::wstring& fami
     return WorkerRead::IoError;
 }
 
+// REQ-049: non-blocking drain of frames the worker queued on the family pipe
+// while the dispatcher was idle (heartbeat cadence, or a stray final left by a
+// timed-out previous job). The manager mutex keeps the handle lifecycle
+// serialized exactly like ReadFromWorker; timeout 0 makes each ReadPipeFrame a
+// pure poll — PipeRead::Timeout means the pipe is empty and the drain is done.
+// No per-frame log: heartbeats are routine traffic.
+int WorkerManager::DrainWorkerPipe(const std::wstring& family, int max_frames) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    WorkerHandle* w = impl_->FindLocked(family);
+    if (!w || (w->state != WorkerState::Ready && w->state != WorkerState::Busy) ||
+        !w->pipe || w->pipe == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    int drained = 0;
+    std::string json; // discarded: only the count matters to the caller
+    while (drained < max_frames && ReadPipeFrame(w->pipe, json, 0) == PipeRead::Ok) {
+        ++drained;
+    }
+    return drained;
+}
+
 // ---- spawn + handshake (design §1.1 rules 1-2 / §3.4) -----------------------
 // REQ-044 (P4-3, item 5): the blocking ConnectNamedPipe wait + announce
 // ReadPipeFrame below run while impl_->mu is held. This is a deliberate
