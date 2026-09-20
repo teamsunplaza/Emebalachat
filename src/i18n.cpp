@@ -127,7 +127,9 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(gguf_manager_err_no_localappdata) \
     X(gguf_manager_err_write) \
     X(gguf_manager_err_write_partial) \
-    X(gguf_manager_err_registry_damaged)
+    X(gguf_manager_err_registry_damaged) \
+    X(tooltip_translate_failed) \
+    X(repair_transient_body)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -152,9 +154,9 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // to 76. REQ-047 D2 (design §B.3) appended the bundled-duplicate notice
 // body (77). REQ-047 U1 (designer 164500 §5.3) appended the tray
 // "(미등록)" empty-slot marker (78). REQ-048 R2-D appended the 12
-// gguf-manager fields (95). The Get() switch maps exactly these 95
+// gguf-manager fields (97). The Get() switch maps exactly these 97
 // named fields.
-static_assert(kLocalizedStringsFieldCount == 95,
+static_assert(kLocalizedStringsFieldCount == 97,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -293,6 +295,8 @@ const LocalizedStrings kStringsKorean = {
     .gguf_manager_err_write = L"registry.json을 쓸 수 없습니다.",
     .gguf_manager_err_write_partial = L"registry.json을 끝까지 쓰지 못했습니다.",
     .gguf_manager_err_registry_damaged = L"registry.json이 손상되었거나 지원하지 않는 스키마입니다. 수정하지 않았습니다. 복구하거나 삭제한 후 다시 시도하세요.",
+    .tooltip_translate_failed = L"번역에 실패했습니다. 다시 시도해 주세요.",
+    .repair_transient_body = L"로컬 번역 엔진을 일시적으로 사용할 수 없습니다(시작 중일 수 있습니다). 잠시 후 다시 시도해 주세요.",
 };
 
 // 2. Japanese (ja)
@@ -433,6 +437,8 @@ const LocalizedStrings kStringsJapanese = {
     L"registry.json を書き込めません。",
     L"registry.json の書き込みが完了しませんでした。",
     L"registry.json が破損しているか、サポートされていないスキーマです。変更は加えていません。修復するか削除してから再試行してください。",
+    L"翻訳に失敗しました。もう一度お試しください。",
+    L"ローカル翻訳エンジンを一時的に使用できません(起動中の可能性があります)。しばらくしてからもう一度お試しください。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -573,6 +579,8 @@ const LocalizedStrings kStringsChineseSimp = {
     L"无法写入 registry.json。",
     L"registry.json 未能完整写入。",
     L"registry.json 已损坏或架构不受支持。未做修改。请修复或删除后重试。",
+    L"翻译失败。请重试。",
+    L"本地翻译引擎暂时不可用(可能正在启动)。请稍后重试。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -713,6 +721,8 @@ const LocalizedStrings kStringsChineseTrad = {
     L"無法寫入 registry.json。",
     L"registry.json 未能完整寫入。",
     L"registry.json 已損毀或結構不受支援。未做修改。請修復或刪除後重試。",
+    L"翻譯失敗。請重試。",
+    L"本機翻譯引擎暫時不可用(可能正在啟動)。請稍後重試。",
 };
 
 // 5. Vietnamese (vi)
@@ -853,6 +863,8 @@ const LocalizedStrings kStringsVietnamese = {
     L"Không thể ghi registry.json.",
     L"Không thể ghi registry.json hoàn chỉnh.",
     L"registry.json bị hỏng hoặc có lược đồ không được hỗ trợ. Nó KHÔNG bị sửa đổi. Hãy khắc phục hoặc xóa rồi thử lại.",
+    L"Dịch thất bại. Vui lòng thử lại.",
+    L"Không thể sử dụng tạm thời công cụ dịch cục bộ (có thể đang khởi động). Vui lòng đợi một chút và thử lại.",
 };
 
 // 6. Spanish (es)
@@ -990,6 +1002,8 @@ const LocalizedStrings kStringsSpanish = {
     L"No se pudo escribir registry.json.",
     L"No se pudo escribir registry.json por completo.",
     L"registry.json está dañado o tiene un esquema no compatible. NO se modificó. Repárelo o elimínelo y vuelva a intentarlo.",
+    L"La traducción falló. Inténtelo de nuevo.",
+    L"El motor de traducción local no está disponible temporalmente (puede estar iniciándose). Espere un momento e inténtelo de nuevo.",
 };
 
 // 7. English (en) - Default Fallback
@@ -1128,6 +1142,8 @@ const LocalizedStrings kStringsEnglish = {
     L"registry.json could not be written.",
     L"registry.json could not be written completely.",
     L"registry.json is damaged or has an unsupported schema. It was NOT modified. Fix or remove it, then retry.",
+    L"Translation failed. Please try again.",
+    L"The local translation engine is temporarily unavailable (it may be starting up). Please wait a moment and try again.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1280,6 +1296,8 @@ const LocalizedStrings kStringsFrench = {
     L"Impossible d'écrire registry.json.",
     L"registry.json n'a pas pu être écrit complètement.",
     L"registry.json est endommagé ou utilise un schéma non pris en charge. Il n'a PAS été modifié. Réparez-le ou supprimez-le, puis réessayez.",
+    L"Échec de la traduction. Veuillez réessayer.",
+    L"Le moteur de traduction local est temporairement indisponible (il est peut-être en cours de démarrage). Patientez un instant puis réessayez.",
 };
 
 // 9. German (de)
@@ -1420,6 +1438,8 @@ const LocalizedStrings kStringsGerman = {
     L"registry.json konnte nicht geschrieben werden.",
     L"registry.json konnte nicht vollständig geschrieben werden.",
     L"registry.json ist beschädigt oder hat ein nicht unterstütztes Schema. Es wurde NICHT geändert. Reparieren oder entfernen Sie es und versuchen Sie es erneut.",
+    L"Übersetzung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    L"Die lokale Übersetzungsengine ist vorübergehend nicht verfügbar (möglicherweise beim Start). Warten Sie einen Moment und versuchen Sie es erneut.",
 };
 
 // 10. Russian (ru)
@@ -1560,6 +1580,8 @@ const LocalizedStrings kStringsRussian = {
     L"Не удалось записать registry.json.",
     L"Не удалось полностью записать registry.json.",
     L"registry.json повреждён или имеет неподдерживаемую схему. Он НЕ был изменён. Исправьте или удалите его и повторите попытку.",
+    L"Перевод не удался. Попробуйте ещё раз.",
+    L"Локальный движок перевода временно недоступен (возможно, запускается). Подождите немного и повторите попытку.",
 };
 
 // 11. Portuguese (pt)
@@ -1700,6 +1722,8 @@ const LocalizedStrings kStringsPortuguese = {
     L"Não foi possível escrever registry.json.",
     L"registry.json não foi completamente escrito.",
     L"registry.json está danificado ou tem um esquema não suportado. NÃO foi modificado. Corrija-o ou remova-o e tente novamente.",
+    L"Falha na tradução. Tente novamente.",
+    L"O motor de tradução local está temporariamente indisponível (pode estar a iniciar). Aguarde um momento e tente novamente.",
 };
 
 // 12. Italian (it)
@@ -1840,6 +1864,8 @@ const LocalizedStrings kStringsItalian = {
     L"Impossibile scrivere registry.json.",
     L"registry.json non è stato scritto completamente.",
     L"registry.json è danneggiato o ha uno schema non supportato. NON è stato modificato. Riparalo o rimuovilo e riprova.",
+    L"Traduzione non riuscita. Riprova.",
+    L"Il motore di traduzione locale è temporaneamente non disponibile (potrebbe essere in avvio). Attendi un momento e riprova.",
 };
 
 // 13. Dutch (nl)
@@ -1980,6 +2006,8 @@ const LocalizedStrings kStringsDutch = {
     L"registry.json kon niet worden weggeschreven.",
     L"registry.json kon niet volledig worden weggeschreven.",
     L"registry.json is beschadigd of heeft een niet-ondersteund schema. Het is NIET gewijzigd. Herstel of verwijder het en probeer het opnieuw.",
+    L"Vertaling mislukt. Probeer het opnieuw.",
+    L"De lokale vertaalengine is tijdelijk niet beschikbaar (mogelijk aan het starten). Wacht even en probeer het opnieuw.",
 };
 
 // 14. Polish (pl)
@@ -2120,6 +2148,8 @@ const LocalizedStrings kStringsPolish = {
     L"Nie można zapisać registry.json.",
     L"Nie można w pełni zapisać registry.json.",
     L"registry.json jest uszkodzony lub ma nieobsługiwaną strukturę. NIE został zmieniony. Napraw go lub usuń i spróbuj ponownie.",
+    L"Tłumaczenie nie powiodło się. Spróbuj ponownie.",
+    L"Lokalny silnik tłumaczenia jest tymczasowo niedostępny (może się uruchamiać). Poczekaj chwilę i spróbuj ponownie.",
 };
 
 // 15. Czech (cs)
@@ -2260,6 +2290,8 @@ const LocalizedStrings kStringsCzech = {
     L"registry.json se nepodařilo zapsat.",
     L"registry.json se nepodařilo zapsat celý.",
     L"registry.json je poškozený nebo má nepodporované schéma. Nebyl změněn. Opravte ho nebo ho odstraňte a zkuste to znovu.",
+    L"Překlad se nezdařil. Zkuste to znovu.",
+    L"Místní překladový engine je dočasně nedostupný (možná se spouští). Počkejte chvíli a zkuste to znovu.",
 };
 
 // 16. Hungarian (hu)
@@ -2400,6 +2432,8 @@ const LocalizedStrings kStringsHungarian = {
     L"A registry.json nem írható.",
     L"A registry.json nem írható teljesen.",
     L"A registry.json sérült vagy nem támogatott sémájú. NEM lett módosítva. Javítsa ki vagy távolítsa el, majd próbálja újra.",
+    L"A fordítás nem sikerült. Próbálja újra.",
+    L"A helyi fordítómotor átmenetileg nem érhető el (előfordulhat, hogy éppen indul). Várjon egy pillanatot, és próbálja újra.",
 };
 
 // 17. Romanian (ro)
@@ -2540,6 +2574,8 @@ const LocalizedStrings kStringsRomanian = {
     L"registry.json nu a putut fi scris.",
     L"registry.json nu a putut fi scris complet.",
     L"registry.json este deteriorat sau are un schemă neacceptată. NU a fost modificat. Reparați-l sau eliminați-l și încercați din nou.",
+    L"Traducerea a eșuat. Încercați din nou.",
+    L"Motorul de traducere local este temporar indisponibil (se poate inițializa). Așteptați un moment și încercați din nou.",
 };
 
 // 18. Swedish (sv)
@@ -2680,6 +2716,8 @@ const LocalizedStrings kStringsSwedish = {
     L"registry.json kunde inte skrivas.",
     L"registry.json kunde inte skrivas fullständigt.",
     L"registry.json är skadad eller har ett schema som inte stöds. Den har INTE ändrats. Reparera eller ta bort den och försök igen.",
+    L"Översättningen misslyckades. Försök igen.",
+    L"Den lokala översättningsmotorn är tillfälligt otillgänglig (den kan starta). Vänta en stund och försök igen.",
 };
 
 // 19. Danish (da)
@@ -2820,6 +2858,8 @@ const LocalizedStrings kStringsDanish = {
     L"registry.json kunne ikke skrives.",
     L"registry.json kunne ikke skrives færdig.",
     L"registry.json er beskadiget eller har et ikke-understøttet skema. Den er IKKE ændret. Reparér eller fjern den, og prøv igen.",
+    L"Oversættelsen mislykkedes. Prøv igen.",
+    L"Den lokale oversættelsesmotor er midlertidigt utilgængelig (den er muligvis ved at starte). Vent et øjeblik og prøv igen.",
 };
 
 // 20. Finnish (fi)
@@ -2960,6 +3000,8 @@ const LocalizedStrings kStringsFinnish = {
     L"registry.jsonia ei voitu kirjoittaa.",
     L"registry.jsonia ei voitu kirjoittaa loppuun.",
     L"registry.json on vioittunut tai sen skeemaa ei tueta. Sitä EI muutettu. Korjaa tai poista se ja yritä uudelleen.",
+    L"Käännös epäonnistui. Yritä uudelleen.",
+    L"Paikallinen käännösmoottori on tilapäisesti EI käytettävissä (se saattaa olla käynnistymässä). Odota hetki ja yritä uudelleen.",
 };
 
 // 21. Norwegian (no / nb)
@@ -3100,6 +3142,8 @@ const LocalizedStrings kStringsNorwegian = {
     L"registry.json kunne ikke skrives.",
     L"registry.json kunne ikke skrives fullstendig.",
     L"registry.json er skadet eller har et schema som ikke støttes. Den har IKKE blitt endret. Reparer eller fjern den, og prøv igjen.",
+    L"Oversettelsen mislyktes. Prøv igjen.",
+    L"Den lokale oversettelsesmotoren er midlertidig utilgjengelig (den kan være under oppstart). Vent et øyeblikk og prøv igjen.",
 };
 
 // 22. Greek (el)
@@ -3240,6 +3284,8 @@ const LocalizedStrings kStringsGreek = {
     L"Δεν ήταν δυνατή η εγγραφή του registry.json.",
     L"Το registry.json δεν εγγράφηκε πλήρως.",
     L"Το registry.json είναι κατεστραμμένο ή έχει μη υποστηριζόμενο σχήμα. ΔΕΝ τροποποιήθηκε. Επισκευάστε το ή αφαιρέστε το και δοκιμάστε ξανά.",
+    L"Η μετάφραση απέτυχε. Δοκιμάστε ξανά.",
+    L"Η τοπική μηχανή μετάφρασης είναι προσωρινά μη διαθέσιμη (πιθανώς ξεκινά). Περιμένετε λίγο και δοκιμάστε ξανά.",
 };
 
 // 23. Turkish (tr)
@@ -3380,6 +3426,8 @@ const LocalizedStrings kStringsTurkish = {
     L"registry.json yazılamadı.",
     L"registry.json tamamen yazılamadı.",
     L"registry.json hasarlı veya desteklenmeyen bir şemaya sahip. DeğiştirilMEdi. Düzeltin veya kaldırın ve yeniden deneyin.",
+    L"Çeviri başarısız oldu. Lütfen tekrar deneyin.",
+    L"Yerel çeviri motoru geçici olarak kullanılamıyor (başlatılıyor olabilir). Lütfen biraz bekleyip tekrar deneyin.",
 };
 
 // 24. Ukrainian (uk)
@@ -3520,6 +3568,8 @@ const LocalizedStrings kStringsUkrainian = {
     L"Не вдалося записати registry.json.",
     L"Не вдалося повністю записати registry.json.",
     L"registry.json пошкоджено або має непідтримувану схему. Він НЕ змінений. Відновіть його або видаліть і повторіть спробу.",
+    L"Переклад не вдався. Спробуйте ще раз.",
+    L"Локальний рушій перекладу тимчасово недоступний (можливо, запускається). Зачекайте трохи й повторіть спробу.",
 };
 
 // 25. Thai (th)
@@ -3660,6 +3710,8 @@ const LocalizedStrings kStringsThai = {
     L"ไม่สามารถเขียน registry.json ได้",
     L"เขียน registry.json ไม่เสร็จสมบูรณ์",
     L"registry.json เสียหายหรือมี schema ที่ไม่รองรับ ไม่ได้ถูกแก้ไข โปรดซ่อมแซมหรือลบแล้วลองใหม่",
+    L"การแปลล้มเหลว โปรดลองใหม่",
+    L"เอนจินแปลในเครื่องไม่พร้อมใช้งานชั่วคราว (อาจกำลังเริ่มต้น) โปรดรอครู่แล้วลองใหม่",
 };
 
 // 26. Indonesian (id)
@@ -3800,6 +3852,8 @@ const LocalizedStrings kStringsIndonesian = {
     L"registry.json tidak dapat ditulis.",
     L"registry.json tidak dapat ditulis sepenuhnya.",
     L"registry.json rusak atau memiliki skema yang tidak didukung. File TIDAK diubah. Perbaiki atau hapus, lalu coba lagi.",
+    L"Terjemahan gagal. Silakan coba lagi.",
+    L"Mesin terjemahan lokal sementara tidak tersedia (mungkin sedang mulai). Tunggu sebentar dan coba lagi.",
 };
 
 // 27. Malay (ms)
@@ -3940,6 +3994,8 @@ const LocalizedStrings kStringsMalay = {
     L"registry.json tidak dapat ditulis.",
     L"registry.json tidak dapat ditulis dengan lengkap.",
     L"registry.json rosak atau mempunyai skema tidak disokong. Ia TIDAK diubah suai. Baiki atau padamkannya, kemudian cuba lagi.",
+    L"Terjemahan gagal. Sila cuba lagi.",
+    L"Enjin terjemahan tempatan tidak tersedia buat sementara (mungkin sedang dimulakan). Tunggu seketika dan cuba lagi.",
 };
 
 // 28. Filipino (fil)
@@ -4082,6 +4138,8 @@ const LocalizedStrings kStringsFilipino = {
     L"Hindi maisulat ang registry.json.",
     L"Hindi lubos na nasulat ang registry.json.",
     L"Sira ang registry.json o may hindi suportadong schema. HINDI ito binago. Ayusin o tanggalin ito, at subukan muli.",
+    L"Nabigo ang pagsasalin. Subukan muli.",
+    L"Ang lokal na engine ng pagsasalin ay pansamantalang hindi available (maaaring nagsisimula). Maghintay sandali at subukan muli.",
 };
 
 // 29. Hindi (hi)
@@ -4222,6 +4280,8 @@ const LocalizedStrings kStringsHindi = {
     L"registry.json नहीं लिखा जा सका।",
     L"registry.json पूरी तरह नहीं लिखा जा सका।",
     L"registry.json क्षतिग्रस्त है या उसका स्कीमा unsupported है। इसमें कोई बदलाव नहीं किया गया। इसे ठीक करें या हटाएं, फिर पुनः प्रयास करें।",
+    L"अनुवाद विफल रहा। कृपया पुनः प्रयास करें।",
+    L"स्थानीय अनुवाद इंजन अस्थायी रूप से उपलब्ध नहीं है (शायद प्रारंभ हो रहा हो)। कृपया कुछ देर प्रतीक्षा करें और पुनः प्रयास करें।",
 };
 
 // 30. Bengali (bn)
@@ -4362,6 +4422,8 @@ const LocalizedStrings kStringsBengali = {
     L"registry.json লেখা যায়নি।",
     L"registry.json সম্পূর্ণভাবে লেখা যায়নি।",
     L"registry.json ক্ষতিগ্রস্ত বা এর স্কিমা সমর্থিত নয়। এটি পরিবর্তন করা হয়নি। এটি মেরামত করুন বা মুছুন, তারপর আবার চেষ্টা করুন।",
+    L"অনুবাদ ব্যর্থ হয়েছে। আবার চেষ্টা করুন।",
+    L"লোকাল অনুবাদ ইঞ্জিনটি সাময়িকভাবে অনুপলব্ধ (হয়তো শুরু হচ্ছে)। একটু অপেক্ষা করে আবার চেষ্টা করুন।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -4503,6 +4565,8 @@ const LocalizedStrings kStringsArabic = {
     L"تعذر كتابة registry.json.",
     L"تعذر كتابة registry.json بالكامل.",
     L"registry.json تالف أو يحتوي على مخطط غير مدعوم. لم يتم تعديله. أصلحه أو احذفه ثم أعد المحاولة.",
+    L"فشلت الترجمة. يرجى المحاولة مرة أخرى.",
+    L"محرك الترجمة المحلي غير متاح مؤقتًا (قد يكون قيد التشغيل). يرجى الانتظار قليلاً والمحاولة مرة أخرى.",
 };
 
 // 32. Persian (fa) — RTL
@@ -4643,6 +4707,8 @@ const LocalizedStrings kStringsPersian = {
     L"registry.json نوشته نشد.",
     L"registry.json به‌طور کامل نوشته نشد.",
     L"registry.json آسیب دیده یا دارای طرح پشتیبانی‌نشده است. تغییر داده نشده است. آن را تعمیر یا حذف کنید و دوباره تلاش کنید.",
+    L"ترجمه ناموفق بود. دوباره تلاش کنید.",
+    L"موتور ترجمه محلی به‌طور موقت در دسترس نیست (ممکن است در حال راه‌اندازی باشد). کمی صبر کنید و دوباره تلاش کنید.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -4783,6 +4849,8 @@ const LocalizedStrings kStringsUrdu = {
     L"registry.json نہیں لکھی جا سکی۔",
     L"registry.json مکمل نہیں لکھی جا سکی۔",
     L"registry.json خراب ہے یا اس کا اسکیما معاونت یافتہ نہیں۔ اسے تبدیل نہیں کیا گیا۔ اسے ٹھیک کریں یا حذف کریں اور دوبارہ کوشش کریں۔",
+    L"ترجمہ ناکام رہا۔ دوبارہ کوشش کریں۔",
+    L"لوکل ترجمہ انجن عارضی طور پر دستیاب نہیں (ہو سکتا ہے شروع ہو رہا ہو)۔ تھوڑی دیر انتظار کریں اور دوبارہ کوشش کریں۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -4923,6 +4991,8 @@ const LocalizedStrings kStringsHebrew = {
     L"לא ניתן היה לכתוב את registry.json.",
     L"registry.json לא נכתב במלואו.",
     L"registry.json פגום או בעל סכימה לא נתמכת. הוא לא שונה. תקנו או הסירו אותו ונסו שוב.",
+    L"התרגום נכשל. נסה שוב.",
+    L"מנוע התרגום המקומי אינו זמין זמנית (ייתכן שהוא בתהליך הפעלה). המתן רגע ונסה שוב.",
 };
 
 // 35. Khmer (km)
@@ -5063,6 +5133,8 @@ const LocalizedStrings kStringsKhmer = {
     L"មិនអាចសរសេរ registry.json បានទេ។",
     L"registry.json មិនត្រូវបានសរសេរពេញលេញទេ។",
     L"registry.json ខូចឬមានស្គីមាមិនត្រូវបានគាំទ្រ។ វាមិនត្រូវបានកែប្រាងទេ។ ជួសជុលឬលុបវាចេញ រួចព្យាយាមម្ដងទៀត។",
+    L"ការបកប្រែបរាជ័យ។ សូមព្យាយាមម្ដងទៀត។",
+    L"ម៉ាស៊ីនបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើប្រាស់បណ្តោះអាសន្ន (អាចកំពុងចាប់ផ្តើម)។ សូមរង់ចាំបន្តិចហើយព្យាយាមម្ដងទៀត។",
 };
 
 // 36. Lao (lo)
@@ -5203,6 +5275,8 @@ const LocalizedStrings kStringsLao = {
     L"ບໍ່ສາມາດຂຽນ registry.json ໄດ້.",
     L"registry.json ບໍ່ໄດ້ຖືກຂຽນໃຫ້ສົມບູນ.",
     L"registry.json ເສຍຫາຍ ຫຼື ມີ schema ທີ່ບໍ່ຮອງຮັບ. ມັນບໍ່ໄດ້ຖືກດັດແປງ. ສ້ອມແປງ ຫຼື ລຶບມັນອອກ ແລ້ວລອງໃໝ່.",
+    L"ການແປລົ້ມເຫຼວ. ກະລຸນາລອງໃໝ່.",
+    L"ເຄື່ອງຈັກແປທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້ຊົ່ວຄາວ (ອາດກຳລັງເລີ່ມຕົ້ນ). ກະລຸນາลໍຖ້າຊົວຄູ່ແລ້ວລອງໃໝ່.",
 };
 
 // 37. Burmese (my)
@@ -5343,6 +5417,8 @@ const LocalizedStrings kStringsBurmese = {
     L"registry.json ကို မရေးနိုင်ပါ။",
     L"registry.json ကို အပြည့်အဝ မရေးနိုင်ပါ။",
     L"registry.json ပျက်စီးနေပါသည် သို့မဟုတ် မပံ့ပိုးသော schema ရှိပါသည်။ ၎င်းကို မပြောင်းလဲပါ။ ပြုပြင်ပါ သို့မဟုတ် ဖျက်ပြီး ထပ်စဉ်းစားပါ။",
+    L"ဘာသာပြန် မအောင်မြင်ပါ။ ထပ်စဉ်းစားပါ။",
+    L"ဒေသတွင်း ဘာသာပြန် အင်ဂျင်ကို ယာယီ အသုံးမပြုနိုင်ပါ (စတင်နေပါရန် ဖြစ်နိုင်ပါသည်)။ ခဏစောင့်ပြီး ထပ်စဉ်းစားပါ။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -5630,6 +5706,8 @@ std::wstring I18n::Get(StringId id) {
         case StringId::GgufManagerErrWrite: return s.gguf_manager_err_write;
         case StringId::GgufManagerErrWritePartial: return s.gguf_manager_err_write_partial;
         case StringId::GgufManagerErrRegistryDamaged: return s.gguf_manager_err_registry_damaged;
+        case StringId::TooltipTranslateFailed:      return s.tooltip_translate_failed;
+        case StringId::RepairTransientBody:         return s.repair_transient_body;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

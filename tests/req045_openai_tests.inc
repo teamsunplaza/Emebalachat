@@ -166,8 +166,8 @@ void TestReq045OpenAiI18nPresent() {
     // R2-D (the gguf model-manager strings). Read through a volatile to keep
     // the runtime comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 95,
-                "StringId::EnumCount is 95 after the 13+6+1+1+12+5 field appends");
+    TEST_CHECK(enum_count == 97,
+                "StringId::EnumCount is 97 after the 13+6+1+1+12+5+2 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }

@@ -14525,7 +14525,7 @@ struct Req044LstrMirror {
     // (design §B.3): 1 bundled-duplicate notice body appended (76 -> 77);
     // REQ-047 U1 (designer 164500 §5.3): 1 tray "(미등록)" marker (77 -> 78);
     // REQ-048 R2-D: 12 gguf-manager fields appended (78 -> 90).
-    const wchar_t* f[95];
+    const wchar_t* f[97];
 };
 
 } // namespace
@@ -14538,8 +14538,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 95 (78+12+5)
-    static_assert(kExpectedFieldCount == 95,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 97 (78+12+5+2)
+    static_assert(kExpectedFieldCount == 97,
                    "REQ-044/045/047/048: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
@@ -14549,11 +14549,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 95,
-                "REQ-044/045/047/048: LocalizedStrings field count is 95 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 97,
+                "REQ-044/045/047/048: LocalizedStrings field count is 97 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 95,
-                "REQ-044/045/047/048: StringId::EnumCount is 95 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 97,
+                "REQ-044/045/047/048: StringId::EnumCount is 97 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong

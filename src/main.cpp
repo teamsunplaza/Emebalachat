@@ -1449,15 +1449,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_F("MAIN/EngineModal/020: strict local failure status=%d; "
                "requesting engine-unavailable modal\n",
                static_cast<int>(status));
-        // The strict-failure wording reuses the existing RepairFailedTitle /
-        // RepairFailedBody pair (design §A.5: reuse first). Both strict states
-        // describe the same user-facing condition — the local engine cannot
-        // serve this translation — so one wording covers them; the status is
-        // shape-logged above for triage without surfacing user text.
+        // REQ-048 R4: split the wording by cause. LocalModelMissing = no local
+        // source at all (the honest "engine files missing" case) keeps the
+        // RepairFailed* wording. CloudConsentBlocked at this seam means the
+        // host IS present but a serving attempt failed (cold-load timeout,
+        // transient pipe error) - telling the user "files are missing, reinstall"
+        // for a transient failure sent users into pointless reinstalls, so the
+        // transient state gets its own retry-oriented body (repair_transient_body).
         emebalachat::RequestEngineUnavailableModal(
             emebalachat::g_hControllerWnd,
             emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+            emebalachat::I18n::Get(status == emebalachat::TranslationStatus::LocalModelMissing
+                                       ? emebalachat::StringId::RepairFailedBody
+                                       : emebalachat::StringId::RepairTransientBody));
     });
 
     // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;
@@ -2524,15 +2528,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         badge.SetStatus(emebalachat::BadgeStatus::Active);
         if (drag_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
             drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // REQ-048 R4: same cause split as the Enter-pipeline seam - missing
+            // source vs transient serving failure get different bodies.
             emebalachat::RequestEngineUnavailableModal(
                 emebalachat::g_hControllerWnd,
                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                emebalachat::I18n::Get(drag_status == emebalachat::TranslationStatus::LocalModelMissing
+                                           ? emebalachat::StringId::RepairFailedBody
+                                           : emebalachat::StringId::RepairTransientBody));
         } else if (!translated.empty()) {
             // Success sentinel: resets the streak latch so a later strict
             // failure re-arms the modal (same path as the Enter pipeline).
             emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
                                                        std::wstring(), std::wstring());
+        } else {
+            // REQ-048 R4: EngineFailed / timeout / cancel used to update NOTHING
+            // on this path - the previous drag's tooltip stayed on screen and
+            // read as "it shows the sentence I dragged before" (the reported
+            // stale-result bug). Surface a failure notice stamped with THIS
+            // request's generation so a newer drag still supersedes it.
+            tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed),
+                                          gen);
         }
 
         // Worker thread, so marshal the D2D render to the GUI thread via the
