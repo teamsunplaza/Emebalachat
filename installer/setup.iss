@@ -665,7 +665,15 @@ const
   // [Setup] AppVersion at compile time - single source of truth (the Pascal-
   // script SetupSetting() API is not available on every Inno 6.x compiler).
   // engine.version records this value for the next Emebala installer.
-  ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}';
+  // REQ-048 R2: ENGINE_REVISION is bumped whenever the engine binaries change
+  // WITHIN the same AppVersion (the components.json rule A-2 keeps an equal
+  // version, so a same-version rebuild would otherwise never replace a stale
+  // store copy - exactly how the pre-R2 worker with the pinned-model bug
+  // survived reinstalls). CompareVersionText digit-sums dotted segments, so
+  // '0.10.1.r2' > '0.10.1' (replace) while older/newer cross-product compares
+  // still resolve correctly.
+#define ENGINE_REVISION ".r2"
+  ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
   // component-model constants for the v2 installer decision rule A.
