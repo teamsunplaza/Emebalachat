@@ -14,7 +14,7 @@ BOM since 6.5):
           Inno Setup 6.x compiler (pre-6.3 falls back to system ANSI without
           one).
   RULE 3  installer/setup.iss must contain the compile-time version guard
-          `#if VER < 0x06030000` (refuses pre-6.3 compilers, which would
+          `#if VER < 0x06040000` (refuses pre-6.4 compilers, which would
           mis-decode the BOM-less bundled .isl files as system ANSI and
           garble every non-Latin language).
   RULE 4  Files referenced via `compiler:` must exist in the local Inno
@@ -110,8 +110,8 @@ def main() -> int:
 
     # RULE 2 + RULE 3 on setup.iss itself
     check_file(ISS, must_have_bom=True, problems=problems)
-    if "#if VER < 0x06030000" not in iss_text:
-        problems.append("RULE3 installer/setup.iss: missing `#if VER < 0x06030000` compiler-version guard")
+    if "#if VER < 0x06040000" not in iss_text:
+        problems.append("RULE3 installer/setup.iss: missing `#if VER < 0x06040000` compiler-version guard")
 
     # Resolve referenced files
     compiler_refs = re.findall(r'MessagesFile:\s*"compiler:([^"]+)"', iss_text)

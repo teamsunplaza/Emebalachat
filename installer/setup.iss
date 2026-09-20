@@ -27,8 +27,8 @@
 ; End-user locale is irrelevant after compilation (strings become UTF-16 in
 ; the setup binary), so compile-time decoding is the only exposure. Refuse
 ; to build on an old compiler instead of shipping mojibake:
-#if VER < 0x06030000
-  #error This script requires Inno Setup 6.3 or later: BOM-less official .isl files are decoded as UTF-8 only since 6.3 (older compilers mis-decode them as system ANSI and garble all non-Latin languages).
+#if VER < 0x06040000
+  #error This script requires Inno Setup 6.4 or later: (1) BOM-less official .isl files are decoded as UTF-8 only since 6.3, and (2) CustomMessage {cm:} fallback to the first defined language is only replicated at runtime since 6.4 — a 6.3 build would InternalError on the 21 intentionally-undefined languages instead of showing English.
 #endif
 
 ; ------------------------------------------------------------------------
@@ -1683,7 +1683,7 @@ begin
     Log('EXPECTED_MODEL_SHA256 is empty - model integrity verification skipped (dev build).');
     Exit;
   end;
-#if VER >= 0x06030000
+#if VER >= 0x06040000
   ActualHash := GetSHA256OfFile(FilePath);
   Result := SameText(ActualHash, EXPECTED_MODEL_SHA256);
   if Result then
