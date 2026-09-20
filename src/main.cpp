@@ -1503,17 +1503,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             : (prefEngine == "user_gguf") ? 3
             : 0;
 
-        // REQ-047 U1 (designer 164500 §5.4.1, decision #1): resolve the
-        // user-model stem for the tray's dynamic label. Only consulted when
-        // the user-model engine is the preferred one; a registry miss falls
-        // back to showing the raw config id so the label never lies. The
-        // registry load mirrors RegisterUserGgufModel's loader (same
-        // LoadDefaultRegistry entry point). user_model_id is read directly
-        // (not via the snapshot): per the config.hpp contract it is a
-        // GUI-thread-only field never touched by hook/worker threads — the
-        // same direct-read precedent as the engine-select coordinator below.
+        // REQ-047 U1 (designer 164500 §5.4.1, decision #1) + REQ-050 (user
+        // items 3-1/3-2): resolve the user-model stem for the tray's dynamic
+        // label whenever a user model is REGISTERED — no longer gated on the
+        // user-model engine being the preferred one, so the tray can show the
+        // checkable entry and its " — <stem>" suffix under ANY checked
+        // engine. A registry miss falls back to showing the raw config id so
+        // the label never lies. The registry load mirrors
+        // RegisterUserGgufModel's loader (same LoadDefaultRegistry entry
+        // point). user_model_id is read directly (not via the snapshot): per
+        // the config.hpp contract it is a GUI-thread-only field never touched
+        // by hook/worker threads — the same direct-read precedent as the
+        // engine-select coordinator below.
         std::string user_model_stem;
-        if (snap.engine_type == "user_gguf" && !config.user_model_id.empty()) {
+        if (!config.user_model_id.empty()) {
             auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
             if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
                 if (const auto* m = reg.registry.FindModel(config.user_model_id)) {

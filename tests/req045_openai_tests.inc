@@ -94,6 +94,28 @@ void TestReq045OpenAiDpapi() {
     std::string digest;
     TEST_CHECK(OpenAiSha256Hex(original, digest) && digest.size() == 64,
                "integrity digest computes for the original key");
+
+    // REQ-050: the settings dialog's save composition — digest taken BEFORE
+    // protect, because Protect scrubs the caller's cleartext buffer. Model
+    // the fixed order end-to-end and pin the invariant WithUnprotectedKey
+    // relies on: the digest captured from the live cleartext must equal the
+    // digest re-computed from the decrypted key (under the old digest-after-
+    // protect order this parity check failed: digest == SHA-256(zero buffer)).
+    std::string key2 = "sk-order-pin-key-0123456789";
+    const std::string original2 = key2;
+    std::string digest2;
+    TEST_CHECK(OpenAiSha256Hex(key2, digest2) && digest2.size() == 64,
+               "REQ-050: digest computable from the live cleartext before protect");
+    std::string blob2;
+    TEST_CHECK(ProtectOpenAiApiKey(key2, blob2) && !blob2.empty(),
+               "REQ-050: protect succeeds after the digest was taken");
+    std::string recovered2;
+    TEST_CHECK(UnprotectOpenAiApiKey(blob2, recovered2) && recovered2 == original2,
+               "REQ-050: unprotect still round-trips after digest-then-protect");
+    std::string digest3;
+    TEST_CHECK(OpenAiSha256Hex(recovered2, digest3) && digest3 == digest2,
+               "REQ-050: digest taken before protect matches the decrypted-key re-hash");
+    SecureZeroMemory(recovered2.data(), recovered2.size());
 }
 
 // ---- config round-trip for the openai{} block ----
@@ -255,6 +277,35 @@ void TestReq050OpenAiEndpointJoin() {
         TEST_CHECK(src.find("L\"OK\"") == std::string::npos &&
                    src.find("L\"Cancel\"") == std::string::npos,
                    "REQ-050 (E): no hardcoded L\"OK\"/L\"Cancel\" labels remain");
+
+        // REQ-050 (digest order): ProtectOpenAiApiKey scrubs the caller's
+        // cleartext buffer in place (SecureZeroMemory, on success AND on
+        // failure — see src/openai_compatible_client.cpp), so the persisted
+        // api_key_sha256 must be taken BEFORE protect at BOTH call sites.
+        // The old digest-after-protect order persisted SHA-256(zero buffer),
+        // and WithUnprotectedKey's re-hash of the real decrypted key refused
+        // every saved key (live proof: OPENAI/WithUnprotectedKey/002).
+        // Source-order pins per the REQ-048 R2-D (e) precedent above.
+        const std::string::size_type idcancel_at = src.find("case IDCANCEL");
+        if (fetch_at != std::string::npos && ok_at != std::string::npos && fetch_at < ok_at) {
+            const std::string fetch_src = src.substr(fetch_at, ok_at - fetch_at);
+            const std::string::size_type sha_pos = fetch_src.find("OpenAiSha256Hex(keyUtf8");
+            const std::string::size_type protect_pos =
+                fetch_src.find("ProtectOpenAiApiKey(keyUtf8");
+            TEST_CHECK(sha_pos != std::string::npos && protect_pos != std::string::npos &&
+                       sha_pos < protect_pos,
+                       "REQ-050: fetch probe hashes the key BEFORE protect scrubs it");
+        }
+        if (ok_at != std::string::npos && idcancel_at != std::string::npos &&
+            ok_at < idcancel_at) {
+            const std::string ok_src = src.substr(ok_at, idcancel_at - ok_at);
+            const std::string::size_type sha_pos = ok_src.find("OpenAiSha256Hex(keyUtf8");
+            const std::string::size_type protect_pos =
+                ok_src.find("ProtectOpenAiApiKey(keyUtf8");
+            TEST_CHECK(sha_pos != std::string::npos && protect_pos != std::string::npos &&
+                       sha_pos < protect_pos,
+                       "REQ-050: IDOK save hashes the key BEFORE protect scrubs it");
+        }
     }
 
     if (g_failed_count == failures_before) {

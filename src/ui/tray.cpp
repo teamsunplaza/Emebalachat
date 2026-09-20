@@ -345,20 +345,22 @@ void SystemTray::ShowContextMenu() {
     // are untouched.
     ::AppendMenuW(hEngineMenu, MF_SEPARATOR, 0, nullptr);
 
-    // REQ-047 U1 (designer 164500 §1.2 Layer 2, decision #1): dynamic label —
-    // when the user-model engine is checked, append the registered model's
-    // stem ("사용자 지정 모델 (.gguf) — Mistral-7B-v0.1"); when nothing is
-    // registered, append the localized "(미등록)" placeholder instead. Other
-    // engines keep the plain label so the menu stays compact.
-    std::wstring user_gguf_label = I18n::Get(StringId::MenuEngineUserGguf);
-    if (pref == 3) {
-        if (!user_model_stem_.empty()) {
-            user_gguf_label += L" — " + ToUtf16(user_model_stem_);
-        } else {
-            user_gguf_label += L" — " + I18n::Get(StringId::MenuEngineUserGgufEmpty);
-        }
+    // REQ-050 (user items 3-1 + 3-2): the checkable 사용자 선택(.gguf) entry
+    // is appended ONLY while a user model is registered — user_model_stem_
+    // (the registry-derived stem UpdateStatus caches, REQ-047 U1) non-empty.
+    // Nothing registered -> the submenu shows just the manager row below.
+    // While registered, the " — <stem>" suffix rides the label REGARDLESS of
+    // the checked engine: the old code appended the suffix only at pref==3,
+    // so switching to another engine made the entry read like nothing was
+    // registered. The frozen REQ-046 radio contract is untouched (same ID,
+    // same 4-way check mark, conditional append), and the localized
+    // "(미등록)" placeholder is gone together with the always-append entry.
+    if (!user_model_stem_.empty()) {
+        std::wstring user_gguf_label = I18n::Get(StringId::MenuEngineUserGguf);
+        user_gguf_label += L" — " + ToUtf16(user_model_stem_);
+        ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED),
+                      ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
     }
-    ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
     // REQ-050: the former two plain rows — "다른 .gguf 모델 등록…"
     // (ID_TRAY_BROWSE_GGUF) and "모델 관리…" (ID_TRAY_MANAGE_GGUF) — are merged
     // into ONE manager row. The manager window offers both add methods
@@ -366,9 +368,10 @@ void SystemTray::ShowContextMenu() {
     // pipeline; [Hugging Face에서 추가…] downloads from a resolve URL) above
     // the registered-model list (rename/delete). PLAIN item (it opens a
     // dialog; no check geometry), sitting below the separator in the
-    // user-model group. Clicking "사용자 지정 모델 (.gguf)" with no model
-    // registered also opens this manager (main.cpp INV-B3, deferred via
-    // WM_APP+0x501 like this row's dispatch below).
+    // user-model group. With no model registered this row is the ONLY
+    // user-model entry in the submenu (REQ-050 3-1); main.cpp's INV-B3 guard
+    // keeps the deferred manager open as a defensive path for a config/stem
+    // desync (deferred via WM_APP+0x501 like this row's dispatch below).
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_MANAGE_GGUF,
                   I18n::Get(StringId::MenuManageGgufModels).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());

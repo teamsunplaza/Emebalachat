@@ -10,8 +10,9 @@
 // manager row) are MERGED — the manager is now the single entry point:
 //   * Top row: [파일에서 추가…] (the existing file-picker registration
 //     pipeline, passed in as a callback — see ShowGgufModelManagerDialog)
-//     and [Hugging Face에서 추가…] (paste a resolve URL -> https-only
-//     host-pinned WinHTTP download with progress + cancel -> registration).
+//     and [Hugging Face에서 추가…] (paste a model URL -> NormalizeHfUrl
+//     auto-conversion (REQ-050 2-1) -> https-only host-pinned WinHTTP
+//     download with progress + cancel -> registration).
 //   * Below: the ListBox of the registry's origin != "bundled" models
 //     (label "id — file"), Rename (small second dialog: one edit + OK/Cancel)
 //     with validation (non-empty, no duplicate id, no path separators /
@@ -80,13 +81,27 @@ bool RemoveUserModelEntry(engine_host_registry::Registry& registry,
 
 // ---- REQ-050: Hugging Face resolve-URL gate (fail-closed, headless-testable)
 //
-// The [Hugging Face에서 추가…] path only accepts model FILE URLs of the exact
-// shape  https://huggingface.co/<repo>/resolve/<revision>/<path...>  —
-// anything else (other hosts, http, /blob/ pages, query/fragment tricks,
-// empty or dot path segments) is rejected before any network I/O. The scheme
-// + host prefix is compared case-sensitively: the validator is deliberately
-// stricter than a browser so a lookalike URL can never reach WinHTTP.
+// IsHfResolveUrl is the CANONICAL-shape gate: it accepts only model FILE URLs
+// of the exact shape  https://huggingface.co/<repo>/resolve/<revision>/<path...>
+// — anything else (other hosts, http, /tree/ pages, query/fragment tricks,
+// empty or dot path segments) is rejected. The scheme + host prefix is
+// compared case-sensitively: the validator is deliberately stricter than a
+// browser so a lookalike URL can never reach WinHTTP.
 bool IsHfResolveUrl(std::string_view url);
+
+// REQ-050 (user item 2-1): user-facing URL auto-conversion. Accepts the three
+// shapes a user actually pastes from huggingface.co and normalizes each to
+// the canonical resolve form above BEFORE any network I/O:
+//   * https://huggingface.co/<repo>/resolve/<rev>/<file...>  (verbatim)
+//   * https://huggingface.co/<repo>/blob/<rev>/<file...>     (-> /resolve/)
+//   * https://huggingface.co/<repo>?show_file_info=<file>    (percent-decoded
+//     file param, single occurrence only -> /resolve/main/<file>)
+// Everything else fails closed: wrong host, http, /tree/ paths, a blob/page
+// URL whose file cannot be determined, multiple (or unknown) query params,
+// malformed percent-encoding, and any path traversal. On success *out holds
+// a string that passes IsHfResolveUrl (re-validated inside); on failure
+// *out is empty. `out` may be null (plain predicate form).
+bool NormalizeHfUrl(std::string_view url, std::string* out_resolve_url);
 
 // Derives the LOCAL filename (last path segment) from a resolve URL already
 // accepted by IsHfResolveUrl. Rejects an empty segment, "." / "..", any
@@ -107,6 +122,14 @@ void BuildGgufManagerTemplate(TemplateBuilder& tb);
 // system-class-ordinal TemplateBuilder cannot emit "msctls_progress32", so
 // the dialog proc creates it at runtime (pinned structurally in the tests).
 void BuildHfAddTemplate(TemplateBuilder& tb);
+
+// REQ-050 (user item 2-2): the runtime progress bar's DLU-space rect. The
+// template cannot carry msctls_progress32 (no system-class ordinal), so the
+// dialog proc creates the bar at runtime — through MapDialogRect. The pre-fix
+// code handed these DLU numbers to CreateWindowExW RAW (which takes PIXELS),
+// landing the bar across the middle of the URL edit (the user's "the square
+// box looks covered" report). left/top/right/bottom in dialog units.
+inline constexpr RECT kHfProgressRectDlu = { 8, 35, 254, 47 };
 
 // ---- The modal manager dialog ----
 // `parent` is the owner HWND (g_hControllerWnd from main.cpp). On any applied

@@ -752,11 +752,13 @@ void TestReq047P5F2DragPathsStatusWiring() {
 // ---------------------------------------------------------------------------
 // REQ-047 U1 (designer 164500, P4-4b): tray engine-submenu gguf-state
 // expression — ① "로컬 LLM" -> "내장 로컬 엔진" relabel, ② dynamic user-model
-// label with stem / "(미등록)" placeholder, ③ MF_SEPARATOR group boundary
-// between built-in engines and the user model, ④ file-picker row relabelled
-// "다른 .gguf 모델 등록…" and placed below the separator, ⑤ OpenAI "…" suffix.
-// The 4-way radio contract (REQ-046) and the 2010~2014 ID band are pinned
-// unchanged; the separator carries no ID (designer §5.2.3).
+// label (stem whenever a model is registered, regardless of the checked
+// engine; entry absent when nothing is registered — REQ-050 3-1/3-2), ③
+// MF_SEPARATOR group boundary between built-in engines and the user model,
+// ④ file-picker row relabelled "다른 .gguf 모델 등록…" (merged into the
+// manager row by REQ-050) and placed below the separator, ⑤ OpenAI "…"
+// suffix. The 4-way radio contract (REQ-046) and the 2010~2014 ID band are
+// pinned unchanged; the separator carries no ID (designer §5.2.3).
 // ---------------------------------------------------------------------------
 
 void TestReq047U1TrayGgufLabels() {
@@ -824,11 +826,20 @@ void TestReq047U1TrayGgufLabels() {
     // model (designer decision #1, Layer 3).
     TEST_CHECK(tray_src.find("MF_SEPARATOR, 0, nullptr") != std::string::npos,
                "REQ-047 U1 (b): tray.cpp inserts an MF_SEPARATOR into the engine submenu");
-    // Dynamic label: stem appended when present, "(미등록)" placeholder when
-    // empty (designer decision #1, Layer 2). The em-dash join is the spec's.
+    // Dynamic label (REQ-050 3-1/3-2 revision): the " — <stem>" suffix is
+    // appended whenever a model is registered, REGARDLESS of the checked
+    // engine (the old pref==3 gate is gone); with nothing registered the
+    // checkable entry is not appended at all, so the "(미등록)" placeholder
+    // left the tray menu with the always-append entry. The em-dash join is
+    // the spec's.
     TEST_CHECK(tray_src.find("user_model_stem_") != std::string::npos &&
-                   tray_src.find("StringId::MenuEngineUserGgufEmpty") != std::string::npos,
-               "REQ-047 U1 (b): tray.cpp appends the stem / '(미등록)' placeholder dynamically");
+                   tray_src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
+               "REQ-047 U1 (b): tray.cpp joins the registered stem via the em-dash; the "
+               "'(미등록)' placeholder is gone (REQ-050 3-1)");
+    TEST_CHECK(tray_src.find("if (!user_model_stem_.empty())") != std::string::npos &&
+                   tray_src.find("if (pref == 3)") == std::string::npos,
+               "REQ-047 U1 (b): the checkable entry exists only while a model is registered "
+               "and its stem shows under any checked engine (REQ-050 3-1/3-2)");
     TEST_CHECK(tray_src.find("L\" — \"") != std::string::npos,
                "REQ-047 U1 (b): tray.cpp joins the dynamic label with the em-dash separator");
     // UpdateStatus carries the new parameter with an empty default (designer

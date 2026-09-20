@@ -118,6 +118,9 @@ void TestReq048R2ServingPath() {
 //       TestR6P5P6I18n EnumCount loop);
 //   (e) structural pins — tray.cpp single merged manager row + WM_APP+0x501
 //       deferred post + the frozen 4-way radio IDs (2010~2014) intact;
+//       REQ-050 user items 3-1/3-2 — the checkable user-gguf entry exists
+//       ONLY while a model is registered and its " — <stem>" suffix shows
+//       regardless of the checked engine (main.cpp stem gate pins included);
 //       main.cpp kMsgOpenGgufManager + the open/refresh coordinator + the
 //       REQ-050 INV-B3 deferred-open; the manager window cpp reuses
 //       TemplateBuilder + SerializeRegistry + the config contract and hosts
@@ -339,7 +342,7 @@ void TestReq048R2GgufManager() {
         I18n::SetLocale(UiLocale::English); // DialogOk/Cancel reference
         using namespace req048_detail;
         TemplateBuilder tb;
-        tb.Begin(L"probe", 256, 88, /*itemCount=*/5);
+        tb.Begin(L"probe", 262, 92, /*itemCount=*/5);
         BuildHfAddTemplate(tb);
         const auto* dt = tb.Get();
         TEST_CHECK(dt != nullptr && dt->cdit == 5,
@@ -352,13 +355,13 @@ void TestReq048R2GgufManager() {
             const WORD kHfBtnCls = 0x0080;
             struct Exp { WORD id; WORD cls; short x, y, cx, cy; std::wstring title; };
             const Exp kExp[] = {
-                {4300, kHfStaticCls, 8,   6,  120, 9,
+                {4300, kHfStaticCls, 8,   6,  140, 9,
                  I18n::Get(StringId::HfUrlLabel)},
-                {4301, kHfEditCls,   8,   17, 240, 12, L""},
-                {4302, kHfStaticCls, 8,   52, 240, 9,  L""},
-                {IDOK, kHfBtnCls,    110, 66, 64,  13,
+                {4301, kHfEditCls,   8,   17, 246, 12, L""},
+                {4302, kHfStaticCls, 8,   52, 246, 9,  L""},
+                {IDOK, kHfBtnCls,    118, 68, 64,  13,
                  I18n::Get(StringId::DialogOk)},
-                {IDCANCEL, kHfBtnCls, 182, 66, 64, 13,
+                {IDCANCEL, kHfBtnCls, 190, 68, 64, 13,
                  I18n::Get(StringId::DialogCancel)},
             };
             size_t off = 18 + 2 + 2;
@@ -386,7 +389,7 @@ void TestReq048R2GgufManager() {
                 off = toff + 2;
             }
             TEST_CHECK(walk_ok,
-                       "REQ-050 (c2): HF add template items 1:1 — URL edit w=240, "
+                       "REQ-050 (c2): HF add template items 1:1 — URL edit w=246, "
                        "Download(IDOK)/Cancel reuse DialogOk/DialogCancel");
             TEST_CHECK(off == tb.size(),
                        "REQ-050 (c2): HF add template walk consumed exactly size() bytes");
@@ -415,7 +418,7 @@ void TestReq048R2GgufManager() {
     TEST_CHECK(I18n::Get(StringId::HfFailed) == L"다운로드에 실패했습니다.",
                "REQ-050 (d): ko HfFailed is the designer reference");
     TEST_CHECK(I18n::Get(StringId::HfInvalidUrl) ==
-                   L"huggingface.co 모델 주소를 입력하세요 (…/resolve/… 형식)",
+                   L"huggingface.co 모델 주소를 입력하세요 (…/resolve/main/파일.gguf 또는 모델 페이지 주소)",
                "REQ-050 (d): ko HfInvalidUrl is the designer reference");
     TEST_CHECK(I18n::Get(StringId::HfDone) == L"등록되었습니다.",
                "REQ-050 (d): ko HfDone is the designer reference");
@@ -427,7 +430,7 @@ void TestReq048R2GgufManager() {
     TEST_CHECK(I18n::Get(StringId::GgufManagerAddFile) == L"Add from file…",
                "REQ-050 (d): en GgufManagerAddFile tail field intact");
     TEST_CHECK(I18n::Get(StringId::HfInvalidUrl) ==
-                   L"Enter a huggingface.co model URL (…/resolve/… format)",
+                   L"Enter a huggingface.co model URL (resolve, blob, or model page)",
                "REQ-050 (d): en HfInvalidUrl tail field intact");
     I18n::SetLocale(initial_locale); // suite-state hygiene
 
@@ -467,6 +470,27 @@ void TestReq048R2GgufManager() {
         // Deferred open: same modality-avoidance contract as WM_APP+0x500.
         TEST_CHECK(src.find("WM_APP + 0x501") != std::string::npos,
                    "REQ-048 R2-D (e): tray dispatches the deferred WM_APP+0x501 open");
+        // REQ-050 user items 3-1/3-2: the checkable 사용자 선택(.gguf) entry
+        // is appended ONLY while a user model is registered (menu with no
+        // model = manager row only), and the " — <stem>" suffix rides the
+        // label regardless of the checked engine (the old pref==3 gate and
+        // the "(미등록)" placeholder are gone).
+        TEST_CHECK(src.find("if (!user_model_stem_.empty())") != std::string::npos,
+                   "REQ-050 (e) 3-1: the user-gguf append is gated on a registered model");
+        TEST_CHECK(src.find("if (pref == 3)") == std::string::npos &&
+                   src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
+                   "REQ-050 (e) 3-2: the stem suffix is no longer gated on pref==3 and the "
+                   "'(미등록)' placeholder is gone with the always-append entry");
+        // Ordering: the registration guard opens before the em-dash join,
+        // which precedes the ID_TRAY_ENGINE_USER_GGUF append — the entry is
+        // built INSIDE the guard (frozen radio ID, conditional append).
+        const size_t guard_pos = src.find("if (!user_model_stem_.empty())");
+        const size_t join_pos = src.find("user_gguf_label += L\" — \"");
+        const size_t append_pos = src.find("ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str()");
+        TEST_CHECK(guard_pos != std::string::npos && join_pos != std::string::npos &&
+                       append_pos != std::string::npos && guard_pos < join_pos &&
+                       join_pos < append_pos,
+                   "REQ-050 (e) 3-1/3-2: label join + radio append live inside the registration guard");
     }
 
     const std::filesystem::path main_cpp = ResolveRepoFile(L"src\\main.cpp");
@@ -497,6 +521,15 @@ void TestReq048R2GgufManager() {
         TEST_CHECK(invb3_pos != std::string::npos && invb3_post != std::string::npos &&
                        invb3_pos < invb3_post,
                    "REQ-050 (e): INV-B3 posts kMsgOpenGgufManager (deferred open contract)");
+        // REQ-050 user items 3-1/3-2: the stem is resolved whenever a user
+        // model is REGISTERED — no longer only when the user-model engine is
+        // the preferred one — so the tray can render the checkable entry and
+        // its stem under ANY checked engine.
+        TEST_CHECK(src.find("if (!config.user_model_id.empty())") != std::string::npos &&
+                       src.find("\"user_gguf\" && !config.user_model_id.empty()") ==
+                           std::string::npos,
+                   "REQ-050 (e) 3-1/3-2: main.cpp resolves the stem for any registered user model "
+                   "(engine_type gate dropped)");
     }
 
     const std::filesystem::path mgr_cpp = ResolveRepoFile(L"src\\ui\\gguf_model_manager_window.cpp");

@@ -317,7 +317,7 @@ const LocalizedStrings kStringsKorean = {
     .hf_url_label = L"모델 URL",
     .hf_downloading = L"다운로드 중…",
     .hf_failed = L"다운로드에 실패했습니다.",
-    .hf_invalid_url = L"huggingface.co 모델 주소를 입력하세요 (…/resolve/… 형식)",
+    .hf_invalid_url = L"huggingface.co 모델 주소를 입력하세요 (…/resolve/main/파일.gguf 또는 모델 페이지 주소)",
     .hf_done = L"등록되었습니다.",
 };
 
@@ -471,7 +471,7 @@ const LocalizedStrings kStringsJapanese = {
     L"モデル URL",
     L"ダウンロード中…",
     L"ダウンロードに失敗しました。",
-    L"huggingface.co のモデル URL を入力してください (…/resolve/… 形式)",
+    L"huggingface.co のモデル URL を入力してください (resolve、blob、またはモデルページ)",
     L"登録しました。",
 };
 
@@ -625,7 +625,7 @@ const LocalizedStrings kStringsChineseSimp = {
     L"模型 URL",
     L"正在下载…",
     L"下载失败。",
-    L"请输入 huggingface.co 模型地址（…/resolve/… 格式）",
+    L"请输入 huggingface.co 模型地址（resolve、blob 链接或模型页面）",
     L"已注册。",
 };
 
@@ -779,7 +779,7 @@ const LocalizedStrings kStringsChineseTrad = {
     L"模型 URL",
     L"正在下載…",
     L"下載失敗。",
-    L"請輸入 huggingface.co 模型網址（…/resolve/… 格式）",
+    L"請輸入 huggingface.co 模型網址（resolve、blob 連結或模型頁面）",
     L"已註冊。",
 };
 
@@ -933,7 +933,7 @@ const LocalizedStrings kStringsVietnamese = {
     L"URL mô hình",
     L"Đang tải xuống…",
     L"Tải xuống thất bại.",
-    L"Nhập URL mô hình huggingface.co (dạng …/resolve/…)",
+    L"Nhập URL mô hình huggingface.co (resolve, blob hoặc trang mô hình)",
     L"Đã đăng ký.",
 };
 
@@ -1084,7 +1084,7 @@ const LocalizedStrings kStringsSpanish = {
     L"URL del modelo",
     L"Descargando…",
     L"Error al descargar.",
-    L"Introduce la URL del modelo en huggingface.co (formato …/resolve/…)",
+    L"Introduce la URL del modelo en huggingface.co (resolve, blob o página del modelo)",
     L"Registrado.",
 };
 
@@ -1236,7 +1236,7 @@ const LocalizedStrings kStringsEnglish = {
     L"Model URL",
     L"Downloading…",
     L"Download failed.",
-    L"Enter a huggingface.co model URL (…/resolve/… format)",
+    L"Enter a huggingface.co model URL (resolve, blob, or model page)",
     L"Registered.",
 };
 
@@ -1402,7 +1402,7 @@ const LocalizedStrings kStringsFrench = {
     L"URL du modèle",
     L"Téléchargement en cours…",
     L"Échec du téléchargement.",
-    L"Saisissez l'URL du modèle huggingface.co (format …/resolve/…)",
+    L"Saisissez l'URL du modèle huggingface.co (resolve, blob ou page du modèle)",
     L"Enregistré.",
 };
 
@@ -1556,7 +1556,7 @@ const LocalizedStrings kStringsGerman = {
     L"Modell-URL",
     L"Wird heruntergeladen…",
     L"Download fehlgeschlagen.",
-    L"Geben Sie die huggingface.co-Modell-URL ein (Format …/resolve/…)",
+    L"Geben Sie die huggingface.co-Modell-URL ein (resolve, blob oder Modellseite)",
     L"Registriert.",
 };
 
@@ -1710,7 +1710,7 @@ const LocalizedStrings kStringsRussian = {
     L"URL модели",
     L"Загрузка…",
     L"Сбой загрузки.",
-    L"Введите URL модели huggingface.co (формат …/resolve/…)",
+    L"Введите URL модели huggingface.co (resolve, blob или страница модели)",
     L"Зарегистрировано.",
 };
 
@@ -1864,7 +1864,7 @@ const LocalizedStrings kStringsPortuguese = {
     L"URL do modelo",
     L"Baixando…",
     L"Falha no download.",
-    L"Insira o URL do modelo no huggingface.co (formato …/resolve/…)",
+    L"Insira o URL do modelo no huggingface.co (resolve, blob ou página do modelo)",
     L"Registrado.",
 };
 
@@ -2018,7 +2018,7 @@ const LocalizedStrings kStringsItalian = {
     L"URL del modello",
     L"Download in corso…",
     L"Download non riuscito.",
-    L"Inserisci l'URL del modello huggingface.co (formato …/resolve/…)",
+    L"Inserisci l'URL del modello huggingface.co (resolve, blob o pagina del modello)",
     L"Registrato.",
 };
 
@@ -2172,7 +2172,7 @@ const LocalizedStrings kStringsDutch = {
     L"Model-URL",
     L"Bezig met downloaden…",
     L"Downloaden mislukt.",
-    L"Voer de huggingface.co-model-URL in (formaat …/resolve/…)",
+    L"Voer de huggingface.co-model-URL in (resolve, blob of modelpagina)",
     L"Geregistreerd.",
 };
 
@@ -2326,7 +2326,7 @@ const LocalizedStrings kStringsPolish = {
     L"Adres URL modelu",
     L"Pobieranie…",
     L"Pobieranie nie powiodło się.",
-    L"Podaj adres URL modelu huggingface.co (format …/resolve/…)",
+    L"Podaj adres URL modelu huggingface.co (resolve, blob lub strona modelu)",
     L"Zarejestrowano.",
 };
 
@@ -2480,7 +2480,7 @@ const LocalizedStrings kStringsCzech = {
     L"URL modelu",
     L"Stahování…",
     L"Stažení se nezdařilo.",
-    L"Zadejte URL modelu huggingface.co (formát …/resolve/…)",
+    L"Zadejte URL modelu huggingface.co (resolve, blob nebo stránka modelu)",
     L"Zaregistrováno.",
 };
 
@@ -2634,7 +2634,7 @@ const LocalizedStrings kStringsHungarian = {
     L"Modell URL-címe",
     L"Letöltés folyamatban…",
     L"A letöltés nem sikerült.",
-    L"Adja meg a huggingface.co modell URL-jét (…/resolve/… formátum)",
+    L"Adja meg a huggingface.co modell URL-jét (resolve, blob vagy modelloldal)",
     L"Regisztrálva.",
 };
 
@@ -2788,7 +2788,7 @@ const LocalizedStrings kStringsRomanian = {
     L"URL-ul modelului",
     L"Se descarcă…",
     L"Descărcarea a eșuat.",
-    L"Introduceți URL-ul modelului de pe huggingface.co (format …/resolve/…)",
+    L"Introduceți URL-ul modelului de pe huggingface.co (resolve, blob sau pagina modelului)",
     L"Înregistrat.",
 };
 
@@ -2942,7 +2942,7 @@ const LocalizedStrings kStringsSwedish = {
     L"Modell-URL",
     L"Laddar ner…",
     L"Nedladdningen misslyckades.",
-    L"Ange modell-URL från huggingface.co (format …/resolve/…)",
+    L"Ange modell-URL från huggingface.co (resolve, blob eller modellsida)",
     L"Registrerad.",
 };
 
@@ -3096,7 +3096,7 @@ const LocalizedStrings kStringsDanish = {
     L"Model-URL",
     L"Download i gang…",
     L"Download mislykkedes.",
-    L"Indtast model-URL'en fra huggingface.co (format …/resolve/…)",
+    L"Indtast model-URL'en fra huggingface.co (resolve, blob eller modelside)",
     L"Registreret.",
 };
 
@@ -3250,7 +3250,7 @@ const LocalizedStrings kStringsFinnish = {
     L"Mallin URL-osoite",
     L"Ladataan…",
     L"Lataus epäonnistui.",
-    L"Syötä huggingface.co-mallin URL-osoite (muoto …/resolve/…)",
+    L"Syötä huggingface.co-mallin URL-osoite (resolve, blob tai mallisivu)",
     L"Rekisteröity.",
 };
 
@@ -3404,7 +3404,7 @@ const LocalizedStrings kStringsNorwegian = {
     L"Modell-URL",
     L"Laster ned…",
     L"Nedlastingen mislyktes.",
-    L"Skriv inn modell-URL fra huggingface.co (format …/resolve/…)",
+    L"Skriv inn modell-URL fra huggingface.co (resolve, blob eller modellside)",
     L"Registrert.",
 };
 
@@ -3558,7 +3558,7 @@ const LocalizedStrings kStringsGreek = {
     L"URL μοντέλου",
     L"Λήψη σε εξέλιξη…",
     L"Η λήψη απέτυχε.",
-    L"Εισαγάγετε το URL μοντέλου από το huggingface.co (μορφή …/resolve/…)",
+    L"Εισαγάγετε το URL μοντέλου από το huggingface.co (resolve, blob ή σελίδα μοντέλου)",
     L"Καταχωρήθηκε.",
 };
 
@@ -3712,7 +3712,7 @@ const LocalizedStrings kStringsTurkish = {
     L"Model URL'si",
     L"İndiriliyor…",
     L"İndirme başarısız oldu.",
-    L"huggingface.co model URL'sini girin (…/resolve/… biçimi)",
+    L"huggingface.co model URL'sini girin (resolve, blob veya model sayfası)",
     L"Kaydedildi.",
 };
 
@@ -3866,7 +3866,7 @@ const LocalizedStrings kStringsUkrainian = {
     L"URL-адреса моделі",
     L"Завантаження…",
     L"Не вдалося завантажити.",
-    L"Введіть URL-адресу моделі huggingface.co (формат …/resolve/…)",
+    L"Введіть URL-адресу моделі huggingface.co (resolve, blob або сторінка моделі)",
     L"Зареєстровано.",
 };
 
@@ -4020,7 +4020,7 @@ const LocalizedStrings kStringsThai = {
     L"URL ของโมเดล",
     L"กำลังดาวน์โหลด…",
     L"ดาวน์โหลดไม่สำเร็จ",
-    L"ป้อน URL โมเดลจาก huggingface.co (รูปแบบ …/resolve/…)",
+    L"ป้อน URL โมเดลจาก huggingface.co (resolve, blob หรือหน้าโมเดล)",
     L"ลงทะเบียนแล้ว",
 };
 
@@ -4174,7 +4174,7 @@ const LocalizedStrings kStringsIndonesian = {
     L"URL model",
     L"Mengunduh…",
     L"Unduhan gagal.",
-    L"Masukkan URL model huggingface.co (format …/resolve/…)",
+    L"Masukkan URL model huggingface.co (resolve, blob, atau halaman model)",
     L"Terdaftar.",
 };
 
@@ -4328,7 +4328,7 @@ const LocalizedStrings kStringsMalay = {
     L"URL model",
     L"Memuat turun…",
     L"Muat turun gagal.",
-    L"Masukkan URL model huggingface.co (format …/resolve/…)",
+    L"Masukkan URL model huggingface.co (resolve, blob atau halaman model)",
     L"Telah didaftarkan.",
 };
 
@@ -4484,7 +4484,7 @@ const LocalizedStrings kStringsFilipino = {
     L"URL ng model",
     L"Nagda-download…",
     L"Nabigo ang pag-download.",
-    L"Ilagay ang URL ng model mula sa huggingface.co (format …/resolve/…)",
+    L"Ilagay ang URL ng model mula sa huggingface.co (resolve, blob o pahina ng model)",
     L"Naka-register na.",
 };
 
@@ -4638,7 +4638,7 @@ const LocalizedStrings kStringsHindi = {
     L"मॉडल URL",
     L"डाउनलोड हो रहा है…",
     L"डाउनलोड विफल रहा।",
-    L"huggingface.co का मॉडल URL दर्ज करें (…/resolve/… प्रारूप)",
+    L"huggingface.co का मॉडल URL दर्ज करें (resolve, blob या मॉडल पेज)",
     L"पंजीकृत हो गया।",
 };
 
@@ -4792,7 +4792,7 @@ const LocalizedStrings kStringsBengali = {
     L"মডেলের URL",
     L"ডাউনলোড হচ্ছে…",
     L"ডাউনলোড ব্যর্থ হয়েছে।",
-    L"huggingface.co মডেলের URL লিখুন (…/resolve/… বিন্যাস)",
+    L"huggingface.co মডেলের URL লিখুন (resolve, blob বা মডেল পেজ)",
     L"নিবন্ধিত হয়েছে।",
 };
 
@@ -4947,7 +4947,7 @@ const LocalizedStrings kStringsArabic = {
     L"عنوان URL للنموذج",
     L"جارٍ التنزيل…",
     L"فشل التنزيل.",
-    L"أدخل عنوان URL للنموذج من huggingface.co (بصيغة …/resolve/…)",
+    L"أدخل عنوان URL للنموذج من huggingface.co (resolve أو blob أو صفحة النموذج)",
     L"تم التسجيل.",
 };
 
@@ -5101,7 +5101,7 @@ const LocalizedStrings kStringsPersian = {
     L"URL مدل",
     L"در حال دانلود…",
     L"دانلود ناموفق بود.",
-    L"URL مدل huggingface.co را وارد کنید (قالب …/resolve/…)",
+    L"URL مدل huggingface.co را وارد کنید (resolve، blob یا صفحه مدل)",
     L"ثبت شد.",
 };
 
@@ -5255,7 +5255,7 @@ const LocalizedStrings kStringsUrdu = {
     L"ماڈل کا URL",
     L"ڈاؤن لوڈ ہو رہا ہے…",
     L"ڈاؤن لوڈ ناکام ہوا۔",
-    L"huggingface.co کا ماڈل URL درج کریں (…/resolve/… فارمیٹ)",
+    L"huggingface.co کا ماڈل URL درج کریں (resolve، blob یا ماڈل صفحہ)",
     L"رجسٹر ہو گیا۔",
 };
 
@@ -5409,7 +5409,7 @@ const LocalizedStrings kStringsHebrew = {
     L"כתובת URL של המודל",
     L"מוריד…",
     L"ההורדה נכשלה.",
-    L"הזן את כתובת ה-URL של המודל מ-huggingface.co (בפורמט …/resolve/…)",
+    L"הזן את כתובת ה-URL של המודל מ-huggingface.co (resolve, blob או דף המודל)",
     L"נרשם.",
 };
 
@@ -5563,7 +5563,7 @@ const LocalizedStrings kStringsKhmer = {
     L"URL របស់ម៉ូដែល",
     L"កំពុងទាញយក…",
     L"ការទាញយកបរាជ័យ។",
-    L"បញ្ចូល URL ម៉ូដែលពី huggingface.co (ទ្រង់ទ្រាយ …/resolve/…)",
+    L"បញ្ចូល URL ម៉ូដែលពី huggingface.co (resolve, blob ឬទំព័រម៉ូដែល)",
     L"បានចុះឈ្មោះ។",
 };
 
@@ -5717,7 +5717,7 @@ const LocalizedStrings kStringsLao = {
     L"URL ຂອງໂມເດລ",
     L"ກຳລັງດາວໂຫລດ…",
     L"ການດາວໂຫລດລົ້ມເຫຼວ.",
-    L"ໃສ່ URL ໂມເດລຈາກ huggingface.co (ຮູບແບບ …/resolve/…)",
+    L"ໃສ່ URL ໂມເດລຈາກ huggingface.co (resolve, blob ຫຼື ໜ້າໂມເດລ)",
     L"ລົງທະບຽນແລ້ວ.",
 };
 
@@ -5871,7 +5871,7 @@ const LocalizedStrings kStringsBurmese = {
     L"မော်ဒယ် URL",
     L"ဒေါင်းလုဒ်လုပ်နေသည်…",
     L"ဒေါင်းလုဒ်လုပ်ရန်မအောင်မြင်ပါ။",
-    L"huggingface.co မှ မော်ဒယ် URL ထည့်ပါ (…/resolve/… ပုံစံ)",
+    L"huggingface.co မှ မော်ဒယ် URL ထည့်ပါ (resolve, blob သို့မဟုတ် မော်ဒယ်စာမျက်နှာ)",
     L"စာရင်းသွင်းပြီးပါပြီ။",
 };
 

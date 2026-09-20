@@ -95,8 +95,12 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 probe.api_key_dpapi = st->cfg->api_key_dpapi;
                 probe.api_key_sha256 = st->cfg->api_key_sha256;
             } else if (!keyUtf8.empty()) {
-                ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
+                // REQ-050: digest BEFORE protect — ProtectOpenAiApiKey scrubs
+                // the caller's cleartext buffer in place, so hashing after it
+                // persisted SHA-256(zero buffer) and the probed key never
+                // matched the saved digest.
                 OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);
+                ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
             }
             SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
             // REQ-050: the pre-save fetch hit the same http consent gate as
@@ -164,6 +168,14 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 out.api_key_dpapi = st->cfg->api_key_dpapi;
                 out.api_key_sha256 = st->cfg->api_key_sha256;
             } else if (!keyUtf8.empty()) {
+                // REQ-050: digest BEFORE protect — ProtectOpenAiApiKey scrubs
+                // the caller's cleartext buffer in place (SecureZeroMemory),
+                // so hashing after it persisted SHA-256(zero buffer);
+                // WithUnprotectedKey re-hashes the real decrypted key, the
+                // comparison never matched, and every saved key was refused
+                // (live: OPENAI/WithUnprotectedKey/002). On protect failure
+                // the already-computed digest is discarded with `out`.
+                OpenAiSha256Hex(keyUtf8, out.api_key_sha256);
                 if (!ProtectOpenAiApiKey(keyUtf8, out.api_key_dpapi)) {
                     SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
                     ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
@@ -171,7 +183,6 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                                   MB_OK | MB_ICONWARNING);
                     return TRUE;
                 }
-                OpenAiSha256Hex(keyUtf8, out.api_key_sha256);
             }
             SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
 

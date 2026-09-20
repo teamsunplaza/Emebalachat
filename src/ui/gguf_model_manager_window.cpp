@@ -384,7 +384,7 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
             DIAG_F("UI/HfAdd/001: temp file open failed (path_len=%zu)\n",
                    st->worker_tmp.wstring().size());
         } else {
-            // The validator pinned the URL to this exact prefix, so the
+            // The normalizer guarantees the canonical pinned prefix, so the
             // remainder is the request path (<repo>/resolve/<rev>/<file>).
             constexpr std::size_t kPrefixLen = 23; // "https://huggingface.co/"
             static_assert(kPrefixLen == std::wstring_view(L"https://huggingface.co/").size());
@@ -746,19 +746,24 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (!::GetDlgItem(dlg, IDC_HF_STATUS)) {
             DIAG_F("UI/HfAdd/006: IDC_HF_STATUS control missing after dialog init\n");
         }
-        // REQ-050: the progress bar is created at runtime — the
+        // REQ-050 (2-2): the progress bar is created at runtime — the
         // TemplateBuilder only emits system-class ordinals and
-        // "msctls_progress32" has none.
+        // "msctls_progress32" has none. Its rect is DIALOG UNITS and MUST be
+        // mapped through MapDialogRect: CreateWindowExW takes pixels, and the
+        // pre-fix raw-DLU numbers landed the bar on top of the URL edit.
         static bool s_comctl_initialized = false;
         if (!s_comctl_initialized) {
             INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_PROGRESS_CLASS };
             ::InitCommonControlsEx(&icc);
             s_comctl_initialized = true;
         }
+        RECT prc = kHfProgressRectDlu;
+        ::MapDialogRect(dlg, &prc);
         HWND prog = ::CreateWindowExW(
             0, PROGRESS_CLASSW, nullptr,
             WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
-            8, 35, 240, 12, dlg,
+            prc.left, prc.top, prc.right - prc.left, prc.bottom - prc.top,
+            dlg,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HF_PROGRESS)),
             ::GetModuleHandleW(nullptr), nullptr);
         if (!prog) {
@@ -821,18 +826,24 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
-        case IDOK: { // [다운로드] — validate + guard, then spawn the worker
+        case IDOK: { // [다운로드] — validate + normalize + guard, then spawn the worker
             if (st->worker_running) {
                 return TRUE; // a download is already in flight
             }
             const std::string url = ToUtf8(GetCtrlText(dlg, IDC_HF_URL_EDIT));
+            // REQ-050 (2-1): the user pastes one of three HF shapes (resolve /
+            // blob / model-page-with-show_file_info); only the canonical
+            // resolve form may reach WinHTTP, so the download always uses the
+            // NORMALIZED url, never the raw edit text.
+            std::string resolve_url;
             std::string filename;
-            if (!IsHfResolveUrl(url) || !HfResolveFilename(url, &filename)) {
+            const bool normalized = NormalizeHfUrl(url, &resolve_url);
+            if (!normalized || !HfResolveFilename(resolve_url, &filename)) {
                 if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
                     ::SetWindowTextW(s, I18n::Get(StringId::HfInvalidUrl).c_str());
                 }
-                DIAG_F("UI/HfAdd/019: URL rejected (len=%zu valid_shape=%d)\n",
-                       url.size(), IsHfResolveUrl(url) ? 1 : 0);
+                DIAG_F("UI/HfAdd/019: URL rejected (len=%zu normalized=%d)\n",
+                       url.size(), normalized ? 1 : 0);
                 return TRUE;
             }
             switch (HfPreFlight(dlg, st, filename)) {
@@ -845,7 +856,7 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 break;
             }
             st->cancel.store(false);
-            st->worker_url = ToUtf16(url);
+            st->worker_url = ToUtf16(resolve_url);
             st->worker_filename = std::move(filename);
             st->worker_tmp = engine_host_registry::DefaultModelsDir() /
                              (ToUtf16(st->worker_filename) + L".download");
@@ -931,8 +942,10 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         case IDC_MGR_ADD_HF: {
-            // REQ-050: [Hugging Face에서 추가…] — paste-a-resolve-URL dialog;
-            // on a registration it returns true and the list is rebuilt.
+            // REQ-050: [Hugging Face에서 추가…] — paste-a-model-URL dialog
+            // (resolve / blob / page-with-show_file_info auto-converted; see
+            // NormalizeHfUrl); on a registration it returns true and the list
+            // is rebuilt.
             if (ShowHfAddDialog(dlg, *st->config, *st->engine)) {
                 st->registry_changed = true;
                 if (!LoadManagerRegistry(dlg, st)) {
@@ -1145,6 +1158,190 @@ bool IsHfResolveUrl(std::string_view url) {
     return true;
 }
 
+namespace {
+
+// REQ-050 (2-1): strict percent-decoder for the show_file_info query value.
+// Only %HH triplets are decoded; every other byte passes through verbatim.
+// Returns false on a malformed triplet so a partially decoded value can never
+// reach the normalized URL (fail-closed, same house policy as the URL gate).
+bool HfPercentDecode(std::string_view in, std::string* out) {
+    out->clear();
+    out->reserve(in.size());
+    auto hexval = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] != '%') {
+            out->push_back(in[i]);
+            continue;
+        }
+        if (i + 2 >= in.size()) {
+            return false; // truncated triplet
+        }
+        const int hi = hexval(in[i + 1]);
+        const int lo = hexval(in[i + 2]);
+        if (hi < 0 || lo < 0) {
+            return false; // non-hex digits
+        }
+        out->push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+    }
+    return true;
+}
+
+// REQ-050 (2-1): the segment rules shared by the auto-conversion branches.
+// Mirrors IsHfResolveUrl's per-segment checks (non-empty, no "." / "..") and
+// additionally bans '\' and control chars, which the canonical gate leaves to
+// HfResolveFilename — the normalizer must never emit them in the first place.
+// Bytes >= 0x80 pass through (percent-encoded UTF-8 filenames stay legal).
+bool HfValidRepoRelPath(std::string_view path) {
+    if (path.empty() || path.front() == '/' || path.back() == '/') {
+        return false;
+    }
+    size_t seg_start = 0;
+    for (;;) {
+        const size_t seg_end = path.find('/', seg_start);
+        const std::string_view seg = path.substr(
+            seg_start, seg_end == std::string_view::npos
+                           ? std::string_view::npos
+                           : seg_end - seg_start);
+        if (seg.empty() || seg == "." || seg == "..") {
+            return false;
+        }
+        for (const unsigned char c : seg) {
+            if (c < 0x20 || c == 0x7F || c == '\\') {
+                return false;
+            }
+        }
+        if (seg_end == std::string_view::npos) {
+            break;
+        }
+        seg_start = seg_end + 1;
+    }
+    return true;
+}
+
+} // namespace
+
+bool NormalizeHfUrl(std::string_view url, std::string* out_resolve_url) {
+    if (out_resolve_url) {
+        out_resolve_url->clear();
+    }
+    if (!out_resolve_url || url.empty()) {
+        return false; // null out-parameter is a safe no-op false
+    }
+    // (1) The canonical resolve URL passes through verbatim — IsHfResolveUrl
+    //     stays the single authority on that shape (queries/fragments still
+    //     rejected there).
+    if (IsHfResolveUrl(url)) {
+        *out_resolve_url = std::string(url);
+        return true;
+    }
+    constexpr std::string_view kPrefix = "https://huggingface.co/";
+    if (url.rfind(kPrefix, 0) != 0) {
+        return false; // pinned host only (also rejects http, lookalikes)
+    }
+    if (url.find('#') != std::string_view::npos) {
+        return false; // fragments are never accepted
+    }
+    const std::string_view rest = url.substr(kPrefix.size());
+    const size_t q_pos = rest.find('?');
+    if (q_pos == std::string_view::npos) {
+        // (2) Blob link: <repo>/blob/<rev>/<file...> -> <repo>/resolve/<rev>/<file...>
+        const std::string_view path = rest;
+        const size_t blob_pos = path.find("/blob/");
+        if (blob_pos == std::string_view::npos) {
+            return false; // page URL without query / /tree/ path / bad resolve
+        }
+        const std::string_view repo = path.substr(0, blob_pos);
+        const std::string_view tail = path.substr(blob_pos + std::string_view("/blob/").size());
+        const size_t slash = tail.find('/');
+        if (slash == std::string_view::npos || slash == 0) {
+            return false; // a revision and a file path are both required
+        }
+        const std::string_view rev = tail.substr(0, slash);
+        const std::string_view file = tail.substr(slash + 1);
+        if (!HfValidRepoRelPath(repo) || !HfValidRepoRelPath(rev) ||
+            !HfValidRepoRelPath(file)) {
+            return false; // empty/dot segments, traversal, '\' or controls
+        }
+        if (repo.find("/resolve/") != std::string_view::npos ||
+            repo.find("/tree/") != std::string_view::npos ||
+            repo.find("/blob/") != std::string_view::npos) {
+            return false; // reserved markers inside the repo path
+        }
+        std::string candidate = std::string(kPrefix) + std::string(repo) +
+                                "/resolve/" + std::string(rev) + "/" +
+                                std::string(file);
+        if (!IsHfResolveUrl(candidate)) {
+            return false; // belt and braces: canonical re-validation
+        }
+        *out_resolve_url = std::move(candidate);
+        return true;
+    }
+    // (3) Model page URL: <repo>?show_file_info=<file> (percent-decoded) ->
+    //     <repo>/resolve/main/<file>. The file is undeterminable from any
+    //     other page shape, so those fail closed here (bare page, /tree/…).
+    const std::string_view path = rest.substr(0, q_pos);
+    const std::string_view query = rest.substr(q_pos + 1);
+    if (!HfValidRepoRelPath(path)) {
+        return false;
+    }
+    if (path.find("/resolve/") != std::string_view::npos ||
+        path.find("/blob/") != std::string_view::npos ||
+        path.find("/tree/") != std::string_view::npos) {
+        return false; // reserved markers inside the repo path
+    }
+    if (query.empty()) {
+        return false;
+    }
+    // Exactly one show_file_info parameter; ANY other parameter is rejected
+    // outright (fail-closed; multiple show_file_info params are ambiguous).
+    std::string_view raw_value;
+    int seen = 0;
+    size_t seg_start = 0;
+    for (;;) {
+        const size_t seg_end = query.find('&', seg_start);
+        const std::string_view pair = query.substr(
+            seg_start, seg_end == std::string_view::npos
+                           ? std::string_view::npos
+                           : seg_end - seg_start);
+        constexpr std::string_view kKey = "show_file_info=";
+        if (pair.rfind(kKey, 0) != 0) {
+            return false; // unknown parameter (incl. a bare key without '=')
+        }
+        raw_value = pair.substr(kKey.size());
+        if (++seen > 1) {
+            return false; // multiple show_file_info params
+        }
+        if (seg_end == std::string_view::npos) {
+            break;
+        }
+        seg_start = seg_end + 1;
+    }
+    // Raw value hygiene: '+', raw space and control bytes are ambiguous or
+    // invalid inside a URL; a real HF page percent-encodes them instead.
+    for (const unsigned char c : raw_value) {
+        if (c <= 0x20 || c == 0x7F || c == '+') {
+            return false;
+        }
+    }
+    std::string file;
+    if (!HfPercentDecode(raw_value, &file) || !HfValidRepoRelPath(file)) {
+        return false; // malformed triplet or traversal after decoding
+    }
+    const std::string candidate = std::string(kPrefix) + std::string(path) +
+                                  "/resolve/main/" + std::move(file);
+    if (!IsHfResolveUrl(candidate)) {
+        return false; // belt and braces: canonical re-validation
+    }
+    *out_resolve_url = candidate;
+    return true;
+}
+
 // REQ-050: filename length ceiling. NTFS allows 255, but the models dir
 // prefix + this name must stay comfortably inside the classic MAX_PATH for
 // every consumer (worker, registry writer, installer), so the derived name
@@ -1237,6 +1434,13 @@ bool ShowGgufModelManagerDialog(HWND parent, AppConfig& config,
 // AddItem calls below: URL label + URL edit + status static + Download(IDOK)
 // + Cancel(IDCANCEL) = 5. The progress bar is NOT a template item (see the
 // header note); the dialog proc creates msctls_progress32 at runtime.
+//
+// REQ-050 (user item 2-2): 256x88 -> 262x92. Every control now sits fully
+// inside the client rect with >= 6 DLU margins on ALL sides (the old template
+// only kept 8 on the right of a 240-wide edit inside 256 — and the runtime
+// progress bar, created from raw DLU-as-pixel numbers, landed across the URL
+// edit; see kHfProgressRectDlu). y-order: label, edit, progress (runtime,
+// y 35..47), status, buttons.
 void BuildHfAddTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
@@ -1245,16 +1449,16 @@ void BuildHfAddTemplate(TemplateBuilder& tb) {
     const WORD EDIT_CLS   = 0x0081;  // "EDIT"
     const WORD BTN_CLS    = 0x0080;  // "BUTTON"
 
-    tb.AddItem(LBL, 8, 6, 120, 9, IDC_HF_URL_LABEL, STATIC_CLS,
+    tb.AddItem(LBL, 8, 6, 140, 9, IDC_HF_URL_LABEL, STATIC_CLS,
                I18n::Get(StringId::HfUrlLabel));
-    tb.AddItem(EDT, 8, 17, 240, 12, IDC_HF_URL_EDIT, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 52, 240, 9, IDC_HF_STATUS, STATIC_CLS, L"");
+    tb.AddItem(EDT, 8, 17, 246, 12, IDC_HF_URL_EDIT, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 52, 246, 9, IDC_HF_STATUS, STATIC_CLS, L"");
     // [다운로드] doubles as IDOK (Enter in the edit starts the download);
     // the label reuses DialogOk — the action-button half of the OK/Cancel
     // pair — per the REQ-050 string budget (cancel reuses DialogCancel).
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 66, 64, 13, IDOK, BTN_CLS,
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 118, 68, 64, 13, IDOK, BTN_CLS,
                I18n::Get(StringId::DialogOk));
-    tb.AddItem(BTN, 182, 66, 64, 13, IDCANCEL, BTN_CLS,
+    tb.AddItem(BTN, 190, 68, 64, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::DialogCancel));
 }
 
@@ -1265,7 +1469,7 @@ bool ShowHfAddDialog(HWND parent, AppConfig& config, TranslationManager& engine)
 
     const std::wstring title = I18n::Get(StringId::HfAddTitle);
     TemplateBuilder tb;
-    tb.Begin(title, 256, 88, /*itemCount=*/5);
+    tb.Begin(title, 262, 92, /*itemCount=*/5);
     BuildHfAddTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(

@@ -83,10 +83,10 @@ public:
         int preferred_engine,
         // REQ-047 U1 (designer 164500 §5.2.1): stem of the registered user
         // .gguf model (files[0] minus ".gguf"), shown after the "사용자 지정
-        // 모델 (.gguf)" label when that engine is checked. Empty -> the
-        // MenuEngineUserGgufEmpty "(미등록)" placeholder is appended instead.
-        // Defaults keep the hook.cpp call sites (which don't track the model
-        // registry) untouched.
+        // 모델 (.gguf)" label whenever a model is registered, regardless of
+        // the checked engine (REQ-050 3-2). Empty -> the checkable entry is
+        // not appended at all (REQ-050 3-1). Defaults keep the hook.cpp call
+        // sites (which don't track the model registry) untouched.
         std::string_view user_model_stem = ""
     );
 

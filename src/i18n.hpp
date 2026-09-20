@@ -216,11 +216,12 @@ enum class StringId {
     // registration picker). Title reuses UserGgufRegisteredTitle.
     UserGgufBundledDuplicateBody, // "already built in" notice (76 -> 77)
 
-    // REQ-047 U1 (designer 164500 §5.3): "(미등록)" placeholder appended to the
-    // user-model tray entry when no .gguf model has been registered yet (the
-    // dynamic label reads "사용자 지정 모델 (.gguf) — (미등록)"). Appended last
-    // so the EnumCount completeness loop covers it automatically (77 -> 78).
-    MenuEngineUserGgufEmpty,     // "(미등록)" empty-slot marker for the tray
+    // REQ-047 U1 (designer 164500 §5.3): "(미등록)" empty-slot marker. REQ-050
+    // (3-1): the tray no longer appends the placeholder — with no model
+    // registered the checkable user-model entry is omitted entirely and only
+    // the manager row shows. The string stays in the tables (frozen field
+    // count); reserved for a future empty-state hint.
+    MenuEngineUserGgufEmpty,     // "(미등록)" empty-slot marker (unused by tray)
 
     // REQ-048 R2-D: registered user-.gguf model manager (rename/delete). Tray
     // engine-submenu row + the manager dialog (list / empty placeholder /

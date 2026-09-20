@@ -14502,6 +14502,13 @@ void TestEngineHostAvailabilityAndMigration() {
 #include "req048_cloud_tests.inc"
 #include "req048_r2_tests.inc"
 
+// REQ-050 (user items 2-1/2-2): HF add-dialog URL auto-conversion matrix +
+// the 262x92 template layout byte-walk. Staged as an .inc next to this
+// runner; registered in main() right after TestReq050HfUrlGate. PLACEMENT:
+// AFTER req048_template_tests.inc — the suite reuses req048_detail::ReadWord/
+// ReadString (and the gguf manager header is pulled in by req048_r2 above).
+#include "req050_hf_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14813,6 +14820,24 @@ void TestReq046TrayMenuStructure() {
     TEST_CHECK(tray_src.find("MF_STRING, ID_TRAY_MANAGE_GGUF") != std::string::npos,
                "tray (REQ-050): the single merged manager row is a plain MF_STRING item");
 
+    // 2b. REQ-050 user items 3-1/3-2: the checkable 사용자 선택(.gguf) entry
+    //     is appended ONLY while a user model is registered (no model -> the
+    //     manager row is the sole user-model entry), and the " — <stem>"
+    //     suffix shows regardless of the checked engine (the old pref==3
+    //     gate and the "(미등록)" placeholder are gone). The frozen radio ID
+    //     and the 4-way check mark survive inside the conditional.
+    TEST_CHECK(tray_src.find("if (!user_model_stem_.empty())") != std::string::npos &&
+               tray_src.find("if (pref == 3)") == std::string::npos,
+               "tray (REQ-050 3-1/3-2): user-gguf entry conditional on registration, "
+               "stem suffix not gated on pref==3");
+    TEST_CHECK(tray_src.find("ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str())") !=
+                   std::string::npos,
+               "tray (REQ-050 3-1/3-2): the conditional entry keeps the frozen "
+               "ID_TRAY_ENGINE_USER_GGUF radio ID");
+    TEST_CHECK(tray_src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
+               "tray (REQ-050 3-1): the '(미등록)' placeholder left the menu with the "
+               "always-append entry");
+
     // 3. The nested POPUP is gone (0 hits required).
     TEST_CHECK(tray_src.find("hUserGgufMenu") == std::string::npos,
                "tray: nested hUserGgufMenu POPUP removed");
@@ -14820,6 +14845,15 @@ void TestReq046TrayMenuStructure() {
     // 4. refresh_tray maps "user_gguf" -> 3.
     TEST_CHECK(main_src.find("(prefEngine == \"user_gguf\") ? 3") != std::string::npos,
                "main: refresh_tray maps engine_type \"user_gguf\" -> preferred_engine 3");
+
+    // 4b. REQ-050 user items 3-1/3-2: refresh_tray resolves the user-model
+    //     stem whenever a model is REGISTERED (no engine_type gate), so the
+    //     tray can show the checkable entry + stem under any checked engine.
+    TEST_CHECK(main_src.find("if (!config.user_model_id.empty())") != std::string::npos &&
+               main_src.find("\"user_gguf\" && !config.user_model_id.empty()") ==
+                   std::string::npos,
+               "main (REQ-050 3-1/3-2): stem resolution is engine-agnostic once a model "
+               "is registered");
 
     // 5. on_select_engine is the explicit 4-way chain: engine_idx==3 branch,
     //    OpenAI demoted from else-terminator to else if (engine_idx == 2).
@@ -15290,6 +15324,10 @@ int main() {
     // REQ-050: the Hugging Face resolve-URL gate + filename derivation —
     // the headless-logic proof for the merged manager's HF add path.
     TestReq050HfUrlGate();
+    // REQ-050 (user items 2-1/2-2): URL auto-conversion (page/blob/resolve)
+    // + the widened 262x92 dialog layout — registered after the canonical-gate
+    // suite it complements.
+    TestReq050HfAddDialog();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
