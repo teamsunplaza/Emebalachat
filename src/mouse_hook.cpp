@@ -257,6 +257,20 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
     }
 
     if (wParam == WM_LBUTTONDOWN) {
+        // REQ-052 (audit P1): never let a pen/touch press (0xFF515700
+        // dwExtraInfo signature) arm the drag origin or the double-click
+        // tracking below - without this, the matching touch release trips the
+        // 15 px drag gate and spawns the drag-translate icon on every pen
+        // stroke or touch scroll. Real mouse input has dwExtraInfo == 0 and
+        // never matches. Pure touch sequences never enter the state machine
+        // because the press is filtered here, before is_lbutton_down_ is set.
+        // The signature lives in bits 8-31 of the LOW dword of the 64-bit
+        // dwExtraInfo (MS injection contract); the DWORD predicate + mask
+        // never examine anything above bit 31, so the low-dword cast is the
+        // exact filter (C4244: no implicit ULONG_PTR -> DWORD narrowing).
+        if (IsFromTouchInjection(static_cast<DWORD>(ms->dwExtraInfo))) {
+            return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }
         DWORD now = ms->time;
         int d_last_x = std::abs(ms->pt.x - s_instance->last_click_pt_.x);
         int d_last_y = std::abs(ms->pt.y - s_instance->last_click_pt_.y);
@@ -286,6 +300,14 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         // O(1) performance guarantee: do no heavy computation during mouse movement
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     } else if (wParam == WM_LBUTTONUP) {
+        // REQ-052 (audit P1): a pen/touch release must not reach the drag gate
+        // or the multi-click settle arm below (both fire drag_cb). This also
+        // covers the mixed case of a real mouse press followed by a touch
+        // release, which would otherwise measure drag distance from the real
+        // press origin. Low-dword cast: see the WM_LBUTTONDOWN guard above.
+        if (IsFromTouchInjection(static_cast<DWORD>(ms->dwExtraInfo))) {
+            return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }
         if (s_instance->is_lbutton_down_.load(std::memory_order_relaxed)) {
             s_instance->is_lbutton_down_.store(false, std::memory_order_relaxed);
 

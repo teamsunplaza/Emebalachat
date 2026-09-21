@@ -120,9 +120,13 @@ private:
     static constexpr UINT_PTR kTimerIdle = 1001;
     static constexpr UINT_PTR kTimerSingleClick = 1002;
     static constexpr DWORD kIdleTimeoutMs = 5000;
-    static constexpr DWORD kSingleClickDelayMs = 220;
 
     bool is_mouse_down_ = false;
+    // REQ-052 P3: single-click timer delay, captured once at Create() from
+    // GetDoubleClickTime() (the OS double-click window, default 500ms). The
+    // old fixed 220ms fired the pause-toggle action before a 250-350ms
+    // double-click arrived and could cancel it via WM_LBUTTONDBLCLK.
+    UINT single_click_delay_ms_ = 220; // overwritten in Create()
     bool is_dragging_ = false;
     POINT drag_start_cursor_ = {};
     POINT drag_start_window_ = {};

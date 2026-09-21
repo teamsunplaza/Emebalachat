@@ -24,6 +24,11 @@ FloatingBadge::~FloatingBadge() {
 
 bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std::wstring_view tgt_code, int initial_x, int initial_y) {
     hInstance_ = hInstance;
+    // REQ-052 P3: capture the single-click delay once at init so the pause
+    // toggle always outlives the OS double-click window (GetDoubleClickTime,
+    // default 500ms) instead of the old fixed 220ms that raced ahead of a
+    // slow double-click.
+    single_click_delay_ms_ = ::GetDoubleClickTime();
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         src_code_ = src_code;
@@ -664,8 +669,15 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 int dy = ptNow.y - self->drag_start_cursor_.y;
 
                 if (!self->is_dragging_) {
+                    // REQ-052 P2: use the system drag threshold. A
+                    // registry-set metric of 0 would make abs(d) >= 0 always
+                    // true and turn mere click tremor into a drag, silently
+                    // swallowing every click - so fall back to the historical
+                    // 3px when the metric is unavailable.
                     int dragX = ::GetSystemMetrics(SM_CXDRAG);
                     int dragY = ::GetSystemMetrics(SM_CYDRAG);
+                    if (dragX <= 0) dragX = 3;
+                    if (dragY <= 0) dragY = 3;
                     if (abs(dx) >= dragX || abs(dy) >= dragY) {
                         self->is_dragging_ = true;
                         ::KillTimer(hwnd, kTimerSingleClick);
@@ -683,9 +695,15 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     // keeps the pill visually the same physical footprint once it lands.
                     POINT ptCenter = { newX + self->PhysW() / 2, newY + self->PhysH() / 2 };
                     const UINT targetDpi = emebalachat::ui::MonitorDpiAtPoint(ptCenter);
+                    bool dpiChanged = false;
                     if (targetDpi != self->dpi_) {
                         self->dpi_ = targetDpi;
+                        // REQ-052 P1: ReallocateBuffer destroys the DIB, so the
+                        // contents must be re-rendered below; ReallocateBuffer
+                        // alone left the badge transparent until the next state
+                        // change.
                         self->ReallocateBuffer(self->PhysW(), self->PhysH());
+                        dpiChanged = true;
                     }
                     HMONITOR hMon = ::MonitorFromPoint(ptCenter, MONITOR_DEFAULTTONEAREST);
                     MONITORINFO mi = {};
@@ -697,7 +715,21 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         newY = clamped.y;
                     }
 
-                    ::SetWindowPos(hwnd, HWND_TOPMOST, newX, newY, self->PhysW(), self->PhysH(), SWP_NOSIZE | SWP_NOACTIVATE);
+                    // REQ-052 P1: when the DPI change above reallocated the DIB
+                    // at a new physical size, the size must actually be applied -
+                    // SWP_NOSIZE would leave the window at the old scale and the
+                    // blit would be rescaled (ghost pill).
+                    ::SetWindowPos(hwnd, HWND_TOPMOST, newX, newY,
+                                   self->PhysW(), self->PhysH(),
+                                   SWP_NOACTIVATE | (dpiChanged ? 0 : SWP_NOSIZE));
+                    if (dpiChanged) {
+                        // Full render path restores the destroyed DIB contents;
+                        // Render() terminates in UpdateAlpha(current_alpha_), so
+                        // the re-blit happens in the same call. Mirrors the
+                        // WM_DPICHANGED house pattern in tooltip.cpp /
+                        // about_window.cpp (resize -> reallocate -> re-render).
+                        self->Render();
+                    }
                 }
             } else {
                 if (!self->is_hovered_) {
@@ -730,8 +762,10 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 }
             } else if (self->is_mouse_down_) {
                 self->is_mouse_down_ = false;
-                // Click in place: start short single-click timer to allow double-click detection
-                ::SetTimer(hwnd, kTimerSingleClick, kSingleClickDelayMs, nullptr);
+                // Click in place: start single-click timer (sized to the OS
+                // double-click window captured at Create) to allow double-click
+                // detection
+                ::SetTimer(hwnd, kTimerSingleClick, self->single_click_delay_ms_, nullptr);
             }
             return 0;
         }

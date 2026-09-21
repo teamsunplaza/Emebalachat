@@ -67,6 +67,26 @@ public:
         return arm_tick_ms + kMultiClickDebounceMs;
     }
 
+    // ---- REQ-052 (audit P1) pure pen/touch-injection predicate, headless-testable ----
+    //
+    // Windows tags pen/touch-injected mouse events (touch pan, pen strokes on
+    // Surface/Wacom-class hardware) with the MOUSEEVENTF_FROMTOUCH signature
+    // 0xFF515700 in the upper bits of MSLLHOOKSTRUCT::dwExtraInfo; the low
+    // byte is reserved for event-specific data, hence the mask. Genuine
+    // hardware mouse input always reports dwExtraInfo == 0, so this can never
+    // match real mouse input.
+    static constexpr DWORD kFromTouchSignature = 0xFF515700UL;
+    static constexpr DWORD kFromTouchMask      = 0xFFFFFF00UL;
+
+    // True for pen/touch-injected mouse events that must neither arm nor trip
+    // the drag/multi-click translation triggers. LowLevelMouseProc bypasses
+    // them at the WM_LBUTTONDOWN and WM_LBUTTONUP branches; this composes with
+    // the EXTRA_INFO_MARKER self-filter (exact-equality, runs first) because
+    // both filters perform the identical side-effect-free bypass.
+    static constexpr bool IsFromTouchInjection(DWORD extra_info) {
+        return (extra_info & kFromTouchMask) == kFromTouchSignature;
+    }
+
     MouseHook();
     ~MouseHook();
 

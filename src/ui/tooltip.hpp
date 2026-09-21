@@ -215,6 +215,35 @@ public:
         return track_top + frac * range;
     }
 
+    // ---- REQ-052 (audit P1): header target-button geometry planner ----
+    // Pure/constexpr, headless-testable (same pattern as the scroll math
+    // above). The target-language button starts after the source tag + arrow
+    // run (28 DIP past the tag's left edge) but must NEVER reach the close
+    // button: its right edge keeps kHeaderCloseGapDip clear of the close
+    // button's left edge (card_width - 32), and its width is the measured
+    // label width clamped to [kHeaderTargetMinWidthDip, max_width]. When even
+    // the minimum width would not fit at the natural start, the start itself
+    // is pulled left to close_left - (min + gap), which guarantees
+    // max_width >= min (the button stays clickable on very wide source tags).
+    static constexpr float kHeaderCloseGapDip = 8.0f;
+    static constexpr float kHeaderTargetMinWidthDip = 40.0f;
+    struct HeaderTargetButtonPlan {
+        float x;
+        float width;
+    };
+    static constexpr HeaderTargetButtonPlan PlanHeaderTargetButton(
+        float src_tag_x, float src_tag_width, float card_width, float desired_width) {
+        const float close_left = card_width - 32.0f;
+        float x = src_tag_x + src_tag_width + 28.0f;
+        const float x_limit = close_left - (kHeaderTargetMinWidthDip + kHeaderCloseGapDip);
+        if (x > x_limit) x = x_limit;
+        const float max_width = close_left - kHeaderCloseGapDip - x;
+        float w = desired_width;
+        if (w < kHeaderTargetMinWidthDip) w = kHeaderTargetMinWidthDip;
+        if (w > max_width) w = max_width;
+        return {x, w};
+    }
+
     // Test/inspection seams for the REQ-002 scroll state (values are written
     // only on the GUI thread; tests pump messages on the owning thread).
     bool IsScrollableForTest() const { return scrollable_; }
@@ -371,8 +400,9 @@ private:
     void EnsureScratchBrush();
     void ReleaseScratchBrush();
     // C2 (session 260910_0007): measured-layout cache seam. Recomputes
-    // src_tag_width_ / copy_btn_w_ / tts_btn_w_ ONLY when the label strings
-    // feeding them change (content set, UI-locale string switch - detected by
+    // src_tag_width_ / copy_btn_w_ / tts_btn_w_ - plus tgt_btn_w_ (REQ-052) -
+    // ONLY when the label strings feeding them change (content set, UI-locale
+    // string switch - detected by
     // the cached-key comparison; DirectWrite metrics are DPI-independent DIPs
     // so a DPI crossing needs no recompute). Render consumes the cached
     // floats; the hit-test rects derive from the same values (lockstep by
@@ -460,6 +490,13 @@ private:
     float copy_btn_w_ = 88.0f;         // floors == old hardcoded boxes
     float tts_btn_w_ = 82.0f;
     std::wstring footer_labels_key_;   // concat of the 3 footer labels measured
+    // REQ-052: target pill natural width (floor == the pre-REQ-052 hardcoded
+    // 90 DIP box, fallback parity) and its label key. Render clamps it
+    // against the close button via PlanHeaderTargetButton; the cache holds
+    // only the measured natural width, so a card/DPI change needs no
+    // re-measure (DirectWrite metrics are DIP-independent).
+    float tgt_btn_w_ = 90.0f;
+    std::wstring tgt_label_key_;
 
     int hovered_btn_ = 0; // 0=none, 1=copy, 2=tts, 3=lang, 4=close, 5=src
     bool copied_feedback_ = false;
@@ -501,5 +538,28 @@ static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategorySapi, 
               "REQ-C-001: SAPI exact-match lattice point is 70");
 static_assert(TooltipWindow::VoiceTotalScore(TooltipWindow::kVoiceCategorySapi, 1) == 50,
               "REQ-C-001: SAPI partial-match lattice point is 50");
+
+// REQ-052 (audit P1 header overlap fix): compile-time proof of the header
+// target-button clamp planner. All operands are small integers, exact in
+// binary floating point. On the 360 DIP card the close button's left edge
+// sits at 328 DIP.
+static_assert(TooltipWindow::PlanHeaderTargetButton(44.0f, 60.0f, 360.0f, 90.0f).x == 132.0f &&
+                  TooltipWindow::PlanHeaderTargetButton(44.0f, 60.0f, 360.0f, 90.0f).width == 90.0f,
+              "REQ-052: nominal source tag keeps the natural start and the old 90 DIP width");
+// German "Automatische Erkennung ▾" (~165 DIP source tag): the desired 90 DIP
+// width clamps to 83 DIP so the right edge lands exactly 8 DIP clear of the
+// close button (was ~327 vs 328 DIP - the overlap that put the language menu
+// on top of the ✕).
+static_assert(TooltipWindow::PlanHeaderTargetButton(44.0f, 165.0f, 360.0f, 90.0f).x == 237.0f &&
+                  TooltipWindow::PlanHeaderTargetButton(44.0f, 165.0f, 360.0f, 90.0f).width == 83.0f,
+              "REQ-052: wide source tag clamps the target width to the 8 DIP gap");
+// Extreme source tag: the start itself is pulled left to close_left - 48 so
+// the button keeps the 40 DIP minimum - always clickable, never under the ✕.
+static_assert(TooltipWindow::PlanHeaderTargetButton(44.0f, 250.0f, 360.0f, 90.0f).x == 280.0f &&
+                  TooltipWindow::PlanHeaderTargetButton(44.0f, 250.0f, 360.0f, 90.0f).width == 40.0f,
+              "REQ-052: extreme source tag pulls the start left, width floors at 40 DIP");
+// A sub-minimum desired width (measurement glitch) floors at the minimum.
+static_assert(TooltipWindow::PlanHeaderTargetButton(44.0f, 60.0f, 360.0f, 20.0f).width == 40.0f,
+              "REQ-052: desired width below the 40 DIP minimum is floored");
 
 } // namespace emebalachat

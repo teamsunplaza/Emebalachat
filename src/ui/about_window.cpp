@@ -613,6 +613,9 @@ void AboutWindow::Render() {
     // The marker mirrors with the UI locale's reading direction (body_format_
     // carries RTL for RTL locales; leading alignment starts at the rect's
     // reading edge), so RTL locales get the dot on the right.
+    // REQ-052 (audit P1): each block's DrawText below carries
+    // D2D1_DRAW_TEXT_OPTIONS_CLIP - translations wrapping to 3+ lines
+    // (de/ru/es) previously bled into the next block and its divider.
     const bool ui_rtl = DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL;
     if (body_format_) {
         for (int i = 0; i < 3; ++i) {
@@ -629,7 +632,7 @@ void AboutWindow::Render() {
                                         body_format_,
                                         ui_rtl ? D2D1::RectF(28.0f, top, w - 40.0f, top + 40.0f)
                                                : D2D1::RectF(40.0f, top, w - 28.0f, top + 40.0f),
-                                        scratch_brush_);
+                                        scratch_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
 
@@ -789,6 +792,13 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
 
         case kDismissMessage: {
+            // REQ-052: while the reset-confirmation MessageBox is up, a click
+            // on the box itself is an outside-click for this card, so the
+            // mouse hook marshals a dismiss that must not hide the window
+            // underneath the still-open modal box.
+            if (pThis->confirm_pending_) {
+                return 0;
+            }
             pThis->Dismiss();
             return 0;
         }
@@ -876,12 +886,32 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 return 0;
             }
             // Phase 4 (REQ-020, plan §1.3): reset button click. The window is
-            // a pure view - it invokes the coordinator callback (main.cpp,
-            // GUI thread, runs the 4-field default rewrite + save + surface
-            // refresh synchronously here), then shows the optimistic 1.6 s
-            // "done" feedback regardless of the outcome. No confirm dialog
-            // (plan §2.2: non-destructive operation).
+            // a pure view - the coordinator callback (main.cpp, GUI thread,
+            // runs the 4-field default rewrite + save + surface refresh
+            // synchronously here) is what mutates state, and this layer only
+            // asks first.
+            // REQ-052 (audit Medium): the reset is destructive (both language
+            // pairs + ui_language -> defaults, persisted immediately), so it
+            // now requires an explicit Yes before the callback runs. The
+            // message is assembled from existing strings only (the reset
+            // label + '?', caption = the localized brand name) - no new
+            // StringIds; the MB_YESNO buttons are system-localized.
+            // confirm_pending_ keeps the modal box from dismissing the card
+            // underneath it: the modal loop moves focus to the box (this
+            // window would get WM_KILLFOCUS -> Dismiss) and a click on the
+            // box is an outside-click for this card (mouse hook -> posted
+            // kDismissMessage). Both paths hold off while it is set.
             if (IsPointInRect(pThis->reset_rect_, x, y)) {
+                std::wstring confirm_body = I18n::Get(StringId::AboutResetButton);
+                confirm_body += L'?';
+                pThis->confirm_pending_ = true;
+                const int confirm = ::MessageBoxW(
+                    hwnd, confirm_body.c_str(), I18n::Get(StringId::AppName).c_str(),
+                    MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND);
+                pThis->confirm_pending_ = false;
+                if (confirm != IDYES) {
+                    return 0; // declined: state untouched, no "done" feedback
+                }
                 if (pThis->reset_callback_) {
                     pThis->reset_callback_();
                 }
@@ -929,6 +959,12 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
 
         case WM_KILLFOCUS: {
+            // REQ-052: while the reset-confirmation MessageBox is up, the
+            // modal loop moves focus to the box; that focus move must not
+            // dismiss the card underneath it.
+            if (pThis->confirm_pending_) {
+                return 0;
+            }
             // Plan §2.2: closes on focus loss (Alt+Tab, app switch, browser
             // handoff after a link click).
             pThis->Dismiss();

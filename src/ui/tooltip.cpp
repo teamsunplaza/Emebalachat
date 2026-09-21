@@ -462,16 +462,18 @@ void TooltipWindow::ReleaseScratchBrush() {
 }
 
 // C2 (session 260910_0007): measured-layout cache. Catalog audit verified the
-// src-tag pill width [was inline at Render] and the two footer button widths
-// [was inline at Render] as the ONLY genuinely per-frame CreateTextLayout
-// measurement sites; the ShowTranslation body measures (content path, once
-// per translation) were mislabeled and stay untouched. The label inputs
+// src-tag pill width [was inline at Render], the two footer button widths
+// [was inline at Render] and (REQ-052) the target pill width [was the
+// hardcoded 90 DIP box at Render] as the ONLY genuinely per-frame
+// CreateTextLayout measurement sites; the ShowTranslation body measures
+// (content path, once per translation) were mislabeled and stay untouched. The label inputs
 // change on content set / language pick / UI-locale string switch only, so
 // the cache keys are the exact label strings; a key match skips all
 // shaping. DirectWrite metrics are DPI-independent DIPs, so a DPI crossing
 // needs no recompute (verified: the old blocks used constant 512 DIP extent
 // constraints with no per-frame width drift). The hit-test rects
-// (src_btn_rect_, copy_btn_rect_, tts_btn_rect_) are rebuilt every Render
+// (src_btn_rect_, copy_btn_rect_, tts_btn_rect_, lang_btn_rect_) are rebuilt
+// every Render
 // FROM these cached widths in the same pass, so measure and hit-test cannot
 // disagree (the VP's stale-cache click-misroute hazard is closed by the
 // single source of truth). If measurement is unavailable (no format /
@@ -548,6 +550,34 @@ void TooltipWindow::EnsureMeasuredLayouts() {
             copy_btn_w_ = copy_w;
             tts_btn_w_ = tts_w;
             footer_labels_key_ = labels_key;
+        }
+
+        // --- site 7 (REQ-052): target-language pill width (button_format_) ---
+        // The old Render box was a hardcoded 90 DIP regardless of the label,
+        // so wide localized target names (e.g. "Portuguese (Brazil) ▾")
+        // silently clipped inside it - and on a wide source tag the box ran
+        // into the close ✕ (audit P1). Same pattern as site 3 (+16 DIP
+        // padding, floor == the old box); Render clamps the result against
+        // the close button through PlanHeaderTargetButton.
+        const std::wstring tgt_name = target_lang_.empty()
+                                          ? I18n::GetLanguageDisplayName("English")
+                                          : ToUtf16(target_lang_);
+        const std::wstring tgt_label = tgt_name + L" ▾";
+        if (tgt_label != tgt_label_key_) {
+            float tgt_w = 90.0f; // floor == the pre-REQ-052 hardcoded box (fallback parity)
+            IDWriteTextLayout* tgt_layout = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    tgt_label.c_str(), static_cast<UINT32>(tgt_label.size()),
+                    button_format_, 512.0f, 24.0f, &tgt_layout)) && tgt_layout) {
+                DWRITE_TEXT_METRICS tgt_metrics = {};
+                if (SUCCEEDED(tgt_layout->GetMetrics(&tgt_metrics)) && tgt_metrics.width > 0.0f) {
+                    tgt_w = tgt_metrics.width + 16.0f;
+                    if (tgt_w < 90.0f) tgt_w = 90.0f;
+                }
+                tgt_layout->Release();
+            }
+            tgt_btn_w_ = tgt_w;
+            tgt_label_key_ = tgt_label;
         }
     }
 }
@@ -1444,9 +1474,18 @@ void TooltipWindow::Render() {
     std::wstring tgt_name = target_lang_.empty() ? I18n::GetLanguageDisplayName("English")
                                                  : ToUtf16(target_lang_);
     std::wstring tgt_label = tgt_name + L" ▾";
-    float tgt_btn_x = src_tag_x + src_tag_width + 28.0f;
-    float tgt_btn_width = 90.0f;
-    lang_btn_rect_ = D2D1::RectF(tgt_btn_x, 8.0f, tgt_btn_x + tgt_btn_width, 30.0f);
+    // REQ-052 (audit P1): the old hardcoded 90.0f box overlapped the close ✕
+    // whenever the measured source tag ran wide (e.g. German "Automatische
+    // Erkennung ▾" ~165 DIP: right edge ~327 DIP vs the ✕ left edge at
+    // current_width_ - 32 = 328 DIP on the 360 DIP card). The rect now comes
+    // from the pure PlanHeaderTargetButton planner (tooltip.hpp): the
+    // measured label width (C2 site 7, tgt_btn_w_) clamped to
+    // [40, close_left - 8 - x], with the start itself pulled left when even
+    // the minimum would not fit. Close button position and card width are
+    // unchanged; the language menu anchors at lang_btn_rect_ as before.
+    const HeaderTargetButtonPlan tgt_plan = PlanHeaderTargetButton(
+        src_tag_x, src_tag_width, static_cast<float>(current_width_), tgt_btn_w_);
+    lang_btn_rect_ = D2D1::RectF(tgt_plan.x, 8.0f, tgt_plan.x + tgt_plan.width, 30.0f);
     D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, 4.0f, 4.0f);
 
     scratch_brush_->SetColor((hovered_btn_ == 3) ? D2D1::ColorF(0x334155, 1.0f)
@@ -1897,8 +1936,13 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // F8 (ADR-A1-4): source button hover (id 5) before the target
             // button so the leftmost header control wins on any overlap.
             else if (IsPointInRect(pThis->src_btn_rect_, x, y)) new_hover = 5;
-            else if (IsPointInRect(pThis->lang_btn_rect_, x, y)) new_hover = 3;
+            // REQ-052 (audit P1): close (id 4) BEFORE target (id 3) - on any
+            // residual overlap the dismiss control wins, matching the
+            // WM_LBUTTONUP click order (close is checked there before the
+            // language menu). The planner clamp keeps an 8 DIP gap between
+            // the rects, so this order is defensive-only.
             else if (IsPointInRect(pThis->close_btn_rect_, x, y)) new_hover = 4;
+            else if (IsPointInRect(pThis->lang_btn_rect_, x, y)) new_hover = 3;
 
             const bool new_thumb_hover =
                 pThis->scrollable_ && !pThis->dragging_thumb_ &&

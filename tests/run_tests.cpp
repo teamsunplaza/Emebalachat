@@ -1515,17 +1515,16 @@ void TestW5C1C2BrushMeasurePins() {
                "C1: about_window.hpp declares scratch_brush_");
 
     // ---- C2: measured-layout cache ----
-    // Genuine per-frame sites (converted): src-tag pill + 2 footer labels.
-    // EnsureMeasuredLayouts owns exactly the 4 CreateTextLayout measurement
-    // calls; ShowTranslation keeps its 2 content-path body measures (the
-    // catalog mislabeled them as per-frame - they already run at content
-    // granularity and MUST NOT move into Render or the cache).
+    // Genuine per-frame sites (converted): src-tag pill + 2 footer labels +
+    // (REQ-052) the target pill. EnsureMeasuredLayouts owns exactly the 5
+    // CreateTextLayout measurement calls; the ShowTranslation body measures
+    // (content path, once per translation) were mislabeled and stay untouched.
     TEST_CHECK(count_occ(tipRender, "CreateTextLayout(") == 0,
                "C2: no CreateTextLayout inside TooltipWindow::Render (steady-state frames shape zero labels)");
     const std::string tipMeasure = func_body(tip, "void TooltipWindow::EnsureMeasuredLayouts() {");
     TEST_CHECK(!tipMeasure.empty(), "C2: EnsureMeasuredLayouts located");
-    TEST_CHECK(count_occ(tipMeasure, "CreateTextLayout(") == 4,
-               "C2: cache owns exactly 4 measurements (src-tag + copy + copied + tts labels)");
+    TEST_CHECK(count_occ(tipMeasure, "CreateTextLayout(") == 5,
+               "C2: cache owns exactly 5 measurements (src-tag + copy + copied + tts + target pill labels)");
     const std::string tipShow = func_body(tip, "void TooltipWindow::ShowTranslation(");
     TEST_CHECK(count_occ(tipShow, "CreateTextLayout(") == 2,
                "C2: ShowTranslation content-path body measures stay at content granularity (2 calls)");
@@ -14595,6 +14594,15 @@ void TestEngineHostAvailabilityAndMigration() {
 // once safe; run_tests already links Emebalachat_engine_core).
 #include "req051_decode_budget_tests.inc"
 
+// REQ-052 (session 260922, UI defect bundle): tooltip header clamp, badge
+// DPI-drag/threshold/click-delay, about clip+reset confirm, touch/pen
+// filter. Staged as an .inc next to this runner; registered near the end of
+// main() after TestReq051DecodeWallClockSemantics(), per the end-of-file
+// pattern. The pure pins call the header-inline planners directly (tooltip,
+// mouse_hook — both headers are already included by this TU); the rest are
+// ResolveRepoFile source pins.
+#include "req052_ui_fixes_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15433,6 +15441,11 @@ int main() {
     // + the widened 262x92 dialog layout — registered after the canonical-gate
     // suite it complements.
     TestReq050HfAddDialog();
+    // REQ-052: the HF manager/downloader defect bundle (list refresh after a
+    // fresh add, 65535% decode, cancel interrupt, 64-bit Content-Length,
+    // orphan re-register, localized rename captions) — registered after the
+    // REQ-050 HF suites.
+    TestReq052HfUiFixes();
     // REQ-051 (session 260921, symptoms A+B): the capture retry policy (drag
     // 3-attempt cycle through the shared CopyChordWithSettledRetry driver +
     // the Enter dropped-chord streak surfacing) and the local transient
@@ -15449,6 +15462,10 @@ int main() {
     TestReq051ClearOpenAiSettings();
     TestReq051I18nCountAndCoverage();
     TestReq051OpenAiDialogStructuralPins();
+    // REQ-052: the OpenAI model-list fetch moved off the GUI thread (detached
+    // worker + PostMessage completion) — registered after the REQ-051 dialog
+    // pins it complements.
+    TestReq052OpenAiAsyncFetchPins();
     TestReq051OpenAiDeleteI18n();
     // REQ-051 (handoff §6 bullet 2): the shared UTF-8 BOM tolerance for the
     // host-side JSON readers — helper, runtime routes, structural pins.
@@ -15460,6 +15477,16 @@ int main() {
     // loader suites, per the end-of-file pattern.
     TestReq051ScaledGenCap();
     TestReq051DecodeWallClockSemantics();
+    // REQ-052 (UI defect bundle): the pure header planner, the tooltip/badge/
+    // about structural pins, and the pen/touch injection filter. Registered
+    // after the U-1 suites, per the end-of-file pattern.
+    TestReq052HeaderTargetButtonPlan();
+    TestReq052TooltipHeaderPins();
+    TestReq052BadgeDpiDragReRender();
+    TestReq052BadgeDragThresholdFallback();
+    TestReq052BadgeSingleClickUsesDoubleClickTime();
+    TestReq052AboutWindowFixes();
+    TestReq052TouchFilterPredicate();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

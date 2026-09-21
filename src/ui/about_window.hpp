@@ -213,6 +213,11 @@ private:
     D2D1_RECT_F reset_rect_ = {};
     ULONGLONG reset_feedback_until_ = 0;
     std::function<void()> reset_callback_;
+    // REQ-052: true while the reset-confirmation MessageBoxW is up. The modal
+    // box moves focus to itself (WM_KILLFOCUS) and a click on the box counts
+    // as an outside click for this card (mouse hook -> kDismissMessage); both
+    // dismissal paths must hold off until the user answers.
+    bool confirm_pending_ = false;
 };
 
 } // namespace emebalachat
