@@ -121,6 +121,19 @@ public:
     explicit SimpleJsonReader(std::string_view src) : src_(src), pos_(0) {}
 
     bool ParseObject(std::vector<std::pair<std::string, std::string>>& out_pairs) {
+        // REQ-051-1: Strip a leading UTF-8 BOM (EF BB BF) before the opening
+        // brace. Windows editors (Notepad, PowerShell Set-Content/Out-File)
+        // prepend a BOM when saving UTF-8 text; without this skip the parser
+        // saw byte 0xEF instead of '{' and rejected — then the startup path
+        // overwrote the user's config with defaults, resetting every setting.
+        // The app itself never writes a BOM (SaveToFileLocked emits raw UTF-8),
+        // but external edits must not brick the config.
+        if (src_.size() >= 3 &&
+            static_cast<unsigned char>(src_[0]) == 0xEF &&
+            static_cast<unsigned char>(src_[1]) == 0xBB &&
+            static_cast<unsigned char>(src_[2]) == 0xBF) {
+            pos_ = 3;
+        }
         SkipWhitespace();
         if (pos_ >= src_.size() || src_[pos_] != '{') return false;
         pos_++; // skip '{'

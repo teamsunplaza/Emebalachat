@@ -350,6 +350,59 @@ void TestConfigModule() {
                    "I2: lone low surrogate replaced by U+FFFD");
     }
 
+    // ---- 8. REQ-051-1: UTF-8 BOM stripping in SimpleJsonReader::ParseObject ----
+    // Windows editors (Notepad, PowerShell Set-Content) prepend EF BB BF when
+    // saving UTF-8. The parser must skip it, or the app rejects a valid config
+    // and the startup save path overwrites every user setting with defaults.
+    {
+        // 8a. Minimal BOM + single key
+        AppConfig bom_cfg;
+        TEST_CHECK(bom_cfg.FromJsonString("\xEF\xBB\xBF{\"engine_type\": \"google\"}"),
+                   "REQ-051-1: config with UTF-8 BOM parses successfully");
+        TEST_CHECK(bom_cfg.GetSnapshot().engine_type == "google",
+                   "REQ-051-1: BOM-prefixed config value is correct");
+
+        // 8b. BOM + full app-saved shape (nested blocks + trailing newline)
+        const std::string kBomFull =
+            "\xEF\xBB\xBF"
+            "{\n"
+            "  \"engine_type\": \"google\",\n"
+            "  \"engine_host\": {\n"
+            "    \"enabled\": true,\n"
+            "    \"spawn\": true,\n"
+            "    \"idle_exit_ms\": 600000\n"
+            "  },\n"
+            "  \"openai\": {\n"
+            "    \"base_url\": \"https://example.com/v1/\",\n"
+            "    \"model\": \"test-model\",\n"
+            "    \"api_key_dpapi\": \"\",\n"
+            "    \"api_key_sha256\": \"\",\n"
+            "    \"http_consent_given\": false\n"
+            "  },\n"
+            "  \"badge_y\": -1\n"
+            "}\n";
+        AppConfig bom_full;
+        TEST_CHECK(bom_full.FromJsonString(kBomFull),
+                   "REQ-051-1: BOM + nested blocks + trailing newline parses");
+        TEST_CHECK(bom_full.GetSnapshot().engine_type == "google",
+                   "REQ-051-1: BOM full config engine_type correct");
+        TEST_CHECK(bom_full.openai.model == "test-model",
+                   "REQ-051-1: BOM full config openai.model correct");
+        TEST_CHECK(bom_full.engine_host.idle_exit_ms == 600000,
+                   "REQ-051-1: BOM full config engine_host.idle_exit_ms correct");
+
+        // 8c. No-BOM regression guard: same content without BOM still works
+        AppConfig nobom;
+        TEST_CHECK(nobom.FromJsonString(kBomFull.c_str() + 3),
+                   "REQ-051-1: identical config without BOM still parses (no regression)");
+
+        // 8d. Malformed JSON missing closing brace still rejected (BOM must not
+        //     weaken the parser's structural validation)
+        AppConfig bom_broken;
+        TEST_CHECK(!bom_broken.FromJsonString("\xEF\xBB\xBF{\"engine_type\": \"google\""),
+                   "REQ-051-1: BOM + missing closing brace is still rejected");
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Config & Languages tests completed." << std::endl;
     } else {
