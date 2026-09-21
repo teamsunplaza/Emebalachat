@@ -47,6 +47,12 @@ std::string LoadUserModelIdFromConfig(const std::wstring& lad_override) {
     if (engine_host_json::ReadTextFileUtf8(path, text) != engine_host_json::FileReadOutcome::Ok) {
         return {}; // absent/unreadable -> the pinned default (AC-4)
     }
+    // REQ-051: defense-in-depth BOM skip on the reader entry point itself.
+    // ReadTextFileUtf8 already stripped a file BOM, so this is normally a
+    // no-op; it keeps the tolerance invariant local to the parse even if the
+    // read layer ever changes (the 9cf0d40 lesson: a load-side rejection is
+    // what enabled the config self-destruct loop).
+    text = engine_host_json::SkipUtf8Bom(text);
     enginehost::JsonPairs fields;
     if (!enginehost::JsonParseObject(text, fields)) return {};
     // C1 gate: engine_type must be the exact string "user_gguf".

@@ -74,6 +74,12 @@ std::unique_ptr<IManifestVerifier> CreateManifestVerifier(const char* mode) {
 
 LoadResult ParseManifestJson(std::string_view json) {
     LoadResult result;
+    // REQ-051: tolerate a leading UTF-8 BOM on the in-memory document, not
+    // only on the file-read path (LoadDefaultManifest strips it there via
+    // ReadTextFileUtf8). This parser is a public reader entry point too —
+    // a BOM-prefixed manifest document must not be rejected as NotJson
+    // (9cf0d40 defect class). Structural rejection below is unchanged.
+    json = engine_host_json::SkipUtf8Bom(json);
     enginehost::JsonPairs doc;
     if (!enginehost::JsonParseObject(json, doc)) {
         result.status = LoadStatus::NotJson;

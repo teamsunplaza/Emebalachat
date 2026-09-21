@@ -16,7 +16,10 @@
 //
 // Parsing reuses the frozen engine_host_json_util helpers (JsonParseObject /
 // detail::FindField) — the same minimal-parse primitives the pre-REQ-046
-// reader used; no new JSON surface. Boot-time only: the host caches the
+// reader used; no new JSON surface. A leading UTF-8 BOM is skipped via the
+// shared engine_host_json::SkipUtf8Bom (REQ-051) — BOM-prefixed config.json
+// (Notepad / PowerShell edits) must read identically to the app's own
+// BOM-free output. Boot-time only: the host caches the
 // result once and never reloads (idle-exit respawn bounds staleness).
 //
 // Privacy: shape-only. Callers must NEVER log the returned id's content —

@@ -9,11 +9,17 @@
 // REUSED VERBATIM from the frozen protocol header (JsonParseObject / JsonPairs
 // / JsonValue / JsonParseStringArray / detail::FindField / detail::ParseInt /
 // detail::ScanBalanced). engine_host_protocol.hpp itself is a frozen contract
-// and is NOT modified — this header only ADDS the two generic pieces the
+// and is NOT modified — this header only ADDS the generic pieces the
 // protocol header does not provide:
 //   * SplitJsonArray — split a raw JSON array into balanced element texts
 //     (the protocol reader keeps nested objects/arrays as RAW text, so
 //     array-of-object documents like registry.json models[] need a splitter).
+//   * StartsWithUtf8Bom / SkipUtf8Bom — ONE shared definition of the
+//     leading-UTF-8-BOM tolerance (REQ-051, the 9cf0d40 config.cpp lesson:
+//     a reader that rejects what a BOM-emitting editor wrote hands the
+//     failure to whatever rewrite path runs next). Every reader entry
+//     point — file or in-memory — routes through SkipUtf8Bom so the
+//     tolerance lives in exactly one place.
 //   * ReadTextFileUtf8 — whole-file reader with a UTF-8 BOM tolerance strip.
 // Plus tiny typed accessors so the three parsers stay declarative.
 //
@@ -162,6 +168,29 @@ inline bool IsBareFilename(std::string_view name) {
     return true;
 }
 
+// ---- leading UTF-8 BOM tolerance (REQ-051: one shared definition) -----------
+
+// The UTF-8 BOM is the three bytes EF BB BF. Windows editors (Notepad,
+// PowerShell Set-Content/Out-File) prepend it to UTF-8 text; the frozen
+// JsonReader::SkipWs does not recognize it, so a BOM-prefixed document would
+// be rejected as NotJson — the exact defect class of the 9cf0d40 config.cpp
+// self-destruction (load-side rejection -> defaults -> rewrite destroyed the
+// user's file). Skipping the BOM is pure prefix tolerance: it weakens NO
+// structural validation of what follows.
+inline bool StartsWithUtf8Bom(std::string_view text) {
+    return text.size() >= 3 &&
+           static_cast<unsigned char>(text[0]) == 0xEF &&
+           static_cast<unsigned char>(text[1]) == 0xBB &&
+           static_cast<unsigned char>(text[2]) == 0xBF;
+}
+
+// Returns `text` with a single leading UTF-8 BOM removed, or `text` unchanged
+// (empty input, partial BOM bytes, and non-BOM prefixes all pass through).
+// Only ONE BOM is ever skipped — a double-BOM document stays malformed.
+inline std::string_view SkipUtf8Bom(std::string_view text) {
+    return StartsWithUtf8Bom(text) ? text.substr(3) : text;
+}
+
 // ---- whole-file reader (UTF-8 text with a BOM-tolerance strip) -------------
 
 enum class FileReadOutcome { Ok, Missing, ReadError };
@@ -182,8 +211,10 @@ inline FileReadOutcome ReadTextFileUtf8(const std::filesystem::path& path, std::
     if (!f) return FileReadOutcome::ReadError;
     std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     if (f.bad()) return FileReadOutcome::ReadError;
-    if (data.size() >= 3 && static_cast<unsigned char>(data[0]) == 0xEF &&
-        static_cast<unsigned char>(data[1]) == 0xBB && static_cast<unsigned char>(data[2]) == 0xBF) {
+    // REQ-051: the BOM strip routes through the shared StartsWithUtf8Bom
+    // predicate (one definition for every JSON reader) — byte-identical to
+    // the previous inline check.
+    if (StartsWithUtf8Bom(data)) {
         data.erase(0, 3);
     }
     out = std::move(data);
