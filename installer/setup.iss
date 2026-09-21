@@ -672,7 +672,7 @@ const
   // survived reinstalls). CompareVersionText digit-sums dotted segments, so
   // '0.10.1.r2' > '0.10.1' (replace) while older/newer cross-product compares
   // still resolve correctly.
-#define ENGINE_REVISION ".r3"
+#define ENGINE_REVISION ".r4"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
