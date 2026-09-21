@@ -16,6 +16,10 @@
 //        the margin/order asserts + the kHfProgressRectDlu runtime rect).
 // Staged as an .inc next to this runner; registered in main() right after
 // TestReq050HfUrlGate (the canonical-gate matrix this suite complements).
+// REQ-052 extends this file with TestReq052HfUiFixes (the HF add-dialog
+// defect bundle: registered-flag refresh, progress-decode signedness,
+// cancel abort-before-join, 64-bit Content-Length, orphan-file registration,
+// localized rename captions) — register it right after TestReq050HfAddDialog.
 // ---------------------------------------------------------------------------
 
 #include "../src/ui/gguf_model_manager_window.hpp" // NormalizeHfUrl + BuildHfAddTemplate + kHfProgressRectDlu
@@ -319,6 +323,141 @@ void TestReq050HfAddDialog() {
                   << std::endl;
     } else {
         std::cout << "[FAIL] REQ-050 (2-1/2-2) HF add-dialog checks: "
+                  << (g_failed_count - failures_before) << " check(s) failed."
+                  << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REQ-052: the HF model-manager/downloader defect bundle —
+//   1 manager list not refreshed after a successful fresh HF add
+//     (HfRegisterDownloaded's fresh path now flips st->registered like both
+//     reuse paths; the caller gates the reload on it)
+//   2 '(65535%)' signedness — HfDecodeProgressPercent((WORD)-1) == -1 so the
+//     marquee branch runs again (the pure helper lives in the window hpp)
+//   3 cancel freeze — the worker publishes its connect/request handles and
+//     IDCANCEL WinHttpCloseHandles them BEFORE joining (the documented
+//     cross-thread abort), instead of waiting out the 60s receive timeout
+//   4 4GB+ Content-Length — the header is queried as TEXT and parsed to a
+//     64-bit value (no WINHTTP_QUERY_FLAG_NUMBER on it anymore), percent
+//     math stays 64-bit with the divide-by-zero guard
+//   5 orphan-file re-download deadlock — an unregistered file on disk is
+//     registered through the same origin:"user" path a completed download
+//     takes (shared HfDeriveFreshIdentity) with an honest HfDone status,
+//     instead of a bare HfFailed refusal
+//   6 rename-dialog captions — the hardcoded L"OK"/L"Cancel" became the
+//     generic DialogOk/DialogCancel pair (no new i18n strings)
+// ---------------------------------------------------------------------------
+void TestReq052HfUiFixes() {
+    std::cout << "[RUN] Testing REQ-052 HF add-dialog defect fixes..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (2) pure: the progress-percent decode helper (header-inline) -------
+    TEST_CHECK(HfDecodeProgressPercent(static_cast<WPARAM>(static_cast<WORD>(-1))) == -1,
+               "REQ-052: (WORD)-1 marquee sentinel decodes to -1 (not 65535)");
+    TEST_CHECK(HfDecodeProgressPercent(0) == 0,
+               "REQ-052: 0% decodes to 0");
+    TEST_CHECK(HfDecodeProgressPercent(50) == 50,
+               "REQ-052: 50% decodes to 50");
+    TEST_CHECK(HfDecodeProgressPercent(100) == 100,
+               "REQ-052: 100% decodes to 100");
+    // The wire value 65535 IS the sentinel — the pre-fix cast decoded it to
+    // +65535 and the status read "(65535%)".
+    TEST_CHECK(HfDecodeProgressPercent(static_cast<WPARAM>(65535)) == -1,
+               "REQ-052: the wire value 65535 decodes to -1 (marquee)");
+
+    // ---- (1/3/4/5/6) structural pins on the production source ---------------
+    const std::filesystem::path hf_req052_cpp =
+        ResolveRepoFile(L"src\\ui\\gguf_model_manager_window.cpp");
+    if (hf_req052_cpp.empty()) {
+        std::cout << "[SKIP] src/ui/gguf_model_manager_window.cpp not resolvable; "
+                     "REQ-052 source pins skipped." << std::endl;
+    } else {
+        std::ifstream in(hf_req052_cpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        const auto count_occ = [&src](const std::string& needle) {
+            size_t n = 0;
+            size_t pos = 0;
+            while ((pos = src.find(needle, pos)) != std::string::npos) {
+                ++n;
+                pos += needle.size();
+            }
+            return n;
+        };
+
+        // (1) every success path flips `registered` — both reuse paths, the
+        // orphan-file path AND the fresh path (the pre-fix fresh path forgot,
+        // so the caller's manager-list reload gate never ran).
+        TEST_CHECK(count_occ("st->registered = true") >= 3,
+                   "REQ-052: st->registered = true on every registration path "
+                   "(reuse x2 + orphan + fresh)");
+        // (2) the handler decodes through the helper, not a raw WORD->int cast.
+        TEST_CHECK(src.find("const int percent = HfDecodeProgressPercent(wp);") !=
+                       std::string::npos &&
+                       src.find("static_cast<int>(static_cast<WORD>(wp))") ==
+                           std::string::npos,
+                   "REQ-052: kHfMsgProgress decodes wParam through "
+                   "HfDecodeProgressPercent (the raw WORD->int cast is gone)");
+        // (3) the worker publishes the request handle so the cancel path has
+        // something to close.
+        TEST_CHECK(src.find("st->hf_request = request.get();") != std::string::npos &&
+                       src.find("st->hf_connect = connect.get();") != std::string::npos,
+                   "REQ-052: the worker publishes its connect/request handles "
+                   "into the dialog state");
+        // (3) cancel: close BEFORE join (source order inside the IDCANCEL arm —
+        // the cancel flag store is the only st->cancel.store(true) in the file).
+        {
+            const size_t pos_cancel = src.find("st->cancel.store(true)");
+            const size_t pos_close = src.find("WinHttpCloseHandle(abort_request)");
+            const size_t pos_join =
+                pos_cancel == std::string::npos
+                    ? std::string::npos
+                    : src.find("HfJoinWorker(st);", pos_cancel);
+            TEST_CHECK(pos_cancel != std::string::npos &&
+                           pos_close != std::string::npos &&
+                           pos_join != std::string::npos &&
+                           pos_cancel < pos_close && pos_close < pos_join,
+                       "REQ-052: IDCANCEL closes the published handles before "
+                       "joining the worker (abort, not a 60s freeze)");
+        }
+        // (4) 64-bit Content-Length: no FLAG_NUMBER on the content-length
+        // query (the status-code query legitimately keeps its own), and the
+        // strict decimal text parse to unsigned long long is present.
+        TEST_CHECK(src.find("WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER") ==
+                       std::string::npos,
+                   "REQ-052: Content-Length is no longer queried with "
+                   "WINHTTP_QUERY_FLAG_NUMBER (the DWORD 4GB overflow)");
+        TEST_CHECK(src.find("WINHTTP_QUERY_CONTENT_LENGTH,") != std::string::npos &&
+                       src.find("unsigned long long parsed") != std::string::npos &&
+                       src.find("parsed * 10ull") != std::string::npos,
+                   "REQ-052: Content-Length is queried as text and parsed to a "
+                   "64-bit value");
+        // (5) orphan file: registered through the shared identity helper with
+        // an honest HfDone status (HfDone is also the done-handler notice, so
+        // >= 2 uses).
+        TEST_CHECK(src.find("orphan file registered") != std::string::npos &&
+                       count_occ("HfDeriveFreshIdentity(") >= 3,
+                   "REQ-052: the orphan-file path registers the existing file "
+                   "through the shared HfDeriveFreshIdentity helper");
+        TEST_CHECK(count_occ("I18n::Get(StringId::HfDone)") >= 2,
+                   "REQ-052: the orphan path surfaces the honest HfDone status "
+                   "(reused string, no new i18n field)");
+        // (6) rename captions localized through the generic pair.
+        TEST_CHECK(src.find("L\"OK\"") == std::string::npos &&
+                       src.find("L\"Cancel\"") == std::string::npos,
+                   "REQ-052: the rename dialog no longer hardcodes L\"OK\"/L\"Cancel\"");
+        TEST_CHECK(count_occ("I18n::Get(StringId::DialogOk)") >= 2 &&
+                       count_occ("I18n::Get(StringId::DialogCancel)") >= 2,
+                   "REQ-052: rename OK/Cancel reuse the generic DialogOk/"
+                   "DialogCancel pair (HF dialog + rename dialog)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-052 HF add-dialog defect fixes passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-052 HF add-dialog defect fixes: "
                   << (g_failed_count - failures_before) << " check(s) failed."
                   << std::endl;
     }

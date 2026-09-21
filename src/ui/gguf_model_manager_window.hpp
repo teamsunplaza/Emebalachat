@@ -110,6 +110,18 @@ bool NormalizeHfUrl(std::string_view url, std::string* out_resolve_url);
 // re-validated inside, so callers can pass an arbitrary string safely.
 bool HfResolveFilename(std::string_view url, std::string* out_filename);
 
+// REQ-052: decodes the value-only kHfMsgProgress wParam. The worker posts the
+// percent as a WORD (0..100), with (WORD)-1 as the "server gave no
+// Content-Length" marquee sentinel. The pre-fix handler did a plain
+// WORD->int cast, so the sentinel decoded as 65535, the marquee branch never
+// ran and the status line read "(65535%)". The payload is value-only, so the
+// WPARAM is truncated to its low WORD first and any upper bits are discarded
+// by design.
+inline int HfDecodeProgressPercent(WPARAM wp) {
+    const WORD raw = static_cast<WORD>(wp);
+    return raw == static_cast<WORD>(-1) ? -1 : static_cast<int>(raw);
+}
+
 // ---- Template emission (unit-suite byte-walk, same split precedent as
 // BuildOpenAiTemplate: Begin() must already have been called with the matching
 // item count — 7 for the manager, 4 for the rename prompt, 5 for the HF add

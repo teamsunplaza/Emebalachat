@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -269,8 +270,13 @@ void BuildGgufRenameTemplate(TemplateBuilder& tb) {
     tb.AddItem(LBL, 8, 5, 204, 9, IDC_RENAME_PROMPT, STATIC_CLS,
                I18n::Get(StringId::GgufManagerRenameBody));
     tb.AddItem(EDT, 8, 16, 204, 12, IDC_RENAME_EDIT, EDIT_CLS, L"");
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 34, 48, 13, IDOK, BTN_CLS, L"OK");
-    tb.AddItem(BTN, 164, 34, 48, 13, IDCANCEL, BTN_CLS, L"Cancel");
+    // REQ-052: localized captions (the generic DialogOk/DialogCancel pair) —
+    // the pre-fix hardcoded English literals stayed English in every
+    // non-English UI.
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 34, 48, 13, IDOK, BTN_CLS,
+               I18n::Get(StringId::DialogOk));
+    tb.AddItem(BTN, 164, 34, 48, 13, IDCANCEL, BTN_CLS,
+               I18n::Get(StringId::DialogCancel));
 }
 
 // Runs the rename prompt loop for `old_id` until the user cancels, enters a
@@ -351,6 +357,19 @@ struct HfAddDialogState {
     std::wstring worker_url;
     std::filesystem::path worker_tmp;
     std::string worker_filename;
+    // REQ-052: the in-flight connect/request handles, published by the worker
+    // so the IDCANCEL path can abort a blocked WinHTTP call — closing an
+    // HINTERNET from another thread is the documented abort for a pending
+    // operation (the pre-fix design joined the worker while it could sit in
+    // WinHttpReadData for the whole 60s receive timeout -> GUI freeze). A
+    // slot is nulled under the mutex BEFORE its close and whoever clears it
+    // owns the single close, so no handle is double-closed and the worker
+    // never uses a handle after the cancel path closed it (every post-close
+    // API call fails, so the loop breaks out; the cancel poll sits at the
+    // loop top).
+    std::mutex hf_handles_mutex;
+    HINTERNET hf_connect = nullptr;
+    HINTERNET hf_request = nullptr;
 };
 
 void HfJoinWorker(HfAddDialogState* st) {
@@ -360,9 +379,38 @@ void HfJoinWorker(HfAddDialogState* st) {
     st->worker_running = false;
 }
 
+// REQ-052: single-owner close for a handle published in the dialog state.
+// The slot is returned to nullptr under the mutex BEFORE the close; when the
+// slot no longer holds `h`, the cancel path already closed it and this side
+// must not (exactly-once close across the worker's deleters and the GUI
+// cancel path). A null st/slot (the session handle is worker-local) means
+// this side always closes.
+void HfClearSlot(HfAddDialogState* st, HINTERNET HfAddDialogState::*slot,
+                 HINTERNET h) {
+    if (!h) {
+        return;
+    }
+    bool mine = true;
+    if (st != nullptr && slot != nullptr) {
+        mine = false;
+        {
+            std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+            if (st->*slot == h) {
+                st->*slot = nullptr;
+                mine = true;
+            }
+        }
+    }
+    if (mine) {
+        ::WinHttpCloseHandle(h);
+    }
+}
+
 struct HfScopedHandleDeleter {
+    HfAddDialogState* st = nullptr;              // REQ-052: published-slot owner
+    HINTERNET HfAddDialogState::*slot = nullptr; // (null => worker-local handle)
     void operator()(HINTERNET h) const {
-        if (h) ::WinHttpCloseHandle(h);
+        HfClearSlot(st, slot, h);
     }
 };
 using HfScopedHInternet = std::unique_ptr<void, HfScopedHandleDeleter>;
@@ -411,17 +459,34 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
                 // only): resolve/connect 10s, send 30s, receive 60s.
                 ::WinHttpSetTimeouts(session.get(), 10000, 10000, 30000, 60000);
             }
-            HfScopedHInternet connect;
+            // REQ-052: connect/request publish into the dialog state as soon as
+            // they exist, so the IDCANCEL path can close them and abort a
+            // blocked call (the single-owner HfClearSlot protocol clears the
+            // slot before either side closes).
+            // REQ-052 integration fix: unique_ptr<void, Deleter> needs the
+            // pointer argument (nullptr — the handle arrives via reset());
+            // the deleter-only form never compiled (C2664).
+            HfScopedHInternet connect(nullptr, HfScopedHandleDeleter{
+                st, &HfAddDialogState::hf_connect});
             if (session) {
                 connect.reset(::WinHttpConnect(session.get(), L"huggingface.co",
                                                INTERNET_DEFAULT_HTTPS_PORT, 0));
+                if (connect) {
+                    std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+                    st->hf_connect = connect.get();
+                }
             }
-            HfScopedHInternet request;
+            HfScopedHInternet request(nullptr, HfScopedHandleDeleter{
+                st, &HfAddDialogState::hf_request});
             if (connect) {
                 request.reset(::WinHttpOpenRequest(connect.get(), L"GET", path,
                                                    nullptr, WINHTTP_NO_REFERER,
                                                    WINHTTP_DEFAULT_ACCEPT_TYPES,
                                                    WINHTTP_FLAG_SECURE));
+                if (request) {
+                    std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+                    st->hf_request = request.get();
+                }
             }
             ok = request != nullptr;
             if (ok) {
@@ -446,17 +511,39 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
             if (ok) {
                 // Content-Length is optional (chunked/CDN): when unknown the
                 // dialog keeps the marquee and shows the byte count instead.
-                DWORD len = 0;
-                DWORD lsz = sizeof(len);
-                if (::WinHttpQueryHeaders(request.get(),
-                        WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &len, &lsz,
+                // REQ-052: query the header as TEXT and parse it to a 64-bit
+                // value — WINHTTP_QUERY_FLAG_NUMBER fills a DWORD, so a >4GB
+                // model (the 20GB cap allows them) parsed as 0 and broke the
+                // progress math. (The status-code query above keeps its
+                // FLAG_NUMBER path: an HTTP code always fits a DWORD.)
+                wchar_t len_buf[32] = {};
+                DWORD len_sz = sizeof(len_buf);
+                if (::WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_CONTENT_LENGTH,
+                        WINHTTP_HEADER_NAME_BY_INDEX, len_buf, &len_sz,
                         WINHTTP_NO_HEADER_INDEX)) {
-                    advertised = len;
-                    if (advertised > kHfMaxDownloadBytes) {
-                        DIAG_F("UI/HfAdd/003: advertised length %llu exceeds the %llu-byte cap\n",
-                               advertised, kHfMaxDownloadBytes);
-                        ok = false;
+                    // Strict decimal parse: a bogus length must not reach the
+                    // progress math; unparseable is treated like "unknown"
+                    // (marquee), matching the pre-fix FLAG_NUMBER behavior.
+                    unsigned long long parsed = 0;
+                    bool len_ok = true;
+                    for (const wchar_t* p = len_buf; *p != L'\0'; ++p) {
+                        if (*p < L'0' || *p > L'9') {
+                            len_ok = false;
+                            break;
+                        }
+                        parsed = parsed * 10ull +
+                                 static_cast<unsigned long long>(*p - L'0');
+                    }
+                    if (len_ok) {
+                        advertised = parsed;
+                        if (advertised > kHfMaxDownloadBytes) {
+                            DIAG_F("UI/HfAdd/003: advertised length %llu exceeds the %llu-byte cap\n",
+                                   advertised, kHfMaxDownloadBytes);
+                            ok = false;
+                        }
+                    } else {
+                        DIAG_F("UI/HfAdd/020: unparseable Content-Length ignored (len=%lu)\n",
+                               len_sz);
                     }
                 }
             }
@@ -531,6 +618,45 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
     ::PostMessageW(dlg, kHfMsgDone, static_cast<WPARAM>(code), 0);
 }
 
+// REQ-052: the fresh-registration identity shared by the post-download path
+// and the orphan-file path (HfPreFlight) — the file-picker pipeline's id
+// policy: case-insensitive ".gguf" tail strip for the display stem, then
+// user-<stem> with "_2"/"_3"… suffixes on a registry id collision (the
+// filename itself is fixed).
+struct HfFreshIdentity {
+    std::string stem;
+    std::string model_id;
+};
+
+HfFreshIdentity HfDeriveFreshIdentity(engine_host_registry::Registry& registry,
+                                      const std::string& filename) {
+    const std::string kGgufExt = ".gguf";
+    std::string stem = filename;
+    if (stem.size() > kGgufExt.size()) {
+        const std::string tail = stem.substr(stem.size() - kGgufExt.size());
+        bool gguf_tail = true;
+        for (size_t ci = 0; ci < kGgufExt.size(); ++ci) {
+            if (std::tolower(static_cast<unsigned char>(tail[ci])) !=
+                std::tolower(static_cast<unsigned char>(kGgufExt[ci]))) {
+                gguf_tail = false;
+                break;
+            }
+        }
+        if (gguf_tail) {
+            stem.resize(stem.size() - kGgufExt.size());
+        }
+    }
+    HfFreshIdentity ident;
+    ident.stem = std::move(stem);
+    ident.model_id = "user-" + ident.stem;
+    for (int suffix = 2;
+         registry.FindModel(ident.model_id) != nullptr && suffix <= 1000;
+         ++suffix) {
+        ident.model_id = "user-" + ident.stem + "_" + std::to_string(suffix);
+    }
+    return ident;
+}
+
 // REQ-050: pre-download guards, run on the GUI thread BEFORE the worker
 // starts so a multi-GB download is never wasted:
 //   * LOCALAPPDATA / models dir (loud, reuses the manager-error strings)
@@ -538,7 +664,9 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
 //   * filename already registered -> bundled refusal or user-entry reuse
 //     (switch config to the existing entry; the file-picker pipeline's §4
 //     semantics, so both add methods behave identically)
-//   * filename present on disk but unregistered -> refuse to overwrite
+//   * REQ-052: filename present on disk but unregistered -> REGISTER the
+//     existing complete file (origin "user") instead of dead-ending the
+//     re-download with a bare failure status
 enum class HfPreFlightResult { Proceed, Handled, Refused };
 
 HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
@@ -598,16 +726,38 @@ HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
         st->registered = true;
         return HfPreFlightResult::Handled;
     }
-    // Orphan-file collision: an unregistered file with this name already
-    // sits in the models dir. Refuse-with-message (the task-mandated honest
-    // policy) rather than silently suffixing or overwriting.
+    // REQ-052: orphan-file collision — a complete file with this name sits in
+    // the models dir but is not registered. The pre-fix code refused with a
+    // bare HfFailed ("다운로드 실패") even though nothing failed, dead-ending
+    // re-downloads of a model the user already has. Register the EXISTING
+    // file through the same origin:"user" path a completed download takes
+    // (same id policy via HfDeriveFreshIdentity, same loud registry write,
+    // same engine switch) and report an honest done status; the download
+    // never starts.
     if (std::filesystem::exists(models_dir / ToUtf16(filename), ec)) {
-        if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
-            ::SetWindowTextW(s, I18n::Get(StringId::HfFailed).c_str());
+        const HfFreshIdentity ident = HfDeriveFreshIdentity(res.registry, filename);
+        engine_host_registry::ModelEntry entry;
+        entry.id = ident.model_id;
+        entry.family = "ggml-translate";
+        entry.files = { filename };
+        entry.origin = "user";
+        res.registry.models.push_back(std::move(entry));
+        if (!WriteRegistryLoud(dlg, res.registry)) {
+            return HfPreFlightResult::Refused; // the guard already surfaced why
         }
-        DIAG_F("UI/HfAdd/012: target file already exists on disk; refusing (file=%s)\n",
-               filename.c_str());
-        return HfPreFlightResult::Refused;
+        st->config->SetUserModelId(ident.model_id);
+        st->config->SetEngineTypeName("user_gguf");
+        st->engine->SetEngineType(EngineType::LocalLlama);
+        // REQ-051 U-2: the engine name flips to the freshly derived stem.
+        st->engine->SetUserModelDisplayStem(ident.stem);
+        st->config->SaveToFile();
+        if (HWND s = ::GetDlgItem(dlg, IDC_HF_STATUS)) {
+            ::SetWindowTextW(s, I18n::Get(StringId::HfDone).c_str());
+        }
+        DIAG_F("UI/HfAdd/021: orphan file registered id=%s file=%s (origin=user)\n",
+               ident.model_id.c_str(), filename.c_str());
+        st->registered = true;
+        return HfPreFlightResult::Handled;
     }
     return HfPreFlightResult::Proceed;
 }
@@ -693,32 +843,12 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
         discard_tmp();
         return false;
     }
-    // Fresh registration — the file-picker pipeline's id policy: user-<stem>,
-    // "_2"/"_3"… suffixes on id collision (the filename itself is fixed).
-    const std::string kGgufExt = ".gguf";
-    std::string stem = st->worker_filename;
-    if (stem.size() > kGgufExt.size()) {
-        const std::string tail = stem.substr(stem.size() - kGgufExt.size());
-        bool gguf_tail = true;
-        for (size_t ci = 0; ci < kGgufExt.size(); ++ci) {
-            if (std::tolower(static_cast<unsigned char>(tail[ci])) !=
-                std::tolower(static_cast<unsigned char>(kGgufExt[ci]))) {
-                gguf_tail = false;
-                break;
-            }
-        }
-        if (gguf_tail) {
-            stem.resize(stem.size() - kGgufExt.size());
-        }
-    }
-    std::string model_id = "user-" + stem;
-    for (int suffix = 2;
-         res.registry.FindModel(model_id) != nullptr && suffix <= 1000;
-         ++suffix) {
-        model_id = "user-" + stem + "_" + std::to_string(suffix);
-    }
+    // Fresh registration — the file-picker pipeline's id policy via the
+    // shared helper: user-<stem>, "_2"/"_3"… suffixes on id collision (the
+    // filename itself is fixed).
+    const HfFreshIdentity ident = HfDeriveFreshIdentity(res.registry, st->worker_filename);
     engine_host_registry::ModelEntry entry;
-    entry.id = model_id;
+    entry.id = ident.model_id;
     entry.family = "ggml-translate";
     entry.files = { st->worker_filename };
     entry.origin = "user";
@@ -728,14 +858,19 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
         // like the file-picker pipeline's copy-then-write-failure case.
         return false;
     }
-    st->config->SetUserModelId(model_id);
+    st->config->SetUserModelId(ident.model_id);
     st->config->SetEngineTypeName("user_gguf");
     st->engine->SetEngineType(EngineType::LocalLlama);
     // REQ-051 U-2: the engine name flips to the freshly derived stem.
-    st->engine->SetUserModelDisplayStem(stem);
+    st->engine->SetUserModelDisplayStem(ident.stem);
     st->config->SaveToFile();
     DIAG_F("UI/HfAdd/018: registered HF model id=%s file=%s (origin=user)\n",
-           model_id.c_str(), st->worker_filename.c_str());
+           ident.model_id.c_str(), st->worker_filename.c_str());
+    // REQ-052: the fresh path must flip `registered` too — ShowHfAddDialog
+    // returns it and the caller gates the manager-list reload on it, so a
+    // successful fresh add used to leave the list stale (both reuse paths
+    // already set it).
+    st->registered = true;
     return true;
 }
 
@@ -793,7 +928,9 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
     case kHfMsgProgress: {
-        const int percent = static_cast<int>(static_cast<WORD>(wp));
+        // REQ-052: decode through the helper — the raw WORD->int cast turned
+        // the (WORD)-1 marquee sentinel into 65535 ("(65535%)").
+        const int percent = HfDecodeProgressPercent(wp);
         const auto bytes = static_cast<unsigned long long>(lp);
         if (HWND prog = ::GetDlgItem(dlg, IDC_HF_PROGRESS)) {
             if (percent < 0) {
@@ -894,12 +1031,42 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case IDCANCEL:
             if (st->worker_running) {
-                // Ask the worker to stop and wait for it (bounded by the
-                // per-call io timeouts between cancel polls). If it actually
-                // finished in the meantime, the completed temp is discarded —
-                // the user explicitly asked to cancel.
+                // Ask the worker to stop, ABORT the in-flight I/O, and only
+                // then wait for it. REQ-052: the pre-fix code joined directly,
+                // so a worker blocked in WinHttpReadData sat until the 60s
+                // receive timeout — a ~60s GUI freeze. WinHTTP documents
+                // WinHttpCloseHandle from another thread as the abort for a
+                // pending operation; the slot-clear protocol (HfClearSlot)
+                // makes each close exactly-once, and the worker breaks out of
+                // its loop on the very next failed call (the cancel poll sits
+                // at the loop top, so a handle is never used after this
+                // close). If the download actually finished in the meantime,
+                // the completed temp is discarded — the user explicitly asked
+                // to cancel.
                 st->cancel.store(true);
+                HINTERNET abort_request = nullptr;
+                HINTERNET abort_connect = nullptr;
+                {
+                    std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+                    abort_request = st->hf_request;
+                    st->hf_request = nullptr;
+                    abort_connect = st->hf_connect;
+                    st->hf_connect = nullptr;
+                }
+                if (abort_request) {
+                    ::WinHttpCloseHandle(abort_request);
+                }
+                if (abort_connect) {
+                    ::WinHttpCloseHandle(abort_connect);
+                }
                 HfJoinWorker(st);
+                // REQ-052: when the cancel click wins the race against
+                // kHfMsgDone, the completed temp would otherwise linger as
+                // <name>.download (the worker only deletes it on a
+                // failure/cancel exit, and the done handler that consumes it
+                // never runs).
+                std::error_code cancel_ec;
+                std::filesystem::remove(st->worker_tmp, cancel_ec);
             }
             ::EndDialog(dlg, IDCANCEL);
             return TRUE;
