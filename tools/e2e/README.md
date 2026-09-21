@@ -12,6 +12,7 @@ and the B-6c edge-flow matrix (design
 | File | Role |
 |---|---|
 | [`req027_e2e.py`](req027_e2e.py) | Main harness. Launches `build\Emebala_chat.exe` + a real Notepad scratch window, types/drives input, judges on 3 layers (log / content / verdict). |
+| [`req051_drag_e2e.py`](req051_drag_e2e.py) | REQ-051 drag→floating-button regression harness (3 scenarios: `drag_translate`, `drag_consecutive`, `drag_capture_failure`). Drives the REAL mouse path (drag-select via SendInput/mouse_event → `Emebalachat_DragIconClass` click) and judges on the drag-path DIAG token family (`UI/tooltip_request_begin`, `UI/tooltip_show kind=…`, `STATE/drag_src`, `MAIN/DragIconClick/…`, `WIN32_INPUT/CopySelectionWithSequenceWait/002`, `MAIN/EngineModal/010`). Copied architecture from req027 (same adoption policy, 3-layer verdicts, INCONCLUSIVE auto-retry, exit codes). See the section below. |
 | [`app_probe.py`](app_probe.py) | D-4a universal-app matrix probe (design 173700 §2.3): lists edit-control classes of the 8 user-named apps (메모장/카톡/디스코드/Chrome/Firefox/HWP/PPT/Word), replays the app's read-only EM_* probe family via ctypes, ports `ClassifyEmProbe` verbatim, and renders the 앱×컨트롤×EM-능력×예상경로×판정 matrix (markdown, `--json` for machine reading, `--fallback` adds the opt-in keyboard-geometry measurement). Reuses the `req027_e2e` ctypes layer (one source of truth, stdlib only). |
 | [`uia_read_edit.ps1`](uia_read_edit.ps1) | Layer-2 fallback reader: UIA ValuePattern via `System.Windows.Automation` (ships with .NET — no install). Used only when `WM_GETTEXT` cannot read the edit control. |
 | [`uia_close_window.ps1`](uia_close_window.ps1) | Teardown helper: dismisses the Win11 Notepad "save?" dialog via UIA when closing our dirty scratch window. (B-6c fixed the ko-KR discard-button pattern `저장하지 않음`.) |
@@ -38,6 +39,41 @@ and the B-6c edge-flow matrix (design
 scenario; `multi_lang` uses its own sessions — see below). INCONCLUSIVE
 results are auto-retried once (delegation §4). Individual runs:
 `python tools\e2e\req027_e2e.py <scenario>`.
+
+### req051_drag_e2e.py (REQ-051, drag → floating-button matrix)
+
+```bat
+python tools\e2e\req051_drag_e2e.py all                 ; 3 scenarios, one shared app session
+python tools\e2e\req051_drag_e2e.py drag_translate      ; single drag → icon → translation tooltip
+python tools\e2e\req051_drag_e2e.py drag_consecutive    ; 3 distinct sources → per-drag src_len/gen linkage (contamination guard)
+python tools\e2e\req051_drag_e2e.py drag_capture_failure; forced copy failure → the notice MUST surface, never silent
+```
+
+Closes the coverage hole named in the REQ-051 handoff (§6 "E2E 커버리지
+구멍"): the keyboard-centric req027 matrix has no defense for Symptom A
+("드래그 후 플로팅버튼을 눌러 번역 … 다른 것이 복사되어 출력"). The harness
+performs a real drag-select in the Notepad scratch window (EM_POSFROMCHAR-
+derived geometry, ≥15 px so the app's `WH_MOUSE_LL` drag-release gate
+fires), clicks the real `Emebalachat_DragIconClass` popup, and judges from
+the drag-path DIAG tokens. The drag path logs **no** `PIPELINE/stage=`
+lines (REQ-051 handoff §1-2): completion proof is
+`MAIN/EngineModal/010` + `UI/tooltip_show kind=translation`, capture
+failure is the per-attempt `WIN32_INPUT/CopySelectionWithSequenceWait/002`
+refusals (budgets 80/80/120, one per failed attempt of the shared 3-attempt
+`CopyChordWithSettledRetry` cycle) + the single `MAIN/DragIconClick/001`
+exhaustion line (`after 3 attempt(s)`; the retired `DragIconClick/004|005`
+retry tokens are gone), and contamination is caught by exact
+per-generation `src_len` linkage against the EM-selection readback.
+`drag_capture_failure` collapses the selection with a real VK_LEFT before
+the icon click (a synthetic Ctrl+C on an empty caret cannot bump the
+clipboard sequence), so the copy-failure notice path is exercised
+deterministically. Requirements match req027 (interactive desktop, do not
+touch the mouse/keyboard during a run, single app instance) plus:
+`diag_log_enabled=true` and `drag_to_translate=true` in the runtime config
+(%LOCALAPPDATA%, the harness never modifies config); a degenerate drag
+selection or a missing icon is a SETUP abort → INCONCLUSIVE auto-retry,
+never a product FAIL. Unverified-by-execution on a headless session — it
+needs the same live-desktop QA slot as req027.
 
 ## Requirements
 
