@@ -476,6 +476,7 @@ std::wstring TranslationManager::Translate(
         }
         std::string host_out;
         std::string host_err;
+        const auto t_local_attempt = std::chrono::steady_clock::now();
         if (engine_host::TryTranslate(engine_host_config_,
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), host_out, host_err)) {
@@ -489,6 +490,51 @@ std::wstring TranslationManager::Translate(
         ++host_fail_streak_;
         DIAG_F("ENGINE/Translate/044: engine-host try failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
                host_err.c_str(), host_fail_streak_);
+        // REQ-051 (session 260921, symptom B-1): ONE identical-input retry on
+        // a TRANSIENT fast failure (connect racing the orchestrator's spawn,
+        // busy/respawning worker, pipe died mid-request). The warrant is the
+        // pure policy in engine.hpp: transient code, retry budget unspent,
+        // the first attempt failed inside the fast-failure ceiling (so the
+        // pair stays inside the established request-time envelope - a 30 s
+        // cold-load timeout converges to the honest modal instead of a
+        // second half-minute wait), and no REQ-R16 cancel intent. The retry
+        // re-runs ONLY the local leg: the consent gates below are untouched,
+        // so under a strict-local pick with cloud_fallback_enabled=false the
+        // text still never leaves the device, and under Auto / explicit
+        // consent the already-consented cloud leg is reached exactly as
+        // before, only delayed by ~400 ms of local-first recovery.
+        const uint64_t first_attempt_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_local_attempt).count());
+        if (EngineHostTransientRetryWarranted(host_err, /*retries_so_far=*/0,
+                                              first_attempt_ms,
+                                              cancel_requested_.load(std::memory_order_acquire))) {
+            DIAG_F("ENGINE/Translate/046: transient local failure (code=%s, first attempt %llums); retrying the identical input once after %ums\n",
+                   host_err.c_str(), static_cast<unsigned long long>(first_attempt_ms),
+                   static_cast<unsigned int>(kEngineHostTransientRetryBackoffMs));
+            ::Sleep(kEngineHostTransientRetryBackoffMs);
+            if (cancel_requested_.load(std::memory_order_acquire)) {
+                // REQ-R16: a cancel posted while we slept — never start the
+                // second pipe request (it could transmit user text after an
+                // exit intent and could never deliver its result).
+                set_status(TranslationStatus::Canceled);
+                return {};
+            }
+            if (engine_host::TryTranslate(engine_host_config_,
+                                          std::string(src_code_or_name), tgt_name,
+                                          ToUtf8(text), host_out, host_err)) {
+                host_fail_streak_ = 0;  // the retry recovered the service
+                set_status(TranslationStatus::Ok);
+                return ToUtf16(host_out);
+            }
+            // REQ-051 integration fix: NO second ++host_fail_streak_ here.
+            // The streak is the CLIENT-SIDE REPAIR SIGNAL (V2-8.6) — one
+            // signal per converged user request, not per pipe attempt; the
+            // retry above is internal recovery. Counting both attempts broke
+            // the frozen T5 contract (one Translate -> streak 1). The /047
+            // line still logs the post-convergence streak.
+            DIAG_F("ENGINE/Translate/047: transient retry failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
+                   host_err.c_str(), host_fail_streak_);
+        }
         // Local serving failed. Auto: seamless cloud fallback - the consented
         // contract above.
         if (preferred_type_ == EngineType::Auto) {

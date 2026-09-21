@@ -444,6 +444,51 @@ constexpr bool ClipboardRestorerStaysArmed(bool pasted, bool restore_confirmed) 
     return !(pasted && restore_confirmed);
 }
 
+// REQ-051 (session 260921, symptom A-2): the Enter-path dropped-chord
+// surfacing policy, as ONE pure definition shared by worker.cpp and the unit
+// tests (same discipline as the predicates above). The capture seam reports
+// EnterCaptureResult::CopyChordDropped when the synthetic Ctrl+C never
+// committed on a selection-capable geometry after the full retry budget -
+// the user typed real text and the pipeline read nothing. The policy is the
+// main.cpp:748 engine-modal streak-latch algebra applied to this failure
+// class: surface the notice exactly when the consecutive-drop streak REACHES
+// the threshold (entry into the failed state); while the streak persists the
+// notice stays suppressed (the GUI latch equivalent - no per-Enter tooltip
+// spam); the next successful capture resets the streak (recovery clears the
+// latch). Warranted only OUTSIDE the REQ-034 paste window - inside it the
+// established benign send-through is untouched.
+inline constexpr int kDroppedChordNoticeStreakThreshold = 1;
+constexpr bool DroppedChordFailureStreakSurfaces(int consecutive_drops) {
+    return consecutive_drops == kDroppedChordNoticeStreakThreshold;
+}
+
+// REQ-051 (session 260921, symptom B-2): the Enter-path EngineFailed
+// surfacing policy, as ONE pure definition shared by worker.cpp and the unit
+// tests. The Auto-path EngineFailed (the consented local->cloud waterfall
+// also failed) used to be a silent failure - the user pressed Enter and
+// nothing at all happened. The policy reuses the existing GUI streak latch
+// (kMsgEngineUnavailableModal drain): the strict local statuses keep their
+// REQ-047 D1 threshold-1 surfacing; EngineFailed surfaces ONLY when the
+// preferred engine is a local leg (Auto or explicit local/user_gguf - where
+// "the local engine is unavailable" is the honest headline after the
+// waterfall) AND the consecutive-failure streak reached the threshold - a
+// single transient blip never pops a modal. An explicit Google/OpenAI pick
+// keeps its established error-tone-only surface: showing the repair-flavored
+// local modal for a pure-cloud outage would be the wrong text (no new
+// i18n strings allowed). The latch itself stays GUI-thread-only (REQ-047
+// P5-F1): the worker enqueues per failure once the threshold is crossed and
+// the drain suppresses the re-arms.
+inline constexpr int kEnterEngineFailureStreakThreshold = 3;
+constexpr bool EnterEngineFailureSurfacesModal(bool strict_local_status,
+                                               bool local_leg_preferred,
+                                               int consecutive_engine_failures) {
+    if (strict_local_status) {
+        return true; // REQ-047 D1 behavior preserved (the GUI latch dedupes)
+    }
+    return local_leg_preferred &&
+           consecutive_engine_failures >= kEnterEngineFailureStreakThreshold;
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);
@@ -490,7 +535,7 @@ public:
         empty_capture_cb_ = std::move(cb);
     }
 
-    // REQ-042 (계획-2): called (on the worker thread) exactly when the Enter
+    // REQ-042: called (on the worker thread) exactly when the Enter
     // path takes the tail-unchanged short-circuit AND the verbatim prefix
     // still holds translatable text (see UntranslatedResidueNoticeWarranted).
     // Same contract as SetEmptyCaptureCallback: registered once at startup
@@ -501,6 +546,20 @@ public:
     // predicate guarantees paste/selection/ledger state is untouched here.
     void SetUntranslatedResidueCallback(std::function<void()> cb) {
         untranslated_residue_cb_ = std::move(cb);
+    }
+
+    // REQ-051 (session 260921, symptom A-2): called (on the worker thread)
+    // exactly when the Enter path's capture seam reports
+    // EnterCaptureResult::CopyChordDropped and the task took the loud
+    // (outside-paste-window) hold branch - the synthetic Ctrl+C never
+    // committed on a selection-capable geometry after the full retry budget.
+    // Same contract as the other SetXxxCallback seams: registered once at
+    // startup BEFORE Start(), read-only afterwards. main.cpp registers a
+    // TooltipWindow::ShowMessageThreadSafe wrapper surfacing the EXISTING
+    // StringId::TooltipCopyFailed notice; the DroppedChordFailureStreakSurfaces
+    // policy gates the call to once per consecutive-streak.
+    void SetCopyChordFailedCallback(std::function<void()> cb) {
+        copy_chord_failed_cb_ = std::move(cb);
     }
 
     // REQ-047 D1 (design §A-1, Tech Gate §D1 #2/#3): called on the worker
@@ -545,6 +604,25 @@ private:
     // REQ-047 D1: set once at startup via SetEngineUnavailableCallback (see
     // contract there). Single-worker-thread read inside ExecuteTask.
     std::function<void(TranslationStatus)> engine_unavailable_cb_;
+
+    // REQ-051 (symptom A-2): set once at startup via SetCopyChordFailedCallback
+    // (see contract there). Single-worker-thread read inside ExecuteTask.
+    std::function<void()> copy_chord_failed_cb_;
+
+    // REQ-051 (symptom A-2): consecutive dropped-chord captures on the Enter
+    // path (EnterCaptureResult::CopyChordDropped verdicts that took the loud
+    // hold branch). DroppedChordFailureStreakSurfaces consumes it; reset on
+    // every successful (non-empty) capture - the recovery-clear half of the
+    // streak latch. Benign empty captures (provably-empty exemption, smart
+    // bypass) neither increment nor reset it. Single-worker-thread state,
+    // same discipline as the last-paste ledger below.
+    int dropped_chord_streak_ = 0;
+
+    // REQ-051 (symptom B-2): consecutive engine-failure outcomes
+    // (EngineFailed / CloudConsentBlocked / LocalModelMissing) on the Enter
+    // path. EnterEngineFailureSurfacesModal consumes it; reset on every
+    // successful translation. Single-worker-thread state, same discipline.
+    int consecutive_engine_failures_ = 0;
 
     // REQ-034 F3-B: GetTickCount64() stamp of the last SUCCESSFUL paste
     // (pasted == true branch in ExecuteTask). Read by the empty-capture

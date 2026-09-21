@@ -667,6 +667,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const bool should_translate = !line.empty() && !was_smart_bypassed;
     DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
+    // REQ-051 (symptom A-2): a non-empty capture is the recovery signal for
+    // the dropped-chord streak latch (and the B-2 engine-failure streak) -
+    // the capture seam demonstrably reads the target again, so a later
+    // dropped-chord notice may re-arm. Benign empty shapes (provably-empty
+    // exemption, smart bypass) leave the streak untouched.
+    if (!line.empty()) {
+        dropped_chord_streak_ = 0;
+        consecutive_engine_failures_ = 0;
+    }
     // Session 260913_0001 (Phase B, debug report 022121 §8-1): an empty
     // capture is no longer one flat `capture_empty` label - the capture
     // seam's shape-only verdict (guard_abort / copy_chord_failed /
@@ -787,6 +796,40 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         return;
     }
     if (empty_capture_hold && empty_capture_cb_) {
+        // REQ-051 (symptom A-2): the dropped-chord class (the capture seam
+        // reports CopyChordDropped - a selection-capable geometry whose
+        // synthetic Ctrl+C never committed after the full retry budget). The
+        // text the user typed is still sitting in the target app, so the R5
+        // hold contract applies exactly like the no-selection case; the
+        // NOTICE differs - the existing TooltipCopyFailed ("couldn't copy
+        // the selection, check the target app") is honest for a dropped
+        // chord, while TooltipNoSelection would mislabel a selection the app
+        // failed to grab. The DroppedChordFailureStreakSurfaces policy
+        // surfaces it ONCE per consecutive streak (the main.cpp:748 latch
+        // algebra); without a registered callback this degrades to the
+        // established no-selection notice, never to a silent swallow.
+        if (capture_result == EnterCaptureResult::CopyChordDropped &&
+            copy_chord_failed_cb_) {
+            ++dropped_chord_streak_;
+            DIAG_F(
+                    "WORKER/ExecuteTask/048: dropped copy chord on bare-Enter path "
+                    "(streak=%d, smart_bypass=%d); holding send, copy-failed notice "
+                    "policy=%s\n",
+                    dropped_chord_streak_, was_smart_bypassed ? 1 : 0,
+                    DroppedChordFailureStreakSurfaces(dropped_chord_streak_)
+                        ? "surface" : "latched");
+            DIAG_LOG("PIPELINE", "stage=empty_capture decision=hold_send reason=copy_chord_dropped "
+                                 "streak=%d action=%s duration_ms=%llu",
+                     dropped_chord_streak_,
+                     DroppedChordFailureStreakSurfaces(dropped_chord_streak_)
+                         ? "copy_failed_notice" : "notice_latched",
+                     ::GetTickCount64() - t_task_start);
+            ReleaseSelectionOnce();
+            if (DroppedChordFailureStreakSurfaces(dropped_chord_streak_)) {
+                copy_chord_failed_cb_();
+            }
+            return;
+        }
         DIAG_F(
                 "WORKER/ExecuteTask/035: empty capture on bare-Enter path; holding send, "
                 "showing no-selection notice (smart_bypass=%d)\n",
@@ -878,18 +921,44 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     //   * success (non-empty result) -> clear the GUI-thread latch so a later
     //     recurrence re-arms the modal. The wrapper performs the GUI hop; the
     //     worker thread never touches the latch itself (Tech Gate #2).
-    // Auto-path EngineFailed (the cloud waterfall also failed) is deliberately
-    // NOT surfaced here — design §A.2 keeps the existing silence for that case.
+    // REQ-051 (session 260921, symptom B-2): the Auto-path EngineFailed (the
+    // cloud waterfall also failed) is NO LONGER silent. The failure feeds the
+    // consecutive_engine_failures_ streak and surfaces through this SAME seam
+    // once EnterEngineFailureSurfacesModal fires (threshold crossed AND the
+    // preferred engine is a local leg) - the existing GUI streak latch keeps
+    // it to ONE modal per streak. An explicit Google/OpenAI pick never
+    // surfaces here (its modal wording would be wrong); its established
+    // error-tone-only surface is unchanged.
     if (engine_unavailable_cb_) {
         if (status == TranslationStatus::CloudConsentBlocked ||
             status == TranslationStatus::LocalModelMissing) {
+            ++consecutive_engine_failures_;
             DIAG_F("WORKER/ExecuteTask/030: strict local failure status=%d; "
                    "signaling engine-unavailable modal\n",
                    static_cast<int>(status));
             engine_unavailable_cb_(status);
+        } else if (status == TranslationStatus::EngineFailed) {
+            ++consecutive_engine_failures_;
+            const bool local_leg =
+                engine_.GetEngineType() == EngineType::Auto ||
+                engine_.GetEngineType() == EngineType::LocalLlama;
+            if (EnterEngineFailureSurfacesModal(/*strict_local_status=*/false,
+                                                local_leg,
+                                                consecutive_engine_failures_)) {
+                DIAG_F("WORKER/ExecuteTask/049: engine failure streak %d on a local "
+                       "leg; surfacing once through the streak latch\n",
+                       consecutive_engine_failures_);
+                engine_unavailable_cb_(status);
+            } else {
+                DIAG_F("WORKER/ExecuteTask/050: engine failure streak %d below the "
+                       "local-leg surfacing threshold (or a pure-cloud leg); "
+                       "staying silent (error tone only)\n",
+                       consecutive_engine_failures_);
+            }
         } else if (!translated.empty()) {
             // Translation produced output — the streak that gated the modal is
             // over. Signal the reset through the same marshaled seam.
+            consecutive_engine_failures_ = 0;
             engine_unavailable_cb_(TranslationStatus::Ok);
         }
     }

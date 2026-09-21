@@ -592,6 +592,23 @@ bool PasteSelection() {
     return SendModifiedKey(VK_CONTROL, 'V');
 }
 
+// REQ-051 (symptom A-1): the shared copy-chord retry driver - see the header
+// contract. Every attempt re-baselines the clipboard sequence inside
+// CopySelectionWithSequenceWait (the REQ-R04 stale-read invariant); this
+// driver only owns the attempt count / settle pacing.
+bool CopyChordWithSettledRetry(int total_attempts, uint32_t settle_ms) {
+    for (int attempt = 0; attempt < total_attempts; ++attempt) {
+        if (attempt > 0) {
+            ::Sleep(settle_ms);
+        }
+        if (CopySelectionWithSequenceWait(
+                CopyChordRetryAttemptTimeoutMs(attempt, total_attempts))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::wstring GetClipboardText(DWORD timeout_ms) {
     // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note.
     ScopedClipboard clip(nullptr, timeout_ms);
@@ -1537,6 +1554,13 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     // reports what really ran - the provably-empty exemption can stop the
     // loop after one attempt.
     int attempts_executed = 0;
+    // REQ-051 (symptom A-2): set when the retry loop stopped via the
+    // provably-empty EM exemption (the REQ-034 F3-B paste-window geometry -
+    // Ctrl+C over an empty selection legitimately changes nothing). The
+    // final verdict uses it to keep the benign CopyChordFailed label; a
+    // non-exempted exhaustion on a selection-capable geometry is reported as
+    // the distinct CopyChordDropped verdict instead.
+    bool provably_empty_exempt = false;
     for (int attempt = 0; attempt < kClipboardCopyChordAttempts; ++attempt) {
         if (attempt == 0) {
             if (category == AppCategory::CategoryA) {
@@ -1579,6 +1603,7 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
         }
         const bool provably_empty = EditCaretTracker_SelectionProvablyEmpty(hwnd);
         if (!CopyChordRetryWarranted(attempt, provably_empty)) {
+            provably_empty_exempt = provably_empty;
             if (attempt == 0) {
                 // REQ-F3 (log 260908 F3): the provably-empty EM selection is
                 // the REQ-034 F3-B paste-window geometry - Ctrl+C on an empty
@@ -1631,7 +1656,18 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                 "WIN32_INPUT/CopySelectedText/001: copy not confirmed after %d chord attempt(s) (hwnd=%p category=%d sel_send=%d); returning empty\n",
                 attempts_executed,
                 reinterpret_cast<void*>(hwnd), static_cast<int>(category), sel_ok ? 1 : 0);
-        report(EnterCaptureResult::CopyChordFailed);
+        // REQ-051 (symptom A-2): distinguish the genuine dropped chord from
+        // the benign paste-window geometry. A non-exempted exhaustion on the
+        // BUG-002 rescue-eligible class (CategoryB non-EM - structured
+        // contenteditable / Electron editors, where the user typed real text
+        // and the synthetic Ctrl+C never committed) reports the distinct
+        // CopyChordDropped verdict for the worker's dropped-chord streak
+        // policy; CategoryA keeps CopyChordFailed because there a
+        // non-confirming chord is indistinguishable from an empty chat input
+        // and the established no-selection wording is the accurate surface.
+        report((!provably_empty_exempt && SelectAllRescueWarranted(em_path, category))
+                   ? EnterCaptureResult::CopyChordDropped
+                   : EnterCaptureResult::CopyChordFailed);
         return {};
     }
 

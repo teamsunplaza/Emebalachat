@@ -235,6 +235,17 @@ enum class EnterCaptureResult {
     CopyChordFailed, // Ctrl+C not confirmed within the retry budget; empty returned
     EmptySelection,  // copy confirmed but the clipboard text was empty; empty returned
     EditorExcluded,  // F4 editor/IDE exclusion backstop (/005); no selection attempted
+    // REQ-051 (session 260921, symptom A-2): the chord attempts were exhausted
+    // WITHOUT the provably-empty exemption on a capture geometry that can hold
+    // a real selection (the BUG-002 class: structured contenteditable /
+    // Electron editor targets where the user TYPED text and the synthetic
+    // Ctrl+C never committed). Distinct from CopyChordFailed (the benign
+    // REQ-034 F3-B paste-window geometry, where Ctrl+C over an empty EM
+    // selection legitimately changes nothing): the worker surfaces this
+    // verdict through the dropped-chord streak policy (hold + the existing
+    // TooltipCopyFailed notice once per streak), while CopyChordFailed keeps
+    // its established behavior (paste-window suppress / no-selection notice).
+    CopyChordDropped,
 };
 
 constexpr const char* EnterCaptureResultName(EnterCaptureResult result) {
@@ -246,6 +257,7 @@ constexpr const char* EnterCaptureResultName(EnterCaptureResult result) {
         case EnterCaptureResult::CopyChordFailed: return "copy_chord_failed";
         case EnterCaptureResult::EmptySelection:  return "empty_selection";
         case EnterCaptureResult::EditorExcluded:  return "editor_excluded";
+        case EnterCaptureResult::CopyChordDropped: return "copy_chord_dropped";
     }
     return "unknown"; // unreachable; keeps the function total for constexpr use
 }
@@ -513,14 +525,43 @@ static_assert(kClipboardCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
 static_assert(kClipboardCopyAttemptTimeoutMs[0] + kClipboardCopyAttemptTimeoutMs[1] <= 200,
               "REQ-001: the chord retry schedule must stay within the 200 ms cap");
 
+// ---- REQ-051 (session 260921, symptom A-1): ONE shared copy-chord retry ----
+// policy for the drag and Enter paths. The per-attempt change-timeout rule is
+// a single pure function parameterized by the cycle's total attempt count:
+//   * attempt 0 always waits the single-shot 80 ms budget (REQ-R04/REQ-001);
+//   * the LAST attempt of a multi-attempt cycle waits the extended 120 ms
+//     patience (the REQ-001 retry pattern: a late Electron IPC commit gets a
+//     longer window on the final try);
+//   * middle attempts wait 80 ms;
+//   * out-of-range indices fall back to the single-shot budget (the
+//     established CopyAttemptTimeoutMs contract, pinned by the REQ-001 tests).
+// The two paths keep SEPARATE attempt budgets: the Enter chord cycle stays at
+// kClipboardCopyChordAttempts = 2 (its REQ-001 ~200 ms empty-input cap is a
+// shipped regression fix and must not regress), while the drag path grows to
+// kDragCopyChordAttempts = 3 - the confirmed symptom-A root cause is slow-
+// focus Electron targets missing the synthetic Ctrl+C, and the documented
+// ~100-200 ms focus-transition latency can outlive a 2-attempt / ~230 ms
+// cycle; the third attempt (after another kDragCopyRetryBackoffMs settle)
+// lands at ~300 ms with the extended 120 ms patience.
+constexpr uint32_t CopyChordRetryAttemptTimeoutMs(int attempt, int total_attempts) {
+    if (attempt <= 0) {
+        return kClipboardChangeTimeoutMs; // attempt 1 / single-shot / fallback
+    }
+    if (total_attempts >= 2 && attempt == total_attempts - 1) {
+        return kClipboardCopyAttemptTimeoutMs[1]; // extended final patience (120)
+    }
+    return kClipboardChangeTimeoutMs; // middle attempts
+}
+
 // 0-based attempt index -> per-attempt change timeout. Out-of-range indices
 // fall back to the attempt-1 budget (the safe, established timeline); the
 // retry loop only ever passes in-range values under the CopyChordRetryWarranted
 // budget. Single shared definition for CopySelectedText and the unit tests.
+// REQ-051 (symptom A-1): re-expressed as the Enter-path profile (2 attempts)
+// of the ONE shared schedule CopyChordRetryAttemptTimeoutMs above - every
+// pinned value is preserved (80/120 in-range, single-shot fallback outside).
 constexpr uint32_t CopyAttemptTimeoutMs(int attempt) {
-    return (attempt >= 0 && attempt < kClipboardCopyChordAttempts)
-               ? kClipboardCopyAttemptTimeoutMs[attempt]
-               : kClipboardChangeTimeoutMs;
+    return CopyChordRetryAttemptTimeoutMs(attempt, kClipboardCopyChordAttempts);
 }
 
 // Pure retry-warrant predicate (single definition shared by
@@ -534,6 +575,43 @@ constexpr uint32_t CopyAttemptTimeoutMs(int attempt) {
 constexpr bool CopyChordRetryWarranted(int attempt_index, bool selection_provably_empty) {
     return (attempt_index + 1 < kClipboardCopyChordAttempts) && !selection_provably_empty;
 }
+
+// Drag-path strengthened retry cycle (REQ-051 symptom A). Replaces the old
+// fixed 2-attempt drag retry (2 x 80 ms + one 70 ms backoff); the 3rd attempt
+// is the slow-focus Electron recovery. Worst case on the drag worker thread:
+// 80 + 70 + 80 + 70 + 120 = 420 ms (the GUI pump stays free - the cycle runs
+// on SingleSlotWorker thread, same contract as the REQ-R1 offload).
+inline constexpr int kDragCopyChordAttempts = 3;
+inline constexpr uint32_t kDragCopyAttemptTimeoutMs[kDragCopyChordAttempts] = {80, 80, 120};
+static_assert(kDragCopyAttemptTimeoutMs[0] == kClipboardChangeTimeoutMs,
+              "REQ-051: drag attempt 1 must equal the single-shot 80 ms budget");
+static_assert(kDragCopyAttemptTimeoutMs[kDragCopyChordAttempts - 1] ==
+                  kClipboardCopyAttemptTimeoutMs[1],
+              "REQ-051: drag final attempt reuses the established 120 ms patience");
+// REQ-005 (session 260910_0003 Task B) settle time between drag copy-chord
+// attempts, MOVED here from main.cpp so the drag retry cycle and any future
+// caller share ONE definition. The click that starts the job lands on our
+// WS_EX_NOACTIVATE drag icon, so the text-source window may need a moment to
+// (re-)acquire the foreground before the re-sent Ctrl+C chord reaches it.
+inline constexpr uint32_t kDragCopyRetryBackoffMs = 70;
+static_assert(kDragCopyRetryBackoffMs >= 60 && kDragCopyRetryBackoffMs <= 80,
+              "REQ-005: drag copy retry backoff must stay inside the 60-80 ms directive");
+static_assert(kDragCopyAttemptTimeoutMs[0] + kDragCopyAttemptTimeoutMs[1] +
+                      kDragCopyAttemptTimeoutMs[2] +
+                      kDragCopyRetryBackoffMs * (kDragCopyChordAttempts - 1) <=
+                  500,
+              "REQ-051: worst-case 3-attempt drag copy cycle stays <= 500 ms");
+
+// The shared copy-chord retry driver behind the drag path (REQ-051): runs
+// CopySelectionWithSequenceWait up to total_attempts times, sleeping
+// settle_ms between attempts so the target's input pipeline can drain (the
+// established kDragCopyRetryBackoffMs pattern). THE REQ-R04 INVARIANT HOLDS
+// FOR EVERY ATTEMPT: CopySelectionWithSequenceWait re-reads the clipboard
+// sequence number as its baseline IMMEDIATELY BEFORE its own Ctrl+C, so a
+// late commit from an earlier chord is absorbed into the fresh baseline and
+// can never be read as stale text. Per-attempt budgets come from the unified
+// schedule above. Runs on a worker thread; the Sleep never blocks the GUI.
+bool CopyChordWithSettledRetry(int total_attempts, uint32_t settle_ms);
 
 // ---- BUG-002 (session 260913_0002): SelectAll rescue for structured ---------
 // contenteditable targets (Reddit composer class) -----------------------------

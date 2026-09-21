@@ -128,6 +128,64 @@ EngineType PlanTranslationRouting(std::string_view src_code,
                                   EngineType engine_type,
                                   bool google_consent);
 
+// ---- REQ-051 (session 260921, symptom B-1): local transient-failure retry --
+//
+// The user-reported 'sometimes works, sometimes shows the 로컬번역을 사용할 수
+// 없습니다 modal' class: a TRANSIENT engine-host failure (pipe connect racing
+// the orchestrator's spawn, worker busy/respawning) surfaced through
+// CloudConsentBlocked with NO retry. Classification and the retry warrant
+// are ONE pure definition (shared by engine.cpp and the unit tests):
+//   * Transient = "connect" (orchestrator still booting / spawn in flight),
+//     "busy" (the worker manager refused a job while loading), "io" (the
+//     pipe died mid-request; the NEXT call respawns), "timeout" (worker-side
+//     decode deadline). These are the codes the frozen client's failure
+//     contract (engine_host_client.hpp) documents as recoverable-by-retry.
+//   * Everything else is Permanent: "disabled", "no_host_binary",
+//     "unauthorized", "version_mismatch", "pin_mismatch", "bad_request",
+//     "model_missing" and "engine_failed" (a decode that actually ran -
+//     retrying a deterministic decode failure only reloads the model).
+//     UNKNOWN / empty codes fail PERMANENT (fail-safe: never spend a retry
+//     on a code the policy does not recognize).
+enum class EngineHostFailureClass { Transient, Permanent };
+constexpr EngineHostFailureClass ClassifyEngineHostFailure(std::string_view err_code) {
+    return (err_code == "connect" || err_code == "busy" || err_code == "io" ||
+            err_code == "timeout")
+               ? EngineHostFailureClass::Transient
+               : EngineHostFailureClass::Permanent;
+}
+
+// One identical-input retry on a transient local failure, inside the existing
+// request machinery: ~400 ms backoff (the handoff's 300-500 ms band), bounded
+// by kEngineHostTransientRetryMax (ONE retry - never a loop), and gated on
+// the FIRST attempt having failed FAST (<= the ceiling): the second attempt
+// rides the client's own 30 s budget, so a retry is only warranted when the
+// pair stays inside the established request-time envelope - a failure that
+// already burned the full 30 s (e.g. a cold model load on the user's 2.8 GB
+// user_gguf) converges to the honest modal instead of a second 30 s wait.
+// The REQ-R16 latch outranks everything: a cancel intent never retries and
+// never starts a second pipe request.
+inline constexpr int kEngineHostTransientRetryMax = 1;
+inline constexpr uint32_t kEngineHostTransientRetryBackoffMs = 400;
+inline constexpr uint64_t kEngineHostRetryFirstAttemptCeilingMs = 10000;
+constexpr bool EngineHostTransientRetryWarranted(std::string_view err_code,
+                                                 int retries_so_far,
+                                                 uint64_t first_attempt_elapsed_ms,
+                                                 bool cancel_requested) {
+    return !cancel_requested &&
+           ClassifyEngineHostFailure(err_code) == EngineHostFailureClass::Transient &&
+           retries_so_far < kEngineHostTransientRetryMax &&
+           first_attempt_elapsed_ms <= kEngineHostRetryFirstAttemptCeilingMs;
+}
+
+// REQ-051 (symptom B-1) ABSOLUTE SECURITY BOUNDARY: the retry re-runs ONLY
+// the local engine-host leg (engine_host::TryTranslate). The cloud/openai
+// call lambdas below are never invoked by the retry path itself; under
+// engine_type=local / user_gguf with cloud_fallback_enabled=false an
+// exhausted retry still converges to CloudConsentBlocked with the text
+// staying on-device - the policy can delay an already-consented cloud leg
+// (Auto / explicit fallback) but can NEVER newly trigger one. The unit tests
+// pin both this predicate matrix and the engine.cpp source structure.
+
 // REQ-043 (M6 T5, design §5 (1)): the ShouldPreloadLocalModel /
 // ShouldPreloadOnEngineSwitch preload seams and the
 // MigrateLegacyDefaultModelPath migration helper are REMOVED with the
