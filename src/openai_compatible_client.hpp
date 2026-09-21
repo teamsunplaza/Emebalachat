@@ -10,8 +10,11 @@
 // synchronous WinHttpOpen/Connect/OpenRequest/SendRequest/ReceiveResponse
 // pattern (design §3b "F9"), so it runs on the pipeline worker thread exactly
 // like the Google seam (TECH GATE Item 7/8: synchronous WinHTTP on the worker
-// thread is UI-safe). The short GUI-thread "fetch model list" call from the
-// settings dialog is the documented exception (bounded by a 10 s budget).
+// thread is UI-safe). REQ-052: the settings dialog's "fetch model list" no
+// longer calls this on the GUI thread either — the dialog spawns a detached
+// worker and the completion refills the combo on the GUI thread (the old
+// synchronous GUI-thread call froze the dialog mid-typing; bounded by a 10 s
+// budget). All ListModels callers therefore run off the GUI thread.
 //
 // This header also carries the SMALL, PURE security helpers (design §3b "API
 // Key 보안"): base-URL policy, DPAPI protect/unprotect, SHA-256 integrity

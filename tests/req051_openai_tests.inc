@@ -22,6 +22,14 @@
 //       delete branch persists via AppConfig + ClearOpenAiSettings and ends
 //       non-IDOK (kDeleted), and no code path in the TU touches the engine
 //       selection.
+//   (e) TestReq052OpenAiAsyncFetchPins — REQ-052 source pins on the same TU:
+//       the debounce timer no longer runs the synchronous fetch (the worker
+//       spawn sits between KillTimer and completion), the ListModels call
+//       lives only inside the worker-side helper, digest-before-protect
+//       holds at BOTH compositions (fetch probe + IDOK save), the
+//       single-flight generation drops stale completions, the heap result
+//       crosses PostMessageW with ownership released on every path, and
+//       WM_DESTROY flips the worker liveness flag instead of joining.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -298,7 +306,7 @@ void TestReq051OpenAiDialogStructuralPins() {
     TEST_CHECK(reset_pos != std::string::npos && target_pos != std::string::npos,
                "REQ-051 C pin: reset and target-capture are both locatable");
     if (reset_pos != std::string::npos && target_pos != std::string::npos) {
-        // The pre-reset capture lives inside DoFetchModels; the FIRST
+        // The pre-reset capture lives inside RefillOpenAiModelCombo; the FIRST
         // reset send in the TU is the refill's, so the capture must
         // appear at or before it (the INIT-time SetCtrlText is an edit,
         // not a GetCtrlText of the combo).
@@ -378,6 +386,158 @@ void TestReq051OpenAiDialogStructuralPins() {
         std::cout << "[PASS] REQ-051 OpenAI dialog structural pins passed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-051 OpenAI dialog structural pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REQ-052 (OpenAI settings dialog freeze fix) — structural pins on
+// src/ui/openai_settings_window.cpp. The synchronous ListModels call moved
+// off the GUI thread onto a detached worker (audit P0: the dialog went
+// '응답 없음' mid-typing while the 800 ms debounce fired the 10 s WinHTTP
+// call inline). All pins are source-textual: the dialog logic is GUI code.
+// ---------------------------------------------------------------------------
+void TestReq052OpenAiAsyncFetchPins() {
+    std::cout << "[RUN] Testing REQ-052 OpenAI async model-fetch pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    std::string osw_src;
+    Req051ReadSrc("src/ui/openai_settings_window.cpp", osw_src);
+    if (osw_src.empty()) {
+        std::cout << "[SKIP] src/ui/openai_settings_window.cpp not resolvable from the test CWD; "
+                     "REQ-052 async-fetch pins skipped." << std::endl;
+        return;
+    }
+
+    // (a) The debounce timer SPAWNS the fetch; it no longer runs any
+    // synchronous network call itself.
+    const size_t timer_pos = osw_src.find("case WM_TIMER:");
+    const size_t timer_end = osw_src.find("case WM_COMMAND:");
+    TEST_CHECK(timer_pos != std::string::npos && timer_end != std::string::npos &&
+                   timer_pos < timer_end,
+               "REQ-052 pin: the WM_TIMER branch is locatable");
+    if (timer_pos != std::string::npos && timer_end != std::string::npos &&
+        timer_pos < timer_end) {
+        const std::string timer_branch = osw_src.substr(timer_pos, timer_end - timer_pos);
+        TEST_CHECK(timer_branch.find("KillTimer") != std::string::npos,
+                   "REQ-052 pin: WM_TIMER still kills the debounce timer first");
+        TEST_CHECK(timer_branch.find("DoFetchModels(dlg, st);") != std::string::npos,
+                   "REQ-052 pin: WM_TIMER drives the async fetch spawn");
+        TEST_CHECK(timer_branch.find("ListModels") == std::string::npos &&
+                       timer_branch.find("OpenAiCompatibleClient") == std::string::npos,
+                   "REQ-052 pin: WM_TIMER performs no synchronous network call");
+    }
+
+    // (b) The network boundary lives only off the GUI thread: exactly one
+    // ListModels call site — inside the 1-arg probe helper — which the
+    // detached worker invokes; the GUI spawn (2-arg overload) starts the
+    // thread but performs no I/O itself.
+    const size_t lm_pos = osw_src.find("OpenAiCompatibleClient::ListModels");
+    TEST_CHECK(lm_pos != std::string::npos &&
+                   osw_src.find("OpenAiCompatibleClient::ListModels", lm_pos + 1) ==
+                       std::string::npos,
+               "REQ-052 pin: exactly one ListModels call site remains");
+    const size_t probe_fn_pos = osw_src.find(
+        "std::vector<std::string> DoFetchModels(const OpenAiConfig& probe)");
+    const size_t worker_pos = osw_src.find("void OpenAiFetchWorker(");
+    TEST_CHECK(probe_fn_pos != std::string::npos && worker_pos != std::string::npos &&
+                   probe_fn_pos < lm_pos && lm_pos < worker_pos,
+               "REQ-052 pin: the ListModels call is the worker-side fetch helper");
+    if (worker_pos != std::string::npos) {
+        const size_t worker_end = osw_src.find("\n}\n", worker_pos);
+        const std::string worker_body = osw_src.substr(
+            worker_pos,
+            worker_end == std::string::npos ? std::string::npos : worker_end - worker_pos);
+        TEST_CHECK(worker_body.find("DoFetchModels(probe)") != std::string::npos,
+                   "REQ-052 pin: the worker invokes the fetch helper");
+    }
+    const size_t spawn_pos =
+        osw_src.find("bool DoFetchModels(HWND dlg, OpenAiDialogState* st)");
+    const size_t proc_pos = osw_src.find("INT_PTR CALLBACK OpenAiSettingsProc");
+    TEST_CHECK(spawn_pos != std::string::npos && proc_pos != std::string::npos &&
+                   spawn_pos < proc_pos,
+               "REQ-052 pin: the GUI spawn precedes the dialog proc");
+    if (spawn_pos != std::string::npos && proc_pos != std::string::npos &&
+        spawn_pos < proc_pos) {
+        const std::string spawn_src = osw_src.substr(spawn_pos, proc_pos - spawn_pos);
+        TEST_CHECK(spawn_src.find("std::thread(OpenAiFetchWorker") != std::string::npos &&
+                       spawn_src.find(".detach()") != std::string::npos,
+                   "REQ-052 pin: the GUI spawn starts the detached worker thread");
+        TEST_CHECK(spawn_src.find("ListModels") == std::string::npos &&
+                       spawn_src.find("OpenAiCompatibleClient") == std::string::npos,
+                   "REQ-052 pin: the GUI spawn performs no network I/O itself");
+    }
+
+    // (c) digest-BEFORE-protect (REQ-050 b6f98da contract) at BOTH
+    // compositions: the fetch probe and the IDOK save.
+    const size_t fetch_sha_pos =
+        osw_src.find("OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);");
+    const size_t fetch_prot_pos =
+        osw_src.find("ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);");
+    TEST_CHECK(fetch_sha_pos != std::string::npos && fetch_prot_pos != std::string::npos &&
+                   fetch_sha_pos < fetch_prot_pos,
+               "REQ-052 pin: the fetch probe keeps digest-before-protect");
+    const size_t ok_sha_pos = osw_src.find("OpenAiSha256Hex(keyUtf8, out.api_key_sha256);");
+    const size_t ok_prot_pos = osw_src.find("ProtectOpenAiApiKey(keyUtf8, out.api_key_dpapi)");
+    TEST_CHECK(ok_sha_pos != std::string::npos && ok_prot_pos != std::string::npos &&
+                   ok_sha_pos < ok_prot_pos,
+               "REQ-052 pin: the IDOK save keeps digest-before-protect");
+
+    // (d) Single-flight: the spawn bumps the generation; the completion
+    // handler drops any completion whose generation is not current.
+    TEST_CHECK(osw_src.find("++st->fetch_generation;") != std::string::npos &&
+                   osw_src.find("result->generation != st->fetch_generation") !=
+                       std::string::npos,
+               "REQ-052 pin: single-flight generation — stale completions are dropped");
+
+    // (e) The heap result crosses PostMessageW with ownership transfer; the
+    // worker has a self-release fallback (failed post / dialog gone) and the
+    // GUI handler deletes on every path (current + stale/orphaned).
+    TEST_CHECK(osw_src.find("new OpenAiFetchResult") != std::string::npos &&
+                   osw_src.find("::PostMessageW(dlg, kOpenAiMsgFetchDone") !=
+                       std::string::npos,
+               "REQ-052 pin: the worker delivers the heap result via PostMessage");
+    size_t release_count = 0;
+    for (size_t p = osw_src.find("delete result;"); p != std::string::npos;
+         p = osw_src.find("delete result;", p + 1)) {
+        ++release_count;
+    }
+    TEST_CHECK(release_count >= 2,
+               "REQ-052 pin: both the worker fallback and the GUI handler release the result");
+    const size_t done_pos = osw_src.find("case kOpenAiMsgFetchDone:");
+    TEST_CHECK(done_pos != std::string::npos &&
+                   osw_src.find("delete result;", done_pos) != std::string::npos &&
+                   osw_src.find("RefillOpenAiModelCombo(dlg, models);", done_pos) !=
+                       std::string::npos,
+               "REQ-052 pin: the completion handler refills via the extracted helper "
+               "and releases the result");
+
+    // (f) WM_DESTROY liveness guard: no join (joining a worker still inside
+    // its bounded network call would re-block the GUI thread this fix freed);
+    // the shared flag tells a finishing worker the receiver is gone.
+    const size_t destroy_pos = osw_src.find("case WM_DESTROY:");
+    TEST_CHECK(destroy_pos != std::string::npos,
+               "REQ-052 pin: the dialog proc handles WM_DESTROY");
+    if (destroy_pos != std::string::npos) {
+        const std::string destroy_branch = osw_src.substr(destroy_pos, 900);
+        TEST_CHECK(destroy_branch.find("fetch_alive->store(false") != std::string::npos,
+                   "REQ-052 pin: WM_DESTROY flips the worker liveness flag");
+    }
+
+    // (g) The REQ-050/REQ-051 contracts survive the async move: the 800 ms
+    // debounce is intact, the refill still plans via the REQ-051 helper
+    // (never index 0), and the failure notice stays manual-only.
+    TEST_CHECK(osw_src.find("kFetchDebounceMs = 800") != std::string::npos,
+               "REQ-052 pin: the 800 ms debounce timer is unchanged");
+    TEST_CHECK(osw_src.find("PlanOpenAiComboSelection(items, target)") != std::string::npos,
+               "REQ-052 pin: the refill still plans the selection from the current text");
+    TEST_CHECK(osw_src.find("if (manual && models.empty()) {") != std::string::npos,
+               "REQ-052 pin: the failure notice stays manual-only (auto path silent)");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-052 OpenAI async model-fetch pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-052 OpenAI async model-fetch pins: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

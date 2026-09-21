@@ -5,8 +5,11 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 // REQ-050 (cue banners): EM_SETCUEBANNER (0x1501, ECM_FIRST + 1) ships in the
@@ -38,6 +41,21 @@ struct OpenAiDialogState {
     OpenAiConfig* cfg;   // in/out; key DPAPI-protected on save
     bool saved = false;
     bool deleted = false; // REQ-051 D: [삭제] persisted the cleared block itself
+    // REQ-052 (async fetch): single-flight generation — every spawn
+    // increments it; a completion carrying an older generation is stale (a
+    // newer fetch superseded it) and is dropped. GUI thread only.
+    unsigned long long fetch_generation = 0;
+    // REQ-052 (async fetch): spawn origin. The call site sets it
+    // immediately before spawning (both call sites are GUI-thread) and the
+    // spawn copies it into the worker args: a manual completion may show
+    // the failure notice, an auto completion stays silent. GUI thread only.
+    bool fetch_manual = false;
+    // REQ-052 (async fetch): liveness shared with every detached worker
+    // (one shared_ptr copy each). WM_DESTROY flips it to false so a worker
+    // finishing after the dialog is gone drops its heap result instead of
+    // posting to a destroyed hwnd.
+    std::shared_ptr<std::atomic<bool>> fetch_alive =
+        std::make_shared<std::atomic<bool>>(true);
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -68,6 +86,57 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
 constexpr UINT_PTR kFetchTimerId = 101;
 constexpr UINT kFetchDebounceMs = 800;
 
+// REQ-052 (async fetch): worker->dialog completion message. lParam carries a
+// heap-allocated OpenAiFetchResult* whose ownership transfers to the GUI
+// completion handler (which deletes it); the worker deletes the result
+// itself when the post fails or the dialog is already closing. WM_APP band —
+// this dialog owns its ids (the GGUF add dialog uses WM_APP+0x10/+0x11).
+constexpr UINT kOpenAiMsgFetchDone = WM_APP + 0x20;
+
+// REQ-052 (async fetch): the heap result delivered through lParam. The
+// worker fills it, posts it, and forgets it; the GUI handler owns it from a
+// successful PostMessageW on and deletes it on EVERY path (current,
+// stale-generation, or post-destroy). `generation` is the single-flight key:
+// a completion older than the dialog's current fetch generation is stale (a
+// newer fetch superseded it) and must be dropped, not refilled.
+struct OpenAiFetchResult {
+    unsigned long long generation;
+    bool manual; // button-originated spawn (may show the failure notice)
+    std::vector<std::string> models; // empty == fetch failed / server gave none
+};
+
+// REQ-052 (async fetch): the network boundary of the model-list fetch,
+// split out of the old synchronous DoFetchModels(dlg, st) body. Runs ONLY
+// on the detached worker thread — the caller hands over the probe composed
+// on the GUI thread (by value) — because the GUI thread must never enter
+// the synchronous WinHTTP call again: that was the audit P0 freeze (the
+// whole dialog went '응답 없음' mid-typing while the bounded 10 s budget ran
+// inline).
+std::vector<std::string> DoFetchModels(const OpenAiConfig& probe) {
+    return OpenAiCompatibleClient::ListModels(probe);
+}
+
+// REQ-052 (async fetch): the detached worker body. It owns ONLY the probe
+// copy it was handed and its heap result — no dialog state, no config — so
+// a dialog destroyed mid-fetch can never catch it touching freed memory.
+// After the bounded network call it posts the result to the dialog; when
+// the dialog already closed (or is closing) the liveness flag / the failed
+// PostMessageW makes it delete the result itself. Detached at spawn: its
+// whole lifetime is the bounded WinHTTP budget, and the generation check
+// (not a join) is what keeps a late completion off the combo — joining here
+// would reintroduce the very GUI-thread block this fix removes.
+void OpenAiFetchWorker(std::shared_ptr<std::atomic<bool>> alive, HWND dlg,
+                       unsigned long long generation, bool manual,
+                       OpenAiConfig probe) {
+    OpenAiFetchResult* result =
+        new OpenAiFetchResult{generation, manual, DoFetchModels(probe)};
+    if (!alive->load(std::memory_order_acquire) ||
+        !::PostMessageW(dlg, kOpenAiMsgFetchDone, 0,
+                        reinterpret_cast<LPARAM>(result))) {
+        delete result; // dialog gone: no GUI handler will take ownership
+    }
+}
+
 // REQ-050 (auto-fetch): a key is "available" for the debounced fetch when
 // the edit holds anything (a typed key or the masked placeholder of the
 // stored pair) or the stored pair itself survived the WM_INITDIALOG
@@ -78,21 +147,65 @@ bool KeyAvailableForFetch(HWND dlg, const OpenAiConfig* cfg) {
     return !cfg->api_key_dpapi.empty();
 }
 
-// REQ-050 (auto-fetch): the model-list fetch shared by the manual "Fetch
-// model list" button and the debounced auto-fetch. Owns the probe
-// composition (digest BEFORE protect), the http consent gate, the
-// synchronous ListModels call (10 s budget, GUI thread — same as the
-// pre-factor button body), and the combo refill; the RESULT NOTICE stays
-// with the caller (the button shows the failure box on an empty result, the
-// auto-fetch path stays silent). Returns the fetched ids — empty when the
-// fetch was declined or failed — so the caller can tell "ran, got nothing"
-// apart from "declined, combo untouched".
+// REQ-052 (async fetch): the combo refill, extracted UNCHANGED from the old
+// synchronous DoFetchModels tail — this is the same post-success logic, now
+// executed by the GUI completion handler instead of inline after the
+// network call returned on the GUI thread.
 // REQ-051 (Symptom C): the refill no longer clobbers the current model —
 // it pins the combo's current text (saved model or user-typed) via
 // PlanOpenAiComboSelection: exact match -> select it; absent -> append it
 // and select the append; empty fetch -> the combo is left completely
 // untouched so the injected current-model text stays visible.
-std::vector<std::string> DoFetchModels(HWND dlg, OpenAiDialogState* st) {
+void RefillOpenAiModelCombo(HWND dlg, const std::vector<std::string>& models) {
+    if (models.empty()) {
+        // REQ-051 (Symptom C): fetch failed / empty — do NOT reset the
+        // combo (CB_RESETCONTENT would also wipe the edit text on this
+        // CBS_DROPDOWN control, hiding the injected current-model text).
+        // Leaving the list + text intact keeps the in-use model visible
+        // and selectable; the manual-fetch button still surfaces the
+        // failure notice, the silent auto path stays silent.
+        return;
+    }
+    HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO);
+    if (!combo) return;
+    // REQ-051 (Symptom C): capture the current-model text BEFORE the
+    // reset — after CB_RESETCONTENT the edit text is gone.
+    const std::string target = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+    ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    std::vector<std::pair<int, std::string>> items;
+    items.reserve(models.size());
+    for (const auto& m : models) {
+        const int idx = static_cast<int>(::SendMessageW(
+            combo, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(ToUtf16(m).c_str())));
+        if (idx >= 0) items.emplace_back(idx, m);
+    }
+    // REQ-051 (Symptom C): select the saved/current model when the list
+    // holds it; otherwise append the current text and select THAT (the
+    // pre-REQ-051 code unconditionally selected index 0, clobbering the
+    // saved model). Correctness of the selection beats everything else.
+    const OpenAiComboSelection plan = PlanOpenAiComboSelection(items, target);
+    if (plan.insert_target) {
+        const int idx = static_cast<int>(::SendMessageW(
+            combo, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(ToUtf16(target).c_str())));
+        if (idx >= 0) ::SendMessageW(combo, CB_SETCURSEL, idx, 0);
+    } else if (plan.select_index >= 0) {
+        ::SendMessageW(combo, CB_SETCURSEL, plan.select_index, 0);
+    }
+}
+
+// REQ-050 (auto-fetch) / REQ-052 (async): the model-list fetch shared by the
+// manual "Fetch model list" button and the debounced auto-fetch — the
+// pre-REQ-052 DoFetchModels body split at the network boundary. The GUI
+// thread still reads the controls, composes the probe (digest BEFORE
+// protect) and runs the http consent gate; ONLY the synchronous network
+// call moved onto the detached worker. The RESULT NOTICE contract is
+// unchanged: a declined fetch (http consent denied) or a failed spawn
+// returns false so the manual button shows the failure box immediately
+// (exactly as before); a spawned-but-empty fetch shows it from the
+// completion handler; the auto path stays silent in every case.
+bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     OpenAiConfig probe;
     probe.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
     std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
@@ -119,50 +232,32 @@ std::vector<std::string> DoFetchModels(HWND dlg, OpenAiDialogState* st) {
             dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
             I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
             MB_YESNO | MB_ICONWARNING);
-        if (rc != IDYES) return {}; // user declined: abort the fetch
+        if (rc != IDYES) return false; // user declined: abort the fetch
         probe.http_consent_given = true;
     } else {
         probe.http_consent_given = st->cfg->http_consent_given;
     }
-    const std::vector<std::string> models =
-        OpenAiCompatibleClient::ListModels(probe);
-    if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
-        if (models.empty()) {
-            // REQ-051 (Symptom C): fetch failed / empty — do NOT reset the
-            // combo (CB_RESETCONTENT would also wipe the edit text on this
-            // CBS_DROPDOWN control, hiding the injected current-model text).
-            // Leaving the list + text intact keeps the in-use model visible
-            // and selectable; the manual-fetch button still surfaces the
-            // failure notice, the silent auto path stays silent.
-            return models;
-        }
-        // REQ-051 (Symptom C): capture the current-model text BEFORE the
-        // reset — after CB_RESETCONTENT the edit text is gone.
-        const std::string target = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
-        ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-        std::vector<std::pair<int, std::string>> items;
-        items.reserve(models.size());
-        for (const auto& m : models) {
-            const int idx = static_cast<int>(::SendMessageW(
-                combo, CB_ADDSTRING, 0,
-                reinterpret_cast<LPARAM>(ToUtf16(m).c_str())));
-            if (idx >= 0) items.emplace_back(idx, m);
-        }
-        // REQ-051 (Symptom C): select the saved/current model when the list
-        // holds it; otherwise append the current text and select THAT (the
-        // pre-REQ-051 code unconditionally selected index 0, clobbering the
-        // saved model). Correctness of the selection beats everything else.
-        const OpenAiComboSelection plan = PlanOpenAiComboSelection(items, target);
-        if (plan.insert_target) {
-            const int idx = static_cast<int>(::SendMessageW(
-                combo, CB_ADDSTRING, 0,
-                reinterpret_cast<LPARAM>(ToUtf16(target).c_str())));
-            if (idx >= 0) ::SendMessageW(combo, CB_SETCURSEL, idx, 0);
-        } else if (plan.select_index >= 0) {
-            ::SendMessageW(combo, CB_SETCURSEL, plan.select_index, 0);
-        }
+    // REQ-052: single-flight — bump the generation BEFORE the spawn so the
+    // completion handler drops any older in-flight completion (a newer
+    // fetch supersedes it; the stale worker only wasted its bounded
+    // WinHTTP budget and its dropped heap result).
+    ++st->fetch_generation;
+    // REQ-052: the probe (base URL + DPAPI key pair + consent) crosses into
+    // the worker BY VALUE — the cleartext key never leaves this thread (it
+    // was scrubbed above) and the worker touches no dialog state.
+    try {
+        std::thread(OpenAiFetchWorker, st->fetch_alive, dlg, st->fetch_generation,
+                    st->fetch_manual, std::move(probe))
+            .detach();
+    } catch (...) {
+        // Thread creation failure (resource exhaustion): the fetch never
+        // started — roll the supersede back so an older in-flight
+        // completion is not falsely demoted to stale.
+        DIAG_F("UI/OpenAiSettings/008: model-list fetch worker spawn failed\n");
+        --st->fetch_generation;
+        return false;
     }
-    return models;
+    return true;
 }
 
 INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -241,13 +336,16 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
     case WM_TIMER:
-        // REQ-050 (auto-fetch): debounce timer expired. Kill it BEFORE the
-        // synchronous fetch — ListModels blocks the GUI thread so no timer
-        // can fire during it, and the kill also cancels any timer an
-        // in-flight keystroke batch re-armed. The auto path stays SILENT:
-        // DoFetchModels refills the combo but never shows the failure box.
+        // REQ-050 (auto-fetch) / REQ-052 (async): debounce timer expired —
+        // kill it BEFORE spawning (the kill also cancels any timer an
+        // in-flight keystroke batch re-armed) and start the ASYNC fetch:
+        // the network call runs on a worker thread now, so the GUI thread
+        // no longer blocks on the bounded budget mid-typing (the audit P0
+        // '응답 없음' freeze). fetch_manual = false keeps this completion on
+        // the silent auto path (never a result notice, per REQ-050).
         if (wp == kFetchTimerId) {
             ::KillTimer(dlg, kFetchTimerId);
+            st->fetch_manual = false;
             DoFetchModels(dlg, st);
             return TRUE;
         }
@@ -271,12 +369,15 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         switch (LOWORD(wp)) {
         case IDC_FETCH_BTN: {
-            // REQ-050 (auto-fetch): the fetch itself (probe + consent gate +
-            // ListModels + combo refill) lives in DoFetchModels, shared with
-            // the debounced auto-fetch; the button keeps the failure notice
-            // the silent auto path must not show.
-            const std::vector<std::string> models = DoFetchModels(dlg, st);
-            if (models.empty()) {
+            // REQ-050/REQ-052: the fetch (probe + consent gate + worker
+            // spawn) lives in DoFetchModels(dlg, st), shared with the
+            // debounced auto-fetch; fetch_manual marks this completion as
+            // button-originated so the completion handler may show the
+            // failure notice the silent auto path must never show. A
+            // DECLINED fetch (http consent denied) or a failed spawn shows
+            // the notice immediately — the exact pre-REQ-052 contract.
+            st->fetch_manual = true;
+            if (!DoFetchModels(dlg, st)) {
                 ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
                               I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                               MB_OK | MB_ICONINFORMATION);
@@ -383,6 +484,42 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         }
         return FALSE;
+    case kOpenAiMsgFetchDone: {
+        // REQ-052: a fetch worker finished its bounded network call.
+        // Ownership of the heap result crossed PostMessageW in lParam —
+        // take it here, on the GUI thread, and delete it on EVERY path.
+        auto* result = reinterpret_cast<OpenAiFetchResult*>(lp);
+        if (!st || result->generation != st->fetch_generation) {
+            delete result; // stale (a newer fetch superseded it) or orphaned
+            return TRUE;
+        }
+        const bool manual = result->manual;
+        std::vector<std::string> models = std::move(result->models);
+        delete result;
+        // Same post-success logic as before REQ-052 (RefillOpenAiModelCombo
+        // is the extracted inline path): an empty fetch leaves the combo
+        // untouched so the typed/current model stays visible; the manual
+        // button keeps its failure notice, the silent auto path stays
+        // silent.
+        RefillOpenAiModelCombo(dlg, models);
+        if (manual && models.empty()) {
+            ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
+                          I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                          MB_OK | MB_ICONINFORMATION);
+        }
+        return TRUE;
+    }
+    case WM_DESTROY:
+        // REQ-052: a detached fetch worker may still be inside its bounded
+        // network call when the dialog closes. The worker never touches
+        // this state — it owns only its heap result and the hwnd value — so
+        // there is nothing to join; flipping the liveness flag tells a
+        // finishing worker the receiver is gone, so it deletes its result
+        // instead of posting to a destroyed hwnd.
+        if (st && st->fetch_alive) {
+            st->fetch_alive->store(false, std::memory_order_release);
+        }
+        return TRUE;
     }
     return FALSE;
 }

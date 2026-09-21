@@ -7,10 +7,12 @@
 //                that persists http_consent_given)
 //   * API Key    (ES_PASSWORD edit; stored DPAPI-protected, never cleartext;
 //                masked read-back "abcdef***" after save)
-//   * Model      (editable combo — "Fetch model list" calls ListModels on the
-//                GUI thread with a bounded 10 s budget and fills the combo;
-//                when the fetch fails or returns empty the user types a model
-//                id directly, per the user requirement)
+//   * Model      (editable combo — "Fetch model list" fetches the model list
+//                ASYNCHRONOUSLY on a background thread (REQ-052: the
+//                synchronous 10 s WinHTTP call used to freeze the whole
+//                dialog on the GUI thread) and the completion handler fills
+//                the combo; when the fetch fails or returns empty the user
+//                types a model id directly, per the user requirement)
 // Save validates, DPAPI-protects the key, writes the openai{} block through
 // the AppConfig the caller passes, and persists via SaveToFile.
 
