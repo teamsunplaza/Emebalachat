@@ -274,9 +274,18 @@ enum class StringId {
 
     // REQ-050 (OpenAI settings cue banners): gray placeholder hints on the
     // two single-line edits (EM_SETCUEBANNER). Appended at the tail so the
-    // EnumCount completeness loop covers them automatically (109x37).
+    // EnumCount completeness loop covers them automatically (109x37;
+    // REQ-051 bumped the tail to 110 — see below).
     OpenAiBaseUrlHint,  // "e.g. https://api.openai.com/v1"
     OpenAiApiKeyHint,   // "sk-..."
+
+    // REQ-051 (Symptom D, decisions.md 260921 17:08 — user-frozen scope): the
+    // OpenAI settings dialog [삭제] push button. Clears exactly the saved
+    // OpenAI block (base_url / model / api_key_dpapi+sha256 pair / http
+    // consent) and leaves the engine selection untouched. Appended at the
+    // tail so the EnumCount completeness loop covers it automatically
+    // (110x37).
+    OpenAiDeleteSettings,  // "설정 삭제" / "Delete settings"
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales

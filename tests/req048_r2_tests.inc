@@ -98,10 +98,10 @@ void TestReq048R2ServingPath() {
 // Hugging Face resolve-URL download dialog).
 // User request: "다른 gguf 모델을 할 거면 이름이라도 수정할 수 있던가, 등록한
 // 모델을 삭제라도 할 수 있던가". Five layers:
-//   (a) i18n field-count mirror with the NEW total (109) — the same sizeof
+//   (a) i18n field-count mirror with the NEW total (110) — the same sizeof
 //       technique as TestReq044I18nFieldOrder; that suite's mirror in
 //       run_tests.cpp is frozen at the pre-REQ-050 count by the editing
-//       mandate, so the REQ-050 total is pinned here instead;
+//       mandate, so the REQ-051 total is pinned here instead;
 //   (b) functional — ValidateUserModelId rules (empty / >64 / separators /
 //       whitespace / duplicate / self), UserModelsOf filtering (bundled
 //       excluded), rename -> SerializeRegistry -> re-parse (id changed,
@@ -135,13 +135,14 @@ void TestReq048R2ServingPath() {
 namespace req048_r2d_detail {
 
 // Mirror of LocalizedStrings (src/i18n.cpp) — field COUNT and TYPE only,
-// with the REQ-050 total (78 pre-R2-D fields + 17 gguf-manager family fields
+// with the REQ-051 total (78 pre-R2-D fields + 17 gguf-manager family fields
 // + tooltip/repair-transient pair + the REQ-050 dialog OK/Cancel pair + the
-// 8 merged-manager/HF fields + the 2 OpenAI cue-banner hints). TestReq044I18nFieldOrder pins the count with
+// 8 merged-manager/HF fields + the 2 OpenAI cue-banner hints + the REQ-051
+// OpenAI delete-button caption). TestReq044I18nFieldOrder pins the count with
 // the identical sizeof technique; its copy lives in run_tests.cpp and is
-// frozen by the editing mandate, so the 109-field total is asserted here.
+// frozen by the editing mandate, so the 110-field total is asserted here.
 struct Req048R2LstrMirror {
-    const wchar_t* f[109];
+    const wchar_t* f[110];
 };
 
 } // namespace req048_r2d_detail
@@ -150,23 +151,23 @@ void TestReq048R2GgufManager() {
     std::cout << "[RUN] Testing REQ-048 R2-D gguf model manager..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- (a) i18n field-count mirror (REQ-050 total 109) ----------------
+    // ---- (a) i18n field-count mirror (REQ-051 total 110) ----------------
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 109
-    static_assert(kR2dFieldCount == 109,
-                  "REQ-048 R2-D/REQ-050: LocalizedStrings field count is 109 (78 + 17 + 2 + "
-                  "2 + 8 + 2) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 110
+    static_assert(kR2dFieldCount == 110,
+                  "REQ-048 R2-D/REQ-050/REQ-051: LocalizedStrings field count is 110 (78 + 17 + 2 + "
+                  "2 + 8 + 2 + 1) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 109,
-               "REQ-048 R2-D/REQ-050 (a): LocalizedStrings field count is 109");
-    TEST_CHECK(observed_enum_count == 109,
-               "REQ-048 R2-D/REQ-050 (a): StringId::EnumCount is 109 (struct fields == "
-               "switch cases, through OpenAiApiKeyHint)");
+    TEST_CHECK(observed_field_count == 110,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 110");
+    TEST_CHECK(observed_enum_count == 110,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 110 (struct fields == "
+               "switch cases, through OpenAiDeleteSettings)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.
@@ -620,11 +621,12 @@ void TestReq048R2GgufManager() {
 
 
 // ---------------------------------------------------------------------------
-// REQ-048 R2-F (user directive) + REQ-050 tail extension: the most-recent
-// StringIds (the gguf manager family + the REQ-050 dialog OK/Cancel pair +
-// the 8 merged-manager/HF strings + the 2 OpenAI cue-banner hints, indices
-// 78..108) must be REAL translations in every one of the 37 supported
-// locales — no English passthrough.
+// REQ-048 R2-F (user directive) + REQ-050 tail extension + REQ-051: the
+// most-recent StringIds (the gguf manager family + the REQ-050 dialog OK/
+// Cancel pair + the 8 merged-manager/HF strings + the 2 OpenAI cue-banner
+// hints + the REQ-051 OpenAI delete-button caption, indices 78..109) must be
+// REAL translations in every one of the 37 supported locales — no English
+// passthrough.
 // Language-level English fallback exists only for UNSUPPORTED languages; a
 // supported locale that shows English for a shipped string is a defect (the
 // REQ-045/047 backlog shipped exactly that way, which this gate now prevents
@@ -637,9 +639,9 @@ void TestReq048R2I18nCoverage() {
     const UiLocale initial = I18n::GetCurrentLocale();
 
     I18n::SetLocale(UiLocale::English);
-    std::wstring en[31];
+    std::wstring en[32];
     const int first = static_cast<int>(StringId::MenuManageGgufModels);
-    const int last = static_cast<int>(StringId::OpenAiApiKeyHint); // REQ-050 tail (through the cue-banner hints)
+    const int last = static_cast<int>(StringId::OpenAiDeleteSettings); // REQ-051 tail (through the delete-button caption)
     for (int id = first; id <= last; ++id) {
         en[id - first] = I18n::Get(static_cast<StringId>(id));
     }
@@ -655,8 +657,8 @@ void TestReq048R2I18nCoverage() {
     }
     I18n::SetLocale(initial); // suite-state hygiene
     TEST_CHECK(english_copy == 0,
-               "REQ-048 R2-F/R4 + REQ-050: the 31 recent strings (manager family through "
-               "OpenAiApiKeyHint) are translated in all 37 locales (zero English-identical fields)");
+               "REQ-048 R2-F/R4 + REQ-050 + REQ-051: the 32 recent strings (manager family through "
+               "OpenAiDeleteSettings) are translated in all 37 locales (zero English-identical fields)");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-048 R2 recent-field translation coverage passed." << std::endl;

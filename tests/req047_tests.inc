@@ -956,3 +956,46 @@ void TestReq047U1TrayGgufLabels() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// ---------------------------------------------------------------------------
+// REQ-051 (Symptom D): the new OpenAiDeleteSettings StringId — the settings
+// dialog [삭제] push-button caption — resolves NON-EMPTY in all 37 selectable
+// locales, with the designer-exact Korean and English references (the user
+// mandate: real translations in every locale, no English placeholders; the
+// zero-English-passthrough gate rides TestReq048R2I18nCoverage's extended
+// range). TestReq047BundledDuplicateI18n precedent.
+// ---------------------------------------------------------------------------
+
+void TestReq051OpenAiDeleteI18n() {
+    std::cout << "[RUN] Testing REQ-051 OpenAiDeleteSettings i18n coverage..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // (a) non-empty in all 37 authored tables (Auto is the detection
+    // sentinel, not a table).
+    const UiLocale initial = I18n::GetCurrentLocale();
+    int blank = 0;
+    for (int li = static_cast<int>(UiLocale::Korean);
+         li <= static_cast<int>(UiLocale::Burmese); ++li) {
+        I18n::SetLocale(static_cast<UiLocale>(li));
+        if (I18n::Get(StringId::OpenAiDeleteSettings).empty()) ++blank;
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(blank == 0,
+               "REQ-051 (a): OpenAiDeleteSettings is non-empty in all 37 locales");
+
+    // (b) designer-exact reference strings.
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::OpenAiDeleteSettings) == L"설정 삭제",
+               "REQ-051 (b): ko OpenAiDeleteSettings is the designer reference");
+    I18n::SetLocale(UiLocale::English);
+    TEST_CHECK(I18n::Get(StringId::OpenAiDeleteSettings) == L"Delete settings",
+               "REQ-051 (b): en OpenAiDeleteSettings is the reference");
+    I18n::SetLocale(initial);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-051 OpenAiDeleteSettings i18n coverage passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-051 OpenAiDeleteSettings i18n coverage: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}

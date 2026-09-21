@@ -398,6 +398,18 @@ std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bo
 // Cleared at shutdown with g_apply_language_change so a late posted
 // kMsgOpenOpenAiSettings can never call into destroyed state.
 std::function<bool(const OpenAiConfig&, bool saved)> g_apply_openai_settings;
+// REQ-051 (Symptom D): the [삭제] kDeleted seam — invoked on the GUI thread
+// with the dialog-cleared openai block when the user deleted the settings
+// (ShowOpenAiSettingsDialogEx -> OpenAiSettingsOutcome::kDeleted). The body
+// mirrors the cleared fields into the in-memory config (so the unconditional
+// exit save cannot resurrect the deleted settings), re-points the runtime
+// engine's openai block, persists, and refreshes the tray — WITHOUT touching
+// engine_type / the engine selection (user-frozen scope). Set once at startup
+// to a wWinMain lambda (the g_apply_openai_settings sibling pattern, since
+// ControllerWndProc cannot name wWinMain's locals). Cleared at shutdown with
+// g_apply_openai_settings so a late posted kMsgOpenOpenAiSettings can never
+// call into destroyed state.
+std::function<void(const OpenAiConfig&)> g_apply_openai_deleted;
 // REQ-048 R2-D: the deferred gguf-model-manager dialog resolves on the GUI
 // thread in ControllerWndProc, which cannot name wWinMain's locals (config /
 // engine / refresh_tray). Set once at startup to a wWinMain lambda that opens
@@ -775,8 +787,14 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                                                         // re-post during the dialog is legal
         OpenAiConfig edited = emebalachat::s_pending_openai_cfg.value_or(OpenAiConfig{});
         emebalachat::s_pending_openai_cfg.reset();
-        if (!emebalachat::ShowOpenAiSettingsDialog(
-                /*parent=*/emebalachat::g_hControllerWnd, edited)) {
+        // REQ-051 (Symptom D): the tri-state dialog — kCancelled/kSaved keep
+        // the pre-REQ-051 wrapper's byte-identical behavior (the bool wrapper
+        // still maps kDeleted -> false for any remaining caller); kDeleted is
+        // dispatched to its own reconcile seam below.
+        const emebalachat::OpenAiSettingsOutcome openai_outcome =
+            emebalachat::ShowOpenAiSettingsDialogEx(
+                /*parent=*/emebalachat::g_hControllerWnd, edited);
+        if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kCancelled) {
             // Cancel: engine untouched, refresh the tray check mark back.
             DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
             if (g_apply_openai_settings) {
@@ -784,8 +802,21 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         }
-        if (g_apply_openai_settings) {
-            g_apply_openai_settings(edited, /*saved=*/true);
+        if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kSaved) {
+            if (g_apply_openai_settings) {
+                g_apply_openai_settings(edited, /*saved=*/true);
+            }
+            return 0;
+        }
+        // kDeleted: the dialog already cleared + persisted the five openai
+        // fields through its own read-modify-write (engine_type untouched by
+        // construction). Reconcile the SAME cleared block into the in-memory
+        // config + runtime engine so the unconditional exit save cannot
+        // resurrect the deleted settings; NO engine switch (the frozen
+        // user scope: settings only, engine selection unchanged).
+        DIAG_F("MAIN/on_select_engine/004: openai settings deleted; engine selection unchanged\n");
+        if (g_apply_openai_deleted) {
+            g_apply_openai_deleted(edited);
         }
         return 0;
     }
@@ -862,22 +893,13 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     return ::DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// ---- REQ-005 (session 260910_0003 Task B): drag-icon copy retry backoff ----
-// Settle time between the first CopySelectionWithSequenceWait() failure and the
-// single retry in run_drag_translate. The click lands on our WS_EX_NOACTIVATE
-// drag icon, so the text-source window may need a moment to (re-)acquire the
-// foreground before the re-sent Ctrl+C chord is delivered to it; the field
-// failure theory puts focus-transition latency at ~100-200 ms, and 70 ms sits
-// inside the user's 60-80 ms directive while keeping the worst-case worker
-// budget (80 + 70 + 80 ~= 230 ms) far from the old 180 ms single-shot UX.
-// Sleep granularity (~15 ms) makes 70 vs 60/80 behaviorally equivalent.
-constexpr uint32_t kDragCopyRetryBackoffMs = 70;
-static_assert(kDragCopyRetryBackoffMs >= 60 && kDragCopyRetryBackoffMs <= 80,
-              "REQ-005: drag copy retry backoff must stay inside the 60-80 ms directive");
-static_assert(kClipboardChangeTimeoutMs * 2 + kDragCopyRetryBackoffMs <= 250,
-              "REQ-005: worst-case drag copy cycle (attempt+backoff+retry) stays <= 250 ms");
-
 } // namespace (anon)
+
+// REQ-051 note: the drag-icon copy retry backoff constant
+// (kDragCopyRetryBackoffMs, REQ-005 session 260910_0003 Task B) MOVED to
+// src/win32_input.hpp so the strengthened 3-attempt retry cycle
+// (CopyChordWithSettledRetry) and its schedule live next to the other
+// clipboard constants - ONE shared definition (see the header contract).
 
 // REQ-045 P4-5 note: `RegisterUserGgufModel` above lives in this anon
 // namespace (inside namespace emebalachat), so wWinMain below sees it.
@@ -1448,6 +1470,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection));
     });
 
+    // REQ-051 (session 260921, symptom A-2): the dropped-chord failure notice.
+    // The worker calls this (on the pipeline worker thread) exactly when the
+    // Enter path's capture seam reports EnterCaptureResult::CopyChordDropped -
+    // the synthetic Ctrl+C never committed on a selection-capable geometry
+    // (structured contenteditable / Electron editor) after the full retry
+    // budget. The streak policy (DroppedChordFailureStreakSurfaces, worker.hpp)
+    // surfaces this ONCE per consecutive-streak - the main.cpp:748 engine-
+    // modal latch algebra: entry into the failure state notifies, persistence
+    // suppresses, recovery (the next successful capture) clears. Reuses the
+    // EXISTING TooltipCopyFailed string (no new i18n): "couldn't copy the
+    // selection, check the target app" is the honest wording for a dropped
+    // chord, where the no-selection text would mislabel a selection the app
+    // failed to grab. PLACEMENT CONSTRAINT: this registration must stay
+    // BEFORE the engine-unavailable registration below (req047_tests.inc
+    // P5-F1 isolates the file's LAST Set*Callback registration body by the
+    // literal callback name - keep that the engine-unavailable one).
+    worker.SetCopyChordFailedCallback([&tooltip]() {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipCopyFailed));
+    });
+
     // REQ-042 (계획-2, session 260917_0002): under-slice feedback notice. The
     // worker calls this (on the pipeline worker thread) exactly when the Enter
     // path takes the tail-unchanged short-circuit while the verbatim prefix
@@ -1774,6 +1822,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
                engine.GetActiveEngineName().c_str());
         return true;
+    };
+    // REQ-051 (Symptom D): the [삭제] reconcile body for the kDeleted outcome.
+    // Mirror the dialog-cleared openai block into the in-memory config (the
+    // dialog's own persist already wrote the file; without this mirror the
+    // unconditional exit save would resurrect the deleted settings), re-point
+    // the runtime engine's openai block, persist, refresh the tray.
+    // engine_type / the engine selection is deliberately NOT touched here —
+    // the user-frozen scope is "settings only" (decisions.md 260921 17:08).
+    emebalachat::g_apply_openai_deleted = [&](const emebalachat::OpenAiConfig& edited) {
+        config.openai = edited;
+        engine.SetOpenAiConfig(config.openai);
+        config.SaveToFile();
+        refresh_tray();
     };
 
     // REQ-048 R2-D + REQ-050: publish the gguf-model-manager open for the
@@ -2472,35 +2533,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // exposing stale clipboard text. On the worker thread, its
         // Sleep-polling never freezes the GUI pump.
         //
-        // REQ-005 (session 260910_0003 Task B): one focus-switch retry. The
-        // click that starts this job lands on our WS_EX_NOACTIVATE drag icon,
-        // so the text-source window may not have finished (re-)acquiring the
-        // foreground when the first synthetic Ctrl+C fires; the chord is then
-        // lost and attempt 1 returns false. REQ-001 shrunk the single-shot
-        // budget to 80 ms, which the documented ~100-200 ms focus-transition
-        // latency can exceed - one retry after a short settle converts those
-        // intermittent failures into successes. The retry re-calls
-        // CopySelectionWithSequenceWait(), which re-baselines the clipboard
-        // sequence immediately before its own keystroke (REQ-R04), so a late
-        // commit from the lost chord can never be read as stale text. Worst
-        // case is 80 + kDragCopyRetryBackoffMs + 80 ~= 230 ms on THIS worker
+        // REQ-005 (session 260910_0003 Task B) + REQ-051 (symptom A-1,
+        // session 260921): the copy-chord cycle now runs through the SHARED
+        // retry driver CopyChordWithSettledRetry - kDragCopyChordAttempts (3)
+        // attempts with the established kDragCopyRetryBackoffMs (70 ms)
+        // settle between them. The click that starts this job lands on our
+        // WS_EX_NOACTIVATE drag icon, so the text-source window may not have
+        // finished (re-)acquiring the foreground when the first synthetic
+        // Ctrl+C fires; slow-focus Electron targets (documented ~100-200 ms
+        // focus-transition latency) could outlive the old 2-attempt ~
+        // 230 ms cycle - the confirmed symptom-A root cause ("drag shows the
+        // wrong content" = capture failure leaving the previous text on
+        // screen). The third attempt lands at ~300 ms with the extended
+        // 120 ms patience. THE REQ-R04 INVARIANT HOLDS FOR EVERY ATTEMPT:
+        // each CopySelectionWithSequenceWait re-reads the clipboard sequence
+        // immediately before its own keystroke, so a late commit from a lost
+        // chord is absorbed into the fresh baseline and can never be read as
+        // stale text. Worst case is 80+70+80+70+120 = 420 ms on THIS worker
         // thread; the GUI pump stays free. The double-Ctrl+C path
         // (MAIN/DoubleCtrlC/001) keeps no retry: it fires only when the USER
-        // physically pressed Ctrl+C, so no icon click displaced the foreground.
-        bool copy_confirmed = emebalachat::CopySelectionWithSequenceWait();
-        if (!copy_confirmed) {
-            DIAG_F("MAIN/DragIconClick/004: copy attempt 1 failed (focus-switch hazard?); retrying after %ums backoff\n",
-                   emebalachat::kDragCopyRetryBackoffMs);
-            // Runs on the drag-translate worker thread - the Sleep never
-            // blocks the GUI pump (same rationale as the seam's polling).
-            ::Sleep(emebalachat::kDragCopyRetryBackoffMs);
-            copy_confirmed = emebalachat::CopySelectionWithSequenceWait();
-            DIAG_F("MAIN/DragIconClick/005: copy retry %s\n",
-                   copy_confirmed ? "confirmed" : "failed");
-        }
+        // physically pressed Ctrl+C, so no icon click displaced the
+        // foreground.
+        bool copy_confirmed = emebalachat::CopyChordWithSettledRetry(
+            emebalachat::kDragCopyChordAttempts, emebalachat::kDragCopyRetryBackoffMs);
         if (!copy_confirmed) {
             emebalachat::RestoreClipboard(backup);
-            DIAG_F("MAIN/DragIconClick/001: clipboard copy not confirmed; selection lost or target too slow\n");
+            DIAG_F("MAIN/DragIconClick/001: clipboard copy not confirmed after %d attempt(s); selection lost or target too slow\n",
+                   emebalachat::kDragCopyChordAttempts);
             // REQ-R1(b): failure is now user-visible, not silent.
             // R6 B1-H1: carries this request's generation - a superseded
             // drag must not stamp a notice over a newer result either.
@@ -3173,6 +3232,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-047 D3: retire the OpenAI coordinator with it, so a late posted
     // kMsgOpenOpenAiSettings can never call into destroyed config/engine/tray.
     emebalachat::g_apply_openai_settings = nullptr;
+    // REQ-051 (Symptom D): the kDeleted seam retires with the same contract.
+    emebalachat::g_apply_openai_deleted = nullptr;
     // REQ-048 R2-D: retire the gguf-model-manager coordinator with it, so a
     // late posted kMsgOpenGgufManager can never call into destroyed state.
     emebalachat::g_open_gguf_model_manager = nullptr;

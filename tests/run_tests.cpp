@@ -1342,11 +1342,13 @@ void TestWorkerB1SendThroughPins() {
 
     // (3) Every direct ReleaseSelectionOnce() use is accounted for: the helper,
     //     the hold-notice branch (Enter NOT sent there), the paste-branch
-    //     SelectionReleaseRequired gate, and the BUG-004 F2 post-paste collapse
-    //     (PostPasteCollapseRequired gate, success-rescue path only). Any
+    //     SelectionReleaseRequired gate, the BUG-004 F2 post-paste collapse
+    //     (PostPasteCollapseRequired gate, success-rescue path only), and the
+    //     REQ-051 dropped-chord hold branch (WORKER/ExecuteTask/048: a dropped
+    //     copy chord still holds send + notices, Enter NOT sent there). Any
     //     unlisted new use fails this pin.
-    TEST_CHECK(count_occ(src, "ReleaseSelectionOnce();") == 4,
-               "B1: ReleaseSelectionOnce inventory == helper + hold-notice + paste-gate + BUG-004 collapse (4 sites)");
+    TEST_CHECK(count_occ(src, "ReleaseSelectionOnce();") == 5,
+               "B1: ReleaseSelectionOnce inventory == helper + hold-notice + paste-gate + BUG-004 collapse + dropped-chord hold (5 sites)");
 
     // (4) Helper body: canonical order SampleCaret-branch → Release → SendEnter
     //     → Notify, and the std::optional pre-sample signature/default.
@@ -11056,8 +11058,8 @@ void TestBug005S0GoldenDecisionTables() {
             ++n;
             pos += 1;
         }
-        TEST_CHECK(n == 4,
-                   "S0 G3: four ReleaseSelectionOnce sites (send-through helper / empty-capture hold / BUG-004 collapse / REQ-R03 release) - one key event per path frozen");
+        TEST_CHECK(n == 5,
+                   "S0 G3: five ReleaseSelectionOnce sites (send-through helper / empty-capture hold / BUG-004 collapse / REQ-R03 release / REQ-051 dropped-chord hold) - one key event per path frozen");
     }
 
     // ---- G4: 2nd-Enter expected state-transition tables (043000 section
@@ -14562,6 +14564,29 @@ void TestEngineHostAvailabilityAndMigration() {
 // ReadString (and the gguf manager header is pulled in by req048_r2 above).
 #include "req050_hf_tests.inc"
 
+// REQ-051 (session 260921, symptoms A+B): the strengthened copy-chord retry
+// policy (drag 3-attempt cycle + Enter dropped-chord streak) and the local
+// transient engine retry policy. Staged as .inc files next to this runner;
+// registered near the end of main() after the REQ-050 suites, per the
+// end-of-file pattern. PLACEMENT: at the end of file with the other req0xx
+// includes (they need ResolveRepoFile/TEST_CHECK from this TU).
+#include "req051_capture_retry_tests.inc"
+#include "req051_engine_retry_tests.inc"
+
+// REQ-051 (session 260921, symptoms C+D): the OpenAI settings dialog model
+// pinning (PlanOpenAiComboSelection), the settings-delete predicate
+// (ClearOpenAiSettings) + the tri-state outcome, and the 110-field i18n
+// record. Staged as an .inc next to this runner; registered near the end of
+// main() after the REQ-050 suites, per the end-of-file pattern. TestReq051-
+// OpenAiDeleteI18n arrives via the req047 include above (mirror-suite file).
+#include "req051_openai_tests.inc"
+
+// REQ-051 (handoff §6 bullet 2): the shared UTF-8 BOM tolerance audit for the
+// host-side JSON readers (engine_host_json_util / manifest / config reader).
+// Staged as an .inc next to this runner; registered near the end of main()
+// after the REQ-050 suites, per the end-of-file pattern.
+#include "req051_json_loader_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14588,8 +14613,9 @@ struct Req044LstrMirror {
     // REQ-050: 2 dialog OK/Cancel labels (95 -> 97) plus tooltip/repair-
     // transient (97 -> 99) and the merged-manager Hugging Face block
     // (99 -> 107: 2 add-method buttons + 6 HF dialog strings), plus the
-    // OpenAI settings cue-banner hints (107 -> 109).
-    const wchar_t* f[109];
+    // OpenAI settings cue-banner hints (107 -> 109); REQ-051 (Symptom D):
+    // 1 OpenAI settings [삭제] caption appended (109 -> 110).
+    const wchar_t* f[110];
 };
 
 } // namespace
@@ -14602,9 +14628,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 109
-    static_assert(kExpectedFieldCount == 109,
-                   "REQ-044/045/047/048/050: LocalizedStrings field count changed - update the "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 110
+    static_assert(kExpectedFieldCount == 110,
+                   "REQ-044/045/047/048/050/051: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -14613,11 +14639,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 109,
-                "REQ-044/045/047/048/050: LocalizedStrings field count is 109 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 110,
+                "REQ-044/045/047/048/050/051: LocalizedStrings field count is 110 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 109,
-                "REQ-044/045/047/048/050: StringId::EnumCount is 109 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 110,
+                "REQ-044/045/047/048/050/051: StringId::EnumCount is 110 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15399,6 +15425,28 @@ int main() {
     // + the widened 262x92 dialog layout — registered after the canonical-gate
     // suite it complements.
     TestReq050HfAddDialog();
+    // REQ-051 (session 260921, symptoms A+B): the capture retry policy (drag
+    // 3-attempt cycle through the shared CopyChordWithSettledRetry driver +
+    // the Enter dropped-chord streak surfacing) and the local transient
+    // engine retry policy (one identical-input retry inside the 30 s budget,
+    // never a newly-cloud send). Registered after the REQ-050 cluster, per
+    // the end-of-file pattern.
+    TestReq051CaptureRetryPolicy();
+    TestReq051EngineRetryPolicy();
+    // REQ-051 (symptoms C+D): the OpenAI combo pick-or-insert plan, the
+    // settings-delete predicate, the 110-field i18n record + dialog structural
+    // pins, and the delete-caption 37-locale coverage (the last via the req047
+    // mirror suite). Registered after the capture/engine retry suites.
+    TestReq051ComboSelection();
+    TestReq051ClearOpenAiSettings();
+    TestReq051I18nCountAndCoverage();
+    TestReq051OpenAiDialogStructuralPins();
+    TestReq051OpenAiDeleteI18n();
+    // REQ-051 (handoff §6 bullet 2): the shared UTF-8 BOM tolerance for the
+    // host-side JSON readers — helper, runtime routes, structural pins.
+    TestReq051JsonBomSkipHelper();
+    TestReq051JsonReaderBomRoutes();
+    TestReq051JsonLoaderStructuralPins();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

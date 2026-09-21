@@ -1,5 +1,6 @@
 #include "openai_settings_window.hpp"
 
+#include "../config.hpp"      // REQ-051 D: AppConfig read-modify-write for the [삭제] persist
 #include "../diag_logger.hpp" // REQ-047 D3 §C.4: control-creation verification logging
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
@@ -30,11 +31,13 @@ enum : WORD {
     IDC_MODEL_COMBO,
     IDC_FETCH_BTN,
     IDC_MASKED_LABEL,
+    IDC_DELETE_BTN,   // REQ-051 D: [설정 삭제] push button (bottom-left row)
 };
 
 struct OpenAiDialogState {
     OpenAiConfig* cfg;   // in/out; key DPAPI-protected on save
     bool saved = false;
+    bool deleted = false; // REQ-051 D: [삭제] persisted the cleared block itself
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -59,7 +62,7 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
 
 // REQ-050 (auto-fetch): debounce timer for the model-list auto-fetch. The
 // timer id lives in the Win32 timer namespace (no clash with the control IDs
-// 100..107 above). Re-arming an existing id via SetTimer is a silent
+// 100..108 above). Re-arming an existing id via SetTimer is a silent
 // kill+restart, which is exactly the debounce semantics the EN_CHANGE
 // handler wants.
 constexpr UINT_PTR kFetchTimerId = 101;
@@ -84,6 +87,11 @@ bool KeyAvailableForFetch(HWND dlg, const OpenAiConfig* cfg) {
 // auto-fetch path stays silent). Returns the fetched ids — empty when the
 // fetch was declined or failed — so the caller can tell "ran, got nothing"
 // apart from "declined, combo untouched".
+// REQ-051 (Symptom C): the refill no longer clobbers the current model —
+// it pins the combo's current text (saved model or user-typed) via
+// PlanOpenAiComboSelection: exact match -> select it; absent -> append it
+// and select the append; empty fetch -> the combo is left completely
+// untouched so the injected current-model text stays visible.
 std::vector<std::string> DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     OpenAiConfig probe;
     probe.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
@@ -119,12 +127,40 @@ std::vector<std::string> DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     const std::vector<std::string> models =
         OpenAiCompatibleClient::ListModels(probe);
     if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
-        ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-        for (const auto& m : models) {
-            ::SendMessageW(combo, CB_ADDSTRING, 0,
-                           reinterpret_cast<LPARAM>(ToUtf16(m).c_str()));
+        if (models.empty()) {
+            // REQ-051 (Symptom C): fetch failed / empty — do NOT reset the
+            // combo (CB_RESETCONTENT would also wipe the edit text on this
+            // CBS_DROPDOWN control, hiding the injected current-model text).
+            // Leaving the list + text intact keeps the in-use model visible
+            // and selectable; the manual-fetch button still surfaces the
+            // failure notice, the silent auto path stays silent.
+            return models;
         }
-        if (!models.empty()) ::SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        // REQ-051 (Symptom C): capture the current-model text BEFORE the
+        // reset — after CB_RESETCONTENT the edit text is gone.
+        const std::string target = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+        ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        std::vector<std::pair<int, std::string>> items;
+        items.reserve(models.size());
+        for (const auto& m : models) {
+            const int idx = static_cast<int>(::SendMessageW(
+                combo, CB_ADDSTRING, 0,
+                reinterpret_cast<LPARAM>(ToUtf16(m).c_str())));
+            if (idx >= 0) items.emplace_back(idx, m);
+        }
+        // REQ-051 (Symptom C): select the saved/current model when the list
+        // holds it; otherwise append the current text and select THAT (the
+        // pre-REQ-051 code unconditionally selected index 0, clobbering the
+        // saved model). Correctness of the selection beats everything else.
+        const OpenAiComboSelection plan = PlanOpenAiComboSelection(items, target);
+        if (plan.insert_target) {
+            const int idx = static_cast<int>(::SendMessageW(
+                combo, CB_ADDSTRING, 0,
+                reinterpret_cast<LPARAM>(ToUtf16(target).c_str())));
+            if (idx >= 0) ::SendMessageW(combo, CB_SETCURSEL, idx, 0);
+        } else if (plan.select_index >= 0) {
+            ::SendMessageW(combo, CB_SETCURSEL, plan.select_index, 0);
+        }
     }
     return models;
 }
@@ -137,7 +173,8 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         st = reinterpret_cast<OpenAiDialogState*>(lp);
         ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
-        // template itself is proven-good (10 controls incl. OK/Cancel), but
+        // template itself is proven-good (11 controls incl. OK/Cancel and the
+        // REQ-051 delete button), but
         // if any edit/combo control failed to materialize the dialog would
         // look like the
         // reported "API input field missing" symptom. Surface a distinct log
@@ -304,6 +341,46 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case IDCANCEL:
             ::EndDialog(dlg, IDCANCEL);
             return TRUE;
+        case IDC_DELETE_BTN: {
+            // REQ-051 (Symptom D, decisions.md 260921 17:08 — user-frozen
+            // scope): clear EXACTLY the saved OpenAI settings (base_url,
+            // model, the api_key_dpapi+api_key_sha256 pair TOGETHER so a
+            // half-cleared pair can never reach the refuse-forever
+            // WithUnprotectedKey state, http_consent_given) and persist,
+            // leaving the engine selection untouched. The persist is a
+            // read-modify-write of the canonical config.json through a
+            // SECOND AppConfig instance: the dialog only ever receives the
+            // openai block, so file-level persistence is the only save path
+            // that cannot touch engine_type. On success the in/out copy is
+            // cleared too and the dialog ends with a NON-IDOK code (kDeleted
+            // outcome) so pre-REQ-051 callers — main.cpp
+            // kMsgOpenOpenAiSettings via the bool wrapper — see plain cancel
+            // semantics (refresh_tray only, NO engine switch, no persisted
+            // engine_type="openai"). main.cpp's in-memory AppConfig::openai
+            // is reconciled by the caller adopting ShowOpenAiSettingsDialogEx
+            // (see the REQ-051 handoff); until then the file is correct and
+            // any later in-memory save is the documented integration gap.
+            // Fail-closed: a load/save failure keeps the dialog open with
+            // every field intact — nothing is ever half-cleared.
+            AppConfig persisted;
+            if (!persisted.LoadFromFile()) {
+                DIAG_F("UI/OpenAiSettings/005: delete requested but config load failed; "
+                       "settings left intact\n");
+                return TRUE;
+            }
+            ClearOpenAiSettings(persisted.openai);
+            if (!persisted.SaveToFile()) {
+                DIAG_F("UI/OpenAiSettings/006: delete requested but config save failed; "
+                       "settings left intact\n");
+                return TRUE;
+            }
+            DIAG_F("UI/OpenAiSettings/007: saved OpenAI settings deleted "
+                   "(base_url/model/key pair/consent cleared; engine selection untouched)\n");
+            *st->cfg = OpenAiConfig{};
+            st->deleted = true;
+            ::EndDialog(dlg, IDC_DELETE_BTN);
+            return TRUE;
+        }
         }
         return FALSE;
     }
@@ -311,6 +388,35 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 } // namespace
+
+// REQ-051 (Symptom C): pick-or-insert plan for the model-combo refill. Pure
+// (the combo is stateless w.r.t. this helper), so the unit suite drives the
+// exact algorithm the refill applies. Model ids are case-sensitive, so the
+// match is exact and case-sensitive; the first occurrence wins. An empty
+// target never selects or inserts — the combo is left untouched rather than
+// fabricating a selection the user never made.
+OpenAiComboSelection PlanOpenAiComboSelection(
+    const std::vector<std::pair<int, std::string>>& items,
+    const std::string& target) {
+    if (target.empty()) return {-1, false};
+    for (const auto& [index, text] : items) {
+        if (text == target) return {index, false};
+    }
+    return {items.empty() ? 0 : items.back().first + 1, true};
+}
+
+// REQ-051 (Symptom D): clears exactly the five persisted OpenAI settings
+// fields. The key pair (DPAPI blob + SHA-256 digest) is wiped TOGETHER: a
+// half-cleared pair is what made WithUnprotectedKey refuse a valid key
+// forever (REQ-050 b6f98da contract). engine selection is untouched —
+// OpenAiConfig carries no engine field.
+void ClearOpenAiSettings(OpenAiConfig& cfg) {
+    cfg.base_url.clear();
+    cfg.model.clear();
+    cfg.api_key_dpapi.clear();
+    cfg.api_key_sha256.clear();
+    cfg.http_consent_given = false;
+}
 
 // REQ-050 (corrupt-pair recovery): headless integrity check of a persisted
 // key pair — unprotects the DPAPI blob, re-hashes the cleartext, and compares
@@ -413,7 +519,7 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // dialog hands to DialogBoxIndirectParamW. The control IDs (IDC_*) live in
 // the anonymous namespace above; a namespace-scope definition in this same
 // TU can reference them. itemCount must match the AddItem calls below:
-// 8 app controls + IDOK + IDCANCEL = 10.
+// 9 app controls + IDOK + IDCANCEL = 11 (REQ-051 added the delete button).
 void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
@@ -445,6 +551,12 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     tb.AddItem(BTN, 190, 37, 64, 12, IDC_FETCH_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiFetchModels));
     tb.AddItem(LBL, 8, 54, 240, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
+    // REQ-051 (Symptom D): the [설정 삭제] button owns the bottom-LEFT corner
+    // of the action row, far from OK/Cancel — a destructive action gets its
+    // own corner so it cannot be hit by muscle memory aiming at OK. The
+    // 262x130 DLU shell is unchanged. i18n caption (all 37 locales).
+    tb.AddItem(BTN, 8, 70, 64, 13, IDC_DELETE_BTN, BTN_CLS,
+               I18n::Get(StringId::OpenAiDeleteSettings));
     // REQ-050: OK/Cancel are real i18n strings now (StringId::DialogOk /
     // DialogCancel), not hardcoded English — the 37-locale tables carry the
     // conventional native button label for each locale.
@@ -454,18 +566,34 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
                I18n::Get(StringId::DialogCancel));
 }
 
-bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
-    OpenAiDialogState st{&cfg, false};
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg) {
+    OpenAiDialogState st{&cfg, false, false};
 
     const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
     TemplateBuilder tb;
-    tb.Begin(title, 262, 130, /*itemCount=*/10);
+    // REQ-051: 11 items — the IDC_DELETE_BTN button joined the 10-control
+    // REQ-048 P2 template (shell size unchanged at 262x130 DLU).
+    tb.Begin(title, 262, 130, /*itemCount=*/11);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(
         ::GetModuleHandleW(nullptr), tb.Get(), parent, OpenAiSettingsProc,
         reinterpret_cast<LPARAM>(&st));
-    return st.saved && rc == IDOK;
+    // REQ-051 (Symptom D): the [삭제] button persisted the cleared block
+    // itself and ended with a NON-IDOK code; report it distinctly so the
+    // caller never routes a deletion through the save/switch (engine-flip)
+    // path. Deleted wins over saved (the button ends the dialog immediately,
+    // so the two can never co-occur).
+    if (st.deleted) return OpenAiSettingsOutcome::kDeleted;
+    return (st.saved && rc == IDOK) ? OpenAiSettingsOutcome::kSaved
+                                    : OpenAiSettingsOutcome::kCancelled;
+}
+
+bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {
+    // REQ-051 (Symptom D): pre-REQ-051 callers keep their exact contract —
+    // only the kSaved outcome reads as true (kDeleted arrives as false, i.e.
+    // cancel semantics: engine untouched, no save/switch side effects).
+    return ShowOpenAiSettingsDialogEx(parent, cfg) == OpenAiSettingsOutcome::kSaved;
 }
 
 } // namespace emebalachat

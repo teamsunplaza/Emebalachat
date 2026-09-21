@@ -16,6 +16,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -50,7 +51,50 @@ private:
 // `cfg` is the current persisted openai block (read to pre-fill); on OK it is
 // replaced with the edited values AND the key is DPAPI-protected in-place.
 // Returns true when the user saved (caller persists via AppConfig::SaveToFile).
+// REQ-051 (Symptom D): a thin compatibility wrapper over
+// ShowOpenAiSettingsDialogEx — it reports ONLY the kSaved outcome as true, so
+// pre-REQ-051 callers (main.cpp kMsgOpenOpenAiSettings) keep their exact
+// save/switch contract; the kDeleted outcome arrives as false (the delete
+// path persists itself and must never trigger the caller's engine switch).
 bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg);
+
+// REQ-051 (Symptom D): tri-state dialog outcome. kCancelled == the dialog was
+// dismissed without applying anything; kSaved == IDOK (caller persists + owns
+// any engine switch, REQ-047 D3 contract); kDeleted == the [삭제] button
+// cleared the five OpenAI settings fields and PERSISTED that clear itself —
+// the caller must NOT switch the engine and only needs to refresh any UI that
+// renders the openai block (the in-memory AppConfig::openai is reconciled by
+// the caller's own save path; see the REQ-051 handoff).
+enum class OpenAiSettingsOutcome { kCancelled, kSaved, kDeleted };
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg);
+
+// REQ-051 (Symptom C): the pick-or-insert plan for the model combo refill.
+// `items` are the freshly fetched model ids with the combo indices they were
+// added at (index = the CB_ADDSTRING return); `target` is the combo's current
+// text — the saved model at dialog init, or whatever the user typed since.
+// Exact, case-sensitive match (model ids are case-sensitive). Result:
+//   * target found      -> select that index, no insert
+//   * target non-empty,
+//     absent            -> insert_target = true; select_index is the index the
+//                          appended item WILL occupy (last index + 1, or 0)
+//   * target empty      -> {-1, false}: leave the combo unselected (never
+//                          fabricate a selection the user never made)
+struct OpenAiComboSelection {
+    int select_index;    // CB_SETCURSEL target; -1 = leave the combo unselected
+    bool insert_target;  // CB_ADDSTRING(target) first, then select select_index
+};
+OpenAiComboSelection PlanOpenAiComboSelection(
+    const std::vector<std::pair<int, std::string>>& items,
+    const std::string& target);
+
+// REQ-051 (Symptom D): clears EXACTLY the five persisted OpenAI settings
+// fields — base_url, model, api_key_dpapi, api_key_sha256 (the DPAPI/digest
+// pair is wiped TOGETHER so a half-cleared pair can never reach the refuse-
+// forever WithUnprotectedKey state), http_consent_given — so a later save
+// persists the cleared state. OpenAiConfig carries no engine field, so the
+// engine selection is untouched by construction. Pure/side-effect-free apart
+// from the referenced struct; unit-tested headlessly.
+void ClearOpenAiSettings(OpenAiConfig& cfg);
 
 // REQ-048 P2: emits the production OpenAI-settings item set into `tb` (Begin
 // must already have been called with the matching item count). Split out of

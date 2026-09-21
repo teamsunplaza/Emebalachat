@@ -141,7 +141,8 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(hf_invalid_url) \
     X(hf_done) \
     X(openai_base_url_hint) \
-    X(openai_api_key_hint)
+    X(openai_api_key_hint) \
+    X(openai_delete_settings)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -165,9 +166,10 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // + tooltip_translate_failed + repair_transient_body (97) + dialog OK/Cancel
 // (REQ-050, 99) + the merged-manager Hugging Face block (REQ-050: 2 add-
 // method buttons + 6 HF dialog strings, 107) + the OpenAI settings cue-banner
-// hints (REQ-050: base-URL + API-key edit placeholders, 109). The Get()
-// switch maps exactly these 109 named fields.
-static_assert(kLocalizedStringsFieldCount == 109,
+// hints (REQ-050: base-URL + API-key edit placeholders, 109) + the OpenAI
+// settings delete-button caption (REQ-051, 110). The Get()
+// switch maps exactly these 110 named fields.
+static_assert(kLocalizedStringsFieldCount == 110,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -325,6 +327,8 @@ const LocalizedStrings kStringsKorean = {
     // REQ-050: OpenAI settings cue banners (edit placeholder hints).
     .openai_base_url_hint = L"예: https://api.openai.com/v1",
     .openai_api_key_hint = L"API 키",
+    // REQ-051 (Symptom D): 설정 다이얼로그 [설정 삭제] 버튼 캡션.
+    .openai_delete_settings = L"설정 삭제",
 };
 
 // 2. Japanese (ja)
@@ -481,6 +485,8 @@ const LocalizedStrings kStringsJapanese = {
     L"登録しました。",
     L"例: https://api.openai.com/v1",
     L"APIキー",
+    // REQ-051: [設定を削除] ボタン。
+    L"設定を削除",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -637,6 +643,8 @@ const LocalizedStrings kStringsChineseSimp = {
     L"已注册。",
     L"例如: https://api.openai.com/v1",
     L"API 密钥",
+    // REQ-051: [删除设置] 按钮。
+    L"删除设置",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -793,6 +801,8 @@ const LocalizedStrings kStringsChineseTrad = {
     L"已註冊。",
     L"例如: https://api.openai.com/v1",
     L"API 金鑰",
+    // REQ-051: [刪除設定] 按鈕。
+    L"刪除設定",
 };
 
 // 5. Vietnamese (vi)
@@ -949,6 +959,8 @@ const LocalizedStrings kStringsVietnamese = {
     L"Đã đăng ký.",
     L"VD: https://api.openai.com/v1",
     L"Khóa API",
+    // REQ-051: nút [Xóa cài đặt].
+    L"Xóa cài đặt",
 };
 
 // 6. Spanish (es)
@@ -1102,6 +1114,8 @@ const LocalizedStrings kStringsSpanish = {
     L"Registrado.",
     L"es.: https://api.openai.com/v1",
     L"Clave de API",
+    // REQ-051: botón [Eliminar ajustes].
+    L"Eliminar ajustes",
 };
 
 // 7. English (en) - Default Fallback
@@ -1256,6 +1270,8 @@ const LocalizedStrings kStringsEnglish = {
     L"Registered.",
     L"e.g. https://api.openai.com/v1",
     L"sk-...",
+    // REQ-051: [Delete settings] button.
+    L"Delete settings",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1424,6 +1440,8 @@ const LocalizedStrings kStringsFrench = {
     L"Enregistré.",
     L"par ex. : https://api.openai.com/v1",
     L"Clé API",
+    // REQ-051: bouton [Supprimer les paramètres].
+    L"Supprimer les paramètres",
 };
 
 // 9. German (de)
@@ -1580,6 +1598,8 @@ const LocalizedStrings kStringsGerman = {
     L"Registriert.",
     L"z. B. https://api.openai.com/v1",
     L"API-Schlüssel",
+    // REQ-051: Schaltfläche [Einstellungen löschen].
+    L"Einstellungen löschen",
 };
 
 // 10. Russian (ru)
@@ -1736,6 +1756,8 @@ const LocalizedStrings kStringsRussian = {
     L"Зарегистрировано.",
     L"напр.: https://api.openai.com/v1",
     L"Ключ API",
+    // REQ-051: кнопка [Удалить настройки].
+    L"Удалить настройки",
 };
 
 // 11. Portuguese (pt)
@@ -1892,6 +1914,8 @@ const LocalizedStrings kStringsPortuguese = {
     L"Registrado.",
     L"ex.: https://api.openai.com/v1",
     L"Chave de API",
+    // REQ-051: botão [Eliminar configurações].
+    L"Eliminar configurações",
 };
 
 // 12. Italian (it)
@@ -2048,6 +2072,8 @@ const LocalizedStrings kStringsItalian = {
     L"Registrato.",
     L"es.: https://api.openai.com/v1",
     L"Chiave API",
+    // REQ-051: pulsante [Elimina impostazioni].
+    L"Elimina impostazioni",
 };
 
 // 13. Dutch (nl)
@@ -2204,6 +2230,8 @@ const LocalizedStrings kStringsDutch = {
     L"Geregistreerd.",
     L"bijv.: https://api.openai.com/v1",
     L"API-sleutel",
+    // REQ-051: knop [Instellingen verwijderen].
+    L"Instellingen verwijderen",
 };
 
 // 14. Polish (pl)
@@ -2360,6 +2388,8 @@ const LocalizedStrings kStringsPolish = {
     L"Zarejestrowano.",
     L"np.: https://api.openai.com/v1",
     L"Klucz API",
+    // REQ-051: przycisk [Usuń ustawienia].
+    L"Usuń ustawienia",
 };
 
 // 15. Czech (cs)
@@ -2516,6 +2546,8 @@ const LocalizedStrings kStringsCzech = {
     L"Zaregistrováno.",
     L"např.: https://api.openai.com/v1",
     L"API klíč",
+    // REQ-051: tlačítko [Odstranit nastavení].
+    L"Odstranit nastavení",
 };
 
 // 16. Hungarian (hu)
@@ -2672,6 +2704,8 @@ const LocalizedStrings kStringsHungarian = {
     L"Regisztrálva.",
     L"pl.: https://api.openai.com/v1",
     L"API-kulcs",
+    // REQ-051: [Beállítások törlése] gomb.
+    L"Beállítások törlése",
 };
 
 // 17. Romanian (ro)
@@ -2828,6 +2862,8 @@ const LocalizedStrings kStringsRomanian = {
     L"Înregistrat.",
     L"ex.: https://api.openai.com/v1",
     L"Cheie API",
+    // REQ-051: buton [Șterge setările].
+    L"Șterge setările",
 };
 
 // 18. Swedish (sv)
@@ -2984,6 +3020,8 @@ const LocalizedStrings kStringsSwedish = {
     L"Registrerad.",
     L"t.ex. https://api.openai.com/v1",
     L"API-nyckel",
+    // REQ-051: knapp [Ta bort inställningar].
+    L"Ta bort inställningar",
 };
 
 // 19. Danish (da)
@@ -3140,6 +3178,8 @@ const LocalizedStrings kStringsDanish = {
     L"Registreret.",
     L"f.eks. https://api.openai.com/v1",
     L"API-nøgle",
+    // REQ-051: knap [Slet indstillinger].
+    L"Slet indstillinger",
 };
 
 // 20. Finnish (fi)
@@ -3296,6 +3336,8 @@ const LocalizedStrings kStringsFinnish = {
     L"Rekisteröity.",
     L"esim. https://api.openai.com/v1",
     L"API-avain",
+    // REQ-051: painike [Poista asetukset].
+    L"Poista asetukset",
 };
 
 // 21. Norwegian (no / nb)
@@ -3452,6 +3494,8 @@ const LocalizedStrings kStringsNorwegian = {
     L"Registrert.",
     L"f.eks. https://api.openai.com/v1",
     L"API-nøkkel",
+    // REQ-051: knapp [Slett innstillinger].
+    L"Slett innstillinger",
 };
 
 // 22. Greek (el)
@@ -3608,6 +3652,8 @@ const LocalizedStrings kStringsGreek = {
     L"Καταχωρήθηκε.",
     L"π.χ. https://api.openai.com/v1",
     L"Κλειδί API",
+    // REQ-051: κουμπί [Διαγραφή ρυθμίσεων].
+    L"Διαγραφή ρυθμίσεων",
 };
 
 // 23. Turkish (tr)
@@ -3764,6 +3810,8 @@ const LocalizedStrings kStringsTurkish = {
     L"Kaydedildi.",
     L"örn. https://api.openai.com/v1",
     L"API anahtarı",
+    // REQ-051: [Ayarları sil] düğmesi.
+    L"Ayarları sil",
 };
 
 // 24. Ukrainian (uk)
@@ -3920,6 +3968,8 @@ const LocalizedStrings kStringsUkrainian = {
     L"Зареєстровано.",
     L"напр.: https://api.openai.com/v1",
     L"Ключ API",
+    // REQ-051: кнопка [Видалити налаштування].
+    L"Видалити налаштування",
 };
 
 // 25. Thai (th)
@@ -4076,6 +4126,8 @@ const LocalizedStrings kStringsThai = {
     L"ลงทะเบียนแล้ว",
     L"เช่น https://api.openai.com/v1",
     L"คีย์ API",
+    // REQ-051: ปุ่ม [ลบการตั้งค่า]
+    L"ลบการตั้งค่า",
 };
 
 // 26. Indonesian (id)
@@ -4232,6 +4284,8 @@ const LocalizedStrings kStringsIndonesian = {
     L"Terdaftar.",
     L"mis.: https://api.openai.com/v1",
     L"Kunci API",
+    // REQ-051: tombol [Hapus pengaturan].
+    L"Hapus pengaturan",
 };
 
 // 27. Malay (ms)
@@ -4388,6 +4442,8 @@ const LocalizedStrings kStringsMalay = {
     L"Telah didaftarkan.",
     L"cth.: https://api.openai.com/v1",
     L"Kunci API",
+    // REQ-051: butang [Padamkan tetapan].
+    L"Padamkan tetapan",
 };
 
 // 28. Filipino (fil)
@@ -4546,6 +4602,8 @@ const LocalizedStrings kStringsFilipino = {
     L"Naka-register na.",
     L"hal.: https://api.openai.com/v1",
     L"Susi ng API",
+    // REQ-051: button na [Tanggalin ang mga setting].
+    L"Tanggalin ang mga setting",
 };
 
 // 29. Hindi (hi)
@@ -4702,6 +4760,8 @@ const LocalizedStrings kStringsHindi = {
     L"पंजीकृत हो गया।",
     L"उदा.: https://api.openai.com/v1",
     L"API कुंजी",
+    // REQ-051: [सेटिंग हटाएं] बटन।
+    L"सेटिंग हटाएं",
 };
 
 // 30. Bengali (bn)
@@ -4858,6 +4918,8 @@ const LocalizedStrings kStringsBengali = {
     L"নিবন্ধিত হয়েছে।",
     L"উদা.: https://api.openai.com/v1",
     L"API কী",
+    // REQ-051: [সেটিংস মুছুন] বোতাম।
+    L"সেটিংস মুছুন",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -5015,6 +5077,8 @@ const LocalizedStrings kStringsArabic = {
     L"تم التسجيل.",
     L"مثال: https://api.openai.com/v1",
     L"مفتاح API",
+    // REQ-051: زر [حذف الإعدادات].
+    L"حذف الإعدادات",
 };
 
 // 32. Persian (fa) — RTL
@@ -5171,6 +5235,8 @@ const LocalizedStrings kStringsPersian = {
     L"ثبت شد.",
     L"مثلاً: https://api.openai.com/v1",
     L"کلید API",
+    // REQ-051: دکمه [حذف تنظیمات].
+    L"حذف تنظیمات",
 };
 
 // 33. Urdu (ur) — RTL
@@ -5327,6 +5393,8 @@ const LocalizedStrings kStringsUrdu = {
     L"رجسٹر ہو گیا۔",
     L"مثال: https://api.openai.com/v1",
     L"API کلید",
+    // REQ-051: [ترتیبات حذف کریں] بٹن۔
+    L"ترتیبات حذف کریں",
 };
 
 // 34. Hebrew (he) — RTL
@@ -5483,6 +5551,8 @@ const LocalizedStrings kStringsHebrew = {
     L"נרשם.",
     L"לדוגמה: https://api.openai.com/v1",
     L"מפתח API",
+    // REQ-051: לחצן [מחיקת הגדרות].
+    L"מחיקת הגדרות",
 };
 
 // 35. Khmer (km)
@@ -5639,6 +5709,8 @@ const LocalizedStrings kStringsKhmer = {
     L"បានចុះឈ្មោះ។",
     L"ឧ. https://api.openai.com/v1",
     L"កូនសោ API",
+    // REQ-051: ប៊ូតុង [លុបការកំណត់]។
+    L"លុបការកំណត់",
 };
 
 // 36. Lao (lo)
@@ -5795,6 +5867,8 @@ const LocalizedStrings kStringsLao = {
     L"ລົງທະບຽນແລ້ວ.",
     L"ຕົວຢ່າງ: https://api.openai.com/v1",
     L"ລະຫັດ API",
+    // REQ-051: ປຸ່ມ [ລົບການຕັ້ງຄ່າ].
+    L"ລົບການຕັ້ງຄ່າ",
 };
 
 // 37. Burmese (my)
@@ -5951,6 +6025,8 @@ const LocalizedStrings kStringsBurmese = {
     L"စာရင်းသွင်းပြီးပါပြီ။",
     L"ဥပမာ: https://api.openai.com/v1",
     L"API ကီးပါ",
+    // REQ-051: [ဆက်တင်ဖျက်ပါ] ခလုတ်။
+    L"ဆက်တင်ဖျက်ပါ",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -6261,6 +6337,9 @@ std::wstring I18n::Get(StringId id) {
         // the base-URL / API-key single-line edits (EM_SETCUEBANNER).
         case StringId::OpenAiBaseUrlHint:  return s.openai_base_url_hint;
         case StringId::OpenAiApiKeyHint:   return s.openai_api_key_hint;
+
+        // REQ-051 (Symptom D): the settings-dialog [삭제] push-button caption.
+        case StringId::OpenAiDeleteSettings: return s.openai_delete_settings;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

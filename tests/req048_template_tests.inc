@@ -37,7 +37,8 @@ constexpr WORD kComboCls  = 0x0085;
 
 // REQ-050: geometry matches BuildOpenAiTemplate exactly (262x130 dialog;
 // labels w=56; edits x=68 w=186; combo x=68 w=118; fetch x=190 w=64;
-// masked label w=240; OK x=110 w=64; Cancel x=182 w=64 — all h/y per spec).
+// masked label w=240; REQ-051 delete x=8 y=70 w=64 h=13; OK x=110 w=64;
+// Cancel x=182 w=64 — all h/y per spec).
 const ItemExpectation kExpected[] = {
     {100, kStaticCls, false, L"",   8,   6, 56,  9},  // IDC_STATIC_BASE
     {101, kEditCls,   true,  L"",   68,  5, 186, 12}, // IDC_BASE_URL
@@ -47,6 +48,7 @@ const ItemExpectation kExpected[] = {
     {105, kComboCls,  true,  L"",   68,  37, 118, 64},// IDC_MODEL_COMBO
     {106, kBtnCls,    false, L"",   190, 37, 64,  12},// IDC_FETCH_BTN (i18n title)
     {107, kStaticCls, true,  L"",   8,   54, 240, 9}, // IDC_MASKED_LABEL
+    {108, kBtnCls,    false, L"",   8,   70, 64,  13},// REQ-051 IDC_DELETE_BTN (i18n title)
     {IDOK,     kBtnCls, true, L"OK",     110, 70, 64, 13},
     {IDCANCEL, kBtnCls, true, L"Cancel", 182, 70, 64, 13},
 };
@@ -126,7 +128,9 @@ void TestReq048OpenAiTemplateSerialization() {
         using namespace req048_detail;
         TemplateBuilder tb;
         // REQ-050: production dialog is 262 x 130 DLU.
-        tb.Begin(L"production", 262, 130, /*itemCount=*/10);
+        // REQ-051: 11 items — the IDC_DELETE_BTN button (REQ-051 Symptom D)
+        // joined the 10-control REQ-048 P2 template.
+        tb.Begin(L"production", 262, 130, /*itemCount=*/11);
         BuildOpenAiTemplate(tb);
         const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
         const size_t tpl_base = 0; // buffer origin == template origin for a fresh builder
@@ -136,7 +140,7 @@ void TestReq048OpenAiTemplateSerialization() {
         // Header: style, exstyle, cdit, x, y, cx, cy (18 bytes).
         size_t off = 18;
         const WORD cdit = ReadWord(base, 8);
-        TEST_CHECK(cdit == 10, "REQ-048 P2 (b): header cdit == 10 (8 controls + OK + Cancel)");
+        TEST_CHECK(cdit == 11, "REQ-048 P2 (b): header cdit == 11 (9 controls + OK + Cancel)");
         // menu (WORD 0), windowClass (WORD 0), title string, pointsize, font.
         TEST_CHECK(ReadWord(base, off) == 0, "REQ-048 P2 (b): menu == 0 (none)");
         off += 2;
@@ -165,13 +169,14 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (b): item start is 4-byte aligned");
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18.
             const WORD id = ReadWord(base, off + 16);
-            TEST_CHECK(i < 10, "REQ-048 P2 (b): item index within expectation table");
-            if (i >= 10) break;
+            TEST_CHECK(i < 11, "REQ-048 P2 (b): item index within expectation table");
+            if (i >= 11) break;
             const ItemExpectation& exp = kExpected[i];
             TEST_CHECK(id == exp.id, "REQ-048 P2 (b): item id matches production constant");
             // REQ-050: geometry pin — x/y/cx/cy must match the production
             // AddItem coordinates exactly (labels w=56, edits x=68 w=186,
-            // fetch x=190 w=64, OK x=110 w=64, Cancel x=182 w=64).
+            // fetch x=190 w=64, REQ-051 delete x=8 y=70, OK x=110 w=64,
+            // Cancel x=182 w=64).
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18,
             // so x/y/cx/cy live at off+8..off+15 (id is off+16).
             TEST_CHECK(ReadWord(base, off + 8) == static_cast<WORD>(exp.x) &&
