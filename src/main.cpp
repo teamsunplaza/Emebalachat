@@ -94,6 +94,33 @@ bool IsSameUserGgufStem(const std::string& entry_file, const std::string& source
     return false;
 }
 
+// REQ-051 U-2: the user-model display stem for the ENGINE name — the SAME
+// resolution refresh_tray performs for the tray label (bound id -> registry
+// files[0] stem; registry miss -> the raw id so the name never lies; empty
+// binding -> the FIRST origin=="user" entry), so the tooltip/log engine name
+// and the tray menu entry can never disagree. Returns "" when no user model
+// is registered (the caller then keeps the pinned Hy-MT2 naming).
+std::string ResolveUserModelStem(const std::string& user_model_id) {
+    auto reg = engine_host_registry::LoadDefaultRegistry();
+    if (reg.status != engine_host_registry::LoadStatus::Ok) {
+        return {};
+    }
+    if (!user_model_id.empty()) {
+        if (const auto* m = reg.registry.FindModel(user_model_id)) {
+            if (!m->files.empty()) {
+                return GgufFileStem(m->files[0]);
+            }
+        }
+        return user_model_id; // registry miss: the raw id still never lies
+    }
+    for (const auto& m : reg.registry.models) {
+        if (m.origin == "user" && !m.files.empty()) {
+            return GgufFileStem(m.files[0]);
+        }
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // REQ-045 P4-5 (item 3a-2, design §A.3/A.4): third-party .gguf registration.
 // Invoked on the GUI thread from the tray engine submenu's
@@ -250,6 +277,10 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
             config.SetUserModelId(m.id);
             config.SetEngineTypeName("user_gguf");
             engine.SetEngineType(EngineType::LocalLlama);
+            // REQ-051 U-2: the display stem rides the switch so the engine
+            // name flips to the reused model immediately (stem from the
+            // matched entry's own file).
+            engine.SetUserModelDisplayStem(GgufFileStem(m.files[0]));
             config.SaveToFile();
             DIAG_F("MAIN/RegisterUserGguf/006: existing entry reused (id=%s)\n", m.id.c_str());
             ::MessageBoxW(nullptr,
@@ -342,6 +373,9 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
     config.SetUserModelId(model_id);
     config.SetEngineTypeName("user_gguf");
     engine.SetEngineType(EngineType::LocalLlama);
+    // REQ-051 U-2: the display stem rides the switch (the freshly stripped
+    // source stem) so the engine name flips to the new model immediately.
+    engine.SetUserModelDisplayStem(stem);
     config.SaveToFile();
     DIAG_F("MAIN/RegisterUserGguf/012: registered id=%s file=%s (origin=user)\n",
            model_id.c_str(), dest_bare.c_str());
@@ -1270,6 +1304,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-045 P4-3 (design §3b): push the persisted OpenAI Compatible block
     // into the router (same I3 pattern as SetEngineHostConfig above).
     engine.SetOpenAiConfig(config.openai);
+    // REQ-051 U-2: the user-model (.gguf) route's display name. The config
+    // string (not the resolved enum) is the discriminator — "user_gguf" and
+    // "local" both map to LocalLlama, but only the former displays the model
+    // stem. The stem resolution mirrors the tray label exactly.
+    if (config.engine_type == "user_gguf") {
+        engine.SetUserModelDisplayStem(emebalachat::ResolveUserModelStem(config.user_model_id));
+    }
 
     // 6. Create Hidden Controller Window for Tray & Message Pump
     WNDCLASSEXW wc = {};
@@ -1816,6 +1857,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         config.openai = edited;
         engine.SetOpenAiConfig(config.openai);
         engine.SetEngineType(emebalachat::EngineType::OpenAi);
+        // REQ-051 U-2: leaving the user-model route clears its display stem.
+        engine.SetUserModelDisplayStem({});
         config.SetEngineTypeName("openai");
         config.SaveToFile();
         refresh_tray();
@@ -1986,9 +2029,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // and worker threads read these fields concurrently.
         if (engine_idx == 0) {
             engine.SetEngineType(emebalachat::EngineType::GoogleTranslate);
+            // REQ-051 U-2: leaving the user-model route clears its display
+            // stem (all three non-user picks do this — google/local/openai).
+            engine.SetUserModelDisplayStem({});
             config.SetEngineTypeName("google");
         } else if (engine_idx == 1) {
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
+            // REQ-051 U-2: "local" is the PINNED Hy-MT2 route — the user-model
+            // stem must not linger on it.
+            engine.SetUserModelDisplayStem({});
             config.SetEngineTypeName("local");
         } else if (engine_idx == 2) {
             // REQ-047 D3 (design §C.2 안 C-1, Tech Gate §D3 #3): the OpenAI
@@ -2062,6 +2111,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     config.SetUserModelId(fallback_id);
                     config.SetEngineTypeName("user_gguf");
                     engine.SetEngineType(emebalachat::EngineType::LocalLlama);
+                    // REQ-051 U-2: display stem from the SAME first-user entry
+                    // the bind resolves (fallback_id) — one registry read.
+                    engine.SetUserModelDisplayStem(emebalachat::ResolveUserModelStem(fallback_id));
                     config.SaveToFile();
                     refresh_tray();
                     DIAG_F("MAIN/on_select_engine/010: user_gguf bound to the first registered model (id=%s)\n",
@@ -2088,6 +2140,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 return;
             }
             engine.SetEngineType(emebalachat::EngineType::LocalLlama);
+            // REQ-051 U-2: the user-model route displays the resolved model
+            // stem (registry files[0], raw-id fallback) from here on.
+            engine.SetUserModelDisplayStem(emebalachat::ResolveUserModelStem(config.user_model_id));
             config.SetEngineTypeName("user_gguf");
         } else {
             // REQ-046 P4-2 (C3): defensive guard — an unknown index must

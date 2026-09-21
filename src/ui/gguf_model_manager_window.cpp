@@ -68,6 +68,18 @@ constexpr UINT kHfMsgDone = WM_APP + 0x11;
 // repair client uses the same bounded-body discipline, sized for manifests).
 constexpr unsigned long long kHfMaxDownloadBytes = 20ull * 1024 * 1024 * 1024;
 
+// REQ-051 U-2: registry files[0] -> display stem (the engine name must flip
+// to the model stem the moment the manager switches the binding). Same
+// case-sensitive ".gguf" rfind-strip policy as main.cpp's GgufFileStem.
+std::string ManagerModelStem(const std::string& file) {
+    std::string stem = file;
+    const auto dot = stem.rfind(".gguf");
+    if (dot != std::string::npos && dot + 5 == stem.size()) {
+        stem.resize(dot);
+    }
+    return stem;
+}
+
 struct ManagerDialogState {
     AppConfig* config = nullptr;          // REQ-048 R2-D: user_model_id tracking
     TranslationManager* engine = nullptr; // REQ-048 R2-D: delete -> Auto re-point
@@ -576,6 +588,8 @@ HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
         st->config->SetUserModelId(m.id);
         st->config->SetEngineTypeName("user_gguf");
         st->engine->SetEngineType(EngineType::LocalLlama);
+        // REQ-051 U-2: the engine name flips to the reused model's stem.
+        st->engine->SetUserModelDisplayStem(ManagerModelStem(m.files[0]));
         st->config->SaveToFile();
         ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
                       title.c_str(), MB_OK | MB_ICONINFORMATION);
@@ -647,6 +661,8 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
         st->config->SetUserModelId(m.id);
         st->config->SetEngineTypeName("user_gguf");
         st->engine->SetEngineType(EngineType::LocalLlama);
+        // REQ-051 U-2: the engine name flips to the reused model's stem.
+        st->engine->SetUserModelDisplayStem(ManagerModelStem(m.files[0]));
         st->config->SaveToFile();
         ::MessageBoxW(dlg, I18n::Get(StringId::UserGgufRegisteredBody).c_str(),
                       title.c_str(), MB_OK | MB_ICONINFORMATION);
@@ -715,6 +731,8 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
     st->config->SetUserModelId(model_id);
     st->config->SetEngineTypeName("user_gguf");
     st->engine->SetEngineType(EngineType::LocalLlama);
+    // REQ-051 U-2: the engine name flips to the freshly derived stem.
+    st->engine->SetUserModelDisplayStem(stem);
     st->config->SaveToFile();
     DIAG_F("UI/HfAdd/018: registered HF model id=%s file=%s (origin=user)\n",
            model_id.c_str(), st->worker_filename.c_str());
@@ -1016,6 +1034,9 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 st->config->SetUserModelId("");
                 st->config->SetEngineTypeName("auto");
                 st->engine->SetEngineType(EngineType::Auto);
+                // REQ-051 U-2: the user-model route is gone — the display
+                // stem must not linger on the Auto (pinned Hy-MT2) leg.
+                st->engine->SetUserModelDisplayStem({});
                 st->config->SaveToFile();
             }
             st->registry_changed = true;

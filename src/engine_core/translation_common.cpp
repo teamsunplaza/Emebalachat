@@ -180,9 +180,11 @@ bool LocalInferenceEngine::EnsureLoaded(const std::string& path) {
         return false;
     }
 
-    // REQ-R16: if a shutdown cancellation was requested while we were
-    // queued behind the caller's lock, do not even start a model load.
-    if (CancelRequested()) {
+    // REQ-R16 + REQ-051 U-1 FIX 2: if a load-cancellation was requested while
+    // we were queued behind the caller's lock, do not even start a model load.
+    // The LOAD leg reads LoadCancelRequested() (load_cancel_flag, defaulting
+    // to the cancel_flag alias) — a decode-time abort never reaches it.
+    if (LoadCancelRequested()) {
         DIAG_F("ENGINE/EnsureLoaded/030: load skipped, shutdown cancellation pending\n");
         return false;
     }
@@ -195,15 +197,19 @@ bool LocalInferenceEngine::EnsureLoaded(const std::string& path) {
     // headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp).
     SetGpuOffloadParams(mparams, /*gpu_offload=*/true);
     // REQ-R16: abort an in-progress model load when shutdown is requested.
+    // REQ-051 U-1 FIX 2: the progress callback reads the LOAD flag (never the
+    // decode flag), so a per-job abort mid-load cannot discard the load — the
+    // default load_cancel_flag alias keeps the legacy behavior byte-identical.
     mparams.progress_callback = LlamaLoadProgress;
     mparams.progress_callback_user_data =
-        const_cast<void*>(static_cast<const void*>(cancel_flag));
+        const_cast<void*>(static_cast<const void*>(EffectiveLoadCancelFlag()));
 
     model = llama_model_load_from_file(path.c_str(), mparams);
     if (!model) {
         // REQ-R16: a cancel-aborted load is not a CUDA failure; do not
         // spend another full load attempt on the CPU path afterwards.
-        if (CancelRequested()) {
+        // REQ-051 U-1 FIX 2: same load-flag split as the pre-load check.
+        if (LoadCancelRequested()) {
             DIAG_F("ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
             return false;
         }
@@ -263,6 +269,9 @@ std::wstring LocalInferenceEngine::Translate(
     float rep_pen
 ) {
     // REQ-R16: a canceled engine short-circuits before touching llama.
+    // REQ-051 U-1 FIX 1: every Translate() entry clears the wall-clock
+    // exhaustion latch so a previous timeout can never leak into this result.
+    decode_wall_clock_exhausted_ = false;
     if (CancelRequested()) {
         return {};
     }
@@ -465,7 +474,20 @@ std::wstring LocalInferenceEngine::Translate(
     }
 
     std::string output_u8;
-    constexpr int max_gen_tokens = kLlamaGenReserve; // REQ-R01: reserve mirrored from the budget constant
+    // REQ-051 U-1 FIX 1: input-scaled generation cap (min(kLlamaGenReserve,
+    // max(256, 4n+128))) replaces the flat 2048 mirror — kLlamaGenReserve stays
+    // the named ceiling constant (untouched REQ-R01 pin), but a degenerate
+    // non-Hy-MT2 loop now deterministically dies at 4x the prompt size + 128
+    // tokens instead of pasting 2048 tokens of garbage. The wall-clock budget
+    // below is the second, VRAM-contention-proof backstop: whichever trips
+    // first wins.
+    const int max_gen_tokens = ScaledMaxGenTokens(n_prompt_tokens);
+    // REQ-051 U-1 FIX 1: the decode wall-clock budget starts HERE (after the
+    // prompt decode + sampler setup) and covers token GENERATION only — a
+    // model load is governed by the REQ-051 U-1 FIX 2 finish-once-started
+    // rule, not by this clock.
+    const auto decode_start = std::chrono::steady_clock::now();
+    const auto decode_deadline = decode_start + std::chrono::milliseconds(kDecodeWallClockBudgetMs);
 
     for (int i = 0; i < max_gen_tokens; ++i) {
         // REQ-R16: cancellation check BETWEEN DECODE STEPS - the token
@@ -475,6 +497,24 @@ std::wstring LocalInferenceEngine::Translate(
         // the loop with the partial output discarded as empty.
         if (CancelRequested()) {
             DIAG_F("ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
+            llama_sampler_free(smpl);
+            return {};
+        }
+
+        // REQ-051 U-1 FIX 1: wall-clock budget check BETWEEN DECODE STEPS
+        // (same seam as the cancellation check — at most one more sampled
+        // token runs before we exit). On expiry the partial output is
+        // discarded as empty and the exhaustion latch is set; the worker
+        // maps it to the frozen "timeout" wire code (transient -> the
+        // client's one-shot retry). Shape-only line: ms + token index, no
+        // content.
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= decode_deadline) {
+            const long long elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - decode_start).count();
+            decode_wall_clock_exhausted_ = true;
+            DIAG_F("ENGINE/Translate/033: decode wall-clock budget exhausted at token %d (%lld ms); answering timeout\n",
+                   i, static_cast<long long>(elapsed_ms));
             llama_sampler_free(smpl);
             return {};
         }
@@ -557,7 +597,13 @@ void LocalInferenceEngine::Unload() {}
 bool LocalInferenceEngine::EnsureLoaded(const std::string&) { return false; }
 std::wstring LocalInferenceEngine::Translate(std::wstring_view, std::string_view,
                                              std::string_view, const std::string&,
-                                             float, float, int, float) { return {}; }
+                                             float, float, int, float) {
+    // REQ-051 U-1 FIX 1: parity with the llama build — the exhaustion latch
+    // is cleared at every Translate() entry even though the stub can never
+    // exhaust the budget.
+    decode_wall_clock_exhausted_ = false;
+    return {};
+}
 
 #endif // HAVE_LLAMA_CPP
 

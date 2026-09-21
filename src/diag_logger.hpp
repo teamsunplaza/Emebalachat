@@ -106,8 +106,21 @@ void Shutdown();
 void SetEnabled(bool enabled);
 bool IsEnabled();
 
-// Removes the oldest emebalachat_*.log files in `dir` until the directory
-// total is at or below cap_bytes (default kLogDirCapBytes). Best-effort: a
+// REQ-051 U-1 FIX 3 (session 260922): per-process log FILENAME stem override.
+// Default L"emebalachat" (the app). The shared inference host
+// (Emebala.Engine.exe) sets L"emebala_engine" at boot BEFORE the first
+// SetEnabled(true) so its opt-in log file is distinguishable from the app's
+// in the SAME %LOCALAPPDATA%\Emebalachat\logs directory (the timestamp
+// convention below is unchanged: <stem>_yymmddhhmmss.log, "-N" collision
+// suffix). Boot-time only: the value is read when the lazy open builds the
+// file name; a change after the file is open has no effect on this run.
+// An empty stem resets to the default. Thread-safe (file_mtx), never throws.
+void SetLogFileStem(const std::wstring& stem);
+
+// Removes the oldest <stem>_*.log files in `dir` (the app's "emebalachat_"
+// stem plus the engine host's "emebala_engine_" stem — REQ-051 U-1 FIX 3)
+// until the directory total is at or below cap_bytes (default
+// kLogDirCapBytes). Best-effort: a
 // file that cannot be stat'ed or deleted (locked, vanished) is skipped, and
 // the function never throws. Returns the number of files deleted. main.cpp
 // calls it once at startup against DefaultLogDir() REGARDLESS of the opt-in

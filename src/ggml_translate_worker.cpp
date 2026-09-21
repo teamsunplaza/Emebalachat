@@ -291,6 +291,14 @@ ReadOutcome ReadFrame(HANDLE pipe, std::string& json, DWORD timeout_ms) {
 // the host_main.cpp g_abort pattern, relocated into the worker process.
 std::atomic<bool> g_cancel{false};
 
+// REQ-051 U-1 FIX 2: the LOAD-side cancellation flag. The engine's
+// load_cancel_flag is pointed at THIS never-set atomic: a per-job abort
+// (g_cancel) unwinds the in-flight DECODE, but a multi-minute model load —
+// once started — always runs to completion. The old single-flag behavior
+// discarded the load on abort, so the next request repaid the full load and
+// a busy user's retry spiral never converged.
+std::atomic<bool> g_never_cancel_load{false};
+
 // The job id currently in flight (0 = none). M6 ggml-translate serves ONE
 // context at a time (registry max_sessions=1), so a single slot suffices.
 std::atomic<std::uint64_t> g_current_job{0};
@@ -313,6 +321,10 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
     // stay single-threaded (v1 InferenceLoop discipline, §4.5).
     auto engine = std::make_unique<LocalInferenceEngine>();
     engine->cancel_flag = &g_cancel; // address-stability contract (D-2)
+    // REQ-051 U-1 FIX 2: the load leg never cancels on a per-job abort — a
+    // started load always finishes (see g_never_cancel_load above). Without
+    // this wiring load_cancel_flag aliases cancel_flag (the legacy behavior).
+    engine->load_cancel_flag = &g_never_cancel_load;
 
     // REQ-045 P4-4 (item 3a-1): the models directory + registry.json are
     // resolved ONCE at frame-loop start (same common location as the host;
@@ -464,14 +476,22 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                 }
             }
             const bool aborted = g_cancel.load(std::memory_order_acquire);
+            // REQ-051 U-1 FIX 1: a decode that exhausted its wall-clock budget
+            // answers the SAME "timeout" code as a cancel-aborted job — the
+            // wire vocabulary is unchanged (no new frame shape) and the frozen
+            // client classifies "timeout" as TRANSIENT, so the app's one-shot
+            // retry fires instead of the classification-as-Permanent
+            // engine_failed no-retry dead end.
+            const bool decode_wall_clock_exhausted = engine->decode_wall_clock_exhausted();
             g_current_job.store(0, std::memory_order_release);
 
             wp::EventMsg ev;
             ev.session = job.session;
             ev.seq = ++event_seq;
-            if (aborted) {
+            if (aborted || decode_wall_clock_exhausted) {
                 // Cancel contract: the orchestrator maps an aborted job to
-                // status=timeout toward the client (v1 §4.4 behavior).
+                // status=timeout toward the client (v1 §4.4 behavior). The
+                // wall-clock-exhausted leg shares the exact same answer.
                 ev.kind = wp::EventKind::Error;
                 ev.code = "timeout";
             } else if (!model_ok || !loaded) {

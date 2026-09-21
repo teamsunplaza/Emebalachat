@@ -210,6 +210,16 @@ void TranslationManager::SetOpenAiConfig(const OpenAiConfig& cfg) {
     RefreshActiveEngine();
 }
 
+// REQ-051 U-2: pushes the user-model (.gguf) display stem ("" clears the
+// route back to the pinned Hy-MT2 naming). Same GUI-thread-only startup/
+// runtime discipline as SetEngineType; re-evaluates the active name so the
+// tooltip/log surface flips immediately.
+void TranslationManager::SetUserModelDisplayStem(std::string_view stem) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    user_model_stem_ = std::string(stem);
+    RefreshActiveEngine();
+}
+
 // REQ-R16: shutdown latch — deliberately NOT taking mutex_: an in-flight
 // Translate() (cloud WinHTTP or engine-host pipe) holds it across the whole
 // request; the atomic store is the signal that call observes.
@@ -271,7 +281,14 @@ void TranslationManager::RefreshActiveEngine() {
         // split collapses to a single host-serving leg.
         if (host_available) {
             active_type_ = EngineType::LocalLlama;
-            active_name_ = "Hy-MT2-1.8B (Shared Host)";
+            // REQ-051 U-2: the user-model (.gguf) route gets a DISTINCT,
+            // config-derived display name (the model file stem — active_name_
+            // is UI-visible through the tooltip and the pipeline/translate
+            // diagnostic lines, so the pinned Hy-MT2 name must not masquerade
+            // as the user's model). No new hardcoded English + no i18n
+            // strings: the bare stem reads correctly in every locale.
+            active_name_ = user_model_stem_.empty() ? "Hy-MT2-1.8B (Shared Host)"
+                                                    : user_model_stem_;
         } else {
             // REQ-029-B honesty preserved: a strict-local pick with NO local
             // source stays honest — active_type_ remains LocalLlama
@@ -287,6 +304,10 @@ void TranslationManager::RefreshActiveEngine() {
         if (host_available) {
             // REQ-043: under Auto a deployed host keeps local-first routing
             // — otherwise every translation would silently go to Google.
+            // The pinned Hy-MT2 name stays UNCONDITIONAL here: the host's C1
+            // gate serves the pinned model for engine_type=auto, so the
+            // user-model stem (a LocalLlama-route display input) must not
+            // leak into the Auto leg.
             active_type_ = EngineType::LocalLlama;
             active_name_ = "Hy-MT2-1.8B (Shared Host)";
         } else {

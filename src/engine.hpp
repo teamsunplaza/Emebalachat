@@ -162,11 +162,17 @@ constexpr EngineHostFailureClass ClassifyEngineHostFailure(std::string_view err_
 // pair stays inside the established request-time envelope - a failure that
 // already burned the full 30 s (e.g. a cold model load on the user's 2.8 GB
 // user_gguf) converges to the honest modal instead of a second 30 s wait.
+// REQ-051 U-1 FIX 1 (session 260922): the ceiling moved 10 s -> 15 s so the
+// one-shot retry still fires after a WORKER-SIDE 12 s decode wall-clock
+// timeout (kDecodeWallClockBudgetMs): 12 s + 400 ms backoff + 12 s ~= 25 s
+// stays inside the frozen 30 s client budget. A first attempt that took
+// longer than 15 s is still deemed "already waited long enough" and
+// converges to the honest modal without a second spend.
 // The REQ-R16 latch outranks everything: a cancel intent never retries and
 // never starts a second pipe request.
 inline constexpr int kEngineHostTransientRetryMax = 1;
 inline constexpr uint32_t kEngineHostTransientRetryBackoffMs = 400;
-inline constexpr uint64_t kEngineHostRetryFirstAttemptCeilingMs = 10000;
+inline constexpr uint64_t kEngineHostRetryFirstAttemptCeilingMs = 15000;
 constexpr bool EngineHostTransientRetryWarranted(std::string_view err_code,
                                                  int retries_so_far,
                                                  uint64_t first_attempt_elapsed_ms,
@@ -226,6 +232,14 @@ public:
     // selecting "openai" IS the consent (their own credentials), distinct
     // from the google_consent/cloud_fallback H2 gate.
     void SetOpenAiConfig(const OpenAiConfig& cfg);
+
+    // REQ-051 U-2 (live bug U-2, cosmetic): the display stem for the
+    // user-model (.gguf) route. Empty (default) = the pinned Hy-MT2 route.
+    // main.cpp resolves the stem from config (registry files[0] stem, raw
+    // user_model_id fallback — the same resolution the tray label uses) and
+    // pushes it whenever the user_gguf route activates; switching to any
+    // other engine clears it. Purely display: tooltip + diagnostic lines.
+    void SetUserModelDisplayStem(std::string_view stem);
 
     // Returns user-facing name of the currently active engine
     std::string GetActiveEngineName() const;
@@ -339,6 +353,11 @@ private:
     // drives the OpenAi serving leg of Translate(). Startup-only write (same
     // discipline as engine_host_config_), so it needs no Snapshot entry.
     OpenAiConfig openai_config_;
+
+    // REQ-051 U-2: the user-model (.gguf) route's display stem ("" = pinned
+    // Hy-MT2). Startup/runtime write from the GUI thread only (main.cpp's
+    // engine-select coordinator); read by RefreshActiveEngine under mutex_.
+    std::string user_model_stem_;
 
     float temperature_ = 0.0f;
     float top_p_ = 0.6f;

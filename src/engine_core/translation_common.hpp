@@ -30,10 +30,20 @@
 //
 // Cancellation contract (unchanged from the pre-extraction code): the engine
 // reads *cancel_flag between decode steps and from llama.cpp's abort callback
-// (CPU chunks) and the model-load progress callback. Callers serialize
-// inference; the flag's address must stay stable for the engine's lifetime
-// (TranslationManager wires its own latch; the host wires one fixed
-// per-request atomic — see host_main.cpp).
+// (CPU chunks). REQ-051 U-1 FIX 2 splits the MODEL-LOAD leg onto its own
+// load_cancel_flag (default: aliases cancel_flag, so legacy callers are
+// byte-identical): the worker points it at a never-set atomic so a per-job
+// abort unwinds the DECODE but never discards a multi-minute load (the
+// never-converging load spiral). Callers serialize inference; both flag
+// addresses must stay stable for the engine's lifetime (TranslationManager
+// wires its own latch; the host wires one fixed per-request atomic — see
+// host_main.cpp).
+//
+// REQ-051 U-1 FIX 1: the decode loop additionally carries a wall-clock budget
+// (kDecodeWallClockBudgetMs) and an input-scaled generation cap
+// (ScaledMaxGenTokens): a degenerate loop on a user GGUF stops sampling at the
+// budget and reports exhaustion through decode_wall_clock_exhausted() so the
+// worker can answer the frozen "timeout" code (transient -> client retry).
 //
 // At extraction time the in-app path's runtime behavior was UNCHANGED by the
 // move: TranslationManager::LlamaEngine was a zero-member derived class
@@ -54,7 +64,50 @@
 #include "llama.h"
 #endif
 
+// REQ-051 U-1 FIX 1: the input-scaled generation cap clamps against
+// kLlamaGenReserve (the REQ-R01 budget constant lives in this library's
+// llama-independent helper header; re-exported through engine.hpp for the
+// existing consumers).
+#include "engine_core_helpers.hpp"
+
 namespace emebalachat {
+
+// REQ-051 U-1 FIX 1 (live bug U-1, user-GGUF serving intermittency): the
+// decode wall-clock budget. A healthy Hy-MT2 translation finishes in
+// ~78-171 ms warm / <= ~2 s worst case; a degenerate non-Hy-MT2 loop under
+// VRAM contention burned the ENTIRE 2048-token generation reserve at
+// ~14 ms/token (~28.5 s), colliding with the frozen 30 s client budget.
+// 12 s is generous for every legitimate translation (even a 10x-thrashed
+// decode gets ONE honest timeout + the client's one-shot transient retry
+// instead of a 30 s freeze): 12 s + 400 ms backoff + 12 s ~= 25 s stays
+// inside the frozen 30 s budget.
+inline constexpr int kDecodeWallClockBudgetMs = 12000;
+
+// REQ-051 U-1 FIX 1: input-scaled generation cap constants. Translation
+// outputs beyond (4x input + 128) tokens do not legitimately exist; the cap
+// is floored at 256 (a one-token prompt still deserves a full sentence) and
+// clamped at kLlamaGenReserve (2048 stays the named ceiling constant — the
+// unit-test pins and the REQ-R01 static_asserts are untouched).
+inline constexpr int kScaledGenFloorTokens = 256;
+inline constexpr int kScaledGenPerInputToken = 4;
+inline constexpr int kScaledGenFlatTokens = 128;
+
+// REQ-051 U-1 FIX 1: max_gen_tokens = min(kLlamaGenReserve, max(256, 4n+128)).
+// Pure/constexpr so the unit suite can pin the whole matrix headlessly.
+// Overflow-safe: the multiply happens only after the ceiling crossover
+// short-circuit, so adversarial token counts can never reach it.
+constexpr int ScaledMaxGenTokens(int input_token_count) {
+    if (input_token_count <= 0) {
+        return kScaledGenFloorTokens;
+    }
+    constexpr int kCeilingCrossover =
+        (kLlamaGenReserve - kScaledGenFlatTokens) / kScaledGenPerInputToken; // 480
+    if (input_token_count >= kCeilingCrossover) {
+        return kLlamaGenReserve;
+    }
+    const int scaled = input_token_count * kScaledGenPerInputToken + kScaledGenFlatTokens;
+    return scaled < kScaledGenFloorTokens ? kScaledGenFloorTokens : scaled;
+}
 
 // REQ-043: headless local inference engine (see file header for provenance).
 // All members are public exactly as in the original struct; the host drives it
@@ -81,16 +134,44 @@ public:
     // created without one, e.g. in isolation tests - then cancellation is
     // simply unavailable and behavior is the old full-run).
     const std::atomic<bool>* cancel_flag = nullptr;
+    // REQ-051 U-1 FIX 2: the model-load cancellation flag. NULL (the default)
+    // makes the load leg ALIAS cancel_flag — byte-identical to the historical
+    // single-flag behavior. A caller that must never discard an in-flight
+    // load (the ggml-translate worker: a per-job abort unwinds the decode via
+    // cancel_flag but the multi-minute load, once started, runs to completion
+    // so the next job never repays it) points this at its own never-set
+    // atomic. EnsureLoaded's progress callback and its cancel checks read
+    // THIS flag (see LoadCancelRequested); the decode loop keeps cancel_flag.
+    const std::atomic<bool>* load_cancel_flag = nullptr;
+    // REQ-051 U-1 FIX 1: set when a Translate() decode loop exhausts
+    // kDecodeWallClockBudgetMs (the worker maps it to the frozen "timeout"
+    // wire code); cleared at every Translate() entry. Plain bool — Translate()
+    // is caller-serialized, exactly like control_texts_built below.
+    bool decode_wall_clock_exhausted_ = false;
+
+    bool CancelRequested() const {
+        return cancel_flag && cancel_flag->load(std::memory_order_acquire);
+    }
+
+    // REQ-051 U-1 FIX 2: the effective load-cancellation flag (load_cancel_flag
+    // when wired, cancel_flag otherwise). EnsureLoaded consults this so the
+    // default configuration keeps the legacy single-flag semantics.
+    const std::atomic<bool>* EffectiveLoadCancelFlag() const {
+        return load_cancel_flag ? load_cancel_flag : cancel_flag;
+    }
+    bool LoadCancelRequested() const {
+        const std::atomic<bool>* flag = EffectiveLoadCancelFlag();
+        return flag && flag->load(std::memory_order_acquire);
+    }
+    bool decode_wall_clock_exhausted() const {
+        return decode_wall_clock_exhausted_;
+    }
     // SEC-B2 (session 260911_0002, verify 233020): vocab-derived control-token
     // scrub set, built lazily on the first Translate() after a (re)load and
     // invalidated by Unload(). Translation requests are caller-serialized, so
     // this cache needs no separate lock (original contract, kept verbatim).
     std::vector<std::wstring> control_token_texts;
     bool control_texts_built = false;
-
-    bool CancelRequested() const {
-        return cancel_flag && cancel_flag->load(std::memory_order_acquire);
-    }
 
     LocalInferenceEngine();
     ~LocalInferenceEngine();

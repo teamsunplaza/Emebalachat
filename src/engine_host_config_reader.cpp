@@ -39,6 +39,9 @@ std::wstring LocalAppDataDir() {
 // stale user_model_id still in config.json) keeps the result "" so the
 // host's g_user_model_id stays empty -> EnsureWorkerModelRelayed no-ops ->
 // the pinned Hy-MT2 path serves (the user's "터치하면 안 됨" contract).
+// REQ-051 U-1 FIX 3: this is the LEGACY full parse — kept verbatim (the
+// req051_json_loader suite pins the BOM skip inside this function). The
+// combined reader below delegates the id to it.
 std::string LoadUserModelIdFromConfig(const std::wstring& lad_override) {
     const std::wstring lad = lad_override.empty() ? LocalAppDataDir() : lad_override;
     if (lad.empty()) return {};
@@ -62,6 +65,33 @@ std::string LoadUserModelIdFromConfig(const std::wstring& lad_override) {
     const auto* v = enginehost::detail::FindField(fields, "user_model_id");
     if (!v || !v->is_string) return {};
     return v->text; // "" (or absent above) keeps the pinned path
+}
+
+// REQ-046 P4-2 (Rev2 §B-4, C1) + REQ-051 U-1 FIX 3: the combined boot read —
+// the C1-gated user_model_id (delegated to the legacy reader above, so its
+// pinned shape stays intact) plus the diag_log_enabled opt-in for the
+// orchestrator's diag FILE sink. The extra pass re-reads the same ~2 KB
+// config.json once per boot; keeping it separate preserves the legacy reader
+// byte-for-byte. The diag flag is read UNCONDITIONALLY (not gated on
+// engine_type), mirroring the app's own diag_log_enabled semantics
+// (config.cpp). Typed-JSON-bool discipline: a quoted "true" (is_string) is a
+// schema error and stays false.
+HostBootConfig LoadHostBootConfig(const std::wstring& lad_override) {
+    HostBootConfig out;
+    out.user_model_id = LoadUserModelIdFromConfig(lad_override);
+    const std::wstring lad = lad_override.empty() ? LocalAppDataDir() : lad_override;
+    if (lad.empty()) return out;
+    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+    std::string text;
+    if (engine_host_json::ReadTextFileUtf8(path, text) != engine_host_json::FileReadOutcome::Ok) {
+        return out; // absent/unreadable -> the pinned default (AC-4)
+    }
+    text = engine_host_json::SkipUtf8Bom(text);
+    enginehost::JsonPairs fields;
+    if (!enginehost::JsonParseObject(text, fields)) return out;
+    const auto* dbg = enginehost::detail::FindField(fields, "diag_log_enabled");
+    out.diag_log_enabled = dbg && !dbg->is_string && dbg->text == "true";
+    return out;
 }
 
 } // namespace enginehost

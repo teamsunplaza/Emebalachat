@@ -13,9 +13,11 @@
 //   (b) EngineHostTransientRetryWarranted matrix: transient + budget + fast
 //       first attempt + no cancel -> retry; each guard independently kills
 //       it (permanent code, spent budget, over-ceiling first attempt,
-//       REQ-R16 cancel). Boundary pins at the ceiling.
+//       REQ-R16 cancel). Boundary pins at the ceiling (15 s since the
+//       REQ-051 U-1 FIX 1 raise — the pins track the shipped constant).
 //   (c) The constants: ONE retry, 400 ms backoff (the 300-500 ms handoff
-//       band), 10 s first-attempt ceiling.
+//       band), 15 s first-attempt ceiling (clears the worker's 12 s decode
+//       wall-clock timeout inside the frozen 30 s budget).
 //   (d) EnterEngineFailureSurfacesModal: strict statuses keep the REQ-047
 //       threshold-1 surface; EngineFailed surfaces only on a local leg at
 //       the streak threshold; a pure-cloud leg never surfaces.
@@ -60,9 +62,14 @@ void TestReq051EngineRetryPolicy() {
     TEST_CHECK(!EngineHostTransientRetryWarranted("busy", 0, 30500, false),
                "REQ-051: a first attempt that burned the 30 s budget does NOT "
                "retry (converges to the honest modal instead)");
-    TEST_CHECK(EngineHostTransientRetryWarranted("io", 0, 10000, false),
-               "REQ-051: the first-attempt ceiling is inclusive (10 s)");
-    TEST_CHECK(!EngineHostTransientRetryWarranted("connect", 0, 10001, false),
+    // REQ-051 U-1 FIX 1 (session 260922): the ceiling moved 10 s -> 15 s so
+    // the retry still fires after the worker-side 12 s decode wall-clock
+    // timeout (12 s + 400 ms + 12 s ~= 25 s < the frozen 30 s budget). The
+    // boundary pins moved WITH the constant — they exist to catch silent
+    // drift, not to freeze a superseded value.
+    TEST_CHECK(EngineHostTransientRetryWarranted("io", 0, 15000, false),
+               "REQ-051: the first-attempt ceiling is inclusive (15 s)");
+    TEST_CHECK(!EngineHostTransientRetryWarranted("connect", 0, 15001, false),
                "REQ-051: past the ceiling the retry is refused");
     TEST_CHECK(!EngineHostTransientRetryWarranted("connect", 0, 2000, true),
                "REQ-051: a REQ-R16 cancel intent outranks the retry");
@@ -77,8 +84,9 @@ void TestReq051EngineRetryPolicy() {
     TEST_CHECK(backoff >= 300 && backoff <= 500,
                "REQ-051: the retry backoff stays inside the 300-500 ms band");
     volatile uint64_t ceiling = kEngineHostRetryFirstAttemptCeilingMs;
-    TEST_CHECK(ceiling == 10000,
-               "REQ-051: the fast-failure ceiling is 10 s");
+    TEST_CHECK(ceiling == 15000,
+               "REQ-051 U-1 FIX 1: the fast-failure ceiling is 15 s (clears "
+               "the 12 s decode wall-clock timeout)");
 
     // ---- (d) the Enter-path EngineFailed streak surfacing ------------------
     volatile int threshold = kEnterEngineFailureStreakThreshold;

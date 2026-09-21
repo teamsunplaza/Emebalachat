@@ -45,8 +45,13 @@
 //     delete the token, exit 0; the next client request respawns it. No
 //     worker is ever orphaned (design §1.1 rule 4 / §10).
 //   * Shape-only logging through the existing diag_logger (OFF by default —
-//     the host has no config file and never enables the file sink; DIAG_F's
-//     stderr mirror is unconditional). User text NEVER appears in any log.
+//     REQ-051 U-1 FIX 3 adds an OPT-IN file sink: when the app's config.json
+//     sets diag_log_enabled=true the host enables the sink at boot with the
+//     "emebala_engine_" filename stem, same %LOCALAPPDATA%\Emebalachat\logs
+//     directory + timestamp convention as the app; the shape-only
+//     ENGINEHOST/* line discipline is already authored at every call site;
+//     DIAG_F's stderr mirror is unconditional). User text NEVER appears in
+//     any log.
 //   * Startup mirrors main.cpp: SetDllDirectoryW(L""), single-instance mutex,
 //     diag::Init, EnsureVulkanGuard (delay-load SEH guard).
 // ---------------------------------------------------------------------------
@@ -1381,9 +1386,27 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
                ::GetLastError());
     }
 
-    // Shape-only logging; the file sink stays OFF (no config file, release
-    // posture — the DIAG_F stderr mirror still reports hard errors).
+    // Shape-only logging; the file sink stays OFF unless the app's config.json
+    // opts in (REQ-051 U-1 FIX 3 below — the DIAG_F stderr mirror still
+    // reports hard errors either way).
     (void)diag::Init();
+
+    // REQ-051 U-1 FIX 3 (live bug U-1 triage): orchestrator internals were
+    // unobservable on user devices because the diag file sink was wired OFF
+    // with no way to turn it on. Read the app's config.json ONCE at boot (the
+    // same reader the user_model_id C1 gate uses) and honor its
+    // diag_log_enabled: when opted in, enable the FILE sink with the
+    // "emebala_engine_" filename stem in the app's own logs directory (the
+    // diag::SetLogFileStem override; the yymmddhhmmss timestamp convention is
+    // unchanged, so host and app logs are distinguishable side by side).
+    // Privacy contract unchanged: strictly opt-in, and every ENGINEHOST/*
+    // line is shape-only by construction (user text never appears).
+    const HostBootConfig boot_cfg = LoadHostBootConfig({});
+    if (boot_cfg.diag_log_enabled) {
+        diag::SetLogFileStem(L"emebala_engine");
+        diag::SetEnabled(true);
+        DIAG_LOG("ENGINEHOST", "host/002: diag file sink enabled (stem=emebala_engine)");
+    }
 
     // P5-F1: driverless machines must CPU-fall back, never SEH 0xC06D007E.
     (void)EnsureVulkanGuard();
@@ -1462,7 +1485,9 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     // user's chosen model id for the dispatcher's session_open relay — ONLY
     // when config's engine_type=="user_gguf" (the reader gates it). Boot-time
     // only (no runtime reload — the idle-exit respawn bounds staleness).
-    g_user_model_id = enginehost::LoadUserModelIdFromConfig({});
+    // REQ-051 U-1 FIX 3: the id comes from the SAME boot-time parse that read
+    // diag_log_enabled right after diag::Init (one file read per boot).
+    g_user_model_id = boot_cfg.user_model_id;
     // REQ-046 P4-2 (Rev2 §B-4): shape-only DIAG with the C1 discriminator —
     // the model id's CONTENT is never logged (privacy: shape-only logs).
     DIAG_LOG("ENGINEHOST", "host/004: user_model_id len=%zu (engine_type=%s)",

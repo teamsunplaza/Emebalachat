@@ -14587,6 +14587,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // after the REQ-050 suites, per the end-of-file pattern.
 #include "req051_json_loader_tests.inc"
 
+// REQ-051 U-1 FIX 1+2 (session 260922): the decode wall-clock budget + the
+// input-scaled generation cap + the load/decode cancellation split. Staged
+// as an .inc next to this runner; registered near the end of main() after
+// TestReq051JsonLoaderStructuralPins(). The inc includes
+// ../src/engine_core/translation_common.hpp itself (mid-TU include, pragma-
+// once safe; run_tests already links Emebalachat_engine_core).
+#include "req051_decode_budget_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15447,6 +15455,11 @@ int main() {
     TestReq051JsonBomSkipHelper();
     TestReq051JsonReaderBomRoutes();
     TestReq051JsonLoaderStructuralPins();
+    // REQ-051 U-1 FIX 1+2: the input-scaled generation cap and the decode
+    // wall-clock / load-cancel split semantics. Registered after the JSON
+    // loader suites, per the end-of-file pattern.
+    TestReq051ScaledGenCap();
+    TestReq051DecodeWallClockSemantics();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

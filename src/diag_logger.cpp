@@ -69,6 +69,11 @@ struct State {
     std::wstring dir;    // resolved by Init(); empty = file can never open
     FILE* file = nullptr;
     std::wstring path;
+    // REQ-051 U-1 FIX 3: the log FILENAME stem (default "emebalachat"; the
+    // engine host overrides it with "emebala_engine" before its first
+    // SetEnabled(true)). Lives under file_mtx like dir/path/file — it is
+    // read by BuildLogName while the lazy open holds file_mtx.
+    std::wstring file_stem = L"emebalachat";
 };
 
 State g;
@@ -397,26 +402,31 @@ std::wstring ResolveLogDir(const std::filesystem::path& dir_override) {
     return {};
 }
 
-// emebalachat_yymmddhhmmss.log (LOCAL time in the name, user-specified
-// format). One file per run: an already-existing name (two runs inside the
-// same second) gets a "-N" collision suffix.
+// <stem>_yymmddhhmmss.log (LOCAL time in the name, user-specified format;
+// the stem defaults to "emebalachat" — REQ-051 U-1 FIX 3 lets the engine host
+// override it with "emebala_engine"). One file per run: an already-existing
+// name (two runs inside the same second) gets a "-N" collision suffix.
+// CALLER CONTRACT: file_mtx is held (every caller is the lazy-open path).
 std::wstring BuildLogName(const std::wstring& dir) {
     SYSTEMTIME st = {};
     ::GetLocalTime(&st);
-    wchar_t base[64] = {};
-    swprintf_s(base, L"emebalachat_%02u%02u%02u%02u%02u%02u",
+    const std::wstring stem =
+        g.file_stem.empty() ? std::wstring(L"emebalachat") : g.file_stem;
+    wchar_t ts[32] = {};
+    swprintf_s(ts, L"%02u%02u%02u%02u%02u%02u",
                static_cast<unsigned>(st.wYear % 100), static_cast<unsigned>(st.wMonth),
                static_cast<unsigned>(st.wDay), static_cast<unsigned>(st.wHour),
                static_cast<unsigned>(st.wMinute), static_cast<unsigned>(st.wSecond));
+    const std::wstring base = stem + L"_" + ts;
     namespace fs = std::filesystem;
     for (unsigned n = 0; n < 100; ++n) {
-        std::wstring stem = base;
+        std::wstring name = base;
         if (n > 0) {
             wchar_t suffix[16] = {};
             swprintf_s(suffix, L"-%u", n);
-            stem += suffix;
+            name += suffix;
         }
-        fs::path cand = fs::path(dir) / (stem + L".log");
+        fs::path cand = fs::path(dir) / (name + L".log");
         std::error_code ec;
         if (!fs::exists(cand, ec)) {
             return cand.wstring();
@@ -424,7 +434,7 @@ std::wstring BuildLogName(const std::wstring& dir) {
     }
     // Absurd collision case (100 runs within one second): reuse the base name
     // anyway — "ab" append keeps both runs' records instead of losing logs.
-    return (fs::path(dir) / (std::wstring(base) + L".log")).wstring();
+    return (fs::path(dir) / (base + L".log")).wstring();
 }
 
 } // namespace
@@ -458,10 +468,19 @@ uint64_t PruneLogs(const std::filesystem::path& dir, uint64_t cap_bytes) {
                 continue;
             }
             const std::wstring name = it->path().filename().wstring();
-            const std::wstring kPrefix = L"emebalachat_";
+            const std::wstring kAppPrefix = L"emebalachat_";
+            // REQ-051 U-1 FIX 3: the engine host's opt-in logs share the
+            // directory (<stem>_yymmddhhmmss.log with the "emebala_engine_"
+            // stem); the cap bounds them too so an always-on diagnostic run
+            // cannot grow the dir without limit.
+            const std::wstring kEnginePrefix = L"emebala_engine_";
             const std::wstring kSuffix = L".log";
-            if (name.size() < kPrefix.size() + kSuffix.size() ||
-                name.compare(0, kPrefix.size(), kPrefix) != 0 ||
+            const bool ours =
+                (name.size() >= kAppPrefix.size() + kSuffix.size() &&
+                 name.compare(0, kAppPrefix.size(), kAppPrefix) == 0) ||
+                (name.size() >= kEnginePrefix.size() + kSuffix.size() &&
+                 name.compare(0, kEnginePrefix.size(), kEnginePrefix) == 0);
+            if (!ours ||
                 name.compare(name.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) {
                 continue; // foreign files in the dir are not ours to touch
             }
@@ -605,6 +624,16 @@ void SetEnabled(bool enabled) {
 
 bool IsEnabled() {
     return g.enabled.load(std::memory_order_relaxed);
+}
+
+void SetLogFileStem(const std::wstring& stem) {
+    try {
+        std::lock_guard<std::mutex> flk(g.file_mtx);
+        g.file_stem = stem.empty() ? std::wstring(L"emebalachat") : stem;
+    } catch (...) {
+        // Logging must never crash the host; a failed stem change keeps the
+        // previous stem (BuildLogName's empty fallback covers the rest).
+    }
 }
 
 void SetContentLogging(bool enabled) {

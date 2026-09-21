@@ -555,6 +555,12 @@ void TestReq048R2GgufManager() {
         TEST_CHECK(src.find("emebalachat::GgufFileStem(m.files[0]);") != std::string::npos,
                    "REQ-050 (e) Q2: refresh_tray falls back to the first origin==\"user\" entry "
                    "for the stem when the binding is empty");
+        // REQ-051 U-2 added a THIRD site: the shared ResolveUserModelStem
+        // helper (main.cpp anon namespace) performs the same first
+        // origin=="user" scan for the ENGINE display stem, so the tooltip/
+        // log engine name and the tray label can never disagree. The pin's
+        // intent — refresh_tray AND the engine-select coordinator both
+        // carry the fallback — still holds at 3 (the helper plus those two).
         {
             size_t scan_pos = src.find("m.origin == \"user\" && !m.files.empty()");
             int scans = 0;
@@ -562,9 +568,10 @@ void TestReq048R2GgufManager() {
                 ++scans;
                 scan_pos = src.find("m.origin == \"user\" && !m.files.empty()", scan_pos + 1);
             }
-            TEST_CHECK(scans == 2,
+            TEST_CHECK(scans == 3,
                        "REQ-050 (e) Q2: the origin==\"user\" fallback scan exists in BOTH "
-                       "refresh_tray and the engine-select coordinator");
+                       "refresh_tray and the engine-select coordinator, plus the REQ-051 U-2 "
+                       "ResolveUserModelStem helper (3 sites)");
         }
         TEST_CHECK(src.find("config.SetUserModelId(fallback_id)") != std::string::npos,
                    "REQ-050 (e) Q2: clicking the checkable entry with an empty binding binds the "
