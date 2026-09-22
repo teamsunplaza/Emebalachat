@@ -233,6 +233,31 @@ def check_contract(text: str) -> list[str]:
                 "CHECK 8: the bare-name tampering guard (IsSafeBareName) is "
                 "gone from the cleanup path")
 
+    # -- CHECK 10: M7 A-7 family-shared setup-gate mutex wiring ----------------
+    # The [Code] gate must exist on BOTH entry points and use the exact
+    # family mutex name; the elevated chained child must be exempt so the
+    # master's own mutex never aborts the real install. (Structural only —
+    # runtime behavior is the physical-install domain.)
+    if "FAMILY_SETUP_MUTEX = 'Local\\EmebalaSetup'" not in text:
+        failures.append("CHECK 10: family setup mutex constant is not the "
+                        "exact Local\\EmebalaSetup")
+    gate = extract_procedure(text, "FamilySetupGateAcquire")
+    if not gate:
+        failures.append("CHECK 10: FamilySetupGateAcquire() is missing")
+    else:
+        if "CheckForMutexes(FAMILY_SETUP_MUTEX)" not in gate:
+            failures.append("CHECK 10: gate does not check the shared mutex")
+        if "CreateMutex(FAMILY_SETUP_MUTEX)" not in gate:
+            failures.append("CHECK 10: gate does not acquire the shared mutex")
+        if "{param:SL5}" not in gate:
+            failures.append("CHECK 10: gate lost the chained-mode (SL5) "
+                            "elevated-child exemption")
+    for ev in ("InitializeSetup", "InitializeUninstall"):
+        fn = extract_procedure(text, ev)
+        if not fn or "FamilySetupGateAcquire" not in fn:
+            failures.append(
+                f"CHECK 10: {ev}() is missing or not wired to the gate")
+
     # -- CHECK 9: M7 A-2 installer-side registry merge invariants ------------
     writer = extract_procedure(text, "WriteRegistryFile")
     if not writer:

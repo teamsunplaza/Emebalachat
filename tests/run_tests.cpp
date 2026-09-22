@@ -14632,6 +14632,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // engine_host_registry.hpp and ResolveRepoFile source pins.
 #include "m7_registry_merge_uninstall_tests.inc"
 
+// M7 A-7/A-8 (session 260922_0001, DEC-003/DEC-004): family-shared
+// Local\EmebalaSetup installer-gate mutex + ARP DisplayName "Emebala" prefix
+// contract. Pure ResolveRepoFile source pins against installer/setup.iss
+// (mutex constant, InitializeSetup/InitializeUninstall wiring, SL5 chained-
+// child exemption, 11-language gate messages, prefix scanner anchors).
+// Defines TestM7SetupGateMutex.
+#include "m7_setup_gate_mutex_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15539,6 +15547,10 @@ int main() {
     // damage handling, installer-side structural pins). Registered right
     // after the A-1 suite, per the end-of-file pattern.
     TestM7RegistryMergeUninstall();
+    // M7 A-7/A-8: the family setup-gate mutex + naming contract structural
+    // pins (setup.iss source-text anchors; runtime gate behavior is the
+    // physical-install domain). Registered after the A-2/A-3 suite.
+    TestM7SetupGateMutex();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -526,6 +526,36 @@ french.SharedEngineDeletePromptBody=Aucun autre produit Emebala n'est installé 
 german.SharedEngineDeletePromptBody=Es ist kein anderes Emebala-Produkt installiert und kein Emebala-Prozess aktiv.%n%nMöchten Sie die gemeinsame Emebala-Engine und das KI-Modell aus %LOCALAPPDATA%\Emebala\Common entfernen? Sie werden erneut heruntergeladen, wenn Sie ein Emebala-Produkt erneut installieren.%n%nEmpfehlung: Behalten Sie sie (wählen Sie Nein).
 italian.SharedEngineDeletePromptBody=Non è installato alcun altro prodotto Emebala e nessun processo Emebala è in esecuzione.%n%nVuoi rimuovere il motore Emebala condiviso e il modello IA da %LOCALAPPDATA%\Emebala\Common? Verranno scaricati di nuovo se reinstalli un prodotto Emebala.%n%nRaccomandazione: conservali (scegli No).
 
+; M7 A-7 (session 260922_0001, DEC-003): family-shared installer gate messages.
+; Shown by InitializeSetup/InitializeUninstall when another Emebala-family
+; installer/uninstaller currently holds the Local\EmebalaSetup mutex. Same
+; 11-language policy as the F2/F3 keys above; the remaining installer
+; languages intentionally fall back to english (Inno >= 6.4 replicated
+; fallback, see the compiler-version gate at the top of this script).
+english.FamilySetupGateTitle=Another Emebala installer is running
+korean.FamilySetupGateTitle=다른 Emebala 설치 프로그램이 실행 중입니다
+japanese.FamilySetupGateTitle=別のEmebalaインストーラーが実行中です
+chinesesimplified.FamilySetupGateTitle=另一个埃梅巴拉安装程序正在运行
+chinesetraditional.FamilySetupGateTitle=另一個埃梅巴拉安裝程式正在執行
+spanish.FamilySetupGateTitle=Se está ejecutando otro instalador de Emebala
+portuguese.FamilySetupGateTitle=Está a ser executado outro instalador da Emebala
+brazilianportuguese.FamilySetupGateTitle=Outro instalador da Emebala está sendo executado
+french.FamilySetupGateTitle=Un autre programme d'installation Emebala est en cours d'exécution
+german.FamilySetupGateTitle=Ein anderes Emebala-Installationsprogramm wird ausgeführt
+italian.FamilySetupGateTitle=Un altro programma di installazione Emebala è in esecuzione
+
+english.FamilySetupGateBody=A second Emebala product cannot be installed or removed while the first one is still in progress, because both would write to the same shared Emebala Engine at the same time.%n%nPlease wait for the other installer to finish, then start this one again.
+korean.FamilySetupGateBody=선행 설치가 진행 중이므로 두 번째 Emebala 제품은 설치하거나 제거할 수 없습니다. 두 설치 프로그램이 동시에 같은 공유 Emebala Engine에 기록하게 되기 때문입니다.%n%n다른 설치 프로그램이 종료될 때까지 기다린 후 다시 시작하세요.
+japanese.FamilySetupGateBody=先のインストールが進行中のため、2番目のEmebala製品をインストールまたはアンインストールできません。両方のセットアップが同じ共有Emebala Engineへ同時に書き込むことになるためです。%n%n他のインストールプログラムの終了を待ってから、再度開始してください。
+chinesesimplified.FamilySetupGateBody=由于前一个安装仍在进行中，无法安装或卸载第二个埃梅巴拉产品，因为两个安装程序会同时写入同一个共享 Emebala Engine。%n%n请等待另一个安装程序结束后，再重新启动本安装程序。
+chinesetraditional.FamilySetupGateBody=由於前一個安裝仍在進行中，無法安裝或解除安裝第二個埃梅巴拉產品，因為兩個安裝程式會同時寫入同一個共用 Emebala Engine。%n%n請等待另一個安裝程式結束後，再重新啟動本安裝程式。
+spanish.FamilySetupGateBody=No se puede instalar ni desinstalar un segundo producto de Emebala mientras el primero sigue en curso, porque ambos escribirían a la vez en el mismo motor Emebala compartido.%n%nEspere a que termine el otro instalador y vuelva a iniciar este.
+portuguese.FamilySetupGateBody=Não é possível instalar nem desinstalar um segundo produto da Emebala enquanto o primeiro ainda está em curso, porque ambos escreveriam em simultâneo no mesmo motor Emebala partilhado.%n%nAguarde a conclusão do outro instalador e inicie este novamente.
+brazilianportuguese.FamilySetupGateBody=Não é possível instalar nem desinstalar um segundo produto da Emebala enquanto o primeiro ainda está em andamento, porque ambos gravariam ao mesmo tempo no mesmo motor Emebala compartilhado.%n%nAguarde a conclusão do outro instalador e inicie este novamente.
+french.FamilySetupGateBody=Un second produit Emebala ne peut pas être installé ou désinstallé pendant que le premier est encore en cours, car les deux écriraient simultanément dans le même moteur Emebala partagé.%n%nVeuillez attendre la fin de l'autre programme d'installation, puis relancer celui-ci.
+german.FamilySetupGateBody=Ein zweites Emebala-Produkt kann nicht installiert oder deinstalliert werden, während das erste noch läuft, da beide gleichzeitig in dieselbe gemeinsame Emebala-Engine schreiben würden.%n%nBitte warten Sie, bis das andere Installationsprogramm beendet ist, und starten Sie dieses anschließend erneut.
+italian.FamilySetupGateBody=Un secondo prodotto Emebala non può essere installato o disinstallato mentre il primo è ancora in corso, perché entrambi scriverebbero contemporaneamente nello stesso motore Emebala condiviso.%n%nAttendi il completamento dell'altro programma di installazione e riavvia questo.
+
 ; ------------------------------------------------------------------------
 ; [Tasks] - Optional user-selectable tasks
 ; ------------------------------------------------------------------------
@@ -714,6 +744,20 @@ const
   // time from MODEL_FILENAME so the pin and the registry can never drift.
   REGISTRY_FILENAME = 'registry.json';
   REGISTRY_BUNDLED_ID = 'hy-mt2-1.8b-q8';
+  // M7 A-7 (session 260922_0001, DEC-003): family-shared installer mutex name.
+  // ALL Emebala-family installers (Chat/Listener/Reader setup.iss) must use
+  // this EXACT string so a second family installer can never run concurrently
+  // with the first one (shared-store writes: engine files, components.json,
+  // registry.json, last-app uninstall cleanup).
+  // Local\ namespace rationale (mirrors the AppMutex decision above, audit
+  // Blocker 4 / CWE-284): the contended resource is the PER-USER common store
+  // (%LOCALAPPDATA%\Emebala\Common), so per-session exclusion is the correct
+  // scope. A Global\ mutex would let another user's install on multi-user/RDP
+  // machines deny this user's installer - the exact cross-session denial the
+  // AppMutex audit rejected for the app itself. Inno's own per-EXE setup
+  // mutex only stops two instances of the SAME file; it cannot see the other
+  // family products' installers, hence this explicit shared name.
+  FAMILY_SETUP_MUTEX = 'Local\EmebalaSetup';
   REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
   REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
 
@@ -1940,6 +1984,89 @@ begin
   Result := RegistryHasOtherEmebalaApp(HKEY_LOCAL_MACHINE);
   if not Result then
     Result := RegistryHasOtherEmebalaApp(HKEY_CURRENT_USER);
+end;
+
+// ------------------------------------------------------------------------
+// FamilySetupGateAcquire - M7 A-7 (session 260922_0001, DEC-003, plan v2.1
+// 결정 기록 A-7): the Emebala-family installers (Chat/Listener/Reader) all
+// write the SAME per-user common store (%LOCALAPPDATA%\Emebala\Common: engine
+// binaries, components.json, registry.json) and the last-app uninstaller
+// prunes it. Two family installers (or an installer plus an uninstaller)
+// running at the same time can interleave those writes, so every family
+// setup/uninstall entry point takes an advisory gate on the shared mutex
+// FAMILY_SETUP_MUTEX before touching the store.
+//
+// Namespace decision (Local\, NOT Global\): the contended resource is the
+// PER-USER common store, so per-session exclusion is the correct scope. A
+// Global\ mutex would let another user's install on multi-user/RDP machines
+// deny this user's installer - the exact cross-session denial the AppMutex
+// audit (Blocker 4, CWE-284, see [Setup] above) rejected for the app itself.
+// Both halves of one chained (UAC-elevated) install share the same
+// interactive session, so Local\ still covers the master+child pair.
+//
+// Chained-mode correctness: with PrivilegesRequired=admin under UAC, Inno
+// runs the wizard in the non-elevated master and relaunches an elevated
+// child passing /SL5=. BOTH halves execute this [Code], so the gate is only
+// checked/created in the master (no /SL5 on the command line); the child is
+// the SAME install instance the master already gated - re-checking there
+// would abort on the master's own mutex.
+//
+// Race honesty: CheckForMutexes -> CreateMutex is advisory and not atomic
+// (a same-millisecond double launch can still slip through - worst case is
+// the status quo ante, no new harm). The window this gate actually closes is
+// the realistic one: a user starting a second family product's installer
+// while a minutes-long model download / shared-store rewrite is in flight.
+// The OS releases the mutex when the owning process exits; no CloseHandle
+// needed (same lifecycle model as the app-side single-instance mutex).
+// Returns True when the caller must abort (another setup instance holds the
+// gate and the user has been told why).
+// ------------------------------------------------------------------------
+function FamilySetupGateAcquire(): Boolean;
+var
+  Break2: String;
+begin
+  Result := False;
+  if ExpandConstant('{param:SL5}') <> '' then
+  begin
+    // Elevated child of a chained install: the master already holds the gate.
+    Log('M7 A-7: chained child instance - family setup gate inherited from master.');
+    Exit;
+  end;
+  if CheckForMutexes(FAMILY_SETUP_MUTEX) then
+  begin
+    Break2 := #13#10 + #13#10;
+    // Plain-text MsgBox pattern (same contract as the F3 SuppressibleMsgBox
+    // calls): silent runs take the default answer and abort, no UI pops.
+    SuppressibleMsgBox(CustomMessage('FamilySetupGateTitle') + Break2 +
+                       CustomMessage('FamilySetupGateBody'), mbError, MB_OK, IDOK);
+    Log('M7 A-7: another Emebala-family setup instance holds ' + FAMILY_SETUP_MUTEX + '; this run aborts.');
+    Result := True;
+    Exit;
+  end;
+  CreateMutex(FAMILY_SETUP_MUTEX);
+  Log('M7 A-7: family setup gate acquired (' + FAMILY_SETUP_MUTEX + ').');
+end;
+
+// ------------------------------------------------------------------------
+// InitializeSetup - M7 A-7: abort when another Emebala-family installer or
+// uninstaller currently holds the shared setup gate. NOTE: InitializeSetup
+// runs AFTER the Select Setup Language dialog, so CustomMessage() here is
+// already localized (multi-language display gate honored).
+// ------------------------------------------------------------------------
+function InitializeSetup(): Boolean;
+begin
+  Result := not FamilySetupGateAcquire();
+end;
+
+// ------------------------------------------------------------------------
+// InitializeUninstall - M7 A-7: the same gate protects the uninstall path -
+// the last-app CleanupSharedEngineStore rewrite must never interleave with a
+// concurrent family installer writing the same store. Same chained-mode SL5
+// guard as the setup side.
+// ------------------------------------------------------------------------
+function InitializeUninstall(): Boolean;
+begin
+  Result := not FamilySetupGateAcquire();
 end;
 
 // ------------------------------------------------------------------------
