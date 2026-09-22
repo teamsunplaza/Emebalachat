@@ -462,6 +462,14 @@ struct ResultMsg {
     std::uint64_t id = 0;
     HostStatus status = HostStatus::EngineFailed;
     std::string text;
+    // REQ-057: OPTIONAL served-model id echo ("" = the frame omitted the
+    // member — a pre-REQ-057 sender). PARSE-ONLY contract awareness: the
+    // frozen BuildResult below does NOT emit it (the orchestrator splices the
+    // member host-side onto the built bytes when the worker's terminal event
+    // carried one); ParseResult extracts it so the self-contained client's
+    // reduced copy stays a strict subset of this parser (the REQ-044
+    // verbatim-sync invariant). Registry-id metadata only, never user text.
+    std::string model;
 };
 
 struct ErrorMsg {
@@ -592,6 +600,14 @@ inline bool ParseResult(std::string_view json, ResultMsg& m) {
     m.text.clear();
     if (const auto* t = detail::FindField(p, "text")) {
         if (t->is_string) m.text = t->text;
+    }
+    // REQ-057: the OPTIONAL served-model echo (parse-only awareness — see
+    // ResultMsg). Strictly typed, mirroring the `code` member discipline in
+    // the worker contract; receivers that predate REQ-057 never see the
+    // member and are unaffected (§4.3 unknown-field-ignore).
+    if (const auto* md = detail::FindField(p, "model")) {
+        if (!md->is_string) return false; // mistyped optional member is malformed
+        m.model = md->text;
     }
     return true;
 }

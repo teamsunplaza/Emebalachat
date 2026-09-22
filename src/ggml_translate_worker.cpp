@@ -367,7 +367,10 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
     // Lazily-reported fallback notice (c3): set on the first unresolved
     // model_id, logged once, then cleared.
     bool fallback_notice_pending = false;
-    auto resolve_active_model = [&]() -> std::string {
+    // REQ-057: `resolved_out` additionally reports whether the id RESOLVED
+    // against the registry (false = the pinned fallback was taken) — the
+    // served-model echo needs the same distinction the one-time notice uses.
+    auto resolve_active_model = [&](bool* resolved_out) -> std::string {
         bool resolved = true;
         const std::string path = ResolveModelFile(models_dir, registry, active_model_id, &resolved);
         if (!resolved && !fallback_notice_pending) {
@@ -377,6 +380,7 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                      "falling back to the pinned model",
                      active_model_id.c_str(), registry_loaded ? 1 : 0);
         }
+        if (resolved_out) *resolved_out = resolved;
         return path;
     };
 
@@ -437,8 +441,20 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // REQ-045 P4-4: resolve the model for THIS job from the latest
             // session_open model_id ("" -> pinned; unresolvable -> pinned with
             // the one-time notice; referenced-but-absent -> model_missing).
-            const std::string model_path = resolve_active_model();
+            bool model_resolved = true;
+            const std::string model_path = resolve_active_model(&model_resolved);
             const bool model_ok = !model_path.empty();
+            // REQ-057: the ACTUALLY-SERVED model id echo (privacy-safe: the
+            // registry id metadata, never user content). Rule: a non-empty
+            // active id that RESOLVED names itself; an empty or unresolved id
+            // serves the pinned default, so the echo names the bundled
+            // registry entry (ResolveBundledModelId, the same scan the
+            // app's expected-id check uses). Empty when the registry names
+            // no bundled entry -> the frame stays in the pre-REQ-057 shape.
+            const std::string served_model_id =
+                (!active_model_id.empty() && model_resolved)
+                    ? active_model_id
+                    : emebalachat::engine_host_registry::ResolveBundledModelId(registry);
             bool loaded = false;
             std::wstring out;
             if (model_ok) {
@@ -504,6 +520,9 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                 ev.kind = wp::EventKind::Final;
                 ev.text = emebalachat::ToUtf8(out);
             }
+            // REQ-057: echo the served id on EVERY terminal event of the job
+            // (final AND error kinds) — diagnosability on failures matters.
+            ev.model = served_model_id;
             if (!WriteFrame(pipe, wp::BuildEvent(ev))) {
                 DIAG_F("ENGINEHOST/worker/023: event write failed (orchestrator gone)\n");
                 return 3;

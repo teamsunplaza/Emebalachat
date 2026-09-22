@@ -487,8 +487,9 @@ void TestReq048R2GgufManager() {
         // is appended ONLY while a user model is registered (menu with no
         // model = manager row only), and the " — <stem>" suffix rides the
         // label regardless of the checked engine (the old pref==3 gate and
-        // the "(미등록)" placeholder are gone).
-        TEST_CHECK(src.find("if (!user_model_stem_.empty())") != std::string::npos,
+        // the "(미등록)" placeholder are gone). REQ-056: the guard reads the
+        // menu-build-time local the resolver just derived (no cached member).
+        TEST_CHECK(src.find("if (!user_model_stem.empty())") != std::string::npos,
                    "REQ-050 (e) 3-1: the user-gguf append is gated on a registered model");
         TEST_CHECK(src.find("if (pref == 3)") == std::string::npos &&
                    src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
@@ -497,13 +498,17 @@ void TestReq048R2GgufManager() {
         // Ordering: the registration guard opens before the em-dash join,
         // which precedes the ID_TRAY_ENGINE_USER_GGUF append — the entry is
         // built INSIDE the guard (frozen radio ID, conditional append).
-        const size_t guard_pos = src.find("if (!user_model_stem_.empty())");
+        const size_t guard_pos = src.find("if (!user_model_stem.empty())");
         const size_t join_pos = src.find("user_gguf_label += L\" — \"");
         const size_t append_pos = src.find("ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str()");
         TEST_CHECK(guard_pos != std::string::npos && join_pos != std::string::npos &&
                        append_pos != std::string::npos && guard_pos < join_pos &&
                        join_pos < append_pos,
                    "REQ-050 (e) 3-1/3-2: label join + radio append live inside the registration guard");
+        // REQ-056: the menu derives both values from the resolver's view at
+        // build time — no cached copies remain in the tray.
+        TEST_CHECK(src.find("resolver_ ? resolver_() : EngineMenuView{}") != std::string::npos,
+                   "REQ-056: ShowContextMenu derives the engine-menu view from the resolver");
     }
 
     const std::filesystem::path main_cpp = ResolveRepoFile(L"src\\main.cpp");

@@ -5,6 +5,7 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <utility>
 #include <vector>
 
 namespace emebalachat {
@@ -254,6 +255,10 @@ void SystemTray::Destroy() {
     }
 }
 
+void SystemTray::SetEngineMenuResolver(std::function<EngineMenuView()> resolver) {
+    resolver_ = std::move(resolver);
+}
+
 void SystemTray::UpdateStatus(
     bool active,
     std::string_view active_engine,
@@ -263,28 +268,14 @@ void SystemTray::UpdateStatus(
     std::string_view drag_tgt_code,
     bool auto_send,
     bool sound_enabled,
-    bool badge_visible,
-    int preferred_engine,
-    std::optional<std::string_view> user_model_stem
+    bool badge_visible
 ) {
     bool iconChanged = (is_active_ != active);
     is_active_ = active;
     // REQ-029-B: display-only capture (tooltip + tray_update log below); the
-    // Engine submenu check mark now reads preferred_engine_ instead.
+    // Engine submenu check mark is derived at open (REQ-056), never from
+    // this string.
     active_engine_ = active_engine;
-    // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: single source of truth
-    // for the check (0 = Google, 1 = Local, 2 = OpenAI Compatible).
-    preferred_engine_ = preferred_engine;
-    // REQ-047 U1 (designer 164500 §5.2.1): cache the user-model stem so the
-    // context-menu rebuild below can append it to the checkable entry.
-    // REQ-054: only an ENGAGED argument writes the cache (nullopt = keep).
-    // The regression this fixes: the F9/Ctrl+F9/Ctrl+Shift+Enter hotkey paths
-    // in hook.cpp used to pass an explicit empty stem, wiping the cached stem
-    // and hiding the 사용자 선택(.gguf) tray entry until the next registry-
-    // aware refresh_tray re-resolved it.
-    if (user_model_stem.has_value()) {
-        user_model_stem_ = *user_model_stem;
-    }
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
@@ -329,18 +320,20 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
     // 2. Engine submenu
-    // REQ-029-B (design §2.1 change 2): the check mark follows the USER'S
-    // preferred engine (config engine_type), not the displayed engine name.
-    // Before B-7a a missing local model made the engine report "Google
-    // Translate (Model Not Found)" and this substring search lied - Google
-    // appeared checked while Local was configured. active_engine_ remains
-    // display-only.
+    // REQ-056 (derive-at-open): the submenu's two config-derived values are
+    // resolved NOW, at menu build time, from main.cpp (the single authority)
+    // — the tray keeps no cached copies, so no push path can go stale (the
+    // 260922 session's F9 stem-clobber and check-mark bugs both lived in those
+    // caches). Without a resolver the defaults render Google checked and no
+    // user-model entry (engine submenu degenerates to built-ins + manager).
+    const EngineMenuView view = resolver_ ? resolver_() : EngineMenuView{};
+    const int pref = view.preferred_engine;
+    const std::string user_model_stem = view.user_model_stem;
     HMENU hEngineMenu = ::CreatePopupMenu();
     // REQ-045 P4-3 + REQ-046 P4-2 (Rev2 §B-3): flat 4-way check (0 = Google,
     // 1 = Local, 2 = OpenAI, 3 = 사용자 선택(.gguf)). The nested POPUP from
     // REQ-045 P4-5 is replaced by a CHECKABLE engine entry (the state the
     // user actually selects) plus a separate always-active file-picker row.
-    const int pref = preferred_engine_;
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 0 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_GOOGLE, I18n::Get(StringId::MenuEngineGoogle).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 1 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_LOCAL, I18n::Get(StringId::MenuEngineLocal).c_str());
     ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 2 ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_ENGINE_OPENAI, I18n::Get(StringId::MenuEngineOpenAi).c_str());
@@ -353,18 +346,19 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hEngineMenu, MF_SEPARATOR, 0, nullptr);
 
     // REQ-050 (user items 3-1 + 3-2): the checkable 사용자 선택(.gguf) entry
-    // is appended ONLY while a user model is registered — user_model_stem_
-    // (the registry-derived stem UpdateStatus caches, REQ-047 U1) non-empty.
-    // Nothing registered -> the submenu shows just the manager row below.
-    // While registered, the " — <stem>" suffix rides the label REGARDLESS of
-    // the checked engine: the old code appended the suffix only at pref==3,
-    // so switching to another engine made the entry read like nothing was
-    // registered. The frozen REQ-046 radio contract is untouched (same ID,
-    // same 4-way check mark, conditional append), and the localized
-    // "(미등록)" placeholder is gone together with the always-append entry.
-    if (!user_model_stem_.empty()) {
+    // is appended ONLY while a user model is registered — the stem the
+    // resolver just derived (REQ-056; main.cpp resolves it from the registry
+    // at this moment) non-empty. Nothing registered -> the submenu shows just
+    // the manager row below. While registered, the " — <stem>" suffix rides
+    // the label REGARDLESS of the checked engine: the old code appended the
+    // suffix only at pref==3, so switching to another engine made the entry
+    // read like nothing was registered. The frozen REQ-046 radio contract is
+    // untouched (same ID, same 4-way check mark, conditional append), and the
+    // localized "(미등록)" placeholder is gone together with the always-append
+    // entry.
+    if (!user_model_stem.empty()) {
         std::wstring user_gguf_label = I18n::Get(StringId::MenuEngineUserGguf);
-        user_gguf_label += L" — " + ToUtf16(user_model_stem_);
+        user_gguf_label += L" — " + ToUtf16(user_model_stem);
         ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED),
                       ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
     }

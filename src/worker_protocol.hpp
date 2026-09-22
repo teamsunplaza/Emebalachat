@@ -23,7 +23,10 @@
 //                  unavailable. §V2-12-2 unknown-field-ignore means an OLD
 //                  worker that omits `token` is rejected here by design.)
 //     event       {op:"event","session":N,"kind":"partial|final|token|error|eos",
-//                  "seq":M, "text":"...", "code":"..."}
+//                  "seq":M, "text":"...", "code":"...",
+//                  "model":"..."}  (REQ-057 OPTIONAL served-model id echo,
+//                                  emitted only when the sender populates it;
+//                                  "" / omitted = pre-REQ-057 sender)
 //     closed      {op:"closed","session":N}
 //     heartbeat   {op:"heartbeat","ts":T}             (every 5 s; ReaperLoop
 //                                                   15 s timeout judge)
@@ -315,6 +318,11 @@ struct EventMsg {
     std::uint64_t seq = 0;
     std::string text;                 // final/partial/token payload
     std::string code;                 // error kind: model_missing|engine_failed
+    // REQ-057: OPTIONAL served-model id echo ("" = sender didn't populate —
+    // the pre-REQ-057 wire shape). Registry-id metadata only (never user
+    // content); carried on terminal events so a wrong-model serving issue is
+    // diagnosable from the diagnostic log.
+    std::string model;
 };
 
 struct AbortMsg { std::uint64_t session = 0; };
@@ -373,6 +381,12 @@ inline std::string BuildEvent(const EventMsg& m) {
     }
     if (!m.code.empty()) {
         s += ",\"code\":\"" + enginehost::JsonEscape(m.code) + "\"";
+    }
+    // REQ-057: the served-model echo is OPTIONAL — emitted only when the
+    // sender populated it (old senders omit the member entirely; receivers
+    // ignore unknown fields per §V2-12-2, so old<->new interop is unaffected).
+    if (!m.model.empty()) {
+        s += ",\"model\":\"" + enginehost::JsonEscape(m.model) + "\"";
     }
     s += "}";
     return s;
@@ -574,6 +588,10 @@ inline bool ParseEvent(std::string_view json, EventMsg& m) {
     if (const auto* c = enginehost::detail::FindField(p, "code")) {
         if (!c->is_string) return false;
         m.code = c->text;
+    }
+    if (const auto* md = enginehost::detail::FindField(p, "model")) {
+        if (!md->is_string) return false; // REQ-057: mistyped optional member is malformed
+        m.model = md->text;
     }
     return true;
 }

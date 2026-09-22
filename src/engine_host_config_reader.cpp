@@ -10,6 +10,7 @@
 #include "engine_host_paths.hpp"     // REQ-044: paths::kModelsDirRel sibling constants
 
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 #include <windows.h>
@@ -65,6 +66,48 @@ std::string LoadUserModelIdFromConfig(const std::wstring& lad_override) {
     const auto* v = enginehost::detail::FindField(fields, "user_model_id");
     if (!v || !v->is_string) return {};
     return v->text; // "" (or absent above) keeps the pinned path
+}
+
+// REQ-055: mtime/size-cached LIVE read of the C1-gated user model pin (see
+// the header for the contract). The parse itself delegates to the legacy
+// reader above, so the C1 gate / BOM skip / AC-4 fallbacks stay byte-identical;
+// this wrapper only decides WHEN to re-parse. Attribute failure (absent /
+// unreadable config) bypasses the cache with a fresh direct read, so a deleted
+// file still answers "" and a later re-created file re-seeds normally.
+std::string LoadUserModelIdFromConfigLive(const std::wstring& lad_override) {
+    const std::wstring lad = lad_override.empty() ? LocalAppDataDir() : lad_override;
+    if (lad.empty()) return {};
+    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+        return LoadUserModelIdFromConfig(lad); // absent/unreadable -> fresh "" answer
+    }
+    ULARGE_INTEGER mtime;
+    mtime.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+    mtime.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+    ULARGE_INTEGER fsize;
+    fsize.LowPart = fad.nFileSizeLow;
+    fsize.HighPart = fad.nFileSizeHigh;
+
+    // Single-slot cache keyed by the RESOLVED lad: production has exactly one
+    // config path, so the steady state is one GetFileAttributesEx per job and
+    // zero re-parses; tests rotating temp dirs just re-read on every switch.
+    static std::mutex live_mu;
+    static std::wstring live_lad;
+    static unsigned long long live_mtime = 0;
+    static unsigned long long live_size = 0;
+    static std::string live_id;
+
+    std::lock_guard<std::mutex> lk(live_mu);
+    if (live_lad == lad && live_mtime == mtime.QuadPart && live_size == fsize.QuadPart) {
+        return live_id;
+    }
+    live_id = LoadUserModelIdFromConfig(lad);
+    live_lad = lad;
+    live_mtime = mtime.QuadPart;
+    live_size = fsize.QuadPart;
+    return live_id;
 }
 
 // REQ-046 P4-2 (Rev2 §B-4, C1) + REQ-051 U-1 FIX 3: the combined boot read —

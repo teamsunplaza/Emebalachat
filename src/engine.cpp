@@ -5,6 +5,9 @@
 #include "openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible cloud engine
 #include "unicode_utils.hpp"
 #include "engine_core/translation_common.hpp" // REQ-043: LocalInferenceEngine (M6 T1 move; M6 T5: consumed by the worker exe only)
+// REQ-057: served-vs-expected model-id diagnosis at the local-host seam.
+#include "engine_host_registry.hpp"      // ResolveBundledModelId (the bundled registry id)
+#include "engine_host_config_reader.hpp" // LoadUserModelIdFromConfigLive (the C1-gated live user pin)
 
 #include <algorithm>
 #include <chrono>
@@ -356,6 +359,67 @@ std::wstring TranslationManager::Translate(
     return Translate(text, src_code_or_name, tgt_code_or_name, nullptr);
 }
 
+// ---- REQ-057: served-vs-expected model-id diagnosis -------------------------
+//
+// Background: this session's host bug served a user-registered model
+// (MiLM-4B) for requests meant for the built-in Hy-MT2 — the output
+// "explained instead of translating" — and the app could not detect it: the
+// v1 result carried no model identity (the welcome SHA pin compares the
+// host's HARD-CODED expectation, not the loaded model). The worker now
+// echoes the ACTUALLY-SERVED registry id on every terminal event and the
+// orchestrator relays it as the OPTIONAL result-frame "model" member
+// (wire-freeze: additive only, old<->new interop unaffected). Here the app
+// compares the echo against the selected engine's expected id.
+// DIAGNOSTIC ONLY — deliberately no user-visible notice: the diagnostic log
+// line is the deliverable, so a wrong-model serving issue is spotted from
+// the log instead of hours of investigation. Privacy: registry-id metadata
+// only, never user content.
+namespace {
+
+// The bundled registry id resolved ONCE per process: the bundled entry is
+// installer-managed and its id is stable for the session, and the value only
+// feeds this diagnostic comparison — a session-scoped cache keeps the
+// per-translate cost at zero.
+std::string BundledModelIdCached() {
+    static const std::string id = [] {
+        const auto lr = engine_host_registry::LoadDefaultRegistry();
+        return lr.status == engine_host_registry::LoadStatus::Ok
+                   ? engine_host_registry::ResolveBundledModelId(lr.registry)
+                   : std::string{};
+    }();
+    return id;
+}
+
+void DiagnoseServedModelMismatch(EngineType preferred_type,
+                                 const std::string& served_model) {
+    if (served_model.empty()) {
+        return; // pre-REQ-057 host: no echo to compare — skip silently
+    }
+    // Expected id mirrors the host's serving rule: engine_type=="user_gguf"
+    // -> config.user_model_id; anything else ("local"/"auto") -> the bundled
+    // registry id (the pinned default). The C1-gated LIVE read
+    // (LoadUserModelIdFromConfigLive, REQ-055) returns exactly the user id
+    // for user_gguf and "" otherwise, so one read resolves both cases — and
+    // a live read can never go stale the way a startup-pushed copy would.
+    const std::string pin = enginehost::LoadUserModelIdFromConfigLive(L"");
+    std::string expected = pin.empty() ? BundledModelIdCached() : pin;
+    if (expected.empty()) {
+        return; // registry unreadable / no bundled entry: no expectation to check
+    }
+    const char* engine_type = !pin.empty() ? "user_gguf"
+                            : (preferred_type == EngineType::Auto ? "auto" : "local");
+    if (served_model == expected) {
+        return;
+    }
+    DIAG_F("ENGINE/Translate/057: served model '%s' != expected '%s' (engine_type=%s)\n",
+           served_model.c_str(), expected.c_str(), engine_type);
+    DIAG_LOG("ENGINE", "Translate/057: served-vs-expected model mismatch "
+                       "(served_len=%zu expected_len=%zu engine_type=%s)",
+             served_model.size(), expected.size(), engine_type);
+}
+
+} // namespace
+
 // REQ-R02 (Batch D1, audit §2.1 / §5-C4): every path that produces no
 // translation reports a TranslationStatus the worker can react to (error
 // tone / tooltip), and the Auto policy is restored to its documented
@@ -497,12 +561,15 @@ std::wstring TranslationManager::Translate(
         }
         std::string host_out;
         std::string host_err;
+        std::string served_model; // REQ-057: the actually-served model id echo
         const auto t_local_attempt = std::chrono::steady_clock::now();
         if (engine_host::TryTranslate(engine_host_config_,
                                       std::string(src_code_or_name), tgt_name,
-                                      ToUtf8(text), host_out, host_err)) {
+                                      ToUtf8(text), host_out, host_err, served_model)) {
             host_fail_streak_ = 0;  // §V2-8.6: success clears the repair signal
             set_status(TranslationStatus::Ok);
+            // REQ-057: served-vs-expected model id (diagnostic log only).
+            DiagnoseServedModelMismatch(preferred_type_, served_model);
             return ToUtf16(host_out);
         }
         // §V2-8.6 (b): persistent host failure — record the repair signal for
@@ -542,9 +609,11 @@ std::wstring TranslationManager::Translate(
             }
             if (engine_host::TryTranslate(engine_host_config_,
                                           std::string(src_code_or_name), tgt_name,
-                                          ToUtf8(text), host_out, host_err)) {
+                                          ToUtf8(text), host_out, host_err, served_model)) {
                 host_fail_streak_ = 0;  // the retry recovered the service
                 set_status(TranslationStatus::Ok);
+                // REQ-057: served-vs-expected model id (diagnostic log only).
+                DiagnoseServedModelMismatch(preferred_type_, served_model);
                 return ToUtf16(host_out);
             }
             // REQ-051 integration fix: NO second ++host_fail_streak_ here.

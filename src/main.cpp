@@ -1653,63 +1653,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-025 (Phase A §2.1.A3-25): the drag pair is passed through as
         // well, but ONLY drives the new "번역툴팁" submenu check marks - the
         // hover tip keeps showing the type pair.
-        // REQ-029-B (design §2.1 change 2), REQ-045 P4-3, REQ-046 P4-2
-        // (Rev2 §B-3): the Engine submenu check mark is driven by the USER'S
-        // preference (config engine_type), not the displayed engine name.
-        // Rule: "local" -> Local (1); "openai" -> OpenAI (2);
-        // "user_gguf" -> 사용자 선택(.gguf) (3); "google"/"auto"/unknown ->
-        // Google (0, Auto is Google-family for display; the flag never
-        // affects routing - SetEngineType is untouched).
-        const std::string& prefEngine = snap.engine_type;
-        const int preferred_engine =
-            (prefEngine == "local") ? 1
-            : (prefEngine == "openai") ? 2
-            : (prefEngine == "user_gguf") ? 3
-            : 0;
-
-        // REQ-047 U1 (designer 164500 §5.4.1, decision #1) + REQ-050 (user
-        // items 3-1/3-2): resolve the user-model stem for the tray's dynamic
-        // label whenever a user model is REGISTERED — no longer gated on the
-        // user-model engine being the preferred one, so the tray can show the
-        // checkable entry and its " — <stem>" suffix under ANY checked
-        // engine. A registry miss falls back to showing the raw config id so
-        // the label never lies. The registry load mirrors
-        // RegisterUserGgufModel's loader (same LoadDefaultRegistry entry
-        // point). user_model_id is read directly (not via the snapshot): per
-        // the config.hpp contract it is a GUI-thread-only field never touched
-        // by hook/worker threads — the same direct-read precedent as the
-        // engine-select coordinator below.
-        // REQ-050 Q2 (real-device finding, one-shot entry): the bound id
-        // wins, but an EMPTY binding (config reset/deleted, or cleared after
-        // registration) must NOT hide the entry while a REGISTERED
-        // origin=="user" model still exists — 3-1's conditional append keys
-        // on this stem, so gate on it and fall back to the FIRST origin==
-        // "user" registry entry in that case (same fallback the engine-select
-        // coordinator below binds with).
-        std::string user_model_stem;
-        {
-            auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
-            if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
-                if (!config.user_model_id.empty()) {
-                    if (const auto* m = reg.registry.FindModel(config.user_model_id)) {
-                        if (!m->files.empty()) {
-                            user_model_stem = emebalachat::GgufFileStem(m->files[0]);
-                        }
-                    }
-                    if (user_model_stem.empty()) {
-                        user_model_stem = config.user_model_id;  // fallback: show the id
-                    }
-                } else {
-                    for (const auto& m : reg.registry.models) {
-                        if (m.origin == "user" && !m.files.empty()) {
-                            user_model_stem = emebalachat::GgufFileStem(m.files[0]);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
+        // REQ-056: the Engine submenu's config-derived values (check index +
+        // user-model stem) moved OUT of this push path into the
+        // SetEngineMenuResolver lambda below — derive-at-open from the single
+        // authority, no cached copies.
         tray.UpdateStatus(
             hook.IsActive(),
             engine.GetActiveEngineName(),          // display-only (tooltip + log)
@@ -1719,11 +1666,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
-            badge.IsVisible(),
-            preferred_engine,
-            // REQ-047 U1; REQ-054: engaged optional — an empty resolved stem
-            // still CLEARS the cached entry (last user model deleted).
-            std::string_view(user_model_stem)
+            badge.IsVisible()
         );
     };
 
@@ -2422,6 +2365,54 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // R6 Phase 6: mirror the persisted ui_language into the tray's selector
     // check state (snapshot read; the warmup thread already exists here).
     tray.SetUiLanguage(config.GetSnapshot().ui_language);
+    // REQ-056 (derive-at-open): the engine submenu's two config-derived
+    // values — the 4-way check index (REQ-054's TrayPreferredEngineIndex) and
+    // the registered user-model stem — are resolved HERE, on demand, when the
+    // tray menu is built. main.cpp is the single authority (config + registry
+    // resolution); the tray keeps no cached copies, so no push path can go
+    // stale. Runs ON THE GUI THREAD: ShowContextMenu is reached only from
+    // the tray icon's own message and the badge right-click, both marshaled
+    // to the GUI thread. The stem block below is the exact logic refresh_tray
+    // used to push on every refresh (REQ-047 U1 + REQ-050 3-1/3-2, with the
+    // REQ-050 Q2 first-origin=="user" fallback).
+    tray.SetEngineMenuResolver([&]() {
+        emebalachat::SystemTray::EngineMenuView view;
+        const auto snap = config.GetSnapshot();
+        // REQ-054: the mapping (local->1, openai->2, user_gguf->3,
+        // "google"/"auto"/unknown->0; the index never affects routing).
+        view.preferred_engine = emebalachat::TrayPreferredEngineIndex(snap.engine_type);
+        // Bound id wins; an EMPTY binding falls back to the FIRST
+        // origin=="user" registry entry so a registered model never
+        // disappears from the menu; a registry miss shows the raw config id
+        // so the label never lies. user_model_id is read directly (not via
+        // the snapshot): per the config.hpp contract it is a GUI-thread-only
+        // field, and this resolver always runs on the GUI thread.
+        std::string user_model_stem;
+        {
+            auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
+            if (reg.status == emebalachat::engine_host_registry::LoadStatus::Ok) {
+                if (!config.user_model_id.empty()) {
+                    if (const auto* m = reg.registry.FindModel(config.user_model_id)) {
+                        if (!m->files.empty()) {
+                            user_model_stem = emebalachat::GgufFileStem(m->files[0]);
+                        }
+                    }
+                    if (user_model_stem.empty()) {
+                        user_model_stem = config.user_model_id;  // fallback: show the id
+                    }
+                } else {
+                    for (const auto& m : reg.registry.models) {
+                        if (m.origin == "user" && !m.files.empty()) {
+                            user_model_stem = emebalachat::GgufFileStem(m.files[0]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        view.user_model_stem = std::move(user_model_stem);
+        return view;
+    });
     // R6 Phase 1 (B3, plan §2.4 "config reload at startup"): initial surface
     // alignment runs through the SAME coordinator as every runtime mutation
     // (empty request = refresh-only: valid, unchanged, no persist). This is

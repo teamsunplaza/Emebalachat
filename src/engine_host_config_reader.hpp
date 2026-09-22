@@ -68,6 +68,15 @@ HostBootConfig LoadHostBootConfig(const std::wstring& lad_override);
 // through it unchanged.
 std::string LoadUserModelIdFromConfig(const std::wstring& lad_override);
 
+// REQ-055: mtime/size-cached LIVE read of the C1-gated user model pin.
+// LoadUserModelIdFromConfig re-parses on every call; the host dispachers
+// call this per job, so cache on the config file's mtime+size signature
+// (one GetFileAttributesEx per job, re-parse only on change). Single-slot
+// cache keyed by the RESOLVED lad dir: production has one path (steady
+// state = zero re-parses); tests with rotating temp dirs just re-read.
+// Thread-safe (dispatchers run on multiple threads).
+std::string LoadUserModelIdFromConfigLive(const std::wstring& lad_override);
+
 } // namespace enginehost
 } // namespace emebalachat
 

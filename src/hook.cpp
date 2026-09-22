@@ -479,8 +479,9 @@ void KeyboardHook::SetActive(bool active) {
         // REQ-025: drag pair passed through (drives the 번역툴팁 submenu
         // check marks only; the tip keeps the type pair).
         const AppConfig::Snapshot snap = config_.GetSnapshot();
-        // REQ-029-B (design §2.1 change 2): check mark follows the user's
-        // preferred engine; the engine string above stays display-only.
+        // REQ-056: the hook paths refresh only RUNTIME state — the Engine
+        // submenu's config-derived check index + user-model stem are derived
+        // at open by main.cpp's resolver (single authority), not pushed here.
         tray_.UpdateStatus(
             active,
             snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -490,14 +491,13 @@ void KeyboardHook::SetActive(bool active) {
             snap.drag_target_language,
             snap.auto_send,
             snap.sound_enabled,
-            badge_.IsVisible(),
-            /* preferred_engine_google = */ (snap.engine_type != "local")
-            // REQ-054: the user-model-stem argument is omitted (std::nullopt =
-            // preserve) — the hook thread cannot resolve the user-model stem
-            // (registry I/O; the REQ-047 U1 rationale still holds), so the
-            // tray keeps its last registry-resolved stem across hotkey
-            // refreshes. Clearing after a delete is refresh_tray's exclusive
-            // job on the GUI thread (main.cpp).
+            badge_.IsVisible()
+            // REQ-054/REQ-056 history: this call used to carry an explicit
+            // empty user-model stem (wiping the tray's cached entry until
+            // REQ-054 made it optional) and then a TrayPreferredEngineIndex
+            // check index (wrong formula until REQ-054's helper); REQ-056
+            // removed both from UpdateStatus entirely — the menu derives at
+            // open, so no hook-thread push can go stale.
         );
         // REQ-R08 visual feedback: the floating badge above IS the visual
         // state indicator (green=active/gray=disabled, and it renders even
@@ -553,8 +553,8 @@ void KeyboardHook::CycleTargetLanguage() {
     // Badge and tray display the TYPE pair (plan §2.4). REQ-025: drag pair
     // mirrors the snapshot for the 번역툴팁 submenu check marks.
     badge_.SetLanguages(ToUtf16(snap.type_source_language), ToUtf16(snap.type_target_language));
-    // REQ-029-B (design §2.1 change 2): check mark follows the user's
-    // preferred engine; the engine string above stays display-only.
+    // REQ-056: runtime-state refresh only — the Engine submenu derives its
+    // check index + user-model stem at open (main.cpp's resolver).
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -564,9 +564,9 @@ void KeyboardHook::CycleTargetLanguage() {
         snap.drag_target_language,
         snap.auto_send,
         snap.sound_enabled,
-        badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local")
-        // REQ-054: stem argument omitted (preserved), same contract as SetActive.
+        badge_.IsVisible()
+        // REQ-054/REQ-056: same contract as SetActive — engine-menu values
+        // are derive-at-open now, nothing pushed from the hook thread.
     );
     PlayLangChange();
 }
@@ -582,8 +582,8 @@ void KeyboardHook::ToggleAutoSend() {
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
     // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
     // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
-    // REQ-029-B (design §2.1 change 2): check mark follows the user's
-    // preferred engine; the engine string above stays display-only.
+    // REQ-056: runtime-state refresh only — the Engine submenu derives its
+    // check index + user-model stem at open (main.cpp's resolver).
     tray_.UpdateStatus(
         is_active_.load(),
         snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
@@ -593,9 +593,9 @@ void KeyboardHook::ToggleAutoSend() {
         snap.drag_target_language,
         next,
         snap.sound_enabled,
-        badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local")
-        // REQ-054: stem argument omitted (preserved), same contract as SetActive.
+        badge_.IsVisible()
+        // REQ-054/REQ-056: same contract as SetActive — engine-menu values
+        // are derive-at-open now, nothing pushed from the hook thread.
     );
     PlayModeChange();
 }

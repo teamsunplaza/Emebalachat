@@ -288,8 +288,12 @@ bool ParseWelcomeWire(std::string_view json, int& protocol,
     return true;
 }
 
+// REQ-057: `model` receives the OPTIONAL served-model id echo from the result
+// frame (cleared first; stays empty when the host omitted the member — an old
+// host). Registry-id metadata only, never user content.
 bool ParseResultWire(std::string_view json, std::uint64_t& id,
-                     std::string& status, std::string& text) {
+                     std::string& status, std::string& text,
+                     std::string& model) {
     JsonPairs p;
     if (!JsonReader(json).ParseObject(p)) return false;
     const auto* op = FindField(p, "op");
@@ -302,6 +306,11 @@ bool ParseResultWire(std::string_view json, std::uint64_t& id,
     text.clear();
     if (const auto* t = FindField(p, "text")) {
         if (t->is_string) text = t->text;
+    }
+    model.clear();
+    if (const auto* md = FindField(p, "model")) {
+        if (!md->is_string) return false; // REQ-057: mistyped optional member is malformed
+        model = md->text;
     }
     return true;
 }
@@ -646,9 +655,11 @@ bool TryTranslate(const EngineHostConfig& cfg,
                   const std::string& tgt,
                   const std::string& text,
                   std::string& out,
-                  std::string& err_code) {
+                  std::string& err_code,
+                  std::string& served_model) {
     out.clear();
     err_code.clear();
+    served_model.clear(); // REQ-057: set only when the result frame carried the echo
 
     if (!cfg.enabled) { err_code = "disabled"; return false; }
 
@@ -702,8 +713,8 @@ bool TryTranslate(const EngineHostConfig& cfg,
             return false; // protocol-level error: connection stays (§4.4 only closes on handshake errors)
         }
         std::uint64_t rid = 0;
-        std::string status, rtext;
-        if (!ParseResultWire(frame, rid, status, rtext)) {
+        std::string status, rtext, rmodel;
+        if (!ParseResultWire(frame, rid, status, rtext, rmodel)) {
             err_code = "io"; // unparseable frame: treat as protocol drift
             CloseSessionLocked();
             return false;
@@ -711,11 +722,24 @@ bool TryTranslate(const EngineHostConfig& cfg,
         if (rid != id) continue;
         if (status == "ok") {
             out = std::move(rtext);
+            served_model = std::move(rmodel); // REQ-057: served-model echo
             return true;
         }
         err_code = status; // engine_failed | model_missing | timeout | bad_request | busy
         return false;
     }
+}
+
+bool TryTranslate(const EngineHostConfig& cfg,
+                  const std::string& src,
+                  const std::string& tgt,
+                  const std::string& text,
+                  std::string& out,
+                  std::string& err_code) {
+    // REQ-057: the 6-arg contract form forwards to the served-model-aware
+    // overload and discards the echo (existing callers stay source-compatible).
+    std::string ignored_model;
+    return TryTranslate(cfg, src, tgt, text, out, err_code, ignored_model);
 }
 
 void SetPathsForTesting(const wchar_t* pipe_name,

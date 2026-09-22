@@ -903,21 +903,24 @@ void TestReq047U1TrayGgufLabels() {
     // engine (the old pref==3 gate is gone); with nothing registered the
     // checkable entry is not appended at all, so the "(미등록)" placeholder
     // left the tray menu with the always-append entry. The em-dash join is
-    // the spec's.
-    TEST_CHECK(tray_src.find("user_model_stem_") != std::string::npos &&
+    // the spec's. REQ-056: the stem is a menu-build-time local derived from
+    // the resolver's EngineMenuView (no cached member).
+    TEST_CHECK(tray_src.find("view.user_model_stem") != std::string::npos &&
                    tray_src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
                "REQ-047 U1 (b): tray.cpp joins the registered stem via the em-dash; the "
                "'(미등록)' placeholder is gone (REQ-050 3-1)");
-    TEST_CHECK(tray_src.find("if (!user_model_stem_.empty())") != std::string::npos &&
+    TEST_CHECK(tray_src.find("if (!user_model_stem.empty())") != std::string::npos &&
                    tray_src.find("if (pref == 3)") == std::string::npos,
                "REQ-047 U1 (b): the checkable entry exists only while a model is registered "
                "and its stem shows under any checked engine (REQ-050 3-1/3-2)");
     TEST_CHECK(tray_src.find("L\" — \"") != std::string::npos,
                "REQ-047 U1 (b): tray.cpp joins the dynamic label with the em-dash separator");
-    // UpdateStatus carries the new parameter with an empty default (designer
-    // §5.2.1) so the hook.cpp call sites stay source-compatible.
-    TEST_CHECK(tray_hdr.find("user_model_stem") != std::string::npos,
-               "REQ-047 U1 (b): tray.hpp UpdateStatus declares the user_model_stem parameter");
+    // REQ-056 (derive-at-open): the tray declares the resolver seam; the old
+    // UpdateStatus user_model_stem parameter is gone.
+    TEST_CHECK(tray_hdr.find("struct EngineMenuView") != std::string::npos &&
+                   tray_hdr.find("SetEngineMenuResolver") != std::string::npos,
+               "REQ-056: tray.hpp declares EngineMenuView + SetEngineMenuResolver "
+               "(derive-at-open replaces the UpdateStatus stem parameter)");
 
     // ---- (c) REQ-046 contract pins: ID band 2010~2014 + 4-way radio --------
     // (regression guard — the separator must NOT consume an ID or a slot).
@@ -933,20 +936,23 @@ void TestReq047U1TrayGgufLabels() {
                    tray_src.find("pref == 3 ? MF_CHECKED") != std::string::npos,
                "REQ-047 U1 (c): the 4-way radio check structure is preserved");
 
-    // ---- (d) main.cpp stem-resolution wiring -------------------------------
+    // ---- (d) main.cpp stem-resolution wiring (REQ-056: inside the resolver) -
     if (!main_src.empty()) {
         TEST_CHECK(main_src.find("user_model_stem") != std::string::npos &&
                        main_src.find("FindModel(config.user_model_id)") != std::string::npos,
                    "REQ-047 U1 (d): main.cpp resolves the stem via the default registry");
         TEST_CHECK(main_src.find("rfind(\".gguf\")") != std::string::npos,
                    "REQ-047 U1 (d): main.cpp strips the '.gguf' suffix into the stem");
-        // Ordering: the stem resolution lives inside refresh_tray, before the
-        // UpdateStatus call it feeds.
-        const size_t stem_pos = main_src.find("std::string user_model_stem;");
-        const size_t call_pos = main_src.find("tray.UpdateStatus(");
-        TEST_CHECK(stem_pos != std::string::npos && call_pos != std::string::npos &&
-                       stem_pos < call_pos,
-                   "REQ-047 U1 (d): stem resolution precedes the UpdateStatus call");
+        // REQ-056: the resolution lives inside the SetEngineMenuResolver
+        // lambda (derive-at-open), which is wired before the message loop.
+        const size_t resolver_pos = main_src.find("SetEngineMenuResolver");
+        const size_t stem_pos = main_src.find("std::string user_model_stem;", resolver_pos);
+        const size_t msg_pos = main_src.find("while (::GetMessageW");
+        TEST_CHECK(resolver_pos != std::string::npos && stem_pos != std::string::npos &&
+                       stem_pos > resolver_pos,
+                   "REQ-056: stem resolution lives inside the engine-menu resolver");
+        TEST_CHECK(msg_pos != std::string::npos && resolver_pos < msg_pos,
+                   "REQ-056: the resolver is wired before the message loop");
     }
 
     if (g_failed_count == failures_before) {

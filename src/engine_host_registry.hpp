@@ -107,6 +107,20 @@ struct Registry {
     }
 };
 
+// REQ-057: the pinned default's registry id — the id of the FIRST
+// origin=="bundled" entry (the installer-managed bundle slot; the installer
+// pins it to 'hy-mt2-1.8b-q8', setup.iss REGISTRY_BUNDLED_ID). Pure scan, no
+// I/O. "" when the registry names no bundled entry (the worker's served-model
+// echo then stays empty = the pre-REQ-057 frame shape). Shared by the worker
+// (pinned-fallback echo) and the app (the local engine's expected-id check)
+// so both sides resolve the pinned default identically.
+inline std::string ResolveBundledModelId(const Registry& registry) {
+    for (const auto& m : registry.models) {
+        if (m.origin == "bundled") return m.id;
+    }
+    return {};
+}
+
 // Parse result: status != Ok => registry is left EMPTY (fail-closed). A status
 // is returned even on success so callers can distinguish empty-but-valid docs.
 struct LoadResult {

@@ -1,80 +1,86 @@
 // ---------------------------------------------------------------------------
-// REQ-054: tray user-model stem preservation across hotkey refreshes.
-// User-reported defect: pressing F9 (or Ctrl+F9 / Ctrl+Shift+Enter) hid the
-// "사용자 선택(.gguf) — <stem>" entry from the engine submenu until the next
-// registry-aware refresh. Root cause: the three hook-thread hotkey paths call
-// SystemTray::UpdateStatus with an explicit EMPTY user_model_stem, and the
-// tray cached that empty string unconditionally — wiping the stem the
-// registry-aware refresh_tray (main.cpp, GUI thread) had resolved. The model
-// itself stayed registered in registry.json; this was a pure tray display
-// regression.
-// Fix: the UpdateStatus stem parameter became std::optional<std::string_view>
-// defaulting to std::nullopt = KEEP the cached stem; an engaged value
-// (including empty) sets/clears it. These pins are the structural mirror of
-// that contract:
-//   (a) tray.hpp — the optional parameter declaration + <optional> include;
-//   (b) tray.cpp — the cache write is guarded by has_value() and the guard
-//       precedes the write;
-//   (c) hook.cpp — the explicit-empty-stem markers are gone and the REQ-054
-//       contract note is present;
-//   (d) main.cpp — refresh_tray still resolves the stem and passes it as an
-//       ENGAGED optional (explicit std::string_view construction — passing
-//       the std::string directly would not compile, two implicit user-defined
-//       conversions), so an empty resolved stem still clears the entry;
-//   (e) main.cpp — F9-pause drag-icon UX: the active-change callback dismisses
-//       the icon behind an !active guard, and the icon click callback gates
-//       on hook.IsActive() before the worker submit (the icon is only shown
-//       while active, so a stale post-pause icon must be neither visible nor
-//       clickable).
+// REQ-054 (session history) + REQ-056 (derive-at-open, the actual contract).
+// REQ-054 history: pressing F9 hid the "사용자 선택(.gguf) — <stem>" entry
+// (the hook paths pushed an explicit empty stem into the tray's cache), and
+// the check mark lied after hotkeys (a legacy bool formula). Both bugs lived
+// in PUSHED COPIES the tray kept (user_model_stem_, preferred_engine_).
+// REQ-056 removes the copies entirely: the engine submenu's two config-
+// derived values are DERIVED AT OPEN — ShowContextMenu asks main.cpp's
+// resolver (SetEngineMenuResolver, GUI thread, single authority) at menu
+// build time. UpdateStatus no longer carries either value; the hook paths
+// refresh only runtime state. No caches -> no stale paths.
+//   (a) tray.hpp — EngineMenuView + SetEngineMenuResolver declared; the old
+//       UpdateStatus push parameters (optional stem, preferred_engine) gone;
+//   (b) tray.cpp — no cached members (user_model_stem_/preferred_engine_);
+//       the menu consumes the resolver's view;
+//   (c) hook.cpp — the hook paths push nothing config-derived (no
+//       TrayPreferredEngineIndex argument, no empty-stem marker);
+//   (d) main.cpp — the resolver publishes stem + check-index resolution and
+//       is wired before the message loop; the engaged-optional stem hack is
+//       gone;
+//   (e) main.cpp — F9-pause drag-icon UX (REQ-054, still valid): the
+//       active-change callback dismisses the icon behind an !active guard,
+//       and the icon click callback gates on hook.IsActive() before the
+//       worker submit;
+//   (f) behavioral — the shared 4-way check-mark mapping (TrayPreferredEngineIndex),
+//       now consumed by main.cpp's resolver only.
 // ResolveRepoFile source pins (L97 of run_tests.cpp); every file unresolvable
 // -> the section is skipped, exactly like the req048_r2 pattern.
 // ---------------------------------------------------------------------------
 
+// run_tests.cpp's include block does not pull in tray.hpp; this inc includes
+// it directly for the behavioral TrayPreferredEngineIndex pins below (pragma-
+// once safe; the same mid-TU discipline as req048_r2_tests.inc).
+#include "../src/ui/tray.hpp" // REQ-054: TrayPreferredEngineIndex (shared 4-way mapping)
+
 void TestReq054ToggleStemPreserve() {
-    std::cout << "[RUN] Testing REQ-054 toggle stem preservation pins..." << std::endl;
+    std::cout << "[RUN] Testing REQ-054/REQ-056 engine-menu pins..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- (a) tray.hpp: the optional parameter + <optional> include ---------
+    // ---- (a) tray.hpp: the derive-at-open seam replaces the push parameters
     const std::filesystem::path tray_hpp = ResolveRepoFile(L"src\\ui\\tray.hpp");
     if (tray_hpp.empty()) {
-        std::cout << "[SKIP] src/ui/tray.hpp not resolvable; REQ-054 (a) pins skipped."
+        std::cout << "[SKIP] src/ui/tray.hpp not resolvable; REQ-056 (a) pins skipped."
                   << std::endl;
     } else {
         std::ifstream in(tray_hpp, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#include <optional>") != std::string::npos,
-                   "REQ-054 (a): tray.hpp includes <optional>");
-        TEST_CHECK(src.find("std::optional<std::string_view> user_model_stem = std::nullopt") !=
+        TEST_CHECK(src.find("struct EngineMenuView") != std::string::npos &&
+                       src.find("SetEngineMenuResolver") != std::string::npos,
+                   "REQ-056 (a): tray.hpp declares EngineMenuView + SetEngineMenuResolver "
+                   "(the derive-at-open seam)");
+        TEST_CHECK(src.find("std::optional<std::string_view> user_model_stem") ==
                        std::string::npos,
-                   "REQ-054 (a): UpdateStatus declares the stem as optional, "
-                   "defaulting to nullopt (preserve)");
+                   "REQ-056 (a): the UpdateStatus stem push parameter is gone "
+                   "(REQ-054's optional is obsolete)");
+        TEST_CHECK(src.find("int preferred_engine,") == std::string::npos &&
+                       src.find("preferred_engine_") == std::string::npos,
+                   "REQ-056 (a): UpdateStatus carries no preferred_engine argument and "
+                   "no cached member remains");
     }
 
-    // ---- (b) tray.cpp: the cache write is guarded by has_value() -----------
+    // ---- (b) tray.cpp: no cached copies; the menu consumes the resolver's view
     const std::filesystem::path tray_cpp = ResolveRepoFile(L"src\\ui\\tray.cpp");
     if (tray_cpp.empty()) {
-        std::cout << "[SKIP] src/ui/tray.cpp not resolvable; REQ-054 (b) pins skipped."
+        std::cout << "[SKIP] src/ui/tray.cpp not resolvable; REQ-056 (b) pins skipped."
                   << std::endl;
     } else {
         std::ifstream in(tray_cpp, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("user_model_stem_ = *user_model_stem;") != std::string::npos,
-                   "REQ-054 (b): the cache write dereferences the engaged optional");
-        // Ordering: the has_value guard must open BEFORE the guarded write —
-        // an unconditional write would reintroduce the F9 wipe.
-        const size_t guard_pos = src.find("if (user_model_stem.has_value())");
-        const size_t write_pos = src.find("user_model_stem_ = *user_model_stem;");
-        TEST_CHECK(guard_pos != std::string::npos && write_pos != std::string::npos &&
-                       guard_pos < write_pos,
-                   "REQ-054 (b): the has_value() guard precedes the cache write");
+        TEST_CHECK(src.find("user_model_stem_") == std::string::npos &&
+                       src.find("preferred_engine_") == std::string::npos,
+                   "REQ-056 (b): the tray keeps no cached stem/check-index copies");
+        TEST_CHECK(src.find("view.user_model_stem") != std::string::npos &&
+                       src.find("view.preferred_engine") != std::string::npos,
+                   "REQ-056 (b): ShowContextMenu derives the menu from the resolver's view");
     }
 
-    // ---- (c) hook.cpp: the explicit-empty-stem markers are gone ------------
+    // ---- (c) hook.cpp: the hook paths push nothing config-derived ----------
     const std::filesystem::path hook_cpp = ResolveRepoFile(L"src\\hook.cpp");
     if (hook_cpp.empty()) {
-        std::cout << "[SKIP] src/hook.cpp not resolvable; REQ-054 (c) pins skipped."
+        std::cout << "[SKIP] src/hook.cpp not resolvable; REQ-056 (c) pins skipped."
                   << std::endl;
     } else {
         std::ifstream in(hook_cpp, std::ios::binary);
@@ -83,29 +89,42 @@ void TestReq054ToggleStemPreserve() {
         TEST_CHECK(src.find("\"\",  // REQ-047 U1") == std::string::npos,
                    "REQ-054 (c): the explicit empty-stem argument (the F9 wipe) "
                    "is gone from the hook paths");
-        TEST_CHECK(src.find("REQ-054") != std::string::npos,
-                   "REQ-054 (c): the hook paths carry the preserve-contract note");
+        TEST_CHECK(src.find("TrayPreferredEngineIndex(") == std::string::npos,
+                   "REQ-056 (c): the hook paths no longer pass a preferred-engine "
+                   "expression to UpdateStatus (derive-at-open)");
+        TEST_CHECK(src.find("REQ-056") != std::string::npos,
+                   "REQ-056 (c): the hook paths carry the derive-at-open note");
     }
 
-    // ---- (d) main.cpp: refresh_tray resolves the stem and passes it engaged -
+    // ---- (d) main.cpp: the resolver is the single authority ----------------
     const std::filesystem::path main_cpp = ResolveRepoFile(L"src\\main.cpp");
     if (main_cpp.empty()) {
-        std::cout << "[SKIP] src/main.cpp not resolvable; REQ-054 (d) pins skipped."
+        std::cout << "[SKIP] src/main.cpp not resolvable; REQ-056 (d) pins skipped."
                   << std::endl;
     } else {
         std::ifstream in(main_cpp, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("std::string user_model_stem;") != std::string::npos,
-                   "REQ-054 (d): refresh_tray still resolves the stem from the registry");
-        // The engaged pass rides the tray.UpdateStatus call — an empty resolved
-        // stem must still reach the tray as an engaged (clearing) value.
-        const size_t call_pos = src.find("tray.UpdateStatus(");
-        const size_t engaged_pos = src.find("std::string_view(user_model_stem)");
-        TEST_CHECK(call_pos != std::string::npos && engaged_pos != std::string::npos &&
-                       call_pos < engaged_pos,
-                   "REQ-054 (d): refresh_tray passes the resolved stem as an engaged "
-                   "optional at the UpdateStatus call (empty resolves to a clear)");
+        const size_t resolver_pos = src.find("SetEngineMenuResolver");
+        TEST_CHECK(resolver_pos != std::string::npos,
+                   "REQ-056 (d): main.cpp publishes the engine-menu resolver");
+        // Both resolutions live INSIDE the resolver lambda (scoped finds).
+        TEST_CHECK(resolver_pos != std::string::npos &&
+                       src.find("TrayPreferredEngineIndex(snap.engine_type)",
+                                resolver_pos) != std::string::npos,
+                   "REQ-056 (d): the check-index mapping is resolved inside the resolver");
+        TEST_CHECK(resolver_pos != std::string::npos &&
+                       src.find("LoadDefaultRegistry", resolver_pos) != std::string::npos,
+                   "REQ-056 (d): the stem resolution (registry) lives inside the resolver");
+        // REQ-054's engaged-optional stem pass is gone with the parameter.
+        TEST_CHECK(src.find("std::string_view(user_model_stem)") == std::string::npos,
+                   "REQ-056 (d): the engaged-optional stem pass at the UpdateStatus call "
+                   "is gone");
+        // Wiring precedes the message loop (ShowContextMenu can only fire
+        // after both exist).
+        const size_t msg_pos = src.find("while (::GetMessageW");
+        TEST_CHECK(msg_pos != std::string::npos && resolver_pos < msg_pos,
+                   "REQ-056 (d): the resolver is wired before the message loop");
 
         // ---- (e) F9-pause UX: the drag icon is dismissed and unclickable ----
         // The icon is only SHOWN while active (SetDragReleaseCallback gates on
@@ -136,10 +155,29 @@ void TestReq054ToggleStemPreserve() {
                    "before the drag-translate submit");
     }
 
+    // ---- (f) behavioral: the shared 4-way check-mark mapping ---------------
+    // The mapping is pinned here functionally so "user_gguf -> 3" (and every
+    // other arm) can never silently drift; REQ-056 leaves main.cpp's resolver
+    // as its only consumer.
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("local") == 1,
+               "REQ-054 (f): \"local\" maps to the Local check index (1)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("openai") == 2,
+               "REQ-054 (f): \"openai\" maps to the OpenAI check index (2)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("user_gguf") == 3,
+               "REQ-054 (f): \"user_gguf\" maps to the 사용자 선택(.gguf) check index (3)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("google") == 0,
+               "REQ-054 (f): \"google\" maps to the Google check index (0)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("auto") == 0,
+               "REQ-054 (f): \"auto\" maps to the Google check index (0, Google-family)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("bogus") == 0,
+               "REQ-054 (f): an unknown engine_type falls back to Google (0)");
+    TEST_CHECK(emebalachat::TrayPreferredEngineIndex("") == 0,
+               "REQ-054 (f): an empty engine_type falls back to Google (0)");
+
     if (g_failed_count == failures_before) {
-        std::cout << "[PASS] REQ-054 toggle stem preservation checks passed." << std::endl;
+        std::cout << "[PASS] REQ-054/REQ-056 engine-menu checks passed." << std::endl;
     } else {
-        std::cout << "[FAIL] REQ-054 toggle stem preservation: "
+        std::cout << "[FAIL] REQ-054/REQ-056 engine-menu checks: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

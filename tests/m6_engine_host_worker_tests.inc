@@ -281,6 +281,50 @@ void TestWorkerProtocol() {
                    "event: unknown kind converges to failure (§V2-12-2)");
         TEST_CHECK(!wp::ParseEvent("{\"op\":\"event\",\"kind\":\"final\",\"seq\":1}", ep2),
                    "event: missing session rejected");
+
+        // REQ-057: the OPTIONAL served-model echo — present and absent cases.
+        {
+            wp::EventMsg with_model;
+            with_model.session = 7;
+            with_model.kind = wp::EventKind::Final;
+            with_model.seq = 3;
+            with_model.text = "bonjour";
+            with_model.model = "hy-mt2-1.8b-q8";
+            const std::string built_m = wp::BuildEvent(with_model);
+            TEST_CHECK(built_m.find("\"model\":\"hy-mt2-1.8b-q8\"") != std::string::npos,
+                       "event: served-model echo emitted when populated (REQ-057)");
+            wp::EventMsg parsed_m;
+            TEST_CHECK(wp::ParseEvent(built_m, parsed_m) &&
+                           parsed_m.model == "hy-mt2-1.8b-q8" && parsed_m.text == "bonjour",
+                       "event: served-model echo roundtrip (REQ-057)");
+            // Interop: a hand-written foreign frame with the extra member
+            // parses on the new parser (old parsers ignore it per §V2-12-2).
+            wp::EventMsg foreign_m;
+            TEST_CHECK(wp::ParseEvent(
+                           "{\"op\":\"event\",\"session\":9,\"kind\":\"error\",\"seq\":2,"
+                           "\"code\":\"model_missing\",\"model\":\"user-x\"}",
+                           foreign_m) &&
+                           foreign_m.model == "user-x" && foreign_m.code == "model_missing",
+                       "event: hand-written frame with the optional echo parses (REQ-057)");
+            TEST_CHECK(!wp::ParseEvent(
+                           "{\"op\":\"event\",\"session\":9,\"kind\":\"final\",\"seq\":2,"
+                           "\"model\":123}",
+                           foreign_m),
+                       "event: mistyped echo member rejected (REQ-057)");
+
+            wp::EventMsg without_model;
+            without_model.session = 7;
+            without_model.kind = wp::EventKind::Error;
+            without_model.seq = 4;
+            without_model.code = "model_missing";
+            const std::string built_nm = wp::BuildEvent(without_model);
+            TEST_CHECK(built_nm.find("\"model\"") == std::string::npos,
+                       "event: empty echo omits the member (pre-REQ-057 shape byte-identical)");
+            wp::EventMsg parsed_nm;
+            TEST_CHECK(wp::ParseEvent(built_nm, parsed_nm) && parsed_nm.model.empty() &&
+                           parsed_nm.code == "model_missing",
+                       "event: absent echo parses to empty (old sender)");
+        }
     }
 
     // ---- 9. Session open/opened/close/abort/heartbeat/shutdown ----

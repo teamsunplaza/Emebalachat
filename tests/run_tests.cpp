@@ -14625,6 +14625,31 @@ void TestEngineHostAvailabilityAndMigration() {
 // per the end-of-file pattern. Pure ResolveRepoFile source pins.
 #include "req054_toggle_stem_tests.inc"
 
+// REQ-055 (user report: "F9 pause/resume reverts my engine"): the engine host
+// cached config.json's C1-gated user_model_id once at boot and both
+// dispatchers served the snapshot — a busy host never idles out, so a user
+// model selected at boot kept serving plain local requests after the user
+// switched back to the built-in engine. The dispatchers now read the live
+// mtime/size-cached pin per job (LoadUserModelIdFromConfigLive) and the
+// relay sends empty ids (worker reset to pinned Hy-MT2). Staged as an .inc
+// next to this runner; registered near the end of main() right after
+// TestReq054ToggleStemPreserve(), per the end-of-file pattern. Behavioral
+// pins against engine_host_config_reader + ResolveRepoFile source pins.
+#include "req055_live_pin_tests.inc"
+
+// REQ-057 (wrong-model serving diagnosability): the worker echoes the
+// ACTUALLY-SERVED model id on every terminal event (EventMsg.model, OPTIONAL
+// per the wire-freeze discipline), the orchestrator relays it as the
+// OPTIONAL v1 result-frame "model" member, the self-contained client exposes
+// it on a TryTranslate overload, and the app compares it against the
+// selected engine's expected id after every successful local translate
+// (diagnostic log only). Staged as an .inc next to this runner; registered
+// near the end of main() right after TestReq055LiveUserModelPin(), per the
+// end-of-file pattern. Behavioral ResolveBundledModelId pins + ResolveRepoFile
+// source pins (the EventMsg present/absent round-trip cases live in
+// m6_engine_host_worker_tests.inc section 8, extended in place).
+#include "req057_served_model_tests.inc"
+
 // M7 A-1 (session 260922_0001): per-family worker-manifest naming scheme
 // (worker.<family>.manifest + legacy fallback + store enumeration + coexistence
 // non-clobber pins). Staged as an .inc next to this runner; defines
@@ -14969,7 +14994,7 @@ void TestReq046TrayMenuStructure() {
     //     suffix shows regardless of the checked engine (the old pref==3
     //     gate and the "(미등록)" placeholder are gone). The frozen radio ID
     //     and the 4-way check mark survive inside the conditional.
-    TEST_CHECK(tray_src.find("if (!user_model_stem_.empty())") != std::string::npos &&
+    TEST_CHECK(tray_src.find("if (!user_model_stem.empty())") != std::string::npos &&
                tray_src.find("if (pref == 3)") == std::string::npos,
                "tray (REQ-050 3-1/3-2): user-gguf entry conditional on registration, "
                "stem suffix not gated on pref==3");
@@ -14985,9 +15010,15 @@ void TestReq046TrayMenuStructure() {
     TEST_CHECK(tray_src.find("hUserGgufMenu") == std::string::npos,
                "tray: nested hUserGgufMenu POPUP removed");
 
-    // 4. refresh_tray maps "user_gguf" -> 3.
-    TEST_CHECK(main_src.find("(prefEngine == \"user_gguf\") ? 3") != std::string::npos,
-               "main: refresh_tray maps engine_type \"user_gguf\" -> preferred_engine 3");
+    // 4. REQ-056: the engine-menu resolver derives the check index via the
+    //    shared 4-way helper (the mapping itself — every arm — is
+    //    behaviorally pinned by TestReq054ToggleStemPreserve's
+    //    TrayPreferredEngineIndex block).
+    TEST_CHECK(main_src.find("SetEngineMenuResolver") != std::string::npos &&
+                   main_src.find("TrayPreferredEngineIndex(snap.engine_type)") !=
+                       std::string::npos,
+               "main: the engine-menu resolver derives preferred_engine via the shared "
+               "TrayPreferredEngineIndex helper (user_gguf -> 3)");
 
     // 4b. REQ-050 user items 3-1/3-2: refresh_tray resolves the user-model
     //     stem whenever a model is REGISTERED (no engine_type gate), so the
@@ -15551,6 +15582,14 @@ int main() {
     // argument; hook hotkey paths omit it, refresh_tray passes it engaged).
     // Registered after the REQ-053 cluster, per the end-of-file pattern.
     TestReq054ToggleStemPreserve();
+    // REQ-055: the engine host's live user-model pin (per-job live config
+    // read + empty-id reset relay + engine revision bump). Registered right
+    // after the REQ-054 suite it complements.
+    TestReq055LiveUserModelPin();
+    // REQ-057: the served-model id echo (worker -> orchestrator -> client ->
+    // app-side served-vs-expected diagnosis). Registered right after the
+    // REQ-055 suite it builds on (the live pin IS the expected-id source).
+    TestReq057ServedModelEcho();
     // M7 A-1: the per-family worker-manifest naming scheme (path resolution,
     // store enumeration, legacy fallback, translate+asr coexistence non-
     // clobber, deployment pins). Registered after the REQ-052 cluster, per

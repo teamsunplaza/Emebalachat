@@ -9,6 +9,20 @@
 
 namespace emebalachat {
 
+// REQ-054/REQ-056: the engine submenu's 4-way check-mark index (0 = Google/
+// auto, 1 = Local, 2 = OpenAI, 3 = 사용자 선택(.gguf)) derived from the
+// persisted config engine_type string. Single definition consumed by
+// main.cpp's engine-menu resolver (REQ-056 derive-at-open). Pre-REQ-054 the
+// hook paths passed a legacy bool "(type != local)" as this index, mapping
+// user_gguf -> Local (the "F9 reverts my engine" report: the menu tick, not
+// routing).
+inline int TrayPreferredEngineIndex(std::string_view engine_type) {
+    return (engine_type == "local") ? 1
+         : (engine_type == "openai") ? 2
+         : (engine_type == "user_gguf") ? 3
+         : 0;
+}
+
 class SystemTray {
 public:
     struct Callbacks {
@@ -61,16 +75,15 @@ public:
     // REQ-025: src/tgt are the TYPE pair (tip text + type submenu checks);
     // drag_src/drag_tgt drive ONLY the new drag submenu check marks - the tip
     // always keeps displaying the type pair (Phase A §2.1.A3-25 design).
+    // active_engine stays a DISPLAY-ONLY string (tooltip + tray_update log).
     //
-    // REQ-029-B (design §2.1 change 2): preferred_engine is the single source
-    // of truth for the Engine submenu check mark. 0 = Google (also covers
-    // "auto", which is Google-family for display), 1 = Local LLM, 2 = OpenAI
-    // Compatible (REQ-045 P4-3), 3 = 사용자 선택(.gguf) (REQ-046 P4-2). It
-    // carries the USER'S configured preference (config engine_type), so the
-    // check can no longer lie when the local model is missing and the engine
-    // honestly reports "Local (Model Missing)". active_engine above stays a
-    // DISPLAY-ONLY string (tooltip + tray_update log); it is never used for
-    // check decisions.
+    // REQ-056 (derive-at-open): the Engine submenu's two config-derived
+    // values — the 4-way preferred-engine check index and the registered
+    // user-model stem — are NO LONGER pushed through UpdateStatus and cached.
+    // Every tray bug of the 260922 session (F9 stem clobber REQ-054, check-
+    // mark formula REQ-054) came from those push paths. ShowContextMenu now
+    // asks main.cpp's resolver (SetEngineMenuResolver) at menu build time;
+    // UpdateStatus carries only runtime state.
     void UpdateStatus(
         bool active,
         std::string_view active_engine,
@@ -80,21 +93,18 @@ public:
         std::string_view drag_tgt_code,
         bool auto_send,
         bool sound_enabled,
-        bool badge_visible,
-        int preferred_engine,
-        // REQ-047 U1 (designer 164500 §5.2.1): stem of the registered user
-        // .gguf model (files[0] minus ".gguf"), shown after the "사용자 지정
-        // 모델 (.gguf)" label whenever a model is registered, regardless of
-        // the checked engine (REQ-050 3-2). Empty -> the checkable entry is
-        // not appended at all (REQ-050 3-1).
-        // REQ-054: std::nullopt (the default) KEEPS the cached stem — the
-        // hook-thread hotkey paths (F9/Ctrl+F9/Ctrl+Shift+Enter in hook.cpp)
-        // cannot resolve the user-model registry (REQ-047 U1 rationale) and
-        // must not wipe the cached stem; an engaged value, INCLUDING an empty
-        // string, sets/clears it (main.cpp refresh_tray after register/rename/
-        // delete).
-        std::optional<std::string_view> user_model_stem = std::nullopt
+        bool badge_visible
     );
+
+    // REQ-056: derive-at-open view of the engine submenu's two config-derived
+    // pieces. Invoked ON THE GUI THREAD from ShowContextMenu at menu build
+    // time — main.cpp is the single authority (registry + config resolution);
+    // the tray no longer caches either value, so no push path can go stale.
+    struct EngineMenuView {
+        int preferred_engine = 0;      // TrayPreferredEngineIndex(engine_type)
+        std::string user_model_stem;   // "" = no user model registered
+    };
+    void SetEngineMenuResolver(std::function<EngineMenuView()> resolver);
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
     // locale code) for the UI-language submenu check mark. Called by main.cpp
@@ -120,15 +130,10 @@ private:
     // REQ-029-B: display-only engine name (tooltip + tray_update log). The
     // Engine submenu check mark NO LONGER reads this string.
     std::string active_engine_ = "Google Translate";
-    // REQ-029-B (design §2.1 change 2), REQ-045 P4-3: preferred engine as
-    // configured by the user. 0 = Google (also covers "auto", Google-family
-    // for display), 1 = Local, 2 = OpenAI Compatible. Default 0 matches the
-    // pre-existing active_engine_ default so the menu is coherent before the
-    // first refresh.
-    int preferred_engine_ = 0;
-    // REQ-047 U1 (designer 164500 §5.2.1): cached stem for the dynamic
-    // user-model tray label (empty = no model registered).
-    std::string user_model_stem_;
+    // REQ-056: derive-at-open — the engine submenu's config-derived values
+    // (check index + user-model stem) are resolved from main.cpp at menu
+    // build time; nothing is cached here.
+    std::function<EngineMenuView()> resolver_;
     std::string src_code_ = "AUTO";
     std::string tgt_code_ = "EN";
     // REQ-025: drag-pair check-mark state for the "번역툴팁" submenus.

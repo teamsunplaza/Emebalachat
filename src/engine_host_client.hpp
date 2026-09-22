@@ -79,6 +79,20 @@ bool TryTranslate(const EngineHostConfig& cfg,
                   std::string& out,
                   std::string& err_code);
 
+// REQ-057: served-model-aware overload. Additionally reports the OPTIONAL
+// served-model id echo from the v1 result frame: on success `served_model`
+// holds the registry id the host's worker actually translated with ("" when
+// the host omitted the member — a pre-REQ-057 host — or on failure).
+// Diagnostic metadata only (a registry id, never user content); callers may
+// compare it against the selected engine's expected model id.
+bool TryTranslate(const EngineHostConfig& cfg,
+                  const std::string& src,
+                  const std::string& tgt,
+                  const std::string& text,
+                  std::string& out,
+                  std::string& err_code,
+                  std::string& served_model);
+
 // REQ-043 test seam (plan §9.1-2 wants the fallback matrix tested
 // headlessly): overrides the three fixed deployment paths for THIS process.
 // Any nullptr component keeps its production default. Testing only — the
