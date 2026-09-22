@@ -38,16 +38,19 @@ Fixes in this build
   hotkeys or other changes.
 * The app now records which translation model actually served each local
   translation (visible in the diagnostic log when enabled) and warns when
-  it differs from the model of the engine you selected - so a wrong-model
-  serving issue can be spotted from the log instead of hours of
-  investigation.
-* Fixed an issue where, after the translation engine restarts internally,
-  a previously selected user (.gguf) model could be silently replaced by
-  the built-in model: your selection is now re-applied after every engine
-  restart, and if your selected model cannot produce a translation the app
-  tells you instead of quietly using the built-in one.
-* The translation engine now shows the Emebala brand icon in Explorer and
-  Task Manager.
+  it differs from the selected engine's model - a wrong-model issue can now
+  be spotted from the log instead of hours of investigation.
+* After an internal engine restart, your selected engine (including a
+  user-added model) is re-applied automatically instead of being silently
+  replaced by the built-in model; when your selected model cannot produce
+  a translation, the app now tells you instead of quietly substituting.
+* Models you add in Model Management now translate instead of failing: when
+  a model's embedded chat template is missing or unusable, the engine wraps
+  the (fixed) translation instruction in a standard chat format, and if the
+  model still stays silent or just repeats your text, it retries once with
+  an alternative fixed prompt form. Built-in Hy-MT2 behavior is unchanged.
+* The translation engine (Emebala.Engine) now shows the Emebala brand icon
+  in Explorer / Task Manager instead of the generic application icon.
 
 v0.10.1 (rerelease) - 2026-09-19
 ================================

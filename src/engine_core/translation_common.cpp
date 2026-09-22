@@ -293,21 +293,68 @@ std::wstring LocalInferenceEngine::Translate(
 
     // Tencent Hy-MT2 instruction format + optional GGUF chat template. Both are
     // rebuilt inside the REQ-R01 shrink loop, so they live in one lambda.
+    // REQ-059 rung 1: the template is probed ONCE per call — if applying it to
+    // a single user message returns the content VERBATIM (adds no structure;
+    // MiLM ships the trivial {% for message in messages %}{{ message.content
+    // %}{% endfor %} concat template) the bare fixed instruction is out-of-
+    // distribution (live evidence: immediate-EOS empty decode). A trivial (or
+    // absent) template therefore falls back to llama's BUILT-IN default
+    // template (ChatML) instead; non-trivial templates (Hy-MT2) keep the
+    // existing path byte-identically.
     const char* chat_tmpl = llama_model_chat_template(model, nullptr);
-    auto build_final_prompt = [&](std::wstring_view s) -> std::string {
+    bool chat_tmpl_is_trivial = true;
+    if (chat_tmpl) {
+        static constexpr const char* kTmplProbe = "REQ059_TEMPLATE_PROBE";
+        llama_chat_message probe{"user", kTmplProbe};
+        const int32_t probe_needed =
+            llama_chat_apply_template(chat_tmpl, &probe, 1, true, nullptr, 0);
+        if (probe_needed > 0) {
+            std::vector<char> formatted(static_cast<size_t>(probe_needed) + 1);
+            const int32_t probe_written = llama_chat_apply_template(
+                chat_tmpl, &probe, 1, true, formatted.data(),
+                static_cast<int32_t>(formatted.size()));
+            chat_tmpl_is_trivial =
+                probe_written > 0 &&
+                std::string(formatted.data(), static_cast<size_t>(probe_written)) == kTmplProbe;
+        }
+    }
+    // REQ-059: two fixed prompt forms, selected per attempt (rung 1 = chat,
+    // rung 2 = completion); rung 2 exists only for trivial-template user
+    // models — the completion form is never applied to the Hy-MT2 path's
+    // non-trivial template (attempt 1 only follows an empty/echo rung 1).
+    auto build_final_prompt = [&](std::wstring_view s, bool completion_form) -> std::string {
         std::string u8 = ToUtf8(s);
         if (u8.empty()) {
             return {};
         }
-        std::string p = BuildPrompt(u8, tgt_name, src_name);
-        if (chat_tmpl) {
-            llama_chat_message msg{"user", p.c_str()};
-            int32_t needed = llama_chat_apply_template(chat_tmpl, &msg, 1, true, nullptr, 0);
-            if (needed > 0) {
-                std::vector<char> formatted(needed + 1);
-                int32_t written = llama_chat_apply_template(chat_tmpl, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
-                if (written > 0) {
-                    p.assign(formatted.data(), written);
+        std::string p = completion_form
+            ? BuildCompletionPrompt(u8, tgt_name, src_name)
+            : BuildPrompt(u8, tgt_name, src_name);
+        if (!completion_form) {
+            if (chat_tmpl && !chat_tmpl_is_trivial) {
+                llama_chat_message msg{"user", p.c_str()};
+                int32_t needed = llama_chat_apply_template(chat_tmpl, &msg, 1, true, nullptr, 0);
+                if (needed > 0) {
+                    std::vector<char> formatted(needed + 1);
+                    int32_t written = llama_chat_apply_template(chat_tmpl, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
+                    if (written > 0) {
+                        p.assign(formatted.data(), written);
+                    }
+                }
+            } else {
+                // REQ-059 rung 1: trivial (concat-only) or absent template —
+                // wrap with llama's BUILT-IN default template (ChatML) so the
+                // fixed instruction is in-distribution for Gemma-style user
+                // models. (Hy-MT2 never reaches this branch: its real
+                // template is non-trivial and stays byte-identical.)
+                llama_chat_message msg{"user", p.c_str()};
+                int32_t needed = llama_chat_apply_template(nullptr, &msg, 1, true, nullptr, 0);
+                if (needed > 0) {
+                    std::vector<char> formatted(needed + 1);
+                    int32_t written = llama_chat_apply_template(nullptr, &msg, 1, true, formatted.data(), static_cast<int32_t>(formatted.size()));
+                    if (written > 0) {
+                        p.assign(formatted.data(), written);
+                    }
                 }
             }
         }
@@ -379,7 +426,58 @@ std::wstring LocalInferenceEngine::Translate(
     // after this point) stay intact. The shrink loop below only re-slices
     // this already-scrubbed copy, so every rebuild inherits the scrub.
     src_w = ScrubControlTokenTexts(src_w, control_token_texts);
-    std::string prompt = build_final_prompt(src_w);
+    // REQ-059: the prompt build + tokenize + decode body runs per attempt
+    // (attempt 0 = rung-1 chat form; attempt 1 = rung-2 completion form,
+    // only after an empty/echo rung 1). The shrink loop, hard cap, sampler,
+    // cancel/wall-clock checks and the REQ-051 U-1 latch semantics are
+    // identical per attempt; the decode wall-clock budget is FRESH per
+    // attempt. Hy-MT2 never degrades: its rung-1 output is never empty/echo.
+    // REQ-059 live-verified: a rung-1 output can also be a BARE SPECIAL
+    // MARKER — the live MiLM host spelled "<|im_end|>" out of SIX NORMAL
+    // tokens (the eot id 106 was never sampled, so the stop disjuncts and
+    // the control-piece scrub — NORMAL pieces by definition — could not
+    // catch it). Such an output is rejected exactly like empty/echo.
+    auto output_is_bare_special = [&](const std::string& out) {
+        if (out.empty()) {
+            return false;
+        }
+        // Fixed end-of-conversation markers (session 260922_0002 live
+        // evidence): llama's BUILT-IN default template (ChatML) spells its
+        // turn ends as <|im_end|>/<|im_start|>, which the Gemma-family
+        // native specials do NOT cover — the MiLM vocab declares eot id 106
+        // whose text is the NATIVE form, while the model spelled the CHATML
+        // form token-by-token. Neither source alone catches both shapes.
+        static constexpr const char* kFixedMarkers[] = {
+            "<|im_end|>", "<|im_start|>", "<end_of_turn>", "<start_of_turn>",
+        };
+        for (const char* marker : kFixedMarkers) {
+            if (out == marker) {
+                return true;
+            }
+        }
+        // Plus the texts of every special id the vocab declares (eos/eot/
+        // bos/sep/pad) — same no-op-safety argument as the eos disjunct for
+        // undeclared ids (-1).
+        const llama_token specials[] = {
+            llama_vocab_eos(vocab), llama_vocab_eot(vocab), llama_vocab_bos(vocab),
+            llama_vocab_sep(vocab), llama_vocab_pad(vocab),
+        };
+        for (const llama_token id : specials) {
+            if (id < 0) {
+                continue;
+            }
+            const char* text = llama_vocab_get_text(vocab, id);
+            if (text && out == text) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::string trimmed_u8;
+    bool degraded_to_completion = false;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+    const bool completion_form = (attempt == 1);
+    std::string prompt = build_final_prompt(src_w, completion_form);
     std::vector<llama_token> prompt_tokens;
     int32_t n_prompt_tokens = tokenize_prompt(prompt, prompt_tokens);
     if (n_prompt_tokens < 0) {
@@ -405,7 +503,7 @@ std::wstring LocalInferenceEngine::Translate(
                 target_len = src_w.size() - 1; // shrink at least one unit per iteration
             }
             src_w = TruncateHeadTailWindow(src_w, target_len / 2);
-            prompt = build_final_prompt(src_w);
+            prompt = build_final_prompt(src_w, completion_form);
             const int32_t n2 = tokenize_prompt(prompt, prompt_tokens);
             if (n2 < 0) {
                 DIAG_F("ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
@@ -536,20 +634,49 @@ std::wstring LocalInferenceEngine::Translate(
         // case. llama_vocab_eos returns -1 for EOS-less vocabs, which
         // never equals a valid sampled token, so this is a safe no-op
         // there.
-        if (llama_vocab_is_eog(vocab, token) || token == llama_vocab_eos(vocab)) {
+        // REQ-059: third disjunct — llama_vocab_eot (end-of-turn). Gemma-
+        // family GGUFs (user models) declare an eot id that is NOT eos and
+        // NOT in the eog set consulted above, so a model emitting its eot
+        // directly would leak the piece into the output (live MiLM host,
+        // session 260922_0002). NOTE (live-traced): this vocab's actual
+        // failure spelled "<|im_end|>" out of SIX NORMAL tokens instead —
+        // caught by the bare-special acceptance test below, not this
+        // disjunct; both guards stay (a direct eot sample remains possible
+        // on other GGUFs). Mirroring the eos no-op-safety argument:
+        // llama_vocab_eot returns -1 for eot-less vocabs, never equal to a
+        // valid sampled token.
+        if (llama_vocab_is_eog(vocab, token) || token == llama_vocab_eos(vocab) ||
+            token == llama_vocab_eot(vocab)) {
             break;
         }
 
         char piece[256] = {};
         int n_piece = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
         if (n_piece > 0) {
-            output_u8.append(piece, n_piece);
+            // REQ-059: output-side control-piece scrub (defense-in-depth).
+            // The eot break above handles termination; this stops any other
+            // stray control-class piece (mid-output specials) from reaching
+            // the caller's text. The scrub set is the same per-load
+            // control_token_texts built for the SEC-B2 input scrub — cheap:
+            // it holds only control-class token texts.
+            const std::wstring piece_w =
+                ToUtf16(std::string_view(piece, static_cast<size_t>(n_piece)));
+            if (std::find(control_token_texts.begin(), control_token_texts.end(), piece_w) ==
+                control_token_texts.end()) {
+                output_u8.append(piece, n_piece);
+            }
         } else if (n_piece < 0) {
             int needed = -n_piece;
             std::vector<char> big_piece(needed);
             int written = llama_token_to_piece(vocab, token, big_piece.data(), needed, 0, false);
             if (written > 0) {
-                output_u8.append(big_piece.data(), written);
+                // REQ-059: same control-piece scrub on the oversized-piece path.
+                const std::wstring piece_w =
+                    ToUtf16(std::string_view(big_piece.data(), static_cast<size_t>(written)));
+                if (std::find(control_token_texts.begin(), control_token_texts.end(), piece_w) ==
+                    control_token_texts.end()) {
+                    output_u8.append(big_piece.data(), written);
+                }
             }
         }
 
@@ -577,7 +704,19 @@ std::wstring LocalInferenceEngine::Translate(
         end--;
     }
 
-    std::string trimmed_u8 = output_u8.substr(start, end - start);
+    trimmed_u8 = output_u8.substr(start, end - start);
+
+    // REQ-059: leading-colon cleanup — Gemma-style models answering through
+    // the ChatML wrap start with a stray ':' token; drop the colon (and any
+    // spaces after it) when the source itself did not start with one.
+    if (!trimmed_u8.empty() && trimmed_u8.front() == ':' &&
+        (src_u8.empty() || src_u8.front() != ':')) {
+        size_t colon_drop = 1;
+        while (colon_drop < trimmed_u8.size() && trimmed_u8[colon_drop] == ' ') {
+            ++colon_drop;
+        }
+        trimmed_u8.erase(0, colon_drop);
+    }
 
     // Strip matching outer quotes if model wrapped translation in quotes but source text was not quoted
     if (trimmed_u8.size() >= 2 && trimmed_u8.front() == '\"' && trimmed_u8.back() == '\"') {
@@ -586,6 +725,52 @@ std::wstring LocalInferenceEngine::Translate(
         }
     }
 
+    // REQ-059 rung acceptance: an EMPTY rung-1 decode (immediate EOS), an
+    // ECHO (trimmed output equals the trimmed source — the live MiLM KO->EN
+    // behavior), or a BARE SPECIAL MARKER (live MiLM EN->KO: "<|im_end|>"
+    // spelled out of normal tokens) degrades to the completion form for ONE
+    // more decode with a fresh wall-clock budget. Hy-MT2 never trips this
+    // (its rung-1 output is a real translation), so its path stays
+    // byte-identical end to end.
+    if (attempt == 0) {
+        std::string src_cmp = src_u8;
+        size_t cs = 0;
+        while (cs < src_cmp.size() &&
+               (src_cmp[cs] == ' ' || src_cmp[cs] == '\n' || src_cmp[cs] == '\r' || src_cmp[cs] == '\t')) {
+            ++cs;
+        }
+        size_t ce = src_cmp.size();
+        while (ce > cs &&
+               (src_cmp[ce - 1] == ' ' || src_cmp[ce - 1] == '\n' ||
+                src_cmp[ce - 1] == '\r' || src_cmp[ce - 1] == '\t')) {
+            --ce;
+        }
+        src_cmp = src_cmp.substr(cs, ce - cs);
+        const bool rung1_empty = trimmed_u8.empty();
+        const bool rung1_echo = !rung1_empty && !src_cmp.empty() && trimmed_u8 == src_cmp;
+        const bool rung1_bare_special = output_is_bare_special(trimmed_u8);
+        if (!rung1_empty && !rung1_echo && !rung1_bare_special) {
+            break; // acceptable rung-1 output — no completion-form retry
+        }
+        degraded_to_completion = true;
+        DIAG_F("ENGINE/Translate/034: rung-1 chat form produced %s; retrying with the completion form (shape-only)\n",
+               rung1_empty ? "an empty decode"
+                           : (rung1_echo ? "an echo of the source" : "a bare special marker"));
+    }
+    } // REQ-059 attempt loop (rung 1 chat -> rung 2 completion)
+
+    // REQ-059: the completion form can emit the same bare marker (defense:
+    // the rung-1 check above only guards the retry decision) — answer
+    // honestly with empty (-> engine_failed) instead of handing the caller
+    // a control-token string.
+    if (output_is_bare_special(trimmed_u8)) {
+        DIAG_F("ENGINE/Translate/036: output is a bare special-token marker; answering engine_failed\n");
+        return {};
+    }
+
+    if (degraded_to_completion) {
+        DIAG_F("ENGINE/Translate/035: returning the completion-form result (shape-only)\n");
+    }
     return ToUtf16(trimmed_u8);
 }
 

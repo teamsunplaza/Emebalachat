@@ -701,6 +701,67 @@ std::string BuildPrompt(std::string_view source_text,
     return prompt;
 }
 
+// REQ-059: the completion-form prompt for user GGUF models whose GGUF chat
+// template is trivial (rung 2 of the fixed ladder in translation_common.cpp;
+// see the header for the two pinned forms and the fidelity-probe evidence).
+// Language resolution mirrors BuildPrompt above: name_en on both sides,
+// AUTO/unresolvable target -> raw-token injection, AUTO/absent/unresolvable
+// source -> the target-side-only form.
+std::string BuildCompletionPrompt(std::string_view source_text,
+                                  std::string_view target_lang,
+                                  std::string_view source_lang) {
+    std::string tgt_code;
+    const LanguageInfo* tgt_info = ResolvePromptLanguage(target_lang, tgt_code);
+    std::string tgt_en;
+    if (tgt_info != nullptr && tgt_code != "AUTO") {
+        tgt_en = tgt_info->name_en;
+    } else {
+        // AUTO or unresolvable token: keep the historical raw injection so
+        // the prompt still names whatever the caller passed.
+        tgt_code.clear();
+        tgt_en = std::string(target_lang);
+    }
+
+    std::string src_code;
+    std::string src_en;
+    if (!source_lang.empty()) {
+        const LanguageInfo* src_info = ResolvePromptLanguage(source_lang, src_code);
+        if (src_info != nullptr && src_code != "AUTO") {
+            src_en = src_info->name_en;
+        }
+    }
+
+    std::string prompt;
+    if (!src_en.empty()) {
+        // Official two-sided completion form (fidelity probe: PERFECT both
+        // directions on the MiLM family when the bare chat path decodes
+        // empty or echoes).
+        prompt.append("Translate this from ");
+        prompt.append(src_en);
+        prompt.append(" to ");
+        prompt.append(tgt_en);
+        prompt.append(":\n");
+        prompt.append(src_en);
+        prompt.append(": ");
+        prompt.append(source_text);
+        prompt.push_back('\n');
+        prompt.append(tgt_en);
+        prompt.push_back(':');
+    } else {
+        // AUTO / absent / unresolvable source: naming a source language the
+        // model must detect itself ("from Auto Detect") is nonsense, so the
+        // form carries the target side only.
+        prompt.append("Translate into ");
+        prompt.append(tgt_en);
+        prompt.append(":\n");
+        prompt.append(source_text);
+        prompt.push_back('\n');
+        prompt.append(tgt_en);
+        prompt.push_back(':');
+    }
+    return prompt;
+}
+
 // R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
 // LOCAL Hy-MT2 engine (see config.hpp doc).
 //

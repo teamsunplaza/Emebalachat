@@ -213,6 +213,19 @@ std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
                         std::string_view source_lang = {});
 
+// REQ-059: the completion-form prompt (rung 2 of the fixed user-model
+// ladder) for GGUF models whose chat template is trivial — the model
+// family's official completion shape. Mirrors BuildPrompt's language
+// resolution (ResolvePromptLanguage, name_en on both sides, AUTO/raw-token
+// fallbacks) but emits two pinned forms:
+//   resolved source: "Translate this from <src_en> to <tgt_en>:\n<src_en>: <text>\n<tgt_en>:"
+//   AUTO / absent / unresolvable source: "Translate into <tgt_en>:\n<text>\n<tgt_en>:"
+// The instruction language is always English (no Chinese branch — this form
+// exists for Gemma-style third-party models, not the Hy-MT2 SFT template).
+std::string BuildCompletionPrompt(std::string_view source_text,
+                                  std::string_view target_lang,
+                                  std::string_view source_lang = {});
+
 // R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
 // LOCAL Hy-MT2 engine. F5 Phase 2 (session 260908_0003, ask audit 181530
 // Inquiry 3 adjudicated) SUPERSEDES the original conservative EN-only set:
