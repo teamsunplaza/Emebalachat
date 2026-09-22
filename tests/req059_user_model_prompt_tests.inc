@@ -107,6 +107,46 @@ void TestReq059UserModelPrompt() {
         TEST_CHECK(src.find("\"<|im_end|>\"") != std::string::npos,
                    "REQ-059 (b): the bare-special rejection covers the fixed ChatML "
                    "turn markers (live MiLM spelled <|im_end|> from NORMAL tokens)");
+        // REQ-059 second live-refinement: embedded markers (source echo +
+        // "<|im_end|>" tail) are STRIPPED before the acceptance checks, with
+        // a source-guard so user text containing a marker survives.
+        TEST_CHECK(src.find("StripEndOfConversationMarkers") != std::string::npos &&
+                       src.find("kEndOfConversationMarkers") != std::string::npos,
+                   "REQ-059 (b): the strip helper exists and shares the fixed "
+                   "marker table with the bare-special predicate");
+        TEST_CHECK(src.find("source_u8.find(marker)") != std::string::npos,
+                   "REQ-059 (b): the strip carries the source-guard "
+                   "(markers present in the source are never removed)");
+        {
+            // Ordering: the strip runs BEFORE the echo/acceptance compare so
+            // "source + marker" is judged as the echo it is.
+            const size_t strip_pos = src.find("StripEndOfConversationMarkers(trimmed_u8");
+            const size_t echo_pos = src.find("rung1_echo");
+            TEST_CHECK(strip_pos != std::string::npos && echo_pos != std::string::npos &&
+                           strip_pos < echo_pos,
+                       "REQ-059 (b): the marker strip precedes the echo/acceptance compare");
+        }
+        // REQ-059 perf: rung-1 early echo abort — every
+        // kEchoPrefixProbeTokenCadence tokens the accumulated output is
+        // compared EXACTLY against the source prefix; a match aborts rung 1
+        // (the rung1_aborted_echo flag feeds the acceptance test).
+        TEST_CHECK(src.find("kEchoPrefixProbeTokenCadence") != std::string::npos &&
+                       src.find("output_u8.compare(0, output_u8.size(), src_u8") !=
+                           std::string::npos,
+                   "REQ-059 (b): the early-echo prefix probe exists (cadence + exact compare)");
+        TEST_CHECK(src.find("rung1_aborted_echo") != std::string::npos &&
+                       src.find("Translate/037") != std::string::npos,
+                   "REQ-059 (b): the early-abort flag feeds the acceptance test "
+                   "with a shape-only diagnostic");
+        // REQ-059 perf: the decode wall-clock budget is input-scaled off
+        // max_gen_tokens (computed just above it).
+        {
+            const size_t gen_pos = src.find("max_gen_tokens = ScaledMaxGenTokens");
+            TEST_CHECK(gen_pos != std::string::npos &&
+                           src.find("ScaledDecodeWallClockBudgetMs(max_gen_tokens)",
+                                    gen_pos) != std::string::npos,
+                       "REQ-059 (b): the wall-clock budget scales off max_gen_tokens");
+        }
         {
             const size_t bare_pos = src.find("output_is_bare_special");
             TEST_CHECK(src.find("rung1_bare_special") != std::string::npos &&
@@ -116,6 +156,24 @@ void TestReq059UserModelPrompt() {
             TEST_CHECK(src.find("Translate/036") != std::string::npos,
                        "REQ-059 (b): the final bare-special guard answers engine_failed");
         }
+    }
+
+    // REQ-059 perf constants in the helper header: 20 ms/token worst-case
+    // assumption, 27 s ceiling under the frozen 30 s client budget.
+    const std::filesystem::path tc_hpp = ResolveRepoFile(L"src\\engine_core\\translation_common.hpp");
+    if (tc_hpp.empty()) {
+        std::cout << "[SKIP] src/engine_core/translation_common.hpp not resolvable; "
+                     "REQ-059 perf pins skipped." << std::endl;
+    } else {
+        std::ifstream in(tc_hpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        TEST_CHECK(src.find("kDecodeMsPerAssumedToken = 20") != std::string::npos,
+                   "REQ-059 (b): kDecodeMsPerAssumedToken is 20 (50 tok/s worst case)");
+        TEST_CHECK(src.find("kDecodeWallClockBudgetMaxMs = 27000") != std::string::npos,
+                   "REQ-059 (b): kDecodeWallClockBudgetMaxMs is 27000 (under the 30 s wire budget)");
+        TEST_CHECK(src.find("ScaledDecodeWallClockBudgetMs") != std::string::npos,
+                   "REQ-059 (b): the clamp helper exists (floor 12 s, ceiling 27 s)");
     }
 
     // config.hpp declares the helper.

@@ -48,7 +48,13 @@ Fixes in this build
   a model's embedded chat template is missing or unusable, the engine wraps
   the (fixed) translation instruction in a standard chat format, and if the
   model still stays silent or just repeats your text, it retries once with
-  an alternative fixed prompt form. Built-in Hy-MT2 behavior is unchanged.
+  an alternative fixed prompt form; the engine also strips stray end-of-
+  conversation markers from results, detects a model that is merely copying
+  your text (and switches to the alternative form right away instead of
+  transcribing the whole copy first), and gives longer texts proportionally
+  more decoding time, so a large paragraph no longer fails just because the
+  built-in model's speed budget was designed for the smaller built-in one.
+  Built-in Hy-MT2 behavior is unchanged.
 * The translation engine (Emebala.Engine) now shows the Emebala brand icon
   in Explorer / Task Manager instead of the generic application icon.
 

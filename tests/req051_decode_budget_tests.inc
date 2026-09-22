@@ -184,12 +184,15 @@ void TestReq051DecodeWallClockSemantics() {
             TEST_CHECK(sets == 1,
                        "REQ-051 U-1 pin: the latch is set only by the wall-clock expiry arm");
 
-            // The deadline is built from the pinned budget constant ...
+            // The deadline is built from the input-scaled budget
+            // (REQ-059 perf: floor = the pinned kDecodeWallClockBudgetMs
+            // constant, ceiling kDecodeWallClockBudgetMaxMs) ...
             TEST_CHECK(tc_src.find(
-                           "decode_deadline = decode_start + "
-                           "std::chrono::milliseconds(kDecodeWallClockBudgetMs)") !=
+                           "decode_deadline = decode_start +\n"
+                           "        std::chrono::milliseconds(ScaledDecodeWallClockBudgetMs(max_gen_tokens));") !=
                            std::string::npos,
-                       "REQ-051 U-1 pin: the decode deadline derives from kDecodeWallClockBudgetMs");
+                       "REQ-051 U-1 pin: the decode deadline derives from "
+                       "ScaledDecodeWallClockBudgetMs (12 s kDecodeWallClockBudgetMs floor)");
             // ... the cap is wired at the token loop ...
             TEST_CHECK(tc_src.find("const int max_gen_tokens = ScaledMaxGenTokens(n_prompt_tokens);") !=
                            std::string::npos,

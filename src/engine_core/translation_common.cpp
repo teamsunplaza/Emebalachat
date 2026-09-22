@@ -53,6 +53,25 @@ static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget 
 
 namespace {
 
+// REQ-059: the fixed end-of-conversation marker table, shared by the
+// mid-output strip (StripEndOfConversationMarkers) and the bare-special
+// acceptance predicate. Session 260922_0002 live evidence: llama's BUILT-IN
+// default template (ChatML) spells its turn ends as <|im_end|>/<|im_start|>,
+// which the Gemma-family native specials do NOT cover (the MiLM vocab
+// declares eot id 106 whose text is the NATIVE form, while the model spelled
+// the CHATML form out of NORMAL tokens). Neither source alone catches both
+// shapes, so the table stays fixed alongside the declared-special texts.
+constexpr const char* kEndOfConversationMarkers[] = {
+    "<|im_end|>", "<|im_start|>", "<end_of_turn>", "<start_of_turn>",
+};
+
+// REQ-059 perf: rung-1 early-echo-abort cadence — every N generated tokens
+// the accumulated output is compared against the source prefix (exact
+// compare). 16 tokens of exact source tracking is already conclusive (a
+// real translation never tracks the source for that long), and the probe
+// stays negligible against a 4B decode.
+constexpr int kEchoPrefixProbeTokenCadence = 16;
+
 // REQ-R16 (audit §5 latent item 4): llama.cpp abort callback. ggml calls this
 // between tensor-evaluation chunks of an in-flight llama_decode(); returning
 // true aborts the compute. user_data is the caller's cancellation atomic
@@ -437,27 +456,16 @@ std::wstring LocalInferenceEngine::Translate(
     // tokens (the eot id 106 was never sampled, so the stop disjuncts and
     // the control-piece scrub — NORMAL pieces by definition — could not
     // catch it). Such an output is rejected exactly like empty/echo.
-    auto output_is_bare_special = [&](const std::string& out) {
-        if (out.empty()) {
-            return false;
-        }
-        // Fixed end-of-conversation markers (session 260922_0002 live
-        // evidence): llama's BUILT-IN default template (ChatML) spells its
-        // turn ends as <|im_end|>/<|im_start|>, which the Gemma-family
-        // native specials do NOT cover — the MiLM vocab declares eot id 106
-        // whose text is the NATIVE form, while the model spelled the CHATML
-        // form token-by-token. Neither source alone catches both shapes.
-        static constexpr const char* kFixedMarkers[] = {
-            "<|im_end|>", "<|im_start|>", "<end_of_turn>", "<start_of_turn>",
-        };
-        for (const char* marker : kFixedMarkers) {
-            if (out == marker) {
-                return true;
-            }
-        }
-        // Plus the texts of every special id the vocab declares (eos/eot/
-        // bos/sep/pad) — same no-op-safety argument as the eos disjunct for
-        // undeclared ids (-1).
+    // REQ-059: the full end-of-conversation marker text set, built ONCE per
+    // call: the fixed ChatML/native table above PLUS the texts of every
+    // special id the vocab declares (eos/eot/bos/sep/pad; same no-op-safety
+    // argument as the eos disjunct for undeclared ids (-1)). Shared by the
+    // mid-output strip and the bare-special acceptance predicate.
+    std::vector<std::string> eoc_markers;
+    for (const char* marker : kEndOfConversationMarkers) {
+        eoc_markers.emplace_back(marker);
+    }
+    {
         const llama_token specials[] = {
             llama_vocab_eos(vocab), llama_vocab_eot(vocab), llama_vocab_bos(vocab),
             llama_vocab_sep(vocab), llama_vocab_pad(vocab),
@@ -466,15 +474,43 @@ std::wstring LocalInferenceEngine::Translate(
             if (id < 0) {
                 continue;
             }
-            const char* text = llama_vocab_get_text(vocab, id);
-            if (text && out == text) {
-                return true;
+            const char* special_text = llama_vocab_get_text(vocab, id);
+            if (special_text && *special_text) {
+                eoc_markers.emplace_back(special_text);
             }
         }
-        return false;
+    }
+    auto output_is_bare_special = [&](const std::string& out) {
+        if (out.empty()) {
+            return false;
+        }
+        return std::find(eoc_markers.begin(), eoc_markers.end(), out) != eoc_markers.end();
+    };
+    // REQ-059: strip end-of-conversation markers embedded in an otherwise
+    // real output (live user case: rung-1 answered with the source ECHO +
+    // a spelled-out "<|im_end|>" tail, which the EOG break and the
+    // control-piece scrub both miss because the marker is spelled from
+    // NORMAL tokens). Source-guard: a marker the SOURCE text itself
+    // contains is NEVER stripped, so legitimate user text about chat
+    // formats survives untouched.
+    auto StripEndOfConversationMarkers = [&](std::string& out, std::string_view source_u8) {
+        for (const std::string& marker : eoc_markers) {
+            if (source_u8.find(marker) != std::string_view::npos) {
+                continue; // source-guard (see above)
+            }
+            size_t pos = 0;
+            while ((pos = out.find(marker, pos)) != std::string::npos) {
+                out.erase(pos, marker.size());
+            }
+        }
     };
     std::string trimmed_u8;
     bool degraded_to_completion = false;
+    // REQ-059 perf: set when the rung-1 early-echo probe aborts the decode —
+    // the acceptance test below treats it exactly like an echo (the output
+    // is only a source PREFIX at that point, so the full-equality echo
+    // compare alone could not catch it).
+    bool rung1_aborted_echo = false;
     for (int attempt = 0; attempt < 2; ++attempt) {
     const bool completion_form = (attempt == 1);
     std::string prompt = build_final_prompt(src_w, completion_form);
@@ -584,8 +620,13 @@ std::wstring LocalInferenceEngine::Translate(
     // prompt decode + sampler setup) and covers token GENERATION only — a
     // model load is governed by the REQ-051 U-1 FIX 2 finish-once-started
     // rule, not by this clock.
+    // REQ-059 perf: the budget is input-scaled
+    // (ScaledDecodeWallClockBudgetMs(max_gen_tokens)): the 12 s REQ-051
+    // floor for typical inputs, scaling to 27 s for long translations on
+    // slow 4B user models. REQ-051 U-1 latch semantics unchanged.
     const auto decode_start = std::chrono::steady_clock::now();
-    const auto decode_deadline = decode_start + std::chrono::milliseconds(kDecodeWallClockBudgetMs);
+    const auto decode_deadline = decode_start +
+        std::chrono::milliseconds(ScaledDecodeWallClockBudgetMs(max_gen_tokens));
 
     for (int i = 0; i < max_gen_tokens; ++i) {
         // REQ-R16: cancellation check BETWEEN DECODE STEPS - the token
@@ -680,6 +721,26 @@ std::wstring LocalInferenceEngine::Translate(
             }
         }
 
+        // REQ-059 perf: early echo abort (RUNG 1 ONLY). A rung-1 echo on a
+        // long paragraph otherwise generates the ENTIRE source (hundreds of
+        // tokens, seconds on a 4B model) before the end-of-generation echo
+        // check can reject it — roughly doubling the bill before rung 2
+        // re-decodes from scratch. Every kEchoPrefixProbeTokenCadence
+        // tokens, compare the accumulated output against the source prefix:
+        // an EXACT-prefix match means the model is echoing — bail out now
+        // (shape-only 037 line) and let the attempt loop degrade to the
+        // completion form. Exact compare only, no fuzzy heuristic: Hy-MT2
+        // translations never track the source for 16+ tokens, and even a
+        // false fire still answers correctly via rung 2.
+        if (!completion_form && (i + 1) % kEchoPrefixProbeTokenCadence == 0 &&
+            !output_u8.empty() && output_u8.size() <= src_u8.size() &&
+            output_u8.compare(0, output_u8.size(), src_u8, 0, output_u8.size()) == 0) {
+            DIAG_F("ENGINE/Translate/037: rung-1 output tracks the source prefix at token %d (out=%zu src=%zu); aborting to the completion form\n",
+                   i + 1, output_u8.size(), src_u8.size());
+            rung1_aborted_echo = true;
+            break;
+        }
+
         batch = llama_batch_get_one(&token, 1);
         if (llama_decode(ctx, batch) != 0) {
             // REQ-049: a mid-generation decode failure used to fall through
@@ -706,6 +767,13 @@ std::wstring LocalInferenceEngine::Translate(
 
     trimmed_u8 = output_u8.substr(start, end - start);
 
+    // REQ-059: strip embedded end-of-conversation markers FIRST — the
+    // ladder's acceptance checks (echo compare + bare-special predicate)
+    // and the colon/quote cleanup all operate on the STRIPPED string, so
+    // "source + marker" reduces to exactly the source and is correctly
+    // judged an ECHO (rung 2).
+    StripEndOfConversationMarkers(trimmed_u8, src_u8);
+
     // REQ-059: leading-colon cleanup — Gemma-style models answering through
     // the ChatML wrap start with a stray ':' token; drop the colon (and any
     // spaces after it) when the source itself did not start with one.
@@ -725,13 +793,13 @@ std::wstring LocalInferenceEngine::Translate(
         }
     }
 
-    // REQ-059 rung acceptance: an EMPTY rung-1 decode (immediate EOS), an
-    // ECHO (trimmed output equals the trimmed source — the live MiLM KO->EN
-    // behavior), or a BARE SPECIAL MARKER (live MiLM EN->KO: "<|im_end|>"
-    // spelled out of normal tokens) degrades to the completion form for ONE
-    // more decode with a fresh wall-clock budget. Hy-MT2 never trips this
-    // (its rung-1 output is a real translation), so its path stays
-    // byte-identical end to end.
+    // REQ-059 rung acceptance: an EMPTY rung-1 decode (immediate EOS, or a
+    // bare marker stripped to empty just above), an ECHO (trimmed output
+    // equals the trimmed source — the live MiLM KO->EN behavior), or a
+    // bare special marker degrades to the completion form for ONE more
+    // decode with a fresh wall-clock budget. Hy-MT2 never trips this (its
+    // rung-1 output is a real translation), so its path stays byte-identical
+    // end to end.
     if (attempt == 0) {
         std::string src_cmp = src_u8;
         size_t cs = 0;
@@ -749,13 +817,15 @@ std::wstring LocalInferenceEngine::Translate(
         const bool rung1_empty = trimmed_u8.empty();
         const bool rung1_echo = !rung1_empty && !src_cmp.empty() && trimmed_u8 == src_cmp;
         const bool rung1_bare_special = output_is_bare_special(trimmed_u8);
-        if (!rung1_empty && !rung1_echo && !rung1_bare_special) {
+        if (!rung1_empty && !rung1_echo && !rung1_bare_special && !rung1_aborted_echo) {
             break; // acceptable rung-1 output — no completion-form retry
         }
         degraded_to_completion = true;
         DIAG_F("ENGINE/Translate/034: rung-1 chat form produced %s; retrying with the completion form (shape-only)\n",
-               rung1_empty ? "an empty decode"
-                           : (rung1_echo ? "an echo of the source" : "a bare special marker"));
+               rung1_aborted_echo ? "a source-prefix echo (early abort)"
+                                  : (rung1_empty ? "an empty decode"
+                                                 : (rung1_echo ? "an echo of the source"
+                                                               : "a bare special marker")));
     }
     } // REQ-059 attempt loop (rung 1 chat -> rung 2 completion)
 

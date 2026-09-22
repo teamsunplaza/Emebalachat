@@ -83,6 +83,38 @@ namespace emebalachat {
 // inside the frozen 30 s budget.
 inline constexpr int kDecodeWallClockBudgetMs = 12000;
 
+// REQ-059 perf (live: MiLM long paragraphs slow/failing): input-scaled
+// decode wall-clock budget. The flat 12 s REQ-051 budget was sized for
+// Hy-MT2-1.8B (healthy <= ~2 s); MiLM-class 4B user models decode ~2x+
+// slower per token, so a long LEGITIMATE translation could exceed 12 s,
+// be discarded -> "timeout" -> the one-shot retry exhausts -> the user
+// sees a failure on long paragraphs. The budget now scales with the
+// generation cap at a worst-case-assumed 50 tok/s (20 ms/token) —
+// clamp(max_gen_tokens * 20, kDecodeWallClockBudgetMs /*12 s floor, this
+// named constant is UNTOUCHED*/, kDecodeWallClockBudgetMaxMs). The 12 s
+// floor holds while max_gen_tokens <= 600 (prompt n <= 118); long
+// translations (both models) scale up to 27 s, staying under the frozen
+// 30 s v1 client budget including the one-shot retry headroom. The
+// REQ-051 U-1 latch semantics (timeout wire code on exhaust) are
+// unchanged.
+inline constexpr int kDecodeMsPerAssumedToken = 20;
+inline constexpr int kDecodeWallClockBudgetMaxMs = 27000;
+
+// REQ-059 perf: budget_ms = clamp(max_gen_tokens * kDecodeMsPerAssumedToken,
+// kDecodeWallClockBudgetMs, kDecodeWallClockBudgetMaxMs). Pure/constexpr so
+// the unit suite pins the clamp headlessly (mirrors ScaledMaxGenTokens).
+constexpr int ScaledDecodeWallClockBudgetMs(int max_gen_token_count) {
+    const long long scaled =
+        static_cast<long long>(max_gen_token_count) * kDecodeMsPerAssumedToken;
+    if (scaled < kDecodeWallClockBudgetMs) {
+        return kDecodeWallClockBudgetMs;
+    }
+    if (scaled > kDecodeWallClockBudgetMaxMs) {
+        return kDecodeWallClockBudgetMaxMs;
+    }
+    return static_cast<int>(scaled);
+}
+
 // REQ-051 U-1 FIX 1: input-scaled generation cap constants. Translation
 // outputs beyond (4x input + 128) tokens do not legitimately exist; the cap
 // is floored at 256 (a one-token prompt still deserves a full sentence) and
