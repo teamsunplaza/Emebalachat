@@ -6,9 +6,11 @@
 ; a runtime configuration file.
 ;
 ; Requirements:
-;   - Inno Setup 6.3 or later (for CreateDownloadPage support AND for correct
-;     UTF-8 decoding of the BOM-less official .isl translation files - see the
-;     compiler-version gate below and tools/check_installer_encoding.py)
+;   - Inno Setup 6.4 or later (for CreateDownloadPage support, correct UTF-8
+;     decoding of the BOM-less official .isl translation files, and the
+;     CustomMessage first-defined-language fallback replicated at runtime
+;     since 6.4 - see the compiler-version gate below and
+;     tools/check_installer_encoding.py)
 ;   - Build Emebalachat.exe with CMake before compiling this installer
 ; ============================================================================
 

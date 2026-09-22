@@ -4,17 +4,22 @@ This directory contains the Inno Setup script and assets for building the Emebal
 
 ## Prerequisites
 
-1. **Inno Setup 6.3 or later** (hard requirement, enforced at compile time)
+1. **Inno Setup 6.4 or later** (hard requirement, enforced at compile time)
    Download and install from: https://jrsoftware.org/isinfo.php
    BOM-less UTF-8 decoding of `.iss`/`.isl` files exists only since 6.3; the
    official bundled `.isl` translations intentionally ship without a BOM
    (removed in 6.5), so an older compiler would garble every non-Latin
-   language. `setup.iss` aborts the build with `#error` on pre-6.3 compilers.
+   language. Since 6.4 the installer also relies on `CustomMessage {cm:}`
+   falling back to the first defined language at runtime, so the 21
+   intentionally-undefined installer languages show English instead of raising
+   a compile error. `setup.iss` aborts the build with `#error` on pre-6.4
+   compilers.
 
 2. **Build the binaries first**
-   Use CMake to build the application before compiling the installer. The installer expects BOTH executables to exist (the compile fails otherwise):
+   Use CMake to build the application before compiling the installer. The installer expects ALL of these to exist (the compile fails otherwise):
    - `../build/Emebala_chat.exe` (the application)
    - `../build/Emebala.Engine.exe` (the shared inference host, bundled into the per-user common store — REQ-043)
+   - `../build/Emebalachat.Engine.ggml-translate.exe` **and** `../build/worker.ggml-translate.manifest` (the translation worker and its per-family manifest, both bundled next to the host — REQ-006/M6, M7 A-1)
 
 ## How to Compile
 
@@ -36,11 +41,14 @@ This directory contains the Inno Setup script and assets for building the Emebal
 
 > **Uninstall-contract gate — run before every release build (mandatory):**
 > `python tools/check_uninstall_contract.py`
-> Statically re-derives the REQ-048 F3 shared-engine uninstall contract from
-> `setup.iss` (triple detection, `DelTree` behind an IDYES-confirmed
-> `SuppressibleMsgBox`, IDNO preserve default, fail-closed WMI probe, kept
-> notice, 11-language message coverage, frozen anchors). Uninstall behavior
-> cannot be exercised on a build machine, so do not ship past a FAIL.
+> Statically re-derives the shared-engine uninstall contract from `setup.iss`:
+> REQ-048 F3 (triple detection, the `SuppressibleMsgBox` confirmation behind
+> IDYES with an IDNO preserve default, fail-closed WMI probe, kept notice,
+> 11-language message coverage, frozen anchors) **plus the M7 A-3
+> registry-aware cleanup invariants** (bundled-only file deletion, user-item
+> preservation, bare-name guard, fail-closed preserve of a damaged registry;
+> the pre-A-3 blanket `DelTree` is prohibited and trips the gate). Uninstall
+> behavior cannot be exercised on a build machine, so do not ship past a FAIL.
 > Exits non-zero on any violation.
 
 ## Memo page text MUST go through the RTF-safe `MessageLines()`
@@ -161,11 +169,32 @@ output\Emebalachat_Setup_0.10.1.exe
      `winmgmts:` moniker form is unavailable in Inno Pascal Script). The probe
      is **fail-closed** — any WMI error preserves the engine.
    - **Deleted only on explicit confirmation** when neither holds: a
-     `SuppressibleMsgBox` asks before `DelTree` and defaults to **IDNO
-     (preserve)**, so silent uninstalls and plain "No" answers keep the engine.
-     Reinstalling any Emebala product re-downloads the engine + model.
-   The behavior is statically gated by `tools/check_uninstall_contract.py`;
-   real uninstall verification is a manual QA step.
+     `SuppressibleMsgBox` asks before the registry-aware cleanup and defaults to
+     **IDNO (preserve)**, so silent uninstalls and plain "No" answers keep the
+     engine. Reinstalling any Emebala product re-downloads the engine + model.
+   - **Registry-aware, bundled-only cleanup (M7 A-3)** — what a confirmed
+     deletion actually removes changed in 0.10.1: the uninstaller now reads
+     `registry.json` in the shared store and deletes **only** the files listed
+     by `origin: "bundled"` items (with every `files[]` entry re-checked as a
+     bare filename first). Models you registered yourself (`origin: "user"`,
+     e.g. your own `.gguf`), unknown-origin or unregistered files, and other
+     families' engine binaries are **preserved** — the registry entry is
+     dropped from the rewritten document only for bundled items, and the
+     rewrite happens before any file deletion so the listing can never point at
+     a deleted model. If `registry.json` is unreadable or damaged, the ENTIRE
+     shared store is preserved (fail-closed: a destructive fallback is
+     forbidden). Engine-dir removal is limited to the files this installer owns
+     (orchestrator, worker, manifests, version/components metadata); other
+     Emebala products keep their own files.
+   - **Model registration is merged, never overwritten (M7 A-2)** — at install
+     time the bundled model's entry is merged into the existing `registry.json`
+     atomically (write-temp-then-rename), so registrations written by other
+     Emebala products or by you are never lost, and two installers running at
+     the same time cannot corrupt the file. This protects your registered
+     models across reinstall and uninstall.
+   The behavior is statically gated by `tools/check_uninstall_contract.py`
+   (CHECK 2/8 cover the M7 A-3 invariants); real uninstall verification is a
+   manual QA step.
 
 ## Model Integrity Verification (release procedure)
 

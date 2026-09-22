@@ -33,6 +33,40 @@ can do now
 * Uninstall now verifies its registry cleanup, so removing the app
   leaves no orphaned install records behind.
 
+Further fixes in this same v0.10.1 build
+---------------------------------------
+* Double-clicking the tray icon no longer flips translation off and back
+  on: a single click still pauses or resumes translation, and a
+  double-click now only shows or hides the floating badge.
+* The About window no longer clips the bottom of its feature
+  descriptions in languages with longer text (German, Russian, Spanish,
+  Vietnamese and others); the blocks now size themselves to the text.
+* Changing your display scaling (for example 100% to 150%) re-renders
+  the floating badge sharply instead of leaving its text blurred.
+* After a GPU driver reset, a sleep/resume, or a driver update, the
+  floating badge repaints itself instead of vanishing.
+* Changing the language from the result tooltip's menu no longer pulls
+  focus away from the window you were typing in - your selected text and
+  caret position stay exactly where they were.
+* While the OpenAI-compatible model list is being fetched, the "Get
+  models" button is disabled and re-enables when the request finishes,
+  so repeated clicking can no longer queue duplicate requests.
+* In the user model manager, Rename and Delete are now greyed out while
+  no model is selected, instead of looking clickable and doing nothing.
+* Rapidly repeating F9 (or any other sound-carrying hotkey) no longer
+  starts one playback thread per beep: tones queue and play in order, so
+  heavy shortcut use stays smooth.
+* Installing or updating Emebala Chat now merges its model registration
+  into the shared registry.json atomically instead of overwriting the
+  file: models registered by other Emebala products, and models you
+  registered yourself, can no longer be lost - even if two installers
+  run at the same time.
+* Uninstalling now removes only the files this installer itself placed
+  in the shared store: your own registered .gguf models, and models
+  belonging to another Emebala product, are preserved. If the
+  registration file cannot be read or is damaged, the uninstaller leaves
+  the whole shared store untouched instead of deleting it.
+
 v0.10.1 - 2026-09-17
 ====================
 

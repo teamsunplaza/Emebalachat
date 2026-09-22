@@ -54,7 +54,7 @@ src/                    # production C++20 sources; one module per .hpp/.cpp pai
   ui/                   # Direct2D presentation layer
     badge.cpp  tray.cpp  tooltip.cpp  drag_icon.cpp  about_window.cpp
     layered_renderer.cpp  asset_loader.cpp  dpi.cpp  (Per-Monitor V2 DPI)
-tests/run_tests.cpp     # single-file unit test suite (~3,388 checks), links Emebalachat_core (+ m6_engine_host_*.inc suites)
+tests/run_tests.cpp     # single-file unit test suite (~4,531 checks), links Emebalachat_core (+ m6_engine_host_*.inc, m7_*, req0xx_*.inc suites)
 installer/              # Inno Setup 6 packaging (setup.iss, README.md, languages/, assets/)
 tools/                  # Python/PowerShell verification & gate scripts (see below)
 tools/e2e/              # interactive-desktop E2E harness (Notepad + real app)
@@ -76,7 +76,7 @@ cmake --build build --config Release
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 3388 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 4531 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 ```
 
 Useful variants:
@@ -86,9 +86,10 @@ Useful variants:
 - Separate build trees exist for special configs (`build_gpuoff`, `build_gputest`, …); `build*/` is gitignored.
 - **E2E harness** (requires an interactive desktop session — SendInput + real foreground windows; cannot run headless/CI): `python tools\e2e\req027_e2e.py --all` (12 scenarios; individual: `python tools\e2e\req027_e2e.py <scenario>`). Built app must exist at `build\Emebala_chat.exe`. Python 3.8+, stdlib only.
 - **Installer gates (mandatory before any installer build/release):**
-  - `python tools/check_installer_encoding.py` — encoding gate for all `.iss`/`.isl` text inputs (UTF-8 rules + Inno ≥ 6.3 version guard). Non-zero exit = do not build.
+  - `python tools/check_installer_encoding.py` — encoding gate for all `.iss`/`.isl` text inputs (UTF-8 rules + Inno ≥ 6.4 version guard). Non-zero exit = do not build.
   - `python tools/check_installer_display_text.py` — display-layer mojibake gate (compiles a probe wizard per language and reads memo text back). Non-zero exit = do not ship.
-  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; the worker entries are skipped in no-llama builds). Inno Setup 6.3+ is a hard requirement (enforced by a compile-time `#error`).
+  - `python tools/check_uninstall_contract.py` — static re-derivation of the shared-engine uninstall contract, including the M7 A-3 registry-aware bundled-only cleanup invariants (the pre-A-3 blanket `DelTree` trips the gate). Non-zero exit = do not ship.
+  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; a missing worker exe fails the compile even in no-llama builds). Inno Setup 6.4+ is a hard requirement (enforced by a compile-time `#error`).
 
 ## Development Conventions
 
@@ -102,9 +103,9 @@ Useful variants:
 
 ## Testing Strategy
 
-1. **Unit tests** — `tests/run_tests.cpp`, one self-contained file linking `Emebalachat_core` (+ `Emebalachat_engine_core` for llama-guarded suites), ~3,388 checks covering every core module (config/languages, unicode/normalization, bidi, smart bypass, engine routing, engine-host protocol/scheduler/worker/registry/manifest/components/bootstrap, clipboard, hooks, worker, UI helpers, vulkan guard). Run after every build; CTest name is `CoreTests`. Add checks there for logic changes.
+1. **Unit tests** — `tests/run_tests.cpp`, one self-contained file linking `Emebalachat_core` (+ `Emebalachat_engine_core` for llama-guarded suites), ~4,531 checks covering every core module (config/languages, unicode/normalization, bidi, smart bypass, engine routing, engine-host protocol/scheduler/worker/registry/manifest/components/bootstrap, UI-audit fixes, clipboard, hooks, worker, UI helpers, vulkan guard). Run after every build; CTest name is `CoreTests`. Add checks there for logic changes.
 2. **E2E harness** — `tools/e2e/req027_e2e.py` drives the real app against a real Notepad window (12 scenarios: capture correctness, multi-language blocks, paste-window suppression, caret-mid-line, backspace clamp, per-hwnd offset isolation, tray UI-language enumeration). Verdicts are judged from the diagnostic log; INCONCLUSIVE is auto-retried once. Interactive desktop only.
-3. **Gates** — the two installer gates above (encoding, display text) plus benchmark/verification scripts under `tools/` (e.g. `run_fidelity_experiment.py`, `fidelity_probe`) used during translation-quality tuning sessions.
+3. **Gates** — the three installer gates above (encoding, display text, uninstall contract) plus benchmark/verification scripts under `tools/` (e.g. `run_fidelity_experiment.py`, `fidelity_probe`) used during translation-quality tuning sessions.
 4. **Manual QA gate** — `docs/RELEASE-CHECKLIST.md` lists user-verified release items (IME composition behavior, hotkeys, privacy-notice flow) that cannot be automated. Note this file and the whole `docs/` tree are gitignored (local-only).
 
 ## Security & Privacy Considerations

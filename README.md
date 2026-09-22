@@ -42,7 +42,7 @@ Type naturally in your native language, press <kbd>Enter</kbd>, and the text you
 | Step | What happens |
 |:-----|:-------------|
 | **Type** | Type naturally in your native language (Discord, Slack, in-game chat, browser, anywhere; editor/IDE windows are deliberately excluded from the Enter pipeline). |
-| **Translate** | Offline local AI (**Hy-MT2-1.8B** via llama.cpp) or cloud engine (Google Translate, no API key). |
+| **Translate** | Offline local AI (**Hy-MT2-1.8B** via llama.cpp) or a cloud engine (Google Translate with no API key, or any OpenAI-compatible API you configure yourself). |
 | **Replace** | Your original keystrokes are automatically erased and replaced with the translated text, right where your cursor is. In **Auto-Send** mode (or in chat apps where <kbd>Enter</kbd> sends), the translated text is sent too. |
 
 ## What it is — and what it is not
@@ -94,11 +94,13 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
   - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size + mtime) before the model is handed to llama.cpp.
   - **Shared Inference Host (0.10.1+)**: local translations are routed through `Emebala.Engine.exe`, an orchestrator process every Emebala app shares. It loads the model **once** into GPU memory, serves all installed Emebala apps over a local named pipe (current-user ACL + per-boot security token), and hands each job to a dedicated `Emebalachat.Engine.ggml-translate.exe` worker process, so two or three Emebala apps no longer duplicate the model in VRAM and a misbehaving app cannot take the model down. If the engine cannot be used — missing binaries, connection failure, version/token mismatch, busy, timeout — the app does not fail silently: it offers a one-click repair, falls back to the cloud engine under the same consent rules as always (see below), or shows a clear notice that local translation is unavailable. The engine never appears in the Start menu, runs only while needed, and exits by itself after 10 minutes idle (`engine_host.idle_exit_ms`).
   - Pairs outside the model's reliable set are routed to the cloud engine under `auto`, or kept on-device (with a degradation warning) under a strict `local` pin without cloud consent.
-- **Built-in Cloud Engine**:
-  - Native asynchronous HTTP client built on `winhttp.dll`.
-  - Communicates directly with Google Translate HTTPS endpoints.
-  - Requires **no Google Cloud API keys**, no Python runtimes, and zero third-party dynamic libraries.
-  - Consent-gated: the `auto` engine policy documents cloud fallback when the local model is absent or a local attempt fails, but with `engine_type` pinned to `local`, nothing is ever sent to the cloud unless you explicitly set `cloud_fallback_enabled` to `true` (default `false`).
+- **Cloud Engines**:
+  - **Google Translate (built-in)**:
+    - Native asynchronous HTTP client built on `winhttp.dll`.
+    - Communicates directly with Google Translate HTTPS endpoints.
+    - Requires **no Google Cloud API keys**, no Python runtimes, and zero third-party dynamic libraries.
+    - Consent-gated: the `auto` engine policy documents cloud fallback when the local model is absent or a local attempt fails, but with `engine_type` pinned to `local`, nothing is ever sent to the cloud unless you explicitly set `cloud_fallback_enabled` to `true` (default `false`).
+  - **OpenAI Compatible (0.10.1+)**: use any OpenAI-compatible API instead of Google. Pick it under **Translation engine → OpenAI Compatible** in the tray menu, enter the Base URL and API key in the settings dialog, then fetch the model list or type a model name. The key is stored Windows-user-encrypted (DPAPI) in `config.json` and only its first 6 characters are ever shown back; requests go only to the base URL you entered — never to Google. Plaintext `http://` endpoints require an explicit on-screen consent, and redirects are refused so your key can never be replayed to another host. With `engine_type` pinned to `openai`, the app never falls back to the local model or Google.
 
 ### 3. Floating Pill Badge UI
 
@@ -111,6 +113,9 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
   - **Double Click**: Swap the typing source and target languages.
   - **Right Click**: Open the full context menu (engine selection, UI language, typing/drag language pairs, Auto-Send, Sound, Show Badge, Start with Windows, About, Cheat Sheet, Exit).
   - **Left Drag**: Freely reposition anywhere across your displays; coordinates automatically persist in `config.json`.
+- **Tray Icon Gestures**:
+  - **Left Click**: Toggle translation between Active and Paused (with the usual chime).
+  - **Double Click**: Show or hide the floating badge. A double-click never toggles translation, so an accidental double-click cannot flip your translation state (a small delay is applied to the single-click action so a double-click is always recognized as such).
 
 ### 4. Zero-Leak Clipboard Safety & Privacy
 
@@ -231,6 +236,8 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   - `"auto"` (default): Prefers local LLM if the model exists; falls back to Google Translate when the model is absent or a local attempt fails.
   - `"local"`: Strictly forces the local llama.cpp model. Cloud use then requires `cloud_fallback_enabled: true`.
   - `"google"`: Strictly forces Google Translate via WinHTTP.
+  - `"openai"` (0.10.1+): Strictly uses the OpenAI-compatible API configured in the `openai` block below; there is no fallback to the local model or Google while it is pinned.
+  - `"user_gguf"` (0.10.1+): Uses a `.gguf` model you registered yourself (tray > Translation engine > User-selected (.gguf)). It is served through the same shared engine host as `"local"`, with the registered id kept in `user_model_id`.
 - `model_path`: Legacy key, kept only for migrating older configs. Since 0.10.1 the local engine is the shared engine host, which always loads the pinned model from the shared store (`%LOCALAPPDATA%\Emebala\Common\models\Hy-MT2-1.8B-Q8_0.gguf`); the value of this key drives no serving decision anymore. The installer still records the shared-store absolute path here so existing configs stay valid, but editing it has no effect.
 - `source_language` / `target_language`: Legacy single pair, kept only for migrating older configs. The runtime uses the two context pairs below.
 - `drag_source_language` / `drag_target_language`: Language pair for **drag-to-translate** (tooltip/drag icon). Defaults: source `Auto Detect`, target = your Windows display language.
@@ -244,6 +251,8 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   - `spawn` (default `true`): start the engine on demand when it is not running (fixed path `%LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe`).
   - `idle_exit_ms` (default `600000` = 10 minutes): how long the engine stays alive with no connected app before exiting — the next translation request respawns it automatically.
   Whenever the engine cannot be used (missing binaries, connection failure, version/token mismatch, busy, timeout), translation does not fail silently: the app offers a one-click repair, falls back to the cloud engine under the normal consent rules, or shows a clear notice that local translation is unavailable.
+- `openai` (0.10.1+): Settings for the OpenAI Compatible engine — `base_url`, `model`, and the API key, stored Windows-user-encrypted as `api_key_dpapi` plus an `api_key_sha256` integrity digest (never in cleartext). Normally written for you by the settings dialog; `http_consent_given` records your explicit consent before a plaintext `http://` endpoint is used.
+- `user_model_id` (0.10.1+): Registry id of the `.gguf` model you registered in the user model manager; this is what `engine_type: "user_gguf"` serves.
 - `diag_log_enabled`: **Master switch** for the diagnostic log FILE. Default `false` — a shipped build writes no log file at all (the file is opened lazily, only on the first enabled write). Set `true` (and restart) to create per-run logs for troubleshooting. See [Privacy & Data Handling](#privacy--data-handling-technical) §6.
 - `diag_log_content`: Diagnostic-log privacy gate, **subordinate to `diag_log_enabled`**. When `false` (default, and while the master switch is off), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** `content: true` with `enabled: false` still writes nothing. Only enable while actively troubleshooting: your typed content will be written to disk.
 - `privacy_notice_shown`: One-shot record of the blocking first-run privacy notice. Default `false` — a fresh install shows the notice once; dismissing it sets the flag to `true` so it never re-appears. Do not set this by hand unless you understand what the notice says.
@@ -466,7 +475,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (3,599 checks as of v0.10.1) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (4,531 checks as of v0.10.1) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe
@@ -485,7 +494,7 @@ Expected output (excerpt):
 [RUN] Testing Smart Bypass...
 [PASS] Smart Bypass tests completed.
 ...
-Total Checks: 3388
+Total Checks: 4531
 Failures:     0
 ========================================
 >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<
@@ -495,9 +504,9 @@ Failures:     0
 
 To package Emebala Chat into a single, self-extracting Windows installer:
 
-1. Download and install [Inno Setup 6.1+](https://jrsoftware.org/isinfo.php).
+1. Download and install [Inno Setup 6.4+](https://jrsoftware.org/isinfo.php) (older compilers are rejected at compile time).
 2. Ensure `build\Emebala_chat.exe`, `build\Emebala.Engine.exe` (the shared inference host), **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (its translation worker — both mandatory bundle components; the manifest uses the per-family `worker.<family>.manifest` scheme since M7 A-1) have been built. The compile of the host target fails without them when the llama.cpp backend is enabled.
-3. Run the installer gates (`python tools\check_installer_encoding.py` and `python tools\check_installer_display_text.py`), then the Inno Setup compiler:
+3. Run the installer gates (`python tools\check_installer_encoding.py`, `python tools\check_installer_display_text.py`, and `python tools\check_uninstall_contract.py`), then the Inno Setup compiler:
 
 ```powershell
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
@@ -554,7 +563,7 @@ C:\path\to\Emebalachat\
 │       ├── tooltip.hpp/.cpp    # Translation result tooltip card
 │       └── tray.hpp/.cpp       # Shell_NotifyIconW system tray integration
 └── tests\                      # Native unit test suite
-    └── run_tests.cpp           # 3,388 unit checks covering all core modules
+    └── run_tests.cpp           # 4,531 unit checks covering all core modules
 ```
 
 ### Architecture
