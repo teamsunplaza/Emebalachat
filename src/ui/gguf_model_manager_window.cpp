@@ -108,8 +108,13 @@ std::wstring GetCtrlText(HWND dlg, int id) {
 
 // REQ-048 R2-D: the list shows exactly the origin != "bundled" entries
 // (UserModelsOf), so row i of the ListBox maps to user_ids[i]. The empty
-// state hides the list, shows the static placeholder, and disables the two
-// action buttons.
+// state hides the list, shows the static placeholder, and (through
+// SyncManagerActionButtons) greys the two action buttons out.
+//
+// 260922_0001 A7: forward declaration — the rebuild re-syncs the action
+// buttons, while the helper itself reads SelectedUserIndex below.
+void SyncManagerActionButtons(HWND dlg, ManagerDialogState* st);
+
 void RebuildManagerList(HWND dlg, ManagerDialogState* st) {
     HWND list = ::GetDlgItem(dlg, IDC_MGR_LIST);
     if (!list) return;
@@ -134,15 +139,14 @@ void RebuildManagerList(HWND dlg, ManagerDialogState* st) {
     if (HWND e = ::GetDlgItem(dlg, IDC_MGR_EMPTY)) {
         ::ShowWindow(e, empty ? SW_SHOW : SW_HIDE);
     }
-    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_RENAME)) {
-        ::EnableWindow(b, !empty);
-    }
-    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_DELETE)) {
-        ::EnableWindow(b, !empty);
-    }
     if (!empty) {
+        // LB_SETCURSEL is silent — it posts no LBN_SELCHANGE — so the sync
+        // below is the only thing that re-enables the buttons after a rebuild.
         ::SendMessageW(list, LB_SETCURSEL, 0, 0);
     }
+    // 260922_0001 A7: selection is the single source of truth for the action
+    // pair (empty list, Ctrl+click deselection, post-rebuild auto-select).
+    SyncManagerActionButtons(dlg, st);
 }
 
 // Returns the user_ids index of the selected row, or -1.
@@ -156,6 +160,22 @@ int SelectedUserIndex(HWND dlg, const ManagerDialogState* st) {
         return -1;
     }
     return static_cast<int>(data);
+}
+
+// 260922_0001 A7: the rename/delete pair is enabled only while a user-model
+// row is selected, so the IDC_MGR_RENAME / IDC_MGR_DELETE handlers' silent
+// `idx < 0` returns become defensive guards instead of dead-click paths.
+// Called on every list rebuild and on LBN_SELCHANGE (Ctrl+click deselection
+// yields -1 and greys both buttons out). Same "no callback -> disabled"
+// precedent as IDC_MGR_ADD_FILE in WM_INITDIALOG.
+void SyncManagerActionButtons(HWND dlg, ManagerDialogState* st) {
+    const bool enabled = SelectedUserIndex(dlg, st) >= 0;
+    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_RENAME)) {
+        ::EnableWindow(b, enabled ? TRUE : FALSE);
+    }
+    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_DELETE)) {
+        ::EnableWindow(b, enabled ? TRUE : FALSE);
+    }
 }
 
 // REQ-048 R2-D: registry persistence with the RegisterUserGgufModel loud-
@@ -1105,6 +1125,10 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         RebuildManagerList(dlg, st);
+        // 260922_0001 A7: explicit sync even when RebuildManagerList returned
+        // early on a missing IDC_MGR_LIST — SelectedUserIndex then reports -1,
+        // so the pair stays disabled rather than dead-clickable.
+        SyncManagerActionButtons(dlg, st);
         return TRUE;
     }
     case WM_COMMAND:
@@ -1141,8 +1165,19 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return TRUE;
         }
+        case IDC_MGR_LIST:
+            // 260922_0001 A7: LBN_SELCHANGE (mouse click, arrow keys,
+            // Ctrl+click deselection) drives the action-button pair. Other
+            // list notifications (LBN_DBLCLK) have no handler — return FALSE.
+            if (HIWORD(wp) == LBN_SELCHANGE) {
+                SyncManagerActionButtons(dlg, st);
+                return TRUE;
+            }
+            return FALSE;
         case IDC_MGR_RENAME: {
             const int idx = SelectedUserIndex(dlg, st);
+            // 260922_0001 A7: defensive guard — the button is disabled unless
+            // a row is selected, so this path is unreachable by click.
             if (idx < 0) return TRUE;
             const std::string old_id = st->user_ids[static_cast<size_t>(idx)];
             std::string applied_new_id;
@@ -1172,6 +1207,8 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case IDC_MGR_DELETE: {
             const int idx = SelectedUserIndex(dlg, st);
+            // 260922_0001 A7: defensive guard — the button is disabled unless
+            // a row is selected, so this path is unreachable by click.
             if (idx < 0) return TRUE;
             const std::string old_id = st->user_ids[static_cast<size_t>(idx)];
             // REQ-048 R2-D: explicit confirmation. The body states the .gguf
