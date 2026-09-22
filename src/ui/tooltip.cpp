@@ -2105,10 +2105,22 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->src_btn_rect_.bottom), pThis->dpi_)
                 };
                 ::ClientToScreen(hwnd, &pt);
+                // 260922_0001 A5: back up the window that owned the foreground
+                // before the menu takes it, so focus can be restored after the
+                // modal TrackPopupMenuEx loop (focus loss on language change).
+                HWND hwndPrev = ::GetForegroundWindow();
                 ::SetForegroundWindow(hwnd);
 
                 int cmd = ::TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd, nullptr);
                 ::DestroyMenu(hMenu);
+
+                // 260922_0001 A5: best-effort focus restore (return value ignored -
+                // the tooltip is WS_EX_NOACTIVATE, so a failure degrades to the
+                // previous behaviour). IsWindow guards a window destroyed while the
+                // modal loop was running; a prev == hwnd case needs no restore.
+                if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {
+                    ::SetForegroundWindow(hwndPrev);
+                }
 
                 if (cmd > 0 && static_cast<size_t>(cmd - 1) < src_langs.size()) {
                     // name_en payload (the AUTO entry yields "Auto Detect") -
@@ -2143,10 +2155,22 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     emebalachat::ui::ScaleDipsToPixels(static_cast<int>(pThis->lang_btn_rect_.bottom), pThis->dpi_)
                 };
                 ::ClientToScreen(hwnd, &pt);
+                // 260922_0001 A5: back up the window that owned the foreground
+                // before the menu takes it, so focus can be restored after the
+                // modal TrackPopupMenuEx loop (focus loss on language change).
+                HWND hwndPrev = ::GetForegroundWindow();
                 ::SetForegroundWindow(hwnd);
 
                 int cmd = ::TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd, nullptr);
                 ::DestroyMenu(hMenu);
+
+                // 260922_0001 A5: best-effort focus restore (return value ignored -
+                // the tooltip is WS_EX_NOACTIVATE, so a failure degrades to the
+                // previous behaviour). IsWindow guards a window destroyed while the
+                // modal loop was running; a prev == hwnd case needs no restore.
+                if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {
+                    ::SetForegroundWindow(hwndPrev);
+                }
 
                 if (cmd > 0 && static_cast<size_t>(cmd - 1) < target_langs.size()) {
                     std::string new_lang = target_langs[cmd - 1].name_en;
