@@ -50,6 +50,14 @@ struct OpenAiDialogState {
     // spawn copies it into the worker args: a manual completion may show
     // the failure notice, an auto completion stays silent. GUI thread only.
     bool fetch_manual = false;
+    // 260922_0001 A6 (UI audit rank 6, disable-only feedback): the fetch
+    // button's disabled mirror of the single-flight bid above. Set true by
+    // the successful spawn in DoFetchModels (manual button AND debounced
+    // auto-fetch), cleared by the completion handler on EVERY exit path
+    // (current, stale-generation, empty result) so a superseded fetch can
+    // never leave the button stuck gray. No i18n string accompanies it
+    // (§5 A6 scope: the graying alone is the feedback). GUI thread only.
+    bool fetch_button_busy = false;
     // REQ-052 (async fetch): liveness shared with every detached worker
     // (one shared_ptr copy each). WM_DESTROY flips it to false so a worker
     // finishing after the dialog is gone drops its heap result instead of
@@ -257,6 +265,14 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
         --st->fetch_generation;
         return false;
     }
+    // 260922_0001 A6 (UI audit rank 6): the worker is in flight — gray the
+    // fetch button so the click is visibly acknowledged (the audit finding:
+    // no loading feedback at all). This single site covers BOTH spawn
+    // callers: the manual IDC_FETCH_BTN below and the debounced auto-fetch
+    // (WM_TIMER). The declined-consent and failed-spawn paths returned
+    // above, so they keep the button enabled with their existing notice.
+    st->fetch_button_busy = true;
+    ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), FALSE);
     return true;
 }
 
@@ -346,6 +362,9 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kFetchTimerId) {
             ::KillTimer(dlg, kFetchTimerId);
             st->fetch_manual = false;
+            // 260922_0001 A6: the auto-fetch shares the manual path's busy
+            // feedback — a successful spawn grays the button and its
+            // completion restores it (DoFetchModels owns both transitions).
             DoFetchModels(dlg, st);
             return TRUE;
         }
@@ -376,6 +395,10 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // failure notice the silent auto path must never show. A
             // DECLINED fetch (http consent denied) or a failed spawn shows
             // the notice immediately — the exact pre-REQ-052 contract.
+            // 260922_0001 A6: the successful spawn inside DoFetchModels
+            // already disabled the button (busy feedback); its false return
+            // (declined consent / failed spawn) leaves the button enabled
+            // and shows the notice below — the pre-REQ-052 contract.
             st->fetch_manual = true;
             if (!DoFetchModels(dlg, st)) {
                 ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
@@ -490,12 +513,26 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // take it here, on the GUI thread, and delete it on EVERY path.
         auto* result = reinterpret_cast<OpenAiFetchResult*>(lp);
         if (!st || result->generation != st->fetch_generation) {
+            // 260922_0001 A6: this exit restores the button too — a
+            // superseded (stale) fetch must not leave it gray while the
+            // newer worker it yielded to is still running. `st` is null
+            // only if WM_INITDIALOG never stored it, so the button was
+            // never disabled in that case.
+            if (st) {
+                st->fetch_button_busy = false;
+                ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
+            }
             delete result; // stale (a newer fetch superseded it) or orphaned
             return TRUE;
         }
         const bool manual = result->manual;
         std::vector<std::string> models = std::move(result->models);
         delete result;
+        // 260922_0001 A6: the in-flight fetch is done — restore the button
+        // BEFORE the refill/notice below so the failure box never sits over
+        // a still-gray button.
+        st->fetch_button_busy = false;
+        ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
         // Same post-success logic as before REQ-052 (RefillOpenAiModelCombo
         // is the extracted inline path): an empty fetch leaves the combo
         // untouched so the typed/current model stays visible; the manual
