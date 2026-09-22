@@ -11,6 +11,7 @@
 #include "mouse_hook.hpp"
 #include "single_slot_worker.hpp" // D2 (session 260910_0007): shared single-slot worker loops
 #include "smart_bypass.hpp"
+#include "tray_toggle_debounce.hpp" // 260922_0001 A1: pure tray single-click debounce
 #include "sound.hpp"
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
@@ -676,12 +677,21 @@ MouseHook* g_pMouseHook = nullptr; // REQ-R14 resume/unlock re-registration
 // tooltip.Create and cleared at shutdown, mirroring g_pBadge).
 TooltipWindow* g_pTooltip = nullptr;
 
+// 260922_0001 A1: armed state of the tray single-click debounce timer. The
+// decision logic itself is the pure TrayToggleDebounceStateMachine() in
+// tray_toggle_debounce.hpp (unit-testable: main.cpp is not linked into
+// run_tests.exe); this flag only carries the armed state between WndProc hits.
+bool g_tray_toggle_pending = false;
+
 // ---- REQ-R14 (audit §5 latent item 2): hook lifecycle timers ----
 // kTimerHookReinstall: debounced (coalesced) reinstall triggered by
 // resume/unlock messages. kTimerHookHealth: periodic watchdog that catches
 // the transitions with no message of their own (UAC secure-desktop trips).
 constexpr UINT_PTR kTimerHookReinstall = 5001;
 constexpr UINT_PTR kTimerHookHealth = 5002;
+// 260922_0001 A1: tray single-click debounce timer. Isolated from 5001/5002 so
+// the hook-lifecycle watchdog and the tray debounce can never collide.
+constexpr UINT_PTR kTimerTrayToggle = 5003;
 
 // Re-register whichever LL hooks are installed, on the GUI thread (the only
 // threads allowed to Start/Stop the hooks). Always reinstall on the event
@@ -874,6 +884,18 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     if (msg == WM_TIMER) {
+        if (wParam == kTimerTrayToggle) {
+            // 260922_0001 A1: the debounce window elapsed with no double-click
+            // following -> this was a genuine single click, toggle the engine.
+            const TrayToggleDecision decision = TrayToggleDebounceStateMachine(
+                TrayToggleEvent::kTimerExpired, g_tray_toggle_pending);
+            g_tray_toggle_pending = decision.timer_pending;
+            ::KillTimer(hwnd, kTimerTrayToggle);
+            if (decision.action == TrayToggleAction::kToggleNow && g_pHook) {
+                g_pHook->ToggleActive();
+            }
+            return 0;
+        }
         if (wParam == kTimerHookReinstall) {
             ::KillTimer(hwnd, kTimerHookReinstall);
             ReinstallHooksAfterLifecycleEvent("resume/unlock", hwnd);
@@ -905,11 +927,23 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         } else if (lParam == WM_LBUTTONUP) {
-            if (g_pHook) {
-                g_pHook->ToggleActive();
+            // 260922_0001 A1: arm the debounce instead of toggling immediately,
+            // so a double-click does not flip the engine (it only toggles the
+            // badge below). A second click within the window just re-arms it.
+            const TrayToggleDecision decision = TrayToggleDebounceStateMachine(
+                TrayToggleEvent::kLeftButtonUp, g_tray_toggle_pending);
+            g_tray_toggle_pending = decision.timer_pending;
+            if (decision.action == TrayToggleAction::kArmTimer) {
+                ::SetTimer(hwnd, kTimerTrayToggle, ::GetDoubleClickTime(), nullptr);
             }
             return 0;
         } else if (lParam == WM_LBUTTONDBLCLK) {
+            // 260922_0001 A1: cancel the pending engine toggle, then keep the
+            // original badge-visibility behavior.
+            const TrayToggleDecision decision = TrayToggleDebounceStateMachine(
+                TrayToggleEvent::kLeftButtonDblClk, g_tray_toggle_pending);
+            g_tray_toggle_pending = decision.timer_pending;
+            ::KillTimer(hwnd, kTimerTrayToggle);
             if (g_pBadge) {
                 g_pBadge->SetVisible(!g_pBadge->IsVisible());
             }
@@ -920,6 +954,7 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     if (msg == WM_DESTROY) {
         ::KillTimer(hwnd, kTimerHookReinstall);
         ::KillTimer(hwnd, kTimerHookHealth);
+        ::KillTimer(hwnd, kTimerTrayToggle); // 260922_0001 A1: no dangling timer at teardown
         ::PostQuitMessage(0);
         return 0;
     }
