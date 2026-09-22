@@ -305,9 +305,12 @@ void FloatingBadge::UpdateAlpha(BYTE alpha) {
     renderer_.Present(hwnd_, PhysW(), PhysH(), current_alpha_);
 }
 
-void FloatingBadge::Render() {
+// 260922_0001 A4: reentry_allowed caps the device-lost recovery re-render at
+// one nested pass (top-level true -> recovery pass false). render_mutex_ is a
+// recursive mutex so the nested lock on the same GUI thread is safe.
+void FloatingBadge::Render(bool reentry_allowed) {
     if (!hwnd_) return;
-    std::lock_guard<std::mutex> render_lock(render_mutex_);
+    std::lock_guard<std::recursive_mutex> render_lock(render_mutex_);
 
     BadgeStatus status;
     std::wstring src_code;
@@ -603,11 +606,21 @@ void FloatingBadge::Render() {
 
     // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. A driver
     // reset fails EndDraw with D2DERR_RECREATE_TARGET; without recreation the
-    // badge stays a permanently blank pill. Next Render draws on the new
-    // target (app-safe degradation, no recursion risk here either way).
+    // badge stays a permanently blank pill.
+    // 260922_0001 A4 (fix plan §4.1-A): the previous pass committed the blank
+    // DIB via UpdateAlpha immediately after recreation, so the badge showed an
+    // empty pill until the next unrelated state change. Now a successful
+    // recovery re-renders once (reentry_allowed=false caps the recursion at
+    // depth 2) and returns through that pass's own UpdateAlpha commit; a
+    // failed recovery (or the already-recovering pass) SKIPS the commit so no
+    // stale/blank bitmap ever reaches the layered window.
     const HRESULT hr = dc_render_target_->EndDraw();
     if (IsRecoverableDeviceLost(hr)) {
-        RecreateAfterDeviceLost();
+        if (reentry_allowed && RecreateAfterDeviceLost()) {
+            Render(false);
+            return;
+        }
+        return; // commit skipped: nothing valid to blit this pass
     }
 
     // Commit pixels to layered window
@@ -617,18 +630,22 @@ void FloatingBadge::Render() {
 // R6 Phase 3 (audit item 4): recreate the single-threaded DC render target
 // after a device-lost. ReallocateBuffer re-binds SetDpi + BindDC on the fresh
 // target; the logo bitmap was created on the lost device and must be rebuilt.
-void FloatingBadge::RecreateAfterDeviceLost() {
+// 260922_0001 A4: returns true only when the target exists again (create
+// succeeded); false on the factory-null / CreateTarget failure paths so the
+// caller skips the pixel commit and retries recovery on the next Render.
+bool FloatingBadge::RecreateAfterDeviceLost() {
     DIAG_F("BADGE/DeviceLost/001: D2DERR_RECREATE_TARGET; recreating render target\n");
     renderer_.ReleaseTarget(&dc_render_target_);
     if (!d2d_factory_) {
-        return; // Create() never finished; all render paths null-guard already
+        return false; // Create() never finished; all render paths null-guard already
     }
     if (!renderer_.CreateTarget(d2d_factory_, &dc_render_target_)) {
         DIAG_F("BADGE/DeviceLost/002: render-target recreation failed; badge stays stale until next Create()\n");
-        return;
+        return false;
     }
     ReallocateBuffer(PhysW(), PhysH());
     LoadLogoBitmap();
+    return true;
 }
 
 LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -831,6 +848,32 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case WM_NCDESTROY: {
             ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
+
+        // 260922_0001 A3 (fix plan §5 A3): live per-monitor DPI change. The
+        // badge used to re-scale only during cross-DPI drags (WM_MOUSEMOVE
+        // path) or at the next state change, so a display-scaling change on a
+        // stationary badge left the physical DIB stale and the DWM compositor
+        // upscaled the UpdateLayeredWindow blit — blurry pill text. Ports the
+        // 5-step house pattern from tooltip.cpp WM_DPICHANGED (and
+        // about_window.cpp): suggested origin + dpi refresh + own-extent
+        // resize + buffer reallocation + full re-render.
+        case WM_DPICHANGED: {
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            self->dpi_ = emebalachat::ui::WindowDpi(hwnd);
+            // Keep our own PhysW()/PhysH() extents (ScaleDipsToPixels
+            // rounding) instead of the suggested size: DIB and window rect
+            // must match exactly or the blit is rescaled — the very defect
+            // being fixed (tooltip.cpp:2174-2176 contract).
+            ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                           self->PhysW(), self->PhysH(),
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            self->ReallocateBuffer(self->PhysW(), self->PhysH());
+            // Render() terminates in UpdateAlpha(current_alpha_), so the
+            // re-blit happens inside this call (no separate Present needed);
+            // the A4 reentry_allowed guard applies through it too.
+            self->Render();
+            return 0;
         }
 
         case WM_DESTROY: {

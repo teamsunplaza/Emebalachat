@@ -62,7 +62,12 @@ public:
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    void Render();
+    // 260922_0001 A4 (fix plan §4.1-A): after an EndDraw device-lost, Render()
+    // recreates the target and re-renders exactly once. reentry_allowed caps
+    // the recursion depth at 2 (top pass true -> recovery pass false); the
+    // recovery pass is a plain call on the same (GUI) thread, so the only
+    // re-lock it performs is render_mutex_ — hence the recursive mutex below.
+    void Render(bool reentry_allowed = true);
     void UpdateAlpha(BYTE alpha);
     void ResetIdleTimer();
     void ReallocateBuffer(int width, int height); // physical px buffer
@@ -77,11 +82,22 @@ private:
     // (+ device-dependent logo bitmap) after EndDraw returns
     // D2DERR_RECREATE_TARGET, so a driver reset cannot leave the badge a
     // permanently blank pill.
-    void RecreateAfterDeviceLost();
+    // 260922_0001 A4: returns true only when the target was recreated and
+    // rebound — Render() uses it to decide between the one-shot recovery
+    // re-render and skipping the UpdateAlpha commit of stale/blank pixels.
+    bool RecreateAfterDeviceLost();
     void LoadLogoBitmap();
 
     mutable std::mutex data_mutex_;
-    mutable std::mutex render_mutex_;
+    // 260922_0001 A4: std::mutex -> std::recursive_mutex. The one-shot
+    // device-lost recovery pass runs as Render(false) from inside the locked
+    // Render() body; a NON-recursive lock_guard would self-deadlock on that
+    // re-entry (std::mutex is UB/deadlock when locked by its owning thread).
+    // Cross-thread semantics are unchanged: only the GUI message thread ever
+    // calls Render (worker-side SetStatus/SetLanguages marshal via
+    // PostMessage — see the REQ-R10 seam comments), and the recursion is
+    // depth-capped at 1 by reentry_allowed.
+    mutable std::recursive_mutex render_mutex_;
 
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
