@@ -8,7 +8,10 @@
 #include "engine_host_registry.hpp"
 
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
+
+#include <windows.h> // M7 A-2: MoveFileExW / GetLastError (config.cpp SaveToFileLocked precedent)
 
 #include "diag_logger.hpp"
 
@@ -409,6 +412,61 @@ LoadResult LoadDefaultRegistry() {
             return result;
     }
     return ParseRegistryJson(text);
+}
+
+// M7 A-2 (session 260922_0001): atomic multi-writer-safe persistence.
+// config.cpp SaveToFileLocked is the in-codebase precedent this mirrors
+// byte-for-byte in strategy: create the parent dir, write the sibling
+// ".tmp", flush, then MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH) — the
+// rename is atomic because source and target live on the same volume.
+// A concurrent reader therefore ever sees either the complete OLD document
+// or the complete NEW one, never a truncated mix. The whole body is
+// try/catch-wrapped: no exception leaves the module (header contract).
+WriteOutcome WriteRegistryAtomically(const Registry& registry,
+                                     const std::filesystem::path& dir) {
+    try {
+        const std::string serialized = SerializeRegistry(registry);
+        if (serialized.empty()) {
+            // SerializeRegistry already emitted the shape-only refusal DIAG.
+            return WriteOutcome::SerializeRefused;
+        }
+        std::error_code ec;
+        if (!dir.empty()) {
+            std::filesystem::create_directories(dir, ec); // existing dir is fine
+        }
+        const std::filesystem::path target = dir / L"registry.json";
+        std::filesystem::path tmp = target;
+        tmp += L".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                DIAG_F("ENGINEHOST/Registry/006: registry.json.tmp open-for-write "
+                       "failed (atomic writer)\n");
+                return WriteOutcome::IoError;
+            }
+            out << serialized;
+            out.flush();
+            if (!out) {
+                DIAG_F("ENGINEHOST/Registry/007: registry.json.tmp write "
+                       "incomplete (atomic writer)\n");
+                out.close();
+                std::filesystem::remove(tmp, ec);
+                return WriteOutcome::IoError;
+            }
+        } // handle closed before the rename
+        if (!::MoveFileExW(tmp.c_str(), target.c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DIAG_F("ENGINEHOST/Registry/008: registry.json atomic rename failed "
+                   "(err=%lu)\n", ::GetLastError());
+            std::filesystem::remove(tmp, ec);
+            return WriteOutcome::IoError;
+        }
+        return WriteOutcome::Ok;
+    } catch (...) {
+        DIAG_F("ENGINEHOST/Registry/009: atomic registry write threw "
+               "(converted to IoError)\n");
+        return WriteOutcome::IoError;
+    }
 }
 
 } // namespace engine_host_registry

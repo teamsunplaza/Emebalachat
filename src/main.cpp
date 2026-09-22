@@ -330,9 +330,17 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
     entry.files = { dest_bare };
     entry.origin = "user";
     registry.models.push_back(std::move(entry));
-    const std::string serialized =
-        engine_host_registry::SerializeRegistry(registry);
-    if (serialized.empty()) {
+    // M7 A-2 (session 260922_0001): persist through the ATOMIC writer —
+    // registry.json is a family-shared multi-writer file (every Emebala
+    // installer merges bundled entries into it; the manager window rewrites
+    // it). A truncate-in-place ofstream exposed a torn-document window to
+    // concurrent readers, so the write now lands as registry.json.tmp +
+    // same-volume rename (config.cpp SaveToFileLocked precedent). Loud
+    // failure discipline unchanged: SerializeRefused vs IoError surface
+    // their own messages and the previous document is guaranteed intact.
+    const auto write_outcome =
+        engine_host_registry::WriteRegistryAtomically(registry, models_dir);
+    if (write_outcome == engine_host_registry::WriteOutcome::SerializeRefused) {
         ::MessageBoxW(nullptr,
                       L"The registry could not be serialized (a filename was rejected). The model file was copied but NOT registered.",
                       I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
@@ -340,27 +348,13 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
         DIAG_F("MAIN/RegisterUserGguf/009: SerializeRegistry refused (non-bare filename)\n");
         return;
     }
-    const std::filesystem::path registry_path = models_dir / L"registry.json";
-    {
-        std::ofstream out(registry_path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            ::MessageBoxW(nullptr,
-                          L"registry.json could not be written. The model file was copied but NOT registered.",
-                          I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
-                          MB_OK | MB_ICONERROR);
-            DIAG_F("MAIN/RegisterUserGguf/010: registry.json open-for-write failed\n");
-            return;
-        }
-        out << serialized;
-        out.close();
-        if (!out) {
-            ::MessageBoxW(nullptr,
-                          L"registry.json could not be written completely.",
-                          I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
-                          MB_OK | MB_ICONERROR);
-            DIAG_F("MAIN/RegisterUserGguf/011: registry.json write failed mid-stream\n");
-            return;
-        }
+    if (write_outcome != engine_host_registry::WriteOutcome::Ok) {
+        ::MessageBoxW(nullptr,
+                      L"registry.json could not be written. The model file was copied but NOT registered.",
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        DIAG_F("MAIN/RegisterUserGguf/010: atomic registry write failed (IoError)\n");
+        return;
     }
 
     // (5) REQ-046 P4-2 (Rev2 §B-2 + Tech Gate 결함-1): persist the pick AND

@@ -182,15 +182,18 @@ void SyncManagerActionButtons(HWND dlg, ManagerDialogState* st) {
 // failure discipline — SerializeRegistry's bare-filename refusal and every IO
 // error surface a MessageBox + DIAG line and leave disk untouched. Returns
 // true only when the document landed complete.
+//
+// M7 A-2 (session 260922_0001): the persistence itself moved to
+// engine_host_registry::WriteRegistryAtomically (registry.json.tmp + same-
+// volume rename). The manager dialog rewrites the WHOLE document on every
+// rename/delete/add, and registry.json is a family-shared multi-writer file —
+// a truncate-in-place write exposed a torn-document window to any reader
+// (the host, the worker, another app's installer merge). Loud-failure
+// discipline and the per-branch MessageBox texts are unchanged: refusal vs
+// LOCALAPPDATA-missing vs IoError still surface distinctly, and on IoError
+// the previous document is guaranteed intact.
 bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registry) {
     const std::wstring title = I18n::Get(StringId::GgufManagerTitle);
-    const std::string serialized = engine_host_registry::SerializeRegistry(registry);
-    if (serialized.empty()) {
-        ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrSerialize).c_str(),
-                      title.c_str(), MB_OK | MB_ICONERROR);
-        DIAG_F("UI/GgufManager/001: SerializeRegistry refused (non-bare filename)\n");
-        return false;
-    }
     const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
     if (models_dir.empty()) {
         ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrNoLocalappdata).c_str(),
@@ -198,23 +201,19 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
         DIAG_F("UI/GgufManager/002: LOCALAPPDATA missing; registry not written\n");
         return false;
     }
-    const std::filesystem::path registry_path = models_dir / L"registry.json";
-    {
-        std::ofstream out(registry_path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrWrite).c_str(),
-                          title.c_str(), MB_OK | MB_ICONERROR);
-            DIAG_F("UI/GgufManager/003: registry.json open-for-write failed\n");
-            return false;
-        }
-        out << serialized;
-        out.close();
-        if (!out) {
-            ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrWritePartial).c_str(),
-                          title.c_str(), MB_OK | MB_ICONERROR);
-            DIAG_F("UI/GgufManager/004: registry.json write failed mid-stream\n");
-            return false;
-        }
+    const auto outcome =
+        engine_host_registry::WriteRegistryAtomically(registry, models_dir);
+    if (outcome == engine_host_registry::WriteOutcome::SerializeRefused) {
+        ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrSerialize).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        DIAG_F("UI/GgufManager/001: SerializeRegistry refused (non-bare filename)\n");
+        return false;
+    }
+    if (outcome != engine_host_registry::WriteOutcome::Ok) {
+        ::MessageBoxW(owner, I18n::Get(StringId::GgufManagerErrWrite).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        DIAG_F("UI/GgufManager/003: registry.json atomic write failed (IoError)\n");
+        return false;
     }
     return true;
 }

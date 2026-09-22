@@ -126,6 +126,28 @@ LoadResult ParseRegistryJson(std::string_view json);
 // write→parse round-trips are identity-checked by the unit tests.
 std::string SerializeRegistry(const Registry& registry);
 
+// M7 A-2 (session 260922_0001): MULTI-WRITER SAFE PERSISTENCE. registry.json
+// lives in the family-shared Common store and is written by BOTH the apps
+// (user-model registration / manager edits) and every family installer
+// (bundled-entry merge). A plain truncate-in-place ofstream could therefore
+// be caught mid-write by another process's reader (torn document), and a
+// crash mid-write loses the whole registry. WriteRegistryAtomically applies
+// the codebase-proven pattern (config.cpp SaveToFileLocked): write
+// registry.json.tmp then a same-volume rename that atomically replaces the
+// target (MoveFileExW REPLACE_EXISTING under MSVC's std::filesystem::rename —
+// same volume so the swap cannot half-land). Outcomes are data, not
+// exceptions (module rule: NOTHING escapes this module).
+enum class WriteOutcome {
+    Ok,               // document landed complete at registry.json
+    SerializeRefused, // SerializeRegistry rejected a non-bare filename (disk untouched)
+    IoError,          // temp write or rename failed (previous registry.json intact)
+};
+
+// Serialize + atomically replace <dir>\registry.json. Never throws. When the
+// outcome is not Ok the previous registry.json (if any) is guaranteed intact.
+WriteOutcome WriteRegistryAtomically(const Registry& registry,
+                                     const std::filesystem::path& dir);
+
 // Parse + report a single model item (exposed for tests). Returns false when
 // the item is rejected (missing id/files, non-string fields, path escape in
 // files[]); a rejected item does NOT abort the whole document parse.
