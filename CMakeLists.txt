@@ -459,7 +459,7 @@ endif()
 # the worker's ONLY body is LocalInferenceEngine (llama), so with
 # ENABLE_LLAMA_FETCH=OFF there is nothing to serve — the target is SKIPPED
 # entirely (same rule that skips the llama link on Emebalachat_core). The
-# installer (T7) MUST then also omit the worker exe + worker.manifest [Files]
+# installer (T7) MUST then also omit the worker exe + worker manifest [Files]
 # entries; the orchestrator's missing-exe path (wmgr/003) answers
 # unavailable, which is the correct degraded behavior for a cloud-only build.
 if (TARGET llama)
@@ -497,14 +497,18 @@ if (TARGET llama)
         target_link_options(EmebalaEngineGgmlTranslate PRIVATE ${_eme_delayload_worker})
     endif()
 
-    # REQ-043 (M6 T3, design §3.4 + T3 scope item 3): worker.manifest is
+    # REQ-043 (M6 T3, design §3.4 + T3 scope item 3): the worker manifest is
     # GENERATED next to the worker exe at build time (the exe-adjacent
     # deployment lookup). The INSTALLED copy is written by the installer (T7);
     # this file is the build-tree artifact the orchestrator finds when both
     # exes run from build/ (dev/smoke posture) and the byte-exact template the
     # installer deploys. Content = the §3.4 schema the worker_protocol parser
     # accepts (kept in sync with EmbeddedWorkerManifest()).
-    set(_eme_worker_manifest "${CMAKE_CURRENT_BINARY_DIR}/worker.manifest")
+    # M7 A-1 (session 260922_0001): per-family filename scheme
+    # worker.<family>.manifest so a second family (ggml-asr) deploying into
+    # the same store can never overwrite this one (DEC-007: the hyphenated
+    # family string is used verbatim). Schema bytes are UNCHANGED.
+    set(_eme_worker_manifest "${CMAKE_CURRENT_BINARY_DIR}/worker.ggml-translate.manifest")
     file(WRITE "${_eme_worker_manifest}"
 "{\n"
 "  \"schema_version\": 1,\n"
@@ -519,8 +523,8 @@ if (TARGET llama)
     add_custom_command(TARGET EmebalaEngineGgmlTranslate POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${_eme_worker_manifest}"
-                "$<TARGET_FILE_DIR:EmebalaEngineGgmlTranslate>/worker.manifest"
-        COMMENT "Deploying worker.manifest next to Emebalachat.Engine.ggml-translate.exe")
+                "$<TARGET_FILE_DIR:EmebalaEngineGgmlTranslate>/worker.ggml-translate.manifest"
+        COMMENT "Deploying worker.ggml-translate.manifest next to Emebalachat.Engine.ggml-translate.exe")
 endif()
 
 enable_testing()

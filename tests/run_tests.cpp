@@ -31,6 +31,7 @@
 #include "../src/engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
 #include "../src/engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
 #include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
+#include "../src/engine_host_paths.hpp" // M7 A-1: per-family worker-manifest naming scheme helpers
 #include "../src/engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
 #include "../src/ui/openai_settings_window.hpp" // REQ-046 P4-3: TemplateBuilder (Tech Gate 필수-5)
 
@@ -14603,6 +14604,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // ResolveRepoFile source pins.
 #include "req052_ui_fixes_tests.inc"
 
+// M7 A-1 (session 260922_0001): per-family worker-manifest naming scheme
+// (worker.<family>.manifest + legacy fallback + store enumeration + coexistence
+// non-clobber pins). Staged as an .inc next to this runner; defines
+// TestM7WorkerManifestNaming against engine_host_paths.hpp (scheme helpers),
+// engine_host_bootstrap_client.hpp (enumeration/resolution seams), the frozen
+// worker_protocol.hpp parser (loader) and ResolveRepoFile source pins.
+#include "m7_worker_manifest_naming_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15487,6 +15496,11 @@ int main() {
     TestReq052BadgeSingleClickUsesDoubleClickTime();
     TestReq052AboutWindowFixes();
     TestReq052TouchFilterPredicate();
+    // M7 A-1: the per-family worker-manifest naming scheme (path resolution,
+    // store enumeration, legacy fallback, translate+asr coexistence non-
+    // clobber, deployment pins). Registered after the REQ-052 cluster, per
+    // the end-of-file pattern.
+    TestM7WorkerManifestNaming();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

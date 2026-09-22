@@ -549,7 +549,7 @@ Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; must fail the compile (the host is a mandatory release component).
 Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineHost
 ; REQ-006/M6 (engine-host v2, plan §V2-8.2, design §6.2): bundle the
-; ggml-translate worker exe and its worker.manifest into the SAME per-user
+; ggml-translate worker exe and its worker manifest into the SAME per-user
 ; COMMON store as the orchestrator. The orchestrator spawns the worker by
 ; exe-adjacent lookup only (T4 dispatcher contract), so both files must sit
 ; next to Emebala.Engine.exe. Install/replace is gated by the
@@ -565,8 +565,13 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; mandatory release component, so a missing build\Emebalachat.Engine.ggml-
 ; translate.exe must now FAIL the compile exactly like the orchestrator
 ; entry above (the "missing must fail compile" policy, L451-452).
+; M7 A-1 (session 260922_0001): the deployed manifest filename follows the
+; per-family scheme worker.<family>.manifest (worker.ggml-translate.manifest)
+; so a second family (ggml-asr, deployed by Listener) sharing the common
+; store can never overwrite this file. Reads keep accepting the legacy bare
+; worker.manifest (bootstrap fallback); this installer WRITES the new name only.
 Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
-Source: "..\build\worker.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
+Source: "..\build\worker.ggml-translate.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; REQ-207/208 (session 260911_0002 T6, design 144800 §2.3): bundle the README so
 ; the first-run privacy notice's "re-read this anytime in the README file"
@@ -680,7 +685,8 @@ const
   // COMPONENTS_FILENAME: the shared per-user components registry written by
   //   every v2+ installer (%LOCALAPPDATA%\Emebala\Common\engine\components.json).
   // WORKER_FILENAME: the ggml-translate worker exe (T3 build artifact).
-  // WORKER_MANIFEST_FILENAME: the worker manifest deployed next to the exe.
+  // WORKER_MANIFEST_FILENAME: the worker manifest deployed next to the exe
+  //   (M7 A-1: per-family scheme worker.<family>.manifest, DEC-007).
   // ENGINE_*_ABI_VERSION: pinned ABI versions of the bundled orchestrator (2)
   //   and worker (1). A mismatch or absence of the installed value triggers
   //   replacement per rule A.
@@ -688,7 +694,7 @@ const
   //   recorded in components.json (design §3.3 schema).
   COMPONENTS_FILENAME = 'components.json';
   WORKER_FILENAME = 'Emebalachat.Engine.ggml-translate.exe';
-  WORKER_MANIFEST_FILENAME = 'worker.manifest';
+  WORKER_MANIFEST_FILENAME = 'worker.ggml-translate.manifest';
   ENGINE_ORCHESTRATOR_ABI_VERSION = 2;
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
@@ -1235,7 +1241,8 @@ end;
 // ------------------------------------------------------------------------
 // ShouldInstallEngineWorker - REQ-006/M6 (plan §V2-8.2): Check function for
 // the bundled [Files] entries of the ggml-translate worker exe and its
-// worker.manifest. Mirrors ShouldInstallEngineHost but targets the
+// worker manifest (M7 A-1: worker.ggml-translate.manifest). Mirrors
+// ShouldInstallEngineHost but targets the
 // 'ggml-translate' component entry only.
 //
 // No-llama guard (REQ-006 design §4.1 / T3 report), REQ-045 (P4-1, item 2a)

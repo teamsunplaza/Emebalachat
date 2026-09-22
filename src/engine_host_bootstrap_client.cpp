@@ -27,9 +27,9 @@
 #include "engine_host_json_util.hpp" // JsonParseObject / FindField (frozen primitives)
 #include "unicode_utils.hpp"        // ToUtf8 / ToUtf16
 // REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
-// kModelsDirRel / kOrchestratorExe / kWorkerExe / kWorkerManifest /
-// kRegistryJson) — replaces the local definitions that used to live at
-// L44-49 below.
+// kModelsDirRel / kOrchestratorExe / kWorkerExe / kRegistryJson, and since
+// M7 A-1 the per-family worker-manifest scheme helpers) — replaces the local
+// definitions that used to live at L44-49 below.
 #include "engine_host_paths.hpp"    // REQ-044: shared path constants
 
 // Fallback when the macro is somehow absent (a hand-rolled build that skipped
@@ -51,15 +51,25 @@ namespace {
 // to engine_host_paths.hpp (paths::kEngineDirRel etc.).
 namespace paths = emebalachat::enginehost::paths;
 
+// M7 A-1 (session 260922_0001): the worker manifest is no longer a FIXED
+// filename in kRequired[]. The store hosts one manifest per worker family
+// (worker.<family>.manifest; DEC-007 keeps the hyphenated family strings
+// verbatim) plus, on pre-A-1 installs, the legacy bare worker.manifest. The
+// requirement gate below resolves the translate-family manifest through the
+// read scheme (new name first, legacy fallback) instead of hardcoding a
+// single constant, and EnumerateWorkerManifests() surfaces every manifest
+// present. The manifest SCHEMA is unchanged (worker_protocol.hpp frozen).
+constexpr char kWorkerFamilyTranslate[] = "ggml-translate";
+
 // The required components, in check order. The model filename comes from the
 // pinned kPinnedModelFilename (engine_core re-export via engine.hpp).
 const RequiredComponent kRequired[] = {
     {RequiredComponent::Root::Engine, "Emebala.Engine.exe"},
     {RequiredComponent::Root::Engine, "Emebalachat.Engine.ggml-translate.exe"},
-    {RequiredComponent::Root::Engine, "worker.manifest"},
     {RequiredComponent::Root::Models, "registry.json"},
     // The pinned model is appended dynamically (kPinnedModelFilename is a
-    // runtime string_view, not a constexpr).
+    // runtime string_view, not a constexpr), as is the translate-family
+    // worker manifest (M7 A-1 — resolved per the read scheme, below).
 };
 
 std::string PinnedModelRelative() {
@@ -92,6 +102,27 @@ std::filesystem::path RootDir(RequiredComponent::Root root) {
 
 std::string RootPrefix(RequiredComponent::Root root) {
     return root == RequiredComponent::Root::Engine ? "engine/" : "models/";
+}
+
+// M7 A-1: resolve the READ-scheme manifest name for one family inside `dir`:
+// the canonical worker.<family>.manifest first; then, ONLY for the
+// ggml-translate family, the pre-A-1 legacy bare worker.manifest (backward
+// compatibility — the pre-A-1 store held exactly one manifest and it was the
+// translate one; WRITES never choose the legacy name). A different family
+// (e.g. ggml-asr) must NOT claim the legacy file as its own: its manifest
+// only ever exists under the per-family name. Returns the chosen BARE
+// filename as UTF-8, empty when no candidate belongs to this family.
+// Pure presence check — file content is never touched here.
+std::string ResolveManifestIn(const std::filesystem::path& dir,
+                              const std::wstring& family_w) {
+    if (dir.empty()) return {};
+    const std::wstring modern = emebalachat::enginehost::paths::WorkerManifestName(family_w);
+    if (FileExists(dir / modern)) return ToUtf8(modern);
+    if (family_w == ToUtf16(kWorkerFamilyTranslate)) {
+        const std::wstring legacy(emebalachat::enginehost::paths::kWorkerManifestLegacy);
+        if (FileExists(dir / legacy)) return ToUtf8(legacy);
+    }
+    return {};
 }
 
 // Split "engine/x" / "models/x" into root + remainder. False when the prefix
@@ -292,8 +323,53 @@ ComponentCheckResult CheckComponents() {
     };
 
     for (const RequiredComponent& c : kRequired) check_one(c.root, c.relative);
+
+    // M7 A-1: the translate-family worker manifest resolves through the READ
+    // scheme (worker.ggml-translate.manifest first, legacy worker.manifest as
+    // the backward-compatible fallback). When neither exists, report the
+    // CANONICAL new-scheme name as missing — repair then fetches/installs the
+    // new-scheme file only (writes never choose the legacy name). The missing
+    // string is emitted by the same engine/ prefix machinery as the fixed
+    // components, so RepairMissingComponents treats it identically.
+    {
+        const std::wstring family_w = ToUtf16(kWorkerFamilyTranslate);
+        const std::string present = ResolveManifestIn(engine_dir, family_w);
+        check_one(RequiredComponent::Root::Engine,
+                  present.empty() ? ToUtf8(paths::WorkerManifestName(family_w)) : present);
+    }
+
     check_one(RequiredComponent::Root::Models, PinnedModelRelative());
     return r;
+}
+
+std::vector<std::string> EnumerateWorkerManifestsIn(const std::filesystem::path& engine_dir) {
+    std::vector<std::string> out;
+    if (engine_dir.empty()) return out;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(engine_dir,
+                                           std::filesystem::directory_options::skip_permission_denied,
+                                           ec);
+    if (ec) return out; // absent/unreadable dir -> empty enumeration (never throws)
+    const std::filesystem::directory_iterator end;
+    for (; !ec && it != end; it.increment(ec)) {
+        std::error_code fec;
+        if (!it->is_regular_file(fec) || fec) continue;
+        const std::wstring name = it->path().filename().wstring();
+        if (paths::IsWorkerManifestName(name)) {
+            out.push_back(ToUtf8(name));
+        }
+    }
+    std::sort(out.begin(), out.end()); // deterministic order for callers/tests
+    return out;
+}
+
+std::vector<std::string> EnumerateWorkerManifests() {
+    return EnumerateWorkerManifestsIn(RootDir(RequiredComponent::Root::Engine));
+}
+
+std::string ResolveWorkerManifestName(const std::filesystem::path& dir,
+                                      const std::string& family) {
+    return ResolveManifestIn(dir, ToUtf16(family));
 }
 
 std::filesystem::path ResolveTargetPath(const std::string& prefixed_relative) {

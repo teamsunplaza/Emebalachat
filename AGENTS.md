@@ -22,7 +22,7 @@ Key product facts:
   - `Emebalachat_core` — static library with all `src/` modules except `main.cpp` and the engine_core files.
   - `Emebalachat` — `WIN32` executable → `Emebala_chat.exe` (links core only; no llama symbol).
   - `EmebalaEngine` — `WIN32` executable → `Emebala.Engine.exe` (orchestrator: dual pipes, sessions, scheduler, worker manager, health).
-  - `EmebalaEngineGgmlTranslate` — `WIN32` executable → `Emebalachat.Engine.ggml-translate.exe` (translation worker; also emits `worker.manifest` next to it; skipped entirely in no-llama builds).
+  - `EmebalaEngineGgmlTranslate` — `WIN32` executable → `Emebalachat.Engine.ggml-translate.exe` (translation worker; also emits its per-family manifest `worker.ggml-translate.manifest` next to it — M7 A-1 scheme `worker.<family>.manifest`; skipped entirely in no-llama builds).
   - `run_tests` — unit-test console runner, registered as CTest `CoreTests`.
 - **DLL loading**: CUDA (`cublas64_13`, `cublasLt64_13`, `cudart64_13`) and Vulkan (`vulkan-1.dll`, only when ggml-vulkan was built) are **delay-loaded** so machines without GPU drivers fall back to CPU instead of failing at startup. `main.cpp` calls `SetDllDirectoryW(L"")` at startup to close the CWD DLL-hijack vector (do NOT pass NULL — that restores the CWD in the search order; do NOT use `SetDefaultDllDirectories` — it drops PATH and breaks CUDA resolution). `src/vulkan_guard.cpp` adds a delay-load failure hook plus a loader probe that keeps the ggml Vulkan backend out of the registry on driverless machines.
 - **Runtime data flow**: keyboard hook (dedicated message-pump thread) → synthetic-event filter (randomized per-process `EXTRA_INFO_MARKER` in `dwExtraInfo`) → pipeline worker thread → IME flush → select line / Ctrl+C → smart-bypass filter (URLs, numbers, emojis, script mismatch, same-language) → engine router → (local) `engine_host_client` over `\\.\pipe\emebala-engine` (canonical) or `\\.\pipe\emebala-engine-v1` (frozen v1 alias), orchestrator spawns the `ggml-translate` worker on demand → or (cloud) WinHTTP Google client → set clipboard + Ctrl+V with RAII clipboard restore → Direct2D badge/tray/tooltip update.
@@ -48,7 +48,7 @@ src/                    # production C++20 sources; one module per .hpp/.cpp pai
   engine_host_*         # host client, registry/manifest/components parsers, bootstrap client
   host_main.cpp         # Emebala.Engine entry: dual pipes, sessions, scheduler, worker manager, health
   host_v2_*.cpp/.hpp    # session/scheduler/worker-manager/health modules for the orchestrator
-  worker_protocol.hpp   # orchestrator↔worker (inner) pipe contract + worker.manifest schema
+  worker_protocol.hpp   # orchestrator↔worker (inner) pipe contract + worker manifest schema (M7 A-1: deployed as worker.<family>.manifest)
   ggml_translate_worker.cpp  # translation worker process entry
   sound.cpp / mouse_hook.cpp / vulkan_guard.cpp / hook_thread.hpp / single_slot_worker.hpp
   ui/                   # Direct2D presentation layer
@@ -88,7 +88,7 @@ Useful variants:
 - **Installer gates (mandatory before any installer build/release):**
   - `python tools/check_installer_encoding.py` — encoding gate for all `.iss`/`.isl` text inputs (UTF-8 rules + Inno ≥ 6.3 version guard). Non-zero exit = do not build.
   - `python tools/check_installer_display_text.py` — display-layer mojibake gate (compiles a probe wizard per language and reads memo text back). Non-zero exit = do not ship.
-  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.manifest` (the mandatory engine bundle; the worker entries are skipped in no-llama builds). Inno Setup 6.3+ is a hard requirement (enforced by a compile-time `#error`).
+  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; the worker entries are skipped in no-llama builds). Inno Setup 6.3+ is a hard requirement (enforced by a compile-time `#error`).
 
 ## Development Conventions
 

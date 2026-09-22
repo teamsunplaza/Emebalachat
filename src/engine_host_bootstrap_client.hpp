@@ -17,7 +17,10 @@
 // Component set (the fixed common layout, plan §7.1 / host_main.cpp kEngineDirRel):
 //   %LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe        (orchestrator)
 //   %LOCALAPPDATA%\Emebala\Common\engine\Emebalachat.Engine.ggml-translate.exe (worker)
-//   %LOCALAPPDATA%\Emebala\Common\engine\worker.manifest
+//   %LOCALAPPDATA%\Emebala\Common\engine\worker.<family>.manifest  (per-family
+//     manifest scheme, M7 A-1; the pre-A-1 legacy name "worker.manifest" is
+//     still ACCEPTED on reads — the requirement gate falls back to it, and the
+//     store enumeration below surfaces both)
 //   %LOCALAPPDATA%\Emebala\Common\models\<pinned model>            (kPinnedModelFilename)
 //   %LOCALAPPDATA%\Emebala\Common\models\registry.json
 // Only PRESENCE (and, for repair, the manifest hash) is inspected — user text
@@ -145,6 +148,31 @@ RepairOutcome RepairMissingComponents(const std::vector<std::string>& missing,
 // Test seam: expose the target root resolution for one prefixed relative path
 // ("engine/x" -> engine dir, "models/x" -> models dir). Empty when unresolved.
 std::filesystem::path ResolveTargetPath(const std::string& prefixed_relative);
+
+// ---- M7 A-1 per-family worker-manifest scheme -------------------------------
+// Enumerate every worker-manifest file present in the common ENGINE directory
+// (both the per-family worker.<family>.manifest scheme and the pre-A-1 legacy
+// worker.manifest are surfaced; see engine_host_paths.hpp::IsWorkerManifestName).
+// Returns bare filenames in sorted order. An unresolvable/absent engine dir
+// yields an empty vector. The requirement gate and the repair flow enumerate
+// manifests this way instead of hardcoding a single file name; the
+// orchestrator's multi-manifest load uses the same enumeration.
+std::vector<std::string> EnumerateWorkerManifests();
+
+// Test seam: the same enumeration restricted to an arbitrary directory
+// (`engine_dir`), so unit tests can stage fake stores without touching
+// %LOCALAPPDATA%. Never throws — iteration errors converge on the entries
+// collected so far.
+std::vector<std::string> EnumerateWorkerManifestsIn(const std::filesystem::path& engine_dir);
+
+// Test seam: resolve the manifest file NAME for one worker family inside an
+// arbitrary directory using the read scheme — new-scheme name first, falling
+// back to the legacy bare name when only that exists on disk. Returns the
+// FILENAME (not a path) of the chosen candidate, or empty when the directory
+// holds neither. `dir` is injected so unit tests can stage fake stores without
+// touching %LOCALAPPDATA%.
+std::string ResolveWorkerManifestName(const std::filesystem::path& dir,
+                                      const std::string& family);
 
 } // namespace engine_host_bootstrap
 } // namespace emebalachat

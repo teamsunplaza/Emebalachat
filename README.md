@@ -496,7 +496,7 @@ Failures:     0
 To package Emebala Chat into a single, self-extracting Windows installer:
 
 1. Download and install [Inno Setup 6.1+](https://jrsoftware.org/isinfo.php).
-2. Ensure `build\Emebala_chat.exe`, `build\Emebala.Engine.exe` (the shared inference host), **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.manifest` (its translation worker — both mandatory bundle components) have been built. The compile of the host target fails without them when the llama.cpp backend is enabled.
+2. Ensure `build\Emebala_chat.exe`, `build\Emebala.Engine.exe` (the shared inference host), **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (its translation worker — both mandatory bundle components; the manifest uses the per-family `worker.<family>.manifest` scheme since M7 A-1) have been built. The compile of the host target fails without them when the llama.cpp backend is enabled.
 3. Run the installer gates (`python tools\check_installer_encoding.py` and `python tools\check_installer_display_text.py`), then the Inno Setup compiler:
 
 ```powershell
