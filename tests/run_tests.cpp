@@ -15533,6 +15533,14 @@ int main() {
 
     ::CoUninitialize();
 
+    // 260922_0001 P5-fix: A8 turned sound playback into a resident worker
+    // thread; TestSoundModule() starts it via PlaySoundAsync(), but the test
+    // binary previously exited without joining it (only main.cpp's shutdown
+    // path called ShutdownSound()), so process teardown raced the live worker
+    // and terminated with fail-fast 0xC0000409. Join here before EITHER return
+    // path (pass or fail). Idempotent-safe when no worker was ever created.
+    emebalachat::ShutdownSound();
+
     if (g_failed_count == 0) {
         std::cout << ">>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<" << std::endl;
         return 0;
