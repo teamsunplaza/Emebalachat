@@ -1253,6 +1253,9 @@ begin
   Doc := UTF8Decode(Raw);
   if (Length(Doc) > 0) and (Doc[1] = #$FEFF) then
     Doc := Copy(Doc, 2, Length(Doc) - 1);
+  // D1 fix (260922 P5 audit): the success path never assigned Result := True,
+  // so every existing-file merge/read path was permanently fail-closed.
+  Result := True;
 end;
 
 // WriteTextFileAtomic - the installer-side twin of the app's

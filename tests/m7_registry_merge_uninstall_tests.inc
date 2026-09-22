@@ -217,6 +217,43 @@ void TestM7RegistryMergeUninstall() {
         TEST_CHECK(iss_src.find("user item(s) preserved verbatim") != std::string::npos,
                    "pin: A-3 rewrite keeps user items and logs the preservation");
 
+        // D1 regression pin (260922 P5 audit): LoadRegistryDocument must assign
+        // Result := True on its SUCCESS path. Before the fix the body fell off
+        // `end;` with Result still False, so every existing-file read returned
+        // False: the A-2 merge and the A-3 registry-aware cleanup were
+        // permanently fail-closed (silently unreachable, never exercised at
+        // runtime). The pin extracts the function body and asserts (i) the
+        // fail-closed read-guard is unchanged, (ii) a bare `Result := True;`
+        // assignment exists, (iii) it sits AFTER the guard (success path only)
+        // and after the default `Result := False;` initialisation.
+        {
+            const std::string fn_hdr =
+                "function LoadRegistryDocument(const Path: String; out Doc: String): Boolean;";
+            const auto h = iss_src.find(fn_hdr);
+            TEST_CHECK(h != std::string::npos, "pin D1: LoadRegistryDocument header present");
+            if (h != std::string::npos) {
+                const auto body_end = iss_src.find("\nend;", h);
+                TEST_CHECK(body_end != std::string::npos, "pin D1: LoadRegistryDocument body closes");
+                if (body_end != std::string::npos) {
+                    const std::string body = iss_src.substr(h, body_end - h);
+                    const auto init = body.find("Result := False;");
+                    const auto guard = body.find("if not LoadStringFromFile(Path, Raw) then");
+                    // Match only a real assignment line: the fix's comment text
+                    // contains "Result := True," (comma) and cannot alias here.
+                    const auto tru = body.find("Result := True;");
+                    TEST_CHECK(init != std::string::npos,
+                               "pin D1: default return stays False before any read");
+                    TEST_CHECK(guard != std::string::npos,
+                               "pin D1: unreadable-file fail-closed Exit guard unchanged");
+                    TEST_CHECK(tru != std::string::npos,
+                               "pin D1: success path assigns Result := True (D1 fix)");
+                    TEST_CHECK(init != std::string::npos && guard != std::string::npos &&
+                                   tru != std::string::npos && init < guard && guard < tru,
+                               "pin D1: Result := True ordered AFTER the fail-closed guard");
+                }
+            }
+        }
+
         // App writers moved off the truncate-in-place ofstream pattern.
         std::string main_src;
         TEST_CHECK(read_src(L"src\\main.cpp", main_src), "pin: main.cpp readable");
