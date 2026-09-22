@@ -3358,6 +3358,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     tooltip.Destroy();
     drag_icon.Destroy();
     about_window.Destroy();
+    // 260922_0001 A8: join the resident sound worker last — the hook thread
+    // (stopped above via hook.Stop()) and the tray menu callbacks (retired by
+    // tray.Destroy()) were the only PlaySoundAsync producers, so no enqueue
+    // can race the shutdown latch. Bounded by at most one in-flight Beep.
+    emebalachat::ShutdownSound();
 
     if (hController) {
         ::DestroyWindow(hController);
