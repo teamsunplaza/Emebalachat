@@ -124,6 +124,112 @@ public:
     };
     static LocalizedContent BuildLocalizedContent();
 
+    // ---------------------------------------------------------------------
+    // 260922_0001 A2 (fix plan §4.3-A / §5 A2, CPO triage Rank 2): dynamic
+    // feature-block heights for the About card. The old layout hard-coded
+    // `top = 230.0f + i*42.0f` with a fixed 40 DIP clip rect, so localized
+    // feature lines wrapping to 2–3 lines (de/ru/es/vi) had their third line
+    // silently clipped away. The fix measures each feature's actual text
+    // height (IDWriteTextLayout::GetMetrics in Render) and stacks the three
+    // blocks with cumulative offsets. Same "pure plan function + Render
+    // consumes it" shape as REQ-052's TooltipWindow::PlanHeaderTargetButton.
+    //
+    // The POD metrics struct below deliberately abstracts DWRITE_TEXT_METRICS
+    // so run_tests.exe (links Emebalachat_core only — never instantiates
+    // DWrite) can call the planner with synthetic heights (fix plan §5 A2
+    // verification item: TestReq053AboutFeatureLayout). Field mirrors the one
+    // DWrite metric the planner actually consumes; Render copies it verbatim
+    // from DWRITE_TEXT_METRICS::height.
+    // ---------------------------------------------------------------------
+    struct AboutFeatureMetrics {
+        float height; // measured text height in DIP (DWRITE_TEXT_METRICS.height)
+    };
+    struct AboutFeaturePlan {
+        float block_top[3];   // stacked block start Y (DIP, window coords)
+        float block_h[3];     // per-block height (>= 40 DIP floor pre-squeeze)
+        float marker_x[3];    // gold marker-dot rect LEFT X; LTR: 28.0f, RTL: card_w - 33.0f
+        float next_free_y;    // first Y below the last block (bottom anchors derive from this)
+    };
+
+    // Pure layout planner (260922_0001 A2). No D2D/DWrite COM dependency —
+    // callable headless. card_w is the unused-in-current-geometry DIP card
+    // width (parameter per the fix-plan signature; kept for the RTL marker
+    // math and any future width-driven rules).
+    //   block_h[i]   = max(metrics[i].height + 8.0f, 40.0f)   // 40 DIP = old fixed height floor
+    //   block_top[0] = 230.0f; block_top[i] = block_top[i-1] + block_h[i-1] + 2.0f
+    //   next_free_y  = block_top[2] + block_h[2]
+    // Worst-case squeeze fallback (fix plan §5 A2 item 5): when the three
+    // natural-height blocks plus the FIXED bottom section can no longer fit
+    // above the reset-button bottom (578 DIP in the 596 DIP card), every
+    // block is uniformly shrunk — but never below the 40 DIP floor; the
+    // residual overflow is accepted (CLIP still prevents bleed into the
+    // etymology section, same contract as REQ-052).
+    static constexpr AboutFeaturePlan PlanAboutFeatureLayout(
+        const AboutFeatureMetrics metrics[3], bool ui_rtl, float card_w) {
+        AboutFeaturePlan plan{};
+        for (int i = 0; i < 3; ++i) {
+            const float natural = metrics[i].height + 8.0f;
+            plan.block_h[i] = natural > 40.0f ? natural : 40.0f;
+        }
+        plan.block_top[0] = 230.0f;
+        for (int i = 1; i < 3; ++i) {
+            plan.block_top[i] = plan.block_top[i - 1] + plan.block_h[i - 1] + 2.0f;
+        }
+        plan.next_free_y = plan.block_top[2] + plan.block_h[2];
+        // Squeeze pass (fix plan §5 A2 item 5, geometry reconciled — see the
+        // A2 report's plan-deviation note): the bottom section keeps its old
+        // gaps relative to next_free_y (etymology +8 … reset bottom +224), so
+        // the design ceiling for the reset bottom is 588 DIP = card 596
+        // minus the 8 DIP border margin (the plan's "578" was the ONE-LINE
+        // reset bottom, not a structural limit — clamping there would forbid
+        // any growth and nullify the fix). next_free_y may therefore reach
+        // 588 - 224 = 364 before blocks must give. Under the old fixed
+        // geometry next_free_y was 230 + 42 + 42 + 40 = 354, so the 1-line
+        // case renders byte-identically to the old layout; growth beyond the
+        // 364 ceiling squeezes the blocks uniformly (40 DIP floor, then the
+        // retained D2D1_DRAW_TEXT_OPTIONS_CLIP contains the residual).
+        // (card_w is intentionally not referenced here — see the parameter
+        // note above.)
+        (void)card_w;
+        float overflow = plan.next_free_y - 364.0f;
+        // 40 DIP per-block floor: the blocks can shed at most their excess
+        // above the floor. The overflow is spread uniformly ACROSS THE
+        // SHEDDABLE EXCESS (pro-rata share of each block's height above 40)
+        // rather than a flat third each: a flat third would push the 1-line
+        // blocks below the 40 DIP floor while a tall block still overflows,
+        // violating the floor contract. Pro-rata keeps every block >= 40 and
+        // lands next_free_y back on exactly 354 whenever overflow <= the
+        // total sheddable excess.
+        float sheddable = 0.0f;
+        float excess[3] = {};
+        for (int i = 0; i < 3; ++i) {
+            excess[i] = (plan.block_h[i] > 40.0f) ? (plan.block_h[i] - 40.0f) : 0.0f;
+            sheddable += excess[i];
+        }
+        if (overflow > 0.0f) {
+            if (overflow > sheddable) overflow = sheddable; // clamp: never cut below the floor
+            for (int i = 0; i < 3; ++i) {
+                plan.block_h[i] -= (sheddable > 0.0f) ? (overflow * excess[i] / sheddable)
+                                                      : 0.0f;
+            }
+            // Recompute cumulative tops/next_free_y from the squeezed heights.
+            plan.block_top[0] = 230.0f;
+            for (int i = 1; i < 3; ++i) {
+                plan.block_top[i] = plan.block_top[i - 1] + plan.block_h[i - 1] + 2.0f;
+            }
+            plan.next_free_y = plan.block_top[2] + plan.block_h[2];
+        }
+        // Marker dot: LTR dot rect left stays at the historical 28.0f; the
+        // RTL mirror keeps the dot 33 DIP in from the card's right edge
+        // (old expression `w - 33.0f`, fix plan §5 A2 risk item 2 — kept
+        // byte-identical).
+        const float marker_left = ui_rtl ? (card_w - 33.0f) : 28.0f;
+        for (int i = 0; i < 3; ++i) {
+            plan.marker_x[i] = marker_left;
+        }
+        return plan;
+    }
+
     // (Removed with the SEC-ADJ fix: the old DrainMarshalQueue PeekMessageW
     // sweep existed solely to delete heap ShowPayload pointers the DestroyWindow
     // queue purge would have leaked. kShowMessage now carries the coordinates

@@ -607,22 +607,56 @@ void AboutWindow::Render() {
     dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 218.0f), D2D1::Point2F(w - 24.0f, 218.0f),
                                 scratch_brush_, 1.0f);
 
-    // 4. Features: 3 blocks of 42 DIP. DESIGN-260910 (P2 hierarchy): each
-    // block gains a 5 DIP emerald marker dot so the section scans as three
-    // distinct capability statements instead of one gray paragraph wall.
-    // The marker mirrors with the UI locale's reading direction (body_format_
-    // carries RTL for RTL locales; leading alignment starts at the rect's
-    // reading edge), so RTL locales get the dot on the right.
-    // REQ-052 (audit P1): each block's DrawText below carries
-    // D2D1_DRAW_TEXT_OPTIONS_CLIP - translations wrapping to 3+ lines
-    // (de/ru/es) previously bled into the next block and its divider.
+    // 4. Features: dynamic-height blocks (260922_0001 A2, fix plan §5 A2).
+    // DESIGN-260910 (P2 hierarchy): each block gains a 5 DIP marker dot so the
+    // section scans as three distinct capability statements instead of one
+    // gray paragraph wall. The marker mirrors with the UI locale's reading
+    // direction (body_format_ carries RTL for RTL locales; leading alignment
+    // starts at the rect's reading edge), so RTL locales get the dot on the
+    // right. REQ-052 (audit P1) kept D2D1_DRAW_TEXT_OPTIONS_CLIP per block so
+    // a too-tall block can never bleed into the next one; 260922_0001 A2
+    // removes the ROOT cause of the clipping: the old fixed `230 + i*42` grid
+    // with a 40 DIP clip rect silently cut the third line of de/ru/es/vi
+    // translations. Each block is now measured with IDWriteTextLayout::
+    // GetMetrics (layout width = the text rect's actual wrap width, w - 68
+    // DIP for both directions) and the whole section is laid out by the pure
+    // planner AboutWindow::PlanAboutFeatureLayout (headless-testable — see
+    // the header comment; layout-creation failure yields height 0 which the
+    // planner floors at the historical 40 DIP, fix plan §5 A2 risk item 1).
     const bool ui_rtl = DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL;
+    AboutFeatureMetrics feature_metrics[3] = {};
+    if (body_format_ && dwrite_factory_) {
+        for (int i = 0; i < 3; ++i) {
+            IDWriteTextLayout* layout = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    content.features[i].c_str(),
+                    static_cast<UINT32>(content.features[i].size()),
+                    body_format_, w - 68.0f, 1000.0f, &layout)) && layout) {
+                DWRITE_TEXT_METRICS m = {};
+                if (SUCCEEDED(layout->GetMetrics(&m))) {
+                    feature_metrics[i].height = m.height;
+                }
+                layout->Release();
+            }
+            // Failure: leave height 0 -> planner floors the block at 40 DIP.
+        }
+    }
+    const AboutFeaturePlan plan = PlanAboutFeatureLayout(feature_metrics, ui_rtl, w);
+    // Bottom-section baseline: the old fixed next_free_y was 230 + 42 + 42 +
+    // 40 = 354 (etymology top 362 = 354 + 8, divider2 414 = 354 + 60, links
+    // 428 = 354 + 74, contacts 472 = 354 + 118, reset 546 = 354 + 192). All
+    // five anchors keep those exact gaps relative to plan.next_free_y, so the
+    // 1-line case (planner floors blocks at 40, next_free_y back at 354)
+    // renders byte-identical to the old layout, and the squeeze fallback
+    // pins next_free_y at 354 in the worst case. (260922_0001 A2, fix plan
+    // §5 A2 item 4.)
+    const float base = plan.next_free_y;
     if (body_format_) {
         for (int i = 0; i < 3; ++i) {
-            const float top = 230.0f + static_cast<float>(i) * 42.0f;
+            const float top = plan.block_top[i];
+            const float bottom = top + plan.block_h[i];
             const D2D1_ROUNDED_RECT dot = D2D1::RoundedRect(
-                ui_rtl ? D2D1::RectF(w - 33.0f, top + 7.0f, w - 28.0f, top + 12.0f)
-                       : D2D1::RectF(28.0f, top + 7.0f, 33.0f, top + 12.0f),
+                D2D1::RectF(plan.marker_x[i], top + 7.0f, plan.marker_x[i] + 5.0f, top + 12.0f),
                 2.5f, 2.5f);
             scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold marker
             dc_render_target_->FillRoundedRectangle(dot, scratch_brush_);
@@ -630,8 +664,8 @@ void AboutWindow::Render() {
             dc_render_target_->DrawText(content.features[i].c_str(),
                                         static_cast<UINT32>(content.features[i].size()),
                                         body_format_,
-                                        ui_rtl ? D2D1::RectF(28.0f, top, w - 40.0f, top + 40.0f)
-                                               : D2D1::RectF(40.0f, top, w - 28.0f, top + 40.0f),
+                                        ui_rtl ? D2D1::RectF(28.0f, top, w - 40.0f, bottom)
+                                               : D2D1::RectF(40.0f, top, w - 28.0f, bottom),
                                         scratch_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
@@ -640,12 +674,12 @@ void AboutWindow::Render() {
     if (etymology_format_) {
         scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
         dc_render_target_->DrawText(content.etymology.c_str(), static_cast<UINT32>(content.etymology.size()),
-                                    etymology_format_, D2D1::RectF(24.0f, 362.0f, w - 24.0f, 402.0f), scratch_brush_);
+                                    etymology_format_, D2D1::RectF(24.0f, base + 8.0f, w - 24.0f, base + 48.0f), scratch_brush_);
     }
 
     // Divider 2
     scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));  // lapis divider
-    dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 414.0f), D2D1::Point2F(w - 24.0f, 414.0f),
+    dc_render_target_->DrawLine(D2D1::Point2F(24.0f, base + 60.0f), D2D1::Point2F(w - 24.0f, base + 60.0f),
                                 scratch_brush_, 1.0f);
 
     // 6. Links row: 3 pill buttons centered (Website / Contact / Reddit).
@@ -653,11 +687,13 @@ void AboutWindow::Render() {
     const float pill_gap = 10.0f;
     const float pills_total = pill_w * kNumLinks + pill_gap * (kNumLinks - 1);
     const float pills_x = (w - pills_total) / 2.0f;
+    // 260922_0001 A2: pill row follows plan.next_free_y (old 428/456 = base +
+    // 74/102 with base 354).
     for (int i = 0; i < kNumLinks; ++i) {
         link_rects_[i] = D2D1::RectF(pills_x + static_cast<float>(i) * (pill_w + pill_gap),
-                                     428.0f,
+                                     base + 74.0f,
                                      pills_x + static_cast<float>(i) * (pill_w + pill_gap) + pill_w,
-                                     456.0f);
+                                     base + 102.0f);
         const bool hover = (hovered_link_ == i);
         const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(link_rects_[i], 4.0f, 4.0f);
         scratch_brush_->SetColor(hover ? D2D1::ColorF(0x22406B, 1.0f)     // pill hover
@@ -674,10 +710,11 @@ void AboutWindow::Render() {
     }
 
     // 7. Contact block (small 10.5, subtext, centered).
+    // 260922_0001 A2: follows plan.next_free_y (old 472 = base + 118).
     if (small_format_) {
         scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
         for (int i = 0; i < 3; ++i) {
-            const float top = 472.0f + static_cast<float>(i) * 22.0f;
+            const float top = base + 118.0f + static_cast<float>(i) * 22.0f;
             dc_render_target_->DrawText(content.contacts[i].c_str(),
                                         static_cast<UINT32>(content.contacts[i].size()),
                                         small_format_,
@@ -687,13 +724,17 @@ void AboutWindow::Render() {
     }
 
     // 7b. "Reset to system defaults" action button (Phase 4, REQ-020, plan
-    // §2.2): full card width minus the 24 DIP insets, y 546..578, made
-    // possible by the 560 -> 596 DIP card extension. Same pill palette as
-    // the link buttons (pillBg / pillBgHover / accent border, 4 DIP radius,
-    // link_format_ centered text) but wide, visually marking it as an
-    // action. During the 1.6 s post-click feedback window the label reads
-    // StringId::AboutResetDone instead of the localized resting label.
-    reset_rect_ = D2D1::RectF(24.0f, 546.0f, w - 24.0f, 578.0f);
+    // §2.2): full card width minus the 24 DIP insets, made possible by the
+    // 560 -> 596 DIP card extension. Same pill palette as the link buttons
+    // (pillBg / pillBgHover / accent border, 4 DIP radius, link_format_
+    // centered text) but wide, visually marking it as an action. During the
+    // 1.6 s post-click feedback window the label reads StringId::AboutResetDone
+    // instead of the localized resting label.
+    // 260922_0001 A2: follows plan.next_free_y (old 546..578 = base +
+    // 192..224 with base 354; the planner's squeeze fallback pins base back
+    // to 354 in the worst case, keeping the button above the 596 DIP card
+    // bottom).
+    reset_rect_ = D2D1::RectF(24.0f, base + 192.0f, w - 24.0f, base + 224.0f);
     {
         const bool hover = (hovered_link_ == kHoverReset);
         const bool feedback = (reset_feedback_until_ != 0 &&
