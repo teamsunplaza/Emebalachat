@@ -1,6 +1,25 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.1 (rerelease) - 2026-09-22
+================================
+
+This rerelease of v0.10.1 ships the fixes below under the same version
+number - the version is intentionally unchanged. Patch update.
+
+Fixes in this build
+-------------------
+* Pressing F9 to pause or resume translation no longer makes a model you
+  added in Model Management disappear from the Translation engine menu:
+  the "User-selected (.gguf) — <model name>" entry now stays listed no
+  matter how often you toggle. (The model itself was still registered -
+  only the menu label was being dropped until some other setting
+  changed.)
+* Pausing translation with F9 now also dismisses the floating
+  drag-translate icon, and while paused that icon can no longer be
+  clicked to run a translation: every translation entry point now
+  respects the paused state, so "off" truly means off.
+
 v0.10.1 (rerelease) - 2026-09-19
 ================================
 

@@ -265,7 +265,7 @@ void SystemTray::UpdateStatus(
     bool sound_enabled,
     bool badge_visible,
     int preferred_engine,
-    std::string_view user_model_stem
+    std::optional<std::string_view> user_model_stem
 ) {
     bool iconChanged = (is_active_ != active);
     is_active_ = active;
@@ -277,7 +277,14 @@ void SystemTray::UpdateStatus(
     preferred_engine_ = preferred_engine;
     // REQ-047 U1 (designer 164500 §5.2.1): cache the user-model stem so the
     // context-menu rebuild below can append it to the checkable entry.
-    user_model_stem_ = user_model_stem;
+    // REQ-054: only an ENGAGED argument writes the cache (nullopt = keep).
+    // The regression this fixes: the F9/Ctrl+F9/Ctrl+Shift+Enter hotkey paths
+    // in hook.cpp used to pass an explicit empty stem, wiping the cached stem
+    // and hiding the 사용자 선택(.gguf) tray entry until the next registry-
+    // aware refresh_tray re-resolved it.
+    if (user_model_stem.has_value()) {
+        user_model_stem_ = *user_model_stem;
+    }
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the

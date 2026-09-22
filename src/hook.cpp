@@ -491,8 +491,13 @@ void KeyboardHook::SetActive(bool active) {
             snap.auto_send,
             snap.sound_enabled,
             badge_.IsVisible(),
-            /* preferred_engine_google = */ (snap.engine_type != "local"),
-            ""  // REQ-047 U1: hook paths don't track the user-model registry
+            /* preferred_engine_google = */ (snap.engine_type != "local")
+            // REQ-054: the user-model-stem argument is omitted (std::nullopt =
+            // preserve) — the hook thread cannot resolve the user-model stem
+            // (registry I/O; the REQ-047 U1 rationale still holds), so the
+            // tray keeps its last registry-resolved stem across hotkey
+            // refreshes. Clearing after a delete is refresh_tray's exclusive
+            // job on the GUI thread (main.cpp).
         );
         // REQ-R08 visual feedback: the floating badge above IS the visual
         // state indicator (green=active/gray=disabled, and it renders even
@@ -560,8 +565,8 @@ void KeyboardHook::CycleTargetLanguage() {
         snap.auto_send,
         snap.sound_enabled,
         badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local"),
-        ""  // REQ-047 U1: hook paths don't track the user-model registry
+        /* preferred_engine_google = */ (snap.engine_type != "local")
+        // REQ-054: stem argument omitted (preserved), same contract as SetActive.
     );
     PlayLangChange();
 }
@@ -589,8 +594,8 @@ void KeyboardHook::ToggleAutoSend() {
         next,
         snap.sound_enabled,
         badge_.IsVisible(),
-        /* preferred_engine_google = */ (snap.engine_type != "local"),
-        ""  // REQ-047 U1: hook paths don't track the user-model registry
+        /* preferred_engine_google = */ (snap.engine_type != "local")
+        // REQ-054: stem argument omitted (preserved), same contract as SetActive.
     );
     PlayModeChange();
 }

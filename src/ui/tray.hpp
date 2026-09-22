@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <windows.h>
@@ -85,9 +86,14 @@ public:
         // .gguf model (files[0] minus ".gguf"), shown after the "사용자 지정
         // 모델 (.gguf)" label whenever a model is registered, regardless of
         // the checked engine (REQ-050 3-2). Empty -> the checkable entry is
-        // not appended at all (REQ-050 3-1). Defaults keep the hook.cpp call
-        // sites (which don't track the model registry) untouched.
-        std::string_view user_model_stem = ""
+        // not appended at all (REQ-050 3-1).
+        // REQ-054: std::nullopt (the default) KEEPS the cached stem — the
+        // hook-thread hotkey paths (F9/Ctrl+F9/Ctrl+Shift+Enter in hook.cpp)
+        // cannot resolve the user-model registry (REQ-047 U1 rationale) and
+        // must not wipe the cached stem; an engaged value, INCLUDING an empty
+        // string, sets/clears it (main.cpp refresh_tray after register/rename/
+        // delete).
+        std::optional<std::string_view> user_model_stem = std::nullopt
     );
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a

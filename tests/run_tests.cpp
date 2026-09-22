@@ -14615,6 +14615,16 @@ void TestEngineHostAvailabilityAndMigration() {
 // ResolveRepoFile source pins.
 #include "req053_ui_audit_tests.inc"
 
+// REQ-054 (tray display regression): the F9/Ctrl+F9/Ctrl+Shift+Enter hotkey
+// paths passed an explicit empty user_model_stem to SystemTray::UpdateStatus,
+// wiping the cached stem and hiding the 사용자 선택(.gguf) tray entry until the
+// next registry-aware refresh. The stem parameter is now std::optional
+// (nullopt = preserve); refresh_tray (main.cpp, GUI thread) passes it engaged
+// so register/rename/delete still set/clear it. Staged as an .inc next to this
+// runner; registered near the end of main() after TestReq053SoundQueuePolicy(),
+// per the end-of-file pattern. Pure ResolveRepoFile source pins.
+#include "req054_toggle_stem_tests.inc"
+
 // M7 A-1 (session 260922_0001): per-family worker-manifest naming scheme
 // (worker.<family>.manifest + legacy fallback + store enumeration + coexistence
 // non-clobber pins). Staged as an .inc next to this runner; defines
@@ -15537,6 +15547,10 @@ int main() {
     TestReq053OpenAiButtonDisablePins();
     TestReq053GgufButtonSyncPins();
     TestReq053SoundQueuePolicy();
+    // REQ-054: the tray user-model stem preservation contract (optional stem
+    // argument; hook hotkey paths omit it, refresh_tray passes it engaged).
+    // Registered after the REQ-053 cluster, per the end-of-file pattern.
+    TestReq054ToggleStemPreserve();
     // M7 A-1: the per-family worker-manifest naming scheme (path resolution,
     // store enumeration, legacy fallback, translate+asr coexistence non-
     // clobber, deployment pins). Registered after the REQ-052 cluster, per

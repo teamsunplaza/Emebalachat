@@ -1721,7 +1721,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             snap.sound_enabled,
             badge.IsVisible(),
             preferred_engine,
-            user_model_stem                        // REQ-047 U1
+            // REQ-047 U1; REQ-054: engaged optional — an empty resolved stem
+            // still CLEARS the cached entry (last user model deleted).
+            std::string_view(user_model_stem)
         );
     };
 
@@ -2934,6 +2936,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // to the worker, return immediately - the message pump is never blocked
     // by clipboard settle or inference.
     drag_icon.SetClickCallback([&](int click_x, int click_y) {
+        // REQ-054: this was the only drag entry point lacking the fire-time
+        // IsActive() gate the others have (drag release at the
+        // SetDragReleaseCallback above checks !hook.IsActive() before showing;
+        // the double-Ctrl+C callback below gates on it too) — a stale icon
+        // still on screen after an F9 pause must never launch a translation.
+        if (!hook.IsActive()) {
+            return;
+        }
         // Generation stamping STAYS at the producer (D2 acceptance
         // constraint): stamp at trigger time, then hand the job over.
         const uint64_t gen = tooltip.BeginTranslationRequest();
@@ -3197,6 +3207,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // every real SetActive() change - including the Win+F9 hotkey path that
         // previously left the mouse hook permanently disabled.
         mouse_hook.SetEnabled(active);
+
+        // REQ-054: the drag icon is only SHOWN while active, but nothing hid
+        // it when F9 paused the app — leaving a clickable translate affordance
+        // on screen while paused. Hide() is thread-safe from any thread
+        // (kHideMessage marshaling, drag_icon.hpp).
+        if (!active) {
+            drag_icon.Hide();
+        }
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);
