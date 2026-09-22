@@ -14604,6 +14604,17 @@ void TestEngineHostAvailabilityAndMigration() {
 // ResolveRepoFile source pins.
 #include "req052_ui_fixes_tests.inc"
 
+// REQ-053 (session 260922_0001, UI audit fix bundle A1-A8): tray click
+// debounce, About dynamic feature heights, badge WM_DPICHANGED + device-lost
+// re-render, tooltip menu focus restore, OpenAI fetch-button busy feedback,
+// GGUF action-button sync, sound worker queue policy. Staged as an .inc next
+// to this runner; registered near the end of main() after
+// TestReq052TouchFilterPredicate(), per the end-of-file pattern. The pure
+// pins call the header-inline modules the inc includes itself
+// (tray_toggle_debounce.hpp, sound.hpp, about_window.hpp); the rest are
+// ResolveRepoFile source pins.
+#include "req053_ui_audit_tests.inc"
+
 // M7 A-1 (session 260922_0001): per-family worker-manifest naming scheme
 // (worker.<family>.manifest + legacy fallback + store enumeration + coexistence
 // non-clobber pins). Staged as an .inc next to this runner; defines
@@ -15496,6 +15507,19 @@ int main() {
     TestReq052BadgeSingleClickUsesDoubleClickTime();
     TestReq052AboutWindowFixes();
     TestReq052TouchFilterPredicate();
+    // REQ-053 (UI audit fix bundle A1-A8): the tray debounce state machine,
+    // the About feature-block planner, the badge DPI/device-lost pins, the
+    // tooltip focus restore, the OpenAI/GGUF button pins, and the sound queue
+    // policy. Registered after the REQ-052 cluster, per the end-of-file
+    // pattern.
+    TestReq053TrayToggleDebounce();
+    TestReq053AboutFeatureLayout();
+    TestReq053BadgeDpiChangedPins();
+    TestReq053DeviceLostRecovery();
+    TestReq053TooltipFocusRestorePins();
+    TestReq053OpenAiButtonDisablePins();
+    TestReq053GgufButtonSyncPins();
+    TestReq053SoundQueuePolicy();
     // M7 A-1: the per-family worker-manifest naming scheme (path resolution,
     // store enumeration, legacy fallback, translate+asr coexistence non-
     // clobber, deployment pins). Registered after the REQ-052 cluster, per
