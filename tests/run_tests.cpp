@@ -14623,6 +14623,15 @@ void TestEngineHostAvailabilityAndMigration() {
 // worker_protocol.hpp parser (loader) and ResolveRepoFile source pins.
 #include "m7_worker_manifest_naming_tests.inc"
 
+// M7 A-2/A-3 (session 260922_0001): registry.json multi-writer merge rules
+// (atomic tmp+rename writer, item-preserving app-side merge, origin:"user"
+// survival, damaged-file fail-closure) + registry-aware uninstall cleanup
+// pins (setup.iss DelTree(CommonDir) -> CleanupSharedEngineStore structural
+// pins, installer canonical bundled item cross-parse). Staged as an .inc
+// next to this runner; defines TestM7RegistryMergeUninstall against
+// engine_host_registry.hpp and ResolveRepoFile source pins.
+#include "m7_registry_merge_uninstall_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15525,6 +15534,11 @@ int main() {
     // clobber, deployment pins). Registered after the REQ-052 cluster, per
     // the end-of-file pattern.
     TestM7WorkerManifestNaming();
+    // M7 A-2/A-3: the registry merge writer + uninstall protection (atomic
+    // write round-trips on a temp stage, origin preservation, fail-closed
+    // damage handling, installer-side structural pins). Registered right
+    // after the A-1 suite, per the end-of-file pattern.
+    TestM7RegistryMergeUninstall();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

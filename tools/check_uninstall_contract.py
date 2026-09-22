@@ -11,9 +11,16 @@ from the script source on every run:
            itself (SWbemLocator against root\\cimv2 — Inno Pascal Script
            registers no GetObject, so the 'winmgmts:' moniker form is not
            usable; the locator binds the same namespace).
-  CHECK 2  The shared store DelTree({localappdata}\\Emebala\\Common) is
+  CHECK 2  The shared store cleanup (CleanupSharedEngineStore, M7 A-3) is
            reachable only behind a SuppressibleMsgBox confirmation that
-           compares against IDYES inside CurUninstallStepChanged.
+           compares against IDYES inside CurUninstallStepChanged. The
+           pre-A-3 blanket DelTree(CommonDir, ...) is PROHIBITED (§V2-5.4
+           user-model protection) and its return trips this gate.
+  CHECK 8  M7 A-3 registry-aware cleanup invariants: the cleanup procedure
+           exists and fail-closes (a damaged/unreadable registry preserves
+           the ENTIRE store), deletes ONLY origin:"bundled" items' files,
+           preserves user items, and guards every files[] name with a bare-
+           name check before DeleteFile.
   CHECK 3  Preserve is the default: the delete confirmation passes IDNO as
            the SuppressibleMsgBox default (silent/Enter answers keep the
            engine), and the process probe is fail-closed (except -> keep).
@@ -117,21 +124,28 @@ def check_contract(text: str) -> list[str]:
                 "CHECK 1: IsEmebalaProcessRunning narrowed the process filter "
                 "(expected Win32_Process Name LIKE ''Emebala%'')")
 
-    # -- CHECK 2: DelTree behind an explicit IDYES confirmation ------------
+    # -- CHECK 2: registry-aware cleanup behind an explicit IDYES -----------
+    # confirmation, and the blanket DelTree of the shared store is gone.
     uninstall = extract_procedure(text, "CurUninstallStepChanged")
     if not uninstall:
         failures.append("CHECK 2: CurUninstallStepChanged is missing")
     else:
-        m_del = re.search(r"DelTree\(CommonDir", uninstall)
+        if re.search(r"DelTree\(\s*CommonDir", uninstall):
+            failures.append(
+                "CHECK 2: blanket DelTree(CommonDir) is back — M7 A-3 "
+                "requires registry-aware CleanupSharedEngineStore (§V2-5.4 "
+                "protects origin:\"user\" models; §V2-8.5 cleans bundles only)")
+        m_del = re.search(r"CleanupSharedEngineStore\(", uninstall)
         m_prompt = re.search(
             r"SuppressibleMsgBox\(\s*CustomMessage\('SharedEngineDeletePromptTitle'\)",
             uninstall)
         if not m_del:
             failures.append(
-                "CHECK 2: no DelTree(CommonDir) in CurUninstallStepChanged")
+                "CHECK 2: no CleanupSharedEngineStore call in "
+                "CurUninstallStepChanged")
         elif not m_prompt or m_prompt.start() > m_del.start():
             failures.append(
-                "CHECK 2: DelTree(CommonDir) is not preceded by the "
+                "CHECK 2: CleanupSharedEngineStore is not preceded by the "
                 "SharedEngineDeletePrompt SuppressibleMsgBox")
         else:
             guard = uninstall[m_prompt.start():m_del.start()]
@@ -139,7 +153,7 @@ def check_contract(text: str) -> list[str]:
                              re.DOTALL):
                 failures.append(
                     "CHECK 2: the SharedEngine delete confirmation does not "
-                    "require an explicit IDYES before DelTree(CommonDir)")
+                    "require an explicit IDYES before CleanupSharedEngineStore")
 
     # -- CHECK 3: preserve defaults ----------------------------------------
     if uninstall:
@@ -194,6 +208,57 @@ def check_contract(text: str) -> list[str]:
             failures.append(
                 f"CHECK 7: expected a kept-notice box in BOTH preserve branches, "
                 f"found {kept_notices}")
+
+    # -- CHECK 8: M7 A-3 registry-aware cleanup invariants -------------------
+    cleanup = extract_procedure(text, "CleanupSharedEngineStore")
+    if not cleanup:
+        failures.append("CHECK 8: CleanupSharedEngineStore is missing")
+    else:
+        if "not a strict v1 document" not in text or \
+                "ENTIRE shared store is preserved" not in cleanup:
+            failures.append(
+                "CHECK 8: CleanupSharedEngineStore lost the fail-closed "
+                "preserve-everything path for a damaged/unreadable registry")
+        if "DelTree" in cleanup:
+            failures.append(
+                "CHECK 8: CleanupSharedEngineStore uses DelTree — only "
+                "targeted DeleteFile of owned/bundled paths is allowed")
+        if "Origin = 'bundled'" not in cleanup:
+            failures.append(
+                "CHECK 8: cleanup no longer gates model deletion on "
+                "origin == 'bundled' (user models must survive)")
+        if "IsSafeBareName" not in text or \
+                "not a safe bare name" not in text:
+            failures.append(
+                "CHECK 8: the bare-name tampering guard (IsSafeBareName) is "
+                "gone from the cleanup path")
+
+    # -- CHECK 9: M7 A-2 installer-side registry merge invariants ------------
+    writer = extract_procedure(text, "WriteRegistryFile")
+    if not writer:
+        failures.append("CHECK 9: WriteRegistryFile is missing")
+    else:
+        if "leaving it untouched" not in writer:
+            failures.append(
+                "CHECK 9: WriteRegistryFile lost the fail-closed preserve "
+                "path for a damaged/non-strict registry.json")
+        if "REGISTRY_BUNDLED_ID" not in writer or "'bundled'" not in writer:
+            failures.append(
+                "CHECK 9: WriteRegistryFile no longer merges the single "
+                "owned bundled slot (origin-preservation rule)")
+        if "WriteTextFileAtomic" not in writer:
+            failures.append(
+                "CHECK 9: WriteRegistryFile no longer persists through the "
+                "atomic tmp+rename writer (multi-writer torn-read protection)")
+        # A-2 must not regress to the pre-A-2 create-if-missing model:
+        if re.search(r"already exists - leaving it untouched \(idempotent",
+                     writer):
+            failures.append(
+                "CHECK 9: the pre-A-2 create-if-missing early-exit is back; "
+                "existing registries must be MERGED, not skipped")
+    if "function WriteTextFileAtomic" not in text:
+        failures.append("CHECK 9: WriteTextFileAtomic (atomic writer helper) "
+                        "is missing")
 
     return failures
 

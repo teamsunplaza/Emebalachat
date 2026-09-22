@@ -543,8 +543,9 @@ Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Install/replace is gated by the ShouldInstallEngineHost() Check (engine.version
 ; compare: missing/older => install, equal/newer => skip). uninsneveruninstall
 ; is REQUIRED: the file is shared, so Inno's own uninstall must NOT remove it -
-; the plan §7.3 last-app check in [Code] (CurUninstallStepChanged) deletes the
-; common engine/models only when no other Emebala app remains installed.
+; the plan §7.3 last-app check in [Code] (CurUninstallStepChanged) cleans the
+; common engine/models (registry-aware, bundled-only per M7 A-3) only when no
+; other Emebala app remains installed and the user confirms.
 ; No skipifsourcedoesntexist on purpose: a missing build\Emebala.Engine.exe
 ; must fail the compile (the host is a mandatory release component).
 Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineHost
@@ -556,8 +557,9 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; ShouldInstallEngineWorker() Check (components.json 'ggml-translate' rule A
 ; decision + no-llama file-absence guard). uninsneveruninstall matches the
 ; orchestrator entry: the plan §7.3 last-app check in [Code]
-; (CurUninstallStepChanged) deletes the whole common engine dir only when
-; no other Emebala app remains installed.
+; (CurUninstallStepChanged -> CleanupSharedEngineStore, M7 A-3) removes only
+; the files THIS installer owns, and only when no other Emebala app remains
+; installed and the user confirms.
 ; REQ-045 (P4-1, item 2a): skipifsourcedoesntexist was REMOVED from both
 ; worker entries. It used to silently omit the worker on a no-llama build
 ; tree (ENABLE_LLAMA_FETCH=OFF), which let a "local-LLM-capable" release ship
@@ -699,6 +701,19 @@ const
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
   ENGINE_WORKER_ENGINE_VERSION = 'b6099';
+
+  // M7 A-2 (session 260922_0001, plan §V2-5.1): registry.json multi-writer
+  // merge contract. This installer owns EXACTLY ONE models[] item - the
+  // bundled translate model - identified by REGISTRY_BUNDLED_ID. The item is
+  // serialized as a single compact line so the strict walker (JsonGetField*)
+  // can round-trip it; the C++ parser (src/engine_host_registry.cpp) reads it
+  // as-is (same values the pre-A-2 15-line document produced, incl. the
+  // already-clamped priority 9). The model filename is interpolated at write
+  // time from MODEL_FILENAME so the pin and the registry can never drift.
+  REGISTRY_FILENAME = 'registry.json';
+  REGISTRY_BUNDLED_ID = 'hy-mt2-1.8b-q8';
+  REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
+  REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
 
 var
   DownloadPage: TDownloadWizardPage;
@@ -943,6 +958,289 @@ begin
           (S[Idx] <> #13) and (S[Idx] <> #10) do
       Idx := Idx + 1;
   end;
+end;
+
+// ------------------------------------------------------------------------
+// M7 A-2/A-3 (session 260922_0001): registry.json walkers + atomic writer.
+// Same family of helpers the WriteComponentsFile merge uses (JsonSkipWs /
+// JsonParseKey / JsonParseString / JsonParseInt / JsonSkipValue), lifted to
+// the generic operations the model registry merge and the A-3 registry-aware
+// uninstall cleanup need. STRICT-BY-DESIGN: every helper returns failure on
+// any deviation from the writer's own serialization shape; callers then take
+// the fail-closed path (leave the file untouched), mirroring the components.json
+// "safe-failure" precedent. The C++ parser (src/engine_host_registry.cpp)
+// additionally tolerates unknown fields and a UTF-8 BOM; a document that
+// carries either is preserved verbatim here instead of being rewritten -
+// preservation, never destruction, is the merge contract.
+// ------------------------------------------------------------------------
+
+// JsonGetFieldString - first string value stored under Field in the object
+// text Obj ('' when absent or when any structural deviation is hit). Keys are
+// matched case-sensitively (JSON), values must be quoted strings.
+function JsonGetFieldString(const Obj, Field: String): String;
+var
+  Idx: Integer;
+  Key: String;
+begin
+  Result := '';
+  Idx := 1;
+  JsonSkipWs(Obj, Idx);
+  if (Idx > Length(Obj)) or (Obj[Idx] <> '{') then
+    Exit;
+  Idx := Idx + 1;
+  while Idx <= Length(Obj) do
+  begin
+    JsonSkipWs(Obj, Idx);
+    if Idx > Length(Obj) then
+      Exit;
+    if Obj[Idx] = '}' then
+      Break;
+    Key := JsonParseKey(Obj, Idx);
+    if Key = '' then
+      Exit; // malformed key: fail closed
+    JsonSkipWs(Obj, Idx);
+    if (Idx > Length(Obj)) or (Obj[Idx] <> ':') then
+      Exit;
+    Idx := Idx + 1;
+    JsonSkipWs(Obj, Idx);
+    if (Key = Field) and (Idx <= Length(Obj)) and (Obj[Idx] = '"') then
+    begin
+      Result := JsonParseString(Obj, Idx);
+      Exit;
+    end;
+    JsonSkipValue(Obj, Idx);
+    JsonSkipWs(Obj, Idx);
+    if (Idx <= Length(Obj)) and (Obj[Idx] = ',') then
+      Idx := Idx + 1;
+  end;
+end;
+
+// JsonGetFieldRaw - raw text of the value stored under Field in the object
+// text Obj (balanced slice). Result=False when the field is absent or the
+// object deviates from the expected shape.
+function JsonGetFieldRaw(const Obj, Field: String; out Raw: String): Boolean;
+var
+  Idx, Start: Integer;
+  Key: String;
+begin
+  Result := False;
+  Raw := '';
+  Idx := 1;
+  JsonSkipWs(Obj, Idx);
+  if (Idx > Length(Obj)) or (Obj[Idx] <> '{') then
+    Exit;
+  Idx := Idx + 1;
+  while Idx <= Length(Obj) do
+  begin
+    JsonSkipWs(Obj, Idx);
+    if Idx > Length(Obj) then
+      Exit;
+    if Obj[Idx] = '}' then
+      Break;
+    Key := JsonParseKey(Obj, Idx);
+    if Key = '' then
+      Exit;
+    JsonSkipWs(Obj, Idx);
+    if (Idx > Length(Obj)) or (Obj[Idx] <> ':') then
+      Exit;
+    Idx := Idx + 1;
+    Start := Idx;
+    JsonSkipValue(Obj, Idx);
+    if Idx = Start then
+      Exit; // nothing consumed: malformed
+    if Key = Field then
+    begin
+      Raw := Trim(Copy(Obj, Start, Idx - Start));
+      Result := True;
+      Exit;
+    end;
+    JsonSkipWs(Obj, Idx);
+    if (Idx <= Length(Obj)) and (Obj[Idx] = ',') then
+      Idx := Idx + 1;
+  end;
+end;
+
+// JsonSplitArray - split an array text into its raw element texts (balanced
+// slices, Trim-ed). Enforces: leading '[', no trailing comma, closing ']'.
+function JsonSplitArray(const Arr: String; out Items: TArrayOfString): Boolean;
+var
+  Idx, Start, N: Integer;
+begin
+  Result := False;
+  SetArrayLength(Items, 0);
+  Idx := 1;
+  JsonSkipWs(Arr, Idx);
+  if (Idx > Length(Arr)) or (Arr[Idx] <> '[') then
+    Exit;
+  Idx := Idx + 1;
+  N := 0;
+  while Idx <= Length(Arr) do
+  begin
+    JsonSkipWs(Arr, Idx);
+    if Idx > Length(Arr) then
+      Exit; // unterminated array
+    if Arr[Idx] = ']' then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Start := Idx;
+    JsonSkipValue(Arr, Idx);
+    if Idx = Start then
+      Exit; // nothing consumed: malformed element
+    SetArrayLength(Items, N + 1);
+    Items[N] := Trim(Copy(Arr, Start, Idx - Start));
+    N := N + 1;
+    JsonSkipWs(Arr, Idx);
+    if (Idx <= Length(Arr)) and (Arr[Idx] = ',') then
+    begin
+      Idx := Idx + 1;
+      JsonSkipWs(Arr, Idx);
+      if (Idx > Length(Arr)) or (Arr[Idx] = ']') then
+        Exit; // trailing comma: fail closed
+    end;
+  end;
+end;
+
+// IsSafeBareName - M7 A-3 deletion guard: a registry files[] entry must be a
+// bare filename before the uninstall cleanup may resolve it against the
+// models dir. The C++ parser rejects separators as tampering, but the
+// strict installer walker validates JSON SHAPE, not content — so a
+// hand-edited document carrying "..\\..\\evil.exe" under origin:"bundled"
+// must still never reach DeleteFile. Empty, or containing '\' '/' ':', fails.
+function IsSafeBareName(const N: String): Boolean;
+begin
+  Result := (Length(N) > 0) and (Pos('\', N) = 0) and (Pos('/', N) = 0) and
+            (Pos(':', N) = 0) and (Pos(#0, N) = 0);
+end;
+
+// JsonParseRegistryItems - validate the v1 registry envelope (schema_version
+// first == 1, models second, array, NOTHING after models) and split models[]
+// into raw item texts. The strict tail check is deliberate: a document that
+// carries extra top-level fields is a shape this installer cannot round-trip,
+// so it must fail here and push the caller into the preserve-verbatim
+// fail-closed path (never silently drop another writer's fields).
+function JsonParseRegistryItems(const Doc: String;
+  out Items: TArrayOfString): Boolean;
+var
+  Idx, Start: Integer;
+  Key, ModelsRaw: String;
+begin
+  Result := False;
+  SetArrayLength(Items, 0);
+  Idx := 1;
+  JsonSkipWs(Doc, Idx);
+  if (Idx > Length(Doc)) or (Doc[Idx] <> '{') then
+    Exit;
+  Idx := Idx + 1;
+  JsonSkipWs(Doc, Idx);
+  Key := JsonParseKey(Doc, Idx);
+  if Key <> 'schema_version' then
+    Exit;
+  JsonSkipWs(Doc, Idx);
+  if (Idx > Length(Doc)) or (Doc[Idx] <> ':') then
+    Exit;
+  Idx := Idx + 1;
+  JsonSkipWs(Doc, Idx);
+  if JsonParseInt(Doc, Idx) <> 1 then
+    Exit; // v1 only (matches ENGINEHOST/Registry/001 fail-closed)
+  JsonSkipWs(Doc, Idx);
+  if (Idx > Length(Doc)) or (Doc[Idx] <> ',') then
+    Exit;
+  Idx := Idx + 1;
+  JsonSkipWs(Doc, Idx);
+  Key := JsonParseKey(Doc, Idx);
+  if Key <> 'models' then
+    Exit;
+  JsonSkipWs(Doc, Idx);
+  if (Idx > Length(Doc)) or (Doc[Idx] <> ':') then
+    Exit;
+  Idx := Idx + 1;
+  Start := Idx;
+  JsonSkipValue(Doc, Idx);
+  if Idx = Start then
+    Exit;
+  ModelsRaw := Trim(Copy(Doc, Start, Idx - Start));
+  if not JsonSplitArray(ModelsRaw, Items) then
+    Exit;
+  // Envelope tail: '}' must close the document right after models[].
+  JsonSkipWs(Doc, Idx);
+  if (Idx > Length(Doc)) or (Doc[Idx] <> '}') then
+    Exit;
+  Idx := Idx + 1;
+  JsonSkipWs(Doc, Idx);
+  if Idx <= Length(Doc) then
+    Exit; // trailing content: unknown top-level field -> fail closed
+  Result := True;
+end;
+
+// JsonBuildRegistryDoc - re-serialize items into the canonical two-key
+// document the C++ parser accepts. Single-line compact shape (byte-stable,
+// round-trip-verified by the structural pins).
+function JsonBuildRegistryDoc(const Items: TArrayOfString): String;
+var
+  I: Integer;
+begin
+  Result := '{"schema_version": 1, "models": [';
+  for I := 0 to GetArrayLength(Items) - 1 do
+  begin
+    if I > 0 then
+      Result := Result + ',';
+    Result := Result + Items[I];
+  end;
+  Result := Result + ']}';
+end;
+
+// LoadRegistryDocument - read registry.json as raw bytes and decode UTF-8
+// (NO system-codepage round-trip: LoadStringFromFile returns the exact file
+// bytes as AnsiString; UTF8Decode is byte-faithful, so a non-ASCII user model
+// filename survives verbatim - the CP949 mojibake class of bug stays out of
+// this path). Tolerates one leading BOM (the pre-A-2 installer wrote one).
+function LoadRegistryDocument(const Path: String; out Doc: String): Boolean;
+var
+  Raw: AnsiString;
+begin
+  Result := False;
+  Doc := '';
+  if not LoadStringFromFile(Path, Raw) then
+    Exit;
+  Doc := UTF8Decode(Raw);
+  if (Length(Doc) > 0) and (Doc[1] = #$FEFF) then
+    Doc := Copy(Doc, 2, Length(Doc) - 1);
+end;
+
+// WriteTextFileAtomic - the installer-side twin of the app's
+// WriteRegistryAtomically (src/engine_host_registry.cpp, config.cpp
+// SaveToFileLocked precedent): complete bytes to <Path>.tmp on the SAME
+// volume first, then rename over the target. A reader ever sees either the
+// complete old document or the complete new one; a crash mid-write leaves
+// the previous file intact with only a stray .tmp behind. RenameFile cannot
+// replace an existing target, so the replace case deletes the old file and
+// renames immediately after (the tiny window is still strictly better than
+// the old truncate-in-place overwrite, and failure keeps the .tmp path).
+function WriteTextFileAtomic(const Path, Content: String): Boolean;
+var
+  Tmp: String;
+  A: AnsiString;
+begin
+  Tmp := Path + '.tmp';
+  A := UTF8Encode(Content);
+  Result := False;
+  if SaveStringToFile(Tmp, A, False) then
+  begin
+    if RenameFile(Tmp, Path) then
+      Result := True
+    else
+    begin
+      DeleteFile(Path); // replace-existing retry (documented above)
+      if RenameFile(Tmp, Path) then
+        Result := True
+      else
+        Log('M7 A-2: atomic rename failed for ' + Path);
+    end;
+  end;
+  if not Result then
+    DeleteFile(Tmp);
 end;
 
 // ------------------------------------------------------------------------
@@ -2082,7 +2380,8 @@ begin
 end;
 
 // ------------------------------------------------------------------------
-// WriteRegistryFile - REQ-045 (P4-1, item 2b): write the v1 model registry
+// WriteRegistryFile - REQ-045 (P4-1, item 2b), MULTI-WRITER MERGE per M7 A-2
+// (session 260922_0001, plan §V2-5.1: "작성: 설치기(번들)와 앱(사용자 모델)")
 // ------------------------------------------------------------------------
 // The app's bootstrap gate (engine_host_bootstrap_client.cpp kRequired[])
 // treats %LOCALAPPDATA%\Emebala\Common\models\registry.json as a REQUIRED
@@ -2092,53 +2391,150 @@ end;
 // wrote registry.json, so every install landed in that gap: the model was
 // present but the app still reported the local engine as missing.
 //
-// This procedure writes the fixed v1 registry document for the bundled
-// hy-mt2-1.8b-q8 model into the common models dir right after DownloadModel.
-// IDEMPOTENT / NON-DESTRUCTIVE: when registry.json already exists it is left
-// completely untouched, so a user's custom model registrations are never
-// overwritten. Only a missing file is created (fresh install, or repair of
-// a pre-REQ-045 install). Runs unconditionally at ssPostInstall - even when
-// the model download was skipped or declined - because the registry is a
-// contract about the model SLOT, not the downloaded bytes, and a missing
-// registry must never again read as "not installed".
+// MERGE RULE (A-2; replaces the pre-A-2 create-if-missing single-writer
+// model, which silently left a NEWER bundled slot unfilled once ANY
+// registry.json existed — and, worse, made every other family installer a
+// pure first-writer-wins competitor). The document is a family-shared
+// multi-writer file, so this installer now merges instead of skipping:
 //
-// Document shape matches the tests/m6_engine_host_registry_tests.inc golden
-// (schema_version 1) and design 124500 §2b. files[] holds the bare filename
-// only (engine_host_registry.cpp rejects path escapes as tampering). The
-// emitted "priority" is the already-clamped 9 (the golden writes 10 and the
-// parser clamps 10->9 to the 0..9 scheduler scale; emitting 9 keeps the
-// on-disk value equal to the effective value). UTF-8, no BOM: SaveStringsTo
-// UTF8File satisfies the installer encoding gate, matching CreateConfigFile.
+//   * file MISSING  -> create the fresh one-item document (REQ-045 behavior).
+//   * file present  -> parse it with the STRICT v1 walkers. ANY deviation
+//                      (unparseable JSON, schema != 1, unknown top-level
+//                      fields, trailing commas) is a FAIL-CLOSED preserve:
+//                      the file is left byte-identical and the install logs
+//                      why (same "leaving it untouched (safe-failure path)"
+//                      semantics as the WriteComponentsFile merge, and the
+//                      same direction as the C++ parser's ENGINEHOST/
+//                      Registry/001-004 rejections). A damaged registry is
+//                      NEVER overwritten.
+//   * per item (models[] order preserved):
+//       - item id != REGISTRY_BUNDLED_ID   -> copied VERBATIM (user models,
+//         other families' bundles, unknown-origin items: this installer owns
+//         only its single bundled slot; everything else is another writer's
+//         document content and passes through byte-for-byte, mirroring the
+//         components.json non-owned-entry rule).
+//       - item id == REGISTRY_BUNDLED_ID and origin == "bundled" -> REPLACED
+//         by the current canonical bundled item (a reinstall updates the
+//         slot; "bundled 재설치는 버전/경로 필드만 갱신" — the canonical item
+//         IS this release's version/path truth).
+//       - item id == REGISTRY_BUNDLED_ID and origin != "bundled" (user or
+//         absent origin) -> the EXISTING item WINS: a user registration is
+//         never lost to a bundled reinstall (A-2 origin-preservation rule;
+//         practically unreachable since RegisterUserGgufModel prefixes user
+//         ids with "user-", but it is the defensive contract).
+//   * no item with the bundled id at all  -> the canonical item is APPENDED.
+//
+// The rewrite goes through WriteTextFileAtomic (registry.json.tmp + rename):
+// concurrent readers — the running host, another app's registry parse —
+// ever see a complete document, never a half-written one.
+//
+// Runs unconditionally at ssPostInstall - even when the model download was
+// skipped or declined - because the registry is a contract about the model
+// SLOT, not the downloaded bytes, and a missing registry must never again
+// read as "not installed". Document shape matches the tests/
+// m6_engine_host_registry_tests.inc golden (schema_version 1); files[] holds
+// the bare filename only (engine_host_registry.cpp rejects path escapes as
+// tampering); "priority" is the already-clamped 9 (golden writes 10, parser
+// clamps 10->9). UTF-8 without BOM (the app parser tolerates one anyway —
+// REQ-048 R2); byte-faithful via UTF8Encode/LoadRegistryDocument so a
+// non-ASCII user entry copied verbatim cannot be codepage-mangled.
 // ------------------------------------------------------------------------
 procedure WriteRegistryFile();
 var
   RegistryPath: String;
-  Lines: TArrayOfString;
+  Doc: String;
+  Items, Merged: TArrayOfString;
+  BundledItem, Id, Origin, SlotNote: String;
+  I, MergedCount: Integer;
+  HaveBundled: Boolean;
 begin
-  RegistryPath := ExpandConstant(COMMON_MODELS_DIR) + '\registry.json';
-  if FileExists(RegistryPath) then
+  RegistryPath := ExpandConstant(COMMON_MODELS_DIR) + '\' + REGISTRY_FILENAME;
+  BundledItem := REGISTRY_BUNDLED_ITEM_PREFIX + MODEL_FILENAME +
+                 REGISTRY_BUNDLED_ITEM_SUFFIX;
+
+  // ---- missing file: fresh one-item document (REQ-045 path) --------------
+  if not FileExists(RegistryPath) then
   begin
-    Log('REQ-045: registry.json already exists - leaving it untouched (idempotent, preserves user registrations).');
+    // DownloadModel normally ForceDirectories the same dir at ssPostInstall,
+    // but it may exit early (consent declined); the fresh-create must not
+    // depend on that side effect.
+    if not DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
+      ForceDirectories(ExpandConstant(COMMON_MODELS_DIR));
+    SetArrayLength(Merged, 1);
+    Merged[0] := BundledItem;
+    if WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Merged)) then
+      Log('M7 A-2: registry.json created (fresh) at: ' + RegistryPath)
+    else
+      Log('M7 A-2: WARNING failed to create registry.json at: ' + RegistryPath);
     Exit;
   end;
-  SetArrayLength(Lines, 15);
-  Lines[0]  := '{';
-  Lines[1]  := '  "schema_version": 1,';
-  Lines[2]  := '  "models": [{';
-  Lines[3]  := '    "id": "hy-mt2-1.8b-q8",';
-  Lines[4]  := '    "family": "ggml-translate",';
-  Lines[5]  := '    "files": ["Hy-MT2-1.8B-Q8_0.gguf"],';
-  Lines[6]  := '    "capabilities": ["translate"],';
-  Lines[7]  := '    "origin": "bundled",';
-  Lines[8]  := '    "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9},';
-  Lines[9]  := '    "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}},';
-  Lines[10] := '    "lang_pairs": ["*"]';
-  Lines[11] := '  }]';
-  Lines[12] := '}';
-  if SaveStringsToUTF8File(RegistryPath, Lines, False) then
-    Log('REQ-045: registry.json created at: ' + RegistryPath)
+
+  // ---- existing file: strict parse or fail-closed preserve ---------------
+  if not LoadRegistryDocument(RegistryPath, Doc) then
+  begin
+    Log('M7 A-2: registry.json unreadable; leaving it untouched (fail-closed, preserves every registration).');
+    Exit;
+  end;
+  if not JsonParseRegistryItems(Doc, Items) then
+  begin
+    Log('M7 A-2: registry.json is not a strict v1 document (damage or an unknown shape); leaving it untouched (fail-closed).');
+    Exit;
+  end;
+
+  // ---- merge: verbatim for non-owned items, own the bundled slot --------
+  HaveBundled := False;
+  MergedCount := 0;
+  SetArrayLength(Merged, GetArrayLength(Items) + 1);
+  for I := 0 to GetArrayLength(Items) - 1 do
+  begin
+    Id := JsonGetFieldString(Items[I], 'id');
+    if Id = REGISTRY_BUNDLED_ID then
+    begin
+      if HaveBundled then
+      begin
+        // Duplicate owned keys: not our document to arbitrate — verbatim
+        // copy everything from the first match on and skip the replacement.
+        Log('M7 A-2: duplicate bundled id in registry.json; copying verbatim.');
+        Merged[MergedCount] := Items[I];
+        MergedCount := MergedCount + 1;
+        Continue;
+      end;
+      Origin := JsonGetFieldString(Items[I], 'origin');
+      if Origin = 'bundled' then
+      begin
+        Merged[MergedCount] := BundledItem; // reinstall refreshes the slot
+      end
+      else
+      begin
+        // origin:"user" (or absent -> the C++ parser also defaults to user):
+        // the existing registration WINS over this bundle.
+        Merged[MergedCount] := Items[I];
+        Log('M7 A-2: bundled id carried a non-bundled origin; user registration preserved (bundle slot not overwritten).');
+      end;
+      HaveBundled := True;
+    end
+    else
+    begin
+      Merged[MergedCount] := Items[I]; // non-owned: verbatim passthrough
+    end;
+    MergedCount := MergedCount + 1;
+  end;
+  if not HaveBundled then
+  begin
+    Merged[MergedCount] := BundledItem; // append the missing owned slot
+    MergedCount := MergedCount + 1;
+  end;
+  SetArrayLength(Merged, MergedCount);
+
+  if HaveBundled then
+    SlotNote := 'refreshed/preserved'
   else
-    Log('REQ-045: WARNING failed to create registry.json at: ' + RegistryPath);
+    SlotNote := 'appended';
+  if WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Merged)) then
+    Log('M7 A-2: registry.json merged (' + IntToStr(MergedCount) +
+        ' item(s), bundled slot ' + SlotNote + '): ' + RegistryPath)
+  else
+    Log('M7 A-2: WARNING merged registry.json could not be written; previous document left intact at: ' + RegistryPath);
 end;
 
 // ------------------------------------------------------------------------
@@ -2229,10 +2625,14 @@ begin
     // migrate), then the common-path pin check / download, then config.
     DeleteLegacyModel();
     DownloadModel();
-    // REQ-045 (P4-1, item 2b): ensure the v1 model registry exists so the
-    // app's kRequired[] bootstrap gate no longer reads "local engine not
-    // installed" on a machine that does have the model. Idempotent: only a
-    // missing registry.json is created; an existing one is never touched.
+    // REQ-045 (P4-1, item 2b) + M7 A-2 merge: ensure this release's bundled
+    // model slot exists in the v1 registry so the app's kRequired[] bootstrap
+    // gate no longer reads "local engine not installed" on a machine that
+    // does have the model. MERGE semantics (see WriteRegistryFile): missing
+    // file -> fresh create; existing strict-v1 file -> this installer's
+    // bundled item is refreshed/appended while every other item (user
+    // models, other families) is preserved verbatim; damaged or non-strict
+    // documents are fail-closed PRESERVED, never overwritten.
     WriteRegistryFile();
     CreateConfigFile();
     // REQ-043 + REQ-006/M6: stamp the v1 engine.version (frozen contract) and
@@ -2297,6 +2697,194 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// M7 A-3 (session 260922_0001, plan §V2-5.4/§V2-8.5): registry-aware
+// shared-store cleanup — replaces the blanket DelTree(%LOCALAPPDATA%\
+// Emebala\Common) the last-family-app uninstall used to run.
+//
+// §V2-5.4: origin:"user" items are EXEMPT from removal/cleanup (user data
+// protection). §V2-8.5: only the last family app cleans the shared engine +
+// BUNDLE model. A blanket DelTree violated both: it destroyed user-registered
+// models and every unowned file in the store. The contract now:
+//   * registry.json unreadable OR not a strict v1 document (damage, unknown
+//     shape) -> preserve the ENTIRE store, zero deletions. A destructive
+//     fallback is forbidden; the log line carries the reason (shape-only).
+//   * origin:"bundled" items -> their files[] are deleted (each name must
+//     pass IsSafeBareName first: a hand-edited registry can never steer
+//     DeleteFile outside the models dir), and their registry entries are
+//     dropped from the rewritten document.
+//   * everything else (origin:"user", unknown-origin items, unregistered
+//     files, other families' engine binaries) -> PRESERVED verbatim.
+//   * the registry rewrite happens BEFORE the file deletions: if the rewrite
+//     fails, no files are removed (a document must never end up listing
+//     deleted models). If a deletion fails (locked), the orphan file simply
+//     stays behind unregistered.
+//   * engine-dir cleanup is limited to the files THIS installer owns
+//     (orchestrator + ggml-translate worker + its manifests + the version/
+//     components metadata); directories are only RemoveDir-ed when empty,
+//     so unowned leftovers keep the tree alive.
+// ------------------------------------------------------------------------
+
+// RemoveBundledItemFiles - delete the models-dir files referenced by one
+// bundled registry item. Every files[] entry passes IsSafeBareName; unsafe
+// or unparseable entries are logged and SKIPPED (preservation direction).
+procedure RemoveBundledItemFiles(const Item, ModelsDir: String);
+var
+  FilesRaw: String;
+  Files: TArrayOfString;
+  Name: String;
+  I, Jdx: Integer;
+begin
+  if not JsonGetFieldRaw(Item, 'files', FilesRaw) then
+  begin
+    Log('M7 A-3: bundled item has no parseable files[]; entry dropped, model file preserved.');
+    Exit;
+  end;
+  if not JsonSplitArray(FilesRaw, Files) then
+  begin
+    Log('M7 A-3: bundled item files[] is not a strict array; entry dropped, model file preserved.');
+    Exit;
+  end;
+  for I := 0 to GetArrayLength(Files) - 1 do
+  begin
+    Jdx := 1;
+    if (Length(Files[I]) = 0) or (Files[I][1] <> '"') then
+    begin
+      Log('M7 A-3: bundled files[] entry is not a string; file preserved.');
+      Continue;
+    end;
+    Name := JsonParseString(Files[I], Jdx);
+    if not IsSafeBareName(Name) then
+    begin
+      Log('M7 A-3: bundled files[] entry is not a safe bare name; file preserved (tampering guard).');
+      Continue;
+    end;
+    if FileExists(ModelsDir + '\' + Name) then
+    begin
+      if DeleteFile(ModelsDir + '\' + Name) then
+        Log('M7 A-3: bundled model file removed: ' + Name)
+      else
+        Log('M7 A-3: WARNING bundled model file still in use, left unregistered: ' + Name);
+    end;
+  end;
+end;
+
+// DeleteOwnedFile - best-effort removal of one store file this installer
+// owns. Missing is fine (older installs may never have shipped it).
+procedure DeleteOwnedFile(const Path: String);
+begin
+  if FileExists(Path) then
+  begin
+    if DeleteFile(Path) then
+      Log('M7 A-3: owned engine file removed: ' + Path)
+    else
+      Log('M7 A-3: WARNING owned engine file still in use, left behind: ' + Path);
+  end;
+end;
+
+procedure CleanupSharedEngineStore(const CommonDir: String);
+var
+  ModelsDir, EngineDir, RegistryPath: String;
+  Doc: String;
+  Items, Kept: TArrayOfString;
+  Origin: String;
+  I, KeptCount, RemovedBundled: Integer;
+begin
+  ModelsDir := CommonDir + '\models';
+  EngineDir := CommonDir + '\engine';
+  RegistryPath := ModelsDir + '\' + REGISTRY_FILENAME;
+
+  // ---- 1. registry-aware model cleanup (bundled only) --------------------
+  if FileExists(RegistryPath) then
+  begin
+    if not LoadRegistryDocument(RegistryPath, Doc) then
+    begin
+      Log('M7 A-3: registry.json unreadable; the ENTIRE shared store is preserved (destructive fallback forbidden).');
+      Exit;
+    end;
+    if not JsonParseRegistryItems(Doc, Items) then
+    begin
+      Log('M7 A-3: registry.json is not a strict v1 document (damage or unknown shape); the ENTIRE shared store is preserved (destructive fallback forbidden).');
+      Exit;
+    end;
+
+    KeptCount := 0;
+    SetArrayLength(Kept, GetArrayLength(Items));
+    RemovedBundled := 0;
+    for I := 0 to GetArrayLength(Items) - 1 do
+    begin
+      Origin := JsonGetFieldString(Items[I], 'origin');
+      if Origin = 'bundled' then
+      begin
+        // The entry is dropped from Kept; its files go in the loop below.
+        RemovedBundled := RemovedBundled + 1;
+      end
+      else
+      begin
+        // origin:"user", absent origin (the C++ parser defaults it to
+        // "user"), or any other origin value: user-side data — PRESERVED.
+        Kept[KeptCount] := Items[I];
+        KeptCount := KeptCount + 1;
+      end;
+    end;
+
+    if RemovedBundled > 0 then
+    begin
+      // Rewrite the registry FIRST (registry-listing integrity): only when
+      // the document landed may the bundled files themselves be deleted.
+      SetArrayLength(Kept, KeptCount);
+      if KeptCount = 0 then
+      begin
+        // No registrations left at all: the store holds no model contract;
+        // a future install recreates registry.json through the A-2
+        // fresh-create path (the app's bootstrap gate keeps reading
+        // "not installed" correctly meanwhile).
+        if not DeleteFile(RegistryPath) then
+        begin
+          Log('M7 A-3: WARNING registry.json could not be removed; bundled model files preserved (listing integrity).');
+          Exit;
+        end;
+        Log('M7 A-3: registry.json removed (no user registrations remained).');
+      end
+      else if not WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Kept)) then
+      begin
+        Log('M7 A-3: WARNING registry.json could not be rewritten; bundled model files preserved (listing integrity).');
+        Exit;
+      end
+      else
+        Log('M7 A-3: registry.json rewritten (' + IntToStr(KeptCount) + ' user item(s) preserved verbatim).');
+
+      // Now the bundled files.
+      for I := 0 to GetArrayLength(Items) - 1 do
+      begin
+        Origin := JsonGetFieldString(Items[I], 'origin');
+        if Origin = 'bundled' then
+          RemoveBundledItemFiles(Items[I], ModelsDir);
+      end;
+    end;
+  end;
+
+  // ---- 2. engine dir: ONLY the files this installer owns ------------------
+  // The orchestrator is family-shared (DEC-006: Chat builds it) and carries
+  // uninsneveruninstall precisely so this code path - not Inno's log-driven
+  // uninstall - removes it, at the last family app. Other families' worker
+  // exes / untracked files are unowned here: preserved.
+  DeleteOwnedFile(EngineDir + '\' + ENGINE_HOST_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + WORKER_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + WORKER_MANIFEST_FILENAME);
+  DeleteOwnedFile(EngineDir + '\worker.manifest'); // legacy pre-A-1 name (translate's)
+  DeleteOwnedFile(EngineDir + '\' + ENGINE_VERSION_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + COMPONENTS_FILENAME);
+  DeleteOwnedFile(EngineDir + '\token'); // §4.2 host token; host deletes at exit, best-effort here
+
+  // ---- 3. prune empty directories only (unowned files keep the tree) ------
+  RemoveDir(EngineDir);
+  RemoveDir(ModelsDir);
+  RemoveDir(CommonDir);
+  if DirExists(CommonDir) then
+    Log('M7 A-3: shared store kept at ' + CommonDir + ' (user models and/or files owned by another Emebala product remain — by design).');
+end;
+
+// ------------------------------------------------------------------------
 // CurUninstallStepChanged - Clean up auto-start registry entry on uninstall
 // ------------------------------------------------------------------------
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -2334,7 +2922,7 @@ begin
     // REQ-043 (plan §7.3) + REQ-048 F3 (architect 052600 §F3): each app
     // removes only its own files (the shared host exe carries
     // uninsneveruninstall for exactly this reason). The shared engine +
-    // model under %LOCALAPPDATA%\Emebala\Common are removed only when ALL
+    // model under %LOCALAPPDATA%\Emebala\Common are touched only when ALL
     // of the following hold:
     //   1. no other Emebala-family app remains installed (ARP scan above,
     //      own AppId excluded) - REQ-043;
@@ -2345,6 +2933,14 @@ begin
     //      uninstall and a plain Enter/No answer both keep the engine.
     // In every other case the store is preserved and the user is told why
     // (SharedEngineKeptInUse* explains the other-product / in-use cases).
+    //
+    // M7 A-3 (session 260922_0001, plan §V2-5.4/§V2-8.5): the confirmed
+    // cleanup is NO LONGER a blanket DelTree of the whole Common store —
+    // that destroyed origin:"user" models (user data) and unowned files,
+    // violating both contract sections. It is now CleanupSharedEngineStore:
+    // registry-aware, bundled-only removal with fail-closed preservation on
+    // any damaged/unreadable registry (see the procedure header for the full
+    // contract).
     CommonDir := ExpandConstant('{localappdata}\Emebala\Common');
     if IsOtherEmebalaAppInstalled() then
     begin
@@ -2366,8 +2962,8 @@ begin
                               CustomMessage('SharedEngineDeletePromptBody'),
                               mbConfirmation, MB_YESNO, IDNO) = IDYES then
         begin
-          DelTree(CommonDir, True, True, True);
-          Log('REQ-048 F3: user confirmed; shared engine and model deleted: ' + CommonDir);
+          CleanupSharedEngineStore(CommonDir);
+          Log('M7 A-3: registry-aware shared-store cleanup completed for: ' + CommonDir);
         end
         else
           Log('REQ-048 F3: user chose to keep the shared engine and model at: ' + CommonDir);
