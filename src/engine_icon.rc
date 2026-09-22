@@ -1,0 +1,43 @@
+// REQ-R2 engine counterpart (session 260922_0002): the shared engine host's
+// icon resource. Embeds the Emebala brand logo (multi-size .ico generated
+// from assets/Emebala_Brand_Logo.png — assets/Emebala_Engine_Appicon.ico) into
+// Emebala.Engine.exe so Explorer / Task Manager / Alt+Tab show the branded
+// icon instead of the generic Win32 application icon. Mirrors src/app_icon.rc
+// (the Chat exe) with the engine's own identity strings.
+//
+// Path is relative to THIS .rc file (src/), so ../assets/... resolves to the
+// repo's assets directory. IDI_ICON1 is the conventional primary app icon id;
+// Windows uses the lowest-numbered ICON resource as the file's icon.
+#include <windows.h>
+
+IDI_ICON1 ICON "..\\assets\\Emebala_Engine_Appicon.ico"
+
+// VERSIONINFO resource for Explorer file properties (mirrors app_icon.rc).
+1 VERSIONINFO
+ FILEVERSION 0,10,1
+ PRODUCTVERSION 0,10,1
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Team Sunplaza\0"
+            VALUE "FileDescription",  "Emebala Engine - Shared Translation Engine Host\0"
+            VALUE "FileVersion",      "0.10.1\0"
+            VALUE "InternalName",     "Emebala.Engine\0"
+            VALUE "LegalCopyright",   "Copyright (C) 2025-2026 Team Sunplaza\0"
+            VALUE "OriginalFilename", "Emebala.Engine.exe\0"
+            VALUE "ProductName",      "Emebala Engine\0"
+            VALUE "ProductVersion",   "0.10.1\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

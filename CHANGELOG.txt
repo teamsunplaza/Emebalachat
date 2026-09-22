@@ -41,6 +41,13 @@ Fixes in this build
   it differs from the model of the engine you selected - so a wrong-model
   serving issue can be spotted from the log instead of hours of
   investigation.
+* Fixed an issue where, after the translation engine restarts internally,
+  a previously selected user (.gguf) model could be silently replaced by
+  the built-in model: your selection is now re-applied after every engine
+  restart, and if your selected model cannot produce a translation the app
+  tells you instead of quietly using the built-in one.
+* The translation engine now shows the Emebala brand icon in Explorer and
+  Task Manager.
 
 v0.10.1 (rerelease) - 2026-09-19
 ================================

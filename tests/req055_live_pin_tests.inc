@@ -16,12 +16,20 @@
 // Fix: LoadUserModelIdFromConfigLive (mtime/size-cached live read, reusing
 // the exact C1-gated parse) per job in both dispatchers; the relay now sends
 // empty ids (reset-to-pinned) and both loops do string change-detection.
+// REQ-058 follow-up (live probe, session 260922_0002 round 4): the live pin
+// worked on a FRESH host, but a worker CRASH + EnsureSpawned respawn resets
+// the fresh worker's active_model_id to "" (pinned default) while the
+// dispatcher's relayed_model_id still held the last pin — pin == relayed
+// stayed true and user_gguf was silently served by Hy-MT2 with status=ok.
+// Both dispatchers now ALSO snapshot the worker PROCESS handle at relay-
+// accept time and re-relay on a handle change exactly like a pin change.
 //   (a-d) behavioral — the live reader against rotating temp lad dirs
 //         (TestReq046HostUserModelIdGate fixture precedent).
 //   (e)   source pins — host_main.cpp uses the live pin, the resolved fast
-//         path, keeps g_user_model_id only at declaration + boot log, and
-//         EnsureWorkerModelRelayed no longer skips empty ids; setup.iss
-//         bumped to .r6 (orchestrator + worker binaries changed, REQ-057).
+//         path, keeps g_user_model_id only at declaration + boot log,
+//         EnsureWorkerModelRelayed no longer skips empty ids, and BOTH
+//         dispatchers re-relay on a worker-process change; setup.iss bumped
+//         to .r8 (orchestrator binary changed).
 // ResolveRepoFile source pins (L97 of run_tests.cpp); unresolvable file ->
 // the section is skipped, exactly like the req048_r2 pattern.
 // ---------------------------------------------------------------------------
@@ -136,6 +144,22 @@ void TestReq055LiveUserModelPin() {
         TEST_CHECK(skip_pos == std::string::npos ||
                        (fn_end != std::string::npos && skip_pos > fn_end),
                    "REQ-055 (e): EnsureWorkerModelRelayed no longer skips empty ids");
+        // REQ-058: a crash + respawn gives a fresh worker whose active_model_id
+        // resets to "" (pinned default), so BOTH dispatchers snapshot the
+        // worker process handle at relay-accept time and re-relay on a handle
+        // change exactly like a pin change (live r6 defect: user_gguf served
+        // silently by Hy-MT2 with status=ok on the long-running host).
+        TEST_CHECK(src.find("relayed_worker_process") != std::string::npos,
+                   "REQ-058: both dispatchers snapshot the relayed worker process handle");
+        TEST_CHECK(src.find("w->process != relayed_worker_process") != std::string::npos,
+                   "REQ-058: the v1 relay condition re-relays on a worker process change");
+        {
+            const size_t v2_pos = src.find("DispatcherV2Loop");
+            TEST_CHECK(v2_pos != std::string::npos &&
+                           src.find("w->process != relayed_worker_process", v2_pos) !=
+                               std::string::npos,
+                       "REQ-058: the v2 relay condition re-relays on a worker process change");
+        }
     }
 
     // setup.iss: the orchestrator binary changed, so the bundled engine
@@ -149,8 +173,8 @@ void TestReq055LiveUserModelPin() {
         std::ifstream in(setup_iss, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#define ENGINE_REVISION \".r6\"") != std::string::npos,
-                   "REQ-055 (e): ENGINE_REVISION bumped to .r6 (orchestrator + worker binaries changed)");
+        TEST_CHECK(src.find("#define ENGINE_REVISION \".r8\"") != std::string::npos,
+                   "REQ-058: ENGINE_REVISION bumped to .r8 (orchestrator binary changed)");
     }
 
     if (g_failed_count == failures_before) {

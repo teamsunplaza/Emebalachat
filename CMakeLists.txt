@@ -416,8 +416,11 @@ endif()
 # the installer worker owns the packaging). Links Emebalachat_core so the
 # translation core, SHA pin, diag logger and Vulkan guard are shared, not
 # duplicated; CUDA (+Vulkan when built) are delay-loaded exactly like the app.
+# src/engine_icon.rc embeds the branded multi-size engine icon + VERSIONINFO
+# (session 260922_0002; mirrors src/app_icon.rc on the Chat exe).
 add_executable(EmebalaEngine WIN32
     src/host_main.cpp
+    src/engine_icon.rc
 )
 
 set_target_properties(EmebalaEngine PROPERTIES OUTPUT_NAME "Emebala.Engine")

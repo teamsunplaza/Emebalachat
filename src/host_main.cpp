@@ -652,8 +652,13 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
     // after an engine switch until idle-exit, and a busy host never idles
     // out. relayed_model_id tracks the last id the worker accepted ("" =
     // pinned default; an empty pin RESETS the worker, which
-    // EnsureWorkerModelRelayed now relays instead of skipping).
+    // EnsureWorkerModelRelayed now relays instead of skipping). REQ-058:
+    // relayed_worker_process snapshots the worker PROCESS handle at relay-
+    // accept time — EnsureSpawned respawns after a crash give a fresh handle,
+    // and a respawned worker's active_model_id resets to "" (pinned default),
+    // so a handle change must re-relay exactly like a pin change.
     std::string relayed_model_id;
+    HANDLE relayed_worker_process = nullptr;
     for (;;) {
         Job job;
         if (!g_queue.Pop(job)) break; // shutdown
@@ -698,13 +703,20 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // REQ-045 P4-4 + REQ-055: relay a CHANGED pin before the job (the
         // existing session_open frame; the worker resolves it per job). An
         // empty pin is the reset-to-pinned-default relay the boot snapshot
-        // could never send. A failed relay leaves relayed_model_id stale and
-        // falls through — the worker keeps its previous model and the job
-        // path below answers honestly (no new failure class); the next job
-        // retries the relay.
-        if (pin != relayed_model_id) {
+        // could never send. REQ-058: a CHANGED WORKER PROCESS (crash + respawn
+        // via EnsureSpawned) also re-relays — the fresh worker's active_model_id
+        // resets to "" (pinned default Hy-MT2), so without the handle check
+        // pin == relayed_model_id would stay false-change and every user_gguf
+        // request would be silently served by Hy-MT2 with status=ok (live
+        // probe evidence, session 260922_0002 round 4: served-model echo =
+        // hy-mt2 on the long-running host, real MiLM load on a fresh host).
+        // A failed relay leaves both snapshots stale and falls through — the
+        // worker keeps its previous model and the job path answers honestly
+        // (no new failure class); the next job retries the relay.
+        if (pin != relayed_model_id || w->process != relayed_worker_process) {
             if (EnsureWorkerModelRelayed(wmgr, family, pin)) {
                 relayed_model_id = pin;
+                relayed_worker_process = w->process;
             }
         }
 
@@ -874,8 +886,14 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
     // model). Per job the session model wins; a sessionless job falls back
     // to the LIVE config pin (LoadUserModelIdFromConfigLive) — the pre-
     // REQ-055 boot snapshot went stale after an engine switch and a busy
-    // host never idles out to respawn.
+    // host never idles out to respawn. REQ-058: relayed_worker_process
+    // snapshots the worker PROCESS handle at relay-accept time; a crash +
+    // respawn hands out a fresh handle while the respawned worker's
+    // active_model_id resets to "" (pinned default), so a handle change
+    // re-relays exactly like a model_id change (same live defect as v1 —
+    // silently serving Hy-MT2 for user_gguf with status=ok).
     std::string relayed_model_id;
+    HANDLE relayed_worker_process = nullptr;
     for (;;) {
         host_v2::SchedItem item;
         host_v2::SchedItem expired;
@@ -925,12 +943,16 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // REQ-045 P4-4 + REQ-055: relay a CHANGED model_id before the job
         // (existing session_open frame; empty -> RESET to the pinned default
         // — relayable now that EnsureWorkerModelRelayed relays empty ids).
-        // A failed relay leaves relayed_model_id stale and falls through —
-        // the worker keeps its previous model and the job path answers
-        // honestly.
-        if (model_id != relayed_model_id) {
+        // REQ-058: a CHANGED WORKER PROCESS (crash + respawn) re-relays too —
+        // the fresh worker's active_model_id reset to "" (pinned default), so
+        // trusting relayed_model_id alone would silently serve Hy-MT2 for a
+        // user_gguf session/pin with status=ok. A failed relay leaves both
+        // snapshots stale and falls through — the worker keeps its previous
+        // model and the job path answers honestly.
+        if (model_id != relayed_model_id || w->process != relayed_worker_process) {
             if (EnsureWorkerModelRelayed(wmgr, family, model_id)) {
                 relayed_model_id = model_id;
+                relayed_worker_process = w->process;
             }
         }
         // The v2 profile forwards the request with a synthetic in-flight id
