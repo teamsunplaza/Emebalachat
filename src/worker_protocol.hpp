@@ -40,6 +40,9 @@
 //   orchestrator -> worker:
 //     session_open{op:"session_open","session":N,"capability":"translate",
 //                  "model_id":"...","profile":"..."}  -> opened | error
+//                  (P2-1: capability "asr" rides the SAME frame verbatim —
+//                  the ggml-asr worker additionally reads model_id/file/
+//                  lang_hint at the top level or nested in "options")
 //     opened      {op:"opened","session":N}           (worker ack)
 //     job         {op:"job","job":N,"session":N,"kind":"translate","src":..,
 //                  "tgt":..,"text":.., "sampling":{temperature,top_p,top_k,
@@ -80,6 +83,23 @@ namespace workerproto {
 // ---- frozen contract constants (worker.manifest §3.4 values) ---------------
 inline constexpr int kWorkerSchemaVersion = 1;          // §3.4 schema_version
 inline constexpr std::string_view kWorkerFamily = "ggml-translate";
+
+// P2-1 (family coexistence, session 260925_0001): the orchestrator serves ONE
+// worker family per deployed worker.<family>.manifest (M7 A-1 enumeration in
+// host_main.cpp). The announce gate compares the announced family against
+// this REGISTERED set — the Listener-authored asr family is the P2-1
+// addition alongside the M6 translate family. kWorkerFamily above stays the
+// ggml-translate worker's OWN id (EmbeddedWorkerManifest); it also appears in
+// the registered set.
+inline constexpr std::string_view kWorkerFamiliesRegistered[] = {"ggml-translate",
+                                                                 "ggml-asr"};
+
+inline bool IsRegisteredWorkerFamily(std::string_view family) {
+    for (const std::string_view f : kWorkerFamiliesRegistered) {
+        if (f == family) return true;
+    }
+    return false;
+}
 inline constexpr std::string_view kWorkerEngine = "llama.cpp";
 inline constexpr std::string_view kWorkerEngineVersion = "b6099"; // plan §V2-3 pin
 inline constexpr int kWorkerAbiVersion = 1;
@@ -249,7 +269,9 @@ struct AnnounceCheck {
                                    int orchestrator_abi_max,
                                    int orch_proto_min,
                                    int orch_proto_max) {
-        if (a.family != std::string(kWorkerFamily)) return AnnounceStatus::FamilyMismatch;
+        // P2-1: registered-family set comparison (was the single
+        // kWorkerFamily equality — rejected the ggml-asr family by design).
+        if (!IsRegisteredWorkerFamily(a.family)) return AnnounceStatus::FamilyMismatch;
         if (a.abi_version < 1 || a.abi_version > orchestrator_abi_max) {
             return AnnounceStatus::AbiOutOfRange;
         }
@@ -662,6 +684,129 @@ inline bool ParseError(std::string_view json, ErrorMsg& m) {
     m.code = c->text;
     return true;
 }
+
+// ===========================================================================
+// §7.3 W-PCM-1 — PCM binary-frame clause (P2-1 port, session 260925_0001).
+//
+// Ported VERBATIM from the Listener-side worker_protocol.hpp (Emebala_Listner
+// src/worker_protocol.hpp:610-729, REQ-003/012) so the orchestrator-side
+// relay speaks the same codec as the ggml-asr worker. The clause adds:
+//   * BuildFeedAudioMeta / ParseFeedAudioMeta — the JSON META frame
+//     ({"op":"feed_audio","session":N,"seq":M,"format":"pcm_s16le_16k_mono"}).
+//   * EncodeBinaryFrame — [u32 LE length][raw PCM]; length = PCM byte count
+//     (<= 65536). The 1 MiB v1 frame cap applies unchanged.
+//   * DecodeFrame — length-prefix split that works for BOTH JSON and binary
+//     payloads (the receiver decides via its 1-frame "awaiting binary" state).
+//   * LooksLikeJsonObject — payload sniff used to detect a binary frame that
+//     arrived WITHOUT a preceding meta (clause violation -> bad_request).
+//   * IsFlushMarker — W-FLUSH-1: true when a binary PCM payload following a
+//     feed_audio meta is EMPTY (zero payload bytes). The worker treats that
+//     pair as "finalize this utterance now, keep the session open". A non-
+//     empty binary frame after the same meta is ordinary audio.
+// The encoder/decoder do not parse JSON; they only split/concatenate the wire
+// length prefix, so the JSON-only contract stays byte-identical.
+// ===========================================================================
+inline namespace pcm {
+
+inline constexpr std::string_view kFeedAudioFormat = "pcm_s16le_16k_mono";
+inline constexpr std::uint32_t kMaxPcmChunkBytes = 65536; // 64 KiB = 32768 samples @16k s16le mono
+
+struct FeedAudioMsg {
+    std::uint64_t session = 0;
+    std::uint64_t seq = 0;
+    std::string format; // kFeedAudioFormat for the ASR path
+};
+
+// The META frame that announces the immediately-following binary PCM frame.
+inline std::string BuildFeedAudioMeta(std::uint64_t session, std::uint64_t seq,
+                                      std::string_view format) {
+    return std::string("{\"op\":\"feed_audio\",\"session\":") + std::to_string(session) +
+           ",\"seq\":" + std::to_string(seq) +
+           ",\"format\":\"" + enginehost::JsonEscape(format) + "\"}";
+}
+
+inline bool ParseFeedAudioMeta(std::string_view json, FeedAudioMsg& m) {
+    enginehost::JsonPairs p;
+    if (!enginehost::JsonParseObject(json, p)) return false;
+    const auto* op = enginehost::detail::FindField(p, "op");
+    if (!op || !op->is_string || op->text != "feed_audio") return false;
+    const auto* s = enginehost::detail::FindField(p, "session");
+    if (!s || !enginehost::detail::ParseUInt64(s->text, m.session)) return false;
+    if (const auto* sq = enginehost::detail::FindField(p, "seq")) {
+        if (!enginehost::detail::ParseUInt64(sq->text, m.seq)) return false;
+    }
+    if (const auto* f = enginehost::detail::FindField(p, "format")) {
+        if (!f->is_string) return false;
+        m.format = f->text;
+    }
+    return true;
+}
+
+// [u32 LE length][payload]. Refuses lengths above kMaxFrameBytes (1 MiB v1 cap
+// applies to binary frames too, per §7.3). A 64 KiB PCM cap is a SEND-side
+// policy (the session codec splits); the decoder only enforces the 1 MiB cap.
+inline bool EncodeBinaryFrame(const std::uint8_t* payload, std::size_t n,
+                              std::vector<std::uint8_t>& out) {
+    if (payload == nullptr && n != 0) return false;
+    if (n > enginehost::kMaxFrameBytes) return false;
+    out.clear();
+    out.reserve(enginehost::kFrameHeaderSize + n);
+    const std::uint32_t len = static_cast<std::uint32_t>(n);
+    for (unsigned i = 0; i < 4; ++i) {
+        out.push_back(static_cast<std::uint8_t>((len >> (8 * i)) & 0xFF));
+    }
+    out.insert(out.end(), payload, payload + n);
+    return true;
+}
+
+inline bool EncodeBinaryFrame(const std::vector<std::uint8_t>& payload,
+                              std::vector<std::uint8_t>& out) {
+    return EncodeBinaryFrame(payload.data(), payload.size(), out);
+}
+
+// Length-prefix split for either payload kind. Validates the declared length
+// against the actual frame size and the 1 MiB cap.
+inline bool DecodeFrame(const std::uint8_t* data, std::size_t size,
+                        std::vector<std::uint8_t>& out_payload) {
+    if (data == nullptr || size < enginehost::kFrameHeaderSize) return false;
+    std::uint32_t len = 0;
+    if (!enginehost::FrameReadLengthPrefix(reinterpret_cast<const char*>(data), len)) {
+        return false;
+    }
+    if (len > enginehost::kMaxFrameBytes) return false;
+    if (static_cast<std::size_t>(len) + enginehost::kFrameHeaderSize != size) return false;
+    out_payload.assign(data + enginehost::kFrameHeaderSize,
+                       data + enginehost::kFrameHeaderSize + len);
+    return true;
+}
+
+inline bool DecodeFrame(const std::vector<std::uint8_t>& frame,
+                        std::vector<std::uint8_t>& out_payload) {
+    return DecodeFrame(frame.data(), frame.size(), out_payload);
+}
+
+// Cheap payload sniff: a JSON object frame starts with '{'. A binary PCM frame
+// almost never does (s16le low bytes of quiet audio can be '{' by chance, so
+// this is only a HINT for the bad_request predicate, never a hard rule — the
+// authoritative discriminator is the receiver's awaiting-binary state).
+inline bool LooksLikeJsonObject(std::string_view s) {
+    return !s.empty() && s.front() == '{';
+}
+
+// W-FLUSH-1 flush-marker predicate (§9 registry): a feed_audio META frame
+// followed by a ZERO-LENGTH binary payload is the mid-session flush request.
+// The worker runs Finalize() on this pair, emits final + eos, and keeps the
+// session and model loaded. `close` must never be used as a flush substitute
+// (it unloads the model — see the ggml_asr_worker.cpp W-FLUSH-1 note).
+inline bool IsFlushMarker(const std::uint8_t* /*payload*/, std::size_t n) {
+    return n == 0; // only an EMPTY binary payload after a meta is a flush
+}
+
+inline bool IsFlushMarker(const std::vector<std::uint8_t>& payload) {
+    return IsFlushMarker(payload.data(), payload.size());
+}
+
+} // namespace pcm
 
 } // namespace workerproto
 } // namespace emebalachat

@@ -78,8 +78,10 @@
 #include "host_v2_scheduler.hpp"        // §V2-4.6 scheduler queue
 #include "host_v2_health.hpp"           // REQ-008 health counters
 #include "host_v2_worker_manager.hpp"   // §V2-3 worker lifecycle (T3)
+#include "host_v2_asr_relay.hpp"        // P2-1 stabilization: pure asr relay claim state
 #include "worker_protocol.hpp"          // second frozen contract (frames)
 #include "engine_host_registry.hpp"     // registry.json (model_id/profile resolution)
+#include "overlapped_io_util.hpp"       // REQ-L32 부록 ②-4: cancel-approve 대기 공용 헬퍼
 // REQ-046 P4-2 (Rev2 §B-4, Tech Gate 조건-1): the minimal config.json
 // user_model_id read moved OUT to engine_host_config_reader (linked into
 // Emebalachat_core so run_tests can link it); the host keeps calling the
@@ -147,6 +149,27 @@ constexpr const char* kPipeNameVersionless = "\\\\.\\pipe\\emebala-engine";
 // contract; registry.json entries resolve the same family string).
 constexpr wchar_t kWorkerFamilyTranslate[] = L"ggml-translate";
 
+// P2-1 (family coexistence, session 260925_0001): the Listener-authored asr
+// worker family (Emebala.Engine.ggml-asr.exe). Registered through the
+// exe-adjacent worker.<family>.manifest enumeration in wWinMain — this
+// constant names the family for the asr relay paths.
+constexpr wchar_t kWorkerFamilyAsr[] = L"ggml-asr";
+
+// P2-1: the asr relay read cadence. ReadFromWorker holds the worker-manager
+// mutex for AT MOST this window (the manager serializes Send/Read on one
+// mutex), so 100 ms bounds the translate dispatch path's worst-case wait
+// while an asr stream is live.
+constexpr int kAsrRelayPollMs = 100;
+
+// P2-1 stabilization (session 260925_0001, live-test defect 1): the ONE
+// deadline covering the WHOLE asr open — the cold-start spawn/connect wait,
+// the handshake, and the worker's opened/error answer. The worker LOADS the
+// model before opened (751MB GGUF; a cold load measures ~40 s), and the
+// spawn/connect phase can retry through crash backoff inside the same
+// window. 120 s covers both with margin. The wait POLLS at kAsrRelayPollMs,
+// so the manager mutex is never held long.
+constexpr int kAsrOpenTimeoutMs = 120000;
+
 // REQ-043 (M6 T4): how long a v1 job waits for its worker event before the
 // dispatcher itself declares timeout (safety net BEYOND the client's
 // timeout_ms watchdog — a hung worker pipe must not pin a queue slot past
@@ -165,9 +188,11 @@ HANDLE g_stop_event = nullptr; // manual-reset: wakes connection threads for exi
 // ---- v2 orchestrator singletons (M6 T4, design §1.1) ------------------------
 // Health (REQ-008): local atomics only; exposed via the v2 welcome.
 host_v2::HealthCounters g_health;
-// Session table (§V2-4.3): M6 serves "translate" only — anything else fails
-// to open (unavailable, §V2-4.5).
-host_v2::SessionTable g_sessions{std::vector<std::string>{"translate"}};
+// Session table (§V2-4.3): M6 serves "translate"; P2-1 (session 260925_0001)
+// adds "asr" — asr sessions ride the ggml-asr relay path (one ACTIVE session
+// at a time, max_sessions=1 parity); anything else fails to open
+// (unavailable, §V2-4.5).
+host_v2::SessionTable g_sessions{std::vector<std::string>{"translate", "asr"}};
 // Scheduler (§V2-4.6): the v1 profile path does NOT use it (frozen
 // immediate-busy queue above); protocol-2 requests enqueue here.
 host_v2::Scheduler g_scheduler;
@@ -428,7 +453,7 @@ struct Connection {
     // session thread; one mutex serializes frame writes per connection.
     std::mutex write_mu;
 
-    bool WriteFrame(std::string_view json) {
+    bool WriteFrame(std::string_view json, DWORD timeout_ms = 15000) {
         std::string frame;
         frame.reserve(4 + json.size());
         const uint32_t len = static_cast<uint32_t>(json.size());
@@ -446,9 +471,29 @@ struct Connection {
         HANDLE w = write_pipe ? write_pipe : pipe;
         BOOL ok = ::WriteFile(w, frame.data(), static_cast<DWORD>(frame.size()), &written, &ol);
         if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-            // REQ-043: the completion wait MUST target the SAME handle the IO
-            // was issued on — GetOverlappedResult matches pending IO per handle.
-            ok = ::GetOverlappedResult(w, &ol, &written, TRUE);
+            if (timeout_ms == 0) {
+                // REQ-043: the completion wait MUST target the SAME handle the
+                // IO was issued on — GetOverlappedResult matches pending IO
+                // per handle.
+                ok = ::GetOverlappedResult(w, &ol, &written, TRUE);
+            } else {
+                // P2-1 stabilization R4 (session 260925_0001-GPU-R4, live
+                // wedge): the wait is BOUNDED. An unbounded completion wait
+                // pins the writer forever when the peer stops draining (its
+                // inbound buffer full) — the relay then could not answer a
+                // teardown join and the single asr claim wedged for the whole
+                // storm. On timeout the pending write is cancelled (message
+                // atomicity discards it) and the write reports failure.
+                const DWORD wr = ::WaitForSingleObject(ol.hEvent, timeout_ms);
+                if (wr == WAIT_OBJECT_0) {
+                    ok = ::GetOverlappedResult(w, &ol, &written, FALSE);
+                } else {
+                    ::CancelIoEx(w, &ol);
+                    DWORD discarded = 0;
+                    ::GetOverlappedResult(w, &ol, &discarded, TRUE); // cancel ack
+                    ok = FALSE;
+                }
+            }
         }
         ::CloseHandle(ol.hEvent);
         return ok && written == frame.size();
@@ -495,26 +540,39 @@ struct Connection {
     }
     // Bounded wait for the peer to close: one overlapped read that completes
     // (with ERROR_BROKEN_PIPE) once the client closes. Returns immediately on
-    // broken pipe; gives up after timeout_ms (cancelling the pending read) so
-    // a rude peer cannot pin the thread forever.
+    // broken pipe; gives up after timeout_ms so a rude peer cannot pin the
+    // thread forever.
+    // REQ-L32 부록 ②-4 (session 260925): the timeout branch previously ran
+    // CancelIoEx and then closed the event WITHOUT waiting for the kernel
+    // cancel-ack (the same UAF class the helper exists for). The helper blocks
+    // until the kernel acks; the event is freed by scope exit, strictly after.
     void WaitForClientClose(DWORD timeout_ms) {
         char scratch[64];
+        emebalachat::engine_host::ScopedOverlappedEvent event;
+        if (!event.IsValid()) return;
         OVERLAPPED ol = {};
-        ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (!ol.hEvent) return;
+        ol.hEvent = event.Get();
         DWORD read = 0;
         BOOL ok = ::ReadFile(pipe, scratch, sizeof(scratch), &read, &ol);
         if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-            if (::WaitForSingleObject(ol.hEvent, timeout_ms) == WAIT_TIMEOUT) {
-                ::CancelIoEx(pipe, &ol);
-                ::CloseHandle(ol.hEvent);
-                return;
+            if (!emebalachat::engine_host::WaitOverlappedOrCancelApprove(pipe, ol, timeout_ms, read)) {
+                return; // timed out; cancel acked, event freed by scope exit
             }
-            ok = ::GetOverlappedResult(pipe, &ol, &read, FALSE);
+            ok = TRUE; // completed inside the window (outcome value not used)
         }
         // Any outcome (broken pipe = client closed; stray data = rude client)
         // leads to the caller returning and ConnectionLoop disconnecting.
-        ::CloseHandle(ol.hEvent);
+        (void)ok;
+    }
+    // P2-1 stabilization (session 260925_0001, live-test defect 2): cheap
+    // liveness probe for the asr open wait. A client that vanishes mid-open
+    // (taskkill) breaks the pipe; the open must unwind and release the relay
+    // claim promptly instead of pinning the single slot to the 120 s
+    // deadline. PeekNamedPipe never blocks and never consumes a frame: a
+    // healthy idle client peeks TRUE (0 bytes pending), a dead one FALSE.
+    bool ClientAlive() const {
+        DWORD avail = 0;
+        return ::PeekNamedPipe(pipe, nullptr, 0, nullptr, &avail, nullptr) != FALSE;
     }
     void SendWelcome() {
         enginehost::WelcomeMsg m;
@@ -540,17 +598,28 @@ struct Connection {
         if (g_registry_loaded && !g_registry.empty()) {
             bool first_model = true;
             for (const auto& m : g_registry.models) {
-                const bool serves_translate =
-                    std::any_of(m.capabilities.begin(), m.capabilities.end(),
-                                [](const std::string& c) { return c == "translate"; });
-                if (!serves_translate) continue;
+                // P2-1 (session 260925_0001): the welcome serves BOTH
+                // capabilities; each registry model advertises the
+                // intersection of its registry capabilities with the served
+                // set (translate models keep their M6 shape; asr models —
+                // family ggml-asr — ride the same members).
+                std::string caps = "[";
+                bool first_cap = true;
+                for (const auto& c : m.capabilities) {
+                    if (c != "translate" && c != "asr") continue;
+                    if (!first_cap) caps += ',';
+                    first_cap = false;
+                    caps += std::string("\"") + enginehost::JsonEscape(c) + "\"";
+                }
+                caps += ']';
+                if (caps == "[]") continue; // serves neither capability
                 if (!first_model) models += ',';
                 first_model = false;
                 models += std::string("{\"id\":\"") + enginehost::JsonEscape(m.id) +
                           "\",\"family\":\"" + enginehost::JsonEscape(m.family) +
-                          "\",\"capabilities\":[\"translate\"]";
-                // "default": the first registry translate model wins (the
-                // bundle ships exactly one; §V2-4.7 example shape).
+                          "\",\"capabilities\":" + caps;
+                // "default": the first registry model wins (the bundle ships
+                // exactly one translate model; §V2-4.7 example shape).
                 models += ",\"default\":";
                 models += (m.id == g_registry.models.front().id) ? "true" : "false";
                 models += "}";
@@ -565,7 +634,7 @@ struct Connection {
         const std::string welcome =
             std::string("{\"op\":\"welcome\",\"protocol\":2") +
             ",\"models\":" + models +
-            ",\"capabilities\":[\"translate\"]" +
+            ",\"capabilities\":[\"translate\",\"asr\"]" +
             ",\"health\":" + health + "}";
         if (!WriteFrame(welcome)) {
             DIAG_LOG("ENGINEHOST", "conn/%03d: welcome v2 write failed (client gone)", index);
@@ -611,6 +680,11 @@ void WatchdogLoop() {
 // (tech gate c5/R9: the ModelFileExistsFor fast path below already consults
 // the resolved path, so a selected-but-absent model answers model_missing
 // here.)
+// P2-1 (session 260925_0001): the hardcoded "translate" capability is
+// TRANSLATE-PATH-ONLY — the asr relay never calls this function. The asr
+// worker resolves its model inside the worker (registry.json under
+// Common\models, ggml_asr_worker.cpp ResolveModelPath), so there is no
+// orchestrator-side model relay or file-presence probe on the asr path.
 bool EnsureWorkerModelRelayed(host_v2::WorkerManager& wmgr, const std::wstring& family,
                               const std::string& model_id) {
     namespace wp = emebalachat::workerproto;
@@ -1175,36 +1249,444 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
     }
 }
 
+// ---- P2-1 asr relay (session 260925_0001, design §7.2/§7.3 W-PCM-1) ---------
+// The ggml-asr family serves ONE streaming session at a time (registry
+// max_sessions=1 parity — the worker keeps a single loaded model). The
+// orchestrator mirrors that with ONE active asr relay:
+//   * session_open (capability "asr") is relayed to the worker VERBATIM —
+//     the CLIENT-chosen session id is kept (the Listener client pins it in
+//     its opened check) and the worker's opened/error answer is relayed back
+//     verbatim. NO orchestrator-side model probe: the asr worker resolves
+//     the model itself (registry.json under Common\models).
+//   * feed_audio META + its binary PCM companion are relayed in lockstep
+//     (§7.3): the META arms the "next frame is binary" state, the following
+//     frame rides to the worker as a raw binary frame (an EMPTY payload is
+//     the W-FLUSH-1 utterance-finalize marker; close is NEVER a flush
+//     substitute — it unloads the model).
+//   * Worker event/closed/error frames PASS THROUGH to the client
+//     verbatim (heartbeats are consumed, never forwarded). The relay thread
+//     is the stream reader — DispatcherV2Loop is one-shot-job oriented and
+//     cannot be reused for a stream.
+//   * session_close -> close{session} (the worker's closed is relayed back);
+//     cancel -> abort{session} (W-ABORT-1, the in-flight utterance is
+//     discarded; the session stays open).
+// Threading: the OWNING connection thread makes every claim/teardown
+// decision; the relay thread NEVER touches the thread object (join/assign
+// happen only on connection threads under g_asr_relay.mu) and releases the
+// claim as its LAST mutex acquisition, so joins can never deadlock. The
+// claim STATE itself is the pure, unit-pinned host_v2::AsrRelayClaim
+// (host_v2_asr_relay.hpp) — P2-1 stabilization (session 260925_0001):
+// ReleaseByRelay preserves the owner fields so the owner's later teardown
+// can still close the SessionTable record that outlives the claim.
+struct AsrRelay {
+    std::mutex mu;
+    host_v2::AsrRelayClaim claim;   // the pure single-slot state
+    std::thread thread;
+};
+AsrRelay g_asr_relay;
+
+// The relay read loop. Exits on: stop/shutdown, a relayed session end
+// (closed / error event / bare error frame), a client write failure, or the
+// worker pipe dying (the reaper judges the crash + respawn; the session gets
+// a synthesized engine_failed so the client can reconnect — mirrors the
+// §V2-3 dispatcher's crash answer). P2-1 stabilization: EVERY exit reason is
+// logged (shape-only: codes/ids/counts — the live defect-2 hunt) so a wedged
+// slot can be traced from the stderr mirror alone.
+void AsrRelayLoop(host_v2::WorkerManager& wmgr, Connection& conn) {
+    namespace wp = emebalachat::workerproto;
+    const std::wstring family(kWorkerFamilyAsr);
+    std::uint64_t relayed = 0; // frames forwarded to the client (shape count)
+    const char* exit_reason = "?";
+    int64_t last_activity_ms = NowMs();
+    for (;;) {
+        std::uint64_t wire_session_local = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+            if (g_asr_relay.claim.stop) { exit_reason = "stop"; break; }
+            if (g_shutdown.load(std::memory_order_acquire)) { exit_reason = "shutdown"; break; }
+            // Read the wire id UNDER the lock: the engine_failed synthesis
+            // below must not race a claim handoff (P2-1 stabilization).
+            wire_session_local = g_asr_relay.claim.wire_session;
+        }
+        // P2-1 stabilization R4 (session 260925_0001-GPU-R4, live wedge):
+        // WRITE-INDEPENDENT client-liveness probe. The relay used to learn
+        // "client gone" only from a failed WRITE — a quiet worker (no events)
+        // plus a wedged/full client buffer meant no write ever failed and
+        // the claim stuck. PeekNamedPipe never blocks and never touches the
+        // worker-manager mutex, so the probe runs every iteration regardless
+        // of worker I/O. (ClientAlive is a const member; the conn handle
+        // outlives the session.)
+        if (!conn.ClientAlive()) { exit_reason = "client_gone"; break; }
+        std::string json;
+        const auto rc = wmgr.ReadFromWorker(family, json, kAsrRelayPollMs);
+        if (rc == host_v2::WorkerManager::WorkerRead::Timeout) {
+            // P2-1 trace: a quiet worker is legal mid-feed (no events on
+            // non-speech), but a LONG silence while a stream is armed is the
+            // hunt discriminator — surface it shape-only.
+            if (NowMs() - last_activity_ms > 10000) {
+                last_activity_ms = NowMs();
+                DIAG_F("ENGINEHOST/asr/045: relay quiet 10s+ (conn=%03d relayed=%llu)\n",
+                       conn.index, static_cast<unsigned long long>(relayed));
+            }
+            continue;
+        }
+        last_activity_ms = NowMs();
+        if (rc == host_v2::WorkerManager::WorkerRead::IoError) {
+            exit_reason = "worker_io";
+            DIAG_F("ENGINEHOST/asr/012: relay read IoError -> engine_failed synthesized "
+                   "(conn=%03d session=%llu relayed=%llu)\n",
+                   conn.index, static_cast<unsigned long long>(wire_session_local),
+                   static_cast<unsigned long long>(relayed));
+            wp::EventMsg ev;
+            ev.session = wire_session_local;
+            ev.kind = wp::EventKind::Error;
+            ev.seq = 0;
+            ev.code = "engine_failed";
+            conn.WriteFrame(wp::BuildEvent(ev), 2000);
+            break;
+        }
+        wp::HeartbeatMsg hb;
+        if (wp::ParseHeartbeat(json, hb)) continue; // §1.2 cadence: consume
+        // Everything else (event/closed/error) rides to the client verbatim —
+        // the Listener client reads kind/seq/text/langTag/code and ignores
+        // the session member, so no remap is needed (worker seq space is
+        // the client's own; the relay never renumbers).
+        // R4: the client write is BOUNDED (2 s). A client that stops draining
+        // (dead or stalled) must not pin the relay — the bounded wait turns
+        // it into a clean exit so the claim frees within seconds, and the
+        // loop-top ClientAlive probe catches the silent-death case earlier.
+        if (!conn.WriteFrame(json, 2000)) { // client gone or not draining
+            exit_reason = "client_write";
+            DIAG_F("ENGINEHOST/asr/013: relay client write failed (conn=%03d "
+                   "session=%llu relayed=%llu)\n",
+                   conn.index, static_cast<unsigned long long>(wire_session_local),
+                   static_cast<unsigned long long>(relayed));
+            break;
+        }
+        ++relayed;
+        std::uint64_t s = 0;
+        if (wp::ParseClosed(json, s)) { exit_reason = "closed"; break; }      // session end (relayed)
+        wp::ErrorMsg err;
+        if (wp::ParseError(json, err)) { exit_reason = "error_frame"; break; } // protocol error (relayed)
+        wp::EventMsg ev;
+        if (wp::ParseEvent(json, ev) && ev.kind == wp::EventKind::Error) {
+            exit_reason = "error_event";
+            DIAG_F("ENGINEHOST/asr/015: relayed worker error event (conn=%03d "
+                   "session=%llu code=%s relayed=%llu)\n",
+                   conn.index, static_cast<unsigned long long>(wire_session_local),
+                   ev.code.c_str(), static_cast<unsigned long long>(relayed));
+            break;
+        }
+        // partial/final/eos: the stream continues.
+    }
+    DIAG_F("ENGINEHOST/asr/010: relay loop exit (conn=%03d reason=%s relayed=%llu)\n",
+           conn.index, exit_reason, static_cast<unsigned long long>(relayed));
+    // LAST mutex acquisition: free the slot so the next open can claim it.
+    // The owner fields (conn/table_id) STAY — the owning connection's
+    // teardown may still need to close the SessionTable record that outlives
+    // the claim (P2-1 stabilization, defect 3). Nothing after this point
+    // touches g_asr_relay (or any mutex) — the connection-side join waits
+    // only for the pure function return.
+    {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        g_asr_relay.claim.ReleaseByRelay();
+    }
+    DIAG_F("ENGINEHOST/asr/017: relay released the claim (conn=%03d)\n", conn.index);
+}
+
+// Connection-teardown cleanup (task item 2: "연결 종료 시 소유 세션 자동
+// 정리"; P2-1 stabilization defect 2: EVERY connection end funnels here —
+// the normal loop exit, the abnormal disconnect, and the protocol-error
+// exits RunSessionV2 now routes to the single loop-end teardown). The pure
+// plan is taken under the lock; the I/O runs OUTSIDE it: order the worker
+// close (the model unload — the client is gone, so nothing reads the answer;
+// a stale `closed` left on the pipe is cleared by the next session_open's
+// REQ-049 drain), join the relay thread, close the SessionTable record.
+// When the relay already self-released (a mid-stream terminal frame), there
+// is nothing to order, but the table record STILL belongs to this
+// connection and is closed here (defect 3 — the record outlives the claim).
+// No-op when this connection does not own the slot.
+void AsrCleanupConnection(host_v2::WorkerManager& wmgr, Connection& conn) {
+    namespace wp = emebalachat::workerproto;
+    host_v2::AsrRelayClaim::TeardownPlan plan;
+    {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        plan = g_asr_relay.claim.PlanTeardown(&conn);
+    }
+    if (!plan.ours) return;
+    DIAG_F("ENGINEHOST/asr/020: connection teardown plan (conn=%03d order_close=%d "
+           "session=%llu table=%llu)\n",
+           conn.index, plan.order_worker_close ? 1 : 0,
+           static_cast<unsigned long long>(plan.wire_session),
+           static_cast<unsigned long long>(plan.table_id));
+    // Order the model unload BEFORE joining so the worker's finalize/unload
+    // overlaps the relay drain.
+    if (plan.order_worker_close) {
+        const bool sent = wmgr.SendToWorker(std::wstring(kWorkerFamilyAsr),
+                                            wp::BuildClose(plan.wire_session));
+        DIAG_F("ENGINEHOST/asr/021: teardown worker close %s (conn=%03d session=%llu)\n",
+               sent ? "sent" : "FAILED", conn.index,
+               static_cast<unsigned long long>(plan.wire_session));
+    }
+    if (g_asr_relay.thread.joinable()) g_asr_relay.thread.join();
+    {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        g_asr_relay.claim.DisownIfOwner(&conn);
+    }
+    if (plan.table_id) (void)g_sessions.Close(plan.table_id);
+    DIAG_F("ENGINEHOST/asr/022: connection teardown done (conn=%03d table=%llu)\n",
+           conn.index, static_cast<unsigned long long>(plan.table_id));
+}
+
+// Open the asr session: claim the single relay slot FIRST (so a racing
+// second asr open fails fast with unavailable — max_sessions=1 parity),
+// then spawn/connect the ggml-asr worker — P2-1 stabilization defect 1:
+// EnsureSpawned's fast nullptr (the backoff-gated respawn) used to fail the
+// first open instantly, so the spawn/connect is RETRIED inside the ONE open
+// deadline until the worker is spawned+connected — relay the ORIGINAL
+// session_open frame verbatim, and poll for the worker's opened/error
+// answer. Returns true when the worker opened the session and the relay
+// thread is running; the caller registered the SessionTable record
+// (table_id). Every failure path answers the client and releases the claim
+// + table record.
+bool AsrOpenSession(host_v2::WorkerManager& wmgr, Connection& conn,
+                    std::uint64_t table_id, std::string_view open_frame) {
+    namespace wp = emebalachat::workerproto;
+    const std::wstring family(kWorkerFamilyAsr);
+    wp::SessionOpenMsg msg;
+    if (!wp::ParseSessionOpen(open_frame, msg) || msg.capability != "asr") {
+        conn.SendErrorThenClose(enginehost::kErrBadRequest);
+        return false;
+    }
+    // Claim the single-worker slot BEFORE touching the worker so a racing
+    // second asr open fails fast with unavailable (max_sessions=1 parity).
+    // The unavailable answer is written OUTSIDE the lock (the frame write
+    // can block on a wedged client). Joining the previous relay under the
+    // lock is safe: active==false is the relay's LAST mutex acquisition, so
+    // by the time we observe it the relay fn is already returning.
+    bool claimed = false;
+    {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        if (!g_asr_relay.claim.active) {
+            if (g_asr_relay.thread.joinable()) g_asr_relay.thread.join();
+            claimed = g_asr_relay.claim.TryClaim(&conn, msg.session, table_id);
+        }
+    }
+    if (!claimed) {
+        // P2-1 stabilization (reconnect race, live-observed): a client that
+        // reconnects the instant its pipe breaks races the old connection's
+        // teardown — the slot can still be claimed by a GONE owner whose
+        // ReadMessage has not fired yet. Answering `unavailable` here wedges
+        // well-behaved clients into their retry loop for no reason. Grace:
+        // while the current owner's pipe is already dead, its loop-end
+        // teardown (claim release) is imminent — poll briefly and claim the
+        // freed slot. A genuinely LIVE owner breaks the grace immediately
+        // (max_sessions=1 parity stands).
+        for (int grace = 0; grace < 20 && !claimed; ++grace) {
+            const Connection* owner = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                if (g_asr_relay.claim.active) {
+                    owner = static_cast<const Connection*>(g_asr_relay.claim.conn);
+                }
+            }
+            if (!owner || owner->ClientAlive()) break; // freed or genuinely busy
+            ::Sleep(100);
+            std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+            if (!g_asr_relay.claim.active) {
+                if (g_asr_relay.thread.joinable()) g_asr_relay.thread.join();
+                claimed = g_asr_relay.claim.TryClaim(&conn, msg.session, table_id);
+            }
+        }
+    }
+    if (!claimed) {
+        DIAG_F("ENGINEHOST/asr/002: open refused, slot busy (conn=%03d session=%llu)\n",
+               conn.index, static_cast<unsigned long long>(msg.session));
+        conn.SendError("unavailable");
+        return false;
+    }
+    DIAG_F("ENGINEHOST/asr/001: claim acquired (conn=%03d session=%llu table=%llu)\n",
+           conn.index, static_cast<unsigned long long>(msg.session),
+           static_cast<unsigned long long>(table_id));
+    // ONE deadline covers the WHOLE open: the cold-start spawn/connect
+    // retries, the handshake, and the worker's opened/error answer (the
+    // worker LOADS the model before opened — a cold load measures ~40 s).
+    const int64_t deadline = NowMs() + kAsrOpenTimeoutMs;
+    // Cold start (defect 1): EnsureSpawned blocks through connect+announce,
+    // but answers nullptr FAST while the family is backoff-gated (Crashed)
+    // or a slow cold spawn outran the fixed handshake window. Retry inside
+    // the deadline until spawned+connected; Unavailable alone (wrong
+    // deployment: missing exe / announce mismatch) fails fast — a retry
+    // cannot fix it.
+    host_v2::WorkerHandle* w = nullptr;
+    int spawn_attempts = 0;
+    for (;;) {
+        w = wmgr.EnsureSpawned(family);
+        if (w) break;
+        ++spawn_attempts;
+        const host_v2::WorkerState st = wmgr.State(family);
+        DIAG_F("ENGINEHOST/asr/003: EnsureSpawned null (conn=%03d attempt=%d state=%s)\n",
+               conn.index, spawn_attempts,
+               host_v2::WorkerStateToString(st).data());
+        {
+            std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+            if (g_asr_relay.claim.stop) break; // owning connection went away
+        }
+        if (g_shutdown.load(std::memory_order_acquire)) break;
+        if (!conn.ClientAlive()) break; // taskkill during the open wait (defect 2)
+        if (!host_v2::AsrSpawnRetryWarranted(st, NowMs(), deadline)) break;
+        ::Sleep(kAsrRelayPollMs);
+    }
+    if (w) {
+        DIAG_F("ENGINEHOST/asr/004: worker spawned+connected (conn=%03d attempts=%d)\n",
+               conn.index, spawn_attempts);
+    }
+    bool opened = false;
+    bool answered = false; // the client was answered (event/error forwarded)
+    const char* open_exit = w ? "send_failed" : "no_worker";
+    if (w) {
+        (void)wmgr.DrainWorkerPipe(family); // REQ-049 parity: no stale frames
+        if (wmgr.SendToWorker(family, open_frame)) {
+            DIAG_F("ENGINEHOST/asr/005: open relayed to worker (conn=%03d session=%llu)\n",
+                   conn.index, static_cast<unsigned long long>(msg.session));
+            for (;;) {
+                {
+                    std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                    if (g_asr_relay.claim.stop) { open_exit = "stop"; break; }
+                }
+                if (g_shutdown.load(std::memory_order_acquire)) { open_exit = "shutdown"; break; }
+                if (!conn.ClientAlive()) { open_exit = "client_gone"; break; }
+                std::string json;
+                const auto rc = wmgr.ReadFromWorker(family, json, kAsrRelayPollMs);
+                if (rc == host_v2::WorkerManager::WorkerRead::Timeout) {
+                    if (NowMs() >= deadline) { open_exit = "timeout"; break; }
+                    continue;
+                }
+                if (rc == host_v2::WorkerManager::WorkerRead::IoError) { open_exit = "worker_io"; break; }
+                std::uint64_t s = 0;
+                if (wp::ParseOpened(json, s)) {
+                    if (s != msg.session) {
+                        // Stale opened of a racing previous attempt (in
+                        // flight past the REQ-049 drain) — consume, keep
+                        // waiting; the deadline bounds the wait.
+                        open_exit = "stale_opened";
+                        continue;
+                    }
+                    if (!conn.WriteFrame(json, 2000)) { open_exit = "client_write"; break; }
+                    opened = true;
+                    open_exit = "opened";
+                    break;
+                }
+                std::uint64_t stale_closed = 0;
+                if (wp::ParseClosed(json, stale_closed)) {
+                    // Stale terminal frame of the previous session (its
+                    // teardown close answer in flight) — consume, keep
+                    // waiting (live-observed as open exit=failclosed churn).
+                    open_exit = "stale_closed";
+                    continue;
+                }
+                wp::EventMsg ev;
+                if (wp::ParseEvent(json, ev) && ev.session == msg.session) {
+                    // The load-failure shape: model_missing rides an error
+                    // EVENT with NO opened frame (ggml_asr_worker.cpp) —
+                    // relay it verbatim; it is the answer.
+                    conn.WriteFrame(json);
+                    answered = true;
+                    open_exit = "answered_event";
+                    break;
+                }
+                wp::HeartbeatMsg hb;
+                if (wp::ParseHeartbeat(json, hb)) continue;
+                open_exit = "failclosed"; // anything else on a fresh pipe is fail-closed
+                break;
+            }
+        }
+    }
+    DIAG_F("ENGINEHOST/asr/006: open wait end (conn=%03d exit=%s opened=%d answered=%d)\n",
+           conn.index, open_exit, opened ? 1 : 0, answered ? 1 : 0);
+    if (opened) {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        g_asr_relay.thread = std::thread(AsrRelayLoop, std::ref(wmgr), std::ref(conn));
+        return true;
+    }
+    if (!answered) {
+        // EnsureSpawned failure = the family cannot serve (missing exe,
+        // spawn/handshake exhaustion inside the deadline) -> unavailable; an
+        // open that was relayed but never answered -> engine_failed. The
+        // session stays open for the client to retry or close.
+        DIAG_F("ENGINEHOST/asr/007: open failed, answering %s (conn=%03d exit=%s)\n",
+               w ? "engine_failed" : "unavailable", conn.index, open_exit);
+        conn.SendError(w ? "engine_failed" : "unavailable");
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+        g_asr_relay.claim.ReleaseByOwner(&conn, msg.session);
+    }
+    DIAG_F("ENGINEHOST/asr/008: open unwind released the claim (conn=%03d session=%llu)\n",
+           conn.index, static_cast<unsigned long long>(msg.session));
+    return false;
+}
+
 // ---- v2 profile session (M6 T4, §V2-4.3/§V2-4.4) ----------------------------
-// hello.protocol=2. M6's real consumer is translate, but the session model
-// and event frames already follow §V2-4.3/§V2-4.4: session_open ->
-// {"op":"opened","session":N}; translate rides the §V2-4.6 scheduler with
-// priority/drop_eligible/deadline extension fields (unknown-field rule makes
-// them OPTIONAL for the receiver); close/cancel end the session. The
-// dispatcher thread (the same single worker-context contract, §V2-4.6
-// max_sessions=1) drains the scheduler queue and proxies to the ggml worker
-// exactly like the v1 path.
-void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
+// hello.protocol=2. M6's consumer is translate (P2-1 adds the asr relay);
+// the session model and event frames already follow §V2-4.3/§V2-4.4:
+// session_open -> {"op":"opened","session":N}; translate rides the §V2-4.6
+// scheduler with priority/drop_eligible/deadline extension fields
+// (unknown-field rule makes them OPTIONAL for the receiver); close/cancel
+// end the session. The dispatcher thread (the same single worker-context
+// contract, §V2-4.6 max_sessions=1) drains the scheduler queue and proxies
+// to the ggml worker exactly like the v1 path. P2-1 (session 260925_0001):
+// capability "asr" bypasses the scheduler entirely — it is relayed to the
+// ggml-asr worker verbatim (see the asr relay block above).
+void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
+                  host_v2::WorkerManager& wmgr) {
     namespace wp = emebalachat::workerproto;
     DIAG_LOG("ENGINEHOST", "conn/%03d: hello ok v2 (client=%s version=%s)",
              conn.index, hello.client.c_str(), hello.client_version.c_str());
     conn.SendWelcomeV2();
 
     std::string frame;
+    // P2-1 §7.3: a feed_audio META arms the "next frame is the binary PCM
+    // companion" state (W-FLUSH-1: an EMPTY payload is the flush marker).
+    bool asr_awaiting_binary = false;
     for (;;) {
         if (!ReadMessage(conn, frame)) break; // client gone / cap violation
         TouchActivity();
 
+        // P2-1 §7.3 lockstep: the armed frame is binary PCM — relayed
+        // verbatim to the worker (raw bytes, no JSON parse). A binary frame
+        // arriving WITHOUT the armed state is the §7.3 violation and
+        // converges to bad_request exactly like the Listener rule: raw PCM
+        // is not a JSON object, so the generic parse failure below is that
+        // rule.
+        if (asr_awaiting_binary) {
+            asr_awaiting_binary = false;
+            if (!wmgr.SendToWorker(std::wstring(kWorkerFamilyAsr),
+                                   std::string_view(frame.data(), frame.size()))) {
+                // Worker pipe died (or the stalled worker was killed): end
+                // the session locally with a TRANSIENT answer — the client
+                // reconnects (§7.5) instead of being misread as a protocol
+                // violation on its next feed. The relay/claim cleanup funnels
+                // through the loop-end teardown.
+                DIAG_F("ENGINEHOST/asr/024: binary PCM relay write failed (conn=%03d bytes=%zu)\n",
+                       conn.index, frame.size());
+                AsrCleanupConnection(wmgr, conn);
+                conn.SendError("engine_failed");
+                break;
+            }
+            continue;
+        }
+
         enginehost::JsonPairs fields;
         if (!enginehost::JsonParseObject(frame, fields)) {
             conn.SendErrorThenClose(enginehost::kErrBadRequest);
-            return;
+            break; // P2-1 stabilization: the loop-end teardown frees the claim
         }
         const auto* opField = enginehost::detail::FindField(fields, "op");
         const std::string op = (opField && opField->is_string) ? opField->text : "";
 
         if (op == "session_open") {
-            // §V2-4.3: capability-gated (M6 serves "translate" only —
+            // §V2-4.3: capability-gated (P2-1 serves "translate" + "asr" —
             // anything else is unavailable, §V2-4.5).
             host_v2::SessionRecord req;
             if (const auto* cap = enginehost::detail::FindField(fields, "capability")) {
@@ -1231,12 +1713,74 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
                 conn.SendResult(0, enginehost::HostStatus::Busy);
                 continue;
             }
+            if (req.capability == "asr") {
+                // P2-1: the asr relay path — the ORIGINAL frame is relayed
+                // (the client session id is kept) and the worker's answer
+                // decides opened/unavailable. Never reaches the translate
+                // scheduler; the relay thread owns the event stream after a
+                // successful open.
+                if (AsrOpenSession(wmgr, conn, opened.id, frame)) {
+                    g_health.RecordSession(true);
+                } else {
+                    (void)g_sessions.Close(opened.id);
+                    g_health.RecordSession(false);
+                }
+                continue;
+            }
             g_health.RecordSession(true);
             // {"op":"opened","session":N}
             if (!conn.WriteFrame(std::string("{\"op\":\"opened\",\"session\":") +
                                  std::to_string(opened.id) + "}")) {
                 g_sessions.Close(opened.id);
             }
+        } else if (op == "feed_audio") {
+            // P2-1 §7.3: the feed_audio META. It must reference THIS
+            // connection's live asr session and the pcm_s16le_16k_mono
+            // format (the worker applies the same gate, but the orchestrator
+            // validates first so a malformed META cannot kill the worker).
+            // The META is relayed verbatim; the next frame is its binary PCM
+            // companion (see the lockstep gate at the loop top).
+            bool asr_live = false;
+            {
+                std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                asr_live = g_asr_relay.claim.IsLiveFor(&conn);
+            }
+            if (!asr_live) {
+                DIAG_F("ENGINEHOST/asr/026: feed_audio with no live session -> bad_request "
+                       "(conn=%03d)\n", conn.index);
+                conn.SendErrorThenClose(enginehost::kErrBadRequest);
+                break; // P2-1 stabilization: the loop-end teardown frees the claim
+            }
+            wp::pcm::FeedAudioMsg meta;
+            if (!wp::pcm::ParseFeedAudioMeta(frame, meta) ||
+                meta.format != wp::pcm::kFeedAudioFormat) {
+                DIAG_F("ENGINEHOST/asr/026: malformed feed_audio META -> bad_request (conn=%03d)\n",
+                       conn.index);
+                conn.SendErrorThenClose(enginehost::kErrBadRequest);
+                break; // P2-1 stabilization: the loop-end teardown frees the claim
+            }
+            {
+                std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                asr_live = g_asr_relay.claim.IsLiveFor(&conn, meta.session);
+            }
+            if (!asr_live) {
+                DIAG_F("ENGINEHOST/asr/026: feed_audio session mismatch -> bad_request "
+                       "(conn=%03d session=%llu)\n",
+                       conn.index, static_cast<unsigned long long>(meta.session));
+                conn.SendErrorThenClose(enginehost::kErrBadRequest);
+                break; // P2-1 stabilization: the loop-end teardown frees the claim
+            }
+            const bool meta_sent = wmgr.SendToWorker(std::wstring(kWorkerFamilyAsr), frame);
+            if (!meta_sent) {
+                // Worker pipe died (or the stalled worker was killed): end
+                // the session with a TRANSIENT answer — see the binary path.
+                DIAG_F("ENGINEHOST/asr/023: feed_audio META relay write failed (conn=%03d)\n",
+                       conn.index);
+                AsrCleanupConnection(wmgr, conn);
+                conn.SendError("engine_failed");
+                break;
+            }
+            asr_awaiting_binary = true;
         } else if (op == "translate") {
             // §V2-4.4 translate: the v1 frozen message shape plus OPTIONAL
             // model/profile/sampling/priority fields (§V2-4.4 table). The
@@ -1251,7 +1795,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
                     continue;
                 }
                 conn.SendErrorThenClose(enginehost::kErrBadRequest);
-                return;
+                break; // P2-1 stabilization: the loop-end teardown frees the claim
             }
             if (msg.src.empty() || msg.tgt.empty()) {
                 conn.SendResult(msg.id, enginehost::HostStatus::BadRequest);
@@ -1293,8 +1837,80 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
             if (const auto* s = enginehost::detail::FindField(fields, "session")) {
                 if (!enginehost::detail::ParseUInt64(s->text, session)) {
                     conn.SendErrorThenClose(enginehost::kErrBadRequest);
-                    return;
+                    break; // P2-1 stabilization: the loop-end teardown frees the claim
                 }
+            }
+            // P2-1: an active asr session ends through the WORKER — close
+            // unloads the model and the worker's closed frame is relayed
+            // back to the client. The generic local closed below is the
+            // translate path only (whose table id IS the wire id).
+            host_v2::AsrRelayClaim::TeardownPlan asr_plan;
+            {
+                std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                asr_plan = g_asr_relay.claim.PlanSessionEnd(&conn, session);
+            }
+            if (asr_plan.ours) {
+                DIAG_F("ENGINEHOST/asr/025: client session_close plan (conn=%03d session=%llu "
+                       "table=%llu)\n",
+                       conn.index, static_cast<unsigned long long>(session),
+                       static_cast<unsigned long long>(asr_plan.table_id));
+                if (asr_plan.order_worker_close) {
+                    (void)wmgr.SendToWorker(std::wstring(kWorkerFamilyAsr),
+                                            wp::BuildClose(session));
+                }
+                if (g_asr_relay.thread.joinable()) g_asr_relay.thread.join();
+                // P2-1 stabilization: the worker's `closed` answer RACES the
+                // relay stop above — the relay checks `stop` at the top of
+                // each poll, so a `closed` arriving after the stop is never
+                // forwarded and the client never sees the terminal frame
+                // (live-observed: session_close answered with silence).
+                // Drain the worker pipe briefly and forward the terminal
+                // frame (closed/error) verbatim; heartbeats are consumed.
+                // R4: the Disown runs AFTER the drain — while draining we
+                // still own the slot record, and the drain aborts the moment
+                // a racing new owner claims it (below).
+                {
+                    const int64_t closed_deadline = NowMs() + 5000;
+                    for (;;) {
+                        // R4 ownership guard: the drain races the NEXT
+                        // connection's open-wait on the SAME family pipe —
+                        // a racing claim (the relay self-release frees the
+                        // slot before this close path finishes) means OUR
+                        // drain must stop reading the instant the record
+                        // changes hands (live race: this drain stole the
+                        // next session's `opened` -> 120 s open timeout).
+                        // The g_asr_relay.mu is held ACROSS the bounded read
+                        // so a claim handoff is atomic vs the read: a new
+                        // owner either claims before our read (we see it and
+                        // stop) or after (we were the rightful reader).
+                        std::string json;
+                        host_v2::WorkerManager::WorkerRead rc;
+                        {
+                            std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                            if (g_asr_relay.claim.conn != &conn) break;
+                            rc = wmgr.ReadFromWorker(std::wstring(kWorkerFamilyAsr),
+                                                     json, 250);
+                        }
+                        if (rc == host_v2::WorkerManager::WorkerRead::Timeout) {
+                            if (NowMs() >= closed_deadline) break;
+                            continue;
+                        }
+                        if (rc == host_v2::WorkerManager::WorkerRead::IoError) break;
+                        wp::HeartbeatMsg hb;
+                        if (wp::ParseHeartbeat(json, hb)) {
+                            if (NowMs() >= closed_deadline) break;
+                            continue;
+                        }
+                        (void)conn.WriteFrame(json); // `closed` (or an error) — terminal
+                        break;
+                    }
+                }
+                {
+                    std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                    g_asr_relay.claim.DisownIfOwner(&conn);
+                }
+                if (asr_plan.table_id) (void)g_sessions.Close(asr_plan.table_id);
+                continue;
             }
             std::vector<host_v2::SchedItem> dropped;
             (void)g_scheduler.DropSession(session, dropped);
@@ -1310,10 +1926,32 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
                 break;
             }
         } else if (op == "cancel") {
+            // P2-1: the asr session cancel is {"op":"cancel","session":N}
+            // (W-ABORT-1 — the worker discards the in-flight utterance; the
+            // session stays open). The frozen v1 CancelMsg requires an "id"
+            // member, so the asr session member is read here BEFORE the
+            // frozen parser; the translate in-flight rule below is untouched.
+            if (const auto* s = enginehost::detail::FindField(fields, "session")) {
+                std::uint64_t asr_session = 0;
+                if (enginehost::detail::ParseUInt64(s->text, asr_session)) {
+                    bool asr_ours = false;
+                    {
+                        std::lock_guard<std::mutex> lk(g_asr_relay.mu);
+                        asr_ours = g_asr_relay.claim.IsLiveFor(&conn, asr_session);
+                    }
+                    if (asr_ours) {
+                        // No answer frame: the client's cancel path does not
+                        // read one (W-ABORT-1 is observable on the next feed).
+                        (void)wmgr.SendToWorker(std::wstring(kWorkerFamilyAsr),
+                                                wp::BuildAbort(asr_session));
+                        continue;
+                    }
+                }
+            }
             enginehost::CancelMsg msg;
             if (!enginehost::ParseCancel(frame, msg)) {
                 conn.SendErrorThenClose(enginehost::kErrBadRequest);
-                return;
+                break; // P2-1 stabilization: the loop-end teardown frees the claim
             }
             // §4.4 cancel rule carried into v2: only the in-flight job is
             // aborted (the dispatcher's g_current), everything else ignored.
@@ -1347,15 +1985,23 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
             // A second hello on one connection is a protocol violation (the
             // v1 rule carries over).
             conn.SendErrorThenClose(enginehost::kErrBadRequest);
-            return;
+            break; // P2-1 stabilization: the loop-end teardown frees the claim
         } else {
             // §V2-12-2: unknown ops converge to bad_request + close.
             conn.SendErrorThenClose(enginehost::kErrBadRequest);
-            return;
+            break; // P2-1 stabilization: the loop-end teardown frees the claim
         }
     }
     // Connection teardown: auto-close the sessions this connection owns
-    // (task item 2: "연결 종료 시 소유 세션 자동 정리").
+    // (task item 2: "연결 종료 시 소유 세션 자동 정리"). P2-1 stabilization
+    // (defect 2): EVERY loop exit funnels here — the normal client close,
+    // the abnormal disconnect (taskkill breaks the ReadMessage), and the
+    // protocol-error exits above (previously fatal `return`s that skipped
+    // this cleanup and leaked the single asr relay claim). The asr relay is
+    // stopped first — it orders the worker close (model unload) and closes
+    // its own SessionTable record.
+    DIAG_F("ENGINEHOST/asr/030: v2 session loop exit (conn=%03d)\n", conn.index);
+    AsrCleanupConnection(wmgr, conn);
     std::vector<std::uint64_t> owned;
     (void)g_sessions.CloseOwnedByConnection(&conn, owned);
     for (const auto sid : owned) {
@@ -1365,7 +2011,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello) {
 }
 
 // The protocol BRANCH (§V2-4.7): handshake once, then dispatch by profile.
-void RunSession(Connection& conn) {
+void RunSession(Connection& conn, host_v2::WorkerManager& wmgr) {
     // ---- handshake (§4.4): hello is mandatory, exactly once ----
     std::string frame;
     if (!ReadMessage(conn, frame)) return;
@@ -1385,14 +2031,14 @@ void RunSession(Connection& conn) {
         return;
     }
     if (hello.protocol == 2) {
-        RunSessionV2(conn, hello);
+        RunSessionV2(conn, hello, wmgr);
         return;
     }
     // Any other protocol: version_mismatch (the v1 rule, frozen).
     conn.SendErrorThenClose(enginehost::kErrVersionMismatch);
 }
 
-void ConnectionLoop(Connection* conn) {
+void ConnectionLoop(Connection* conn, host_v2::WorkerManager& wmgr) {
     HANDLE acceptEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!acceptEvent) {
         DIAG_F("ENGINEHOST/Conn/%03d: accept-event creation failed\n", conn->index);
@@ -1429,7 +2075,7 @@ void ConnectionLoop(Connection* conn) {
                    conn->index, ::GetLastError());
             conn->write_pipe = nullptr;
         }
-        RunSession(*conn);
+        RunSession(*conn, wmgr);
         g_active_connections.fetch_sub(1, std::memory_order_acq_rel);
         TouchActivity();
         if (conn->write_pipe) {
@@ -1439,6 +2085,31 @@ void ConnectionLoop(Connection* conn) {
         ::DisconnectNamedPipe(conn->pipe);
     }
     ::CloseHandle(acceptEvent);
+}
+
+// P2-1 (session 260925_0001): enumerate the deployed worker families by
+// scanning the orchestrator exe directory for worker.<family>.manifest files
+// (M7 A-1 scheme; engine_host_paths.hpp IsWorkerManifestName). A worker
+// family deploys by dropping ONE exe + ONE manifest next to
+// Emebala.Engine.exe — no host code change, no hardcoded family list. The
+// legacy bare worker.manifest carries no family segment and is skipped
+// (pre-A-1 stores are the bootstrapper's repair business).
+std::vector<std::wstring> EnumerateWorkerFamilies(const std::filesystem::path& dir) {
+    std::vector<std::wstring> out;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(dir, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto& entry = *it;
+        std::error_code type_ec;
+        if (!entry.is_regular_file(type_ec) || type_ec) continue;
+        const std::wstring name = entry.path().filename().wstring();
+        std::wstring family = enginehost::paths::WorkerFamilyFromManifestName(name);
+        if (family.empty()) continue;
+        out.push_back(std::move(family));
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 } // namespace
@@ -1566,19 +2237,33 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
              g_user_model_id.size(),
              g_user_model_id.empty() ? "pinned" : "user_gguf");
 
-    // ---- the worker manager (M6 T3) + the ggml-translate family ----
+    // ---- the worker manager (M6 T3) + family registration ----
     // The worker exe sits next to the orchestrator in the build tree and at
     // %LOCALAPPDATA%\Emebala\Common\engine in the installed layout — both
     // are the orchestrator's own directory, so the exe-adjacent lookup
     // covers both (T7 may adjust the installed name only).
     wchar_t self_path[MAX_PATH] = {0};
+    std::filesystem::path self_dir;
     std::wstring worker_exe;
     if (::GetModuleFileNameW(nullptr, self_path, MAX_PATH) > 0) {
-        std::filesystem::path dir = std::filesystem::path(self_path).parent_path();
-        worker_exe = (dir / L"Emebalachat.Engine.ggml-translate.exe").wstring();
+        self_dir = std::filesystem::path(self_path).parent_path();
+        worker_exe = (self_dir / L"Emebalachat.Engine.ggml-translate.exe").wstring();
     }
     host_v2::WorkerManager wmgr;
+    // REQ-043 baseline: the translate family (its exe keeps the legacy
+    // Emebalachat.Engine.* deployed name — the installer contract is frozen).
     wmgr.RegisterFamily(kWorkerFamilyTranslate, worker_exe);
+    // P2-1 (session 260925_0001): every additional worker.<family>.manifest
+    // next to the orchestrator exe registers its family — the Listener-
+    // authored ggml-asr (Emebala.Engine.ggml-asr.exe) arrives this way.
+    if (!self_dir.empty()) {
+        for (const auto& family : EnumerateWorkerFamilies(self_dir)) {
+            if (family == kWorkerFamilyTranslate) continue; // registered above (legacy exe name)
+            const std::wstring exe =
+                (self_dir / (L"Emebala.Engine." + family + L".exe")).wstring();
+            wmgr.RegisterFamily(family, exe);
+        }
+    }
     wmgr.StartReaper(); // 250 ms done_event poll (design §1.1 rule 3)
 
     std::vector<std::unique_ptr<Connection>> connections;
@@ -1620,7 +2305,7 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
 
     g_stop_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     for (size_t i = 0; i < connections.size(); ++i) {
-        threads.emplace_back(ConnectionLoop, connections[i].get());
+        threads.emplace_back(ConnectionLoop, connections[i].get(), std::ref(wmgr));
     }
     std::thread watchdog(WatchdogLoop);
     std::thread dispatcher(DispatcherLoop, std::ref(wmgr));

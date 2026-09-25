@@ -178,7 +178,8 @@ void TestHostV2Session() {
     const int failures_before = g_failed_count;
     using namespace emebalachat::host_v2;
 
-    SessionTable t{std::vector<std::string>{"translate"}};
+    // P2-1 (session 260925_0001): the deployment serves translate + asr.
+    SessionTable t{std::vector<std::string>{"translate", "asr"}};
 
     // ---- 1. Host-global incrementing ids from 1 ----
     {
@@ -192,9 +193,15 @@ void TestHostV2Session() {
 
     // ---- 2. Unallocated capability fails closed (§V2-4.5 unavailable) ----
     {
+        // P2-1: "asr" is now a SERVED capability — it opens.
         SessionRecord r; r.capability = "asr";
         SessionRecord out;
-        TEST_CHECK(t.Open(r, out) == SessionOpenResult::Unavailable,
+        TEST_CHECK(t.Open(r, out) == SessionOpenResult::Opened,
+                   "session: P2-1 asr capability opens");
+        TEST_CHECK(t.Close(out.id), "session: P2-1 asr session closes");
+        // A capability outside the served set stays unavailable.
+        SessionRecord other; other.capability = "tts";
+        TEST_CHECK(t.Open(other, out) == SessionOpenResult::Unavailable,
                    "session: unserved capability -> unavailable");
         SessionRecord empty; empty.capability = "";
         TEST_CHECK(t.Open(empty, out) == SessionOpenResult::BadArguments,
@@ -338,30 +345,47 @@ void TestHostV2WelcomeGolden() {
     // The v2 welcome is BUILT (not parsed) by host_main.cpp from the
     // registry + health. Golden-shape check: the §V2-4.7 example keys parse
     // back through the frozen JSON primitives, and the v1 welcome builder is
-    // byte-unchanged (no new fields — the frozen contract).
+    // byte-unchanged (no new fields — the frozen contract). P2-1 extends the
+    // v2 shape: capabilities list BOTH translate and asr, and registry
+    // models advertising either capability appear in models[].
     {
         const std::string v2_example =
             "{\"op\":\"welcome\",\"protocol\":2,"
             "\"models\":[{\"id\":\"hy-mt2-1.8b-q8\",\"family\":\"ggml-translate\","
-            "\"capabilities\":[\"translate\"],\"default\":true}],"
-            "\"capabilities\":[\"translate\"],"
+            "\"capabilities\":[\"translate\"],\"default\":true},"
+            "{\"id\":\"nemotron-3.5-asr-streaming-0.6b-q8\",\"family\":\"ggml-asr\","
+            "\"capabilities\":[\"asr\"],\"default\":false}],"
+            "\"capabilities\":[\"translate\",\"asr\"],"
             "\"health\":{\"session_success_ratio\":0.997,\"fallback_ratio\":0.004}}";
         eh::JsonPairs p;
         TEST_CHECK(eh::JsonParseObject(v2_example, p), "welcome v2 golden: parses");
         const auto* op = eh::detail::FindField(p, "op");
         const auto* proto = eh::detail::FindField(p, "protocol");
         const auto* models = eh::detail::FindField(p, "models");
+        const auto* caps = eh::detail::FindField(p, "capabilities");
         const auto* health = eh::detail::FindField(p, "health");
         TEST_CHECK(op && op->is_string && op->text == "welcome", "welcome v2 golden: op");
         TEST_CHECK(proto && !proto->is_string && proto->text == "2",
                    "welcome v2 golden: protocol 2");
         TEST_CHECK(models && !models->is_string && models->text.find("\"ggml-translate\"") !=
-                       std::string::npos,
-                   "welcome v2 golden: models[] with family");
+                       std::string::npos &&
+                       models->text.find("\"ggml-asr\"") != std::string::npos,
+                   "welcome v2 golden: models[] with the translate + asr families (P2-1)");
         TEST_CHECK(health && !health->is_string &&
                        health->text.find("session_success_ratio") != std::string::npos &&
                        health->text.find("fallback_ratio") != std::string::npos,
                    "welcome v2 golden: health{session_success_ratio,fallback_ratio}");
+        // P2-1 pins: the served set advertises asr, and the asr registry
+        // model rides the models[] list.
+        std::vector<std::string> cap_list;
+        TEST_CHECK(caps && eh::JsonParseStringArray(caps->text, cap_list) &&
+                       std::find(cap_list.begin(), cap_list.end(), "translate") !=
+                           cap_list.end() &&
+                       std::find(cap_list.begin(), cap_list.end(), "asr") != cap_list.end(),
+                   "welcome v2 golden: capabilities [translate, asr] (P2-1)");
+        TEST_CHECK(models && models->text.find("nemotron-3.5-asr-streaming-0.6b-q8") !=
+                       std::string::npos,
+                   "welcome v2 golden: the asr model id is listed (P2-1)");
     }
 
     // The v1 welcome builder gains NOTHING (frozen bytes).

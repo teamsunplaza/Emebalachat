@@ -92,6 +92,36 @@ inline int BackoffDelayMs(int consecutive_failures) {
     return delay > wp::kWorkerBackoffMaxMs ? wp::kWorkerBackoffMaxMs : delay;
 }
 
+// P2-1 stabilization (session 260925_0001, live-test defect 1): the asr
+// session_open cold-start wait classifier. EnsureSpawned can answer nullptr
+// FAST while the family is still coming up — the Crashed backoff gate defers
+// the respawn, and a slow cold spawn can outrun the fixed handshake window —
+// and the first open used to convert that fast nullptr straight into
+// "unavailable". The open instead RETRIES EnsureSpawned inside its deadline
+// (kAsrOpenTimeoutMs) until the worker is spawned+connected. Unavailable is
+// permanent (missing exe / announce mismatch: a retry cannot fix a wrong
+// deployment), so it alone fails fast; past the deadline anything stops.
+// P2-1 stabilization (session 260925_0001, live defect: persistent
+// `unavailable` under sustained load): a worker-pipe write failure is either
+// BROKEN (peer dead, immediate error) or STALLED (peer alive but not draining
+// for the full bounded write window — e.g. blocked inside an inference call).
+// A STALLED worker is useless to a real-time stream and must be KILLED: its
+// per-family single-instance mutex rejects every duplicate spawn while the
+// stuck process holds it, so without the kill the family wedges in
+// backoff-respawn churn (the live `unavailable` loop). Pure decision,
+// unit-pinned.
+enum class FrameWriteResult : unsigned char { Ok, Broken, Stalled };
+inline bool WorkerWriteFailureNeedsKill(FrameWriteResult r) {
+    return r == FrameWriteResult::Stalled;
+}
+
+inline bool AsrSpawnRetryWarranted(WorkerState s, int64_t now_ms, int64_t deadline_ms) {
+    if (now_ms >= deadline_ms) return false;
+    return s == WorkerState::Stopped || s == WorkerState::Spawning ||
+           s == WorkerState::Crashed || s == WorkerState::Ready ||
+           s == WorkerState::Busy;
+}
+
 // ---- injectable spawn seam (unit tests substitute a fake launcher) ---------
 // The real launcher spawns "Emebala.Engine.<family>.exe" hidden with
 // --pipe/--token. Tests inject a process handle + fake exit behavior so the

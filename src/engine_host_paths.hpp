@@ -102,6 +102,25 @@ inline bool IsWorkerManifestName(std::wstring_view name) {
                         name.size() - prefix.size() - suffix.size()).empty();
 }
 
+// Extract the family segment from a per-family manifest name
+// (worker.<family>.manifest -> <family>). Returns EMPTY for the legacy bare
+// worker.manifest (no family segment) and for any name outside the scheme —
+// callers that must distinguish the two gate on IsWorkerManifestName first.
+// P2-1 (session 260925_0001): the orchestrator's exe-adjacent enumeration
+// registers one family per discovered manifest, so a worker family deploys by
+// dropping one exe + one manifest next to Emebala.Engine.exe.
+inline std::wstring WorkerFamilyFromManifestName(std::wstring_view name) {
+    constexpr std::wstring_view prefix(kWorkerManifestPrefix);
+    constexpr std::wstring_view suffix(kWorkerManifestSuffix);
+    if (name.size() <= prefix.size() + suffix.size()) return {};
+    if (name.substr(0, prefix.size()) != prefix) return {};
+    if (name.substr(name.size() - suffix.size()) != suffix) return {};
+    const std::wstring_view middle = name.substr(
+        prefix.size(), name.size() - prefix.size() - suffix.size());
+    if (middle.empty()) return {};
+    return std::wstring(middle);
+}
+
 // REQ-044 (P4-2): replaces kRegistryJson in
 // engine_host_bootstrap_client.cpp L49.
 constexpr wchar_t kRegistryJson[] = L"registry.json";

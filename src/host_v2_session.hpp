@@ -7,8 +7,9 @@
 //
 // Session model (§V2-4.3): session_open (capability, model/profile, options)
 // -> bidirectional frames (client -> feed / host -> event) -> session_close /
-// cancel. M6's only real consumer is translate (one-shot jobs dispatched by
-// the scheduler), but the FRAME format already follows §V2-4.4: events carry
+// cancel. The translate consumer runs one-shot jobs dispatched by the
+// scheduler; P2-1's asr consumer rides the ggml-asr relay. The FRAME format
+// already follows §V2-4.4: events carry
 // {"op":"event","session":N,"kind":...,"seq":M,...} and seq counts per
 // session from 1.
 //
@@ -19,9 +20,11 @@
 //     sessions it owns are closed and reported to the caller (auto-cleanup,
 //     task item 2: "연결 종료 시 소유 세션 자동 정리").
 //
-// Unallocated capability: a session_open naming a capability the M6
-// deployment does not serve (e.g. "asr") FAILS to open (unavailable) — the
-// table accepts only registered capabilities, fail-closed (§V2-4.5).
+// Unallocated capability: a session_open naming a capability the deployment
+// does not serve FAILS to open (unavailable) — the table accepts only the
+// registered capabilities passed to the ctor, fail-closed (§V2-4.5). M6
+// registered "translate"; P2-1 (session 260925_0001) adds "asr" (the host
+// passes the served set; this module stays capability-agnostic).
 //
 // Privacy: sessions store identity/lifecycle fields only (ids, strings named
 // by the client's open request — capability/model/profile names, not user
@@ -57,7 +60,7 @@ inline std::string_view SessionStateToString(SessionState s) {
 struct SessionRecord {
     std::uint64_t id = 0;             // host-global increment (1-based)
     void* connection = nullptr;       // owning connection (opaque to this module)
-    std::string capability;           // "translate" | "asr" | ... (M6: translate)
+    std::string capability;           // "translate" | "asr" | ... (served-set gated)
     std::string model_id;             // registry reference ("" = family default)
     std::string profile;              // registry profile key ("default")
     int priority = 5;                 // §V2-4.6 0-9
@@ -77,7 +80,8 @@ enum class SessionOpenResult : unsigned char {
 class SessionTable {
 public:
     // `served_capabilities`: the capabilities THIS deployment can open (M6:
-    // {"translate"}). Fail-closed when empty (nothing can open).
+    // {"translate"}; P2-1 adds "asr"). Fail-closed when empty (nothing can
+    // open).
     explicit SessionTable(std::vector<std::string> served_capabilities)
         : served_(std::move(served_capabilities)) {}
 

@@ -157,9 +157,12 @@ void TestWorkerProtocol() {
         TEST_CHECK(wp::AnnounceCheck::Validate(good, 2, 1, 2) == wp::AnnounceStatus::Ok,
                    "handshake: abi below orchestrator ceiling accepted");
         good.family = "ggml-asr";
+        TEST_CHECK(wp::AnnounceCheck::Validate(good, 1, 1, 2) == wp::AnnounceStatus::Ok,
+                   "handshake: P2-1 registered ggml-asr family accepted");
+        good.family = "ggml-tts";
         TEST_CHECK(wp::AnnounceCheck::Validate(good, 1, 1, 2) ==
                        wp::AnnounceStatus::FamilyMismatch,
-                   "handshake: family mismatch rejected");
+                   "handshake: unregistered family mismatch rejected (P2-1)");
         good = wp::EmbeddedWorkerManifest();
         good.abi_version = 2;
         TEST_CHECK(wp::AnnounceCheck::Validate(good, 1, 1, 2) ==
