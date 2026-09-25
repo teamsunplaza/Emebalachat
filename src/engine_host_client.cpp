@@ -12,6 +12,7 @@
 // session is torn down (the host does the same to oversized frames).
 
 #include "engine_host_client.hpp"
+#include "overlapped_io_util.hpp" // REQ-L02/REQ-L32 부록 ②-4: cancel-approve 대기 공용 헬퍼
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -37,6 +38,13 @@ namespace {
 
 // ---- frozen deployment paths (§4.1 / §4.2 / §7.1) --------------------------
 constexpr wchar_t kDefaultPipeName[] = L"\\\\.\\pipe\\emebala-engine-v1";
+// REQ-L28/REQ-L32 부록 ②-1 (session 260925): v1 fallback candidate — a
+// v1-capable orchestrator may serve protocol 1 on the PRIMARY shared-engine
+// pipe only; the frozen -v1 name then has no listener and the connect matrix
+// falls through to this one. A version_mismatch answer to the protocol:1
+// hello is reported cleanly (see ConnectAndHandshake). Token-identical with
+// the Listener copy (e07d0de) so both sides try the same order.
+constexpr wchar_t kPrimaryPipeName[] = L"\\\\.\\pipe\\emebala-engine";
 constexpr wchar_t kEngineSubdir[] = L"Emebala\\Common\\engine";
 constexpr wchar_t kTokenFilename[] = L"token";
 constexpr wchar_t kHostExeFilename[] = L"Emebala.Engine.exe";
@@ -355,9 +363,14 @@ std::wstring DefaultExePath() {
     return lad + L"\\" + kEngineSubdir + L"\\" + kHostExeFilename;
 }
 
-std::wstring PipeName() {
+// REQ-L28 (session 260923_0001): connect candidates in priority order — the
+// PRIMARY shared-engine pipe first, then the frozen -v1 fallback name. Unified
+// with the Listener copy so both sides try the same order (default -> v1). A test
+// override replaces the whole list with the single override pipe.
+std::vector<std::wstring> PipeCandidates() {
     std::lock_guard<std::mutex> lk(g_paths_mu);
-    return g_pipe_override.empty() ? std::wstring(kDefaultPipeName) : g_pipe_override;
+    if (!g_pipe_override.empty()) return {g_pipe_override};
+    return {std::wstring(kPrimaryPipeName), std::wstring(kDefaultPipeName)};
 }
 std::wstring TokenPath() {
     std::lock_guard<std::mutex> lk(g_paths_mu);
@@ -454,14 +467,12 @@ long long RemainingMs(SteadyClock::time_point deadline) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
 }
 
-bool WaitOverlapped(HANDLE pipe, OVERLAPPED& ol, long long timeout_ms, DWORD& transferred) {
-    const DWORD wait = timeout_ms <= 0 ? 0u : static_cast<DWORD>(timeout_ms);
-    const DWORD wr = ::WaitForSingleObject(ol.hEvent, wait);
-    if (wr != WAIT_OBJECT_0) return false; // timeout (or abandoned -> treat as io error)
-    return ::GetOverlappedResult(pipe, &ol, &transferred, FALSE) != FALSE;
-}
-
 // Write one complete frame as ONE pipe message (§4.3).
+// REQ-L02 (session 260923_0001): the write path previously had NO cancel on
+// timeout — the overlapped write kept running against a released event.
+// Now it goes through WaitOverlappedOrCancelApprove like every other path.
+// P5-fix D2: the event handle is owned by ScopedOverlappedEvent so no exit
+// path (including the timeout early-return) can skip the close.
 bool WriteFrame(HANDLE pipe, std::string_view json) {
     std::string frame;
     frame.reserve(4 + json.size());
@@ -471,17 +482,21 @@ bool WriteFrame(HANDLE pipe, std::string_view json) {
     }
     frame.append(json);
 
+    ScopedOverlappedEvent event;
+    if (!event.IsValid()) return false;
     OVERLAPPED ol = {};
-    ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!ol.hEvent) return false;
+    ol.hEvent = event.Get();
     DWORD written = 0;
     const SteadyClock::time_point deadline = SteadyClock::now() + std::chrono::milliseconds(15000);
     BOOL ok = ::WriteFile(pipe, frame.data(), static_cast<DWORD>(frame.size()), &written, &ol);
     if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-        ok = WaitOverlapped(pipe, ol, RemainingMs(deadline), written);
+        ok = WaitOverlappedOrCancelApprove(pipe, ol, RemainingMs(deadline), written);
     }
+    // REQ-L02 (session 260923_0001): the helper already acked the cancel before
+    // returning false; the event is released when `event` goes out of scope at
+    // the end of this function — strictly after the cancel-approve wait. The
+    // pipe handle is never closed here.
     const bool success = ok && written == frame.size();
-    ::CloseHandle(ol.hEvent);
     return success;
 }
 
@@ -490,28 +505,37 @@ enum class ReadOutcome { Ok, Timeout, IoError };
 // Read exactly one pipe message into `json` (frame header + body), enforcing
 // the deadline. A message larger than the buffer (the 1 MiB cap) is an IO
 // error and tears the session down.
+// P5-fix D2: the event handle is owned by ScopedOverlappedEvent so the
+// timeout early-return below can no longer leak it (a321916 regression).
 ReadOutcome ReadFrame(HANDLE pipe, std::string& json, long long timeout_ms) {
     constexpr DWORD kBufSize = (1u << 20) + 4;
     static thread_local std::vector<char> buf; // 1 MiB TLS, allocated once per thread
     if (buf.size() < kBufSize) buf.resize(kBufSize);
 
+    ScopedOverlappedEvent event;
+    if (!event.IsValid()) return ReadOutcome::IoError;
     OVERLAPPED ol = {};
-    ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!ol.hEvent) return ReadOutcome::IoError;
+    ol.hEvent = event.Get();
     DWORD read = 0;
     const SteadyClock::time_point deadline = SteadyClock::now() + std::chrono::milliseconds(timeout_ms);
     BOOL ok = ::ReadFile(pipe, buf.data(), kBufSize, &read, &ol);
     if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-        ok = WaitOverlapped(pipe, ol, RemainingMs(deadline), read);
+        // REQ-L02 (session 260923_0001): cancel + kernel cancel-approve wait —
+        // the helper blocks until the kernel acks the cancel, only then may the
+        // event be released.
+        ok = WaitOverlappedOrCancelApprove(pipe, ol, RemainingMs(deadline), read);
         if (!ok) {
-            ::CancelIoEx(pipe, &ol);
-            ::CloseHandle(ol.hEvent);
+            // Timeout-vs-ioerror judgment preserved: a completed cancel leaves
+            // ERROR_OPERATION_ABORTED; a still-live read past the deadline is a
+            // timeout; anything else is an io error.
+            // The event is released when `event` goes out of scope — the helper
+            // already completed the cancel-ack before returning false, so the
+            // close here is safe on every path.
             return ::GetLastError() == ERROR_OPERATION_ABORTED || RemainingMs(deadline) <= 0
                        ? ReadOutcome::Timeout
                        : ReadOutcome::IoError;
         }
     }
-    ::CloseHandle(ol.hEvent);
     if (!ok || read < 4) return ReadOutcome::IoError;
     std::uint32_t len = 0;
     len = (static_cast<std::uint32_t>(static_cast<unsigned char>(buf[0]))      ) |
@@ -525,27 +549,19 @@ ReadOutcome ReadFrame(HANDLE pipe, std::string& json, long long timeout_ms) {
     return ReadOutcome::Ok;
 }
 
-// Connect + handshake. On success g_session.pipe is live and the welcome pin
-// has been verified. `err` receives a stable machine token on failure.
-bool ConnectAndHandshake(const EngineHostConfig& cfg, std::string& err) {
-    const std::wstring pipe = PipeName();
-    if (pipe.empty()) { err = "connect"; return false; }
-
-    HANDLE h = nullptr;
-    bool spawned = false;
-    DWORD last_err = ERROR_SUCCESS;
+// Connect ONE pipe candidate with the plan §5.1-4 retry/wait matrix
+// (WaitNamedPipe + CreateFile, then retries paced at 500 ms x3). `spawned`
+// tracks the spawn-on-demand-once rule ACROSS candidates. Returns a live
+// handle or INVALID_HANDLE_VALUE (the last OS error is stored in last_err).
+HANDLE ConnectPipeWithRetry(const std::wstring& pipe, const EngineHostConfig& cfg,
+                            bool& spawned, DWORD& last_err) {
     for (int attempt = 0;; ++attempt) {
         ::WaitNamedPipeW(pipe.c_str(), kConnectRetryIntervalMs);
-        h = ::CreateFileW(pipe.c_str(), GENERIC_READ | GENERIC_WRITE,
-                          0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-        if (h != INVALID_HANDLE_VALUE) break;
+        HANDLE h = ::CreateFileW(pipe.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (h != INVALID_HANDLE_VALUE) return h;
         last_err = ::GetLastError();
-        if (attempt >= kConnectRetryCount) {
-            // Shape-only diagnostic: the bare code lets logs distinguish
-            // "no listener" (2) from "all instances busy" (231) etc.
-            err = "connect:" + std::to_string(last_err);
-            return false;
-        }
+        if (attempt >= kConnectRetryCount) return INVALID_HANDLE_VALUE;
         // §5.1-4: spawn on demand (once), then retries paced at 500 ms (x3).
         // The fixed sleep is load-bearing: WaitNamedPipe returns IMMEDIATELY
         // when no pipe instance exists yet, so without it all three retries
@@ -558,6 +574,33 @@ bool ConnectAndHandshake(const EngineHostConfig& cfg, std::string& err) {
             spawned = true;
         }
         ::Sleep(kConnectRetryIntervalMs);
+    }
+}
+
+// Connect + handshake. On success g_session.pipe is live and the welcome pin
+// has been verified. `err` receives a stable machine token on failure.
+bool ConnectAndHandshake(const EngineHostConfig& cfg, std::string& err) {
+    // REQ-L28 (session 260923_0001): pipe priority — the primary shared-engine
+    // pipe first, then the frozen -v1 fallback name (see kPrimaryPipeName). The
+    // full retry matrix runs per candidate; the first candidate that ACCEPTS a
+    // connection carries the handshake — a version_mismatch answer there is
+    // reported cleanly (never a hang: the handshake read is bounded by
+    // kHandshakeTimeoutMs).
+    const std::vector<std::wstring> candidates = PipeCandidates();
+    if (candidates.empty()) { err = "connect"; return false; }
+
+    HANDLE h = INVALID_HANDLE_VALUE;
+    bool spawned = false;
+    DWORD last_err = ERROR_SUCCESS;
+    for (const std::wstring& pipe : candidates) {
+        h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err);
+        if (h != INVALID_HANDLE_VALUE) break;
+    }
+    if (h == INVALID_HANDLE_VALUE) {
+        // Shape-only diagnostic: the bare code lets logs distinguish
+        // "no listener" (2) from "all instances busy" (231) etc.
+        err = "connect:" + std::to_string(last_err);
+        return false;
     }
     g_session.pipe = h;
 
