@@ -21,6 +21,26 @@ This directory contains the Inno Setup script and assets for building the Emebal
    - `../build/Emebala.Engine.exe` (the shared inference host, bundled into the per-user common store — REQ-043)
    - `../build/Emebalachat.Engine.ggml-translate.exe` **and** `../build/worker.ggml-translate.manifest` (the translation worker and its per-family manifest, both bundled next to the host — REQ-006/M6, M7 A-1)
 
+2b. **Stage the Listener-owned engine bundle (REQ-L32 P2-2, session 260925)**
+   The ggml-asr worker and the CUDA runtime redists are LISTENER-owned shared
+   slots: this installer stages them **only for first-install coverage** and
+   never replaces an existing store file (G3 downgrade guard, see
+   `SharedSlotReplaceDecision` in `setup.iss`). Populate the staging dir
+   before compiling (the dir is git-ignored, local only):
+   - copy `Emebala.Engine.ggml-asr.exe` from the Listener build output
+     (Listener `build/Release/` or `build_gpu/`, whichever is the current
+     release build — the exact source build is recorded per release in
+     `docs/…/engine-bundle-hashes.md`)
+   - copy `worker.ggml-asr.manifest` (byte copy of the Listener
+     `src/worker/worker_manifest_ggml_asr.json`)
+   - copy the CUDA v13.3 runtime redists from the toolkit:
+     `copy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\x64\cublas64_13.dll" installer\bundled\engine\`
+     (same for `cublasLt64_13.dll`, `cudart64_13.dll`)
+   If the staging dir is left empty the installer still compiles
+   (`skipifsourcedoesntexist`), and the runtime staged gate makes the setup
+   install nothing it does not carry — such a build is for verification
+   workflows only; a release MUST ship the staged pair.
+
 ## How to Compile
 
 > **Encoding gate — run before every installer build (mandatory):**

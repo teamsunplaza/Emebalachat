@@ -606,6 +606,26 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; worker.manifest (bootstrap fallback); this installer WRITES the new name only.
 Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
 Source: "..\build\worker.ggml-translate.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
+; REQ-L32 P2-2 (session 260925, design v2 §A-4.6): the ggml-asr worker exe,
+; its per-family manifest (M7 A-1 worker.ggml-asr.manifest) and the CUDA
+; runtime DLLs (which ride the ggml-asr slot per the family matrix) are
+; LISTENER-owned shared slots. This installer stages them ONLY for first-install
+; coverage: the SharedSlotReplaceDecision non-owner branch refuses to touch an
+; existing store file (G3 downgrade guard, both ways), so installing Chat over
+; a Listener-managed engine can never downgrade the asr family. Staged sources
+; (installer\bundled\engine\, populated at release time from the Listener build
+; + the CUDA v13.3 toolkit — see installer\README.md) are embedded in setup.exe
+; at compile time; skipifsourcedoesntexist keeps no-staging source builds
+; compilable, and the runtime staged gate in SharedSlotReplaceDecision re-checks
+; {src}\bundled\engine\ so a bare setup.exe copied out of the staging tree
+; installs nothing it does not carry. uninsneveruninstall matches the other
+; engine entries: the M7 A-3 registry-aware last-app cleanup owns removal (the
+; asr pair was added to its owned list by P2-3).
+Source: "bundled\engine\Emebala.Engine.ggml-asr.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorkerAsr
+Source: "bundled\engine\worker.ggml-asr.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorkerAsr
+Source: "bundled\engine\cublas64_13.dll"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorkerAsr
+Source: "bundled\engine\cublasLt64_13.dll"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorkerAsr
+Source: "bundled\engine\cudart64_13.dll"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall skipifsourcedoesntexist; Check: ShouldInstallEngineWorkerAsr
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; REQ-207/208 (session 260911_0002 T6, design 144800 §2.3): bundle the README so
 ; the first-run privacy notice's "re-read this anytime in the README file"
@@ -711,7 +731,7 @@ const
   // survived reinstalls). CompareVersionText digit-sums dotted segments, so
   // '0.10.1.r2' > '0.10.1' (replace) while older/newer cross-product compares
   // still resolve correctly.
-#define ENGINE_REVISION ".r10"
+#define ENGINE_REVISION ".r11"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
@@ -729,6 +749,20 @@ const
   COMPONENTS_FILENAME = 'components.json';
   WORKER_FILENAME = 'Emebalachat.Engine.ggml-translate.exe';
   WORKER_MANIFEST_FILENAME = 'worker.ggml-translate.manifest';
+  // REQ-L32 P2-2/P2-3 (session 260925, design v2 §A-4.6): ggml-asr is a
+  // LISTENER-owned shared slot. This installer stages the worker + manifest +
+  // CUDA runtime DLLs only for FIRST-INSTALL coverage (common store absent);
+  // as a non-owner it NEVER replaces an existing store file (G3 downgrade
+  // guard, both ways). The staged artifacts live under installer\bundled\engine
+  // (copied from the Listener build at release time; intentionally not
+  // committed — see installer\README.md "Engine bundle staging").
+  WORKER_ASR_FILENAME = 'Emebala.Engine.ggml-asr.exe';
+  WORKER_MANIFEST_ASR_FILENAME = 'worker.ggml-asr.manifest';
+  ENGINE_WORKER_ASR_ABI_VERSION = 1;
+  ENGINE_BUNDLE_DIR = 'bundled\engine';
+  CUDA_CUBLAS_DLL_FILENAME = 'cublas64_13.dll';
+  CUDA_CUBLASLT_DLL_FILENAME = 'cublasLt64_13.dll';
+  CUDA_CUDART_DLL_FILENAME = 'cudart64_13.dll';
   ENGINE_ORCHESTRATOR_ABI_VERSION = 2;
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
@@ -1527,6 +1561,104 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// EngineComponentRuleA - REQ-L32 P2-2 (session 260925, transfer of Listener
+// setup.iss:1830): the rule A verdict for ONE component, factored out of the
+// ShouldInstall* bodies so the shared-slot decision below can reuse it.
+//   components.json ABSENT  -> replace (rule A-1: v1-generation install).
+//   components.json PRESENT -> ComponentNeedsReplace for the named entry.
+//   components.json UNREADABLE -> fail-closed, replace.
+// Callers apply their own gates BEFORE calling (staged-bundle gate for
+// cross-app slots, store-existence repair hole for owned slots).
+// ------------------------------------------------------------------------
+function EngineComponentRuleA(const ComponentName: String;
+                              BundledAbi: Integer): Boolean;
+var
+  ComponentsPath: String;
+  ComponentsAnsi: AnsiString;
+  ComponentsJson: String;
+begin
+  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  Result := True;
+  if not FileExists(ComponentsPath) then
+  begin
+    // Rule A-1: components.json absent = v1-generation install -> replace
+    // unconditionally.
+    Log('REQ-L32: components.json absent - rule A-1: component "' + ComponentName + '" will be (re)installed unconditionally.');
+  end
+  else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
+  begin
+    ComponentsJson := Trim(ComponentsAnsi);
+    Result := ComponentNeedsReplace(ComponentsJson, ComponentName,
+                                    BundledAbi, ENGINE_BUNDLED_VERSION);
+    if not Result then
+      Log('REQ-L32: components.json present and "' + ComponentName + '" up-to-date - keeping existing component.');
+  end
+  else
+  begin
+    // components.json exists but cannot be read: fail-closed, replace.
+    Log('REQ-L32: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// SharedSlotReplaceDecision - REQ-L32 P2-2 (session 260925, G3, design v2
+// §A-4.2/§A-4.5): shared-slot "ownership + existence" replace decision.
+// Transferred from the Listener installer (260925_0001 GATE-FIX form) with the
+// complementary IsOwner values: Chat OWNS orchestrator/translate and must
+// NEVER replace the Listener-owned ggml-asr slot (and vice versa).
+//   IsOwner=True  -> NO staged gate (own artifacts are embedded in setup.exe;
+//                    a missing-staged fails the COMPILE, never the runtime).
+//                    Repair hole (G3-symmetric): a missing
+//                    COMMON_ENGINE_DIR\<DeployedFileName> reinstalls even
+//                    when components.json claims the slot is current; both
+//                    store files present -> rule A (EngineComponentRuleA).
+//   IsOwner=False -> staged gate FIRST (no staged source = nothing to
+//                    install), then the G3 branches UNCHANGED: store file
+//                    EXISTS -> NEVER replace; ABSENT -> first install.
+// ------------------------------------------------------------------------
+function SharedSlotReplaceDecision(const Ownership, ComponentName,
+                                   DeployedFileName: String; BundledAbi: Integer;
+                                   IsOwner: Boolean): Boolean;
+begin
+  if IsOwner then
+  begin
+    // Owned slot (chat orchestrator/translate): no staged-bundle gate. Repair
+    // hole: a store file vanishing under a current components.json (partial
+    // cleanup/AV quarantine) must still reinstall - G3-symmetric to the
+    // cross-app existence check below.
+    if not FileExists(ExpandConstant(COMMON_ENGINE_DIR) + '\' + DeployedFileName) then
+    begin
+      Log('REQ-L32: owned slot "' + ComponentName + '" store file missing - reinstalling (repair hole).');
+      Result := True;
+      Exit;
+    end;
+    // Both store files present: the rule A abi/version decision preserved.
+    Result := EngineComponentRuleA(ComponentName, BundledAbi);
+    Exit;
+  end;
+  // Non-owned (cross-app) slot: staged-bundle gate FIRST - without the
+  // staged source file there is nothing to install.
+  // {src} expands to the directory the running setup.exe lives in; a bundle
+  // deployed without the staging tree carries no cross-app artifacts to
+  // install, so the gate stays on THIS branch only.
+  if not FileExists(ExpandConstant('{src}\') + ENGINE_BUNDLE_DIR + '\' +
+                    DeployedFileName) then
+    begin
+      Result := False;
+      Exit;
+    end;
+  // G3 branch: cross-app-owned slot exists - NEVER replace (downgrade guard).
+  if FileExists(ExpandConstant(COMMON_ENGINE_DIR) + '\' + DeployedFileName) then
+    begin
+      Log('REQ-L32: ' + Ownership + '-owned slot "' + ComponentName + '" exists - NEVER replace (G3).');
+      Result := False;
+      Exit;
+    end;
+  // Non-owned slot absent from the store: first install -> install.
+  Result := True;
+end;
+
+// ------------------------------------------------------------------------
 // ShouldInstallEngineHost - REQ-006/M6 (plan §V2-8.1 rule A, design §6.1):
 // Check function for the bundled [Files] entry of the shared host
 // Emebala.Engine.exe (the v2 orchestrator). The shared common store may
@@ -1547,40 +1679,16 @@ end;
 // WriteComponentsFile().
 // ------------------------------------------------------------------------
 function ShouldInstallEngineHost(): Boolean;
-var
-  ComponentsPath: String;
-  // LoadStringFromFile takes an AnsiString var param (Inno 6 Unicode), so the
-  // file is loaded into an AnsiString and converted; the file is ASCII.
-  ComponentsAnsi: AnsiString;
-  ComponentsJson: String;
 begin
-  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
-  Result := True;
-  if not FileExists(ComponentsPath) then
-  begin
-    // Rule A-1: components.json absent = v1-generation install -> replace
-    // unconditionally. The v1 engine.version comparison is deliberately
-    // skipped (design §6.1 decision A; closes the equal-version skip hole).
-    Log('REQ-006: components.json absent - rule A-1: shared engine host will be (re)installed unconditionally.');
-  end
-  else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
-  begin
-    ComponentsJson := Trim(ComponentsAnsi);
-    Result := ComponentNeedsReplace(ComponentsJson, 'orchestrator',
-                                    ENGINE_ORCHESTRATOR_ABI_VERSION,
-                                    ENGINE_BUNDLED_VERSION)
-           or ComponentNeedsReplace(ComponentsJson, 'ggml-translate',
-                                    ENGINE_WORKER_ABI_VERSION,
-                                    ENGINE_BUNDLED_VERSION);
-    if not Result then
-      Log('REQ-006: components.json present and up-to-date - keeping existing shared engine host.');
-  end
-  else
-  begin
-    // components.json exists but cannot be read: fail-closed, replace.
-    Log('REQ-006: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
-  end;
-  EngineHostUpdated := Result;
+  // REQ-L32 P2-2: Chat OWNS the orchestrator slot (IsOwner=True): repair hole
+  // + rule A via SharedSlotReplaceDecision. The defensive ggml-translate
+  // mirror of the original inline rule A is preserved (both deploy together).
+  EngineHostUpdated := SharedSlotReplaceDecision('listener', 'orchestrator',
+      ENGINE_HOST_FILENAME, ENGINE_ORCHESTRATOR_ABI_VERSION, True);
+  if not EngineHostUpdated then
+    EngineHostUpdated := SharedSlotReplaceDecision('listener', 'ggml-translate',
+        WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+  Result := EngineHostUpdated;
   if Result then
     Log('REQ-006: shared engine host will be (re)installed.');
 end;
@@ -1607,42 +1715,34 @@ end;
 // Side effect: latches EngineWorkerUpdated for WriteComponentsFile().
 // ------------------------------------------------------------------------
 function ShouldInstallEngineWorker(): Boolean;
-var
-  ComponentsPath: String;
-  ComponentsAnsi: AnsiString;
-  ComponentsJson: String;
 begin
   EngineWorkerUpdated := False;
-  // REQ-046 P4-1: the old no-llama guard probed {src}\..\build\<worker exe>.
-  // {src} resolves on the INSTALLING machine, so on any end-user box it always
-  // pointed at a non-existent dev build tree -> FileExists=False -> the worker
-  // [Files] entries were silently skipped (P2 192430 H1 confirmed). A no-llama
-  // build is already blocked at ISCC compile time (policy 7b171a0: the L471-472
-  // worker Source entries have no skipifsourcedoesntexist), so the runtime
-  // guard is removed and version/abi gating (below) decides installation.
-  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
-  Result := True;
-  if not FileExists(ComponentsPath) then
-  begin
-    // Rule A-1: components.json absent = v1-generation install -> replace.
-    Log('REQ-006: components.json absent - rule A-1: worker will be installed unconditionally.');
-  end
-  else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
-  begin
-    ComponentsJson := Trim(ComponentsAnsi);
-    Result := ComponentNeedsReplace(ComponentsJson, 'ggml-translate',
-                                    ENGINE_WORKER_ABI_VERSION,
-                                    ENGINE_BUNDLED_VERSION);
-    if not Result then
-      Log('REQ-006: components.json present and ggml-translate up-to-date - keeping existing worker.');
-  end
-  else
-  begin
-    Log('REQ-006: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
-  end;
-  EngineWorkerUpdated := Result;
+  // REQ-L32 P2-2: Chat OWNS the ggml-translate slot (IsOwner=True): repair
+  // hole + rule A via SharedSlotReplaceDecision. The no-llama loud-fail
+  // policy still holds — the [Files] entries above carry no
+  // skipifsourcedoesntexist, so a missing build-tree worker exe fails the
+  // ISCC compile before this Check can ever run.
+  EngineWorkerUpdated := SharedSlotReplaceDecision('listener', 'ggml-translate',
+      WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+  Result := EngineWorkerUpdated;
   if Result then
     Log('REQ-006: worker will be (re)installed.');
+end;
+
+// ------------------------------------------------------------------------
+// ShouldInstallEngineWorkerAsr - REQ-L32 P2-2 (session 260925, design v2
+// §A-4): ggml-asr is LISTENER's OWN slot; the Chat installer is NOT its owner
+// (IsOwner=False) -> the staged gate runs first (no staged artifact = nothing
+// to install), a store file already present is NEVER replaced (G3 downgrade
+// guard, both ways), and only an absent store file first-installs the staged
+// pair. No components.json latch here on purpose: the owner (Listener) is the
+// sole stamper of the 'ggml-asr' entry; WriteComponentsFile preserves every
+// non-owned entry verbatim, so this installer never touches Listener's stamp.
+// ------------------------------------------------------------------------
+function ShouldInstallEngineWorkerAsr(): Boolean;
+begin
+  Result := SharedSlotReplaceDecision('listener', 'ggml-asr',
+      WORKER_ASR_FILENAME, ENGINE_WORKER_ASR_ABI_VERSION, False);
 end;
 
 // ------------------------------------------------------------------------
@@ -2998,11 +3098,16 @@ begin
   // ---- 2. engine dir: ONLY the files this installer owns ------------------
   // The orchestrator is family-shared (DEC-006: Chat builds it) and carries
   // uninsneveruninstall precisely so this code path - not Inno's log-driven
-  // uninstall - removes it, at the last family app. Other families' worker
-  // exes / untracked files are unowned here: preserved.
+  // uninstall - removes it, at the last family app. REQ-L32 P2-3 (session
+  // 260925): the Listener-owned ggml-asr pair was added here so a last-app
+  // Chat uninstall no longer strands it as an orphan (KNOWN-GAP #1 close);
+  // when another family app remains registered, the registry-aware gate above
+  // preserves the whole store and this list never runs.
   DeleteOwnedFile(EngineDir + '\' + ENGINE_HOST_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + WORKER_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + WORKER_MANIFEST_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + WORKER_ASR_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + WORKER_MANIFEST_ASR_FILENAME);
   DeleteOwnedFile(EngineDir + '\worker.manifest'); // legacy pre-A-1 name (translate's)
   DeleteOwnedFile(EngineDir + '\' + ENGINE_VERSION_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + COMPONENTS_FILENAME);

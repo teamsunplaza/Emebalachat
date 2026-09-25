@@ -233,6 +233,37 @@ def check_contract(text: str) -> list[str]:
                 "CHECK 8: the bare-name tampering guard (IsSafeBareName) is "
                 "gone from the cleanup path")
 
+    # -- CHECK 9: REQ-L32 P2-2/P2-3 asr shared-slot contract -----------------
+    # The Listener-owned ggml-asr pair must be (a) staged as a NON-owner slot
+    # (first-install only, NEVER replace existing — G3 downgrade guard), and
+    # (b) enumerated in the M7 A-3 owned-cleanup list so a last-app Chat
+    # uninstall does not strand it as an orphan (KNOWN-GAP #1 close).
+    if "WORKER_ASR_FILENAME = 'Emebala.Engine.ggml-asr.exe'" not in text:
+        failures.append(
+            "CHECK 9: WORKER_ASR_FILENAME constant missing "
+            "(REQ-L32 P2-2 asr staging)")
+    if "WORKER_MANIFEST_ASR_FILENAME = 'worker.ggml-asr.manifest'" not in text:
+        failures.append(
+            "CHECK 9: WORKER_MANIFEST_ASR_FILENAME constant missing "
+            "(REQ-L32 P2-2 asr staging)")
+    if "function ShouldInstallEngineWorkerAsr" not in text:
+        failures.append(
+            "CHECK 9: ShouldInstallEngineWorkerAsr() missing (REQ-L32 P2-2)")
+    if cleanup:
+        if "DeleteOwnedFile(EngineDir + '\\' + WORKER_ASR_FILENAME)" not in cleanup:
+            failures.append(
+                "CHECK 9: CleanupSharedEngineStore does not delete "
+                "WORKER_ASR_FILENAME (P2-3 orphan close)")
+        if "DeleteOwnedFile(EngineDir + '\\' + WORKER_MANIFEST_ASR_FILENAME)" not in cleanup:
+            failures.append(
+                "CHECK 9: CleanupSharedEngineStore does not delete "
+                "WORKER_MANIFEST_ASR_FILENAME (P2-3 orphan close)")
+    if "function SharedSlotReplaceDecision" not in text or \
+            "NEVER replace (G3)" not in text:
+        failures.append(
+            "CHECK 9: SharedSlotReplaceDecision G3 guard missing "
+            "(REQ-L32 P2-2 downgrade guard)")
+
     # -- CHECK 10: M7 A-7 family-shared setup-gate mutex wiring ----------------
     # The [Code] gate must exist on BOTH entry points and use the exact
     # family mutex name; the elevated chained child must be exempt so the
