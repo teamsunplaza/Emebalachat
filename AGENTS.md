@@ -76,7 +76,7 @@ cmake --build build --config Release
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 4531 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 4755 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 ```
 
 Useful variants:
@@ -89,7 +89,7 @@ Useful variants:
   - `python tools/check_installer_encoding.py` — encoding gate for all `.iss`/`.isl` text inputs (UTF-8 rules + Inno ≥ 6.4 version guard). Non-zero exit = do not build.
   - `python tools/check_installer_display_text.py` — display-layer mojibake gate (compiles a probe wizard per language and reads memo text back). Non-zero exit = do not ship.
   - `python tools/check_uninstall_contract.py` — static re-derivation of the shared-engine uninstall contract, including the M7 A-3 registry-aware bundled-only cleanup invariants (the pre-A-3 blanket `DelTree` trips the gate). Non-zero exit = do not ship.
-  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; a missing worker exe fails the compile even in no-llama builds). Inno Setup 6.4+ is a hard requirement (enforced by a compile-time `#error`).
+  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.1.exe`. The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebalachat.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; a missing worker exe fails the compile even in no-llama builds). REQ-L32 P2-2 (session 260925): the installer ALSO stages the Listener-owned ggml-asr pair + CUDA 13.3 runtime DLLs from `installer\bundled\engine\` (git-ignored, populated at release time per `installer\README.md` §2b; `skipifsourcedoesntexist` + the `SharedSlotReplaceDecision` staged gate) — the Chat installer is a NON-owner of that slot: first-install coverage only, never replaces an existing store file (G3). Inno Setup 6.4+ is a hard requirement (enforced by a compile-time `#error`).
 
 ## Development Conventions
 

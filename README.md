@@ -494,7 +494,7 @@ Expected output (excerpt):
 [RUN] Testing Smart Bypass...
 [PASS] Smart Bypass tests completed.
 ...
-Total Checks: 4531
+Total Checks: 4755
 Failures:     0
 ========================================
 >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<

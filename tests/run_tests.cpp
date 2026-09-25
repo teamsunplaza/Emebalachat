@@ -90,6 +90,13 @@ static int g_failed_count = 0;
 #include "host_v2_health.hpp"
 #include "m6_engine_host_orchestrator_tests.inc"
 
+// P2-1 (session 260925_0001): family-coexistence asr relay suites — the
+// registered-family announce gate, the §7.3 W-PCM-1 pcm clause port, the
+// close/abort relay mapping, and the manifest-name family extraction.
+// P2-1 stabilization adds the pure claim state these suites drive:
+#include "../src/host_v2_asr_relay.hpp" // P2-1 stabilization: pure asr relay claim
+#include "p2_1_asr_relay_tests.inc"
+
 // REQ-005 (M6 T6): repair-bootstrapper test bodies (staged session .inc;
 // defines TestEngineHostBootstrap/TestEngineHostBootstrapHashAndMove against
 // the engine_host_bootstrap_client module).
@@ -14637,6 +14644,20 @@ void TestEngineHostAvailabilityAndMigration() {
 // pins against engine_host_config_reader + ResolveRepoFile source pins.
 #include "req055_live_pin_tests.inc"
 
+// REQ-059 (user report: a model added in Model Management did not translate —
+// "both engines translate identically" / Enter does nothing): GGUF models
+// whose chat template is trivial (Gemma-style concat) choke on the bare fixed
+// Hy-MT2 instruction (empty decode) or echo the source. Fixed two-rung ladder
+// in translation_common.cpp: rung 1 wraps with llama's built-in default
+// template (ChatML) for trivial/absent templates; rung 2 retries once with
+// the model family's official completion form (BuildCompletionPrompt,
+// config.cpp) after an empty/echo rung 1. Hy-MT2's non-trivial template path
+// stays byte-identical. Staged as an .inc next to this runner; registered
+// near the end of main() right after TestReq055LiveUserModelPin(), per the
+// end-of-file pattern. Pure BuildCompletionPrompt pins + ResolveRepoFile
+// source pins.
+#include "req059_user_model_prompt_tests.inc"
+
 // REQ-057 (wrong-model serving diagnosability): the worker echoes the
 // ACTUALLY-SERVED model id on every terminal event (EventMsg.model, OPTIONAL
 // per the wire-freeze discipline), the orchestrator relays it as the
@@ -14649,6 +14670,11 @@ void TestEngineHostAvailabilityAndMigration() {
 // source pins (the EventMsg present/absent round-trip cases live in
 // m6_engine_host_worker_tests.inc section 8, extended in place).
 #include "req057_served_model_tests.inc"
+
+// REQ-L28/REQ-L32 부록 ② (session 260925): pipe-candidate priority + REQ-L02
+// cancel-approve helper adoption — source-text pins (same ResolveRepoFile
+// mechanism as the REQ-057 suite above).
+#include "req_l28_pipe_candidates_tests.inc"
 
 // M7 A-1 (session 260922_0001): per-family worker-manifest naming scheme
 // (worker.<family>.manifest + legacy fallback + store enumeration + coexistence
@@ -15433,6 +15459,22 @@ int main() {
     TestHostV2Session();
     TestHostV2Health();
     TestHostV2WelcomeGolden();
+    // P2-1 (session 260925_0001): family-coexistence asr suites (announce
+    // gate + §7.3 W-PCM-1 pcm clause + relay mapping) — registered after the
+    // T4 suites, per the end-of-file pattern.
+    TestP21AsrAnnounce();
+    TestP21AsrPcmClause();
+    // P2-1 stabilization (session 260925_0001, live-test defects 1/2/3): the
+    // asr relay claim lifecycle (disconnect zombie repro, worker-death
+    // reopen, table-record recovery) and the cold-start spawn-wait classifier
+    // — registered after the P2-1 suites, per the end-of-file pattern.
+    TestP21AsrRelayLifecycle();
+    TestP21AsrColdStartWait();
+    TestP21AsrStallRecovery();
+    // REQ-L28/REQ-L32 부록 ② (session 260925): pipe-candidate priority
+    // (primary -> v1) + REQ-L02 cancel-approve helper adoption pins —
+    // registered after the P2-1 suites, per the end-of-file pattern.
+    TestReqL28PipeCandidates();
     // REQ-005 (M6 T6): repair bootstrapper suites (plan §V2-8.3, design §9 R-3b)
     // — registered after the T4 suites, per the end-of-file pattern.
     TestEngineHostBootstrap();
@@ -15586,6 +15628,10 @@ int main() {
     // read + empty-id reset relay + engine revision bump). Registered right
     // after the REQ-054 suite it complements.
     TestReq055LiveUserModelPin();
+    // REQ-059: the user-model prompt ladder (trivial-template ChatML wrap +
+    // completion-form retry + colon cleanup). Registered right after the
+    // REQ-055 suite, per the end-of-file pattern.
+    TestReq059UserModelPrompt();
     // REQ-057: the served-model id echo (worker -> orchestrator -> client ->
     // app-side served-vs-expected diagnosis). Registered right after the
     // REQ-055 suite it builds on (the live pin IS the expected-id source).
