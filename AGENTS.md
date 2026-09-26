@@ -76,7 +76,7 @@ cmake --build build --config Release
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 4772 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 5102 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 ```
 
 Useful variants:
