@@ -38,8 +38,14 @@ This directory contains the Inno Setup script and assets for building the Emebal
      (same for `cublasLt64_13.dll`, `cudart64_13.dll`)
    If the staging dir is left empty the installer still compiles
    (`skipifsourcedoesntexist`), and the runtime staged gate makes the setup
-   install nothing it does not carry — such a build is for verification
-   workflows only; a release MUST ship the staged pair.
+   install nothing it does not carry.
+   > **Release policy (2026-09-26)**: the v0.10.1.r11 release ships with an
+   > EMPTY staging dir on purpose — the ~600 MiB staged build was judged too
+   > heavy, and the Listener installer (slot owner) delivers the asr worker +
+   > CUDA runtime itself. Chat-only installs get the Listener-compatible
+   > orchestrator (asr relay is code, not payload) at the usual ~117 MB.
+   > Restage the pair only when a release explicitly wants Chat-first
+   > installs to carry the asr slot.
 
 ## How to Compile
 
