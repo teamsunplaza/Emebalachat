@@ -523,3 +523,179 @@ void TestP21AsrStallRecovery() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// Session 260926_0009 (sv-live-measure, the answered_event churn root cause):
+// the asr OPEN-WAIT frame classifier. Live evidence (orchestrator stderr,
+// 62 opens in one measure): 20 opens (32%) exited `answered_event` — the
+// open wait read a stale final/eos event of the PREVIOUS session still in
+// flight from the worker's close processing (Finalize -> final + eos ->
+// closed) and misclassified it as the model_missing answer, unwound the
+// claim, and the client's next feed died on "no live session" bad_request —
+// the reconnect storm fed itself (client_gone answers chased the same loop).
+// The Listener pins its wire session id across reconnects, so the leftover
+// carries the SAME id; only the ordering fact (the worker publishes opened
+// BEFORE any event of the new session) separates stale traffic from the
+// real answer. The fix is the pure ClassifyAsrOpenFrame in
+// host_v2_asr_relay.hpp; these suites pin every shape and then drive the
+// randomized leftover/answer interleavings.
+void TestAsrOpenFrameClassifier() {
+    std::cout << "[RUN] Testing asr open-wait frame classifier (260926_0009 answered_event fix)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace wp = emebalachat::workerproto;
+    namespace hv2 = emebalachat::host_v2;
+
+    // ---- 1. Direct classification pins (frame shape x session match) ----
+    {
+        wp::EventMsg ev;
+        // opened: the matching session completes the wait; any other
+        // session is a previous dead open's late answer.
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(wp::BuildOpened(1), 1, ev) ==
+                       hv2::AsrOpenFrame::Opened,
+                   "openwait: matching opened completes the wait");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(wp::BuildOpened(7), 1, ev) ==
+                       hv2::AsrOpenFrame::OpenedStale,
+                   "openwait: a foreign opened is stale (previous dead open)");
+        // closed: the previous session's late close answer — always stale
+        // (the worker only writes closed for close processing, never during
+        // an open).
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(wp::BuildClosed(1), 1, ev) ==
+                       hv2::AsrOpenFrame::ClosedStale,
+                   "openwait: a same-session closed is a stale close answer");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(wp::BuildClosed(9), 1, ev) ==
+                       hv2::AsrOpenFrame::ClosedStale,
+                   "openwait: a foreign closed is stale too");
+        // THE regression pin: a stale final/eos/partial/token event carrying
+        // the SAME wire session id (the client pins it across reconnects)
+        // must be consumed, never read as the model_missing answer. The
+        // pre-fix code matched any same-session event -> answered_event.
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Final, 1, "stale", ""}),
+                       1, ev) == hv2::AsrOpenFrame::ProgressStale,
+                   "openwait: a same-session stale final is consumed (the 260926_0009 repro)");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Eos, 2, "", ""}),
+                       1, ev) == hv2::AsrOpenFrame::ProgressStale,
+                   "openwait: a same-session stale eos is consumed");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Partial, 3, "p", ""}),
+                       1, ev) == hv2::AsrOpenFrame::ProgressStale,
+                   "openwait: a same-session stale partial is consumed");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{9, wp::EventKind::Final, 1, "x", ""}),
+                       1, ev) == hv2::AsrOpenFrame::ProgressStale,
+                   "openwait: a foreign final is consumed");
+        // The legitimate load-failure answer survives: a MATCHING error
+        // event is the worker's model_missing shape (no opened frame).
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Error, 1, "",
+                                                  "model_missing"}),
+                       1, ev) == hv2::AsrOpenFrame::ErrorAnswer,
+                   "openwait: a matching error event is the load-failure answer");
+        TEST_CHECK(ev.kind == wp::EventKind::Error && ev.code == "model_missing",
+                   "openwait: the error answer event is surfaced for the verbatim relay");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       wp::BuildEvent(wp::EventMsg{9, wp::EventKind::Error, 1, "",
+                                                  "engine_failed"}),
+                       1, ev) == hv2::AsrOpenFrame::ProgressStale,
+                   "openwait: a foreign error event is a leftover, not an answer");
+        // Heartbeats and junk.
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(wp::BuildHeartbeat(123), 1, ev) ==
+                       hv2::AsrOpenFrame::Heartbeat,
+                   "openwait: heartbeat is consumed");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame("garbage", 1, ev) ==
+                       hv2::AsrOpenFrame::Malformed,
+                   "openwait: unparseable bytes are fail-closed");
+        TEST_CHECK(hv2::ClassifyAsrOpenFrame(
+                       "{\"op\":\"announce\",\"token\":\"x\"}", 1, ev) ==
+                       hv2::AsrOpenFrame::Malformed,
+                   "openwait: an announce frame is fail-closed (consumed at spawn)");
+    }
+
+    // ---- 2. The exact live-repro sequence, fixed ----
+    // Previous session's close processing in flight (Finalize decode ->
+    // final + eos -> closed), then the new open's real answer. The wait must
+    // consume the leftovers and complete with Opened.
+    {
+        wp::EventMsg ev;
+        const char* seq_exit = "?";
+        const std::vector<std::pair<std::string, hv2::AsrOpenFrame>> seq = {
+            {wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Final, 1, "old", ""}),
+             hv2::AsrOpenFrame::ProgressStale},
+            {wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Eos, 2, "", ""}),
+             hv2::AsrOpenFrame::ProgressStale},
+            {wp::BuildClosed(1), hv2::AsrOpenFrame::ClosedStale},
+            {wp::BuildOpened(1), hv2::AsrOpenFrame::Opened},
+        };
+        bool terminal = false;
+        for (const auto& [frame, expect] : seq) {
+            const hv2::AsrOpenFrame got = hv2::ClassifyAsrOpenFrame(frame, 1, ev);
+            TEST_CHECK(got == expect, "openwait repro: frame classified as designed");
+            if (got == hv2::AsrOpenFrame::Opened) { seq_exit = "opened"; terminal = true; }
+            if (got == hv2::AsrOpenFrame::ErrorAnswer) { seq_exit = "answered_event"; terminal = true; }
+            if (got == hv2::AsrOpenFrame::Malformed) { seq_exit = "failclosed"; terminal = true; }
+            if (terminal) break;
+        }
+        TEST_CHECK(terminal && std::string(seq_exit) == "opened",
+                   "openwait repro: the stale final/eos/closed never answer the open");
+    }
+
+    // ---- 3. Randomized leftover/answer interleavings ----
+    // Simulate the unordered arrival the drain cannot bound: shuffle the
+    // previous session's leftovers (same-id final/eos, its closed, a foreign
+    // dead open's opened, a foreign error event, heartbeats) around the true
+    // answer and assert the wait ALWAYS terminates with the true answer and
+    // never with ErrorAnswer. Two answer shapes: opened (healthy) and a
+    // matching model_missing error event (load failure).
+    {
+        const std::vector<std::string> leftovers = {
+            wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Final, 1, "old", ""}),
+            wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Eos, 2, "", ""}),
+            wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Partial, 3, "p", ""}),
+            wp::BuildClosed(1),
+            wp::BuildOpened(7),
+            wp::BuildEvent(wp::EventMsg{9, wp::EventKind::Error, 1, "", "engine_failed"}),
+            wp::BuildHeartbeat(1),
+            wp::BuildHeartbeat(2),
+        };
+        std::mt19937 rng(26092609); // pinned seed: the measure date, reproducible
+        for (int round = 0; round < 400; ++round) {
+            const bool answer_is_opened = (round % 2) == 0;
+            const std::string answer =
+                answer_is_opened
+                    ? wp::BuildOpened(1)
+                    : wp::BuildEvent(wp::EventMsg{1, wp::EventKind::Error, 1, "",
+                                                 "model_missing"});
+            std::vector<std::string> frames = leftovers;
+            frames.push_back(answer);
+            std::shuffle(frames.begin(), frames.end(), rng);
+            // Drive the same consume/terminal state machine the open wait
+            // runs (host_main.cpp AsrOpenSession).
+            hv2::AsrOpenFrame result = hv2::AsrOpenFrame::Heartbeat; // "still waiting"
+            wp::EventMsg ev;
+            for (const auto& f : frames) {
+                const hv2::AsrOpenFrame c = hv2::ClassifyAsrOpenFrame(f, 1, ev);
+                if (c == hv2::AsrOpenFrame::Opened ||
+                    c == hv2::AsrOpenFrame::ErrorAnswer ||
+                    c == hv2::AsrOpenFrame::Malformed) {
+                    result = c;
+                    break;
+                }
+            }
+            if (answer_is_opened) {
+                TEST_CHECK(result == hv2::AsrOpenFrame::Opened,
+                           "openwait shuffle: the true answer (opened) always wins");
+            } else {
+                TEST_CHECK(result == hv2::AsrOpenFrame::ErrorAnswer,
+                           "openwait shuffle: the true answer (model_missing) survives");
+            }
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Asr open-wait frame classifier tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Asr open-wait frame classifier tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}

@@ -29,6 +29,9 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <string_view>
+
+#include "worker_protocol.hpp" // frozen contract parsers (opened/closed/event/heartbeat)
 
 namespace emebalachat {
 namespace host_v2 {
@@ -140,6 +143,61 @@ struct AsrRelayClaim {
     }
     void Disown() { DisownIfOwner(conn); }
 };
+
+// ---- asr open-wait frame classifier (session 260926_0009 live fix) ---------
+// The open wait relays session_open to the worker and reads until the
+// worker's answer. The previous session's terminal frames can STILL be in
+// flight: the teardown orders the worker close and joins the relay BEFORE
+// the worker finished its close processing (Finalize decode -> final + eos
+// events -> closed), so those frames land in the pipe while the NEXT open
+// waits. Live-measured (docs 260926_0009, 62 opens x 20 = 32%): the open
+// wait consumed a stale final/eos event carrying the SAME wire session id
+// (the Listener pins its session id across reconnects) and misclassified it
+// as the model_missing answer (exit=answered_event) — the claim unwound, the
+// client's next feed got bad_request, and the reconnect storm fed itself.
+//
+// Ordering fact that makes the classification sound: the worker is
+// single-threaded and writes `opened` BEFORE any event of the new session
+// (it resolves+loads the model, publishes opened, then streams events).
+// Therefore ANY event read before the matching `opened` — even one carrying
+// the new session's own wire id — is by definition a leftover of the
+// PREVIOUS session, never traffic of the open in flight. Only an error
+// event matching the wire id can be the legitimate load-failure answer
+// (the worker's model_missing shape), because it is emitted by the same
+// session_open processing that would otherwise have emitted opened.
+enum class AsrOpenFrame : unsigned char {
+    Opened,        // op=opened, session MATCHES -> the open succeeded
+    OpenedStale,   // op=opened, other session -> a previous dead open's late answer; consume
+    ClosedStale,   // op=closed (any session) -> the previous session's late close; consume
+    ErrorAnswer,   // event kind=error, session MATCHES -> the load-failure answer (model_missing shape)
+    ProgressStale, // event kind=partial|final|token|eos (ANY session) -> a previous session's late stream; consume
+    Heartbeat,     // op=heartbeat (§1.2 cadence) -> consume
+    Malformed,     // anything else -> fail-closed protocol violation
+};
+
+// Fills `ev` only for the event classes (the caller relays an ErrorAnswer
+// verbatim); returns the classification above.
+inline AsrOpenFrame ClassifyAsrOpenFrame(std::string_view json, std::uint64_t session,
+                                         workerproto::EventMsg& ev) {
+    namespace wp = emebalachat::workerproto;
+    std::uint64_t s = 0;
+    if (wp::ParseOpened(json, s)) {
+        return s == session ? AsrOpenFrame::Opened : AsrOpenFrame::OpenedStale;
+    }
+    if (wp::ParseClosed(json, s)) return AsrOpenFrame::ClosedStale;
+    wp::HeartbeatMsg hb;
+    if (wp::ParseHeartbeat(json, hb)) return AsrOpenFrame::Heartbeat;
+    if (wp::ParseEvent(json, ev)) {
+        if (ev.kind == wp::EventKind::Error) {
+            // A foreign-session error is a leftover like any other progress
+            // frame; only a MATCHING error event is this open's answer.
+            return ev.session == session ? AsrOpenFrame::ErrorAnswer
+                                         : AsrOpenFrame::ProgressStale;
+        }
+        return AsrOpenFrame::ProgressStale;
+    }
+    return AsrOpenFrame::Malformed;
+}
 
 } // namespace host_v2
 } // namespace emebalachat

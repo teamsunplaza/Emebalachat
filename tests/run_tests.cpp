@@ -49,6 +49,7 @@
 #include <iostream>
 #include <iomanip> // REQ-005 (M6 T6): std::setw/std::setfill in the bootstrap mock hash
 #include <map>     // REQ-005 (M6 T6): MockHash digest map
+#include <random>  // 260926_0009: pinned-seed shuffle for the open-wait race simulation
 #include <sstream> // P5-F1: diag log proof (TestVulkanGuard 3b) reads a log stream
 #include <string>
 #include <thread>
@@ -15553,6 +15554,11 @@ int main() {
     TestP21AsrRelayLifecycle();
     TestP21AsrColdStartWait();
     TestP21AsrStallRecovery();
+    // 260926_0009 (sv-live-measure): the open-wait frame classifier — the
+    // stale final/eos of the previous session's close processing must be
+    // consumed, never read as the model_missing answer (the answered_event
+    // churn root cause, 32% of opens in the live measure).
+    TestAsrOpenFrameClassifier();
     // REQ-L28/REQ-L32 부록 ② (session 260925): pipe-candidate priority
     // (primary -> v1) + REQ-L02 cancel-approve helper adoption pins —
     // registered after the P2-1 suites, per the end-of-file pattern.

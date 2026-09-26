@@ -1563,42 +1563,54 @@ bool AsrOpenSession(host_v2::WorkerManager& wmgr, Connection& conn,
                     continue;
                 }
                 if (rc == host_v2::WorkerManager::WorkerRead::IoError) { open_exit = "worker_io"; break; }
-                std::uint64_t s = 0;
-                if (wp::ParseOpened(json, s)) {
-                    if (s != msg.session) {
-                        // Stale opened of a racing previous attempt (in
-                        // flight past the REQ-049 drain) — consume, keep
-                        // waiting; the deadline bounds the wait.
-                        open_exit = "stale_opened";
-                        continue;
-                    }
-                    if (!conn.WriteFrame(json, 2000)) { open_exit = "client_write"; break; }
-                    opened = true;
-                    open_exit = "opened";
-                    break;
-                }
-                std::uint64_t stale_closed = 0;
-                if (wp::ParseClosed(json, stale_closed)) {
-                    // Stale terminal frame of the previous session (its
-                    // teardown close answer in flight) — consume, keep
-                    // waiting (live-observed as open exit=failclosed churn).
-                    open_exit = "stale_closed";
-                    continue;
-                }
+                // Frame classification (session 260926_0009 live fix): the
+                // previous session's terminal frames (final/eos events, its
+                // closed answer, a previous dead open's late opened) can
+                // still be in flight when this open waits — the teardown
+                // ordered the worker close and joined the relay BEFORE the
+                // worker finished its close processing. The classifier
+                // consumes every such leftover; only the matching opened (or
+                // a matching load-failure error event) completes the wait.
+                // The pre-fix code matched ANY same-session event — a stale
+                // final/eos with the client-pinned id read as the
+                // model_missing answer (exit=answered_event, 32% of opens in
+                // the live measure) and the claim unwound mid-handshake.
                 wp::EventMsg ev;
-                if (wp::ParseEvent(json, ev) && ev.session == msg.session) {
-                    // The load-failure shape: model_missing rides an error
-                    // EVENT with NO opened frame (ggml_asr_worker.cpp) —
-                    // relay it verbatim; it is the answer.
-                    conn.WriteFrame(json);
-                    answered = true;
-                    open_exit = "answered_event";
-                    break;
+                bool terminal = false;
+                switch (host_v2::ClassifyAsrOpenFrame(json, msg.session, ev)) {
+                    case host_v2::AsrOpenFrame::Opened:
+                        if (!conn.WriteFrame(json, 2000)) { open_exit = "client_write"; break; }
+                        opened = true;
+                        open_exit = "opened";
+                        terminal = true;
+                        break;
+                    case host_v2::AsrOpenFrame::ErrorAnswer:
+                        // The load-failure shape: model_missing rides an
+                        // error EVENT with NO opened frame
+                        // (ggml_asr_worker.cpp) — relay it verbatim; it is
+                        // the answer.
+                        (void)conn.WriteFrame(json);
+                        answered = true;
+                        open_exit = "answered_event";
+                        terminal = true;
+                        break;
+                    case host_v2::AsrOpenFrame::Malformed:
+                        open_exit = "failclosed"; // anything else is fail-closed
+                        terminal = true;
+                        break;
+                    case host_v2::AsrOpenFrame::OpenedStale:
+                        open_exit = "stale_opened"; // a previous dead open's late answer; consume
+                        break;
+                    case host_v2::AsrOpenFrame::ClosedStale:
+                        open_exit = "stale_closed"; // the previous session's late close; consume
+                        break;
+                    case host_v2::AsrOpenFrame::ProgressStale:
+                        open_exit = "stale_event"; // the previous session's late stream; consume
+                        break;
+                    case host_v2::AsrOpenFrame::Heartbeat:
+                        break; // §1.2 cadence; consume
                 }
-                wp::HeartbeatMsg hb;
-                if (wp::ParseHeartbeat(json, hb)) continue;
-                open_exit = "failclosed"; // anything else on a fresh pipe is fail-closed
-                break;
+                if (terminal) break;
             }
         }
     }
