@@ -5974,6 +5974,87 @@ void TestP7F2GpuOffloadParams() {
 #endif // HAVE_LLAMA_CPP
 
 // ===========================================================================
+// RT-C (260926_0003, task RT-C "D안-개선"): MT worker VRAM auto gate pure
+// decision matrix. The production seam lives in translation_common.cpp
+// EnsureLoaded -> MtGpuOffloadGateDecision, which reads EMEBALA_MT_GPU, probes
+// free local VRAM through QueryMtAdapterFreeVramBytes (DXGI), and applies the
+// pure rule below. Only the pure half is pinned here (the DXGI probe and the
+// real load against a contested GPU stay in the manual acceptance matrix —
+// same honesty as the P7-F2 seam test above). The gate is llama-independent,
+// so this suite runs in every build configuration.
+// ===========================================================================
+void TestRtCMtGpuVramGate() {
+    std::cout << "[RUN] Testing RT-C MT worker VRAM auto gate..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Named-constant pin: the floor must stay 1.5 GiB (task RT-C spec).
+    // Wrong value fails the build here instead of silently re-gating every
+    // 8 GB-class machine. (Runtime TEST_CHECK omitted on purpose: comparing
+    // two constexpr constants trips C4127 under /W4 — the static_assert IS
+    // the pin.)
+    static_assert(kMtGpuFreeVramThresholdBytes == 1536ull * 1024 * 1024,
+                  "RT-C: MT GPU free-VRAM threshold is 1.5 GiB");
+
+    // EMEBALA_MT_GPU parse matrix: exact "0"/"1" only; every other shape
+    // (unset, empty, typo, whitespace, multi-char) degrades to Auto so a
+    // malformed override can never hard-lock a machine.
+    TEST_CHECK(ParseMtGpuOverride(L"") == kMtGpuOverrideAuto,
+               "RT-C: empty override -> auto");
+    TEST_CHECK(ParseMtGpuOverride(L"0") == kMtGpuOverrideForceCpu,
+               "RT-C: override 0 -> force CPU");
+    TEST_CHECK(ParseMtGpuOverride(L"1") == kMtGpuOverrideForceGpu,
+               "RT-C: override 1 -> force GPU");
+    TEST_CHECK(ParseMtGpuOverride(L"2") == kMtGpuOverrideAuto,
+               "RT-C: out-of-domain digit -> auto (never a silent lock)");
+    TEST_CHECK(ParseMtGpuOverride(L"01") == kMtGpuOverrideAuto,
+               "RT-C: multi-char digit string -> auto");
+    TEST_CHECK(ParseMtGpuOverride(L"true") == kMtGpuOverrideAuto,
+               "RT-C: word -> auto");
+    TEST_CHECK(ParseMtGpuOverride(L" 1") == kMtGpuOverrideAuto,
+               "RT-C: whitespace-padded -> auto (exact match only)");
+    TEST_CHECK(ParseMtGpuOverride(L"00") == kMtGpuOverrideAuto,
+               "RT-C: repeated digit -> auto");
+
+    const unsigned long long threshold = kMtGpuFreeVramThresholdBytes;
+
+    // Override precedence: an explicit EMEBALA_MT_GPU wins over everything,
+    // INCLUDING an unmeasurable/empty VRAM answer (forcing GPU on a
+    // driverless machine degrades through the existing CUDA->CPU retry, so
+    // the override stays unconditional by design).
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideForceGpu, /*query_ok=*/false, 0) == true,
+               "RT-C: force GPU beats failed VRAM query");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideForceGpu, /*query_ok=*/true, 0) == true,
+               "RT-C: force GPU beats zero free VRAM");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideForceCpu, /*query_ok=*/true, 1ull << 40) == false,
+               "RT-C: force CPU beats abundant free VRAM");
+
+    // Auto leg, driverless / unmeasurable: CPU — the historical P5-F1
+    // CPU-fallback contract must hold exactly (never a crash, never GPU).
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/false, 0) == false,
+               "RT-C: auto + no driver -> CPU");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/false, 1ull << 40) == false,
+               "RT-C: auto + query failure ignores the stale bytes, still CPU");
+
+    // Auto leg, measurable: threshold comparison is inclusive on purpose —
+    // exactly-threshold free VRAM earns the GPU leg (>=, not >).
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/true, threshold) == true,
+               "RT-C: free == threshold -> GPU (inclusive boundary)");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/true, threshold + 1) == true,
+               "RT-C: free above threshold -> GPU");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/true, threshold - 1) == false,
+               "RT-C: free one byte below threshold -> CPU");
+    TEST_CHECK(DecideMtGpuOffload(kMtGpuOverrideAuto, /*query_ok=*/true, 0) == false,
+               "RT-C: measurable zero free -> CPU");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] RT-C MT worker VRAM auto gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] RT-C MT worker VRAM auto gate tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
 // R6 Phase 1 (B3): single-source-of-truth language sync. Pure planner seam
 // (PlanLanguageSync) + persistence (INV-1/3) + tooltip view refresh + hook
 // cycle-delegate routing. Mirrors the coordinator flow in src/main.cpp
@@ -15389,6 +15470,7 @@ int main() {
 #ifdef HAVE_LLAMA_CPP
     TestP7F2GpuOffloadParams(); // P7-F2: CUDA+Vulkan layer-split prevention seam
 #endif
+    TestRtCMtGpuVramGate(); // RT-C (260926_0003): MT worker VRAM auto-gate pure decision matrix
     TestR6P5P6I18n();
     TestDiagLogger();
     TestReq203LogPrune(); // REQ-203: 200MB logs-directory prune engine

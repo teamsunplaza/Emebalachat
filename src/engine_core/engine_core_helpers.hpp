@@ -153,6 +153,87 @@ inline constexpr int kLlamaPromptTokenBudget =
 // alternative GGUF is protected by its own vocabulary).
 std::wstring ScrubControlTokenTexts(std::wstring_view text, const std::vector<std::wstring>& tokens);
 
+// RT-C (260926_0003, task RT-C "D안-개선"): translation-worker VRAM auto gate.
+// WHY: the shared engine host serves BOTH the ASR family (Listener-owned,
+// VRAM-hungry) and this MT family from one GPU. Live defect (RTX 2070 8 GB
+// class, the "개발도상국 수준 데스크탑" mission target): the translate
+// worker's unconditional GPU offload (~2.8 GB) evicted the ASR worker into
+// its CPU fallback (~12x slower captions). The gate decides the FIRST
+// EnsureLoaded leg from the FREE local VRAM left at worker start instead of
+// hard-pinning either backend:
+//   free local VRAM >= kMtGpuFreeVramThresholdBytes -> GPU offload (unchanged)
+//   below threshold, or not measurable               -> CPU leg directly
+//     (no CUDA context is initialized, so the ASR budget is never touched)
+// Manual override env var EMEBALA_MT_GPU: "1" forces GPU, "0" forces CPU,
+// unset/empty/anything else -> auto. The orchestrator spawns the worker with
+// lpEnvironment=nullptr (host_v2_worker_manager.cpp LaunchWorkerProcess), so
+// the variable inherits from the host process / user environment.
+// VRAM measurement: DXGI IDXGIAdapter3::QueryVideoMemoryInfo (WDDM local
+// memory Budget - CurrentUsage = how much more THIS process can still
+// commit; reflects every other process's usage, vendor-agnostic CUDA/Vulkan,
+// and never initializes a CUDA context as a side effect). dxgi.lib is
+// already on every engine_core consumer's link line (Emebalachat_core PUBLIC
+// set, CMakeLists "Win32 system dependencies") — NO new dependency.
+// Driverless machines: only the software basic render driver enumerates, so
+// the query finds no candidate adapter and reports failure -> CPU, exactly
+// the historical CPU-fallback contract (P5-F1 / EnsureLoaded retry parity).
+// Win10 builds older than 1607 (DXGI < 1.4) likewise fail the
+// IDXGIAdapter3 QueryInterface -> CPU; RTX-class mission machines are all
+// 1607+. The gate is evaluated ONCE per process (worker start = first
+// EnsureLoaded) and cached.
+inline constexpr unsigned long long kMtGpuFreeVramThresholdBytes = 1536ull * 1024 * 1024; // 1.5 GiB floor
+
+// RT-C: parsed EMEBALA_MT_GPU states. Anything outside {"0","1"} (unset,
+// empty, typo) degrades to Auto — a malformed override must never hard-lock
+// a machine into the "wrong" backend silently.
+inline constexpr int kMtGpuOverrideAuto = -1;
+inline constexpr int kMtGpuOverrideForceCpu = 0;
+inline constexpr int kMtGpuOverrideForceGpu = 1;
+
+// RT-C: pure EMEBALA_MT_GPU parse. Exact match only ("0"/"1"); every other
+// shape ("" included) -> kMtGpuOverrideAuto. Unit-pinned by
+// TestRtCMtGpuVramGate (tests/run_tests.cpp).
+constexpr int ParseMtGpuOverride(std::wstring_view value) {
+    if (value == L"0") {
+        return kMtGpuOverrideForceCpu;
+    }
+    if (value == L"1") {
+        return kMtGpuOverrideForceGpu;
+    }
+    return kMtGpuOverrideAuto;
+}
+
+// RT-C: pure offload decision (unit-pinned by TestRtCMtGpuVramGate).
+// Precedence: explicit override wins over everything (forcing GPU on a
+// driverless machine still lands on CPU through the existing
+// CUDA-load-failure -> CPU retry, so the override can stay unconditional);
+// then auto: unmeasurable VRAM -> CPU (historical fallback contract), free
+// >= threshold -> GPU, free < threshold -> CPU.
+constexpr bool DecideMtGpuOffload(int override_value, bool vram_query_ok,
+                                  unsigned long long free_vram_bytes) {
+    if (override_value == kMtGpuOverrideForceCpu) {
+        return false;
+    }
+    if (override_value == kMtGpuOverrideForceGpu) {
+        return true;
+    }
+    if (!vram_query_ok) {
+        return false;
+    }
+    return free_vram_bytes >= kMtGpuFreeVramThresholdBytes;
+}
+
+// RT-C: DXGI-backed free-local-VRAM probe for the adapter the inference
+// backend would actually use (max DedicatedVideoMemory among non-software
+// adapters — the discrete card, i.e. ggml device 0 in practice). Returns
+// true only when a real hardware adapter reported its WDDM local-memory
+// budget; out_free_bytes is then Budget - CurrentUsage (clamped at 0).
+// Failure shapes (no factory, no hardware adapter, DXGI < 1.4,
+// QueryVideoMemoryInfo error) all return false -> the caller gates to CPU.
+// Deliberately quiet on failure: a driverless machine is the NORMAL CPU
+// path, not an error. Shape-only decision logging lives at the caller.
+bool QueryMtAdapterFreeVramBytes(unsigned long long& out_free_bytes);
+
 #ifdef HAVE_LLAMA_CPP
 // SEC-B2: enumerate the scrub set from a loaded llama.cpp vocab. Returns the
 // text of every token whose attr has CONTROL or USER_DEFINED or UNKNOWN set -

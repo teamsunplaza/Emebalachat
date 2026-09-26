@@ -40,6 +40,14 @@
 // Delay-load rules identical to the host: CUDA (+Vulkan when built) DLLs are
 // delay-loaded by CMake; on a driverless machine EnsureVulkanGuard + the
 // EnsureLoaded CUDA->CPU retry keep inference alive.
+// RT-C (260926_0003, task RT-C "D안-개선"): the EnsureLoaded VRAM auto gate
+// (see translation_common.hpp / engine_core_helpers.hpp) reads the manual
+// override EMEBALA_MT_GPU=0/1 from THIS process environment. The
+// orchestrator spawns us with lpEnvironment=nullptr
+// (host_v2_worker_manager.cpp LaunchWorkerProcess), so the variable inherits
+// from the host process / user environment — set it user- or machine-wide
+// (or on the host) to pin the MT worker to GPU or CPU on a given box. No
+// manifest or command-line change: the wire contract is untouched.
 // ---------------------------------------------------------------------------
 
 #ifndef NOMINMAX

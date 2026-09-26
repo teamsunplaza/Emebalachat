@@ -122,6 +122,33 @@ bool DebugPromptEnabled() {
     return enabled;
 }
 
+// RT-C (260926_0003, task RT-C "D안-개선"): the translation-worker VRAM auto
+// gate decision, evaluated ONCE per process (worker start = first EnsureLoaded)
+// and cached in the function-local static (thread-safe init since C++11 —
+// same discipline as DebugPromptEnabled above). Reads the manual override
+// EMEBALA_MT_GPU (0/1), probes the free LOCAL VRAM through the DXGI query in
+// engine_core_helpers.cpp, and applies the pure rule pinned by
+// TestRtCMtGpuVramGate. The decision is logged shape-only (byte counts, no
+// user content). Forcing GPU on a driverless machine is safe: the CUDA load
+// leg then fails into the pre-existing CPU retry below.
+bool MtGpuOffloadGateDecision() {
+    static const bool decision = [] {
+        wchar_t env_buf[16] = {0};
+        const DWORD env_n = ::GetEnvironmentVariableW(L"EMEBALA_MT_GPU", env_buf, 16);
+        const int override_value = (env_n > 0 && env_n < 16)
+            ? ParseMtGpuOverride(std::wstring_view(env_buf, env_n))
+            : ParseMtGpuOverride({});
+        unsigned long long free_vram_bytes = 0;
+        const bool query_ok = QueryMtAdapterFreeVramBytes(free_vram_bytes);
+        const bool gpu = DecideMtGpuOffload(override_value, query_ok, free_vram_bytes);
+        DIAG_F("ENGINE/EnsureLoaded/040: RT-C VRAM gate -> %s (query_ok=%d free_bytes=%llu threshold_bytes=%llu override=%d)\n",
+               gpu ? "gpu" : "cpu", query_ok ? 1 : 0, free_vram_bytes,
+               kMtGpuFreeVramThresholdBytes, override_value);
+        return gpu;
+    }();
+    return decision;
+}
+
 } // namespace
 
 // P7-F2: the SetGpuOffloadParams DEFINITION moved to
@@ -214,7 +241,13 @@ bool LocalInferenceEngine::EnsureLoaded(const std::string& path) {
     // the CUDA+Vulkan layer split of one physical card. Full contract +
     // evidence: SetGpuOffloadParams in src/engine.hpp. Seam-tested
     // headlessly by TestP7F2GpuOffloadParams (tests/run_tests.cpp).
-    SetGpuOffloadParams(mparams, /*gpu_offload=*/true);
+    // RT-C (260926_0003, task RT-C "D안-개선"): the FIRST leg is no longer
+    // hardcoded true — the VRAM auto gate decides it from the free local
+    // VRAM at worker start (protects the Listener ASR worker's VRAM share
+    // on 8 GB-class cards). CPU-gated machines run the CPU leg directly:
+    // no CUDA context is initialized, no GPU load attempt is wasted.
+    const bool gpu_offload = MtGpuOffloadGateDecision();
+    SetGpuOffloadParams(mparams, gpu_offload);
     // REQ-R16: abort an in-progress model load when shutdown is requested.
     // REQ-051 U-1 FIX 2: the progress callback reads the LOAD flag (never the
     // decode flag), so a per-job abort mid-load cannot discard the load — the
@@ -230,6 +263,14 @@ bool LocalInferenceEngine::EnsureLoaded(const std::string& path) {
         // REQ-051 U-1 FIX 2: same load-flag split as the pre-load check.
         if (LoadCancelRequested()) {
             DIAG_F("ENGINE/EnsureLoaded/031: model load aborted by shutdown cancellation\n");
+            return false;
+        }
+        // RT-C (260926_0003): when the VRAM gate already routed this load
+        // onto the CPU leg, the failure is final — retrying the IDENTICAL
+        // CPU-shaped load would only burn another multi-second pass before
+        // answering the same false (model_missing).
+        if (!gpu_offload) {
+            DIAG_F("ENGINE/EnsureLoaded/041: CPU-gated model load failed (RT-C gate decision)\n");
             return false;
         }
         // Fallback to CPU-only load if CUDA load encounters an issue

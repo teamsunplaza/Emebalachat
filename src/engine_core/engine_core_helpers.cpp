@@ -16,6 +16,13 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+// RT-C (260926_0003): IDXGIAdapter1::GetDesc1 (dxgi.h) + IDXGIAdapter3::
+// QueryVideoMemoryInfo / DXGI_QUERY_VIDEO_MEMORY_INFO (dxgi1_4.h; DXGI 1.4 =
+// Win10 1607+). dxgi.lib arrives transitively on every engine_core consumer's
+// link line via Emebalachat_core's PUBLIC link set — no new dependency, no
+// CMake change.
+#include <dxgi.h>
+#include <dxgi1_4.h>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -444,6 +451,97 @@ std::wstring ScrubControlTokenTexts(std::wstring_view text, const std::vector<st
         }
     }
     return out;
+}
+
+// RT-C (260926_0003, task RT-C "D안-개선"): DXGI-backed free-local-VRAM probe
+// backing the translation-worker offload gate — full contract in
+// engine_core_helpers.hpp (DecideMtGpuOffload). Design notes:
+//   * Adapter choice = max DedicatedVideoMemory among non-software adapters:
+//     that is the discrete card ggml registers as device 0 (P7-F2 pins
+//     main_gpu=0), on hybrid laptops the iGPU is skipped the same way.
+//   * Budget - CurrentUsage is the WDDM residency answer to "how much more
+//     can THIS process still commit" — it already reflects every other
+//     process (the Listener ASR worker, games, the compositor), unlike a
+//     raw total-memory read. Querying never initializes a CUDA context, so
+//     a CPU-gated worker costs the ASR family zero VRAM.
+//   * Every failure shape returns false (caller gates to CPU): factory
+//     creation failing (pre-Win10), zero hardware adapters (driverless —
+//     only the Microsoft Basic Render Driver enumerates, and it is flagged
+//     DXGI_ADAPTER_FLAG_SOFTWARE), the IDXGIAdapter3 QueryInterface failing
+//     (DXGI < 1.4, i.e. Win10 builds older than 1607), or the budget query
+//     itself erroring (headless/RDP oddities). All COM releases are RAII'd;
+//     no exception can escape (COM only returns HRESULT here).
+bool QueryMtAdapterFreeVramBytes(unsigned long long& out_free_bytes) {
+    out_free_bytes = 0;
+
+    struct ComReleaseGuard {
+        IUnknown* p;
+        ~ComReleaseGuard() { if (p) p->Release(); }
+    };
+
+    IDXGIFactory1* factory_raw = nullptr;
+    const HRESULT factory_hr = ::CreateDXGIFactory1(IID_PPV_ARGS(&factory_raw));
+    if (FAILED(factory_hr) || !factory_raw) {
+        return false;
+    }
+    ComReleaseGuard factory{factory_raw};
+
+    // Pick the adapter the inference backend would actually use. Ownership
+    // transfers into `best` only on replacement, so every loop path releases
+    // exactly once.
+    IDXGIAdapter1* best = nullptr;
+    unsigned long long best_dedicated = 0;
+    for (UINT i = 0;; ++i) {
+        IDXGIAdapter1* adapter = nullptr;
+        const HRESULT enum_hr = factory_raw->EnumAdapters1(i, &adapter);
+        if (enum_hr == DXGI_ERROR_NOT_FOUND) {
+            break; // enumeration finished
+        }
+        if (FAILED(enum_hr) || !adapter) {
+            if (adapter) {
+                adapter->Release();
+            }
+            break; // unexpected enum failure: judge from what we already have
+        }
+        DXGI_ADAPTER_DESC1 desc{};
+        const bool candidate =
+            SUCCEEDED(adapter->GetDesc1(&desc)) &&
+            (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+            desc.DedicatedVideoMemory > 0;
+        if (candidate && desc.DedicatedVideoMemory > best_dedicated) {
+            if (best) {
+                best->Release();
+            }
+            best = adapter;
+            best_dedicated = desc.DedicatedVideoMemory;
+        } else {
+            adapter->Release();
+        }
+    }
+    if (!best) {
+        return false; // driverless: no hardware adapter -> CPU (normal path)
+    }
+
+    // DXGI 1.4 (Win10 1607+) exposes the per-process local-memory budget.
+    IDXGIAdapter3* adapter3 = nullptr;
+    const HRESULT qi_hr = best->QueryInterface(IID_PPV_ARGS(&adapter3));
+    best->Release();
+    best = nullptr;
+    if (FAILED(qi_hr) || !adapter3) {
+        return false; // down-level DXGI -> CPU
+    }
+    ComReleaseGuard adapter3_guard{adapter3};
+
+    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+    const HRESULT info_hr = adapter3->QueryVideoMemoryInfo(
+        0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info);
+    if (FAILED(info_hr)) {
+        return false;
+    }
+    out_free_bytes = info.Budget > info.CurrentUsage
+                         ? static_cast<unsigned long long>(info.Budget - info.CurrentUsage)
+                         : 0ull;
+    return true;
 }
 
 #ifdef HAVE_LLAMA_CPP

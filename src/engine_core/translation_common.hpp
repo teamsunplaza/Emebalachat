@@ -45,6 +45,20 @@
 // budget and reports exhaustion through decode_wall_clock_exhausted() so the
 // worker can answer the frozen "timeout" code (transient -> client retry).
 //
+// RT-C (260926_0003, task RT-C "D안-개선"): EnsureLoaded's FIRST load leg is
+// decided by the VRAM auto gate (engine_core_helpers.hpp:
+// kMtGpuFreeVramThresholdBytes / ParseMtGpuOverride / DecideMtGpuOffload /
+// QueryMtAdapterFreeVramBytes), evaluated once per process and cached: free
+// local VRAM >= 1.5 GiB -> GPU offload (unchanged P7-F2 behavior), below ->
+// the CPU leg runs DIRECTLY (no CUDA context initialized, so a co-resident
+// Listener ASR worker keeps its VRAM on 8 GB-class cards). The env var
+// EMEBALA_MT_GPU=1/0 forces GPU/CPU over the auto decision; a forced GPU load
+// on a driverless machine still degrades through the existing CPU retry
+// below. The gate never changes the wire protocol — worker manifest, spawn
+// command line and frame vocabulary are untouched (the override reaches the
+// worker through the inherited process environment; see
+// ggml_translate_worker.cpp).
+//
 // At extraction time the in-app path's runtime behavior was UNCHANGED by the
 // move: TranslationManager::LlamaEngine was a zero-member derived class
 // (engine.cpp), forwarding every call to this implementation verbatim. That

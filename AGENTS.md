@@ -8,7 +8,7 @@ Guidance for AI coding agents working in this repository. Read this first; it su
 
 Key product facts:
 
-- **Dual translation engines**: a local engine served by the shared per-user host (`Emebala.Engine.exe` orchestrator + `Emebalachat.Engine.ggml-translate.exe` worker, llama.cpp tag `b6099` loading Tencent Hy-MT2-1.8B, Q8_0 GGUF, ~1.9 GB, CUDA GPU offload with CPU fallback) and a cloud engine (direct async WinHTTP client to Google Translate, no API key). The Chat app itself carries **no embedded inference**: its exe is llama-free, and local serving fails over through one-click repair → consent-gated cloud → explicit unavailability notice. Engine selection is `auto` / `local` / `google` via `config.json`.
+- **Dual translation engines**: a local engine served by the shared per-user host (`Emebala.Engine.exe` orchestrator + `Emebalachat.Engine.ggml-translate.exe` worker, llama.cpp tag `b6099` loading Tencent Hy-MT2-1.8B, Q8_0 GGUF, ~1.9 GB, CUDA GPU offload with CPU fallback) and a cloud engine (direct async WinHTTP client to Google Translate, no API key). The Chat app itself carries **no embedded inference**: its exe is llama-free, and local serving fails over through one-click repair → consent-gated cloud → explicit unavailability notice. Engine selection is `auto` / `local` / `google` via `config.json`. RT-C (260926_0003): the translate worker auto-gates its GPU offload on the free local VRAM at worker start (DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`, threshold 1.5 GiB; below → CPU leg directly, protecting a co-resident Listener ASR worker's VRAM on 8 GB-class cards). `EMEBALA_MT_GPU=0/1` overrides (inherited environment).
 - **Privacy-first design**: the app operates no servers; cloud translation is consent-gated; clipboard use is RAII snapshot/restore with Windows Clipboard History exclusion formats; diagnostic logging is OFF by default and shape-only unless `diag_log_content` is explicitly enabled.
 - **38 language entries** (37 targets + Auto Detect) for translation; UI localized in 37 languages; installer UI in 32 languages.
 - The produced binary is `Emebala_chat.exe` (CMake target name is `Emebalachat`; rename is via `OUTPUT_NAME`).
@@ -76,7 +76,7 @@ cmake --build build --config Release
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 4755 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 4772 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 ```
 
 Useful variants:
