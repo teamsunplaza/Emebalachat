@@ -176,6 +176,17 @@ constexpr int kAsrOpenTimeoutMs = 120000;
 // the watchdog's own abort; 5 s of grace covers pipe turnaround).
 constexpr int kWorkerAnswerGraceMs = 5000;
 
+// 260927_0003 (MT audit Q1 fix A): bounded settle at give-up. After the abort
+// order, the dispatcher keeps reading (bounded) until the given-up job's
+// terminal event arrives and DISCARDS it, before the timeout answer leaves
+// and before the next job frame is published. The REQ-049 drain is a
+// non-blocking idle-time poll: it cannot cover a terminal event the still-
+// decoding worker publishes only after the abort unwinds the decode — without
+// the settle the next job reads that event as its own answer (worker events
+// carry no job id; the wait loop classifies by kind only) and the pairing
+// skew persists for the worker's lifetime.
+constexpr int kWorkerSettleMs = 10000; // the audit's <= 10 s budget
+
 // ---- activity / shutdown ----------------------------------------------------
 std::atomic<int64_t> g_last_activity_ms{0};
 // REQ-043 (M6 T4, REQ-002): ONE counter shared by BOTH pipe sets — the
@@ -388,6 +399,11 @@ struct Job {
     std::string text;
     int timeout_ms = enginehost::kDefaultTranslateTimeoutMs;
     Connection* conn = nullptr;
+    // Item D (session 260928_0001): hello.client identity captured at enqueue
+    // time so the dispatcher can gate the config-pin relay per originating
+    // client family ("emebala-chat" relays the live user pin; every other
+    // client, e.g. "emebala-listner", is forced to the pinned default).
+    std::string client;
 };
 
 class JobQueue {
@@ -439,8 +455,16 @@ CurrentJob g_current;
 std::atomic<bool> g_abort{false};
 
 // ---- connection -------------------------------------------------------------
+// Item D (session 260928_0001): the hello `client` string of the connection's
+// current session ("emebala-chat", "emebala-listner", ...). Written once by
+// RunSessionV1/RunSessionV2 after the handshake parses the hello (same narrow
+// window as the existing per-session DIAG_LOG), read by the dispatchers to
+// gate the config-pin relay. Each accepted connection is served by exactly
+// one session thread at a time, and the protocol branch is terminal, so the
+// single plain field mirrors the existing connection-scoped write patterns.
 struct Connection {
     HANDLE pipe = nullptr;
+    std::string client;
     // REQ-043: duplicated server end used EXCLUSIVELY for frame writes. The
     // inference worker answers translate while the connection loop sits in a
     // pending ReadFile; a write on the SAME handle serializes behind that
@@ -715,6 +739,20 @@ bool EnsureWorkerModelRelayed(host_v2::WorkerManager& wmgr, const std::wstring& 
 // marks the manager not-busy. The §4.5 single-context serialization contract
 // is preserved: ONE job in flight at a time (registry max_sessions=1 for
 // ggml-translate, enforced by SetBusy Ready<->Busy on the single family).
+// Item D (session 260928_0001): the config-pin relay gate. Only the
+// "emebala-chat" family receives the live C1-gated user_model_id pin; every
+// other client (e.g. "emebala-listner") is forced to "" so the worker keeps
+// serving its pinned default Hy-MT2 — the shared host must not bind another
+// app's real-time MT path to the chat app's heavy user_gguf selection.
+// Shared by DispatcherLoop (v1) and DispatcherV2Loop (v2 sessionless fallback).
+inline std::string RelayPinForClient(const std::string& client) {
+    constexpr char kChatClientPrefix[] = "emebala-chat";
+    if (client.rfind(kChatClientPrefix, 0) == 0) {
+        return enginehost::LoadUserModelIdFromConfigLive(L"");
+    }
+    return "";
+}
+
 void DispatcherLoop(host_v2::WorkerManager& wmgr) {
     const std::wstring family(kWorkerFamilyTranslate);
     namespace wp = emebalachat::workerproto;
@@ -740,7 +778,10 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // REQ-055: read the live C1-gated pin BEFORE the fast path so the
         // probe consults the RESOLVED model ("" -> pinned default check —
         // was ModelFileExists(), pinned-only, another boot-snapshot shadow).
-        const std::string pin = enginehost::LoadUserModelIdFromConfigLive(L"");
+        // Item D: the v1 client never sends a model_id, so the pin is the
+        // per-client gated config relay — "emebala-chat" keeps the live
+        // user_gguf pin; any other client is forced to "" (pinned default).
+        const std::string pin = RelayPinForClient(job.client);
         // v1 §8 fast-path parity: the file-presence probe stays in the host,
         // so a missing model answers model_missing WITHOUT a worker round
         // trip (the worker would answer the same; the fast path keeps the
@@ -764,6 +805,25 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         host_v2::WorkerHandle* w = wmgr.EnsureSpawned(family);
         if (!w) {
             job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
+            g_health.RecordJob(host_v2::HealthOutcome::Fallback);
+            TouchActivity();
+            continue;
+        }
+
+        // 260927_0003 F-01 (review round 2): single-flight acquire BEFORE any
+        // family-pipe I/O (drain, relay, publish). The family is held Busy
+        // from here through the whole job AND the give-up settle, until the
+        // post-answer release below — so the sibling dispatcher (the v1 and
+        // v2 loops run concurrently over this same family) cannot publish,
+        // drain, or relay into our frame stream while we own it: its
+        // TrySetBusy fails fast and it answers Busy (existing status; the
+        // client retries). Pre-fix the prolog's SetBusy(true) was a no-op on
+        // an already-Busy family, so both loops could interleave on one pipe
+        // — the settle could then discard the sibling job's ONLY terminal,
+        // and the sibling could win the race for our late stray (the
+        // original re-stamp skew, cross-dispatcher edition).
+        if (!wmgr.TrySetBusy(family)) {
+            job.conn->SendResult(job.id, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
             continue;
@@ -818,7 +878,6 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         jm.text = job.text;
         // No sampling member: the worker's shipped defaults (0.0/0.6/20/1.05)
         // apply — protocol v1 has no tuning channel (unchanged, frozen).
-        wmgr.SetBusy(family, true);
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             // Dead pipe: the manager already marked the family Crashed; the
@@ -912,11 +971,23 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             const bool past_deadline = NowMs() >= give_up_ms;
             if (aborted || past_deadline) {
                 // D-2 chain across the process boundary: order the worker to
-                // unwind (abort frame). Its event, if it still arrives, is a
-                // stray the next job must never read as its own answer —
-                // REQ-049 drains such strays (DrainWorkerPipe) before the
-                // next job frame is published.
+                // unwind (abort frame). 260927_0003 (MT audit Q1 fix A): then
+                // SETTLE — read until the given-up job's terminal event
+                // arrives and discard it — BEFORE the timeout answer leaves
+                // and BEFORE the next job frame is published. The pre-fix
+                // comment here admitted "its event, if it still arrives, is a
+                // stray the next job must never read as its own answer" and
+                // leaned on REQ-049's DrainWorkerPipe — a NON-BLOCKING poll
+                // that by its own contract only covers strays that arrived
+                // while this dispatcher was IDLE. A worker still decoding
+                // publishes the terminal event milliseconds after the give-up
+                // (unwinding between tokens, seconds late under CPU
+                // contention), the back-to-back next job consumed it, and the
+                // host re-stamped it with the new job id — the persistent
+                // off-by-one pairing skew (clean rows showing translations
+                // generated for neighboring inputs).
                 (void)wmgr.SendToWorker(family, wp::BuildAbort(0));
+                (void)wmgr.SettleWorkerPipe(family, kWorkerSettleMs, &g_shutdown);
                 status = enginehost::HostStatus::Timeout;
                 answered = true;
                 break;
@@ -994,7 +1065,14 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // a sessionless job falls back to the LIVE config pin (REQ-055: the
         // boot snapshot went stale after an engine switch; busy hosts never
         // idle out).
-        std::string model_id = enginehost::LoadUserModelIdFromConfigLive(L"");
+        // Item D (C1/F-1, session 260928_0001): the sessionless fallback gates
+        // on the ENQUEUE-TIME identity snapshot (SchedItem.client, copied at
+        // the translate-enqueue site) — never the LIVE requester->client field:
+        // pooled connections are reused across sessions, so a new hello can
+        // overwrite conn.client while this item is still queued, and the live
+        // std::string read would race the hello-thread write (UB). The session
+        // model still wins below when a session exists.
+        std::string model_id = RelayPinForClient(item.client);
         host_v2::SessionRecord sess;
         if (item.session != 0 && g_sessions.Find(item.session, sess) && !sess.model_id.empty()) {
             model_id = sess.model_id;
@@ -1006,6 +1084,15 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         }
         host_v2::WorkerHandle* w = wmgr.EnsureSpawned(family);
         if (!w) {
+            requester->SendResult(0, enginehost::HostStatus::Busy);
+            g_health.RecordJob(host_v2::HealthOutcome::Fallback);
+            continue;
+        }
+        // 260927_0003 F-01 (review round 2): the same single-flight acquire as
+        // the v1 prolog (see DispatcherLoop) — BEFORE any family-pipe I/O, so
+        // the sibling dispatcher can never publish/drain/relay into our job
+        // or our give-up settle; it fails fast here and answers Busy.
+        if (!wmgr.TrySetBusy(family)) {
             requester->SendResult(0, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
@@ -1037,7 +1124,6 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         wp::JobMsg jm;
         jm.job = item.enqueue_seq;
         jm.session = item.session;
-        wmgr.SetBusy(family, true);
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             requester->SendResult(0, enginehost::HostStatus::EngineFailed);
@@ -1090,7 +1176,14 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 break;
             }
             if (NowMs() >= give_up_ms) {
+                // 260927_0003 (MT audit Q1 fix A): the same bounded settle as
+                // the v1 dispatcher's give-up branch (see DispatcherLoop) —
+                // this loop shares ClassifyJobWaitFrame and therefore the
+                // same re-stamp hazard: after the abort, read until the
+                // given-up job's terminal event arrives and discard it,
+                // BEFORE answering and BEFORE the next job frame is published.
                 (void)wmgr.SendToWorker(family, wp::BuildAbort(0));
+                (void)wmgr.SettleWorkerPipe(family, kWorkerSettleMs, &g_shutdown);
                 status = enginehost::HostStatus::Timeout;
                 break;
             }
@@ -1171,6 +1264,7 @@ bool ReadMessage(Connection& conn, std::string& json) {
 void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
     DIAG_LOG("ENGINEHOST", "conn/%03d: hello ok v1 (client=%s version=%s)",
              conn.index, hello.client.c_str(), hello.client_version.c_str());
+    conn.client = hello.client; // Item D: pin-relay gate identity
     conn.SendWelcome();
 
     // ---- request loop (the FROZEN §4.4 body, unchanged) ----
@@ -1222,6 +1316,7 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
             job.text = std::move(msg.text);
             job.timeout_ms = msg.timeout_ms;
             job.conn = &conn;
+            job.client = conn.client; // Item D: pin-relay gate identity
             if (!g_queue.Push(job)) {
                 conn.SendResult(job.id, enginehost::HostStatus::Busy); // §4.4: depth > 8
                 continue;
@@ -1655,6 +1750,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
     namespace wp = emebalachat::workerproto;
     DIAG_LOG("ENGINEHOST", "conn/%03d: hello ok v2 (client=%s version=%s)",
              conn.index, hello.client.c_str(), hello.client_version.c_str());
+    conn.client = hello.client; // Item D: pin-relay gate identity
     conn.SendWelcomeV2();
 
     std::string frame;
@@ -1831,6 +1927,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
             }
             item.deadline_ms = NowMs() + msg.timeout_ms; // §V2-4.6 deadline
             item.user = &conn;
+            item.client = conn.client; // Item D: pin-relay gate identity
             host_v2::SchedItem evicted;
             const auto r = g_scheduler.Enqueue(item, evicted);
             if (r == host_v2::EnqueueResult::BusyDroppedOld) {

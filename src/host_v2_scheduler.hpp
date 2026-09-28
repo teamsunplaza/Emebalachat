@@ -37,6 +37,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace emebalachat {
@@ -58,6 +59,10 @@ struct SchedItem {
     std::int64_t deadline_ms = 0;             // absolute; 0 = no deadline
     std::uint64_t session = 0;                // owning session (0 = sessionless job)
     void* user = nullptr;                     // opaque caller context (never touched)
+    // Item D (session 260928_0001): hello.client captured at enqueue time so
+    // the dispatcher can gate the config-pin relay when the request carries
+    // no session model (the connection may close while the item is queued).
+    std::string client;
 };
 
 // TryEnqueue outcomes. Busy answers are the CALLER's job (no pipe IO here).
