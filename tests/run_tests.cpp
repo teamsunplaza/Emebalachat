@@ -14743,6 +14743,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // + the std:: facilities above; the resolver target lives in Emebalachat_core).
 #include "engine_host_client_policy_test.cpp"
 
+// REQ-CP T2 (session 260928_0001, design §11 T2): the LIVE per-client policy
+// reader — LoadClientPolicyLive over %LOCALAPPDATA%\Emebala\Common\
+// engine_client_policy.json, extending the REQ-055 mtime/size live cache to
+// the policy file with a CONTENT-level (not resolution-level) cache so the
+// per-job client id always re-resolves against the cached text. Staged as an
+// .inc next to this runner; the reader target lives in Emebalachat_core.
+#include "req056_client_policy_live_tests.inc"
+
 // REQ-059 (user report: a model added in Model Management did not translate —
 // "both engines translate identically" / Enter does nothing): GGUF models
 // whose chat template is trivial (Gemma-style concat) choke on the bare fixed
@@ -15767,6 +15775,12 @@ int main() {
     // per-key tolerance / partial sampling / merge precedence pins.
     // Registered after the M7 suites, per the end-of-file pattern.
     TestEngineHostClientPolicy();
+    // REQ-CP T2 (session 260928_0001, design §11 T2): the live client-policy
+    // reader — mtime/size cache hit/miss, delete->defaults, torn-write
+    // fail-closed, absent-store no-crash, per-dir cache isolation. Registered
+    // right after the T1 resolver suite it consumes, per the end-of-file
+    // pattern.
+    TestReq056ClientPolicyLive();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
 // engine_host_config_reader — REQ-046 P4-2 (Rev2 §B-4, Ask Light Gate C1):
-// the engine host's boot-time read of the Chat app's config.json.
+// the engine host's boot-time read of the Chat app's config.json, plus the
+// REQ-CP (session 260928_0001, design §11 T2) live per-client policy reader
+// for the family-shared Common-store policy file.
 //
 // Extracted from host_main.cpp (previously the file-local
 // LoadUserModelIdFromConfig) so the C1 gate logic is LINKABLE from
@@ -35,6 +37,8 @@
 #pragma once
 
 #include <string>
+
+#include "engine_host_client_policy.hpp" // REQ-CP (T1): clientpolicy::ClientPolicy (return type)
 
 namespace emebalachat {
 namespace enginehost {
@@ -76,6 +80,39 @@ std::string LoadUserModelIdFromConfig(const std::wstring& lad_override);
 // state = zero re-parses); tests with rotating temp dirs just re-read.
 // Thread-safe (dispatchers run on multiple threads).
 std::string LoadUserModelIdFromConfigLive(const std::wstring& lad_override);
+
+// REQ-CP T2 (design §11 T2): mtime/size-cached LIVE reader for the
+// family-shared per-client engine policy file
+// %LOCALAPPDATA%\Emebala\Common\engine_client_policy.json (schema + rules in
+// design §5; the pure decision core is engine_host_client_policy.{hpp,cpp}).
+// Resolves the section for `client_id` and returns the ClientPolicy the
+// dispatcher applies (precedence layering is the caller's job, T3).
+//
+// The cache is CONTENT-level (the raw document TEXT), NOT resolution-level:
+// `client_id` varies per job, so a resolution-keyed cache would mis-serve
+// multi-client dispatchers. The steady state is one GetFileAttributesEx per
+// job and zero re-reads/re-parses; the document is re-read + re-resolved only
+// when the file's mtime/size signature moves. Sibling single-slot cache to
+// the REQ-055 pin reader — keyed by the RESOLVED lad dir, thread-safe.
+//
+// Fail-closed, never throws, never blocks the dispatcher: file absent /
+// unreadable / locked / torn (a partial write without the writer's tmp+rename
+// commit) / schema-rejected / unknown client -> the compiled-in safe defaults
+// for `client_id` (clientpolicy::CompiledInDefaults semantics, reached via
+// clientpolicy::ResolvePolicy(client_id, "")). The reader NEVER creates the
+// file or the Common dir — creation is the installer / app-writer concern
+// (T7); an absent store is a normal first-run state, not an error.
+//
+// Privacy: the policy file carries ids / numbers / template refs only — no
+// user text. This reader is I/O + cache only and emits NO log line itself;
+// shape-only DIAG codes (never content) are authored at the T3 call site,
+// per the repo's ENGINEHOST/<site>/NNN discipline.
+//
+// `lad_override` injects the %LOCALAPPDATA% parent for tests (an empty string
+// falls back to the real SHGetKnownFolderPath lookup — the production call
+// site passes nothing, so its behavior is unchanged).
+clientpolicy::ClientPolicy LoadClientPolicyLive(const std::string& client_id,
+                                                const std::wstring& lad_override);
 
 } // namespace enginehost
 } // namespace emebalachat

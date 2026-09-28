@@ -125,6 +125,13 @@ inline std::wstring WorkerFamilyFromManifestName(std::wstring_view name) {
 // engine_host_bootstrap_client.cpp L49.
 constexpr wchar_t kRegistryJson[] = L"registry.json";
 
+// REQ-CP T2 (session 260928_0001, design §11 T2): the family-shared per-client
+// engine POLICY document (design §5 schema), read live by
+// engine_host_config_reader::LoadClientPolicyLive. Lives in the Common store
+// next to registry.json (each installer owns only its own client SECTION; the
+// host is the authoritative READER). Header-only constexpr — no ODR change.
+constexpr wchar_t kClientPolicyJson[] = L"engine_client_policy.json";
+
 } // namespace paths
 } // namespace enginehost
 } // namespace emebalachat
