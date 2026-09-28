@@ -239,6 +239,68 @@ public:
     // job id). Returns the number of drained frames; bounded by max_frames.
     int DrainWorkerPipe(const std::wstring& family, int max_frames = 128);
 
+    // 260927_0003 (MT audit Q1 fix A): bounded blocking SETTLE after a give-up.
+    // The REQ-049 drain is a non-blocking poll, so by its own contract it only
+    // covers strays that arrived while the dispatcher was IDLE. A worker that
+    // is still decoding a given-up job publishes that job's terminal event
+    // only AFTER the abort unwinds the decode (between tokens, seconds late
+    // under CPU contention) — a back-to-back next job then classifies it by
+    // kind only (worker events carry no job id) and re-stamps it with its own
+    // id: a persistent off-by-one pairing skew for the worker's lifetime.
+    // The settle closes that hole: BEFORE the timeout answer leaves and BEFORE
+    // the next job frame is published, read frames until the given-up job's
+    // terminal event arrives and DISCARD it. The worker answers exactly ONE
+    // terminal event per job (T3 contract — after an abort it is the
+    // error/timeout unwind event or a final that outran the abort), so the
+    // first terminal frame read after the abort is the given-up job's by
+    // construction — and that invariant is FAMILY-WIDE, not per-dispatcher:
+    // 260927_0003 F-01 (review round 2). The owner holds the family Busy from
+    // the TrySetBusy acquire (prolog, BEFORE any family-pipe I/O: drain,
+    // relay, publish) through the whole job and this settle until the
+    // post-answer release, and BOTH dispatchers publish only via TrySetBusy,
+    // which fails fast while the family is Busy. The sibling therefore
+    // answers HostStatus::Busy instead of publishing mid-settle — its frames
+    // can never race the settle's discard, and the settle can never swallow
+    // the sibling job's only terminal. Heartbeat/progress frames interleaved
+    // are consumed; a malformed frame is consumed too — the job is already
+    // given up, so there is nothing left to fail-closed.
+    // Bounded by timeout_ms (the audit's <= 10 s budget) AND max_frames;
+    // `cancel` (host shutdown) ends the settle early. Lock discipline mirrors
+    // ReadFromWorker: the handle is snapshotted under the mutex, frames are
+    // read WITHOUT holding it (a seconds-long blocking read must not stall
+    // SendToWorker or the reaper), and a pipe IO error ends the settle.
+    enum class SettleOutcome : unsigned char {
+        TerminalDiscarded, // the given-up job's terminal frame was read + dropped
+        DeadlineExpired,   // the budget (time or max_frames) ran out first
+        PipeIoError,       // the family pipe died mid-settle (the reaper judges)
+        Cancelled,         // `cancel` fired (host shutdown)
+    };
+    SettleOutcome SettleWorkerPipe(const std::wstring& family, int timeout_ms,
+                                   const std::atomic<bool>* cancel = nullptr,
+                                   int max_frames = 512);
+
+    // 260927_0003 F-01 (review round 2): single-flight family acquire. Under
+    // ONE mutex acquisition: succeeds only when the family is Ready and flips
+    // it to Busy atomically; ANY other state fails fast (Busy = a sibling
+    // dispatcher owns the pipe across its whole job + give-up settle window;
+    // Crashed/Spawning/Unavailable/Stopped = cannot serve right now). The
+    // loser answers HostStatus::Busy (an existing status on both profiles;
+    // the client retries) instead of interleaving its publish/drain/relay
+    // with the owner's frames — the cross-dispatcher hole the settle's
+    // invariant needs closed (the v1 and v2 dispatcher threads run
+    // concurrently in one host over the same translate-worker family).
+    // Replaces the prolog SetBusy(true), which was a no-op when the family
+    // was already Busy and so never enforced single-flight.
+    // DEADLOCK-FREE BY CONSTRUCTION: mu is held only for the compare+store,
+    // never across a wait or an I/O; the loser never blocks on the owner
+    // thread (no condition variable, no cross-thread wait, no lock ordering
+    // between the two dispatchers — the only lock is mu, and no thread ever
+    // waits on another thread while holding it). The winner's later pipe
+    // I/O keeps the established ReadFromWorker snapshot discipline (mu only
+    // for handle snapshots), so the sibling's fail-fast path can never
+    // convoy behind a blocking read either.
+    bool TrySetBusy(const std::wstring& family);
+
     // M-2 graceful stop of ONE family: shutdown -> wait shutdown_ack/EOF ->
     // close. Returns after the pipe is closed. Safe on a dead worker.
     bool GracefulStop(WorkerHandle& w, int timeout_ms = 10000);

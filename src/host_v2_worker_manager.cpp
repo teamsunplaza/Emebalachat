@@ -350,6 +350,17 @@ void WorkerManager::SetBusy(const std::wstring& family, bool busy) {
     else if (!busy && w->state == WorkerState::Busy) w->state = WorkerState::Ready;
 }
 
+// 260927_0003 F-01 (review round 2): single-flight acquire — see the header
+// contract (atomic Ready->Busy under one mu acquisition; deadlock-free: mu is
+// never held across a wait, the loser never blocks on the owner).
+bool WorkerManager::TrySetBusy(const std::wstring& family) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    WorkerHandle* w = impl_->FindLocked(family);
+    if (!w || w->state != WorkerState::Ready) return false;
+    w->state = WorkerState::Busy;
+    return true;
+}
+
 bool WorkerManager::SendToWorker(const std::wstring& family, std::string_view json) {
     std::lock_guard<std::mutex> lk(impl_->mu);
     WorkerHandle* w = impl_->FindLocked(family);
@@ -448,6 +459,84 @@ int WorkerManager::DrainWorkerPipe(const std::wstring& family, int max_frames) {
         ++drained;
     }
     return drained;
+}
+
+// 260927_0003 (MT audit Q1 fix A): bounded settle — see the header contract.
+WorkerManager::SettleOutcome WorkerManager::SettleWorkerPipe(
+    const std::wstring& family, int timeout_ms, const std::atomic<bool>* cancel,
+    int max_frames) {
+    const int64_t started_ms = NowMs();
+    HANDLE pipe = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        WorkerHandle* w = impl_->FindLocked(family);
+        if (!w || (w->state != WorkerState::Ready && w->state != WorkerState::Busy) ||
+            !w->pipe || w->pipe == INVALID_HANDLE_VALUE) {
+            DIAG_LOG("ENGINEHOST",
+                     "wmgr/020: settle end (family=%ws outcome=pipe_io_error drained=0 "
+                     "elapsed_ms=%lld)",
+                     family.c_str(), static_cast<long long>(NowMs() - started_ms));
+            return SettleOutcome::PipeIoError;
+        }
+        pipe = w->pipe; // snapshot: read WITHOUT the mutex (ReadFromWorker pattern)
+    }
+    const int64_t deadline = NowMs() + timeout_ms;
+    int drained = 0;
+    SettleOutcome outcome = SettleOutcome::DeadlineExpired;
+    for (;;) {
+        if (cancel && cancel->load(std::memory_order_acquire)) {
+            outcome = SettleOutcome::Cancelled;
+            break;
+        }
+        const int64_t now = NowMs();
+        if (now >= deadline || drained >= max_frames) {
+            outcome = SettleOutcome::DeadlineExpired;
+            break;
+        }
+        // Bounded read: never past the remaining budget, never past one idle
+        // tick, so cancel/deadline re-checks stay responsive.
+        const DWORD wait_ms = static_cast<DWORD>(
+            std::min<int64_t>(int64_t{250}, deadline - now));
+        std::string json;
+        const PipeRead rc = ReadPipeFrame(pipe, json, wait_ms);
+        if (rc == PipeRead::IoError) {
+            outcome = SettleOutcome::PipeIoError;
+            break;
+        }
+        if (rc == PipeRead::Timeout) continue;
+        ++drained;
+        wp::EventMsg ev;
+        const JobWaitFrame frame = ClassifyJobWaitFrame(json, ev);
+        if (frame == JobWaitFrame::Final || frame == JobWaitFrame::Error) {
+            // The given-up job's terminal event: discarded here, so it can
+            // NEVER be re-stamped into the next job. Exactly one terminal
+            // event exists per job (worker T3 contract), so this frame is the
+            // given-up job's by construction (family-wide single-flight,
+            // F-01: TrySetBusy gates the sibling dispatcher) — no new job is
+            // in flight while this settle runs.
+            outcome = SettleOutcome::TerminalDiscarded;
+            break;
+        }
+        // Heartbeat / progress / malformed: consumed, keep settling.
+    }
+    // 260927_0003 F-04 (review round 2): one shape-only line per settle —
+    // kinds/counts/timing only, never content (Chat privacy rules): the
+    // outcome + drained + elapsed distinguish "stray discarded as designed"
+    // from "hung worker burned the budget" (drained ~0, elapsed ~budget)
+    // from "flooding worker" (drained ~max_frames, elapsed << budget) in a
+    // future incident.
+    const char* outcome_name = "?";
+    switch (outcome) {
+        case SettleOutcome::TerminalDiscarded: outcome_name = "terminal_discarded"; break;
+        case SettleOutcome::DeadlineExpired:   outcome_name = "deadline_expired";   break;
+        case SettleOutcome::PipeIoError:       outcome_name = "pipe_io_error";      break;
+        case SettleOutcome::Cancelled:         outcome_name = "cancelled";          break;
+    }
+    DIAG_LOG("ENGINEHOST",
+             "wmgr/020: settle end (family=%ws outcome=%s drained=%d elapsed_ms=%lld)",
+             family.c_str(), outcome_name, drained,
+             static_cast<long long>(NowMs() - started_ms));
+    return outcome;
 }
 
 // ---- spawn + handshake (design §1.1 rules 1-2 / §3.4) -----------------------
