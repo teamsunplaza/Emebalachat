@@ -745,12 +745,65 @@ bool EnsureWorkerModelRelayed(host_v2::WorkerManager& wmgr, const std::wstring& 
 // serving its pinned default Hy-MT2 — the shared host must not bind another
 // app's real-time MT path to the chat app's heavy user_gguf selection.
 // Shared by DispatcherLoop (v1) and DispatcherV2Loop (v2 sessionless fallback).
+
+// REQ-CP T3 (design §4/§9 row 3 + tech-gate A1): the per-client engine pin
+// now resolves through the live policy reader. The wrapper keeps the legacy
+// C1 semantics as the special case for chat (design §10 migration point 2):
+//   * chat section model_id EMPTY  -> legacy C1-gated live pin (item-D verbatim)
+//   * chat section model_id non-empty -> the policy id wins
+//   * listener / unknown client -> "" (pinned bundled default; item-D verbatim)
+// The fail-closed behavior rides the T2 reader: an absent/garbage/schema-
+// rejected policy file resolves to the compiled-in defaults, whose model_id is
+// "" -> chat falls back to the live C1 pin, listener/unknown stay "". Zero
+// behavior change when the file is absent.
+//
+// IMPORTANT (tech-gate R-A / T2 owner note): a policy model_id change must ride
+// the EXISTING changed-pin re-relay comparison (EnsureWorkerModelRelayed) at
+// the dispatcher call sites — this wrapper only RESOLVES the pin per job; the
+// dispatchers compare pin != relayed_model_id exactly as before. A bare
+// assignment would silently serve the old model, so the re-relay stays.
 inline std::string RelayPinForClient(const std::string& client) {
+    namespace cp = emebalachat::enginehost::clientpolicy;
     constexpr char kChatClientPrefix[] = "emebala-chat";
-    if (client.rfind(kChatClientPrefix, 0) == 0) {
+    const bool is_chat = client.rfind(kChatClientPrefix, 0) == 0;
+    // REQ-CP T3: resolve the per-client policy LIVE per job (T2 content-level
+    // mtime/size cache; fail-closed to compiled-in defaults). The reader
+    // returns the section for the canonical client id (alias-canonicalized,
+    // unknown -> defaults with model_id "").
+    const cp::ClientPolicy policy = enginehost::LoadClientPolicyLive(client, L"");
+    // Legacy C1 semantics gate (design §4 + §10 point 2): only CHAT falls back
+    // to the live C1-gated user_gguf pin when its policy section model_id is
+    // empty; every other client's empty model_id already means the pinned
+    // bundled default. Non-empty wins regardless of family.
+    if (!policy.model_id.empty()) {
+        return policy.model_id;
+    }
+    if (is_chat) {
         return enginehost::LoadUserModelIdFromConfigLive(L"");
     }
     return "";
+}
+
+// REQ-CP T3 (design §11 T3): a deterministic, client-scoped session id for v1
+// profile jobs (which are otherwise sessionless). The worker reads job.session
+// ONLY to echo it back on the terminal event (ggml_translate_worker.cpp: the
+// job branch copies job.session into ev.session; the session_open/close tables
+// are untouched) — it is NOT a cache key and no SessionOpenMsg is required per
+// id, so distinct stable ids per client are safe and carry no worker-side
+// state. The value is FNV-1a over the CANONICAL client id, offset into a
+// disjoint constant range (1e9+) so a hash-derived session id can never
+// collide with the v2 enqueue_seq job-id namespace or a real v2 session table
+// id (tech-gate A1 amendment).
+inline std::uint64_t StableClientSessionId(const std::string& client) {
+    const std::string canonical =
+        emebalachat::enginehost::clientpolicy::CanonicalizeClientId(client);
+    // 64-bit FNV-1a over the canonical id bytes.
+    std::uint64_t hash = 1469598103934665603ULL; // FNV offset basis
+    for (const unsigned char c : canonical) {
+        hash ^= static_cast<std::uint64_t>(c);
+        hash *= 1099511628211ULL; // FNV prime
+    }
+    return 1000000000ULL + (hash % 4000000000ULL); // [1e9, 5e9): disjoint range
 }
 
 void DispatcherLoop(host_v2::WorkerManager& wmgr) {
@@ -782,6 +835,19 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // per-client gated config relay — "emebala-chat" keeps the live
         // user_gguf pin; any other client is forced to "" (pinned default).
         const std::string pin = RelayPinForClient(job.client);
+        // REQ-CP T3 (design §9 row 4): resolve the SAME per-client policy once
+        // per job for the v1 job frame. The reader is the T2 live cache (one
+        // extra GetFileAttributesEx signature check; the content text is
+        // already cached from the pin resolution above), so this costs no
+        // second file read. sampling_present is always stamped TRUE so the
+        // worker applies the resolved numerics — the compiled-in defaults
+        // block IS the shipped values (0.0/0.6/20/1.05), so when the policy
+        // file is ABSENT the resolved sampling is numerically identical to the
+        // worker's shipped defaults (option b, host-side Listener profile: the
+        // v1 client<->host wire stays byte-frozen; only this host<->worker
+        // internal frame gains the sampling member it already carried).
+        const emebalachat::enginehost::clientpolicy::ClientPolicy job_policy =
+            enginehost::LoadClientPolicyLive(job.client, L"");
         // v1 §8 fast-path parity: the file-presence probe stays in the host,
         // so a missing model answers model_missing WITHOUT a worker round
         // trip (the worker would answer the same; the fast path keeps the
@@ -872,12 +938,24 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // request id IS the worker job id (1:1, id-matching preserved).
         wp::JobMsg jm;
         jm.job = job.id;
-        jm.session = 0; // v1 profile jobs are sessionless (§1.2 one-shot shortcut)
+        // REQ-CP T3 (design §11 T3): v1 profile jobs get a deterministic,
+        // client-scoped session id (was hardcoded 0). The worker only echoes
+        // job.session on the terminal event — no cache key, no per-id state —
+        // so a stable per-client id is safe and adds no worker round trip.
+        jm.session = StableClientSessionId(job.client);
         jm.src = job.src;
         jm.tgt = job.tgt;
         jm.text = job.text;
-        // No sampling member: the worker's shipped defaults (0.0/0.6/20/1.05)
-        // apply — protocol v1 has no tuning channel (unchanged, frozen).
+        // REQ-CP T3 (design §9 row 4): stamp the resolved client-policy
+        // sampling (always present — the resolved defaults ARE the shipped
+        // 0.0/0.6/20/1.05, so an absent policy file is numerically identical to
+        // the old "no sampling member" behavior). This is the host<->worker
+        // INTERNAL frame (the frozen v1 client<->host wire is untouched).
+        jm.sampling.temperature = job_policy.sampling.temperature;
+        jm.sampling.top_p = job_policy.sampling.top_p;
+        jm.sampling.top_k = job_policy.sampling.top_k;
+        jm.sampling.rep_pen = job_policy.sampling.rep_pen;
+        jm.sampling_present = true;
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             // Dead pipe: the manager already marked the family Crashed; the
@@ -1077,6 +1155,14 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         if (item.session != 0 && g_sessions.Find(item.session, sess) && !sess.model_id.empty()) {
             model_id = sess.model_id;
         }
+        // REQ-CP T3 (design §9 row 5): resolve the per-client policy once per
+        // job for the v2 job frame (sampling stamp). The reader is the T2 live
+        // content-level cache; absent file -> compiled-in defaults (numerically
+        // the shipped values). The session model override above still wins for
+        // the model pin (request > client profile); the session cannot override
+        // sampling on the frozen-internal frame, so the policy sampling applies.
+        const emebalachat::enginehost::clientpolicy::ClientPolicy item_policy =
+            enginehost::LoadClientPolicyLive(item.client, L"");
         if (!ModelFileExistsFor(model_id)) {
             requester->SendResult(0, enginehost::HostStatus::ModelMissing);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
@@ -1124,6 +1210,26 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         wp::JobMsg jm;
         jm.job = item.enqueue_seq;
         jm.session = item.session;
+        // REQ-CP T3 + tech-gate A1 (design §9 row 5): the v2 job frame now
+        // carries the request BODY — the SchedItem captured src/tgt/text at
+        // the enqueue site (the old build forwarded an EMPTY body, the latent
+        // gap that would dead-end the first real v2 translate). Sessionless
+        // v2 jobs get a deterministic client-scoped session id exactly like v1
+        // (a real session id still wins above when the item carried one).
+        if (jm.session == 0) {
+            jm.session = StableClientSessionId(item.client);
+        }
+        jm.src = item.src;
+        jm.tgt = item.tgt;
+        jm.text = item.text;
+        // REQ-CP T3 (design §9 row 5): the same policy sampling stamp as v1 —
+        // the resolved defaults are numerically the shipped values, so an
+        // absent policy file is behavior-identical to the old never-set frame.
+        jm.sampling.temperature = item_policy.sampling.temperature;
+        jm.sampling.top_p = item_policy.sampling.top_p;
+        jm.sampling.top_k = item_policy.sampling.top_k;
+        jm.sampling.rep_pen = item_policy.sampling.rep_pen;
+        jm.sampling_present = true;
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             requester->SendResult(0, enginehost::HostStatus::EngineFailed);
@@ -1928,6 +2034,13 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
             item.deadline_ms = NowMs() + msg.timeout_ms; // §V2-4.6 deadline
             item.user = &conn;
             item.client = conn.client; // Item D: pin-relay gate identity
+            // REQ-CP T3 / tech-gate A1: capture the translate body so the v2
+            // dispatcher can copy it into the worker job frame (fixes the
+            // latent empty-body gap — the parsed msg would otherwise be
+            // discarded here and the queued item would forward nothing).
+            item.src = msg.src;
+            item.tgt = msg.tgt;
+            item.text = msg.text;
             host_v2::SchedItem evicted;
             const auto r = g_scheduler.Enqueue(item, evicted);
             if (r == host_v2::EnqueueResult::BusyDroppedOld) {

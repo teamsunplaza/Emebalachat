@@ -63,6 +63,13 @@ struct SchedItem {
     // the dispatcher can gate the config-pin relay when the request carries
     // no session model (the connection may close while the item is queued).
     std::string client;
+    // REQ-CP T3 / tech-gate A1 (design §9 row 5): the translate request BODY,
+    // captured at the enqueue site so the v2 dispatcher can copy it into the
+    // worker job frame (the old build forwarded an empty body — the latent
+    // v2 gap). Inert data like `client`: the scheduler never reads these.
+    std::string src;
+    std::string tgt;
+    std::string text;
 };
 
 // TryEnqueue outcomes. Busy answers are the CALLER's job (no pipe IO here).

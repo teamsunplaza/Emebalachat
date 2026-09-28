@@ -14751,6 +14751,16 @@ void TestEngineHostAvailabilityAndMigration() {
 // .inc next to this runner; the reader target lives in Emebalachat_core.
 #include "req056_client_policy_live_tests.inc"
 
+// REQ-CP T3 (session 260928_0001, design §9 rows 3-5 + §11 T3 + tech-gate A1):
+// the dispatcher-side policy integration — resolver-driven pin (chat keeps the
+// legacy C1 fallback), the v1 sampling stamp + client-scoped session id, and
+// the A1 v2 body copy (SchedItem src/tgt/text -> job frame). host_main.cpp has
+// NO unit-test seam (tech-gate honesty note A6), so these are ResolveRepoFile
+// source pins + the one behavioral leg seeds a temp-lad policy file through
+// the T2 reader. Staged as an .inc next to this runner; registered in main()
+// right after TestReq056ClientPolicyLive(), per the end-of-file pattern.
+#include "req057b_t3_dispatcher_policy_tests.inc"
+
 // REQ-059 (user report: a model added in Model Management did not translate —
 // "both engines translate identically" / Enter does nothing): GGUF models
 // whose chat template is trivial (Gemma-style concat) choke on the bare fixed
@@ -15781,6 +15791,12 @@ int main() {
     // right after the T1 resolver suite it consumes, per the end-of-file
     // pattern.
     TestReq056ClientPolicyLive();
+    // REQ-CP T3 (session 260928_0001, design §9 rows 3-5 + §11 T3 + A1): the
+    // dispatcher policy integration — resolver-driven pin (legacy C1 fallback),
+    // v1 sampling stamp + client-scoped session, A1 v2 body copy. Source pins
+    // (no dispatcher unit seam per tech-gate A6) + a seeded-policy behavioral
+    // leg. Registered right after the T2 reader suite it consumes.
+    TestReq057bT3DispatcherPolicy();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -731,7 +731,11 @@ const
   // survived reinstalls). CompareVersionText digit-sums dotted segments, so
   // '0.10.1.r2' > '0.10.1' (replace) while older/newer cross-product compares
   // still resolve correctly.
-#define ENGINE_REVISION ".r11"
+// REQ-CP T3 (session 260928_0001): the orchestrator binary (host_main.cpp) and
+// the v2 scheduler header changed, so the engine revision bumps per the
+// component-model rule A-2 (a same-version rebuild must replace the stale
+// store copy).
+#define ENGINE_REVISION ".r12"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
