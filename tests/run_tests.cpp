@@ -33,6 +33,7 @@
 #include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
 #include "../src/engine_host_paths.hpp" // M7 A-1: per-family worker-manifest naming scheme helpers
 #include "../src/engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
+#include "../src/engine_host_client_policy.hpp" // REQ-CP (T1): per-client engine policy resolver (pure core)
 #include "../src/ui/openai_settings_window.hpp" // REQ-046 P4-3: TemplateBuilder (Tech Gate 필수-5)
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
@@ -14619,6 +14620,16 @@ void TestEngineHostAvailabilityAndMigration() {
 // protocol suites it complements.
 #include "m6_engine_host_verbatim_sync_tests.inc"
 
+// 260927_0003 (MT audit Q1 fix A): bounded settle at give-up — the pairing
+// integrity suites (TestWorkerSettlePipe, functional against a real pipe
+// pair via the seam-injectable WorkerManager; TestHostGiveUpSettlePins,
+// structural pins on the exe-resident dispatcher loops through
+// ResolveRepoFile, this TU). Staged as an .inc next to this runner;
+// registered in main() after TestJobWaitFrameClassifier().
+// PLACEMENT: after m6_engine_host_verbatim_sync_tests.inc — the suite needs
+// ResolveRepoFile from this TU (same source-pin dependency as REQ-044).
+#include "m6_engine_host_settle_tests.inc"
+
 // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine — pure
 // security/policy helper tests (URL classification, SHA-256 digest, masking,
 // DPAPI round-trip, config round-trip, i18n presence). Test bodies staged as
@@ -14725,6 +14736,12 @@ void TestEngineHostAvailabilityAndMigration() {
 // TestReq054ToggleStemPreserve(), per the end-of-file pattern. Behavioral
 // pins against engine_host_config_reader + ResolveRepoFile source pins.
 #include "req055_live_pin_tests.inc"
+
+// REQ-CP (session 260928_0001 T1): the per-client engine policy resolver
+// suite — staged as a .cpp next to this runner (same staging contract as the
+// .inc suites: the body is included directly and uses the TEST_CHECK harness
+// + the std:: facilities above; the resolver target lives in Emebalachat_core).
+#include "engine_host_client_policy_test.cpp"
 
 // REQ-059 (user report: a model added in Model Management did not translate —
 // "both engines translate identically" / Enter does nothing): GGUF models
@@ -15536,6 +15553,13 @@ int main() {
     // engine_failed'). Registered after the T3 suites, per the end-of-file
     // pattern.
     TestJobWaitFrameClassifier();
+    // 260927_0003 (MT audit Q1 fix A): bounded settle at give-up — the late
+    // terminal event of a given-up job can never be re-stamped into the next
+    // job. Functional suite against a real pipe pair + structural pins on the
+    // exe-resident dispatcher loops — registered after the REQ-049 suite,
+    // per the end-of-file pattern.
+    TestWorkerSettlePipe();
+    TestHostGiveUpSettlePins();
     // REQ-043 (M6 T4): orchestrator-v2 suites (§V2-4.3/§V2-4.6/REQ-008) —
     // registered after the T3 suites, per the end-of-file pattern.
     TestHostV2Scheduler();
@@ -15738,6 +15762,11 @@ int main() {
     // pins (setup.iss source-text anchors; runtime gate behavior is the
     // physical-install domain). Registered after the A-2/A-3 suite.
     TestM7SetupGateMutex();
+    // REQ-CP (session 260928_0001 T1): the ClientPolicyResolver pure core —
+    // schema reject / unknown-client fail-closed / alias canonicalization /
+    // per-key tolerance / partial sampling / merge precedence pins.
+    // Registered after the M7 suites, per the end-of-file pattern.
+    TestEngineHostClientPolicy();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

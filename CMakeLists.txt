@@ -227,6 +227,11 @@ add_library(Emebalachat_core STATIC
     # config.json reader (C1 engine_type=="user_gguf" gate). Lives in core
     # (not host_main.cpp) so run_tests.exe can link + test it.
     src/engine_host_config_reader.cpp
+    # REQ-CP (session 260928_0001 T1, design §4/§5): the per-client engine
+    # policy resolver (pure decision core, no I/O — the T2 live reader injects
+    # the document text). Lives in core so run_tests.exe can link + test it,
+    # same seam as the config reader above.
+    src/engine_host_client_policy.cpp
     src/i18n.cpp
     src/ui/about_window.cpp
     src/ui/gguf_model_manager_window.cpp # REQ-048 R2-D: registered-model rename/delete manager
