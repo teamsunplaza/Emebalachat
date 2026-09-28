@@ -656,7 +656,7 @@ Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skip
 ; deleting a hand-authored policy on last-app uninstall would violate the
 ; zero-behavior-change migration (§10 point 6: deleting the file restores
 ; compiled-in defaults by USER action, not by installer wipe).
-Source: "assets\engine_client_policy.seed.json"; DestDir: "{localappdata}\Emebala\Common"; DestName: "engine_client_policy.json"; Flags: ignoreversion uninsneveruninstall
+Source: "assets\engine_client_policy.seed.json"; DestDir: "{localappdata}\Emebala\Common"; DestName: "engine_client_policy.json"; Flags: onlyifdoesntexist uninsneveruninstall
 
 ; ------------------------------------------------------------------------
 ; [Icons] - Start Menu and Desktop shortcuts

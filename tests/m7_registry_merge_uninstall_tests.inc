@@ -281,10 +281,30 @@ void TestM7RegistryMergeUninstall() {
         // target the policy file.
         TEST_CHECK(iss_src.find(
                        "Source: \"assets\\engine_client_policy.seed.json\"; DestDir: \"{localappdata}\\Emebala\\Common\"; "
-                       "DestName: \"engine_client_policy.json\"; Flags: ignoreversion uninsneveruninstall") !=
+                       "DestName: \"engine_client_policy.json\"; Flags: onlyifdoesntexist uninsneveruninstall") !=
                         std::string::npos,
                     "pin: T7 [Files] entry seeds engine_client_policy.json create-if-absent "
                     "with uninsneveruninstall (Common store survives uninstall)");
+        // F2/P0 (code-reviewer 054228): default Inno replace-rule 4 overwrites an
+        // existing UNVERSIONED dest file, and ignoreversion replaces regardless of
+        // version — so create-if-absent REQUIRES the onlyifdoesntexist flag. Pin
+        // the semantic flag explicitly so a future drop silently reintroduces the
+        // overwrite-the-hand-authored-file defect (F2 data loss) instead of going
+        // green over it.
+        TEST_CHECK(iss_src.find(
+                       "DestName: \"engine_client_policy.json\"; Flags: onlyifdoesntexist") !=
+                        std::string::npos,
+                    "pin: T7 seed entry carries onlyifdoesntexist (Inno create-if-absent; "
+                    "default/ignoreversion would overwrite a hand-authored policy)");
+        // F3/P2 MANUAL QA STEP (NON-AUTOMATABLE): Inno runtime [Files] semantics
+        // cannot be exercised from this in-repo structural pin. Before each
+        // installer release, verify reinstall-preservation by hand:
+        //   install -> hand-edit engine_client_policy.json (change model_id /
+        //   sampling, add an unknown top-level section) -> reinstall the SAME
+        //   family -> confirm the file is byte-unchanged (hand-authored edits and
+        //   the unknown section survive). Design §11 T7: "reinstall preserves".
+        // A structural pin cannot prove this; the manual matrix step is the only
+        // true evidence.
         {
             // Every line naming the policy file must be the seed [Files] entry
             // or a comment — never a delete/overwrite target.
