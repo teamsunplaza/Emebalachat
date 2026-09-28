@@ -956,6 +956,13 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         jm.sampling.top_k = job_policy.sampling.top_k;
         jm.sampling.rep_pen = job_policy.sampling.rep_pen;
         jm.sampling_present = true;
+        // REQ-CP T5 (design §9 row 7 + §11 T5): stamp the resolved client-policy
+        // prompt template ref (OPTIONAL member — the BuildJob builder emits it
+        // only when non-empty, and the compiled-in default IS "hymt2-official",
+        // so an absent policy file yields byte-identical behavior to the pre-T5
+        // frame). The worker's template registry resolves the ref (fail-closed
+        // to hymt2-official on unknown/empty).
+        jm.prompt_template = job_policy.prompt_template_ref;
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             // Dead pipe: the manager already marked the family Crashed; the
@@ -1230,6 +1237,10 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         jm.sampling.top_k = item_policy.sampling.top_k;
         jm.sampling.rep_pen = item_policy.sampling.rep_pen;
         jm.sampling_present = true;
+        // REQ-CP T5 (design §9 row 7 + §11 T5): the same prompt template ref
+        // stamp as v1 (OPTIONAL member; the compiled-in default IS
+        // "hymt2-official", so an absent policy file is behavior-identical).
+        jm.prompt_template = item_policy.prompt_template_ref;
         const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
         if (!sent) {
             requester->SendResult(0, enginehost::HostStatus::EngineFailed);

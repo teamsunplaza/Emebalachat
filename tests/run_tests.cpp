@@ -14761,6 +14761,15 @@ void TestEngineHostAvailabilityAndMigration() {
 // right after TestReq056ClientPolicyLive(), per the end-of-file pattern.
 #include "req057b_t3_dispatcher_policy_tests.inc"
 
+// REQ-CP T5 (session 260928_0001, design §9 row 7 + §11 T5): the worker
+// protocol's OPTIONAL JobMsg.prompt_template field — parse/build pins, the
+// worker pass-through, both dispatcher stamps, the seeded-listener behavioral
+// leg, and the cross-repo JobMsg-surface byte-parity differential (reuses the
+// VerbatimReduceFragment / VerbatimExtractBlock helpers + ResolveRepoFile from
+// the REQ-044 verbatim-sync suite above). Included directly, registered in
+// main() right after TestReq057bT3DispatcherPolicy() per the staging pattern.
+#include "req058_t5_prompt_template_field_tests.inc"
+
 // REQ-CP T4 (session 260928_0001, design §8 + §9 row 6 + tech-gate A2): the
 // worker-side prompt template registry — three compiled-in template bodies
 // (hymt2-official / subtitle-realtime-v1 / literary-flow-v1) selected by a
@@ -15624,6 +15633,9 @@ int main() {
     // JSON helper copy (L57-318) still matches engine_host_protocol.hpp after
     // any header edit; approach ii (runtime source-text differential).
     TestReq044VerbatimSync();
+    // REQ-CP T5: worker-protocol OPTIONAL prompt_template field (both copies +
+    // the worker/host connection points + the cross-repo parity pin).
+    TestReq058T5PromptTemplateField();
     // REQ-044 P4-5: i18n field-order structural defense (X-macro + Korean
     // designated-initializer pilot) — registered after the P4-4 verbatim suite.
     TestReq044I18nFieldOrder();

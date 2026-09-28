@@ -332,6 +332,15 @@ struct JobMsg {
     std::string text;
     SamplingParams sampling;
     bool sampling_present = false; // false -> use the shipped defaults
+    // REQ-CP T5 (design §9 row 7 + §11 T5): OPTIONAL prompt template ref —
+    // a registry-style id ("hymt2-official" | "subtitle-realtime-v1" | ...),
+    // never user text. Same OPTIONAL-string discipline as EventMsg.model
+    // (REQ-057): the builder emits the member ONLY when non-empty, the parser
+    // rejects a mistyped (non-string) member as a malformed job, and an absent
+    // member parses to "" (= hymt2-official, the fail-closed default the
+    // worker-side template registry resolves). Old hosts omit it, old workers
+    // ignore it (§V2-12-2), so old<->new interop is safe.
+    std::string prompt_template;
 };
 
 struct EventMsg {
@@ -389,6 +398,12 @@ inline std::string BuildJob(const JobMsg& m) {
              ",\"top_p\":" + std::to_string(m.sampling.top_p) +
              ",\"top_k\":" + std::to_string(m.sampling.top_k) +
              ",\"rep_pen\":" + std::to_string(m.sampling.rep_pen) + "}";
+    }
+    // REQ-CP T5 (design §9 row 7): OPTIONAL prompt_template ref — emitted ONLY
+    // when non-empty (old-frame discipline: an unset ref keeps the pre-T5 wire
+    // byte shape; §V2-12-2 means a new worker still parses it).
+    if (!m.prompt_template.empty()) {
+        s += ",\"prompt_template\":\"" + enginehost::JsonEscape(m.prompt_template) + "\"";
     }
     s += "}";
     return s;
@@ -587,6 +602,16 @@ inline bool ParseJob(std::string_view json, JobMsg& m) {
     if (const auto* sm = enginehost::detail::FindField(p, "sampling")) {
         if (!detail::ParseSamplingObject(sm->text, m.sampling)) return false;
         m.sampling_present = true;
+    }
+    // REQ-CP T5 (design §11 T5): OPTIONAL prompt_template ref — a mistyped
+    // (non-string) member is a malformed job (same strict-typed discipline as
+    // EventMsg.model, REQ-057); an absent member leaves the ref at "" (the
+    // worker resolves "" -> hymt2-official, fail-closed).
+    if (const auto* pt = enginehost::detail::FindField(p, "prompt_template")) {
+        if (!pt->is_string) return false;
+        m.prompt_template = pt->text;
+    } else {
+        m.prompt_template.clear();
     }
     return true;
 }

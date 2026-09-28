@@ -493,18 +493,19 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                     const emebalachat::LanguageInfo* tgt_info =
                         emebalachat::FindLanguageByCode(norm_tgt);
                     const std::string tgt_name = tgt_info ? tgt_info->name_en : job.tgt;
-                    // REQ-CP T4 (design §9 row 6 + tech-gate A2): the prompt
-                    // template ref threads to the rung-1 prompt builder. The
-                    // JobMsg field `prompt_template` is T5's OPTIONAL wire
-                    // addition; until T5 lands it does not exist on the struct,
-                    // so we forward the empty ref (= hymt2-official, the fail-
-                    // closed default) and leave this as the single pass-through
-                    // point T5 connects to `job.prompt_template`.
+                    // REQ-CP T4+T5 (design §9 rows 6-7 + tech-gate A2): the
+                    // prompt template ref threads to the rung-1 prompt builder.
+                    // T5 connected the wire: the job frame's OPTIONAL
+                    // prompt_template ref (absent -> "" = hymt2-official, the
+                    // fail-closed default the template registry resolves) is
+                    // forwarded here; a non-empty ref selects subtitle-
+                    // realtime-v1 / literary-flow-v1, an unknown ref falls back
+                    // to hymt2-official.
                     out = engine->Translate(
                         emebalachat::ToUtf16(job.text), tgt_name, job.src, model_path,
                         job.sampling.temperature, job.sampling.top_p,
                         job.sampling.top_k, job.sampling.rep_pen,
-                        /*template_ref=*/"");
+                        /*template_ref=*/job.prompt_template);
                 }
             }
             const bool aborted = g_cancel.load(std::memory_order_acquire);
