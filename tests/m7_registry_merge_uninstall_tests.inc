@@ -258,14 +258,89 @@ void TestM7RegistryMergeUninstall() {
         std::string main_src;
         TEST_CHECK(read_src(L"src\\main.cpp", main_src), "pin: main.cpp readable");
         TEST_CHECK(main_src.find("WriteRegistryAtomically(registry, models_dir)") !=
-                       std::string::npos,
-                   "pin: RegisterUserGgufModel persists through the atomic writer");
+                        std::string::npos,
+                    "pin: RegisterUserGgufModel persists through the atomic writer");
         std::string mgr_src;
         TEST_CHECK(read_src(L"src\\ui\\gguf_model_manager_window.cpp", mgr_src),
-                   "pin: gguf manager readable");
+                    "pin: gguf manager readable");
         TEST_CHECK(mgr_src.find("WriteRegistryAtomically(registry, models_dir)") !=
-                       std::string::npos,
-                   "pin: WriteRegistryLoud persists through the atomic writer");
+                        std::string::npos,
+                    "pin: WriteRegistryLoud persists through the atomic writer");
+
+        // ---- REQ-CP T7 (session 260928_0001, design §11 T7): the installer
+        // seeds the family-shared per-client engine policy file
+        // %LOCALAPPDATA%\Emebala\Common\engine_client_policy.json CREATE-IF-
+        // ABSENT ONLY. The payload ships in setup.exe via a [Files] entry
+        // whose source is the repo asset; Inno's copy semantics skip an
+        // existing destination without overwrite, so a reinstall of one
+        // family NEVER touches an existing file (section-preserving
+        // semantics = first installer wins). The Common store must SURVIVE
+        // this family's uninstall (family-ownership rule, same contract as
+        // the registry.json entry above), so the entry must carry
+        // uninsneveruninstall and no [UninstallDelete]/cleanup path may
+        // target the policy file.
+        TEST_CHECK(iss_src.find(
+                       "Source: \"assets\\engine_client_policy.seed.json\"; DestDir: \"{localappdata}\\Emebala\\Common\"; "
+                       "DestName: \"engine_client_policy.json\"; Flags: ignoreversion uninsneveruninstall") !=
+                        std::string::npos,
+                    "pin: T7 [Files] entry seeds engine_client_policy.json create-if-absent "
+                    "with uninsneveruninstall (Common store survives uninstall)");
+        {
+            // Every line naming the policy file must be the seed [Files] entry
+            // or a comment — never a delete/overwrite target.
+            std::istringstream stream(iss_src);
+            std::string line;
+            bool only_seed_refs = true;
+            while (std::getline(stream, line)) {
+                if (line.find("engine_client_policy") == std::string::npos) continue;
+                const bool is_seed_entry =
+                    line.find("Source: \"assets\\engine_client_policy.seed.json\"") !=
+                    std::string::npos;
+                const bool is_comment = !line.empty() && line[0] == ';';
+                if (!is_seed_entry && !is_comment) only_seed_refs = false;
+            }
+            TEST_CHECK(only_seed_refs,
+                        "pin: T7 every engine_client_policy reference is the seed entry or a "
+                        "comment (no DeleteFile/UninstallDelete targets it)");
+        }
+        const auto read_seed = [](const wchar_t* rel, std::string& out) {
+            const std::filesystem::path p = ResolveRepoFile(rel);
+            if (p.empty()) return false;
+            std::ifstream in(p, std::ios::binary);
+            if (!in) return false;
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            out = ss.str();
+            return true;
+        };
+        std::string seed_src;
+        TEST_CHECK(read_seed(L"installer\\assets\\engine_client_policy.seed.json", seed_src),
+                    "pin: T7 seed asset readable");
+        if (!seed_src.empty()) {
+            TEST_CHECK(seed_src.find("\"schema_version\": 1") != std::string::npos,
+                        "pin: T7 seed schema_version is 1");
+            TEST_CHECK(seed_src.find("\"emebala-chat\"") != std::string::npos &&
+                           seed_src.find("\"emebala-listner\"") != std::string::npos &&
+                           seed_src.find("\"emebala-reader\"") != std::string::npos,
+                        "pin: T7 seed carries the three canonical client sections "
+                        "(emebala-listner typo-preserved)");
+            TEST_CHECK(seed_src.find("\"prompt_template_ref\": \"hymt2-official\"") !=
+                           std::string::npos &&
+                           seed_src.find("\"prompt_template_ref\": \"subtitle-realtime-v1\"") !=
+                           std::string::npos &&
+                           seed_src.find("\"prompt_template_ref\": \"literary-flow-v1\"") !=
+                           std::string::npos,
+                        "pin: T7 seed ships distinct prompt_template_refs per app (D2: "
+                        "effective out of the box)");
+            TEST_CHECK(seed_src.find("\"model_id\": \"\"") != std::string::npos,
+                        "pin: T7 seed model_id empty (pinned bundled default, "
+                        "zero-divergence stance)");
+            TEST_CHECK(seed_src.find("\"temperature\": 0.0") != std::string::npos &&
+                           seed_src.find("\"top_p\": 0.6") != std::string::npos &&
+                           seed_src.find("\"top_k\": 20") != std::string::npos &&
+                           seed_src.find("\"rep_pen\": 1.05") != std::string::npos,
+                        "pin: T7 seed sampling defaults 0.0/0.6/20/1.05 present");
+        }
     }
 
     std::cout << "  m7 registry merge/uninstall: "

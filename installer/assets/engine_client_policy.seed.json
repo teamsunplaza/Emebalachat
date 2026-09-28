@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "clients": {
+    "emebala-chat": {
+      "model_id": "",
+      "profile_name": "",
+      "sampling": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05},
+      "prompt_template_ref": "hymt2-official",
+      "comment": "chat inherits legacy behavior: empty model_id -> C1-gated user_gguf pin; non-empty -> pinned id"
+    },
+    "emebala-listner": {
+      "model_id": "",
+      "profile_name": "",
+      "sampling": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05},
+      "prompt_template_ref": "subtitle-realtime-v1",
+      "comment": "real-time subtitle policy; empty model_id = pinned Hy-MT2"
+    },
+    "emebala-reader": {
+      "model_id": "",
+      "profile_name": "",
+      "sampling": {"temperature": 0.3, "top_p": 0.9, "top_k": 40, "rep_pen": 1.05},
+      "prompt_template_ref": "literary-flow-v1",
+      "comment": "SLOT RESERVED - app not shipped; schema + default exist so Reader needs zero host changes at launch"
+    }
+  }
+}

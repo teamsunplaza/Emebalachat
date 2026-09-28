@@ -640,6 +640,24 @@ Source: "..\assets\Emebala_Chat_Appicon_small.png"; DestDir: "{app}\assets"; Fla
 Source: "..\assets\Emebala_Chat_Logo_small.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
+; REQ-CP T7 (session 260928_0001, design §11 T7 + §5): seed the family-shared
+; per-client engine policy file CREATE-IF-ABSENT ONLY. The payload ships in
+; setup.exe (Source: installer\assets\engine_client_policy.seed.json); Inno's
+; [Files] copy semantics do the create-if-absent: when the destination already
+; exists the entry is skipped WITHOUT overwrite (section-preserving semantics =
+; FIRST installer wins; a reinstall of one family NEVER touches an existing
+; file, and live-app writes use the merge pattern, not the installer).
+; DestDir: the same Common store root that hosts engine\ and models\ — the
+; resolver (T1 engine_host_client_policy) reads exactly this path.
+; uninsneveruninstall: the Common store must SURVIVE this family's uninstall
+; (family-ownership rule, mirroring the registry.json M7 A-2 ownership pin);
+; only the M7 A-3 registry-aware last-app cleanup may prune the Common store,
+; and engine_client_policy.json is intentionally NOT in its owned-file enum —
+; deleting a hand-authored policy on last-app uninstall would violate the
+; zero-behavior-change migration (§10 point 6: deleting the file restores
+; compiled-in defaults by USER action, not by installer wipe).
+Source: "assets\engine_client_policy.seed.json"; DestDir: "{localappdata}\Emebala\Common"; DestName: "engine_client_policy.json"; Flags: ignoreversion uninsneveruninstall
+
 ; ------------------------------------------------------------------------
 ; [Icons] - Start Menu and Desktop shortcuts
 ; ------------------------------------------------------------------------
