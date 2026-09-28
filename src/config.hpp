@@ -209,9 +209,40 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
 // into …. Note that you should only output the translated result without any additional explanation:\n\n"). AUTO / empty / unresolvable sources add NO source token, producing
 // byte-identical prompts to the historical behavior (plan §4.2
 // backward-compatibility requirement).
+// REQ-CP T4 (session 260928_0001, design §8 + §9 row 6 + tech-gate A2): the
+// worker-side prompt TEMPLATE REGISTRY. A template is a compiled-in instruction
+// body selected by `prompt_template_ref` and rendered with the SAME
+// {source}/{target}/{text} substitution BuildPrompt already does. Refs are a
+// CLOSED enum-like set; unknown refs and the empty ref fall back FAIL-CLOSED to
+// kPromptTemplateHymt2Official (the existing Tencent 100% Official Full SFT
+// form), so a bogus or absent ref can never select a free-text / unsanctioned
+// prompt. This keeps free user text out of the policy file and off the wire
+// (design §6): only the ref travels, never the body.
+//
+// The three refs (verbatim from design §8):
+//   * kPromptTemplateHymt2Official     — existing behavior, byte-identical,
+//                                        incl. the AUTO/unresolvable degenerate
+//                                        forms; ALSO the universal fallback.
+//   * kPromptTemplateSubtitleRealtime  — design §8.2 (EmebalaListener): short
+//                                        subtitle lines, anti-completion,
+//                                        anti-embellishment, pass-through on
+//                                        gibberish.
+//   * kPromptTemplateLiteraryFlow      — design §8.3 (EmebalaReader slot
+//                                        default): long-form on-screen reading.
+//
+// template_ref (optional, default {} = ""): selects the template. Per tech-gate
+// amendment A2 the ref applies to the rung-1 chat form (BuildPrompt) ONLY; the
+// rung-2 completion retry (BuildCompletionPrompt) is template-independent and
+// keeps its single pinned form for ALL templates, preserving the REQ-059
+// byte-identity golden pins.
+inline constexpr const char* kPromptTemplateHymt2Official    = "hymt2-official";
+inline constexpr const char* kPromptTemplateSubtitleRealtime = "subtitle-realtime-v1";
+inline constexpr const char* kPromptTemplateLiteraryFlow     = "literary-flow-v1";
+
 std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
-                        std::string_view source_lang = {});
+                        std::string_view source_lang = {},
+                        std::string_view template_ref = {});
 
 // REQ-059: the completion-form prompt (rung 2 of the fixed user-model
 // ladder) for GGUF models whose chat template is trivial — the model

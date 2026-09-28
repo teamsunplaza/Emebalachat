@@ -173,8 +173,8 @@ void TestReq055LiveUserModelPin() {
         std::ifstream in(setup_iss, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#define ENGINE_REVISION \".r11\"") != std::string::npos,
-                   "REQ-059: ENGINE_REVISION bumped to .r11 (orchestrator + worker binaries changed; REQ-L32 asr bundle staging, session 260925)");
+        TEST_CHECK(src.find("#define ENGINE_REVISION \".r12\"") != std::string::npos,
+                   "REQ-059: ENGINE_REVISION bumped to .r12 (orchestrator binary changed; REQ-CP T3 dispatcher policy integration, session 260928)");
     }
 
     if (g_failed_count == failures_before) {

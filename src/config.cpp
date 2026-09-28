@@ -629,9 +629,127 @@ const LanguageInfo* ResolvePromptLanguage(std::string_view token, std::string& o
 }
 } // namespace
 
+// REQ-CP T4 (design §8.2 / §8.3): render the two NEW prompt templates. Reuses
+// the SAME language-resolution prologue as BuildPrompt (ResolvePromptLanguage:
+// Chinese branch keeps name_native on both sides, English branch name_en on
+// both sides; AUTO/unresolvable target -> raw-token injection; AUTO/empty/
+// unresolvable source -> NO source hint token, the byte-stable degenerate
+// form). The template bodies below are copied VERBATIM from design §8 — the
+// exact {source}/{target}/{text} substitution pattern mirrors hymt2-official.
+// `template_ref` is assumed already validated to one of the two new refs by
+// the caller (BuildPrompt dispatches only known refs here; unknown/empty fall
+// back to hymt2-official before reaching this function).
+static std::string BuildTemplatedPrompt(std::string_view source_text,
+                                        std::string_view target_lang,
+                                        std::string_view source_lang,
+                                        std::string_view template_ref) {
+    std::string tgt_code;
+    const LanguageInfo* tgt_info = ResolvePromptLanguage(target_lang, tgt_code);
+    std::string tgt_native;
+    std::string tgt_en;
+    if (tgt_info != nullptr && tgt_code != "AUTO") {
+        tgt_native = tgt_info->name_native;
+        tgt_en     = tgt_info->name_en;
+    } else {
+        // AUTO / unresolvable target: raw-token injection (BuildPrompt parity).
+        tgt_code.clear();
+        tgt_native = std::string(target_lang);
+        tgt_en     = tgt_native;
+    }
+
+    std::string src_code;
+    std::string src_native;
+    std::string src_en;
+    if (!source_lang.empty()) {
+        const LanguageInfo* src_info = ResolvePromptLanguage(source_lang, src_code);
+        if (src_info != nullptr && src_code != "AUTO") {
+            src_native = src_info->name_native;
+            src_en     = src_info->name_en;
+        }
+    }
+
+    // Chinese-target branch, same sniff as hymt2-official (canonical ZH codes,
+    // else the legacy raw-token Chinese sniff keeps historical forms).
+    const bool zh_instruction =
+        (tgt_code == "ZH-CN" || tgt_code == "ZH-TW") ||
+        (tgt_code.empty() && IsChineseLanguage(tgt_native));
+
+    std::string prompt;
+    if (template_ref == kPromptTemplateSubtitleRealtime) {
+        if (zh_instruction) {
+            // Design §8.2 Chinese-target form (verbatim). The {source_native}
+            // hint token is dropped exactly as hymt2-official's src_en-empty
+            // path does, giving the byte-stable degenerate "将以下字幕翻译为…".
+            prompt = "将以下";
+            if (!src_native.empty()) {
+                prompt.append(src_native);
+            }
+            prompt.append("字幕翻译为");
+            prompt.append(tgt_native);
+            prompt.append("。只输出译文一行，不要解释，不要引号，不要标签，不要添加标点。尽量与原文同样简短；若句子不完整，只翻译已有内容，不要补全。若内容无法辨认，原样输出原文。\n\n");
+            prompt.append(source_text);
+            return prompt;
+        }
+        // Design §8.2 English-source canonical form (verbatim).
+        prompt = "Translate this subtitle line from ";
+        if (!src_en.empty()) {
+            prompt.append(src_en);
+            prompt.push_back(' ');
+        }
+        prompt.append("into ");
+        prompt.append(tgt_en);
+        prompt.append(". Output ONLY the translation: one short line, no explanations, no quotation marks, no labels, no added punctuation. Keep it as brief as the original; if the line is cut off mid-sentence, translate only what is there and do not complete it. If the input is not intelligible ");
+        if (!src_en.empty()) {
+            prompt.append(src_en);
+        }
+        prompt.append(", output the input unchanged.\n\n");
+        prompt.append(source_text);
+        return prompt;
+    }
+
+    // kPromptTemplateLiteraryFlow (design §8.3, verbatim).
+    if (zh_instruction) {
+        prompt = "将以下";
+        if (!src_native.empty()) {
+            prompt.append(src_native);
+        }
+        prompt.append("文本翻译为");
+        prompt.append(tgt_native);
+        prompt.append("，供屏幕阅读使用。保持原文的语气与段落结构。只输出译文，不要任何解释或注释。\n\n");
+        prompt.append(source_text);
+        return prompt;
+    }
+    prompt = "Translate the following ";
+    if (!src_en.empty()) {
+        prompt.append(src_en);
+        prompt.push_back(' ');
+    }
+    prompt.append("text into ");
+    prompt.append(tgt_en);
+    prompt.append(" for on-screen reading. Preserve the tone, register, and paragraph structure of the original. Output only the translation, without explanations or annotations.\n\n");
+    prompt.append(source_text);
+    return prompt;
+}
+
 std::string BuildPrompt(std::string_view source_text,
                         std::string_view target_lang,
-                        std::string_view source_lang) {
+                        std::string_view source_lang,
+                        std::string_view template_ref) {
+    // REQ-CP T4 (design §8 + tech-gate A2): dispatch on the template ref. The
+    // registry is FAIL-CLOSED — an unknown ref or the empty ref selects
+    // kPromptTemplateHymt2Official, so a bogus/absent ref can never reach a
+    // non-sanctioned body. The hymt2-official branch below is the EXISTING
+    // code path, byte-identical (the ref param only routes here); the two new
+    // templates are rendered by BuildTemplatedPrompt. The completion-retry
+    // (BuildCompletionPrompt) is template-independent per A2 and untouched.
+    if (template_ref != kPromptTemplateHymt2Official && !template_ref.empty()) {
+        if (template_ref == kPromptTemplateSubtitleRealtime ||
+            template_ref == kPromptTemplateLiteraryFlow) {
+            return BuildTemplatedPrompt(source_text, target_lang, source_lang, template_ref);
+        }
+        // Unknown ref: fall through to hymt2-official (fail-closed).
+    }
+
     std::string tgt_code;
     const LanguageInfo* tgt_info = ResolvePromptLanguage(target_lang, tgt_code);
     std::string tgt_native;

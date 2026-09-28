@@ -326,7 +326,8 @@ std::wstring LocalInferenceEngine::Translate(
     float temperature,
     float top_p,
     int top_k,
-    float rep_pen
+    float rep_pen,
+    std::string_view template_ref
 ) {
     // REQ-R16: a canceled engine short-circuits before touching llama.
     // REQ-051 U-1 FIX 1: every Translate() entry clears the wall-clock
@@ -387,9 +388,14 @@ std::wstring LocalInferenceEngine::Translate(
         if (u8.empty()) {
             return {};
         }
+        // REQ-CP T4 (tech-gate A2): the template_ref steers the rung-1 chat
+        // form ONLY. The rung-2 completion retry keeps its single pinned,
+        // template-independent form for ALL templates, preserving the REQ-059
+        // byte-identity golden pins. template_ref defaults to "" (hymt2-
+        // official) so the pre-T5 default path is byte-identical.
         std::string p = completion_form
             ? BuildCompletionPrompt(u8, tgt_name, src_name)
-            : BuildPrompt(u8, tgt_name, src_name);
+            : BuildPrompt(u8, tgt_name, src_name, template_ref);
         if (!completion_form) {
             if (chat_tmpl && !chat_tmpl_is_trivial) {
                 llama_chat_message msg{"user", p.c_str()};
@@ -893,7 +899,8 @@ void LocalInferenceEngine::Unload() {}
 bool LocalInferenceEngine::EnsureLoaded(const std::string&) { return false; }
 std::wstring LocalInferenceEngine::Translate(std::wstring_view, std::string_view,
                                              std::string_view, const std::string&,
-                                             float, float, int, float) {
+                                             float, float, int, float,
+                                             std::string_view) {
     // REQ-051 U-1 FIX 1: parity with the llama build — the exhaustion latch
     // is cleared at every Translate() entry even though the stub can never
     // exhaust the budget.

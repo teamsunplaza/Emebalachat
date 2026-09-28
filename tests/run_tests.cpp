@@ -14761,6 +14761,17 @@ void TestEngineHostAvailabilityAndMigration() {
 // right after TestReq056ClientPolicyLive(), per the end-of-file pattern.
 #include "req057b_t3_dispatcher_policy_tests.inc"
 
+// REQ-CP T4 (session 260928_0001, design §8 + §9 row 6 + tech-gate A2): the
+// worker-side prompt template registry — three compiled-in template bodies
+// (hymt2-official / subtitle-realtime-v1 / literary-flow-v1) selected by a
+// trailing BuildPrompt template_ref, fail-closed to hymt2-official on unknown/
+// empty ref, with the ref threaded through LocalInferenceEngine::Translate
+// (rung-1 only per A2) to the worker pass-through. Pure BuildPrompt render pins
+// + ResolveRepoFile source pins. PLACEMENT: after the T3 suite (they share the
+// config.cpp/translation_common.cpp surface); needs ResolveRepoFile + the
+// config.hpp BuildPrompt decl from this TU.
+#include "req_cp_t4_prompt_template_tests.inc"
+
 // REQ-059 (user report: a model added in Model Management did not translate —
 // "both engines translate identically" / Enter does nothing): GGUF models
 // whose chat template is trivial (Gemma-style concat) choke on the bare fixed
@@ -15797,6 +15808,13 @@ int main() {
     // (no dispatcher unit seam per tech-gate A6) + a seeded-policy behavioral
     // leg. Registered right after the T2 reader suite it consumes.
     TestReq057bT3DispatcherPolicy();
+    // REQ-CP T4 (session 260928_0001, design §8 + §9 row 6 + tech-gate A2):
+    // the worker-side prompt template registry — three compiled-in template
+    // bodies selected by a BuildPrompt template_ref, fail-closed to hymt2-
+    // official, threaded through Translate (rung-1 only) to the worker pass-
+    // through. Registered right after the T3 dispatcher suite, per the
+    // end-of-file pattern.
+    TestReqCpT4PromptTemplates();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

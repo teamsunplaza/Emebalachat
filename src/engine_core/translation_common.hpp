@@ -227,6 +227,13 @@ public:
 
     // R6 Phase 4 (B2, plan §4.1 item 2): src_name is the resolved SOURCE token
     // for the prompt hint (""/AUTO = no hint, historical behavior).
+    //
+    // REQ-CP T4 (design §8 + tech-gate A2): template_ref selects the rung-1
+    // prompt template (config.cpp registry). Defaulted to "" = hymt2-official,
+    // so every existing caller compiles and behaves byte-identically until T5
+    // wires the worker-protocol prompt_template field. Per A2 the ref steers
+    // the rung-1 BuildPrompt ONLY; the rung-2 completion retry keeps its single
+    // template-independent form.
     std::wstring Translate(
         std::wstring_view text,
         std::string_view tgt_name,
@@ -235,7 +242,8 @@ public:
         float temperature = 0.0f,
         float top_p = 0.6f,
         int top_k = 20,
-        float rep_pen = 1.05f
+        float rep_pen = 1.05f,
+        std::string_view template_ref = {}
     );
 };
 
