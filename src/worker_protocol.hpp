@@ -114,9 +114,45 @@ inline constexpr int kWorkerBackoffMaxMs = 30000;        // R-4 cap, hardcoded
 inline constexpr int kWorkerReaperPollMs = 250;          // done_event poll
 inline constexpr int kWorkerSpawnConnectTimeoutMs = 15000; // announce handshake
 
-// Single-instance mutex per family (design §4.2 target note).
+// Single-instance mutex per family (design §4.2 target note). This constant is
+// the LEGACY name (== MutexNameForFamily(L"ggml-translate") below); it stays as
+// the arg-absent fallback so an OLD orchestrator spawning a NEW worker (or any
+// pair where the family arg never arrives) keeps single-instance protection
+// for the default translate family.
 inline constexpr wchar_t kWorkerSingleInstanceMutexName[] =
     L"Local\\EmebalaEngine_Worker_ggml_translate";
+
+// Per-family single-instance mutex derivation (B3 fix, session 260928_0001):
+// the orchestrator passes the family on the child command line (--mutex) and
+// the worker derives its session mutex name HERE instead of sharing one
+// family-agnostic constant (the B-T4 pool spawns one worker PER FAMILY; the
+// second family used to collide on the shared name, exit 0 pre-connect, and
+// wedge the host in a 15 s ConnectNamedPipe timeout + model_missing).
+// Contract:
+//   * family empty           -> the EXACT legacy constant (backward compat for
+//                               an arg-absent spawn from an old orchestrator).
+//   * family "ggml-translate"-> the EXACT legacy constant (the bare default
+//                               family keeps today's deployed name, so a
+//                               mixed old/new host+worker pair still
+//                               dedupes same-family duplicates correctly).
+//   * any other family       -> L"Local\\EmebalaEngine_Worker_" + family with
+//                               '-' mapped to '_' (mutex-name friendly; the
+//                               family charset is already sanitizer-restricted
+//                               to [A-Za-z0-9._-] by PoolFamilyForModel, so
+//                               the mapping is deterministic and injection-
+//                               safe). Two distinct families always derive
+//                               distinct names; the same family always derives
+//                               the same name.
+inline std::wstring MutexNameForFamily(std::wstring_view family) {
+    if (family.empty() || family == L"ggml-translate") {
+        return std::wstring(kWorkerSingleInstanceMutexName);
+    }
+    std::wstring out = L"Local\\EmebalaEngine_Worker_";
+    for (const wchar_t c : family) {
+        out += (c == L'-') ? L'_' : c;
+    }
+    return out;
+}
 
 // ---- event kinds (§1.2 event frame; unknown -> parse failure) --------------
 enum class EventKind : unsigned char {

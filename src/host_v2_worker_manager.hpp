@@ -140,6 +140,14 @@ struct SpawnRequest {
     // BuildTranslateSpawnEnvironment (parent env + the boot-scoped overrides),
     // passed to CreateProcessW as lpEnvironment.
     std::vector<wchar_t> environment_block;
+    // B3 fix (session 260928_0001): the worker family this spawn serves. The
+    // launcher forwards it to the child as `--mutex <family>` so the worker
+    // derives a PER-FAMILY single-instance mutex (wp::MutexNameForFamily)
+    // instead of the legacy family-agnostic constant — the B-T4 pool spawns
+    // one worker per family and the second family used to collide on the
+    // shared mutex name. Empty (old call sites / arg-absent worker) -> the
+    // worker falls back to the exact legacy constant (backward compat).
+    std::wstring family;
 };
 
 struct SpawnResult {

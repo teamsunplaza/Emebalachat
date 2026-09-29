@@ -104,10 +104,18 @@ int64_t NowMs() {
 struct WorkerArgs {
     std::wstring pipe_name;
     std::string token;
+    // B3 fix (session 260928_0001): the orchestrator passes the family it is
+    // spawning this worker for as --mutex <family>; the worker derives its
+    // PER-FAMILY single-instance mutex from it (wp::MutexNameForFamily). Empty
+    // (arg absent — an OLD orchestrator) -> the exact legacy constant, so a
+    // new worker under an old host keeps single-instance protection for the
+    // default translate family.
+    std::wstring mutex_family;
 };
 
-// Minimal argv walker: --pipe <value> / --token <value>. The orchestrator is
-// the only legitimate spawner; malformed input -> empty -> exit 2.
+// Minimal argv walker: --pipe <value> / --token <value> / --mutex <value>.
+// The orchestrator is the only legitimate spawner; malformed input -> empty
+// -> exit 2.
 WorkerArgs ParseArgs(const wchar_t* cmd) {
     WorkerArgs out;
     if (!cmd) return out;
@@ -133,6 +141,13 @@ WorkerArgs ParseArgs(const wchar_t* cmd) {
             for (const wchar_t* q = start; q != p; ++q) {
                 out.token.push_back(static_cast<char>(*q));
             }
+        } else if (wcsncmp(p, L"--mutex", 7) == 0 && (p[7] == L' ' || p[7] == L'=')) {
+            p += 7;
+            if (*p == L'=') ++p;
+            while (*p == L' ') ++p;
+            const wchar_t* start = p;
+            while (*p && *p != L' ') ++p;
+            out.mutex_family.assign(start, static_cast<size_t>(p - start));
         } else {
             while (*p && *p != L' ') ++p; // skip unknown arg (forward compat)
         }
@@ -645,17 +660,27 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     // P5-F1: driverless machines must CPU-fall back, never SEH 0xC06D007E.
     (void)EnsureVulkanGuard();
 
-    // Single instance per family (design §4.2): a duplicate spawn exits
-    // quietly; the orchestrator's respawn path retries on the next dispatch.
-    g_mutex = ::CreateMutexW(nullptr, TRUE, wp::kWorkerSingleInstanceMutexName);
+    // ---- handshake arguments (§1.2) ----
+    // B3 fix (session 260928_0001): parsed BEFORE the single-instance gate so
+    // the mutex name can be derived PER FAMILY (wp::MutexNameForFamily). The
+    // B-T4 pool spawns one worker per family; under the old family-agnostic
+    // constant the second family's worker collided here, exited 0 pre-connect,
+    // and wedged the host in a 15 s ConnectNamedPipe timeout + model_missing.
+    const WorkerArgs args = ParseArgs(pCmdLine);
+
+    // Single instance per family (design §4.2): the mutex name is derived
+    // from the family arg (--mutex); an arg-absent spawn (old orchestrator)
+    // falls back to the exact legacy constant. A duplicate same-family spawn
+    // exits quietly; the orchestrator's respawn path retries on the next
+    // dispatch. Distinct families derive distinct names, so the per-family
+    // pool coexists.
+    const std::wstring mutex_name = wp::MutexNameForFamily(args.mutex_family);
+    g_mutex = ::CreateMutexW(nullptr, TRUE, mutex_name.c_str());
     if (!g_mutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
         if (g_mutex) ::CloseHandle(g_mutex);
         diag::Shutdown();
         return 0;
     }
-
-    // ---- handshake arguments (§1.2) ----
-    const WorkerArgs args = ParseArgs(pCmdLine);
     const bool token_ok = args.token.size() == 32 &&
         std::all_of(args.token.begin(), args.token.end(), [](char c) {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');

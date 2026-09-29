@@ -119,8 +119,17 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
     std::wstring token_w;
     token_w.reserve(req.token.size());
     for (char c : req.token) token_w.push_back(static_cast<wchar_t>(c));
+    // B3 fix (session 260928_0001): forward the family so the child derives a
+    // PER-FAMILY single-instance mutex (wp::MutexNameForFamily) instead of the
+    // legacy family-agnostic constant. The family charset is already
+    // sanitizer-restricted to [A-Za-z0-9._-] (PoolFamilyForModel), so it
+    // contains no spaces/quotes and appends safely unquoted, exactly like the
+    // existing --pipe value. An EMPTY family (defensive; every real call site
+    // populates it from w->family) is omitted — the worker then falls back to
+    // the exact legacy constant (arg-absent backward compat).
     std::wstring cmd = L"\"" + req.exe_path + L"\" --pipe " + req.pipe_name +
                        L" --token " + token_w;
+    if (!req.family.empty()) cmd += L" --mutex " + req.family;
     // P2-1 stabilization observability (temporary diagnostic): when THIS
     // host's own stderr is a real handle (a logging run started with
     // redirection), hand the child exactly that handle through
@@ -922,6 +931,11 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     // Spawn (hidden, same user, token on the command line — no file).
     impl_->CloseProcessLocked(*w);
     SpawnRequest req{w->exe_path, w->pipe_name, w->token};
+    // B3 fix (session 260928_0001): stamp the family so LaunchWorkerProcess
+    // forwards `--mutex <family>` and the worker derives its per-family
+    // single-instance mutex (wp::MutexNameForFamily). Every family registered
+    // via RegisterFamily/TranslatePoolEnsure carries a non-empty w->family.
+    req.family = w->family;
     // B-T3 (A-4) + P5a.5 C2 (195700_code-reviewer-planb-p5a5.md F-2): a CPU-leg
     // translate-family spawn (the gate set spawn_gpu_env_override at
     // registration) carries EMEBALA_MT_GPU=0 so the worker-side RT-C gate reads

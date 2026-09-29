@@ -15483,6 +15483,14 @@ void TestReq046OpenAiDialogParent() {
     }
 }
 
+// B3 fix (session 260928_0001): per-family worker single-instance mutex pins —
+// the wp::MutexNameForFamily derivation contract (legacy exact / distinct
+// families / arg-absent fallback), the EnsureSpawned -> SpawnRequest.family
+// propagation through the fake-launcher seam, and the structural --mutex
+// cmdline pin. End-of-file include (the suite uses ResolveRepoFile, defined
+// above), per the end-of-file .inc pattern.
+#include "mutex_family_pin_tests.inc"
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -15905,6 +15913,12 @@ int main() {
     // ownership + uninstall survival + policy seed). Registered right after the
     // Chat isolation pin, per the end-of-file pattern.
     TestBt8InstallerModelBundling();
+    // B3 fix (session 260928_0001): the per-family single-instance mutex pins —
+    // registered at the end of main() (the suite lives in an end-of-file .inc
+    // after ResolveRepoFile), per the end-of-file pattern.
+    mf_pin::TestMutexNameForFamily();
+    mf_pin::TestSpawnRequestFamilyPropagation();
+    mf_pin::TestLaunchWorkerProcessMutexArgPin();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
