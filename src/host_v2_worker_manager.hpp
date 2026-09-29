@@ -215,6 +215,14 @@ struct TranslatePoolEntry {
     // EMEBALA_MT_GPU=0 in the child environment (technical gate A-4). Cleared
     // on a GPU-leg decision. Only consulted at SPAWN time (the gate decides AT
     // SPAWN, design §4.2).
+    //
+    // P5a.5 C2 (195700_code-reviewer-planb-p5a5.md F-2): this flag is the
+    // PERSISTENT per-entry record of the family's spawn-env leg. It is applied
+    // on EVERY LaunchWorkerProcess for the family — initial spawn, backoff
+    // crash-respawn, and graceful-restart respawn alike (the handle state is
+    // NOT consulted; the old `state == Stopped` gate silently skipped the
+    // Crashed->respawn path). A respawned CPU-leg worker must never silently
+    // take the GPU leg (REQ-B004 honesty on the designed crash-respawn path).
     bool spawn_gpu_env_override = false; // true -> child env carries EMEBALA_MT_GPU=0
 };
 
@@ -488,6 +496,16 @@ private:
     //   std::wstring translate_exe_path_;
     //   unsigned long long translate_pool_reserved_vram_bytes_; (§4.3, + its mu)
     //   VramBytesResolver / FreeVramProbe / override / last-gate snapshot
+    //
+    // P5a.5 C1 (195700 F-1) MAP-MUTEX CONTRACT: EVERY access to
+    // `translate_pool_` (find / emplace / iterate / entry-field read+write)
+    // runs under translate_pool_mu_ — reads AND writes alike. Callers
+    // copy-and-release: take pool mu, copy the needed entry values out (or make
+    // the brief field update), release — and NEVER hold translate_pool_mu_
+    // across a spawn / RegisterFamily / any blocking op (technical gate A-2;
+    // no nesting with impl_->mu across those long ops). Holding only impl_->mu
+    // (or no lock) while touching the map is a data race (UB) — the exact class
+    // C1 closed (Ready-charge / respawn-env / reaper were the escaped sites).
     struct Impl;
     Impl* impl_;
 };

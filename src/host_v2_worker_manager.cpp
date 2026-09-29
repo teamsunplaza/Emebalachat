@@ -922,12 +922,24 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     // Spawn (hidden, same user, token on the command line — no file).
     impl_->CloseProcessLocked(*w);
     SpawnRequest req{w->exe_path, w->pipe_name, w->token};
-    // B-T3 (A-4): a CPU-leg translate-family spawn (the gate set
-    // spawn_gpu_env_override at registration) carries EMEBALA_MT_GPU=0 so the
-    // worker-side RT-C gate reads a forced CPU leg. A GPU-permitted spawn
-    // leaves the block empty -> lpEnvironment=nullptr (inherit, unchanged).
-    if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0 &&
-        w->state == WorkerState::Stopped) {
+    // B-T3 (A-4) + P5a.5 C2 (195700_code-reviewer-planb-p5a5.md F-2): a CPU-leg
+    // translate-family spawn (the gate set spawn_gpu_env_override at
+    // registration) carries EMEBALA_MT_GPU=0 so the worker-side RT-C gate reads
+    // a forced CPU leg. A GPU-permitted spawn leaves the block empty ->
+    // lpEnvironment=nullptr (inherit, unchanged). The override is read from the
+    // POOL ENTRY (persists across a crash) on EVERY launch of the family —
+    // initial spawn, backoff respawn, graceful-restart respawn alike. The old
+    // code gated the block on `state == Stopped`, which silently skipped the
+    // Crashed->backoff->respawn path (REQ-B004 honesty break: a respawned
+    // CPU-leg worker could take the GPU leg). The entry flag is the single
+    // source of truth for the family's leg; the handle state is irrelevant.
+    // C1/F-3: pool mu guards the map lookup AND the F-3 snapshot reset. The
+    // scope is brief (no spawn under it — technical gate A-2), copies the two
+    // needed values out (copy-and-release: `spawn_gpu_env_override` here;
+    // `reserved_vram_bytes`/`relayed_*` in their own sites below), and never
+    // nests with impl_->mu held by EnsureSpawned's caller.
+    if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
+        std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
         const auto it = impl_->translate_pool_.find(impl_->PoolModelIdForFamily(w->family));
         if (it != impl_->translate_pool_.end() && it->second.spawn_gpu_env_override) {
             if (BuildTranslateSpawnEnvironment({{kMtGpuEnvName, L"0"}}, req.environment_block)) {
@@ -935,6 +947,23 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
                 // inherits; the override pin then reads the parent env, the
                 // same honest-CPU behavior as pre-B-T3.
             }
+        }
+        // P5a.5 F-3 (relay-snapshot HANDLE-reuse defeat): launching a NEW process
+        // for an existing entry invalidates the relay snapshot up front.
+        // Windows recycles a just-freed handle value for the new child with
+        // high probability (close->CreateProcess adjacency reuses the lowest
+        // free slot), so the old `relayed_worker_process != current_process`
+        // comparison can compare a numerically EQUAL handle and wrongly answer
+        // "no re-relay" — the fresh worker (active_model_id == "") would then
+        // serve user-model jobs on the pinned default (silent wrong-model).
+        // Forcing the snapshot to the initial sentinel here makes
+        // TranslatePoolNeedsRelay unconditionally true on the first job after
+        // ANY (re)launch — same observable semantics as the pre-existing
+        // process-CHANGE re-relay, so the REQ-058/B010 "restart epoch re-relays
+        // exactly once" pins hold unchanged.
+        if (it != impl_->translate_pool_.end()) {
+            it->second.relayed_worker_process = nullptr;
+            it->second.relayed_model_id.clear();
         }
     }
     SpawnResult sr = impl_->spawn_fn(req, impl_->user);
@@ -1049,20 +1078,30 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     // map the bare-prefix ASR family to the boot "" id and wrongly charge it.
     if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
         const std::string model_id = impl_->PoolModelIdForFamily(w->family);
-        const auto it = impl_->translate_pool_.find(model_id);
-        if (it != impl_->translate_pool_.end()) {
-            const unsigned long long charged = it->second.reserved_vram_bytes;
-            if (charged == 0ull) {
-                // Charge the model bytes (§4.3 step 1: the registry lookup). The
-                // gate already resolved this for a runtime-registered entry; the
-                // boot "" entry (never gated) resolves here. Absent -> the §4.3
-                // step 2 conservative default.
-                unsigned long long model_bytes =
-                    impl_->vram_resolver_ ? impl_->vram_resolver_(model_id) : 0ull;
-                if (model_bytes == 0ull) model_bytes = kDefaultTranslateModelVramBytes;
-                it->second.reserved_vram_bytes = model_bytes;
-                std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
-                impl_->translate_pool_reserved_vram_bytes_ += model_bytes;
+        // P5a.5 C1 (195700 F-1): the entry-field read AND the conditional write
+        // below run under translate_pool_mu_ (the map's own mutex). Before this,
+        // the find + reserved_vram_bytes access held only impl_->mu — no
+        // happens-before edge to a concurrent TranslatePoolEnsure emplace ->
+        // data race (UB) on the bucket chain. Copy-and-release: the charged
+        // value is read under pool mu, the tracker bump under vram_mu, and no
+        // spawn/I/O runs inside the pool-mu scope (technical gate A-2 holds).
+        {
+            std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
+            const auto it = impl_->translate_pool_.find(model_id);
+            if (it != impl_->translate_pool_.end()) {
+                const unsigned long long charged = it->second.reserved_vram_bytes;
+                if (charged == 0ull) {
+                    // Charge the model bytes (§4.3 step 1: the registry lookup). The
+                    // gate already resolved this for a runtime-registered entry; the
+                    // boot "" entry (never gated) resolves here. Absent -> the §4.3
+                    // step 2 conservative default.
+                    unsigned long long model_bytes =
+                        impl_->vram_resolver_ ? impl_->vram_resolver_(model_id) : 0ull;
+                    if (model_bytes == 0ull) model_bytes = kDefaultTranslateModelVramBytes;
+                    it->second.reserved_vram_bytes = model_bytes;
+                    std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+                    impl_->translate_pool_reserved_vram_bytes_ += model_bytes;
+                }
             }
         }
     }
@@ -1173,15 +1212,35 @@ int WorkerManager::ReaperPass(int64_t now_ms) {
         // is excluded up front — PoolModelIdForFamily would otherwise map the
         // bare-prefix ASR family to the boot "" id and wrongly subtract it.
         if (w.family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
+            // P5a.5 C1: the reaper's find + entry-field read/write run under
+            // translate_pool_mu_ (same data-race class as the Ready-charge
+            // site). Copy the contribution out, release, then bump the tracker
+            // under vram_mu — copy-and-release, no spawn under pool mu (A-2).
+            // P5a.5 F-3: a reaper-detected exit ALSO clears the entry's relay
+            // snapshot (relayed_worker_process -> nullptr, relayed_model_id ->
+            // ""). Windows recycles a closed handle value for a NEW process, so
+            // keeping the dead worker's handle in the snapshot could make a
+            // later NeedsRelay compare numerically-equal handles and wrongly
+            // answer "no re-relay" after the respawn (silent wrong-model). The
+            // launch-side reset (EnsureSpawned) is the primary guard; this
+            // exit-side reset backstops any other path that finalizes an exit.
+            std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
             const auto it = impl_->translate_pool_.find(impl_->PoolModelIdForFamily(w.family));
-            if (it != impl_->translate_pool_.end() && it->second.reserved_vram_bytes != 0ull) {
-                std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
-                if (impl_->translate_pool_reserved_vram_bytes_ >= it->second.reserved_vram_bytes) {
-                    impl_->translate_pool_reserved_vram_bytes_ -= it->second.reserved_vram_bytes;
-                } else {
-                    impl_->translate_pool_reserved_vram_bytes_ = 0;
+            if (it != impl_->translate_pool_.end()) {
+                if (it->second.reserved_vram_bytes != 0ull) {
+                    const unsigned long long contribution = it->second.reserved_vram_bytes;
+                    {
+                        std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+                        if (impl_->translate_pool_reserved_vram_bytes_ >= contribution) {
+                            impl_->translate_pool_reserved_vram_bytes_ -= contribution;
+                        } else {
+                            impl_->translate_pool_reserved_vram_bytes_ = 0;
+                        }
+                    }
+                    it->second.reserved_vram_bytes = 0;
                 }
-                it->second.reserved_vram_bytes = 0;
+                it->second.relayed_worker_process = nullptr;
+                it->second.relayed_model_id.clear();
             }
         }
         ++crashes;

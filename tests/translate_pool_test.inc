@@ -562,6 +562,138 @@ void TestTranslatePool() {
         (void)mgr.TranslatePoolReservedVramBytes();
     }
 
+    // ---- P5a.5 C2 (195700 F-2): CPU-leg env block SURVIVES a crash-respawn ---
+    // A CPU-leg entry (gate !allow_gpu -> spawn_gpu_env_override) crashes; the
+    // backoff-respawned spawn must STILL carry EMEBALA_MT_GPU=0. The old code
+    // gated the block on `state == Stopped`, so the Crashed->respawn path
+    // silently dropped the override and the respawned worker could take the GPU
+    // leg (REQ-B004 honesty break). Drives the genuine crash->backoff->respawn
+    // path: reach Ready, signal the exit event, the reaper finalizes the crash
+    // (state Crashed), then EnsureSpawned respawns past the 1s backoff. The
+    // handshake thread restarts automatically (FakeHandshakeSpawn kicks it per
+    // spawn), so the respawn reaches Ready too. spawn#2 records the env block.
+    {
+        namespace detail = translate_pool_test_detail;
+        struct RespawnEnvCtx {
+            detail::FakeHandshakeCtx* hs;
+            int spawns = 0;
+            bool second_spawn_override = false; // spawn#2's EMEBALA_MT_GPU=0 presence
+        };
+        static RespawnEnvCtx re_ctx;
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "C2 respawn-env: exit event created");
+        re_ctx = RespawnEnvCtx{&ctx, 0, false};
+        hv2::WorkerManager mgr(
+            [](const hv2::SpawnRequest& req, void* user) -> hv2::SpawnResult {
+                auto* c = static_cast<RespawnEnvCtx*>(user);
+                ++c->spawns;
+                if (c->spawns == 2 && !req.environment_block.empty()) {
+                    const std::wstring env(req.environment_block.begin(),
+                                           req.environment_block.end());
+                    // Exactly one EMEBALA_MT_GPU=0 occurrence (CPU-leg block).
+                    size_t pos = env.find(L"EMEBALA_MT_GPU=0" L"\0");
+                    if (pos != std::wstring::npos &&
+                        env.find(L"EMEBALA_MT_GPU=0", pos + 1) == std::wstring::npos) {
+                        c->second_spawn_override = true;
+                    }
+                }
+                return detail::FakeHandshakeSpawn(req, c->hs); // genuine Ready handshake
+            },
+            [](HANDLE, void*) {}, &re_ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self); // the boot "" family (never gated)
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 4ull * 1024 * kMiB; });
+        // 5 GiB free - 4 GiB model = 1 GiB < 1.5 GiB floor -> !allow_gpu (CPU leg).
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 5ull * 1024 * kMiB; return true; });
+
+        hv2::TranslatePoolEntry* e = mgr.TranslatePoolEnsure("user-Y");
+        TEST_CHECK(e != nullptr && e->spawn_gpu_env_override,
+                   "C2 respawn-env: CPU-leg entry flagged for EMEBALA_MT_GPU=0");
+        hv2::WorkerHandle* w1 = mgr.EnsureSpawned(e->family);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w1 != nullptr && w1->state == hv2::WorkerState::Ready,
+                   "C2 respawn-env: first spawn reached Ready");
+
+        ::SetEvent(ctx.exit_ev);
+        TEST_CHECK(mgr.ReaperPass(0) == 1,
+                   "C2 respawn-env: the exit is finalized (worker crashed)");
+        hv2::WorkerHandle* crashed = mgr.Find(e->family);
+        TEST_CHECK(crashed != nullptr && crashed->state == hv2::WorkerState::Crashed,
+                   "C2 respawn-env: family is Crashed (the respawn path C2 targets)");
+
+        // A fresh exit event for the respawned worker, then respawn past backoff.
+        ::ResetEvent(ctx.exit_ev);
+        hv2::WorkerHandle* w2 = mgr.EnsureSpawned(e->family);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w2 != nullptr && w2->state == hv2::WorkerState::Ready,
+                   "C2 respawn-env: backoff respawn reached Ready");
+        TEST_CHECK(re_ctx.spawns == 2, "C2 respawn-env: exactly one respawn (2 spawns total)");
+        TEST_CHECK(re_ctx.second_spawn_override,
+                   "C2 respawn-env: the RESPAWNED CPU-leg spawn carries EMEBALA_MT_GPU=0 "
+                   "(the state-gated hole C2 closed)");
+        mgr.GracefulStop(*w2, 2000);
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- P5a.5 F-3 (195700): relay snapshot invalidated on crash+respawn ------
+    // Windows recycles a closed process-handle value for a NEW process, so the
+    // old `relayed_worker_process != current_process` comparison can compare
+    // numerically-EQUAL handles and wrongly answer "no re-relay" after a
+    // respawn. This pin drives the genuine crash->respawn path with a tracked
+    // process handle that is REUSED for the respawn (same ctx.exit_ev value
+    // returned for BOTH spawns), so the numeric-handle comparison alone would
+    // see an unchanged handle and (pre-fix) answer no-re-relay. The fix clears
+    // the entry's relay snapshot on the crash/respawn transition, so
+    // NeedsRelay is unconditionally true again after the respawn.
+    {
+        namespace detail = translate_pool_test_detail;
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "F-3 relay-invalidate: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+        hv2::WorkerHandle* w1 = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w1 != nullptr && w1->state == hv2::WorkerState::Ready,
+                   "F-3 relay-invalidate: first spawn reached Ready");
+        // Relay to the first worker and record the snapshot (as the dispatcher
+        // does post-ack).
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("", w1->process),
+                   "F-3 relay-invalidate: first job needs relay (initial snapshot)");
+        mgr.TranslatePoolMarkRelayed("", w1->process);
+        TEST_CHECK(!mgr.TranslatePoolNeedsRelay("", w1->process),
+                   "F-3 relay-invalidate: snapshot recorded (no relay while unchanged)");
+
+        // Crash + respawn. The fake launcher returns the SAME ctx.exit_ev value
+        // for the respawned worker, so w2->process == w1->process numerically —
+        // the handle-recycling canary. Handle-recycling canary reasoning: the
+        // numeric HANDLE comparison alone cannot detect this respawn (equal
+        // values), so ONLY an explicit snapshot-invalidation on the transition
+        // makes NeedsRelay true again. Pre-fix this asserted false (the bug).
+        ::SetEvent(ctx.exit_ev);
+        TEST_CHECK(mgr.ReaperPass(0) == 1, "F-3 relay-invalidate: the crash is finalized");
+        ::ResetEvent(ctx.exit_ev);
+        hv2::WorkerHandle* w2 = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w2 != nullptr && w2->state == hv2::WorkerState::Ready,
+                   "F-3 relay-invalidate: respawn reached Ready");
+        TEST_CHECK(w2->process == w1->process,
+                   "F-3 relay-invalidate: the respawned handle numerically equals the old "
+                   "(handle-recycling canary armed)");
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("", w2->process),
+                   "F-3 relay-invalidate: NeedsRelay true again post-respawn even though the "
+                   "handle value matches (snapshot invalidated on the transition)");
+        mgr.GracefulStop(*w2, 2000);
+        ::CloseHandle(ctx.exit_ev);
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Translate pool machinery tests completed." << std::endl;
     } else {
