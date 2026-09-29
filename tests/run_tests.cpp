@@ -14863,6 +14863,17 @@ void TestEngineHostAvailabilityAndMigration() {
 // registered in main() at the end of file, per the end-of-file pattern.
 #include "translate_pool_identity_pin_tests.inc"
 
+// Plan-B (REQ-B007) B-T7: Chat-side test-isolation scan pin — scans THIS
+// binary's own unit-test sources (the tests/ tree) for Listener-app image
+// references and Listener-targeting spawn windows; asserts zero.  The E2E
+// harnesses under tools/e2e/ are EXPLICITLY excluded (design §7.2: they are
+// documented opt-in manual tools, not default test targets).  PLACEMENT: end
+// of file (after ResolveRepoFile, which this pin uses to locate the
+// repo-root tests/ directory); defines TestChatTestIsolationPin; registered
+// in main() right after TestTranslatePoolClientVisibleIdentity, per the
+// end-of-file pattern.
+#include "test_isolation_pin_test.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15870,6 +15881,13 @@ int main() {
     // result `e->family`). End-of-file registration (the suite lives in an
     // end-of-file .inc after ResolveRepoFile), per the end-of-file pattern.
     TestTranslatePoolClientVisibleIdentity();
+    // Plan-B (REQ-B007) B-T7: the Chat-side test-isolation scan pin — the
+    // tests/ tree (this binary's own sources) must reference the Listener app
+    // image / spawn it nowhere (tools/e2e is excluded by design §7.2 as
+    // documented opt-in harnesses). End-of-file registration (the suite lives
+    // in an end-of-file .inc after ResolveRepoFile), per the end-of-file
+    // pattern.
+    TestChatTestIsolationPin();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

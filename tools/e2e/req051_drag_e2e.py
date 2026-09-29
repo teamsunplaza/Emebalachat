@@ -134,6 +134,18 @@ import sys
 import time
 from ctypes import wintypes
 
+# Plan-B (REQ-B007) B-T7 R2: shared sibling-process isolation gate.  The
+# sibling-app/engine check lives in ONE helper (isolation_gate.py) imported
+# by both this harness and req027_e2e.py — factored, not copy-pasted, per
+# the B-T7 delegation (the AppSession body below still carries the older
+# "Copied from req027" provenance for its single-instance/log contract; the
+# NEW gate logic is shared, not duplicated).
+try:
+    from isolation_gate import IsolationGateError, check_isolation_gate
+except ImportError:  # pragma: no cover - direct script invocation fallback
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from isolation_gate import IsolationGateError, check_isolation_gate
+
 # ---------------------------------------------------------------------------
 # constants / tunables (all timeouts explicit, polling-only)
 # ---------------------------------------------------------------------------
@@ -887,6 +899,14 @@ class AppSession:
         self.log_path = None
 
     def start(self):
+        # Plan-B (REQ-B007) B-T7 R2: pre-flight sibling-process isolation
+        # gate — refuse to spawn Chat while the Listener app / shared engine
+        # host is live (concurrent engine-pipe / Common-store access is the
+        # flicker root cause).  Runs BEFORE the self-instance check below;
+        # EMEBALA_E2E_FORCE=1 skips it (documented escape hatch, see
+        # tools/e2e/README.md).  IsolationGateError is a RuntimeError, so
+        # the harness's existing top-level RuntimeError handling reports it.
+        check_isolation_gate(list_processes_like)
         pre = list_processes_like("Emebala_chat")
         if pre:
             raise EnvBlock(

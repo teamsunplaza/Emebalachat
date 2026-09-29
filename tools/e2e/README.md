@@ -1,246 +1,64 @@
-# `tools/e2e/` — REQ-027 notepad translation E2E harness
+# Emebala Chat E2E Harnesses
 
-Automates the manual user-QA items QA-27-B / QA-27-1 / QA-27-4 (design report
-[`docs/260907_0001_session_user-test-fixes-req024-027/192100_architect-report-req027-richeditd2dpt-redesign.md`](../../docs/260907_0001_session_user-test-fixes-req024-027/192100_architect-report-req027-richeditd2dpt-redesign.md) §3.4)
-and the B-6c edge-flow matrix (design
-[`210000_architect-report-issue1-fix-b5b-e2e-matrix.md`](../../docs/260907_0001_session_user-test-fixes-req024-027/210000_architect-report-issue1-fix-b5b-e2e-matrix.md)
-§2.4): "평소에 사용하지 않을만한 다양한 flow에서도 에러가 발생 안
-해야 해" is now verified by one command.
+These harnesses spawn the REAL `Emebala_chat.exe` GUI application and drive a
+real Notepad window against it. They are **OPT-IN, MANUAL-ONLY** tools: they
+are NOT part of `ctest` / `run_tests` and are never run by the default build
+or CI. Run them only when you are deliberately doing interactive E2E QA.
 
-## Files
+## Isolation Contract (REQ-B007, Plan-B-minimum §7.3)
 
-| File | Role |
-|---|---|
-| [`req027_e2e.py`](req027_e2e.py) | Main harness. Launches `build\Emebala_chat.exe` + a real Notepad scratch window, types/drives input, judges on 3 layers (log / content / verdict). |
-| [`req051_drag_e2e.py`](req051_drag_e2e.py) | REQ-051 drag→floating-button regression harness (3 scenarios: `drag_translate`, `drag_consecutive`, `drag_capture_failure`). Drives the REAL mouse path (drag-select via SendInput/mouse_event → `Emebalachat_DragIconClass` click) and judges on the drag-path DIAG token family (`UI/tooltip_request_begin`, `UI/tooltip_show kind=…`, `STATE/drag_src`, `MAIN/DragIconClick/…`, `WIN32_INPUT/CopySelectionWithSequenceWait/002`, `MAIN/EngineModal/010`). Copied architecture from req027 (same adoption policy, 3-layer verdicts, INCONCLUSIVE auto-retry, exit codes). See the section below. |
-| [`app_probe.py`](app_probe.py) | D-4a universal-app matrix probe (design 173700 §2.3): lists edit-control classes of the 8 user-named apps (메모장/카톡/디스코드/Chrome/Firefox/HWP/PPT/Word), replays the app's read-only EM_* probe family via ctypes, ports `ClassifyEmProbe` verbatim, and renders the 앱×컨트롤×EM-능력×예상경로×판정 matrix (markdown, `--json` for machine reading, `--fallback` adds the opt-in keyboard-geometry measurement). Reuses the `req027_e2e` ctypes layer (one source of truth, stdlib only). |
-| [`uia_read_edit.ps1`](uia_read_edit.ps1) | Layer-2 fallback reader: UIA ValuePattern via `System.Windows.Automation` (ships with .NET — no install). Used only when `WM_GETTEXT` cannot read the edit control. |
-| [`uia_close_window.ps1`](uia_close_window.ps1) | Teardown helper: dismisses the Win11 Notepad "save?" dialog via UIA when closing our dirty scratch window. (B-6c fixed the ko-KR discard-button pattern `저장하지 않음`.) |
-| [`uia_tray_menu.ps1`](uia_tray_menu.ps1) | B-6c multi_lang 1st-choice path: right-clicks the app tray icon and walks the type → target-language submenu via UIA. Verdict is parsed from its `TRAY:` output lines. B-4 added `-Mode EnumUiLang`: opens the Interface-Language submenu and dumps every item endonym as `TRAY:NAME:` lines (read-only, ESC-closes). |
+**NEVER run these harnesses while any of the following are active:**
 
-## Scenarios (12 automated)
+- `EmebalaListener.exe` (the Listener app)
+- `Emebala.Engine.exe` (the shared engine host)
+- Listener repo's `ctest` / test suite
 
-| Scenario | Flow (design §2.4 #) | What it proves |
+Concurrent access to the shared engine pipes / Common store from two apps is
+exactly the window-flicker class of defect this contract exists to prevent
+(see `docs/260928_0001_session_translation-fail-fix/234900_architect-planB-design.md`
+§7.1 root cause).
+
+### Pre-flight gate (R2)
+
+`AppSession.start()` in every harness below runs the R2 sibling-process gate
+BEFORE any `subprocess.Popen`: it probes for `EmebalaListener.exe` and
+`Emebala.Engine.exe` via the existing `list_processes_like()` helper and
+aborts with an `ISOLATION GATE` RuntimeError (message points here) if either
+is live. The gate is implemented once in `isolation_gate.py`
+(`check_isolation_gate`) and imported by both harnesses — no copy-paste.
+
+### Escape hatch: `EMEBALA_E2E_FORCE=1`
+
+Setting `EMEBALA_E2E_FORCE=1` in the environment **skips the sibling-process
+gate** (the gate logs that it honored the bypass). This is the documented,
+explicit opt-in for the rare intentional cross-app scenario — you take
+responsibility for the shared-pipe / Common-store corruption risk when you
+set it. There is one first-class consumer: the interleave proof (below).
+
+## Running
+
+```bat
+:: 1. Close the Listener app, the engine host, and any Listener ctest run.
+:: 2. Then:
+python tools/e2e/req027_e2e.py
+python tools/e2e/req051_drag_e2e.py
+```
+
+## Harness inventory
+
+| Harness | Purpose | Gate? |
 |---|---|---|
-| `qa27b` | 1 Hangul line + Enter (existing) | only that line replaced, EM path, exact capture |
-| `example1` | 6 sentences, Enter each (existing) | non-cumulative captures, 6 replacements, newline structure |
-| `consecutive` | 2 same-language lines (existing) | no `translation_equals_source` skip (QA-27-4) |
-| `multi_lang` | 3 blocks EN→JA→VI (new, REQ-019) | per-block target language: `lang_pair tgt` + output script witness |
-| `empty_enter` | bare Enter ×3 on empty doc | R5 `empty_capture hold_send` on every Enter, no crash, doc stays empty; **D-4b (F3-B/C-5)**: the no-selection notice MUST surface per held task (`tooltip_show kind=message`) and the paste-window suppression must NOT fire (2.6 s settle guards against a previous scenario's paste still inside the 2000 ms window) |
-| `cursor_mid` | caret mid-line via EM_SETSEL + Enter (new) | capture = [start..caret) only; text after the caret survives |
-| `backspace_enter` | translate → retype → real VK_BACK across the stored offset → Enter (new) | `/004` clamp path fires and completes safely (last>caret → 0) |
-| `shift_enter_multi` | Shift+Enter ×2 then bare Enter (new, REQ-018) | 2× `ENTER_GATE reason=shift_enter_newline`, exactly ONE task, capture spans the multi-line block |
-| `paste_then_enter` | external clipboard + Ctrl+V + immediate Enter (B-6c phase 1), **then one immediate retry Enter (D-4b phase 2)** | phase 1: capture == pasted text exactly, normal replacement; phase 2: retry Enter inside the 2000 ms paste window must log `WORKER/ExecuteTask/036` + `decision=paste_window_suppress`, surface NO notice, skip translate/paste, and hand the Enter to the app (document grows by the newline); the `/036` elapsed/window numbers are parsed as `kPasteEmptySuppressMs`-tuning evidence |
-| `long_text` | one 1000-char Hangul line + Enter (new) | no EM saturation, full-block capture, replacement normal |
-| `notepad_vscode_mix` | window-1 → window-2 → window-1 Enters (new) | per-hwnd caret-offset isolation: window-2 starts `last=0`, window-1 resumes its own stored offset, no cross leak, no spurious `/004` |
-| `uilang_37` | tray Interface-Language submenu UIA enumeration (REQ-037/B-4, design §4.3 E2E-UILANG-2) | 38 items: localized Auto + 37 endonyms (العربية/日本語/한국어 witnesses), §2-Q3 order, EN last. READ-ONLY (never invokes). Menu-tree starvation (TrackPopupMenu modal loop, see multi_lang limitation) is judged INCONCLUSIVE, not FAIL; offline verdict-path proof: `tools_tmp_b4_uilang37_proof.py` at repo root |
+| `req027_e2e.py` | REQ-027 notepad per-line block translation QA | R2 gate enforced |
+| `req051_drag_e2e.py` | REQ-051 drag-gesture / selection translation QA | R2 gate enforced |
 
-`--all` runs all 12 (shared app instance, fresh scratch window per
-scenario; `multi_lang` uses its own sessions — see below). INCONCLUSIVE
-results are auto-retried once (delegation §4). Individual runs:
-`python tools\e2e\req027_e2e.py <scenario>`.
+## Intentional Cross-App Harnesses (gate-exempt-by-design)
 
-### req051_drag_e2e.py (REQ-051, drag → floating-button matrix)
+Per Plan-B design v2 amendment A4
+(`235700_architect-planB-design-v2-amendments.md`), the following harness is
+**planned** (task B-T9) and deliberately runs with both apps live:
 
-```bat
-python tools\e2e\req051_drag_e2e.py all                 ; 3 scenarios, one shared app session
-python tools\e2e\req051_drag_e2e.py drag_translate      ; single drag → icon → translation tooltip
-python tools\e2e\req051_drag_e2e.py drag_consecutive    ; 3 distinct sources → per-drag src_len/gen linkage (contamination guard)
-python tools\e2e\req051_drag_e2e.py drag_capture_failure; forced copy failure → the notice MUST surface, never silent
-```
-
-Closes the coverage hole named in the REQ-051 handoff (§6 "E2E 커버리지
-구멍"): the keyboard-centric req027 matrix has no defense for Symptom A
-("드래그 후 플로팅버튼을 눌러 번역 … 다른 것이 복사되어 출력"). The harness
-performs a real drag-select in the Notepad scratch window (EM_POSFROMCHAR-
-derived geometry, ≥15 px so the app's `WH_MOUSE_LL` drag-release gate
-fires), clicks the real `Emebalachat_DragIconClass` popup, and judges from
-the drag-path DIAG tokens. The drag path logs **no** `PIPELINE/stage=`
-lines (REQ-051 handoff §1-2): completion proof is
-`MAIN/EngineModal/010` + `UI/tooltip_show kind=translation`, capture
-failure is the per-attempt `WIN32_INPUT/CopySelectionWithSequenceWait/002`
-refusals (budgets 80/80/120, one per failed attempt of the shared 3-attempt
-`CopyChordWithSettledRetry` cycle) + the single `MAIN/DragIconClick/001`
-exhaustion line (`after 3 attempt(s)`; the retired `DragIconClick/004|005`
-retry tokens are gone), and contamination is caught by exact
-per-generation `src_len` linkage against the EM-selection readback.
-`drag_capture_failure` collapses the selection with a real VK_LEFT before
-the icon click (a synthetic Ctrl+C on an empty caret cannot bump the
-clipboard sequence), so the copy-failure notice path is exercised
-deterministically. Requirements match req027 (interactive desktop, do not
-touch the mouse/keyboard during a run, single app instance) plus:
-`diag_log_enabled=true` and `drag_to_translate=true` in the runtime config
-(%LOCALAPPDATA%, the harness never modifies config); a degenerate drag
-selection or a missing icon is a SETUP abort → INCONCLUSIVE auto-retry,
-never a product FAIL. Unverified-by-execution on a headless session — it
-needs the same live-desktop QA slot as req027.
-
-## Requirements
-
-- Windows 10/11 with an **interactive desktop session** (SendInput + real
-  foreground windows). **Headless CI cannot run this.**
-- Python 3.8+ (stdlib only; **pywinauto not required** — verified absent in
-  this environment, the ctypes/P-Invoke + PowerShell path was chosen).
-- Built app at `build\Emebala_chat.exe` (no rebuild needed; override with
-  `--app-exe`).
-- Network: the type path translates via the cloud engine
-  (`engine_type: google` in `build\config.json`). Cloud failure is judged
-  **INCONCLUSIVE**, never FAIL.
-- Do not touch the keyboard/mouse during a run; close any pre-existing
-  `Emebala_chat.exe` first (single-instance mutex).
-
-## How verdicts are produced (3 layers)
-
-1. **Log layer (primary)** — parses the session's
-   `%LOCALAPPDATA%\Emebalachat\logs\emebalachat_*.log` per pipeline task:
-   - NO fallback signature: `EditCaretTracker/002` (focus unresolved),
-     `/006` (capability Unknown) or `/007` (NotCapable) — every scenario
-     targets Win11 Notepad `RichEditD2DPT` whose intended verdict is
-     Capable, so **any /006|/007 line is FAIL** (B-6c watch requirement).
-     Exception by design: on an EMPTY document the B-6b (0,0)-ambiguity
-     probe may conservatively fall back; `empty_enter` records that as
-     INFO (harmless outcome, still asserted).
-   - positive `EditCaretTracker em_setselect` (EM path taken);
-   - `stage=capture end len=N` equals the expected capture EXACTLY
-     (typed line / [start..caret) / pasted text — never cumulative;
-     leading/trailing-newline shapes are flagged as ISSUE-1/REQ-023
-     defect candidates);
-   - `stage=paste result=1`; translation completion =
-     `stage=translate end status=0` + paste + `task_end`
-     (`tooltip_show kind=translation` belongs to the drag paths only);
-   - `/004` is the designed clamp safety net (asserted PRESENT by
-     `backspace_enter`, never a FAIL by itself); `/005` (estimate
-     fallback) and `/008` (newline-settle timeout) are collected as
-     **INFO reference counters** — regression watch, not verdict drivers.
-2. **Content layer (secondary)** — reads the edit control
-   (`RichEditD2DPT`, via `WM_GETTEXT`, UIA fallback): typed source GONE
-   where replacement is expected, document changed, REQ-023 separators
-   intact (newline count ≥ translation count), scenario-specific
-   survival checks (`cursor_mid` tail, `empty_enter` emptiness).
-3. **Verdict layer** — FAIL if any check definitively fails; INCONCLUSIVE
-   if environment factors blocked it (cloud status 2/3, hook off, unreadable
-   control, foreground lock); PASS only when all checks pass.
-   Exit codes: `0` PASS · `1` FAIL · `2` INCONCLUSIVE · `3` harness error.
-
-## Known limits & handoffs (documented per delegation)
-
-- **`ime_composing` is NOT automated (user QA QA-27-6).** The harness
-  inserts text via `PostMessageW(WM_CHAR)` / `SendInput(UNICODE)` — neither
-  can create a real IME *composition* state (WM_CHAR is post-commit text;
-  vk=0 unicode events never set the hook's IME mirror). Simulating jamo
-  without a way to VERIFY the OS IME state would produce unverified fake
-  verdicts (decisions.md 2026-09-07 20:54). Manual QA (IMM32 Korean IME —
-  jamo routed via `VK_PROCESSKEY`, so the hook mirror opens) with the hook
-  ACTIVE and worker idle: compose Hangul, press Enter mid-composition; F2
-  (REQ-F2) now promotes that Enter — the log must show
-  `ENTER_GATE ... outcome=task_posted reason=ime_composing_commit_promoted`
-  followed by a pipeline task whose `stage=capture` contains the committed
-  Hangul, then a pasted translation (commit-then-translate). With the hook
-  INACTIVE (or worker busy) the pre-F2 pass-through line remains:
-  `ENTER_GATE ... outcome=pass_through reason=ime_composing_commit` and no
-  pipeline task.
-- **64K offset saturation is NOT automated (user QA QA-27-7).** `EM_GETSEL`
-  answers are WORD-packed (saturate at 65535). 65,000-char input via
-  65,000 `PostMessage`s risks message-queue overflow and minutes of
-  runtime for no added signal beyond 1000-char proof. `long_text` uses
-  1000 chars.
-- **`multi_lang` runtime-switch limitation when in fallback mode.** The
-  tray-menu UIA automation is ATTEMPTED FIRST (design §2.4 option (b));
-  live verdict 260907: the app's tray menu is a modal
-  `TrackPopupMenuEx` loop that starves the UIA/MSAA menu provider —
-  the `#32768` pane enumerates **zero children** for out-of-proct
-  UIA (probe evidence in the batch report). So the harness falls back to
-  option (a): per-block fresh app session with `type_target_language`
-  pre-injected in `build\config.json` (restored afterwards). **This
-  verifies ONLY the startup config-load path — the REQ-019 runtime
-  switch path (ApplyLanguageChange via the tray) remains unverified by
-  this harness**; live switching is user QA QA-27-3R. `--no-tray` forces
-  the fallback immediately. The per-block `STATE/lang_sync` marker is
-  watched so that IF a future UIA/automation path does succeed, runtime
-  mode runs automatically with its own per-block switch assertions.
-- **`notepad_vscode_mix` uses two Notepad windows, not VSCode.** The
-  delegation sanctions the substitution; the verified property is
-  per-focus-hwnd offset isolation. Win11 makes it STRICTER than the
-  original design: both scratch windows share ONE process (pid), so the
-  key `(focus_hwnd, pid)` is exercised with the pid constant and only
-  hwnd differing. Electron launch/focus automation is environment-
-  dependent and its intended verdict is the `/007` FALLBACK, which
-  collides with the matrix-wide `/006|/007`-FAIL gate; VSCode/Chrome
-  fallback behavior belongs to user QA (B-6b report Next-Step 3).
-- **Windows 11 Notepad adoption policy (B-6c).** File-open coalesces into
-  a TAB of an existing frame and `/m` is ignored (probed live), so the
-  harness launches BLANK and claims a frame by CONTENT: the first fresh
-  frame that reads empty, else an existing untitled-and-empty frame
-  (reuse pool; preflight `preflight_scrub` trims accumulated blank
-  residue but keeps one). A window with any non-`E2Exx` text is never
-  adopted, cleared, or closed. Teardown closes ONLY the owned window;
-  the shared Notepad process is NEVER killed (a duplicate `stop()` that
-  did that was removed in B-6c — user-data-loss hazard). If adoption
-  fails, look first for foreground-lock wedges (below) and for session-
-  restore content in Settings.
-- **Foreground-lock wedge (environment, observed live 260907).**
-  `GameInputSvc.exe` can hold an invisible phantom
-  `GameInputServiceWindow` as the foreground window with
-  `ForegroundLockTimeout` forced to 0x7FFFFFFF; every acquisition API
-  (`SetForegroundWindow`, ALT-tap, `AttachThreadInput`,
-  `SwitchToThisWindow`, `LockSetForegroundWindow(UNLOCK)`, synthetic
-  clicks/Alt+Tab, taskbar UIA invoke, hide/minimize/WM_CLOSE on the
-  phantom) then fails and the whole matrix turns INCONCLUSIVE. Recovery
-  is OUTSIDE user-mode reach from the harness: stop/restart the
-  "GameInputService" (admin), log off/on, or reboot — then re-run.
-- **`long_text` intermittency is a PRODUCT-side finding, not harness
-  flake.** Observed both PASS and FAIL in one session:
-  `WIN32_INPUT/CopySelectionWithSequenceWait/002` — for a 1000-char
-  selection Win11 Notepad's Ctrl+C does not bump the clipboard sequence
-  within the app's 180 ms budget, the app refuses the stale read, capture
-  = 0, and the R5 hold surfaces a no-selection notice (harmless, no
-  crash, original text intact — the Enter retried later succeeded within
-  ~407 ms in the PASS runs). Fixing the timing belongs to src (out of
-  this batch's scope); the harness reports it honestly as FAIL and the
-  matrix keeps the evidence.
-- Clipboard backup/restore is the app's own responsibility — out of scope.
-  `paste_then_enter` and the `multi_lang` fallback change
-  `build\config.json` / the clipboard and restore afterwards.
-- Waits are polling with explicit timeouts; the only fixed delay is a
-  300 ms diag-flush settle before teardown.
-- Offline parser proof (earlier batches): against the user's pre-fix log
-  `emebalachat_260907041018.log` the task parser recovered 9 tasks,
-  cumulative capture growth 61→761 chars, 3× `translation_equals_source`.
-
-## Usage
-
-```bat
-python tools\e2e\req027_e2e.py all            ; the full 12-scenario matrix
-python tools\e2e\req027_e2e.py qa27b          ; single scenarios...
-python tools\e2e\req027_e2e.py multi_lang --no-tray   ; force config-seed mode
-python tools\e2e\req027_e2e.py long_text --step-timeout 90
-python tools\e2e\req027_e2e.py paste_then_enter  ; incl. D-4b F3-B retry-Enter phase
-python tools\e2e\req027_e2e.py empty_enter       ; incl. D-4b notice-required + never-suppress
-
-optional: --app-exe <path>  --no-cleanup (debug: leave the app running)
-```
-
-### app_probe.py (D-4a, universal-app matrix)
-
-```bat
-python tools\e2e\app_probe.py --help                 ; full option list
-python tools\e2e\app_probe.py                        ; markdown matrix, all 8 apps (READ-ONLY)
-python tools\e2e\app_probe.py --app word --json      ; one app, machine-readable
-python tools\e2e\app_probe.py --app all --fallback   ; + Shift+Home/Ctrl+C geometry (mutates selection+clipboard, never text)
-python tools\e2e\app_probe.py --probe-hwnd 0x1234    ; arbitrary control (user-QA escape hatch)
-python tools\e2e\app_probe.py --out app-matrix.md    ; also write the rendered matrix
-```
-
-Default mode sends **read-only** messages only (EM_GETSEL / EM_GETLIMITTEXT /
-WM_GETTEXTLENGTH / EM_GETLINECOUNT / EM_LINEFROMCHAR / EM_GETLINE via
-`SendMessageTimeoutW` 100 ms, the app's own SendEm budget) plus an EM_SETSEL
-no-op re-set of the *current* range whose reply is verified unchanged. It
-never activates windows and never types. `--fallback` opts into the design
-§2.3 item-5 measurement (Shift+Home span, Ctrl+Shift+Home span, Ctrl+C
-clipboard-sequence/length) which does mutate selection and the clipboard and
-needs the foreground - interactive-QA scoped. Launching an app requires
-`--top` and only for apps with a locatable install path; anything not
-measurable stays "확인 필요" by design (no guesses). Per the D-4 delegation,
-the 8-app LIVE run (with each app focused and holding a representative
-document) is **user QA**; the harness sandbox proof is `--help` + a
-read-only default run in `tools_d4_probe.log` (workspace root).
+- `planb_interleave_proof.py` (REQ-B009): the per-model translate worker pool
+  behavioral proof. It DELIBERATELY runs Listener + Chat + engine host
+  concurrently. It requires `EMEBALA_E2E_FORCE=1` (the R2 pre-flight gate
+  skips its sibling-process check when this is set) and must never be
+  executed outside a controlled interleave-proof session.
