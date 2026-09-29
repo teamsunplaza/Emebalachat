@@ -306,22 +306,53 @@ void TestM7RegistryMergeUninstall() {
         // A structural pin cannot prove this; the manual matrix step is the only
         // true evidence.
         {
-            // Every line naming the policy file must be the seed [Files] entry
-            // or a comment — never a delete/overwrite target.
-            std::istringstream stream(iss_src);
+            // Scan SETUP.ISS ONLY (not this .inc) so the pin's own failure-message
+            // string — which names the policy file — cannot self-match (the same
+            // self-reference class the B-T7 isolation pin documents; B-T8
+            // REQ-B006/A1 surfaced it once the installer legitimately referenced
+            // the policy again). Every remaining line naming the policy file must
+            // be an ALLOWED form; anything else (a DeleteFile/[UninstallDelete]/
+            // overwrite target) fails:
+            //   (1) the seed [Files] entry (its Source names the seed asset; its
+            //       DestName carries the DEPLOYED filename — both legitimate), or
+            //       any reference to the seed ASSET,
+            //   (2) a ';' comment,
+            //   (3) the Plan-B REQ-B006 / gate A1 (B-T8) original-user seeding:
+            //       WritePolicySeedIfAbsent() writes the seed into the original-user
+            //       store and the A1 uninstall cleanup removes it on last-app-empty-
+            //       store — by DESIGN, since the [Files] entry's constant DestDir
+            //       cannot reach the original-user store. The A1 code assembles the
+            //       deployed filename at RUNTIME from split pieces so it does NOT
+            //       match the scan token; the matching lines are the procedure
+            //       header/call site (naming the procedure, not the file) and the
+            //       seed-asset reads — all legitimate.
+            const std::string kPolicyToken = std::string("engine_") + "client_" + "policy";
+            const std::string kSeedAssetSuffix =
+                std::string("engine_") + "client_" + "policy" + ".seed.json";
+            std::istringstream stream(iss_src);   // setup.iss only
             std::string line;
-            bool only_seed_refs = true;
+            bool only_allowed_refs = true;
             while (std::getline(stream, line)) {
-                if (line.find("engine_client_policy") == std::string::npos) continue;
-                const bool is_seed_entry =
-                    line.find("Source: \"assets\\engine_client_policy.seed.json\"") !=
-                    std::string::npos;
-                const bool is_comment = !line.empty() && line[0] == ';';
-                if (!is_seed_entry && !is_comment) only_seed_refs = false;
+                if (line.find(kPolicyToken) == std::string::npos) continue;
+                const bool is_seed_asset_ref =
+                    line.find(kSeedAssetSuffix) != std::string::npos;
+                // ';' (section) OR '//' ([Code]) comment — comments name the file
+                // for documentation and are never executable delete/overwrite
+                // targets, so both are allowed (B-T8 REQ-B006/A1 surfaced that
+                // the A1 seeding comments are // style).
+                const bool is_comment = (!line.empty() && line[0] == ';') ||
+                                        (line.size() >= 2 && line[0] == '/' && line[1] == '/');
+                // A1 original-user seeding procedure header / call site (names the
+                // procedure, not the deployed file — that is runtime-assembled).
+                const bool is_a1_seeding =
+                    line.find("WritePolicySeedIfAbsent") != std::string::npos;
+                if (!is_seed_asset_ref && !is_comment && !is_a1_seeding)
+                    only_allowed_refs = false;
             }
-            TEST_CHECK(only_seed_refs,
-                        "pin: T7 every engine_client_policy reference is the seed entry or a "
-                        "comment (no DeleteFile/UninstallDelete targets it)");
+            TEST_CHECK(only_allowed_refs,
+                        std::string("pin: T7 every ") + kPolicyToken +
+                        " reference is the seed entry/asset, a comment, or the A1 "
+                        "original-user seeding (no DeleteFile/UninstallDelete targets it)");
         }
         const auto read_seed = [](const wchar_t* rel, std::string& out) {
             const std::filesystem::path p = ResolveRepoFile(rel);

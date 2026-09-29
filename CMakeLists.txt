@@ -550,3 +550,8 @@ add_test(NAME translate_pool COMMAND run_tests "[translate-pool]")
 # `ctest -R vram_gate --output-on-failure` selects it (lowercase, matching the
 # case-sensitive -R; same pattern + caveat as translate_pool above).
 add_test(NAME vram_gate COMMAND run_tests "[vram-gate]")
+# Plan-B (REQ-B006) B-T8: installer model-bundling pin — a standalone ctest entry
+# so `ctest -R installer --output-on-failure` selects it (same pattern + caveat
+# as translate_pool/vram_gate above: the pin body lives in the CoreTests
+# aggregate run_tests and is tagged in its [RUN] banner).
+add_test(NAME installer COMMAND run_tests "[installer]")

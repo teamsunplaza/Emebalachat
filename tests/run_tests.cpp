@@ -14874,6 +14874,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // end-of-file pattern.
 #include "test_isolation_pin_test.inc"
 
+// Plan-B (REQ-B006) B-T8: Chat installer model bundling into the Common store
+// — the gate-A1 original-user path retrofit (never {commonappdata}), the
+// slot-ownership (G3) + uninstall-survival contract, the 3-scenario merge
+// shape, and the unchanged policy seed. Staged as an .inc next to this
+// runner; registered in main() right after TestChatTestIsolationPin, per the
+// end-of-file pattern. ResolveRepoFile source pins + frozen C++ merge shapes.
+#include "bt8_installer_model_pin_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15888,6 +15896,10 @@ int main() {
     // in an end-of-file .inc after ResolveRepoFile), per the end-of-file
     // pattern.
     TestChatTestIsolationPin();
+    // Plan-B (REQ-B006) B-T8: installer model bundling pins (A1 path retrofit +
+    // ownership + uninstall survival + policy seed). Registered right after the
+    // Chat isolation pin, per the end-of-file pattern.
+    TestBt8InstallerModelBundling();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

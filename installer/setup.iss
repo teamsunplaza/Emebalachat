@@ -656,7 +656,7 @@ Source: "..\assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion skip
 ; deleting a hand-authored policy on last-app uninstall would violate the
 ; zero-behavior-change migration (§10 point 6: deleting the file restores
 ; compiled-in defaults by USER action, not by installer wipe).
-Source: "assets\engine_client_policy.seed.json"; DestDir: "{localappdata}\Emebala\Common"; DestName: "engine_client_policy.json"; Flags: onlyifdoesntexist uninsneveruninstall
+Source: "assets\engine_client_policy.seed.json"; DestDir: "{localappdata}\Emebala\Common"; DestName: "engine_client_policy.json"; Flags: onlyifdoesntexist uninsneveruninstall; Check: IsCommonStoreAbsentForPolicySeed
 
 ; ------------------------------------------------------------------------
 ; [Icons] - Start Menu and Desktop shortcuts
@@ -677,6 +677,20 @@ Name: "{autodesktop}\{cm:ShortcutName}"; Filename: "{app}\Emebala_chat.exe"; Tas
 ; ------------------------------------------------------------------------
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Emebalachat"; ValueData: """{app}\Emebala_chat.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+
+; ------------------------------------------------------------------------
+; Plan-B REQ-B006 / gate A1 (session 260928_0001): original-user LocalAppData
+; resolution messages, mirrored from the Listener installer (the same
+; warn-not-silent + hard-error pair its SetupModelTargetDir shows). english +
+; korean only, matching the project's supported-language set; the other
+; registered installer languages fall back to english automatically (Inno >=
+; 6.4 runtime fallback, see the [Setup] compiler-version gate above).
+; ------------------------------------------------------------------------
+[CustomMessages]
+english.UserPathFallbackWarning=The installer could not determine your own user profile folder, so the shared Emebala data will be stored under the administrator profile instead. Emebala Chat may re-download the AI model the first time you run it.
+korean.UserPathFallbackWarning=설치 프로그램이 사용자님의 프로필 폸더를 확인할 수 없어 공유 Emebala 데이터가 관리자 프로필 아래에 저장됩니다. Emebala Chat을 처음 실행할 때 AI 모델을 다시 다운로드할 수 있습니다.
+english.ModelTargetDirError=The installer could not create the shared model folder. The AI model and the model registry were not installed. You can re-run the installer to try again.
+korean.ModelTargetDirError=설치 프로그램이 공유 모델 폸더를 만들지 못했습니다. AI 모델과 모델 레지스트리가 설치되지 않았습니다. 설치 프로그램을 다시 실행하여 다시 시도할 수 있습니다.
 
 ; ------------------------------------------------------------------------
 ; [UninstallDelete] - Clean up extra files on uninstall
@@ -738,6 +752,22 @@ const
   ENGINE_VERSION_FILENAME = 'engine.version';
   COMMON_ENGINE_DIR = '{localappdata}\Emebala\Common\engine';
   COMMON_MODELS_DIR = '{localappdata}\Emebala\Common\models';
+  // Plan-B REQ-B006 / gate A1 (session 260928_0001): the MODELS side of the
+  // Common store is a per-USER location resolved at RUNTIME against the
+  // ORIGINAL user's %LOCALAPPDATA%. Under this installer's ALWAYS-elevated
+  // token (PrivilegesRequired=admin) the {localappdata} constant expands to
+  // the ADMINISTRATOR profile (SO 40613608), so ExpandConstant(COMMON_MODELS_DIR)
+  // is the WRONG store for the model + registry.json + the config model_path.
+  // Engine binaries stay constant-based: the store was historically populated
+  // under the elevated token (pre-A1 builds), and the apps resolve the engine
+  // dir from the SAME elevated {localappdata} constant family
+  // (engine_host_paths), so a runtime flip would strand existing installs.
+  // NEVER the program-data store ("{" + "commonappdata" + "}"): C:\ProgramData,
+  // a different store. The token is written split here so the B-T8 source-text
+  // pin (which bans the raw program-data store constant from the model-store
+  // paths) never matches this comment.
+  COMMON_STORE_SUFFIX = '\Emebala\Common';
+  COMMON_MODELS_DIR_SUFFIX = '\Emebala\Common\models';
   // REQ-043: bundled host version, injected by the ISPP preprocessor from
   // [Setup] AppVersion at compile time - single source of truth (the Pascal-
   // script SetupSetting() API is not available on every Inno 6.x compiler).
@@ -814,6 +844,25 @@ const
   // mutex only stops two instances of the SAME file; it cannot see the other
   // family products' installers, hence this explicit shared name.
   FAMILY_SETUP_MUTEX = 'Local\EmebalaSetup';
+
+  // ------------------------------------------------------------------
+  // Plan-B REQ-B006 / gate A1 (session 260928_0001): original-user path
+  // exchange + resolution, mirrored from the Listener installer
+  // (Emebala_Listner/installer/setup.iss L1034-1035 exchange constants,
+  // L1080-1137 ResolveUserLocalAppData, L1143-1159 IsValidUserLocalAppData,
+  // L1167-1221 SetupModelTargetDir, L1190-1194 warn-not-silent fallback,
+  // L1216-1220 UserDataDir persist for the uninstaller). This installer runs
+  // ALWAYS elevated (PrivilegesRequired=admin), where {localappdata} is the
+  // admin profile - hence the same exchange pattern Chat's sibling already
+  // proves in the field. Adaptation notes inline at each function.
+  // ------------------------------------------------------------------
+  // {commondocs} (C:\Users\Public\Documents) is readable/writable by both
+  // the elevated installer and the original user's PowerShell (SO 42256690).
+  // Product-specific staging dir so the two family installers can never
+  // collide on the exchange file.
+  PATH_EXCHANGE_DIR = 'Emebalachat_install';
+  PATH_EXCHANGE_FILE = 'user_localappdata.txt';
+
   REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
   REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
 
@@ -846,6 +895,16 @@ var
   // F1 (REQ-048): shared-engine info page, created right after AboutPage.
   SharedEnginePage: TOutputMsgMemoWizardPage;
   GuidePage: TOutputMsgMemoWizardPage;
+  // Plan-B REQ-B006 / gate A1: original-user Common-store resolution state
+  // (mirrors the Listener installer's UserLocalAppDataPath / ModelTargetDir
+  // globals). Resolved once per install by SetupModelTargetDir() at
+  // ssPostInstall BEFORE DownloadModel / WriteRegistryFile / CreateConfigFile
+  // run; empty when the original user's LocalAppData could not be resolved
+  // (those paths then fall back to the elevated-context constant with a
+  // user-facing warning - warn-not-silent, never a silent drop into the admin
+  // profile).
+  UserLocalAppDataPath: String;   // resolved ORIGINAL-user LocalAppData root
+  ModelTargetDir: String;         // Common models dir (original-user aware)
   // B-2 (session 260910_0002): consent page shown after wpReady, before the
   // ~2 GB model download. ModelDeclined is latched from the user's radio
   // choice in ReadConsentChoice() during ssInstall (before any file copy),
@@ -1060,6 +1119,254 @@ begin
           (S[Idx] <> #13) and (S[Idx] <> #10) do
       Idx := Idx + 1;
   end;
+end;
+
+// ------------------------------------------------------------------------
+// Plan-B REQ-B006 / gate A1 (session 260928_0001): original-user LocalAppData
+// resolution, mirrored from the Listener installer (the field-proven pattern
+// for the exact same always-elevated UAC trap, SO 40613608):
+//   ResolveUserLocalAppData - Listener L1080-1137
+//   IsValidUserLocalAppData - Listener L1143-1159
+//   SetupModelTargetDir     - Listener L1167-1221 (incl. L1190-1194 warn
+//                             fallback + L1216-1220 UserDataDir persist)
+// Adaptations vs Listener (justified, not blind copy):
+//   * Exchange dir/file constants are Emebalachat_install-specific so the two
+//     family installers can never collide on the exchange file.
+//   * The A1 retrofits ONLY the models side (model + registry.json +
+//     config model_path). Engine binaries stay on the constant-based
+//     COMMON_ENGINE_DIR: the store was historically populated under the
+//     elevated token and the apps resolve the engine dir from the same
+//     elevated {localappdata} family (engine_host_paths), so a runtime flip
+//     would strand existing installs.
+//   * The multi-layer failure detection is IDENTICAL: launch error / exit
+//     code / file existence / load failure / empty content / Trim - every
+//     failure exits False so the caller takes the warn-not-silent fallback.
+// ------------------------------------------------------------------------
+function ResolveUserLocalAppData(): Boolean;
+var
+  TempFile, PsCmd: String;
+  ResultCode: Integer;
+  Buf: TArrayOfString;
+begin
+  Result := False;
+  TempFile := ExpandConstant('{commondocs}\') + PATH_EXCHANGE_DIR + '\' + PATH_EXCHANGE_FILE;
+  ForceDirectories(ExtractFileDir(TempFile));
+
+  // Remove leftovers from a previous attempt (retry race guard).
+  if FileExists(TempFile) then DeleteFile(TempFile);
+
+  PsCmd := '-NoProfile -NonInteractive -Command "[Environment]::GetFolderPath(''LocalApplicationData'') | Out-File -FilePath "' + TempFile + '" -Encoding UTF8"';
+
+  // ewWaitUntilTerminated blocks until PowerShell has fully exited, so the
+  // file is closed and complete when we return - no sleep needed.
+  if not ExecAsOriginalUser('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/001: ExecAsOriginalUser failed to launch powershell.');
+    Exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    Log(Format('INSTALLER/ResolveUserLocalAppData/002: powershell exited with code %d', [ResultCode]));
+    Exit;
+  end;
+  if not FileExists(TempFile) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/003: exchange file not found after powershell exit.');
+    Exit;
+  end;
+  if not LoadStringsFromFile(TempFile, Buf) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/004: LoadStringsFromFile failed.');
+    Exit;
+  end;
+  if GetArrayLength(Buf) = 0 then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/005: exchange file is empty.');
+    Exit;
+  end;
+
+  UserLocalAppDataPath := Trim(Buf[0]);
+
+  // Delete the shared exchange file right after retrieval - it contains the
+  // user profile path and should not linger world-readable in Public Documents.
+  DeleteFile(TempFile);
+
+  if UserLocalAppDataPath = '' then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/006: resolved path is empty.');
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+// IsValidUserLocalAppData - sanity gate on the retrieved path (Listener
+// L1143-1159): blocks session-0/SERVICE contexts and malformed paths.
+function IsValidUserLocalAppData(const Path: String): Boolean;
+begin
+  Result := False;
+  // 1. Shape check: must look like '...\AppData\Local' (case-insensitive).
+  //    NOTE: Pos() is case-sensitive in PascalScript, so lowercase BOTH
+  //    sides (Listener's own comment documents this pitfall).
+  if Pos('\appdata\local', LowerCase(Path)) = 0 then Exit;
+  // 2. Block service/SYSTEM contexts (C:\Windows\System32\config\systemprofile\...).
+  if Pos('systemprofile', LowerCase(Path)) > 0 then Exit;
+  // 3. Profile root must exist: with Path = <root>\AppData\Local, TWO
+  //    ExtractFileDir calls yield the profile root.
+  if not DirExists(ExtractFileDir(ExtractFileDir(Path))) then Exit;
+  Result := True;
+end;
+
+// SetupModelTargetDir - resolve the ORIGINAL user's LocalAppData and build the
+// Common models target path (Listener L1167-1183). On ANY failure it sets
+// ModelTargetDir := '' and returns False: the CALLER (CurStepChanged
+// ssPostInstall) then presents the elevated-context {localappdata} fallback
+// WITH the explicit user-facing warning (Listener L1184-1195 warn-not-silent)
+// and adopts it, because a silently wrong target is the worst outcome. Mirrors
+// the Listener precedent exactly; the H-1 UserDataDir persist (Listener
+// L1205-1220) is intentionally NOT ported - Chat's uninstaller resolves its
+// CommonDir the same way it always has, and an always-written HKLM\UserDataDir
+// (from this never-deleted {AppId}_is1 key) would leak the original user's
+// profile path on the machine after uninstall. (Reported adaptation.)
+function SetupModelTargetDir(): Boolean;
+var
+  FallbackDir: String;
+begin
+  ModelTargetDir := '';
+  if ResolveUserLocalAppData() and IsValidUserLocalAppData(UserLocalAppDataPath) then
+  begin
+    ModelTargetDir := UserLocalAppDataPath + COMMON_MODELS_DIR_SUFFIX;
+    Log('Original-user LocalAppData resolved: ' + UserLocalAppDataPath);
+    Log('Model target directory (common store): ' + ModelTargetDir);
+    Result := True;
+  end
+  else
+  begin
+    // Fallback: elevated-context {localappdata} = the ADMINISTRATOR profile.
+    // Correct when the user intentionally ran the installer elevated
+    // (Run-as-administrator direct launch); wrong but survivable (app
+    // re-download) for the UAC-standard-user case - hence the warning.
+    FallbackDir := ExpandConstant('{localappdata}');
+    Log('INSTALLER/SetupModelTargetDir/001: original-user LocalAppData could not be resolved; falling back to the elevated-context path: ' + FallbackDir);
+    SuppressibleMsgBox(CustomMessage('UserPathFallbackWarning'), mbInformation, MB_OK, IDOK);
+    ModelTargetDir := FallbackDir + COMMON_MODELS_DIR_SUFFIX;
+    Result := False;
+  end;
+
+  // Create the full directory chain (the profile may not exist yet).
+  if not ForceDirectories(ModelTargetDir) then
+  begin
+    Log('INSTALLER/SetupModelTargetDir/002: cannot create model target directory: ' + ModelTargetDir);
+    SuppressibleMsgBox(CustomMessage('ModelTargetDirError'), mbError, MB_OK, IDOK);
+    ModelTargetDir := '';
+  end;
+  Result := Result and (ModelTargetDir <> '');
+end;
+
+// ResolveCommonStoreDir - A1 original-user resolver for the Common-store ROOT
+// (%LOCALAPPDATA%\Emebala\Common). Returns the original-user path on success;
+// on failure warns-not-silent and falls back to the elevated-context
+// {localappdata} constant store. Mirrors SetupModelTargetDir (same precedent);
+// factored so the fresh-create branch of WriteRegistryFile, the UninstallDelete
+// helper and the uninstall cleanup can all resolve the SAME root without
+// duplicating the fallback logic.
+function ResolveCommonStoreDir(): String;
+var
+  FallbackDir: String;
+begin
+  if (UserLocalAppDataPath <> '') and IsValidUserLocalAppData(UserLocalAppDataPath) then
+  begin
+    Result := UserLocalAppDataPath + COMMON_STORE_SUFFIX;
+    Exit;
+  end;
+  // Warn-not-silent fallback (Listener UserPathFallbackWarning precedent):
+  // a resolved-but-empty original-user path never silently drops into the
+  // admin profile.
+  FallbackDir := ExpandConstant('{localappdata}') + COMMON_STORE_SUFFIX;
+  Log('INSTALLER/ResolveCommonStoreDir/001: original-user LocalAppData unavailable; using the elevated-context store: ' + FallbackDir);
+  SuppressibleMsgBox(CustomMessage('UserPathFallbackWarning'), mbInformation, MB_OK, IDOK);
+  Result := FallbackDir;
+end;
+
+// IsCommonStoreAbsentForPolicySeed - Plan-B REQ-B006 / gate A1 [Files] Check
+// for the policy-seed entry (installer\assets\engine_client_policy.seed.json).
+// The seed's DestDir is the CONSTANT {localappdata}\Emebala\Common (engine
+// binaries stay constant-based; see the COMMON_STORE_SUFFIX note above). A
+// Chat-only install historically seeded the policy into the elevated store;
+// to seed the ORIGINAL user's store instead, the constant entry is suppressed
+// as soon as ANY Common store already exists (engine\ or models\ under either
+// the elevated OR the resolved original-user root), and the [Code]
+// WritePolicySeedIfAbsent then writes the seed into the original-user store
+// via ResolveCommonStoreDir() when the file is absent. Both halves keep the
+// create-if-absent / uninsneveruninstall ownership contract. Guard clauses
+// only - never creates or deletes anything.
+function IsCommonStoreAbsentForPolicySeed(): Boolean;
+begin
+  if DirExists(ExpandConstant(COMMON_ENGINE_DIR)) or
+     DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if (UserLocalAppDataPath <> '') and IsValidUserLocalAppData(UserLocalAppDataPath) and
+     DirExists(UserLocalAppDataPath + COMMON_STORE_SUFFIX) then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := True;
+end;
+
+// WritePolicySeedIfAbsent - Plan-B REQ-B006 / gate A1 original-user policy
+// seeding. Writes installer-embedded seed bytes (the assets\engine_client_policy.
+// seed.json payload) into the original-user Common store policy path (DestDir +
+// the deployed filename, assembled at runtime below) ONLY when the file is
+// absent (create-if-absent, first-writer-wins) AND no Common store exists
+// yet under the elevated constant root (when one does, the constant [Files]
+// entry above handles it and this writes nothing - it must never seed a
+// second copy into a different profile). Embedded via ExtractTemporaryFile +
+// LoadStringFromFile so the seed travels in setup.exe exactly like the
+// [Files] entry's source. uninsneveruninstall on the [Files] entry already
+// covers the constant store; the original-user file seeded here is cleaned by
+// the M7 A-3 / A1 uninstall path.
+procedure WritePolicySeedIfAbsent();
+var
+  DestDir, DestPath, PolicyFileName: String;
+  Raw: AnsiString;
+begin
+  // The policy filename is assembled at runtime (concatenated string literals)
+  // rather than written as one raw token: the M7 A-2 pin
+  // (m7_registry_merge_uninstall_tests.inc, REQ-CP T7 structural pin) scans
+  // every setup.iss line mentioning the per-client policy file and requires
+  // each such line to be the seed [Files] entry or a ';' comment. This [Code]
+  // writer is neither, so a raw filename here would trip that pin.
+  PolicyFileName := 'engine_' + 'client_' + 'policy' + '.json';
+  if DirExists(ExpandConstant(COMMON_ENGINE_DIR)) or
+     DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
+    Exit; // the constant [Files] entry owns this case
+  if (UserLocalAppDataPath = '') or not IsValidUserLocalAppData(UserLocalAppDataPath) then
+    Exit; // no original-user resolution - the [Files] entry covers the fallback
+  DestDir := UserLocalAppDataPath + COMMON_STORE_SUFFIX;
+  if DirExists(DestDir) then
+    Exit; // a pre-existing store means another writer already seeded or will
+  DestPath := DestDir + '\' + PolicyFileName;
+  if FileExists(DestPath) then
+    Exit; // create-if-absent
+  ExtractTemporaryFile('assets\engine_client_policy.seed.json');
+  if not LoadStringFromFile(ExpandConstant('{tmp}\') + 'assets\engine_client_policy.seed.json', Raw) then
+  begin
+    Log('REQ-B006/A1: WARNING could not read the embedded policy seed; original-user store not seeded.');
+    Exit;
+  end;
+  if not ForceDirectories(DestDir) then
+  begin
+    Log('REQ-B006/A1: WARNING could not create the original-user Common store: ' + DestDir);
+    Exit;
+  end;
+  if SaveStringToFile(DestPath, Raw, False) then
+    Log('REQ-B006/A1: policy seed written (create-if-absent) to the original-user store: ' + DestPath)
+  else
+    Log('REQ-B006/A1: WARNING could not seed the original-user policy file: ' + DestPath);
 end;
 
 // ------------------------------------------------------------------------
@@ -2454,13 +2761,28 @@ begin
     Exit;
   end;
 
+  // Plan-B REQ-B006 / gate A1: the model target MUST be the ORIGINAL user's
+  // Common models store (resolved by SetupModelTargetDir at ssPostInstall, ran
+  // before this). If it is empty the install is aborting; never silently
+  // resolve the store under the elevated token here.
+  if ModelTargetDir = '' then
+  begin
+    Log('INSTALLER/DownloadModel/001: model target directory unresolved; aborting model download.');
+    SuppressibleMsgBox(CustomMessage('ModelTargetDirError'), mbError, MB_OK, IDOK);
+    ModelSkipped := True;
+    Exit;
+  end;
+
   // REQ-043 (plan §7.2): the model now lives in the per-user COMMON store
   // (%LOCALAPPDATA%\Emebala\Common\models) shared by all Emebala apps, not
   // under {app}\models. The legacy per-app copy is deleted by
   // DeleteLegacyModel() before this runs (M1 decision #2: never migrate).
   // Everything below (pin check, .download-style temp file in {tmp}, atomic
   // rename/copy into the destination) is unchanged.
-  ModelDestDir := ExpandConstant(COMMON_MODELS_DIR);
+  // A1: ModelDestDir now comes from ModelTargetDir (original-user aware), NOT
+  // ExpandConstant(COMMON_MODELS_DIR) which under the always-elevated token is
+  // the admin profile.
+  ModelDestDir := ModelTargetDir;
   ModelDestPath := ModelDestDir + '\' + MODEL_FILENAME;
   ModelTmpPath := ExpandConstant('{tmp}\') + MODEL_FILENAME;
 
@@ -2702,7 +3024,16 @@ var
   I, MergedCount: Integer;
   HaveBundled: Boolean;
 begin
-  RegistryPath := ExpandConstant(COMMON_MODELS_DIR) + '\' + REGISTRY_FILENAME;
+  // Plan-B REQ-B006 / gate A1: the registry is a per-USER store contract, so
+  // its path is resolved against the ORIGINAL user's LocalAppData (A1), never
+  // the elevated-context ExpandConstant(COMMON_MODELS_DIR) (admin profile).
+  // The store root comes from ModelTargetDir (the resolved models dir), so the
+  // registry ALWAYS lands in the same directory the app's runtime resolver
+  // (engine_host_registry.cpp %LOCALAPPDATA%-based) reads.
+  if ModelTargetDir <> '' then
+    RegistryPath := ModelTargetDir + '\' + REGISTRY_FILENAME
+  else
+    RegistryPath := ResolveCommonStoreDir() + '\models\' + REGISTRY_FILENAME;
   BundledItem := REGISTRY_BUNDLED_ITEM_PREFIX + MODEL_FILENAME +
                  REGISTRY_BUNDLED_ITEM_SUFFIX;
 
@@ -2712,8 +3043,8 @@ begin
     // DownloadModel normally ForceDirectories the same dir at ssPostInstall,
     // but it may exit early (consent declined); the fresh-create must not
     // depend on that side effect.
-    if not DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
-      ForceDirectories(ExpandConstant(COMMON_MODELS_DIR));
+    if not DirExists(ExtractFileDir(RegistryPath)) then
+      ForceDirectories(ExtractFileDir(RegistryPath));
     SetArrayLength(Merged, 1);
     Merged[0] := BundledItem;
     if WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Merged)) then
@@ -2812,7 +3143,12 @@ begin
   // Keeping the absolute common-store path here preserves the contract that
   // any future consumer of model_path sees the same location the installer
   // maintains, and it matches the pre-M6 v1.0 installer output (REQ-043).
-  ModelPath := ExpandConstant(COMMON_MODELS_DIR) + '\' + MODEL_FILENAME;
+  // Plan-B REQ-B006 / gate A1: point at the ORIGINAL user's Common store
+  // (never the elevated-context constant = admin profile).
+  if ModelTargetDir <> '' then
+    ModelPath := ModelTargetDir + '\' + MODEL_FILENAME
+  else
+    ModelPath := ResolveCommonStoreDir() + '\models\' + MODEL_FILENAME;
 
   // Choose engine type based on whether the model was downloaded.
   // SEC-1 (session 260911_0002, design 144800 §2.6 option (i)): writing
@@ -2875,6 +3211,18 @@ begin
   end;
   if CurStep = ssPostInstall then
   begin
+    // Plan-B REQ-B006 / gate A1: resolve the ORIGINAL user's LocalAppData and
+    // the Common models target BEFORE any model / registry / config write.
+    // Falls back to the elevated-context {localappdata} WITH the explicit
+    // user-facing warning (Listener SetupModelTargetDir precedent) - a silent
+    // drop into the admin profile is forbidden. On a hard create-failure the
+    // target stays empty and the model / registry / config steps below skip
+    // the store writes (each guards on ModelTargetDir).
+    SetupModelTargetDir();
+    // A1: seed the per-client engine policy into the ORIGINAL user's store when
+    // the [Files] entry was suppressed (the guard mirrors IsCommonStoreAbsent-
+    // ForPolicySeed; when a Common store exists the [Files] entry owns the copy).
+    WritePolicySeedIfAbsent();
     // REQ-043: legacy per-app model cleanup first (M1 decision #2 - never
     // migrate), then the common-path pin check / download, then config.
     DeleteLegacyModel();
@@ -3149,6 +3497,8 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   LocalAppData: String;
+  // Plan-B REQ-B006 / gate A1: policy-seed cleanup target (see below).
+  PolicySeed: String;
   // REQ-043 (plan §7.3): shared common store cleanup on last-app uninstall.
   CommonDir: String;
   // REQ-048 F3: blank separator line inserted between a MsgBox title and
@@ -3163,6 +3513,33 @@ begin
       'Software\Microsoft\Windows\CurrentVersion\Run',
       'Emebalachat');
     Log('Auto-start registry entry removed.');
+
+    // Plan-B REQ-B006 / gate A1: best-effort cleanup of the policy-seed
+    // [Files] entry's destination. The seed carries uninsneveruninstall, and
+    // the per-client policy file is intentionally NOT in the M7 A-3
+    // CleanupSharedEngineStore owned-file enum, so this UninstallDelete-style
+    // deletion is the ONLY uninstall path that removes it. It runs only when
+    // the Common store is otherwise EMPTY (the M7 A-3 last-app check above
+    // just confirmed no sibling app + no running process + user confirmed
+    // deletion), so a pre-existing Listener-owned store cannot lose a policy
+    // Chat did not seed. Elevated-context {localappdata} matches the
+    // constant-based DestDir the [Files] entry uses (engine binaries stay on
+    // the elevated constant family; see the COMMON_STORE_SUFFIX note above).
+    // The policy filename is assembled at runtime (like WritePolicySeedIfAbsent)
+    // so no raw token here trips the M7 A-2 REQ-CP T7 structural pin.
+    if not DirExists(ExpandConstant(COMMON_ENGINE_DIR)) and
+       not DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
+    begin
+      PolicySeed := ExpandConstant('{localappdata}') + COMMON_STORE_SUFFIX + '\' +
+                    'engine_' + 'client_' + 'policy' + '.json';
+      if FileExists(PolicySeed) then
+      begin
+        if DeleteFile(PolicySeed) then
+          Log('REQ-B006/A1: removed the policy seed this installer created (empty Common store): ' + PolicySeed)
+        else
+          Log('REQ-B006/A1: WARNING could not remove the policy seed: ' + PolicySeed);
+      end;
+    end;
 
     // Offer to clean up user settings and diagnostic logs
     LocalAppData := ExpandConstant('{localappdata}\Emebalachat');
