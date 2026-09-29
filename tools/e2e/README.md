@@ -55,7 +55,8 @@ python tools/e2e/req051_drag_e2e.py
 
 Per Plan-B design v2 amendment A4
 (`235700_architect-planB-design-v2-amendments.md`), the following harness is
-**planned** (task B-T9) and deliberately runs with both apps live:
+**implemented** (task B-T9, `planb_interleave_proof.py` exists) and
+deliberately runs with both apps live:
 
 - `planb_interleave_proof.py` (REQ-B009): the per-model translate worker pool
   behavioral proof. It DELIBERATELY runs Listener + Chat + engine host
