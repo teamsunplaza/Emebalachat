@@ -50,6 +50,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -132,6 +133,13 @@ struct SpawnRequest {
     std::wstring exe_path;      // absolute path to the worker exe
     std::wstring pipe_name;     // \\.\pipe\emebala-engine-worker-<pid>-<rand>
     std::string token;          // 32 hex chars
+    // Plan-B (REQ-B004) B-T3, technical gate A-4: per-spawn environment block
+    // override. Empty -> the child inherits the parent's environment verbatim
+    // (the pre-B-T3 behavior, lpEnvironment=nullptr). Non-empty -> a
+    // double-null-terminated Unicode environment block built by
+    // BuildTranslateSpawnEnvironment (parent env + the boot-scoped overrides),
+    // passed to CreateProcessW as lpEnvironment.
+    std::vector<wchar_t> environment_block;
 };
 
 struct SpawnResult {
@@ -143,6 +151,22 @@ struct SpawnResult {
 
 using SpawnFn = SpawnResult (*)(const SpawnRequest&, void* user);
 using CloseProcessFn = void (*)(HANDLE process, void* user);
+
+// ---- Plan-B (REQ-B004) B-T3: injectable VRAM-gate dependencies -------------
+// host_v2 stays dependency-free (technical gate A-5): the registry vram lookup
+// lives in Emebalachat_core (engine_host_registry), the DXGI free-VRAM probe in
+// Emebalachat_engine_core (engine_core_helpers) — host_v2 links NEITHER. Each
+// is injected once at boot from host_main.cpp (B-T4 wiring) via a setter; unit
+// tests inject fakes so the whole gate runs with no DXGI and no registry.
+//
+//   VramBytesResolver: model_id -> its reserved VRAM in BYTES (the registry
+//     vram_mb converted at the call site). A null/empty return -> the model is
+//     absent from the boot registry snapshot -> the conservative default
+//     (design §4.3 step 2).
+//   FreeVramProbe: (out_free_bytes) -> query_ok. False -> the gate's fail-closed
+//     rule (query_ok=false -> never allow GPU, vramgate::DecideSpawnVram).
+using VramBytesResolver = std::function<unsigned long long(const std::string& model_id)>;
+using FreeVramProbe = std::function<bool(unsigned long long& out_free_bytes)>;
 
 // ---- per-family handle (design §1.1 WorkerHandle) --------------------------
 struct WorkerHandle {
@@ -180,6 +204,18 @@ struct TranslatePoolEntry {
     std::string relayed_model_id;   // last model_id the worker accepted (REQ-055)
     HANDLE relayed_worker_process = nullptr;  // REQ-058 process-handle snapshot
     bool registered = false;        // RegisterFamily() has been called
+    // ---- B-T3 (REQ-B004 §4.3) ----
+    // This entry's contribution to translate_pool_reserved_vram_bytes_, recorded
+    // when its spawn succeeds (gate allow_gpu == spawn with the GPU offload
+    // environment; the model_vram_bytes the gate charged). 0 while not running.
+    // The reaper subtracts EXACTLY this on exit, so the tracker can never
+    // drift from the pool's own accounting (design §12.4).
+    unsigned long long reserved_vram_bytes = 0;
+    // Set when the gate decided !allow_gpu (CPU leg): the spawn passes
+    // EMEBALA_MT_GPU=0 in the child environment (technical gate A-4). Cleared
+    // on a GPU-leg decision. Only consulted at SPAWN time (the gate decides AT
+    // SPAWN, design §4.2).
+    bool spawn_gpu_env_override = false; // true -> child env carries EMEBALA_MT_GPU=0
 };
 
 // ---- job-wait frame classifier (REQ-049) -----------------------------------
@@ -341,16 +377,58 @@ public:
     // idempotent: a second call is a no-op when the entry already exists.
     bool RegisterTranslatePoolBootEntry();
 
-    // Plan-B §3.4 on-demand registration. Returns the pool entry for
-    // `model_id`, creating + registering it when absent. For "" this returns
-    // the boot entry (no duplicate registration). When the family derivation
-    // yields an empty string (invalid id chars) or the translate exe path is
-    // unset, returns nullptr (the dispatcher answers model_missing).
+    // Plan-B §3.4 on-demand registration + B-T3 (REQ-B004) VRAM gate. Returns
+    // the pool entry for `model_id`, creating + registering it when absent.
+    // For "" this returns the boot entry (no duplicate registration). When the
+    // family derivation yields an empty string (invalid id chars) or the
+    // translate exe path is unset, returns nullptr (the dispatcher answers
+    // model_missing).
+    //
+    // B-T3 gate (runs ONLY for a NEW entry — the gate decides AT SPAWN, design
+    // §4.2; an already-registered entry takes the fast path with no re-run):
+    //   free   <- the injected FreeVramProbe (default nullptr -> query_ok=false)
+    //   model  <- the injected VramBytesResolver (default -> 2048 MiB, §4.3 step 2)
+    //   override <- the injected override value (default = absent/auto)
+    //   reserved <- translate_pool_reserved_vram_bytes_ (the running tracker)
+    //   decision <- vramgate::DecideSpawnVram(...)
+    // Branch per §4.4 / v2 §A2 (the CPU leg is always permitted):
+    //   allow_gpu  -> register + spawn with the GPU offload environment as-is
+    //                 (child inherits; unchanged behavior).
+    //   !allow_gpu -> register + spawn with EMEBALA_MT_GPU=0 in the child env
+    //                 (technical gate A-4). The CPU leg is never refused, so a
+    //                 nullptr return here means only "invalid id / no exe".
+    // Shape-only decision log (invariant #5): family / reason enum / numbers.
+    //
     // LOCK DISCIPLINE (technical gate A-2): pool mu is held ONLY for the map
-    // insert; RegisterFamily / any future EnsureSpawned run OUTSIDE pool mu —
-    // never hold translate_pool_mu_ across a spawn (30 s convoy risk).
-    // NO VRAM gate in B-T1 — that is B-T3.
+    // lookup/insert; RegisterFamily / EnsureSpawned run OUTSIDE pool mu — never
+    // hold translate_pool_mu_ across a spawn (30 s convoy risk).
     TranslatePoolEntry* TranslatePoolEnsure(const std::string& model_id);
+
+    // ---- B-T3 injectable VRAM-gate seams (technical gate A-5) ----------------
+    // Boot wiring (host_main.cpp, B-T4) calls each setter ONCE before the
+    // dispatchers start; unit tests inject fakes. host_v2 stays free of
+    // engine_core / registry includes.
+    //   resolver: model_id -> reserved bytes. Unset/empty -> 2048 MiB default.
+    //   probe:    (out_free) -> query_ok. Unset -> query_ok=false (fail-closed).
+    //   override: the EMEBALA_MT_GPU value (1 force GPU / 0 force CPU / other
+    //             = auto). Boot reads the env ONCE behind this setter.
+    void SetVramBytesResolver(VramBytesResolver resolver);
+    void SetFreeVramProbe(FreeVramProbe probe);
+    void SetVramOverrideValue(int override_value);
+    // The last gate decision inputs+outputs, for the unit pins (never null).
+    struct VramGateSnapshot {
+        int override_value;
+        bool query_ok;
+        unsigned long long free_bytes;
+        unsigned long long reserved_bytes;
+        unsigned long long model_vram_bytes;
+        bool allow_gpu;
+        bool allow_cpu;
+        const char* reason; // vramgate::SpawnVramReasonString, shape-only
+    };
+    // The gate ran only when the snapshot's model_vram_bytes is non-zero
+    // (0 marks "no decision yet"); B-T3 tests assert on the last decision.
+    VramGateSnapshot TranslatePoolLastGateDecision() const;
 
     // Plan-B §3.5 relay consolidation. Byte-identical comparison semantics to
     // the removed per-loop locals: relayed_model_id != model_id ||
@@ -364,6 +442,13 @@ public:
 
     // Pool size — for B-T1 verification pins only.
     size_t TranslatePoolSize() const;
+
+    // B-T3: the running-bytes tracker (design §4.3) — the sum of the RUNNING
+    // translate families' model bytes. Incremented when a translate-family
+    // spawn reaches Ready (+entry->reserved_vram_bytes, which the gate set);
+    // decremented by the reaper when a translate worker exits. ASR families
+    // are NEVER counted (§4.5). Test-only accessor.
+    unsigned long long TranslatePoolReservedVramBytes() const;
 
     // M-2 graceful stop of ONE family: shutdown -> wait shutdown_ack/EOF ->
     // close. Returns after the pipe is closed. Safe on a dead worker.
@@ -397,10 +482,12 @@ public:
 
 private:
     // NOTE (header): Impl's member layout is completed in the .cpp. The pool
-    // containers + translate exe path live in Impl there:
+    // containers + translate exe path + B-T3 gate seams live in Impl there:
     //   std::unordered_map<std::string, TranslatePoolEntry> translate_pool_;
     //   std::mutex translate_pool_mu_;
     //   std::wstring translate_exe_path_;
+    //   unsigned long long translate_pool_reserved_vram_bytes_; (§4.3, + its mu)
+    //   VramBytesResolver / FreeVramProbe / override / last-gate snapshot
     struct Impl;
     Impl* impl_;
 };
@@ -409,6 +496,18 @@ private:
 // SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/);
 // void CloseWorkerProcess(HANDLE process, void* /*user*/);
 // (Defined in the .cpp; the manager defaults to them when ctor seams are null.)
+
+// ---- B-T3 (REQ-B004, technical gate A-4): per-spawn environment helper -------
+// Pure + testable (no CreateProcess): builds a double-null-terminated Unicode
+// environment block = a copy of the PARENT environment (GetEnvironmentStringsW)
+// with `assignments` applied/overwritten. The GPU-permitted leg passes an empty
+// `assignments` and the CALLER forwards an empty result as lpEnvironment=nullptr
+// (inherit verbatim — unchanged pre-B-T3 behavior); the CPU leg passes
+// {L"EMEBALA_MT_GPU", L"0"}. Returns false only when the parent block cannot be
+// read (CreateProcessW then runs with lpEnvironment=nullptr — the inherit path,
+// never a failed spawn because of the env block).
+bool BuildTranslateSpawnEnvironment(const std::vector<std::pair<std::wstring, std::wstring>>& assignments,
+                                    std::vector<wchar_t>& out_block);
 
 } // namespace host_v2
 } // namespace emebalachat

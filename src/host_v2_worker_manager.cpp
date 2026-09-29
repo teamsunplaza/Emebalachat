@@ -7,6 +7,7 @@
 
 #include "host_v2_worker_manager.hpp"
 #include "host_v2_translate_pool.hpp" // Plan-B §3.3 PoolFamilyForModel (pure)
+#include "engine_host_vram_gate.hpp"  // Plan-B B-T3 DecideSpawnVram (pure, host_v2 member)
 
 #include <bcrypt.h>   // BCryptGenRandom (boot-scoped worker token)
 #include <sddl.h>
@@ -92,6 +93,14 @@ std::wstring MakeWorkerPipeName() {
 
 constexpr DWORD kPipeBufSize = (1u << 20) + 4;
 
+// Plan-B (REQ-B004) B-T3, design §4.3 step 2: a model absent from the boot
+// registry snapshot is charged this conservative default (Hy-MT2 class,
+// 2048 MiB) so the gate always runs on a concrete number.
+constexpr unsigned long long kDefaultTranslateModelVramBytes = 2048ull * 1024 * 1024;
+
+// B-T3, technical gate A-4: the child-environment key the CPU leg forces.
+constexpr wchar_t kMtGpuEnvName[] = L"EMEBALA_MT_GPU";
+
 // Hard kill for a child that cannot be ordered down (handshake failure /
 // orphan guard). Best effort: a race-lost kill still gets closed by the
 // caller's CloseProcess (the reaper never waits on a zombie handle).
@@ -138,8 +147,18 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
     // (every CreateEventW/CreateNamedPipeW/CreateFileW uses a non-inheritable
     // default or an explicit FALSE), so the child receives exactly the two
     // standard handles named above.
+    // B-T3 (technical gate A-4): per-spawn environment. An empty
+    // environment_block keeps the pre-B-T3 behavior (lpEnvironment=nullptr ->
+    // inherit the parent env verbatim); a non-empty block is the built
+    // parent-env copy + overrides (double-null-terminated Unicode), which
+    // CreateProcessW forwards as lpEnvironment (the block itself is read-only
+    // here and dies with this scope — the child received a COPY).
+    // (const-cast: the block is read-only here; CreateProcessW only reads it.)
+    const void* env = nullptr;
+    if (!req.environment_block.empty()) env = req.environment_block.data();
     const BOOL ok = ::CreateProcessW(req.exe_path.c_str(), cmd.data(), nullptr, nullptr,
-                                     TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+                                     TRUE, CREATE_NO_WINDOW,
+                                     const_cast<LPVOID>(env), nullptr, &si, &pi);
     if (!ok) {
         r.last_error = ::GetLastError();
         return r;
@@ -263,6 +282,73 @@ PipeRead ReadPipeFrame(HANDLE pipe, std::string& json, DWORD timeout_ms) {
 
 } // namespace
 
+// B-T3 (technical gate A-4): build a double-null-terminated Unicode environment
+// block = a copy of the PARENT environment (GetEnvironmentStringsW) with
+// `assignments` applied/overwritten. An empty `assignments` yields an empty
+// out_block — the caller then passes lpEnvironment=nullptr (inherit verbatim,
+// the unchanged pre-B-T3 GPU-permitted path). False only when the parent block
+// cannot be read; the caller treats that as "no block" (inherit), never a
+// spawn failure. Pure + testable: no CreateProcess here. (Defined OUTSIDE the
+// anonymous namespace: this is the exported host_v2 symbol the tests link.)
+bool BuildTranslateSpawnEnvironment(
+    const std::vector<std::pair<std::wstring, std::wstring>>& assignments,
+    std::vector<wchar_t>& out_block) {
+    out_block.clear();
+    if (assignments.empty()) return true; // inherit path
+    const wchar_t* parent = ::GetEnvironmentStringsW();
+    if (!parent) return false;
+    size_t parent_chars = 0;
+    while (parent[parent_chars] != L'\0' ||
+           parent[parent_chars + 1] != L'\0') {
+        ++parent_chars;
+    }
+    parent_chars += 2; // include the double-null terminator
+
+    // Split into name->value (the name ends at the first L'='); an entry with
+    // no '=' is skipped (malformed parent entries are not forwarded).
+    std::vector<std::pair<std::wstring, std::wstring>> entries;
+    entries.reserve(parent_chars / 8 + assignments.size());
+    size_t i = 0;
+    while (i < parent_chars && parent[i] != L'\0') {
+        size_t j = i;
+        while (j < parent_chars && parent[j] != L'\0' && parent[j] != L'=') ++j;
+        if (j < parent_chars && parent[j] == L'=' && j > i) {
+            entries.emplace_back(std::wstring(parent + i, parent + j),
+                                 std::wstring(parent + j + 1));
+        }
+        while (i < parent_chars && parent[i] != L'\0') ++i;
+        ++i; // past the NUL
+    }
+    ::FreeEnvironmentStringsW(const_cast<wchar_t*>(parent));
+
+    // Apply/overwriting the assignments (last write wins; a parent value under
+    // an assigned name is replaced, so the child sees exactly one occurrence).
+    for (const auto& a : assignments) {
+        bool replaced = false;
+        for (auto& e : entries) {
+            if (e.first == a.first) { e.second = a.second; replaced = true; break; }
+        }
+        if (!replaced) entries.emplace_back(a.first, a.second);
+    }
+
+    size_t total = 1; // the final block terminator
+    for (const auto& e : entries) {
+        total += e.first.size() + 1 + e.second.size() + 1;
+    }
+    out_block.assign(total, L'\0');
+    size_t pos = 0;
+    for (const auto& e : entries) {
+        std::copy(e.first.begin(), e.first.end(), out_block.begin() + pos);
+        pos += e.first.size();
+        out_block[pos++] = L'=';
+        std::copy(e.second.begin(), e.second.end(), out_block.begin() + pos);
+        pos += e.second.size();
+        out_block[pos++] = L'\0';
+    }
+    out_block[pos] = L'\0'; // the second (block) terminator
+    return true;
+}
+
 // ---- Impl -------------------------------------------------------------------
 struct WorkerManager::Impl {
     // A-1 (technical gate, Plan-B): std::deque keeps element references/pointers
@@ -288,6 +374,23 @@ struct WorkerManager::Impl {
     // runtime-registered families.
     std::wstring translate_exe_path_;
 
+    // ---- B-T3 (REQ-B004 §4.3): reserved-bytes tracker + gate seams ----------
+    // translate_pool_reserved_vram_bytes_ = sum of the RUNNING translate
+    // families' model bytes (ASR NEVER counted, §4.5). Incremented when a
+    // translate spawn reaches Ready (the entry's gate-charged bytes); the
+    // reaper subtracts on exit. translate_pool_vram_mu_ guards the total.
+    //   vram_resolver_/free_probe_ are the A-5 injections (unset resolver ->
+    //   2048 MiB default; unset probe -> query_ok=false fail-closed).
+    //   vram_override_value_ is the boot-read EMEBALA_MT_GPU (sentinel = unset).
+    //   last_gate_ is the last DecideSpawnVram decision (unit pins; guarded by
+    //   translate_pool_mu_ alongside the map).
+    unsigned long long translate_pool_reserved_vram_bytes_ = 0;
+    std::mutex translate_pool_vram_mu_;
+    VramBytesResolver vram_resolver_;
+    FreeVramProbe free_probe_;
+    int vram_override_value_ = -1; // -1 = absent/auto
+    WorkerManager::VramGateSnapshot last_gate_{};
+
     std::thread reaper_thread;
     std::atomic<bool> reaper_stop{false};
     HANDLE reaper_wake = nullptr; // auto-reset event: StopReaper beats the 250 ms poll
@@ -307,6 +410,26 @@ struct WorkerManager::Impl {
             if (w.family == family) return &w;
         }
         return nullptr;
+    }
+
+    // B-T3: the pool map is keyed by model_id while the WorkerHandle/reaper
+    // know only the family, so a family is resolved back to its model_id
+    // ("" is the only id whose family equals the bare prefix). Returns "" for
+    // a non-translate family (the caller's pool lookup then misses, which is
+    // exactly how ASR exits are excluded from the tracker, §4.5).
+    std::string PoolModelIdForFamily(const std::wstring& family) {
+        if (family == translate_pool::kWorkerFamilyTranslate) return std::string();
+        const std::wstring prefix =
+            std::wstring(translate_pool::kWorkerFamilyTranslate) + L"-";
+        if (family.rfind(prefix, 0) == 0) {
+            std::string out;
+            out.reserve(family.size() - prefix.size());
+            for (const wchar_t c : std::wstring(family.begin() + prefix.size(), family.end())) {
+                out.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+            }
+            return out;
+        }
+        return std::string();
     }
 
     // Tear a dead/broken pipe (process handle stays — the reaper still
@@ -399,6 +522,69 @@ TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_
         exe = impl_->translate_exe_path_;
     }
     if (exe.empty()) return nullptr;
+
+    // B-T3 VRAM gate (design §4.3) — runs ONLY for a NEW entry: the gate
+    // decides AT SPAWN (§4.2), and an already-registered entry took the fast
+    // path above with NO re-run. Reads are lock-free or brief (A-2); the gate
+    // itself is pure (enginehost::vramgate::DecideSpawnVram). Every family
+    // derived from PoolFamilyForModel carries the kWorkerFamilyTranslate
+    // prefix, so the entry is inherently a translate family (§4.5 — ASR never
+    // reaches here).
+    namespace vramgate = emebalachat::enginehost::vramgate;
+    vramgate::SpawnVramDecision decision;
+    {
+        unsigned long long free_bytes = 0;
+        bool query_ok = false;
+        if (impl_->free_probe_) query_ok = impl_->free_probe_(free_bytes);
+        unsigned long long reserved = 0;
+        {
+            std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+            reserved = impl_->translate_pool_reserved_vram_bytes_;
+        }
+        unsigned long long model_bytes = 0;
+        if (impl_->vram_resolver_) model_bytes = impl_->vram_resolver_(model_id);
+        const bool model_from_registry = model_bytes != 0ull;
+        if (!model_from_registry) {
+            model_bytes = kDefaultTranslateModelVramBytes; // §4.3 step 2
+        }
+        const int override_value = impl_->vram_override_value_;
+        decision = vramgate::DecideSpawnVram(override_value, query_ok, free_bytes,
+                                             reserved, model_bytes);
+        {
+            std::lock_guard<std::mutex> snap_lk(impl_->translate_pool_mu_);
+            WorkerManager::VramGateSnapshot& g = impl_->last_gate_;
+            g.override_value = override_value;
+            g.query_ok = query_ok;
+            g.free_bytes = free_bytes;
+            g.reserved_bytes = reserved;
+            g.model_vram_bytes = model_bytes;
+            g.allow_gpu = decision.allow_gpu;
+            g.allow_cpu = decision.allow_cpu;
+            g.reason = vramgate::SpawnVramReasonString(decision.reason);
+        }
+        // Shape-only decision log (invariant #5): family / reason / numbers
+        // only — never user text. model_from_registry=0 marks the conservative
+        // default charge.
+        DIAG_LOG("ENGINEHOST",
+                 "wmgr/021: spawn vram gate (family=%ws reason=%s free=%llu reserved=%llu "
+                 "model=%llu model_from_registry=%d override=%d allow_gpu=%d)",
+                 family.c_str(), vramgate::SpawnVramReasonString(decision.reason),
+                 decision.estimated_free_bytes, decision.reserved_bytes, model_bytes,
+                 model_from_registry ? 1 : 0, override_value,
+                 decision.allow_gpu ? 1 : 0);
+    }
+    // §4.4 / v2 §A2 branch table — the CPU leg is ALWAYS permitted, so this
+    // never refuses here. !allow_gpu -> the spawn passes EMEBALA_MT_GPU=0 in
+    // the child environment (technical gate A-4); allow_gpu -> inherit as-is.
+    const bool cpu_leg = !decision.allow_gpu;
+    std::vector<wchar_t> env_block;
+    if (cpu_leg) {
+        if (BuildTranslateSpawnEnvironment({{kMtGpuEnvName, L"0"}}, env_block)) {
+            // Empty block (build fell back to inherit) -> the spawn inherits;
+            // the override pin then reads the parent env, matching pre-B-T3.
+        }
+    }
+
     // Runtime family registration OUTSIDE pool mu (A-2): RegisterFamily takes
     // the manager mu; never hold translate_pool_mu_ across it.
     RegisterFamily(family, exe);
@@ -406,12 +592,36 @@ TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_
     e.model_id = model_id;
     e.family = family;
     e.registered = true;
+    e.spawn_gpu_env_override = cpu_leg;
     std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
     // Double-check under the lock: a sibling may have inserted while we were
     // registering. RegisterFamily is idempotent, so reusing the winner's entry
     // is correct.
     const auto result = impl_->translate_pool_.emplace(model_id, std::move(e));
     return &result.first->second;
+}
+
+// ---- B-T3 (REQ-B004 §4.3): reserved-bytes tracker + gate seams --------------
+unsigned long long WorkerManager::TranslatePoolReservedVramBytes() const {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_vram_mu_);
+    return impl_->translate_pool_reserved_vram_bytes_;
+}
+
+void WorkerManager::SetVramBytesResolver(VramBytesResolver resolver) {
+    impl_->vram_resolver_ = std::move(resolver);
+}
+
+void WorkerManager::SetFreeVramProbe(FreeVramProbe probe) {
+    impl_->free_probe_ = std::move(probe);
+}
+
+void WorkerManager::SetVramOverrideValue(int override_value) {
+    impl_->vram_override_value_ = override_value;
+}
+
+WorkerManager::VramGateSnapshot WorkerManager::TranslatePoolLastGateDecision() const {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    return impl_->last_gate_;
 }
 
 bool WorkerManager::TranslatePoolNeedsRelay(const std::string& model_id,
@@ -712,6 +922,21 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     // Spawn (hidden, same user, token on the command line — no file).
     impl_->CloseProcessLocked(*w);
     SpawnRequest req{w->exe_path, w->pipe_name, w->token};
+    // B-T3 (A-4): a CPU-leg translate-family spawn (the gate set
+    // spawn_gpu_env_override at registration) carries EMEBALA_MT_GPU=0 so the
+    // worker-side RT-C gate reads a forced CPU leg. A GPU-permitted spawn
+    // leaves the block empty -> lpEnvironment=nullptr (inherit, unchanged).
+    if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0 &&
+        w->state == WorkerState::Stopped) {
+        const auto it = impl_->translate_pool_.find(impl_->PoolModelIdForFamily(w->family));
+        if (it != impl_->translate_pool_.end() && it->second.spawn_gpu_env_override) {
+            if (BuildTranslateSpawnEnvironment({{kMtGpuEnvName, L"0"}}, req.environment_block)) {
+                // Empty block (build fell back to inherit) -> the spawn
+                // inherits; the override pin then reads the parent env, the
+                // same honest-CPU behavior as pre-B-T3.
+            }
+        }
+    }
     SpawnResult sr = impl_->spawn_fn(req, impl_->user);
     if (!sr.ok) {
         DIAG_F("ENGINEHOST/wmgr/007: spawn failed (family=%ws err=%lu)\n",
@@ -815,6 +1040,32 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     w->manifest = announced;
     w->spawn_failures = 0; // a clean handshake resets the crash streak
     w->state = WorkerState::Ready;
+    // B-T3 (REQ-B004 §4.3): a translate-family worker reached Ready -> count
+    // its model bytes in the reserved tracker. The gate charged the model at
+    // registration (entry.reserved_vram_bytes == 0 until now, so a respawn
+    // never double-counts; a fresh registration on a running family is a
+    // no-op). ONLY translate families are counted (§4.5): a non-translate
+    // family (ASR) is excluded up front — PoolModelIdForFamily would otherwise
+    // map the bare-prefix ASR family to the boot "" id and wrongly charge it.
+    if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
+        const std::string model_id = impl_->PoolModelIdForFamily(w->family);
+        const auto it = impl_->translate_pool_.find(model_id);
+        if (it != impl_->translate_pool_.end()) {
+            const unsigned long long charged = it->second.reserved_vram_bytes;
+            if (charged == 0ull) {
+                // Charge the model bytes (§4.3 step 1: the registry lookup). The
+                // gate already resolved this for a runtime-registered entry; the
+                // boot "" entry (never gated) resolves here. Absent -> the §4.3
+                // step 2 conservative default.
+                unsigned long long model_bytes =
+                    impl_->vram_resolver_ ? impl_->vram_resolver_(model_id) : 0ull;
+                if (model_bytes == 0ull) model_bytes = kDefaultTranslateModelVramBytes;
+                it->second.reserved_vram_bytes = model_bytes;
+                std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+                impl_->translate_pool_reserved_vram_bytes_ += model_bytes;
+            }
+        }
+    }
     DIAG_LOG("ENGINEHOST", "wmgr/011: worker ready (family=%ws engine=%s/%s abi=%d proto=%d-%d)",
              family.c_str(), w->manifest.engine.c_str(), w->manifest.engine_version.c_str(),
              w->manifest.abi_version, w->manifest.protocol_min, w->manifest.protocol_max);
@@ -915,6 +1166,24 @@ int WorkerManager::ReaperPass(int64_t now_ms) {
         w.state = WorkerState::Crashed;
         w.spawn_failures++;
         w.next_spawn_allowed_ms = now_ms + BackoffDelayMs(w.spawn_failures);
+        // B-T3 (REQ-B004 §4.3/§12.4): a translate-family worker exited ->
+        // subtract EXACTLY its entry's recorded contribution (never below 0),
+        // so the tracker cannot drift from the pool's own accounting. ONLY
+        // translate families are counted (§4.5): a non-translate family (ASR)
+        // is excluded up front — PoolModelIdForFamily would otherwise map the
+        // bare-prefix ASR family to the boot "" id and wrongly subtract it.
+        if (w.family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
+            const auto it = impl_->translate_pool_.find(impl_->PoolModelIdForFamily(w.family));
+            if (it != impl_->translate_pool_.end() && it->second.reserved_vram_bytes != 0ull) {
+                std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+                if (impl_->translate_pool_reserved_vram_bytes_ >= it->second.reserved_vram_bytes) {
+                    impl_->translate_pool_reserved_vram_bytes_ -= it->second.reserved_vram_bytes;
+                } else {
+                    impl_->translate_pool_reserved_vram_bytes_ = 0;
+                }
+                it->second.reserved_vram_bytes = 0;
+            }
+        }
         ++crashes;
         // 장애 격리 (§V2-3): this family's in-flight jobs are ended here —
         // T4's dispatcher observes state==Crashed and answers engine_failed/
