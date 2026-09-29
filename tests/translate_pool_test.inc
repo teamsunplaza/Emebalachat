@@ -591,10 +591,23 @@ void TestTranslatePool() {
                 if (c->spawns == 2 && !req.environment_block.empty()) {
                     const std::wstring env(req.environment_block.begin(),
                                            req.environment_block.end());
-                    // Exactly one EMEBALA_MT_GPU=0 occurrence (CPU-leg block).
-                    size_t pos = env.find(L"EMEBALA_MT_GPU=0" L"\0");
-                    if (pos != std::wstring::npos &&
-                        env.find(L"EMEBALA_MT_GPU=0", pos + 1) == std::wstring::npos) {
+                    // Exactly one EMEBALA_MT_GPU=0 ENTRY-BOUNDARY occurrence.
+                    // The old needle `L"EMEBALA_MT_GPU=0" L"\0"` lost its
+                    // embedded NUL in the implicit wstring conversion (the
+                    // literal decays to a C-string), degrading the intended
+                    // "=0 then NUL" match to a plain substring search. Build
+                    // the real needle and count entry-boundary occurrences in
+                    // the raw double-null-terminated block.
+                    const std::wstring needle =
+                        std::wstring(L"EMEBALA_MT_GPU=0") + L'\0';
+                    size_t gpu0_entries = 0;
+                    for (size_t pos = env.find(needle); pos != std::wstring::npos;
+                         pos = env.find(needle, pos + 1)) {
+                        // An entry starts at the block start or right after the
+                        // previous entry's NUL terminator.
+                        if (pos == 0 || env[pos - 1] == L'\0') ++gpu0_entries;
+                    }
+                    if (gpu0_entries == 1) {
                         c->second_spawn_override = true;
                     }
                 }
@@ -673,10 +686,24 @@ void TestTranslatePool() {
 
         // Crash + respawn. The fake launcher returns the SAME ctx.exit_ev value
         // for the respawned worker, so w2->process == w1->process numerically —
-        // the handle-recycling canary. Handle-recycling canary reasoning: the
-        // numeric HANDLE comparison alone cannot detect this respawn (equal
-        // values), so ONLY an explicit snapshot-invalidation on the transition
-        // makes NeedsRelay true again. Pre-fix this asserted false (the bug).
+        // the handle-recycling PRECONDITION, not a comparison statement: w1 and
+        // w2 alias the same WorkerHandle (FindLocked returns one stable object
+        // per family, A-1 deque), so the old `w2->process == w1->process`
+        // canary compared one field with itself and could never fail. Snapshot
+        // the pre-crash VALUE instead — that assertion CAN fail (launcher drift
+        // to distinct per-spawn handles, or any respawn write-through drift),
+        // which keeps the NeedsRelay check below genuinely bug-detecting:
+        //   * canary: handle value at respawn == the pre-crash snapshot -> the
+        //     bare `relayed_worker_process != current_process` comparison is
+        //     blind to this (re)launch (Windows recycles the freed value).
+        //   * NeedsRelay: with the value recycled, ONLY the explicit snapshot
+        //     reset can make NeedsRelay true. Drop the reset (the F-3-reverted
+        //     hypothetical) and the entry keeps a snapshot pointing at this
+        //     recycled value -> equality -> "no re-relay" -> the fresh worker
+        //     (active_model_id == "") serves a user-model job on the pinned
+        //     default (silent wrong-model). That is the failure mode this pin
+        //     catches.
+        const HANDLE h1 = w1->process; // pre-crash snapshot (canary source)
         ::SetEvent(ctx.exit_ev);
         TEST_CHECK(mgr.ReaperPass(0) == 1, "F-3 relay-invalidate: the crash is finalized");
         ::ResetEvent(ctx.exit_ev);
@@ -684,7 +711,7 @@ void TestTranslatePool() {
         if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
         TEST_CHECK(w2 != nullptr && w2->state == hv2::WorkerState::Ready,
                    "F-3 relay-invalidate: respawn reached Ready");
-        TEST_CHECK(w2->process == w1->process,
+        TEST_CHECK(w2->process == h1,
                    "F-3 relay-invalidate: the respawned handle numerically equals the old "
                    "(handle-recycling canary armed)");
         TEST_CHECK(mgr.TranslatePoolNeedsRelay("", w2->process),

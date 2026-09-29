@@ -934,10 +934,18 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     // CPU-leg worker could take the GPU leg). The entry flag is the single
     // source of truth for the family's leg; the handle state is irrelevant.
     // C1/F-3: pool mu guards the map lookup AND the F-3 snapshot reset. The
-    // scope is brief (no spawn under it — technical gate A-2), copies the two
-    // needed values out (copy-and-release: `spawn_gpu_env_override` here;
-    // `reserved_vram_bytes`/`relayed_*` in their own sites below), and never
-    // nests with impl_->mu held by EnsureSpawned's caller.
+    // scope is brief (no spawn under it — technical gate A-2) and reads the
+    // entry flag inline (`spawn_gpu_env_override`; the Ready-charge / reaper
+    // sites update `reserved_vram_bytes` / `relayed_*` under their own pool-mu
+    // scopes). Nesting/order (P5a.5 re-review NEW-3/NEW-4 wording fix): this
+    // scope nests inside EnsureSpawned's function-scope impl_->mu — the SAFE
+    // direction of the single global order impl_->mu -> translate_pool_mu_ ->
+    // translate_pool_vram_mu_; pool mu is NOT leaf-level in general. What this
+    // scope must never do is invert the order (no spawn / RegisterFamily under
+    // pool mu): the GetEnvironmentStringsW env-block snapshot inside
+    // BuildTranslateSpawnEnvironment is a brief OS read accepted here as a
+    // fast-path-map-consistency choice (it takes no lock; pre-fix it ran under
+    // impl_->mu alone).
     if (w->family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
         std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
         const auto it = impl_->translate_pool_.find(impl_->PoolModelIdForFamily(w->family));
@@ -1082,9 +1090,14 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
         // below run under translate_pool_mu_ (the map's own mutex). Before this,
         // the find + reserved_vram_bytes access held only impl_->mu — no
         // happens-before edge to a concurrent TranslatePoolEnsure emplace ->
-        // data race (UB) on the bucket chain. Copy-and-release: the charged
-        // value is read under pool mu, the tracker bump under vram_mu, and no
-        // spawn/I/O runs inside the pool-mu scope (technical gate A-2 holds).
+        // data race (UB) on the bucket chain. Lock shape (P5a.5 re-review
+        // NEW-3/NEW-4 wording fix): this scope nests translate_pool_vram_mu_
+        // INSIDE pool mu (impl_->mu -> pool mu -> vram mu, consistent global
+        // order, no reverse path exists), so pool mu is NOT leaf-level here.
+        // The one registry model-bytes resolve below (vram_resolver_) is a
+        // brief OS read accepted under pool mu as a fast-path-map-consistency
+        // choice; no spawn runs inside the pool-mu scope (technical gate A-2
+        // holds).
         {
             std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
             const auto it = impl_->translate_pool_.find(model_id);
@@ -1214,8 +1227,13 @@ int WorkerManager::ReaperPass(int64_t now_ms) {
         if (w.family.rfind(translate_pool::kWorkerFamilyTranslate, 0) == 0) {
             // P5a.5 C1: the reaper's find + entry-field read/write run under
             // translate_pool_mu_ (same data-race class as the Ready-charge
-            // site). Copy the contribution out, release, then bump the tracker
-            // under vram_mu — copy-and-release, no spawn under pool mu (A-2).
+            // site). The tracker subtract bumps translate_pool_vram_mu_ INSIDE
+            // the pool-mu scope, i.e. the vram lock is NESTED, not taken after
+            // release (P5a.5 re-review NEW-3 wording fix: the old wording said
+            // "copy out, release, then bump", which does not match this code —
+            // safe because the global order impl_->mu -> pool mu -> vram mu is
+            // consistent and no vram->pool path exists; pool mu is not
+            // leaf-level). No spawn under pool mu (A-2).
             // P5a.5 F-3: a reaper-detected exit ALSO clears the entry's relay
             // snapshot (relayed_worker_process -> nullptr, relayed_model_id ->
             // ""). Windows recycles a closed handle value for a NEW process, so

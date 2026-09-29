@@ -499,13 +499,24 @@ private:
     //
     // P5a.5 C1 (195700 F-1) MAP-MUTEX CONTRACT: EVERY access to
     // `translate_pool_` (find / emplace / iterate / entry-field read+write)
-    // runs under translate_pool_mu_ — reads AND writes alike. Callers
-    // copy-and-release: take pool mu, copy the needed entry values out (or make
-    // the brief field update), release — and NEVER hold translate_pool_mu_
-    // across a spawn / RegisterFamily / any blocking op (technical gate A-2;
-    // no nesting with impl_->mu across those long ops). Holding only impl_->mu
-    // (or no lock) while touching the map is a data race (UB) — the exact class
-    // C1 closed (Ready-charge / respawn-env / reaper were the escaped sites).
+    // runs under translate_pool_mu_ — reads AND writes alike. Callers copy the
+    // needed entry values out (or make the brief field update) and release —
+    // and NEVER hold translate_pool_mu_ across a spawn / RegisterFamily
+    // (technical gate A-2: pool mu is never held across those long ops).
+    // Do NOT read this as "copy-and-release, pool mu stays a leaf" (P5a.5
+    // re-review NEW-3/NEW-4 wording fix). The ACTUAL safe nesting is
+    // impl_->mu -> translate_pool_mu_ -> translate_pool_vram_mu_ (one global
+    // order, no reverse path anywhere; pool mu is therefore NOT leaf-level —
+    // the tracker bump nests vram mu inside pool mu at the Ready-charge and
+    // reaper-subtract sites). Brief OS reads under pool mu are accepted
+    // fast-path-map-consistency choices: the GPU-env block snapshot
+    // (GetEnvironmentStringsW inside BuildTranslateSpawnEnvironment) at the
+    // spawn site and the one registry model-bytes resolve (vram_resolver_) at
+    // the Ready-charge site — the same calls already ran under impl_->mu
+    // pre-fix; neither takes impl_->mu or pool mu, so no deadlock path exists.
+    // Holding only impl_->mu (or no lock) while touching the map is a data
+    // race (UB) — the exact class C1 closed (Ready-charge / respawn-env /
+    // reaper were the escaped sites).
     struct Impl;
     Impl* impl_;
 };
