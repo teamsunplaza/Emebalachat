@@ -99,6 +99,12 @@ static int g_failed_count = 0;
 #include "../src/host_v2_asr_relay.hpp" // P2-1 stabilization: pure asr relay claim
 #include "p2_1_asr_relay_tests.inc"
 
+// Plan-B (REQ-B003) B-T1: per-model translate pool machinery pins
+// (PoolFamilyForModel derivation, TranslatePoolEnsure/NeedsRelay/MarkRelayed,
+// deque pointer stability A-1, boot translate exe path A-3).
+#include "../src/host_v2_translate_pool.hpp"
+#include "translate_pool_test.inc"
+
 // REQ-005 (M6 T6): repair-bootstrapper test bodies (staged session .inc;
 // defines TestEngineHostBootstrap/TestEngineHostBootstrapHashAndMove against
 // the engine_host_bootstrap_client module).
@@ -15591,6 +15597,10 @@ int main() {
     // engine_failed'). Registered after the T3 suites, per the end-of-file
     // pattern.
     TestJobWaitFrameClassifier();
+    // Plan-B (REQ-B003) B-T1: per-model translate pool machinery — registered
+    // after the worker-manager suites (same host_v2 machinery), per the
+    // end-of-file pattern.
+    TestTranslatePool();
     // 260927_0003 (MT audit Q1 fix A): bounded settle at give-up — the late
     // terminal event of a given-up job can never be re-stamped into the next
     // job. Functional suite against a real pipe pair + structural pins on the

@@ -49,10 +49,12 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace emebalachat {
@@ -157,6 +159,27 @@ struct WorkerHandle {
     int64_t last_heartbeat_ms = 0;
     // Diagnostics counters (shape-only; surfaced in the T4 health block).
     int64_t jobs_failed_on_crash = 0;
+};
+
+// ---- per-model translate pool entry (Plan-B §3.2 / REQ-B003) ----------------
+// One entry per distinct resolved model_id (the output domain of
+// RelayPinForClient). The WorkerManager owns the pool; the dispatchers only
+// ever call TranslatePoolEnsure() and use the returned family with the
+// existing WorkerManager API. Relay state lives HERE — this is the single
+// source of truth that eliminates the duplicated per-dispatcher-loop
+// relayed_model_id / relayed_worker_process locals (§3.5).
+//
+// In B-T1 the pool is present but UNUSED: the dispatchers still hardcode
+// kWorkerFamilyTranslate; the boot "" entry references that same family. The
+// switchover lands in B-T4 (two-stage merge, §12.1 mitigation 4).
+struct TranslatePoolEntry {
+    std::string model_id;           // "" = pinned default. Pool map key.
+    std::wstring family;            // derived: kWorkerFamilyTranslate for "",
+                                    //   kWorkerFamilyTranslate + L"-" + widened
+                                    //   model_id otherwise (§3.3).
+    std::string relayed_model_id;   // last model_id the worker accepted (REQ-055)
+    HANDLE relayed_worker_process = nullptr;  // REQ-058 process-handle snapshot
+    bool registered = false;        // RegisterFamily() has been called
 };
 
 // ---- job-wait frame classifier (REQ-049) -----------------------------------
@@ -301,6 +324,47 @@ public:
     // convoy behind a blocking read either.
     bool TrySetBusy(const std::wstring& family);
 
+    // ---- per-model translate pool (Plan-B §3, REQ-B003; B-T1 machinery) ------
+    // A-3 (technical gate): the translate worker exe path is a main()-scope
+    // local today (host_main.cpp). It is handed to the manager ONCE at boot
+    // so TranslatePoolEnsure can reuse the SAME exe path for runtime
+    // registrations of new pool families (the worker is model-agnostic at
+    // spawn; the model is resolved INSIDE the worker via session_open).
+    // Returns false when no translate exe path has been recorded.
+    bool SetTranslateExePath(const std::wstring& exe_path);
+    std::wstring TranslateExePath() const;
+
+    // Boot registration of the pinned-default ("") pool entry. Called ONCE at
+    // the boot site, immediately after RegisterFamily(kWorkerFamilyTranslate,
+    // ...): the "" entry references that SAME family — no new RegisterFamily
+    // is issued for it (B-T1 scope; dispatchers keep the hardcoded family).
+    // idempotent: a second call is a no-op when the entry already exists.
+    bool RegisterTranslatePoolBootEntry();
+
+    // Plan-B §3.4 on-demand registration. Returns the pool entry for
+    // `model_id`, creating + registering it when absent. For "" this returns
+    // the boot entry (no duplicate registration). When the family derivation
+    // yields an empty string (invalid id chars) or the translate exe path is
+    // unset, returns nullptr (the dispatcher answers model_missing).
+    // LOCK DISCIPLINE (technical gate A-2): pool mu is held ONLY for the map
+    // insert; RegisterFamily / any future EnsureSpawned run OUTSIDE pool mu —
+    // never hold translate_pool_mu_ across a spawn (30 s convoy risk).
+    // NO VRAM gate in B-T1 — that is B-T3.
+    TranslatePoolEntry* TranslatePoolEnsure(const std::string& model_id);
+
+    // Plan-B §3.5 relay consolidation. Byte-identical comparison semantics to
+    // the removed per-loop locals: relayed_model_id != model_id ||
+    // relayed_worker_process != current_process. Accessed under the per-family
+    // Busy lock (TrySetBusy) — the F-01 single-flight contract provides the
+    // mutation discipline; pool mu guards only the O(1) map lookup.
+    bool TranslatePoolNeedsRelay(const std::string& model_id, HANDLE current_process);
+
+    // Mark relay accepted (after EnsureWorkerModelRelayed succeeds).
+    void TranslatePoolMarkRelayed(const std::string& model_id, HANDLE process);
+
+    // Pool size — for B-T1 verification pins only.
+    size_t TranslatePoolSize() const;
+
     // M-2 graceful stop of ONE family: shutdown -> wait shutdown_ack/EOF ->
     // close. Returns after the pipe is closed. Safe on a dead worker.
     bool GracefulStop(WorkerHandle& w, int timeout_ms = 10000);
@@ -332,6 +396,11 @@ public:
     WorkerHandle* Find(const std::wstring& family); // mutex-internal use only
 
 private:
+    // NOTE (header): Impl's member layout is completed in the .cpp. The pool
+    // containers + translate exe path live in Impl there:
+    //   std::unordered_map<std::string, TranslatePoolEntry> translate_pool_;
+    //   std::mutex translate_pool_mu_;
+    //   std::wstring translate_exe_path_;
     struct Impl;
     Impl* impl_;
 };

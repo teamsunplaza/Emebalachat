@@ -6,6 +6,7 @@
 // graceful stop, and the 250 ms reaper thread with exponential backoff.
 
 #include "host_v2_worker_manager.hpp"
+#include "host_v2_translate_pool.hpp" // Plan-B §3.3 PoolFamilyForModel (pure)
 
 #include <bcrypt.h>   // BCryptGenRandom (boot-scoped worker token)
 #include <sddl.h>
@@ -264,11 +265,28 @@ PipeRead ReadPipeFrame(HANDLE pipe, std::string& json, DWORD timeout_ms) {
 
 // ---- Impl -------------------------------------------------------------------
 struct WorkerManager::Impl {
+    // A-1 (technical gate, Plan-B): std::deque keeps element references/pointers
+    // stable across push_back — a std::vector reallocates on growth and would
+    // dangle every WorkerHandle* a dispatcher thread holds across a runtime
+    // RegisterFamily (use-after-free under Plan-B on-demand registration).
     std::mutex mu;
-    std::vector<WorkerHandle> workers;
+    std::deque<WorkerHandle> workers;
     SpawnFn spawn_fn = nullptr;
     CloseProcessFn close_fn = nullptr;
     void* user = nullptr;
+
+    // ---- per-model translate pool (Plan-B §3.2, REQ-B003) ------------------
+    // translate_pool_mu_ serializes REGISTRATION and guards the map; relay
+    // state is read under the per-family Busy lock (F-01 single-flight), NOT
+    // under this mutex. NEVER hold translate_pool_mu_ across a spawn
+    // (technical gate A-2: a first-spawn can run 30 s and must not convoy a
+    // sibling dispatcher's NeedsRelay lookup).
+    std::unordered_map<std::string, TranslatePoolEntry> translate_pool_;
+    std::mutex translate_pool_mu_;
+    // A-3: translate worker exe path recorded at boot (main()-scope local in
+    // host_main.cpp) so TranslatePoolEnsure can reuse the SAME exe path for
+    // runtime-registered families.
+    std::wstring translate_exe_path_;
 
     std::thread reaper_thread;
     std::atomic<bool> reaper_stop{false};
@@ -340,6 +358,82 @@ WorkerState WorkerManager::State(const std::wstring& family) {
 WorkerHandle* WorkerManager::Find(const std::wstring& family) {
     std::lock_guard<std::mutex> lk(impl_->mu);
     return impl_->FindLocked(family);
+}
+
+// ---- per-model translate pool (Plan-B §3, REQ-B003; B-T1 machinery) ---------
+bool WorkerManager::SetTranslateExePath(const std::wstring& exe_path) {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    impl_->translate_exe_path_ = exe_path;
+    return true;
+}
+
+std::wstring WorkerManager::TranslateExePath() const {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    return impl_->translate_exe_path_;
+}
+
+bool WorkerManager::RegisterTranslatePoolBootEntry() {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    if (impl_->translate_pool_.count(std::string()) != 0) return false; // already
+    TranslatePoolEntry e;
+    e.model_id.clear();
+    e.family = translate_pool::PoolFamilyForModel(e.model_id); // kWorkerFamilyTranslate
+    e.registered = true; // RegisterFamily(kWorkerFamilyTranslate,...) ran at boot
+    impl_->translate_pool_.emplace(std::string(), std::move(e));
+    return true;
+}
+
+TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_id) {
+    // Existing entry fast path — pool mu only guards the O(1) lookup (A-2).
+    {
+        std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+        const auto it = impl_->translate_pool_.find(model_id);
+        if (it != impl_->translate_pool_.end()) return &it->second;
+    }
+    // Absent: derive the family (fail-closed on invalid id chars).
+    const std::wstring family = translate_pool::PoolFamilyForModel(model_id);
+    if (family.empty()) return nullptr;
+    std::wstring exe;
+    {
+        std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+        exe = impl_->translate_exe_path_;
+    }
+    if (exe.empty()) return nullptr;
+    // Runtime family registration OUTSIDE pool mu (A-2): RegisterFamily takes
+    // the manager mu; never hold translate_pool_mu_ across it.
+    RegisterFamily(family, exe);
+    TranslatePoolEntry e;
+    e.model_id = model_id;
+    e.family = family;
+    e.registered = true;
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    // Double-check under the lock: a sibling may have inserted while we were
+    // registering. RegisterFamily is idempotent, so reusing the winner's entry
+    // is correct.
+    const auto result = impl_->translate_pool_.emplace(model_id, std::move(e));
+    return &result.first->second;
+}
+
+bool WorkerManager::TranslatePoolNeedsRelay(const std::string& model_id,
+                                            HANDLE current_process) {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    const auto it = impl_->translate_pool_.find(model_id);
+    if (it == impl_->translate_pool_.end()) return true; // no entry: relay required
+    const TranslatePoolEntry& e = it->second;
+    return e.relayed_model_id != model_id || e.relayed_worker_process != current_process;
+}
+
+void WorkerManager::TranslatePoolMarkRelayed(const std::string& model_id, HANDLE process) {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    const auto it = impl_->translate_pool_.find(model_id);
+    if (it == impl_->translate_pool_.end()) return;
+    it->second.relayed_model_id = model_id;
+    it->second.relayed_worker_process = process;
+}
+
+size_t WorkerManager::TranslatePoolSize() const {
+    std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
+    return impl_->translate_pool_.size();
 }
 
 void WorkerManager::SetBusy(const std::wstring& family, bool busy) {

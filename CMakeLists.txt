@@ -537,3 +537,7 @@ endif()
 
 enable_testing()
 add_test(NAME CoreTests COMMAND run_tests)
+# Plan-B (REQ-B003) B-T1: translate-pool suite — a standalone ctest entry so
+# `ctest -R translate_pool --output-on-failure` selects it (the aggregate
+# CoreTests entry cannot ctest -R a sub-suite; technical gate item-7 note).
+add_test(NAME translate_pool COMMAND run_tests "[translate-pool]")
