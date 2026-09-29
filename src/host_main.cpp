@@ -87,6 +87,11 @@
 // Emebalachat_core so run_tests can link it); the host keeps calling the
 // same logic through the header. The frozen json primitives stay untouched.
 #include "engine_host_config_reader.hpp"  // REQ-046 P4-2: LoadUserModelIdFromConfig (C1 gate)
+// Plan-B (REQ-B004) B-T4 boot wiring: the DXGI free-VRAM probe +
+// EMEBALA_MT_GPU parse the translate-pool VRAM gate injects (declared in
+// emebalachat::, engine_core_helpers.hpp; the host target already links
+// Emebalachat_engine_core).
+#include "engine_core/engine_core_helpers.hpp"  // QueryMtAdapterFreeVramBytes / ParseMtGpuOverride / kMtGpuOverrideAuto
 // REQ-044 (P4-2): shared engine-host path constants (kEngineDirRel /
 // kModelsDirRel / kTokenFilename) — replaces the local definitions that
 // used to live at L119-121 below.
@@ -807,23 +812,13 @@ inline std::uint64_t StableClientSessionId(const std::string& client) {
 }
 
 void DispatcherLoop(host_v2::WorkerManager& wmgr) {
-    const std::wstring family(kWorkerFamilyTranslate);
     namespace wp = emebalachat::workerproto;
-    // REQ-045 P4-4 + REQ-055: the v1 one-shot client never sends a model_id,
-    // so the dispatcher relays the config's C1-gated user_model_id pin via
-    // the existing session_open frame. REQ-055: the pin is read LIVE per job
-    // (LoadUserModelIdFromConfigLive, mtime/size-cached) — the pre-REQ-055
-    // boot snapshot kept serving the user model for plain local requests
-    // after an engine switch until idle-exit, and a busy host never idles
-    // out. relayed_model_id tracks the last id the worker accepted ("" =
-    // pinned default; an empty pin RESETS the worker, which
-    // EnsureWorkerModelRelayed now relays instead of skipping). REQ-058:
-    // relayed_worker_process snapshots the worker PROCESS handle at relay-
-    // accept time — EnsureSpawned respawns after a crash give a fresh handle,
-    // and a respawned worker's active_model_id resets to "" (pinned default),
-    // so a handle change must re-relay exactly like a pin change.
-    std::string relayed_model_id;
-    HANDLE relayed_worker_process = nullptr;
+    // Plan-B (REQ-B003) B-T4: routing is per-job through the translate pool —
+    // the family for every post-spawn reference resolves from
+    // TranslatePoolEntry::family after `pin` (no hardcoded per-loop family,
+    // no per-loop relay snapshot locals: the pool entry owns the relay state,
+    // design §3.5). The v1 one-shot client never sends a model_id, so the pin
+    // RelayPinForClient resolves is the per-client gated config relay (item D).
     for (;;) {
         Job job;
         if (!g_queue.Pop(job)) break; // shutdown
@@ -868,7 +863,18 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // back exactly as it does on model_missing today — §V2-4.7 keeps v1
         // semantics intact; the v2 profile surfaces proper unavailable via
         // the scheduler path below).
-        host_v2::WorkerHandle* w = wmgr.EnsureSpawned(family);
+        // Plan-B B-T4 (design §3.6): pool routing, not a hardcoded family —
+        // `pin` resolves the per-model pool entry; a nullptr entry (invalid
+        // id / no exe) answers the frozen v1 model_missing exactly like the
+        // EnsureSpawned-fail path below (§V2-4.7 precedent).
+        host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(pin);
+        if (!e) {
+            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
+            g_health.RecordJob(host_v2::HealthOutcome::Fallback);
+            TouchActivity();
+            continue;
+        }
+        host_v2::WorkerHandle* w = wmgr.EnsureSpawned(e->family);
         if (!w) {
             job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
@@ -888,7 +894,7 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // — the settle could then discard the sibling job's ONLY terminal,
         // and the sibling could win the race for our late stray (the
         // original re-stamp skew, cross-dispatcher edition).
-        if (!wmgr.TrySetBusy(family)) {
+        if (!wmgr.TrySetBusy(e->family)) {
             job.conn->SendResult(job.id, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
@@ -898,7 +904,7 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // REQ-049: drain frames the worker queued while this dispatcher was idle
         // (heartbeat cadence + stray finals) so the job's answer cannot be
         // misattributed. Non-blocking; bounded.
-        (void)wmgr.DrainWorkerPipe(family);
+        (void)wmgr.DrainWorkerPipe(e->family);
 
         // REQ-045 P4-4 + REQ-055: relay a CHANGED pin before the job (the
         // existing session_open frame; the worker resolves it per job). An
@@ -913,10 +919,14 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // A failed relay leaves both snapshots stale and falls through — the
         // worker keeps its previous model and the job path answers honestly
         // (no new failure class); the next job retries the relay.
-        if (pin != relayed_model_id || w->process != relayed_worker_process) {
-            if (EnsureWorkerModelRelayed(wmgr, family, pin)) {
-                relayed_model_id = pin;
-                relayed_worker_process = w->process;
+        // Plan-B B-T4 (design §3.5 AFTER): the pool entry owns the relay
+        // snapshots; NeedsRelay/MarkRelayed are the byte-identical comparison
+        // and carry the same under-Busy discipline (tech-gate item 2: the
+        // relay section sits strictly inside the TrySetBusy->SetBusy(false)
+        // window).
+        if (wmgr.TranslatePoolNeedsRelay(pin, w->process)) {
+            if (EnsureWorkerModelRelayed(wmgr, e->family, pin)) {
+                wmgr.TranslatePoolMarkRelayed(pin, w->process);
             }
         }
 
@@ -963,14 +973,14 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // frame). The worker's template registry resolves the ref (fail-closed
         // to hymt2-official on unknown/empty).
         jm.prompt_template = job_policy.prompt_template_ref;
-        const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
+        const bool sent = wmgr.SendToWorker(e->family, wp::BuildJob(jm));
         if (!sent) {
             // Dead pipe: the manager already marked the family Crashed; the
             // reaper owns the respawn. Answer NOW — never leave a v1 id
             // unmatched (§4.4: every request gets exactly one result).
             job.conn->SendResult(job.id, enginehost::HostStatus::EngineFailed);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
-            wmgr.SetBusy(family, false);
+            wmgr.SetBusy(e->family, false);
             {
                 std::lock_guard<std::mutex> lk(g_current.mu);
                 g_current.done = true;
@@ -1000,9 +1010,9 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                 if (g_current.done) break;
             }
             if (g_shutdown.load(std::memory_order_acquire)) break;
-            if (!wmgr.EnsureSpawned(family)) break; // family died, cannot serve
+            if (!wmgr.EnsureSpawned(e->family)) break; // family died, cannot serve
             std::string json;
-            const auto rc = wmgr.ReadFromWorker(family, json, 250);
+            const auto rc = wmgr.ReadFromWorker(e->family, json, 250);
             if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
                 wp::EventMsg ev;
                 const host_v2::JobWaitFrame frame = host_v2::ClassifyJobWaitFrame(json, ev);
@@ -1071,8 +1081,8 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                 // host re-stamped it with the new job id — the persistent
                 // off-by-one pairing skew (clean rows showing translations
                 // generated for neighboring inputs).
-                (void)wmgr.SendToWorker(family, wp::BuildAbort(0));
-                (void)wmgr.SettleWorkerPipe(family, kWorkerSettleMs, &g_shutdown);
+                (void)wmgr.SendToWorker(e->family, wp::BuildAbort(0));
+                (void)wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
                 status = enginehost::HostStatus::Timeout;
                 answered = true;
                 break;
@@ -1090,7 +1100,7 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                 g_health.RecordJob(host_v2::HealthOutcome::Failure);
             }
         }
-        wmgr.SetBusy(family, false);
+        wmgr.SetBusy(e->family, false);
         {
             std::lock_guard<std::mutex> lk(g_current.mu);
             g_current.done = true;
@@ -1109,21 +1119,11 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
 // registry max_sessions=1 profile prescribes (§V2-5.2).
 void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
     namespace wp = emebalachat::workerproto;
-    const std::wstring family(kWorkerFamilyTranslate);
-    // REQ-045 P4-4 + REQ-055: last model_id relayed to the worker ("" =
-    // pinned). The v2 session_open carries a model_id per session; the
-    // single worker slot tracks the latest one (tech gate c2: single active
-    // model). Per job the session model wins; a sessionless job falls back
-    // to the LIVE config pin (LoadUserModelIdFromConfigLive) — the pre-
-    // REQ-055 boot snapshot went stale after an engine switch and a busy
-    // host never idles out to respawn. REQ-058: relayed_worker_process
-    // snapshots the worker PROCESS handle at relay-accept time; a crash +
-    // respawn hands out a fresh handle while the respawned worker's
-    // active_model_id resets to "" (pinned default), so a handle change
-    // re-relays exactly like a model_id change (same live defect as v1 —
-    // silently serving Hy-MT2 for user_gguf with status=ok).
-    std::string relayed_model_id;
-    HANDLE relayed_worker_process = nullptr;
+    // Plan-B (REQ-B003) B-T4: routing is per-job through the translate pool —
+    // the family for every post-spawn reference resolves from
+    // TranslatePoolEntry::family after `model_id` (post session-override; no
+    // hardcoded per-loop family, no per-loop relay snapshot locals: the pool
+    // entry owns the relay state, design §3.5).
     for (;;) {
         host_v2::SchedItem item;
         host_v2::SchedItem expired;
@@ -1175,7 +1175,18 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             continue;
         }
-        host_v2::WorkerHandle* w = wmgr.EnsureSpawned(family);
+        // Plan-B B-T4 (design §3.6): pool routing — `model_id` (post session
+        // override) resolves the per-model pool entry; a nullptr entry
+        // (invalid id / no exe) answers Busy exactly like the EnsureSpawned-
+        // fail path below (design §12.3 / §4.4 branch: v1 model_missing, v2
+        // Busy — the frozen status set has no "pool_refused").
+        host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(model_id);
+        if (!e) {
+            requester->SendResult(0, enginehost::HostStatus::Busy);
+            g_health.RecordJob(host_v2::HealthOutcome::Fallback);
+            continue;
+        }
+        host_v2::WorkerHandle* w = wmgr.EnsureSpawned(e->family);
         if (!w) {
             requester->SendResult(0, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
@@ -1185,7 +1196,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // the v1 prolog (see DispatcherLoop) — BEFORE any family-pipe I/O, so
         // the sibling dispatcher can never publish/drain/relay into our job
         // or our give-up settle; it fails fast here and answers Busy.
-        if (!wmgr.TrySetBusy(family)) {
+        if (!wmgr.TrySetBusy(e->family)) {
             requester->SendResult(0, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
@@ -1193,7 +1204,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // REQ-049: drain frames the worker queued while this dispatcher was idle
         // (heartbeat cadence + stray finals) so the job's answer cannot be
         // misattributed. Non-blocking; bounded.
-        (void)wmgr.DrainWorkerPipe(family);
+        (void)wmgr.DrainWorkerPipe(e->family);
         // REQ-045 P4-4 + REQ-055: relay a CHANGED model_id before the job
         // (existing session_open frame; empty -> RESET to the pinned default
         // — relayable now that EnsureWorkerModelRelayed relays empty ids).
@@ -1203,10 +1214,12 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // user_gguf session/pin with status=ok. A failed relay leaves both
         // snapshots stale and falls through — the worker keeps its previous
         // model and the job path answers honestly.
-        if (model_id != relayed_model_id || w->process != relayed_worker_process) {
-            if (EnsureWorkerModelRelayed(wmgr, family, model_id)) {
-                relayed_model_id = model_id;
-                relayed_worker_process = w->process;
+        // Plan-B B-T4 (design §3.5 AFTER): the pool entry owns the relay
+        // snapshots; NeedsRelay/MarkRelayed are the byte-identical comparison
+        // and carry the same under-Busy discipline (tech-gate item 2).
+        if (wmgr.TranslatePoolNeedsRelay(model_id, w->process)) {
+            if (EnsureWorkerModelRelayed(wmgr, e->family, model_id)) {
+                wmgr.TranslatePoolMarkRelayed(model_id, w->process);
             }
         }
         // The v2 profile forwards the request with a synthetic in-flight id
@@ -1241,11 +1254,11 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // stamp as v1 (OPTIONAL member; the compiled-in default IS
         // "hymt2-official", so an absent policy file is behavior-identical).
         jm.prompt_template = item_policy.prompt_template_ref;
-        const bool sent = wmgr.SendToWorker(family, wp::BuildJob(jm));
+        const bool sent = wmgr.SendToWorker(e->family, wp::BuildJob(jm));
         if (!sent) {
             requester->SendResult(0, enginehost::HostStatus::EngineFailed);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
-            wmgr.SetBusy(family, false);
+            wmgr.SetBusy(e->family, false);
             continue;
         }
         enginehost::HostStatus status = enginehost::HostStatus::EngineFailed;
@@ -1257,10 +1270,10 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             (item.deadline_ms != 0 ? item.deadline_ms : NowMs() + 30000) + kWorkerAnswerGraceMs;
         for (;;) {
             if (g_shutdown.load(std::memory_order_acquire)) break;
-            host_v2::WorkerHandle* cur = wmgr.EnsureSpawned(family);
+            host_v2::WorkerHandle* cur = wmgr.EnsureSpawned(e->family);
             if (!cur) break;
             std::string json;
-            const auto rc = wmgr.ReadFromWorker(family, json, 250);
+            const auto rc = wmgr.ReadFromWorker(e->family, json, 250);
             if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
                 wp::EventMsg ev;
                 const host_v2::JobWaitFrame frame = host_v2::ClassifyJobWaitFrame(json, ev);
@@ -1299,8 +1312,8 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 // same re-stamp hazard: after the abort, read until the
                 // given-up job's terminal event arrives and discard it,
                 // BEFORE answering and BEFORE the next job frame is published.
-                (void)wmgr.SendToWorker(family, wp::BuildAbort(0));
-                (void)wmgr.SettleWorkerPipe(family, kWorkerSettleMs, &g_shutdown);
+                (void)wmgr.SendToWorker(e->family, wp::BuildAbort(0));
+                (void)wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
                 status = enginehost::HostStatus::Timeout;
                 break;
             }
@@ -1314,7 +1327,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         } else {
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
         }
-        wmgr.SetBusy(family, false);
+        wmgr.SetBusy(e->family, false);
         TouchActivity();
     }
 }
@@ -2486,6 +2499,45 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     // REQ-043 baseline: the translate family (its exe keeps the legacy
     // Emebalachat.Engine.* deployed name — the installer contract is frozen).
     wmgr.RegisterFamily(kWorkerFamilyTranslate, worker_exe);
+    // Plan-B (REQ-B003/B004) B-T4 boot wiring (technical-gate A-3/A-5,
+    // B-T3 readiness note): the pool machinery gets its real inputs once,
+    // BEFORE the dispatcher threads start (below), so a runtime
+    // TranslatePoolEnsure routes + VRAM-gates on honest values instead of
+    // the test defaults:
+    //   * the SAME translate exe path reused for runtime family registrations
+    //     (the worker is model-agnostic at spawn; the model binds via
+    //     session_open inside the worker).
+    //   * the pinned-default ("") boot pool entry — references the SAME
+    //     kWorkerFamilyTranslate family registered above (no duplicate
+    //     RegisterFamily); a second call is a no-op.
+    //   * the registry vram resolver: g_registry is the boot snapshot
+    //     (loaded above); model_id "" / absent -> the 2048 MiB conservative
+    //     default (design §4.3 step 2) is the resolver's own 0-return.
+    //   * the DXGI free-VRAM probe (engine_core_helpers) — the same probe the
+    //     worker-side RT-C gate uses.
+    //   * the EMEBALA_MT_GPU override, read ONCE here (absent/other ->
+    //     kMtGpuOverrideAuto = the -1 auto default the manager ships with).
+    wmgr.SetTranslateExePath(worker_exe);
+    if (!wmgr.RegisterTranslatePoolBootEntry()) {
+        DIAG_LOG("ENGINEHOST", "host/005: translate pool boot entry not registered");
+    }
+    wmgr.SetVramBytesResolver(
+        [](const std::string& id) -> unsigned long long {
+            const engine_host_registry::ModelEntry* m = g_registry.FindModel(id);
+            return m ? static_cast<unsigned long long>(m->resource.vram_mb) * 1024ull * 1024ull
+                     : 0ull;
+        });
+    wmgr.SetFreeVramProbe([](unsigned long long& out_free_bytes) {
+        return emebalachat::QueryMtAdapterFreeVramBytes(out_free_bytes);
+    });
+    {
+        wchar_t mt_gpu_env[16] = {0};
+        const DWORD mt_gpu_n = ::GetEnvironmentVariableW(L"EMEBALA_MT_GPU", mt_gpu_env, 16);
+        if (mt_gpu_n > 0 && mt_gpu_n < 16) {
+            wmgr.SetVramOverrideValue(
+                emebalachat::ParseMtGpuOverride(std::wstring_view(mt_gpu_env, mt_gpu_n)));
+        }
+    }
     // P2-1 (session 260925_0001): every additional worker.<family>.manifest
     // next to the orchestrator exe registers its family — the Listener-
     // authored ggml-asr (Emebala.Engine.ggml-asr.exe) arrives this way.
