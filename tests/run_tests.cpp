@@ -105,6 +105,15 @@ static int g_failed_count = 0;
 #include "../src/host_v2_translate_pool.hpp"
 #include "translate_pool_test.inc"
 
+// Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate pins (the 7 v2 §A2
+// pins + threshold-equality + boundary/underflow supplements). The gate is a
+// member of Emebalachat_host_v2; the engine_core_helpers include is only to
+// pin threshold byte-equality (run_tests links engine_core), which the pure
+// gate TU itself must not do.
+#include "../src/engine_core/engine_core_helpers.hpp"
+#include "../src/engine_host_vram_gate.hpp"
+#include "vram_gate_test.inc"
+
 // REQ-005 (M6 T6): repair-bootstrapper test bodies (staged session .inc;
 // defines TestEngineHostBootstrap/TestEngineHostBootstrapHashAndMove against
 // the engine_host_bootstrap_client module).
@@ -15601,6 +15610,9 @@ int main() {
     // after the worker-manager suites (same host_v2 machinery), per the
     // end-of-file pattern.
     TestTranslatePool();
+    // Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate — registered after
+    // the B-T1 pool suite (same Plan-B cluster), per the end-of-file pattern.
+    TestVramGate();
     // 260927_0003 (MT audit Q1 fix A): bounded settle at give-up — the late
     // terminal event of a given-up job can never be re-stamped into the next
     // job. Functional suite against a real pipe pair + structural pins on the

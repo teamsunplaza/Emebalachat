@@ -173,6 +173,11 @@ add_library(Emebalachat_host_v2 STATIC
     src/host_v2_session.cpp
     src/host_v2_scheduler.cpp
     src/host_v2_health.cpp
+    # Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate — PURE decision
+    # core (no DXGI / no env / no engine_core include). Kept in host_v2 so
+    # run_tests links it via the existing host_v2 link and the EmebalaEngine
+    # host target gets it via its existing host_v2 link; avoids touching core.
+    src/engine_host_vram_gate.cpp
 )
 
 target_include_directories(Emebalachat_host_v2 PUBLIC
@@ -541,3 +546,7 @@ add_test(NAME CoreTests COMMAND run_tests)
 # `ctest -R translate_pool --output-on-failure` selects it (the aggregate
 # CoreTests entry cannot ctest -R a sub-suite; technical gate item-7 note).
 add_test(NAME translate_pool COMMAND run_tests "[translate-pool]")
+# Plan-B (REQ-B004) B-T2: VRAM-gate suite — standalone ctest entry so
+# `ctest -R vram_gate --output-on-failure` selects it (lowercase, matching the
+# case-sensitive -R; same pattern + caveat as translate_pool above).
+add_test(NAME vram_gate COMMAND run_tests "[vram-gate]")
