@@ -14853,6 +14853,16 @@ void TestEngineHostAvailabilityAndMigration() {
 // Defines TestM7SetupGateMutex.
 #include "m7_setup_gate_mutex_tests.inc"
 
+// Plan-B (REQ-B010) B-T5 pin 4: structural client-visible-identity scan pin —
+// the POSITIVE half complementing the B-T4fix1 negative pins (both dispatcher
+// loops obtain family ONLY from the TranslatePoolEnsure result `e->family`; no
+// hardcoded translate-family literal inside a loop body). PLACEMENT: end of
+// file (after ResolveRepoFile, which this source pin needs to locate
+// src/host_main.cpp); the behavioral B-T5 pins live in translate_pool_test.inc
+// (included earlier). Defines TestTranslatePoolClientVisibleIdentity;
+// registered in main() at the end of file, per the end-of-file pattern.
+#include "translate_pool_identity_pin_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -15610,6 +15620,12 @@ int main() {
     // after the worker-manager suites (same host_v2 machinery), per the
     // end-of-file pattern.
     TestTranslatePool();
+    // Plan-B (REQ-B010) B-T5: fast-path pins on the LIVE pool routing (design §9,
+    // v2 §A2-rescoped) — registered immediately after the B-T1 pool suite (same
+    // Plan-B cluster), per the end-of-file pattern. The structural client-
+    // visible-identity scan pin (TestTranslatePoolClientVisibleIdentity) lives
+    // in an end-of-file .inc and is registered at the end of main().
+    TestTranslatePoolFastPathReqB010();
     // Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate — registered after
     // the B-T1 pool suite (same Plan-B cluster), per the end-of-file pattern.
     TestVramGate();
@@ -15849,6 +15865,11 @@ int main() {
     // through. Registered right after the T3 dispatcher suite, per the
     // end-of-file pattern.
     TestReqCpT4PromptTemplates();
+    // Plan-B (REQ-B010) B-T5 pin 4: the structural client-visible-identity scan
+    // pin (both dispatcher loops obtain family ONLY from the TranslatePoolEnsure
+    // result `e->family`). End-of-file registration (the suite lives in an
+    // end-of-file .inc after ResolveRepoFile), per the end-of-file pattern.
+    TestTranslatePoolClientVisibleIdentity();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

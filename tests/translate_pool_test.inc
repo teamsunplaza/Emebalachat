@@ -569,3 +569,317 @@ void TestTranslatePool() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// =============================================================================
+// Plan-B (REQ-B010) B-T5: fast-path pins on the LIVE pool routing (design §9,
+// re-scoped by v2 amendment A3 to client-visible behavior + the one documented
+// internal delta). These pins run against the SAME pool API the B-T4-wired
+// dispatchers call (host_main.cpp DispatcherLoop L870-931 / DispatcherV2Loop
+// L1183-1224); no dispatcher source is exercised (host_main has no unit seam,
+// tech-gate honesty note A6) — the pins mirror the exact per-job call sequence
+// and assert the pool-side invariants REQ-B010 depends on.
+//
+// Scope note (B-T5): pin 1 is the v2 §A2-rescoped single-dispatcher fast path;
+// pin 3 is the NEW mixed v1+v2 single-relay pin that documents the 2→1 relay
+// dedup (the ONLY internal delta §9 declares). Pin 4 (the structural
+// client-visible-identity scan) lives in TestTranslatePoolClientVisibleIdentity
+// below and complements the B-T4fix1 negative pins.
+
+namespace translate_pool_fastpath_detail {
+
+// RegisterFamily-effect counter for the FastPath pin (the spawn seam is a
+// plain function pointer, so the count lives in a static the trampoline bumps;
+// scoped to this pin). Distinguishes a REGISTRATION (family-table effect) from
+// a repeated Ensure on an existing entry (which must NOT re-register).
+struct RegisterProbe {
+    int registrations = 0;
+    int spawns = 0;
+};
+inline RegisterProbe& Probe() {
+    static RegisterProbe p;
+    return p;
+}
+
+} // namespace translate_pool_fastpath_detail
+
+void TestTranslatePoolFastPathReqB010() {
+    std::cout << "[RUN] Testing translate pool fast-path pins (Plan-B B-T5, REQ-B010)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace hv2 = emebalachat::host_v2;
+
+    const wchar_t* kTranslateFamily = L"ggml-translate";
+    const unsigned long long kMiB = 1024ull * 1024;
+    wchar_t self[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self, MAX_PATH); // a guaranteed-present exe path
+    namespace detail = translate_pool_fastpath_detail;
+
+    // ---- Pin 1 (design §9.2 / v2 §A2): TranslatePoolFastPathPin -------------
+    // Single dispatcher, pool booted with ONLY the "" entry. 10 job-equivalents
+    // drive the SAME per-job sequence the v1 loop runs:
+    //   Ensure -> EnsureSpawned -> TrySetBusy -> NeedsRelay -> [relay] ->
+    //   MarkRelayed -> SetBusy(false). Asserts the single-worker fast path is
+    //   preserved: size stays 1, family == kWorkerFamilyTranslate exactly, the
+    //   RegisterFamily effect happens once (at boot), and the relay fires on
+    //   the FIRST job only (nullptr process snapshot), never per job.
+    {
+        detail::Probe() = detail::RegisterProbe{};
+        namespace b3 = translate_pool_test_detail; // B-T3 fake-launcher handshake
+        b3::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "B010 fast-path: exit event created");
+        // The RegisterFamily-effect trampoline: a runtime registration effect
+        // reuses the SAME translate exe path as the boot family; a spawn whose
+        // exe_path DIFFERS from the boot translate path would mean a new family
+        // was registered. This lets the pin assert "the RegisterFamily effect
+        // happens at boot, not per job" exactly (all 10 jobs stay on the boot
+        // family + its single exe path). The expected path travels through the
+        // `user` pointer (the spawn seam is a plain function pointer, no
+        // captures).
+        struct FastPathSpawnCtx {
+            const wchar_t* boot_path;
+            b3::FakeHandshakeCtx* hs;
+        } fp_ctx{self, &ctx};
+        hv2::WorkerManager mgr(
+            [](const hv2::SpawnRequest& req, void* user) -> hv2::SpawnResult {
+                auto* c = static_cast<FastPathSpawnCtx*>(user);
+                if (req.exe_path != std::wstring(c->boot_path)) {
+                    ++detail::Probe().registrations; // a NEW family registration effect
+                }
+                ++detail::Probe().spawns;
+                return b3::FakeHandshakeSpawn(req, c->hs); // genuine Ready handshake
+            },
+            [](HANDLE, void*) {}, &fp_ctx);
+        mgr.SetTranslateExePath(self);
+        // Boot registration — ONE RegisterFamily effect, the same family the ""
+        // pool entry references. (The boot call itself is the single effect;
+        // counted by the explicit boot marker below so the trampoline's
+        // runtime-registration count starts at zero.)
+        mgr.RegisterFamily(kTranslateFamily, self);
+        detail::Probe().registrations = 0; // boot effect consumed; runtime effects accumulate from here
+        TEST_CHECK(mgr.RegisterTranslatePoolBootEntry(),
+                   "B010 fast-path: boot \"\" entry registered");
+        mgr.SetVramBytesResolver([](const std::string&) { return 0ull; }); // resolver leg
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+        // EnsureSpawned reaches Ready through the genuine connect+announce
+        // handshake (the B-T3 fake-launcher pattern): the single-worker fast
+        // path serves every job from THIS one Ready worker.
+        hv2::WorkerHandle* ready = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(ready != nullptr && ready->state == hv2::WorkerState::Ready,
+                   "B010 fast-path: the single worker reached Ready (real connect+announce)");
+        TEST_CHECK(detail::Probe().registrations == 0,
+                   "B010 fast-path: the boot-family spawn issued NO new RegisterFamily effect");
+        HANDLE live_process = ready->process;
+
+        int relay_calls = 0;
+        for (int job = 0; job < 10; ++job) {
+            const std::string pin; // "" — all clients on the pinned default
+            // (1) Ensure -> the boot entry (no new registration for "").
+            hv2::TranslatePoolEntry* e = mgr.TranslatePoolEnsure(pin);
+            TEST_CHECK(e != nullptr, "B010 fast-path: Ensure(\"\") returns the boot entry");
+            TEST_CHECK(e->family == std::wstring(kTranslateFamily),
+                       "B010 fast-path: entry.family == kWorkerFamilyTranslate (exact string)");
+            TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                       "B010 fast-path: pool size stays 1 (single-worker fast path)");
+            // (2) EnsureSpawned on the entry family (the existing Ready worker —
+            // zero additional spawns across jobs 1-10).
+            hv2::WorkerHandle* w = mgr.EnsureSpawned(e->family);
+            TEST_CHECK(w == ready, "B010 fast-path: EnsureSpawned serves the existing worker");
+            // (3) TrySetBusy single-flight acquire (mirrors the loop prolog).
+            TEST_CHECK(mgr.TrySetBusy(e->family),
+                       "B010 fast-path: TrySetBusy acquires the family for the job");
+            // (4) NeedsRelay — true ONLY for the first job (nullptr process
+            // snapshot vs the live Ready worker process, REQ-058).
+            if (mgr.TranslatePoolNeedsRelay(pin, live_process)) {
+                // (5) Relay (EnsureWorkerModelRelayed — no host seam here, so
+                // the relay is the pool-side relay-state transition the worker
+                // ack would drive) then MarkRelayed.
+                ++relay_calls;
+                mgr.TranslatePoolMarkRelayed(pin, live_process);
+            }
+            // (6) Post-answer release (mirrors the loop's SetBusy(false)).
+            mgr.SetBusy(e->family, false);
+        }
+
+        TEST_CHECK(relay_calls == 1,
+                   "B010 fast-path: exactly ONE relay host-wide on the single-dispatcher "
+                   "fast path (first job only; jobs 2-10 zero additional relays)");
+        TEST_CHECK(detail::Probe().registrations == 0,
+                   "B010 fast-path: RegisterFamily effect happens exactly once (at boot, "
+                   "not per job)");
+        TEST_CHECK(detail::Probe().spawns == 1,
+                   "B010 fast-path: exactly ONE spawn across all 10 jobs (the existing worker "
+                   "serves every job; no re-spawn)");
+        TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                   "B010 fast-path: pool size == 1 at end of 10 jobs");
+        mgr.GracefulStop(*ready, 2000); // Ready worker released (pipe client closed -> EOF)
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- Pin 2 (design §9.2): TranslatePoolSingleEntryNoLeak ----------------
+    // 100 Ensure iterations on pin="": pool size stays 1, the reserved-VRAM
+    // tracker reflects exactly one worker's bytes (resolver-driven), no drift
+    // after ensure×100, no duplicate entries. A real spawned worker (worker-
+    // thread handshake reaches Ready) charges the tracker ONCE; the 100 Ensures
+    // then leave size + tracker byte-for-byte stable.
+    {
+        namespace b3 = translate_pool_test_detail; // B-T3 fake-launcher handshake
+        b3::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "B010 no-leak: exit event created");
+        hv2::WorkerManager mgr(&b3::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "B010 no-leak: the single worker reached Ready (real connect+announce)");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "B010 no-leak: tracker reflects exactly one worker's bytes (resolver-driven)");
+
+        for (int i = 0; i < 100; ++i) {
+            hv2::TranslatePoolEntry* e = mgr.TranslatePoolEnsure("");
+            TEST_CHECK(e != nullptr && e->family == std::wstring(kTranslateFamily),
+                       "B010 no-leak: every Ensure(\"\") returns the SAME boot entry");
+            TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                       "B010 no-leak: pool size stays 1 across ensure×100");
+            TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                       "B010 no-leak: tracker byte-exact across ensure×100 (no drift)");
+        }
+        TEST_CHECK(mgr.TranslatePoolSize() == 1 && mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "B010 no-leak: after ensure×100 size==1 and tracker==one worker's bytes");
+        TEST_CHECK(mgr.TranslatePoolEnsure("") == mgr.TranslatePoolEnsure(""),
+                   "B010 no-leak: repeated Ensure(\"\") returns the identical entry (no duplicates)");
+
+        // Release the worker (its handle is the live event; the pipe client
+        // closed -> EOF, so the graceful stop is immediate).
+        mgr.GracefulStop(*w, 2000);
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- Pin 3 (v2 §A3 NEW): TranslatePoolMixedV1V2SingleRelay --------------
+    // BOTH dispatcher loops' relay protocol against ONE pool entry, same pin
+    // ("") and same worker process handle. The v2 §A3 delta: pre-Plan-B each
+    // loop carried its OWN relayed_* snapshot, so on the "" model TODAY each
+    // loop would relay once on its first job = 2 host↔worker relays; under the
+    // consolidated pool entry exactly ONE host-wide relay fires. This pin
+    // asserts that dedup AND the restart-epoch semantics (a worker-process
+    // change makes BOTH loops see NeedsRelay==true again, exactly once each).
+    {
+        namespace b3 = translate_pool_test_detail;
+        b3::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "B010 mixed: exit event created");
+        hv2::WorkerManager mgr(&b3::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "B010 mixed: the single worker reached Ready (real connect+announce)");
+        // The jobs read w->process FRESH each call — exactly what the real
+        // dispatcher loops do (host_main.cpp passes w->process to NeedsRelay).
+        int v1_relays = 0;
+        int v2_relays = 0;
+        auto v1_job = [&]() {
+            // Mirrors the v1 loop relay block (host_main.cpp L927-931).
+            if (mgr.TranslatePoolNeedsRelay("", w->process)) {
+                ++v1_relays;
+                mgr.TranslatePoolMarkRelayed("", w->process);
+            }
+        };
+        auto v2_job = [&]() {
+            // Mirrors the v2 loop relay block (host_main.cpp L1220-1224).
+            if (mgr.TranslatePoolNeedsRelay("", w->process)) {
+                ++v2_relays;
+                mgr.TranslatePoolMarkRelayed("", w->process);
+            }
+        };
+
+        // Interleave v1, v2, v1, v2 ... 8 jobs total on the SAME "" entry + the
+        // SAME worker process handle.
+        for (int round = 0; round < 4; ++round) {
+            v1_job();
+            TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                       "B010 mixed: pool size stays 1 across interleaved v1/v2 jobs");
+            v2_job();
+            TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                       "B010 mixed: pool size stays 1 across interleaved v1/v2 jobs");
+        }
+        // The v2 §A3 dedup assertion: the v1 loop's first job relayed ONCE;
+        // the v2 loop's first job produced ZERO additional relays (the pool
+        // relay snapshot already matched). Exactly ONE host-wide relay.
+        TEST_CHECK(v1_relays == 1,
+                   "B010 mixed (v2 §A3): the v1 loop's first job relays exactly once");
+        TEST_CHECK(v2_relays == 0,
+                   "B010 mixed (v2 §A3): the v2 loop's first job produces ZERO additional "
+                   "relays — the 2→1 host-wide dedup delta");
+
+        // Restart epoch: a worker-process change (crash + respawn, REQ-058)
+        // re-arms the relay requirement. The jobs read w->process fresh (as the
+        // real loops do), so swapping w->process to a NEW live handle models the
+        // respawned worker the pool entry must re-relay to.
+        wchar_t sys2[MAX_PATH] = {0};
+        ::GetSystemDirectoryW(sys2, MAX_PATH);
+        const std::wstring ping2 = std::wstring(sys2) + L"\\ping.exe";
+        std::wstring ping2_cmd = L"\"" + ping2 + L"\" -t 127.0.0.1 > NUL";
+        STARTUPINFOW si2 = {};
+        si2.cb = sizeof(si2);
+        si2.dwFlags = STARTF_USESHOWWINDOW;
+        si2.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi2 = {};
+        TEST_CHECK(::CreateProcessW(ping2.c_str(), ping2_cmd.data(), nullptr, nullptr, FALSE,
+                                    CREATE_NO_WINDOW, nullptr, nullptr, &si2, &pi2) != FALSE,
+                   "B010 mixed: respawned worker-process stand-in spawned");
+        ::CloseHandle(pi2.hThread);
+        HANDLE h2 = pi2.hProcess;
+
+        // Swap the live worker's process handle to h2 — exactly what a crash +
+        // respawn does to w->process (EnsureSpawned returns a fresh handle;
+        // the B-T3 ASR pin writes w->process directly, so the field is the
+        // test-writable seam). The relay snapshot still carries the ORIGINAL
+        // handle (the dead worker), so the next per-job NeedsRelay sees a
+        // process change.
+        w->process = h2;
+        v1_job(); // w->process(h2) vs snapshot (original) -> NeedsRelay true, relays once
+        v2_job(); // same entry snapshot now carries h2 -> NeedsRelay false
+        v1_job(); // snapshot matches -> false
+        v2_job(); // snapshot matches -> false
+        TEST_CHECK(v1_relays == 2,
+                   "B010 mixed restart epoch: the v1 loop re-relays exactly once on the new "
+                   "worker process (REQ-058)");
+        TEST_CHECK(v2_relays == 0,
+                   "B010 mixed restart epoch: the v2 loop stays deduped — the consolidated "
+                   "snapshot already carries the new process (zero additional relays)");
+
+        TEST_CHECK(::TerminateProcess(h2, 1) != FALSE,
+                   "B010 mixed: terminate the respawned stand-in");
+        ::CloseHandle(h2);
+        mgr.GracefulStop(*w, 2000);
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Translate pool fast-path (REQ-B010) pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Translate pool fast-path (REQ-B010) pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// NOTE (B-T5 pin 4 placement): the structural client-visible-identity scan pin
+// (TestTranslatePoolClientVisibleIdentity) lives in
+// translate_pool_identity_pin_tests.inc — an end-of-file .inc after
+// ResolveRepoFile (this file is included BEFORE ResolveRepoFile is defined, so
+// the source-scan helper is unavailable here). Registered in main() at the end
+// of file, per the end-of-file pattern.
