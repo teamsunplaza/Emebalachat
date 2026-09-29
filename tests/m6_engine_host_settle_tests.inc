@@ -739,18 +739,22 @@ void TestHostGiveUpSettlePins() {
         // EVERY family-pipe touch in the prolog. Exactly one TrySetBusy, it
         // precedes the REQ-049 drain and the job publish, the old no-op
         // SetBusy(true) is gone, and the fail-fast branch answers Busy.
-        const size_t acquire = region.find("TrySetBusy(family)");
+        // B-T4fix1 (session 260928_0001, design §3.6): the per-job pool entry
+        // e->family replaced the loop-local `family`, so the same ordering
+        // window is re-anchored to TrySetBusy(e->family) — invariant unchanged.
+        const size_t acquire = region.find("TrySetBusy(e->family)");
         TEST_CHECK(acquire != std::string::npos,
-                   "settle pins: dispatcher acquires the family via TrySetBusy");
-        TEST_CHECK(region.find("TrySetBusy(family)", acquire + 1) == std::string::npos,
+                   "settle pins: dispatcher acquires the family via TrySetBusy(e->family)");
+        TEST_CHECK(region.find("TrySetBusy(e->family)", acquire + 1) == std::string::npos,
                    "settle pins: exactly one TrySetBusy in the dispatcher");
-        const size_t drain = region.find("DrainWorkerPipe(family)");
+        const size_t drain = region.find("DrainWorkerPipe(e->family");
         TEST_CHECK(drain != std::string::npos && acquire < drain,
                    "settle pins: the single-flight acquire precedes the REQ-049 drain");
-        const size_t publish = region.find("SendToWorker(family, wp::BuildJob");
+        const size_t publish = region.find("SendToWorker(e->family, wp::BuildJob");
         TEST_CHECK(publish != std::string::npos && acquire < publish,
                    "settle pins: the single-flight acquire precedes the job publish");
-        TEST_CHECK(region.find("SetBusy(family, true)") == std::string::npos,
+        TEST_CHECK(region.find("SetBusy(e->family, true)") == std::string::npos &&
+                       region.find("SetBusy(family, true)") == std::string::npos,
                    "settle pins: the old no-op SetBusy(true) prolog is gone");
         TEST_CHECK(region.find("HostStatus::Busy") != std::string::npos,
                    "settle pins: the contended publish answers Busy (existing status)");
@@ -770,8 +774,31 @@ void TestHostGiveUpSettlePins() {
     TEST_CHECK(wmgr_src.find("bool TrySetBusy(const std::wstring& family);") !=
                    std::string::npos,
                "settle pins: TrySetBusy declared (F-01 single-flight acquire)");
-    TEST_CHECK(host_src.find("TrySetBusy(family)") != std::string::npos,
-               "settle pins: TrySetBusy wired in both dispatcher prologs");
+    TEST_CHECK(host_src.find("TrySetBusy(e->family)") != std::string::npos,
+               "settle pins: TrySetBusy(e->family) wired in both dispatcher prologs");
+    {
+        // B-T4fix1 strengthen (design §3.6): the dispatcher prologs must NOT
+        // reintroduce the hardcoded per-loop family literal — routing is
+        // per-job through the pool entry's e->family.
+        const size_t v1_pos = host_src.find("void DispatcherLoop(host_v2::WorkerManager& wmgr)");
+        const size_t v2_pos = host_src.find("void DispatcherV2Loop(host_v2::WorkerManager& wmgr)");
+        const size_t read_msg_pos = host_src.find("bool ReadMessage(Connection& conn");
+        TEST_CHECK(v1_pos != std::string::npos && v2_pos != std::string::npos,
+                   "settle pins: both dispatcher loops located for the family-literal pin");
+        if (v1_pos != std::string::npos && v2_pos != std::string::npos) {
+            const std::string v1_region = host_src.substr(v1_pos, v2_pos - v1_pos);
+            const std::string v2_region =
+                host_src.substr(v2_pos, (read_msg_pos == std::string::npos || read_msg_pos < v2_pos)
+                                            ? std::string::npos
+                                            : read_msg_pos - v2_pos);
+            TEST_CHECK(v1_region.find("const std::wstring family(kWorkerFamilyTranslate)") ==
+                           std::string::npos,
+                       "settle pins: v1 prolog no longer hardcodes the translate family literal");
+            TEST_CHECK(v2_region.find("const std::wstring family(kWorkerFamilyTranslate)") ==
+                           std::string::npos,
+                       "settle pins: v2 prolog no longer hardcodes the translate family literal");
+        }
+    }
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Host give-up settle structural pins completed." << std::endl;

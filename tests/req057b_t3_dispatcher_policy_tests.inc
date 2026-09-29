@@ -168,10 +168,29 @@ void TestReq057bT3DispatcherPolicy() {
 
         // (5) The policy model_id change rides the changed-pin re-relay: the
         // re-relay comparison is intact in both loops (tech-gate R-A).
-        TEST_CHECK(src.find("pin != relayed_model_id") != std::string::npos,
-                   "REQ-CP T3: the v1 changed-pin re-relay comparison is intact (R-A)");
-        TEST_CHECK(src.find("model_id != relayed_model_id") != std::string::npos,
-                   "REQ-CP T3: the v2 changed-model re-relay comparison is intact (R-A)");
+        // B-T4fix1 (session 260928_0001): B-T4 consolidated the per-loop relay
+        // snapshots into the pool entry (design §3.5), so the changed-pin /
+        // changed-model comparison moved from inline `pin != relayed_model_id`
+        // / `model_id != relayed_model_id` literals into the pool-owned
+        // TranslatePoolNeedsRelay — byte-identical semantics, still gated per
+        // model AND worker process. R-A is now pinned as (a) both loops calling
+        // the pool relay contract and (b) the manager's dual-condition body.
+        {
+            const size_t v1_pos = src.find("void DispatcherLoop(");
+            const size_t v2_pos = src.find("void DispatcherV2Loop(");
+            TEST_CHECK(v1_pos != std::string::npos && v2_pos != std::string::npos &&
+                           v2_pos > v1_pos,
+                       "REQ-CP T3: both dispatcher loop definitions located for the R-A pin");
+            if (v1_pos != std::string::npos && v2_pos != std::string::npos) {
+                const std::string v1_region = src.substr(v1_pos, v2_pos - v1_pos);
+                TEST_CHECK(v1_region.find("TranslatePoolNeedsRelay(") != std::string::npos,
+                           "REQ-CP T3: the v1 loop routes its changed-pin re-relay through "
+                           "TranslatePoolNeedsRelay (R-A)");
+                TEST_CHECK(src.find("TranslatePoolNeedsRelay(", v2_pos) != std::string::npos,
+                           "REQ-CP T3: the v2 loop routes its changed-model re-relay through "
+                           "TranslatePoolNeedsRelay (R-A)");
+            }
+        }
 
         // The enqueue site captures the translate body into the SchedItem.
         TEST_CHECK(src.find("item.src = msg.src;") != std::string::npos &&

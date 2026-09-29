@@ -149,16 +149,66 @@ void TestReq055LiveUserModelPin() {
         // worker process handle at relay-accept time and re-relay on a handle
         // change exactly like a pin change (live r6 defect: user_gguf served
         // silently by Hy-MT2 with status=ok on the long-running host).
-        TEST_CHECK(src.find("relayed_worker_process") != std::string::npos,
-                   "REQ-058: both dispatchers snapshot the relayed worker process handle");
-        TEST_CHECK(src.find("w->process != relayed_worker_process") != std::string::npos,
-                   "REQ-058: the v1 relay condition re-relays on a worker process change");
+        // B-T4fix1 (session 260928_0001, design §3.5): the per-loop relay
+        // snapshots (relayed_model_id / relayed_worker_process locals) were
+        // consolidated into the pool entry owned by WorkerManager; the
+        // byte-identical process-handle comparison now lives in
+        // TranslatePoolNeedsRelay. The invariant is unchanged — only the owner
+        // moved — so the pin re-anchors to the pool contract + call sites.
+        TEST_CHECK(src.find("TranslatePoolNeedsRelay(") != std::string::npos,
+                   "REQ-058: the dispatchers consult TranslatePoolNeedsRelay for the re-relay decision");
+        TEST_CHECK(src.find("TranslatePoolMarkRelayed(") != std::string::npos,
+                   "REQ-058: a successful relay is recorded via TranslatePoolMarkRelayed");
         {
-            const size_t v2_pos = src.find("DispatcherV2Loop");
-            TEST_CHECK(v2_pos != std::string::npos &&
-                           src.find("w->process != relayed_worker_process", v2_pos) !=
-                               std::string::npos,
-                       "REQ-058: the v2 relay condition re-relays on a worker process change");
+            const size_t v1_pos = src.find("void DispatcherLoop(host_v2::WorkerManager& wmgr)");
+            const size_t v2_pos = src.find("void DispatcherV2Loop(host_v2::WorkerManager& wmgr)");
+            TEST_CHECK(v1_pos != std::string::npos && v2_pos != std::string::npos,
+                       "REQ-058: both dispatcher loops located for the NeedsRelay call-site pin");
+            if (v1_pos != std::string::npos && v2_pos != std::string::npos) {
+                const std::string v1_region = src.substr(v1_pos, v2_pos - v1_pos);
+                TEST_CHECK(v1_region.find("TranslatePoolNeedsRelay(") != std::string::npos &&
+                               v1_region.find("TranslatePoolMarkRelayed(") != std::string::npos,
+                           "REQ-058: the v1 loop calls NeedsRelay + MarkRelayed (process-change re-relay)");
+                TEST_CHECK(src.find("TranslatePoolNeedsRelay(", v2_pos) != std::string::npos &&
+                               src.find("TranslatePoolMarkRelayed(", v2_pos) != std::string::npos,
+                           "REQ-058: the v2 loop calls NeedsRelay + MarkRelayed (process-change re-relay)");
+            }
+        }
+        // Negative pin (B-T4fix1): the consolidated per-loop relay locals must
+        // NOT resurface as dispatcher state — their only remaining presence is
+        // inside the pool entry (manager) and prose comments. A redeclaration
+        // in host_main.cpp would mean the pool consolidation was silently
+        // reverted and the two loops could again drift on the snapshot.
+        TEST_CHECK(src.find("std::string relayed_model_id") == std::string::npos &&
+                       src.find("HANDLE relayed_worker_process") == std::string::npos,
+                   "REQ-058: the per-loop relayed_model_id / relayed_worker_process locals are gone "
+                   "from host_main.cpp (state consolidated into the pool entry)");
+    }
+
+    // ---- REQ-058 pool contract: TranslatePoolNeedsRelay dual comparison ----
+    const std::filesystem::path wmgr_cpp = ResolveRepoFile(L"src\\host_v2_worker_manager.cpp");
+    if (wmgr_cpp.empty()) {
+        std::cout << "[SKIP] src/host_v2_worker_manager.cpp not resolvable; REQ-058 pool contract "
+                     "pin skipped."
+                  << std::endl;
+    } else {
+        std::ifstream in(wmgr_cpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        const size_t fn_pos = src.find("WorkerManager::TranslatePoolNeedsRelay");
+        TEST_CHECK(fn_pos != std::string::npos,
+                   "REQ-058: TranslatePoolNeedsRelay is implemented in the worker manager");
+        if (fn_pos != std::string::npos) {
+            const size_t fn_end = src.find("\n}\n", fn_pos);
+            const std::string fn_body = src.substr(
+                fn_pos, fn_end == std::string::npos ? std::string::npos : fn_end - fn_pos);
+            // The byte-identical comparison consolidated from the two loops
+            // (design §3.5): re-relay on a model_id change OR a worker-process
+            // change. Dropping either side silently reopens the live-r6 defect.
+            TEST_CHECK(fn_body.find("e.relayed_model_id != model_id") != std::string::npos,
+                       "REQ-058: the pool re-relays on a model_id change");
+            TEST_CHECK(fn_body.find("e.relayed_worker_process != current_process") != std::string::npos,
+                       "REQ-058: the pool re-relays on a worker process change");
         }
     }
 
