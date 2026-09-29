@@ -420,6 +420,25 @@ if (MSVC)
     endif()
 endif()
 
+# Plan-B (REQ-B009) P6 closure C-2: the §12.2 crash-isolation pin runs in its
+# OWN process (the run_tests process cannot create the SECOND concurrent
+# named-pipe client — see the PLACEMENT NOTE at the top of
+# translate_pool_test.inc). A tiny standalone main hosts the SAME pin +
+# handshake; launched via CTest below. Links only host_v2 (the WorkerManager +
+# the pool machinery the pin drives).
+add_executable(crash_iso_test tests/crash_iso_test_main.cpp)
+# host_v2 pulls in diag::Printf / diag::MirrorF (the ENGINEHOST/wmgr/* DIAG
+# lines), which live in diag_logger.cpp — compile it in + link host_v2 and
+# engine_core, same libraries run_tests uses.
+target_sources(crash_iso_test PRIVATE src/diag_logger.cpp src/unicode_utils.cpp)
+target_link_libraries(crash_iso_test PRIVATE
+    Emebalachat_host_v2
+    Emebalachat_engine_core
+)
+if (MSVC)
+    target_compile_options(crash_iso_test PRIVATE /W4 /utf-8 /permissive-)
+endif()
+
 # Target 3: EmebalaEngine — REQ-043 shared inference host (plan §5.1).
 # WIN32 GUI subsystem (no console), produced binary Emebala.Engine.exe, the
 # fixed install location is %LOCALAPPDATA%\Emebala\Common\engine\ (plan §7.1 —
@@ -555,3 +574,7 @@ add_test(NAME vram_gate COMMAND run_tests "[vram-gate]")
 # as translate_pool/vram_gate above: the pin body lives in the CoreTests
 # aggregate run_tests and is tagged in its [RUN] banner).
 add_test(NAME installer COMMAND run_tests "[installer]")
+# Plan-B (REQ-B009) P6 closure C-2: §12.2 crash-isolation pin — a standalone
+# process (see the target comment above); ctest -R crash_isolation runs just
+# this pin.
+add_test(NAME crash_isolation COMMAND crash_iso_test)

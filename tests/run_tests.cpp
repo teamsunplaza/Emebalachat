@@ -15645,6 +15645,11 @@ int main() {
     // visible-identity scan pin (TestTranslatePoolClientVisibleIdentity) lives
     // in an end-of-file .inc and is registered at the end of main().
     TestTranslatePoolFastPathReqB010();
+    // Plan-B (REQ-B009) P6 closure C-2: TranslatePoolCrashIsolationTest
+    // (design §12.2 — sibling worker crash isolation) runs in its OWN process
+    // via CTest (crash_iso_test_main), NOT here: the run_tests process cannot
+    // create the SECOND concurrent named-pipe client (see the PLACEMENT NOTE at
+    // the top of translate_pool_test.inc). This default suite is unchanged.
     // Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate — registered after
     // the B-T1 pool suite (same Plan-B cluster), per the end-of-file pattern.
     TestVramGate();

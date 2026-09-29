@@ -45,6 +45,13 @@ the §8.2 dump was a design sketch never emitted — see report):
 Evidence: shape-only `planb_interleave_evidence.json` (codes / ids / counts /
 timings). NO job text is ever written to the evidence file or stdout.
 
+P6 closure C-1 (221800_ask-final-audit-planb.md): the phase-4 kill is REAL —
+`_terminate_pids` issues an argv-list `taskkill /F /PID` on the resolved
+dedicated chat-worker PID (split-refusal gated: only a DISTINCT user-model
+family is killable; the shared-default topology keeps the honest
+skipped_reason path — killing the sole shared worker would disrupt the user's
+live engine clients). Pre-C-1 the kill resolved PIDs but never terminated.
+
 Exit codes: 0 PASS · 2 FORCE missing · 3 env insufficient · 4 assertion FAIL
 """
 
@@ -701,6 +708,10 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
         # the user-model leg; an empty policy model exercises the shared
         # default entry (the pool's size()==1 fast path, REQ-B010).
         if chat_model_id or True:
+            # The chat policy model id ("" in the shared-default topology; the
+            # user-picked id once the pool splits). Drives the phase-3 budget
+            # gate + the phase-4 family match below.
+            ctx["chat_model_id"] = chat_model_id
             p2_jobs = _run_jobs(chat, PHASE2_JOBS, EN_FIXTURE, "phase2",
                                 evidence["phases"], tail, signals)
             chat_jobs.extend(p2_jobs)
@@ -746,6 +757,18 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
                 )
 
         # ---- Phase 3: interleave L/C x3 -----------------------------------
+        # pool_split_is_live is decided BEFORE phase 2 (the phase-2 chat jobs
+        # may spawn the dedicated family; the log tail is consumed per job, so
+        # by phase 3 the split signal is fully observed). Hoisting it here
+        # keeps it in scope for this phase's 1.5x budget gate AND phase 4.
+        p2_info_early = evidence["phases"].get("phase2", {})
+        chat_families_early = [
+            f for f in signals.workers_ready if f.startswith("ggml-translate-")
+        ]
+        chat_model_policy = str(ctx.get("chat_model_id", ""))
+        pool_split_is_live = bool(chat_families_early) or (
+            bool(p2_info_early.get("pool_split")) and bool(chat_model_policy.strip())
+        )
         rounds: List[dict] = []
         p3_listener_lat: List[int] = []
         interleave_fail = 0
@@ -813,27 +836,81 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
                 )
 
         # ---- Phase 4: kill Chat worker, Listener unaffected, respawn ------
+        # (P6 closure C-1: the kill is now REAL — argv-list taskkill on the
+        # resolved dedicated-chat-worker PID, _terminate_pids.)
+        #
+        # Branch discipline (honest, topology-driven):
+        #   * DISTINCT-FAMILY topology (pool split): the chat leg runs on a
+        #     dedicated ggml-translate-<model> worker, so the kill targets
+        #     ONLY that worker (the exact "ggml-translate.exe" Listener worker
+        #     and every app/engine GUI process are structurally excluded by
+        #     the image-name match + the split-refusal gate). The post-kill
+        #     assertions then run for real: the Listener leg must stay green,
+        #     and the next chat job triggers the host backoff-respawn + a
+        #     single re-relay (captured from the host log lines as before).
+        #   * SHARED-DEFAULT topology (pool size 1): the chat leg IS the
+        #     Listener leg — both families are the identical "" default, so
+        #     the single translate worker serves BOTH clients. Killing it
+        #     would disrupt the user's LIVE engine clients by construction,
+        #     so the kill-branch is SKIPPED and the honest skipped_reason
+        #     path records why. The kill-branch fires only after the user's
+        #     C-3 model pick makes the two legs distinct.
         phase4: Dict[str, object] = {"kill": {}, "respawn": {}}
         p2_info = evidence["phases"].get("phase2", {})
         chat_family = str(p2_info.get("chat_pool_family", ""))
-        pool_split_is_live = bool(p2_info.get("pool_split"))
+        if not chat_family.startswith("ggml-translate-") and pool_split_is_live:
+            # The phase-2 block could not name the family (host-log-gated),
+            # but the split is live: derive the dedicated family name from the
+            # chat policy model id (PoolFamilyForModel: "" -> "ggml-translate",
+            # id -> "ggml-translate-" + id).
+            chat_family = "ggml-translate-" + chat_model_policy
         # The kill is only valid when the pool split a DEDICATED chat worker
         # (a ggml-translate-<model> family distinct from the Listener's
         # "ggml-translate"). With an empty chat policy model both clients
         # share the ONE default worker — killing it would take down the
         # Listener's serving path too, violating the phase-4 "Listener
         # unaffected" assertion BY CONSTRUCTION. Refuse, and report honestly.
-        pool_split = chat_family.startswith("ggml-translate-")
+        pool_split = (
+            pool_split_is_live
+            and chat_family.startswith("ggml-translate-")
+            and bool(chat_model_policy.strip())
+        )
         crashed_before = list(signals.workers_crashed)
         if pool_split:
+            resolve_start = time.monotonic()
+            resolved = [
+                pid
+                for pid in list_processes_like("Emebalachat.Engine.ggml-translate")
+                if pid not in list_processes_like("Emebalachat.Engine.ggml-translate.exe")
+            ]
+            kill_start = time.monotonic()
             kills = _kill_family_worker(chat_family)
+            kill_done = time.monotonic()
             phase4["kill"] = {
-                "attempted": bool(kills), "pids": kills, "family": chat_family,
-                "skipped_reason": "" if kills else "no worker pid resolved",
+                "attempted": True,
+                "branch": "distinct_family",
+                "pids": kills,
+                "family": chat_family,
+                "resolved_candidate_pids": sorted(resolved),
+                "resolve_age_ms": int((kill_start - resolve_start) * 1000),
+                "kill_age_ms": int((kill_done - kill_start) * 1000),
+                "skipped_reason": "" if kills else "no dedicated chat worker pid resolved",
             }
+            if not kills:
+                evidence.setdefault("unverifiable", []).append(
+                    "phase4 kill/respawn: the pool split but no dedicated "
+                    "chat worker pid resolved (tasklist race or the worker "
+                    "already exited); kill not executed"
+                )
         else:
             phase4["kill"] = {
-                "attempted": False, "pids": [], "family": chat_family,
+                "attempted": False,
+                "branch": "shared_default",
+                "pids": [],
+                "family": chat_family,
+                "resolved_candidate_pids": [],
+                "resolve_age_ms": 0,
+                "kill_age_ms": 0,
                 "skipped_reason": (
                     "shared default worker (empty chat policy model): killing "
                     "it would also kill the Listener's serving path; phase-4 "
@@ -850,6 +927,7 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
         resp: Dict[str, object] = {}
         phase4["respawn"] = resp
         if kills:
+            respawn_start = time.monotonic()
             # Listener must stay green immediately after the kill
             l_after = _run_jobs(listener, 1, KO_FIXTURE, "phase4",
                                 evidence["phases"], tail, signals)[0]
@@ -868,6 +946,7 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
             signals.consume(tail.new_lines(settle_s=1.0))
             resp["chat_job_ok"] = c_after["ok"]
             resp["chat_latency_ms"] = c_after["latency_ms"]
+            resp["respawn_latency_ms"] = int((time.monotonic() - respawn_start) * 1000)
             if not c_after["ok"]:
                 failures.append("phase4: Chat respawn job failed")
             crashed_new = signals.workers_crashed[len(crashed_before):]
@@ -918,21 +997,64 @@ def _shape_jobs(jobs: List[dict]) -> List[dict]:
     ]
 
 
-def _kill_family_worker(family_prefix: str) -> List[int]:
-    """Kill the newest spawned translate worker NOT shared with the Listener.
+def _terminate_pids(pids: List[int]) -> List[int]:
+    """taskkill /F the given PIDs via an ARGV LIST (injection-safe: the PID is
+    validated as a positive int and passed as a single list element — never a
+    shell string). Mirrors the req027 teardown precedent
+    (tools/e2e/req027_e2e.py L584 force_kill_pids). Returns the PIDs whose
+    taskkill reported success."""
+    killed: List[int] = []
+    for pid in pids:
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            continue  # int/str-validated: only a positive int PID is killable
+        try:
+            r = subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True, timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            killed.append(pid)
+    return killed
 
-    The Listener worker serves family "ggml-translate" (exact). Any
-    Emebalachat.Engine.ggml-translate.exe whose family carries the user-model
-    suffix is the Chat worker. We resolve candidates via the host log: the
-    wmgr/016 crash lines carry the family, and tasklist supplies the PIDs.
+
+def _kill_family_worker(family_prefix: str) -> List[int]:
+    """Kill the DEDICATED chat-model translate worker — the real termination.
+
+    P6 closure C-1 (221800_ask-final-audit-planb.md): the previous version of
+    this function RESOLVED the PIDs but never issued a termination call (the
+    security reviewer's Adj-a: a repo sweep for taskkill/os.kill/
+    TerminateProcess found zero executable hits) — Phase 4 recorded PIDs and
+    asserted on a kill that never occurred. This version performs the real
+    kill, under the SAME split-refusal discipline the phase-4 block applies:
+
+    * SPLIT-REFUSAL GATE: the caller only invokes this when the pool actually
+      split (family_prefix carries the user-model suffix, i.e. the chat leg
+      runs on a family DISTINCT from the Listener's "ggml-translate"). When
+      both legs share the ONE default worker (size-1 topology) the phase-4
+      block never calls here — killing the shared worker would take down the
+      Listener's serving path BY CONSTRUCTION.
+    * CHAT-ONLY TARGETING: the worker image name is
+      "Emebalachat.Engine.ggml-translate.exe"; a distinct user-model family
+      spawns "Emebalachat.Engine.ggml-translate-<model>.exe". The candidate
+      set is the suffixed images ONLY — the exact "ggml-translate.exe"
+      (Listener's worker) and every non-worker app image
+      (Emebala.Engine.exe / EmebalaListener.exe / Emebalachat.exe and the
+      other GUI/engine processes) are structurally excluded by the image-name
+      match, so the split-refusal gate can never touch them. We kill the
+      NEWEST such PID (the current live worker for the dedicated family).
     """
-    pids = list_processes_like("Emebalachat.Engine.ggml-translate")
-    if not pids:
+    if not family_prefix.startswith("ggml-translate-"):
+        return []  # split-refusal: only a DISTINCT (suffixed) family is killable
+    candidates = {
+        pid
+        for pid in list_processes_like("Emebalachat.Engine.ggml-translate")
+        if pid not in list_processes_like("Emebalachat.Engine.ggml-translate.exe")
+    }
+    if not candidates:
         return []
-    # Only kill when the pool split actually happened (a suffixed family
-    # exists). Otherwise the single worker serves BOTH clients and killing it
-    # would violate "Listener unaffected".
-    return [] if not family_prefix.startswith("ggml-translate-") else [max(pids)]
+    return _terminate_pids([max(candidates)])
 
 
 # ---------------------------------------------------------------------------

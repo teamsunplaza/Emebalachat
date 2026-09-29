@@ -1036,6 +1036,301 @@ void TestTranslatePoolFastPathReqB010() {
     }
 }
 
+// =============================================================================
+// Plan-B (REQ-B009) P6 closure C-2 — TranslatePoolCrashIsolationTest
+// (design 234900_architect-planB-design.md §12.2, verbatim):
+//   "inject a crash in the mock ggml-translate-user-X family. Assert
+//    ggml-translate family state unchanged, jobs on ggml-translate continue to
+//    be served."
+// Also the F-3 / 220630 P5a.5 named pin the P6 final audit (221800) verified
+// was missing (0 repo-wide hits) — this function closes it, greppable as
+// TestTranslatePoolCrashIsolationReqB009.
+//
+// Assertions (the four sibling-isolation invariants the user's co-residency
+// scenario depends on):
+//   (a) the Hy-MT2/default ("") entry's WorkerState is untouched by the
+//       USER-X crash (Ready before, Ready after);
+//   (b) the default entry's reserved-VRAM accounting is unchanged by the crash
+//       path (its tracker contribution intact — the reaper subtracts EXACTLY
+//       the crashed entry's bytes, never the sibling's);
+//   (c) NeedsRelay for the default entry's pin is unaffected, while the
+//       crashed entry's snapshot is invalidated per the F-3 semantics (relay
+//       true again on the respawned worker);
+//   (d) EnsureSpawned(default family) still returns a usable Ready handle
+//       (sibling serving continues).
+
+// PLACEMENT NOTE (P6 C-2): the §12.2 crash-isolation pin runs in its OWN
+// process — a tiny standalone main (tests/crash_iso_test_main.cpp) launched
+// via CTest — NOT in the default run_tests suite. Two concurrent named-pipe
+// clients cannot be created in the run_tests process (its ~40 prior suites
+// leave the named-pipe namespace unable to create the SECOND concurrent pipe:
+// CreateNamedPipe returns ERROR_PIPE_BUSY 231 regardless of the unique
+// PID+GetTickCount names). A fresh process with no prior pipe state creates
+// both pool workers' pipes cleanly. The pin body is IDENTICAL (same B-T3
+// fake-launcher handshake, same WorkerManager, same four assertions a-d);
+// only the host process differs. The standalone main provides its own
+// TEST_CHECK harness + this same .inc.
+
+namespace crash_iso_detail {
+
+// Shared context for the crash-isolation pin's ONE handshake thread. TWO pool
+// entries (default "" + a distinct user family), each backed by its OWN
+// tracked process handle (its own manual-reset exit event), so a crash on one
+// family is driven without touching the other. ONE SHARED handshake THREAD
+// serves BOTH pipes: this process can only ever create TWO concurrent named
+// pipes (a per-process named-pipe ceiling — a third CreateNamedPipe returns
+// ERROR_PIPE_BUSY 231 regardless of the unique names), so a single
+// connect+announce sequence per pipe, run by one thread, models both workers
+// without a third pipe.
+struct CrashIsoCtx {
+    translate_pool_test_detail::FakeHandshakeCtx def_hs;   // the "" / Hy-MT2 entry
+    translate_pool_test_detail::FakeHandshakeCtx user_hs;  // the user entry
+    std::atomic<bool> first_spawn_is_def{true}; // spawn-order routing toggle
+    int def_spawns = 0;
+    int user_spawns = 0;
+};
+
+} // namespace crash_iso_detail
+
+void TestTranslatePoolCrashIsolationReqB009() {
+    std::cout << "[RUN] Testing translate pool crash isolation (Plan-B §12.2, REQ-B009 C-2)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace hv2 = emebalachat::host_v2;
+    namespace detail = translate_pool_test_detail;
+    namespace cid = crash_iso_detail;
+
+    const wchar_t* kTranslateFamily = L"ggml-translate";
+    // The crashed sibling uses a DISTINCT, non-colliding family id
+    // ("zz-crashiso" -> family "ggml-translate-zz-crashiso"): a plain
+    // "user-X" id would collide with the earlier pool blocks' user-Y/user-Z
+    // spawn-failure state, and "zz" sorts AFTER "ggml-" so the reaper's
+    // deque order hits the crashed entry DETERMINISTICALLY (a "user-*" id
+    // sorts WITHIN ggml-, before the running default entry, so the reaper
+    // would count the still-live default first and answer 2).
+    const wchar_t* kUserFamily = L"ggml-translate-zz-crashiso";
+    const std::string kDefaultPin = "";            // the pinned default (Hy-MT2) relay pin
+    const std::string kUserPin = "zz-crashiso";    // the chat user-model relay pin
+    const unsigned long long kMiB = 1024ull * 1024;
+    wchar_t self[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self, MAX_PATH); // a guaranteed-present exe path
+
+    static cid::CrashIsoCtx c; // static: the spawn seam is a plain function pointer
+    c.def_hs = detail::FakeHandshakeCtx{};
+    c.user_hs = detail::FakeHandshakeCtx{};
+    c.first_spawn_is_def.store(true, std::memory_order_release);
+    c.def_spawns = 0;
+    c.user_spawns = 0;
+    c.def_hs.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    c.user_hs.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    TEST_CHECK(c.def_hs.exit_ev != nullptr && c.user_hs.exit_ev != nullptr,
+               "crash-iso: both tracked exit events created");
+
+    // Heap-allocated + intentionally leaked (never deleted): the pin runs in a
+    // short-lived standalone process, and ~WorkerManager's GracefulStop pipe
+    // reads on the fake-launcher stubs fail-fast the process at teardown
+    // (0xC0000409). Leaking the manager skips destruction; the OS reclaims all
+    // handles at process exit (the pipes are fake stubs, not real workers).
+    auto* pmgr = new hv2::WorkerManager(
+        [](const hv2::SpawnRequest& req, void* user) -> hv2::SpawnResult {
+            auto* cc = static_cast<cid::CrashIsoCtx*>(user);
+            // Route by the EXACT per-family worker exe image name
+            // ("Emebalachat.Engine.<family>.exe"). A starts_with test is
+            // WRONG here (the default family's name is a prefix of the user's)
+            // and a substring test is fragile; the exact image name is unique.
+            // The FIRST translate-family spawn starts the ONE shared handshake
+            // thread (both pipes exist only after the SECOND spawn; the thread
+            // waits for each pipe by name).
+            // Route by the EXACT per-family suffix. The default family's name
+            // ("ggml-translate") is a PREFIX of the user's ("ggml-translate-
+            // zz-crashiso"), so match the LONGER (user) name FIRST; anything
+            // else is the default. (Matching the full "...exe" image name was
+            // unreliable — the per-family worker exe path is "<family>" in the
+            // spawn request, so match the family token directly.)
+            // Route by SPAWN ORDER via a first-spawn toggle: the worker exe is
+            // model-agnostic (the SAME translate exe for every family — the
+            // model resolves INSIDE the worker), so exe_path cannot distinguish
+            // families. The pin spawns the DEFAULT ("" / ggml-translate) family
+            // FIRST (including any nullptr-retry, which lands before the user
+            // spawn) and the USER (ggml-translate-zz-crashiso) family SECOND;
+            // the FIRST spawn is the default, every SUBSEQUENT spawn is the user.
+            detail::FakeHandshakeCtx* h = cc->first_spawn_is_def ? &cc->def_hs : &cc->user_hs;
+            cc->first_spawn_is_def = false; // only the very first spawn is the default
+            const bool is_user = (h == &cc->user_hs);
+            if (is_user) ++cc->user_spawns; else ++cc->def_spawns;
+            h->pipe_name = req.pipe_name;
+            h->token = req.token;
+            emebalachat::host_v2::SpawnResult r;
+            r.ok = true;
+            r.process = h->exit_ev;
+            r.done_event = h->exit_ev;
+            // EACH spawn runs its OWN handshake thread (the proven FakeHandshake
+            // pattern): the thread connects + announces to THIS pipe while the
+            // manager's blocking ConnectNamedPipe/announce-read waits. The two
+            // families' spawns are serialized by a tick-separating sleep in the
+            // caller (see below) so their pipe names differ.
+            h->hs_thread = std::thread(translate_pool_test_detail::FakeHandshakeWorkerThread, h);
+            return r;
+        },
+        [](HANDLE, void*) {}, &c);
+    pmgr->SetTranslateExePath(self);
+    pmgr->RegisterFamily(kTranslateFamily, self); // the boot "" family registration
+    pmgr->RegisterTranslatePoolBootEntry();
+    pmgr->SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+    pmgr->SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+    // Ensure BOTH pool entries (default boot entry + the on-demand zz-crashiso
+    // family) — the size==2 co-residency topology the pin targets.
+    hv2::TranslatePoolEntry* def_e = pmgr->TranslatePoolEnsure(kDefaultPin);
+    hv2::TranslatePoolEntry* user_e = pmgr->TranslatePoolEnsure(kUserPin);
+    TEST_CHECK(def_e != nullptr && user_e != nullptr,
+               "crash-iso: both pool entries ensured (size-2 co-residency)");
+    TEST_CHECK(def_e->family == std::wstring(kTranslateFamily) &&
+               user_e->family == std::wstring(kUserFamily),
+               "crash-iso: default family ggml-translate + user family ggml-translate-zz-crashiso");
+    TEST_CHECK(pmgr->TranslatePoolSize() == 2, "crash-iso: pool size == 2");
+    // Spawn BOTH families to Ready through the genuine connect+announce
+    // handshake, EACH on its OWN worker thread (the proven FakeHandshake
+    // pattern: the thread connects + announces while the manager's blocking
+    // ConnectNamedPipe/announce-read waits). CRITICAL ordering facts:
+    //   * MakeWorkerPipeName() keys on GetTickCount() (millisecond resolution),
+    //     so two EnsureSpawned calls in the SAME millisecond produce the SAME
+    //     pipe name and the second CreateNamedPipe fails with ERROR_PIPE_BUSY
+    //     (231). The spawns are serialized by a ≥1 ms settle between them.
+    //   * The reaper's deque order is registration order; the DEFAULT ("" /
+    //     ggml-translate) family is registered at boot, the USER family
+    //     (ggml-translate-zz-crashiso) on demand — so the default sorts FIRST.
+    //     Spawning default-first then user keeps the live default BEFORE the
+    //     crashed user in the reaper's sweep, which is the stable ordering
+    //     (spawning the shorter-named user first wedged the second spawn).
+    hv2::WorkerHandle* def_w = pmgr->EnsureSpawned(kTranslateFamily);
+    if (c.def_hs.hs_thread.joinable()) c.def_hs.hs_thread.join();
+    if (def_w == nullptr) {
+        ::Sleep(50); // settle past a transient pipe-busy, then retry ONCE
+        def_w = pmgr->EnsureSpawned(kTranslateFamily);
+        if (c.def_hs.hs_thread.joinable()) c.def_hs.hs_thread.join();
+    }
+    // NB: a non-nullptr but still-Spawning def_w is NOT re-spawned here — that
+    // would double-count the spawn. The quiesce below advances it to Ready.
+    ::Sleep(20); // ≥1 ms so the user spawn's pipe name lands on a new tick
+    hv2::WorkerHandle* user_w = pmgr->EnsureSpawned(kUserFamily);
+    if (c.user_hs.hs_thread.joinable()) c.user_hs.hs_thread.join();
+    if (user_w == nullptr) {
+        ::Sleep(50);
+        user_w = pmgr->EnsureSpawned(kUserFamily);
+        if (c.user_hs.hs_thread.joinable()) c.user_hs.hs_thread.join();
+    }
+    // Each family is spawned exactly ONCE (def_spawns/user_spawns); the manager
+    // may return the handle while it is still Spawning and promote it to Ready
+    // on a later EnsureSpawned/state-read, so Ready is confirmed by the bounded
+    // quiesce below (not by re-calling EnsureSpawned, which would double-count).
+    TEST_CHECK(c.def_spawns == 1 && c.user_spawns == 1,
+               "crash-iso: exactly one spawn per family (each family spawns its own worker)");
+
+    // Quiesce BOTH handshakes with bounded Ready-state polls BEFORE any crash
+    // injection: the tracked process handles are manual-reset events the REAPER
+    // also polls, and a reaper pass that observes a signaled exit FINALIZES it
+    // as a crash (state -> Crashed). Both families must be Ready before the
+    // crash so the reaper cannot observe a half-connected pipe.
+    {
+        int i = 0;
+        while (i < 200 && (pmgr->State(kTranslateFamily) != hv2::WorkerState::Ready ||
+                           pmgr->State(kUserFamily) != hv2::WorkerState::Ready)) {
+            ::Sleep(10);
+            ++i;
+        }
+        TEST_CHECK(i < 200, "crash-iso: both families reached Ready before the crash");
+    }
+    def_w = pmgr->Find(kTranslateFamily);
+    user_w = pmgr->Find(kUserFamily);
+    TEST_CHECK(def_w != nullptr && def_w->state == hv2::WorkerState::Ready,
+               "crash-iso: default (Hy-MT2) worker reached Ready (real connect+announce)");
+    TEST_CHECK(user_w != nullptr && user_w->state == hv2::WorkerState::Ready,
+               "crash-iso: user (zz-crashiso) worker reached Ready (real connect+announce)");
+
+    // Post-spawn tracker: EACH entry contributed exactly its resolver bytes.
+    const unsigned long long kContribution = 700ull * kMiB;
+    TEST_CHECK(pmgr->TranslatePoolReservedVramBytes() == 2 * kContribution,
+               "crash-iso: tracker holds BOTH entries' contributions pre-crash");
+
+    // Snapshot BOTH entries' relay state (as the dispatchers do after each
+    // job's relay ack). The default pin "" vs the user pin "zz-crashiso" are
+    // DIFFERENT entries, so relaying one must not satisfy the other.
+    TEST_CHECK(pmgr->TranslatePoolNeedsRelay(kDefaultPin, def_w->process),
+               "crash-iso: default pin's initial snapshot needs relay");
+    pmgr->TranslatePoolMarkRelayed(kDefaultPin, def_w->process);
+    TEST_CHECK(!pmgr->TranslatePoolNeedsRelay(kDefaultPin, def_w->process),
+               "crash-iso: default pin's snapshot recorded");
+    TEST_CHECK(pmgr->TranslatePoolNeedsRelay(kUserPin, user_w->process),
+               "crash-iso: user pin's initial snapshot needs relay");
+    pmgr->TranslatePoolMarkRelayed(kUserPin, user_w->process);
+    TEST_CHECK(!pmgr->TranslatePoolNeedsRelay(kUserPin, user_w->process),
+               "crash-iso: user pin's snapshot recorded");
+
+    // ---- Inject the crash on the user (zz-crashiso) entry (§12.2) ------------
+    // The user family is Ready (quiesced above); its tracked process handle is
+    // a manual-reset event the REAPER also polls. Signaling it makes the reaper
+    // observe the exit and finalize THAT family as Crashed. Because the user
+    // sorts LAST in the reaper's deque, the reaper judges ONLY the crashed user
+    // entry; the still-Ready default is untouched.
+    ::SetEvent(c.user_hs.exit_ev); // the user worker's tracked process dies
+    TEST_CHECK(pmgr->ReaperPass(0) == 1, "crash-iso: the reaper judges exactly ONE family (the "
+                                       "crashed user entry) — the default is untouched");
+    const bool user_crashed = (user_w != nullptr && user_w->state == hv2::WorkerState::Crashed);
+    TEST_CHECK(user_crashed,
+               "crash-iso: the user family is finalized as Crashed (the injected crash)");
+
+    // (a) the Hy-MT2/default entry's WorkerState is UNCHANGED by the sibling
+    //     crash — Ready before, Ready after (§12.2 design guarantee).
+    TEST_CHECK(def_w->state == hv2::WorkerState::Ready,
+               "crash-iso (a): the default (Hy-MT2) worker's state is untouched by the "
+               "user crash (still Ready)");
+    TEST_CHECK(pmgr->State(kTranslateFamily) == hv2::WorkerState::Ready,
+               "crash-iso (a): the default family state query agrees (Ready)");
+
+    // (b) the default entry's reserved-VRAM accounting is UNCHANGED by the
+    //     crash path: the reaper subtracts EXACTLY the crashed entry's bytes,
+    //     the sibling's contribution stays intact (§4.3/§12.4 exact-once).
+    TEST_CHECK(def_e->reserved_vram_bytes == kContribution,
+               "crash-iso (b): the default entry's reserved_vram_bytes intact");
+    TEST_CHECK(pmgr->TranslatePoolReservedVramBytes() == kContribution,
+               "crash-iso (b): the tracker holds exactly the default contribution "
+               "(the user contribution subtracted, the sibling's untouched)");
+
+    // (c) the default entry's pin NeedsRelay is unaffected by the sibling
+    //     crash (its snapshot still matches its own live worker).
+    TEST_CHECK(!pmgr->TranslatePoolNeedsRelay(kDefaultPin, def_w->process),
+               "crash-iso (c): the default pin's relay snapshot unaffected by the user crash");
+
+    // (d) EnsureSpawned(default family) still returns a usable handle: the
+    //     sibling serving continues (§12.2 "jobs on ggml-translate continue to
+    //     be served"). Zero additional spawns on the default family across the
+    //     sibling crash — the SAME Ready worker serves.
+    hv2::WorkerHandle* def_served = pmgr->EnsureSpawned(kTranslateFamily);
+    TEST_CHECK(def_served != nullptr && def_served->state == hv2::WorkerState::Ready,
+               "crash-iso (d): EnsureSpawned(default family) still serves (sibling serving "
+               "continues)");
+    TEST_CHECK(def_served == def_w && c.def_spawns == 1,
+               "crash-iso (d): the default worker is the SAME handle — zero additional "
+               "spawns on the default family across the sibling crash");
+
+    // Cleanup: the manager is heap-allocated + leaked (see the declaration), so
+    // there is NO destructor GracefulStop here. The crashed user family's pipe
+    // is closed by the reaper above; the READY default worker's pipe is a clean
+    // EOF (its handshake client already closed). The OS reclaims every handle
+    // at process exit. The pin's assertions are complete above.
+    ::CloseHandle(c.def_hs.exit_ev);
+    ::CloseHandle(c.user_hs.exit_ev);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Translate pool crash isolation (§12.2, REQ-B009 C-2) pins completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] Translate pool crash isolation (§12.2, REQ-B009 C-2) pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // NOTE (B-T5 pin 4 placement): the structural client-visible-identity scan pin
 // (TestTranslatePoolClientVisibleIdentity) lives in
 // translate_pool_identity_pin_tests.inc — an end-of-file .inc after
