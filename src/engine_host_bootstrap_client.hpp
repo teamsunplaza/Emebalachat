@@ -16,7 +16,8 @@
 //
 // Component set (the fixed common layout, plan §7.1 / host_main.cpp kEngineDirRel):
 //   %LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe        (orchestrator)
-//   %LOCALAPPDATA%\Emebala\Common\engine\Emebalachat.Engine.ggml-translate.exe (worker)
+//   %LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.ggml-translate.exe (worker;
+//     unified family name since 260930_0003, decisions.md D2)
 //   %LOCALAPPDATA%\Emebala\Common\engine\worker.<family>.manifest  (per-family
 //     manifest scheme, M7 A-1; the pre-A-1 legacy name "worker.manifest" is
 //     still ACCEPTED on reads — the requirement gate falls back to it, and the

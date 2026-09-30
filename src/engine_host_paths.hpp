@@ -61,7 +61,9 @@ constexpr wchar_t kOrchestratorExe[] = L"Emebala.Engine.exe";
 
 // REQ-044 (P4-2): replaces kWorkerExe in
 // engine_host_bootstrap_client.cpp L47.
-constexpr wchar_t kWorkerExe[] = L"Emebalachat.Engine.ggml-translate.exe";
+// 260930_0003 (decisions.md D2): unified to the Listener family convention
+// Emebala.Engine.ggml-translate.exe (ONE deployed worker name everywhere).
+constexpr wchar_t kWorkerExe[] = L"Emebala.Engine.ggml-translate.exe";
 
 // M7 A-1 (session 260922_0001): the legacy single-file manifest name. Kept as
 // the READ fallback for stores written before the per-family scheme (a pre-A-1

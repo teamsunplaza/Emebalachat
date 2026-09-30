@@ -65,7 +65,7 @@ constexpr char kWorkerFamilyTranslate[] = "ggml-translate";
 // pinned kPinnedModelFilename (engine_core re-export via engine.hpp).
 const RequiredComponent kRequired[] = {
     {RequiredComponent::Root::Engine, "Emebala.Engine.exe"},
-    {RequiredComponent::Root::Engine, "Emebalachat.Engine.ggml-translate.exe"},
+    {RequiredComponent::Root::Engine, "Emebala.Engine.ggml-translate.exe"},
     {RequiredComponent::Root::Models, "registry.json"},
     // The pinned model is appended dynamically (kPinnedModelFilename is a
     // runtime string_view, not a constexpr), as is the translate-family

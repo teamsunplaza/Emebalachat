@@ -4,8 +4,9 @@
 //
 // A Win32 GUI-subsystem background process (no console, no tray, no window)
 // that routes every Emebala app's inference requests to family worker
-// processes (Emebalachat.Engine.ggml-translate.exe — the second frozen
-// contract) over local named pipes. See
+// processes (Emebala.Engine.ggml-translate.exe — the second frozen
+// contract; unified name since 260930_0003, decisions.md D2) over local
+// named pipes. See
 // plans/emebala-engine-host-shared-inference.md — the v1 wire contract is
 // FROZEN and still served byte-identically (§V2-4.7).
 //
@@ -2493,11 +2494,16 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     std::wstring worker_exe;
     if (::GetModuleFileNameW(nullptr, self_path, MAX_PATH) > 0) {
         self_dir = std::filesystem::path(self_path).parent_path();
-        worker_exe = (self_dir / L"Emebalachat.Engine.ggml-translate.exe").wstring();
+        // 260930_0003 (decisions.md D2): unified family worker name
+        // Emebala.Engine.ggml-translate.exe (the REQ-043 "installer contract
+        // is frozen" deployed-name freeze is LIFTED by the CEO decision;
+        // mutex/pipe/manifest wire contracts stay frozen).
+        worker_exe = (self_dir / L"Emebala.Engine.ggml-translate.exe").wstring();
     }
     host_v2::WorkerManager wmgr;
-    // REQ-043 baseline: the translate family (its exe keeps the legacy
-    // Emebalachat.Engine.* deployed name — the installer contract is frozen).
+    // REQ-043 baseline: the translate family (its exe name was unified with
+    // the Listener family convention by 260930_0003 — see the spawn path
+    // two lines above).
     wmgr.RegisterFamily(kWorkerFamilyTranslate, worker_exe);
     // Plan-B (REQ-B003/B004) B-T4 boot wiring (technical-gate A-3/A-5,
     // B-T3 readiness note): the pool machinery gets its real inputs once,

@@ -19,7 +19,7 @@ This directory contains the Inno Setup script and assets for building the Emebal
    Use CMake to build the application before compiling the installer. The installer expects ALL of these to exist (the compile fails otherwise):
    - `../build/Emebala_chat.exe` (the application)
    - `../build/Emebala.Engine.exe` (the shared inference host, bundled into the per-user common store — REQ-043)
-   - `../build/Emebalachat.Engine.ggml-translate.exe` **and** `../build/worker.ggml-translate.manifest` (the translation worker and its per-family manifest, both bundled next to the host — REQ-006/M6, M7 A-1)
+   - `../build/Emebala.Engine.ggml-translate.exe` **and** `../build/worker.ggml-translate.manifest` (the translation worker — unified family name since session 260930_0003 — and its per-family manifest, both bundled next to the host — REQ-006/M6, M7 A-1)
 
 2b. **Stage the Listener-owned engine bundle (REQ-L32 P2-2, session 260925)**
    The ggml-asr worker and the CUDA runtime redists are LISTENER-owned shared

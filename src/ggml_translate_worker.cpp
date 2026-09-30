@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // ggml_translate_worker — REQ-043 (M6 T3, design §1.2, plan §V2-3): the
-// Emebalachat.Engine.ggml-translate.exe worker process (WIN32 subsystem).
+// Emebala.Engine.ggml-translate.exe worker process (WIN32 subsystem; unified
+// family name since session 260930_0003).
 //
 // Second frozen contract (난부 계약, §V2-3): the orchestrator creates the
 // PRIVATE named pipe (server side) and spawns this exe with the pipe name +
@@ -530,6 +531,11 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // client classifies "timeout" as TRANSIENT, so the app's one-shot
             // retry fires instead of the classification-as-Permanent
             // engine_failed no-retry dead end.
+            // 260930_0003 (다): over-budget inputs are chunked inside
+            // LocalInferenceEngine::Translate (paragraph boundaries, stitched
+            // with the original separators); each chunk decodes under its own
+            // FRESH wall-clock budget, so the budget below is per chunk and a
+            // chunked job cannot multiply a single decode's timeout risk.
             const bool decode_wall_clock_exhausted = engine->decode_wall_clock_exhausted();
             g_current_job.store(0, std::memory_order_release);
 

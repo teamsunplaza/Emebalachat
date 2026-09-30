@@ -234,9 +234,12 @@ void TestBt8InstallerModelBundling() {
     // owner); the Chat merge must add/gain the mt entry while the asr (Listener)
     // entry survives BYTE-IDENTICAL.
     {
+        // 260930_0003 (decisions.md D3): fixture refreshed to the current
+        // Listener ASR model id (assertions are pass-through; this is
+        // representativeness only).
         const std::string asr_item =
-            "{\"id\": \"sensevoice-small-q8-audiocpp-v1\", \"family\": \"ggml-asr\", "
-            "\"files\": [\"ggml-sensevoice-small-q8.bin\"], \"capabilities\": "
+            "{\"id\": \"whisper-large-v3-turbo-q5-0-v1\", \"family\": \"ggml-asr\", "
+            "\"files\": [\"ggml-large-v3-turbo-q5_0.bin\"], \"capabilities\": "
             "[\"asr\"], \"origin\": \"bundled\", \"resource\": {\"vram_mb\": 0, "
             "\"ctx\": 0, \"max_sessions\": 1, \"residency\": \"ondemand\", "
             "\"eviction\": \"lru\", \"priority\": 5}, \"profiles\": {}, "
@@ -289,7 +292,8 @@ void TestBt8InstallerModelBundling() {
                    "scenario (2): after the Chat merge the store carries BOTH entries");
         if (re.status == ehr::LoadStatus::Ok) {
             // The Listener asr entry is BYTE-IDENTICAL (untouched non-owned section).
-            const ehr::ModelEntry* asr = re.registry.FindModel("sensevoice-small-q8-audiocpp-v1");
+            // 260930_0003: id refreshed with the asr_item fixture above.
+            const ehr::ModelEntry* asr = re.registry.FindModel("whisper-large-v3-turbo-q5-0-v1");
             TEST_CHECK(asr != nullptr && asr->origin == "bundled" &&
                            asr->family == "ggml-asr",
                        "scenario (2): the Listener asr entry survives the Chat merge "

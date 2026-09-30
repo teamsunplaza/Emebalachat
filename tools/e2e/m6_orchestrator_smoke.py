@@ -3,7 +3,8 @@
 """
 m6_orchestrator_smoke.py — REQ-043 (M6 T4, R-6 adopted): real-process E2E
 smoke for the v2 ORCHESTRATOR (Emebala.Engine.exe) against the REAL worker exe
-(Emebalachat.Engine.ggml-translate.exe). Stdlib only (Python 3.8+), Windows
+(Emebala.Engine.ggml-translate.exe; unified family name since 260930_0003,
+decisions.md D2). Stdlib only (Python 3.8+), Windows
 interactive session (named pipes require the same user session; no admin).
 
 Verified round trips (task T4 item 7):
@@ -35,7 +36,7 @@ import ctypes
 import ctypes.wintypes as wt
 
 ORCH_EXE = r"build\Emebala.Engine.exe"
-WORKER_EXE = r"build\Emebalachat.Engine.ggml-translate.exe"
+WORKER_EXE = r"build\Emebala.Engine.ggml-translate.exe"
 CANONICAL_PIPE = r"\\.\pipe\emebala-engine"
 ALIAS_PIPE = r"\\.\pipe\emebala-engine-v1"
 IDLE_EXIT_MS = 60000  # the orchestrator self-exits if we crash and leak it

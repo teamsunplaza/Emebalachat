@@ -596,15 +596,19 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; worker entries. It used to silently omit the worker on a no-llama build
 ; tree (ENABLE_LLAMA_FETCH=OFF), which let a "local-LLM-capable" release ship
 ; with no inference worker (root cause of REQ-045 item 2). The worker is a
-; mandatory release component, so a missing build\Emebalachat.Engine.ggml-
+; mandatory release component, so a missing build\Emebala.Engine.ggml-
 ; translate.exe must now FAIL the compile exactly like the orchestrator
 ; entry above (the "missing must fail compile" policy, L451-452).
+; 260930_0003 (decisions.md D2): the built/staged name is the unified family
+; name Emebala.Engine.ggml-translate.exe (was Emebalachat.Engine.ggml-
+; translate.exe); an install-time legacy absorb renames/deletes any old-name
+; store copy before the stage decision (see AbsorbLegacyWorkerFileName).
 ; M7 A-1 (session 260922_0001): the deployed manifest filename follows the
 ; per-family scheme worker.<family>.manifest (worker.ggml-translate.manifest)
 ; so a second family (ggml-asr, deployed by Listener) sharing the common
 ; store can never overwrite this file. Reads keep accepting the legacy bare
 ; worker.manifest (bootstrap fallback); this installer WRITES the new name only.
-Source: "..\build\Emebalachat.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
+Source: "..\build\Emebala.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
 Source: "..\build\worker.ggml-translate.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
 ; REQ-L32 P2-2 (session 260925, design v2 §A-4.6): the ggml-asr worker exe,
 ; its per-family manifest (M7 A-1 worker.ggml-asr.manifest) and the CUDA
@@ -791,6 +795,10 @@ const
   // COMPONENTS_FILENAME: the shared per-user components registry written by
   //   every v2+ installer (%LOCALAPPDATA%\Emebala\Common\engine\components.json).
   // WORKER_FILENAME: the ggml-translate worker exe (T3 build artifact).
+  //   260930_0003 (decisions.md D2): unified to the Listener family
+  //   convention Emebala.Engine.ggml-translate.exe (ONE deployed name for
+  //   both products; Chat's installer used to stage the old
+  //   Emebalachat.Engine.* name, which is now only a legacy-absorb source).
   // WORKER_MANIFEST_FILENAME: the worker manifest deployed next to the exe
   //   (M7 A-1: per-family scheme worker.<family>.manifest, DEC-007).
   // ENGINE_*_ABI_VERSION: pinned ABI versions of the bundled orchestrator (2)
@@ -799,7 +807,7 @@ const
   // ENGINE_WORKER_ENGINE / ENGINE_WORKER_ENGINE_VERSION: pinned backend identity
   //   recorded in components.json (design §3.3 schema).
   COMPONENTS_FILENAME = 'components.json';
-  WORKER_FILENAME = 'Emebalachat.Engine.ggml-translate.exe';
+  WORKER_FILENAME = 'Emebala.Engine.ggml-translate.exe';
   WORKER_MANIFEST_FILENAME = 'worker.ggml-translate.manifest';
   // REQ-L32 P2-2/P2-3 (session 260925, design v2 §A-4.6): ggml-asr is a
   // LISTENER-owned shared slot. This installer stages the worker + manifest +
@@ -2030,7 +2038,7 @@ end;
 // 'ggml-translate' component entry only.
 //
 // No-llama guard (REQ-006 design §4.1 / T3 report), REQ-045 (P4-1, item 2a)
-// loud-fail: when the build tree lacks build\Emebalachat.Engine.ggml-
+// loud-fail: when the build tree lacks build\Emebala.Engine.ggml-
 // translate.exe (ENABLE_LLAMA_FETCH=OFF), the Check returns False. no-llama
 // is a VERIFICATION-ONLY build config; a release MUST be a llama build. Since
 // REQ-045 item 2a removed skipifsourcedoesntexist from the worker [Files]
@@ -2059,6 +2067,55 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// AbsorbLegacyWorkerFileName - session 260930_0003 (decisions.md D2, CEO
+// decision: ONE translate-worker name everywhere). Chat used to deploy the
+// worker it BUILDS under its own name (Emebalachat.Engine.ggml-translate.exe)
+// while Listener staged the same binary as Emebala.Engine.ggml-translate.exe,
+// so depending on install order the common store accumulated BOTH copies and
+// the last-app M7 A-3 cleanup (which owns only this product's name) orphaned
+// the other product's copy. The unified deployed name is the Listener family
+// convention (WORKER_FILENAME above); the REQ-043 name freeze is LIFTED.
+// Runs ONCE at ssInstall, BEFORE any Check evaluation and any [Files] copy
+// (called from CurStepChanged), so the version-pin/stage decision
+// (SharedSlotReplaceDecision / rule A) and the repair-hole existence check
+// already see the unified name. Idempotent by construction:
+//   legacy absent                       -> no-op
+//   legacy present, unified absent      -> rename legacy to unified
+//     (the same bytes; avoids a needless re-download/re-stage of the slot)
+//   legacy present, unified present     -> delete the legacy file (the
+//     unified store file wins; the staged [Files] copy refreshes it when the
+//     rule A decision says so)
+// Failures are log-only: a locked legacy file (running worker) is retried by
+// the next reinstall; StopRunningEngineHost at ssInstall minimizes the window.
+// ------------------------------------------------------------------------
+procedure AbsorbLegacyWorkerFileName();
+var
+  EngineDir: String;
+  LegacyPath: String;
+  UnifiedPath: String;
+begin
+  EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
+  // The pre-unification Chat-deployed worker name (session 260930_0003);
+  // WORKER_FILENAME is the unified name.
+  LegacyPath := EngineDir + '\Emebalachat.Engine.ggml-translate.exe';
+  UnifiedPath := EngineDir + '\' + WORKER_FILENAME;
+  if not FileExists(LegacyPath) then
+    Exit;
+  if FileExists(UnifiedPath) then
+  begin
+    if DeleteFile(LegacyPath) then
+      Log('260930_0003: legacy worker name removed (unified file already present): ' + LegacyPath)
+    else
+      Log('260930_0003: WARNING legacy worker name could not be removed (in use?); retried on next reinstall: ' + LegacyPath);
+    Exit;
+  end;
+  if RenameFile(LegacyPath, UnifiedPath) then
+    Log('260930_0003: legacy worker renamed to the unified name: ' + UnifiedPath)
+  else
+    Log('260930_0003: WARNING legacy worker rename failed (in use?); the stage decision reinstalls the unified name over it: ' + LegacyPath);
+end;
+
+// ------------------------------------------------------------------------
 // ShouldInstallEngineWorkerAsr - REQ-L32 P2-2 (session 260925, design v2
 // §A-4): ggml-asr is LISTENER's OWN slot; the Chat installer is NOT its owner
 // (IsOwner=False) -> the staged gate runs first (no staged artifact = nothing
@@ -2083,7 +2140,8 @@ end;
 // mid-upgrade is safe. Failure is non-fatal: Inno's file-in-use retry
 // dialog is the backstop.
 //
-// REQ-006/M6: the worker (Emebalachat.Engine.ggml-translate.exe) is spawned
+// REQ-006/M6: the worker (Emebala.Engine.ggml-translate.exe — unified name
+// since 260930_0003, decisions.md D2) is spawned
 // on demand by the orchestrator; killing the host alone would leave the
 // worker running with a stale pipe. Both must be stopped.
 // ------------------------------------------------------------------------
@@ -3203,6 +3261,11 @@ begin
   if CurStep = ssInstall then
   begin
     ReadConsentChoice();
+    // 260930_0003 (decisions.md D2): fold any pre-unification worker copy
+    // (Emebalachat.Engine.ggml-translate.exe) into the unified family name
+    // BEFORE the host/worker Check functions evaluate the pin/stage decision,
+    // so rule A and the repair hole see the unified name.
+    AbsorbLegacyWorkerFileName();
     // REQ-043: when the engine-version compare says this run replaces the
     // shared host, stop a running instance first so the [Files] copy cannot
     // hit a locked exe. Best-effort; the Check re-evaluates the same rule.
@@ -3478,6 +3541,12 @@ begin
   DeleteOwnedFile(EngineDir + '\' + WORKER_MANIFEST_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + WORKER_ASR_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + WORKER_MANIFEST_ASR_FILENAME);
+  // 260930_0003 (decisions.md D3, defect B): the CUDA runtime DLLs Chat stages
+  // ride the ggml-asr slot (see the [Files] entries above); without these rows
+  // the last-app uninstall orphaned them in the engine store.
+  DeleteOwnedFile(EngineDir + '\' + CUDA_CUBLAS_DLL_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + CUDA_CUBLASLT_DLL_FILENAME);
+  DeleteOwnedFile(EngineDir + '\' + CUDA_CUDART_DLL_FILENAME);
   DeleteOwnedFile(EngineDir + '\worker.manifest'); // legacy pre-A-1 name (translate's)
   DeleteOwnedFile(EngineDir + '\' + ENGINE_VERSION_FILENAME);
   DeleteOwnedFile(EngineDir + '\' + COMPONENTS_FILENAME);

@@ -880,8 +880,8 @@ def run_phases(ctx: dict, args: argparse.Namespace) -> Tuple[dict, List[str]]:
             resolve_start = time.monotonic()
             resolved = [
                 pid
-                for pid in list_processes_like("Emebalachat.Engine.ggml-translate")
-                if pid not in list_processes_like("Emebalachat.Engine.ggml-translate.exe")
+                for pid in list_processes_like("Emebala.Engine.ggml-translate")
+                if pid not in list_processes_like("Emebala.Engine.ggml-translate.exe")
             ]
             kill_start = time.monotonic()
             kills = _kill_family_worker(chat_family)
@@ -1036,8 +1036,9 @@ def _kill_family_worker(family_prefix: str) -> List[int]:
       block never calls here — killing the shared worker would take down the
       Listener's serving path BY CONSTRUCTION.
     * CHAT-ONLY TARGETING: the worker image name is
-      "Emebalachat.Engine.ggml-translate.exe"; a distinct user-model family
-      spawns "Emebalachat.Engine.ggml-translate-<model>.exe". The candidate
+      "Emebala.Engine.ggml-translate.exe" (unified family name since
+      260930_0003, decisions.md D2); a distinct user-model family spawns
+      "Emebala.Engine.ggml-translate-<model>.exe". The candidate
       set is the suffixed images ONLY — the exact "ggml-translate.exe"
       (Listener's worker) and every non-worker app image
       (Emebala.Engine.exe / EmebalaListener.exe / Emebalachat.exe and the
@@ -1049,8 +1050,8 @@ def _kill_family_worker(family_prefix: str) -> List[int]:
         return []  # split-refusal: only a DISTINCT (suffixed) family is killable
     candidates = {
         pid
-        for pid in list_processes_like("Emebalachat.Engine.ggml-translate")
-        if pid not in list_processes_like("Emebalachat.Engine.ggml-translate.exe")
+        for pid in list_processes_like("Emebala.Engine.ggml-translate")
+        if pid not in list_processes_like("Emebala.Engine.ggml-translate.exe")
     }
     if not candidates:
         return []

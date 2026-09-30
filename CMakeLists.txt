@@ -482,7 +482,7 @@ if (MSVC)
     endif()
 endif()
 
-# Target 4: Emebalachat.Engine.ggml-translate — REQ-043 (M6 T3, design §1.2/
+# Target 4: Emebala.Engine.ggml-translate — REQ-043 (M6 T3, design §1.2/
 # §4.2, plan §V2-3): the ggml-translate WORKER process (the second frozen
 # contract). WIN32 GUI subsystem (no console), owned by the orchestrator via
 # host_v2_worker_manager (spawn --pipe/--token, announce handshake, shutdown).
@@ -500,7 +500,10 @@ if (TARGET llama)
     )
 
     set_target_properties(EmebalaEngineGgmlTranslate PROPERTIES
-        OUTPUT_NAME "Emebalachat.Engine.ggml-translate")
+        # 260930_0003 (decisions.md D2): ONE worker name everywhere — the
+        # Listener family convention Emebala.Engine.ggml-translate.exe (the
+        # REQ-043 "Emebalachat.Engine.*" deployed-name freeze is lifted).
+        OUTPUT_NAME "Emebala.Engine.ggml-translate")
 
     target_link_libraries(EmebalaEngineGgmlTranslate PRIVATE
         # The worker's low body: LocalInferenceEngine + SHA pin + marker cache
@@ -556,7 +559,7 @@ if (TARGET llama)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${_eme_worker_manifest}"
                 "$<TARGET_FILE_DIR:EmebalaEngineGgmlTranslate>/worker.ggml-translate.manifest"
-        COMMENT "Deploying worker.ggml-translate.manifest next to Emebalachat.Engine.ggml-translate.exe")
+        COMMENT "Deploying worker.ggml-translate.manifest next to Emebala.Engine.ggml-translate.exe")
 endif()
 
 enable_testing()

@@ -35,6 +35,10 @@ from the script source on every run:
            actually invoked inside CurUninstallStepChanged, and BOTH preserve
            branches show the kept-notice box — deleting an else-if branch or
            the probe call must trip this gate even when CHECKs 1-4 pass.
+  CHECK 11 The three CUDA runtime DLLs Chat stages into the shared engine
+           store (cublas64_13 / cublasLt64_13 / cudart64_13) are enumerated
+           in CleanupSharedEngineStore's owned-file list, so the last-app
+           uninstall no longer orphans them (session 260930_0003, defect B).
 
 Exit code 0 = PASS, non-zero = violation (usable as a pre-build gate).
 
@@ -315,6 +319,25 @@ def check_contract(text: str) -> list[str]:
     if "function WriteTextFileAtomic" not in text:
         failures.append("CHECK 9: WriteTextFileAtomic (atomic writer helper) "
                         "is missing")
+
+    # -- CHECK 11: 260930_0003 defect B — staged CUDA DLLs are owned-cleaned ---
+    # Chat stages the CUDA 13.3 runtime DLLs (cublas64_13 / cublasLt64_13 /
+    # cudart64_13) into the shared engine store; without rows in the M7 A-3
+    # owned-file list the last-app uninstall left them as orphans.
+    for const, literal in (
+        ("CUDA_CUBLAS_DLL_FILENAME", "cublas64_13.dll"),
+        ("CUDA_CUBLASLT_DLL_FILENAME", "cublasLt64_13.dll"),
+        ("CUDA_CUDART_DLL_FILENAME", "cudart64_13.dll"),
+    ):
+        if f"{const} = '{literal}'" not in text:
+            failures.append(
+                f"CHECK 11: {const} constant missing "
+                f"(260930_0003 CUDA owned-cleanup)")
+        if cleanup:
+            if f"DeleteOwnedFile(EngineDir + '\\' + {const})" not in cleanup:
+                failures.append(
+                    f"CHECK 11: CleanupSharedEngineStore does not delete "
+                    f"{const} ({literal}; 260930_0003 defect B orphan close)")
 
     return failures
 
