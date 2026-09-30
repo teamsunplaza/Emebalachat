@@ -1,11 +1,12 @@
 Emebala Chat - Changelog
 ========================
 
-v0.10.1 (rerelease) - 2026-09-30
-================================
+v0.10.2 - 2026-09-30
+====================
 
-This rerelease of v0.10.1 ships the fixes below under the same version
-number - the version is intentionally unchanged. Patch update.
+Patch release. The version number changes because the shared translation
+engine's uninstall contract and the long-input translation fix touch files
+outside the app folder; upgrading from any 0.10.1 build is fully supported.
 
 Fixes in this build
 -------------------
