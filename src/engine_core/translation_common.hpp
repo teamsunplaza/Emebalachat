@@ -67,8 +67,10 @@
 // ---------------------------------------------------------------------------
 
 #include <atomic>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #if defined(HAVE_LLAMA_CPP) || __has_include("llama.h")
@@ -153,6 +155,86 @@ constexpr int ScaledMaxGenTokens(int input_token_count) {
     }
     const int scaled = input_token_count * kScaledGenPerInputToken + kScaledGenFlatTokens;
     return scaled < kScaledGenFloorTokens ? kScaledGenFloorTokens : scaled;
+}
+
+// 260930_0003 (다, CEO decision session 260930_0003): paragraph-boundary
+// chunking of over-budget inputs. When the prompt token count exceeds
+// kLlamaPromptTokenBudget, Translate() splits the SOURCE at blank-line
+// boundaries, translates each chunk sequentially in the original order, and
+// stitches the outputs back with the ORIGINAL separators verbatim - the old
+// head+tail shrink that discarded the MIDDLE of a long input is replaced.
+// Model-independent (pure text), so the unit suite pins it headlessly and it
+// compiles in both llama and no-llama configurations.
+struct ParagraphSplit {
+    // blocks[i] is the i-th blank-line-separated paragraph, in original order.
+    std::vector<std::wstring> blocks;
+    // separators[i] is the VERBATIM whitespace run found AFTER blocks[i] in the
+    // source ("" when nothing followed the last block). Stitching a fully
+    // translated input back together is blocks[0] + separators[0] + blocks[1]
+    // + ... + separators[n-1]. Consecutive blank lines (e.g. "\r\n\r\n\r\n")
+    // are preserved as ONE verbatim separator run.
+    std::vector<std::wstring> separators;
+};
+
+// Splits text into alternating content blocks and blank-line separators.
+// CRLF-aware; a whitespace run qualifies as a separator only when it contains
+// >= 2 line breaks (a blank line) - single newlines stay inside a block.
+ParagraphSplit SplitParagraphBlocks(std::wstring_view text);
+
+// Reassembles blocks[first..last] with their INTERNAL separators
+// (separators[first..last-1]). The separator AFTER the range is deliberately
+// NOT included - the caller appends it when stitching chunk outputs, so the
+// original separators survive BETWEEN translated chunks.
+std::wstring JoinParagraphBlocks(const ParagraphSplit& split, size_t first, size_t last);
+
+// 260930_0003 (다): the single over-budget decision point. A prompt token
+// count strictly above the budget selects the chunking path; at or below it
+// Translate() runs the historical single-shot path byte-identically.
+constexpr bool PromptNeedsChunking(int token_count) {
+    return token_count > kLlamaPromptTokenBudget;
+}
+
+// 260930_0003 (다) + P1/P2 remediation (review 260930): pure greedy chunk
+// packer behind an INJECTABLE measure, so the whole packing decision is
+// unit-testable headlessly (the production measure tokenizes through the
+// loaded model's vocab; tests substitute a fake). `measure(first, last)`
+// returns the token count of JoinParagraphBlocks(split, first, last) wrapped
+// as a prompt, or a negative value on tokenizer failure (-> std::nullopt).
+// Returns the inclusive [first,last] block ranges of the chunks, in original
+// order, covering every block exactly once.
+//
+// P1 fix: a range whose joined text is EMPTY (possible only as a LEADING
+// blank-only range - SplitParagraphBlocks emits blocks[0]=="" when the input
+// starts with a blank-line run) is FORCE-EXTENDED with the next block without
+// measuring. Shipping a zero-length chunk would make translate_once("") hit
+// the empty-prompt tokenizer failure and abort the ENTIRE request as
+// engine_failed - the exact long-paste regression chunking was built to fix.
+// The leading separator stays attached to the chunk text, so the stitched
+// reconstruction of the input remains byte-faithful.
+template <typename Measure>
+std::optional<std::vector<std::pair<size_t, size_t>>> PackParagraphChunks(
+    const ParagraphSplit& split, int token_budget, Measure measure) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    const size_t n = split.blocks.size();
+    size_t b = 0;
+    while (b < n) {
+        size_t e = b;
+        while (e + 1 < n) {
+            if (!JoinParagraphBlocks(split, b, e).empty()) {
+                const int tokens = measure(b, e + 1);
+                if (tokens < 0) {
+                    return std::nullopt; // tokenizer failure
+                }
+                if (tokens > token_budget) {
+                    break; // close the chunk at e
+                }
+            }
+            ++e; // fits (or the range so far is blank-only: P1 force-extend)
+        }
+        ranges.emplace_back(b, e);
+        b = e + 1;
+    }
+    return ranges;
 }
 
 // REQ-043: headless local inference engine (see file header for provenance).

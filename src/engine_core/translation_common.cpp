@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -39,15 +40,108 @@ static_assert(kPenaltyLastN == 64, "Hy-MT2 lab spec: repetition penalty last-N w
 // REQ-R01 proof: the llama context budget must agree with the values EnsureLoaded
 // configures and the arithmetic the unit tests rely on. Wrong values fail the build.
 // P2 (session 260910_0001): re-pinned to the official Hy-MT2 model card plan -
-// n_ctx 4096, generation reserve 2048 (see src/engine.hpp for the KV-cache
-// memory justification and the max_tokens=4096 trade-off analysis).
-static_assert(kLlamaNCtx == 4096, "REQ-R01/P2: n_ctx is 4096 (EnsureLoaded must configure the same)");
+// n_ctx 4096, generation reserve 2048 (the KV-cache memory math and the
+// max_tokens=4096 trade-off history now live next to the constants in
+// engine_core_helpers.hpp).
+// 260930_0003 (가): re-pinned per the CEO decision - n_ctx 8192, budget 6128
+// (prompt >= 6000 tokens must fit; user-GGUF vocabularies tokenize CJK less
+// compactly than Hy-MT2's, see engine_core_helpers.hpp for the full rationale).
+static_assert(kLlamaNCtx == 8192, "260930_0003 (가)/REQ-R01: n_ctx is 8192 (EnsureLoaded must configure the same)");
 static_assert(kLlamaGenReserve == 2048, "REQ-R01/P2: generation reserve equals max_gen_tokens");
 static_assert(kLlamaPromptTokenBudget == kLlamaNCtx - kLlamaGenReserve - kLlamaTokenSafetyMargin,
               "REQ-R01: prompt budget = n_ctx - gen reserve - safety margin");
-static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 4096-2048-16 = 2032");
+static_assert(kLlamaPromptTokenBudget == 6128, "260930_0003 (가): prompt token budget is 8192-2048-16 = 6128");
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// 260930_0003 (다, CEO decision): paragraph-boundary chunking + stitching.
+// WHY: the old over-budget path kept head+tail of the SOURCE and discarded the
+// MIDDLE, so a user-GGUF translation of a long input silently dropped whole
+// paragraphs (Hy-MT2's compact CJK vocab masked the 2032 budget; MiLM/Gemma-
+// class vocabs trip it on 1-3 paragraphs). The over-budget path now splits the
+// SOURCE at paragraph boundaries, translates each chunk sequentially in the
+// original order, and stitches the outputs back with the ORIGINAL separators
+// verbatim. A single paragraph that alone exceeds the budget still falls back
+// to the head+tail shrink inside the per-chunk path (TruncateHeadTailWindow,
+// kept in engine.cpp). These helpers are model-independent and compile in
+// both llama and no-llama configurations.
+// ---------------------------------------------------------------------------
+
+ParagraphSplit SplitParagraphBlocks(std::wstring_view text) {
+    ParagraphSplit out;
+    // A blank run is a candidate paragraph separator; a LINE BREAK is \r, \n,
+    // or a \r\n pair (counted once). CRLF-aware: "p1\r\n\r\np2" is ONE
+    // separator run ("\r\n\r\n"), never two adjacent cuts.
+    const auto is_blank = [](wchar_t c) {
+        return c == L'\r' || c == L'\n' || c == L' ' || c == L'\t';
+    };
+    const auto count_line_breaks = [text](size_t start, size_t end) {
+        int breaks = 0;
+        size_t k = start;
+        while (k < end) {
+            if (text[k] == L'\r') {
+                ++breaks;
+                if (k + 1 < end && text[k + 1] == L'\n') {
+                    ++k; // CRLF pair counts as ONE line break
+                }
+            } else if (text[k] == L'\n') {
+                ++breaks;
+            }
+            ++k;
+        }
+        return breaks;
+    };
+    const size_t n = text.size();
+    size_t pos = 0;
+    while (pos < n) {
+        size_t scan = pos;
+        bool found = false;
+        size_t sep_start = 0;
+        size_t sep_end = 0;
+        while (scan < n) {
+            if (!is_blank(text[scan])) {
+                ++scan;
+                continue;
+            }
+            const size_t ws_start = scan;
+            size_t k = scan;
+            while (k < n && is_blank(text[k])) {
+                ++k;
+            }
+            // A whitespace run is a paragraph separator only when it contains
+            // a BLANK LINE, i.e. >= 2 line breaks; single newlines stay inside
+            // the surrounding paragraph (indented line breaks, soft wraps).
+            if (count_line_breaks(ws_start, k) >= 2) {
+                sep_start = ws_start;
+                sep_end = k;
+                found = true;
+                break;
+            }
+            scan = k;
+        }
+        if (!found) {
+            out.blocks.emplace_back(text.substr(pos));
+            out.separators.emplace_back(); // no trailing separator
+            break;
+        }
+        out.blocks.emplace_back(text.substr(pos, sep_start - pos));
+        out.separators.emplace_back(text.substr(sep_start, sep_end - sep_start));
+        pos = sep_end;
+    }
+    return out;
+}
+
+std::wstring JoinParagraphBlocks(const ParagraphSplit& split, size_t first, size_t last) {
+    std::wstring out;
+    for (size_t i = first; i <= last && i < split.blocks.size(); ++i) {
+        if (i > first && i - 1 < split.separators.size()) {
+            out += split.separators[i - 1]; // internal separator between blocks
+        }
+        out += split.blocks[i];
+    }
+    return out;
+}
 
 #ifdef HAVE_LLAMA_CPP
 
@@ -383,7 +477,8 @@ std::wstring LocalInferenceEngine::Translate(
     // rung 2 = completion); rung 2 exists only for trivial-template user
     // models — the completion form is never applied to the Hy-MT2 path's
     // non-trivial template (attempt 1 only follows an empty/echo rung 1).
-    auto build_final_prompt = [&](std::wstring_view s, bool completion_form) -> std::string {
+    auto build_final_prompt = [&](std::wstring_view s, bool completion_form,
+                                  bool suppress_debug_log = false) -> std::string {
         std::string u8 = ToUtf8(s);
         if (u8.empty()) {
             return {};
@@ -429,7 +524,10 @@ std::wstring LocalInferenceEngine::Translate(
         // below), so it needs BOTH gates - the pre-existing opt-in
         // EMEBALA_DEBUG_PROMPT env var AND diag_log_content (default off).
         // With either off, only the byte count is recorded.
-        if (DebugPromptEnabled()) {
+        // 260930_0003 (다): suppress_debug_log is set ONLY by the chunking
+        // pre-check probe below, so a within-budget request emits the exact
+        // same diagnostic lines as before the chunking change.
+        if (DebugPromptEnabled() && !suppress_debug_log) {
             if (diag::ContentLoggingEnabled()) {
                 DIAG_F(
                         "ENGINE/BuildPrompt/050: local prompt target=\"%.*s\" source=\"%.*s\" bytes=%zu:\n%.240s\n---\n",
@@ -551,6 +649,17 @@ std::wstring LocalInferenceEngine::Translate(
             }
         }
     };
+    // 260930_0003 (다): the per-chunk translation body — the former inline
+    // REQ-059 attempt loop (rung 1 chat -> rung 2 completion), unchanged in
+    // behavior, wrapped in a lambda so an over-budget input can be translated
+    // chunk by chunk. `chunk_text` is the source slice for ONE chunk; the
+    // working copy `cur` is what the head+tail shrink mutates (each chunk
+    // shrinks independently). std::nullopt maps the historical in-body
+    // `return {}` failures; a completed attempt ladder returns the trimmed
+    // UTF-8 output even when empty (the caller treats empty as engine_failed,
+    // exactly like the pre-chunking code).
+    auto translate_once = [&](std::wstring_view chunk_text) -> std::optional<std::string> {
+    std::wstring cur(chunk_text);
     std::string trimmed_u8;
     bool degraded_to_completion = false;
     // REQ-059 perf: set when the rung-1 early-echo probe aborts the decode —
@@ -560,43 +669,48 @@ std::wstring LocalInferenceEngine::Translate(
     bool rung1_aborted_echo = false;
     for (int attempt = 0; attempt < 2; ++attempt) {
     const bool completion_form = (attempt == 1);
-    std::string prompt = build_final_prompt(src_w, completion_form);
+    std::string prompt = build_final_prompt(cur, completion_form);
     std::vector<llama_token> prompt_tokens;
     int32_t n_prompt_tokens = tokenize_prompt(prompt, prompt_tokens);
     if (n_prompt_tokens < 0) {
-        return {};
+        return std::nullopt;
     }
 
-    // REQ-R01 (audit §2.1): count prompt tokens BEFORE llama_decode. When they
+    // REQ-R01 (audit §2.1): count prompt tokens BEFORE llama_decode. 260930_0003
+    // (다): this shrink is now the PER-CHUNK fallback — reached only when a
+    // single paragraph alone exceeds the budget (multi-paragraph over-budget
+    // input is chunked before translate_once is ever called). When the tokens
     // exceed the budget (n_ctx - generation reserve - safety margin), shrink
-    // the SOURCE text with a head+tail sliding window and re-tokenize. Each
-    // iteration targets a proportional size minus 25% headroom, so the loop
-    // makes geometric progress and terminates quickly even when the character
-    // -> token compression ratio differs between iterations.
+    // the chunk's SOURCE text with a head+tail sliding window and re-tokenize.
+    // Each iteration targets a proportional size minus 25% headroom, so the
+    // loop makes geometric progress and terminates quickly even when the
+    // character -> token compression ratio differs between iterations.
     if (n_prompt_tokens > kLlamaPromptTokenBudget) {
         const int32_t overflow_n = n_prompt_tokens;
         int shrink_iters = 0;
-        while (n_prompt_tokens > kLlamaPromptTokenBudget && shrink_iters < 16 && src_w.size() > 64) {
+        while (n_prompt_tokens > kLlamaPromptTokenBudget && shrink_iters < 16 && cur.size() > 64) {
             const double ratio = static_cast<double>(kLlamaPromptTokenBudget) / static_cast<double>(n_prompt_tokens);
-            size_t target_len = static_cast<size_t>(static_cast<double>(src_w.size()) * ratio * 0.75);
+            size_t target_len = static_cast<size_t>(static_cast<double>(cur.size()) * ratio * 0.75);
             if (target_len < 64) {
                 target_len = 64;
             }
-            if (target_len >= src_w.size()) {
-                target_len = src_w.size() - 1; // shrink at least one unit per iteration
+            if (target_len >= cur.size()) {
+                target_len = cur.size() - 1; // shrink at least one unit per iteration
             }
-            src_w = TruncateHeadTailWindow(src_w, target_len / 2);
-            prompt = build_final_prompt(src_w, completion_form);
+            cur = TruncateHeadTailWindow(cur, target_len / 2);
+            prompt = build_final_prompt(cur, completion_form);
             const int32_t n2 = tokenize_prompt(prompt, prompt_tokens);
             if (n2 < 0) {
                 DIAG_F("ENGINE/Translate/013: tokenizer rejected the truncated prompt\n");
-                return {};
+                return std::nullopt;
             }
             n_prompt_tokens = n2;
             ++shrink_iters;
         }
-        DIAG_F("ENGINE/Translate/010: prompt tokens %d exceeded budget %d; source truncated to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
-                overflow_n, kLlamaPromptTokenBudget, src_w.size(), n_prompt_tokens, shrink_iters);
+        // 260930_0003 (다): same 010 over-budget family as the chunking line,
+        // message now names the per-chunk head+tail fallback explicitly.
+        DIAG_F("ENGINE/Translate/010: chunk prompt tokens %d exceeded budget %d; chunk head+tail-shrunk to %zu UTF-16 units -> %d tokens after %d shrink iterations\n",
+                overflow_n, kLlamaPromptTokenBudget, cur.size(), n_prompt_tokens, shrink_iters);
     }
 
     // Last-resort hard cap: if the shrink loop still could not reach the budget
@@ -616,9 +730,9 @@ std::wstring LocalInferenceEngine::Translate(
     }
 
     // The post-generation quote-strip heuristic below compares against the
-    // ORIGINAL source quoting; recompute UTF-8 from the (possibly truncated)
+    // ORIGINAL source quoting; recompute UTF-8 from the (possibly shrunk)
     // working copy so the comparison reflects what was actually sent.
-    std::string src_u8 = ToUtf8(src_w);
+    std::string src_u8 = ToUtf8(cur);
 
     // Clear KV memory for clean inference sequence
     llama_memory_clear(llama_get_memory(ctx), true);
@@ -628,7 +742,7 @@ std::wstring LocalInferenceEngine::Translate(
     if (llama_decode(ctx, batch) != 0) {
         DIAG_F("ENGINE/Translate/011: llama_decode failed (%d prompt tokens, budget %d)\n",
                 n_prompt_tokens, kLlamaPromptTokenBudget);
-        return {};
+        return std::nullopt;
     }
 
     // Initialize sampler according to Tencent Hy-MT2 official specifications
@@ -651,7 +765,7 @@ std::wstring LocalInferenceEngine::Translate(
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
     if (!smpl) {
-        return {};
+        return std::nullopt;
     }
 
     std::string output_u8;
@@ -684,7 +798,7 @@ std::wstring LocalInferenceEngine::Translate(
         if (CancelRequested()) {
             DIAG_F("ENGINE/Translate/032: local decode canceled at token %d (shutdown)\n", i);
             llama_sampler_free(smpl);
-            return {};
+            return std::nullopt;
         }
 
         // REQ-051 U-1 FIX 1: wall-clock budget check BETWEEN DECODE STEPS
@@ -702,7 +816,7 @@ std::wstring LocalInferenceEngine::Translate(
             DIAG_F("ENGINE/Translate/033: decode wall-clock budget exhausted at token %d (%lld ms); answering timeout\n",
                    i, static_cast<long long>(elapsed_ms));
             llama_sampler_free(smpl);
-            return {};
+            return std::nullopt;
         }
 
         // Guard against context overflow (REQ-R01: constant now shared with the
@@ -796,7 +910,7 @@ std::wstring LocalInferenceEngine::Translate(
             // prompt-decode failure above.
             DIAG_F("ENGINE/Translate/014: llama_decode failed mid-generation at token %d; answering engine_failed\n", i);
             llama_sampler_free(smpl);
-            return {};
+            return std::nullopt;
         }
     }
 
@@ -882,13 +996,103 @@ std::wstring LocalInferenceEngine::Translate(
     // a control-token string.
     if (output_is_bare_special(trimmed_u8)) {
         DIAG_F("ENGINE/Translate/036: output is a bare special-token marker; answering engine_failed\n");
-        return {};
+        return std::nullopt;
     }
 
     if (degraded_to_completion) {
         DIAG_F("ENGINE/Translate/035: returning the completion-form result (shape-only)\n");
     }
-    return ToUtf16(trimmed_u8);
+    return trimmed_u8;
+    }; // 260930_0003 (다): translate_once (per-chunk attempt ladder)
+
+    // 260930_0003 (다): over-budget pre-check. Tokenize the FULL prompt once
+    // (probe; debug-prompt log suppressed so a within-budget request emits
+    // exactly the same diagnostics as before chunking). Within budget ->
+    // the historical single-shot path, byte-identical. Over budget ->
+    // paragraph-boundary chunking + stitching below.
+    {
+        std::vector<llama_token> probe_tokens;
+        const int32_t n_full_prompt = tokenize_prompt(
+            build_final_prompt(src_w, /*completion_form=*/false, /*suppress_debug_log=*/true),
+            probe_tokens);
+        if (n_full_prompt < 0) {
+            return {};
+        }
+        if (!PromptNeedsChunking(n_full_prompt)) {
+            const std::optional<std::string> single = translate_once(src_w);
+            if (!single) {
+                return {};
+            }
+            return ToUtf16(*single);
+        }
+
+        // ---- 260930_0003 (다): over-budget paragraph chunking + stitching ----
+        const ParagraphSplit split = SplitParagraphBlocks(src_w);
+        if (split.blocks.empty()) {
+            return {}; // impossible for a tokenized non-empty prompt; fail honestly
+        }
+        // Greedy measure-and-pack behind the injectable seam
+        // (PackParagraphChunks in translation_common.hpp): every candidate is
+        // measured through the REAL prompt builder (chat-template overhead
+        // included), so a packed chunk can never drift over the budget,
+        // whatever the model's vocabulary. The packer never emits a
+        // zero-length chunk (P1: a leading blank-only range is force-extended
+        // with the next block), so translate_once() always sees real text.
+        auto measure_chunk = [&](size_t first, size_t last) -> int32_t {
+            const std::wstring t = JoinParagraphBlocks(split, first, last);
+            std::vector<llama_token> tmp;
+            return tokenize_prompt(
+                build_final_prompt(t, /*completion_form=*/false, /*suppress_debug_log=*/true),
+                tmp);
+        };
+        const std::optional<std::vector<std::pair<size_t, size_t>>> ranges =
+            PackParagraphChunks(split, kLlamaPromptTokenBudget, measure_chunk);
+        if (!ranges) {
+            return {}; // tokenizer rejected a mid-input candidate
+        }
+        std::vector<std::wstring> chunks;
+        std::vector<std::wstring> chunk_trailing_separators;
+        for (const std::pair<size_t, size_t>& range : *ranges) {
+            std::wstring chunk_text = JoinParagraphBlocks(split, range.first, range.second);
+            if (chunk_text.empty()) {
+                // P1 defense-in-depth: the packer guarantees non-empty ranges,
+                // but a blank-only chunk must never reach the decode ladder.
+                DIAG_F("ENGINE/Translate/010: skipping zero-length chunk (blank-only block)\n");
+                continue;
+            }
+            chunks.emplace_back(std::move(chunk_text));
+            chunk_trailing_separators.emplace_back(
+                range.second < split.separators.size()
+                    ? split.separators[range.second]
+                    : std::wstring());
+        }
+        if (chunks.empty()) {
+            return {}; // blank-only input can never be over budget; fail honestly
+        }
+        DIAG_F("ENGINE/Translate/010: prompt tokens %d exceeded budget %d; input chunked into %zu parts at paragraph boundaries\n",
+               n_full_prompt, kLlamaPromptTokenBudget, chunks.size());
+
+        // Sequential in-order translation, then stitch with the ORIGINAL
+        // separators verbatim. Each chunk runs the full attempt ladder with a
+        // FRESH decode wall-clock budget and its own input-scaled generation
+        // cap (ScaledMaxGenTokens / ScaledDecodeWallClockBudgetMs are computed
+        // per chunk inside translate_once), so every chunk request stays
+        // inside the wall-clock budget even though the whole input exceeds
+        // the prompt budget. One failed chunk fails the whole request
+        // honestly - never a partial stitch. A single chunk that alone
+        // exceeds the budget keeps the historical head+tail fallback through
+        // the REQ-R01 shrink loop inside translate_once.
+        std::wstring stitched;
+        for (size_t k = 0; k < chunks.size(); ++k) {
+            const std::optional<std::string> part = translate_once(chunks[k]);
+            if (!part) {
+                return {};
+            }
+            stitched += ToUtf16(*part);
+            stitched += chunk_trailing_separators[k];
+        }
+        return stitched;
+    }
 }
 
 #else // !HAVE_LLAMA_CPP

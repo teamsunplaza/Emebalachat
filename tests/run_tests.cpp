@@ -2748,15 +2748,21 @@ void TestEngineModule() {
         std::cout << "  [CACHED LLAMA RESULT in " << ms2 << " ms]: '오늘 날씨가 아주 좋습니다.' -> '" << ToUtf8(second_res) << "'" << std::endl;
         TEST_CHECK(!second_res.empty(), "Second local LLM call produced non-empty result");
 
-        // REQ-R01 (audit §2.1): text long enough to exceed the 4096-token context
-        // must be safely truncated (head+tail window) and STILL produce a
-        // non-empty translation - no decode crash, no silent {}. ~8000 Korean
-        // UTF-16 units tokenize to well beyond kLlamaPromptTokenBudget (2032).
+        // REQ-R01 (audit §2.1) + 260930_0003 (다): text long enough to exceed
+        // the 6128-token prompt budget (8192 n_ctx - 2048 generation reserve -
+        // 16 safety margin) must be safely CHUNKED at paragraph boundaries and
+        // stitched, and STILL produce a non-empty translation - no decode
+        // crash, no silent {}. The fixture is deliberately MULTI-PARAGRAPH
+        // (blank-line separated blocks) so it exercises the chunking path; a
+        // single over-budget paragraph keeps the head+tail shrink instead
+        // (fallback pinned headlessly by TestS260930ChunkStitch).
         {
+            const std::wstring para = L"안녕하세요, 만나서 반갑습니다. 오늘 날씨가 아주 좋습니다. 번역 테스트를 위한 긴 문장을 반복해서 채웁니다. 기계 번역 품질 확인을 위한 문단 구성입니다. ";
             std::wstring filler;
-            filler.reserve(9000);
-            while (filler.size() < 8000) {
-                filler += L"안녕하세요, 만나서 반갑습니다. 오늘 날씨가 아주 좋습니다. 번역 테스트를 위한 긴 문장을 반복해서 채웁니다. ";
+            filler.reserve(30000);
+            while (filler.size() < 24000) {
+                filler += para;
+                filler += L"\r\n\r\n"; // paragraph boundary -> chunk split point
             }
             auto t4 = std::chrono::steady_clock::now();
             TranslationStatus ovf_st = TranslationStatus::EngineFailed;
@@ -3300,10 +3306,11 @@ void TestTokenTruncation() {
     // task's "static-assertion-style checks where feasible" directive (and it
     // avoids MSVC C4127 constant-condition warnings that runtime asserts on
     // constexpr values would emit under /W4).
-    static_assert(kLlamaNCtx == 4096, "test build/P2: n_ctx 4096 (official Hy-MT2 card)");
+    static_assert(kLlamaNCtx == 8192, "test build/260930_0003 (가): n_ctx 8192 (user-GGUF long inputs must fit)");
     static_assert(kLlamaGenReserve == 2048, "test build/P2: generation reserve 2048");
-    static_assert(kLlamaPromptTokenBudget == 4096 - 2048 - 16, "test build: budget 2032");
-    static_assert(kLlamaPromptTokenBudget == 2032, "REQ-R01/P2: prompt token budget is 2032");
+    static_assert(kLlamaPromptTokenBudget == 8192 - 2048 - 16, "test build: budget 6128");
+    static_assert(kLlamaPromptTokenBudget == 6128, "260930_0003 (가): prompt token budget is 6128 (>= 6000)");
+    static_assert(kLlamaPromptTokenBudget >= 6000, "260930_0003 (가): the budget honors the >= 6000 decision");
     static_assert(kLlamaNCtx > kLlamaPromptTokenBudget, "REQ-R01: budget leaves generation reserve");
 
     // Helper: true if s contains ANY unpaired (lone) UTF-16 surrogate.
@@ -14810,6 +14817,14 @@ void TestEngineHostAvailabilityAndMigration() {
 // source pins.
 #include "req059_user_model_prompt_tests.inc"
 
+// 260930_0003 (가+다, CEO decision): the over-budget translation path -
+// n_ctx 8192 / prompt budget 6128, paragraph-boundary chunking + stitching,
+// single-huge-paragraph head+tail fallback (SplitParagraphBlocks /
+// JoinParagraphBlocks / PromptNeedsChunking in translation_common.hpp).
+// Staged as an .inc next to this runner; registered right after
+// TestReq059UserModelPrompt() (same translation-core cluster).
+#include "s260930_0003_chunk_stitch_tests.inc"
+
 // REQ-057 (wrong-model serving diagnosability): the worker echoes the
 // ACTUALLY-SERVED model id on every terminal event (EventMsg.model, OPTIONAL
 // per the wire-freeze discipline), the orchestrator relays it as the
@@ -15855,6 +15870,11 @@ int main() {
     // completion-form retry + colon cleanup). Registered right after the
     // REQ-055 suite, per the end-of-file pattern.
     TestReq059UserModelPrompt();
+    // 260930_0003 (가+다): the over-budget translation path pins (budget
+    // boundary 6128, paragraph chunking + stitching, head+tail fallback
+    // wiring). Registered right after the REQ-059 suite (same
+    // translation-core cluster).
+    TestS260930ChunkStitch();
     // REQ-057: the served-model id echo (worker -> orchestrator -> client ->
     // app-side served-vs-expected diagnosis). Registered right after the
     // REQ-055 suite it builds on (the live pin IS the expected-id source).

@@ -27,7 +27,7 @@ namespace emebalachat {
 // embedded call block, the preload seams and the legacy model-path migration
 // are all gone. The local source is now EXCLUSIVELY the shared inference
 // host (Emebala.Engine.exe via engine_host::TryTranslate); llama.cpp is
-// linked only by the worker exe (Emebalachat.Engine.ggml-translate.exe) and
+// linked only by the worker exe (Emebala.Engine.ggml-translate.exe) and
 // the engine_core library it consumes. The Chat exe links Emebalachat_core
 // only (CMake T5) and carries no llama symbol.
 //
