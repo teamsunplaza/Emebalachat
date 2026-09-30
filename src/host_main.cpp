@@ -1681,7 +1681,23 @@ bool AsrOpenSession(host_v2::WorkerManager& wmgr, Connection& conn,
     const std::wstring family(kWorkerFamilyAsr);
     wp::SessionOpenMsg msg;
     if (!wp::ParseSessionOpen(open_frame, msg) || msg.capability != "asr") {
-        conn.SendErrorThenClose(enginehost::kErrBadRequest);
+        // 260930_0003 poisoned-connection fix: answer bad_request and KEEP
+        // SERVING. The pre-fix SendErrorThenClose parks this thread in a
+        // bounded client-close wait that issues a REAL READ on the
+        // connection; a client that treats the fail-closed answer as
+        // non-terminal (§V2-4.5: a failed open is a per-request outcome, the
+        // connection stays usable — the m6 smoke sends its very next
+        // session_open immediately) has that frame CONSUMED by the wait's
+        // scratch read and discarded: the next request on this connection
+        // then hangs with no answer forever (observed: 90 s window; fresh
+        // connections unaffected — the per-connection poison). The enginehost
+        // §V2-4.3 client contract does not carry the worker-wire "session"
+        // member (only the Listener pins one; the host assigns the table id),
+        // so the frozen wp::ParseSessionOpen legitimately rejects a
+        // conformant asr probe — rejecting the OPEN must not kill the
+        // CONNECTION (the v2 translate branch's per-request failure
+        // precedent: answer + continue).
+        conn.SendError(enginehost::kErrBadRequest);
         return false;
     }
     // Claim the single-worker slot BEFORE touching the worker so a racing
@@ -1805,7 +1821,23 @@ bool AsrOpenSession(host_v2::WorkerManager& wmgr, Connection& conn,
                 bool terminal = false;
                 switch (host_v2::ClassifyAsrOpenFrame(json, msg.session, ev)) {
                     case host_v2::AsrOpenFrame::Opened:
-                        if (!conn.WriteFrame(json, 2000)) { open_exit = "client_write"; break; }
+                        if (!conn.WriteFrame(json, 2000)) {
+                            // 260930_0003 (Listener finding 3-1): a client
+                            // write failure MUST terminate the wait. The
+                            // pre-fix bare `break` exited only the switch, so
+                            // the loop kept polling the worker until the
+                            // ~120 s open deadline with the client-bound
+                            // claim held and the answered worker session
+                            // unmanaged. terminal=true funnels this into the
+                            // standard unwind below (SendError(engine_failed)
+                            // — the dead client drops it — + ReleaseByOwner +
+                            // the caller's table close), exactly the
+                            // treatment of the other terminal exits
+                            // (timeout/client_gone/worker_io).
+                            open_exit = "client_write";
+                            terminal = true;
+                            break;
+                        }
                         opened = true;
                         open_exit = "opened";
                         terminal = true;

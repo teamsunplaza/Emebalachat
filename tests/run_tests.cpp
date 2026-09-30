@@ -15706,6 +15706,12 @@ int main() {
     // consumed, never read as the model_missing answer (the answered_event
     // churn root cause, 32% of opens in the live measure).
     TestAsrOpenFrameClassifier();
+    // 260930_0003 (blind-QA m6 step 8): the poisoned-connection fix — an
+    // asr open reject is per-request (bad_request, connection kept), never
+    // the terminal SendErrorThenClose whose client-close wait swallowed the
+    // client's next frame. Pins the trigger + the healthy path; the
+    // end-to-end regression is the m6 smoke probe.
+    TestAsrOpenRejectKeepsConnection();
     // REQ-L28/REQ-L32 부록 ② (session 260925): pipe-candidate priority
     // (primary -> v1) + REQ-L02 cancel-approve helper adoption pins —
     // registered after the P2-1 suites, per the end-of-file pattern.

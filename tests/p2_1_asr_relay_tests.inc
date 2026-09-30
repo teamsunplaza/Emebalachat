@@ -699,3 +699,82 @@ void TestAsrOpenFrameClassifier() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// 260930_0003 (blind-QA m6 step 8): the poisoned-connection defect. A v2 asr
+// session_open WITHOUT the worker-wire "session" member (legal per the
+// enginehost §V2-4.3 client contract — the host assigns the table id; only
+// the Listener pins a wire id) failed the frozen wp::ParseSessionOpen, and
+// AsrOpenSession answered via SendErrorThenClose: its bounded client-close
+// wait issued a REAL READ on the connection and consumed + discarded the
+// client's very next frame (the m6 smoke's translate session_open, sent
+// immediately after the error answer per §V2-4.5 non-terminal semantics) —
+// the next request on that connection then hung with no answer (observed:
+// 90 s window; fresh connections unaffected — the per-connection poison).
+// The fix (host_main.cpp AsrOpenSession): answer bad_request NON-terminally
+// (SendError) and keep serving, the v2 translate branch's per-request
+// failure precedent. The relay lives in the EmebalaEngine target (not
+// linked into run_tests), so these pins hold the fix's preconditions: the
+// frozen parser rejects the probe frame (the trigger), the dispatcher's own
+// field parse still routes it to the asr branch (the asymmetry that lands
+// on the reject path), and the Listener's pinned-id open keeps parsing (the
+// healthy path unchanged). The end-to-end regression is pinned by the m6
+// smoke probe (asr fail-closed then translate open on the SAME connection).
+void TestAsrOpenRejectKeepsConnection() {
+    std::cout << "[RUN] Testing asr open reject policy (260930_0003 "
+                 "poisoned-connection fix)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace wp = emebalachat::workerproto;
+    namespace eh = emebalachat::enginehost;
+
+    // ---- 1. The trigger: the exact m6 smoke probe bytes (enginehost
+    // §V2-4.3 shape — NO "session" member) are rejected by the frozen
+    // worker-wire parser (its "session" member is required). The rejection
+    // must remain a parse failure — it is what routes the fix's answer.
+    {
+        wp::SessionOpenMsg m;
+        const std::string smoke_probe = "{\"op\":\"session_open\",\"capability\":\"asr\"}";
+        TEST_CHECK(!wp::ParseSessionOpen(smoke_probe, m),
+                   "260930_0003: the session-less asr open (m6 probe) fails the "
+                   "worker-wire parse");
+        TEST_CHECK(!wp::ParseSessionOpen(
+                       "{\"op\":\"session_open\",\"capability\":\"asr\",\"session\":\"abc\"}", m),
+                   "260930_0003: a non-numeric session member is rejected too");
+        TEST_CHECK(!wp::ParseSessionOpen("{\"op\":\"session_open\"}", m),
+                   "260930_0003: a capability-less open is rejected");
+    }
+
+    // ---- 2. The asymmetry: the v2 dispatcher's own field parse of the SAME
+    // frame succeeds and routes it to the asr relay branch — so the reject
+    // path is reachable from a conformant client frame (never reclassify
+    // this frame as a protocol violation at the dispatcher level).
+    {
+        eh::JsonPairs fields;
+        TEST_CHECK(eh::JsonParseObject("{\"op\":\"session_open\",\"capability\":\"asr\"}", fields),
+                   "260930_0003: the dispatcher parses the probe frame as a JSON object");
+        std::string capability;
+        if (const auto* cap = eh::detail::FindField(fields, "capability")) {
+            if (cap->is_string) capability = cap->text;
+        }
+        TEST_CHECK(capability == "asr",
+                   "260930_0003: the dispatcher routes the probe to the asr relay branch");
+    }
+
+    // ---- 3. The healthy path is unchanged: the Listener pinned-session
+    // open passes the exact reject-gate condition AsrOpenSession uses.
+    {
+        wp::SessionOpenMsg m;
+        const std::string listener_open =
+            "{\"op\":\"session_open\",\"session\":7,\"capability\":\"asr\"}";
+        TEST_CHECK(wp::ParseSessionOpen(listener_open, m) && m.capability == "asr" &&
+                       m.session == 7,
+                   "260930_0003: the Listener pinned-session open still passes the gate");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] Asr open reject policy tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] Asr open reject policy tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
