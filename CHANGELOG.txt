@@ -27,6 +27,15 @@ Fixes in this build
   the same filename no matter which Emebala product installed it, so
   updates and uninstalls can always find and refresh it (previously
   the filename depended on which product installed first).
+* The installer is now about 700 MB. It now actually bundles the shared
+  engine's GPU acceleration libraries (CUDA runtime) and the
+  speech-recognition worker that all Emebala family apps share -
+  preparation for the family line-up, so Listener and future Emebala
+  apps can reuse this engine instead of each shipping their own copy.
+  Nothing is slower for you: the app and translation speed are exactly
+  the same as 0.10.1; only the one-time download is bigger. On a fresh
+  install, GPU acceleration now works immediately instead of silently
+  falling back to slower CPU-only translation.
 
 v0.10.1 (rerelease) - 2026-09-22
 ================================
