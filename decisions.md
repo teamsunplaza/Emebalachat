@@ -57,3 +57,25 @@
   Needs a dedicated debug session (orchestrator AsrOpenSession/RunSessionV2).
 - **Uncommitted by policy** — commit requires user approval; propose 2 atomic
   commits: (1) translation quality, (2) worker-name unification + D3.
+
+## 2026-09-30 21:40 — Committed, Listener follow-up answered, setup regenerated
+
+- **Listener follow-up (chat-followup-reply.md) received**: their `--strict` rerun
+  PASSED (made default); they mirrored our request (dropped their rename staging step);
+  they independently confirmed the asr-poison root cause matches our fix; they reported
+  two more pre-existing defects (3-1 client-write missing terminal, 3-2 v2 answers
+  hardcoded id 0). Both verified in our code and FIXED (see commits below).
+- **Commits (user-approved, 5 atomic)**:
+  - 7d73a7d feat(engine): paragraph chunking (D1)
+  - 3a9f687 refactor(engine): worker filename unification (D2 + defect B + fixture)
+  - 0133fe7 fix(host): fail-closed asr open keeps the v2 connection
+  - 7e18044 fix(host): echo client request id in every v2 answer
+  - c0430e6 docs(decisions): this log
+- **Answer to Listener's open question**: the 90 s repro does NOT reproduce on the
+  fix-inclusive binary (reviewer re-ran the regression sequence: same-connection
+  asr reject -> translate open answers in 0.1 s; m6 smoke 11/11).
+- Backlog recorded by review: v2 enqueue probes pinned-only model (consistent with
+  current v2 semantics; revisit when v2 gains model selection); fidelity_probe
+  4096/2032 pins; absorb ordering P3.
+- installer/bundled/engine populated from the Listener bundle (asr pair + CUDA 13.3
+  x64); setup.exe regenerated via ISCC for the CEO's clean reinstall test.
