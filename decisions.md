@@ -79,3 +79,19 @@
   4096/2032 pins; absorb ordering P3.
 - installer/bundled/engine populated from the Listener bundle (asr pair + CUDA 13.3
   x64); setup.exe regenerated via ISCC for the CEO's clean reinstall test.
+
+## 2026-09-30 22:1x — Version promoted to 0.10.2, pushed, released
+
+- CEO: promote this build to 0.10.2, change every related number, commit,
+  push, rebuild the setup, and cut a GitHub Release on teamsunplaza.
+- Bumped: CMakeLists project(0.10.2), setup.iss AppVersion/OutputBaseFilename
+  (Emebalachat_Setup_0.10.2), README badge+download+check-count, AGENTS.md,
+  installer/README, .vscode IntelliSense define, REQ-006 version pins,
+  CHANGELOG section promoted to "v0.10.2 - 2026-09-30". Historical "(0.10.1+)"
+  annotations and illustrative version examples intentionally untouched.
+- Pitfall hit and fixed: a ';' typoed as '#' on the AppVersion history note made
+  ISPP read a preprocessor directive (compile aborted, line 45); the Edit tool
+  also stripped the setup.iss BOM again - both fixed, encoding gate re-passed.
+- Commits 233c0a2 (bump) + 6966b23 (marker fix) pushed to teamsunplaza/main.
+- Release: gh release create v0.10.2 on teamsunplaza/Emebalachat with the
+  setup exe + CHANGELOG notes.
