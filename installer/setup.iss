@@ -42,7 +42,7 @@ AppId={{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}
 ; "Emebalachat" for upgrade-path continuity with existing installs (architect plan row #18).
 AppName=Emebala Chat
 ; REQ-046 P4-4 history: version bump withdrawn per user decision (2026-09-19),
-# shipped as 0.10.1 rereleases; promoted to 0.10.2 on 2026-09-30 (session
+; shipped as 0.10.1 rereleases; promoted to 0.10.2 on 2026-09-30 (session
 ; 260930_0003, CEO decision - see CHANGELOG "v0.10.2").
 AppVersion=0.10.2
 AppPublisher=Team Sunplaza
