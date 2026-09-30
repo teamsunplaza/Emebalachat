@@ -1,6 +1,32 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.1 (rerelease) - 2026-09-30
+================================
+
+This rerelease of v0.10.1 ships the fixes below under the same version
+number - the version is intentionally unchanged. Patch update.
+
+Fixes in this build
+-------------------
+* A user-selected (.gguf) model no longer loses the middle of a long
+  text. Input past the engine's single-pass limit is now split at
+  paragraph boundaries, translated piece by piece, and reassembled in
+  the original order, so 1-3 whole paragraphs come back complete
+  instead of truncated. (The built-in Hy-MT2 model was never affected.)
+* The shared translation engine no longer goes silent after a speech
+  session error: when the Emebala speech engine (Listener) reports a
+  failed session on the shared host, the next translation request is
+  answered normally instead of being dropped (the connection used to
+  hang for 90 seconds).
+* Uninstalling the last Emebala app now also removes the bundled CUDA
+  runtime libraries from the shared engine folder - they used to be
+  left behind as orphans.
+* The translation worker inside the shared engine folder now carries
+  the same filename no matter which Emebala product installed it, so
+  updates and uninstalls can always find and refresh it (previously
+  the filename depended on which product installed first).
+
 v0.10.1 (rerelease) - 2026-09-22
 ================================
 
