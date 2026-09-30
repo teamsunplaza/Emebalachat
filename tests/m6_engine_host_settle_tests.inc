@@ -763,7 +763,11 @@ void TestHostGiveUpSettlePins() {
                   "void DispatcherV2Loop(host_v2::WorkerManager& wmgr)",
                   "job.conn->SendResult(job.id, status");
     PinDispatcher("void DispatcherV2Loop(host_v2::WorkerManager& wmgr)",
-                  "bool ReadMessage(Connection& conn", "requester->SendResult(0, status");
+                  "bool ReadMessage(Connection& conn",
+                  // 260930_0003 (Listener finding 3-2): the v2 answer echoes the
+                  // client's request id (SchedItem.request_id) instead of the
+                  // pre-fix hardcoded 0 — same single answer site, same ordering.
+                  "requester->SendResult(item.request_id, status");
 
     // The manager primitive is declared with the bounded-settle contract.
     TEST_CHECK(wmgr_src.find("enum class SettleOutcome") != std::string::npos,

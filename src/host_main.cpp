@@ -1138,7 +1138,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
             // §V2-4.6 deadline: queued-too-long requests answer timeout.
             if (expired.user) {
                 static_cast<Connection*>(expired.user)->SendResult(
-                    0, enginehost::HostStatus::Timeout);
+                    expired.request_id, enginehost::HostStatus::Timeout); // 260930_0003 (3-2): echo the id
             }
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
@@ -1172,7 +1172,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         const emebalachat::enginehost::clientpolicy::ClientPolicy item_policy =
             enginehost::LoadClientPolicyLive(item.client, L"");
         if (!ModelFileExistsFor(model_id)) {
-            requester->SendResult(0, enginehost::HostStatus::ModelMissing);
+            requester->SendResult(item.request_id, enginehost::HostStatus::ModelMissing);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             continue;
         }
@@ -1183,13 +1183,13 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // Busy — the frozen status set has no "pool_refused").
         host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(model_id);
         if (!e) {
-            requester->SendResult(0, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
         host_v2::WorkerHandle* w = wmgr.EnsureSpawned(e->family);
         if (!w) {
-            requester->SendResult(0, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
@@ -1198,7 +1198,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // the sibling dispatcher can never publish/drain/relay into our job
         // or our give-up settle; it fails fast here and answers Busy.
         if (!wmgr.TrySetBusy(e->family)) {
-            requester->SendResult(0, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
@@ -1257,7 +1257,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         jm.prompt_template = item_policy.prompt_template_ref;
         const bool sent = wmgr.SendToWorker(e->family, wp::BuildJob(jm));
         if (!sent) {
-            requester->SendResult(0, enginehost::HostStatus::EngineFailed);
+            requester->SendResult(item.request_id, enginehost::HostStatus::EngineFailed);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             wmgr.SetBusy(e->family, false);
             continue;
@@ -1319,7 +1319,7 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 break;
             }
         }
-        requester->SendResult(0, status, out_text, std::move(served_model));
+        requester->SendResult(item.request_id, status, out_text, std::move(served_model));
         if (status == enginehost::HostStatus::Ok) {
             g_health.RecordJob(host_v2::HealthOutcome::Success);
         } else if (status == enginehost::HostStatus::Timeout ||
@@ -2089,6 +2089,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
                 item.drop_eligible = (de->text == "true");
             }
             item.deadline_ms = NowMs() + msg.timeout_ms; // §V2-4.6 deadline
+            item.request_id = msg.id; // 260930_0003 (3-2): echo the client's id in the v2 result
             item.user = &conn;
             item.client = conn.client; // Item D: pin-relay gate identity
             // REQ-CP T3 / tech-gate A1: capture the translate body so the v2
@@ -2105,7 +2106,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
                 // THAT request's connection (it carried a different id).
                 if (evicted.user) {
                     static_cast<Connection*>(evicted.user)->SendResult(
-                        0, enginehost::HostStatus::Busy);
+                        evicted.request_id, enginehost::HostStatus::Busy); // 260930_0003 (3-2)
                 }
             } else if (r == host_v2::EnqueueResult::BusyOverflow) {
                 conn.SendResult(msg.id, enginehost::HostStatus::Busy);
@@ -2196,7 +2197,7 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
             for (const auto& d : dropped) {
                 if (d.user) {
                     static_cast<Connection*>(d.user)->SendResult(
-                        0, enginehost::HostStatus::Busy);
+                        d.request_id, enginehost::HostStatus::Busy); // 260930_0003 (3-2)
                 }
             }
             (void)g_sessions.Close(session);

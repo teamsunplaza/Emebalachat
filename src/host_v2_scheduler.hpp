@@ -58,6 +58,14 @@ struct SchedItem {
     bool drop_eligible = false;               // backpressure-permitted (subtitle class)
     std::int64_t deadline_ms = 0;             // absolute; 0 = no deadline
     std::uint64_t session = 0;                // owning session (0 = sessionless job)
+    // 260930_0003 (Listener finding 3-2): the CLIENT-FACING request id (the
+    // v2 translate frame's frozen "id" member), captured at the enqueue site
+    // and echoed back in every v2 result frame — v1 parity (DispatcherLoop
+    // answers job.id, host_main.cpp). Family clients match responses by the
+    // id they sent (the Listener session-level client), so the pre-fix
+    // hardcoded 0 made every v2 session-level translate unmatchable. Inert
+    // data like `client`: the scheduler never reads it.
+    std::uint64_t request_id = 0;             // client request id echoed in the v2 result
     void* user = nullptr;                     // opaque caller context (never touched)
     // Item D (session 260928_0001): hello.client captured at enqueue time so
     // the dispatcher can gate the config-pin relay when the request carries

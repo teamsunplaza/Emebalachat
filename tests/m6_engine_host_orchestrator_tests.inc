@@ -170,6 +170,92 @@ void TestHostV2Scheduler() {
                    "sched/clamp: oversized priority clamps to 9");
     }
 
+    // ---- 9. 260930_0003 (Listener finding 3-2): the client request id is a
+    // first-class SchedItem member that SURVIVES every queue transition the
+    // dispatcher answers from — pop, deadline expiry (Pop + ReaperPass),
+    // session drop, and backpressure eviction. The v2 dispatcher echoes it
+    // in every result frame (v1 parity: DispatcherLoop answers job.id); the
+    // pre-fix hardcoded 0 made session-level translate unmatchable for
+    // family clients. A 0-id item (client omitted "id") stays 0 — the
+    // scheduler never synthesizes one.
+    {
+        SchedQueue q;
+        SchedItem evicted;
+        SchedItem a; a.priority = 5; a.session = 7; a.request_id = 4242; a.deadline_ms = 100;
+        SchedItem b; b.priority = 5; b.request_id = 777; b.session = 8;
+        SchedItem c; c.priority = 5; c.request_id = 9; c.drop_eligible = true;
+        TEST_CHECK(q.TryEnqueue(a, 1, evicted) == EnqueueResult::Enqueued, "sched/id: a in");
+        TEST_CHECK(q.TryEnqueue(b, 2, evicted) == EnqueueResult::Enqueued, "sched/id: b in");
+        // Pop: the request_id rides the popped item to the dispatcher's
+        // success/failure SendResult(item.request_id, ...).
+        SchedItem out, expired; bool had = false;
+        TEST_CHECK(q.Pop(out, 150, expired, had) && had &&
+                       expired.request_id == 4242,
+                   "sched/id: the expiry report carries the client's request id");
+        TEST_CHECK(q.Pop(out, 150, expired, had) && !had && out.request_id == 777,
+                   "sched/id: the popped item carries the client's request id");
+        // ReaperPass: bulk expiry reports keep it too.
+        SchedItem d; d.priority = 5; d.request_id = 31337; d.deadline_ms = 200;
+        TEST_CHECK(q.TryEnqueue(d, 3, evicted) == EnqueueResult::Enqueued, "sched/id: d in");
+        std::vector<SchedItem> expired_all;
+        TEST_CHECK(q.ReaperPass(300, expired_all) == 1 && expired_all[0].request_id == 31337,
+                   "sched/id: the reaper report carries the client's request id");
+        // Session drop: the dropped report keeps it (session_close answers).
+        SchedItem e; e.priority = 5; e.session = 8; e.request_id = 5150;
+        TEST_CHECK(q.TryEnqueue(e, 4, evicted) == EnqueueResult::Enqueued, "sched/id: e in");
+        std::vector<SchedItem> dropped;
+        TEST_CHECK(q.DropSession(8, dropped) == 1 && dropped[0].request_id == 5150,
+                   "sched/id: the session-drop report carries the client's request id");
+        // Backpressure eviction: the evicted report keeps it (busy answer).
+        SchedQueue q2(1);
+        SchedItem old; old.priority = 5; old.drop_eligible = true; old.request_id = 111;
+        SchedItem nu; nu.priority = 5; nu.drop_eligible = true; nu.request_id = 222;
+        TEST_CHECK(q2.TryEnqueue(old, 1, evicted) == EnqueueResult::Enqueued, "sched/id: old in");
+        TEST_CHECK(q2.TryEnqueue(nu, 2, evicted) == EnqueueResult::BusyDroppedOld &&
+                       evicted.request_id == 111,
+                   "sched/id: the backpressure eviction report carries the client's request id");
+    }
+
+    // ---- 10. The host wiring (structural pin, skipped off-repo-root CWD —
+    // the same convention as the REQ-042/REQ-045 source pins): the v2 enqueue
+    // site CAPTURES msg.id into the item and the dispatcher answer sites ECHO
+    // item/expired/evicted/d.request_id — if either half regresses, the v2
+    // result id returns to the unmatchable hardcoded 0.
+    {
+        std::ifstream host_in("src/host_main.cpp", std::ios::binary);
+        if (!host_in) {
+            std::cout << "[SKIP] src/host_main.cpp not resolvable from the test CWD; "
+                         "260930_0003 v2 id-echo wiring pins skipped."
+                      << std::endl;
+        } else {
+            const std::string host_src((std::istreambuf_iterator<char>(host_in)),
+                                       std::istreambuf_iterator<char>());
+            TEST_CHECK(host_src.find("item.request_id = msg.id;") != std::string::npos,
+                       "sched/id: the v2 enqueue site captures the client's request id");
+            TEST_CHECK(host_src.find("requester->SendResult(item.request_id, status, out_text, "
+                                     "std::move(served_model))") != std::string::npos,
+                       "sched/id: the v2 success answer echoes the client's request id");
+            TEST_CHECK(host_src.find("expired.request_id, enginehost::HostStatus::Timeout") !=
+                           std::string::npos,
+                       "sched/id: the v2 deadline-expiry answer echoes the request id");
+            TEST_CHECK(host_src.find("evicted.request_id, enginehost::HostStatus::Busy") !=
+                           std::string::npos,
+                       "sched/id: the v2 backpressure-eviction answer echoes the request id");
+            TEST_CHECK(host_src.find("d.request_id, enginehost::HostStatus::Busy") !=
+                           std::string::npos,
+                       "sched/id: the v2 session-drop answer echoes the request id");
+            const size_t v2_begin = host_src.find("void DispatcherV2Loop(");
+            const size_t v2_end = host_src.find("bool ReadMessage(Connection& conn");
+            const std::string v2_region =
+                (v2_begin != std::string::npos && v2_end != std::string::npos && v2_end > v2_begin)
+                    ? host_src.substr(v2_begin, v2_end - v2_begin)
+                    : "";
+            TEST_CHECK(!v2_region.empty() &&
+                           v2_region.find("SendResult(0,") == std::string::npos,
+                       "sched/id: no hardcoded-0 result remains inside the v2 dispatcher");
+        }
+    }
+
     TEST_CHECK(g_failed_count == failures_before, "sched: suite had no failures");
 }
 

@@ -213,9 +213,14 @@ void TestReq057ServedModelEcho() {
                        "REQ-057 (b): every dispatcher terminal leg plumbs ev.model "
                        "(Final+Error in each of the v1 and v2 loops)");
         }
+        // 260930_0003 (Listener finding 3-2): the v2 answer echoes the client's
+        // request id (SchedItem.request_id, set at the v2 enqueue site) instead
+        // of the pre-fix hardcoded 0 — the served-model echo rides the same
+        // single answer call in both dispatchers.
         TEST_CHECK(src.find("SendResult(job.id, status, out_text, std::move(served_model))") !=
                        std::string::npos &&
-                       src.find("SendResult(0, status, out_text, std::move(served_model))") !=
+                       src.find(
+                           "SendResult(item.request_id, status, out_text, std::move(served_model))") !=
                        std::string::npos,
                    "REQ-057 (b): both SendResult answer paths carry the echo");
     }
