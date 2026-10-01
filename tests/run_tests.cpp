@@ -15799,6 +15799,9 @@ int main() {
     TestReq047P5F1LatchDrainOwnership();
     TestReq047P5F2DragPathsStatusWiring();
     TestReq047U1TrayGgufLabels();
+    // 260930_0004 D9: the model-download offer bypasses the REQ-047 streak
+    // latch, and a declined offer skips the dead-end fall-through notice.
+    TestReq047ModelOfferLatchBypass();
     // REQ-048 P1: boot component-check grace re-check (installer download
     // window) — registered after the REQ-047 suites, per the end-of-file
     // pattern.

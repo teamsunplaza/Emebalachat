@@ -708,6 +708,187 @@ void TestReq047P5F1LatchDrainOwnership() {
 }
 
 // ---------------------------------------------------------------------------
+// 260930_0004 D9 (debug-model-offer-failure): the REQ-MD model-download offer
+// must survive the REQ-047 streak latch. Root cause: the drain dropped ALL
+// requests while latched, and the latch can never clear while the pinned
+// model is absent (the success sentinel needs a successful translation), so
+// after the first failure modal the explicit Built-in-LocalLLM pick (and the
+// post-grace boot offer) was silently dropped forever. Fix: requests carrying
+// offer_model_download bypass the latched-drop (the latch stays set, so
+// duplicate offers coalesce and the strict-failure policy is unchanged), and
+// a DECLINED offer no longer falls through into the dead-end "reinstall"
+// MessageBox. main.cpp is not linked into run_tests.exe — the fix is pinned
+// by source inspection plus a drain-policy re-derivation over the three
+// request kinds (same precedent as P5-F1 above).
+// ---------------------------------------------------------------------------
+
+void TestReq047ModelOfferLatchBypass() {
+    std::cout << "[RUN] Testing 260930_0004 D9 model-offer latch bypass..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; "
+                     "260930_0004 D9 pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // ---- (a) drain handler: offer bypass inside the latch-drop region --------
+    {
+        const size_t handler_pos = main_src.find("if (msg == kMsgEngineUnavailableModal)");
+        TEST_CHECK(handler_pos != std::string::npos,
+                   "D9 (a): kMsgEngineUnavailableModal drain handler exists");
+        const size_t handler_end = main_src.find("if (msg == kMsgOpenOpenAiSettings)",
+                                                 handler_pos);
+        TEST_CHECK(handler_end != std::string::npos && handler_end > handler_pos,
+                   "D9 (a): drain handler body is locatable");
+        if (handler_pos != std::string::npos && handler_end != std::string::npos &&
+            handler_end > handler_pos) {
+            const std::string handler = main_src.substr(handler_pos, handler_end - handler_pos);
+            // Legacy latch shape intact (REQ-047 P5-F1 pin still applies).
+            TEST_CHECK(handler.find("if (emebalachat::g_engine_modal_latched)") !=
+                           std::string::npos,
+                       "D9 (a): the latched-drop guard still exists (strict-failure policy)");
+            // The offer flag gates the drop.
+            TEST_CHECK(handler.find("!req.offer_model_download") != std::string::npos,
+                       "D9 (a): latched-drop is conditioned on the offer flag");
+            // The bypass lives in the drop region, BEFORE the latch set.
+            const size_t bypass_pos = handler.find("!req.offer_model_download");
+            const size_t set_pos = handler.find("g_engine_modal_latched = true");
+            TEST_CHECK(bypass_pos != std::string::npos && set_pos != std::string::npos &&
+                           bypass_pos < set_pos,
+                       "D9 (a): offer bypass precedes the latch set (latch still coalesces)");
+            // Sentinel reset semantics untouched.
+            TEST_CHECK(handler.find("g_engine_modal_latched = false") != std::string::npos,
+                       "D9 (a): success sentinel still clears the latch");
+            // The suppressed-re-arm DIAG survives inside the strict-only branch.
+            const size_t diag_pos = handler.find("EngineModal/030");
+            TEST_CHECK(diag_pos != std::string::npos && bypass_pos != std::string::npos &&
+                           diag_pos > bypass_pos,
+                       "D9 (a): suppressed-re-arm diagnostics live inside the strict-only drop");
+        }
+    }
+
+    // ---- (b) drain policy re-derivation (three request kinds) ----------------
+    {
+        enum class ReqKind { kSuccessSentinel, kStrictFailure, kModelOffer };
+        bool latched = false; // GUI-thread state at startup
+        int strict_shown = 0;
+        int strict_dropped = 0;
+        int offers_shown = 0;
+        int resets = 0;
+        auto drain = [&](ReqKind kind) {
+            if (kind == ReqKind::kSuccessSentinel) {
+                latched = false;
+                ++resets;
+                return;
+            }
+            if (kind == ReqKind::kStrictFailure) {
+                if (latched) {
+                    ++strict_dropped; // suppressed re-arm
+                    return;
+                }
+                latched = true;
+                ++strict_shown;
+                return;
+            }
+            // Model offer: bypasses the latched-drop; the latch STAYS set.
+            if (!latched) {
+                latched = true; // the drain sets the latch before showing
+            }
+            ++offers_shown;
+        };
+
+        drain(ReqKind::kStrictFailure); // #1 -> show + latch
+        drain(ReqKind::kStrictFailure); // latched -> dropped
+        TEST_CHECK(strict_shown == 1 && strict_dropped == 1 && latched,
+                   "D9 (b): strict-failure streak policy unchanged (1 shown, then dropped)");
+
+        drain(ReqKind::kModelOffer); // latched + offer -> DELIVERED (the fix)
+        TEST_CHECK(offers_shown == 1 && latched,
+                   "D9 (b): latched + offer -> delivered (root-cause fix)");
+
+        drain(ReqKind::kStrictFailure); // still latched -> still dropped
+        TEST_CHECK(strict_dropped == 2,
+                   "D9 (b): strict failures still suppressed after a delivered offer");
+
+        drain(ReqKind::kModelOffer); // duplicate offer while latched -> still delivered
+        TEST_CHECK(offers_shown == 2,
+                   "D9 (b): repeated offers are delivered, not latched away");
+
+        drain(ReqKind::kSuccessSentinel); // recovery -> clear
+        TEST_CHECK(!latched && resets == 1,
+                   "D9 (b): success sentinel reset semantics intact");
+        drain(ReqKind::kStrictFailure); // re-arm after recovery
+        TEST_CHECK(strict_shown == 2 && latched,
+                   "D9 (b): strict failure re-arms after the sentinel reset");
+    }
+
+    // ---- (c) declined offer: no dead-end fall-through -------------------------
+    {
+        const size_t fn_pos = main_src.find("void ShowLocalEngineUnavailableModal");
+        TEST_CHECK(fn_pos != std::string::npos,
+                   "D9 (c): ShowLocalEngineUnavailableModal helper exists");
+        if (fn_pos != std::string::npos) {
+            // Isolate the helper body up to the end of the function (the next
+            // top-level "// ----" section header).
+            const size_t fn_end = main_src.find("// ---- REQ-045 P4-8", fn_pos);
+            TEST_CHECK(fn_end != std::string::npos && fn_end > fn_pos,
+                       "D9 (c): helper body is locatable");
+            if (fn_end != std::string::npos && fn_end > fn_pos) {
+                const std::string fn = main_src.substr(fn_pos, fn_end - fn_pos);
+                const size_t offer_pos = fn.find("OfferModelDownload(nullptr)");
+                const size_t box_pos = fn.find("::MessageBoxW");
+                TEST_CHECK(offer_pos != std::string::npos && box_pos != std::string::npos,
+                           "D9 (c): offer dialog and the historical notice both exist");
+                if (offer_pos != std::string::npos && box_pos != std::string::npos) {
+                    // Count the early-returns in the OfferModelDownload ->
+                    // MessageBoxW span. PRE-FIX the span holds exactly ONE
+                    // "return;" (the success path, main.cpp "installed (or
+                    // already present)"); the decline early-return is the
+                    // SECOND. Requiring >= 2 therefore holds only when the
+                    // decline path returns before the notice — a lone
+                    // between.find("return;") pin passed pre-fix code too and
+                    // had no discriminating power (P2 L-01).
+                    const std::string between = fn.substr(offer_pos, box_pos - offer_pos);
+                    int return_count = 0;
+                    size_t ret_pos = between.find("return;");
+                    while (ret_pos != std::string::npos) {
+                        ++return_count;
+                        ret_pos = between.find("return;", ret_pos + 7);
+                    }
+                    TEST_CHECK(return_count >= 2,
+                               "D9 (c): declined offer adds a second early-return before the dead-end notice");
+                    // The non-offer notice path is preserved (RTL policy intact).
+                    TEST_CHECK(fn.find("MB_RTLREADING") != std::string::npos,
+                               "D9 (c): historical notice path preserved (RTL mirroring)");
+                }
+            }
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260930_0004 D9 model-offer latch bypass passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260930_0004 D9 model-offer latch bypass: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // REQ-047 P5-F2 (technical review 175600 finding #2): the three drag-family
 // translation paths — drag-icon click (run_drag_translate), tooltip F9
 // re-translation (run_retranslate), double Ctrl+C — used to call the 3-arg

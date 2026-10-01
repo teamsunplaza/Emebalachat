@@ -559,13 +559,22 @@ void RequestLanguageSync(HWND hController, LanguageContext ctx,
 // actionable: the consent+progress download dialog runs INSTEAD of the
 // dead-end MB_OK. A completed download skips the notice entirely (the store
 // now has the model; the host re-probes per request / respawns and picks it
-// up). Anything else falls through to the historical notice.
+// up). 260930_0004 D9 (fix): a DECLINED offer ("나중에" / cancel / dismissed
+// failure state) now ALSO skips the dead-end notice for that beat — falling
+// straight into the "reinstall" MessageBox after the user just declined the
+// download sent users into pointless reinstalls. The next REAL translation
+// attempt still surfaces the normal failure notice per the strict-failure
+// rules. Only a non-offer request (or an offer whose model raced into place)
+// falls through to the historical notice.
 void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view body,
                                      bool offer_model_download) {
     if (offer_model_download && !emebalachat::modeldownloader::ModelFilePresent()) {
         if (emebalachat::OfferModelDownload(nullptr)) {
             return; // installed (or already present) — no notice warranted
         }
+        // Declined (or the dialog's own failure state was dismissed): no
+        // dead-end notice for this beat.
+        return;
     }
     UINT type = MB_OK | MB_ICONINFORMATION | MB_TOPMOST;
     if (DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL) {
@@ -819,12 +828,25 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 continue;
             }
             if (emebalachat::g_engine_modal_latched) {
-                // REQ-047 P5-F1: the failure this modal describes is still
-                // unresolved — suppress the re-arm (design §A.4 every-trigger
-                // + streak-latch). Judged HERE, on the GUI thread; producers
-                // enqueue unconditionally.
-                DIAG_F("MAIN/EngineModal/030: strict failure while latched; modal suppressed\n");
-                continue;
+                if (!req.offer_model_download) {
+                    // REQ-047 P5-F1: the failure this modal describes is still
+                    // unresolved — suppress the re-arm (design §A.4 every-trigger
+                    // + streak-latch). Judged HERE, on the GUI thread; producers
+                    // enqueue unconditionally.
+                    DIAG_F("MAIN/EngineModal/030: strict failure while latched; modal suppressed\n");
+                    continue;
+                }
+                // 260930_0004 D9 (fix): a model-download OFFER bypasses the
+                // streak latch. The latch predates the offer (REQ-047 D1) and
+                // cannot clear while the pinned model is absent — the success
+                // sentinel needs a successful translation, which is impossible
+                // in exactly the state the offer targets — so without this
+                // exemption the user's explicit Built-in-LocalLLM pick (and the
+                // post-grace boot offer) would be dropped silently forever.
+                // The latch is STILL set below: it keeps streak-suppressing
+                // interleaved STRICT failures only — it does NOT coalesce
+                // offers (live-verified: two queued offers each delivered a
+                // consent). Every explicit pick re-shows the consent dialog.
             }
             emebalachat::g_engine_modal_latched = true; // modal about to show
             ShowLocalEngineUnavailableModal(req.title, req.body,
