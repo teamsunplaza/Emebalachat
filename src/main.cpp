@@ -1542,33 +1542,62 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // is still in flight, so the components land seconds later.
                 // Instead of the immediate inline modal, wait out a bounded
                 // grace window on a DETACHED thread (the main thread stays
-                // non-blocking): 40 re-checks x 3 s = 120 s, first check
-                // immediate. If the components arrive inside the window the
-                // modal is suppressed entirely (bootstrap/017); only a real,
-                // persistent absence converges on the REQ-045 P4-8 modal via
-                // the same SEC-ADJ seam the URL branch uses (this helper is
-                // callable from a detached thread by design).
-                std::thread([]() {
-                    if (bs::WaitForComponentsPresent(
-                            [] { return bs::CheckComponents().missing.empty(); },
-                            40, std::chrono::seconds(3))) {
-                        DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
-                        return; // installer finished; no notice warranted
-                    }
-                    // REQ-MD (260930_0004 D9): a FRESH check at request time —
-                    // the grace window just elapsed, the state may have moved.
-                    // When ONLY models/ components are missing (the pinned
-                    // model file and/or registry), the notice offers the
-                    // on-demand download instead of dead-ending.
-                    const bool offer_model =
-                        emebalachat::modeldownloader::MissingIsModelOnly(
-                            bs::CheckComponents().missing);
-                    emebalachat::RequestEngineUnavailableModal(
-                        emebalachat::g_hControllerWnd,
-                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                        offer_model);
-                }).detach();
+                // non-blocking) and suppress the modal entirely if the
+                // components arrive inside it; only a real, persistent
+                // absence converges on the REQ-045 P4-8 modal via the same
+                // SEC-ADJ seam the URL branch uses (this helper is callable
+                // from a detached thread by design).
+                //
+                // Instant offer (260930_0004 D9, CEO directive), same contract
+                // as the tray-pick site: a models/-ONLY miss is offered
+                // IMMEDIATELY — waiting cannot heal it (the binaries are all
+                // present) and the dialog re-checks ModelFilePresent at show
+                // time (ShowLocalEngineUnavailableModal), so the installer-
+                // in-flight race is still covered without any grace. The post
+                // goes through the SAME detached-thread seam the long branch
+                // uses, just without the wait: this boot context runs on the
+                // main thread PRE-message-loop, and RequestEngineUnavailableModal's
+                // same-thread fast path would run the consent INLINE and freeze
+                // startup until the user dismisses it. A binaries-involved miss
+                // keeps the full REQ-048 P1 window (40 x 3 s = 120 s).
+                if (emebalachat::modeldownloader::MissingIsModelOnly(check.missing)) {
+                    // Model-only miss: offer now (no grace). The branch
+                    // condition already established models/-only from
+                    // check.missing, so the offer flag is literal true.
+                    std::thread([]() {
+                        emebalachat::RequestEngineUnavailableModal(
+                            emebalachat::g_hControllerWnd,
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                            true); // offer_model_download
+                    }).detach();
+                } else {
+                    // Binaries involved: the full false-alarm window — 40
+                    // re-checks x 3 s = 120 s, first check immediate. If the
+                    // components arrive inside the window the modal is
+                    // suppressed entirely (bootstrap/017).
+                    std::thread([]() {
+                        if (bs::WaitForComponentsPresent(
+                                [] { return bs::CheckComponents().missing.empty(); },
+                                40, std::chrono::seconds(3))) {
+                            DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                            return; // installer finished; no notice warranted
+                        }
+                        // REQ-MD (260930_0004 D9): a FRESH check at request time —
+                        // the grace window just elapsed, the state may have moved.
+                        // When ONLY models/ components are missing (the pinned
+                        // model file and/or registry), the notice offers the
+                        // on-demand download instead of dead-ending.
+                        const bool offer_model =
+                            emebalachat::modeldownloader::MissingIsModelOnly(
+                                bs::CheckComponents().missing);
+                        emebalachat::RequestEngineUnavailableModal(
+                            emebalachat::g_hControllerWnd,
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                            offer_model);
+                    }).detach();
+                }
             }
         }
     }
@@ -2200,34 +2229,56 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             namespace bs = emebalachat::engine_host_bootstrap;
             const bs::ComponentCheckResult check = bs::CheckComponents();
             if (!check.missing.empty()) {
-                // REQ-048 R2: same false-alarm exposure as the boot path —
-                // the installer's model download may still be in flight when
-                // the user picks the local engine. Wait out the bounded grace
-                // window on a DETACHED thread (identical contract to the boot
-                // block) and suppress the modal entirely if the components
-                // land inside it; only a persistent absence re-exposes the
-                // REQ-045 P4-8 modal.
+                // Instant offer (260930_0004 D9, CEO directive): a models/-ONLY
+                // miss is posted IMMEDIATELY from the already-computed
+                // check.missing — waiting cannot heal it (the binaries are all
+                // present) and the dialog itself re-checks ModelFilePresent at
+                // show time (ShowLocalEngineUnavailableModal), so the
+                // installer-in-flight race is still covered without any grace.
+                // This path runs on the GUI thread: RequestEngineUnavailableModal's
+                // same-thread fast path shows the consent inline (Tech Gate Item
+                // 6 site — the pre-REQ-048-R2 modal ran exactly this way). A
+                // binaries-involved miss keeps the full REQ-048 R2 window
+                // (40 x 3 s = 120 s) unchanged.
                 DIAG_F("MAIN/on_select_engine/004: local engine selected but %zu component(s) missing; converging on the grace re-check\n",
                        check.missing.size());
-                std::thread([]() {
-                    if (bs::WaitForComponentsPresent(
-                            [] { return bs::CheckComponents().missing.empty(); },
-                            40, std::chrono::seconds(3))) {
-                        DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
-                        return;
-                    }
-                    // REQ-MD (260930_0004 D9): fresh check at request time (the
-                    // grace window just elapsed). models/-only missing set ->
-                    // the notice offers the on-demand model download.
-                    const bool offer_model =
-                        emebalachat::modeldownloader::MissingIsModelOnly(
-                            bs::CheckComponents().missing);
+                if (emebalachat::modeldownloader::MissingIsModelOnly(check.missing)) {
+                    // Model-only miss: offer now. The branch condition already
+                    // established models/-only from check.missing, so the offer
+                    // flag is literal true.
                     emebalachat::RequestEngineUnavailableModal(
                         emebalachat::g_hControllerWnd,
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                        offer_model);
-                }).detach();
+                        true); // offer_model_download
+                } else {
+                    // REQ-048 R2: binaries involved — the full false-alarm
+                    // window (identical contract to the boot path): the
+                    // installer's component download may still be in flight
+                    // when the user picks the local engine, so wait it out on
+                    // a DETACHED thread and suppress the modal entirely if the
+                    // components land inside it; only a persistent absence
+                    // re-exposes the REQ-045 P4-8 modal.
+                    std::thread([]() {
+                        if (bs::WaitForComponentsPresent(
+                                [] { return bs::CheckComponents().missing.empty(); },
+                                40, std::chrono::seconds(3))) {
+                            DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                            return;
+                        }
+                        // REQ-MD (260930_0004 D9): fresh check at request time (the
+                        // grace window just elapsed). models/-only missing set ->
+                        // the notice offers the on-demand model download.
+                        const bool offer_model =
+                            emebalachat::modeldownloader::MissingIsModelOnly(
+                                bs::CheckComponents().missing);
+                        emebalachat::RequestEngineUnavailableModal(
+                            emebalachat::g_hControllerWnd,
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                            offer_model);
+                    }).detach();
+                }
             }
         }
     };

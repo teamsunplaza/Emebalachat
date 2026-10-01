@@ -889,6 +889,159 @@ void TestReq047ModelOfferLatchBypass() {
 }
 
 // ---------------------------------------------------------------------------
+// 260930_0004 D9 offer-site split (two-branch; grace removed from the
+// model-only path per the CEO instant-offer directive): BOTH offer sites
+// (boot + tray pick) branch on the already-computed check.missing. The
+// model-only branch posts the download offer IMMEDIATELY — waiting cannot
+// heal a models/-only miss (binaries present) and the dialog re-checks
+// ModelFilePresent at show time, so the installer-in-flight race stays
+// covered without any grace. Posting shape differs by context: the tray
+// site runs on the GUI thread and posts INLINE (RequestEngineUnavailableModal
+// same-thread fast path, Tech Gate Item 6 site); the boot site runs pre-
+// message-loop on the main thread, where an inline call would freeze startup,
+// so it keeps the existing detached-thread seam with NO wait. The binaries-
+// branch keeps the full 40 x 3 s REQ-048 grace verbatim. Source pins only
+// (main.cpp is not linked into run_tests.exe — same precedent as above).
+// ---------------------------------------------------------------------------
+
+void TestReq047TwoTierGraceSplit() {
+    std::cout << "[RUN] Testing 260930_0004 D9 two-tier grace split..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* name, std::string& out) {
+        const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                    (std::string("../../") + name).c_str()};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                return;
+            }
+        }
+    };
+    auto count_occurrences = [](const std::string& hay, const std::string& needle) {
+        int n = 0;
+        size_t pos = hay.find(needle);
+        while (pos != std::string::npos) {
+            ++n;
+            pos = hay.find(needle, pos + needle.size());
+        }
+        return n;
+    };
+    std::string main_src;
+    read_src("src/main.cpp", main_src);
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; "
+                     "260930_0004 D9 two-tier pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // ---- site extraction -----------------------------------------------------
+    // Boot site: the no-repair-URL else-branch, bounded by the next top-level
+    // comment block. Tray site: the modal-check block `if (engine_idx == 1)`
+    // (the SECOND occurrence — the first is the engine-set branch) through the
+    // next tray callback registration.
+    const size_t boot_pos = main_src.find("// No repair URL compiled in");
+    const size_t boot_end = main_src.find("// R5 (Debug-Surgical)", boot_pos);
+    TEST_CHECK(boot_pos != std::string::npos && boot_end != std::string::npos &&
+                   boot_end > boot_pos,
+               "D9-tier: boot else-branch is locatable");
+    const size_t tray_pos_a = main_src.find("if (engine_idx == 1) {");
+    const size_t tray_pos_b = main_src.find("if (engine_idx == 1) {", tray_pos_a + 1);
+    const size_t tray_end = main_src.find("trayCallbacks.on_select_source_lang", tray_pos_b);
+    TEST_CHECK(tray_pos_a != std::string::npos && tray_pos_b != std::string::npos &&
+                   tray_end != std::string::npos && tray_end > tray_pos_b,
+               "D9-tier: tray-pick modal block is locatable");
+    if (boot_pos == std::string::npos || boot_end == std::string::npos ||
+        tray_pos_b == std::string::npos || tray_end == std::string::npos) {
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] 260930_0004 D9 two-tier grace split passed." << std::endl;
+        }
+        return;
+    }
+    std::string boot_site = main_src.substr(boot_pos, boot_end - boot_pos);
+    std::string tray_site = main_src.substr(tray_pos_b, tray_end - tray_pos_b);
+    // Normalize CRLF so needles can anchor on "(\n" at line ends.
+    boot_site.erase(std::remove(boot_site.begin(), boot_site.end(), '\r'), boot_site.end());
+    tray_site.erase(std::remove(tray_site.begin(), tray_site.end(), '\r'), tray_site.end());
+
+    auto pin_site = [&](const std::string& site, const char* tag, int model_only_thread_count) {
+        // (a) the split happens on the already-computed check.missing, BEFORE
+        // the long branch's grace thread spawns (no extra disk I/O).
+        const size_t split_pos = site.find("MissingIsModelOnly(check.missing)");
+        const size_t first_thread = site.find("std::thread");
+        TEST_CHECK(split_pos != std::string::npos && first_thread != std::string::npos &&
+                       split_pos < first_thread,
+                   std::string("D9-tier (a): ") + tag + " splits on check.missing before the long-branch grace thread");
+        // Branch isolation: model-only branch runs to the "} else {" that
+        // guards the long branch; the long branch runs to the site end.
+        const size_t else_pos = site.find("\n                } else {", split_pos);
+        TEST_CHECK(else_pos != std::string::npos,
+                   std::string("D9-tier: ") + tag + " model-only/long branch boundary is locatable");
+        if (split_pos == std::string::npos || else_pos == std::string::npos) {
+            return;
+        }
+        const std::string model_branch = site.substr(split_pos, else_pos - split_pos);
+        const std::string long_branch = site.substr(else_pos);
+
+        // (b-instant) the model-only branch contains NO grace wait at all —
+        // this pin FAILS against the replaced 3 x 5 s version, which had a
+        // WaitForComponentsPresent here. The short window is gone site-wide.
+        TEST_CHECK(count_occurrences(model_branch, "WaitForComponentsPresent") == 0,
+                   std::string("D9-tier (b): ") + tag + " model-only branch has NO grace wait (instant offer)");
+        TEST_CHECK(count_occurrences(model_branch, "std::chrono") == 0,
+                   std::string("D9-tier (b): ") + tag + " model-only branch has no wait window");
+        TEST_CHECK(count_occurrences(site, "3, std::chrono::seconds(5)") == 0,
+                   std::string("D9-tier (b): ") + tag + " the 3 x 5 s window is gone site-wide");
+        // Posting shape: the tray site posts INLINE on the GUI thread (no
+        // thread in the model-only branch); the boot site keeps exactly one
+        // detached thread that posts immediately (pre-message-loop defer).
+        TEST_CHECK(count_occurrences(model_branch, "std::thread") == model_only_thread_count,
+                   std::string("D9-tier (b): ") + tag + " model-only branch posting shape (inline vs one immediate-post thread)");
+        // (c-instant) exactly ONE immediate post in the model-only branch, the
+        // offer flag decided from check.missing by the branch condition.
+        TEST_CHECK(count_occurrences(model_branch, "RequestEngineUnavailableModal(") == 1,
+                   std::string("D9-tier (c): ") + tag + " model-only branch posts exactly one immediate offer");
+        TEST_CHECK(count_occurrences(model_branch, "// offer_model_download") == 1,
+                   std::string("D9-tier (c): ") + tag + " model-only branch passes the offer flag (true)");
+        // (c-long) the long branch is unchanged: one 40 x 3 s wait, one fresh
+        // post-grace check, one post.
+        TEST_CHECK(count_occurrences(long_branch, "WaitForComponentsPresent") == 1 &&
+                       count_occurrences(long_branch, "40, std::chrono::seconds(3)") == 1,
+                   std::string("D9-tier (c): ") + tag + " long branch keeps the single 40 x 3 s wait");
+        TEST_CHECK(count_occurrences(long_branch, "const bool offer_model =") == 1,
+                   std::string("D9-tier (c): ") + tag + " long branch keeps one post-grace offer decision");
+        TEST_CHECK(count_occurrences(long_branch, "RequestEngineUnavailableModal(") == 1,
+                   std::string("D9-tier (c): ") + tag + " long branch posts exactly one offer");
+    };
+    pin_site(boot_site, "boot site", 1);
+    pin_site(tray_site, "tray-pick site", 0);
+
+    // (d) dialog-side ModelFilePresent guard untouched.
+    {
+        const size_t fn_pos = main_src.find("void ShowLocalEngineUnavailableModal");
+        const size_t fn_end = main_src.find("// ---- REQ-045 P4-8", fn_pos);
+        TEST_CHECK(fn_pos != std::string::npos && fn_end != std::string::npos &&
+                       fn_end > fn_pos,
+                   "D9-tier (d): ShowLocalEngineUnavailableModal body is locatable");
+        if (fn_pos != std::string::npos && fn_end != std::string::npos && fn_end > fn_pos) {
+            const std::string fn = main_src.substr(fn_pos, fn_end - fn_pos);
+            TEST_CHECK(fn.find("offer_model_download && !emebalachat::modeldownloader::ModelFilePresent()") !=
+                           std::string::npos,
+                       "D9-tier (d): dialog-side ModelFilePresent guard untouched");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 260930_0004 D9 two-tier grace split passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 260930_0004 D9 two-tier grace split: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // REQ-047 P5-F2 (technical review 175600 finding #2): the three drag-family
 // translation paths — drag-icon click (run_drag_translate), tooltip F9
 // re-translation (run_retranslate), double Ctrl+C — used to call the 3-arg

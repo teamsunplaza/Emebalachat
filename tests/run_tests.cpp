@@ -15802,6 +15802,9 @@ int main() {
     // 260930_0004 D9: the model-download offer bypasses the REQ-047 streak
     // latch, and a declined offer skips the dead-end fall-through notice.
     TestReq047ModelOfferLatchBypass();
+    // 260930_0004 D9: both offer sites split the grace window — models/-only
+    // miss -> 3 x 5 s, binaries involved -> 40 x 3 s (source pins).
+    TestReq047TwoTierGraceSplit();
     // REQ-048 P1: boot component-check grace re-check (installer download
     // window) — registered after the REQ-047 suites, per the end-of-file
     // pattern.
