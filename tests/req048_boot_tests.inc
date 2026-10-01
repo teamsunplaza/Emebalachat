@@ -86,23 +86,29 @@ void TestReq048BootGraceRecheck() {
         const std::string main_src((std::istreambuf_iterator<char>(in)),
                                    std::istreambuf_iterator<char>());
 
-        // The grace path exists: the wait helper is invoked from the boot
-        // component-check block with the CheckComponents re-check lambda.
-        TEST_CHECK(main_src.find("bs::WaitForComponentsPresent") != std::string::npos,
-                   "REQ-048 P1 structural pin: main.cpp boot block calls the grace re-check helper");
-        TEST_CHECK(main_src.find("CheckComponents().missing.empty()") != std::string::npos,
-                   "REQ-048 P1 structural pin: the grace re-check lambda re-probes CheckComponents()");
+        // 260930_0004 D9 contract change (user-wait-audit "How to go INSTANT"):
+        // the fixed 40 x 3 s grace is replaced by the setup-gate mutex. The
+        // boot block OBSERVES the M7 A-7 family gate (OpenMutexW only — never
+        // CreateMutex, which would poison the installer's gate); the held path
+        // waits on the handle (INFINITE; signaled at installer process exit)
+        // and then exactly one fresh CheckComponents decides. The bounded-wait
+        // helper stays for the unit tests but has NO production caller left.
+        TEST_CHECK(main_src.find("OpenMutexW(SYNCHRONIZE, FALSE, L\"Local\\\\EmebalaSetup\")") !=
+                       std::string::npos,
+                   "REQ-048 P1 structural pin: boot block observes the Local\\EmebalaSetup setup gate");
+        TEST_CHECK(main_src.find("bs::WaitForComponentsPresent") == std::string::npos,
+                   "REQ-048 P1 structural pin: fixed grace wait removed from production sites (helper stays for tests)");
+        TEST_CHECK(main_src.find("40, std::chrono::seconds(3)") == std::string::npos,
+                   "REQ-048 P1 structural pin: no fixed 40 x 3 s window remains in main.cpp");
+        TEST_CHECK(main_src.find("WaitForSingleObject(setup_gate, INFINITE)") !=
+                       std::string::npos &&
+                       main_src.find("CloseHandle(setup_gate)") != std::string::npos,
+                   "REQ-048 P1 structural pin: held path waits on the gate handle once and closes it");
         // The suppression log line the spec mandates (kept verbatim).
         TEST_CHECK(main_src.find(
                        "bootstrap/017: components arrived within grace window; "
                        "suppressing repair-unavailable modal") != std::string::npos,
                    "REQ-048 P1 structural pin: grace-window suppression logs ENGINEHOST/bootstrap/017");
-
-        // REQ-048 P6 R3: the grace budget is pinned too — a window shrink
-        // (e.g. 40 -> 2 attempts) would gut the anti-false-alarm property
-        // while every semantic check above still passed.
-        TEST_CHECK(main_src.find("40, std::chrono::seconds(3)") != std::string::npos,
-                   "REQ-048 P1 structural pin: grace window is 40 re-checks x 3 s (bounded 120 s)");
 
         // Regression guards — the pre-existing structural pins must survive
         // this edit (TestReq045EngineUnavailableModal pins the same strings).

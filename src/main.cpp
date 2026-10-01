@@ -1559,7 +1559,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // main thread PRE-message-loop, and RequestEngineUnavailableModal's
                 // same-thread fast path would run the consent INLINE and freeze
                 // startup until the user dismisses it. A binaries-involved miss
-                // keeps the full REQ-048 P1 window (40 x 3 s = 120 s).
+                // is mutex-gated INSTANT (see the binaries branch below).
                 if (emebalachat::modeldownloader::MissingIsModelOnly(check.missing)) {
                     // Model-only miss: offer now (no grace). The branch
                     // condition already established models/-only from
@@ -1572,25 +1572,68 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                             true); // offer_model_download
                     }).detach();
                 } else {
-                    // Binaries involved: the full false-alarm window — 40
-                    // re-checks x 3 s = 120 s, first check immediate. If the
-                    // components arrive inside the window the modal is
-                    // suppressed entirely (bootstrap/017).
-                    std::thread([]() {
-                        if (bs::WaitForComponentsPresent(
-                                [] { return bs::CheckComponents().missing.empty(); },
-                                40, std::chrono::seconds(3))) {
-                            DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
-                            return; // installer finished; no notice warranted
+                    // Binaries involved — mutex-gated INSTANT notice
+                    // (260930_0004 D9, replacing the fixed 40 x 3 s grace):
+                    // the M7 A-7 family setup gate (installer/setup.iss:855,
+                    // FAMILY_SETUP_MUTEX) is held for the ENTIRE store-writing
+                    // window (install + model download + uninstall), so
+                    // waiting on it converges THE INSTANT setup exits — no
+                    // fixed 120 s, no polling. OBSERVE ONLY: OpenMutexW — the
+                    // app must NEVER CreateMutex this name (that would poison
+                    // the installer's gate). Caveats (user-wait-audit.md
+                    // "How to go INSTANT"): the gate is advisory —
+                    // setup.iss:2505 admits CheckForMutexes -> CreateMutex is
+                    // not atomic, so a same-ms double launch can slip; worst
+                    // case equals the pre-gate status quo, no new harm. The
+                    // mutex only exists after Inno's language-selection dialog
+                    // (~a second into setup), a window no post-install app
+                    // launch can land in. The optional "installation
+                    // finishing" tooltip during the wait is a documented
+                    // follow-up — intentionally not in this pass. Never block
+                    // startup: everything below runs on the existing
+                    // detached-thread seam.
+                    HANDLE setup_gate = ::OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\EmebalaSetup");
+                    const bool gate_held = (setup_gate != nullptr);
+                    const bool gate_unknown =
+                        !gate_held && ::GetLastError() != ERROR_FILE_NOT_FOUND;
+                    const bool offer_model =
+                        emebalachat::modeldownloader::MissingIsModelOnly(check.missing);
+                    std::thread([setup_gate, gate_held, gate_unknown, offer_model]() {
+                        if (gate_held) {
+                            // Setup/uninstall is writing the store: block until
+                            // the installer process exits (Inno never closes
+                            // the handle; the OS signals it on exit), then
+                            // exactly ONE fresh check decides.
+                            ::WaitForSingleObject(setup_gate, INFINITE);
+                            ::CloseHandle(setup_gate);
+                            const bs::ComponentCheckResult fresh = bs::CheckComponents();
+                            if (fresh.missing.empty()) {
+                                DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                                return; // setup finished the store; no notice warranted
+                            }
+                            emebalachat::RequestEngineUnavailableModal(
+                                emebalachat::g_hControllerWnd,
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
+                            return;
                         }
-                        // REQ-MD (260930_0004 D9): a FRESH check at request time —
-                        // the grace window just elapsed, the state may have moved.
-                        // When ONLY models/ components are missing (the pinned
-                        // model file and/or registry), the notice offers the
-                        // on-demand download instead of dead-ending.
-                        const bool offer_model =
-                            emebalachat::modeldownloader::MissingIsModelOnly(
-                                bs::CheckComponents().missing);
+                        if (gate_unknown) {
+                            // OpenMutex failed for a reason other than
+                            // ERROR_FILE_NOT_FOUND: no gate knowledge — fail
+                            // OPEN to informing the user (one immediate fresh
+                            // check + immediate post); never invent a wait.
+                            const bs::ComponentCheckResult fresh = bs::CheckComponents();
+                            emebalachat::RequestEngineUnavailableModal(
+                                emebalachat::g_hControllerWnd,
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
+                            return;
+                        }
+                        // Gate absent (ERROR_FILE_NOT_FOUND): no setup or
+                        // uninstall can heal the state — inform immediately,
+                        // from the already-computed check.missing.
                         emebalachat::RequestEngineUnavailableModal(
                             emebalachat::g_hControllerWnd,
                             emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
@@ -2238,8 +2281,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // This path runs on the GUI thread: RequestEngineUnavailableModal's
                 // same-thread fast path shows the consent inline (Tech Gate Item
                 // 6 site — the pre-REQ-048-R2 modal ran exactly this way). A
-                // binaries-involved miss keeps the full REQ-048 R2 window
-                // (40 x 3 s = 120 s) unchanged.
+                // binaries-involved miss is mutex-gated INSTANT (see the
+                // binaries branch below).
                 DIAG_F("MAIN/on_select_engine/004: local engine selected but %zu component(s) missing; converging on the grace re-check\n",
                        check.missing.size());
                 if (emebalachat::modeldownloader::MissingIsModelOnly(check.missing)) {
@@ -2252,32 +2295,60 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
                         true); // offer_model_download
                 } else {
-                    // REQ-048 R2: binaries involved — the full false-alarm
-                    // window (identical contract to the boot path): the
-                    // installer's component download may still be in flight
-                    // when the user picks the local engine, so wait it out on
-                    // a DETACHED thread and suppress the modal entirely if the
-                    // components land inside it; only a persistent absence
-                    // re-exposes the REQ-045 P4-8 modal.
-                    std::thread([]() {
-                        if (bs::WaitForComponentsPresent(
-                                [] { return bs::CheckComponents().missing.empty(); },
-                                40, std::chrono::seconds(3))) {
-                            DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
-                            return;
+                    // Binaries involved — mutex-gated INSTANT notice (same
+                    // contract as the boot site's binaries branch: the
+                    // Local\EmebalaSetup family gate covers the whole
+                    // store-writing window; observe-only OpenMutexW, advisory
+                    // gate, documented caveats). The NOT-held paths post
+                    // INLINE on the GUI thread (this site's Tech Gate Item 6
+                    // fast path — instant feedback); the held path waits on
+                    // the mutex from a DETACHED thread — WaitForSingleObject
+                    // INFINITE must never run on the GUI thread.
+                    HANDLE setup_gate = ::OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\EmebalaSetup");
+                    if (setup_gate == nullptr) {
+                        if (::GetLastError() == ERROR_FILE_NOT_FOUND) {
+                            // No setup/uninstall holds the store — nothing can
+                            // heal the state → inform immediately, from the
+                            // already-computed check.missing.
+                            const bool offer_model =
+                                emebalachat::modeldownloader::MissingIsModelOnly(check.missing);
+                            emebalachat::RequestEngineUnavailableModal(
+                                emebalachat::g_hControllerWnd,
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                                offer_model);
+                        } else {
+                            // No gate knowledge (acquisition failed for any
+                            // other reason) → fail OPEN to informing the user:
+                            // one immediate fresh check + immediate post;
+                            // never invent a wait.
+                            const bs::ComponentCheckResult fresh = bs::CheckComponents();
+                            emebalachat::RequestEngineUnavailableModal(
+                                emebalachat::g_hControllerWnd,
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
                         }
-                        // REQ-MD (260930_0004 D9): fresh check at request time (the
-                        // grace window just elapsed). models/-only missing set ->
-                        // the notice offers the on-demand model download.
-                        const bool offer_model =
-                            emebalachat::modeldownloader::MissingIsModelOnly(
-                                bs::CheckComponents().missing);
-                        emebalachat::RequestEngineUnavailableModal(
-                            emebalachat::g_hControllerWnd,
-                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                            offer_model);
-                    }).detach();
+                    } else {
+                        // Setup/uninstall is writing the store: the user sees
+                        // the notice THE INSTANT setup exits — wait on the
+                        // handle (signaled at installer process exit), close
+                        // it, then exactly ONE fresh check decides.
+                        std::thread([setup_gate]() {
+                            ::WaitForSingleObject(setup_gate, INFINITE);
+                            ::CloseHandle(setup_gate);
+                            const bs::ComponentCheckResult fresh = bs::CheckComponents();
+                            if (fresh.missing.empty()) {
+                                DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                                return; // setup finished the store; no notice warranted
+                            }
+                            emebalachat::RequestEngineUnavailableModal(
+                                emebalachat::g_hControllerWnd,
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
+                        }).detach();
+                    }
                 }
             }
         }

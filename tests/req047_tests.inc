@@ -889,19 +889,25 @@ void TestReq047ModelOfferLatchBypass() {
 }
 
 // ---------------------------------------------------------------------------
-// 260930_0004 D9 offer-site split (two-branch; grace removed from the
-// model-only path per the CEO instant-offer directive): BOTH offer sites
-// (boot + tray pick) branch on the already-computed check.missing. The
-// model-only branch posts the download offer IMMEDIATELY — waiting cannot
-// heal a models/-only miss (binaries present) and the dialog re-checks
-// ModelFilePresent at show time, so the installer-in-flight race stays
-// covered without any grace. Posting shape differs by context: the tray
-// site runs on the GUI thread and posts INLINE (RequestEngineUnavailableModal
-// same-thread fast path, Tech Gate Item 6 site); the boot site runs pre-
-// message-loop on the main thread, where an inline call would freeze startup,
-// so it keeps the existing detached-thread seam with NO wait. The binaries-
-// branch keeps the full 40 x 3 s REQ-048 grace verbatim. Source pins only
-// (main.cpp is not linked into run_tests.exe — same precedent as above).
+// 260930_0004 D9 offer-site split (source pins; grace eliminated):
+// BOTH offer sites (boot + tray pick) branch on the already-computed
+// check.missing. The model-only branch posts the download offer IMMEDIATELY
+// (waiting cannot heal a models/-only miss; the dialog re-checks
+// ModelFilePresent at show time). The binaries branch is mutex-gated INSTANT:
+// it observes the M7 A-7 family setup gate (installer/setup.iss:855,
+// FAMILY_SETUP_MUTEX 'Local\EmebalaSetup', held for the entire store-writing
+// window) via OpenMutexW ONLY — never CreateMutex (that would poison the
+// installer's gate). Gate absent (ERROR_FILE_NOT_FOUND) → nothing can heal
+// the state → immediate post from check.missing (tray: inline on the GUI
+// thread; boot: the existing detached-thread seam, pre-message-loop). Gate
+// held → detached thread waits on the handle (INFINITE; signaled at installer
+// process exit), closes it, then exactly ONE fresh CheckComponents decides
+// (empty → suppress / bootstrap/017; still missing → post). Gate acquisition
+// failing for any other reason → fail-open: one immediate fresh check + post.
+// The fixed 40 x 3 s grace is gone from both production sites (the
+// WaitForComponentsPresent helper stays for the unit tests). The optional
+// "installation finishing" tooltip is a documented follow-up, not this pass.
+// Source pins only (main.cpp is not linked into run_tests.exe).
 // ---------------------------------------------------------------------------
 
 void TestReq047TwoTierGraceSplit() {
@@ -1005,18 +1011,62 @@ void TestReq047TwoTierGraceSplit() {
                    std::string("D9-tier (c): ") + tag + " model-only branch posts exactly one immediate offer");
         TEST_CHECK(count_occurrences(model_branch, "// offer_model_download") == 1,
                    std::string("D9-tier (c): ") + tag + " model-only branch passes the offer flag (true)");
-        // (c-long) the long branch is unchanged: one 40 x 3 s wait, one fresh
-        // post-grace check, one post.
-        TEST_CHECK(count_occurrences(long_branch, "WaitForComponentsPresent") == 1 &&
-                       count_occurrences(long_branch, "40, std::chrono::seconds(3)") == 1,
-                   std::string("D9-tier (c): ") + tag + " long branch keeps the single 40 x 3 s wait");
-        TEST_CHECK(count_occurrences(long_branch, "const bool offer_model =") == 1,
-                   std::string("D9-tier (c): ") + tag + " long branch keeps one post-grace offer decision");
-        TEST_CHECK(count_occurrences(long_branch, "RequestEngineUnavailableModal(") == 1,
-                   std::string("D9-tier (c): ") + tag + " long branch posts exactly one offer");
+        // (c-mutex) the binaries branch is mutex-gated INSTANT — NO fixed
+        // WaitForComponentsPresent grace remains (these pins FAIL against the
+        // pre-change 40 x 3 s tree, which had one per site). The model-only
+        // branch pins above are unchanged.
+        TEST_CHECK(count_occurrences(long_branch, "WaitForComponentsPresent") == 0,
+                   std::string("D9-tier (c): ") + tag + " binaries branch has NO fixed grace wait");
+        TEST_CHECK(count_occurrences(long_branch, "40, std::chrono::seconds(3)") == 0,
+                   std::string("D9-tier (c): ") + tag + " the 40 x 3 s window is gone from the binaries branch");
+        TEST_CHECK(count_occurrences(long_branch,
+                                     "OpenMutexW(SYNCHRONIZE, FALSE, L\"Local\\\\EmebalaSetup\")") == 1,
+                   std::string("D9-tier (c): ") + tag + " observes the Local\\EmebalaSetup setup gate (OpenMutexW only)");
+        // The not-held (ERROR_FILE_NOT_FOUND) immediate-post path exists, from
+        // the already-computed check.missing.
+        TEST_CHECK(long_branch.find("ERROR_FILE_NOT_FOUND") != std::string::npos,
+                   std::string("D9-tier (c): ") + tag + " not-held path distinguishes ERROR_FILE_NOT_FOUND");
+        // Held path: waits on the mutex handle, closes it, then EXACTLY ONE
+        // fresh CheckComponents between the wait and its post.
+        TEST_CHECK(count_occurrences(long_branch, "WaitForSingleObject(setup_gate, INFINITE)") == 1 &&
+                       count_occurrences(long_branch, "CloseHandle(setup_gate)") == 1,
+                   std::string("D9-tier (c): ") + tag + " held path waits once and closes the gate handle");
+        {
+            const size_t wait_pos = long_branch.find("WaitForSingleObject(setup_gate, INFINITE)");
+            const size_t held_post = long_branch.find("RequestEngineUnavailableModal(", wait_pos);
+            TEST_CHECK(wait_pos != std::string::npos && held_post != std::string::npos &&
+                           count_occurrences(
+                               long_branch.substr(wait_pos, held_post - wait_pos),
+                               "CheckComponents()") == 1,
+                       std::string("D9-tier (c): ") + tag + " held path does exactly ONE post-grace CheckComponents before its post");
+        }
+        // Posts in the binaries branch: three decision paths, each posting
+        // exactly once (held-post, no-knowledge fresh-post, not-held post).
+        TEST_CHECK(count_occurrences(long_branch, "RequestEngineUnavailableModal(") == 3,
+                   std::string("D9-tier (c): ") + tag + " binaries branch posts once per decision path");
     };
     pin_site(boot_site, "boot site", 1);
     pin_site(tray_site, "tray-pick site", 0);
+
+    // (e) the app NEVER CreateMutex's the setup-gate name (that would poison
+    // the installer's gate): exactly two OpenMutexW observations exist, and
+    // no CreateMutex call references the name.
+    TEST_CHECK(count_occurrences(main_src,
+                                 "OpenMutexW(SYNCHRONIZE, FALSE, L\"Local\\\\EmebalaSetup\")") == 2,
+               "D9-tier (e): exactly two OpenMutexW observations of the setup gate");
+    {
+        bool created = false;
+        size_t cm = main_src.find("CreateMutex");
+        while (cm != std::string::npos) {
+            if (main_src.substr(cm, 96).find("EmebalaSetup") != std::string::npos) {
+                created = true;
+                break;
+            }
+            cm = main_src.find("CreateMutex", cm + 11);
+        }
+        TEST_CHECK(!created,
+                   "D9-tier (e): app never CreateMutex's the setup-gate name");
+    }
 
     // (d) dialog-side ModelFilePresent guard untouched.
     {

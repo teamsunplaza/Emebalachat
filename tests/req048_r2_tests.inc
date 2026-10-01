@@ -79,9 +79,13 @@ void TestReq048R2ServingPath() {
                               std::istreambuf_iterator<char>());
         TEST_CHECK(src.find("converging on the grace re-check") != std::string::npos,
                    "REQ-048 R2 (c): tray local pick converges on the grace re-check");
-        TEST_CHECK(src.find("MAIN/on_select_engine/004") != std::string::npos &&
-                   src.find("WaitForComponentsPresent") != std::string::npos,
-                   "REQ-048 R2 (c): tray pick grace uses the bounded wait helper");
+        // 260930_0004 D9 contract change: the bounded wait helper is replaced
+        // by the setup-gate observation (OpenMutexW on Local\EmebalaSetup; held
+        // path waits on the handle from a detached thread).
+        TEST_CHECK(src.find("OpenMutexW(SYNCHRONIZE, FALSE, L\"Local\\\\EmebalaSetup\")") !=
+                       std::string::npos &&
+                       src.find("WaitForSingleObject(setup_gate, INFINITE)") != std::string::npos,
+                   "REQ-048 R2 (c): tray pick binaries path is mutex-gated instant");
     }
 
     if (g_failed_count == failures_before) {
