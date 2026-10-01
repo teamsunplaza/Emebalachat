@@ -236,12 +236,14 @@ void TestReq051I18nCountAndCoverage() {
               << std::endl;
     const int failures_before = g_failed_count;
 
-    // The REQ-051 record: EnumCount advanced 109 -> 110 (the
-    // OpenAiDeleteSettings tail append). Read through a volatile to keep the
-    // runtime comparison (avoids C4127 on the constant expression).
+    // The REQ-051 record advanced 109 -> 110 (the OpenAiDeleteSettings tail
+    // append); REQ-UC 260930_0004 then advanced 110 -> 135 (the 25-string
+    // update-zone block); REQ-MD advanced 135 -> 144 (the 9-string model
+    // download dialog). Read through a volatile to keep the runtime
+    // comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 110,
-               "REQ-051: StringId::EnumCount is 110 after the OpenAiDeleteSettings append");
+    TEST_CHECK(enum_count == 144,
+               "REQ-051: StringId::EnumCount is 144 after the OpenAiDeleteSettings + REQ-UC + REQ-MD appends");
 
     // The new caption resolves non-empty in all 37 authored tables, and no
     // non-English locale falls back to the English text (real translations

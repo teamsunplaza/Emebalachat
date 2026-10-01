@@ -287,6 +287,57 @@ enum class StringId {
     // (110x37).
     OpenAiDeleteSettings,  // "설정 삭제" / "Delete settings"
 
+    // REQ-UC (260930_0004, update-checker design §12): the About-card update
+    // zone strings (six states + consent dialog + progress + ready + errors).
+    // English + Korean authored verbatim from the spec's master string table;
+    // the other 35 tables carry careful short imperative translations. The
+    // {v}/{s} placeholders are positional tokens replaced by the About window
+    // (version string / human size) — every translation keeps them intact.
+    // Appended at the tail so the EnumCount completeness loop covers them
+    // automatically (135x37).
+    UpdateCheck,         // "업데이트 확인" / "Check for updates"
+    UpdateIdleNote,      // "Emebala Chat이 최신인지 확인합니다." / "See if you are running the latest Emebala Chat."
+    UpdateChecking,      // "업데이트 확인 중…" / "Checking for updates…"
+    UpdateCheckingHint,  // "백그라운드에서 실행됩니다 — 이 창을 닫아도 됩니다." / "Runs in the background; you may close this window."
+    UpdateUptodate,      // "최신 버전을 사용 중입니다" / "You are up to date"
+    UpdateDlgTitle,      // "업데이트를 사용할 수 있습니다" / "Update available"
+    UpdateDlgVersion,    // "새 버전" / "Version"
+    UpdateDlgVersionCur, // "현재 {v}" / "you have {v}"
+    UpdateDlgSize,       // "크기" / "Size"
+    UpdateDlgSizeApprox, // "약 {s}" / "about {s}"
+    UpdateDlgPrivacy,    // "확인/다운로드 시 GitHub에 연결됩니다." / "Checking and downloading connect to GitHub."
+    UpdateDlgDownload,   // "다운로드" / "Download"
+    UpdateDlgLater,      // "나중에" / "Later"
+    UpdateDlProgress,    // "다운로드 중…" / "Downloading…"
+    UpdateDlCancel,      // "취소" / "Cancel"
+    UpdateDlCancelled,   // "다운로드가 취소되었습니다" / "Download cancelled."
+    UpdateReadyTitle,    // "다운로드 완료, 설치합니다" / "Download complete — ready to install"
+    UpdateReadyWarn,     // "설치를 시작하면 앱이 종료됩니다." / "The app will close to install."
+    UpdateReadyInstall,  // "지금 설치" / "Install now"
+    UpdateReadyLater,    // "나중에" / "Later"
+    UpdateErrOffline,    // "오프라인 상태입니다. 인터넷 연결을 확인한 후 다시 시도하세요." / "You are offline. Check your connection, then try again."
+    UpdateErrRate,       // "확인 요청이 너무 많습니다. 잠시 후 다시 시도하세요." / "Too many requests. Please try again in a little while."
+    UpdateErrHash,       // "다운로드한 파일이 손상되었습니다" / "The downloaded file did not pass verification."
+    UpdateErrRetry,      // "다시 시도" / "Retry"
+    UpdateSnoozedLine,   // "업데이트를 나중에 설치할 수 있습니다" / "You can install the update later."
+
+    // REQ-MD (260930_0004, decisions.md D9): the on-demand bundled-model
+    // download consent/progress dialog. Later/Cancel/Retry/Close/the download
+    // label/hash-mismatch line REUSE the update-zone + manager ids; these 9
+    // carry the consent, privacy, phase, result and disk-space copy. The
+    // {s} placeholders are the human size (update-checker FormatSizeMb).
+    // Appended at the tail so the EnumCount completeness loop covers them
+    // automatically (144x37).
+    ModelDlCaption,      // "모델 다운로드" / "Model download"
+    ModelDlConsentBody,  // "내장 번역 모델이 설치되어 있지 않습니다. 지금 다운로드하시겠습니까? (약 {s})" / "The built-in translation model is not installed. Download it now? (about {s})"
+    ModelDlPrivacy,      // "다운로드 시 huggingface.co에 연결됩니다." / "Downloading connects to huggingface.co."
+    ModelDlDownload,     // "지금 다운로드" / "Download now"
+    ModelDlVerifying,    // "다운로드한 파일을 확인하는 중…" / "Verifying the download…"
+    ModelDlPlacing,      // "모델을 설치하는 중…" / "Installing the model…"
+    ModelDlDone,         // "모델이 준비되었습니다. 로컬 엔진이 다음 번역부터 사용합니다." / "The model is ready. The local engine will use it from the next translation."
+    ModelDlFailed,       // "다운로드에 실패했습니다. 연결을 확인하고 다시 시도하세요." / "The download failed. Check your connection and try again."
+    ModelDlDiskSpace,    // "디스크 여유 공간이 부족합니다(약 {s} 필요)." / "Not enough free disk space (about {s} required)."
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

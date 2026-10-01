@@ -142,7 +142,41 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(hf_done) \
     X(openai_base_url_hint) \
     X(openai_api_key_hint) \
-    X(openai_delete_settings)
+    X(openai_delete_settings) \
+    X(update_check) \
+    X(update_idle_note) \
+    X(update_checking) \
+    X(update_checking_hint) \
+    X(update_uptodate) \
+    X(update_dlg_title) \
+    X(update_dlg_version) \
+    X(update_dlg_version_cur) \
+    X(update_dlg_size) \
+    X(update_dlg_size_approx) \
+    X(update_dlg_privacy) \
+    X(update_dlg_download) \
+    X(update_dlg_later) \
+    X(update_dl_progress) \
+    X(update_dl_cancel) \
+    X(update_dl_cancelled) \
+    X(update_ready_title) \
+    X(update_ready_warn) \
+    X(update_ready_install) \
+    X(update_ready_later) \
+    X(update_err_offline) \
+    X(update_err_rate) \
+    X(update_err_hash) \
+    X(update_err_retry) \
+    X(update_snoozed_line) \
+    X(model_dl_caption) \
+    X(model_dl_consent_body) \
+    X(model_dl_privacy) \
+    X(model_dl_download) \
+    X(model_dl_verifying) \
+    X(model_dl_placing) \
+    X(model_dl_done) \
+    X(model_dl_failed) \
+    X(model_dl_disk_space)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -167,9 +201,11 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // (REQ-050, 99) + the merged-manager Hugging Face block (REQ-050: 2 add-
 // method buttons + 6 HF dialog strings, 107) + the OpenAI settings cue-banner
 // hints (REQ-050: base-URL + API-key edit placeholders, 109) + the OpenAI
-// settings delete-button caption (REQ-051, 110). The Get()
-// switch maps exactly these 110 named fields.
-static_assert(kLocalizedStringsFieldCount == 110,
+// settings delete-button caption (REQ-051, 110) + the update-checker About
+// zone block (REQ-UC 260930_0004: 25 strings, 135) + the on-demand
+// model download dialog (REQ-MD: 9 strings, 144). The Get()
+// switch maps exactly these 144 named fields.
+static_assert(kLocalizedStringsFieldCount == 144,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -329,6 +365,42 @@ const LocalizedStrings kStringsKorean = {
     .openai_api_key_hint = L"API 키",
     // REQ-051 (Symptom D): 설정 다이얼로그 [설정 삭제] 버튼 캡션.
     .openai_delete_settings = L"설정 삭제",
+    // REQ-UC (260930_0004, 업데이트 확인 About 존 — 디자인 §12 마스터 문자열표).
+    .update_check = L"업데이트 확인",
+    .update_idle_note = L"Emebala Chat이 최신인지 확인합니다.",
+    .update_checking = L"업데이트 확인 중…",
+    .update_checking_hint = L"백그라운드에서 실행됩니다 — 이 창을 닫아도 됩니다.",
+    .update_uptodate = L"최신 버전을 사용 중입니다",
+    .update_dlg_title = L"업데이트를 사용할 수 있습니다",
+    .update_dlg_version = L"새 버전",
+    .update_dlg_version_cur = L"현재 {v}",
+    .update_dlg_size = L"크기",
+    .update_dlg_size_approx = L"약 {s}",
+    .update_dlg_privacy = L"확인/다운로드 시 GitHub에 연결됩니다.",
+    .update_dlg_download = L"다운로드",
+    .update_dlg_later = L"나중에",
+    .update_dl_progress = L"다운로드 중…",
+    .update_dl_cancel = L"취소",
+    .update_dl_cancelled = L"다운로드가 취소되었습니다",
+    .update_ready_title = L"다운로드 완료, 설치합니다",
+    .update_ready_warn = L"설치를 시작하면 앱이 종료됩니다.",
+    .update_ready_install = L"지금 설치",
+    .update_ready_later = L"나중에",
+    .update_err_offline = L"오프라인 상태입니다. 인터넷 연결을 확인한 후 다시 시도하세요.",
+    .update_err_rate = L"확인 요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+    .update_err_hash = L"다운로드한 파일이 손상되었습니다",
+    .update_err_retry = L"다시 시도",
+    .update_snoozed_line = L"업데이트를 나중에 설치할 수 있습니다",
+    // REQ-MD (260930_0004, update-checker design §12 계열): 모델 다운로드 대화상자.
+    .model_dl_caption = L"모델 다운로드",
+    .model_dl_consent_body = L"내장 번역 모델이 설치되어 있지 않습니다. 지금 다운로드하시겠습니까? (약 {s})",
+    .model_dl_privacy = L"다운로드 시 huggingface.co에 연결됩니다.",
+    .model_dl_download = L"지금 다운로드",
+    .model_dl_verifying = L"다운로드한 파일을 확인하는 중…",
+    .model_dl_placing = L"모델을 설치하는 중…",
+    .model_dl_done = L"모델이 준비되었습니다. 로컬 엔진이 다음 번역부터 사용합니다.",
+    .model_dl_failed = L"다운로드에 실패했습니다. 연결을 확인하고 다시 시도하세요.",
+    .model_dl_disk_space = L"디스크 여유 공간이 부족합니다 (약 {s} 필요).",
 };
 
 // 2. Japanese (ja)
@@ -487,6 +559,42 @@ const LocalizedStrings kStringsJapanese = {
     L"APIキー",
     // REQ-051: [設定を削除] ボタン。
     L"設定を削除",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"更新を確認",
+    L"最新の Emebala Chat をご利用かどうかを確認します。",
+    L"更新を確認しています…",
+    L"バックグラウンドで実行されます。このウィンドウを閉じてもかまいません。",
+    L"最新バージョンをご利用中です",
+    L"更新プログラムがあります",
+    L"新しいバージョン",
+    L"現在のバージョンは {v}",
+    L"サイズ",
+    L"約 {s}",
+    L"確認とダウンロードは GitHub に接続します。",
+    L"ダウンロード",
+    L"後で",
+    L"ダウンロード中…",
+    L"キャンセル",
+    L"ダウンロードはキャンセルされました",
+    L"ダウンロード完了 — インストールできます",
+    L"インストールを開始するとアプリは終了します。",
+    L"今すぐインストール",
+    L"後で",
+    L"オフラインです。接続を確認してからもう一度お試しください。",
+    L"リクエストが多すぎます。しばらくしてからもう一度お試しください。",
+    L"ダウンロードしたファイルは検証に合格しませんでした",
+    L"再試行",
+    L"更新プログラムは後でインストールできます。",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"モデルのダウンロード",
+    L"内蔵翻訳モデルがインストールされていません。今すぐダウンロードしますか? (約 {s})",
+    L"ダウンロードは huggingface.co に接続します。",
+    L"今すぐダウンロード",
+    L"ダウンロードしたファイルを確認しています…",
+    L"モデルをインストールしています…",
+    L"モデルの準備ができました。ローカル エンジンが次の翻訳から使用します。",
+    L"ダウンロードに失敗しました。接続を確認してもう一度お試しください。",
+    L"ディスクの空き容量が不足しています (約 {s} 必要)。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -645,6 +753,42 @@ const LocalizedStrings kStringsChineseSimp = {
     L"API 密钥",
     // REQ-051: [删除设置] 按钮。
     L"删除设置",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"检查更新",
+    L"查看你是否在用最新版本的 Emebala Chat。",
+    L"正在检查更新…",
+    L"在后台运行；你可以关闭此窗口。",
+    L"你使用的是最新版本",
+    L"有可用更新",
+    L"新版本",
+    L"你当前为 {v}",
+    L"大小",
+    L"约 {s}",
+    L"检查和下载时会连接到 GitHub。",
+    L"下载",
+    L"稍后",
+    L"正在下载…",
+    L"取消",
+    L"下载已取消。",
+    L"下载完成，可安装",
+    L"安装开始时应用将关闭。",
+    L"立即安装",
+    L"稍后",
+    L"你处于离线状态。请检查网络连接后重试。",
+    L"请求过于频繁。请稍后再试。",
+    L"下载的文件未通过验证。",
+    L"重试",
+    L"你可以稍后安装此更新。",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"下载模型",
+    L"内置翻译模型尚未安装。立即下载? (约 {s})",
+    L"下载时会连接到 huggingface.co。",
+    L"立即下载",
+    L"正在校验下载的文件…",
+    L"正在安装模型…",
+    L"模型已就绪。本地引擎将从下一次翻译开始使用。",
+    L"下载失败。请检查网络连接后重试。",
+    L"磁盘可用空间不足 (需要约 {s})。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -803,6 +947,42 @@ const LocalizedStrings kStringsChineseTrad = {
     L"API 金鑰",
     // REQ-051: [刪除設定] 按鈕。
     L"刪除設定",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"檢查更新",
+    L"查看你是否在使用最新版本的 Emebala Chat。",
+    L"正在檢查更新…",
+    L"在背景執行；你可以關閉此視窗。",
+    L"你使用的是最新版本",
+    L"有可用更新",
+    L"新版本",
+    L"你目前為 {v}",
+    L"大小",
+    L"約 {s}",
+    L"檢查和下載時會連線到 GitHub。",
+    L"下載",
+    L"稍後",
+    L"正在下載…",
+    L"取消",
+    L"下載已取消。",
+    L"下載完成，可安裝",
+    L"安裝開始時應用程式將關閉。",
+    L"立即安裝",
+    L"稍後",
+    L"你目前離線。請檢查網路連線後再試一次。",
+    L"要求過於頻繁。請稍後再試。",
+    L"下載的檔案未通過驗證。",
+    L"重試",
+    L"你可以稍後安裝此更新。",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"下載模型",
+    L"內建翻譯模型尚未安裝。立即下載? (約 {s})",
+    L"下載時會連線到 huggingface.co。",
+    L"立即下載",
+    L"正在驗證下載的檔案…",
+    L"正在安裝模型…",
+    L"模型已就緒。本機引擎將從下一場翻譯開始使用。",
+    L"下載失敗。請檢查網路連線後再試。",
+    L"磁碟可用空間不足 (需要約 {s})。",
 };
 
 // 5. Vietnamese (vi)
@@ -961,6 +1141,42 @@ const LocalizedStrings kStringsVietnamese = {
     L"Khóa API",
     // REQ-051: nút [Xóa cài đặt].
     L"Xóa cài đặt",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Kiểm tra cập nhật",
+    L"Xem bạn có đang dùng phiên bản mới nhất của Emebala Chat không.",
+    L"Đang kiểm tra cập nhật…",
+    L"Chạy trong nền; bạn có thể đóng cửa sổ này.",
+    L"Bạn đang dùng phiên bản mới nhất",
+    L"Có bản cập nhật mới",
+    L"Phiên bản mới",
+    L"bạn đang dùng {v}",
+    L"Kích thước",
+    L"khoảng {s}",
+    L"Việc kiểm tra và tải xuống sẽ kết nối tới GitHub.",
+    L"Tải xuống",
+    L"Để sau",
+    L"Đang tải xuống…",
+    L"Hủy",
+    L"Đã hủy tải xuống.",
+    L"Tải xuống hoàn tất — sẵn sàng cài đặt",
+    L"Ứng dụng sẽ đóng để cài đặt.",
+    L"Cài đặt ngay",
+    L"Để sau",
+    L"Bạn đang ngoại tuyến. Hãy kiểm tra kết nối rồi thử lại.",
+    L"Quá nhiều yêu cầu. Vui lòng thử lại sau ít phút.",
+    L"Tệp đã tải không vượt qua xác minh.",
+    L"Thử lại",
+    L"Bạn có thể cài đặt bản cập nhật sau.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Tải mô hình",
+    L"Mô hình dịch tích hợp chưa được cài đặt. Tải ngay bây giờ? (khoảng {s})",
+    L"Việc tải xuống sẽ kết nối tới huggingface.co.",
+    L"Tải ngay",
+    L"Đang xác minh tệp đã tải…",
+    L"Đang cài đặt mô hình…",
+    L"Mô hình đã sẵn sàng. Cỗ máy cục bộ sẽ sử dụng từ lần dịch tiếp theo.",
+    L"Tải xuống thất bại. Hãy kiểm tra kết nối và thử lại.",
+    L"Không đủ dung lượng đĩa trống (cần khoảng {s}).",
 };
 
 // 6. Spanish (es)
@@ -1116,6 +1332,42 @@ const LocalizedStrings kStringsSpanish = {
     L"Clave de API",
     // REQ-051: botón [Eliminar ajustes].
     L"Eliminar ajustes",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Buscar actualizaciones",
+    L"Comprueba si tienes la última versión de Emebala Chat.",
+    L"Buscando actualizaciones…",
+    L"Se ejecuta en segundo plano; puedes cerrar esta ventana.",
+    L"Ya tienes la versión más reciente",
+    L"Actualización disponible",
+    L"Versión nueva",
+    L"tienes la {v}",
+    L"Tamaño",
+    L"unos {s}",
+    L"Al comprobar y descargar se conecta a GitHub.",
+    L"Descargar",
+    L"Más tarde",
+    L"Descargando…",
+    L"Cancelar",
+    L"Descarga cancelada.",
+    L"Descarga completa — listo para instalar",
+    L"La aplicación se cerrará para instalar.",
+    L"Instalar ahora",
+    L"Más tarde",
+    L"Estás sin conexión. Comprueba tu conexión e inténtalo de nuevo.",
+    L"Demasiadas solicitudes. Inténtalo de nuevo en un rato.",
+    L"El archivo descargado no pasó la verificación.",
+    L"Reintentar",
+    L"Puedes instalar la actualización más tarde.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Descargar modelo",
+    L"El modelo de traducción integrado no está instalado. ¿Descargarlo ahora? (unos {s})",
+    L"Al descargar se conecta a huggingface.co.",
+    L"Descargar ahora",
+    L"Verificando la descarga…",
+    L"Instalando el modelo…",
+    L"El modelo está listo. El motor local lo usará desde la próxima traducción.",
+    L"La descarga falló. Comprueba tu conexión e inténtalo de nuevo.",
+    L"No hay suficiente espacio libre en disco (se requieren unos {s}).",
 };
 
 // 7. English (en) - Default Fallback
@@ -1272,6 +1524,42 @@ const LocalizedStrings kStringsEnglish = {
     L"sk-...",
     // REQ-051: [Delete settings] button.
     L"Delete settings",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Check for updates",
+    L"See if you are running the latest Emebala Chat.",
+    L"Checking for updates…",
+    L"Runs in the background; you may close this window.",
+    L"You are up to date",
+    L"Update available",
+    L"Version",
+    L"you have {v}",
+    L"Size",
+    L"about {s}",
+    L"Checking and downloading connect to GitHub.",
+    L"Download",
+    L"Later",
+    L"Downloading…",
+    L"Cancel",
+    L"Download cancelled.",
+    L"Download complete — ready to install",
+    L"The app will close to install.",
+    L"Install now",
+    L"Later",
+    L"You are offline. Check your connection, then try again.",
+    L"Too many requests. Please try again in a little while.",
+    L"The downloaded file did not pass verification.",
+    L"Retry",
+    L"You can install the update later.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Model download",
+    L"The built-in translation model is not installed. Download it now? (about {s})",
+    L"Downloading connects to huggingface.co.",
+    L"Download now",
+    L"Verifying the download…",
+    L"Installing the model…",
+    L"The model is ready. The local engine will use it from the next translation.",
+    L"The download failed. Check your connection and try again.",
+    L"Not enough free disk space (about {s} required).",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1442,6 +1730,42 @@ const LocalizedStrings kStringsFrench = {
     L"Clé API",
     // REQ-051: bouton [Supprimer les paramètres].
     L"Supprimer les paramètres",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Vérifier les mises à jour",
+    L"Vérifiez que vous utilisez la dernière version d'Emebala Chat.",
+    L"Recherche de mises à jour…",
+    L"S'exécute en arrière-plan ; vous pouvez fermer cette fenêtre.",
+    L"Vous êtes à jour",
+    L"Mise à jour disponible",
+    L"Nouvelle version",
+    L"vous avez la {v}",
+    L"Taille",
+    L"environ {s}",
+    L"La vérification et le téléchargement se connectent à GitHub.",
+    L"Télécharger",
+    L"Plus tard",
+    L"Téléchargement…",
+    L"Annuler",
+    L"Téléchargement annulé.",
+    L"Téléchargement terminé — prêt à installer",
+    L"L'application se fermera pour s'installer.",
+    L"Installer maintenant",
+    L"Plus tard",
+    L"Vous êtes hors ligne. Vérifiez votre connexion, puis réessayez.",
+    L"Trop de requêtes. Veuillez réessayer dans un moment.",
+    L"Le fichier téléchargé n'a pas passé la vérification.",
+    L"Réessayer",
+    L"Vous pouvez installer la mise à jour plus tard.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Téléchargement du modèle",
+    L"Le modèle de traduction intégré n'est pas installé. Le télécharger maintenant ? (environ {s})",
+    L"Le téléchargement se connecte à huggingface.co.",
+    L"Télécharger maintenant",
+    L"Vérification du téléchargement…",
+    L"Installation du modèle…",
+    L"Le modèle est prêt. Le moteur local l'utilisera dès la prochaine traduction.",
+    L"Le téléchargement a échoué. Vérifiez votre connexion et réessayez.",
+    L"Espace disque libre insuffisant (environ {s} requis).",
 };
 
 // 9. German (de)
@@ -1600,6 +1924,42 @@ const LocalizedStrings kStringsGerman = {
     L"API-Schlüssel",
     // REQ-051: Schaltfläche [Einstellungen löschen].
     L"Einstellungen löschen",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Nach Updates suchen",
+    L"Prüfen, ob Sie die neueste Version von Emebala Chat nutzen.",
+    L"Nach Updates wird gesucht…",
+    L"Läuft im Hintergrund; Sie können dieses Fenster schließen.",
+    L"Sie sind auf dem neuesten Stand",
+    L"Update verfügbar",
+    L"Neue Version",
+    L"Sie haben {v}",
+    L"Größe",
+    L"etwa {s}",
+    L"Prüfung und Download stellen eine Verbindung zu GitHub her.",
+    L"Herunterladen",
+    L"Später",
+    L"Wird heruntergeladen…",
+    L"Abbrechen",
+    L"Download abgebrochen.",
+    L"Download abgeschlossen — bereit zur Installation",
+    L"Die App wird zum Installieren geschlossen.",
+    L"Jetzt installieren",
+    L"Später",
+    L"Sie sind offline. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    L"Zu viele Anfragen. Bitte versuchen Sie es gleich erneut.",
+    L"Die heruntergeladene Datei hat die Überprüfung nicht bestanden.",
+    L"Erneut versuchen",
+    L"Sie können das Update später installieren.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Modell herunterladen",
+    L"Das integrierte Übersetzungsmodell ist nicht installiert. Jetzt herunterladen? (etwa {s})",
+    L"Der Download stellt eine Verbindung zu huggingface.co her.",
+    L"Jetzt herunterladen",
+    L"Download wird überprüft…",
+    L"Modell wird installiert…",
+    L"Das Modell ist bereit. Die lokale Engine nutzt es ab der nächsten Übersetzung.",
+    L"Der Download ist fehlgeschlagen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    L"Nicht genügend freier Speicherplatz (etwa {s} erforderlich).",
 };
 
 // 10. Russian (ru)
@@ -1758,6 +2118,42 @@ const LocalizedStrings kStringsRussian = {
     L"Ключ API",
     // REQ-051: кнопка [Удалить настройки].
     L"Удалить настройки",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Проверить обновления",
+    L"Проверьте, используете ли вы последнюю версию Emebala Chat.",
+    L"Проверка обновлений…",
+    L"Выполняется в фоне; это окно можно закрыть.",
+    L"У вас актуальная версия",
+    L"Доступно обновление",
+    L"Новая версия",
+    L"у вас {v}",
+    L"Размер",
+    L"около {s}",
+    L"Проверка и скачивание выполняются через GitHub.",
+    L"Скачать",
+    L"Позже",
+    L"Загрузка…",
+    L"Отмена",
+    L"Загрузка отменена.",
+    L"Загрузка завершена — можно устанавливать",
+    L"Приложение закроется для установки.",
+    L"Установить сейчас",
+    L"Позже",
+    L"Нет подключения. Проверьте соединение и повторите попытку.",
+    L"Слишком много запросов. Повторите попытку через некоторое время.",
+    L"Загруженный файл не прошёл проверку.",
+    L"Повторить",
+    L"Обновление можно установить позже.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Загрузка модели",
+    L"Встроенная модель перевода не установлена. Скачать её сейчас? (около {s})",
+    L"Загрузка выполняется через huggingface.co.",
+    L"Скачать сейчас",
+    L"Проверка загруженного файла…",
+    L"Установка модели…",
+    L"Модель готова. Локальный движок будет использовать её с следующего перевода.",
+    L"Загрузка не удалась. Проверьте подключение и повторите попытку.",
+    L"Недостаточно свободного места на диске (требуется около {s}).",
 };
 
 // 11. Portuguese (pt)
@@ -1916,6 +2312,42 @@ const LocalizedStrings kStringsPortuguese = {
     L"Chave de API",
     // REQ-051: botão [Eliminar configurações].
     L"Eliminar configurações",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Verificar atualizações",
+    L"Veja se está a usar a versão mais recente do Emebala Chat.",
+    L"A verificar atualizações…",
+    L"Executa em segundo plano; pode fechar esta janela.",
+    L"Está atualizado",
+    L"Atualização disponível",
+    L"Nova versão",
+    L"tem a {v}",
+    L"Tamanho",
+    L"cerca de {s}",
+    L"A verificação e o download ligam-se ao GitHub.",
+    L"Transferir",
+    L"Mais tarde",
+    L"A transferir…",
+    L"Cancelar",
+    L"Transferência cancelada.",
+    L"Transferência concluída — pronto para instalar",
+    L"A aplicação vai fechar para instalar.",
+    L"Instalar agora",
+    L"Mais tarde",
+    L"Está offline. Verifique a ligação e tente novamente.",
+    L"Demasiados pedidos. Tente novamente dentro de momentos.",
+    L"O ficheiro transferido não passou na verificação.",
+    L"Tentar novamente",
+    L"Pode instalar a atualização mais tarde.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Transferir modelo",
+    L"O modelo de tradução integrado não está instalado. Transferir agora? (cerca de {s})",
+    L"A transferência liga-se a huggingface.co.",
+    L"Transferir agora",
+    L"A verificar a transferência…",
+    L"A instalar o modelo…",
+    L"O modelo está pronto. O motor local irá utilizá-lo a partir da próxima tradução.",
+    L"A transferência falhou. Verifique a ligação e tente novamente.",
+    L"Espaço livre em disco insuficiente (necessários cerca de {s}).",
 };
 
 // 12. Italian (it)
@@ -2074,6 +2506,42 @@ const LocalizedStrings kStringsItalian = {
     L"Chiave API",
     // REQ-051: pulsante [Elimina impostazioni].
     L"Elimina impostazioni",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Verifica aggiornamenti",
+    L"Verifica se stai usando l'ultima versione di Emebala Chat.",
+    L"Ricerca aggiornamenti…",
+    L"Viene eseguito in background; puoi chiudere questa finestra.",
+    L"Sei aggiornato",
+    L"Aggiornamento disponibile",
+    L"Nuova versione",
+    L"hai la {v}",
+    L"Dimensione",
+    L"circa {s}",
+    L"Il controllo e il download si connettono a GitHub.",
+    L"Scarica",
+    L"Più tardi",
+    L"Download in corso…",
+    L"Annulla",
+    L"Download annullato.",
+    L"Download completato — pronto per l'installazione",
+    L"L'app si chiuderà per l'installazione.",
+    L"Installa ora",
+    L"Più tardi",
+    L"Sei offline. Controlla la connessione e riprova.",
+    L"Troppe richieste. Riprova tra poco.",
+    L"Il file scaricato non ha superato la verifica.",
+    L"Riprova",
+    L"Puoi installare l'aggiornamento più tardi.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Download del modello",
+    L"Il modello di traduzione integrato non è installato. Scaricarlo ora? (circa {s})",
+    L"Il download si connette a huggingface.co.",
+    L"Scarica ora",
+    L"Verifica del download…",
+    L"Installazione del modello…",
+    L"Il modello è pronto. Il motore locale lo userà dalla prossima traduzione.",
+    L"Il download non è riuscito. Controlla la connessione e riprova.",
+    L"Spazio libero su disco insufficiente (circa {s} richiesti).",
 };
 
 // 13. Dutch (nl)
@@ -2232,6 +2700,42 @@ const LocalizedStrings kStringsDutch = {
     L"API-sleutel",
     // REQ-051: knop [Instellingen verwijderen].
     L"Instellingen verwijderen",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Controleren op updates",
+    L"Kijk of je de nieuwste versie van Emebala Chat gebruikt.",
+    L"Updates worden gecontroleerd…",
+    L"Draait op de achtergrond; je mag dit venster sluiten.",
+    L"Je hebt de nieuwste versie",
+    L"Update beschikbaar",
+    L"Nieuwe versie",
+    L"jij hebt {v}",
+    L"Grootte",
+    L"ongeveer {s}",
+    L"Controleren en downloaden verbindt met GitHub.",
+    L"Downloaden",
+    L"Later",
+    L"Bezig met downloaden…",
+    L"Annuleren",
+    L"Download geannuleerd.",
+    L"Download voltooid — klaar om te installeren",
+    L"De app wordt afgesloten om te installeren.",
+    L"Nu installeren",
+    L"Later",
+    L"Je bent offline. Controleer je verbinding en probeer het opnieuw.",
+    L"Te veel aanvragen. Probeer het zo opnieuw.",
+    L"Het gedownloade bestand is niet geverifieerd.",
+    L"Opnieuw proberen",
+    L"Je kunt de update later installeren.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Model downloaden",
+    L"Het ingebouwde vertaalmodel is niet geïnstalleerd. Nu downloaden? (ongeveer {s})",
+    L"Het downloaden verbindt met huggingface.co.",
+    L"Nu downloaden",
+    L"Download wordt geverifieerd…",
+    L"Model wordt geïnstalleerd…",
+    L"Het model is klaar. De lokale engine gebruikt het vanaf de volgende vertaling.",
+    L"De download is mislukt. Controleer je verbinding en probeer het opnieuw.",
+    L"Niet genoeg vrije schijfruimte (ongeveer {s} vereist).",
 };
 
 // 14. Polish (pl)
@@ -2390,6 +2894,42 @@ const LocalizedStrings kStringsPolish = {
     L"Klucz API",
     // REQ-051: przycisk [Usuń ustawienia].
     L"Usuń ustawienia",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Sprawdź aktualizacje",
+    L"Sprawdź, czy używasz najnowszej wersji Emebala Chat.",
+    L"Sprawdzanie aktualizacji…",
+    L"Działa w tle; możesz zamknąć to okno.",
+    L"Masz najnowszą wersję",
+    L"Dostępna aktualizacja",
+    L"Nowa wersja",
+    L"masz wersję {v}",
+    L"Rozmiar",
+    L"około {s}",
+    L"Sprawdzanie i pobieranie łączą się z GitHubem.",
+    L"Pobierz",
+    L"Później",
+    L"Pobieranie…",
+    L"Anuluj",
+    L"Pobieranie anulowane.",
+    L"Pobieranie ukończone — gotowe do instalacji",
+    L"Aplikacja zamknie się, aby zainstalować.",
+    L"Zainstaluj teraz",
+    L"Później",
+    L"Jesteś offline. Sprawdź połączenie i spróbuj ponownie.",
+    L"Zbyt wiele żądań. Spróbuj ponownie za chwilę.",
+    L"Pobrany plik nie przeszedł weryfikacji.",
+    L"Spróbuj ponownie",
+    L"Możesz zainstalować aktualizację później.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Pobieranie modelu",
+    L"Wbudowany model tłumaczeń nie jest zainstalowany. Pobrać teraz? (około {s})",
+    L"Pobieranie łączy się z huggingface.co.",
+    L"Pobierz teraz",
+    L"Weryfikacja pobranego pliku…",
+    L"Instalowanie modelu…",
+    L"Model jest gotowy. Lokalny silnik użyje go od następnego tłumaczenia.",
+    L"Pobieranie nie powiodło się. Sprawdź połączenie i spróbuj ponownie.",
+    L"Za mało wolnego miejsca na dysku (wymagane około {s}).",
 };
 
 // 15. Czech (cs)
@@ -2548,6 +3088,42 @@ const LocalizedStrings kStringsCzech = {
     L"API klíč",
     // REQ-051: tlačítko [Odstranit nastavení].
     L"Odstranit nastavení",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Zkontrolovat aktualizace",
+    L"Zkontrolujte, zda používáte nejnovější verzi aplikace Emebala Chat.",
+    L"Kontrola aktualizací…",
+    L"Běží na pozadí; toto okno můžete zavřít.",
+    L"Používáte nejnovější verzi",
+    L"Je k dispozici aktualizace",
+    L"Nová verze",
+    L"máte {v}",
+    L"Velikost",
+    L"přibližně {s}",
+    L"Kontrola a stahování se připojuje k GitHubu.",
+    L"Stáhnout",
+    L"Později",
+    L"Stahování…",
+    L"Zrušit",
+    L"Stahování bylo zrušeno.",
+    L"Stahování dokončeno — připraveno k instalaci",
+    L"Aplikace se pro instalaci zavře.",
+    L"Nainstalovat nyní",
+    L"Později",
+    L"Jste offline. Zkontrolujte připojení a zkuste to znovu.",
+    L"Příliš mnoho požadavků. Zkuste to znovu za chvíli.",
+    L"Stažený soubor neprošel ověřením.",
+    L"Zkusit znovu",
+    L"Aktualizaci můžete nainstalovat později.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Stáhnout model",
+    L"Integrovaný překladatelský model není nainstalován. Stáhnout nyní? (přibližně {s})",
+    L"Stahování se připojuje k huggingface.co.",
+    L"Stáhnout nyní",
+    L"Ověřování staženého souboru…",
+    L"Instalace modelu…",
+    L"Model je připraven. Místní engine ho použije od dalšího překladu.",
+    L"Stahování se nezdařilo. Zkontrolujte připojení a zkuste to znovu.",
+    L"Nedostatek volného místa na disku (vyžadováno přibližně {s}).",
 };
 
 // 16. Hungarian (hu)
@@ -2706,6 +3282,42 @@ const LocalizedStrings kStringsHungarian = {
     L"API-kulcs",
     // REQ-051: [Beállítások törlése] gomb.
     L"Beállítások törlése",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Frissítések keresése",
+    L"Nézze meg, a legújabb Emebala Chatet futtatja-e.",
+    L"Frissítések keresése…",
+    L"A háttérben fut; bezárhatja ezt az ablakot.",
+    L"Ön a legújabb verziót használja",
+    L"Frissítés érhető el",
+    L"Új verzió",
+    L"Öné: {v}",
+    L"Méret",
+    L"körülbelül {s}",
+    L"A keresés és a letöltés a GitHubhoz kapcsolódik.",
+    L"Letöltés",
+    L"Később",
+    L"Letöltés folyamatban…",
+    L"Mégse",
+    L"A letöltés megszakítva.",
+    L"A letöltés kész — telepítésre kész",
+    L"A telepítéshez az alkalmazás bezár.",
+    L"Telepítés most",
+    L"Később",
+    L"Ön offline. Ellenőrizze a kapcsolatot, és próbálja újra.",
+    L"Túl sok kérés. Kérjük, próbálja meg újra egy kis idő múlva.",
+    L"A letöltött fájl nem ment át az ellenőrzésen.",
+    L"Újrapróbálás",
+    L"A frissítés később is telepíthető.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Modell letöltése",
+    L"A beépített fordítómodell nincs telepítve. Letölti most? (körülbelül {s})",
+    L"A letöltés a huggingface.co-hoz kapcsolódik.",
+    L"Letöltés most",
+    L"A letöltés ellenőrzése…",
+    L"A modell telepítése…",
+    L"A modell kész. A helyi motor a következő fordítástól használja.",
+    L"A letöltés nem sikerült. Ellenőrizze a kapcsolatot, és próbálja újra.",
+    L"Nincs elég szabad lemezterület (kb. {s} szükséges).",
 };
 
 // 17. Romanian (ro)
@@ -2864,6 +3476,42 @@ const LocalizedStrings kStringsRomanian = {
     L"Cheie API",
     // REQ-051: buton [Șterge setările].
     L"Șterge setările",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Verifică actualizări",
+    L"Vedeți dacă rulați cea mai recentă versiune de Emebala Chat.",
+    L"Se verifică actualizările…",
+    L"Rulează în fundal; puteți închide această fereastră.",
+    L"Utilizați cea mai recentă versiune",
+    L"Actualizare disponibilă",
+    L"Versiune nouă",
+    L"aveți {v}",
+    L"Dimensiune",
+    L"aproximativ {s}",
+    L"Verificarea și descărcarea se conectează la GitHub.",
+    L"Descarcă",
+    L"Mai târziu",
+    L"Se descarcă…",
+    L"Anulează",
+    L"Descărcare anulată.",
+    L"Descărcare finalizată — gata de instalare",
+    L"Aplicația se va închide pentru instalare.",
+    L"Instalează acum",
+    L"Mai târziu",
+    L"Sunteți offline. Verificați conexiunea, apoi reîncercați.",
+    L"Prea multe solicitări. Reîncercați peste puțin timp.",
+    L"Fișierul descărcat nu a trecut verificarea.",
+    L"Reîncearcă",
+    L"Puteți instala actualizarea mai târziu.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Descărcare model",
+    L"Modelul de traducere integrat nu este instalat. Îl descărcați acum? (aproximativ {s})",
+    L"Descărcarea se conectează la huggingface.co.",
+    L"Descarcă acum",
+    L"Se verifică descărcarea…",
+    L"Se instalează modelul…",
+    L"Modelul este gata. Motorul local îl va folosi de la următoarea traducere.",
+    L"Descărcarea a eșuat. Verificați conexiunea și încercați din nou.",
+    L"Spațiu liber insuficient pe disc (necesari aproximativ {s}).",
 };
 
 // 18. Swedish (sv)
@@ -3022,6 +3670,42 @@ const LocalizedStrings kStringsSwedish = {
     L"API-nyckel",
     // REQ-051: knapp [Ta bort inställningar].
     L"Ta bort inställningar",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Sök efter uppdateringar",
+    L"Se om du kör den senaste versionen av Emebala Chat.",
+    L"Söker efter uppdateringar…",
+    L"Körs i bakgrunden; du kan stänga det här fönstret.",
+    L"Du har den senaste versionen",
+    L"Uppdatering tillgänglig",
+    L"Ny version",
+    L"du har {v}",
+    L"Storlek",
+    L"cirka {s}",
+    L"Kontroll och hämtning ansluter till GitHub.",
+    L"Ladda ner",
+    L"Senare",
+    L"Laddar ner…",
+    L"Avbryt",
+    L"Nedladdningen avbröts.",
+    L"Nedladdning klar — redo att installera",
+    L"Appen stängs för att installera.",
+    L"Installera nu",
+    L"Senare",
+    L"Du är offline. Kontrollera din anslutning och försök igen.",
+    L"För många förfrågningar. Försök igen om en stund.",
+    L"Den nedladdade filen klarade inte verifieringen.",
+    L"Försök igen",
+    L"Du kan installera uppdateringen senare.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Ladda ner modell",
+    L"Den inbyggda översättningsmodellen är inte installerad. Ladda ner den nu? (cirka {s})",
+    L"Nedladdningen ansluter till huggingface.co.",
+    L"Ladda ner nu",
+    L"Verifierar nedladdningen…",
+    L"Installerar modellen…",
+    L"Modellen är klar. Den lokala motorn använder den från nästa översättning.",
+    L"Nedladdningen misslyckades. Kontrollera din anslutning och försök igen.",
+    L"Inte tillräckligt med ledigt diskutrymme (cirka {s} krävs).",
 };
 
 // 19. Danish (da)
@@ -3180,6 +3864,42 @@ const LocalizedStrings kStringsDanish = {
     L"API-nøgle",
     // REQ-051: knap [Slet indstillinger].
     L"Slet indstillinger",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Søg efter opdateringer",
+    L"Se, om du kører den nyeste version af Emebala Chat.",
+    L"Søger efter opdateringer…",
+    L"Kører i baggrunden; du kan lukke dette vindue.",
+    L"Du har den nyeste version",
+    L"Opdatering tilgængelig",
+    L"Ny version",
+    L"du har {v}",
+    L"Størrelse",
+    L"ca. {s}",
+    L"Kontrol og download opretter forbindelse til GitHub.",
+    L"Download",
+    L"Senere",
+    L"Download i gang…",
+    L"Annullér",
+    L"Download annulleret.",
+    L"Download fuldført — klar til at installere",
+    L"Appen lukkes for at installere.",
+    L"Installer nu",
+    L"Senere",
+    L"Du er offline. Tjek din forbindelse, og prøv igen.",
+    L"For mange anmodninger. Prøv igen om lidt.",
+    L"Den downloadede fil bestod ikke verificeringen.",
+    L"Prøv igen",
+    L"Du kan installere opdateringen senere.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Download model",
+    L"Den indbyggede oversættelsesmodel er ikke installeret. Download nu? (ca. {s})",
+    L"Download opretter forbindelse til huggingface.co.",
+    L"Download nu",
+    L"Verificerer download…",
+    L"Installerer modellen…",
+    L"Modellen er klar. Den lokale motor bruger den fra næste oversættelse.",
+    L"Download mislykkedes. Tjek din forbindelse, og prøv igen.",
+    L"Ikke nok ledig diskplads (ca. {s} påkrævet).",
 };
 
 // 20. Finnish (fi)
@@ -3338,6 +4058,42 @@ const LocalizedStrings kStringsFinnish = {
     L"API-avain",
     // REQ-051: painike [Poista asetukset].
     L"Poista asetukset",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Tarkista päivitykset",
+    L"Katso, käytätkö uusinta Emebala Chat -versiota.",
+    L"Tarkistetaan päivityksiä…",
+    L"Toimii taustalla; voit sulkea tämän ikkunan.",
+    L"Käytät uusinta versiota",
+    L"Päivitys saatavilla",
+    L"Uusi versio",
+    L"käytössäsi on {v}",
+    L"Koko",
+    L"noin {s}",
+    L"Tarkistus ja lataus yhdistävät GitHubiin.",
+    L"Lataa",
+    L"Myöhemmin",
+    L"Ladataan…",
+    L"Peruuta",
+    L"Lataus peruutettu.",
+    L"Lataus valmis — valmis asennettavaksi",
+    L"Sovellus sulkeutuu asennettaessa.",
+    L"Asenna nyt",
+    L"Myöhemmin",
+    L"Olet offline-tilassa. Tarkista yhteys ja yritä uudelleen.",
+    L"Liikaa pyyntöjä. Yritä uudelleen hetken kuluttua.",
+    L"Ladattu tiedosto ei läpäissyt tarkistusta.",
+    L"Yritä uudelleen",
+    L"Voit asentaa päivityksen myöhemmin.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Lataa malli",
+    L"Sisäänrakennettua käännösmallia ei ole asennettu. Ladataanko nyt? (noin {s})",
+    L"Lataus yhdistää huggingface.co-palveluun.",
+    L"Lataa nyt",
+    L"Tarkistetaan latausta…",
+    L"Asennetaan mallia…",
+    L"Malli on valmis. Paikallinen moottori käyttää sitä seuraavasta käännöksestä lähtien.",
+    L"Lataus epäonnistui. Tarkista yhteys ja yritä uudelleen.",
+    L"Levytilaa ei ole riittävästi (tarvitaan noin {s}).",
 };
 
 // 21. Norwegian (no / nb)
@@ -3496,6 +4252,42 @@ const LocalizedStrings kStringsNorwegian = {
     L"API-nøkkel",
     // REQ-051: knapp [Slett innstillinger].
     L"Slett innstillinger",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Se etter oppdateringer",
+    L"Sjekk om du kjører den nyeste versjonen av Emebala Chat.",
+    L"Ser etter oppdateringer…",
+    L"Kjører i bakgrunnen; du kan lukke dette vinduet.",
+    L"Du har den nyeste versjonen",
+    L"Oppdatering tilgjengelig",
+    L"Ny versjon",
+    L"du har {v}",
+    L"Størrelse",
+    L"omtrent {s}",
+    L"Sjekk og nedlasting kobler til GitHub.",
+    L"Last ned",
+    L"Senere",
+    L"Laster ned…",
+    L"Avbryt",
+    L"Nedlastingen avbrutt.",
+    L"Nedlastingen er fullført — klar til å installere",
+    L"Appen lukkes for å installere.",
+    L"Installer nå",
+    L"Senere",
+    L"Du er frakoblet. Sjekk tilkoblingen din, og prøv igjen.",
+    L"For mange forespørsler. Prøv igjen om litt.",
+    L"Den nedlastede filen bestod ikke verifiseringen.",
+    L"Prøv igjen",
+    L"Du kan installere oppdateringen senere.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Last ned modell",
+    L"Den innebygde oversettelsesmodellen er ikke installert. Last ned nå? (ca. {s})",
+    L"Nedlastingen kobler til huggingface.co.",
+    L"Last ned nå",
+    L"Verifiserer nedlastingen…",
+    L"Installerer modellen…",
+    L"Modellen er klar. Den lokale motoren bruker den fra neste oversettelse.",
+    L"Nedlastingen mislyktes. Sjekk tilkoblingen din og prøv igjen.",
+    L"Ikke nok ledig diskplass (ca. {s} kreves).",
 };
 
 // 22. Greek (el)
@@ -3654,6 +4446,42 @@ const LocalizedStrings kStringsGreek = {
     L"Κλειδί API",
     // REQ-051: κουμπί [Διαγραφή ρυθμίσεων].
     L"Διαγραφή ρυθμίσεων",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Έλεγχος για ενημερώσεις",
+    L"Δείτε αν χρησιμοποιείτε την πιο πρόσφατη έκδοση του Emebala Chat.",
+    L"Έλεγχος για ενημερώσεις…",
+    L"Εκτελείται στο παρασκήνιο· μπορείτε να κλείσετε αυτό το παράθυρο.",
+    L"Έχετε την πιο πρόσφατη έκδοση",
+    L"Διαθέσιμη ενημέρωση",
+    L"Νέα έκδοση",
+    L"έχετε την {v}",
+    L"Μέγεθος",
+    L"περίπου {s}",
+    L"Ο έλεγχος και η λήψη συνδέονται στο GitHub.",
+    L"Λήψη",
+    L"Αργότερα",
+    L"Λήψη σε εξέλιξη…",
+    L"Άκυρο",
+    L"Η λήψη ακυρώθηκε.",
+    L"Η λήψη ολοκληρώθηκε — έτοιμο για εγκατάσταση",
+    L"Η εφαρμογή θα κλείσει για εγκατάσταση.",
+    L"Εγκατάσταση τώρα",
+    L"Αργότερα",
+    L"Είστε εκτός σύνδεσης. Ελέγξτε τη σύνδεσή σας και δοκιμάστε ξανά.",
+    L"Πάρα πολλά αιτήματα. Δοκιμάστε ξανά σε λίγο.",
+    L"Το ληφθέν αρχείο δεν πέρασε τον έλεγχο.",
+    L"Δοκιμάστε ξανά",
+    L"Μπορείτε να εγκαταστήσετε την ενημέρωση αργότερα.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Λήψη μοντέλου",
+    L"Το ενσωματωμένο μοντέλο μετάφρασης δεν είναι εγκατεστημένο. Λήψη τώρα; (περίπου {s})",
+    L"Η λήψη συνδέεται στο huggingface.co.",
+    L"Λήψη τώρα",
+    L"Επαλήθευση λήψης…",
+    L"Εγκατάσταση μοντέλου…",
+    L"Το μοντέλο είναι έτοιμο. Η τοπική μηχανή θα το χρησιμοποιεί από την επόμενη μετάφραση.",
+    L"Η λήψη απέτυχε. Ελέγξτε τη σύνδεσή σας και δοκιμάστε ξανά.",
+    L"Δεν υπάρχει αρκετός ελεύθερος χώρος στο δίσκο (απαιτούνται περίπου {s}).",
 };
 
 // 23. Turkish (tr)
@@ -3812,6 +4640,42 @@ const LocalizedStrings kStringsTurkish = {
     L"API anahtarı",
     // REQ-051: [Ayarları sil] düğmesi.
     L"Ayarları sil",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Güncelleştirmeleri denetle",
+    L"En son Emebala Chat sürümünü kullanıp kullanmadığınızı görün.",
+    L"Güncelleştirmeler denetleniyor…",
+    L"Arka planda çalışır; bu pencereyi kapatabilirsiniz.",
+    L"En son sürümü kullanıyorsunuz",
+    L"Güncelleştirme mevcut",
+    L"Yeni sürüm",
+    L"sürümünüz {v}",
+    L"Boyut",
+    L"yaklaşık {s}",
+    L"Denetleme ve indirme GitHub'a bağlanır.",
+    L"İndir",
+    L"Daha sonra",
+    L"İndiriliyor…",
+    L"İptal",
+    L"İndirme iptal edildi.",
+    L"İndirme tamamlandı — kuruluma hazır",
+    L"Kurulum için uygulama kapanacak.",
+    L"Şimdi kur",
+    L"Daha sonra",
+    L"Çevrimdışısınız. Bağlantınızı kontrol edip tekrar deneyin.",
+    L"Çok fazla istek. Lütfen birazdan tekrar deneyin.",
+    L"İndirilen dosya doğrulamayı geçemedi.",
+    L"Yeniden dene",
+    L"Güncelleştirmeyi daha sonra kurabilirsiniz.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Model indir",
+    L"Yerleşik çeviri modeli kurulu değil. Şimdi indirilsin mi? (yaklaşık {s})",
+    L"İndirme huggingface.co adresine bağlanır.",
+    L"Şimdi indir",
+    L"İndirilen doğrulanıyor…",
+    L"Model kuruluyor…",
+    L"Model hazır. Yerel motor bir sonraki çeviriden itibaren kullanacak.",
+    L"İndirme başarısız oldu. Bağlantınızı kontrol edip tekrar deneyin.",
+    L"Yetersiz boş disk alanı (yaklaşık {s} gerekli).",
 };
 
 // 24. Ukrainian (uk)
@@ -3970,6 +4834,42 @@ const LocalizedStrings kStringsUkrainian = {
     L"Ключ API",
     // REQ-051: кнопка [Видалити налаштування].
     L"Видалити налаштування",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Перевірити оновлення",
+    L"Перевірте, чи ви використовуєте найновішу версію Emebala Chat.",
+    L"Перевірка оновлень…",
+    L"Працює у фоні; ви можете закрити це вікно.",
+    L"У вас найновіша версія",
+    L"Доступне оновлення",
+    L"Нова версія",
+    L"у вас {v}",
+    L"Розмір",
+    L"близько {s}",
+    L"Перевірка та завантаження з'єднуються з GitHub.",
+    L"Завантажити",
+    L"Пізніше",
+    L"Завантаження…",
+    L"Скасувати",
+    L"Завантаження скасовано.",
+    L"Завантаження завершено — готово до встановлення",
+    L"Застосунок закриється для встановлення.",
+    L"Встановити зараз",
+    L"Пізніше",
+    L"Ви офлайн. Перевірте з'єднання та повторіть спробу.",
+    L"Занадто багато запитів. Повторіть спробу трохи згодом.",
+    L"Завантажений файл не пройшов перевірку.",
+    L"Повторити",
+    L"Ви можете встановити оновлення пізніше.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Завантаження моделі",
+    L"Вбудовану модель перекладу не встановлено. Завантажити зараз? (близько {s})",
+    L"Завантаження з'єднується з huggingface.co.",
+    L"Завантажити зараз",
+    L"Перевірка завантаженого файлу…",
+    L"Встановлення моделі…",
+    L"Модель готова. Локальний рушій використовуватиме її з наступного перекладу.",
+    L"Завантаження не вдалося. Перевірте з'єднання та повторіть спробу.",
+    L"Недостатньо вільного місця на диску (потрібно близько {s}).",
 };
 
 // 25. Thai (th)
@@ -4128,6 +5028,42 @@ const LocalizedStrings kStringsThai = {
     L"คีย์ API",
     // REQ-051: ปุ่ม [ลบการตั้งค่า]
     L"ลบการตั้งค่า",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"ตรวจสอบการอัปเดต",
+    L"ตรวจสอบว่าคุณกำลังใช้ Emebala Chat เวอร์ชันล่าสุดหรือไม่",
+    L"กำลังตรวจสอบการอัปเดต…",
+    L"ทำงานในเบื้องหลัง คุณสามารถปิดหน้าต่างนี้ได้",
+    L"คุณกำลังใช้เวอร์ชันล่าสุดแล้ว",
+    L"มีการอัปเดตใหม่",
+    L"เวอร์ชันใหม่",
+    L"คุณกำลังใช้ {v}",
+    L"ขนาด",
+    L"ประมาณ {s}",
+    L"การตรวจสอบและดาวน์โหลดจะเชื่อมต่อกับ GitHub",
+    L"ดาวน์โหลด",
+    L"ภายหลัง",
+    L"กำลังดาวน์โหลด…",
+    L"ยกเลิก",
+    L"ยกเลิกการดาวน์โหลดแล้ว",
+    L"ดาวน์โหลดเสร็จสมบูรณ์ — พร้อมติดตั้ง",
+    L"แอปจะปิดเพื่อติดตั้ง",
+    L"ติดตั้งเลย",
+    L"ภายหลัง",
+    L"คุณออฟไลน์อยู่ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง",
+    L"คำขอมากเกินไป โปรดลองอีกครั้งในภายหลัง",
+    L"ไฟล์ที่ดาวน์โหลดไม่ผ่านการตรวจสอบ",
+    L"ลองอีกครั้ง",
+    L"คุณสามารถติดตั้งการอัปเดตภายหลังได้",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"ดาวน์โหลดโมเดล",
+    L"โมเดลแปลภาษาในตัวยังไม่ได้ติดตั้ง ดาวน์โหลดตอนนี้หรือไม่ (ประมาณ {s})",
+    L"การดาวน์โหลดจะเชื่อมต่อกับ huggingface.co",
+    L"ดาวน์โหลดเลย",
+    L"กำลังตรวจสอบไฟล์ที่ดาวน์โหลด…",
+    L"กำลังติดตั้งโมเดล…",
+    L"โมเดลพร้อมใช้งาน เครื่องยนต์ในเครื่องจะใช้งานตั้งแต่การแปลครั้งถัดไป",
+    L"ดาวน์โหลดไม่สำเร็จ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง",
+    L"พื้นที่ดิสก์ว่างไม่เพียงพอ (ต้องการประมาณ {s})",
 };
 
 // 26. Indonesian (id)
@@ -4286,6 +5222,42 @@ const LocalizedStrings kStringsIndonesian = {
     L"Kunci API",
     // REQ-051: tombol [Hapus pengaturan].
     L"Hapus pengaturan",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Periksa pembaruan",
+    L"Lihat apakah Anda menjalankan Emebala Chat versi terbaru.",
+    L"Memeriksa pembaruan…",
+    L"Berjalan di latar belakang; Anda dapat menutup jendela ini.",
+    L"Anda menggunakan versi terbaru",
+    L"Pembaruan tersedia",
+    L"Versi baru",
+    L"Anda menggunakan {v}",
+    L"Ukuran",
+    L"sekitar {s}",
+    L"Memeriksa dan mengunduh akan terhubung ke GitHub.",
+    L"Unduh",
+    L"Nanti",
+    L"Mengunduh…",
+    L"Batal",
+    L"Unduhan dibatalkan.",
+    L"Unduhan selesai — siap dipasang",
+    L"Aplikasi akan ditutup untuk memasang.",
+    L"Pasang sekarang",
+    L"Nanti",
+    L"Anda sedang luring. Periksa koneksi Anda, lalu coba lagi.",
+    L"Terlalu banyak permintaan. Silakan coba lagi sebentar lagi.",
+    L"File yang diunduh tidak lolos verifikasi.",
+    L"Coba lagi",
+    L"Anda dapat memasang pembaruan nanti.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Unduh model",
+    L"Model terjemahan bawaan belum dipasang. Unduh sekarang? (sekitar {s})",
+    L"Mengunduh akan terhubung ke huggingface.co.",
+    L"Unduh sekarang",
+    L"Memverifikasi unduhan…",
+    L"Memasang model…",
+    L"Model siap. Mesin lokal akan menggunakannya mulai terjemahan berikutnya.",
+    L"Unduhan gagal. Periksa koneksi Anda dan coba lagi.",
+    L"Ruang disk bebas tidak cukup (memerlukan sekitar {s}).",
 };
 
 // 27. Malay (ms)
@@ -4444,6 +5416,42 @@ const LocalizedStrings kStringsMalay = {
     L"Kunci API",
     // REQ-051: butang [Padamkan tetapan].
     L"Padamkan tetapan",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Semak kemas kini",
+    L"Lihat sama ada anda menggunakan Emebala Chat versi terkini.",
+    L"Menyemak kemas kini…",
+    L"Berjalan di latar belakang; anda boleh menutup tetingkap ini.",
+    L"Anda menggunakan versi terkini",
+    L"Kemas kini tersedia",
+    L"Versi baharu",
+    L"anda menggunakan {v}",
+    L"Saiz",
+    L"lebih kurang {s}",
+    L"Semakan dan muat turun akan menyambung ke GitHub.",
+    L"Muat turun",
+    L"Kemudian",
+    L"Memuat turun…",
+    L"Batal",
+    L"Muat turun dibatalkan.",
+    L"Muat turun selesai — sedia untuk dipasang",
+    L"Aplikasi akan ditutup untuk memasang.",
+    L"Pasang sekarang",
+    L"Kemudian",
+    L"Anda luar talian. Periksa sambungan anda, kemudian cuba lagi.",
+    L"Terlalu banyak permintaan. Sila cuba sebentar lagi.",
+    L"Fail yang dimuat turun tidak lulus pengesahan.",
+    L"Cuba lagi",
+    L"Anda boleh memasang kemas kini kemudian.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"Muat turun model",
+    L"Model terjemahan terbina dalam belum dipasang. Muat turun sekarang? (lebih kurang {s})",
+    L"Muat turun akan menyambung ke huggingface.co.",
+    L"Muat turun sekarang",
+    L"Mengesahkan muat turun…",
+    L"Memasang model…",
+    L"Model sedia. Enjin tempatan akan menggunakannya mulai terjemahan seterusnya.",
+    L"Muat turun gagal. Periksa sambungan anda dan cuba lagi.",
+    L"Ruang cakera bebas tidak mencukupi (memerlukan lebih kurang {s}).",
 };
 
 // 28. Filipino (fil)
@@ -4604,6 +5612,42 @@ const LocalizedStrings kStringsFilipino = {
     L"Susi ng API",
     // REQ-051: button na [Tanggalin ang mga setting].
     L"Tanggalin ang mga setting",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"Suriin ang mga update",
+    L"Tingnan kung pinakabagong bersyon ng Emebala Chat ang gamit mo.",
+    L"Sinusuri ang mga update…",
+    L"Tumatakbo sa background; maaari mong isara ang window na ito.",
+    L"Gamit mo ang pinakabagong bersyon",
+    L"May available na update",
+    L"Bagong bersyon",
+    L"ang gamit mo ay {v}",
+    L"Laki",
+    L"humigit-kumulang {s}",
+    L"Sinusuri at ini-download nito sa GitHub.",
+    L"I-download",
+    L"Mamaya na",
+    L"Nagda-download…",
+    L"Kanselahin",
+    L"Kinansela ang download.",
+    L"Tapos na ang download — handa nang i-install",
+    L"Isasara ang app para i-install.",
+    L"I-install ngayon",
+    L"Mamaya na",
+    L"Wala kang koneksyon. Suriin ang koneksyon mo, at subukan muli.",
+    L"Masyadong maraming kahilingan. Subukan muli mamaya.",
+    L"Hindi pumasa sa beripikasyon ang na-download na file.",
+    L"Subukan muli",
+    L"Maaari mong i-install ang update mamaya.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"I-download ang model",
+    L"Hindi pa naka-install ang built-in na model ng pagsasalin. I-download ngayon? (humigit-kumulang {s})",
+    L"Kumokonekta sa huggingface.co ang pag-download.",
+    L"I-download ngayon",
+    L"Bineberipika ang download…",
+    L"Ini-install ang model…",
+    L"Handa na ang model. Gagamitin ito ng lokal na engine sa susunod na pagsasalin.",
+    L"Nabigo ang download. Suriin ang koneksyon mo at subukan muli.",
+    L"Kulang ang libreng espasyo ng disk (humigit-kumulang {s} ang kailangan).",
 };
 
 // 29. Hindi (hi)
@@ -4762,6 +5806,42 @@ const LocalizedStrings kStringsHindi = {
     L"API कुंजी",
     // REQ-051: [सेटिंग हटाएं] बटन।
     L"सेटिंग हटाएं",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"अपडेट जांचें",
+    L"देखें कि क्या आप नवीनतम Emebala Chat चला रहे हैं।",
+    L"अपडेट जांचा जा रहा है…",
+    L"यह पृष्ठभूमि में चलता है; आप इस विंडो को बंद कर सकते हैं।",
+    L"आप नवीनतम संस्करण का उपयोग कर रहे हैं",
+    L"अपडेट उपलब्ध है",
+    L"नया संस्करण",
+    L"आपके पास {v} है",
+    L"आकार",
+    L"लगभग {s}",
+    L"जांच और डाउनलोड करने पर GitHub से कनेक्ट होता है।",
+    L"डाउनलोड करें",
+    L"बाद में",
+    L"डाउनलोड हो रहा है…",
+    L"रद्द करें",
+    L"डाउनलोड रद्द कर दिया गया।",
+    L"डाउनलोड पूर्ण — इंस्टॉल के लिए तैयार",
+    L"इंस्टॉल के लिए ऐप बंद हो जाएगा।",
+    L"अभी इंस्टॉल करें",
+    L"बाद में",
+    L"आप ऑफ़लाइन हैं। अपना कनेक्शन जांचें और फिर पुनः प्रयास करें।",
+    L"बहुत अधिक अनुरोध। कृपया थोड़ी देर बाद पुनः प्रयास करें।",
+    L"डाउनलोड की गई फ़ाइल सत्यापित नहीं हुई।",
+    L"पुनः प्रयास करें",
+    L"आप इस अपडेट को बाद में इंस्टॉल कर सकते हैं।",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"मॉडल डाउनलोड करें",
+    L"बिल्ट-इन अनुवाद मॉडल इंस्टॉल नहीं है। अभी डाउनलोड करें? (लगभग {s})",
+    L"डाउनलोड करने पर huggingface.co से कनेक्ट होता है।",
+    L"अभी डाउनलोड करें",
+    L"डाउनलोड की जांच हो रही है…",
+    L"मॉडल इंस्टॉल हो रहा है…",
+    L"मॉडल तैयार है। लोकल इंजन इसे अगले अनुवाद से उपयोग करेगा।",
+    L"डाउनलोड विफल हुआ। अपना कनेक्शन जांचें और पुनः प्रयास करें।",
+    L"डिस्क पर पर्याप्त खाली स्थान नहीं है (लगभग {s} आवश्यक)।",
 };
 
 // 30. Bengali (bn)
@@ -4920,6 +6000,42 @@ const LocalizedStrings kStringsBengali = {
     L"API কী",
     // REQ-051: [সেটিংস মুছুন] বোতাম।
     L"সেটিংস মুছুন",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"আপডেট যাচাই করুন",
+    L"দেখুন আপনি সর্বশেষ Emebala Chat চালাচ্ছেন কিনা।",
+    L"আপডেট যাচাই করা হচ্ছে…",
+    L"এটি পটভূমিতে চলে; আপনি এই উইন্ডোটি বন্ধ করতে পারেন।",
+    L"আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন",
+    L"আপডেট পাওয়া যাচ্ছে",
+    L"নতুন সংস্করণ",
+    L"আপনার সংস্করণ {v}",
+    L"আকার",
+    L"প্রায় {s}",
+    L"যাচাই এবং ডাউনলোড করতে GitHub-এ সংযোগ হয়।",
+    L"ডাউনলোড করুন",
+    L"পরে",
+    L"ডাউনলোড হচ্ছে…",
+    L"বাতিল করুন",
+    L"ডাউনলোড বাতিল করা হয়েছে।",
+    L"ডাউনলোড সম্পূর্ণ — ইনস্টলের জন্য প্রস্তুত",
+    L"ইনস্টল করতে অ্যাপটি বন্ধ হবে।",
+    L"এখনই ইনস্টল করুন",
+    L"পরে",
+    L"আপনি অফলাইনে আছেন। আপনার সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
+    L"অনেক বেশি অনুরোধ। একটু পরে আবার চেষ্টা করুন।",
+    L"ডাউনলোড করা ফাইলটি যাচাই পাস করেনি।",
+    L"আবার চেষ্টা করুন",
+    L"আপনি পরে আপডেটটি ইনস্টল করতে পারেন।",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"মডেল ডাউনলোড করুন",
+    L"বিল্ট-ইন অনুবাদ মডেল ইনস্টল করা নেই। এখনই ডাউনলোড করবেন? (প্রায় {s})",
+    L"ডাউনলোড করতে huggingface.co-এ সংযোগ হয়।",
+    L"এখনই ডাউনলোড করুন",
+    L"ডাউনলোড করা ফাইল যাচাই করা হচ্ছে…",
+    L"মডেল ইনস্টল করা হচ্ছে…",
+    L"মডেল প্রস্তুত। লোকাল ইঞ্জিন পরবর্তী অনুবাদ থেকে এটি ব্যবহার করবে।",
+    L"ডাউনলোড ব্যর্থ হয়েছে। আপনার সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
+    L"ডিস্কে পর্যাপ্ত খালি জায়গা নেই (প্রায় {s} প্রয়োজন)।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -5079,6 +6195,42 @@ const LocalizedStrings kStringsArabic = {
     L"مفتاح API",
     // REQ-051: زر [حذف الإعدادات].
     L"حذف الإعدادات",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"التحقق من التحديثات",
+    L"تحقق مما إذا كنت تستخدم أحدث إصدار من Emebala Chat.",
+    L"جارٍ التحقق من التحديثات…",
+    L"يعمل في الخلفية؛ يمكنك إغلاق هذه النافذة.",
+    L"أنت تستخدم أحدث إصدار",
+    L"يتوفر تحديث",
+    L"الإصدار الجديد",
+    L"إصدارك الحالي {v}",
+    L"الحجم",
+    L"نحو {s}",
+    L"تتطلب التحقق والتنزيل الاتصال بـ GitHub.",
+    L"تنزيل",
+    L"لاحقًا",
+    L"جارٍ التنزيل…",
+    L"إلغاء",
+    L"تم إلغاء التنزيل.",
+    L"اكتمل التنزيل — جاهز للتثبيت",
+    L"سيُغلق التطبيق لبدء التثبيت.",
+    L"تثبيت الآن",
+    L"لاحقًا",
+    L"أنت غير متصل. تحقق من اتصالك ثم حاول مرة أخرى.",
+    L"طلبات كثيرة جدًا. يرجى المحاولة بعد قليل.",
+    L"لم يجتز الملف الذي تم تنزيله عملية التحقق.",
+    L"إعادة المحاولة",
+    L"يمكنك تثبيت التحديث لاحقًا.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"تنزيل النموذج",
+    L"نموذج الترجمة المدمج غير مثبت. هل تريد تنزيله الآن؟ (نحو {s})",
+    L"يتصل التنزيل بـ huggingface.co.",
+    L"نزّل الآن",
+    L"جارٍ التحقق من الملف الذي تم تنزيله…",
+    L"جارٍ تثبيت النموذج…",
+    L"النموذج جاهز. سيعمل المحرك المحلي به بدءًا من الترجمة التالية.",
+    L"فشل التنزيل. تحقق من الاتصال وحاول مرة أخرى.",
+    L"مساحة القرص الحرة غير كافية (مطلوب نحو {s}).",
 };
 
 // 32. Persian (fa) — RTL
@@ -5237,6 +6389,42 @@ const LocalizedStrings kStringsPersian = {
     L"کلید API",
     // REQ-051: دکمه [حذف تنظیمات].
     L"حذف تنظیمات",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"بررسی به‌روزرسانی‌ها",
+    L"ببینید آیا از آخرین نسخه Emebala Chat استفاده می‌کنید.",
+    L"در حال بررسی به‌روزرسانی‌ها…",
+    L"در پس‌زمینه اجرا می‌شود؛ می‌توانید این پنجره را ببندید.",
+    L"از آخرین نسخه استفاده می‌کنید",
+    L"به‌روزرسانی در دسترس است",
+    L"نسخه جدید",
+    L"نسخه فعلی شما {v}",
+    L"اندازه",
+    L"حدود {s}",
+    L"بررسی و دانلود به GitHub متصل می‌شود.",
+    L"دانلود",
+    L"بعداً",
+    L"در حال دانلود…",
+    L"لغو",
+    L"دانلود لغو شد.",
+    L"دانلود کامل شد — آماده نصب",
+    L"برنامه برای نصب بسته خواهد شد.",
+    L"اکنون نصب کنید",
+    L"بعداً",
+    L"آفلاین هستید. اتصال خود را بررسی کنید و دوباره تلاش کنید.",
+    L"درخواست‌ها بیش از حد است. لطفاً کمی بعد دوباره تلاش کنید.",
+    L"فایل دانلود‌شده تأیید نشد.",
+    L"تلاش مجدد",
+    L"می‌توانید به‌روزرسانی را بعداً نصب کنید.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"دانلود مدل",
+    L"مدل ترجمه داخلی نصب نشده است. اکنون دانلود شود؟ (حدود {s})",
+    L"دانلود به huggingface.co متصل می‌شود.",
+    L"اکنون دانلود کنید",
+    L"در حال بررسی فایل دانلودشده…",
+    L"در حال نصب مدل…",
+    L"مدل آماده است. موتور محلی از ترجمه بعدی از آن استفاده می‌کند.",
+    L"دانلود ناموفق بود. اتصال خود را بررسی کنید و دوباره تلاش کنید.",
+    L"فضای خالی دیسک کافی نیست (حدود {s} لازم است).",
 };
 
 // 33. Urdu (ur) — RTL
@@ -5395,6 +6583,42 @@ const LocalizedStrings kStringsUrdu = {
     L"API کلید",
     // REQ-051: [ترتیبات حذف کریں] بٹن۔
     L"ترتیبات حذف کریں",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"اپڈیٹس کی جانچ کریں",
+    L"دیکھیں کہ آیا آپ تازہ ترین Emebala Chat چلا رہے ہیں۔",
+    L"اپڈیٹس کی جانچ ہو رہی ہے…",
+    L"یہ پس منظر میں چلتا ہے؛ آپ اس ونڈو کو بند کر سکتے ہیں۔",
+    L"آپ تازہ ترین ورژن استعمال کر رہے ہیں",
+    L"اپڈیٹ دستیاب ہے",
+    L"نیا ورژن",
+    L"آپ کے پاس {v} ہے",
+    L"سائز",
+    L"تقریباً {s}",
+    L"جانچ اور ڈاؤن لوڈ GitHub سے جڑتا ہے۔",
+    L"ڈاؤن لوڈ کریں",
+    L"بعد میں",
+    L"ڈاؤن لوڈ ہو رہا ہے…",
+    L"منسوخ کریں",
+    L"ڈاؤن لوڈ منسوخ کر دیا گیا۔",
+    L"ڈاؤن لوڈ مکمل — انسٹال کے لیے تیار",
+    L"انسٹال کرنے کے لیے ایپ بند ہو جائے گی۔",
+    L"ابھی انسٹال کریں",
+    L"بعد میں",
+    L"آپ آف لائن ہیں۔ اپنا کنکشن چیک کریں اور دوبارہ کوشش کریں۔",
+    L"بہت زیادہ درخواستیں ہیں۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔",
+    L"ڈاؤن لوڈ کی گئی فائل تصدیق نہیں ہو سکی۔",
+    L"دوبارہ کوشش کریں",
+    L"آپ اپڈیٹ بعد میں انسٹال کر سکتے ہیں۔",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"ماڈل ڈاؤن لوڈ کریں",
+    L"بلٹ اِن ترجمہ ماڈل انسٹال نہیں ہے۔ ابھی ڈاؤن لوڈ کریں؟ (تقریباً {s})",
+    L"ڈاؤن لوڈ huggingface.co سے جڑتا ہے۔",
+    L"ابھی ڈاؤن لوڈ کریں",
+    L"ڈاؤن لوڈ کی گئی فائل کی تصدیق ہو رہی ہے…",
+    L"ماڈل انسٹال ہو رہا ہے…",
+    L"ماڈل تیار ہے۔ مقامی انجن اگلے ترجمے سے اسے استعمال کرے گا۔",
+    L"ڈاؤن لوڈ ناکام رہا۔ اپنا کنکشن چیک کریں اور دوبارہ کوشش کریں۔",
+    L"ڈسک پر کافی خالی جگہ نہیں ہے (تقریباً {s} درکار ہے)۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -5553,6 +6777,42 @@ const LocalizedStrings kStringsHebrew = {
     L"מפתח API",
     // REQ-051: לחצן [מחיקת הגדרות].
     L"מחיקת הגדרות",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"בדיקת עדכונים",
+    L"בדוק אם אתה משתמש בגרסה העדכנית ביותר של Emebala Chat.",
+    L"מבצע בדיקת עדכונים…",
+    L"פועל ברקע; אתה יכול לסגור את החלון הזה.",
+    L"הגרסה שלך עדכנית",
+    L"עדכון זמין",
+    L"גרסה חדשה",
+    L"הגרסה שלך {v}",
+    L"גודל",
+    L"כ-{s}",
+    L"הבדיקה וההורדה מתחברות אל GitHub.",
+    L"הורדה",
+    L"מאוחר יותר",
+    L"מוריד…",
+    L"ביטול",
+    L"ההורדה בוטלה.",
+    L"ההורדה הושלמה — מוכן להתקנה",
+    L"האפליקציה תיסגר כדי להתקין.",
+    L"התקן עכשיו",
+    L"מאוחר יותר",
+    L"אתה לא מחובר. בדוק את החיבור ונסה שוב.",
+    L"יותר מדי בקשות. נסה שוב בעוד מעט.",
+    L"הקובץ שהורד לא עבר אימות.",
+    L"נסה שוב",
+    L"ניתן להתקין את העדכון מאוחר יותר.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"הורדת המודל",
+    L"מודל התרגום המובנה אינו מותקן. להוריד אותו עכשיו? (כ-{s})",
+    L"ההורדה מתחברת אל huggingface.co.",
+    L"הורד עכשיו",
+    L"הקובץ שהורד נבדק…",
+    L"המודל מותקן…",
+    L"המודל מוכן. המנוע המקומי ישתמש בו מהתרגום הבא.",
+    L"ההורדה נכשלה. בדוק את החיבור ונסה שוב.",
+    L"אין מספיק מקום פנוי בדיסק (נדרשים כ-{s}).",
 };
 
 // 35. Khmer (km)
@@ -5711,6 +6971,42 @@ const LocalizedStrings kStringsKhmer = {
     L"កូនសោ API",
     // REQ-051: ប៊ូតុង [លុបការកំណត់]។
     L"លុបការកំណត់",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"ពិនិត្យការធ្វើបច្ចុប្បន្នភាព",
+    L"សូមពិនិត្យថាអ្នកកំពុងប្រើ Emebala Chat ជំនាន់ចុងក្រោយឬទេ។",
+    L"កំពុងពិនិត្យការធ្វើបច្ចុប្បន្នភាព…",
+    L"ដំណើរការនៅផ្នែកខាងក្រោយ អ្នកអាចបិទបង្អួចនេះបាន។",
+    L"អ្នកកំពុងប្រើជំនាន់ចុងក្រោយហើយ",
+    L"មានបច្ចុប្បន្នភាពថ្មី",
+    L"ជំនាន់ថ្មី",
+    L"អ្នកកំពុងប្រើ {v}",
+    L"ទំហំ",
+    L"ប្រហែល {s}",
+    L"ការពិនិត្យនិងទាញយកភ្ជាប់ទៅ GitHub។",
+    L"ទាញយក",
+    L"ពេលក្រោយ",
+    L"កំពុងទាញយក…",
+    L"បោះបង់",
+    L"បានបោះបង់ការទាញយកហើយ",
+    L"ទាញយករួចរាល់ — រួចរាល់សម្រាប់ដំឡើង",
+    L"កម្មវិធីនឹងបិទដើម្បីដំឡើង។",
+    L"ដំឡើងឥឡូវនេះ",
+    L"ពេលក្រោយ",
+    L"អ្នកកំពុងក្រៅបណ្ដាញ។ សូមពិនិត្យការភ្ជាប់ រួចព្យាយាមម្ដងទៀត។",
+    L"សំណើច្រើនពេក។ សូមព្យាយាមម្ដងទៀតបន្តិចទៀត។",
+    L"ឯកសារដែលបានទាញយកមិនបានឆ្លងការផ្ទៀងផ្ទាត់។",
+    L"ព្យាយាមម្ដងទៀត",
+    L"អ្នកអាចដំឡើងបច្ចុប្បន្នភាពនេះពេលក្រោយបាន។",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"ទាញយកម៉ូដែល",
+    L"ម៉ូដែលបកប្រែដែលបានបង្កប់មិនត្រូវបានដំឡើងទេ។ ទាញយកឥឡូវនេះ? (ប្រហែល {s})",
+    L"ការទាញយកភ្ជាប់ទៅ huggingface.co។",
+    L"ទាញយកឥឡូវនេះ",
+    L"កំពុងផ្ទៀងផ្ទាត់ឯកសារដែលបានទាញយក…",
+    L"កំពុងដំឡើងម៉ូដែល…",
+    L"ម៉ូដែលត្រៀមរួចរាល់។ ម៉ាស៊ីនក្នុងស្រុកនឹងប្រើវាចាប់ពីការបកប្រែបន្ទាប់។",
+    L"ការទាញយកបរាជ័យ។ សូមពិនិត្យការភ្ជាប់ ហើយព្យាយាមម្តងទៀត។",
+    L"ទំហំទីតាំងទំនេរលើថាសមិនគ្រប់គ្រាន់ (ត្រូវការប្រហែល {s})។",
 };
 
 // 36. Lao (lo)
@@ -5869,6 +7165,42 @@ const LocalizedStrings kStringsLao = {
     L"ລະຫັດ API",
     // REQ-051: ປຸ່ມ [ລົບການຕັ້ງຄ່າ].
     L"ລົບການຕັ້ງຄ່າ",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"ກວດສອບການອັບເດດ",
+    L"ກວດເບິ່ງວ່າທ່ານໃຊ້ Emebala Chat ລຸ້ນຫຼ້າສຸດບໍ່.",
+    L"ກຳລັງກວດສອບການອັບເດດ…",
+    L"ເຮັດວຽກໃນພື້ນຫຼັງ; ທ່ານສາມາດປິດໜ້າຕ່າງນີ້ໄດ້.",
+    L"ທ່ານໃຊ້ລຸ້ນຫຼ້າສຸດແລ້ວ",
+    L"ມີການອັບເດດໃຫມ່",
+    L"ລຸ້ນໃຫມ່",
+    L"ທ່ານໃຊ້ {v}",
+    L"ຂະໜາດ",
+    L"ປະມານ {s}",
+    L"ການກວດສອບ ແລະ ດາວໂຫຼດ ຈະເຊື່ອມຕໍ່ຫາ GitHub.",
+    L"ດາວໂຫຼດ",
+    L"ພາຍຫຼັງ",
+    L"ກຳລັງດາວໂຫຼດ…",
+    L"ຍົກເລີກ",
+    L"ຍົກເລີກການດາວໂຫຼດແລ້ວ",
+    L"ດາວໂຫຼດສຳເລັດ — ພ້ອມຕິດຕັ້ງ",
+    L"ແອັບຈະປິດເພື່ອຕິດຕັ້ງ.",
+    L"ຕິດຕັ້ງດຽວນີ້",
+    L"ພາຍຫຼັງ",
+    L"ທ່ານອອບລາຍ. ກວດເບິ່ງການເຊື່ອມຕໍ່ ແລ້ວລອງໃໝ່.",
+    L"ຄຳຂໍຫຼາຍເກີນໄປ. ກະລຸນາລອງໃໝ່ອີກຄັ້ງໃນອີກຄືນໜ້ອຍ.",
+    L"ໄຟລ໌ທີ່ດາວໂຫຼດບໍ່ຜ່ານການຢັ້ງຢືນ.",
+    L"ລອງໃໝ່ອີກຄັ້ງ",
+    L"ທ່ານສາມາດຕິດຕັ້ງອັບເດດນີ້ພາຍຫຼັງໄດ້.",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"ດາວໂຫຼດໂມເດວ",
+    L"ໂມເດວແປພາສາໃນຕົວຍັງບໍ່ໄດ້ຕິດຕັ້ງ. ດາວໂຫຼດຕອນນີ້ບໍ? (ປະມານ {s})",
+    L"ການດາວໂຫຼດຈະເຊື່ອມຕໍ່ຫາ huggingface.co.",
+    L"ດາວໂຫຼດດຽວນີ້",
+    L"ກຳລັງກວດສອບໄຟລ໌ທີ່ດາວໂຫຼດ…",
+    L"ກຳລັງຕິດຕັ້ງໂມເດວ…",
+    L"ໂມເດວພ້ອມແລ້ວ. ເຄື່ອງຈັກທ້ອງຖິ່ນຈະໃຊ້ມັນຕັ້ງແຕ່ການແປຄັ້ງຕໍ່ໄປ.",
+    L"ດາວໂຫຼດບໍ່ສຳເລັດ. ກວດເບິ່ງການເຊື່ອມຕໍ່ ແລ້ວລອງໃໝ່.",
+    L"ບໍ່ມີພື້ນທີ່ວ່າງຢູ່ໃນດິສພໍ (ຕ້ອງການປະມານ {s}).",
 };
 
 // 37. Burmese (my)
@@ -6027,6 +7359,42 @@ const LocalizedStrings kStringsBurmese = {
     L"API ကီးပါ",
     // REQ-051: [ဆက်တင်ဖျက်ပါ] ခလုတ်။
     L"ဆက်တင်ဖျက်ပါ",
+    // REQ-UC (260930_0004, update-checker design §12): update-checker strings.
+    L"အပ်ဒိတ်များ စစ်ဆေးရန်",
+    L"သင်အသစ်ဆုံး Emebala Chat ကို သုံးဆဲဖြစ်မဖြစ် စစ်ဆေးပါ။",
+    L"အပ်ဒိတ်များ စစ်ဆေးနေပါသည်…",
+    L"ဘက်ကွက်တွင် လုပ်ဆောင်နေပါသည်။ ဤဝင်းဒိုးကို ပိတ်နိုင်ပါသည်။",
+    L"သင် အသစ်ဆုံးဗားရှင်းကို သုံးနေပါပြီ",
+    L"အပ်ဒိတ်အသစ် ရရှိနိုင်ပါပြီ",
+    L"ဗားရှင်အသစ်",
+    L"သင် အသုံးပြုနေသည်မှာ {v}",
+    L"အရွယ်အစား",
+    L"ခန့်မှန်း {s}",
+    L"စစ်ဆေးမှုနှင့် ဒေါင်းလုဒ်မှာ GitHub နှင့် ချိတ်ဆက်ပါသည်။",
+    L"ဒေါင်းလုဒ်လုပ်ရန်",
+    L"နောက်တွင်",
+    L"ဒေါင်းလုဒ်ဆွဲနေပါသည်…",
+    L"ပယ်ဖျက်ရန်",
+    L"ဒေါင်းလုဒ်ကို ပယ်ဖျက်ခဲ့ပါပြီ။",
+    L"ဒေါင်းလုဒ်ပြီးဆုံးပါပြီ — ထည့်သွင်းရန်အဆင်သင့်",
+    L"ထည့်သွင်းရန် အက်ပ်ကို ပိတ်ပါမည်။",
+    L"ယခုပင် ထည့်သွင်းရန်",
+    L"နောက်တွင်",
+    L"သင်အင်တာနက်မချိတ်ဆက်နိုင်ပါ။ သင့်ချိတ်ဆက်မှုကို စစ်ဆေးပြီး ပြန်လည်ကြိုးစားပါ။",
+    L"တောင်းဆိုမှုများ အလွန်များနေပါသည်။ ခဏကြာပြီး ပြန်လည်ကြိုးစားပါ။",
+    L"ဒေါင်းလုဒ်လုပ်ထားသော ဖိုင်ကို အတည်မပြုနိုင်ပါ။",
+    L"ပြန်လည်ကြိုးစားရန်",
+    L"သင် အပ်ဒိတ်ကို နောက်မှ ထည့်သွင်းနိုင်ပါသည်။",
+    // REQ-MD (260930_0004, update-checker design §12 계열): model download dialog.
+    L"မော်ဒယ်ဒေါင်းလုဒ်လုပ်ရန်",
+    L"တပ်ဆင်ထားသော ဘာသာပြန်မော်ဒယ် မတပ်ဆင်ရသေးပါ။ ယခုဒေါင်းလုဒ်လုပ်ပါသလား? (ခန့်မှန်း {s})",
+    L"ဒေါင်းလုဒ်လုပ်ရန် huggingface.co နှင့် ချိတ်ဆက်ပါသည်။",
+    L"ယခုဒေါင်းလုဒ်လုပ်ရန်",
+    L"ဒေါင်းလုဒ်လုပ်ထားသည့်ဖိုင်ကို စစ်ဆေးနေပါသည်…",
+    L"မော်ဒယ်ကို တပ်ဆင်နေပါသည်…",
+    L"မော်ဒယ်အဆင်သင့်ဖြစ်ပါပြီ။ ဒေသန္တရအင်ဂျင်က နောက် ဘာသာပြန်ချက်ကတည်းက အသုံးပြုပါမည်။",
+    L"ဒေါင်းလုဒ်လုပ်ခြင်း မအောင်မြင်ပါ။ သင့်ချိတ်ဆက်မှုကို စစ်ဆေးပြီး ပြန်လည်ကြိုးစားပါ။",
+    L"ဒစ်စ်ပေါ်တွင် လုံလောက်သော နေရာလွတ် မရှိပါ (ခန့်မှန်း {s} လိုအပ်ပါသည်)။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -6340,6 +7708,44 @@ std::wstring I18n::Get(StringId id) {
 
         // REQ-051 (Symptom D): the settings-dialog [삭제] push-button caption.
         case StringId::OpenAiDeleteSettings: return s.openai_delete_settings;
+
+        // REQ-UC (260930_0004, update-checker design §12): About update zone.
+        case StringId::UpdateCheck:         return s.update_check;
+        case StringId::UpdateIdleNote:      return s.update_idle_note;
+        case StringId::UpdateChecking:      return s.update_checking;
+        case StringId::UpdateCheckingHint:  return s.update_checking_hint;
+        case StringId::UpdateUptodate:      return s.update_uptodate;
+        case StringId::UpdateDlgTitle:      return s.update_dlg_title;
+        case StringId::UpdateDlgVersion:    return s.update_dlg_version;
+        case StringId::UpdateDlgVersionCur: return s.update_dlg_version_cur;
+        case StringId::UpdateDlgSize:       return s.update_dlg_size;
+        case StringId::UpdateDlgSizeApprox: return s.update_dlg_size_approx;
+        case StringId::UpdateDlgPrivacy:    return s.update_dlg_privacy;
+        case StringId::UpdateDlgDownload:   return s.update_dlg_download;
+        case StringId::UpdateDlgLater:      return s.update_dlg_later;
+        case StringId::UpdateDlProgress:    return s.update_dl_progress;
+        case StringId::UpdateDlCancel:      return s.update_dl_cancel;
+        case StringId::UpdateDlCancelled:   return s.update_dl_cancelled;
+        case StringId::UpdateReadyTitle:    return s.update_ready_title;
+        case StringId::UpdateReadyWarn:     return s.update_ready_warn;
+        case StringId::UpdateReadyInstall:  return s.update_ready_install;
+        case StringId::UpdateReadyLater:    return s.update_ready_later;
+        case StringId::UpdateErrOffline:    return s.update_err_offline;
+        case StringId::UpdateErrRate:       return s.update_err_rate;
+        case StringId::UpdateErrHash:       return s.update_err_hash;
+        case StringId::UpdateErrRetry:      return s.update_err_retry;
+        case StringId::UpdateSnoozedLine:   return s.update_snoozed_line;
+
+        // REQ-MD (260930_0004 D9): on-demand bundled-model download dialog.
+        case StringId::ModelDlCaption:      return s.model_dl_caption;
+        case StringId::ModelDlConsentBody:  return s.model_dl_consent_body;
+        case StringId::ModelDlPrivacy:      return s.model_dl_privacy;
+        case StringId::ModelDlDownload:     return s.model_dl_download;
+        case StringId::ModelDlVerifying:    return s.model_dl_verifying;
+        case StringId::ModelDlPlacing:      return s.model_dl_placing;
+        case StringId::ModelDlDone:         return s.model_dl_done;
+        case StringId::ModelDlFailed:       return s.model_dl_failed;
+        case StringId::ModelDlDiskSpace:    return s.model_dl_disk_space;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

@@ -18,6 +18,8 @@
 #include "ui/about_window.hpp"
 #include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
 #include "ui/gguf_model_manager_window.hpp" // REQ-048 R2-D: user .gguf model manager
+#include "ui/model_download_dialog.hpp" // REQ-MD (260930_0004 D9): on-demand model download
+#include "model_downloader.hpp"         // REQ-MD: missing-only predicate + plan
 #include "ui/badge.hpp"
 #include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
@@ -551,7 +553,20 @@ void RequestLanguageSync(HWND hController, LanguageContext ctx,
 // No heap pointer crosses PostMessageW. The consumer is the GUI-thread
 // ControllerWndProc handler below, plus the shutdown drain that mirrors the
 // language-sync discipline (producers joined -> drain -> retire).
-void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view body) {
+// REQ-MD (260930_0004, decisions.md D9): when the request carries the model
+// offer flag (set only by the two notice sites that verified ONLY models/-
+// components are missing), the "engine unavailable" notice becomes
+// actionable: the consent+progress download dialog runs INSTEAD of the
+// dead-end MB_OK. A completed download skips the notice entirely (the store
+// now has the model; the host re-probes per request / respawns and picks it
+// up). Anything else falls through to the historical notice.
+void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view body,
+                                     bool offer_model_download) {
+    if (offer_model_download && !emebalachat::modeldownloader::ModelFilePresent()) {
+        if (emebalachat::OfferModelDownload(nullptr)) {
+            return; // installed (or already present) — no notice warranted
+        }
+    }
     UINT type = MB_OK | MB_ICONINFORMATION | MB_TOPMOST;
     if (DirectionForLocale(I18n::GetCurrentLocale()) == TextDirection::RTL) {
         type |= MB_RTLREADING; // mirror the REQ-208 privacy-notice RTL policy
@@ -590,6 +605,9 @@ constexpr UINT kMsgOpenGgufManager = WM_APP + 0x501;
 struct EngineUnavailableModalRequest {
     std::wstring title;
     std::wstring body;
+    // REQ-MD (260930_0004 D9): offer the on-demand model download from this
+    // notice (set only when the missing-component set is models/-only).
+    bool offer_model_download = false;
 };
 std::mutex g_engine_modal_mu;
 std::deque<EngineUnavailableModalRequest> g_engine_modal_queue;
@@ -620,7 +638,8 @@ std::deque<EngineUnavailableModalRequest> DrainEngineModalQueue() {
 // posted message is a pure (0,0) wake-up; the request itself travels by value
 // through g_engine_modal_queue. On post failure the entry stays queued
 // (drain-safe) — the same accepted trade-off as RequestLanguageSync.
-void RequestEngineUnavailableModal(HWND hController, std::wstring title, std::wstring body) {
+void RequestEngineUnavailableModal(HWND hController, std::wstring title,
+                                   std::wstring body, bool offer_model_download = false) {
     if (!hController) {
         DIAG_F("MAIN/EngineModal/000: no controller window; modal request dropped\n");
         return;
@@ -630,12 +649,13 @@ void RequestEngineUnavailableModal(HWND hController, std::wstring title, std::ws
         // Caller is already the GUI thread (e.g. the tray on_select_engine
         // path and the bootstrap main-thread branch): run the modal inline,
         // matching RequestLanguageSync's same-thread fast path.
-        ShowLocalEngineUnavailableModal(title, body);
+        ShowLocalEngineUnavailableModal(title, body, offer_model_download);
         return;
     }
     EngineUnavailableModalRequest req;
     req.title = std::move(title);
     req.body = std::move(body);
+    req.offer_model_download = offer_model_download;
     {
         std::lock_guard<std::mutex> lk(g_engine_modal_mu);
         g_engine_modal_queue.push_back(std::move(req));
@@ -807,7 +827,8 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 continue;
             }
             emebalachat::g_engine_modal_latched = true; // modal about to show
-            ShowLocalEngineUnavailableModal(req.title, req.body);
+            ShowLocalEngineUnavailableModal(req.title, req.body,
+                                            req.offer_model_download);
         }
         return 0;
     }
@@ -1512,10 +1533,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                         DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
                         return; // installer finished; no notice warranted
                     }
+                    // REQ-MD (260930_0004 D9): a FRESH check at request time —
+                    // the grace window just elapsed, the state may have moved.
+                    // When ONLY models/ components are missing (the pinned
+                    // model file and/or registry), the notice offers the
+                    // on-demand download instead of dead-ending.
+                    const bool offer_model =
+                        emebalachat::modeldownloader::MissingIsModelOnly(
+                            bs::CheckComponents().missing);
                     emebalachat::RequestEngineUnavailableModal(
                         emebalachat::g_hControllerWnd,
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                        offer_model);
                 }).detach();
             }
         }
@@ -2164,10 +2194,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                         DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
                         return;
                     }
+                    // REQ-MD (260930_0004 D9): fresh check at request time (the
+                    // grace window just elapsed). models/-only missing set ->
+                    // the notice offers the on-demand model download.
+                    const bool offer_model =
+                        emebalachat::modeldownloader::MissingIsModelOnly(
+                            bs::CheckComponents().missing);
                     emebalachat::RequestEngineUnavailableModal(
                         emebalachat::g_hControllerWnd,
                         emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+                        offer_model);
                 }).detach();
             }
         }

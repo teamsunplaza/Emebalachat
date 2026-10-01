@@ -13,9 +13,12 @@
 IDI_ICON1 ICON "..\\assets\\Emebala_Engine_Appicon.ico"
 
 // VERSIONINFO resource for Explorer file properties (mirrors app_icon.rc).
+// 260930_0004: version fields are macro-driven from project(VERSION) via
+// CMake COMPILE_OPTIONS defines (see app_icon.rc for the full rationale);
+// a version bump never touches this file.
 1 VERSIONINFO
- FILEVERSION 0,10,1
- PRODUCTVERSION 0,10,1
+ FILEVERSION EMEBALACHAT_RC_VER_MAJOR,EMEBALACHAT_RC_VER_MINOR,EMEBALACHAT_RC_VER_PATCH,0
+ PRODUCTVERSION EMEBALACHAT_RC_VER_MAJOR,EMEBALACHAT_RC_VER_MINOR,EMEBALACHAT_RC_VER_PATCH,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -28,12 +31,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Team Sunplaza\0"
             VALUE "FileDescription",  "Emebala Engine - Shared Translation Engine Host\0"
-            VALUE "FileVersion",      "0.10.1\0"
+            VALUE "FileVersion",      EMEBALACHAT_RC_VER_STR "\0"
             VALUE "InternalName",     "Emebala.Engine\0"
             VALUE "LegalCopyright",   "Copyright (C) 2025-2026 Team Sunplaza\0"
             VALUE "OriginalFilename", "Emebala.Engine.exe\0"
             VALUE "ProductName",      "Emebala Engine\0"
-            VALUE "ProductVersion",   "0.10.1\0"
+            VALUE "ProductVersion",   EMEBALACHAT_RC_VER_STR "\0"
         END
     END
     BLOCK "VarFileInfo"

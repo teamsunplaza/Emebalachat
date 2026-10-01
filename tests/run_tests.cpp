@@ -1474,7 +1474,8 @@ void TestW5C1C2BrushMeasurePins() {
 
     // Render bodies: zero brush creation, zero layout creation; every draw
     // goes through scratch_brush_ SetColor. Exact SetColor counts (29 tooltip
-    // / 21 about) mirror the old per-draw-site brush inventory.
+    // / 75 about) mirror the per-draw-site brush inventory: the merged card
+    // restores the intro blocks and keeps the transient update zone.
     const std::string tipRender = func_body(tip, "void TooltipWindow::Render() {");
     const std::string abtRender = func_body(abt, "void AboutWindow::Render() {");
     TEST_CHECK(!tipRender.empty() && !abtRender.empty(), "C1/C2: Render bodies located in both files");
@@ -1484,8 +1485,8 @@ void TestW5C1C2BrushMeasurePins() {
                "C1: no CreateSolidColorBrush inside AboutWindow::Render");
     TEST_CHECK(count_occ(tipRender, "scratch_brush_->SetColor(") == 29,
                "C1: tooltip Render drives 29 SetColor-just-before-use draw groups");
-    TEST_CHECK(count_occ(abtRender, "scratch_brush_->SetColor(") == 21,
-               "C1: about Render drives 21 SetColor-just-before-use draw groups");
+    TEST_CHECK(count_occ(abtRender, "scratch_brush_->SetColor(") == 71,
+               "C1: about Render drives 71 SetColor-just-before-use draw groups");
     TEST_CHECK(count_occ(tipRender, "ID2D1SolidColorBrush*") == 0,
                "C1: no local brush pointer declarations remain in TooltipWindow::Render");
     TEST_CHECK(count_occ(abtRender, "ID2D1SolidColorBrush*") == 0,
@@ -5411,9 +5412,9 @@ void TestBatch2VersionScrollAbout() {
     // the DIP layout scaled by the window's live DPI - i.e. the DIB and the
     // window stay 1:1 so the layered blit is never rescaled (the blur). The
     // tooltip carries the identical handler; one smoke pins the pattern.
-    // NOTE (Phase 4, REQ-020, plan §2.2): the About card grew 560 -> 596 DIP
-    // to make room for the full-width reset button under the contact block;
-    // the height expectation below tracks that constant (width stays 440).
+    // NOTE (REQ-UC + CEO regression fix 260930_0004): the card hosts the
+    // REQ-UC brand chrome, the restored intro, and the footer; the height
+    // expectation tracks the 625 DIP constant (width stays 440).
     {
         RECT cur = {};
         ::GetWindowRect(about.GetHwnd(), &cur);
@@ -5431,7 +5432,7 @@ void TestBatch2VersionScrollAbout() {
         TEST_CHECK(after.right - after.left ==
                        emebalachat::ui::ScaleDipsToPixels(440, cur_dpi) &&
                        after.bottom - after.top ==
-                       emebalachat::ui::ScaleDipsToPixels(596, cur_dpi),
+                       emebalachat::ui::ScaleDipsToPixels(625, cur_dpi),
                    "D1: About keeps DIP-scaled physical extents after the change");
         TEST_CHECK(about.IsVisible(), "D1: About stays visible across the DPI change");
     }
@@ -7304,7 +7305,7 @@ void TestR6P5P6I18n() {
     //         Render - this pins it headlessly).
     int empty_count = 0;
     TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 53x37 (session 260909_0001: +AppName, +TooltipNoTtsVoice; session 260911_0002 T2: +PrivacyNoticeTitle/Body, +CheatSheetConfigPath; SEC-M1: +TranslateTruncatedNotice)");
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 144x37 (REQ-UC +25, REQ-MD +9)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -14897,6 +14898,22 @@ void TestEngineHostAvailabilityAndMigration() {
 // end-of-file pattern. ResolveRepoFile source pins + frozen C++ merge shapes.
 #include "bt8_installer_model_pin_tests.inc"
 
+// REQ-UC (session 260930_0004): the update checker v1 — version parse/compare
+// matrix, the fail-closed GitHub release-JSON extractor, the release-notes
+// SHA256: hash-line parser, the download-target path builder, size/URL
+// formatting, the streaming CNG SHA-256 leg, and the About-window seams
+// (zone state enum + {v}/{s} token replacement + 37-locale coverage pins).
+// Staged as an .inc next to this runner; registered at the end of main().
+#include "../src/update_checker.hpp"
+#include "update_checker_tests.inc"
+
+// REQ-MD (session 260930_0004, decisions.md D9): the on-demand bundled-model
+// download — HF allowlist, 4 GiB cap math, offer transitions, missing-only
+// gate, registry merge + marker round-trips, pin sync, 37-locale coverage.
+#include "../src/model_downloader.hpp"
+#include "../src/ui/dwrite_helpers.hpp" // delta re-review D-02: IsPointInRect empty-rect pin
+#include "model_download_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -14924,8 +14941,11 @@ struct Req044LstrMirror {
     // transient (97 -> 99) and the merged-manager Hugging Face block
     // (99 -> 107: 2 add-method buttons + 6 HF dialog strings), plus the
     // OpenAI settings cue-banner hints (107 -> 109); REQ-051 (Symptom D):
-    // 1 OpenAI settings [삭제] caption appended (109 -> 110).
-    const wchar_t* f[110];
+    // 1 OpenAI settings [삭제] caption (109 -> 110); REQ-UC (260930_0004,
+    // update-checker design §12): the 25-string About update zone block
+    // (110 -> 135); REQ-MD (D9): the 9-string model-download dialog
+    // (135 -> 144).
+    const wchar_t* f[144];
 };
 
 } // namespace
@@ -14938,9 +14958,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 110
-    static_assert(kExpectedFieldCount == 110,
-                   "REQ-044/045/047/048/050/051: LocalizedStrings field count changed - update the "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 144
+    static_assert(kExpectedFieldCount == 144,
+                   "REQ-044/045/047/048/050/051/UC/MD: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -14949,11 +14969,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 110,
-                "REQ-044/045/047/048/050/051: LocalizedStrings field count is 110 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 144,
+                "REQ-044/045/047/048/050/051/UC/MD: LocalizedStrings field count is 144 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 110,
-                "REQ-044/045/047/048/050/051: StringId::EnumCount is 110 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 144,
+                "REQ-044/045/047/048/050/051/UC/MD: StringId::EnumCount is 144 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15945,6 +15965,27 @@ int main() {
     mf_pin::TestMutexNameForFamily();
     mf_pin::TestSpawnRequestFamilyPropagation();
     mf_pin::TestLaunchWorkerProcessMutexArgPin();
+    // REQ-UC (session 260930_0004): the update checker v1 — registered at the
+    // end of main() (the suites live in an end-of-file .inc), per the
+    // end-of-file pattern.
+    TestUpdateCheckerVersionParse();
+    TestUpdateCheckerJsonExtraction();
+    TestUpdateCheckerHashLineParser();
+    TestUpdateCheckerDownloadTargetPath();
+    TestUpdateCheckerFormattingAndUrl();
+    TestUpdateCheckerFileSha256();
+    TestUpdateCheckerAboutSeam();
+    // REQ-UC SEC (security review 260930_0004 remediation): depth-cap fixtures,
+    // redirect-host allowlist matrix, download-cap matrix, case-insensitive
+    // asset pick, log sanitization. Registered right after the REQ-UC suites.
+    TestUpdateCheckerSecurityPins();
+    // REQ-MD (260930_0004 D9): the on-demand model download — registered
+    // right after the REQ-UC security suite, per the end-of-file pattern.
+    TestModelDownloadLogic();
+    // Delta re-review (second pass 260930_0004): D-01/N1 retry-terminate +
+    // D-02 dead zone retry / empty-rect hit test — registered right after
+    // the REQ-MD suite.
+    TestDeltaRereviewFixes();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -25,9 +25,12 @@
 //   (e) TestReq052BadgeSingleClickUsesDoubleClickTime — badge.hpp/.cpp: the
 //       fixed 220 ms constant is gone; the delay is captured once from
 //       GetDoubleClickTime() and drives the kTimerSingleClick timer.
-//   (f) TestReq052AboutWindowFixes — about_window.hpp/.cpp: CLIP on the 3
-//       feature draws, the MB_YESNO reset confirm, and the confirm_pending_
-//       guards on both dismissal paths (kDismissMessage + WM_KILLFOCUS).
+//   (f) TestReq052AboutWindowFixes — about_window.hpp/.cpp: the REQ-UC
+//       update-zone pins (Render dispatches the zone state machine; the
+//       consent dialog carries the GitHub privacy notice; the single status
+//       CLIP survives the redesign), the MB_YESNO reset confirm, and the
+//       confirm_pending_ guards on both dismissal paths (kDismissMessage +
+//       WM_KILLFOCUS).
 //   (g) TestReq052TouchFilterPredicate — the pure MouseHook::IsFromTouchInjection
 //       predicate (mouse_hook.hpp; the header is already linked into this
 //       runner) + structural pins on the two drag-gate guards in
@@ -330,22 +333,23 @@ void TestReq052AboutWindowFixes() {
         return;
     }
 
-    // CLIP on the 3 feature draws (one DrawText inside the 3-iteration loop).
-    // Needle anchors on the argument form (", D2D1_DRAW_TEXT_OPTIONS_CLIP);")
-    // — the explanatory comment above the loop also names the flag.
+    // REQ-UC (260930_0004): the About card keeps the restored intro (the REQ-053
+    // feature blocks) and swaps the middle region for the six-state update UI
+    // only while a flow is active; Render dispatches the zone on the state
+    // machine, the consent dialog paints the GitHub privacy notice, and exactly
+    // TWO CLIP draws survive (the per-feature block clip + the 2-line status
+    // clip). CEO regression fix: the feature CLIP is pinned again in req053.
+    TEST_CHECK(abt.find("switch (zone_state_)") != std::string::npos,
+               "REQ-052 pin: Render dispatches the update-zone content on the state machine");
+    TEST_CHECK(abt.find("StringId::UpdateDlgPrivacy") != std::string::npos,
+               "REQ-052 pin: the consent dialog paints the GitHub privacy notice");
     size_t clips = 0;
     for (size_t p = abt.find(", D2D1_DRAW_TEXT_OPTIONS_CLIP);"); p != std::string::npos;
          p = abt.find(", D2D1_DRAW_TEXT_OPTIONS_CLIP);", p + 1)) {
         ++clips;
     }
-    TEST_CHECK(clips == 1,
-               "REQ-052 pin: exactly one clipped feature draw (inside the 3-block loop)");
-    const size_t loop_pos = abt.find("for (int i = 0; i < 3; ++i) {");
-    const size_t clip_pos = abt.find(", D2D1_DRAW_TEXT_OPTIONS_CLIP);");
-    TEST_CHECK(loop_pos != std::string::npos && clip_pos != std::string::npos &&
-                   loop_pos < clip_pos,
-               "REQ-052 pin: the CLIP draw sits inside the 3-feature loop "
-               "(wrapping translations no longer bleed into the next block)");
+    TEST_CHECK(clips == 2,
+               "REQ-052 pin: exactly two clipped draws (feature blocks + 2-line status)");
 
     // Reset confirm: MB_YESNO gate, decline arm, no new StringIds.
     TEST_CHECK(abt.find("confirm_pending_ = true;") != std::string::npos &&

@@ -209,6 +209,11 @@ add_library(Emebalachat_core STATIC
     # + CNG SHA-256 integrity digest + display masking. Chat exe links this
     # (core), so bcrypt/crypt32 are added to the core link set below.
     src/openai_compatible_client.cpp
+    # REQ-MD (260930_0004, decisions.md D9): on-demand bundled-model download —
+    # consent/progress dialog + the fetch/verify/place pipeline (reuses the
+    # update checker's DownloadUpdate via the DownloadOptions seam).
+    src/model_downloader.cpp
+    src/ui/model_download_dialog.cpp
     # REQ-043 (M6 T1, design §4.2/D-1): translation_common.cpp moved out to
     # Emebalachat_engine_core (physical move). The llama-adjacent pure helpers
     # moved to src/engine_core/engine_core_helpers.cpp; TruncateHeadTailWindow
@@ -237,6 +242,10 @@ add_library(Emebalachat_core STATIC
     # same seam as the config reader above.
     src/engine_host_client_policy.cpp
     src/i18n.cpp
+    # REQ-UC (session 260930_0004): update checker — the module is header-only
+    # (every function `inline` in update_checker.hpp); this TU compiles the
+    # header standalone as a syntax/ODR check and adds nothing else.
+    src/update_checker.cpp
     src/ui/about_window.cpp
     src/ui/gguf_model_manager_window.cpp # REQ-048 R2-D: registered-model rename/delete manager
     src/ui/openai_settings_window.cpp
@@ -325,6 +334,23 @@ target_link_libraries(Emebalachat_core PUBLIC
 # seams) is deleted, so the core library (and therefore the Chat exe) carries
 # NO llama symbol and HAVE_LLAMA_CPP is undefined in its TUs. llama links ONLY
 # through Emebalachat_engine_core (host / worker / test-runner targets).
+
+# 260930_0004 (0.10.2 blind-QA catch): the .rc VERSIONINFO blocks used to
+# hardcode 0,10,1 / "0.10.1", so Explorer's Properties showed 0.10.1 while the
+# in-app string (EMEBALACHAT_VERSION_STR) showed 0.10.2. Both RC compilations
+# are now macro-driven from PROJECT_VERSION, keeping a version bump to the
+# canonical 3 places (project() here, setup.iss AppVersion, README).
+# PROJECT_VERSION_{MAJOR,MINOR,PATCH} are set automatically by project().
+# rc.exe's preprocessor has NO stringize operator, so the string form is passed
+# pre-quoted; the numeric parts feed FILEVERSION/PRODUCTVERSION directly.
+set(EMEBALA_RC_VER_OPTIONS
+    "/dEMEBALACHAT_RC_VER_MAJOR=${PROJECT_VERSION_MAJOR}"
+    "/dEMEBALACHAT_RC_VER_MINOR=${PROJECT_VERSION_MINOR}"
+    "/dEMEBALACHAT_RC_VER_PATCH=${PROJECT_VERSION_PATCH}"
+    "/dEMEBALACHAT_RC_VER_STR=\"${PROJECT_VERSION}\""
+)
+set_source_files_properties(src/app_icon.rc src/engine_icon.rc
+    PROPERTIES COMPILE_OPTIONS "${EMEBALA_RC_VER_OPTIONS}")
 
 # Target 1: Emebalachat (WIN32 executable)
 # REQ-R2 (session 260905_0001): the internal target name stays "Emebalachat"

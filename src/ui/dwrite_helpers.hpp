@@ -19,7 +19,11 @@ namespace emebalachat {
 // ---- ui geometry (§10c) ----
 
 // Point-in-rect hit test in DIP space for D2D1_RECT_F button/thumb rects.
+// D-02 (delta re-review 260930_0004): an EMPTY rect never hits — the
+// inclusive <= comparison would otherwise make the (0,0) degenerate corner
+// a 1-pixel accidental trigger for controls whose rect was zeroed off.
 inline bool IsPointInRect(const D2D1_RECT_F& r, float x, float y) {
+    if (r.right <= r.left || r.bottom <= r.top) return false; // empty = no hit
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 

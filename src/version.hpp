@@ -4,8 +4,9 @@
 
 // ---------------------------------------------------------------------------
 // Single source of truth for the product display name and version (REQ-006,
-// architect plan §1.2/§1.3; REQ-043 comment sync 0.10.1). The canonical value
-// is CMakeLists.txt's project(Emebalachat VERSION 0.10.1); CMake forwards it
+// architect plan §1.2/§1.3; REQ-043 comment sync, refreshed to 0.10.2 in
+// session 260930_0004). The canonical value
+// is CMakeLists.txt's project(Emebalachat VERSION 0.10.2); CMake forwards it
 // to every consumer of Emebalachat_core (PUBLIC) as EMEBALACHAT_VERSION_STR="x.y.z" via
 // target_compile_definitions. The #ifndef fallback keeps standalone includes
 // (and any build that forgets the definition) compiling with the pinned
@@ -24,11 +25,11 @@
 #define EMBALA_VERSION_CATW(s) EMBALA_VERSION_CATW_IMPL(s)
 
 #ifdef EMEBALACHAT_VERSION_STR
-// CMake supplied: EMEBALACHAT_VERSION_STR=0.10.1 (tokens stringized here).
+// CMake supplied: EMEBALACHAT_VERSION_STR=0.10.2 (tokens stringized here).
 #define EMBALA_VERSION_ASCII EMBALA_VERSION_STR(EMEBALACHAT_VERSION_STR)
 #else
 // Fallback when the compile definition is absent (see header comment).
-#define EMBALA_VERSION_ASCII "0.10.1"
+#define EMBALA_VERSION_ASCII "0.10.2"
 #endif
 
 #define EMBALA_VERSION_WIDE EMBALA_VERSION_CATW(EMBALA_VERSION_ASCII)
@@ -38,7 +39,7 @@ namespace emebalachat {
 // Display name shown in the About window, tray, tooltips (REQ-004 rebrand).
 inline constexpr std::wstring_view kAppNameW = L"Emebala Chat";
 
-// Version as given by CMake PROJECT_VERSION (currently 0.10.1).
+// Version as given by CMake PROJECT_VERSION (currently 0.10.2).
 inline constexpr std::string_view kAppVersionA = EMBALA_VERSION_ASCII;
 inline constexpr std::wstring_view kAppVersionW = EMBALA_VERSION_WIDE;
 

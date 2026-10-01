@@ -17,7 +17,9 @@
 //       1/2/3-line heights, the 40 DIP block floor, cumulative top offsets,
 //       the squeeze trigger/skip boundary, and the RTL marker math
 //       (card_w - 33 DIP), plus source pins that Render consumes the plan
-//       and the old fixed `230 + i*42` grid is gone.
+//       and the old fixed `230 + i*42` grid is gone. Restored 260930_0004
+//       (CEO regression fix) after the update rework; the CLIP count pin is
+//       2 (feature blocks + the REQ-UC transient status line).
 //   (c) TestReq053BadgeDpiChangedPins — badge.cpp source pins (A3): the new
 //       case WM_DPICHANGED and its 5-step order (suggested rect -> WindowDpi
 //       -> SetWindowPos(SWP_NOACTIVATE) -> ReallocateBuffer -> Render).
@@ -33,7 +35,8 @@
 //   (f) TestReq053OpenAiButtonDisablePins — openai_settings_window.cpp source
 //       pins (A6): one FALSE disable (spawn), TWO TRUE restores (stale drop +
 //       normal completion — the A6 report's finding), the fetch_button_busy
-//       field, and no new StringId (EnumCount still 110).
+//       field, and no new StringId (EnumCount stays on the tracked batch
+//       total; 144 since REQ-MD 260930_0004).
 //   (g) TestReq053GgufButtonSyncPins — gguf_model_manager_window.cpp source
 //       pins (A7): SyncManagerActionButtons definition + 3 call sites,
 //       the LBN_SELCHANGE branch, the post-rebuild sync, and the rename/
@@ -183,6 +186,10 @@ void TestReq053TrayToggleDebounce() {
 }
 
 // ---- (b) About dynamic feature-block layout (A2) ---------------------------
+// 260930_0004 CEO regression fix: the feature planner + the intro rendering
+// were restored after the update-checker rework had retired them; this suite
+// is back to pinning the planner + Render consumption verbatim, with the CLIP
+// count at 2 (the feature blocks + the REQ-UC transient status line).
 
 void TestReq053AboutFeatureLayout() {
     std::cout << "[RUN] Testing REQ-053 About feature-block layout plan..." << std::endl;
@@ -302,7 +309,8 @@ void TestReq053AboutFeatureLayout() {
                "REQ-053: the LTR marker keeps the historical 28 DIP left inset");
 
     // Render() consumes the plan; the old fixed `230 + i*42` grid is gone; the
-    // per-block CLIP stays (residual overflow is contained, never bleeding).
+    // per-block CLIP stays. 260930_0004: exactly TWO CLIP sites now (the
+    // feature blocks here + the REQ-UC transient 2-line status line).
     std::string abt;
     Req053ReadSrc(L"src\\ui\\about_window.cpp", abt);
     if (abt.empty()) {
@@ -318,10 +326,10 @@ void TestReq053AboutFeatureLayout() {
     TEST_CHECK(abt.find("AboutFeatureMetrics feature_metrics[3] = {};") != std::string::npos &&
                    abt.find("feature_metrics[i].height = m.height;") != std::string::npos,
                "REQ-053 pin: Render fills the metrics from IDWriteTextLayout::GetMetrics");
-    TEST_CHECK(abt.find("const float base = plan.next_free_y;") != std::string::npos,
-               "REQ-053 pin: the bottom-section anchors derive from plan.next_free_y");
-    TEST_CHECK(Req053Count(abt, ", D2D1_DRAW_TEXT_OPTIONS_CLIP);") == 1,
-               "REQ-053 pin: the single per-block CLIP draw is retained");
+    TEST_CHECK(abt.find("const float base = plan.next_free_y + kIntroShift;") != std::string::npos,
+               "REQ-053 pin: the bottom-section anchors derive from plan.next_free_y (+shift)");
+    TEST_CHECK(Req053Count(abt, ", D2D1_DRAW_TEXT_OPTIONS_CLIP);") == 2,
+               "REQ-053 pin: the feature-block CLIP + the REQ-UC status CLIP are the only two");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-053 About feature-block layout plan passed." << std::endl;
@@ -577,10 +585,12 @@ void TestReq053OpenAiButtonDisablePins() {
                "REQ-053 pin: the completion restore precedes the combo refill");
 
     // No new i18n strings: the fix is graying feedback only (CPO scope). The
-    // StringId tail is unchanged — still 110 ids, the REQ-051 record.
+    // running StringId total moves only with a tracked batch — currently 144
+    // (REQ-MD added the 9 model-download strings on top of the REQ-UC total of
+    // 135; A6 itself added none).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 110,
-               "REQ-053 pin: StringId::EnumCount is still 110 (A6 added no strings)");
+    TEST_CHECK(enum_count == 144,
+               "REQ-053 pin: StringId::EnumCount is 144 (the tracked REQ-MD total; A6 added no strings)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 

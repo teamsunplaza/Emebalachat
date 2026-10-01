@@ -36,6 +36,21 @@ Fixes in this build
   the same as 0.10.1; only the one-time download is bigger. On a fresh
   install, GPU acceleration now works immediately instead of silently
   falling back to slower CPU-only translation.
+* The About window now has a "Check for updates" button (bottom row).
+  It asks GitHub whether a newer Emebala Chat exists; when one does, it
+  shows the new version and size, and - after you agree - downloads the
+  installer inside the app with a progress bar, checks its SHA-256 hash,
+  and starts the installation. Checking and downloading connect to
+  GitHub only when you press the button. All 37 interface languages.
+* If the built-in translation model (Hy-MT2-1.8B) was not downloaded
+  during setup, choosing the built-in engine in the app now offers to
+  fetch it on the spot: a consent window shows the size (~1.9 GB), then
+  a progress window downloads it from Hugging Face, verifies the
+  SHA-256 hash, and installs it into the shared engine store - no
+  re-run of the setup program needed. All 37 interface languages.
+* The version number shown in the file Properties of the app's exe
+  files now always matches the real app version (it used to lag one
+  release behind).
 
 v0.10.1 (rerelease) - 2026-09-22
 ================================

@@ -230,12 +230,14 @@ void TestReq045OpenAiI18nPresent() {
     // and the REQ-050 dialog OK/Cancel labels, by 8 more (99 -> 107) in
     // the REQ-050 merged-manager Hugging Face block, and by 2 more
     // (107 -> 109) for the REQ-050 OpenAI cue-banner hints, and by 1 more
-    // (109 -> 110) for the REQ-051 OpenAI settings [삭제] caption. Read
+    // (109 -> 110) for the REQ-051 OpenAI settings [삭제] caption, and by 25
+    // more (110 -> 135) for the REQ-UC update-zone block, and by 9 more
+    // (135 -> 144) for the REQ-MD model-download dialog. Read
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 110,
-                "StringId::EnumCount is 110 after the 13+6+1+1+17+4+8+2+1 field appends");
+    TEST_CHECK(enum_count == 144,
+                "StringId::EnumCount is 144 after the 13+6+1+1+17+4+8+2+1+25+9 field appends");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
