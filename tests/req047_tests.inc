@@ -889,25 +889,23 @@ void TestReq047ModelOfferLatchBypass() {
 }
 
 // ---------------------------------------------------------------------------
-// 260930_0004 D9 offer-site split (source pins; grace eliminated):
+// 260930_0004 D9 offer-site split (source pins; pick-only offer policy):
 // BOTH offer sites (boot + tray pick) branch on the already-computed
-// check.missing. The model-only branch posts the download offer IMMEDIATELY
-// (waiting cannot heal a models/-only miss; the dialog re-checks
-// ModelFilePresent at show time). The binaries branch is mutex-gated INSTANT:
-// it observes the M7 A-7 family setup gate (installer/setup.iss:855,
-// FAMILY_SETUP_MUTEX 'Local\EmebalaSetup', held for the entire store-writing
-// window) via OpenMutexW ONLY — never CreateMutex (that would poison the
-// installer's gate). Gate absent (ERROR_FILE_NOT_FOUND) → nothing can heal
-// the state → immediate post from check.missing (tray: inline on the GUI
-// thread; boot: the existing detached-thread seam, pre-message-loop). Gate
-// held → detached thread waits on the handle (INFINITE; signaled at installer
-// process exit), closes it, then exactly ONE fresh CheckComponents decides
-// (empty → suppress / bootstrap/017; still missing → post). Gate acquisition
-// failing for any other reason → fail-open: one immediate fresh check + post.
+// check.missing. TRAY PICK (the ONLY offer surface): the model-only branch
+// posts the download offer IMMEDIATELY/inline on the GUI thread; the
+// binaries branch is mutex-gated INSTANT (observes the M7 A-7 family setup
+// gate 'Local\EmebalaSetup' via OpenMutexW ONLY — never CreateMutex; gate
+// absent → immediate post from check.missing; gate held → detached thread
+// waits on the handle (INFINITE; signaled at installer exit), closes it, then
+// exactly ONE fresh CheckComponents decides; acquisition error → fail-open).
+// BOOT (CEO revision): a models/-ONLY miss is NOT user-facing — the engine is
+// healthy and the user simply has not chosen local — so boot stays SILENT
+// (bootstrap/018 shape-only log, no post, no thread). A boot binaries miss
+// keeps the mutex-gated notice but posts with offer_model_download FALSE
+// (the 3-arg shape) — boot reports broken engine files, never the download.
 // The fixed 40 x 3 s grace is gone from both production sites (the
-// WaitForComponentsPresent helper stays for the unit tests). The optional
-// "installation finishing" tooltip is a documented follow-up, not this pass.
-// Source pins only (main.cpp is not linked into run_tests.exe).
+// WaitForComponentsPresent helper stays for the unit tests). Source pins only
+// (main.cpp is not linked into run_tests.exe).
 // ---------------------------------------------------------------------------
 
 void TestReq047TwoTierGraceSplit() {
@@ -972,45 +970,53 @@ void TestReq047TwoTierGraceSplit() {
     boot_site.erase(std::remove(boot_site.begin(), boot_site.end(), '\r'), boot_site.end());
     tray_site.erase(std::remove(tray_site.begin(), tray_site.end(), '\r'), tray_site.end());
 
-    auto pin_site = [&](const std::string& site, const char* tag, int model_only_thread_count) {
+    auto pin_site = [&](const std::string& site, const char* tag, bool offer_at_model_only) {
         // (a) the split happens on the already-computed check.missing, BEFORE
-        // the long branch's grace thread spawns (no extra disk I/O).
+        // the binaries branch's thread spawns (no extra disk I/O).
         const size_t split_pos = site.find("MissingIsModelOnly(check.missing)");
         const size_t first_thread = site.find("std::thread");
         TEST_CHECK(split_pos != std::string::npos && first_thread != std::string::npos &&
                        split_pos < first_thread,
-                   std::string("D9-tier (a): ") + tag + " splits on check.missing before the long-branch grace thread");
+                   std::string("D9-tier (a): ") + tag + " splits on check.missing before the binaries-branch thread");
         // Branch isolation: model-only branch runs to the "} else {" that
-        // guards the long branch; the long branch runs to the site end.
+        // guards the binaries branch; the binaries branch runs to the site end.
         const size_t else_pos = site.find("\n                } else {", split_pos);
         TEST_CHECK(else_pos != std::string::npos,
-                   std::string("D9-tier: ") + tag + " model-only/long branch boundary is locatable");
+                   std::string("D9-tier: ") + tag + " model-only/binaries branch boundary is locatable");
         if (split_pos == std::string::npos || else_pos == std::string::npos) {
             return;
         }
         const std::string model_branch = site.substr(split_pos, else_pos - split_pos);
         const std::string long_branch = site.substr(else_pos);
 
-        // (b-instant) the model-only branch contains NO grace wait at all —
-        // this pin FAILS against the replaced 3 x 5 s version, which had a
-        // WaitForComponentsPresent here. The short window is gone site-wide.
+        // (b-instant) the model-only branch contains NO grace wait at all.
         TEST_CHECK(count_occurrences(model_branch, "WaitForComponentsPresent") == 0,
-                   std::string("D9-tier (b): ") + tag + " model-only branch has NO grace wait (instant offer)");
+                   std::string("D9-tier (b): ") + tag + " model-only branch has NO grace wait");
         TEST_CHECK(count_occurrences(model_branch, "std::chrono") == 0,
                    std::string("D9-tier (b): ") + tag + " model-only branch has no wait window");
         TEST_CHECK(count_occurrences(site, "3, std::chrono::seconds(5)") == 0,
                    std::string("D9-tier (b): ") + tag + " the 3 x 5 s window is gone site-wide");
-        // Posting shape: the tray site posts INLINE on the GUI thread (no
-        // thread in the model-only branch); the boot site keeps exactly one
-        // detached thread that posts immediately (pre-message-loop defer).
-        TEST_CHECK(count_occurrences(model_branch, "std::thread") == model_only_thread_count,
-                   std::string("D9-tier (b): ") + tag + " model-only branch posting shape (inline vs one immediate-post thread)");
-        // (c-instant) exactly ONE immediate post in the model-only branch, the
-        // offer flag decided from check.missing by the branch condition.
-        TEST_CHECK(count_occurrences(model_branch, "RequestEngineUnavailableModal(") == 1,
-                   std::string("D9-tier (c): ") + tag + " model-only branch posts exactly one immediate offer");
-        TEST_CHECK(count_occurrences(model_branch, "// offer_model_download") == 1,
-                   std::string("D9-tier (c): ") + tag + " model-only branch passes the offer flag (true)");
+        if (offer_at_model_only) {
+            // Tray site: the model-only branch posts the offer INLINE on the
+            // GUI thread (one post, literal offer flag; no defer thread).
+            TEST_CHECK(count_occurrences(model_branch, "std::thread") == 0,
+                       std::string("D9-tier (b): ") + tag + " model-only branch posts inline (no defer thread)");
+            TEST_CHECK(count_occurrences(model_branch, "RequestEngineUnavailableModal(") == 1,
+                       std::string("D9-tier (c): ") + tag + " model-only branch posts exactly one immediate offer");
+            TEST_CHECK(count_occurrences(model_branch, "// offer_model_download") == 1,
+                       std::string("D9-tier (c): ") + tag + " model-only branch passes the offer flag (true)");
+        } else {
+            // Boot site (pick-only offer revision): the model-only branch is
+            // SILENT — no post of any kind, no defer thread, shape-only log.
+            TEST_CHECK(count_occurrences(model_branch, "RequestEngineUnavailableModal(") == 0,
+                       std::string("D9-tier (c): ") + tag + " model-only branch is SILENT at boot (no post)");
+            TEST_CHECK(count_occurrences(model_branch, "std::thread") == 0,
+                       std::string("D9-tier (c): ") + tag + " model-only branch spawns nothing at boot");
+            TEST_CHECK(model_branch.find("bootstrap/018") != std::string::npos,
+                       std::string("D9-tier (c): ") + tag + " boot silence leaves a shape-only bootstrap/018 log");
+            TEST_CHECK(count_occurrences(model_branch, "// offer_model_download") == 0,
+                       std::string("D9-tier (c): ") + tag + " no offer flag at the boot model-only branch");
+        }
         // (c-mutex) the binaries branch is mutex-gated INSTANT — NO fixed
         // WaitForComponentsPresent grace remains (these pins FAIL against the
         // pre-change 40 x 3 s tree, which had one per site). The model-only
@@ -1045,8 +1051,21 @@ void TestReq047TwoTierGraceSplit() {
         TEST_CHECK(count_occurrences(long_branch, "RequestEngineUnavailableModal(") == 3,
                    std::string("D9-tier (c): ") + tag + " binaries branch posts once per decision path");
     };
-    pin_site(boot_site, "boot site", 1);
-    pin_site(tray_site, "tray-pick site", 0);
+    pin_site(boot_site, "boot site", /*offer_at_model_only=*/false);
+    pin_site(tray_site, "tray-pick site", /*offer_at_model_only=*/true);
+
+    // (f) pick-only offer revision (CEO): the BOOT site carries NO download
+    // offer anywhere — its only MissingIsModelOnly reference is the branch
+    // split (no offer computation, no offer flag); the offer flag comment
+    // exists ONLY at the tray site.
+    TEST_CHECK(count_occurrences(boot_site, "MissingIsModelOnly(") == 1,
+               "D9-tier (f): boot site has no offer computation (split condition only)");
+    TEST_CHECK(count_occurrences(boot_site, "// offer_model_download") == 0,
+               "D9-tier (f): boot site never passes the offer flag");
+    TEST_CHECK(count_occurrences(tray_site, "// offer_model_download") == 1,
+               "D9-tier (f): tray site keeps the literal offer flag");
+    TEST_CHECK(count_occurrences(tray_site, "MissingIsModelOnly(") == 4,
+               "D9-tier (f): tray site keeps offer computations in all decision paths");
 
     // (e) the app NEVER CreateMutex's the setup-gate name (that would poison
     // the installer's gate): exactly two OpenMutexW observations exist, and

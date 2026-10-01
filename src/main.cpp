@@ -1548,29 +1548,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // SEC-ADJ seam the URL branch uses (this helper is callable
                 // from a detached thread by design).
                 //
-                // Instant offer (260930_0004 D9, CEO directive), same contract
-                // as the tray-pick site: a models/-ONLY miss is offered
-                // IMMEDIATELY — waiting cannot heal it (the binaries are all
-                // present) and the dialog re-checks ModelFilePresent at show
-                // time (ShowLocalEngineUnavailableModal), so the installer-
-                // in-flight race is still covered without any grace. The post
-                // goes through the SAME detached-thread seam the long branch
-                // uses, just without the wait: this boot context runs on the
-                // main thread PRE-message-loop, and RequestEngineUnavailableModal's
-                // same-thread fast path would run the consent INLINE and freeze
-                // startup until the user dismisses it. A binaries-involved miss
-                // is mutex-gated INSTANT (see the binaries branch below).
+                // Pick-only offer (260930_0004 D9 revision, CEO directive): the
+                // model-download offer fires ONLY from the explicit tray pick
+                // (Translation engine > Built-in LocalLLM) — NEVER at startup.
+                // A models/-ONLY miss at boot is NOT user-facing: the engine
+                // is healthy and the user simply has not chosen the local
+                // engine, so boot stays SILENT (a models/-only store is the
+                // expected state of a cloud-only user). A binaries-involved
+                // miss keeps the mutex-gated INSTANT notice (see the branch
+                // below) but with offer_model_download FALSE — boot may
+                // report broken engine files, it never pushes the download.
                 if (emebalachat::modeldownloader::MissingIsModelOnly(check.missing)) {
-                    // Model-only miss: offer now (no grace). The branch
-                    // condition already established models/-only from
-                    // check.missing, so the offer flag is literal true.
-                    std::thread([]() {
-                        emebalachat::RequestEngineUnavailableModal(
-                            emebalachat::g_hControllerWnd,
-                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                            true); // offer_model_download
-                    }).detach();
+                    // Model-only miss at boot: silent by design (pick-only
+                    // offer policy). Shape-only log; no user-visible surface.
+                    DIAG_LOG("ENGINEHOST", "bootstrap/018: models/-only miss at boot; pick-only offer policy — no notice");
                 } else {
                     // Binaries involved — mutex-gated INSTANT notice
                     // (260930_0004 D9, replacing the fixed 40 x 3 s grace):
@@ -1589,16 +1580,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     // (~a second into setup), a window no post-install app
                     // launch can land in. The optional "installation
                     // finishing" tooltip during the wait is a documented
-                    // follow-up — intentionally not in this pass. Never block
+                    // follow-up — intentionally not in this pass.
+                    // Pick-only offer revision (260930_0004 D9): the notice
+                    // posts with offer_model_download FALSE (the 3-arg shape,
+                    // same as the URL branch above) — boot reports broken
+                    // engine files, never the download offer. Never block
                     // startup: everything below runs on the existing
                     // detached-thread seam.
                     HANDLE setup_gate = ::OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\EmebalaSetup");
                     const bool gate_held = (setup_gate != nullptr);
                     const bool gate_unknown =
                         !gate_held && ::GetLastError() != ERROR_FILE_NOT_FOUND;
-                    const bool offer_model =
-                        emebalachat::modeldownloader::MissingIsModelOnly(check.missing);
-                    std::thread([setup_gate, gate_held, gate_unknown, offer_model]() {
+                    std::thread([setup_gate, gate_held, gate_unknown]() {
                         if (gate_held) {
                             // Setup/uninstall is writing the store: block until
                             // the installer process exits (Inno never closes
@@ -1614,31 +1607,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                             emebalachat::RequestEngineUnavailableModal(
                                 emebalachat::g_hControllerWnd,
                                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
                             return;
                         }
                         if (gate_unknown) {
                             // OpenMutex failed for a reason other than
                             // ERROR_FILE_NOT_FOUND: no gate knowledge — fail
                             // OPEN to informing the user (one immediate fresh
-                            // check + immediate post); never invent a wait.
+                            // check; suppress only if it says healed); never
+                            // invent a wait.
                             const bs::ComponentCheckResult fresh = bs::CheckComponents();
+                            if (fresh.missing.empty()) {
+                                DIAG_LOG("ENGINEHOST", "bootstrap/017: components arrived within grace window; suppressing repair-unavailable modal");
+                                return;
+                            }
                             emebalachat::RequestEngineUnavailableModal(
                                 emebalachat::g_hControllerWnd,
                                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                                emebalachat::modeldownloader::MissingIsModelOnly(fresh.missing));
+                                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
                             return;
                         }
                         // Gate absent (ERROR_FILE_NOT_FOUND): no setup or
-                        // uninstall can heal the state — inform immediately,
-                        // from the already-computed check.missing.
+                        // uninstall can heal the state — inform immediately.
                         emebalachat::RequestEngineUnavailableModal(
                             emebalachat::g_hControllerWnd,
                             emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
-                            offer_model);
+                            emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
                     }).detach();
                 }
             }
