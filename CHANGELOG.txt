@@ -47,7 +47,9 @@ Fixes in this build
   fetch it on the spot: a consent window shows the size (~1.9 GB), then
   a progress window downloads it from Hugging Face, verifies the
   SHA-256 hash, and installs it into the shared engine store - no
-  re-run of the setup program needed. All 37 interface languages.
+  re-run of the setup program needed. The offer appears only when you
+  choose the built-in engine, never at startup, so cloud-only users are
+  never nagged. All 37 interface languages.
 * The version number shown in the file Properties of the app's exe
   files now always matches the real app version (it used to lag one
   release behind).
