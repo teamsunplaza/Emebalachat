@@ -148,3 +148,16 @@
   README updated (Download note + Local engine bullet); setup rebuilt; the
   existing v0.10.2 GitHub Release ASSET is replaced and its notes refreshed
   (new changelog + SHA256 line for the app's verifier). Version stays 0.10.2.
+
+## 2026-10-01 17:0x — Model-offer latch failure (CEO live report) root-caused & fixed
+
+- CEO did a clean reinstall and reported the D9 model download "not implemented".
+- Root cause (debug-specialist, live): the REQ-047 streak latch set by ANY failure
+  modal silently dropped all queued engine-unavailable requests, INCLUDING
+  offer_model_download (main.cpp drain). First boot consent decline -> latch ->
+  every later Built-in LocalLLM pick produced total silence.
+- Fix: drain bypass for offer requests (latch still coalesces strict failures);
+  declined offer no longer falls through into the dead-end notice box. Live-proofed
+  on the CEO machine (consent delivered despite latch; clean desktop after decline).
+  Review: CONDITIONAL -> P2/P3 nits fixed (discriminating decline pin, comment).
+- Setup rebuilt (SHA256 88884230...), commit 6b2f8fe pushed, release asset replaced.
