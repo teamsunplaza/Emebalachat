@@ -95,3 +95,56 @@
 - Commits 233c0a2 (bump) + 6966b23 (marker fix) pushed to teamsunplaza/main.
 - Release: gh release create v0.10.2 on teamsunplaza/Emebalachat with the
   setup exe + CHANGELOG notes.
+
+## 2026-09-30 23:0x — Initiative 260930_0004: version-stamp fix + update checker (v0.10.2 kept)
+
+- **D5**: Fix the exe VERSIONINFO stamp bug (RC files hardcode 0,10,1). CMake
+  derives MAJOR/MINOR/PATCH from PROJECT_VERSION and passes them to
+  app_icon.rc / engine_icon.rc; VERSIONINFO blocks become macro-driven. The
+  version.hpp fallback string syncs too. Result: bumping = the canonical 3
+  places only.
+- **D6**: Update checker v1 = MANUAL only. About window gains a "Check for
+  updates" button. No startup/background checks. Flow: check -> newer? ->
+  notice + consent (dialog states the GitHub connection) -> download to %TEMP%
+  with progress -> SHA-256 verify against the hash published IN the release
+  notes (line format `SHA256: <64 lowercase hex>`) -> app exits -> installer
+  runs. Failure/silent-rate-limit = quiet no-op, never an error popup.
+- **D7**: i18n for ALL 37 UI languages (English + Korean authored; the rest
+  translated, short and neutral; existing fallback stays as safety net).
+- **D8**: Version stays 0.10.2; the existing GitHub Release asset is REPLACED
+  (new setup exe + notes updated with the new changelog and the new SHA256
+  line). README updated (full audit, not rewrite-from-scratch unless stale).
+
+## 2026-10-01 08:0x — Initiative 260930_0004 extension: on-demand model download + i18n audit
+
+- **D9 (CEO, user feedback)**: when the bundled Hy-MT2-1.8B model was NOT downloaded
+  during setup, clicking Built-in LocalLLM in the app must offer: "not installed -
+  download now?" -> consent -> download window with progress -> SHA-256 verify ->
+  register/use. All new UI strings in EVERY supported language (full i18n audit:
+  enumerate every id x language gap and close them; no silent fallbacks left).
+- CEO also flagged (fixed in-flight): About window lost its intro content to the
+  update zone (restore intro, move the update affordance to the footer); blind-QA
+  found the Checking-state spinner arc transform bug (arc orbits off-window) and
+  RTL footer non-mirroring.
+
+## 2026-10-01 10:0x — Initiative 260930_0004 COMPLETE (pending release replace)
+
+- **Shipped in the working tree**: D5 version-stamp macro fix; D6 update checker
+  (About footer button, 6 states, GitHub API, pinned redirect/allowlist, 2 GiB cap,
+  SHA256 vs release-notes line, quiet failures); CEO-mandated About restoration
+  (byte-faithful intro, footer affordance, group-centered states, spinner
+  Rotation*Translation fix, RTL footer mirror); D9 on-demand bundled-model
+  download (models/-only gate, consent+progress dialog, HF allowlist, 4 GiB cap,
+  pinned-hash verify, atomic move + registry entry + .sha256ok marker); i18n
+  144 ids x 37 languages = 5328 cells, 0 gaps (mechanical checker).
+- **Defects found & fixed by double-blind review**: D-01 std::terminate on Retry
+  (thread reassign; join-only discipline), D-02 dead zone retry rect + (0,0)
+  hit-test hole (empty-rect rejection at the shared helper). Deferred LOWs
+  (self-heal skip, consent consistency, cancel receive bound) documented.
+- **Final verdicts**: code-review PASS (3 passes), security PASS (re-audit),
+  blind-qa PASS (spinner pixel-proven 0->61 gold px, RTL mirrored, Notepad e2e
+  translation intact), run_tests 6321/0, i18n checker 0 gaps, model-sha sync PASS.
+- **Release mechanics**: CHANGELOG v0.10.2 section extended (4 new bullets);
+  README updated (Download note + Local engine bullet); setup rebuilt; the
+  existing v0.10.2 GitHub Release ASSET is replaced and its notes refreshed
+  (new changelog + SHA256 line for the app's verifier). Version stays 0.10.2.
