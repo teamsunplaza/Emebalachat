@@ -32,6 +32,7 @@ models/
 
 # Installer outputs
 installer/output/
+installer/bundled/
 *.iss.bak
 
 # Cloudflare wrangler local cache (deploy tooling state, regenerable)
@@ -43,6 +44,9 @@ config.json
 
 # Internal session reports & audit docs (local-only, never published)
 docs/
+plans/
+reports/
+decisions.md
 
 # Python caches & virtual environments
 __pycache__/
@@ -64,6 +68,11 @@ tools_tmp_*
 scratch_test.cpp
 tmp.cpp
 nul
+tools/corpus_*/
+tools/analyze_diffs.py
+tools/compute_stats.py
+tools/extract_divergent.py
+tools/phase2_include_audit.ps1
 
 # Probe/verification leftovers from security & QA sessions (SEC verdict L4)
 r5_*
