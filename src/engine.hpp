@@ -183,6 +183,32 @@ constexpr bool EngineHostTransientRetryWarranted(std::string_view err_code,
            first_attempt_elapsed_ms <= kEngineHostRetryFirstAttemptCeilingMs;
 }
 
+// REQ-060 (engine-idle-eviction-warmup): ONE shared definition of the local
+// seam's expected/request model id, consumed by BOTH the outgoing translate
+// request's OPTIONAL model_id pin and the REQ-057 served-vs-expected
+// diagnosis, so the wire pin and the log check can never disagree about
+// which model should serve. Pure and unit-testable.
+//   user_gguf_route: config.json engine_type == "user_gguf" — the C1
+//                    discriminator, read LIVE so a runtime tray switch is
+//                    honored the way the REQ-055 host-side pin read honors it.
+//   user_pin:        the C1-gated live user_model_id ("" unless the route is
+//                    user_gguf — enginehost::LoadUserModelIdFromConfigLive).
+//   bundled_id:      the bundled registry id ("" when the registry names no
+//                    bundled entry — the frame then stays unpinned).
+// The three pinned boundaries:
+//   user_gguf + non-empty pin -> the user id (pin the request to the user's model)
+//   user_gguf + empty pin     -> "" (the frame OMITS model_id; the host's
+//                                user route answers model_missing — the honest
+//                                no-binding failure, never a Hy-MT2 masquerade
+//                                under the user-model display stem)
+//   any other route           -> the bundled id (the pinned Hy-MT2 registry id)
+inline std::string ResolveLocalRequestModelId(bool user_gguf_route,
+                                              const std::string& user_pin,
+                                              const std::string& bundled_id) {
+    if (user_gguf_route) return user_pin;
+    return bundled_id;
+}
+
 // REQ-051 (symptom B-1) ABSOLUTE SECURITY BOUNDARY: the retry re-runs ONLY
 // the local engine-host leg (engine_host::TryTranslate). The cloud/openai
 // call lambdas below are never invoked by the retry path itself; under
@@ -191,6 +217,50 @@ constexpr bool EngineHostTransientRetryWarranted(std::string_view err_code,
 // staying on-device - the policy can delay an already-consented cloud leg
 // (Auto / explicit fallback) but can NEVER newly trigger one. The unit tests
 // pin both this predicate matrix and the engine.cpp source structure.
+
+// ---- REQ-060 (engine-idle-eviction-warmup): model-pinned requests + warmup --
+//
+// Declared HERE (not in the frozen self-contained engine_host_client.hpp, so
+// the sibling Emebala workspaces keep copying that header verbatim): the
+// model_id-pinned translate overload and the warmup persistent-connection
+// manager entry points. Defined in src/engine_host_client.cpp.
+
+namespace engine_host {
+
+// REQ-060: model_id-pinned translation. Identical contract to the REQ-057
+// overload plus `model_id` (placed right after `text`): the OPTIONAL served-
+// model registry id the request pins to. The frame emits the member ONLY when
+// non-empty — an empty pin keeps the exact pre-REQ-060 byte shape and a
+// pre-REQ-060 host never sees the member; the translate path reuses the
+// frozen connection machinery unchanged.
+bool TryTranslate(const EngineHostConfig& cfg,
+                  const std::string& src,
+                  const std::string& tgt,
+                  const std::string& text,
+                  const std::string& model_id,
+                  std::string& out,
+                  std::string& err_code,
+                  std::string& served_model);
+
+// REQ-060: pushes the engine_host block + the local-route state into the
+// warmup manager, which (re)evaluates the persistent warmup connection:
+// held while cfg.warmup && cfg.enabled && the ACTIVE engine is the shared
+// host (LocalLlama) && the host binary is deployed; torn down otherwise.
+// Cheap and non-blocking (snapshot + event signal) — callable from any
+// thread, including engine-switch menu handlers.
+// WIRING (all inside engine.cpp — main.cpp needs NO changes):
+//   * TranslationManager::RefreshActiveEngine pushes on EVERY active-engine
+//     refresh, covering the startup config push (SetEngineHostConfig), tray
+//     engine switches (SetEngineType), and the OpenAI/user-model setters.
+//   * TranslationManager::~TranslationManager calls WarmupShutdown().
+void WarmupSetState(const EngineHostConfig& cfg, bool local_route_active);
+
+// REQ-060: process-exit teardown of the warmup connection and its worker
+// thread (pipe cancel + bounded join). Idempotent. Called from
+// ~TranslationManager; safe to call again on any shutdown path.
+void WarmupShutdown();
+
+} // namespace engine_host
 
 // REQ-043 (M6 T5, design §5 (1)): the ShouldPreloadLocalModel /
 // ShouldPreloadOnEngineSwitch preload seams and the

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # REQ-046 P4-4 history: the version bump in commit 3b3a426 was withdrawn
 # per user decision (2026-09-19) and shipped as 0.10.1 rereleases; promoted
 # to 0.10.2 on 2026-09-30 (session 260930_0003, CEO decision).
-project(Emebalachat VERSION 0.10.2 LANGUAGES C CXX RC)
+project(Emebalachat VERSION 0.10.3 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -249,6 +249,10 @@ add_library(Emebalachat_core STATIC
     src/ui/about_window.cpp
     src/ui/gguf_model_manager_window.cpp # REQ-048 R2-D: registered-model rename/delete manager
     src/ui/openai_settings_window.cpp
+    # REQ-060 (session 261009_0001): translation-model load-mode settings
+    # dialog (engine_host.warmup) — the openai_settings_window pattern
+    # (TemplateBuilder + CBS_DROPDOWNLIST combo + OK/Cancel).
+    src/ui/engine_host_settings_window.cpp
     src/ui/asset_loader.cpp
     src/ui/badge.cpp
     src/ui/dpi.cpp

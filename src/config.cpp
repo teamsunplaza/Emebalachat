@@ -301,6 +301,11 @@ private:
 // idle_exit_ms is validated as an integer — 0/negative restore the default
 // policy, values above the 24h ceiling clamp, unparseable resets to default
 // (the top_k clamp/reset precedent).
+// REQ-060: worker_idle_ms follows the same shape — 0/negative restore the
+// 90000 default policy, values below the 5 s floor clamp up, values above
+// the 24h ceiling clamp down, unparseable resets to default. warmup is
+// strict true-only (any non-"true" literal -> false, the enabled/spawn
+// discipline).
 void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
     SimpleJsonReader reader(raw);
     std::vector<std::pair<std::string, std::string>> pairs;
@@ -325,6 +330,25 @@ void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
             } catch (...) {
                 out.idle_exit_ms = 600000; // unparseable -> default
             }
+        } else if (k == "worker_idle_ms") {
+            // REQ-060: translation-worker idle eviction budget.
+            try {
+                const long long ms = std::stoll(v);
+                if (ms <= 0) {
+                    out.worker_idle_ms = 90000; // 0 means "use the default policy"
+                } else if (ms < 5000) {
+                    out.worker_idle_ms = 5000; // 5 s floor
+                } else if (ms > 86400000LL) {
+                    out.worker_idle_ms = 86400000; // 24 h ceiling
+                } else {
+                    out.worker_idle_ms = static_cast<int>(ms);
+                }
+            } catch (...) {
+                out.worker_idle_ms = 90000; // unparseable -> default
+            }
+        } else if (k == "warmup") {
+            // REQ-060: strict true-only, same discipline as enabled/spawn.
+            out.warmup = (v == "true");
         }
     }
 }
@@ -1266,7 +1290,11 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"engine_host\": {\n";
     ss << "    \"enabled\": " << (engine_host.enabled ? "true" : "false") << ",\n";
     ss << "    \"spawn\": " << (engine_host.spawn ? "true" : "false") << ",\n";
-    ss << "    \"idle_exit_ms\": " << engine_host.idle_exit_ms << "\n";
+    ss << "    \"idle_exit_ms\": " << engine_host.idle_exit_ms << ",\n";
+    // REQ-060: the two new keys are ALWAYS serialized too (same sticky-key
+    // policy), so an untouched round trip writes back the defaults.
+    ss << "    \"worker_idle_ms\": " << engine_host.worker_idle_ms << ",\n";
+    ss << "    \"warmup\": " << (engine_host.warmup ? "true" : "false") << "\n";
     ss << "  },\n";
     // REQ-045 P4-3 (design §3b): the openai block is ALWAYS serialized so a
     // round trip preserves the values (same sticky-key policy as engine_host).

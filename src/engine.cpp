@@ -8,6 +8,9 @@
 // REQ-057: served-vs-expected model-id diagnosis at the local-host seam.
 #include "engine_host_registry.hpp"      // ResolveBundledModelId (the bundled registry id)
 #include "engine_host_config_reader.hpp" // LoadUserModelIdFromConfigLive (the C1-gated live user pin)
+// REQ-060: the live engine_type=="user_gguf" discriminator read reuses the
+// shared store file readers (whole-file read + BOM skip, no new JSON surface).
+#include "engine_host_json_util.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +21,7 @@
 #include <vector>
 
 #include <windows.h>
+#include <shlobj.h> // REQ-060: SHGetKnownFolderPath (config.json live route read)
 
 namespace emebalachat {
 
@@ -107,7 +111,14 @@ TranslationManager::TranslationManager(EngineType preferred_type, std::string mo
     RefreshActiveEngine();
 }
 
-TranslationManager::~TranslationManager() = default;
+TranslationManager::~TranslationManager() {
+    // REQ-060 (engine-idle-eviction-warmup): retire the warmup persistent
+    // connection with the manager. Idempotent and bounded (pipe cancel +
+    // worker join; the warmup thread never calls back into the manager, so
+    // no join-order hazard). Safe across multiple manager instances: the
+    // second and later calls converge to a no-op.
+    engine_host::WarmupShutdown();
+}
 
 void TranslationManager::SetEngineType(EngineType type) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -318,6 +329,15 @@ void TranslationManager::RefreshActiveEngine() {
             active_name_ = "Google Translate (Zero-Install)";
         }
     }
+
+    // REQ-060 (engine-idle-eviction-warmup): mirror the local-route state
+    // into the warmup persistent-connection manager on EVERY active-engine
+    // refresh — the startup config push (SetEngineHostConfig), tray engine
+    // switches (SetEngineType), and the OpenAI/user-model setters all funnel
+    // through here, so no main.cpp wiring is needed. Non-blocking: the
+    // manager snapshots the state and signals its own worker thread; the
+    // teardown runs from ~TranslationManager via engine_host::WarmupShutdown.
+    engine_host::WarmupSetState(engine_host_config_, active_type_ == EngineType::LocalLlama);
 }
 
 // R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam - the header
@@ -390,21 +410,32 @@ std::string BundledModelIdCached() {
     return id;
 }
 
+// REQ-060: defined below (kept with the resolver it feeds); forward-declared
+// here so the diagnosis can consume it.
+bool LocalUserGgufRouteActiveLive();
+
 void DiagnoseServedModelMismatch(EngineType preferred_type,
                                  const std::string& served_model) {
     if (served_model.empty()) {
         return; // pre-REQ-057 host: no echo to compare — skip silently
     }
-    // Expected id mirrors the host's serving rule: engine_type=="user_gguf"
-    // -> config.user_model_id; anything else ("local"/"auto") -> the bundled
-    // registry id (the pinned default). The C1-gated LIVE read
-    // (LoadUserModelIdFromConfigLive, REQ-055) returns exactly the user id
-    // for user_gguf and "" otherwise, so one read resolves both cases — and
-    // a live read can never go stale the way a startup-pushed copy would.
+    // REQ-060: the expected id comes from the SAME resolver that pins the
+    // outgoing request model_id, so the wire pin and this log check can
+    // never disagree about which model should serve (one definition, two
+    // consumers). The C1-gated LIVE read (LoadUserModelIdFromConfigLive,
+    // REQ-055) returns exactly the user id for user_gguf and "" otherwise;
+    // the engine_type discriminator is a second live read (below) because
+    // the C1 reader deliberately cannot distinguish "not user_gguf" from
+    // "user_gguf with an empty binding" — and that distinction decides
+    // whether the request omits the pin (host answers model_missing).
     const std::string pin = enginehost::LoadUserModelIdFromConfigLive(L"");
-    std::string expected = pin.empty() ? BundledModelIdCached() : pin;
+    const std::string expected =
+        ResolveLocalRequestModelId(LocalUserGgufRouteActiveLive(), pin,
+                                   BundledModelIdCached());
     if (expected.empty()) {
-        return; // registry unreadable / no bundled entry: no expectation to check
+        return; // user_gguf route unbound (the request omits the pin and the
+                // host answers model_missing — nothing served to compare),
+                // or the registry is unreadable / names no bundled entry
     }
     const char* engine_type = !pin.empty() ? "user_gguf"
                             : (preferred_type == EngineType::Auto ? "auto" : "local");
@@ -416,6 +447,72 @@ void DiagnoseServedModelMismatch(EngineType preferred_type,
     DIAG_LOG("ENGINE", "Translate/057: served-vs-expected model mismatch "
                        "(served_len=%zu expected_len=%zu engine_type=%s)",
              served_model.size(), expected.size(), engine_type);
+}
+
+// REQ-060: mtime/size-cached LIVE read of config.json's engine_type ==
+// "user_gguf" discriminator — the second half of the C1 pair (the first half
+// is LoadUserModelIdFromConfigLive's pin). The reader module cannot gain a
+// second return field from this side of the tree, so the app keeps its own
+// single-slot cache mirroring the REQ-055 pattern: production resolves one
+// config path, so the steady state is one GetFileAttributesEx per check and
+// zero re-parses. A live read (never a startup-pushed copy) is deliberate:
+// the host reads the same file live per job, and the request pin must track
+// the host's decision source. Shape-only: the value is a route boolean.
+bool LocalUserGgufRouteActiveLive() {
+    PWSTR known = nullptr;
+    std::wstring lad;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known)) && known) {
+        lad.assign(known);
+        ::CoTaskMemFree(known);
+    }
+    if (lad.empty()) return false;
+    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+        return false; // absent/unreadable: no user route evidence
+    }
+    ULARGE_INTEGER mtime;
+    mtime.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+    mtime.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+    ULARGE_INTEGER fsize;
+    fsize.LowPart = fad.nFileSizeLow;
+    fsize.HighPart = fad.nFileSizeHigh;
+
+    static std::mutex route_mu;
+    static unsigned long long route_mtime = 0;
+    static unsigned long long route_size = 0;
+    static bool route_active = false;
+    std::lock_guard<std::mutex> lk(route_mu);
+    if (route_mtime == mtime.QuadPart && route_size == fsize.QuadPart) {
+        return route_active;
+    }
+    bool active = false;
+    std::string text;
+    if (engine_host_json::ReadTextFileUtf8(path, text) == engine_host_json::FileReadOutcome::Ok) {
+        const std::string_view doc = engine_host_json::SkipUtf8Bom(text);
+        enginehost::JsonPairs fields;
+        if (enginehost::JsonParseObject(doc, fields)) {
+            const auto* et = enginehost::detail::FindField(fields, "engine_type");
+            active = et && et->is_string && et->text == "user_gguf";
+        }
+    }
+    route_active = active;
+    route_mtime = mtime.QuadPart;
+    route_size = fsize.QuadPart;
+    return active;
+}
+
+// REQ-060: the model_id the local seam pins onto the outgoing translate
+// frame — ONE resolver shared with the REQ-057 diagnosis above. user_gguf +
+// a live pin -> the user id; user_gguf + no binding -> "" (the frame omits
+// the member; the host answers model_missing); any other route -> the
+// bundled registry id ("" when the registry names no bundled entry — the
+// frame then stays unpinned, byte-identical to the pre-REQ-060 request).
+std::string LocalSeamRequestModelId() {
+    const bool user_gguf_route = LocalUserGgufRouteActiveLive();
+    const std::string pin = enginehost::LoadUserModelIdFromConfigLive(L"");
+    return ResolveLocalRequestModelId(user_gguf_route, pin, BundledModelIdCached());
 }
 
 } // namespace
@@ -562,10 +659,20 @@ std::wstring TranslationManager::Translate(
         std::string host_out;
         std::string host_err;
         std::string served_model; // REQ-057: the actually-served model id echo
+        // REQ-060: pin the request to the expected served model — the live
+        // C1-gated user pin on the user_gguf route, else the bundled
+        // registry id; "" leaves the frame unpinned (the exact pre-REQ-060
+        // wire shape, and the user_gguf-no-binding case where the host
+        // answers model_missing). Resolved ONCE per request so the transient
+        // retry below re-sends the IDENTICAL pin.
+        const std::string request_model_id = LocalSeamRequestModelId();
+        DIAG_F("ENGINE/Translate/060: local seam request model_id resolved (pin_len=%zu)\n",
+               request_model_id.size());
         const auto t_local_attempt = std::chrono::steady_clock::now();
         if (engine_host::TryTranslate(engine_host_config_,
                                       std::string(src_code_or_name), tgt_name,
-                                      ToUtf8(text), host_out, host_err, served_model)) {
+                                      ToUtf8(text), request_model_id,
+                                      host_out, host_err, served_model)) {
             host_fail_streak_ = 0;  // §V2-8.6: success clears the repair signal
             set_status(TranslationStatus::Ok);
             // REQ-057: served-vs-expected model id (diagnostic log only).
@@ -609,7 +716,8 @@ std::wstring TranslationManager::Translate(
             }
             if (engine_host::TryTranslate(engine_host_config_,
                                           std::string(src_code_or_name), tgt_name,
-                                          ToUtf8(text), host_out, host_err, served_model)) {
+                                          ToUtf8(text), request_model_id,
+                                          host_out, host_err, served_model)) {
                 host_fail_streak_ = 0;  // the retry recovered the service
                 set_status(TranslationStatus::Ok);
                 // REQ-057: served-vs-expected model id (diagnostic log only).

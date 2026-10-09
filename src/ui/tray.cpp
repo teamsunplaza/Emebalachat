@@ -40,6 +40,14 @@ enum TrayMenuId : UINT {
     // contract as the OpenAI settings' WM_APP+0x500, REQ-047 D3) instead of a
     // tray callback.
     ID_TRAY_MANAGE_GGUF = 2015,
+    // REQ-060 (session 261009_0001, engine-idle-eviction-warmup): the engine
+    // submenu's "번역 모델 로드 설정…" entry row, appended BELOW the manager
+    // row (2015) per mockup-tray-menu.png. PLAIN item (opens the load-mode
+    // dialog; no check geometry) — the frozen 4-way radio band 2010~2014 is
+    // untouched and 2016 stays clear of the 2020 control band. Dispatch routes
+    // through on_open_engine_load_settings; main.cpp owns the deferred modal
+    // open (the REQ-047 D3 contract, kMsgOpenEngineLoadSettings = WM_APP+0x502).
+    ID_TRAY_ENGINE_LOAD_SETTINGS = 2016,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
     ID_TRAY_SOUND = 2040,
@@ -375,6 +383,11 @@ void SystemTray::ShowContextMenu() {
     // desync (deferred via WM_APP+0x501 like this row's dispatch below).
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_MANAGE_GGUF,
                   I18n::Get(StringId::MenuManageGgufModels).c_str());
+    // REQ-060: the load-mode settings row sits BELOW the manager row (the
+    // mockup-tray-menu.png order). PLAIN entry row — no check mark by design
+    // (it opens a dialog; the 4-way radio contract is untouched).
+    ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_ENGINE_LOAD_SETTINGS,
+                  I18n::Get(StringId::EngineLoadSettingsMenuRow).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 
     // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
@@ -518,6 +531,14 @@ void SystemTray::ShowContextMenu() {
             DIAG_F("UI/Tray/001: PostMessage gguf-manager open failed (GLE %lu)\n",
                    ::GetLastError());
         }
+    } else if (cmd == ID_TRAY_ENGINE_LOAD_SETTINGS && callbacks_.on_open_engine_load_settings) {
+        // REQ-060: open the load-mode settings dialog. The modal open itself
+        // is DEFERRED by main.cpp (the on_open_engine_load_settings callback
+        // posts kMsgOpenEngineLoadSettings to the controller window) — the
+        // same modality contract as the manager row above: entering a modal
+        // synchronously here, while the TrackPopupMenuEx modality tear-down
+        // may still be in flight, is the REQ-047 D3 root cause.
+        callbacks_.on_open_engine_load_settings();
     } else if (cmd == ID_TRAY_SWAP && callbacks_.on_swap_languages) {
         callbacks_.on_swap_languages();
     } else if (cmd == ID_TRAY_AUTOSEND && callbacks_.on_toggle_auto_send) {

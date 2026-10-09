@@ -11,6 +11,12 @@
 // whole message; ERROR_MORE_DATA means the sender violated the cap and the
 // session is torn down (the host does the same to oversized frames).
 
+// REQ-060: NOMINMAX must precede EVERY include in this TU — overlapped_io_util.hpp
+// (line below) pulls in <windows.h>, and the warmup backoff uses std::min.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "engine_host_client.hpp"
 #include "overlapped_io_util.hpp" // REQ-L02/REQ-L32 부록 ②-4: cancel-approve 대기 공용 헬퍼
 
@@ -29,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error> // std::errc (from_chars result)
+#include <thread> // REQ-060: warmup persistent-connection worker
 #include <utility>
 #include <vector>
 
@@ -693,10 +700,16 @@ void SetCommonModelPathForTesting(const wchar_t* model_path) {
     g_common_model_override = model_path ? model_path : L"";
 }
 
+// REQ-060: the model_id-pinned request path (declared in engine.hpp — the
+// self-contained header is frozen for the sibling workspaces, so the new
+// overload is declared by the consumer side). `model_id` is the OPTIONAL
+// served-model registry pin: emitted ONLY when non-empty, so an empty pin
+// keeps the byte shape every pre-REQ-060 receiver expects.
 bool TryTranslate(const EngineHostConfig& cfg,
                   const std::string& src,
                   const std::string& tgt,
                   const std::string& text,
+                  const std::string& model_id,
                   std::string& out,
                   std::string& err_code,
                   std::string& served_model) {
@@ -721,10 +734,18 @@ bool TryTranslate(const EngineHostConfig& cfg,
     }
 
     const std::uint64_t id = g_session.next_id++;
-    const std::string req = std::string("{\"op\":\"translate\",\"id\":") + std::to_string(id) +
-                            ",\"src\":\"" + JsonEscape(src) + "\",\"tgt\":\"" + JsonEscape(tgt) +
-                            "\",\"text\":\"" + JsonEscape(text) +
-                            "\",\"timeout_ms\":" + std::to_string(kRequestTimeoutMs) + "}";
+    std::string req = std::string("{\"op\":\"translate\",\"id\":") + std::to_string(id) +
+                      ",\"src\":\"" + JsonEscape(src) + "\",\"tgt\":\"" + JsonEscape(tgt) +
+                      "\",\"text\":\"" + JsonEscape(text) +
+                      "\",\"timeout_ms\":" + std::to_string(kRequestTimeoutMs);
+    // REQ-060: the OPTIONAL model_id member, emitted ONLY when non-empty —
+    // the exact emission rule (and member position) of BuildTranslate, so the
+    // inline assembly stays wire-identical to the frozen helper; an empty pin
+    // leaves the pre-REQ-060 frame bytes untouched.
+    if (!model_id.empty()) {
+        req += ",\"model_id\":\"" + JsonEscape(model_id) + "\"";
+    }
+    req += "}";
     if (!WriteFrame(g_session.pipe, req)) {
         err_code = "io";
         CloseSessionLocked();
@@ -773,6 +794,21 @@ bool TryTranslate(const EngineHostConfig& cfg,
     }
 }
 
+// REQ-057: the served-model-aware contract form forwards to the REQ-060
+// pinned path with an EMPTY pin — the translate frame then stays byte-
+// identical to the pre-REQ-060 shape (the model_id member is emitted only
+// when non-empty).
+bool TryTranslate(const EngineHostConfig& cfg,
+                  const std::string& src,
+                  const std::string& tgt,
+                  const std::string& text,
+                  std::string& out,
+                  std::string& err_code,
+                  std::string& served_model) {
+    return TryTranslate(cfg, src, tgt, text, std::string() /*model_id: unpinned*/,
+                        out, err_code, served_model);
+}
+
 bool TryTranslate(const EngineHostConfig& cfg,
                   const std::string& src,
                   const std::string& tgt,
@@ -794,6 +830,284 @@ void SetPathsForTesting(const wchar_t* pipe_name,
     g_exe_override = exe_path ? exe_path : L"";
     std::lock_guard<std::mutex> slk(g_session_mu);
     CloseSessionLocked();
+}
+
+// ---- REQ-060: warmup persistent-connection manager --------------------------
+//
+// Contract (declared in engine.hpp; the self-contained header is frozen for
+// the sibling workspaces, so the new entry points are declared by the
+// consumer side): while the active engine is the shared host AND
+// cfg.warmup AND cfg.enabled, one background thread holds a DEDICATED pipe
+// connection whose hello carried warmup=true — the host preloads the
+// translation model at hello time and keeps the worker resident for as long
+// as the connection lives (defeating the worker_idle_ms idle eviction from
+// the client side). The connection NEVER sends a translate frame; the
+// one-shot TryTranslate path above is untouched and fully independent.
+//
+// Threading model: the worker thread owns every pipe handle it opens
+// (connect -> hello/welcome -> hold -> close); no cross-thread handle close
+// exists. State pushes (SetState) only snapshot the decision inputs under a
+// short mutex and signal an event — never blocking the caller. Teardown
+// (Shutdown) latches the stop event and CancelIoEx-es the ONE published
+// in-flight pipe handle under the same mutex that guards its close, so the
+// cancel can never race a handle reuse. The pipe is published as soon as the
+// connection exists (before the hello write), so the cancel covers the whole
+// handshake; the join is then bounded by the worker's next stop check (a
+// canceled read/write unwinds via the cancel-ack path of
+// WaitOverlappedOrCancelApprove). The instance is deliberately
+// leaked (new, never deleted): no static-destructor std::thread hazard, and
+// ExitProcess reaps the thread and events on every termination path.
+
+namespace {
+
+constexpr int kWarmupHoldPollMs = 1000;     // server-drop health-check cadence
+constexpr int kWarmupBackoffStartMs = 1000; // reconnect ladder 1s -> 2s -> ... 30s
+constexpr int kWarmupBackoffCapMs = 30000;
+
+class WarmupManager {
+public:
+    WarmupManager() = default;
+    WarmupManager(const WarmupManager&) = delete;
+    WarmupManager& operator=(const WarmupManager&) = delete;
+
+    // Snapshots the decision inputs and wakes the worker for re-evaluation.
+    // Cheap and non-blocking (no I/O, no join) — safe from any thread.
+    void SetState(const EngineHostConfig& cfg, bool local_route_active) {
+        std::lock_guard<std::mutex> lk(mu_);
+        cfg_ = cfg;
+        local_route_active_ = local_route_active;
+        if (shutting_down_) return;
+        EnsureEventsLocked();
+        if (!stop_event_ || !state_event_) return; // event creation failure: stay inert
+        // REQ-060: reap a worker that returned on its own (the WAIT_FAILED
+        // defensive leg of Run) before the gate — joinable() stays true for
+        // a finished-but-never-joined thread, so without this the gate below
+        // could never respawn and warmup would stop permanently.
+        ReapFinishedWorkerLocked();
+        if (DesiredLocked() && !worker_.joinable()) {
+            worker_ = std::thread([this] { Run(); });
+        }
+        // Re-evaluation wake (hold / backoff / idle park). An unsignaled
+        // auto-reset event stays latched, so a push arriving while the
+        // worker is busy costs one harmless extra evaluation loop.
+        ::SetEvent(state_event_);
+    }
+
+    // Process-exit teardown: idempotent, bounded. Latches stop, then cancels
+    // any in-flight I/O on the published pipe (under mu_, so no close can
+    // interleave and stale-handle CancelIoEx is impossible). REQ-060: the
+    // pipe is published as soon as the connection exists (before the hello
+    // write), so the cancel covers the whole handshake, not just the hold
+    // phase. Then joins.
+    void Shutdown() {
+        std::thread join_target;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            shutting_down_ = true;
+            EnsureEventsLocked();
+            ::SetEvent(stop_event_);
+            ::SetEvent(state_event_);
+            if (pipe_) ::CancelIoEx(pipe_, nullptr);
+            join_target = std::move(worker_);
+        }
+        if (join_target.joinable()) join_target.join();
+        // Events and the manager itself stay allocated for the process
+        // lifetime (deliberate leak — see the section header).
+    }
+
+private:
+    bool DesiredLocked() const {
+        // The connection is held only while the shared host IS the active
+        // local source and the user asked for warmup. `cfg_.enabled` is part
+        // of the gate so a disabled engine_host block never holds a pipe.
+        return cfg_.warmup && cfg_.enabled && local_route_active_;
+    }
+
+    bool StopRequested() {
+        std::lock_guard<std::mutex> lk(mu_);
+        return shutting_down_;
+    }
+
+    bool Desired() {
+        std::lock_guard<std::mutex> lk(mu_);
+        return DesiredLocked();
+    }
+
+    void EnsureEventsLocked() {
+        if (!stop_event_) stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!state_event_) state_event_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+
+    // REQ-060 (dispute-verification-report §5.1(a)): joinable() cannot tell a
+    // live thread from a finished-but-never-joined one. Run() exits on its
+    // own only on the WAIT_FAILED defensive leg, but when it does, worker_
+    // stays joinable and the SetState restart gate would never respawn.
+    // Reap finished workers (zero-timeout probe, then an immediate join) so
+    // the gate sees the true state. Call with mu_ held.
+    void ReapFinishedWorkerLocked() {
+        if (!worker_.joinable()) return;
+        if (::WaitForSingleObject(worker_.native_handle(), 0) == WAIT_OBJECT_0)
+            worker_.join();
+    }
+
+    // REQ-060 (dispute-verification-report §5.2(b)): clear the in-flight
+    // publish (only if still `h`) and close — the same mu_-guarded
+    // unpublish-before-close pairing as drop_held, so Shutdown's CancelIoEx
+    // under mu_ can never observe a closed or reused handle.
+    void UnpublishAndClose(HANDLE h) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (pipe_ == h) pipe_ = nullptr;
+        }
+        if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
+    }
+
+    // One connect + warmup-hello + welcome-validation cycle. Returns a live
+    // pipe to HOLD, nullptr on any failure (the caller paces the retries).
+    // Best-effort and silent: every failure here reconverges through the
+    // reconnect ladder, and the one-shot TryTranslate path reports the real
+    // serving errors with the documented UX chain.
+    HANDLE ConnectWarmup() {
+        const EngineHostConfig cfg = [this] {
+            std::lock_guard<std::mutex> lk(mu_);
+            return cfg_;
+        }();
+        // Cheap gate first: an undeployed host binary means the translate
+        // path would answer no_host_binary too — retry on the ladder.
+        if (!IsHostBinaryPresent()) return nullptr;
+        if (StopRequested()) return nullptr;
+
+        const std::vector<std::wstring> candidates = PipeCandidates();
+        HANDLE h = INVALID_HANDLE_VALUE;
+        bool spawned = false;
+        DWORD last_err = ERROR_SUCCESS;
+        for (const std::wstring& pipe : candidates) {
+            h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err);
+            if (h != INVALID_HANDLE_VALUE) break;
+            if (StopRequested()) return nullptr;
+        }
+        if (h == INVALID_HANDLE_VALUE) return nullptr;
+
+        // REQ-060 (dispute-verification-report §5.2(b)): publish the pipe the
+        // moment the connection exists — BEFORE the hello write — so Shutdown's
+        // CancelIoEx aborts a wedged hello/welcome too. The old publish-after-
+        // welcome left the whole handshake uncancellable (Shutdown join bound
+        // ~17-32 s). The mu_ pairing with every close is unchanged: pipe_ is
+        // cleared under mu_ before the handle close, so CancelIoEx can never
+        // observe a stale handle.
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            pipe_ = h;
+        }
+
+        std::string token;
+        if (!ReadTokenFile(token)) { UnpublishAndClose(h); return nullptr; }
+        if (StopRequested()) { UnpublishAndClose(h); return nullptr; }
+
+        // REQ-060: the warmup hello — identical member order to the
+        // translate path's hello plus the OPTIONAL warmup flag (the
+        // BuildHello emission rule: the member appears only when true).
+        const std::string hello =
+            std::string("{\"op\":\"hello\",\"protocol\":1,\"token\":\"") + JsonEscape(token) +
+            "\",\"client\":\"" + kClientName +
+            "\",\"client_version\":\"" + kClientVersion + "\",\"warmup\":true}";
+        if (!WriteFrame(h, hello)) { UnpublishAndClose(h); return nullptr; }
+        if (StopRequested()) { UnpublishAndClose(h); return nullptr; }
+
+        std::string reply;
+        const ReadOutcome rc = ReadFrame(h, reply, kHandshakeTimeoutMs);
+        if (rc != ReadOutcome::Ok) { UnpublishAndClose(h); return nullptr; }
+        std::string code;
+        if (ParseErrorWire(reply, code)) { UnpublishAndClose(h); return nullptr; }
+        int protocol = 0;
+        std::string sha;
+        if (!ParseWelcomeWire(reply, protocol, sha)) { UnpublishAndClose(h); return nullptr; }
+        if (protocol != 1 || sha != kExpectedModelSha256) {
+            UnpublishAndClose(h); // version/pin drift: the translate path reports it
+            return nullptr;
+        }
+        return h; // pipe_ stays published; Run's drop_held unpublishes pre-close
+    }
+
+    void Run() {
+        // The handles are created before the thread starts and never closed
+        // (deliberate leak), so snapshotting them here is race-free.
+        const HANDLE waits[2] = {stop_event_, state_event_};
+        HANDLE held_pipe = nullptr;
+        int backoff_ms = kWarmupBackoffStartMs;
+
+        auto drop_held = [&]() {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                pipe_ = nullptr; // unpublish BEFORE the close (CancelIoEx pairing)
+            }
+            if (held_pipe && held_pipe != INVALID_HANDLE_VALUE) ::CloseHandle(held_pipe);
+            held_pipe = nullptr;
+        };
+
+        for (;;) {
+            if (StopRequested()) break;
+            if (!Desired()) {
+                if (held_pipe) drop_held();
+                backoff_ms = kWarmupBackoffStartMs;
+                // Park until the next state push or shutdown.
+                const DWORD wr = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                if (wr == WAIT_OBJECT_0) break;
+                continue; // state change: re-evaluate
+            }
+            if (!held_pipe) {
+                held_pipe = ConnectWarmup();
+                if (held_pipe) {
+                    backoff_ms = kWarmupBackoffStartMs;
+                    continue; // hold loop below
+                }
+                backoff_ms = std::min(backoff_ms * 2, kWarmupBackoffCapMs);
+                const DWORD wr = ::WaitForMultipleObjects(
+                    2, waits, FALSE, static_cast<DWORD>(backoff_ms));
+                if (wr == WAIT_OBJECT_0) break;
+                continue; // timeout: retry the ladder; state wake: re-evaluate
+            }
+            // Hold the connection: wake on shutdown, on a state push, or on
+            // the poll cadence for the server-drop health check.
+            const DWORD wr = ::WaitForMultipleObjects(
+                2, waits, FALSE, static_cast<DWORD>(kWarmupHoldPollMs));
+            if (wr == WAIT_OBJECT_0) break;
+            if (wr == WAIT_OBJECT_0 + 1) continue; // re-evaluate desired
+            if (wr == WAIT_FAILED) break;          // defensive: never spin
+            if (!::PeekNamedPipe(held_pipe, nullptr, 0, nullptr, nullptr, nullptr)) {
+                // Server dropped us: reconnect. The ladder resets to 1 s so a
+                // healthy host recovers instantly; a still-down host climbs
+                // 1s -> 2s -> ... -> 30s through the connect-failure path.
+                drop_held();
+                backoff_ms = kWarmupBackoffStartMs;
+            }
+        }
+        if (held_pipe) drop_held();
+    }
+
+    std::mutex mu_;
+    EngineHostConfig cfg_;
+    bool local_route_active_ = false;
+    bool shutting_down_ = false;
+    HANDLE pipe_ = nullptr;   // in-flight pipe, published for Shutdown's cancel
+    HANDLE stop_event_ = nullptr;  // manual-reset: stays latched for late checks
+    HANDLE state_event_ = nullptr; // auto-reset: one consume per push
+    std::thread worker_;
+};
+
+WarmupManager& WarmupInstance() {
+    static WarmupManager* instance = new WarmupManager();
+    return *instance;
+}
+
+} // namespace
+
+void WarmupSetState(const EngineHostConfig& cfg, bool local_route_active) {
+    WarmupInstance().SetState(cfg, local_route_active);
+}
+
+void WarmupShutdown() {
+    WarmupInstance().Shutdown();
 }
 
 } // namespace engine_host

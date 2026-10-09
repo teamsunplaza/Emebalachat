@@ -60,6 +60,13 @@ public:
         // into the single manager row (ID_TRAY_MANAGE_GGUF). The manager's
         // [파일에서 추가…] button consumes main.cpp's registration pipeline
         // through the callback passed to ShowGgufModelManagerDialog instead.
+        // REQ-060 (session 261009_0001, engine-idle-eviction-warmup): the
+        // engine submenu's "번역 모델 로드 설정…" entry row (below the model
+        // manager row). Entry row, NOT a check target — it opens the
+        // translation-model load-mode dialog. main.cpp defers the modal open
+        // to the controller window past the TrackPopupMenuEx teardown (the
+        // REQ-047 D3 contract shared with the manager/OpenAI rows).
+        std::function<void()> on_open_engine_load_settings;
     };
 
     SystemTray();

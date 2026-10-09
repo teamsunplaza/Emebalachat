@@ -441,6 +441,12 @@ struct HelloMsg {
     std::string token;
     std::string client;
     std::string client_version;
+    // REQ-060: OPTIONAL warmup flag (false = the frame omits the member — a
+    // pre-REQ-060 sender). true asks the host to preload the translation
+    // model at hello time so the first translate skips the cold-load latency.
+    // Additive optional member per the §4.3 unknown-field-ignore rule: old
+    // receivers drop it, old senders never emit it.
+    bool warmup = false;
 };
 
 struct WelcomeMsg {
@@ -456,6 +462,11 @@ struct TranslateMsg {
     std::string tgt;
     std::string text;
     int timeout_ms = kDefaultTranslateTimeoutMs;
+    // REQ-060: OPTIONAL served-model registry id ("" = the frame omits the
+    // member — a pre-REQ-060 sender). Lets the router pin the request to a
+    // specific registered model instead of the host's default pick. Additive
+    // optional member per §4.3; registry-id metadata only, never user text.
+    std::string model_id;
 };
 
 struct ResultMsg {
@@ -480,11 +491,17 @@ struct CancelMsg {
     std::uint64_t id = 0;
 };
 
+// REQ-060: the optional warmup member is emitted ONLY when the caller sets
+// HelloMsg::warmup (the default false keeps the frozen §4.4 golden bytes —
+// the member is a pure wire addition old receivers ignore, §4.3).
 inline std::string BuildHello(const HelloMsg& m) {
-    return std::string("{\"op\":\"hello\",\"protocol\":") + std::to_string(m.protocol) +
+    std::string out = std::string("{\"op\":\"hello\",\"protocol\":") + std::to_string(m.protocol) +
            ",\"token\":\"" + JsonEscape(m.token) +
            "\",\"client\":\"" + JsonEscape(m.client) +
-           "\",\"client_version\":\"" + JsonEscape(m.client_version) + "\"}";
+           "\",\"client_version\":\"" + JsonEscape(m.client_version) + "\"";
+    if (m.warmup) out += ",\"warmup\":true";
+    out += "}";
+    return out;
 }
 
 inline std::string BuildWelcome(const WelcomeMsg& m) {
@@ -500,12 +517,20 @@ inline std::string BuildWelcome(const WelcomeMsg& m) {
            "\",\"capabilities\":" + caps + "}";
 }
 
+// REQ-060: the optional model_id member is emitted ONLY when non-empty (the
+// default "" keeps the pre-REQ-060 byte shape — old receivers ignore the
+// extra member per §4.3, old senders never carry it).
 inline std::string BuildTranslate(const TranslateMsg& m) {
-    return std::string("{\"op\":\"translate\",\"id\":") + std::to_string(m.id) +
+    std::string out = std::string("{\"op\":\"translate\",\"id\":") + std::to_string(m.id) +
            ",\"src\":\"" + JsonEscape(m.src) +
            "\",\"tgt\":\"" + JsonEscape(m.tgt) +
            "\",\"text\":\"" + JsonEscape(m.text) +
-           "\",\"timeout_ms\":" + std::to_string(m.timeout_ms) + "}";
+           "\",\"timeout_ms\":" + std::to_string(m.timeout_ms);
+    if (!m.model_id.empty()) {
+        out += ",\"model_id\":\"" + JsonEscape(m.model_id) + "\"";
+    }
+    out += "}";
+    return out;
 }
 
 inline std::string BuildResult(const ResultMsg& m) {
@@ -539,6 +564,18 @@ inline bool ParseHello(std::string_view json, HelloMsg& m) {
     }
     if (const auto* cv = detail::FindField(p, "client_version")) {
         m.client_version = cv->is_string ? cv->text : "";
+    }
+    // REQ-060: the OPTIONAL warmup flag — absent -> false, and only the JSON
+    // true literal counts (any other value degrades to false, the same
+    // permissive discipline as the config bool keys). Never fails the parse:
+    // the member is wire-additive for pre-REQ-060 receivers (§4.3).
+    m.warmup = false;
+    if (const auto* w = detail::FindField(p, "warmup")) {
+        // REQ-060 (round-2 integration): only the JSON true LITERAL counts —
+        // a mistyped STRING member ("warmup":"true") must NOT enable warmup
+        // (is_string gate; the raw text of a string member would otherwise
+        // compare equal), matching ParseSessionOpen's preload discipline.
+        m.warmup = (!w->is_string && w->text == "true");
     }
     return true;
 }
@@ -583,6 +620,14 @@ inline bool ParseTranslate(std::string_view json, TranslateMsg& m) {
     if (const auto* to = detail::FindField(p, "timeout_ms")) {
         int v = 0;
         if (detail::ParseInt(to->text, v)) m.timeout_ms = v;
+    }
+    // REQ-060: the OPTIONAL served-model id — absent -> "", and a wrong-typed
+    // member leaves the default (permissive, mirrors the src/tgt/text
+    // discipline above; the member is wire-additive for pre-REQ-060
+    // receivers per §4.3).
+    m.model_id.clear();
+    if (const auto* md = detail::FindField(p, "model_id")) {
+        if (md->is_string) m.model_id = md->text;
     }
     return true;
 }

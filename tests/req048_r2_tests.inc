@@ -145,9 +145,9 @@ namespace req048_r2d_detail {
 // OpenAI delete-button caption + the 25 REQ-UC update-zone strings). 
 // TestReq044I18nFieldOrder pins the count with
 // the identical sizeof technique; its copy lives in run_tests.cpp and is
-// frozen by the editing mandate, so the 144-field total is asserted here.
+// frozen by the editing mandate, so the 157-field total is asserted here.
 struct Req048R2LstrMirror {
-    const wchar_t* f[144];
+    const wchar_t* f[157];
 };
 
 } // namespace req048_r2d_detail
@@ -156,23 +156,23 @@ void TestReq048R2GgufManager() {
     std::cout << "[RUN] Testing REQ-048 R2-D gguf model manager..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- (a) i18n field-count mirror (REQ-MD total 144) ----------------
+    // ---- (a) i18n field-count mirror (REQ-060 total 157) ----------------
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 144
-    static_assert(kR2dFieldCount == 144,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD: LocalizedStrings field count is 144 (78 + 17 + 2 + "
-                  "2 + 8 + 2 + 1 + 25 + 9) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 157
+    static_assert(kR2dFieldCount == 157,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060: LocalizedStrings field count is 157 (78 + 17 + 2 + "
+                  "2 + 8 + 2 + 1 + 25 + 9 + 13) - update the i18n.cpp X-macro, all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 144,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 144");
-    TEST_CHECK(observed_enum_count == 144,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 144 (struct fields == "
-               "switch cases, through the REQ-MD model-download block)");
+    TEST_CHECK(observed_field_count == 157,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 157");
+    TEST_CHECK(observed_enum_count == 157,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 157 (struct fields == "
+               "switch cases, through the REQ-060 load-mode/policy block)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.
@@ -272,8 +272,8 @@ void TestReq048R2GgufManager() {
     }
 
     // ---- (c) manager template linkage + production item set -------------
-    // REQ-050: 7 items (2 add buttons + list + empty + 3 action buttons),
-    // dialog 242x112. The byte-walk pins the exact ids/geometry/titles the
+    // REQ-060: 8 items (2 add buttons + list + empty + 4 action buttons),
+    // dialog 284x112. The byte-walk pins the exact ids/geometry/titles the
     // Windows DLGITEMTEMPLATE parser consumes (the req048_detail readers from
     // req048_template_tests.inc, included earlier in this TU).
     {
@@ -281,15 +281,15 @@ void TestReq048R2GgufManager() {
         I18n::SetLocale(UiLocale::Korean); // add-button + manager labels
         using namespace req048_detail;
         TemplateBuilder tb;
-        tb.Begin(L"probe", 242, 112, /*itemCount=*/7);
+        tb.Begin(L"probe", 284, 112, /*itemCount=*/8);
         BuildGgufManagerTemplate(tb);
         const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
-        TEST_CHECK(base != nullptr, "REQ-050 (c): manager template buffer non-null");
+        TEST_CHECK(base != nullptr, "REQ-060 (c): manager template buffer non-null");
         if (base) {
             const WORD cdit = ReadWord(base, 8);
-            TEST_CHECK(cdit == 7,
-                       "REQ-050 (c): manager template emits 7 items (add-file + add-HF "
-                       "+ list + empty + rename + delete + close)");
+            TEST_CHECK(cdit == 8,
+                       "REQ-060 (c): manager template emits 8 items (add-file + add-HF "
+                       "+ list + empty + rename + delete + policy + close)");
             // Expected items in emission order: id, x, y, cx, cy, title.
             const WORD kMgrStaticCls = 0x0082;
             const WORD kMgrBtnCls = 0x0080;
@@ -303,9 +303,11 @@ void TestReq048R2GgufManager() {
                  I18n::Get(StringId::GgufManagerEmpty)},
                 {4102, kMgrBtnCls,    8,   86, 60, 13,
                  I18n::Get(StringId::GgufManagerRename)},
-                {4103, kMgrBtnCls,    80,  86, 60, 13,
+                {4103, kMgrBtnCls,    76,  86, 60, 13,
                  I18n::Get(StringId::GgufManagerDelete)},
-                {IDCANCEL, kMgrBtnCls, 172, 86, 62, 13,
+                {4106, kMgrBtnCls,    144, 86, 62, 13,
+                 I18n::Get(StringId::GgufManagerTogglePolicy)},
+                {IDCANCEL, kMgrBtnCls, 212, 86, 62, 13,
                  I18n::Get(StringId::GgufManagerClose)},
             };
             size_t off = 18; // header: style(4) exstyle(4) cdit(2) x y cx cy
@@ -315,7 +317,7 @@ void TestReq048R2GgufManager() {
             off += 2;        // pointsize
             off += 2 * (1 + std::wstring(L"Segoe UI").size()); // font + NUL
             bool walk_ok = true;
-            for (WORD iItem = 0; iItem < cdit && iItem < 7; ++iItem) {
+            for (WORD iItem = 0; iItem < cdit && iItem < 8; ++iItem) {
                 off += (4 - off % 4) % 4; // DWORD-align relative to the template
                 const Exp& e = kExp[iItem];
                 const WORD id = ReadWord(base, off + 16);
@@ -334,10 +336,10 @@ void TestReq048R2GgufManager() {
                 off = toff + 2; // creation-data count WORD
             }
             TEST_CHECK(walk_ok,
-                       "REQ-050 (c): manager template items 1:1 — add-file/add-HF "
-                       "buttons on the top row, list+actions shifted down (7 items)");
+                       "REQ-060 (c): manager template items 1:1 — add-file/add-HF "
+                       "buttons on the top row, four action buttons on the bottom row (8 items)");
             TEST_CHECK(off == tb.size(),
-                       "REQ-050 (c): manager template walk consumed exactly size() bytes");
+                       "REQ-060 (c): manager template walk consumed exactly size() bytes");
         }
         I18n::SetLocale(tpl_locale); // suite-state hygiene
     }
@@ -778,6 +780,214 @@ void TestReq050HfUrlGate() {
         std::cout << "[PASS] REQ-050 HF resolve-URL gate checks passed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-050 HF URL gate: "
+                  << (g_failed_count - failures_before) << " check(s) failed."
+                  << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REQ-060 (fix round): the two pure GGUF-manager helpers the duplicate scan
+// and the policy suffix ride on — ManagerDuplicateStem (the ".gguf" tail +
+// "_<digits>" copy-suffix normalization) and ManagerPolicySuffixId (sticky ->
+// GgufPolicySticky, everything else -> GgufPolicyEvict). The grouping caller
+// (ScanModelDuplicates) additionally requires an exact byte-size match; that
+// condition is a GUI-threaded scan concern, so it is pinned as a source check
+// here rather than exercised at runtime.
+// ---------------------------------------------------------------------------
+
+void TestReq060ManagerHelpers() {
+    std::cout << "[RUN] Testing REQ-060 manager helper units (duplicate stem + policy suffix)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- ManagerDuplicateStem ----------------------------------------------
+    TEST_CHECK(ManagerDuplicateStem("MiLMMT-46-4B_2.gguf") == "MiLMMT-46-4B",
+               "REQ-060: _N copy suffix stripped after the .gguf tail");
+    TEST_CHECK(ManagerDuplicateStem("MiLMMT-46-4B.gguf") == "MiLMMT-46-4B",
+               "REQ-060: bare .gguf tail stripped, no copy suffix");
+    TEST_CHECK(ManagerDuplicateStem("model.GGUF") == "model",
+               "REQ-060: .gguf tail match is case-insensitive");
+    TEST_CHECK(ManagerDuplicateStem("model_2.GGUF") == "model",
+               "REQ-060: case-insensitive tail + _N suffix compose");
+    TEST_CHECK(ManagerDuplicateStem("model_10.gguf") == "model",
+               "REQ-060: multi-digit copy suffix stripped");
+    // The copy suffix must sit IMMEDIATELY before the extension: a digit run
+    // that is part of the real name (no separating underscore) survives.
+    TEST_CHECK(ManagerDuplicateStem("MiLMMT-46-4B.gguf") == "MiLMMT-46-4B",
+               "REQ-060: name-embedded digit runs (46-4B) are not a copy suffix");
+    TEST_CHECK(ManagerDuplicateStem("model_.gguf") == "model_",
+               "REQ-060: bare trailing underscore left alone (no digits)");
+    TEST_CHECK(ManagerDuplicateStem("123.gguf") == "123",
+               "REQ-060: digits-only stem left alone (suffix needs a prefix)");
+    TEST_CHECK(ManagerDuplicateStem("model.bin") == "model.bin",
+               "REQ-060: non-.gguf files never normalized (never compared)");
+    TEST_CHECK(ManagerDuplicateStem("model.ggufx") == "model.ggufx",
+               "REQ-060: near-miss extension not stripped");
+
+    // ---- ManagerPolicySuffixId ----------------------------------------------
+    TEST_CHECK(ManagerPolicySuffixId("sticky") == StringId::GgufPolicySticky,
+               "REQ-060: sticky maps to the GgufPolicySticky string");
+    TEST_CHECK(ManagerPolicySuffixId("evict") == StringId::GgufPolicyEvict,
+               "REQ-060: evict maps to the GgufPolicyEvict string");
+    TEST_CHECK(ManagerPolicySuffixId("") == StringId::GgufPolicyEvict,
+               "REQ-060: empty policy (unregistered default) maps to evict");
+    TEST_CHECK(ManagerPolicySuffixId("preload") == StringId::GgufPolicyEvict,
+               "REQ-060: any unknown spelling maps to evict (normalization parity)");
+    // The strings resolve non-empty in the current locale for both ids.
+    TEST_CHECK(!I18n::Get(StringId::GgufPolicySticky).empty() &&
+                   !I18n::Get(StringId::GgufPolicyEvict).empty(),
+               "REQ-060: both policy suffix strings resolve non-empty");
+
+    // ---- size-match condition (source pin; the scan is GUI-threaded) --------
+    const std::filesystem::path mgr_cpp = ResolveRepoFile(L"src\\ui\\gguf_model_manager_window.cpp");
+    if (mgr_cpp.empty()) {
+        std::cout << "[SKIP] src/ui/gguf_model_manager_window.cpp not resolvable; "
+                     "REQ-060 duplicate-scan pins skipped."
+                  << std::endl;
+    } else {
+        std::ifstream in(mgr_cpp, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        const size_t fn_pos = src.find("ScanModelDuplicates");
+        TEST_CHECK(fn_pos != std::string::npos,
+                   "REQ-060: ScanModelDuplicates present in the manager TU");
+        if (fn_pos != std::string::npos) {
+            const size_t fn_end = src.find("\n}\n", fn_pos);
+            const std::string fn_body = src.substr(
+                fn_pos, fn_end == std::string::npos ? std::string::npos : fn_end - fn_pos);
+            // The stem alone is too loose: a same-stem pair only groups when
+            // the byte sizes match exactly (the header contract).
+            TEST_CHECK(fn_body.find("infos[j].size == g.size") != std::string::npos,
+                       "REQ-060: duplicate grouping requires an exact byte-size match");
+            TEST_CHECK(fn_body.find("ManagerDuplicateStem(") != std::string::npos,
+                       "REQ-060: the scan groups by the ManagerDuplicateStem normalization");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 manager helper checks passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 manager helpers: "
+                  << (g_failed_count - failures_before) << " check(s) failed."
+                  << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REQ-060 security-fix round (session 261009_0001, M-1 / L-3 / L-4):
+//  (a) FUNCTIONAL — IsRegisteredModelFile protects EVERY registry entry's
+//      EVERY files[] member: the bundled origin (deepseek M-1 — a same-stem
+//      +size user copy must never send the pinned Hy-MT2 file to the Recycle
+//      Bin) and files[1+] slots (mimo MEDIUM-1 — a hand-edited multi-file
+//      entry's secondary reference must stay protected), while genuinely
+//      unregistered files remain cleanup targets.
+//  (b) STRUCTURAL — the cleanup click path reloads the LIVE registry before
+//      building the target set (deepseek L-3: registry.json is a multi-writer
+//      document, M7 A-2), and the two new diag lines log the id LENGTH, never
+//      its content (deepseek L-4 / mimo LOW-2 — the host/004 shape-only
+//      contract).
+// ---------------------------------------------------------------------------
+
+void TestReq060RegisteredFileGuard() {
+    std::cout << "[RUN] Testing REQ-060 registered-file guard (security-fix round)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Fixture: the installer-shaped store — the bundled pinned entry plus two
+    // user entries, one hand-edited to carry a MULTI-FILE files[] (the mimo
+    // MEDIUM-1 shape no writer emits but the parser accepts).
+    const std::string doc =
+        "{\"schema_version\":1,\"models\":["
+        "{\"id\":\"hy-mt2-1.8b-q8\",\"family\":\"ggml-translate-hy-mt2-1.8b-q8\","
+        "\"files\":[\"Hy-MT2-1.8B-Q8_0.gguf\"],\"capabilities\":[\"translate\"],"
+        "\"origin\":\"bundled\"},"
+        "{\"id\":\"user-a\",\"family\":\"ggml-translate-user-a\","
+        "\"files\":[\"user-a.gguf\",\"user-a-part2.gguf\"],"
+        "\"capabilities\":[\"translate\"],\"origin\":\"user\"},"
+        "{\"id\":\"user-b\",\"family\":\"ggml-translate-user-b\","
+        "\"files\":[\"user-b.gguf\"],\"capabilities\":[\"translate\"],"
+        "\"origin\":\"user\"}]}";
+    const auto parsed = engine_host_registry::ParseRegistryJson(doc);
+    TEST_CHECK(parsed.status == engine_host_registry::LoadStatus::Ok,
+               "REQ-060 M-1: the guard fixture registry parses Ok");
+    if (parsed.status == engine_host_registry::LoadStatus::Ok) {
+        const auto& reg = parsed.registry;
+
+        // The bundled pinned file is registered even though NO user entry
+        // references it (deepseek M-1: the old files[0]-of-user-models guard
+        // made the bundled file invisible to the cleanup).
+        TEST_CHECK(IsRegisteredModelFile(reg, L"Hy-MT2-1.8B-Q8_0.gguf"),
+                   "REQ-060 M-1: the bundled pinned model file is protected");
+        // The store compare is ASCII case-insensitive (Windows volume).
+        TEST_CHECK(IsRegisteredModelFile(reg, L"hy-mt2-1.8b-q8_0.gguf"),
+                   "REQ-060 M-1: bundled protection is case-insensitive");
+        // files[1+] of a multi-file entry is protected (mimo MEDIUM-1).
+        TEST_CHECK(IsRegisteredModelFile(reg, L"user-a-part2.gguf"),
+                   "REQ-060 M-1: files[1+] of a multi-file entry is protected");
+        TEST_CHECK(IsRegisteredModelFile(reg, L"USER-A.GGUF"),
+                   "REQ-060 M-1: files[0] protection stays case-insensitive");
+        // A genuinely unregistered store file is NOT protected — it stays a
+        // legitimate cleanup target (the guard must not pin everything).
+        TEST_CHECK(!IsRegisteredModelFile(reg, L"some-copy_2.gguf"),
+                   "REQ-060 M-1: an unregistered store file stays a cleanup target");
+        TEST_CHECK(!IsRegisteredModelFile(reg, L"user-a-part3.gguf"),
+                   "REQ-060 M-1: a near-miss sibling name is not protected");
+    }
+    // An empty registry protects nothing (defensive: no dangling guard).
+    const engine_host_registry::Registry empty_reg;
+    TEST_CHECK(!IsRegisteredModelFile(empty_reg, L"Hy-MT2-1.8B-Q8_0.gguf"),
+               "REQ-060 M-1: an empty registry protects nothing");
+
+    // ---- (b) structural pins ------------------------------------------------
+    const std::filesystem::path mgr_cpp =
+        ResolveRepoFile(L"src\\ui\\gguf_model_manager_window.cpp");
+    const std::filesystem::path worker_cpp = ResolveRepoFile(L"src\\ggml_translate_worker.cpp");
+    if (mgr_cpp.empty() || worker_cpp.empty()) {
+        std::cout << "[SKIP] manager/worker sources not resolvable; REQ-060 L-3/L-4 pins skipped."
+                  << std::endl;
+    } else {
+        std::ifstream mgr_in(mgr_cpp, std::ios::binary);
+        const std::string mgr_src((std::istreambuf_iterator<char>(mgr_in)),
+                                  std::istreambuf_iterator<char>());
+        std::ifstream worker_in(worker_cpp, std::ios::binary);
+        const std::string worker_src((std::istreambuf_iterator<char>(worker_in)),
+                                     std::istreambuf_iterator<char>());
+
+        // L-3: RunDuplicateCleanup reloads the live registry at click time,
+        // BEFORE the scan that builds the deletion target set.
+        const size_t cleanup_pos = mgr_src.find("void RunDuplicateCleanup(");
+        TEST_CHECK(cleanup_pos != std::string::npos,
+                   "REQ-060 L-3: RunDuplicateCleanup present in the manager TU");
+        if (cleanup_pos != std::string::npos) {
+            const size_t cleanup_end = mgr_src.find("\n}\n", cleanup_pos);
+            const std::string body = mgr_src.substr(
+                cleanup_pos, cleanup_end == std::string::npos
+                                 ? std::string::npos
+                                 : cleanup_end - cleanup_pos);
+            const size_t reload_pos = body.find("LoadManagerRegistry(dlg, st)");
+            const size_t scan_pos = body.find("ScanModelDuplicates(st)");
+            TEST_CHECK(reload_pos != std::string::npos && scan_pos != std::string::npos &&
+                           reload_pos < scan_pos,
+                       "REQ-060 L-3: the cleanup reloads the live registry BEFORE "
+                       "building the target set");
+        }
+        // L-4: neither new diag line logs the raw model id anymore.
+        TEST_CHECK(mgr_src.find("policy toggled id=%s") == std::string::npos,
+                   "REQ-060 L-4: GgufManager/020 no longer logs the raw id");
+        TEST_CHECK(mgr_src.find("policy toggled id_len=%zu") != std::string::npos,
+                   "REQ-060 L-4: GgufManager/020 logs the id length (host/004 shape-only)");
+        TEST_CHECK(worker_src.find("preload kept model resident (id='%s')") ==
+                       std::string::npos,
+                   "REQ-060 L-4: worker/028 no longer logs the raw id");
+        TEST_CHECK(worker_src.find("preload kept model resident (id_len=%zu)") !=
+                       std::string::npos,
+                   "REQ-060 L-4: worker/028 logs the id length (host/004 shape-only)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 registered-file guard checks passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 registered-file guard: "
                   << (g_failed_count - failures_before) << " check(s) failed."
                   << std::endl;
     }

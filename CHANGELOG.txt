@@ -1,6 +1,44 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.3 - 2026-10-10
+====================
+
+Patch release. The shared translation engine's worker lifecycle is now
+configurable: idle translation workers free their memory automatically,
+and you choose whether the translation model is preloaded or loaded on
+first use. Upgrading from any 0.10.x build is fully supported, and Emebala
+apps already sharing the engine (such as Listener) keep working unchanged.
+
+What's new in this build
+------------------------
+* The translation worker inside the shared engine now frees its memory
+  when idle. If no translation runs for 90 seconds (configurable via
+  engine_host.worker_idle_ms in config.json, 5 seconds to 24 hours), the
+  engine stops the worker process; your next translation respawns it
+  automatically. The engine reads the value once at startup.
+* New translation-model load mode (tray engine menu, also
+  engine_host.warmup in config.json). "Load when used" (default) keeps
+  memory free and loads the model on your first translation; "Preload"
+  holds a standing connection so the worker stays ready and the model is
+  loaded in the background, making the first translation immediate while
+  keeping the model resident in memory.
+* Translation requests now carry the model they target, so the engine
+  host can keep a per-model worker resident or evict it on its own idle
+  schedule.
+* The Model Management window now shows the residency policy of each
+  model you added ("keep resident" or "load on use") and a button to
+  switch it. A switch is remembered immediately and takes effect the next
+  time the engine host restarts (a running engine keeps the policy it
+  started with).
+* The Model Management window now has a duplicate cleanup: leftover
+  unregistered copies of the same model file are moved to the Recycle
+  Bin. The registered copy is never touched, so nothing is lost.
+* Compatibility: Emebala apps already sharing the translation engine
+  (such as Listener) continue to work exactly as before. The new
+  lifecycle options are opt-in and do not change behavior for older
+  clients.
+
 v0.10.2 - 2026-09-30
 ====================
 

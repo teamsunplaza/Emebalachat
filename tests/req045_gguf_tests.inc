@@ -321,7 +321,7 @@ void TestReq045GgufWriterRoundTrip() {
         "\"files\":[\"Hy-MT2-1.8B-Q8_0.gguf\"],"
         "\"capabilities\":[\"translate\"],\"origin\":\"bundled\","
         "\"resource\":{\"vram_mb\":4096,\"ctx\":2048,\"max_sessions\":2,"
-        "\"residency\":\"preload\",\"eviction\":\"sticky\",\"priority\":5},"
+        "\"residency\":\"ondemand\",\"eviction\":\"evict\",\"priority\":5},"
         "\"profiles\":{\"default\":{\"temperature\":0.0,\"top_p\":0.6,"
         "\"top_k\":20,\"rep_pen\":1.05,\"prompt_template_ref\":\"hymt2-official\"}},"
         "\"lang_pairs\":[\"ko-en\",\"en-ko\"]},{"
@@ -350,8 +350,8 @@ void TestReq045GgufWriterRoundTrip() {
                    "REQ-045 P4-5: resource profile survives");
         TEST_CHECK(bundled->resource.max_sessions == 2 && bundled->resource.priority == 5,
                    "REQ-045 P4-5: resource clamps-off fields survive");
-        TEST_CHECK(bundled->resource.residency == "preload" &&
-                   bundled->resource.eviction == "sticky",
+        TEST_CHECK(bundled->resource.residency == "ondemand" &&
+                   bundled->resource.eviction == "evict",
                    "REQ-045 P4-5: resource enums survive");
         const auto it = bundled->profiles.find("default");
         TEST_CHECK(it != bundled->profiles.end() && it->second.prompt_template_ref == "hymt2-official",

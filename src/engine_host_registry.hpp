@@ -65,8 +65,8 @@ struct ResourceProfile {
     int vram_mb = 0;          // clamped 0..kClampVramMbMax
     int ctx = 0;              // clamped 0..kClampCtxMax
     int max_sessions = 1;     // clamped kClampMaxSessionsMin..kClampMaxSessionsMax
-    std::string residency;    // "preload" | "ondemand" (unknown -> "ondemand")
-    std::string eviction;     // "sticky" | "evict"   (unknown -> "evict")
+    std::string residency = "ondemand";    // "preload" | "ondemand" (unknown -> "ondemand")
+    std::string eviction = "evict";        // "sticky" | "evict"   (unknown -> "evict")
     int priority = 5;         // clamped kClampPriorityMin..kClampPriorityMax
 };
 

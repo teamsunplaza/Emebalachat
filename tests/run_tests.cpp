@@ -5280,8 +5280,8 @@ void TestBatch2VersionScrollAbout() {
     const int failures_before = g_failed_count;
 
     // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
-    TEST_CHECK(kAppVersionW == L"0.10.2", "REQ-006: kAppVersionW is 0.10.2 (CMake definition or fallback)");
-    TEST_CHECK(kAppVersionA == "0.10.2", "REQ-006: ASCII version is 0.10.2");
+    TEST_CHECK(kAppVersionW == L"0.10.3", "REQ-006: kAppVersionW is 0.10.3 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.3", "REQ-006: ASCII version is 0.10.3");
     TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
 
     // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----
@@ -7305,7 +7305,7 @@ void TestR6P5P6I18n() {
     //         Render - this pins it headlessly).
     int empty_count = 0;
     TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 144x37 (REQ-UC +25, REQ-MD +9)");
+               "B3: 37 selectable locales (gate fully open) - completeness matrix is 157x37 (REQ-UC +25, REQ-MD +9, REQ-060 +13)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -13945,6 +13945,89 @@ void TestEngineHostProtocol() {
                        "{\"op\":\"translate\",\"src\":\"ko\",\"tgt\":\"en\",\"text\":\"x\"}", td),
                    "translate: missing id rejected");
 
+        // ---- REQ-060: OPTIONAL hello warmup + translate model_id (§4.3) ----
+        // Additive optional members: absent -> default, explicit value
+        // round-trips, any non-conforming spelling degrades to the default
+        // without failing the parse, and unknown fields stay ignored — so a
+        // pre-REQ-060 peer interoperates in both directions.
+        {
+            // hello warmup.
+            eh::HelloMsg hp060;
+            TEST_CHECK(eh::ParseHello(golden, hp060) && !hp060.warmup,
+                       "hello REQ-060: absent warmup keeps the default false");
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"warmup\":true}",
+                           hp060) && hp060.warmup,
+                       "hello REQ-060: explicit warmup=true parses");
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"warmup\":false}",
+                           hp060) && !hp060.warmup,
+                       "hello REQ-060: explicit warmup=false parses");
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"warmup\":\"yes\"}",
+                           hp060) && !hp060.warmup,
+                       "hello REQ-060: non-bool warmup degrades to false (no parse failure)");
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"warmup\":1}",
+                           hp060) && !hp060.warmup,
+                       "hello REQ-060: numeric warmup degrades to false");
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"warmup\":\"true\"}",
+                           hp060) && !hp060.warmup,
+                       "hello REQ-060: mistyped STRING \"true\" degrades to false "
+                       "(only the JSON true literal counts)");
+            // build: default keeps the frozen bytes (no member); true appends it.
+            eh::HelloMsg hw;
+            hw.protocol = 1;
+            hw.token = "t";
+            const std::string hwj = eh::BuildHello(hw);
+            TEST_CHECK(hwj.find("warmup") == std::string::npos,
+                       "hello REQ-060: default build omits the member (frozen bytes)");
+            hw.warmup = true;
+            const std::string hwj_warm = eh::BuildHello(hw);
+            TEST_CHECK(hwj_warm.find("\"warmup\":true") != std::string::npos,
+                       "hello REQ-060: warmup build emits the member");
+            TEST_CHECK(eh::ParseHello(hwj_warm, hp060) && hp060.warmup && hp060.token == "t",
+                       "hello REQ-060: warmup build/parse roundtrip");
+            // unknown-field-ignore holds alongside the new member.
+            TEST_CHECK(eh::ParseHello(
+                           "{\"op\":\"hello\",\"protocol\":1,\"token\":\"t\",\"future_field\":42}",
+                           hp060) && !hp060.warmup,
+                       "hello REQ-060: unknown fields stay ignored (§4.3)");
+
+            // translate model_id.
+            TEST_CHECK(eh::ParseTranslate(
+                           "{\"op\":\"translate\",\"id\":7,\"src\":\"ko\",\"tgt\":\"en\",\"text\":\"x\"}",
+                           td) && td.model_id.empty(),
+                       "translate REQ-060: absent model_id keeps the default empty");
+            TEST_CHECK(eh::ParseTranslate(
+                           "{\"op\":\"translate\",\"id\":7,\"src\":\"ko\",\"tgt\":\"en\","
+                           "\"text\":\"x\",\"model_id\":\"user-llama3\"}",
+                           td) && td.model_id == "user-llama3",
+                       "translate REQ-060: explicit model_id parses");
+            TEST_CHECK(eh::ParseTranslate(
+                           "{\"op\":\"translate\",\"id\":7,\"src\":\"ko\",\"tgt\":\"en\","
+                           "\"text\":\"x\",\"model_id\":42}",
+                           td) && td.model_id.empty(),
+                       "translate REQ-060: wrong-typed model_id keeps the default (no failure)");
+            eh::TranslateMsg tm;
+            tm.id = 7;
+            tm.src = "ko";
+            tm.tgt = "en";
+            tm.text = "x";
+            const std::string tmj = eh::BuildTranslate(tm);
+            TEST_CHECK(tmj.find("model_id") == std::string::npos,
+                       "translate REQ-060: default build omits the member (frozen bytes)");
+            tm.model_id = "user-llama3";
+            const std::string tmj_id = eh::BuildTranslate(tm);
+            TEST_CHECK(tmj_id.find("\"model_id\":\"user-llama3\"") != std::string::npos,
+                       "translate REQ-060: model_id build emits the member");
+            eh::TranslateMsg tmpr;
+            TEST_CHECK(eh::ParseTranslate(tmj_id, tmpr) && tmpr.model_id == "user-llama3" &&
+                           tmpr.id == 7,
+                       "translate REQ-060: model_id build/parse roundtrip");
+        }
+
         const eh::HostStatus all_status[] = {
             eh::HostStatus::Ok,           eh::HostStatus::EngineFailed,
             eh::HostStatus::ModelMissing, eh::HostStatus::Timeout,
@@ -14035,6 +14118,10 @@ void TestEngineHostConfig() {
         TEST_CHECK(cfg.engine_host.spawn == true, "engine_host: default spawn=true");
         TEST_CHECK(cfg.engine_host.idle_exit_ms == 600000,
                    "engine_host: default idle_exit_ms=600000");
+        TEST_CHECK(cfg.engine_host.worker_idle_ms == 90000,
+                   "engine_host: default worker_idle_ms=90000 (REQ-060)");
+        TEST_CHECK(cfg.engine_host.warmup == false,
+                   "engine_host: default warmup=false (REQ-060)");
     }
 
     // Parse a nested block (new key on an old config keeps every other value).
@@ -14096,6 +14183,73 @@ void TestEngineHostConfig() {
                    "engine_host: default value round trips");
     }
 
+    // REQ-060: worker_idle_ms + warmup — explicit parse + always-serialized
+    // round trip (same sticky-key policy as the other engine_host keys).
+    {
+        AppConfig cfg;
+        const bool ok = cfg.FromJsonString(
+            "{\n"
+            "  \"engine_host\": {\n"
+            "    \"enabled\": true,\n"
+            "    \"spawn\": true,\n"
+            "    \"idle_exit_ms\": 600000,\n"
+            "    \"worker_idle_ms\": 123456,\n"
+            "    \"warmup\": true\n"
+            "  }\n"
+            "}");
+        TEST_CHECK(ok, "engine_host: REQ-060 keys parse");
+        TEST_CHECK(cfg.engine_host.worker_idle_ms == 123456,
+                   "engine_host: worker_idle_ms=123456 parsed");
+        TEST_CHECK(cfg.engine_host.warmup, "engine_host: warmup=true parsed");
+    }
+    {
+        AppConfig cfg;
+        cfg.engine_host.worker_idle_ms = 42420; // in-range: the parse floor is 5000
+        cfg.engine_host.warmup = true;
+        const std::string json = cfg.ToJsonString();
+        TEST_CHECK(json.find("\"worker_idle_ms\": 42420") != std::string::npos &&
+                       json.find("\"warmup\": true") != std::string::npos,
+                   "engine_host: REQ-060 keys always serialized (sticky policy)");
+        AppConfig back;
+        TEST_CHECK(back.FromJsonString(json), "engine_host: serialized REQ-060 config parses");
+        TEST_CHECK(back.engine_host.worker_idle_ms == 42420 && back.engine_host.warmup,
+                   "engine_host: REQ-060 round trip preserves values");
+    }
+    // worker_idle_ms policy: 0/negative -> 90000 default, <5000 -> 5000 floor,
+    // >24h -> 86400000 ceiling, garbage -> 90000 (ParseEngineHostBlock).
+    {
+        auto parse_widle = [](const char* block_json) {
+            AppConfig cfg;
+            const std::string full = std::string("{\"engine_host\":") + block_json + "}";
+            cfg.FromJsonString(full);
+            return cfg.engine_host.worker_idle_ms;
+        };
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": 0}") == 90000,
+                   "engine_host: worker_idle_ms=0 restores the default policy");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": -5}") == 90000,
+                   "engine_host: negative worker_idle_ms restores the default");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": 3000}") == 5000,
+                   "engine_host: worker_idle_ms below the 5s floor clamps up");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": 99999999999}") == 86400000,
+                   "engine_host: worker_idle_ms clamps at the 24h ceiling");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": abc}") == 90000,
+                   "engine_host: unparseable worker_idle_ms resets to default");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": 60000}") == 60000,
+                   "engine_host: in-range worker_idle_ms kept verbatim");
+        TEST_CHECK(parse_widle("{\"worker_idle_ms\": 90000}") == 90000,
+                   "engine_host: default value round trips");
+    }
+    // warmup strict true-only; any non-"true" token (incl. 1) is false.
+    {
+        AppConfig cfg;
+        cfg.FromJsonString("{\"engine_host\":{\"warmup\": 1}}");
+        TEST_CHECK(!cfg.engine_host.warmup,
+                   "engine_host: warmup=1 -> false (strict true-only, REQ-060)");
+        AppConfig cfg_true;
+        cfg_true.FromJsonString("{\"engine_host\":{\"warmup\": true}}");
+        TEST_CHECK(cfg_true.engine_host.warmup, "engine_host: warmup=true parsed (REQ-060)");
+    }
+
     // Bool parsing uses the (v == "true") convention; any other token is false.
     {
         AppConfig cfg;
@@ -14110,7 +14264,8 @@ void TestEngineHostConfig() {
         TEST_CHECK(cfg.FromJsonString("{\"engine_type\": \"auto\"}"),
                    "engine_host: legacy config parses");
         TEST_CHECK(cfg.engine_host.enabled && cfg.engine_host.spawn &&
-                       cfg.engine_host.idle_exit_ms == 600000,
+                       cfg.engine_host.idle_exit_ms == 600000 &&
+                       cfg.engine_host.worker_idle_ms == 90000 && !cfg.engine_host.warmup,
                    "engine_host: absent block keeps defaults");
     }
 
@@ -14128,6 +14283,69 @@ void TestEngineHostConfig() {
         std::cout << "[PASS] engine_host config tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] engine_host config tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-060 (engine-idle-eviction-warmup): the local seam's model_id policy.
+// The pure resolver is pinned at its three boundaries (user_gguf / bundled /
+// empty-id); the source pins below keep the consumers wired end to end (the
+// wire-level emission is pinned by the REQ-060 fake-host scenarios inside
+// TestEngineHostClient, and the frame build/parse round trip by
+// TestEngineHostProtocol — no duplication of those).
+void TestLocalRequestModelIdPolicy() {
+    std::cout << "[RUN] Testing REQ-060 local-seam model_id policy..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // The three pinned boundaries of ResolveLocalRequestModelId.
+    TEST_CHECK(ResolveLocalRequestModelId(true, "user-llama3", "hy-mt2-1.8b-q8") ==
+                   "user-llama3",
+               "REQ-060: user_gguf route + non-empty pin -> the user id");
+    TEST_CHECK(ResolveLocalRequestModelId(true, "", "hy-mt2-1.8b-q8").empty(),
+               "REQ-060: user_gguf route + empty pin -> \"\" (frame omits model_id; "
+               "the host answers model_missing)");
+    TEST_CHECK(ResolveLocalRequestModelId(false, "stale-user-id", "hy-mt2-1.8b-q8") ==
+                   "hy-mt2-1.8b-q8",
+               "REQ-060: non-user route -> the bundled id (stale user id ignored, C1)");
+    TEST_CHECK(ResolveLocalRequestModelId(false, "", "hy-mt2-1.8b-q8") == "hy-mt2-1.8b-q8",
+               "REQ-060: non-user route without a user id -> the bundled id");
+    TEST_CHECK(ResolveLocalRequestModelId(false, "", "").empty(),
+               "REQ-060: no bundled entry -> \"\" (frame stays unpinned)");
+
+    // Source pins: resolver defined in engine.hpp; engine.cpp pins requests
+    // and drives the warmup manager; the client emits both optional members.
+    auto read_source = [](const std::wstring& rel) {
+        const std::filesystem::path p = ResolveRepoFile(rel);
+        if (p.empty()) return std::string();
+        std::ifstream in(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    };
+    const std::string engine_hpp = read_source(L"src\\engine.hpp");
+    const std::string engine_cpp = read_source(L"src\\engine.cpp");
+    const std::string client_cpp = read_source(L"src\\engine_host_client.cpp");
+    if (engine_hpp.empty() || engine_cpp.empty() || client_cpp.empty()) {
+        std::cout << "[SKIP] REQ-060 source pins skipped (repo files not resolvable)."
+                  << std::endl;
+    } else {
+        TEST_CHECK(engine_hpp.find("ResolveLocalRequestModelId") != std::string::npos,
+                   "REQ-060 pin: the shared resolver is defined in engine.hpp");
+        TEST_CHECK(engine_cpp.find("ResolveLocalRequestModelId") != std::string::npos &&
+                       engine_cpp.find("LocalSeamRequestModelId") != std::string::npos,
+                   "REQ-060 pin: engine.cpp resolves the request pin through the shared resolver");
+        TEST_CHECK(engine_cpp.find("WarmupSetState(engine_host_config_") != std::string::npos &&
+                       engine_cpp.find("WarmupShutdown()") != std::string::npos,
+                   "REQ-060 pin: engine.cpp drives the warmup manager (refresh + teardown)");
+        TEST_CHECK(client_cpp.find(",\\\"model_id\\\":\\\"") != std::string::npos,
+                   "REQ-060 pin: the client emits the optional model_id member");
+        TEST_CHECK(client_cpp.find("\\\"warmup\\\":true") != std::string::npos,
+                   "REQ-060 pin: the warmup hello carries the warmup flag");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 local-seam model_id policy checks passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 local-seam model_id policy: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
@@ -14184,6 +14402,10 @@ public:
     bool served() const { return served_; }
     bool hello_seen() const { return hello_seen_; }
     int results_sent() const { return results_sent_; }
+    // REQ-060: the model_id member of the LAST translate frame the host
+    // parsed ("" when the client omitted the member) — the wire-level
+    // observation point for the optional request pin.
+    std::string last_translate_model_id() const { return last_translate_model_id_; }
 
 private:
     bool ReadFrame(std::string& json) {
@@ -14261,6 +14483,7 @@ private:
             if (op->text == "translate") {
                 emebalachat::enginehost::TranslateMsg m;
                 if (!emebalachat::enginehost::ParseTranslate(frame, m)) return;
+                last_translate_model_id_ = m.model_id; // REQ-060: wire observation
                 emebalachat::enginehost::HostStatus st =
                     emebalachat::enginehost::HostStatus::EngineFailed;
                 if (!emebalachat::enginehost::StatusFromString(translate_status_, st)) return;
@@ -14291,6 +14514,7 @@ private:
     bool served_ = false;
     bool hello_seen_ = false;
     int results_sent_ = 0;
+    std::string last_translate_model_id_; // REQ-060: last parsed translate model_id
 };
 
 std::wstring TestPipeName(int n) {
@@ -14364,6 +14588,45 @@ void TestEngineHostClient() {
         TEST_CHECK(host.served(), "client: fake host pipe created (served)");
         TEST_CHECK(host.hello_seen(), "client: hello reached the host");
         TEST_CHECK(host.results_sent() == 1, "client: exactly one result requested");
+    }
+
+    // REQ-060: the model_id-pinned overload (8-arg) puts the pin on the wire;
+    // the legacy 6-arg form must keep the pre-REQ-060 byte shape (member
+    // omitted). Wire observation via the fake host's parsed translate frame.
+    {
+        OverrideGuard ov(30, self_exe);
+        WriteTestToken(TestTokenPath(30));
+        FakeHost host(TestPipeName(30), 0, kGoodPin, "", "ok", "pinned-ok", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err, served;
+        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "text",
+                                          std::string("user-llama3"),
+                                          out, err, served);
+        TEST_CHECK(ok, "client REQ-060: pinned translate succeeds (err='" + err + "')");
+        TEST_CHECK(out == "pinned-ok", "client REQ-060: pinned translation text delivered");
+        TEST_CHECK(host.last_translate_model_id() == "user-llama3",
+                   "client REQ-060: model_id reaches the host on the wire");
+        ov.reset();
+        finish(host, t);
+    }
+    {
+        OverrideGuard ov(31, self_exe);
+        WriteTestToken(TestTokenPath(31));
+        FakeHost host(TestPipeName(31), 0, kGoodPin, "", "ok", "unpinned-ok", false);
+        std::thread t = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "text", out, err);
+        TEST_CHECK(ok, "client REQ-060: legacy unpinned translate succeeds");
+        TEST_CHECK(host.last_translate_model_id().empty(),
+                   "client REQ-060: legacy form omits model_id (frozen pre-REQ-060 shape)");
+        ov.reset();
+        finish(host, t);
     }
 
     // §5.4 row 3: pin mismatch -> false + one shape-only line + fallback.
@@ -14944,8 +15207,8 @@ struct Req044LstrMirror {
     // 1 OpenAI settings [삭제] caption (109 -> 110); REQ-UC (260930_0004,
     // update-checker design §12): the 25-string About update zone block
     // (110 -> 135); REQ-MD (D9): the 9-string model-download dialog
-    // (135 -> 144).
-    const wchar_t* f[144];
+    // (135 -> 144 -> 157).
+    const wchar_t* f[157];
 };
 
 } // namespace
@@ -14958,9 +15221,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 144
-    static_assert(kExpectedFieldCount == 144,
-                   "REQ-044/045/047/048/050/051/UC/MD: LocalizedStrings field count changed - update the "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 157
+    static_assert(kExpectedFieldCount == 157,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060: LocalizedStrings field count changed - update the "
                    "i18n.cpp X-macro list, the 37 language tables, "
                    "AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -14969,11 +15232,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 144,
-                "REQ-044/045/047/048/050/051/UC/MD: LocalizedStrings field count is 144 (X-macro static_assert "
+    TEST_CHECK(observed_field_count == 157,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060: LocalizedStrings field count is 157 (X-macro static_assert "
                 "in i18n.cpp is the primary guard; this is the runtime record)");
-    TEST_CHECK(observed_enum_count == 144,
-                "REQ-044/045/047/048/050/051/UC/MD: StringId::EnumCount is 144 (struct fields == switch cases)");
+    TEST_CHECK(observed_enum_count == 157,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060: StringId::EnumCount is 157 (struct fields == switch cases)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -15182,6 +15445,575 @@ void TestReq046HostUserModelIdGate() {
         std::cout << "[PASS] REQ-046 P4-2 host user_model_id C1 gate passed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-046 P4-2 host user_model_id C1 gate: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-060 F-09 fix (session 261009_0001, fix-policy-precedence round): the
+// pin-resolution precedence is HOST-side logic inside host_main.cpp's
+// anonymous namespace (that TU is the EmebalaEngine exe, NOT linked into
+// run_tests), so the three-layer contract — client policy model_id (REQ-CP T3)
+// > explicit per-request id (v1 wire member / v2 session model) > the
+// identity-gated relay fallback — is pinned here as SOURCE pins, exactly like
+// the req055/req058 host_main.cpp pins. The pure policy MERGE layer
+// (MergeForRequest, request-wins) is a different function with its own suite
+// and is intentionally NOT covered here.
+void TestReq060PinPrecedence() {
+    std::cout << "[TEST] REQ-060 F-09 pin precedence source pins..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    const std::filesystem::path host_main = ResolveRepoFile(L"src\\host_main.cpp");
+    if (host_main.empty()) {
+        std::cout << "[SKIP] src/host_main.cpp not resolvable; REQ-060 F-09 pins skipped."
+                  << std::endl;
+    } else {
+        std::ifstream in(host_main, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+
+        // (1) The single resolver exists; inside its body the policy check
+        //     PRECEDES the explicit-id check, which precedes the relay fallback.
+        const size_t helper_pos = src.find("ResolveTranslatePin(const std::string& client");
+        TEST_CHECK(helper_pos != std::string::npos,
+                   "REQ-060 F-09: ResolveTranslatePin exists in host_main.cpp");
+        if (helper_pos != std::string::npos) {
+            const size_t helper_end = src.find("\n}\n", helper_pos);
+            const std::string body = src.substr(
+                helper_pos, helper_end == std::string::npos ? std::string::npos
+                                                            : helper_end - helper_pos);
+            const size_t policy_pos = body.find("!policy.model_id.empty()");
+            const size_t explicit_pos = body.find("!explicit_model_id.empty()");
+            const size_t fallback_pos = body.find("return RelayPinForClient(client)");
+            TEST_CHECK(policy_pos != std::string::npos &&
+                           explicit_pos != std::string::npos &&
+                           fallback_pos != std::string::npos,
+                       "REQ-060 F-09: resolver body carries all three layers");
+            TEST_CHECK(policy_pos < explicit_pos && explicit_pos < fallback_pos,
+                       "REQ-060 F-09: order is policy > explicit > relay fallback");
+            TEST_CHECK(body.find("LoadClientPolicyLive(client") != std::string::npos,
+                       "REQ-060 F-09: the policy layer rides the T2 live reader");
+        }
+
+        // (2) Every translate path resolves through the helper (no dispatcher
+        //     re-implements the ternary).
+        const size_t v1_pos = src.find("void DispatcherLoop(host_v2::WorkerManager& wmgr)");
+        const size_t v2_pos = src.find("void DispatcherV2Loop(host_v2::WorkerManager& wmgr)");
+        TEST_CHECK(v1_pos != std::string::npos && v2_pos != std::string::npos,
+                   "REQ-060 F-09: both dispatcher loops located for the call-site pins");
+        if (v1_pos != std::string::npos) {
+            const std::string v1_region = src.substr(
+                v1_pos, v2_pos == std::string::npos ? std::string::npos : v2_pos - v1_pos);
+            TEST_CHECK(v1_region.find("ResolveTranslatePin(job.client, job.model_id)") !=
+                           std::string::npos,
+                       "REQ-060 F-09: the v1 dispatcher resolves via the helper");
+            TEST_CHECK(v1_region.find("job.model_id.empty() ? RelayPinForClient") ==
+                           std::string::npos,
+                       "REQ-060 F-09: the v1 loop has no leftover explicit-first ternary");
+        }
+        if (v2_pos != std::string::npos) {
+            TEST_CHECK(src.find("ResolveTranslatePin(item.client, explicit_model_id)",
+                                v2_pos) != std::string::npos,
+                       "REQ-060 F-09: the v2 dispatcher resolves via the helper "
+                       "(session model as the explicit id)");
+        }
+        TEST_CHECK(src.find("ResolveTranslatePin(hello.client, \"\")") != std::string::npos,
+                   "REQ-060 F-09: the warmup registration resolves the hold family "
+                   "through the helper (relay fallback layer)");
+        TEST_CHECK(src.find("ResolveTranslatePin(conn.client, msg.model_id)") !=
+                       std::string::npos,
+                   "REQ-060 F-09: the v1 fast-path probe resolves via the helper, "
+                   "so the probe verdict and the served model cannot diverge");
+
+        // (3) Global negative pin: the F-09 violation shape (explicit id tested
+        //     before the policy) must not survive anywhere in the file.
+        TEST_CHECK(src.find("model_id.empty() ? RelayPinForClient") == std::string::npos,
+                   "REQ-060 F-09: no explicit-first pin ternary remains in host_main.cpp");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 F-09 pin precedence pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 F-09 pin precedence: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-060 (session 261009_0001): the HOST-side boot read of
+// engine_host.worker_idle_ms. The host reads the SAME nested block the app's
+// config.cpp ParseEngineHostBlock writes; the clamp discipline must match the
+// client parser exactly (<=0 -> 90000, <5000 -> 5000, >86400000 -> 86400000,
+// absent / wrong-typed / unparseable -> 90000).
+void TestReq060HostBootWorkerIdleMs() {
+    std::cout << "[TEST] REQ-060 host boot worker_idle_ms parse/clamp..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto fixture_fail = [&]() {
+        TEST_CHECK(false, "REQ-060 fixture: temp config directory unavailable");
+    };
+    const fs::path root = fs::temp_directory_path(ec) / L"emebala_req060_idle_test";
+    if (ec) { fixture_fail(); return; }
+    fs::remove_all(root, ec); // clean slate (also clears stale leftovers)
+    ec.clear();
+    fs::create_directories(root / L"Emebalachat", ec);
+    if (ec) { fixture_fail(); return; }
+    const std::wstring lad = root.wstring();
+
+    auto write_config = [&](const std::string& body) {
+        std::ofstream out(root / L"Emebalachat" / L"config.json",
+                          std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) { fixture_fail(); return false; }
+        out << body;
+        out.close();
+        if (!out) { fixture_fail(); return false; }
+        return true;
+    };
+
+    // Absent engine_host block -> the 90000 default.
+    write_config("{\"engine_type\": \"local\"}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: absent engine_host block -> 90000");
+
+    // In-range value kept verbatim.
+    write_config("{\"engine_host\": {\"worker_idle_ms\": 30000}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 30000,
+               "REQ-060: in-range worker_idle_ms kept (30000)");
+
+    // 0 / negative -> the 90000 default policy.
+    write_config("{\"engine_host\": {\"worker_idle_ms\": 0}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: worker_idle_ms 0 -> 90000");
+    write_config("{\"engine_host\": {\"worker_idle_ms\": -5}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: worker_idle_ms negative -> 90000");
+
+    // Below the 5 s floor -> clamped up.
+    write_config("{\"engine_host\": {\"worker_idle_ms\": 3000}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 5000,
+               "REQ-060: worker_idle_ms 3000 -> 5000 (floor)");
+
+    // Above the 24 h ceiling -> clamped down.
+    write_config("{\"engine_host\": {\"worker_idle_ms\": 99999999999}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 86400000,
+               "REQ-060: worker_idle_ms 99999999999 -> 86400000 (ceiling)");
+
+    // Wrong-typed (string) / unparseable literal -> the default.
+    write_config("{\"engine_host\": {\"worker_idle_ms\": \"30000\"}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: string-typed worker_idle_ms -> 90000");
+    write_config("{\"engine_host\": {\"worker_idle_ms\": abc}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: unparseable worker_idle_ms -> 90000");
+
+    // Absent key inside the block -> the default; the sibling keys the app
+    // writes must not disturb the read.
+    write_config("{\"engine_host\": {\"enabled\": true, \"spawn\": true, "
+                 "\"idle_exit_ms\": 600000, \"warmup\": false}}");
+    TEST_CHECK(enginehost::LoadHostBootConfig(lad).worker_idle_ms == 90000,
+               "REQ-060: block present, key absent -> 90000");
+
+    // Regression guard: the pre-REQ-060 HostBootConfig fields keep parsing
+    // alongside the new key (one parse feeds all three).
+    write_config("{\"engine_type\": \"user_gguf\", \"user_model_id\": \"user-060\", "
+                 "\"diag_log_enabled\": true, "
+                 "\"engine_host\": {\"worker_idle_ms\": 45000}}");
+    {
+        const enginehost::HostBootConfig cfg = enginehost::LoadHostBootConfig(lad);
+        TEST_CHECK(cfg.worker_idle_ms == 45000 && cfg.diag_log_enabled &&
+                       cfg.user_model_id == "user-060",
+                   "REQ-060: worker_idle_ms + diag_log_enabled + user_model_id read in ONE parse");
+    }
+
+    fs::remove_all(root, ec);
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 host boot worker_idle_ms parse/clamp passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 host boot worker_idle_ms parse/clamp: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// REQ-060 (session 261009_0001, host-fix round per dispute-verification
+// 261009_0001): the orchestrator-side idle eviction + warmup hold pins. The
+// eviction drives the GENUINE reaper path (worker-thread connect+announce
+// reaches Ready through FakeHandshakeSpawn, exactly like the B-T3 tracker
+// pins): Ready + idle-past-budget + policy "evict" + no warmup hold -> the
+// pass claims the family (Stopping -> M-2 GracefulStop -> Stopped) and resets
+// the pool entry's accounting. The pool NODE survives the eviction (the UAF
+// fix: it is never erased at runtime — dispatchers hold its pointer across a
+// whole job). The fake process handle is a live event (never signaled), so
+// each real eviction costs one GracefulStop kill-escalation window (~2 s) —
+// the suite plans its evictions accordingly.
+void TestReq060WorkerIdleEviction() {
+    std::cout << "[RUN] Testing REQ-060 worker idle eviction + warmup holds..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace hv2 = emebalachat::host_v2;
+    namespace detail = translate_pool_test_detail;
+
+    const wchar_t* kTranslateFamily = L"ggml-translate";
+    const unsigned long long kMiB = 1024ull * 1024;
+    wchar_t self[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self, MAX_PATH); // a guaranteed-present exe path
+    auto test_now_ms = []() -> int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+
+    // ---- 1. Ready + idle + "evict" -> GracefulStop + accounting reset -------
+    //         (the pool node survives)
+    {
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "evict: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+        mgr.SetWorkerIdleMs(5000);
+
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "evict: spawn reached Ready (real connect+announce)");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "evict: tracker charged after Ready");
+        hv2::TranslatePoolEntry* e = mgr.TranslatePoolEnsure("");
+        TEST_CHECK(e != nullptr && e->eviction_policy == "evict",
+                   "evict: no resolver -> the default policy is \"evict\"");
+        TEST_CHECK(mgr.WorkerIdleMs() == 5000, "evict: the idle budget setter round-trips");
+
+        const int64_t t0 = mgr.Find(kTranslateFamily)->last_activity_ms;
+        // Boundary: idle age == budget is NOT past the budget (strictly
+        // greater evicts) — the family must survive its exact budget.
+        TEST_CHECK(mgr.ReaperPass(t0 + 5000) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Ready,
+                   "evict: idle age == budget survives (not past the budget)");
+        // Past the budget: one pass claims, stops and resets the accounting.
+        TEST_CHECK(mgr.ReaperPass(t0 + 5001) == 0, "evict: eviction is not a crash");
+        TEST_CHECK(mgr.State(kTranslateFamily) == hv2::WorkerState::Stopped,
+                   "evict: Ready + idle + evict -> the family is GracefulStopped");
+        // REQ-060 UAF fix: the pool node SURVIVES the eviction (never erased at
+        // runtime) — a TranslatePoolEntry* taken before the eviction (a
+        // dispatcher holds it across a whole job) stays valid, accounting 0.
+        TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                   "evict: the pool entry SURVIVES the eviction (map node never erased)");
+        TEST_CHECK(e != nullptr && e->reserved_vram_bytes == 0,
+                   "evict: the pre-eviction entry pointer stays valid; its accounting is reset");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 0,
+                   "evict: the reserved-VRAM contribution is restored exactly");
+        // A later request reuses the SAME node (accounting was reset, not
+        // erased; the Ready-charge site re-charges when the family respawns).
+        hv2::TranslatePoolEntry* e2 = mgr.TranslatePoolEnsure("");
+        TEST_CHECK(e2 == e && e2->reserved_vram_bytes == 0 && mgr.TranslatePoolSize() == 1,
+                   "evict: re-ensure reuses the SAME entry node (reset, not re-registration)");
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- 2. Busy families are never evicted; the release refreshes the clock
+    {
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "busy: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+        mgr.SetWorkerIdleMs(5000);
+
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "busy: spawn reached Ready");
+        const int64_t t0 = mgr.Find(kTranslateFamily)->last_activity_ms;
+        TEST_CHECK(mgr.TrySetBusy(kTranslateFamily), "busy: single-flight acquire");
+        TEST_CHECK(mgr.ReaperPass(t0 + 60000) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Busy,
+                   "busy: a Busy family is NOT evicted on a far-future pass");
+        TEST_CHECK(mgr.TranslatePoolSize() == 1 && mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "busy: the pool entry + tracker stay intact while Busy");
+        mgr.SetBusy(kTranslateFamily, false);
+        const int64_t t1 = mgr.Find(kTranslateFamily)->last_activity_ms;
+        TEST_CHECK(t1 >= t0, "busy: job completion refreshed the idle clock");
+        TEST_CHECK(mgr.ReaperPass(t1 + 5001) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Stopped,
+                   "busy: once released, the next idle pass evicts normally");
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- 3. "sticky" policy: the reaper never evicts a resident entry -----
+    {
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "sticky: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.SetEvictionPolicyResolver([](const std::string& id) {
+            return id == "zz-sticky" ? std::string("sticky") : std::string("evict");
+        });
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+        mgr.SetWorkerIdleMs(5000);
+
+        hv2::TranslatePoolEntry* boot = mgr.TranslatePoolEnsure("");
+        TEST_CHECK(boot != nullptr && boot->eviction_policy == "evict",
+                   "sticky: the boot \"\" entry resolves \"evict\" through the resolver");
+        hv2::TranslatePoolEntry* s = mgr.TranslatePoolEnsure("zz-sticky");
+        TEST_CHECK(s != nullptr && s->eviction_policy == "sticky",
+                   "sticky: the resolver's \"sticky\" spelling is stored verbatim");
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(s->family);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "sticky: spawn reached Ready");
+        const int64_t t0 = mgr.Find(s->family)->last_activity_ms;
+        TEST_CHECK(mgr.ReaperPass(t0 + 60000) == 0 &&
+                       mgr.State(s->family) == hv2::WorkerState::Ready,
+                   "sticky: a far-future pass leaves the sticky family Ready");
+        TEST_CHECK(mgr.TranslatePoolSize() == 2,
+                   "sticky: both pool entries survive (nothing removed)");
+        mgr.GracefulStop(*w, 2000); // direct release (the entry itself stays)
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- 4. Warmup holds skip ONLY their family; the last release resets the
+    //         family's idle clock ---------------------------------------------
+    {
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "warmup: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+        mgr.SetWorkerIdleMs(5000);
+
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(kTranslateFamily);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "warmup: spawn reached Ready");
+        const int64_t t0 = mgr.Find(kTranslateFamily)->last_activity_ms;
+
+        mgr.RegisterWarmupConnection(kTranslateFamily);
+        TEST_CHECK(mgr.WarmupConnectionCount(kTranslateFamily) == 1,
+                   "warmup: the hold is tracked");
+        TEST_CHECK(mgr.ReaperPass(t0 + 60000) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Ready,
+                   "warmup: a warm-held family is NOT evicted on a far-future pass");
+        mgr.RegisterWarmupConnection(kTranslateFamily); // a stacked hold
+        TEST_CHECK(mgr.WarmupConnectionCount(kTranslateFamily) == 2 &&
+                       mgr.ReaperPass(t0 + 120000) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Ready,
+                   "warmup: stacked holds keep the family alive");
+
+        // The LAST release resets the idle clock: the pre-warmup idle age
+        // must not instant-evict the family.
+        mgr.UnregisterWarmupConnection(kTranslateFamily);
+        TEST_CHECK(mgr.WarmupConnectionCount(kTranslateFamily) == 1,
+                   "warmup: one hold remains after the first release");
+        const int64_t before_last_release = test_now_ms();
+        mgr.UnregisterWarmupConnection(kTranslateFamily);
+        TEST_CHECK(mgr.WarmupConnectionCount(kTranslateFamily) == 0,
+                   "warmup: the count floors at zero");
+        const int64_t t1 = mgr.Find(kTranslateFamily)->last_activity_ms;
+        TEST_CHECK(t1 >= before_last_release,
+                   "warmup: the last release RESET the family's idle clock");
+        TEST_CHECK(mgr.ReaperPass(t1 + 5000) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Ready,
+                   "warmup: the fresh window survives (age == budget)");
+        TEST_CHECK(mgr.ReaperPass(t1 + 5001) == 0 &&
+                       mgr.State(kTranslateFamily) == hv2::WorkerState::Stopped,
+                   "warmup: past the fresh window the family evicts normally");
+        // An unbalanced release is a harmless no-op (no count, no crash).
+        mgr.UnregisterWarmupConnection(kTranslateFamily);
+        TEST_CHECK(mgr.WarmupConnectionCount(kTranslateFamily) == 0,
+                   "warmup: an unbalanced release is a no-op");
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- 5. ResetTranslatePoolAccounting: the direct API semantics ----------
+    // (replaces the removed RemoveTranslatePoolEntry: the UAF fix keeps the
+    // map node alive and only resets the entry's accounting)
+    {
+        detail::FakeHandshakeCtx ctx;
+        ctx.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(ctx.exit_ev != nullptr, "reset: exit event created");
+        hv2::WorkerManager mgr(&detail::FakeHandshakeSpawn, [](HANDLE, void*) {}, &ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+
+        TEST_CHECK(!mgr.ResetTranslatePoolAccounting("no-such-id"),
+                   "reset: an unknown model_id answers false");
+        hv2::TranslatePoolEntry* e = mgr.TranslatePoolEnsure("zz-rem");
+        TEST_CHECK(e != nullptr, "reset: the entry exists");
+        hv2::WorkerHandle* w = mgr.EnsureSpawned(e->family);
+        if (ctx.hs_thread.joinable()) ctx.hs_thread.join();
+        TEST_CHECK(w != nullptr && w->state == hv2::WorkerState::Ready,
+                   "reset: spawn reached Ready (the entry is charged)");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "reset: the tracker holds the entry's contribution");
+        mgr.TranslatePoolMarkRelayed("zz-rem", reinterpret_cast<HANDLE>(1));
+        TEST_CHECK(mgr.ResetTranslatePoolAccounting("zz-rem"),
+                   "reset: an existing entry is reset");
+        TEST_CHECK(mgr.TranslatePoolSize() == 2,
+                   "reset: the entry SURVIVES (boot + zz-rem; nothing erased)");
+        TEST_CHECK(e != nullptr && e->reserved_vram_bytes == 0 &&
+                       mgr.TranslatePoolReservedVramBytes() == 0,
+                   "reset: the exact reserved-VRAM contribution is restored");
+        TEST_CHECK(e->relayed_model_id.empty() && e->relayed_worker_process == nullptr,
+                   "reset: the relay snapshot is cleared (re-relay on the next job)");
+        // The pre-reset pointer stays usable — the exact class the runtime
+        // erase violated (the cleared snapshot makes the next job re-relay).
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("zz-rem", reinterpret_cast<HANDLE>(1)),
+                   "reset: the cleared snapshot makes the next job re-relay");
+        TEST_CHECK(mgr.ResetTranslatePoolAccounting("zz-rem"),
+                   "reset: a second reset is a harmless true no-op (the entry persists)");
+        ::CloseHandle(ctx.exit_ev);
+    }
+
+    // ---- 6. Bundled-id normalization (deepseek F-07): an explicit bundled
+    //         id and the legacy "" pin share ONE pool entry/family ----------
+    {
+        hv2::WorkerManager mgr([](const hv2::SpawnRequest&, void*) { return hv2::SpawnResult{}; },
+                               [](HANDLE, void*) {}, nullptr);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetBundledModelIdResolver([] { return std::string("hy-mt2-1.8b-q8"); });
+        hv2::TranslatePoolEntry* legacy = mgr.TranslatePoolEnsure("");
+        hv2::TranslatePoolEntry* bundled = mgr.TranslatePoolEnsure("hy-mt2-1.8b-q8");
+        TEST_CHECK(legacy != nullptr && bundled == legacy,
+                   "bundled: the explicit bundled id normalizes onto the \"\" entry");
+        TEST_CHECK(bundled != nullptr && bundled->family == std::wstring(kTranslateFamily),
+                   "bundled: the normalized entry serves the bare ggml-translate family");
+        TEST_CHECK(mgr.TranslatePoolSize() == 1,
+                   "bundled: one entry total (no second family for the same model)");
+        // REQ-060 (re-review P2): the relay snapshot resolves the SAME
+        // normalized "" entry — the default path (raw bundled id every job)
+        // must settle after the first relay instead of find()-missing per job.
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("hy-mt2-1.8b-q8", reinterpret_cast<HANDLE>(1)),
+                   "bundled relay: the untouched snapshot still needs the first relay");
+        mgr.TranslatePoolMarkRelayed("hy-mt2-1.8b-q8", reinterpret_cast<HANDLE>(1));
+        TEST_CHECK(legacy != nullptr && legacy->relayed_model_id == "hy-mt2-1.8b-q8" &&
+                       legacy->relayed_worker_process == reinterpret_cast<HANDLE>(1),
+                   "bundled relay: MarkRelayed lands on the shared \"\" entry, storing the RAW id");
+        TEST_CHECK(!mgr.TranslatePoolNeedsRelay("hy-mt2-1.8b-q8", reinterpret_cast<HANDLE>(1)),
+                   "bundled relay: the settled snapshot matches on the raw bundled id (no per-job relay)");
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("hy-mt2-1.8b-q8", reinterpret_cast<HANDLE>(2)),
+                   "bundled relay: a changed worker process still forces the re-relay (REQ-058)");
+        // The id comparison stays RAW by design: a "" pin after a bundled-id
+        // relay still reads as a change (redundant but idempotent re-relay).
+        mgr.TranslatePoolMarkRelayed("", reinterpret_cast<HANDLE>(1));
+        TEST_CHECK(mgr.TranslatePoolNeedsRelay("hy-mt2-1.8b-q8", reinterpret_cast<HANDLE>(1)),
+                   "bundled relay: raw '' vs the recorded bundled id still compares as a change");
+        // A resolver that names no bundled entry -> no normalization.
+        hv2::WorkerManager mgr2([](const hv2::SpawnRequest&, void*) { return hv2::SpawnResult{}; },
+                                [](HANDLE, void*) {}, nullptr);
+        mgr2.SetTranslateExePath(self);
+        mgr2.RegisterFamily(kTranslateFamily, self);
+        mgr2.RegisterTranslatePoolBootEntry();
+        mgr2.SetBundledModelIdResolver([] { return std::string(); });
+        hv2::TranslatePoolEntry* empty_res = mgr2.TranslatePoolEnsure("hy-mt2-1.8b-q8");
+        TEST_CHECK(empty_res != nullptr &&
+                       empty_res->family == std::wstring(L"ggml-translate-hy-mt2-1.8b-q8"),
+                   "bundled: an empty resolver answer keeps the id's own family");
+        // No resolver at all -> the pre-fix legacy shape is unchanged.
+        hv2::WorkerManager mgr3([](const hv2::SpawnRequest&, void*) { return hv2::SpawnResult{}; },
+                                [](HANDLE, void*) {}, nullptr);
+        mgr3.SetTranslateExePath(self);
+        mgr3.RegisterFamily(kTranslateFamily, self);
+        mgr3.RegisterTranslatePoolBootEntry();
+        hv2::TranslatePoolEntry* plain = mgr3.TranslatePoolEnsure("hy-mt2-1.8b-q8");
+        TEST_CHECK(plain != nullptr &&
+                       plain->family == std::wstring(L"ggml-translate-hy-mt2-1.8b-q8"),
+                   "bundled: without the resolver the id keeps its own family (legacy shape)");
+    }
+
+    // ---- 7. Claim-phase warmup re-check (code-reviewer F1): a hold landing
+    //         between the candidate collection and the claim keeps the family
+    //         Ready ----------------------------------------------------------------
+    {
+        struct TwoFamilyCtx {
+            detail::FakeHandshakeCtx a; // the bare "" family
+            detail::FakeHandshakeCtx b; // the "zz-b" family
+        };
+        static TwoFamilyCtx tf_ctx;
+        tf_ctx = TwoFamilyCtx{};
+        tf_ctx.a.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        tf_ctx.b.exit_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        TEST_CHECK(tf_ctx.a.exit_ev != nullptr && tf_ctx.b.exit_ev != nullptr,
+                   "claim-hold: exit events created");
+        hv2::WorkerManager mgr(
+            [](const hv2::SpawnRequest& req, void* user) -> hv2::SpawnResult {
+                auto* c = static_cast<TwoFamilyCtx*>(user);
+                // The spawn carries its family; route to the matching
+                // handshake ctx (EnsureSpawned serializes spawns under mu, so
+                // one user ctx serves both families).
+                if (req.family == std::wstring(L"ggml-translate-zz-b")) {
+                    return detail::FakeHandshakeSpawn(req, &c->b);
+                }
+                return detail::FakeHandshakeSpawn(req, &c->a);
+            },
+            [](HANDLE, void*) {}, &tf_ctx);
+        mgr.SetTranslateExePath(self);
+        mgr.RegisterFamily(kTranslateFamily, self);
+        mgr.RegisterTranslatePoolBootEntry();
+        mgr.SetVramBytesResolver([](const std::string&) { return 700ull * kMiB; });
+        mgr.SetFreeVramProbe([](unsigned long long& out) { out = 8ull * 1024 * kMiB; return true; });
+        mgr.SetWorkerIdleMs(5000);
+
+        hv2::WorkerHandle* wa = mgr.EnsureSpawned(kTranslateFamily);
+        if (tf_ctx.a.hs_thread.joinable()) tf_ctx.a.hs_thread.join();
+        hv2::TranslatePoolEntry* eb = mgr.TranslatePoolEnsure("zz-b");
+        hv2::WorkerHandle* wb = mgr.EnsureSpawned(eb->family);
+        if (tf_ctx.b.hs_thread.joinable()) tf_ctx.b.hs_thread.join();
+        TEST_CHECK(wa != nullptr && wa->state == hv2::WorkerState::Ready &&
+                       wb != nullptr && wb->state == hv2::WorkerState::Ready,
+                   "claim-hold: both families reached Ready");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 1400ull * kMiB,
+                   "claim-hold: both families charged");
+
+        // Both families are idle-past-budget with no hold -> both are
+        // collected. A is claimed first and its stop blocks ~2 s in the
+        // kill-escalation window (the fake process event never signals); the
+        // helper registers B's warmup hold inside that window — AFTER B was
+        // collected but BEFORE B's claim. The claim-phase re-check must then
+        // spare B.
+        const int64_t t0 = test_now_ms();
+        std::thread helper([&mgr] {
+            ::Sleep(300); // lands well inside A's ~2 s stop window
+            mgr.RegisterWarmupConnection(L"ggml-translate-zz-b");
+        });
+        TEST_CHECK(mgr.ReaperPass(t0 + 60000) == 0,
+                   "claim-hold: the pass evicts without a crash");
+        helper.join();
+        TEST_CHECK(mgr.State(kTranslateFamily) == hv2::WorkerState::Stopped,
+                   "claim-hold: A (unheld) is evicted");
+        TEST_CHECK(mgr.State(eb->family) == hv2::WorkerState::Ready,
+                   "claim-hold: B survives — the hold landed before its claim");
+        TEST_CHECK(mgr.WarmupConnectionCount(eb->family) == 1,
+                   "claim-hold: B's hold is tracked");
+        TEST_CHECK(mgr.TranslatePoolReservedVramBytes() == 700ull * kMiB,
+                   "claim-hold: A's contribution was restored; B's stays charged");
+        mgr.UnregisterWarmupConnection(eb->family);
+        ::CloseHandle(tf_ctx.a.exit_ev);
+        ::CloseHandle(tf_ctx.b.exit_ev);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] REQ-060 worker idle eviction + warmup hold tests completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] REQ-060 worker idle eviction + warmup hold tests: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
@@ -15655,6 +16487,10 @@ int main() {
     TestSecB2ControlTokenScrub(); // SEC-B2: prompt control-token injection scrub (verify 233020)
     TestEngineHostProtocol();   // REQ-043: frozen wire protocol (frames/JSON/messages/status)
     TestEngineHostConfig();     // REQ-043: engine_host config block (defaults/parse/roundtrip/clamps)
+    // REQ-060 (engine-idle-eviction-warmup): local-seam model_id policy (pure
+    // boundaries + source pins) — registered after the config suite (same
+    // engine_host cluster), per the end-of-file pattern.
+    TestLocalRequestModelIdPolicy();
     TestEngineHostClient();     // REQ-043: reference client fallback matrix (in-process fake host)
     TestEngineHostAvailabilityAndMigration(); // REQ-043: host-as-local-source routing gate (T5: migration removed)
     // REQ-043 (M6 T5): embedded-removal suites — host-only routing + failure
@@ -15682,6 +16518,10 @@ int main() {
     // after the worker-manager suites (same host_v2 machinery), per the
     // end-of-file pattern.
     TestTranslatePool();
+    // REQ-060 (session 261009_0001): worker idle eviction + warmup holds —
+    // the reaper's genuine pass against Ready workers (the B-T3
+    // fake-launcher handshake pattern), registered after the pool suites.
+    TestReq060WorkerIdleEviction();
     // Plan-B (REQ-B010) B-T5: fast-path pins on the LIVE pool routing (design §9,
     // v2 §A2-rescoped) — registered immediately after the B-T1 pool suite (same
     // Plan-B cluster), per the end-of-file pattern. The structural client-
@@ -15781,6 +16621,13 @@ int main() {
     // (INV-B1b~B1g, functional) + the tray 4-way menu / on_select_engine
     // reconstruction pins (structural). Registered after the P4-8 suite.
     TestReq046HostUserModelIdGate();
+    // REQ-060 (session 261009_0001): the host boot read of
+    // engine_host.worker_idle_ms (parse + the three clamp boundaries) —
+    // registered right after the REQ-046 boot-reader suite (same fixture).
+    TestReq060HostBootWorkerIdleMs();
+    // REQ-060 F-09 (fix round): the policy > explicit > relay pin-precedence
+    // contract is host_main.cpp-internal, so it is pinned as source pins.
+    TestReq060PinPrecedence();
     TestReq046TrayMenuStructure();
     // REQ-046 P4-3 (패키지 C): OpenAI settings dialog 결함根治 — the template
     // style bits (필수-5, runtime-free), the localhost http consent gate
@@ -15827,6 +16674,14 @@ int main() {
     // REQ-050: the Hugging Face resolve-URL gate + filename derivation —
     // the headless-logic proof for the merged manager's HF add path.
     TestReq050HfUrlGate();
+    // REQ-060 (fix round): the two pure GGUF-manager helpers (duplicate-stem
+    // normalization + resident-policy suffix) + the size-match source pin.
+    TestReq060ManagerHelpers();
+    // REQ-060 (security-fix round, session 261009_0001): the duplicate-cleanup
+    // registered-file guard — functional whole-registry/files[] protection
+    // (deepseek M-1 / mimo MEDIUM-1) + the click-time live-reload and
+    // shape-only-log source pins (deepseek L-3 / L-4).
+    TestReq060RegisteredFileGuard();
     // REQ-050 (user items 2-1/2-2): URL auto-conversion (page/blob/resolve)
     // + the widened 262x92 dialog layout — registered after the canonical-gate
     // suite it complements.

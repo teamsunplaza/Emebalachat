@@ -77,6 +77,13 @@ bool ParseResourceObject(std::string_view raw, ResourceProfile& out) {
     // not a security boundary. Wrong TYPES still reject the item.
     if (!engine_host_json::GetStringOr(p, "residency", "ondemand", out.residency)) return false;
     if (!engine_host_json::GetStringOr(p, "eviction", "evict", out.eviction)) return false;
+    // REQ-060: GetStringOr passes a PRESENT-but-empty user value ("") through
+    // verbatim, and any spelling outside the two allowed enums is scheduling
+    // noise — converge both to the safe default so downstream scheduling
+    // never sees a bare "". This also makes the code match the header
+    // contract comment (engine_host_registry.hpp: unknown -> ondemand/evict).
+    if (out.residency != "preload" && out.residency != "ondemand") out.residency = "ondemand";
+    if (out.eviction != "sticky" && out.eviction != "evict") out.eviction = "evict";
     // priority: optional, integer only, clamped 0..9.
     if (FieldPtr v = enginehost::detail::FindField(p, "priority")) {
         if (v->is_string) return false;

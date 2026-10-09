@@ -54,6 +54,13 @@ struct HostBootConfig {
     // sink opt-in; the shape-only line discipline is authored at every
     // ENGINEHOST/* call site and is unchanged by this flag.
     bool diag_log_enabled = false;
+    // REQ-060: config.json's engine_host.worker_idle_ms — the translation
+    // worker's idle budget before the host evicts it (Ready + idle +
+    // eviction-policy "evict" + no active warmup hold). Read ONCE at boot
+    // (startup-only, no wire channel); the reader clamps exactly like the
+    // app's own config.cpp parser: <=0 -> 90000, <5000 -> 5000,
+    // >86400000 -> 86400000, absent / wrong-typed / unparseable -> 90000.
+    int worker_idle_ms = 90000;
 };
 
 // REQ-051 U-1 FIX 3: combined boot read (ONE parse feeds both fields).

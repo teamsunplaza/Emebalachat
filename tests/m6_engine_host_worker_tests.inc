@@ -361,6 +361,62 @@ void TestWorkerProtocol() {
                    "shutdown: wrong op rejected");
     }
 
+    // ---- 9b. REQ-060: session_open OPTIONAL preload member ----------------
+    // (fix-worker round; fix-worker-report.md §5 goldens. The member is emitted
+    // ONLY as the explicit ,"preload":true literal — the default-false 4-arg
+    // form keeps the frozen pre-REQ-060 bytes — and the parse degrades
+    // absent/malformed to false exactly like the v1 hello warmup member.)
+    {
+        // Golden freeze: both the 4-arg form and the explicit preload=false
+        // emit EXACTLY the pre-REQ-060 bytes (no "preload" substring at all).
+        const std::string golden =
+            "{\"op\":\"session_open\",\"session\":9,\"capability\":\"translate\","
+            "\"model_id\":\"hy-mt2-1.8b-q8\",\"profile\":\"default\"}";
+        TEST_CHECK(wp::BuildSessionOpen(9, "translate", "hy-mt2-1.8b-q8", "default") == golden,
+                   "session_open preload: 4-arg form keeps the pre-REQ-060 golden bytes");
+        TEST_CHECK(wp::BuildSessionOpen(9, "translate", "hy-mt2-1.8b-q8", "default",
+                                        /*preload=*/false) == golden,
+                   "session_open preload: explicit false keeps the golden bytes");
+        TEST_CHECK(wp::BuildSessionOpen(9, "translate", "hy-mt2-1.8b-q8", "default",
+                                        /*preload=*/true) ==
+                       golden.substr(0, golden.size() - 1) + ",\"preload\":true}",
+                   "session_open preload: true appends ,\"preload\":true before the brace");
+
+        // Parse matrix (permissive degrade; never fails the parse).
+        wp::SessionOpenMsg m;
+        TEST_CHECK(wp::ParseSessionOpen(golden, m) && !m.preload,
+                   "session_open preload: absent member -> false, parse succeeds");
+        TEST_CHECK(wp::ParseSessionOpen(golden.substr(0, golden.size() - 1) +
+                                            ",\"preload\":false}",
+                                        m) &&
+                       !m.preload,
+                   "session_open preload: explicit false -> false, parse succeeds");
+        TEST_CHECK(wp::ParseSessionOpen(golden.substr(0, golden.size() - 1) +
+                                            ",\"preload\":true}",
+                                        m) &&
+                       m.preload,
+                   "session_open preload: explicit true -> true, parse succeeds");
+        TEST_CHECK(wp::ParseSessionOpen(golden.substr(0, golden.size() - 1) +
+                                            ",\"preload\":\"true\"}",
+                                        m) &&
+                       !m.preload,
+                   "session_open preload: mistyped string member -> false, parse SUCCEEDS");
+        TEST_CHECK(wp::ParseSessionOpen(golden.substr(0, golden.size() - 1) +
+                                            ",\"preload\":1}",
+                                        m) &&
+                       !m.preload,
+                   "session_open preload: numeric member -> false, parse succeeds");
+
+        // Round trip: build(true) parses back true with every other field intact.
+        TEST_CHECK(wp::ParseSessionOpen(
+                       wp::BuildSessionOpen(7, "translate", "user-llama3", "default",
+                                            /*preload=*/true),
+                       m) &&
+                       m.session == 7 && m.capability == "translate" &&
+                       m.model_id == "user-llama3" && m.profile == "default" && m.preload,
+                   "session_open preload: build(true) round-trips true, fields intact");
+    }
+
     // ---- 10. Lifecycle constants (R-4 hardcoded; unit-pinned) ----
     // (BackoffDelayMs lives in host_v2 — the manager owns the respawn math;
     // the constants stay in workerproto. constexpr reads in volatile-free
@@ -472,15 +528,20 @@ void TestJobWaitFrameClassifier() {
         TEST_CHECK(hv2::ClassifyJobWaitFrame("not json", ev) ==
                        hv2::JobWaitFrame::Malformed,
                    "jobwait: non-JSON -> Malformed");
-        // Non-event ops must NOT be mistaken for a job answer: an 'opened' ack
-        // or a bare orchestrator-style error frame on the worker pipe is a
-        // protocol violation for a job-wait loop, not a terminal event.
-        TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"opened\",\"session\":0}", ev) ==
-                       hv2::JobWaitFrame::Malformed,
-                   "jobwait: 'opened' op -> Malformed (non-event op)");
+        // Non-event ops must NOT be mistaken for a job answer: a bare
+        // orchestrator-style error frame on the worker pipe is a protocol
+        // violation for a job-wait loop, not a terminal event.
         TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"error\",\"code\":\"bad_request\"}",
                                              ev) == hv2::JobWaitFrame::Malformed,
                    "jobwait: bare 'error' op -> Malformed (non-event op)");
+        // REQ-060 (MiMo F-N1): a late 'opened' ack from a preload session_open
+        // whose grace timed out is NOT a protocol violation — the ack is never
+        // a job answer, so the wait loop must consume it and keep waiting
+        // (pre-fix this classified Malformed and failed the first job
+        // engine_failed).
+        TEST_CHECK(hv2::ClassifyJobWaitFrame("{\"op\":\"opened\",\"session\":0}", ev) ==
+                       hv2::JobWaitFrame::Progress,
+                   "jobwait: late 'opened' ack -> Progress (consume, keep waiting)");
         // Empty frame.
         TEST_CHECK(hv2::ClassifyJobWaitFrame("", ev) == hv2::JobWaitFrame::Malformed,
                    "jobwait: empty frame -> Malformed");

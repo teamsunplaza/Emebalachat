@@ -107,8 +107,8 @@ void TestModelDownloadLogic() {
                        reg.models[0].files[0] == md::kModelFilename,
                    "MD: bundled entry carries the pinned filename");
         TEST_CHECK(reg.models[0].resource.vram_mb == 2400 && reg.models[0].resource.priority == 9 &&
-                       reg.models[0].resource.residency == "preload" &&
-                       reg.models[0].resource.eviction == "sticky",
+                       reg.models[0].resource.residency == "ondemand" &&
+                       reg.models[0].resource.eviction == "evict",
                    "MD: resource block mirrors the installer shape");
         TEST_CHECK(reg.models[0].profiles.count("default") == 1 &&
                        reg.models[0].profiles.at("default").prompt_template_ref == "hymt2-official",

@@ -5,9 +5,11 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cwchar>   // REQ-060: std::swprintf (duplicate-warning human size)
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -18,6 +20,7 @@
 #include <vector>
 
 #include <commctrl.h>
+#include <shellapi.h> // REQ-060: SHFileOperationW (Recycle-Bin-only duplicate cleanup)
 #include <winhttp.h>
 
 #pragma comment(lib, "winhttp.lib")  // REQ-050: HF download (the bootstrap/google_translate discipline)
@@ -37,7 +40,18 @@ enum : WORD {
     // REQ-050: the top-row add methods.
     IDC_MGR_ADD_FILE,
     IDC_MGR_ADD_HF,
+    // REQ-060: the resident-policy toggle joins the action row (a template
+    // item, itemCount 7 -> 8).
+    IDC_MGR_POLICY,
     // IDCANCEL doubles as the Close button (Esc == Close, Win32 default).
+};
+
+// REQ-060: the duplicate-warning controls are created at RUNTIME (the dialog
+// template carries no conditional controls) — ids reserved in the manager
+// band, distinct from the template items.
+enum : WORD {
+    IDC_MGR_DUP_WARN = 4120,
+    IDC_MGR_DEDUPE,
 };
 
 // Control IDs (rename prompt dialog).
@@ -127,6 +141,11 @@ void RebuildManagerList(HWND dlg, ManagerDialogState* st) {
         if (!m->files.empty()) {
             label += L" — " + ToUtf16(m->files[0]); // "id — filename"
         }
+        // REQ-060: resident-policy suffix — "(상주 유지)" for sticky,
+        // "(사용 시 로드)" for everything else (an empty/unknown policy
+        // normalizes to the on-use leg, matching the registry parser's evict
+        // default).
+        label += L" " + I18n::Get(ManagerPolicySuffixId(m->resource.eviction));
         const int row = static_cast<int>(
             ::SendMessageW(list, LB_ADDSTRING, 0,
                            reinterpret_cast<LPARAM>(label.c_str())));
@@ -175,6 +194,13 @@ void SyncManagerActionButtons(HWND dlg, ManagerDialogState* st) {
     }
     if (HWND b = ::GetDlgItem(dlg, IDC_MGR_DELETE)) {
         ::EnableWindow(b, enabled ? TRUE : FALSE);
+    }
+    // REQ-060: the policy toggle follows the same selection gate. Deliberate
+    // distinct source text (own variable/expression): the REQ-053 pin counts
+    // the pair's exact EnableWindow call line and that count must stay two,
+    // so this button cannot share the pair's line verbatim.
+    if (HWND pb = ::GetDlgItem(dlg, IDC_MGR_POLICY)) {
+        ::EnableWindow(pb, SelectedUserIndex(dlg, st) >= 0 ? TRUE : FALSE);
     }
 }
 
@@ -241,6 +267,320 @@ bool LoadManagerRegistry(HWND dlg, ManagerDialogState* st) {
     }
     st->registry = std::move(res.registry);
     return true;
+}
+
+// ==================== REQ-060: duplicate detection + cleanup ================
+
+// One duplicate-candidate group: every store-dir file whose normalized stem
+// AND byte size agree with at least one other file, of which at least one is
+// referenced by a registry entry. `registered` counts the members that carry
+// a registry entry; the unregistered members are the cleanup targets.
+struct DupGroup {
+    std::wstring stem;                // normalized stem (warning text)
+    unsigned long long size = 0;      // byte size shared by every member
+    std::vector<std::wstring> files;  // member file names (store-dir basenames)
+    int registered = 0;               // members referenced by a registry entry
+};
+
+// REQ-060: ASCII lowercase fold for file-name keys (the store is a Windows
+// volume — file-name lookup is case-insensitive; the normalized STEM match
+// inherits that, while the byte-size compare stays exact).
+std::wstring ManagerLower(std::wstring_view s) {
+    std::wstring out(s);
+    for (auto& ch : out) {
+        if (ch >= L'A' && ch <= L'Z') {
+            ch = static_cast<wchar_t>(ch - L'A' + L'a');
+        }
+    }
+    return out;
+}
+
+// REQ-060 M-1 fix: the guard delegates to IsRegisteredModelFile — EVERY
+// registry entry (the bundled origin included) and every files[] slot, not
+// only the user entries' files[0]. `name` is the raw store basename; the
+// ASCII case-insensitive fold happens inside the helper. The cleanup path
+// consults this immediately before acting, so a registered file can never
+// become a deletion target.
+bool IsRegisteredFile(const ManagerDialogState* st, const std::wstring& name) {
+    return IsRegisteredModelFile(st->registry, name);
+}
+
+// REQ-060: scan the model store dir at dialog open. Only REGISTRATION-AFFORDED
+// comparisons run: an unregistered file on disk is not reported on its own —
+// it enters a group only by matching a registered sibling's normalized stem
+// and size (or by forming an all-registered pair). A missing LOCALAPPDATA /
+// store dir yields an empty result (the registry loader has already surfaced
+// the loud failure in that case). Runs on the GUI thread; it only stats file
+// sizes in a small local directory, never reads multi-GB contents.
+std::vector<DupGroup> ScanModelDuplicates(const ManagerDialogState* st) {
+    std::vector<DupGroup> groups;
+    const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        return groups;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(models_dir, ec) || ec) {
+        return groups;
+    }
+
+    // Enumerate the store (top level): only .gguf files can be model
+    // duplicates — registry.json / worker manifests never enter the compare.
+    struct FileInfo {
+        std::wstring name;
+        std::wstring stem;
+        unsigned long long size;
+    };
+    std::vector<FileInfo> infos;
+    for (std::filesystem::directory_iterator it(models_dir, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        std::error_code type_ec;
+        if (!it->is_regular_file(type_ec) || type_ec) {
+            continue;
+        }
+        const std::wstring name = it->path().filename().wstring();
+        // ".gguf" tail, case-insensitive (HfDeriveFreshIdentity's policy).
+        bool gguf = name.size() > 5;
+        for (size_t i = 0; gguf && i < 5; ++i) {
+            wchar_t c = name[name.size() - 5 + i];
+            if (c >= L'A' && c <= L'Z') {
+                c = static_cast<wchar_t>(c - L'A' + L'a');
+            }
+            gguf = c == L".gguf"[i];
+        }
+        if (!gguf) {
+            continue;
+        }
+        std::error_code size_ec;
+        const unsigned long long sz = it->file_size(size_ec);
+        if (size_ec) {
+            continue; // a vanished/latched file cannot be compared reliably
+        }
+        infos.push_back({name, ToUtf16(ManagerDuplicateStem(ToUtf8(name))), sz});
+    }
+
+    // Group by (normalized stem, size). The store holds tens of files at
+    // most, so the pairwise grouping is trivial. A group needs >= 2 members
+    // of which >= 1 registered to be a duplicate.
+    for (size_t i = 0; i < infos.size(); ++i) {
+        if (infos[i].stem.empty()) {
+            continue; // consumed by an earlier group, or an empty stem
+        }
+        DupGroup g;
+        g.stem = infos[i].stem;
+        g.size = infos[i].size;
+        g.files.push_back(infos[i].name);
+        for (size_t j = i + 1; j < infos.size(); ++j) {
+            if (infos[j].stem.empty()) {
+                continue;
+            }
+            if (ManagerLower(infos[j].stem) == ManagerLower(g.stem) &&
+                infos[j].size == g.size) {
+                g.files.push_back(infos[j].name);
+                infos[j].stem.clear(); // consumed
+            }
+        }
+        infos[i].stem.clear();
+        if (g.files.size() < 2) {
+            continue;
+        }
+        for (const auto& f : g.files) {
+            if (IsRegisteredFile(st, f)) {
+                ++g.registered;
+            }
+        }
+        if (g.registered >= 1) {
+            groups.push_back(std::move(g));
+        }
+    }
+    return groups;
+}
+
+// REQ-060: human size for the warning line — "5.7 GB" at and above 1 GiB
+// (one decimal, the spec-example shape), whole MiB below.
+std::wstring FormatDupSize(unsigned long long bytes) {
+    wchar_t buf[32] = {};
+    if (bytes >= 1ull * 1024 * 1024 * 1024) {
+        std::swprintf(buf, 32, L"%.1f GB",
+                      static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        std::swprintf(buf, 32, L"%llu MB", bytes / (1024 * 1024));
+    }
+    return buf;
+}
+
+std::wstring ReplaceToken(std::wstring text, const std::wstring& token,
+                          const std::wstring& value) {
+    size_t pos = 0;
+    while ((pos = text.find(token, pos)) != std::wstring::npos) {
+        text.replace(pos, token.size(), value);
+        pos += value.size();
+    }
+    return text;
+}
+
+// REQ-060: create (once) + show/hide the duplicate-warning pair and swap the
+// top row between the add-method buttons (normal state) and the warning pair
+// (duplicates present). Called at dialog open and after every cleanup. With
+// no duplicate group the dialog looks exactly like the REQ-050 shape.
+void ApplyDuplicateWarning(HWND dlg, ManagerDialogState* st) {
+    const std::vector<DupGroup> groups = ScanModelDuplicates(st);
+    int targets = 0;
+    for (const auto& g : groups) {
+        for (const auto& f : g.files) {
+            if (!IsRegisteredFile(st, f)) {
+                ++targets; // unregistered members are the only cleanup targets
+            }
+        }
+    }
+    const bool active = !groups.empty();
+    // Top-row swap: the add methods give way while the warning is up.
+    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_ADD_FILE)) {
+        ::ShowWindow(b, active ? SW_HIDE : SW_SHOW);
+    }
+    if (HWND b = ::GetDlgItem(dlg, IDC_MGR_ADD_HF)) {
+        ::ShowWindow(b, active ? SW_HIDE : SW_SHOW);
+    }
+    if (!active) {
+        if (HWND w = ::GetDlgItem(dlg, IDC_MGR_DUP_WARN)) {
+            ::ShowWindow(w, SW_HIDE);
+        }
+        if (HWND b = ::GetDlgItem(dlg, IDC_MGR_DEDUPE)) {
+            ::ShowWindow(b, SW_HIDE);
+        }
+        return;
+    }
+    // Runtime creation — the kHfProgressRectDlu precedent: DLU rects mapped
+    // through MapDialogRect (CreateWindowExW takes pixels), system STATIC /
+    // BUTTON classes need no comctl registration.
+    HINSTANCE inst = ::GetModuleHandleW(nullptr);
+    auto ensure = [&](WORD id, LPCWSTR cls, DWORD style,
+                      const RECT& dlu) -> HWND {
+        if (HWND existing = ::GetDlgItem(dlg, id)) {
+            return existing;
+        }
+        RECT rc = dlu;
+        ::MapDialogRect(dlg, &rc);
+        return ::CreateWindowExW(0, cls, nullptr, style, rc.left, rc.top,
+                                 rc.right - rc.left, rc.bottom - rc.top, dlg,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                                 inst, nullptr);
+    };
+    HWND warn = ensure(IDC_MGR_DUP_WARN, L"STATIC",
+                       WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                       kDupWarningLabelRectDlu);
+    HWND dedupe = ensure(IDC_MGR_DEDUPE, L"BUTTON",
+                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                         kDupWarningButtonRectDlu);
+    if (warn) {
+        std::wstring text;
+        for (const auto& g : groups) {
+            std::wstring line = I18n::Get(StringId::GgufDuplicateWarning);
+            line = ReplaceToken(line, L"{n}", g.stem);
+            line = ReplaceToken(line, L"{s}", FormatDupSize(g.size));
+            line = ReplaceToken(line, L"{c}", std::to_wstring(g.files.size()));
+            if (!text.empty()) {
+                text += L"; ";
+            }
+            text += line;
+        }
+        ::SetWindowTextW(warn, text.c_str());
+        ::ShowWindow(warn, SW_SHOW);
+    }
+    if (dedupe) {
+        ::SetWindowTextW(dedupe, I18n::Get(StringId::GgufManagerDedupe).c_str());
+        // All-registered group: there is no unregistered side to clean —
+        // the button stays gray until one registration is removed.
+        ::EnableWindow(dedupe, targets > 0 ? TRUE : FALSE);
+        ::ShowWindow(dedupe, SW_SHOW);
+    }
+    if (!warn || !dedupe) {
+        DIAG_F("UI/GgufManager/017: duplicate-warning control creation failed "
+               "(warn=%p dedupe=%p)\n", static_cast<void*>(warn),
+               static_cast<void*>(dedupe));
+    }
+}
+
+// REQ-060: [중복 정리] — move ONLY the unregistered side of each duplicate
+// group to the Recycle Bin (SHFileOperationW FO_DELETE with FOF_ALLOWUNDO).
+// FOF_ALLOWUNDO is best-effort only: when the Recycle Bin cannot take a
+// file (bin disabled or over quota — common for ~1.9 GB GGUF copies) the
+// shell falls back to a PERMANENT delete, and FOF_NO_UI (which includes
+// FOF_NOCONFIRMATION) would do that with no warning at all. The
+// FOF_WANTNUKEWARNING flag below partially overrides FOF_NOCONFIRMATION in
+// exactly that case, so a permanent delete happens only after the user
+// confirms the shell's warning; a declined warning lands in the
+// fAnyOperationsAborted quiet no-op path at the end. The registry snapshot
+// is RELOADED from disk at click time (registry.json is a multi-writer
+// document, M7 A-2) and every target is then re-checked against that fresh
+// snapshot immediately before the operation, so registered files are not in
+// the target set by construction.
+void RunDuplicateCleanup(HWND dlg, ManagerDialogState* st) {
+    const std::wstring title = I18n::Get(StringId::GgufManagerTitle);
+    const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerErrNoLocalappdata).c_str(),
+                      title.c_str(), MB_OK | MB_ICONERROR);
+        return;
+    }
+    // REQ-060 L-3 fix (security review round, session 261009_0001): the
+    // dialog-lifetime snapshot was taken at WM_INITDIALOG / after the add
+    // flows, but a sibling Emebala app or the installer can register the
+    // very duplicate copy between the dialog open and this click — the stale
+    // snapshot would then recycle a now-registered file and leave its entry
+    // dangling (engine answers model_missing). Reload the LIVE registry at
+    // click time through the same loud-failure loader as the dialog open; a
+    // damaged/schema-rejected document aborts the cleanup (fail-closed) with
+    // the loader's error message already shown.
+    if (!LoadManagerRegistry(dlg, st)) {
+        return;
+    }
+    const std::vector<DupGroup> groups = ScanModelDuplicates(st);
+    std::vector<std::wstring> targets;
+    for (const auto& g : groups) {
+        for (const auto& f : g.files) {
+            if (!IsRegisteredFile(st, f)) {
+                targets.push_back(f);
+            }
+        }
+    }
+    if (targets.empty()) {
+        return; // every copy is registered: nothing the cleanup may touch
+    }
+    // SHFileOperationW pFrom: a double-NUL-terminated multi-path list.
+    std::wstring from;
+    for (const auto& f : targets) {
+        from += (models_dir / f).wstring();
+        from.push_back(L'\0');
+    }
+    from.push_back(L'\0');
+    SHFILEOPSTRUCTW op = {};
+    op.hwnd = dlg;
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    // FOF_WANTNUKEWARNING partially cancels FOF_NOCONFIRMATION (which
+    // FOF_NO_UI includes) for the Recycle-Bin-full fallback: a permanent
+    // delete then requires the user's confirmation, and a decline aborts
+    // quietly through fAnyOperationsAborted below.
+    op.fFlags = FOF_ALLOWUNDO | FOF_NO_UI | FOF_WANTNUKEWARNING; // Bin; nuke needs a user-confirmed warning
+    const int rc = ::SHFileOperationW(&op);
+    if (rc == 0 && !op.fAnyOperationsAborted) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerDedupeDone).c_str(),
+                      title.c_str(), MB_OK | MB_ICONINFORMATION);
+        DIAG_F("UI/GgufManager/018: duplicate cleanup moved %zu file(s) to the "
+               "Recycle Bin\n", targets.size());
+    } else if (rc != 0) {
+        ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerDedupeFailed).c_str(),
+                      title.c_str(), MB_OK | MB_ICONWARNING);
+        DIAG_F("UI/GgufManager/019: duplicate cleanup failed (rc=%d aborted=%d "
+               "targets=%zu)\n", rc, op.fAnyOperationsAborted ? 1 : 0,
+               targets.size());
+    }
+    // Aborted by the shell is a quiet no-op (same discipline as a declined
+    // confirmation; with FOF_WANTNUKEWARNING this also covers a declined
+    // Recycle-Bin-full permanent-delete warning); success and failure both
+    // refresh from the live store.
+    RebuildManagerList(dlg, st);
+    ApplyDuplicateWarning(dlg, st);
 }
 
 INT_PTR CALLBACK RenameModelProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1128,6 +1468,9 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // early on a missing IDC_MGR_LIST — SelectedUserIndex then reports -1,
         // so the pair stays disabled rather than dead-clickable.
         SyncManagerActionButtons(dlg, st);
+        // REQ-060: duplicate scan + top-row warning swap (a no-op leaving the
+        // dialog in its REQ-050 shape when the store is clean).
+        ApplyDuplicateWarning(dlg, st);
         return TRUE;
     }
     case WM_COMMAND:
@@ -1251,6 +1594,56 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                    old_id.c_str());
             return TRUE;
         }
+        case IDC_MGR_POLICY: {
+            const int idx = SelectedUserIndex(dlg, st);
+            // REQ-060: defensive guard — the button is grayed unless a user
+            // row is selected, so this path is unreachable by click (bundled
+            // entries are never listed, hence never toggled).
+            if (idx < 0) return TRUE;
+            const std::string sel_id = st->user_ids[static_cast<size_t>(idx)];
+            // Mutate a COPY and persist through the same atomic write as
+            // rename/delete; adopt only on success (the state==disk
+            // invariant).
+            engine_host_registry::Registry candidate = st->registry;
+            bool found = false;
+            for (auto& m : candidate.models) {
+                if (m.id != sel_id) {
+                    continue;
+                }
+                if (m.origin == "bundled") {
+                    return TRUE; // never (defensive; the list excludes bundled)
+                }
+                m.resource.eviction =
+                    (m.resource.eviction == "sticky") ? "evict" : "sticky";
+                found = true;
+                break;
+            }
+            if (!found) {
+                return TRUE;
+            }
+            if (!WriteRegistryLoud(dlg, candidate)) {
+                return TRUE;
+            }
+            st->registry = std::move(candidate);
+            st->registry_changed = true;
+            // REQ-060: the toggle deliberately does NOT touch
+            // config.user_model_id — the engine binding stays exactly as it
+            // was; only the residency hint in the registry flips.
+            RebuildManagerList(dlg, st);
+            if (const auto* entry = st->registry.FindModel(sel_id)) {
+                // Shape-only (host/004 contract): the id's length, never its
+                // content, goes to the diag log.
+                DIAG_F("UI/GgufManager/020: policy toggled id_len=%zu eviction=%s\n",
+                       sel_id.size(), entry->resource.eviction.c_str());
+            }
+            return TRUE;
+        }
+        case IDC_MGR_DEDUPE: {
+            // REQ-060: [중복 정리] — Recycle-Bin-only move of the unregistered
+            // duplicate copies (see RunDuplicateCleanup).
+            RunDuplicateCleanup(dlg, st);
+            return TRUE;
+        }
         case IDCANCEL:
             ::EndDialog(dlg, IDCANCEL);
             return TRUE;
@@ -1330,6 +1723,64 @@ bool RemoveUserModelEntry(engine_host_registry::Registry& registry,
         if (it->id == id && it->origin != "bundled") {
             registry.models.erase(it);
             return true;
+        }
+    }
+    return false;
+}
+
+// REQ-060 (declared in the header): the resident-policy list-label suffix.
+StringId ManagerPolicySuffixId(const std::string& eviction) {
+    return eviction == "sticky" ? StringId::GgufPolicySticky
+                                : StringId::GgufPolicyEvict;
+}
+
+// REQ-060 (declared in the header): the duplicate-comparison stem — ".gguf"
+// tail (case-insensitive) then a trailing "_<digits>" copy suffix stripped.
+std::string ManagerDuplicateStem(const std::string& filename) {
+    constexpr std::string_view kExt = ".gguf";
+    std::string stem = filename;
+    if (stem.size() > kExt.size()) {
+        bool tail = true;
+        for (size_t i = 0; i < kExt.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(
+                    stem[stem.size() - kExt.size() + i])) !=
+                std::tolower(static_cast<unsigned char>(kExt[i]))) {
+                tail = false;
+                break;
+            }
+        }
+        if (tail) {
+            stem.resize(stem.size() - kExt.size());
+        }
+    }
+    // Strip a trailing "_<digits>" copy suffix ("model_2" -> "model"). A bare
+    // trailing underscore or a digits-only name is left alone.
+    size_t digits = 0;
+    while (digits < stem.size() &&
+           std::isdigit(static_cast<unsigned char>(stem[stem.size() - 1 - digits]))) {
+        ++digits;
+    }
+    if (digits > 0 && digits < stem.size() &&
+        stem[stem.size() - 1 - digits] == '_') {
+        stem.resize(stem.size() - 1 - digits);
+    }
+    return stem;
+}
+
+// REQ-060 M-1 fix (declared in the header): the cleanup guard — `file_name`
+// is registered when ANY registry entry (the bundled origin included) lists
+// it in files[] (files[1+] included, not only files[0]). The compare folds
+// ASCII case (ManagerLower) on both sides: the store is a Windows volume, so
+// "Hy-MT2-1.8B-Q8_0.gguf" registered and a "hy-mt2-1.8b-q8_0.gguf" store
+// entry are the same file. Pure scan, no I/O.
+bool IsRegisteredModelFile(const engine_host_registry::Registry& registry,
+                           const std::wstring& file_name) {
+    const std::wstring needle = ManagerLower(file_name);
+    for (const auto& m : registry.models) {
+        for (const auto& f : m.files) {
+            if (ManagerLower(ToUtf16(f)) == needle) {
+                return true;
+            }
         }
     }
     return false;
@@ -1597,15 +2048,16 @@ bool HfResolveFilename(std::string_view url, std::string* out_filename) {
     return true;
 }
 
-// REQ-048 R2-D + REQ-050: production manager item-set emission, split out of
-// ShowGgufModelManagerDialog so the unit suite serializes the exact bytes the
-// dialog hands to DialogBoxIndirectParamW (BuildOpenAiTemplate precedent).
-// itemCount must match the AddItem calls below. REQ-050 added the top-row
-// add-method buttons ([파일에서 추가…] / [Hugging Face에서 추가…]) and shifted
-// the list + action row down by 16 DLU (dialog 210x96 -> 242x112, widened so
-// the longer add-button labels do not clip):
+// REQ-048 R2-D + REQ-050 + REQ-060: production manager item-set emission,
+// split out of ShowGgufModelManagerDialog so the unit suite serializes the
+// exact bytes the dialog hands to DialogBoxIndirectParamW (BuildOpenAiTemplate
+// precedent). itemCount must match the AddItem calls below. REQ-050 added the
+// top-row add-method buttons ([파일에서 추가…] / [Hugging Face에서 추가…]) and
+// shifted the list + action row down by 16 DLU; REQ-060 widened the shell
+// 242 -> 284 DLU (room for the fourth action button) and added the
+// [정책 전환] button to the action row:
 //   add-file + add-HF + list + empty placeholder + Rename + Delete +
-//   Close(IDCANCEL) = 7.
+//   Policy(REQ-060) + Close(IDCANCEL) = 8.
 void BuildGgufManagerTemplate(TemplateBuilder& tb) {
     const DWORD LBX = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP |
                       WS_VSCROLL | LBS_NOTIFY;
@@ -1615,7 +2067,9 @@ void BuildGgufManagerTemplate(TemplateBuilder& tb) {
     const WORD BTN_CLS    = 0x0080;  // "BUTTON"
     const WORD LIST_CLS   = 0x0083;  // "LISTBOX"
 
-    // REQ-050: top row — the two add methods.
+    // REQ-050: top row — the two add methods. (REQ-060: while a duplicate
+    // warning is active the runtime pair in ApplyDuplicateWarning hides these
+    // and shows the warning label + [중복 정리] button in their place.)
     tb.AddItem(BTN, 8, 5, 110, 13, IDC_MGR_ADD_FILE, BTN_CLS,
                I18n::Get(StringId::GgufManagerAddFile));
     tb.AddItem(BTN, 124, 5, 110, 13, IDC_MGR_ADD_HF, BTN_CLS,
@@ -1624,12 +2078,17 @@ void BuildGgufManagerTemplate(TemplateBuilder& tb) {
     tb.AddItem(LBX, 8, 22, 226, 58, IDC_MGR_LIST, LIST_CLS, L"");
     tb.AddItem(LBL, 8, 22, 226, 58, IDC_MGR_EMPTY, STATIC_CLS,
                I18n::Get(StringId::GgufManagerEmpty));
+    // REQ-060: the action row now carries four buttons (shell widened to
+    // 284 DLU): Rename / Delete keep their widths, the policy toggle joins
+    // at x=144, and Close slides right to x=212.
     tb.AddItem(BTN, 8, 86, 60, 13, IDC_MGR_RENAME, BTN_CLS,
                I18n::Get(StringId::GgufManagerRename));
-    tb.AddItem(BTN, 80, 86, 60, 13, IDC_MGR_DELETE, BTN_CLS,
+    tb.AddItem(BTN, 76, 86, 60, 13, IDC_MGR_DELETE, BTN_CLS,
                I18n::Get(StringId::GgufManagerDelete));
+    tb.AddItem(BTN, 144, 86, 62, 13, IDC_MGR_POLICY, BTN_CLS,
+               I18n::Get(StringId::GgufManagerTogglePolicy));
     // Close doubles as IDCANCEL so Esc dismisses the dialog (Win32 default).
-    tb.AddItem(BTN, 172, 86, 62, 13, IDCANCEL, BTN_CLS,
+    tb.AddItem(BTN, 212, 86, 62, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::GgufManagerClose));
 }
 
@@ -1643,7 +2102,10 @@ bool ShowGgufModelManagerDialog(HWND parent, AppConfig& config,
 
     const std::wstring title = I18n::Get(StringId::GgufManagerTitle);
     TemplateBuilder tb;
-    tb.Begin(title, 242, 112, /*itemCount=*/7);
+    // REQ-060: 284x112 shell, 8 items — the IDC_MGR_POLICY button joined the
+    // 7-item REQ-050 template (widened so the action row carries four
+    // buttons without label clipping).
+    tb.Begin(title, 284, 112, /*itemCount=*/8);
     BuildGgufManagerTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(

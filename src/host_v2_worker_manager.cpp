@@ -33,6 +33,26 @@ int64_t NowMs() {
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// REQ-060 (relay-key normalization, re-review P2): the relay snapshot must
+// resolve the SAME pool key TranslatePoolEnsure registered — an explicit
+// bundled-id request and the legacy "" pin share ONE entry (deepseek F-07).
+// WITHOUT this the default path (raw bundled id, e.g. "hy-mt2-1.8b-q8", on
+// every job) missed the "" entry in the relay map, answered "no entry ->
+// relay required" per job, and MarkRelayed no-op'd on the same miss, so the
+// snapshot never settled and every job paid an extra session_open/opened
+// pair. ONLY the lookup key is normalized here: the stored relayed_model_id
+// and the `relayed_model_id != model_id` comparison keep the dispatcher's
+// RAW id, so the REQ-055/REQ-058 changed-pin semantics are untouched
+// (normalizing on the dispatcher side first would break that comparison).
+std::string NormalizeTranslatePoolLookupKey(const BundledModelIdResolver& resolver,
+                                            const std::string& model_id) {
+    if (resolver) {
+        const std::string bundled = resolver();
+        if (!bundled.empty() && model_id == bundled) return std::string();
+    }
+    return model_id;
+}
+
 // ---- user-only security descriptor (§4.1 pattern; design §10 row 1) --------
 struct SecurityDescriptorHolder {
     SecurityDescriptorHolder() = default;
@@ -81,13 +101,21 @@ bool GenerateTokenHex32(std::string& out) {
     return true;
 }
 
-// Private worker pipe name: \\.\pipe\emebala-engine-worker-<pid>-<rand>
-// (design §1.2 transport row; unique per spawn attempt).
+// Private worker pipe name: \\.\pipe\emebala-engine-worker-<pid>-<tick>-<seq>
+// (design §1.2 transport row; unique per spawn attempt). REQ-060 (round-2
+// integration): GetTickCount granularity (~10-16 ms) let two BACK-TO-BACK
+// spawns inside one tick mint the SAME name, and the second CreateNamedPipe
+// then failed with ERROR_PIPE_BUSY (231) under maxInstances=1 — observed by
+// the claim-hold eviction pin and reachable in production (simultaneous ASR +
+// translate spawns). A per-process sequence number closes the collision; the
+// name is ephemeral (nothing persisted, no consumer parses the shape).
 std::wstring MakeWorkerPipeName() {
+    static std::atomic<unsigned> seq{0};
     wchar_t buf[128];
-    swprintf(buf, 128, L"\\\\.\\pipe\\emebala-engine-worker-%lu-%u",
+    swprintf(buf, 128, L"\\\\.\\pipe\\emebala-engine-worker-%lu-%u-%u",
              static_cast<unsigned long>(::GetCurrentProcessId()),
-             static_cast<unsigned>(::GetTickCount()));
+             static_cast<unsigned>(::GetTickCount()),
+             seq.fetch_add(1, std::memory_order_relaxed));
     return buf;
 }
 
@@ -400,6 +428,20 @@ struct WorkerManager::Impl {
     int vram_override_value_ = -1; // -1 = absent/auto
     WorkerManager::VramGateSnapshot last_gate_{};
 
+    // ---- REQ-060: idle eviction + warmup holds ----------------------------
+    // worker_idle_ms_: the idle budget before a READY translate worker is
+    // evicted (atomic: set once at boot, read by the reaper thread every
+    // 250 ms tick). eviction_resolver_: the A-5 policy injection (unset ->
+    // "evict"). bundled_id_resolver_: the A-5 bundled-id injection (unset ->
+    // no key normalization). warmup_connections_: ACTIVE warmup-hold counts
+    // per family; guarded by mu (brief compare+store under the outermost
+    // lock — the single global order mu -> pool mu -> vram mu is preserved,
+    // no reverse path exists).
+    std::atomic<int> worker_idle_ms_{90000};
+    EvictionPolicyResolver eviction_resolver_;
+    BundledModelIdResolver bundled_id_resolver_;
+    std::unordered_map<std::wstring, int> warmup_connections_;
+
     std::thread reaper_thread;
     std::atomic<bool> reaper_stop{false};
     HANDLE reaper_wake = nullptr; // auto-reset event: StopReaper beats the 250 ms poll
@@ -511,19 +553,38 @@ bool WorkerManager::RegisterTranslatePoolBootEntry() {
     e.model_id.clear();
     e.family = translate_pool::PoolFamilyForModel(e.model_id); // kWorkerFamilyTranslate
     e.registered = true; // RegisterFamily(kWorkerFamilyTranslate,...) ran at boot
+    // REQ-060: the pinned-default entry carries its registry eviction policy
+    // too ("" is normally absent from the registry -> "evict").
+    if (impl_->eviction_resolver_) {
+        const std::string policy = impl_->eviction_resolver_(e.model_id);
+        e.eviction_policy = (policy == "sticky") ? "sticky" : "evict";
+    }
     impl_->translate_pool_.emplace(std::string(), std::move(e));
     return true;
 }
 
 TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_id) {
+    // REQ-060 (deepseek F-07 fix): an explicit request for the BUNDLED model
+    // id is the SAME worker as the pinned-default ("") legacy pin — normalize
+    // the pool key BEFORE the lookup so both ids share ONE entry/family.
+    // Without this, "hy-mt2-1.8b-q8" derives a second family
+    // (ggml-translate-hy-mt2-1.8b-q8) next to the bare ggml-translate family
+    // and one model gets two resident workers + double VRAM accounting.
+    // The resolver reads the boot registry snapshot (set once at boot); unset
+    // -> no normalization (a shaped id keeps its own family, legacy shape).
+    std::string key = model_id;
+    if (impl_->bundled_id_resolver_) {
+        const std::string bundled = impl_->bundled_id_resolver_();
+        if (!bundled.empty() && key == bundled) key.clear();
+    }
     // Existing entry fast path — pool mu only guards the O(1) lookup (A-2).
     {
         std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
-        const auto it = impl_->translate_pool_.find(model_id);
+        const auto it = impl_->translate_pool_.find(key);
         if (it != impl_->translate_pool_.end()) return &it->second;
     }
     // Absent: derive the family (fail-closed on invalid id chars).
-    const std::wstring family = translate_pool::PoolFamilyForModel(model_id);
+    const std::wstring family = translate_pool::PoolFamilyForModel(key);
     if (family.empty()) return nullptr;
     std::wstring exe;
     {
@@ -551,7 +612,7 @@ TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_
             reserved = impl_->translate_pool_reserved_vram_bytes_;
         }
         unsigned long long model_bytes = 0;
-        if (impl_->vram_resolver_) model_bytes = impl_->vram_resolver_(model_id);
+        if (impl_->vram_resolver_) model_bytes = impl_->vram_resolver_(key);
         const bool model_from_registry = model_bytes != 0ull;
         if (!model_from_registry) {
             model_bytes = kDefaultTranslateModelVramBytes; // §4.3 step 2
@@ -598,15 +659,24 @@ TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_
     // the manager mu; never hold translate_pool_mu_ across it.
     RegisterFamily(family, exe);
     TranslatePoolEntry e;
-    e.model_id = model_id;
+    e.model_id = key;
     e.family = family;
     e.registered = true;
     e.spawn_gpu_env_override = cpu_leg;
+    // REQ-060: resolve the entry's eviction policy ONCE at registration
+    // (the injected boot-registry resolver; unset -> "evict"). The stored
+    // value is the registration-time policy: a later registry edit does not
+    // retroactively re-policy a live entry (the boot snapshot discipline the
+    // VRAM resolver already follows).
+    if (impl_->eviction_resolver_) {
+        const std::string policy = impl_->eviction_resolver_(key);
+        e.eviction_policy = (policy == "sticky") ? "sticky" : "evict";
+    }
     std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
     // Double-check under the lock: a sibling may have inserted while we were
     // registering. RegisterFamily is idempotent, so reusing the winner's entry
     // is correct.
-    const auto result = impl_->translate_pool_.emplace(model_id, std::move(e));
+    const auto result = impl_->translate_pool_.emplace(key, std::move(e));
     return &result.first->second;
 }
 
@@ -614,6 +684,88 @@ TranslatePoolEntry* WorkerManager::TranslatePoolEnsure(const std::string& model_
 unsigned long long WorkerManager::TranslatePoolReservedVramBytes() const {
     std::lock_guard<std::mutex> lk(impl_->translate_pool_vram_mu_);
     return impl_->translate_pool_reserved_vram_bytes_;
+}
+
+// ---- REQ-060: idle eviction + warmup holds ----------------------------------
+void WorkerManager::SetWorkerIdleMs(int worker_idle_ms) {
+    impl_->worker_idle_ms_.store(worker_idle_ms, std::memory_order_release);
+}
+
+int WorkerManager::WorkerIdleMs() const {
+    return impl_->worker_idle_ms_.load(std::memory_order_acquire);
+}
+
+void WorkerManager::SetEvictionPolicyResolver(EvictionPolicyResolver resolver) {
+    impl_->eviction_resolver_ = std::move(resolver);
+}
+
+void WorkerManager::SetBundledModelIdResolver(BundledModelIdResolver resolver) {
+    impl_->bundled_id_resolver_ = std::move(resolver);
+}
+
+void WorkerManager::RegisterWarmupConnection(const std::wstring& family) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    ++impl_->warmup_connections_[family];
+}
+
+void WorkerManager::UnregisterWarmupConnection(const std::wstring& family) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    const auto it = impl_->warmup_connections_.find(family);
+    if (it == impl_->warmup_connections_.end()) return; // unbalanced: harmless no-op
+    if (--it->second > 0) return;
+    impl_->warmup_connections_.erase(it);
+    // REQ-060: the LAST warmup hold released -> the family just became
+    // evictable again; give its idle clock a fresh window from NOW so the
+    // pre-warmup idle age can never instant-evict a freshly-warmed worker.
+    WorkerHandle* w = impl_->FindLocked(family);
+    if (w) w->last_activity_ms = NowMs();
+}
+
+int WorkerManager::WarmupConnectionCount(const std::wstring& family) const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    const auto it = impl_->warmup_connections_.find(family);
+    return it == impl_->warmup_connections_.end() ? 0 : it->second;
+}
+
+void WorkerManager::TouchWorkerActivity(const std::wstring& family) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    WorkerHandle* w = impl_->FindLocked(family);
+    if (w) w->last_activity_ms = NowMs();
+}
+
+bool WorkerManager::ResetTranslatePoolAccounting(const std::string& model_id) {
+    // Lock shape: pool mu -> vram mu, the established global order (P5a.5);
+    // the caller never holds impl_->mu here (the reaper's eviction perform
+    // phase and the unit pins call this with NO manager lock held).
+    //
+    // REQ-060 (UAF fix): the map node is NEVER erased — the dispatchers hold
+    // TranslatePoolEntry* across a whole job (dispute-verification
+    // 261009_0001 interleaving A proved the runtime erase dangles them). The
+    // entry survives with its accounting zeroed; the Ready-charge site
+    // re-charges reserved_vram_bytes when the family later respawns, so the
+    // tracker cannot drift (§12.4 exact-once: this subtract is the one and
+    // only restore for an evicted family).
+    std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
+    const auto it = impl_->translate_pool_.find(model_id);
+    if (it == impl_->translate_pool_.end()) return false;
+    const unsigned long long contribution = it->second.reserved_vram_bytes;
+    if (contribution != 0ull) {
+        std::lock_guard<std::mutex> vram_lk(impl_->translate_pool_vram_mu_);
+        if (impl_->translate_pool_reserved_vram_bytes_ >= contribution) {
+            impl_->translate_pool_reserved_vram_bytes_ -= contribution;
+        } else {
+            impl_->translate_pool_reserved_vram_bytes_ = 0;
+        }
+        it->second.reserved_vram_bytes = 0;
+    }
+    // The relay snapshot (relayed_worker_process) is a NON-OWNING alias of
+    // the worker's own process handle — the manager's close path owns it —
+    // so resetting the entry must NOT CloseHandle it (double close); clearing
+    // the snapshot fields discards the reference, exactly like the reaper's
+    // exit-side reset. The next job on the family re-relays unconditionally.
+    it->second.relayed_worker_process = nullptr;
+    it->second.relayed_model_id.clear();
+    return true;
 }
 
 void WorkerManager::SetVramBytesResolver(VramBytesResolver resolver) {
@@ -636,17 +788,22 @@ WorkerManager::VramGateSnapshot WorkerManager::TranslatePoolLastGateDecision() c
 bool WorkerManager::TranslatePoolNeedsRelay(const std::string& model_id,
                                             HANDLE current_process) {
     std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
-    const auto it = impl_->translate_pool_.find(model_id);
+    const std::string key =
+        NormalizeTranslatePoolLookupKey(impl_->bundled_id_resolver_, model_id);
+    const auto it = impl_->translate_pool_.find(key);
     if (it == impl_->translate_pool_.end()) return true; // no entry: relay required
     const TranslatePoolEntry& e = it->second;
+    // The id comparison stays on the RAW model_id by design (see the helper).
     return e.relayed_model_id != model_id || e.relayed_worker_process != current_process;
 }
 
 void WorkerManager::TranslatePoolMarkRelayed(const std::string& model_id, HANDLE process) {
     std::lock_guard<std::mutex> lk(impl_->translate_pool_mu_);
-    const auto it = impl_->translate_pool_.find(model_id);
+    const std::string key =
+        NormalizeTranslatePoolLookupKey(impl_->bundled_id_resolver_, model_id);
+    const auto it = impl_->translate_pool_.find(key);
     if (it == impl_->translate_pool_.end()) return;
-    it->second.relayed_model_id = model_id;
+    it->second.relayed_model_id = model_id; // raw id: the comparison above is raw
     it->second.relayed_worker_process = process;
 }
 
@@ -659,8 +816,15 @@ void WorkerManager::SetBusy(const std::wstring& family, bool busy) {
     std::lock_guard<std::mutex> lk(impl_->mu);
     WorkerHandle* w = impl_->FindLocked(family);
     if (!w) return;
-    if (busy && w->state == WorkerState::Ready) w->state = WorkerState::Busy;
-    else if (!busy && w->state == WorkerState::Busy) w->state = WorkerState::Ready;
+    // REQ-060: both job boundaries (assign + complete) refresh the idle
+    // clock; a family cycling jobs must never look idle to the reaper.
+    if (busy && w->state == WorkerState::Ready) {
+        w->state = WorkerState::Busy;
+        w->last_activity_ms = NowMs();
+    } else if (!busy && w->state == WorkerState::Busy) {
+        w->state = WorkerState::Ready;
+        w->last_activity_ms = NowMs();
+    }
 }
 
 // 260927_0003 F-01 (review round 2): single-flight acquire — see the header
@@ -671,6 +835,7 @@ bool WorkerManager::TrySetBusy(const std::wstring& family) {
     WorkerHandle* w = impl_->FindLocked(family);
     if (!w || w->state != WorkerState::Ready) return false;
     w->state = WorkerState::Busy;
+    w->last_activity_ms = NowMs(); // REQ-060: job assigned -> idle clock reset
     return true;
 }
 
@@ -871,7 +1036,15 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     WorkerHandle* w = impl_->FindLocked(family);
     if (!w) return nullptr;
 
-    if (w->state == WorkerState::Ready || w->state == WorkerState::Busy) return w;
+    if (w->state == WorkerState::Ready || w->state == WorkerState::Busy ||
+        w->state == WorkerState::Stopping) {
+        // REQ-060: Stopping returns the handle WITHOUT respawning — a graceful
+        // stop owns the handle fields until it sets Stopped, so a respawn from
+        // Stopping would close/replace the very handles GracefulStop is using
+        // (dispute-verification clover modes B/C). Dispatchers fail the
+        // subsequent TrySetBusy (state != Ready) and answer Busy (retry).
+        return w;
+    }
     if (w->state == WorkerState::Unavailable) return nullptr; // wrong deployment: NO respawn
 
     // Backoff gate (R-4): a recent crash defers the respawn.
@@ -1001,6 +1174,7 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     w->process = sr.process;
     w->state = WorkerState::Spawning;
     w->last_heartbeat_ms = NowMs();
+    w->last_activity_ms = NowMs(); // REQ-060: a spawn attempt is activity
 
     // ---- handshake phase 1: the worker connects to our pipe instance ----
     {
@@ -1091,6 +1265,7 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
     w->manifest = announced;
     w->spawn_failures = 0; // a clean handshake resets the crash streak
     w->state = WorkerState::Ready;
+    w->last_activity_ms = NowMs(); // REQ-060: Ready transition refreshes the idle clock
     // B-T3 (REQ-B004 §4.3): a translate-family worker reached Ready -> count
     // its model bytes in the reserved tracker. The gate charged the model at
     // registration (entry.reserved_vram_bytes == 0 until now, so a respawn
@@ -1139,19 +1314,45 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
 }
 
 // ---- M-2 graceful stop (tech gate order) ------------------------------------
+// REQ-060 (dispute-verification 261009_0001, clover modes B/C): the stop
+// works ONLY on mu-snapshotted handle COPIES. The old code read w.pipe /
+// w.process LIVE through the unlocked shutdown/ack/wait phases, and Stopped
+// was respawnable — a dispatcher's EnsureSpawned between the eviction claim
+// and the stop could respawn in place (closing the old handles, writing new
+// ones into the same WorkerHandle), after which this stop would send the
+// shutdown frame to the NEW worker, wait on / kill the NEW process, and
+// clobber the NEW Ready state. The Stopping state closes that window by
+// contract: EnsureSpawned early-returns WITHOUT respawning from Stopping, the
+// reaper's crash loop skips it, and SendToWorker/ReadFromWorker refuse it —
+// so from the Stopping claim until the final Stopped write the snapshot IS
+// the current generation and no mid-I/O re-validation is needed.
 bool WorkerManager::GracefulStop(WorkerHandle& w, int timeout_ms) {
+    HANDLE pipe = nullptr;
+    HANDLE process = nullptr;
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
-        if (!w.pipe) {
-            // Nothing to order down: just finalize the process side.
-            impl_->CloseProcessLocked(w);
-            w.state = WorkerState::Stopped;
-            return true;
+        pipe = w.pipe;     // snapshot: the unlocked phases use THESE copies
+        process = w.process;
+        // Conditional state write: refuse NEW dispatch only from a live
+        // serving state. Stopped/Crashed/Unavailable are either already
+        // claimed (the reaper's eviction claim writes Stopping itself) or not
+        // serving — writing Stopped there could only clobber a respawn that
+        // already published a new state under the same lock.
+        if (w.state == WorkerState::Spawning || w.state == WorkerState::Ready ||
+            w.state == WorkerState::Busy) {
+            w.state = WorkerState::Stopping; // refuse new dispatch immediately
         }
-        w.state = WorkerState::Stopped; // refuse new dispatch immediately
     }
-    // M-2 step 1: send shutdown (one synchronous frame write).
-    const bool sent = WritePipeFrame(w.pipe, wp::BuildShutdown()) == FrameWriteResult::Ok;
+    if (!pipe) {
+        // Nothing to order down: just finalize the process side when it is
+        // still the snapshot's generation.
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        if (w.process == process) impl_->CloseProcessLocked(w);
+        if (w.state == WorkerState::Stopping) w.state = WorkerState::Stopped;
+        return true;
+    }
+    // M-2 step 1: send shutdown (one synchronous frame write) on the SNAPSHOT.
+    const bool sent = WritePipeFrame(pipe, wp::BuildShutdown()) == FrameWriteResult::Ok;
     if (!sent) {
         // Pipe already dead: the worker cannot ack; fall through to the wait
         // (the done_event fires on the process exit we are waiting for).
@@ -1164,7 +1365,7 @@ bool WorkerManager::GracefulStop(WorkerHandle& w, int timeout_ms) {
     bool acked = false;
     while (NowMs() < deadline) {
         std::string json;
-        const PipeRead rc = ReadPipeFrame(w.pipe, json, 250);
+        const PipeRead rc = ReadPipeFrame(pipe, json, 250);
         if (rc == PipeRead::Ok) {
             if (wp::ParseShutdownAck(json)) { acked = true; break; }
             continue; // an in-flight event frame (e.g. a final) — consume it
@@ -1175,22 +1376,24 @@ bool WorkerManager::GracefulStop(WorkerHandle& w, int timeout_ms) {
     }
     // M-2 step 3: ONLY NOW close/disconnect the pipe (nothing in flight).
     // If the process still lives after the window, escalate to kill so an
-    // unresponsive worker cannot outlive the orchestrator.
+    // unresponsive worker cannot outlive the orchestrator. The snapshot is
+    // still the current generation: Stopping blocked every replacement.
     bool killed = false;
-    if (w.process) {
-        const DWORD wr = ::WaitForSingleObject(w.process, 2000);
+    if (process) {
+        const DWORD wr = ::WaitForSingleObject(process, 2000);
         if (wr != WAIT_OBJECT_0) {
             DIAG_F("ENGINEHOST/wmgr/013: worker did not exit after shutdown; terminating (family=%ws acked=%d)\n",
                    w.family.c_str(), acked ? 1 : 0);
-            TerminateProcessHandle(w.process);
+            TerminateProcessHandle(process);
             killed = true;
         }
-        impl_->close_fn(w.process, impl_->user);
-        w.process = nullptr;
+        impl_->close_fn(process, impl_->user);
     }
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
-        impl_->ClosePipeLocked(w);
+        if (w.process == process) w.process = nullptr; // the snapshot handle was closed above
+        impl_->ClosePipeLocked(w);                     // w.pipe is still the snapshot's generation
+        if (w.state == WorkerState::Stopping) w.state = WorkerState::Stopped;
     }
     DIAG_LOG("ENGINEHOST", "wmgr/014: family stopped (family=%ws acked=%d killed=%d)",
              w.family.c_str(), acked ? 1 : 0, killed ? 1 : 0);
@@ -1199,8 +1402,15 @@ bool WorkerManager::GracefulStop(WorkerHandle& w, int timeout_ms) {
 
 // ---- reaper (design §1.1 rule 3) --------------------------------------------
 int WorkerManager::ReaperPass(int64_t now_ms) {
-    std::lock_guard<std::mutex> lk(impl_->mu);
     int crashes = 0;
+    // REQ-060: idle-eviction candidates are COLLECTED under mu (state +
+    // policy + warmup checks in one consistent snapshot), then stopped AFTER
+    // an explicit unlock: the M-2 GracefulStop blocks (shutdown frame ->
+    // ack wait -> close) and must never run under the manager mutex (the
+    // ShutdownAll precedent, session 260918_0001). unique_lock (not
+    // lock_guard) solely so the unlock below is expressible.
+    std::vector<std::pair<std::wstring, std::string>> eviction_candidates;
+    std::unique_lock<std::mutex> lk(impl_->mu);
     for (auto& w : impl_->workers) {
         if (w.state != WorkerState::Ready && w.state != WorkerState::Busy &&
             w.state != WorkerState::Spawning) {
@@ -1283,6 +1493,69 @@ int WorkerManager::ReaperPass(int64_t now_ms) {
         DIAG_F("ENGINEHOST/wmgr/016: worker crashed (family=%ws exit=%lu streak=%d backoff_ms=%d)\n",
                w.family.c_str(), static_cast<unsigned long>(exit_code),
                w.spawn_failures, BackoffDelayMs(w.spawn_failures));
+    }
+
+    // ---- REQ-060: idle-eviction candidate collection ----
+    // A READY (non-Busy) translate worker whose idle age exceeds the
+    // configured budget, whose pool entry policy is "evict", and whose
+    // family has NO active warmup hold. Everything else (Busy jobs,
+    // Spawning handshakes, "sticky" policies, warm-held families,
+    // non-translate families) stays untouched.
+    {
+        const int64_t idle_budget = impl_->worker_idle_ms_.load(std::memory_order_acquire);
+        for (auto& w : impl_->workers) {
+            if (w.state != WorkerState::Ready) continue;
+            if (!w.process) continue; // seam-injected state without a handle
+            if (w.family.rfind(translate_pool::kWorkerFamilyTranslate, 0) != 0) continue;
+            if (now_ms - w.last_activity_ms <= idle_budget) continue;
+            if (impl_->warmup_connections_.count(w.family) != 0) continue;
+            const std::string model_id = impl_->PoolModelIdForFamily(w.family);
+            {
+                std::lock_guard<std::mutex> pool_lk(impl_->translate_pool_mu_);
+                const auto it = impl_->translate_pool_.find(model_id);
+                if (it == impl_->translate_pool_.end()) continue;
+                if (it->second.eviction_policy != "evict") continue; // "sticky" stays resident
+            }
+            eviction_candidates.emplace_back(w.family, model_id);
+        }
+    }
+    lk.unlock();
+    // ---- REQ-060: perform the evictions WITHOUT mu ----
+    for (const auto& cand : eviction_candidates) {
+        WorkerHandle* w = nullptr;
+        int64_t claimed_activity_ms = 0;
+        {
+            std::lock_guard<std::mutex> re_lk(impl_->mu);
+            w = impl_->FindLocked(cand.first);
+            // Re-validate under the lock — the race this closes: a
+            // dispatcher's TrySetBusy flips Ready->Busy between the candidate
+            // snapshot and the claim; a family that just took a job is never
+            // evicted.
+            if (!w || w->state != WorkerState::Ready) continue;
+            // REQ-060: re-check the warmup hold in the SAME claim lock — a
+            // warmup hello landing between the collection snapshot and this
+            // claim must not see its family evicted once (code-reviewer F1).
+            if (impl_->warmup_connections_.count(cand.first) != 0) continue;
+            w->state = WorkerState::Stopping; // claim: refuse new dispatch NOW
+            claimed_activity_ms = w->last_activity_ms; // snapshot for the log
+                                                       // (no unlocked re-read)
+        }
+        // M-2 ordered stop on the claimed generation: Stopping makes the
+        // claim and any respawn mutually exclusive (same mu), so the stop's
+        // snapshot is the current generation for its whole run.
+        if (!GracefulStop(*w)) {
+            // REQ-060 (code-reviewer F3): the stop observed neither an ack
+            // nor a kill — the worker may still be running past its eviction.
+            // Shape-only line (family only, never content) so the residual
+            // case is diagnosable from the diag log.
+            DIAG_F("ENGINEHOST/wmgr/024: idle eviction stop returned false; worker may outlive eviction (family=%ws)\n",
+                   cand.first.c_str());
+        }
+        // REQ-060 (UAF fix): reset the entry's accounting; the pool node
+        // survives (the dispatchers may still hold its pointer).
+        (void)ResetTranslatePoolAccounting(cand.second);
+        DIAG_LOG("ENGINEHOST", "wmgr/022: idle eviction (family=%ws idle_ms=%lld policy=evict)",
+                 cand.first.c_str(), static_cast<long long>(now_ms - claimed_activity_ms));
     }
     return crashes;
 }

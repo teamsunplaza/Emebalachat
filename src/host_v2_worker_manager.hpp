@@ -69,6 +69,7 @@ enum class WorkerState : unsigned char {
     Ready,      // announce validated, accepts dispatch
     Busy,       // a job is in flight (T4 dispatcher sets/clears this)
     Crashed,    // child died abnormally; backoff respawn pending
+    Stopping,   // REQ-060: a graceful stop owns the handle; NO respawn/dispatch
     Stopped,    // graceful stop completed (or never spawned)
     Unavailable, // handshake rejected (abi/family mismatch) — NO respawn
 };
@@ -79,6 +80,7 @@ inline std::string_view WorkerStateToString(WorkerState s) {
         case WorkerState::Ready:       return "ready";
         case WorkerState::Busy:        return "busy";
         case WorkerState::Crashed:     return "crashed";
+        case WorkerState::Stopping:    return "stopping";
         case WorkerState::Stopped:     return "stopped";
         case WorkerState::Unavailable: return "unavailable";
     }
@@ -131,7 +133,7 @@ inline bool AsrSpawnRetryWarranted(WorkerState s, int64_t now_ms, int64_t deadli
 // state machine runs process-free.
 struct SpawnRequest {
     std::wstring exe_path;      // absolute path to the worker exe
-    std::wstring pipe_name;     // \\.\pipe\emebala-engine-worker-<pid>-<rand>
+    std::wstring pipe_name;     // \\.\pipe\emebala-engine-worker-<pid>-<tick>-<seq>
     std::string token;          // 32 hex chars
     // Plan-B (REQ-B004) B-T3, technical gate A-4: per-spawn environment block
     // override. Empty -> the child inherits the parent's environment verbatim
@@ -175,6 +177,19 @@ using CloseProcessFn = void (*)(HANDLE process, void* user);
 //     rule (query_ok=false -> never allow GPU, vramgate::DecideSpawnVram).
 using VramBytesResolver = std::function<unsigned long long(const std::string& model_id)>;
 using FreeVramProbe = std::function<bool(unsigned long long& out_free_bytes)>;
+// REQ-060: model_id -> its registry eviction policy ("sticky" | "evict").
+// Same technical-gate A-5 discipline as the VRAM seams: host_v2 links
+// NEITHER the registry nor engine_core, so the boot snapshot lookup is
+// injected once at boot (host_main.cpp). Unset/empty/absent-model answers
+// normalize to "evict" (the pool-side safe default).
+using EvictionPolicyResolver = std::function<std::string(const std::string& model_id)>;
+// REQ-060 (deepseek F-07 fix): -> the registry id of the BUNDLED model (the
+// pinned default; "" when the boot registry snapshot names no bundled entry).
+// Injected once at boot (host_main.cpp, g_registry snapshot) with the same
+// technical-gate A-5 discipline as the resolvers above; TranslatePoolEnsure
+// normalizes an explicit bundled-id request onto the pinned-default ("") pool
+// key so both ids share ONE entry/family instead of two resident workers.
+using BundledModelIdResolver = std::function<std::string()>;
 
 // ---- per-family handle (design §1.1 WorkerHandle) --------------------------
 struct WorkerHandle {
@@ -191,6 +206,12 @@ struct WorkerHandle {
     int64_t last_heartbeat_ms = 0;
     // Diagnostics counters (shape-only; surfaced in the T4 health block).
     int64_t jobs_failed_on_crash = 0;
+    // REQ-060: the family worker's last observable activity — stamped at
+    // spawn issue, the Ready transition, job assignment (Busy acquire) and
+    // job completion (Busy release). The reaper's idle-eviction branch
+    // compares (now - last_activity_ms) against the configured
+    // worker_idle_ms budget.
+    int64_t last_activity_ms = 0;
 };
 
 // ---- per-model translate pool entry (Plan-B §3.2 / REQ-B003) ----------------
@@ -232,6 +253,21 @@ struct TranslatePoolEntry {
     // Crashed->respawn path). A respawned CPU-leg worker must never silently
     // take the GPU leg (REQ-B004 honesty on the designed crash-respawn path).
     bool spawn_gpu_env_override = false; // true -> child env carries EMEBALA_MT_GPU=0
+    // ---- REQ-060: idle-eviction policy ----
+    // "sticky" (never evict; the family stays resident like the pinned
+    // default) | "evict" (the reaper may GracefulStop it once idle past the
+    // worker_idle_ms budget). Resolved ONCE at pool registration from the
+    // injected EvictionPolicyResolver (the boot registry snapshot answers
+    // resource.eviction; a model absent from the registry -> "evict") and
+    // stored verbatim — anything other than the exact "sticky" spelling is
+    // normalized to "evict".
+    std::string eviction_policy = "evict";
+    // REQ-060 (UAF fix, dispute-verification 261009_0001 interleaving A): a
+    // pool node is NEVER erased at runtime — the dispatchers hold a
+    // TranslatePoolEntry* across a whole job, so erasing would dangle their
+    // pointer. Idle eviction only RESETS the accounting fields below; the
+    // node (small, bounded by the number of registry model ids) lives for the
+    // host's lifetime exactly like the pre-REQ-060 map.
 };
 
 // ---- job-wait frame classifier (REQ-049) -----------------------------------
@@ -242,7 +278,8 @@ struct TranslatePoolEntry {
 enum class JobWaitFrame : unsigned char {
     Final,     // event kind=final -> terminal success
     Error,     // event kind=error -> terminal failure (code mapped by caller)
-    Progress,  // event kind=partial|token|eos -> consume, keep waiting
+    Progress,  // event kind=partial|token|eos, or a stray session "opened"
+               // ack (REQ-060) -> consume, keep waiting
     Heartbeat, // op=heartbeat -> consume, keep waiting
     Malformed, // anything else -> fail-closed protocol violation
 };
@@ -255,6 +292,15 @@ inline JobWaitFrame ClassifyJobWaitFrame(std::string_view json, workerproto::Eve
     if (enginehost::JsonParseObject(json, p)) {
         const auto* op = enginehost::detail::FindField(p, "op");
         if (op && op->is_string && op->text == "heartbeat") return JobWaitFrame::Heartbeat;
+        // REQ-060 (MiMo F-N1): a warmup preload kick relays session_open with
+        // a bounded grace (kWorkerSpawnConnectTimeoutMs); when the model load
+        // outlasts it, the kick's opened wait times out and the worker's LATE
+        // opened ack stays queued on the pipe. The next job's drain only covers
+        // strays that arrived while the dispatcher was IDLE, so an opened that
+        // lands mid-wait used to classify Malformed and fail the job
+        // engine_failed. An opened ack is never a job answer: consume it like
+        // a progress frame and keep waiting for the terminal event.
+        if (op && op->is_string && op->text == "opened") return JobWaitFrame::Progress;
     }
     if (!wp::ParseEvent(json, ev)) return JobWaitFrame::Malformed;
     switch (ev.kind) {
@@ -451,6 +497,9 @@ public:
     // relayed_worker_process != current_process. Accessed under the per-family
     // Busy lock (TrySetBusy) — the F-01 single-flight contract provides the
     // mutation discipline; pool mu guards only the O(1) map lookup.
+    // REQ-060: ONLY the map lookup key is normalized (a raw bundled id resolves
+    // onto the shared "" entry, same as TranslatePoolEnsure); the stored
+    // relayed_model_id and the comparison itself stay on the caller's raw id.
     bool TranslatePoolNeedsRelay(const std::string& model_id, HANDLE current_process);
 
     // Mark relay accepted (after EnsureWorkerModelRelayed succeeds).
@@ -465,6 +514,56 @@ public:
     // decremented by the reaper when a translate worker exits. ASR families
     // are NEVER counted (§4.5). Test-only accessor.
     unsigned long long TranslatePoolReservedVramBytes() const;
+
+    // ---- REQ-060: idle eviction + warmup holds ----------------------------
+    // The idle budget a READY (non-Busy) translate worker may sit unused
+    // before the reaper evicts it (claim -> M-2 GracefulStop -> pool-entry
+    // accounting reset + reserved-VRAM restore; the pool node itself survives,
+    // see the UAF-fix note on TranslatePoolEntry). Set ONCE at boot from
+    // config.json's engine_host.worker_idle_ms (the reader clamps; the shipped
+    // default is 90000 ms). Test accessor alongside the B-T3 seams.
+    void SetWorkerIdleMs(int worker_idle_ms);
+    int WorkerIdleMs() const;
+
+    // REQ-060: the per-model eviction-policy injection (technical gate A-5,
+    // same discipline as SetVramBytesResolver). Resolved at pool-entry
+    // registration (TranslatePoolEnsure / the boot entry); unset -> "evict".
+    void SetEvictionPolicyResolver(EvictionPolicyResolver resolver);
+
+    // REQ-060 (deepseek F-07 fix): the bundled-model-id injection (technical
+    // gate A-5, same discipline). Set once at boot from the g_registry boot
+    // snapshot; unset -> no normalization. See the alias comment above.
+    void SetBundledModelIdResolver(BundledModelIdResolver resolver);
+
+    // REQ-060: one ACTIVE warmup connection holds the family alive: while
+    // the count is > 0 the reaper's idle-eviction branch skips THIS family
+    // (other families evict normally). RegisterWarmupConnection is called on
+    // a warmup hello; UnregisterWarmupConnection MUST run on EVERY session
+    // exit path (host_main.cpp holds it in an RAII guard) and resets the
+    // family's idle clock when the LAST hold releases, so a freshly-warmed
+    // worker gets a full idle budget before it can be evicted. Unbalanced
+    // calls are harmless no-ops (count floors at 0).
+    void RegisterWarmupConnection(const std::wstring& family);
+    void UnregisterWarmupConnection(const std::wstring& family);
+    int WarmupConnectionCount(const std::wstring& family) const;
+
+    // REQ-060: explicit idle-clock touch (host-side activity pings; the
+    // manager stamps it itself on spawn/Ready/Busy transitions).
+    void TouchWorkerActivity(const std::wstring& family);
+
+    // REQ-060 (UAF fix): reset ONE translate pool entry's idle-eviction
+    // accounting (the eviction path — replaces the runtime map ERASE, which
+    // dangled the dispatchers' TranslatePoolEntry*: dispute-verification
+    // 261009_0001 interleaving A). Restores the entry's exact reserved-VRAM
+    // contribution (never below 0, the §12.4 exact-once discipline) and clears
+    // the relay snapshot WITHOUT a CloseHandle (relayed_worker_process aliases
+    // the worker's own process handle, owned and closed by the manager — the
+    // same non-owning discipline as the reaper's exit-side reset). The entry
+    // NODE survives: a later TranslatePoolEnsure reuses it (the VRAM gate does
+    // NOT re-run; the Ready-charge site re-charges when the family respawns).
+    // Lock shape: pool mu -> vram mu (the caller holds NO manager lock).
+    // Returns false when the model_id has no entry.
+    bool ResetTranslatePoolAccounting(const std::string& model_id);
 
     // M-2 graceful stop of ONE family: shutdown -> wait shutdown_ack/EOF ->
     // close. Returns after the pipe is closed. Safe on a dead worker.
@@ -498,12 +597,19 @@ public:
 
 private:
     // NOTE (header): Impl's member layout is completed in the .cpp. The pool
-    // containers + translate exe path + B-T3 gate seams live in Impl there:
+    // containers + translate exe path + B-T3 gate seams + the REQ-060
+    // eviction/warmup state live in Impl there:
     //   std::unordered_map<std::string, TranslatePoolEntry> translate_pool_;
     //   std::mutex translate_pool_mu_;
     //   std::wstring translate_exe_path_;
     //   unsigned long long translate_pool_reserved_vram_bytes_; (§4.3, + its mu)
     //   VramBytesResolver / FreeVramProbe / override / last-gate snapshot
+    //   std::atomic<int> worker_idle_ms_; (REQ-060, default 90000)
+    //   EvictionPolicyResolver eviction_resolver_; (REQ-060, A-5 injection)
+    //   BundledModelIdResolver bundled_id_resolver_; (REQ-060, A-5 injection)
+    //   std::unordered_map<std::wstring,int> warmup_connections_; (REQ-060,
+    //     guarded by impl_->mu — brief compare+store under the outermost
+    //     lock, consistent with the single global order)
     //
     // P5a.5 C1 (195700 F-1) MAP-MUTEX CONTRACT: EVERY access to
     // `translate_pool_` (find / emplace / iterate / entry-field read+write)

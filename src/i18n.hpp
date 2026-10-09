@@ -338,6 +338,30 @@ enum class StringId {
     ModelDlFailed,       // "다운로드에 실패했습니다. 연결을 확인하고 다시 시도하세요." / "The download failed. Check your connection and try again."
     ModelDlDiskSpace,    // "디스크 여유 공간이 부족합니다(약 {s} 필요)." / "Not enough free disk space (about {s} required)."
 
+    // REQ-060 (session 261009_0001, engine-idle-eviction-warmup): the
+    // translation-model load-mode settings UI. The first six carry the new
+    // engine-host settings dialog (src/ui/engine_host_settings_window.*): the
+    // tray entry row (wired by the integration agent), the dialog title, the
+    // two fixed combo options and their per-selection description lines. The
+    // remaining seven extend the gguf-model manager (resident-policy label
+    // suffixes, the policy-toggle button, and the duplicate-file warning /
+    // cleanup pair — {n}/{s}/{c} placeholders are the normalized stem, the
+    // human size and the copy count). Appended at the tail so the EnumCount
+    // completeness loop covers them automatically (157x37).
+    EngineLoadSettingsMenuRow, // "번역 모델 로드 설정…" / "Translation model load settings…"
+    EngineLoadSettingsTitle,   // "번역 모델 로드" / "Translation model loading"
+    LoadModeOnUse,             // "사용할 때 로드 (권장)" / "Load when used (recommended)"
+    LoadModeWarmup,            // "미리 로드" / "Preload"
+    LoadModeOnUseDesc,         // "메모리를 아껴요. 첫 번째 번역이 잠깐 늦어질 수 있어요." / "Saves memory. The first translation may be a few seconds late."
+    LoadModeWarmupDesc,        // "번역이 바로 시작돼요. 모델이 메모리에 계속 올라가 있어요." / "Translation starts right away. The model stays in memory."
+    GgufPolicySticky,          // "(상주 유지)" / "(Keep resident)"
+    GgufPolicyEvict,           // "(사용 시 로드)" / "(Load on use)"
+    GgufManagerTogglePolicy,   // "정책 전환" / "Toggle policy"
+    GgufDuplicateWarning,      // "중복 파일: {n} {s} × {c}" / "Duplicate files: {n} {s} × {c}"
+    GgufManagerDedupe,         // "중복 정리" / "Clean up duplicates"
+    GgufManagerDedupeDone,     // "중복 파일을 휴지통으로 옮겼습니다." / "The duplicate files were moved to the Recycle Bin."
+    GgufManagerDedupeFailed,   // "중복 파일을 정리하지 못했습니다. 파일이 다른 프로그램에서 사용 중인지 확인하세요." / "The duplicate files could not be cleaned up. Check whether another program is using them."
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

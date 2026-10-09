@@ -587,6 +587,31 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // branch — see resolve_active_model). An empty model_id keeps the
             // pinned default (the pre-REQ-045 behavior, byte-identical).
             active_model_id = msg.model_id;
+            // REQ-060: warmup "미리 로드" — an explicit preload asks the worker
+            // to resolve the just-relayed model_id and EnsureLoaded it NOW, so
+            // the model sits resident in VRAM before the opened ack (the first
+            // real job then skips the multi-second load; the worker holds one
+            // model without unload, so post-load residency is automatic).
+            // This IO thread blocks for the whole load — acceptable by design
+            // (one process per worker, this thread owns the frame loop, and
+            // the orchestrator awaits opened before dispatching anyway).
+            // Failure is NON-fatal: one shape-only diag line and the session
+            // still opens normally — the first job re-attempts EnsureLoaded
+            // through the ordinary model_missing path.
+            if (msg.preload) {
+                const std::string preload_path = resolve_active_model(nullptr);
+                if (!preload_path.empty() && engine->EnsureLoaded(preload_path)) {
+                    // Shape-only (host/004 contract): the id's length, never
+                    // its content, goes to the diag log.
+                    DIAG_LOG("ENGINEHOST",
+                             "worker/028: preload kept model resident (id_len=%zu)",
+                             active_model_id.size());
+                } else {
+                    DIAG_LOG("ENGINEHOST",
+                             "worker/029: preload load failed; session opens unloaded "
+                             "(first job retries EnsureLoaded)");
+                }
+            }
             if (!WriteFrame(pipe, wp::BuildOpened(msg.session))) {
                 return 3;
             }

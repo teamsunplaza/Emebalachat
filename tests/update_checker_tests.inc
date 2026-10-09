@@ -54,16 +54,16 @@ void TestUpdateCheckerVersionParse() {
     TEST_CHECK(updatelogic::CompareVersions(*c, *a) > 0, "UC: patch bump is newer");
     TEST_CHECK(updatelogic::CompareVersions(*a, *d) > 0, "UC: 0.10.2 > 0.9.9 (minor over patch)");
 
-    // The offer decision against the running build (kAppVersionA == 0.10.2).
+    // The offer decision against the running build (kAppVersionA == 0.10.3).
     const auto current = updatelogic::ParseVersion(kAppVersionA);
-    TEST_CHECK(current && updatelogic::CompareVersions(*current, *a) == 0,
-               "UC: kAppVersionA parses and equals 0.10.2");
+    TEST_CHECK(current && updatelogic::CompareVersions(*current, *c) == 0,
+               "UC: kAppVersionA parses and equals 0.10.3");
     TEST_CHECK(updatelogic::CompareVersions(*b, *current) > 0,
-               "UC: v0.11.0 offered over 0.10.2 -> UpdateAvailable");
-    TEST_CHECK(updatelogic::CompareVersions(*a, *current) == 0,
-               "UC: v0.10.2 offered over 0.10.2 -> UpToDate (never self-update)");
+               "UC: v0.11.0 offered over 0.10.3 -> UpdateAvailable");
+    TEST_CHECK(updatelogic::CompareVersions(*c, *current) == 0,
+               "UC: v0.10.3 offered over 0.10.3 -> UpToDate (never self-update)");
     TEST_CHECK(updatelogic::CompareVersions(*d, *current) < 0,
-               "UC: v0.9.9 offered over 0.10.2 -> UpToDate");
+               "UC: v0.9.9 offered over 0.10.3 -> UpToDate");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-UC version parse + compare passed." << std::endl;

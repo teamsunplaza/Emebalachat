@@ -410,6 +410,11 @@ struct Job {
     // client family ("emebala-chat" relays the live user pin; every other
     // client, e.g. "emebala-listner", is forced to the pinned default).
     std::string client;
+    // REQ-060: an explicit per-request registry model id (TranslateMsg's
+    // OPTIONAL model_id member). Empty = the legacy relay-pin path (every
+    // pre-REQ-060 client); non-empty wins over RelayPinForClient in the
+    // dispatcher.
+    std::string model_id;
 };
 
 class JobQueue {
@@ -715,15 +720,23 @@ void WatchdogLoop() {
 // worker resolves its model inside the worker (registry.json under
 // Common\models, ggml_asr_worker.cpp ResolveModelPath), so there is no
 // orchestrator-side model relay or file-presence probe on the asr path.
+// REQ-060: `preload` (default false) rides the EXISTING session_open relay —
+// only an explicit true emits the wire member, so the hot-path dispatchers
+// keep byte-identical frames and never pay a blocking reload per dispatch.
+// `grace_ms` bounds the opened wait: a preload open blocks on a full model
+// load inside the worker, so the warmup caller passes a spawn-scale budget;
+// the default stays the pre-REQ-060 job-relay grace.
 bool EnsureWorkerModelRelayed(host_v2::WorkerManager& wmgr, const std::wstring& family,
-                              const std::string& model_id) {
+                              const std::string& model_id, bool preload = false,
+                              int grace_ms = kWorkerAnswerGraceMs) {
     namespace wp = emebalachat::workerproto;
-    if (!wmgr.SendToWorker(family, wp::BuildSessionOpen(0, "translate", model_id, "default"))) {
+    if (!wmgr.SendToWorker(family, wp::BuildSessionOpen(0, "translate", model_id, "default",
+                                                        preload))) {
         return false;
     }
     for (;;) {
         std::string json;
-        const auto rc = wmgr.ReadFromWorker(family, json, kWorkerAnswerGraceMs);
+        const auto rc = wmgr.ReadFromWorker(family, json, grace_ms);
         if (rc == host_v2::WorkerManager::WorkerRead::Ok) {
             std::uint64_t session = 0;
             if (wp::ParseOpened(json, session)) {
@@ -790,6 +803,152 @@ inline std::string RelayPinForClient(const std::string& client) {
     return "";
 }
 
+// REQ-060 (review finding F-09 fix): the SINGLE pin-resolution precedence for
+// EVERY translate path (v1 dispatcher, v2 dispatcher, warmup registration).
+// Priority, highest first:
+//   1. client policy model_id (REQ-CP T3, design §9 rows 3-4): a non-empty
+//      policy id ALWAYS wins — including over a per-request explicit id. This
+//      restores the REQ-CP T3 contract the bare explicit-id branch had made
+//      unreachable from chat clients.
+//   2. explicit per-request model_id (REQ-060): the v1 wire member, or the
+//      v2 session model (the v2 per-request selection).
+//   3. legacy relay fallback (RelayPinForClient above): the identity-gated
+//      C1 config pin for chat, "" (pinned bundled default) for every other
+//      client (item D, session 260928_0001).
+// The policy read rides the T2 live cache (content-level mtime/size), and the
+// fallback's own policy read hits that same cache, so the resolver costs one
+// extra GetFileAttributesEx signature check — the same already-documented
+// per-job pattern as the sampling stamp below.
+inline std::string ResolveTranslatePin(const std::string& client,
+                                       const std::string& explicit_model_id) {
+    namespace cp = emebalachat::enginehost::clientpolicy;
+    // REQ-CP T3: resolve the per-client policy LIVE per job (the T2 reader;
+    // absent/garbage/schema-rejected -> compiled-in defaults with model_id ""
+    // -> falls through to the explicit id / relay fallback exactly like the
+    // pre-REQ-060 behavior).
+    const cp::ClientPolicy policy = enginehost::LoadClientPolicyLive(client, L"");
+    if (!policy.model_id.empty()) {
+        return policy.model_id; // REQ-CP T3: the policy id wins outright.
+    }
+    if (!explicit_model_id.empty()) {
+        return explicit_model_id; // REQ-060: explicit per-request id next.
+    }
+    return RelayPinForClient(client); // legacy identity-gated fallback.
+}
+
+// ---- REQ-060: warmup connections + async preload kicks -----------------------
+// A warmup hello (HelloMsg.warmup) asks the host to hold the family's idle
+// eviction AND to preload the worker/model before the first real translate.
+// The hold is an RAII guard so EVERY session exit path (the v1 loop returns
+// are many) releases it; the manager resets the family's idle clock when
+// the LAST hold releases.
+struct WarmupConnectionGuard {
+    host_v2::WorkerManager* wmgr = nullptr;
+    std::wstring family;
+    WarmupConnectionGuard(host_v2::WorkerManager& m, std::wstring f)
+        : wmgr(&m), family(std::move(f)) {}
+    ~WarmupConnectionGuard() {
+        if (wmgr) wmgr->UnregisterWarmupConnection(family);
+    }
+    WarmupConnectionGuard(const WarmupConnectionGuard&) = delete;
+    WarmupConnectionGuard& operator=(const WarmupConnectionGuard&) = delete;
+};
+
+// The async preload kicks. EnsureSpawned blocks on the connect+announce
+// handshake (deliberate manager-mutex convoy; a cold spawn takes seconds),
+// so the warmup preload MUST NOT run on the session thread. Each kick is a
+// short-lived thread tracked host-lifetime; the shutdown path joins the
+// tracker BEFORE wmgr.ShutdownAll() so a warmup thread can never call into
+// a torn-down manager.
+// REQ-060 (dispute-verification secondary a): std::thread::joinable() is
+// TRUE for a finished-but-unjoined thread, so the old "hygiene" never reaped
+// anything — every warmup reconnect accumulated one std::thread (and its OS
+// handle), and a kick landing after JoinWarmupSpawns() left an unjoined
+// thread in this global for static-destruction std::terminate. Each slot
+// therefore carries a completion flag the kick body sets at exit: kick
+// registration joins+reaps every COMPLETED slot first (bounded, non-blocking
+// — done threads join instantly), and JoinWarmupSpawns() latches `closed` so
+// a late warmup hello refuses to kick instead of leaking a thread past the
+// final join.
+struct WarmupSpawnSlot {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done; // set by the kick body at exit
+};
+struct WarmupSpawnTracker {
+    std::mutex mu;
+    std::vector<WarmupSpawnSlot> slots;
+    bool closed = false; // latched by JoinWarmupSpawns (host shutdown)
+};
+WarmupSpawnTracker g_warmup_spawns;
+
+void KickWarmupSpawn(host_v2::WorkerManager& wmgr, const std::wstring& family,
+                     const std::string& model_id) {
+    std::lock_guard<std::mutex> lk(g_warmup_spawns.mu);
+    if (g_warmup_spawns.closed) return; // the final join already ran
+    auto& v = g_warmup_spawns.slots;
+    for (auto it = v.begin(); it != v.end();) {
+        if (it->done->load(std::memory_order_acquire)) {
+            if (it->thread.joinable()) it->thread.join(); // completed: reap
+            it = v.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread t([done, &wmgr, family, model_id] {
+        if (!g_shutdown.load(std::memory_order_acquire)) {
+            host_v2::WorkerHandle* w = wmgr.EnsureSpawned(family);
+            if (!w) {
+                // Shape-only: the family name only, never content.
+                DIAG_LOG("ENGINEHOST", "wmgr/023: warmup spawn unavailable (family=%ws)",
+                         family.c_str());
+            } else if (wmgr.TrySetBusy(family)) {
+                // REQ-060: the worker is Ready — single-flight the preload
+                // relay exactly like a dispatcher (Ready->Busy -> session_open
+                // -> opened -> release) so this thread never reads the family
+                // pipe concurrently with a dispatcher (single-reader-per-family
+                // is the pipe discipline). Freshly spawned, this IS the first
+                // relay and carries the preload; already relayed, it is the one
+                // duplicate preload open (the worker's EnsureLoaded is
+                // idempotent, so the repeat is harmless — one send per
+                // registration is enough). MarkRelayed inside the Busy window
+                // keeps the next hot job from re-relaying. A Busy family has a
+                // job in flight, which loads the model itself — the preload is
+                // skipped there, not failed. A failed preload logs one line and
+                // keeps the warmup hold; the dispatcher re-relay retries the
+                // load (it carries preload while the hold lives).
+                namespace wp = emebalachat::workerproto;
+                if (EnsureWorkerModelRelayed(wmgr, family, model_id, /*preload=*/true,
+                                             wp::kWorkerSpawnConnectTimeoutMs)) {
+                    wmgr.TranslatePoolMarkRelayed(model_id, w->process);
+                } else {
+                    DIAG_LOG("ENGINEHOST",
+                             "wmgr/025: warmup preload relay failed (family=%ws)",
+                             family.c_str());
+                }
+                wmgr.SetBusy(family, false);
+            }
+        }
+        done->store(true, std::memory_order_release);
+    });
+    v.push_back(WarmupSpawnSlot{std::move(t), std::move(done)});
+}
+
+void JoinWarmupSpawns() {
+    std::vector<std::thread> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_warmup_spawns.mu);
+        g_warmup_spawns.closed = true; // REQ-060: late kicks refuse (no thread
+                                       // can be registered past the final join)
+        pending.reserve(g_warmup_spawns.slots.size());
+        for (auto& s : g_warmup_spawns.slots) pending.push_back(std::move(s.thread));
+        g_warmup_spawns.slots.clear();
+    }
+    for (auto& t : pending) {
+        if (t.joinable()) t.join();
+    }
+}
+
 // REQ-CP T3 (design §11 T3): a deterministic, client-scoped session id for v1
 // profile jobs (which are otherwise sessionless). The worker reads job.session
 // ONLY to echo it back on the terminal event (ggml_translate_worker.cpp: the
@@ -818,8 +977,8 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
     // the family for every post-spawn reference resolves from
     // TranslatePoolEntry::family after `pin` (no hardcoded per-loop family,
     // no per-loop relay snapshot locals: the pool entry owns the relay state,
-    // design §3.5). The v1 one-shot client never sends a model_id, so the pin
-    // RelayPinForClient resolves is the per-client gated config relay (item D).
+    // design §3.5). The pin is the SHARED per-job resolution (policy ->
+    // explicit id -> the per-client gated config relay fallback, item D).
     for (;;) {
         Job job;
         if (!g_queue.Pop(job)) break; // shutdown
@@ -827,10 +986,15 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // REQ-055: read the live C1-gated pin BEFORE the fast path so the
         // probe consults the RESOLVED model ("" -> pinned default check —
         // was ModelFileExists(), pinned-only, another boot-snapshot shadow).
-        // Item D: the v1 client never sends a model_id, so the pin is the
+        // Item D: the relay fallback (tier 3 of the resolver below) is the
         // per-client gated config relay — "emebala-chat" keeps the live
         // user_gguf pin; any other client is forced to "" (pinned default).
-        const std::string pin = RelayPinForClient(job.client);
+        // REQ-060: the per-request model_id now rides the SHARED resolver
+        // (ResolveTranslatePin): a non-empty client policy model_id
+        // (REQ-CP T3) outranks the explicit id, then the identity-gated
+        // relay fallback — the empty-member default keeps every
+        // pre-REQ-060 client on the exact legacy path.
+        const std::string pin = ResolveTranslatePin(job.client, job.model_id);
         // REQ-CP T3 (design §9 row 4): resolve the SAME per-client policy once
         // per job for the v1 job frame. The reader is the T2 live cache (one
         // extra GetFileAttributesEx signature check; the content text is
@@ -926,7 +1090,13 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // relay section sits strictly inside the TrySetBusy->SetBusy(false)
         // window).
         if (wmgr.TranslatePoolNeedsRelay(pin, w->process)) {
-            if (EnsureWorkerModelRelayed(wmgr, e->family, pin)) {
+            // REQ-060: a live warmup hold upgrades this re-relay to the
+            // preload session_open — a crash respawn resets the worker's
+            // active model while the hold keeps the family alive, so the
+            // reload belongs at relay time, not at the first job. No hold ->
+            // default false: the hot path never pays a blocking reload.
+            const bool warmup_preload = wmgr.WarmupConnectionCount(e->family) > 0;
+            if (EnsureWorkerModelRelayed(wmgr, e->family, pin, warmup_preload)) {
                 wmgr.TranslatePoolMarkRelayed(pin, w->process);
             }
         }
@@ -1147,28 +1317,35 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         if (!requester) continue;
         // REQ-045 P4-4 (R9): the fast path must consult the SESSION's model,
         // not only the pinned one — else a selected third-party model whose
-        // file is absent would be mis-judged present. Session model wins;
-        // a sessionless job falls back to the LIVE config pin (REQ-055: the
-        // boot snapshot went stale after an engine switch; busy hosts never
-        // idle out).
+        // file is absent would be mis-judged present. The session model wins
+        // only when no client policy model_id pins this client (REQ-CP T3
+        // restored, review F-09); a sessionless job falls back to the LIVE
+        // config pin (REQ-055: the boot snapshot went stale after an engine
+        // switch; busy hosts never idle out).
         // Item D (C1/F-1, session 260928_0001): the sessionless fallback gates
         // on the ENQUEUE-TIME identity snapshot (SchedItem.client, copied at
         // the translate-enqueue site) — never the LIVE requester->client field:
         // pooled connections are reused across sessions, so a new hello can
         // overwrite conn.client while this item is still queued, and the live
         // std::string read would race the hello-thread write (UB). The session
-        // model still wins below when a session exists.
-        std::string model_id = RelayPinForClient(item.client);
+        // model rides the SHARED resolver below as the explicit id.
+        std::string explicit_model_id;
         host_v2::SessionRecord sess;
         if (item.session != 0 && g_sessions.Find(item.session, sess) && !sess.model_id.empty()) {
-            model_id = sess.model_id;
+            explicit_model_id = sess.model_id; // the v2 per-request explicit id (REQ-060)
         }
+        // REQ-060 (F-09 fix): the SAME resolver as the v1 dispatcher — a
+        // non-empty policy model_id (REQ-CP T3) outranks the session model
+        // exactly like the v1 explicit id, then the identity-gated relay
+        // fallback.
+        const std::string model_id = ResolveTranslatePin(item.client, explicit_model_id);
         // REQ-CP T3 (design §9 row 5): resolve the per-client policy once per
         // job for the v2 job frame (sampling stamp). The reader is the T2 live
         // content-level cache; absent file -> compiled-in defaults (numerically
-        // the shipped values). The session model override above still wins for
-        // the model pin (request > client profile); the session cannot override
-        // sampling on the frozen-internal frame, so the policy sampling applies.
+        // the shipped values). The pin above already resolved through the same
+        // policy first (policy > session model, review F-09); the session
+        // cannot override sampling on the frozen-internal frame, so the policy
+        // sampling applies.
         const emebalachat::enginehost::clientpolicy::ClientPolicy item_policy =
             enginehost::LoadClientPolicyLive(item.client, L"");
         if (!ModelFileExistsFor(model_id)) {
@@ -1219,7 +1396,10 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // snapshots; NeedsRelay/MarkRelayed are the byte-identical comparison
         // and carry the same under-Busy discipline (tech-gate item 2).
         if (wmgr.TranslatePoolNeedsRelay(model_id, w->process)) {
-            if (EnsureWorkerModelRelayed(wmgr, e->family, model_id)) {
+            // REQ-060: same warmup-hold preload upgrade as the v1 loop (a
+            // crash respawn mid-hold re-loads at relay time, not at the job).
+            const bool warmup_preload = wmgr.WarmupConnectionCount(e->family) > 0;
+            if (EnsureWorkerModelRelayed(wmgr, e->family, model_id, warmup_preload)) {
                 wmgr.TranslatePoolMarkRelayed(model_id, w->process);
             }
         }
@@ -1392,11 +1572,40 @@ bool ReadMessage(Connection& conn, std::string& json) {
 //     through the scheduler; the session lifecycle frames follow §V2-4.4.
 //   anything else -> version_mismatch (the v1 rule, frozen — unchanged).
 // The token check stays BEFORE the protocol check (frozen §4.2 order).
-void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
+void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello,
+                  host_v2::WorkerManager& wmgr) {
     DIAG_LOG("ENGINEHOST", "conn/%03d: hello ok v1 (client=%s version=%s)",
              conn.index, hello.client.c_str(), hello.client_version.c_str());
     conn.client = hello.client; // Item D: pin-relay gate identity
     conn.SendWelcome();
+
+    // REQ-060: a warmup hello registers THIS connection as an active warmup
+    // hold on the resolved translate family (idle eviction skips warm-held
+    // families) and kicks an ASYNC preload of the worker/model. The pin
+    // resolves through the SAME shared resolver a real translate takes
+    // (ResolveTranslatePin): the policy model_id (REQ-CP T3) wins first, the
+    // fallback is the identity-gated legacy pin. A hello carries no
+    // per-request id, so the hold tracks the policy/fallback family — the
+    // F-09 divergence (policy set + explicit request id -> hold and request
+    // landing on different families) is gone; a request's own explicit id
+    // still rides its per-request family when the policy is empty (REQ-060's
+    // intentional per-request override, no hello-level equivalent). A missing
+    // model answers nothing here and skips the hold (the first real request
+    // reports model_missing as usual). The guard releases the hold on EVERY
+    // exit path below.
+    std::unique_ptr<WarmupConnectionGuard> warmup_guard;
+    if (hello.warmup) {
+        const std::string pin = ResolveTranslatePin(hello.client, ""); // REQ-060
+        if (ModelFileExistsFor(pin)) {
+            if (host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(pin)) {
+                wmgr.RegisterWarmupConnection(e->family);
+                warmup_guard.reset(new WarmupConnectionGuard(wmgr, e->family));
+                KickWarmupSpawn(wmgr, e->family, pin);
+                DIAG_LOG("ENGINEHOST", "conn/%03d: warmup registered (family=%ws)",
+                         conn.index, e->family.c_str());
+            }
+        }
+    }
 
     // ---- request loop (the FROZEN §4.4 body, unchanged) ----
     std::string frame;
@@ -1436,7 +1645,15 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
             msg.timeout_ms = std::max(enginehost::kMinTranslateTimeoutMs,
                                       std::min(enginehost::kMaxTranslateTimeoutMs, msg.timeout_ms));
             // §8 fast path: no model on disk -> model_missing without queueing.
-            if (!ModelFileExists()) {
+            // REQ-060: the probe consults the RESOLVED pin through the SHARED
+            // resolver — policy model_id first (REQ-CP T3), then the explicit
+            // per-request model_id, then the relay fallback — so an unknown
+            // resolved id answers model_missing HERE and never reaches the
+            // worker spawn. The empty-member default keeps the legacy
+            // ModelFileExists()-equivalent behavior byte-for-byte ("" degrades
+            // to the pinned check inside ModelFileExistsFor).
+            const std::string pin = ResolveTranslatePin(conn.client, msg.model_id);
+            if (!ModelFileExistsFor(pin)) {
                 conn.SendResult(msg.id, enginehost::HostStatus::ModelMissing);
                 continue;
             }
@@ -1448,6 +1665,7 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello) {
             job.timeout_ms = msg.timeout_ms;
             job.conn = &conn;
             job.client = conn.client; // Item D: pin-relay gate identity
+            job.model_id = std::move(msg.model_id); // REQ-060: "" = legacy relay path
             if (!g_queue.Push(job)) {
                 conn.SendResult(job.id, enginehost::HostStatus::Busy); // §4.4: depth > 8
                 continue;
@@ -2307,7 +2525,7 @@ void RunSession(Connection& conn, host_v2::WorkerManager& wmgr) {
         return;
     }
     if (hello.protocol == enginehost::kProtocolVersion) {
-        RunSessionV1(conn, hello);
+        RunSessionV1(conn, hello, wmgr);
         return;
     }
     if (hello.protocol == 2) {
@@ -2557,6 +2775,32 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     //   * the EMEBALA_MT_GPU override, read ONCE here (absent/other ->
     //     kMtGpuOverrideAuto = the -1 auto default the manager ships with).
     wmgr.SetTranslateExePath(worker_exe);
+    // REQ-060: the per-model eviction-policy resolver (technical gate A-5
+    // discipline, same as the VRAM seams: host_v2 links neither the registry
+    // nor engine_core) — the boot registry snapshot answers each model's
+    // resource.eviction ("sticky" | "evict", already normalized at parse,
+    // engine_host_registry.cpp REQ-060 block); a model absent from the
+    // snapshot (the pinned "" default included) resolves to "evict".
+    // Injected BEFORE the pool entries register so every entry stores its
+    // policy at registration time.
+    wmgr.SetEvictionPolicyResolver([](const std::string& id) -> std::string {
+        const engine_host_registry::ModelEntry* m = g_registry.FindModel(id);
+        return m ? m->resource.eviction : "evict";
+    });
+    // REQ-060 (deepseek F-07 fix): the bundled-model-id resolver — same A-5
+    // injection discipline, answered from the SAME boot g_registry snapshot.
+    // TranslatePoolEnsure normalizes an explicit bundled-id request (the app
+    // now sends model_id="hy-mt2-1.8b-q8" on the default route) onto the
+    // pinned-default ("") pool key, so the explicit id and the legacy ""
+    // pin share ONE worker/family instead of two residents of the same model.
+    wmgr.SetBundledModelIdResolver(
+        [] { return engine_host_registry::ResolveBundledModelId(g_registry); });
+    // REQ-060: the translation worker's idle-eviction budget, read ONCE at
+    // boot from the app's config.json (engine_host.worker_idle_ms; the
+    // reader applies the exact client-side clamps). idle_exit_ms stays NOT
+    // forwarded (the hidden --idle-exit-ms hook above is the only override).
+    wmgr.SetWorkerIdleMs(boot_cfg.worker_idle_ms);
+    DIAG_LOG("ENGINEHOST", "host/006: worker_idle_ms=%d", boot_cfg.worker_idle_ms);
     if (!wmgr.RegisterTranslatePoolBootEntry()) {
         DIAG_LOG("ENGINEHOST", "host/005: translate pool boot entry not registered");
     }
@@ -2662,6 +2906,9 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
     // the token file, then exit. token_guard deletes the token on scope exit.
     g_shutdown.store(true, std::memory_order_release);
     ::SetEvent(g_stop_event);
+    // REQ-060: warmup preload threads must leave the WorkerManager BEFORE
+    // ShutdownAll tears it down (a kick calls EnsureSpawned on the manager).
+    JoinWarmupSpawns();
     g_queue.StopAll();
     g_current.cv.notify_all();
     if (dispatcher.joinable()) dispatcher.join();

@@ -136,6 +136,39 @@ HostBootConfig LoadHostBootConfig(const std::wstring& lad_override) {
     if (!enginehost::JsonParseObject(text, fields)) return out;
     const auto* dbg = enginehost::detail::FindField(fields, "diag_log_enabled");
     out.diag_log_enabled = dbg && !dbg->is_string && dbg->text == "true";
+
+    // REQ-060: the idle-eviction budget lives in config.json's NESTED
+    // "engine_host" block (JsonParseObject captures an object member's RAW
+    // source text, is_string stays false) — the same block the app's own
+    // config.cpp ParseEngineHostBlock reads. Clamp discipline mirrors the
+    // client parser exactly (config.cpp, std::stoll so a >int32 literal still
+    // reaches the ceiling clamp): <=0 restores the 90000 default
+    // policy, <5000 clamps up to the 5 s floor, >86400000 clamps down to the
+    // 24 h ceiling, absent / wrong-typed / unparseable keeps the default.
+    if (const auto* eh = enginehost::detail::FindField(fields, "engine_host")) {
+        if (!eh->is_string) {
+            enginehost::JsonPairs block;
+            if (enginehost::JsonParseObject(eh->text, block)) {
+                const auto* wi = enginehost::detail::FindField(block, "worker_idle_ms");
+                if (wi && !wi->is_string) {
+                    try {
+                        const long long ms = std::stoll(wi->text);
+                        if (ms <= 0) {
+                            out.worker_idle_ms = 90000;
+                        } else if (ms < 5000) {
+                            out.worker_idle_ms = 5000;
+                        } else if (ms > 86400000LL) {
+                            out.worker_idle_ms = 86400000;
+                        } else {
+                            out.worker_idle_ms = static_cast<int>(ms);
+                        }
+                    } catch (...) {
+                        // unparseable -> keep the 90000 default
+                    }
+                }
+            }
+        }
+    }
     return out;
 }
 

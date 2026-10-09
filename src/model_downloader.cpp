@@ -22,8 +22,11 @@ engine_host_registry::ModelEntry BuildBundledEntry() {
     e.resource.vram_mb = 2400;
     e.resource.ctx = 4096;
     e.resource.max_sessions = 1;
-    e.resource.residency = "preload";
-    e.resource.eviction = "sticky";
+    // REQ-060: the bundled slot is ondemand/evict — the worker is spawned on
+    // demand and evicted after the configured idle budget (worker_idle_ms),
+    // so a co-resident Listener ASR worker is never pinned out of VRAM.
+    e.resource.residency = "ondemand";
+    e.resource.eviction = "evict";
     e.resource.priority = 9;
     engine_host_registry::SamplingProfile def;
     def.name = "default";

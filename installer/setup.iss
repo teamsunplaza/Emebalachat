@@ -43,13 +43,14 @@ AppId={{E3B7A1C4-8D2F-4A6E-9C1B-5F0D3E8A7B2C}
 AppName=Emebala Chat
 ; REQ-046 P4-4 history: version bump withdrawn per user decision (2026-09-19),
 ; shipped as 0.10.1 rereleases; promoted to 0.10.2 on 2026-09-30 (session
-; 260930_0003, CEO decision - see CHANGELOG "v0.10.2").
-AppVersion=0.10.2
+; 260930_0003, CEO decision - see CHANGELOG "v0.10.2"); promoted to 0.10.3 on
+; 2026-10-10 (session 261009_0001, REQ-060 - see CHANGELOG "v0.10.3").
+AppVersion=0.10.3
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.2
+OutputBaseFilename=Emebalachat_Setup_0.10.3
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
@@ -873,7 +874,7 @@ const
   PATH_EXCHANGE_FILE = 'user_localappdata.txt';
 
   REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
-  REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "preload", "eviction": "sticky", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
+  REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "ondemand", "eviction": "evict", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
 
 var
   DownloadPage: TDownloadWizardPage;

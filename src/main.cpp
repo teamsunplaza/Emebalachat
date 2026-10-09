@@ -18,6 +18,7 @@
 #include "ui/about_window.hpp"
 #include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
 #include "ui/gguf_model_manager_window.hpp" // REQ-048 R2-D: user .gguf model manager
+#include "ui/engine_host_settings_window.hpp" // REQ-060: translation-model load-mode settings dialog
 #include "ui/model_download_dialog.hpp" // REQ-MD (260930_0004 D9): on-demand model download
 #include "model_downloader.hpp"         // REQ-MD: missing-only predicate + plan
 #include "ui/badge.hpp"
@@ -450,6 +451,17 @@ std::function<void(const OpenAiConfig&)> g_apply_openai_deleted;
 // g_apply_openai_settings so a late posted kMsgOpenGgufManager can never call
 // into destroyed state.
 std::function<void()> g_open_gguf_model_manager;
+// REQ-060 (session 261009_0001): the deferred load-settings dialog resolves on
+// the GUI thread in ControllerWndProc, which cannot name wWinMain's locals
+// (config / engine / refresh_tray). Set once at startup to a wWinMain lambda
+// that opens ShowEngineHostSettingsDialog on g_hControllerWnd and, on OK,
+// mirrors the edited engine_host block into the in-memory config, persists,
+// re-pushes the block into the runtime engine (SetEngineHostConfig ->
+// RefreshActiveEngine -> engine_host::WarmupSetState, so the warmup manager
+// re-evaluates immediately), and refreshes the tray. Cleared at shutdown with
+// g_open_gguf_model_manager so a late posted kMsgOpenEngineLoadSettings can
+// never call into destroyed state.
+std::function<void()> g_open_engine_host_settings;
 // REQ-047 D3 (design §C.2 안 C-1 권장 저장소 (a), Tech Gate §D3 #2): the
 // deferred OpenAI dialog's GUI-thread state. Lives in namespace emebalachat
 // (NOT the anon namespace) so both ControllerWndProc and the wWinMain tray
@@ -610,6 +622,19 @@ constexpr UINT kMsgOpenOpenAiSettings = WM_APP + 0x500;
 // engine_modal, 0x300 language_sync, 0x3xx about, 0x2xx tooltip, 0x1xx
 // drag_icon).
 constexpr UINT kMsgOpenGgufManager = WM_APP + 0x501;
+
+// ---- REQ-060 (session 261009_0001): deferred load-settings dialog open ------
+// The tray engine submenu's "번역 모델 로드 설정…" row (tray.cpp, plain item)
+// posts this pure (0,0) wake-up after its TrackPopupMenuEx dispatch — the
+// identical modality-avoidance contract as kMsgOpenGgufManager above
+// (REQ-047 D3): the modal dialog opens only after the menu modality has fully
+// torn down. No coalescing latch is needed for the same reason as the manager
+// row: the only producer is the tray dispatch on this GUI thread, and a modal
+// dialog blocks that thread's message handling.
+// Distinct WM_APP band: 0x502 verified unused (0x500 OpenAI settings, 0x501
+// gguf manager, 0x400 engine_modal, 0x300 language_sync, 0x3xx about, 0x2xx
+// tooltip, 0x1xx drag_icon).
+constexpr UINT kMsgOpenEngineLoadSettings = WM_APP + 0x502;
 
 struct EngineUnavailableModalRequest {
     std::wstring title;
@@ -916,6 +941,23 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // falling through to DefWindowProc would break the modal-open flow.
         if (g_open_gguf_model_manager) {
             g_open_gguf_model_manager();
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenEngineLoadSettings) {
+        // REQ-060: open the translation-model load-mode dialog AFTER the
+        // TrackPopupMenuEx modality has fully torn down. wParam/LPARAM are
+        // IGNORED entirely (pure (0,0) wake-up, same SEC-ADJ contract as
+        // kMsgOpenGgufManager). No coalescing latch is needed (same reasoning
+        // as the manager handler): the only producer is the tray dispatch on
+        // this GUI thread. The open + persist + engine re-push travels through
+        // g_open_engine_host_settings (the wWinMain lambda), so this handler
+        // never names config/engine/refresh_tray.
+        // return 0 is MANDATORY by the same contract as the manager handler —
+        // falling through to DefWindowProc would break the modal-open flow.
+        if (g_open_engine_host_settings) {
+            g_open_engine_host_settings();
         }
         return 0;
     }
@@ -1995,6 +2037,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         refresh_tray();
     };
 
+    // REQ-060 (session 261009_0001): publish the load-settings open for the
+    // deferred kMsgOpenEngineLoadSettings handler (the g_open_gguf_model_manager
+    // sibling pattern). The lambda owns the ONLY call site: modal dialog on
+    // g_hControllerWnd; on OK it copies the edited engine_host block back into
+    // the in-memory config (the dialog performs NO file I/O — ui-report §3),
+    // persists via SaveToFile (the g_apply_openai_settings precedent ignores
+    // the bool result), re-pushes the block into the runtime engine —
+    // SetEngineHostConfig -> RefreshActiveEngine -> engine_host::WarmupSetState
+    // (engine.cpp) re-evaluates the warmup persistent-connection manager
+    // immediately, no app restart — and refreshes the tray. Cancel leaves
+    // everything untouched (the dialog returns false and `out` is discarded).
+    emebalachat::g_open_engine_host_settings = [&config, &engine, &refresh_tray]() {
+        emebalachat::EngineHostConfig out;
+        if (emebalachat::ShowEngineHostSettingsDialog(emebalachat::g_hControllerWnd,
+                                                      config.engine_host, out)) {
+            config.engine_host = out; // verbatim: enabled/spawn/idle_exit_ms/worker_idle_ms + the edited warmup
+            config.SaveToFile();
+            engine.SetEngineHostConfig(config.engine_host); // REQ-060: RefreshActiveEngine -> WarmupSetState
+            refresh_tray();
+            DIAG_F("MAIN/EngineLoadSettings/001: load-mode settings saved; warmup=%d\n",
+                   config.engine_host.warmup ? 1 : 0);
+        }
+    };
+
     // R6 Phase 6 (plan §5.4): locale-change propagation coordinator, mirroring
     // the ApplyLanguageChange pattern above. After I18n::SetLocale, re-render
     // every surface in the plan's order (tray -> badge -> tooltip -> About).
@@ -2345,6 +2411,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     }
                 }
             }
+        }
+    };
+
+    // REQ-060 (session 261009_0001): the engine submenu's "번역 모델 로드 설정…"
+    // row. The modal open is DEFERRED past the TrackPopupMenuEx teardown via
+    // kMsgOpenEngineLoadSettings — entering a modal synchronously from the
+    // tray dispatch is the REQ-047 D3 "minimized window, no input" root cause
+    // (the same contract as the manager row, kMsgOpenGgufManager). The save
+    // body lives in g_open_engine_host_settings (set above), so this callback
+    // only posts the pure (0,0) wake-up; a post failure logs shape-only.
+    trayCallbacks.on_open_engine_load_settings = [&]() {
+        if (::PostMessageW(emebalachat::g_hControllerWnd,
+                           emebalachat::kMsgOpenEngineLoadSettings, 0, 0) == FALSE) {
+            DIAG_F("MAIN/EngineLoadSettings/000: PostMessage load-settings open failed (GLE %lu)\n",
+                   ::GetLastError());
         }
     };
 
@@ -3505,6 +3586,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-048 R2-D: retire the gguf-model-manager coordinator with it, so a
     // late posted kMsgOpenGgufManager can never call into destroyed state.
     emebalachat::g_open_gguf_model_manager = nullptr;
+    // REQ-060: retire the load-settings coordinator with it, so a late posted
+    // kMsgOpenEngineLoadSettings can never call into destroyed state.
+    emebalachat::g_open_engine_host_settings = nullptr;
     // Post-retire verify-empty (SEC-B5, spec 234100 §7.4): with all producers
     // joined and the drain above already run, the deque is expected to be
     // empty; the swap-out releases any residue's std::string memory before

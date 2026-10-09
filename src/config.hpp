@@ -370,7 +370,8 @@ struct AppConfig {
     bool cloud_fallback_enabled = false;
     // REQ-043 (plan §5.1-2): shared-inference-host routing block, persisted
     // as the nested "engine_host" object in config.json:
-    //   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000 }
+    //   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000,
+    //                    "worker_idle_ms": 90000, "warmup": false }
     //   * enabled      — host-first routing at the local-engine seam. On ANY
     //                    host failure the app converges to the §V2-8.6 chain:
     //                    one-click repair -> consent-gated cloud (when enabled)
@@ -386,8 +387,21 @@ struct AppConfig {
     //                    channel, so the value is persisted here for
     //                    observability/forward-compat; the host currently
     //                    applies its own default (hidden --idle-exit-ms test
-    //                    hook). Startup-only write, no Snapshot entry needed
-    //                    (same discipline as cloud_fallback_enabled).
+    //                    hook) — the value is STILL not forwarded.
+    //   * worker_idle_ms / warmup (REQ-060) — translation-worker idle-eviction
+    //                    budget (default 90000 ms) and the app's warmup mode
+    //                    (default false). The two keys have DIFFERENT
+    //                    consumers: the HOST boot read (engine_host_config
+    //                    _reader.cpp) loads worker_idle_ms at startup (the
+    //                    5 s floor / 24 h ceiling clamp applies); warmup is
+    //                    never read by the host — it is a CLIENT-side decision
+    //                    input: while warmup && enabled && the local route is
+    //                    active, the client's WarmupManager holds a dedicated
+    //                    pipe connection whose hello carries warmup:true, and
+    //                    the host answers with an idle-eviction hold (+ a
+    //                    preload session_open). Startup-only write on both
+    //                    sides; no Snapshot entry needed (same discipline as
+    //                    cloud_fallback_enabled).
     EngineHostConfig engine_host;
 
     // REQ-045 P4-3 (design §3b, item 3b): the persisted "openai" block —

@@ -585,12 +585,12 @@ void TestReq053OpenAiButtonDisablePins() {
                "REQ-053 pin: the completion restore precedes the combo refill");
 
     // No new i18n strings: the fix is graying feedback only (CPO scope). The
-    // running StringId total moves only with a tracked batch — currently 144
-    // (REQ-MD added the 9 model-download strings on top of the REQ-UC total of
-    // 135; A6 itself added none).
+    // running StringId total moves only with a tracked batch — currently 157
+    // (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
+    // strings; A6 itself added none).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 144,
-               "REQ-053 pin: StringId::EnumCount is 144 (the tracked REQ-MD total; A6 added no strings)");
+    TEST_CHECK(enum_count == 157,
+               "REQ-053 pin: StringId::EnumCount is 157 (the tracked REQ-060 total; A6 added no strings)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 

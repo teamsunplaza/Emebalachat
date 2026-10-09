@@ -176,7 +176,20 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(model_dl_placing) \
     X(model_dl_done) \
     X(model_dl_failed) \
-    X(model_dl_disk_space)
+    X(model_dl_disk_space) \
+    X(engine_load_settings_menu_row) \
+    X(engine_load_settings_title) \
+    X(load_mode_on_use) \
+    X(load_mode_warmup) \
+    X(load_mode_on_use_desc) \
+    X(load_mode_warmup_desc) \
+    X(gguf_policy_sticky) \
+    X(gguf_policy_evict) \
+    X(gguf_manager_toggle_policy) \
+    X(gguf_duplicate_warning) \
+    X(gguf_manager_dedupe) \
+    X(gguf_manager_dedupe_done) \
+    X(gguf_manager_dedupe_failed)
 
 struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
@@ -203,9 +216,11 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // hints (REQ-050: base-URL + API-key edit placeholders, 109) + the OpenAI
 // settings delete-button caption (REQ-051, 110) + the update-checker About
 // zone block (REQ-UC 260930_0004: 25 strings, 135) + the on-demand
-// model download dialog (REQ-MD: 9 strings, 144). The Get()
-// switch maps exactly these 144 named fields.
-static_assert(kLocalizedStringsFieldCount == 144,
+// model download dialog (REQ-MD: 9 strings, 144) + the REQ-060 load-mode
+// block (session 261009_0001: 6 engine-host load-mode strings + 7 manager
+// policy/duplicate strings, 157). The Get()
+// switch maps exactly these 157 named fields.
+static_assert(kLocalizedStringsFieldCount == 157,
     "LocalizedStrings field count changed - update all 37 locale tables");
 
 // 1. Korean (ko)
@@ -401,6 +416,20 @@ const LocalizedStrings kStringsKorean = {
     .model_dl_done = L"모델이 준비되었습니다. 로컬 엔진이 다음 번역부터 사용합니다.",
     .model_dl_failed = L"다운로드에 실패했습니다. 연결을 확인하고 다시 시도하세요.",
     .model_dl_disk_space = L"디스크 여유 공간이 부족합니다 (약 {s} 필요).",
+    // REQ-060 (session 261009_0001): 번역 모델 로드 설정 + 모델 관리 정책/중복 블록.
+    .engine_load_settings_menu_row = L"번역 모델 로드 설정…",
+    .engine_load_settings_title = L"번역 모델 로드",
+    .load_mode_on_use = L"사용할 때 로드 (권장)",
+    .load_mode_warmup = L"미리 로드",
+    .load_mode_on_use_desc = L"메모리를 아껴요. 첫 번째 번역이 잠깐 늦어질 수 있어요.",
+    .load_mode_warmup_desc = L"번역이 바로 시작돼요. 모델이 메모리에 계속 올라가 있어요.",
+    .gguf_policy_sticky = L"(상주 유지)",
+    .gguf_policy_evict = L"(사용 시 로드)",
+    .gguf_manager_toggle_policy = L"정책 전환",
+    .gguf_duplicate_warning = L"중복 파일: {n} {s} × {c}",
+    .gguf_manager_dedupe = L"중복 정리",
+    .gguf_manager_dedupe_done = L"중복 파일을 휴지통으로 옮겼습니다.",
+    .gguf_manager_dedupe_failed = L"중복 파일을 정리하지 못했습니다. 파일이 다른 프로그램에서 사용 중인지 확인하세요.",
 };
 
 // 2. Japanese (ja)
@@ -595,6 +624,20 @@ const LocalizedStrings kStringsJapanese = {
     L"モデルの準備ができました。ローカル エンジンが次の翻訳から使用します。",
     L"ダウンロードに失敗しました。接続を確認してもう一度お試しください。",
     L"ディスクの空き容量が不足しています (約 {s} 必要)。",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"翻訳モデルの読み込み設定…",
+    L"翻訳モデルの読み込み",
+    L"使用時に読み込む (推奨)",
+    L"事前に読み込む",
+    L"メモリを節約できます。最初の翻訳が少し遅れることがあります。",
+    L"すぐに翻訳を開始できます。モデルは常にメモリに読み込まれたままです。",
+    L"(常駐)",
+    L"(使用時に読み込み)",
+    L"ポリシー切替",
+    L"重複ファイル: {n} {s} × {c}",
+    L"重複を整理",
+    L"重複ファイルをごみ箱に移動しました。",
+    L"重複ファイルを整理できませんでした。他のプログラムがファイルを使用していないか確認してください。",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -789,6 +832,20 @@ const LocalizedStrings kStringsChineseSimp = {
     L"模型已就绪。本地引擎将从下一次翻译开始使用。",
     L"下载失败。请检查网络连接后重试。",
     L"磁盘可用空间不足 (需要约 {s})。",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"翻译模型加载设置…",
+    L"翻译模型加载",
+    L"使用时加载 (推荐)",
+    L"预先加载",
+    L"节省内存。首次翻译可能会稍有延迟。",
+    L"翻译立即开始。模型将一直保留在内存中。",
+    L"(保持常驻)",
+    L"(使用时加载)",
+    L"切换策略",
+    L"重复文件: {n} {s} × {c}",
+    L"清理重复",
+    L"重复文件已移至回收站。",
+    L"无法清理重复文件。请检查是否有其他程序正在使用这些文件。",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -983,6 +1040,20 @@ const LocalizedStrings kStringsChineseTrad = {
     L"模型已就緒。本機引擎將從下一場翻譯開始使用。",
     L"下載失敗。請檢查網路連線後再試。",
     L"磁碟可用空間不足 (需要約 {s})。",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"翻譯模型載入設定…",
+    L"翻譯模型載入",
+    L"使用時載入 (建議)",
+    L"預先載入",
+    L"節省記憶體。首次翻譯可能會稍有延遲。",
+    L"翻譯立即開始。模型將一直保留在記憶體中。",
+    L"(保持常駐)",
+    L"(使用時載入)",
+    L"切換原則",
+    L"重複檔案: {n} {s} × {c}",
+    L"清理重複",
+    L"重複檔案已移至資源回收筒。",
+    L"無法清理重複檔案。請檢查是否有其他程式正在使用這些檔案。",
 };
 
 // 5. Vietnamese (vi)
@@ -1177,6 +1248,20 @@ const LocalizedStrings kStringsVietnamese = {
     L"Mô hình đã sẵn sàng. Cỗ máy cục bộ sẽ sử dụng từ lần dịch tiếp theo.",
     L"Tải xuống thất bại. Hãy kiểm tra kết nối và thử lại.",
     L"Không đủ dung lượng đĩa trống (cần khoảng {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Cài đặt tải mô hình dịch…",
+    L"Tải mô hình dịch",
+    L"Tải khi sử dụng (khuyến nghị)",
+    L"Tải trước",
+    L"Tiết kiệm bộ nhớ. Bản dịch đầu tiên có thể chậm vài giây.",
+    L"Bắt đầu dịch ngay. Mô hình luôn được giữ trong bộ nhớ.",
+    L"(Giữ thường trú)",
+    L"(Tải khi sử dụng)",
+    L"Chuyển chính sách",
+    L"Tệp trùng lặp: {n} {s} × {c}",
+    L"Dọn tệp trùng lặp",
+    L"Các tệp trùng lặp đã được chuyển vào Thùng rác.",
+    L"Không thể dọn các tệp trùng lặp. Hãy kiểm tra xem chương trình khác có đang sử dụng tệp không.",
 };
 
 // 6. Spanish (es)
@@ -1368,6 +1453,20 @@ const LocalizedStrings kStringsSpanish = {
     L"El modelo está listo. El motor local lo usará desde la próxima traducción.",
     L"La descarga falló. Comprueba tu conexión e inténtalo de nuevo.",
     L"No hay suficiente espacio libre en disco (se requieren unos {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Ajustes de carga del modelo de traducción…",
+    L"Carga del modelo de traducción",
+    L"Cargar al usarlo (recomendado)",
+    L"Precargar",
+    L"Ahorra memoria. La primera traducción puede tardar unos segundos más.",
+    L"La traducción empieza enseguida. El modelo permanece en memoria.",
+    L"(Mantener residente)",
+    L"(Cargar al usarlo)",
+    L"Cambiar política",
+    L"Archivos duplicados: {n} {s} × {c}",
+    L"Limpiar duplicados",
+    L"Los archivos duplicados se movieron a la Papelera de reciclaje.",
+    L"No se pudieron limpiar los archivos duplicados. Comprueba si otro programa los está usando.",
 };
 
 // 7. English (en) - Default Fallback
@@ -1560,6 +1659,20 @@ const LocalizedStrings kStringsEnglish = {
     L"The model is ready. The local engine will use it from the next translation.",
     L"The download failed. Check your connection and try again.",
     L"Not enough free disk space (about {s} required).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Translation model load settings…",
+    L"Translation model loading",
+    L"Load when used (recommended)",
+    L"Preload",
+    L"Saves memory. The first translation may be a few seconds late.",
+    L"Translation starts right away. The model stays in memory.",
+    L"(Keep resident)",
+    L"(Load on use)",
+    L"Toggle policy",
+    L"Duplicate files: {n} {s} × {c}",
+    L"Clean up duplicates",
+    L"The duplicate files were moved to the Recycle Bin.",
+    L"The duplicate files could not be cleaned up. Check whether another program is using them.",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1766,6 +1879,20 @@ const LocalizedStrings kStringsFrench = {
     L"Le modèle est prêt. Le moteur local l'utilisera dès la prochaine traduction.",
     L"Le téléchargement a échoué. Vérifiez votre connexion et réessayez.",
     L"Espace disque libre insuffisant (environ {s} requis).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Paramètres de chargement du modèle de traduction…",
+    L"Chargement du modèle de traduction",
+    L"Charger à l'utilisation (recommandé)",
+    L"Précharger",
+    L"Économise la mémoire. La première traduction peut être retardée de quelques secondes.",
+    L"La traduction démarre immédiatement. Le modèle reste en mémoire.",
+    L"(Rester résident)",
+    L"(Charger à l'utilisation)",
+    L"Changer de politique",
+    L"Fichiers en double : {n} {s} × {c}",
+    L"Nettoyer les doublons",
+    L"Les fichiers en double ont été déplacés dans la Corbeille.",
+    L"Impossible de nettoyer les fichiers en double. Vérifiez si un autre programme les utilise.",
 };
 
 // 9. German (de)
@@ -1960,6 +2087,20 @@ const LocalizedStrings kStringsGerman = {
     L"Das Modell ist bereit. Die lokale Engine nutzt es ab der nächsten Übersetzung.",
     L"Der Download ist fehlgeschlagen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
     L"Nicht genügend freier Speicherplatz (etwa {s} erforderlich).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Einstellungen zum Laden des Übersetzungsmodells…",
+    L"Laden des Übersetzungsmodells",
+    L"Bei Verwendung laden (empfohlen)",
+    L"Vorab laden",
+    L"Spart Arbeitsspeicher. Die erste Übersetzung kann einige Sekunden später beginnen.",
+    L"Die Übersetzung startet sofort. Das Modell bleibt im Arbeitsspeicher.",
+    L"(Dauerhaft laden)",
+    L"(Bei Verwendung laden)",
+    L"Richtlinie wechseln",
+    L"Duplizierte Dateien: {n} {s} × {c}",
+    L"Duplikate bereinigen",
+    L"Die duplizierten Dateien wurden in den Papierkorb verschoben.",
+    L"Die duplizierten Dateien konnten nicht bereinigt werden. Prüfen Sie, ob ein anderes Programm sie verwendet.",
 };
 
 // 10. Russian (ru)
@@ -2151,9 +2292,23 @@ const LocalizedStrings kStringsRussian = {
     L"Скачать сейчас",
     L"Проверка загруженного файла…",
     L"Установка модели…",
-    L"Модель готова. Локальный движок будет использовать её с следующего перевода.",
+    L"Модель готова. Локальный движок будет использовать её со следующего перевода.",
     L"Загрузка не удалась. Проверьте подключение и повторите попытку.",
     L"Недостаточно свободного места на диске (требуется около {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Настройки загрузки модели перевода…",
+    L"Загрузка модели перевода",
+    L"Загружать при использовании (рекомендуется)",
+    L"Загружать заранее",
+    L"Экономит память. Первый перевод может начаться на несколько секунд позже.",
+    L"Перевод начинается сразу. Модель постоянно находится в памяти.",
+    L"(Оставлять в памяти)",
+    L"(Загружать при использовании)",
+    L"Сменить политику",
+    L"Дубликаты файлов: {n} {s} × {c}",
+    L"Удалить дубликаты",
+    L"Дубликаты файлов перемещены в корзину.",
+    L"Не удалось удалить дубликаты файлов. Проверьте, не использует ли их другая программа.",
 };
 
 // 11. Portuguese (pt)
@@ -2348,6 +2503,20 @@ const LocalizedStrings kStringsPortuguese = {
     L"O modelo está pronto. O motor local irá utilizá-lo a partir da próxima tradução.",
     L"A transferência falhou. Verifique a ligação e tente novamente.",
     L"Espaço livre em disco insuficiente (necessários cerca de {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Definições de carregamento do modelo de tradução…",
+    L"Carregamento do modelo de tradução",
+    L"Carregar ao utilizar (recomendado)",
+    L"Pré-carregar",
+    L"Poupa memória. A primeira tradução pode demorar alguns segundos extra.",
+    L"A tradução começa imediatamente. O modelo permanece em memória.",
+    L"(Manter residente)",
+    L"(Carregar ao utilizar)",
+    L"Alterar política",
+    L"Ficheiros duplicados: {n} {s} × {c}",
+    L"Limpar duplicados",
+    L"Os ficheiros duplicados foram movidos para a Reciclagem.",
+    L"Não foi possível limpar os ficheiros duplicados. Verifique se outro programa os está a utilizar.",
 };
 
 // 12. Italian (it)
@@ -2542,6 +2711,20 @@ const LocalizedStrings kStringsItalian = {
     L"Il modello è pronto. Il motore locale lo userà dalla prossima traduzione.",
     L"Il download non è riuscito. Controlla la connessione e riprova.",
     L"Spazio libero su disco insufficiente (circa {s} richiesti).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Impostazioni di caricamento del modello di traduzione…",
+    L"Caricamento del modello di traduzione",
+    L"Carica all'uso (consigliato)",
+    L"Precarica",
+    L"Risparmia memoria. La prima traduzione potrebbe ritardare di qualche secondo.",
+    L"La traduzione inizia subito. Il modello resta in memoria.",
+    L"(Mantieni residente)",
+    L"(Carica all'uso)",
+    L"Cambia criterio",
+    L"File duplicati: {n} {s} × {c}",
+    L"Pulisci duplicati",
+    L"I file duplicati sono stati spostati nel Cestino.",
+    L"Impossibile pulire i file duplicati. Controlla se un altro programma li sta usando.",
 };
 
 // 13. Dutch (nl)
@@ -2736,6 +2919,20 @@ const LocalizedStrings kStringsDutch = {
     L"Het model is klaar. De lokale engine gebruikt het vanaf de volgende vertaling.",
     L"De download is mislukt. Controleer je verbinding en probeer het opnieuw.",
     L"Niet genoeg vrije schijfruimte (ongeveer {s} vereist).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Instellingen voor laden van het vertaalmodel…",
+    L"Vertaalmodel laden",
+    L"Laden bij gebruik (aanbevolen)",
+    L"Vooraf laden",
+    L"Bespaart geheugen. De eerste vertaling kan enkele seconden later starten.",
+    L"De vertaling start meteen. Het model blijft in het geheugen.",
+    L"(Resident houden)",
+    L"(Laden bij gebruik)",
+    L"Beleid wijzigen",
+    L"Gedupliceerde bestanden: {n} {s} × {c}",
+    L"Duplicaten opschonen",
+    L"De gedupliceerde bestanden zijn naar de Prullenbak verplaatst.",
+    L"De gedupliceerde bestanden konden niet worden opgeschoond. Controleer of een ander programma ze gebruikt.",
 };
 
 // 14. Polish (pl)
@@ -2930,6 +3127,20 @@ const LocalizedStrings kStringsPolish = {
     L"Model jest gotowy. Lokalny silnik użyje go od następnego tłumaczenia.",
     L"Pobieranie nie powiodło się. Sprawdź połączenie i spróbuj ponownie.",
     L"Za mało wolnego miejsca na dysku (wymagane około {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Ustawienia ładowania modelu tłumaczenia…",
+    L"Ładowanie modelu tłumaczenia",
+    L"Ładuj przy użyciu (zalecane)",
+    L"Ładuj wcześniej",
+    L"Oszczędza pamięć. Pierwsze tłumaczenie może się rozpocząć kilka sekund później.",
+    L"Tłumaczenie zaczyna się od razu. Model pozostaje w pamięci.",
+    L"(Pozostaw w pamięci)",
+    L"(Ładuj przy użyciu)",
+    L"Zmień zasady",
+    L"Zduplikowane pliki: {n} {s} × {c}",
+    L"Wyczyść duplikaty",
+    L"Zduplikowane pliki zostały przeniesione do Kosza.",
+    L"Nie można wyczyścić zduplikowanych plików. Sprawdź, czy nie są używane przez inny program.",
 };
 
 // 15. Czech (cs)
@@ -3124,6 +3335,20 @@ const LocalizedStrings kStringsCzech = {
     L"Model je připraven. Místní engine ho použije od dalšího překladu.",
     L"Stahování se nezdařilo. Zkontrolujte připojení a zkuste to znovu.",
     L"Nedostatek volného místa na disku (vyžadováno přibližně {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Nastavení načítání překladového modelu…",
+    L"Načítání překladového modelu",
+    L"Načíst při použití (doporučeno)",
+    L"Načíst předem",
+    L"Šetří paměť. První překlad se může začít o několik sekund později.",
+    L"Překlad začne okamžitě. Model zůstává v paměti.",
+    L"(Ponechat načtený)",
+    L"(Načíst při použití)",
+    L"Přepnout zásady",
+    L"Duplicitní soubory: {n} {s} × {c}",
+    L"Vyčistit duplicity",
+    L"Duplicitní soubory byly přesunuty do Koše.",
+    L"Duplicitní soubory nelze vyčistit. Zkontrolujte, jestli je nepoužívá jiný program.",
 };
 
 // 16. Hungarian (hu)
@@ -3318,6 +3543,20 @@ const LocalizedStrings kStringsHungarian = {
     L"A modell kész. A helyi motor a következő fordítástól használja.",
     L"A letöltés nem sikerült. Ellenőrizze a kapcsolatot, és próbálja újra.",
     L"Nincs elég szabad lemezterület (kb. {s} szükséges).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"A fordítómodell betöltésének beállításai…",
+    L"Fordítómodell betöltése",
+    L"Betöltés használatkor (ajánlott)",
+    L"Előre betöltés",
+    L"Memóriát takarít meg. Az első fordítás néhány másodperccel később indulhat.",
+    L"A fordítás azonnal elindul. A modell a memóriában marad.",
+    L"(Maradjon bent)",
+    L"(Betöltés használatkor)",
+    L"Szabály váltása",
+    L"Duplikált fájlok: {n} {s} × {c}",
+    L"Duplikációk törlése",
+    L"A duplikált fájlok a Lomtárba lettek áthelyezve.",
+    L"A duplikált fájlokat nem sikerült eltávolítani. Ellenőrizze, hogy más program nem használja-e őket.",
 };
 
 // 17. Romanian (ro)
@@ -3512,6 +3751,20 @@ const LocalizedStrings kStringsRomanian = {
     L"Modelul este gata. Motorul local îl va folosi de la următoarea traducere.",
     L"Descărcarea a eșuat. Verificați conexiunea și încercați din nou.",
     L"Spațiu liber insuficient pe disc (necesari aproximativ {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Setări pentru încărcarea modelului de traducere…",
+    L"Încărcarea modelului de traducere",
+    L"Încarcă la utilizare (recomandat)",
+    L"Preîncarcă",
+    L"Economisește memorie. Prima traducere poate începe cu câteva secunde mai târziu.",
+    L"Traducerea începe imediat. Modelul rămâne în memorie.",
+    L"(Păstrează rezident)",
+    L"(Încarcă la utilizare)",
+    L"Comută politica",
+    L"Fișiere duplicate: {n} {s} × {c}",
+    L"Curăță duplicatele",
+    L"Fișierele duplicate au fost mutate în Coșul de gunoi.",
+    L"Fișierele duplicate nu au putut fi curățate. Verificați dacă alt program le utilizează.",
 };
 
 // 18. Swedish (sv)
@@ -3706,6 +3959,20 @@ const LocalizedStrings kStringsSwedish = {
     L"Modellen är klar. Den lokala motorn använder den från nästa översättning.",
     L"Nedladdningen misslyckades. Kontrollera din anslutning och försök igen.",
     L"Inte tillräckligt med ledigt diskutrymme (cirka {s} krävs).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Inställningar för laddning av översättningsmodell…",
+    L"Laddning av översättningsmodell",
+    L"Ladda vid användning (rekommenderas)",
+    L"Förhandsladda",
+    L"Sparar minne. Den första översättningen kan börja några sekunder senare.",
+    L"Översättningen startar direkt. Modellen stannar i minnet.",
+    L"(Håll kvar i minnet)",
+    L"(Ladda vid användning)",
+    L"Byt princip",
+    L"Dubblerade filer: {n} {s} × {c}",
+    L"Rensa dubbletter",
+    L"De dubblerade filerna har flyttats till Papperskorgen.",
+    L"De dubblerade filerna kunde inte rensas. Kontrollera om ett annat program använder dem.",
 };
 
 // 19. Danish (da)
@@ -3900,6 +4167,20 @@ const LocalizedStrings kStringsDanish = {
     L"Modellen er klar. Den lokale motor bruger den fra næste oversættelse.",
     L"Download mislykkedes. Tjek din forbindelse, og prøv igen.",
     L"Ikke nok ledig diskplads (ca. {s} påkrævet).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Indstillinger for indlæsning af oversættelsesmodellen…",
+    L"Indlæsning af oversættelsesmodel",
+    L"Indlæs ved brug (anbefalet)",
+    L"Forindlæs",
+    L"Sparer hukommelse. Den første oversættelse kan starte et par sekunder senere.",
+    L"Oversættelsen starter med det samme. Modellen bliver i hukommelsen.",
+    L"(Hold indlæst)",
+    L"(Indlæs ved brug)",
+    L"Skift politik",
+    L"Dublerede filer: {n} {s} × {c}",
+    L"Rens dubletter",
+    L"De dublerede filer er flyttet til Papirkurven.",
+    L"De dublerede filer kunne ikke renses. Tjek, om et andet program bruger dem.",
 };
 
 // 20. Finnish (fi)
@@ -4094,6 +4375,20 @@ const LocalizedStrings kStringsFinnish = {
     L"Malli on valmis. Paikallinen moottori käyttää sitä seuraavasta käännöksestä lähtien.",
     L"Lataus epäonnistui. Tarkista yhteys ja yritä uudelleen.",
     L"Levytilaa ei ole riittävästi (tarvitaan noin {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Käännösmallin latausasetukset…",
+    L"Käännösmallin lataus",
+    L"Lataa käytettäessä (suositus)",
+    L"Lataa etukäteen",
+    L"Säästää muistia. Ensimmäinen käännös saattaa alkaa muutaman sekunnin viiveellä.",
+    L"Käännös alkaa heti. Malli pysyy muistissa.",
+    L"(Pysy muistissa)",
+    L"(Lataa käytettäessä)",
+    L"Vaihda käytäntöä",
+    L"Kaksoiskappaleet: {n} {s} × {c}",
+    L"Siivoa kaksoiskappaleet",
+    L"Kaksoiskappaletiedostot siirrettiin Roskakoriin.",
+    L"Kaksoiskappaleita ei voitu siivota. Tarkista, käyttääkö jokin muu ohjelma niitä.",
 };
 
 // 21. Norwegian (no / nb)
@@ -4288,6 +4583,20 @@ const LocalizedStrings kStringsNorwegian = {
     L"Modellen er klar. Den lokale motoren bruker den fra neste oversettelse.",
     L"Nedlastingen mislyktes. Sjekk tilkoblingen din og prøv igjen.",
     L"Ikke nok ledig diskplass (ca. {s} kreves).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Innstillinger for lasting av oversettelsesmodellen…",
+    L"Lasting av oversettelsesmodell",
+    L"Last ved bruk (anbefalt)",
+    L"Forhåndslast",
+    L"Sparer minne. Den første oversettelsen kan starte noen sekunder senere.",
+    L"Oversettelsen starter med en gang. Modellen blir værende i minnet.",
+    L"(Hold lastet)",
+    L"(Last ved bruk)",
+    L"Bytt policy",
+    L"Dupliserte filer: {n} {s} × {c}",
+    L"Rens duplikater",
+    L"De dupliserte filene ble flyttet til papirkurven.",
+    L"De dupliserte filene kunne ikke renses. Sjekk om et annet program bruker dem.",
 };
 
 // 22. Greek (el)
@@ -4482,6 +4791,20 @@ const LocalizedStrings kStringsGreek = {
     L"Το μοντέλο είναι έτοιμο. Η τοπική μηχανή θα το χρησιμοποιεί από την επόμενη μετάφραση.",
     L"Η λήψη απέτυχε. Ελέγξτε τη σύνδεσή σας και δοκιμάστε ξανά.",
     L"Δεν υπάρχει αρκετός ελεύθερος χώρος στο δίσκο (απαιτούνται περίπου {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Ρυθμίσεις φόρτωσης μοντέλου μετάφρασης…",
+    L"Φόρτωση μοντέλου μετάφρασης",
+    L"Φόρτωση κατά τη χρήση (συνιστάται)",
+    L"Προφόρτωση",
+    L"Εξοικονομεί μνήμη. Η πρώτη μετάφραση ενδέχεται να αρχίσει μερικά δευτερόλεπτα αργότερα.",
+    L"Η μετάφραση ξεκινά αμέσως. Το μοντέλο παραμένει στη μνήμη.",
+    L"(Διατήρηση στη μνήμη)",
+    L"(Φόρτωση κατά τη χρήση)",
+    L"Αλλαγή πολιτικής",
+    L"Διπλότυπα αρχεία: {n} {s} × {c}",
+    L"Καθαρισμός διπλότυπων",
+    L"Τα διπλότυπα αρχεία μετακινήθηκαν στον Κάδο ανακύκλωσης.",
+    L"Δεν ήταν δυνατός ο καθαρισμός των διπλότυπων αρχείων. Ελέγξτε αν χρησιμοποιούνται από άλλο πρόγραμμα.",
 };
 
 // 23. Turkish (tr)
@@ -4676,6 +4999,20 @@ const LocalizedStrings kStringsTurkish = {
     L"Model hazır. Yerel motor bir sonraki çeviriden itibaren kullanacak.",
     L"İndirme başarısız oldu. Bağlantınızı kontrol edip tekrar deneyin.",
     L"Yetersiz boş disk alanı (yaklaşık {s} gerekli).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Çeviri modeli yükleme ayarları…",
+    L"Çeviri modeli yükleme",
+    L"Kullanıldığında yükle (önerilir)",
+    L"Önceden yükle",
+    L"Bellekten tasarruf sağlar. İlk çeviri birkaç saniye geç başlayabilir.",
+    L"Çeviri hemen başlar. Model bellekte kalır.",
+    L"(Sürekli yüklü tut)",
+    L"(Kullanıldığında yükle)",
+    L"İlkeyi değiştir",
+    L"Yinelenen dosyalar: {n} {s} × {c}",
+    L"Yinelenenleri temizle",
+    L"Yinelenen dosyalar Geri Dönüşüm Kutusu'na taşındı.",
+    L"Yinelenen dosyalar temizlenemedi. Başka bir program tarafından kullanılıp kullanılmadığını kontrol edin.",
 };
 
 // 24. Ukrainian (uk)
@@ -4870,6 +5207,20 @@ const LocalizedStrings kStringsUkrainian = {
     L"Модель готова. Локальний рушій використовуватиме її з наступного перекладу.",
     L"Завантаження не вдалося. Перевірте з'єднання та повторіть спробу.",
     L"Недостатньо вільного місця на диску (потрібно близько {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Налаштування завантаження моделі перекладу…",
+    L"Завантаження моделі перекладу",
+    L"Завантажувати під час використання (рекомендовано)",
+    L"Завантажувати заздалегідь",
+    L"Заощаджує пам'ять. Перший переклад може початися на кілька секунд пізніше.",
+    L"Переклад починається одразу. Модель постійно залишається в пам'яті.",
+    L"(Лишати в пам'яті)",
+    L"(Завантажувати під час використання)",
+    L"Змінити політику",
+    L"Дублікати файлів: {n} {s} × {c}",
+    L"Очистити дублікати",
+    L"Дублікати файлів переміщено в Кошик.",
+    L"Не вдалося очистити дублікати файлів. Перевірте, чи не використовує їх інша програма.",
 };
 
 // 25. Thai (th)
@@ -5064,6 +5415,20 @@ const LocalizedStrings kStringsThai = {
     L"โมเดลพร้อมใช้งาน เครื่องยนต์ในเครื่องจะใช้งานตั้งแต่การแปลครั้งถัดไป",
     L"ดาวน์โหลดไม่สำเร็จ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง",
     L"พื้นที่ดิสก์ว่างไม่เพียงพอ (ต้องการประมาณ {s})",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"การตั้งค่าการโหลดโมเดลแปล…",
+    L"การโหลดโมเดลแปล",
+    L"โหลดเมื่อใช้งาน (แนะนำ)",
+    L"โหลดล่วงหน้า",
+    L"ประหยัดหน่วยความจำ การแปลครั้งแรกอาจเริ่มช้ากว่าปกติไม่กี่วินาที",
+    L"เริ่มแปลทันที โมเดลจะถูกเก็บไว้ในหน่วยความจำตลอด",
+    L"(คงอยู่ในหน่วยความจำ)",
+    L"(โหลดเมื่อใช้งาน)",
+    L"สลับนโยบาย",
+    L"ไฟล์ซ้ำ: {n} {s} × {c}",
+    L"ล้างไฟล์ซ้ำ",
+    L"ย้ายไฟล์ซ้ำไปยังถังรีไซเคิลแล้ว",
+    L"ไม่สามารถล้างไฟล์ซ้ำได้ โปรดตรวจสอบว่าโปรแกรมอื่นกำลังใช้ไฟล์อยู่หรือไม่",
 };
 
 // 26. Indonesian (id)
@@ -5258,6 +5623,20 @@ const LocalizedStrings kStringsIndonesian = {
     L"Model siap. Mesin lokal akan menggunakannya mulai terjemahan berikutnya.",
     L"Unduhan gagal. Periksa koneksi Anda dan coba lagi.",
     L"Ruang disk bebas tidak cukup (memerlukan sekitar {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Pengaturan pemuatan model terjemahan…",
+    L"Pemuatan model terjemahan",
+    L"Muat saat digunakan (disarankan)",
+    L"Muat di awal",
+    L"Hemat memori. Terjemahan pertama mungkin dimulai beberapa detik lebih lambat.",
+    L"Terjemahan langsung dimulai. Model tetap berada di memori.",
+    L"(Tetap di memori)",
+    L"(Muat saat digunakan)",
+    L"Ganti kebijakan",
+    L"File duplikat: {n} {s} × {c}",
+    L"Bersihkan duplikat",
+    L"File duplikat telah dipindahkan ke Recycle Bin.",
+    L"File duplikat tidak dapat dibersihkan. Periksa apakah file sedang digunakan oleh program lain.",
 };
 
 // 27. Malay (ms)
@@ -5452,6 +5831,20 @@ const LocalizedStrings kStringsMalay = {
     L"Model sedia. Enjin tempatan akan menggunakannya mulai terjemahan seterusnya.",
     L"Muat turun gagal. Periksa sambungan anda dan cuba lagi.",
     L"Ruang cakera bebas tidak mencukupi (memerlukan lebih kurang {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Tetapan pemuatan model terjemahan…",
+    L"Pemuatan model terjemahan",
+    L"Muat semasa digunakan (disyorkan)",
+    L"Muat awal",
+    L"Menimatkan memori. Terjemahan pertama mungkin bermula beberapa saat lewat.",
+    L"Terjemahan bermula dengan serta-merta. Model kekal dalam memori.",
+    L"(Kekal dalam memori)",
+    L"(Muat semasa digunakan)",
+    L"Tukar dasar",
+    L"Fail pendua: {n} {s} × {c}",
+    L"Bersihkan pendua",
+    L"Fail pendua telah dialihkan ke Tong Kitar Semula.",
+    L"Fail pendua tidak dapat dibersihkan. Periksa sama ada fail sedang digunakan oleh program lain.",
 };
 
 // 28. Filipino (fil)
@@ -5648,6 +6041,20 @@ const LocalizedStrings kStringsFilipino = {
     L"Handa na ang model. Gagamitin ito ng lokal na engine sa susunod na pagsasalin.",
     L"Nabigo ang download. Suriin ang koneksyon mo at subukan muli.",
     L"Kulang ang libreng espasyo ng disk (humigit-kumulang {s} ang kailangan).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"Mga setting ng pag-load ng translation model…",
+    L"Pag-load ng translation model",
+    L"I-load kapag gagamitin (inirerekomenda)",
+    L"I-load nang maaga",
+    L"Tipid sa memory. Maaaring maantal ang unang pagsasalin nang ilang segundo.",
+    L"Magsisimula agad ang pagsasalin. Mananatili sa memory ang model.",
+    L"(Manatiling naka-load)",
+    L"(I-load kapag gagamitin)",
+    L"Palitan ang patakaran",
+    L"Mga duplicate na file: {n} {s} × {c}",
+    L"Linisin ang mga duplicate",
+    L"Ang mga duplicate na file ay inilipat sa Recycle Bin.",
+    L"Hindi nalinis ang mga duplicate na file. Tingnan kung ginagamit ng ibang program.",
 };
 
 // 29. Hindi (hi)
@@ -5842,6 +6249,20 @@ const LocalizedStrings kStringsHindi = {
     L"मॉडल तैयार है। लोकल इंजन इसे अगले अनुवाद से उपयोग करेगा।",
     L"डाउनलोड विफल हुआ। अपना कनेक्शन जांचें और पुनः प्रयास करें।",
     L"डिस्क पर पर्याप्त खाली स्थान नहीं है (लगभग {s} आवश्यक)।",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"अनुवाद मॉडल लोड सेटिंग…",
+    L"अनुवाद मॉडल लोडिंग",
+    L"उपयोग पर लोड करें (अनुशंसित)",
+    L"पहले से लोड करें",
+    L"मेमोरी बचाता है। पहला अनुवाद कुछ सेकंड देर से शुरू हो सकता है।",
+    L"अनुवाद तुरंत शुरू होता है। मॉडल मेमोरी में बना रहता है।",
+    L"(मेमोरी में बनाए रखें)",
+    L"(उपयोग पर लोड करें)",
+    L"नीति बदलें",
+    L"डुप्लिकेट फ़ाइलें: {n} {s} × {c}",
+    L"डुप्लिकेट साफ़ करें",
+    L"डुप्लिकेट फ़ाइलों को रीसायकल बिन में ले जाया गया।",
+    L"डुप्लिकेट फ़ाइलें साफ़ नहीं हो सकीं। जांचें कि कहीं कोई अन्य प्रोग्राम उनका उपयोग तो नहीं कर रहा।",
 };
 
 // 30. Bengali (bn)
@@ -6036,6 +6457,20 @@ const LocalizedStrings kStringsBengali = {
     L"মডেল প্রস্তুত। লোকাল ইঞ্জিন পরবর্তী অনুবাদ থেকে এটি ব্যবহার করবে।",
     L"ডাউনলোড ব্যর্থ হয়েছে। আপনার সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
     L"ডিস্কে পর্যাপ্ত খালি জায়গা নেই (প্রায় {s} প্রয়োজন)।",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"অনুবাদ মডেল লোড সেটিংস…",
+    L"অনুবাদ মডেল লোডিং",
+    L"ব্যবহারের সময় লোড করুন (প্রস্তাবিত)",
+    L"আগে থেকে লোড করুন",
+    L"মেমোরি বাঁচায়। প্রথম অনুবাদ কয়েক সেকেন্ড দেরি হতে পারে।",
+    L"অনুবাদ তাৎক্ষণিক শুরু হয়। মডেলটি মেমোরিতে থাকে।",
+    L"(মেমোরিতে রাখুন)",
+    L"(ব্যবহারের সময় লোড করুন)",
+    L"নীতি পরিবর্তন করুন",
+    L"ডুপ্লিকেট ফাইল: {n} {s} × {c}",
+    L"ডুপ্লিকেট পরিষ্কার করুন",
+    L"ডুপ্লিকেট ফাইলগুলি রিসাইকেল বিনে সরানো হয়েছে।",
+    L"ডুপ্লিকেট ফাইল পরিষ্কার করা যায়নি। অন্য কোনো প্রোগ্রাম ফাইলগুলি ব্যবহার করছে কিনা দেখুন।",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -6231,6 +6666,20 @@ const LocalizedStrings kStringsArabic = {
     L"النموذج جاهز. سيعمل المحرك المحلي به بدءًا من الترجمة التالية.",
     L"فشل التنزيل. تحقق من الاتصال وحاول مرة أخرى.",
     L"مساحة القرص الحرة غير كافية (مطلوب نحو {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"إعدادات تحميل نموذج الترجمة…",
+    L"تحميل نموذج الترجمة",
+    L"التحميل عند الاستخدام (موصى به)",
+    L"التحميل المسبق",
+    L"يوفّر الذاكرة. قد تتأخر الترجمة الأولى بضع ثوانٍ.",
+    L"تبدأ الترجمة فورًا. يبقى النموذج محمّلًا في الذاكرة.",
+    L"(يبقى محمّلًا)",
+    L"(التحميل عند الاستخدام)",
+    L"تبديل السياسة",
+    L"ملفات مكررة: {n} {s} × {c}",
+    L"تنظيف الملفات المكررة",
+    L"تم نقل الملفات المكررة إلى سلة المحذوفات.",
+    L"تعذّر تنظيف الملفات المكررة. تحقق مما إذا كانت تُستخدم في برنامج آخر.",
 };
 
 // 32. Persian (fa) — RTL
@@ -6425,6 +6874,20 @@ const LocalizedStrings kStringsPersian = {
     L"مدل آماده است. موتور محلی از ترجمه بعدی از آن استفاده می‌کند.",
     L"دانلود ناموفق بود. اتصال خود را بررسی کنید و دوباره تلاش کنید.",
     L"فضای خالی دیسک کافی نیست (حدود {s} لازم است).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"تنظیمات بارگذاری مدل ترجمه…",
+    L"بارگذاری مدل ترجمه",
+    L"بارگذاری هنگام استفاده (توصیه‌شده)",
+    L"بارگذاری از قبل",
+    L"حافظه را ذخیره می‌کند. اولین ترجمه ممکن است چند ثانیه دیرتر شروع شود.",
+    L"ترجمه بلافاصله شروع می‌شود. مدل در حافظه باقی می‌ماند.",
+    L"(ماندن در حافظه)",
+    L"(بارگذاری هنگام استفاده)",
+    L"تغییر سیاست",
+    L"فایل‌های تکراری: {n} {s} × {c}",
+    L"پاک‌سازی تکراری‌ها",
+    L"فایل‌های تکراری به سطل بازیافت منتقل شدند.",
+    L"پاک‌سازی فایل‌های تکراری ممکن نشد. بررسی کنید که برنامه دیگری از آن‌ها استفاده نمی‌کند.",
 };
 
 // 33. Urdu (ur) — RTL
@@ -6619,6 +7082,20 @@ const LocalizedStrings kStringsUrdu = {
     L"ماڈل تیار ہے۔ مقامی انجن اگلے ترجمے سے اسے استعمال کرے گا۔",
     L"ڈاؤن لوڈ ناکام رہا۔ اپنا کنکشن چیک کریں اور دوبارہ کوشش کریں۔",
     L"ڈسک پر کافی خالی جگہ نہیں ہے (تقریباً {s} درکار ہے)۔",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"ترجمہ ماڈل لوڈ سیٹنگز…",
+    L"ترجمہ ماڈل لوڈنگ",
+    L"استعمال پر لوڈ کریں (تجویز کردہ)",
+    L"پہلے سے لوڈ کریں",
+    L"میموری بچاتا ہے۔ پہلا ترجمہ چند سیکنڈ دیر سے شروع ہو سکتا ہے۔",
+    L"ترجمہ فوراً شروع ہوتا ہے۔ ماڈل میموری میں رہتا ہے۔",
+    L"(میموری میں رہے)",
+    L"(استعمال پر لوڈ کریں)",
+    L"پالیسی بدلیں",
+    L"ڈپلیکیٹ فائلیں: {n} {s} × {c}",
+    L"ڈپلیکیٹ صاف کریں",
+    L"ڈپلیکیٹ فائلیں ریسائیکل بِن میں منتقل کر دی گئیں۔",
+    L"ڈپلیکیٹ فائلیں صاف نہیں ہو سکیں۔ چیک کریں کہ کوئی اور پروگرام ان کا استعمال تو نہیں کر رہا۔",
 };
 
 // 34. Hebrew (he) — RTL
@@ -6813,6 +7290,20 @@ const LocalizedStrings kStringsHebrew = {
     L"המודל מוכן. המנוע המקומי ישתמש בו מהתרגום הבא.",
     L"ההורדה נכשלה. בדוק את החיבור ונסה שוב.",
     L"אין מספיק מקום פנוי בדיסק (נדרשים כ-{s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"הגדרות טעינת מודל התרגום…",
+    L"טעינת מודל התרגום",
+    L"טעינה בעת שימוש (מומלץ)",
+    L"טעינה מראש",
+    L"חוסך זיכרון. התרגום הראשון עשוי להתחיל כמה שניות מאוחר יותר.",
+    L"התרגום מתחיל מיד. המודל נשאר בזיכרון.",
+    L"(להשאיר בזיכרון)",
+    L"(טעינה בעת שימוש)",
+    L"החלפת מדיניות",
+    L"קבצים כפולים: {n} {s} × {c}",
+    L"ניקוי כפילויות",
+    L"הקבצים הכפולים הועברו לסל המיחזור.",
+    L"לא ניתן היה לנקות את הקבצים הכפולים. בדוק אם תוכנית אחרת משתמשת בהם.",
 };
 
 // 35. Khmer (km)
@@ -7007,6 +7498,20 @@ const LocalizedStrings kStringsKhmer = {
     L"ម៉ូដែលត្រៀមរួចរាល់។ ម៉ាស៊ីនក្នុងស្រុកនឹងប្រើវាចាប់ពីការបកប្រែបន្ទាប់។",
     L"ការទាញយកបរាជ័យ។ សូមពិនិត្យការភ្ជាប់ ហើយព្យាយាមម្តងទៀត។",
     L"ទំហំទីតាំងទំនេរលើថាសមិនគ្រប់គ្រាន់ (ត្រូវការប្រហែល {s})។",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"ការកំណត់ការផ្ទុកម៉ូដែលបកប្រែ…",
+    L"ការផ្ទុកម៉ូដែលបកប្រែ",
+    L"ផ្ទុកពេលប្រើប្រាស់ (ណែនាំ)",
+    L"ផ្ទុកជាមុន",
+    L"សន្សំសំណំ។ ការបកប្រែដំបូងអាចយឺតរយៈពេលប៉ុន្មានវិនាទី។",
+    L"ការបកប្រែចាប់ផ្តើមភ្លាមៗ។ ម៉ូដែលនៅតែស្ថិតក្នុងសំណំ។",
+    L"(រក្សាទុកក្នុងសំណំ)",
+    L"(ផ្ទុកពេលប្រើប្រាស់)",
+    L"ប្តូរគោលការណ៍",
+    L"ឯកសារស្ទួន: {n} {s} × {c}",
+    L"សម្អាតឯកសារស្ទួន",
+    L"ឯកសារស្ទួនត្រូវបានផ្លាស់ទីទៅក្នុងធុងសំរាម។",
+    L"មិនអាចសម្អាតឯកសារស្ទួនបានទេ។ សូមពិនិត្យមើលថាកម្មវិធីផ្សេងកំពុងប្រើប្រាស់ពួកវាឬទេ។",
 };
 
 // 36. Lao (lo)
@@ -7201,6 +7706,20 @@ const LocalizedStrings kStringsLao = {
     L"ໂມເດວພ້ອມແລ້ວ. ເຄື່ອງຈັກທ້ອງຖິ່ນຈະໃຊ້ມັນຕັ້ງແຕ່ການແປຄັ້ງຕໍ່ໄປ.",
     L"ດາວໂຫຼດບໍ່ສຳເລັດ. ກວດເບິ່ງການເຊື່ອມຕໍ່ ແລ້ວລອງໃໝ່.",
     L"ບໍ່ມີພື້ນທີ່ວ່າງຢູ່ໃນດິສພໍ (ຕ້ອງການປະມານ {s}).",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"ການຕັ້ງຄ່າການໂຫຼດໂມເດວແປ…",
+    L"ການໂຫຼດໂມເດວແປ",
+    L"ໂຫຼດເມື່ອນຳໃຊ້ (ແນະນຳ)",
+    L"ໂຫຼດລ່ວງໜ້າ",
+    L"ປະຢັດໜ່ວຍຄວາມຈຳ. ການແປຄັ້ງທຳອິດອາດເລີ່ມຊ້າລົງໄປໜຶ່ງວິນາທີ.",
+    L"ການແປເລີ່ມທັນທີ. ໂມເດວຍັງຄົງຢູ່ໃນໜ່ວຍຄວາມຈຳ.",
+    L"(ຄົງໃນໜ່ວຍຄວາມຈຳ)",
+    L"(ໂຫຼດເມື່ອນຳໃຊ້)",
+    L"ສະຫຼັບນະໂຍບາຍ",
+    L"ໄຟລ໌ຊ້ຳກັນ: {n} {s} × {c}",
+    L"ທຳຄວາມສະອາດໄຟລ໌ຊ້ຳ",
+    L"ໄຟລ໌ຊ້ຳໄດ້ຖືກຍ້າຍໄປຖັງຂີ້ເຫຍື້ອແລ້ວ.",
+    L"ບໍ່ສາມາດທຳຄວາມສະອາດໄຟລ໌ຊ້ຳໄດ້. ກວດເບິ່ງວ່າມີໂປຣແກຣມອື່ນໃຊ້ງານໄຟລ໌ນັ້ນຢູ່ບໍ່.",
 };
 
 // 37. Burmese (my)
@@ -7395,6 +7914,20 @@ const LocalizedStrings kStringsBurmese = {
     L"မော်ဒယ်အဆင်သင့်ဖြစ်ပါပြီ။ ဒေသန္တရအင်ဂျင်က နောက် ဘာသာပြန်ချက်ကတည်းက အသုံးပြုပါမည်။",
     L"ဒေါင်းလုဒ်လုပ်ခြင်း မအောင်မြင်ပါ။ သင့်ချိတ်ဆက်မှုကို စစ်ဆေးပြီး ပြန်လည်ကြိုးစားပါ။",
     L"ဒစ်စ်ပေါ်တွင် လုံလောက်သော နေရာလွတ် မရှိပါ (ခန့်မှန်း {s} လိုအပ်ပါသည်)။",
+    // REQ-060 (session 261009_0001): load-mode + manager policy/duplicate block.
+    L"ဘာသာပြန် မော်ဒယ် ဖွင့်စဉ် ဆက်တင်များ…",
+    L"ဘာသာပြန် မော်ဒယ် ဖွင့်စဉ်",
+    L"သုံးတဲ့အခါ ဖွင့်ပါ (အကြံပြုပါသည်)",
+    L"အရင်ကတည်းက ဖွင့်ထားပါ",
+    L"မေမွရီ သက်သာစေပါတယ်။ ပထမ ဘာသာပြန်ချက်က စက္ကန့်ပိုင်းနောက်ကျနိုင်ပါတယ်။",
+    L"ဘာသာပြန်ချက် ချက်ချင်းစတင်ပါတယ်။ မော်ဒယ်က မေမွရီထဲမှာ ဆက်ရှိနေပါတယ်။",
+    L"(ဆက်ရှိနေစေ)",
+    L"(သုံးတဲ့အခါ ဖွင့်ပါ)",
+    L"စည်းမျဉ်း ပြောင်းပါ",
+    L"ထပ်တူ ဖိုင်များ: {n} {s} × {c}",
+    L"ထပ်တူ ရှင်းလင်းရန်",
+    L"ထပ်တူ ဖိုင်များကို recycle bin သို့ ရွှေ့ပြီးပါပြီ။",
+    L"ထပ်တူ ဖိုင်များ ရှင်းလင်း မရပါ။ တခြား ပရိုဂရမ် သုံးနေသလား စစ်ဆေးပါ။",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -7746,6 +8279,22 @@ std::wstring I18n::Get(StringId id) {
         case StringId::ModelDlDone:         return s.model_dl_done;
         case StringId::ModelDlFailed:       return s.model_dl_failed;
         case StringId::ModelDlDiskSpace:    return s.model_dl_disk_space;
+
+        // REQ-060 (session 261009_0001): translation-model load-mode settings
+        // dialog + gguf-manager resident-policy / duplicate-file UI.
+        case StringId::EngineLoadSettingsMenuRow: return s.engine_load_settings_menu_row;
+        case StringId::EngineLoadSettingsTitle:   return s.engine_load_settings_title;
+        case StringId::LoadModeOnUse:             return s.load_mode_on_use;
+        case StringId::LoadModeWarmup:            return s.load_mode_warmup;
+        case StringId::LoadModeOnUseDesc:         return s.load_mode_on_use_desc;
+        case StringId::LoadModeWarmupDesc:        return s.load_mode_warmup_desc;
+        case StringId::GgufPolicySticky:          return s.gguf_policy_sticky;
+        case StringId::GgufPolicyEvict:           return s.gguf_policy_evict;
+        case StringId::GgufManagerTogglePolicy:   return s.gguf_manager_toggle_policy;
+        case StringId::GgufDuplicateWarning:      return s.gguf_duplicate_warning;
+        case StringId::GgufManagerDedupe:         return s.gguf_manager_dedupe;
+        case StringId::GgufManagerDedupeDone:     return s.gguf_manager_dedupe_done;
+        case StringId::GgufManagerDedupeFailed:   return s.gguf_manager_dedupe_failed;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

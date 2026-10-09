@@ -42,8 +42,8 @@ static const char* kM7A2BundledItem =
     "{\"id\": \"hy-mt2-1.8b-q8\", \"family\": \"ggml-translate\", "
     "\"files\": [\"Hy-MT2-1.8B-Q8_0.gguf\"], \"capabilities\": "
     "[\"translate\"], \"origin\": \"bundled\", \"resource\": {\"vram_mb\": "
-    "2400, \"ctx\": 4096, \"max_sessions\": 1, \"residency\": \"preload\", "
-    "\"eviction\": \"sticky\", \"priority\": 9}, \"profiles\": "
+    "2400, \"ctx\": 4096, \"max_sessions\": 1, \"residency\": \"ondemand\", "
+    "\"eviction\": \"evict\", \"priority\": 9}, \"profiles\": "
     "{\"default\": {\"temperature\": 0.0, \"top_p\": 0.6, \"top_k\": 20, "
     "\"rep_pen\": 1.05, \"prompt_template_ref\": \"hymt2-official\"}}, "
     "\"lang_pairs\": [\"*\"]}";
@@ -68,8 +68,8 @@ void TestM7RegistryMergeUninstall() {
             const ehr::ModelEntry& m = r.registry.models[0];
             TEST_CHECK(m.id == "hy-mt2-1.8b-q8" && m.origin == "bundled",
                        "A-2 (e): bundled id/origin intact after the shape swap");
-            TEST_CHECK(m.resource.priority == 9 && m.resource.residency == "preload" &&
-                           m.resource.eviction == "sticky",
+            TEST_CHECK(m.resource.priority == 9 && m.resource.residency == "ondemand" &&
+                           m.resource.eviction == "evict",
                        "A-2 (e): resource block round-trips (emitted values are the clamped ones)");
             TEST_CHECK(m.profiles.count("default") == 1 &&
                            m.profiles.at("default").prompt_template_ref == "hymt2-official",

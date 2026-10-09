@@ -16,7 +16,14 @@
 //       items ending at builder size();
 //   (c) compatibility — the REQ-046 style-bit suite pins dt->cdit == 0 for
 //       itemCount=0; the new layout must keep that true.
+//
+// REQ-060 (session 261009_0001): a fourth section byte-walks
+// BuildEngineHostSettingsTemplate() — the translation-model load-mode dialog —
+// with the same parser contract: 5 items, the CBS_DROPDOWNLIST combo style
+// pin, and the OK/Cancel pair.
 // ---------------------------------------------------------------------------
+
+#include "../src/ui/engine_host_settings_window.hpp" // REQ-060: BuildEngineHostSettingsTemplate
 
 namespace req048_detail {
 
@@ -220,6 +227,80 @@ void TestReq048OpenAiTemplateSerialization() {
                    "REQ-048 P2 (b): IDOK(1) and IDCANCEL(2) present in template");
         TEST_CHECK(off == tb.size(),
                    "REQ-048 P2 (b): parser consumed exactly cdit items and ends at size()");
+    }
+    // ---- REQ-060: engine-host load-mode settings dialog template ----------
+    // Same parser-contract walk as (b) for the translation-model load-mode
+    // dialog: 5 items (title label + mode combo + description static + OK +
+    // Cancel) on the 240x90 shell, with the CBS_DROPDOWNLIST style pin (a
+    // fixed two-option list — no free-text leg, unlike the OpenAI model
+    // combo's CBS_DROPDOWN).
+    {
+        const UiLocale req060_initial_locale = I18n::GetCurrentLocale();
+        I18n::SetLocale(UiLocale::Korean); // title/combo labels
+        using namespace req048_detail;
+        TemplateBuilder tb;
+        tb.Begin(L"production", 240, 90, /*itemCount=*/5);
+        BuildEngineHostSettingsTemplate(tb);
+        const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
+        TEST_CHECK(base != nullptr,
+                   "REQ-060: engine-host settings template buffer non-null");
+        if (base) {
+            const WORD cdit = ReadWord(base, 8);
+            TEST_CHECK(cdit == 5,
+                       "REQ-060: template emits 5 items (title + combo + desc + OK + Cancel)");
+            TEST_CHECK(ReadWord(base, 14) == 240 && ReadWord(base, 16) == 90,
+                       "REQ-060: dialog geometry 240x90 DLU");
+            struct Exp060 { WORD id; WORD cls; short x, y, cx, cy; std::wstring title; };
+            const Exp060 kExp060[] = {
+                {4400, kStaticCls, 8, 6, 224, 9,
+                 I18n::Get(StringId::EngineLoadSettingsTitle)},
+                {4401, kComboCls, 8, 20, 224, 64, L""},
+                {4402, kStaticCls, 8, 40, 224, 22, L""},
+                {IDOK, kBtnCls, 104, 72, 60, 13, I18n::Get(StringId::DialogOk)},
+                {IDCANCEL, kBtnCls, 172, 72, 60, 13,
+                 I18n::Get(StringId::DialogCancel)},
+            };
+            size_t off = 18; // header
+            off += 2;        // menu
+            off += 2;        // windowClass
+            off += 2 * (1 + std::wstring(L"production").size()); // title + NUL
+            off += 2;        // pointsize
+            off += 2 * (1 + std::wstring(L"Segoe UI").size());   // font + NUL
+            bool walk060_ok = true;
+            for (WORD iItem = 0; iItem < cdit && iItem < 5; ++iItem) {
+                off += (4 - off % 4) % 4; // DWORD-align relative to the template
+                const Exp060& e = kExp060[iItem];
+                const WORD id = ReadWord(base, off + 16);
+                const WORD cls = ReadWord(base, off + 20);
+                const short x = static_cast<short>(ReadWord(base, off + 8));
+                const short y = static_cast<short>(ReadWord(base, off + 10));
+                const short cx = static_cast<short>(ReadWord(base, off + 12));
+                const short cy = static_cast<short>(ReadWord(base, off + 14));
+                size_t toff = off + 22; // fixed part 18 + class array 4
+                const std::wstring title = ReadString(base, &toff);
+                if (id != e.id || cls != e.cls || x != e.x || y != e.y ||
+                    cx != e.cx || cy != e.cy || title != e.title) {
+                    walk060_ok = false;
+                    break;
+                }
+                // REQ-060: the mode combo must be CBS_DROPDOWNLIST — the two
+                // load-mode options are a fixed pick list. Styles:
+                // WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000,
+                // +CBS_DROPDOWNLIST (0x0003) = 0x50810003.
+                if (e.id == 4401) {
+                    TEST_CHECK(ReadDword(base, off) == 0x50810003u,
+                               "REQ-060: mode combo carries CBS_DROPDOWNLIST "
+                               "(fixed option list, no free-text leg)");
+                }
+                off = toff + 2; // creation-data count WORD
+            }
+            TEST_CHECK(walk060_ok,
+                       "REQ-060: engine-host settings template items 1:1 — "
+                       "title/combo/desc geometry + i18n captions");
+            TEST_CHECK(off == tb.size(),
+                       "REQ-060: engine-host settings template walk consumed exactly size() bytes");
+        }
+        I18n::SetLocale(req060_initial_locale); // suite-state hygiene
     }
     I18n::SetLocale(req050_initial_locale); // REQ-050: restore pre-test locale
 

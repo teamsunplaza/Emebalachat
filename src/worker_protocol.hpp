@@ -39,9 +39,13 @@
 //                                                   host_main.cpp:363-372)
 //   orchestrator -> worker:
 //     session_open{op:"session_open","session":N,"capability":"translate",
-//                  "model_id":"...","profile":"..."}  -> opened | error
-//                  (P2-1: capability "asr" rides the SAME frame verbatim —
-//                  the ggml-asr worker additionally reads model_id/file/
+//                  "model_id":"...","profile":"...","preload":B} -> opened|error
+//                  (REQ-060: OPTIONAL preload bool, emitted only as the JSON
+//                  true literal — the warmup "미리 로드": the worker resolves
+//                  model_id and EnsureLoaded-keeps the model resident BEFORE
+//                  answering opened; absent/false keeps the pre-REQ-060 byte
+//                  shape. P2-1: capability "asr" rides the SAME frame verbatim
+//                  — the ggml-asr worker additionally reads model_id/file/
 //                  lang_hint at the top level or nested in "options")
 //     opened      {op:"opened","session":N}           (worker ack)
 //     job         {op:"job","job":N,"session":N,"kind":"translate","src":..,
@@ -356,6 +360,13 @@ struct SessionOpenMsg {
     std::string capability;
     std::string model_id;
     std::string profile;
+    // REQ-060: OPTIONAL warmup preload flag — true asks the worker to load
+    // (and keep resident) the resolved model BEFORE answering opened, so the
+    // post-warmup first job skips the multi-second EnsureLoaded. Default
+    // false; the parser degrades absent/malformed to false (the same
+    // discipline as the v1 hello warmup member), so pre-REQ-060 frames
+    // parse unchanged.
+    bool preload = false;
 };
 
 // One-shot translate shortcut (design §1.2: "단발 translate은 session_open
@@ -411,12 +422,21 @@ inline std::string BuildAnnounce(const WorkerManifest& m, std::string_view token
            "\"," + body.substr(1);
 }
 
+// REQ-060: OPTIONAL preload flag — emitted ONLY as the explicit true literal
+// (default false: an unset flag keeps the pre-REQ-060 wire bytes, so every
+// existing golden frame is preserved; §V2-12-2 makes the additive member safe
+// for old receivers, and the permissive parse makes it safe from old senders
+// — the 난부 pipe ships host+worker together, so the extension cannot cross a
+// version boundary unmatched).
 inline std::string BuildSessionOpen(std::uint64_t session, std::string_view capability,
-                                    std::string_view model_id, std::string_view profile) {
-    return std::string("{\"op\":\"session_open\",\"session\":") + std::to_string(session) +
-           ",\"capability\":\"" + enginehost::JsonEscape(capability) +
-           "\",\"model_id\":\"" + enginehost::JsonEscape(model_id) +
-           "\",\"profile\":\"" + enginehost::JsonEscape(profile) + "\"}";
+                                    std::string_view model_id, std::string_view profile,
+                                    bool preload = false) {
+    std::string s = std::string("{\"op\":\"session_open\",\"session\":") + std::to_string(session) +
+                    ",\"capability\":\"" + enginehost::JsonEscape(capability) +
+                    "\",\"model_id\":\"" + enginehost::JsonEscape(model_id) +
+                    "\",\"profile\":\"" + enginehost::JsonEscape(profile) + "\"";
+    if (preload) s += ",\"preload\":true";
+    return s + "}";
 }
 
 inline std::string BuildOpened(std::uint64_t session) {
@@ -560,6 +580,18 @@ inline bool ParseSessionOpen(std::string_view json, SessionOpenMsg& m) {
     if (const auto* pr = enginehost::detail::FindField(p, "profile")) {
         if (!pr->is_string) return false;
         m.profile = pr->text;
+    }
+    // REQ-060: OPTIONAL preload bool — absent -> false, and only the JSON
+    // true literal counts (any other value, incl. a mistyped string member,
+    // degrades to false; the same permissive discipline as the v1 hello
+    // warmup member, engine_host_protocol.hpp ParseHello). Never fails the
+    // parse: the member is wire-additive for pre-REQ-060 senders.
+    m.preload = false;
+    if (const auto* pl = enginehost::detail::FindField(p, "preload")) {
+        // Only the JSON true LITERAL counts: a mistyped STRING member
+        // ("preload":"true") must NOT enable the preload (is_string gate —
+        // the raw text of a string member would otherwise compare equal).
+        m.preload = (!pl->is_string && pl->text == "true");
     }
     return true;
 }

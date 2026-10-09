@@ -47,15 +47,39 @@
 namespace emebalachat {
 
 // REQ-043 persisted config block (config.json "engine_host"):
-//   { "enabled": true, "spawn": true, "idle_exit_ms": 600000 }
+//   { "enabled": true, "spawn": true, "idle_exit_ms": 600000,
+//     "worker_idle_ms": 90000, "warmup": false }
 // `idle_exit_ms` is the HOST-side idle-exit rule (plan §4.4); protocol v1
 // carries no configuration channel, so the client persists it for
 // observability/forward-compat and the host applies its own default (the
 // value is read back when a future protocol version can push it).
+// REQ-060 adds the translation-worker idle-eviction + warmup knobs, with
+// different consumers. worker_idle_ms is a STARTUP-ONLY HOST read: the host
+// loads it from config.json directly at boot (no wire channel; clamped
+// 5000..86400000 with 0/negative -> 90000), so the client persists it for
+// the host and for observability. warmup is NOT a host boot read — it is a
+// CLIENT-side decision input: while true (with the block enabled and the
+// local route active) the client holds a dedicated pipe connection whose
+// hello carries warmup:true, and that hold is what tells the host to skip
+// idle eviction for the family and to pre-spawn the translate worker.
+// Neither knob is mutated after threads exist.
 struct EngineHostConfig {
     bool enabled = true;
     bool spawn = true;
     int idle_exit_ms = 600000;
+    // REQ-060: idle budget (ms) before the host evicts the translation worker
+    // process (default 90000 = 90 s; parsed clamped 5000..86400000, with
+    // 0/negative restoring the 90000 default policy).
+    int worker_idle_ms = 90000;
+    // REQ-060: client-side warmup request (default false), NOT a host boot
+    // read. When true (and the block is enabled with the local route
+    // active) the client holds a dedicated pipe connection whose hello
+    // carries warmup:true; for as long as that connection lives the host
+    // skips idle eviction for the translate family, asynchronously
+    // pre-spawns the worker, and relays a background preload session_open
+    // that loads the pinned default model before the first job (warmup off
+    // keeps the legacy first-job load).
+    bool warmup = false;
 };
 
 namespace engine_host {

@@ -64,8 +64,8 @@ void TestBt8InstallerModelBundling() {
         "{\"id\": \"hy-mt2-1.8b-q8\", \"family\": \"ggml-translate\", "
         "\"files\": [\"Hy-MT2-1.8B-Q8_0.gguf\"], \"capabilities\": "
         "[\"translate\"], \"origin\": \"bundled\", \"resource\": {\"vram_mb\": "
-        "2400, \"ctx\": 4096, \"max_sessions\": 1, \"residency\": \"preload\", "
-        "\"eviction\": \"sticky\", \"priority\": 9}, \"profiles\": "
+        "2400, \"ctx\": 4096, \"max_sessions\": 1, \"residency\": \"ondemand\", "
+        "\"eviction\": \"evict\", \"priority\": 9}, \"profiles\": "
         "{\"default\": {\"temperature\": 0.0, \"top_p\": 0.6, \"top_k\": 20, "
         "\"rep_pen\": 1.05, \"prompt_template_ref\": \"hymt2-official\"}}, "
         "\"lang_pairs\": [\"*\"]}";
