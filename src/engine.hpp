@@ -136,20 +136,48 @@ EngineType PlanTranslationRouting(std::string_view src_code,
 // CloudConsentBlocked with NO retry. Classification and the retry warrant
 // are ONE pure definition (shared by engine.cpp and the unit tests):
 //   * Transient = "connect" (orchestrator still booting / spawn in flight),
-//     "busy" (the worker manager refused a job while loading), "io" (the
-//     pipe died mid-request; the NEXT call respawns), "timeout" (worker-side
-//     decode deadline). These are the codes the frozen client's failure
-//     contract (engine_host_client.hpp) documents as recoverable-by-retry.
+//     "connect:<numeric errno>" (R1-25 U-H4b: the form the client ACTUALLY
+//     emits for every refused/timed-out pipe attempt - see
+//     IsEngineHostConnectErrnoCode below), "busy" (the worker manager refused
+//     a job while loading), "io" (the pipe died mid-request; the NEXT call
+//     respawns), "timeout" (worker-side decode deadline). These are the codes
+//     the frozen client's failure contract (engine_host_client.hpp)
+//     documents as recoverable-by-retry.
 //   * Everything else is Permanent: "disabled", "no_host_binary",
 //     "unauthorized", "version_mismatch", "pin_mismatch", "bad_request",
 //     "model_missing" and "engine_failed" (a decode that actually ran -
 //     retrying a deterministic decode failure only reloads the model).
 //     UNKNOWN / empty codes fail PERMANENT (fail-safe: never spend a retry
 //     on a code the policy does not recognize).
+//   * "connect:peer" (R1-7 peer-identity gate, U-D) stays PERMANENT: the
+//     pipe answered from a process that is not the installed host image, so
+//     a 400 ms re-attempt would only re-run the same rejection.
 enum class EngineHostFailureClass { Transient, Permanent };
+
+// R1-25 (U-H4b, v0.10.4 sweep): the client emits "connect:<os errno>" for
+// every refused/timed-out pipe attempt (`"connect:" + std::to_string(last_err)`
+// in ConnectAndHandshake); the bare "connect" covers ONLY the empty-candidate
+// case. Classifying the literal alone left every real connect failure
+// PERMANENT, so the REQ-051 retry - built for exactly the "connect racing the
+// orchestrator's spawn" symptom - never fired for it. The errno-suffixed form
+// is Transient now; "connect:peer" (letters, not digits) stays Permanent, so
+// the R1-7 squatter gate can never be retried. Anything else after the prefix
+// (empty, spaces, mixed) is unknown -> Permanent, per the fail-safe rule.
+constexpr bool IsEngineHostConnectErrnoCode(std::string_view err_code) {
+    constexpr std::string_view kPrefix = "connect:";
+    if (err_code.size() <= kPrefix.size() ||
+        err_code.substr(0, kPrefix.size()) != kPrefix) {
+        return false;
+    }
+    for (size_t i = kPrefix.size(); i < err_code.size(); ++i) {
+        if (err_code[i] < '0' || err_code[i] > '9') return false;
+    }
+    return true;
+}
+
 constexpr EngineHostFailureClass ClassifyEngineHostFailure(std::string_view err_code) {
-    return (err_code == "connect" || err_code == "busy" || err_code == "io" ||
-            err_code == "timeout")
+    return (err_code == "connect" || IsEngineHostConnectErrnoCode(err_code) ||
+            err_code == "busy" || err_code == "io" || err_code == "timeout")
                ? EngineHostFailureClass::Transient
                : EngineHostFailureClass::Permanent;
 }
@@ -341,7 +369,13 @@ public:
     int HostFailureStreak() const;
 
     // Translates input text from source language to target language.
-    // Thread-safe: internal mutex guards concurrent requests.
+    // Thread-safe: concurrent requests stay SERIALIZED (translate_mutex_ is
+    // held for the whole request), while the routing/consent state the request
+    // needs is read through ONE short-lock snapshot taken at request time and
+    // the repair signal is recorded through two short-lock recorders — so tray
+    // and GUI-thread accessors (GetActiveEngineName / SetEngineType /
+    // HostFailureStreak) never queue behind a 30 s host pipe or a ~16 s cloud
+    // call (R1-11, session 261029_0001, v0.10.4 sweep; code review F-02).
     // The 3-arg form is kept for existing callers; it discards the status.
     std::wstring Translate(
         std::wstring_view text,
@@ -381,11 +415,13 @@ public:
     // Exposed for the shutdown watchdog and the headless seam tests.
     bool IsCancelRequested();
 
-    // REQ-R16 watchdog helper: returns true once the engine mutex is free
-    // again, i.e. every in-flight Translate() (cloud WinHTTP or engine-host
-    // pipe — the mutex is held across the whole call) has unwound. Call
-    // after RequestCancel() to get a BOUNDED, observable confirmation that
-    // no request is still in flight before the process exits.
+    // REQ-R16 watchdog helper: returns true once the REQUEST-SPANNING lock is
+    // free again, i.e. every in-flight Translate() (cloud WinHTTP or
+    // engine-host pipe — translate_mutex_ is held across the whole call) has
+    // unwound. Call after RequestCancel() to get a BOUNDED, observable
+    // confirmation that no request is still in flight before the process
+    // exits. Deliberately never touches mutex_ (the state lock): that lock is
+    // short-held and would prove nothing about a request in flight.
     bool WaitInferenceIdle(DWORD timeout_ms);
 
     // Sets sampling parameters for local LLM generation
@@ -407,7 +443,28 @@ private:
     // llama).
     bool HostCouldServeLocked() const;
 
+    // R1-11 (session 261029_0001, v0.10.4 sweep; code review F-02): the
+    // §V2-8.6 repair signal is recorded through these two SHORT-LOCK helpers
+    // instead of being touched under the request span. NoteHostSuccess clears
+    // it; NoteHostFailure increments and returns the post-increment value for
+    // the caller's diagnostic line (the /044 and /047 lines keep logging the
+    // same number they logged before the split).
+    void NoteHostSuccess();
+    int NoteHostFailure();
+
+    // R1-11: the REQUEST-SPANNING lock. Held for the whole Translate() (the
+    // engine-host pipe may take up to 30 s, the cloud call ~16 s), which is
+    // what keeps concurrent requests serialized exactly as before — and what
+    // WaitInferenceIdle() probes to prove no request is in flight. No getter,
+    // setter or tray/GUI path ever takes it, so the display seams never block
+    // on I/O. Lock order: translate_mutex_ -> mutex_ (never the reverse).
+    std::mutex translate_mutex_;
+
+    // R1-11: the STATE lock. Guards every field below. Only ever held for a
+    // copy-in / copy-out (Translate's request snapshot, the recorders above,
+    // the getters/setters) — NEVER across a translate, network or pipe call.
     mutable std::mutex mutex_;
+
     EngineType preferred_type_ = EngineType::Auto;
     std::string model_path_;
     EngineType active_type_ = EngineType::GoogleTranslate;
@@ -415,13 +472,16 @@ private:
     bool local_model_available_ = false;
     bool cloud_fallback_enabled_ = false;
     // REQ-043: engine_host.enabled gates the host-first routing inside
-    // Translate(); the block is a startup-only write (like
-    // cloud_fallback_enabled_) so it needs no Snapshot entry.
+    // Translate(). Runtime-writable (main.cpp's engine-host settings
+    // coordinator), so Translate() COPIES the block under mutex_ at request
+    // time and uses the copy for the whole request (R1-11) — a concurrent
+    // setter can then never mutate the block mid-request.
     EngineHostConfig engine_host_config_;
 
     // REQ-045 P4-3 (design §3b): the persisted OpenAI Compatible block that
-    // drives the OpenAi serving leg of Translate(). Startup-only write (same
-    // discipline as engine_host_config_), so it needs no Snapshot entry.
+    // drives the OpenAi serving leg of Translate(). Runtime-writable through
+    // SetOpenAiConfig, so Translate() copies it under mutex_ at request time
+    // (same R1-11 discipline as engine_host_config_).
     OpenAiConfig openai_config_;
 
     // REQ-051 U-2: the user-model (.gguf) route's display stem ("" = pinned
@@ -435,15 +495,16 @@ private:
     float repetition_penalty_ = 1.05f;
 
     // REQ-043 (M6 T5): consecutive engine-host failures (the repair signal
-    // getter above); guarded by mutex_ like the rest of the manager state.
-    // The TranslationManager::LlamaEngine member is REMOVED with the
-    // embedded engine.
+    // getter above); guarded by mutex_ like the rest of the manager state and
+    // written only through the two recorders above (R1-11). The
+    // TranslationManager::LlamaEngine member is REMOVED with the embedded
+    // engine.
     int host_fail_streak_ = 0;
 
     // REQ-R16: shutdown latch. Written via RequestCancel() without taking
-    // mutex_ (the point is to signal a thread that IS holding mutex_ inside
-    // a request), read by every Translate() leg - std::atomic keeps all
-    // sides race-free.
+    // either mutex (the point is to signal a thread that IS holding
+    // translate_mutex_ inside a request), read by every Translate() leg -
+    // std::atomic keeps all sides race-free.
     std::atomic<bool> cancel_requested_{false};
 };
 

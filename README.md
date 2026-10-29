@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/teamsunplaza/Emebalachat/releases"><img src="https://img.shields.io/badge/Release-v0.10.3-blue.svg?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/teamsunplaza/Emebalachat/releases"><img src="https://img.shields.io/badge/Release-v0.10.4-blue.svg?style=flat-square" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://microsoft.com/windows"><img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-0078D6.svg?style=flat-square&logo=windows" alt="Platform" /></a>
   <a href="https://teamsunplaza.gumroad.com/l/emebala"><img src="https://img.shields.io/badge/Sponsor-Gumroad-FF90A0.svg?style=flat-square&logo=gumroad&logoColor=white" alt="Sponsor" /></a>
@@ -62,7 +62,7 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 
 ## Download (Windows 10 / 11 x64)
 
-Download **`Emebalachat_Setup_0.10.3.exe`** from [**Releases**](https://github.com/teamsunplaza/Emebalachat/releases) and run it. The installer offers:
+Download **`Emebalachat_Setup_0.10.4.exe`** from [**Releases**](https://github.com/teamsunplaza/Emebalachat/releases) and run it. The installer offers:
 
 - Automatic installation to `%ProgramFiles%\Emebalachat`
 - Optional auto-start with Windows login
@@ -91,9 +91,9 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
   - Direct C++ integration with `llama.cpp` (b6099).
   - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 37 target languages listed below.
   - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
-  - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size + mtime) before the model is handed to llama.cpp.
+  - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size, mtime and a content sample of three fixed 1 MiB windows, so a same-size model swap triggers a full re-hash) before the model is handed to llama.cpp.
   - **On-demand model download (0.10.2+)**: if the model was skipped at setup, choosing the built-in engine offers a consent + progress download from Hugging Face — SHA-256 verified against the pinned hash and atomically installed into the shared store, in all 37 interface languages.
-  - **Shared Inference Host (0.10.1+)**: local translations are routed through `Emebala.Engine.exe`, an orchestrator process every Emebala app shares. It loads the model **once** into GPU memory, serves all installed Emebala apps over a local named pipe (current-user ACL + per-boot security token), and hands each job to a dedicated `Emebala.Engine.ggml-translate.exe` worker process (unified family name since session 260930_0003 — one worker name across all Emebala products), so two or three Emebala apps no longer duplicate the model in VRAM and a misbehaving app cannot take the model down. If the engine cannot be used — missing binaries, connection failure, version/token mismatch, busy, timeout — the app does not fail silently: it offers a one-click repair, falls back to the cloud engine under the same consent rules as always (see below), or shows a clear notice that local translation is unavailable. The engine never appears in the Start menu, runs only while needed, and exits by itself after 10 minutes idle (`engine_host.idle_exit_ms`).
+  - **Shared Inference Host (0.10.1+)**: local translations are routed through `Emebala.Engine.exe`, an orchestrator process every Emebala app shares. It loads the model **once** into GPU memory, serves all installed Emebala apps over a local named pipe (current-user ACL + per-boot security token), and hands each job to a dedicated `Emebala.Engine.ggml-translate.exe` worker process (unified family name since session 260930_0003 — one worker name across all Emebala products), so two or three Emebala apps no longer duplicate the model in VRAM and a misbehaving app cannot take the model down. If the engine cannot be used — missing binaries, connection failure, version/token mismatch, busy, timeout — the app does not fail silently: it offers a one-click repair, falls back to the cloud engine under the same consent rules as always (see below), or shows a clear notice that local translation is unavailable. The engine never appears in the Start menu, runs only while needed, and exits by itself after 10 minutes idle (the engine's own default; `engine_host.idle_exit_ms` in config.json is persisted for observability and does not control it).
   - Pairs outside the model's reliable set are routed to the cloud engine under `auto`, or kept on-device (with a degradation warning) under a strict `local` pin without cloud consent.
 - **Cloud Engines**:
   - **Google Translate (built-in)**:
@@ -127,7 +127,8 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
     - `CanIncludeInClipboardHistory` (explicitly set to 0)
     - `CanUploadToCloudClipboard` (explicitly set to 0)
   - **RAII State Backup & Restore**: Completely snapshots existing clipboard contents (including non-text formats while safely skipping volatile GDI handles), performs the paste operation, and restores the original clipboard state afterwards.
-  - **Paste Settle Timing**: After setting the clipboard, the synthetic paste waits a fixed 120 ms settle delay (`kPasteSettleDelayMs`) before sending <kbd>Ctrl</kbd>+<kbd>V</kbd>, and clipboard reads poll `AddClipboardFormatListener` sequence changes with a timeout gate so a stale copy is never read.
+  - **Paste Settle Timing**: The translated text is placed on the system clipboard, <kbd>Ctrl</kbd>+<kbd>V</kbd> is sent, and a fixed 120 ms settle delay (`kPasteSettleDelayMs`, measured AFTER the paste) lets the target application finish its asynchronous read before the original clipboard is restored; clipboard reads poll `AddClipboardFormatListener` sequence changes with a timeout gate so a stale copy is never read.
+  - **Honest scope of the clipboard window (disclosed, not claimed away)**: for those ~120 ms the translated text is present on the system clipboard and readable by any process that polls it. The exclusion tags above are **advisory**: Windows Clipboard History and Cloud Clipboard honor them, but third-party clipboard managers are not bound by them and may capture the text. The app cannot prevent that; it only keeps the window short and the residue zero (the pre-existing clipboard is restored afterwards, and a copy you make during a translation is preserved).
 
 ### 5. Smart Content Bypass
 
@@ -250,7 +251,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 - `engine_host` (0.10.1+): Shared local inference engine (`Emebala.Engine.exe` + its translation worker) settings.
   - `enabled` (default `true`): route local translations through the shared engine when it is available.
   - `spawn` (default `true`): start the engine on demand when it is not running (fixed path `%LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe`).
-  - `idle_exit_ms` (default `600000` = 10 minutes): how long the engine stays alive with no connected app before exiting — the next translation request respawns it automatically.
+  - `idle_exit_ms` (default `600000` = 10 minutes): persisted for observability only — the engine applies its own 10-minute idle-exit default and this value does not change it. When the engine exits, the next translation request respawns it automatically.
   - `worker_idle_ms` (0.10.3+, default `90000` = 90 seconds): how long a translation worker may sit unused before the engine host exits it to free its memory. The host reads this value once at startup from `config.json`; values below 5000 clamp to 5000, above 86400000 (24 h) clamp to 86400000, and 0 or negative restores the default. The next translation after an eviction respawns the worker automatically.
   - `warmup` (0.10.3+, default `false`): translation-model load mode, editable from the tray engine menu ("Translation model load settings…"). When `false` ("Load when used (recommended)"), the worker and the model stay unloaded until your first translation, keeping memory free at the cost of a slower first translation. When `true` ("Preload"), the app holds a standing engine-host connection so the worker is pre-spawned and the pinned model is loaded in the background — the first translation starts immediately, but the model stays resident in memory until the app exits. You can also toggle a single model between "keep resident" and "load on use" in the Model Management window; that per-model policy is picked up when the engine host next restarts (a running host keeps the policy it resolved at startup).
   Whenever the engine cannot be used (missing binaries, connection failure, version/token mismatch, busy, timeout), translation does not fail silently: the app offers a one-click repair, falls back to the cloud engine under the normal consent rules, or shows a clear notice that local translation is unavailable.
@@ -379,7 +380,12 @@ exactly two user-triggered flows:
   exclusions (`CanIncludeInClipboardHistory = 0`, `CanUploadToCloudClipboard = 0`),
   so it never appears in <kbd>Win</kbd>+<kbd>V</kbd> history or Cloud Clipboard.
   Original clipboard contents are snapshotted (RAII) and fully restored after the
-  paste, including non-text formats.
+  paste, including non-text formats. **Bounded exposure window:** the translated text
+  does sit on the system clipboard for the paste window (the 120 ms settle delay plus
+  the paste itself), and those exclusion tags are advisory — Windows honors them,
+  third-party clipboard managers are not required to and may read the text while it is
+  there. A copy you make while a translation is in flight is kept, not overwritten by
+  the restore.
 - **TTS:** speech synthesis uses the local Windows voice engine; audio never leaves
   the machine.
 
@@ -478,7 +484,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (6,562 checks as of v0.10.3) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (7,213 checks as of v0.10.4) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe
@@ -518,7 +524,7 @@ To package Emebala Chat into a single, self-extracting Windows installer:
 The compiled installer will be output to:
 
 ```text
-installer\output\Emebalachat_Setup_0.10.3.exe
+installer\output\Emebalachat_Setup_0.10.4.exe
 ```
 
 </details>
@@ -536,7 +542,7 @@ C:\path\to\Emebalachat\
 ├── config.example.json         # Reference configuration template
 ├── installer\                  # Inno Setup 6.x packaging scripts
 │   ├── README.md               # Installer build guide
-│   ├── setup.iss               # Inno Setup installer script (0.10.3)
+│   ├── setup.iss               # Inno Setup installer script (0.10.4)
 │   ├── languages\              # Bundled non-default .isl files (Chinese S/T)
 │   ├── assets\                 # Optional setup icons & wizard graphics
 │   └── output\                 # Compiled installer binaries

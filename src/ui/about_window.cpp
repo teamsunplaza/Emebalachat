@@ -284,6 +284,21 @@ bool AboutWindow::Create(HINSTANCE hInstance) {
     if (header_format_) {
         header_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
+    // R2-12d (FIX-B2): makeFormat defaults every format to
+    // DWRITE_PARAGRAPH_ALIGNMENT_NEAR, so the five pill-button labels
+    // (Website / Contact / Reddit / Check for updates / Reset settings)
+    // rendered slammed against the top border of their pills. Their rects are
+    // exactly the pill bodies, so centering the line is the whole fix; the
+    // wrapping member (reset_footer_format_) centers its line block the same
+    // way. The dialog text buttons and update-zone buttons share these
+    // formats and get the same vertical centering - same pill idiom.
+    IDWriteTextFormat* const pill_formats[] = {
+        link_format_, uz_button_format_, uz_textbtn_format_, reset_footer_format_};
+    for (IDWriteTextFormat* fmt : pill_formats) {
+        if (fmt) {
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+    }
 
     ApplyLocaleFormatting();
 

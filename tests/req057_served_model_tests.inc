@@ -160,8 +160,12 @@ void TestReq057ServedModelEcho() {
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
         // The job branch sets ev.model for the terminal event: scoped between
-        // the per-job resolve and the event build.
-        const size_t job_pos = src.find("resolve_active_model(&model_resolved)");
+        // the per-job resolve and the event build. v0.10.4 R1-3: the echo is
+        // the id the ResolveModelFile resolution reported (`served_model_id`),
+        // and the job branch performs NO second registry scan (the pre-fix
+        // re-scan named the first bundled entry, an ASR model, while the
+        // pinned Hy-MT2 served).
+        const size_t job_pos = src.find("resolve_active_model(&served_model_id)");
         const size_t ev_pos = job_pos == std::string::npos
                                   ? std::string::npos
                                   : src.find("wp::BuildEvent(ev)", job_pos);
@@ -173,8 +177,33 @@ void TestReq057ServedModelEcho() {
                        job_scope.find("ev.model = served_model_id;") != std::string::npos,
                    "REQ-057 (b): the worker populates ev.model in the job branch");
         TEST_CHECK(!job_scope.empty() &&
-                       job_scope.find("ResolveBundledModelId") != std::string::npos,
-                   "REQ-057 (b): the served-id rule consults the bundled registry id");
+                       job_scope.find("ResolveBundledModelId") == std::string::npos,
+                   "REQ-057 (b)/R1-3: the job branch re-scans no registry for the id "
+                   "(the echo is the resolution's own report)");
+        // The bundled-id rule still lives in the SINGLE resolution: both pinned
+        // branches of ResolveModelFile report ResolveBundledModelId (now
+        // family-aware, R1-3), so the echo and the app's expectation share one
+        // definition.
+        const size_t rf_pos = src.find("std::string ResolveModelFile(");
+        const size_t rf_end =
+            rf_pos == std::string::npos ? std::string::npos : src.find("\n}", rf_pos);
+        const std::string rf_scope =
+            (rf_pos != std::string::npos && rf_end != std::string::npos)
+                ? src.substr(rf_pos, rf_end - rf_pos)
+                : "";
+        int bundled_id_sites = 0;
+        for (size_t pos = rf_scope.find("ResolveBundledModelId(registry)");
+             pos != std::string::npos;
+             pos = rf_scope.find("ResolveBundledModelId(registry)", pos + 1)) {
+            ++bundled_id_sites;
+        }
+        TEST_CHECK(!rf_scope.empty() && bundled_id_sites == 2,
+                   "REQ-057 (b): both pinned branches of ResolveModelFile consult the "
+                   "bundled registry id (single resolution)");
+        TEST_CHECK(!rf_scope.empty() &&
+                       rf_scope.find("if (resolved_model_id) *resolved_model_id = entry->id;") !=
+                           std::string::npos,
+                   "REQ-057 (b)/R1-3: a resolved model id reports the resolved entry's own id");
     }
 
     const std::filesystem::path host_main = ResolveRepoFile(L"src\\host_main.cpp");
@@ -315,11 +344,16 @@ void TestReq057ServedModelEcho() {
                    "REQ-057 (b): the expected id falls back to the bundled registry id");
         // Both success legs (first attempt + transient retry) diagnose.
         {
-            size_t pos = src.find("DiagnoseServedModelMismatch(preferred_type_, served_model)");
+            // R1-11 (session 261029_0001, v0.10.4 sweep): the argument is the
+            // REQUEST SNAPSHOT's preferred type (the member is only readable
+            // under the short state lock), so the pinned call text names the
+            // snapshot local instead of the member. Still one call per local
+            // success leg (first attempt + transient retry).
+            size_t pos = src.find("DiagnoseServedModelMismatch(preferred, served_model)");
             int sites = 0;
             while (pos != std::string::npos) {
                 ++sites;
-                pos = src.find("DiagnoseServedModelMismatch(preferred_type_, served_model)",
+                pos = src.find("DiagnoseServedModelMismatch(preferred, served_model)",
                                pos + 1);
             }
             TEST_CHECK(sites == 2,

@@ -8,6 +8,7 @@
 
 #include "config.hpp"        // AppConfig::GetLocalAppDataConfigPath (F3 marker-cache fallback dir)
 #include "diag_logger.hpp"   // DIAG_F (shape-only diagnostics)
+#include "model_verify_sample.hpp" // R1-19 content sample (shared with the downloader)
 #include "unicode_utils.hpp" // EqualsIgnoreCaseAscii / IsPathContainedIgnoreCaseAscii (M3)
 
 #include <algorithm>
@@ -198,9 +199,14 @@ namespace {
 //   line 1: verified SHA-256 hex
 //   line 2: raw last-write mtime (file_clock epoch ticks)
 //   line 3: file size in bytes
-// VerifyModelSha256() skips the full hash when the marker exists AND both
-// mtime and size still match the model on disk - the attacker model behind
-// F2/F3 (tamper the GGUF in place) changes mtime, invalidating the cache.
+//   line 4: R1-19 content-sample digest (sha256 over the windows below)
+// VerifyModelSha256() skips the full hash when the marker exists, its line 1
+// satisfies the pin/consent rule, both mtime and size still match the model on
+// disk AND a freshly recomputed content sample matches line 4 - the attacker
+// model behind F2/F3 (tamper the GGUF in place) changes mtime, invalidating the
+// cache, and a same-size swap that also restores mtime now fails the content
+// sample (R1-19; a pre-R1-19 3-line marker has no line 4 and is a cache MISS,
+// re-hashed once and rewritten in the 4-line form - never a load failure).
 // Touching ONLY the mtime without content change is a local-privileged
 // scenario the installer (F2) also cannot distinguish; accepted trade-off,
 // documented here.
@@ -208,6 +214,23 @@ namespace {
 // shipped model lives in {app}\models (Program Files, admin-written by the
 // installer) where a non-elevated app process may not be able to create the
 // marker: first next to the model, then %LOCALAPPDATA%\Emebalachat.
+
+// R1-19 (session 261029_0001, v0.10.4 sweep; sec k3agent SRV-1 + sec step5
+// F-06 + sec mimopro F4): the cache used to trust size+mtime plus PUBLIC data
+// only (the pinned hash every install ships), so swapping in a same-size model
+// and writing a 95-byte marker that repeats the public hash skipped the hash
+// entirely. The marker now carries a digest of the file's REAL bytes:
+// SHA-256 over three fixed 1 MiB windows (start, middle, end).
+// U-H4b (same session): the geometry and the hashing live in
+// src/model_verify_sample.hpp, a llama-free header, because the model
+// downloader must write the identical line 4 after a completed download
+// (model_downloader.cpp WriteSha256OkMarker). ONE definition for both sides, so
+// writer and verifier cannot drift; the cost measurement and the documented
+// LIMIT (content-derived, not a secret) sit with that code.
+
+// R1-19 content sample: one definition, shared with the model downloader
+// (src/model_verify_sample.hpp) - see the comment above.
+
 std::vector<std::filesystem::path> MarkerCandidates(
         const std::filesystem::path& model_path,
         const std::filesystem::path& marker_dir) {
@@ -237,17 +260,18 @@ std::vector<std::filesystem::path> MarkerCandidates(
 bool WriteVerifyMarker(const std::filesystem::path& marker,
                        const std::string& hex,
                        const std::filesystem::file_time_type& mtime,
-                       uintmax_t size) {
+                       uintmax_t size,
+                       const std::string& sample_hex) {
     // Raw file_clock epoch count (100 ns ticks on Windows). No wall-clock
     // conversion is needed: the marker only has to be SELF-CONSISTENT with
-    // the values MarkerMatchesFile() recomputes, and the raw count is
+    // the values CheckVerifyMarker() recomputes, and the raw count is
     // stable across runs and locale/timezone changes.
     const long long stamp = static_cast<long long>(mtime.time_since_epoch().count());
     std::ofstream out(marker, std::ios::binary | std::ios::trunc);
     if (!out) {
         return false;
     }
-    out << hex << '\n' << stamp << '\n' << size << '\n';
+    out << hex << '\n' << stamp << '\n' << size << '\n' << sample_hex << '\n';
     return static_cast<bool>(out);
 }
 
@@ -260,21 +284,36 @@ bool IsPinnedModelName(const std::filesystem::path& model_path) {
                                        kPinnedModelFilename);
 }
 
-bool MarkerMatchesFile(const std::filesystem::path& marker,
-                       const std::filesystem::path& model_path) {
+// R1-19: three outcomes so the caller can log WHY the cache did not hit -
+// a legacy marker (no content line) and a content mismatch are both benign
+// cache misses, never load failures.
+enum class MarkerVerdict { Hit, Miss, LegacyMarker, ContentMismatch };
+
+MarkerVerdict CheckVerifyMarker(const std::filesystem::path& marker,
+                                const std::filesystem::path& model_path) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(marker, ec) || ec) {
-        return false;
+        return MarkerVerdict::Miss;
     }
     std::ifstream in(marker, std::ios::binary);
     if (!in) {
-        return false;
+        return MarkerVerdict::Miss;
     }
     std::string hex;
     long long epoch = -1;
     unsigned long long size = 0;
     if (!(in >> hex >> epoch >> size)) {
-        return false;
+        return MarkerVerdict::Miss;
+    }
+    std::string sample_hex;
+    if (!(in >> sample_hex)) {
+        // Pre-R1-19 marker (3 lines, ~95 bytes): it cannot prove content, so it
+        // authorizes nothing. VerifyModelSha256 re-hashes once and rewrites the
+        // marker in the 4-line form.
+        return MarkerVerdict::LegacyMarker;
+    }
+    if (hex.size() != 64 || sample_hex.size() != 64) {
+        return MarkerVerdict::Miss;
     }
     // A marker authorizes skipping the hash ONLY in the same situations
     // VerifyModelSha256 itself would authorize: (a) hash equals the pin, or
@@ -283,20 +322,32 @@ bool MarkerMatchesFile(const std::filesystem::path& marker,
     // rotation, or a forged consent marker for the pinned name) never hits -
     // the file must re-hash and be compared against the current pin.
     if (hex != kExpectedModelSha256 && IsPinnedModelName(model_path)) {
-        return false;
+        return MarkerVerdict::Miss;
     }
     const auto actual_size = static_cast<unsigned long long>(
         std::filesystem::file_size(model_path, ec));
     if (ec || actual_size != size) {
-        return false;
+        return MarkerVerdict::Miss;
     }
     const auto mtime = std::filesystem::last_write_time(model_path, ec);
     if (ec) {
-        return false;
+        return MarkerVerdict::Miss;
     }
     // Same raw file_clock epoch count that WriteVerifyMarker persisted.
     const auto actual_epoch = static_cast<long long>(mtime.time_since_epoch().count());
-    return actual_epoch == epoch;
+    if (actual_epoch != epoch) {
+        return MarkerVerdict::Miss;
+    }
+    // R1-19: size+mtime alone are forgeable with public data. Re-hash the three
+    // fixed windows and compare against the digest the marker recorded when the
+    // file was last fully verified. An unreadable file is a MISS, not a hit:
+    // the full-hash path below decides (and fails closed if it cannot read).
+    std::string actual_sample;
+    if (!modelverify::ComputeSampleSha256(model_path, actual_size, actual_sample)) {
+        return MarkerVerdict::Miss;
+    }
+    return actual_sample == sample_hex ? MarkerVerdict::Hit
+                                       : MarkerVerdict::ContentMismatch;
 }
 
 } // namespace
@@ -315,12 +366,44 @@ bool VerifyModelSha256(const std::filesystem::path& model_path,
     }
 
     const auto markers = MarkerCandidates(model_path, marker_dir);
+    bool legacy_marker_seen = false;
+    bool content_mismatch_seen = false;
     for (const auto& marker : markers) {
-        if (MarkerMatchesFile(marker, model_path)) {
-            // Cache hit: the file was fully verified before and neither its
-            // size nor its last-write time changed since. Skip the 1.91 GB hash.
-            return true;
+        switch (CheckVerifyMarker(marker, model_path)) {
+            case MarkerVerdict::Hit: {
+                // Cache hit: the file was fully verified before, its size and
+                // last-write time are unchanged, and the R1-19 content sample
+                // still matches. Skip the 1.91 GB hash. Shape-only line: sizes
+                // and window geometry, never file content.
+                const auto confirmed_size = static_cast<uint64_t>(
+                    std::filesystem::file_size(model_path, ec));
+                DIAG_F("ENGINE/VerifyModelSha256/007: verification-cache HIT (size=%llu, "
+                       "content-sample=1MiB x 3 start/middle/end windows matched); "
+                       "full hash skipped: %s\n",
+                       static_cast<unsigned long long>(confirmed_size),
+                       model_path.string().c_str());
+                return true;
+            }
+            case MarkerVerdict::LegacyMarker:
+                legacy_marker_seen = true;
+                break;
+            case MarkerVerdict::ContentMismatch:
+                content_mismatch_seen = true;
+                break;
+            case MarkerVerdict::Miss:
+                break;
         }
+    }
+    if (legacy_marker_seen) {
+        DIAG_F("ENGINE/VerifyModelSha256/008: verification-cache MISS (pre-R1-19 3-line "
+               "marker carries no content sample); re-hashing once and rewriting the marker: %s\n",
+               model_path.string().c_str());
+    }
+    if (content_mismatch_seen) {
+        DIAG_F("ENGINE/VerifyModelSha256/009: verification-cache MISS (size+mtime match but "
+               "the content sample differs - the file changed under a stale marker); "
+               "re-hashing: %s\n",
+               model_path.string().c_str());
     }
 
     // Capture size+mtime BEFORE hashing and bind the marker to THAT stamp.
@@ -348,6 +431,19 @@ bool VerifyModelSha256(const std::filesystem::path& model_path,
         return false;
     }
 
+    // R1-19: the marker needs the content sample as well. Compute it from the
+    // same pre-hash stat; if the sample cannot be read there is nothing
+    // content-bound to write, so the marker write is skipped (an old-format
+    // marker would just be a cache miss next run) and the verification verdict
+    // below still decides the load.
+    std::string sample_hex;
+    const bool sample_ok = modelverify::ComputeSampleSha256(model_path, pre_size, sample_hex);
+    if (!sample_ok) {
+        DIAG_F("ENGINE/VerifyModelSha256/010: content-sample computation failed; "
+               "marker write skipped (the file re-hashes next run): %s\n",
+               model_path.string().c_str());
+    }
+
     if (hex == kExpectedModelSha256) {
         // Success: persist the marker (first writable candidate) so the next
         // launch is instant. A marker write failure is NOT a load failure
@@ -356,12 +452,12 @@ bool VerifyModelSha256(const std::filesystem::path& model_path,
         for (const auto& marker : markers) {
             std::error_code mec;
             std::filesystem::create_directories(marker.parent_path(), mec);
-            if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
+            if (sample_ok && WriteVerifyMarker(marker, hex, pre_mtime, pre_size, sample_hex)) {
                 marker_written = true;
                 break;
             }
         }
-        if (!marker_written) {
+        if (sample_ok && !marker_written) {
             DIAG_F("ENGINE/VerifyModelSha256/004: could not write verification marker for: %s\n",
                    model_path.string().c_str());
         }
@@ -379,13 +475,13 @@ bool VerifyModelSha256(const std::filesystem::path& model_path,
         return false;
     }
     // Consent path: persist a marker keyed on the file's OWN hash so the
-    // "once per changed file" rule holds for user models too. MarkerMatchesFile
+    // "once per changed file" rule holds for user models too. CheckVerifyMarker
     // only accepts a non-pin marker for non-pinned filenames, so this can
     // never authorize the shipped model.
     for (const auto& marker : markers) {
         std::error_code mec;
         std::filesystem::create_directories(marker.parent_path(), mec);
-        if (WriteVerifyMarker(marker, hex, pre_mtime, pre_size)) {
+        if (sample_ok && WriteVerifyMarker(marker, hex, pre_mtime, pre_size, sample_hex)) {
             break;
         }
     }

@@ -363,7 +363,193 @@ void TestHostV2Session() {
                    "session/teardown: repeat teardown is a no-op");
     }
 
+    // ---- 7. R1-10: bounded growth — Open() prunes TERMINAL records ----
+    // The engine host is persistent (REQ-060 evicts workers, never the host)
+    // and Open() runs once per translate job, so an un-pruned table grows
+    // forever. Semantics pinned here: the retained count is bound by
+    // 4*open + kPruneSlack (+1 for the record being opened), terminal records
+    // outside the newest-terminal window are erased, live records never are,
+    // and a pruned id answers exactly like any other terminal id.
+    {
+        SessionTable prune{std::vector<std::string>{"translate"}};
+        SessionRecord req; req.capability = "translate"; req.model_id = "session-model";
+        SessionRecord out;
+        std::uint64_t first_id = 0;
+        std::uint64_t last_id = 0;
+        bool all_opened = true;
+        for (int i = 0; i < 400; ++i) {
+            if (prune.Open(req, out) != SessionOpenResult::Opened) { all_opened = false; break; }
+            if (i == 0) first_id = out.id;
+            last_id = out.id;
+            if (!prune.Close(out.id)) { all_opened = false; break; }
+        }
+        TEST_CHECK(all_opened && first_id == 1 && last_id == 400,
+                   "session/prune: 400 open/close cycles allocate monotonic ids");
+        TEST_CHECK(prune.OpenCount() == 0, "session/prune: every cycle ended closed");
+        TEST_CHECK(prune.TotalCount() <= SessionTable::kPruneSlack + 1,
+                   "session/prune: retained records stay bounded over 400 cycles "
+                   "(<= kPruneSlack + 1)");
+        TEST_CHECK(prune.TotalCount() >= SessionTable::kPruneKeepTerminal,
+                   "session/prune: the newest-terminal retention window is honoured");
+        SessionRecord snap;
+        TEST_CHECK(!prune.Find(first_id, snap),
+                   "session/prune: the OLDEST terminal record was erased");
+        TEST_CHECK(prune.Find(last_id, snap) && snap.state == SessionState::Closed,
+                   "session/prune: the newest terminal record stays findable (id stability)");
+        // A pruned id is indistinguishable from any already-terminal id: every
+        // accessor already answers false/0 for that case, so nothing can
+        // resurrect or mis-sequence a pruned session.
+        TEST_CHECK(!prune.Close(first_id), "session/prune: close of a pruned id is a no-op");
+        TEST_CHECK(!prune.Abort(first_id), "session/prune: abort of a pruned id is a no-op");
+        TEST_CHECK(prune.NextEventSeq(first_id) == 0,
+                   "session/prune: a pruned id allocates no event seq");
+        TEST_CHECK(prune.Open(req, out) == SessionOpenResult::Opened && out.id == 401,
+                   "session/prune: ids stay monotonic across a prune (never reused)");
+        (void)prune.Close(out.id);
+    }
+
+    // ---- 8. R1-10: a prune never drops a LIVE session, and Aborted counts
+    // as terminal exactly like Closed ----
+    {
+        constexpr int kLive = 12;
+        SessionTable prune{std::vector<std::string>{"translate"}};
+        SessionRecord live_req;
+        live_req.capability = "translate";
+        live_req.model_id = "live-model";
+        std::uint64_t live_ids[kLive] = {};
+        int opened_live = 0;
+        for (int i = 0; i < kLive; ++i) {
+            SessionRecord out;
+            if (prune.Open(live_req, out) == SessionOpenResult::Opened) {
+                live_ids[opened_live++] = out.id;
+            }
+        }
+        TEST_CHECK(opened_live == kLive && prune.OpenCount() == kLive,
+                   "session/prune-live: 12 live sessions open and counted");
+        // Churn 600 sessions through the table (half closed, half aborted)
+        // around the live ones, forcing several prune scans.
+        SessionRecord churn; churn.capability = "translate";
+        std::uint64_t oldest_churn = 0;
+        std::uint64_t newest_churn = 0;
+        bool churn_ok = true;
+        for (int i = 0; i < 600; ++i) {
+            SessionRecord out;
+            if (prune.Open(churn, out) != SessionOpenResult::Opened) { churn_ok = false; break; }
+            if (i == 0) oldest_churn = out.id;
+            newest_churn = out.id;
+            const bool terminal = (i % 2 == 0) ? prune.Close(out.id) : prune.Abort(out.id);
+            if (!terminal) { churn_ok = false; break; }
+        }
+        TEST_CHECK(churn_ok, "session/prune-live: 600 churn sessions opened + terminally closed");
+        TEST_CHECK(prune.OpenCount() == kLive,
+                   "session/prune-live: OpenCount unchanged by the prune scans (12)");
+        // Bound with 12 live sessions: 4*12 + 256 + 1.
+        TEST_CHECK(prune.TotalCount() <=
+                       SessionTable::kPruneOpenFactor * kLive + SessionTable::kPruneSlack + 1,
+                   "session/prune-live: retained count bounded by 4*live + kPruneSlack + 1");
+        bool all_live_found = true;
+        bool live_model_kept = true;
+        bool seq_ok = true;
+        for (int i = 0; i < opened_live; ++i) {
+            SessionRecord snap;
+            if (!prune.Find(live_ids[i], snap) || snap.state != SessionState::Open) {
+                all_live_found = false;
+                break;
+            }
+            if (snap.model_id != "live-model") live_model_kept = false;
+            if (prune.NextEventSeq(live_ids[i]) == 0) seq_ok = false;
+        }
+        TEST_CHECK(all_live_found, "session/prune-live: every live session survives the prune");
+        TEST_CHECK(live_model_kept, "session/prune-live: live session records keep their fields");
+        TEST_CHECK(seq_ok, "session/prune-live: live sessions still allocate event seqs");
+        SessionRecord snap;
+        TEST_CHECK(!prune.Find(oldest_churn, snap),
+                   "session/prune-live: an OLD terminal (aborted/closed) record was erased");
+        TEST_CHECK(prune.Find(newest_churn, snap) &&
+                       (snap.state == SessionState::Closed ||
+                        snap.state == SessionState::Aborted),
+                   "session/prune-live: the newest terminal record keeps its exact state");
+        // Closing the live set is still honoured after the prune scans.
+        int closed_live = 0;
+        for (int i = 0; i < opened_live; ++i) {
+            if (prune.Close(live_ids[i])) ++closed_live;
+        }
+        TEST_CHECK(closed_live == kLive && prune.OpenCount() == 0,
+                   "session/prune-live: live session teardown still works after a prune");
+    }
+
     TEST_CHECK(g_failed_count == failures_before, "session: suite had no failures");
+}
+
+// R1-17 (v0.10.4 sweep, 261029_0001): the busy-target publication ordering is
+// a memory-model property that is unobservable on the shipped x64 build, so it
+// is pinned structurally (the same convention as the REQ-042/REQ-045 source
+// pins): the winning exchange must carry a release half AND the HWND store
+// must be a release store, published in that order before the queue push. A
+// regression to relaxed/acquire-only is invisible on x64 and only bites on a
+// weakly ordered architecture - exactly why it needs a pin rather than a
+// runtime test.
+void TestBusyTargetPublishOrdering() {
+    std::cout << "[RUN] Testing PostTask busy-target publication ordering (R1-17)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    std::ifstream in("src/worker.cpp", std::ios::binary);
+    if (!in) {
+        std::cout << "[SKIP] src/worker.cpp not resolvable from the test CWD; "
+                     "R1-17 publication-order pins skipped." << std::endl;
+        return;
+    }
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    const std::size_t post = src.find("bool PipelineWorker::PostTask(");
+    const std::size_t end = src.find("void PipelineWorker::WorkerLoop(", post);
+    TEST_CHECK(post != std::string::npos && end != std::string::npos && end > post,
+               "worker/post: the PostTask body is locatable for the ordering pin");
+    if (post == std::string::npos || end == std::string::npos || end <= post) {
+        TEST_CHECK(g_failed_count == failures_before, "worker/post: suite had no failures");
+        return;
+    }
+    const std::string body = src.substr(post, end - post);
+    const std::size_t busy_at =
+        body.find("is_busy_.exchange(true, std::memory_order_acq_rel)");
+    const std::size_t hwnd_at =
+        body.find("busy_target_hwnd_.store(target_hwnd, std::memory_order_release)");
+    const std::size_t push_at = body.find("queue_.push(");
+    TEST_CHECK(busy_at != std::string::npos,
+               "worker/post: the winning exchange is acq_rel (release half, R1-17)");
+    TEST_CHECK(hwnd_at != std::string::npos,
+               "worker/post: the HWND publication is a release store (R1-17)");
+    TEST_CHECK(busy_at != std::string::npos && hwnd_at != std::string::npos &&
+                   push_at != std::string::npos && busy_at < hwnd_at && hwnd_at < push_at,
+               "worker/post: busy -> hwnd -> queue push ordering preserved (REQ-003)");
+
+    // R1-17 consumer half (U-G residual, closed in the U-H2 unit): the two
+    // accessors the hook thread reads must ACQUIRE, because a release store
+    // pairs only with an acquire load of the same atomic. Relaxed loads on this
+    // side leave the publisher's edge with no matching half (invisible on x64,
+    // wrong on a weakly ordered build).
+    {
+        std::ifstream hpp("src/worker.hpp", std::ios::binary);
+        if (!hpp) {
+            std::cout << "[SKIP] src/worker.hpp not resolvable from the test CWD; "
+                         "R1-17 consumer-side pins skipped." << std::endl;
+        } else {
+            const std::string hsrc((std::istreambuf_iterator<char>(hpp)),
+                                   std::istreambuf_iterator<char>());
+            TEST_CHECK(hsrc.find("is_busy_.load(std::memory_order_acquire)") != std::string::npos,
+                       "worker/read: IsBusy() loads with acquire (R1-17 consumer half)");
+            TEST_CHECK(hsrc.find("busy_target_hwnd_.load(std::memory_order_acquire)") !=
+                           std::string::npos,
+                       "worker/read: BusyTargetHwnd() loads with acquire (R1-17 consumer half)");
+            TEST_CHECK(hsrc.find("is_busy_.load(std::memory_order_relaxed)") == std::string::npos &&
+                           hsrc.find("busy_target_hwnd_.load(std::memory_order_relaxed)") ==
+                               std::string::npos,
+                       "worker/read: no relaxed load survives on the busy/hwnd pair");
+            TEST_CHECK(hsrc.find("Relaxed ordering suffices") == std::string::npos,
+                       "worker/read: the stale 'relaxed ordering suffices' comment is gone");
+        }
+    }
+    TEST_CHECK(g_failed_count == failures_before, "worker/post: suite had no failures");
 }
 
 void TestHostV2Health() {

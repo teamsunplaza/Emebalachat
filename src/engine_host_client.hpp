@@ -20,7 +20,18 @@
 // repair/unavailable-notice path — no embedded engine exists):
 //   * host binary missing            -> false, err="no_host_binary" (SILENT)
 //   * pipe connect refused/timeout   -> spawn (when enabled) -> 3 retries at
-//                                       500 ms -> false, err="connect"
+//                                       500 ms -> false, err="connect:<oserr>"
+//                                       (R2-10: the ACTUAL token is
+//                                       "connect:" + the last Win32 error as
+//                                       decimal digits, e.g. "connect:2";
+//                                       ClassifyEngineHostFailure reads the
+//                                       digit tail as Transient - src/engine.hpp
+//                                       R1-25. The pre-R2-10 comment said a
+//                                       bare "connect", which no consumer ever
+//                                       observed.)
+//   * pipe peer is not the host exe  -> false, err="connect:peer" + ONE
+//                                       shape-only stderr line (R1-7; nothing
+//                                       is written to that peer, fail closed)
 //   * token / version / pin mismatch -> false + ONE shape-only stderr line
 //                                       (never the user's text)
 //   * busy                           -> false immediately, err="busy"
@@ -29,6 +40,12 @@
 //                                       err="io"; the NEXT call respawns
 //   * result status != ok            -> false, err=<status> (model_missing,
 //                                       engine_failed, timeout, bad_request)
+//
+// MIRROR DUTY (R2-10): the SELECTION CONTRACT above and this failure contract
+// are part of what the sibling workspaces copy verbatim. A change to either
+// block must land in every sibling copy (Emebala_Listner, Emebala Reader, ...)
+// in the same change - the wire may not drift, and neither may the tokens a
+// retry classifier keys on.
 //
 // Privacy: the client never logs user text; the single diagnostic line on
 // handshake mismatch carries codes/lengths only. Cloud-consent policy stays
@@ -127,6 +144,43 @@ bool TryTranslate(const EngineHostConfig& cfg,
 void SetPathsForTesting(const wchar_t* pipe_name,
                         const wchar_t* token_path,
                         const wchar_t* exe_path);
+
+// ---- R1-7 (v0.10.4 sweep, session 261029_0001): pipe-SERVER identity gate ---
+//
+// Threat: the canonical pipe name is ownerless while the host idle-exits
+// (default 10 min), so another local user account can create the name first and
+// answer the hello/translate frames. The only pre-R1-7 check was the welcome's
+// model_sha256 pin, which is a PUBLIC compiled-in constant the squatter can
+// echo. The boot token was therefore disclosed pre-auth and every translated
+// message was readable by the squatter.
+//
+// Rule (no wire change, names frozen): after a successful CreateFile on a pipe
+// candidate and BEFORE the token is read or any frame is written, the client
+// resolves the pipe server's process image and requires it to be exactly the
+// host exe this client would spawn (ExePath(), i.e. the installed
+// %LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe, inside the
+// user-only ACL'd profile). Both the one-shot and the REQ-060 warmup connect
+// paths run through the same helper, so both inherit the gate. Fail closed: any
+// API failure, unreadable peer, or path mismatch is a connect failure.
+//
+// PeerPathMatches: the pure comparison predicate (no syscalls, unit-testable).
+// Both sides are normalized for the Win32 equivalences the OS itself applies:
+// case (CompareStringOrdinal ignore-case), the \\?\ / \\?\UNC\ long-path
+// prefix, forward slashes, duplicated separators, and trailing dots/spaces
+// (which Win32 strips from file names). Nothing else is rewritten, so two
+// different files can never compare equal; empty input never matches.
+bool PeerPathMatches(std::wstring_view expected, std::wstring_view actual);
+
+// PeerHandleIsExpectedHost: the handle-level gate the connect path applies
+// (GetNamedPipeServerProcessId -> OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
+// -> QueryFullProcessImageNameW -> PeerPathMatches). `pipe_handle` is a Win32
+// HANDLE passed as void* so this self-contained header stays free of
+// <windows.h> (widen it back with a static_cast). `expected_host_path` is the
+// host exe path (ExePath()). Returns false on ANY failure — invalid handle,
+// unreadable peer (e.g. another user's process: OpenProcess is denied), empty
+// expected path, or a different image. Callers MUST treat false as "not the
+// host" and close the handle without writing a byte to it.
+bool PeerHandleIsExpectedHost(void* pipe_handle, const wchar_t* expected_host_path);
 
 // REQ-043 (plan §5.1-2): the engine manager's local-availability gate. The
 // shared host is the local serving source — Auto must route to it whenever

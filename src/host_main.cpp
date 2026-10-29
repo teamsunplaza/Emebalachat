@@ -2520,7 +2520,11 @@ void RunSession(Connection& conn, host_v2::WorkerManager& wmgr) {
     }
     // Token check runs BEFORE the protocol check (an outsider learns nothing
     // about the protocol version without the boot token) — frozen order.
-    if (hello.token.size() != 32 || hello.token != g_token) {
+    // 261029_0001 R1-18: constant-time compare via the house helper (same one
+    // the worker announce re-validation uses); the != string operator leaks
+    // prefix-match timing. Length gate kept identical.
+    if (hello.token.size() != 32 ||
+        !emebalachat::workerproto::AnnounceTokenMatches(hello.token, g_token)) {
         conn.SendErrorThenClose(enginehost::kErrUnauthorized);
         return;
     }

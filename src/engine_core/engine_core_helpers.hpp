@@ -97,8 +97,10 @@ inline constexpr std::string_view kPinnedModelFilename = "Hy-MT2-1.8B-Q8_0.gguf"
 // Returns false on any read/provider failure. Exposed for unit testing.
 bool ComputeFileSha256(const std::filesystem::path& file, std::string& out_hex);
 
-// Full F3 decision INCLUDING the marker cache (see VerifyModelIntegrity docs
-// in engine.cpp for the <model>.sha256ok cache semantics). Returns true when
+// Full F3 decision INCLUDING the marker cache. The <model>.sha256ok scheme
+// (4-line form, window geometry, cost measurement, threat-tier LIMIT) is
+// documented in src/model_verify_sample.hpp; this function is the cache
+// verdict layer. Returns true when
 // the model load may proceed. marker_dir selects where the cache marker is
 // stored (tests pass a temp dir; production uses the model's own directory).
 bool VerifyModelSha256(const std::filesystem::path& model_path,

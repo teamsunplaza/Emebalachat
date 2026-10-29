@@ -11,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <windows.h>
@@ -265,9 +266,47 @@ constexpr bool ShouldReinstallHooksOnEvent(UINT msg, WPARAM wparam) {
 // refreshed by each trigger keeps the reinstall to ONE Stop()+Start() pair.
 inline constexpr UINT kHookReinstallDebounceMs = 1200;
 // Watchdog cadence: the handle-validity + thread-liveness check behind the
-// event-driven path. Bounds the worst-case silent-unhook window (UAC secure
-// desktop trips have no unlock message when the session was never locked).
+// event-driven path, and the tick source for the periodic self-heal reinstall
+// below. Bounds the worst-case silent-unhook window (UAC secure-desktop trips
+// have no unlock message when the session was never locked).
 inline constexpr UINT kHookHealthWatchdogMs = 30000;
+
+// ---- R1-15b (env research F2): periodic self-heal reinstall ----
+//
+// The watchdog above can only see a DEAD THREAD. A hook Windows removed for
+// blowing LowLevelHooksTimeout keeps a live pump and a valid HHOOK, and there is
+// no user-mode query for "am I still in the hook chain" — the two states are
+// indistinguishable. The only truthful detector is a blind re-registration:
+// Stop()+Start() rebuilds the OS-side hook, so a silently removed hook heals
+// itself instead of waiting for the next lock/unlock (which may never come).
+//
+// Cadence: every 5 min of watchdog ticks (10 ticks). Cost per tick is one
+// Stop()+Start() pair (a few ms; it defers through the SAME debounce timer as
+// the resume/unlock path while a double-Ctrl+C body runs, see
+// ReinstallHooksAfterLifecycleEvent in main.cpp), and the worst-case dead window
+// drops from "until the next lock/unlock" to <= 5 min.
+inline constexpr UINT kHookPeriodicReinstallMs = 300000;
+inline constexpr unsigned kHookHealthTicksPerReinstall =
+    (kHookPeriodicReinstallMs + kHookHealthWatchdogMs - 1) / kHookHealthWatchdogMs;
+static_assert(kHookHealthTicksPerReinstall > 0,
+              "R1-15b: the periodic reinstall needs at least one watchdog tick per period");
+
+// Advances the watchdog tick counter and reports whether the periodic reinstall
+// is due now (exactly once per `per_period` ticks). Pure so the cadence is
+// pinned headlessly: main.cpp is not linked into run_tests.exe (same seam as
+// TrayToggleDebounceStateMachine).
+constexpr bool PeriodicHookReinstallTick(unsigned& ticks,
+                                         unsigned per_period = kHookHealthTicksPerReinstall) {
+    if (per_period == 0) {
+        ticks = 0;
+        return false;
+    }
+    if (++ticks < per_period) {
+        return false;
+    }
+    ticks = 0;
+    return true;
+}
 
 class KeyboardHook {
 public:
@@ -283,9 +322,12 @@ public:
     bool IsRunning() const { return running_.load(std::memory_order_acquire); }
     // Health check for the main-thread watchdog: true only while the hook
     // thread is running AND a hook handle was successfully installed.
+    // R1-14: the handle is read with acquire on the pump's release store
+    // (published before it signals the ready event), so this can never observe
+    // a half-written handle while Start() is still waiting.
     bool IsHealthy() const {
         return running_.load(std::memory_order_acquire) &&
-               hHook_ != nullptr;
+               hHook_.load(std::memory_order_acquire) != nullptr;
     }
     // Verify-and-reinstall seam used after Sleep/Resume, Win+L unlock, and
     // secure-desktop transitions. LL hooks normally survive these, but the
@@ -295,6 +337,10 @@ public:
     // (or shutdown) stopped: returns false without side effects when not
     // running. MUST be called on the main thread (same contract as
     // Start/Stop - it joins the hook thread).
+    // R1-15b: this is ALSO the periodic self-heal (every
+    // kHookPeriodicReinstallMs of watchdog ticks, main.cpp) - a hook removed
+    // for blowing LowLevelHooksTimeout is invisible to every user-mode check,
+    // so only a blind re-registration restores it.
     bool Reinstall() {
         if (!running_.load(std::memory_order_acquire)) {
             return false;
@@ -350,6 +396,17 @@ public:
     // Parses "Win+F9" / "Ctrl+Shift+Enter"-style strings (case-insensitive,
     // whitespace-tolerant). Returns {valid=false} for empty/unknown syntax.
     static HotkeySpec ParseHotkey(std::string_view spec);
+
+    // W5 (R1-22, session 261029_0001): the inverse display form of a compiled
+    // combo, e.g. "F9" / "Ctrl+F9" / "Ctrl+Shift+Enter" / "Win+F9".
+    // Modifiers render in the canonical Ctrl+Shift+Alt+Win order (whatever
+    // order the config string used) and the key token comes from the same
+    // vocabulary ParseHotkey accepts, so ParseHotkey(narrow(display)) round-
+    // trips to the same spec. No new i18n strings: modifier names are Latin
+    // tokens already accepted in config (the tray's hardcoded-F9 status
+    // sentences stay untouched - 37-locale cost, deferred).
+    // Invalid spec (never compiled / no key) -> empty string.
+    static std::wstring HotkeySpecToDisplayString(const HotkeySpec& spec);
 
     // Builds the spec for a physical keypress given the async modifier states
     // sampled inside the hook callback. valid=true so it compares equal to a
@@ -453,7 +510,7 @@ public:
 
     // REQ-R14 test seam: the OS thread id of the running hook thread (0 when
     // not started). Tests prove Reinstall() actually replaced the thread.
-    DWORD HookThreadIdForTest() const { return hook_thread_id_; }
+    DWORD HookThreadIdForTest() const { return hook_thread_id_.load(std::memory_order_acquire); }
 
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
@@ -501,8 +558,20 @@ private:
 
     std::atomic<bool> is_active_{true};
     std::atomic<bool> running_{false};
-    DWORD hook_thread_id_ = 0;
-    HHOOK hHook_ = nullptr;
+    // R1-14 (code review mimoflash F-05): the pump publishes both of these
+    // through atomics instead of plain members. hook_thread_id_ is read by
+    // Start()/Stop() (and HookThreadIdForTest) while the pump may still be
+    // starting, and hHook_ is read by Start()'s bounded install handshake and by
+    // the watchdog's IsHealthy() - the pre-fix plain members were a data race
+    // and the handle read could not be trusted on a timed-out wait.
+    std::atomic<DWORD> hook_thread_id_{0};
+    std::atomic<HHOOK> hHook_{nullptr};
+    // R1-14: set by FinishLowLevelHookStart when the ready wait times out. The
+    // pump checks it immediately after SetWindowsHookExW returns, so a LATE
+    // successful install unwinds itself instead of entering a GetMessageW loop
+    // nobody would ever quit (the pre-fix infinite startup join). Reset by
+    // Start() before every spawn.
+    std::atomic<bool> quit_requested_{false};
     HANDLE hReadyEvent_ = nullptr;
     std::thread thread_;
 

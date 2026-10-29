@@ -107,14 +107,46 @@ struct Registry {
     }
 };
 
+// REQ-057 + v0.10.4 R1-3: the TRANSLATE family of a registry model. The
+// installer writes family "ggml-translate" + capabilities ["translate"]
+// (setup.iss REGISTRY_BUNDLED_ITEM_PREFIX); a hand-registered or future entry
+// may carry only one of the two markers, so either satisfies the predicate.
+// The family name is the model family, NOT the pooled worker family
+// ("ggml-translate-<id>" is a host_v2 pool key and never appears here).
+inline bool IsTranslateFamilyModel(const ModelEntry& m) {
+    if (m.family == "ggml-translate") return true;
+    for (const auto& c : m.capabilities) {
+        if (c == "translate") return true;
+    }
+    return false;
+}
+
 // REQ-057: the pinned default's registry id — the id of the FIRST
-// origin=="bundled" entry (the installer-managed bundle slot; the installer
-// pins it to 'hy-mt2-1.8b-q8', setup.iss REGISTRY_BUNDLED_ID). Pure scan, no
-// I/O. "" when the registry names no bundled entry (the worker's served-model
-// echo then stays empty = the pre-REQ-057 frame shape). Shared by the worker
-// (pinned-fallback echo) and the app (the local engine's expected-id check)
-// so both sides resolve the pinned default identically.
+// origin=="bundled" entry in the TRANSLATE family (the installer-managed
+// bundle slot; the installer pins it to 'hy-mt2-1.8b-q8', setup.iss
+// REGISTRY_BUNDLED_ID). Pure scan, no I/O.
+//
+// v0.10.4 R1-3: the pre-fix rule took the first origin=="bundled" entry
+// REGARDLESS of family. registry.json is family-shared, so the ASR family's
+// entries (installed by the Listener) commonly precede the translate entry —
+// on the reporter's machine "whisper-large-v3-turbo-q8-0-v1" came first, and
+// every translate result echoed an ASR id while Hy-MT2 actually served. The
+// app compared the same wrong id on both sides, so REQ-057's served-vs-
+// expected detector could never fire on the default route.
+//
+// Selection order (deterministic, registry order = document order):
+//   1. first bundled TRANSLATE-family entry (IsTranslateFamilyModel)
+//   2. fallback: first bundled entry of ANY family — old registries / a store
+//      with no translate family bundled stay diagnosable instead of empty
+//   3. "" when the registry names no bundled entry at all (the worker's
+//      served-model echo then stays empty = the pre-REQ-057 frame shape)
+// Shared by the worker (pinned-path echo), the orchestrator (bundled-id pool
+// normalization, host_main.cpp) and the app (the local engine's expected-id
+// check) so every side resolves the pinned default identically.
 inline std::string ResolveBundledModelId(const Registry& registry) {
+    for (const auto& m : registry.models) {
+        if (m.origin == "bundled" && IsTranslateFamilyModel(m)) return m.id;
+    }
     for (const auto& m : registry.models) {
         if (m.origin == "bundled") return m.id;
     }

@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include "diag_logger.hpp" // R1-13: shape-only line when a malformed config is preserved
 #include "i18n.hpp"
 #include "unicode_utils.hpp"
 
@@ -1060,6 +1061,36 @@ std::filesystem::path AppConfig::GetLocalAppDataConfigPath() {
     return result;  // 실패 시 empty → 호출자가 exe-dir 폐백
 }
 
+namespace {
+
+// R1-13 (code review mimoflash F-04): preserve a config.json the parser
+// REJECTED, before anything can overwrite it. FromJsonString leaves every field
+// at its default when it fails, and wWinMain's unconditional exit save then
+// atomically replaces the user's document with those defaults, so a hand-edited
+// setting would be unrecoverable. Copy the ORIGINAL bytes once, as a sibling:
+//   config.json -> config.json.bak
+// Rules: an existing .bak is never overwritten (an older rescue copy is never
+// clobbered by a newer malformation), and a healthy load never reaches this
+// function, so a normal config.json never grows a sibling. The diag line is
+// shape-only: byte count + copy outcome, never the document content.
+void PreserveMalformedConfigBackup(const std::filesystem::path& target_path,
+                                   std::size_t original_bytes) {
+    std::filesystem::path backup_path = target_path;
+    backup_path += ".bak";
+    std::error_code ec;
+    if (std::filesystem::exists(backup_path, ec)) {
+        DIAG_F("CONFIG/001: config.json failed to parse (len=%zu); an existing .bak was kept "
+               "unchanged\n", original_bytes);
+        return;
+    }
+    const bool copied = std::filesystem::copy_file(
+        target_path, backup_path, std::filesystem::copy_options::skip_existing, ec);
+    DIAG_F("CONFIG/002: config.json failed to parse (len=%zu); original copied to .bak "
+           "(copied=%d ec=%d)\n", original_bytes, copied ? 1 : 0, ec.value());
+}
+
+} // namespace
+
 std::filesystem::path AppConfig::GetDefaultConfigPath() {
     // REQ-029-B (설계서 §2.1 3-b): %LOCALAPPDATA% 우선, empty면 exe-dir 폐백,
     // 그마저 empty면 current_path 폐백(기존 동작 호환).
@@ -1130,7 +1161,19 @@ bool AppConfig::LoadFromFile(const std::filesystem::path& path) {
 
     std::stringstream buffer;
     buffer << file.rdbuf();
-    return FromJsonString(buffer.str());
+    std::string document = buffer.str();
+    file.close();
+    if (FromJsonString(document)) {
+        return true;
+    }
+    // R1-13: the document did not parse, so every field is still at its
+    // default and the next save (wWinMain's unconditional exit save, or any
+    // settings change made in this session) would atomically replace the
+    // user's file with those defaults. Preserve the exact bytes FIRST; a
+    // healthy load never reaches this line, so a normal config.json round-trip
+    // never produces a .bak.
+    PreserveMalformedConfigBackup(target_path, document.size());
+    return false;
 }
 
 bool AppConfig::SaveToFile(const std::filesystem::path& path) const {

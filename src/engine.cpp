@@ -234,9 +234,10 @@ void TranslationManager::SetUserModelDisplayStem(std::string_view stem) {
     RefreshActiveEngine();
 }
 
-// REQ-R16: shutdown latch — deliberately NOT taking mutex_: an in-flight
-// Translate() (cloud WinHTTP or engine-host pipe) holds it across the whole
-// request; the atomic store is the signal that call observes.
+// REQ-R16: shutdown latch — deliberately NOT taking translate_mutex_ (the
+// request-spanning lock) or mutex_ (the state lock): an in-flight Translate()
+// holds translate_mutex_ across the whole cloud/host request; the atomic store
+// is the signal that call observes.
 void TranslationManager::RequestCancel() {
     cancel_requested_.store(true, std::memory_order_release);
 }
@@ -245,13 +246,15 @@ bool TranslationManager::IsCancelRequested() {
     return cancel_requested_.load(std::memory_order_acquire);
 }
 
-// REQ-R16 bounded drain: Translate() (and the Auto->cloud fallback) hold mutex_
-// for their whole duration, so acquiring it proves no request is in flight.
-// try_lock polling gives a wall-clock-bounded wait for the shutdown sequence.
+// REQ-R16 bounded drain: Translate() (and the Auto->cloud fallback) hold
+// translate_mutex_ for their whole duration, so acquiring it proves no request
+// is in flight. try_lock polling gives a wall-clock-bounded wait for the
+// shutdown sequence. (R1-11: this must probe the REQUEST lock, not the state
+// lock — the state lock is now short-held and says nothing about a request.)
 bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
-        std::unique_lock<std::mutex> probe(mutex_, std::try_to_lock);
+        std::unique_lock<std::mutex> probe(translate_mutex_, std::try_to_lock);
         if (probe.owns_lock()) {
             return true;
         }
@@ -259,6 +262,33 @@ bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
     }
     return false;
 }
+
+// R1-11 (session 261029_0001, v0.10.4 sweep; code review mimoflash F-02): the
+// §V2-8.6 repair signal recorders. One store under the STATE lock each — the
+// request body calls them outside its snapshot, so a GUI-thread
+// HostFailureStreak() read never queues behind an in-flight translate.
+void TranslationManager::NoteHostSuccess() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    host_fail_streak_ = 0;  // §V2-8.6: success clears the repair signal
+}
+
+int TranslationManager::NoteHostFailure() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++host_fail_streak_;
+    return host_fail_streak_;
+}
+
+// R1-11: the availability predicate over a CONFIG COPY. RefreshActiveEngine
+// evaluates it under the state lock; Translate() evaluates it over its request
+// snapshot with NO lock held (the existence check is file I/O and must never
+// sit inside the state lock). One definition, so the tray/tooltip availability
+// and the request-time pre-block can never disagree about "the host could
+// serve".
+namespace {
+bool HostCouldServeFor(const EngineHostConfig& cfg) {
+    return cfg.enabled && engine_host::IsHostBinaryPresent();
+}
+} // namespace
 
 // REQ-043 (M6 T5): the host is the ONLY local source. Availability =
 // engine_host.enabled + the fixed host binary present (cheap existence check
@@ -268,7 +298,7 @@ bool TranslationManager::WaitInferenceIdle(DWORD timeout_ms) {
 // the engine_core library it links). Every runtime failure still converges
 // through the §V2-8.6 failure UX below.
 bool TranslationManager::HostCouldServeLocked() const {
-    return engine_host_config_.enabled && engine_host::IsHostBinaryPresent();
+    return HostCouldServeFor(engine_host_config_);
 }
 
 void TranslationManager::RefreshActiveEngine() {
@@ -546,7 +576,15 @@ std::wstring TranslationManager::Translate(
     std::string_view tgt_code_or_name,
     TranslationStatus* out_status
 ) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // R1-11 (session 261029_0001, v0.10.4 sweep; code review mimoflash F-02):
+    // TWO locks, two jobs. translate_mutex_ spans the whole request (that is
+    // the "internal mutex guards concurrent requests" contract: requests stay
+    // serialized exactly as before), while mutex_ — the state lock every
+    // tray/GUI accessor takes — is only touched for the snapshot below and for
+    // the two repair-signal recorders. Previously ONE lock did both jobs, so a
+    // tray refresh or engine switch queued behind up to 30 s of host pipe (or
+    // ~16 s of WinHTTP) and the window showed "Not Responding".
+    std::lock_guard<std::mutex> serialize(translate_mutex_);
 
     auto set_status = [&](TranslationStatus s) {
         if (out_status) {
@@ -559,6 +597,35 @@ std::wstring TranslationManager::Translate(
         return {};
     }
 
+    // ---- R1-11 snapshot-begin -------------------------------------------------
+    // ONE short state lock: copy every routing/consent input the request needs,
+    // then release. This is semantically IDENTICAL to the pre-R1-11 code, which
+    // held mutex_ for the whole request: no setter could change these values
+    // mid-request then either. In particular `cloud_consent` is the H2 privacy
+    // gate read AT REQUEST TIME — the value the request was admitted under, so
+    // a mid-flight consent flip can never change this request's outcome.
+    // Copies (not references) are mandatory: engine_host_config_ and
+    // openai_config_ are runtime-writable, and the seams below read them for
+    // the whole request span.
+    EngineType preferred;
+    EngineType active;
+    bool cloud_consent;
+    EngineHostConfig host_cfg;
+    OpenAiConfig openai_cfg;
+    std::string legacy_model_path;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        preferred = preferred_type_;
+        active = active_type_;
+        cloud_consent = cloud_fallback_enabled_;
+        host_cfg = engine_host_config_;
+        openai_cfg = openai_config_;
+        legacy_model_path = model_path_;
+    }
+    // ---- R1-11 snapshot-end ---------------------------------------------------
+    // Everything below runs with NO state lock held; only the recorders take it
+    // again, briefly.
+
     std::string norm_tgt = NormalizeLanguageCode(tgt_code_or_name);
     const auto* pTgt = FindLanguageByCode(norm_tgt);
     std::string tgt_name = pTgt ? pTgt->name_en : std::string(tgt_code_or_name);
@@ -567,7 +634,7 @@ std::wstring TranslationManager::Translate(
     // REQ-029-B / REQ-043 (M6 T5): a local pin with NO local source must
     // never leak to the cloud. Pre-block here, BEFORE the 040 routing log
     // and every cloud seam (the historical REQ-029-B masquerade guard).
-    if (preferred_type_ == EngineType::LocalLlama && !HostCouldServeLocked()) {
+    if (preferred == EngineType::LocalLlama && !HostCouldServeFor(host_cfg)) {
         // REQ-R16 latch outranks this guard: an exit-intent must surface as
         // Canceled, never as an audible failure.
         if (cancel_requested_.load(std::memory_order_acquire)) {
@@ -575,7 +642,7 @@ std::wstring TranslationManager::Translate(
             return {};
         }
         DIAG_F("ENGINE/Translate/043: preferred=local but no local source (host absent/disabled); "
-               "refusing cloud masquerade (legacy model_path=%s)\n", model_path_.c_str());
+               "refusing cloud masquerade (legacy model_path=%s)\n", legacy_model_path.c_str());
         set_status(TranslationStatus::LocalModelMissing);
         return {};
     }
@@ -584,10 +651,10 @@ std::wstring TranslationManager::Translate(
     // 040 line) so the observability log reports the engine that will ACTUALLY
     // serve the request. Meaningful only while the local source is active;
     // availability itself stays RefreshActiveEngine's job.
-    EngineType served_engine = active_type_;
-    if (active_type_ == EngineType::LocalLlama) {
+    EngineType served_engine = active;
+    if (active == EngineType::LocalLlama) {
         served_engine = PlanTranslationRouting(src_code_or_name, tgt_code_or_name,
-                                               preferred_type_, cloud_fallback_enabled_);
+                                               preferred, cloud_consent);
     }
 
     // R5 observability (R6-p4: now also names the resolved source and reflects
@@ -617,7 +684,7 @@ std::wstring TranslationManager::Translate(
     // surfaced as an OpenAI failure, never masqueraded as a local/google one.
     auto openai_call = [&]() -> std::wstring {
         std::wstring res = OpenAiCompatibleClient::ChatCompletion(
-            openai_config_, src_code_or_name, tgt_code_or_name, text);
+            openai_cfg, src_code_or_name, tgt_code_or_name, text);
         set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
         return res;
     };
@@ -625,14 +692,14 @@ std::wstring TranslationManager::Translate(
     // REQ-045 P4-3: OpenAI explicit pick short-circuits every other leg — the
     // user's deliberate engine choice is honored verbatim (REQ-R16 latch
     // first so an exit intent never starts a new WinHTTP request).
-    if (preferred_type_ == EngineType::OpenAi) {
+    if (preferred == EngineType::OpenAi) {
         if (cancel_requested_.load(std::memory_order_acquire)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
         DIAG_F("ENGINE/Translate/045: served=openai (base_url set=%d, model set=%d)\n",
-               openai_config_.base_url.empty() ? 0 : 1,
-               openai_config_.model.empty() ? 0 : 1);
+               openai_cfg.base_url.empty() ? 0 : 1,
+               openai_cfg.model.empty() ? 0 : 1);
         return openai_call();
     }
 
@@ -641,14 +708,15 @@ std::wstring TranslationManager::Translate(
     // cloud-routing leg returns below for unsupported pairs). The client
     // enforces the §4.4 contract (pin/version/token checks, busy, timeout)
     // and never logs user text.
-    if (served_engine == EngineType::LocalLlama && engine_host_config_.enabled) {
+    if (served_engine == EngineType::LocalLlama && host_cfg.enabled) {
         // REQ-R16: cancellation short-circuit BEFORE the pipe is touched (a
-        // shutdown posted RequestCancel() while this call queued on mutex_).
+        // shutdown posted RequestCancel() while this call queued on
+        // translate_mutex_).
         if (cancel_requested_.load(std::memory_order_acquire)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
-        if (preferred_type_ == EngineType::LocalLlama &&
+        if (preferred == EngineType::LocalLlama &&
             !LocalPairReliable(src_code_or_name, tgt_code_or_name)) {
             // Plan §4.1: explicit local pin + no cloud consent keeps the
             // request on-device; warn that the output language may degrade.
@@ -669,22 +737,25 @@ std::wstring TranslationManager::Translate(
         DIAG_F("ENGINE/Translate/060: local seam request model_id resolved (pin_len=%zu)\n",
                request_model_id.size());
         const auto t_local_attempt = std::chrono::steady_clock::now();
-        if (engine_host::TryTranslate(engine_host_config_,
+        // R1-11: the seam reads the request SNAPSHOT's config copy, so the
+        // whole pipe call runs with no state lock held and a concurrent
+        // SetEngineHostConfig cannot mutate the block mid-request.
+        if (engine_host::TryTranslate(host_cfg,
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
                                       host_out, host_err, served_model)) {
-            host_fail_streak_ = 0;  // §V2-8.6: success clears the repair signal
+            NoteHostSuccess();      // §V2-8.6: success clears the repair signal
             set_status(TranslationStatus::Ok);
             // REQ-057: served-vs-expected model id (diagnostic log only).
-            DiagnoseServedModelMismatch(preferred_type_, served_model);
+            DiagnoseServedModelMismatch(preferred, served_model);
             return ToUtf16(host_out);
         }
         // §V2-8.6 (b): persistent host failure — record the repair signal for
         // the T6 bootstrapper (client-internal state, never a protocol
         // status), then converge through the consented fallback below.
-        ++host_fail_streak_;
+        const int fail_streak = NoteHostFailure();
         DIAG_F("ENGINE/Translate/044: engine-host try failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
-               host_err.c_str(), host_fail_streak_);
+               host_err.c_str(), fail_streak);
         // REQ-051 (session 260921, symptom B-1): ONE identical-input retry on
         // a TRANSIENT fast failure (connect racing the orchestrator's spawn,
         // busy/respawning worker, pipe died mid-request). The warrant is the
@@ -714,33 +785,33 @@ std::wstring TranslationManager::Translate(
                 set_status(TranslationStatus::Canceled);
                 return {};
             }
-            if (engine_host::TryTranslate(engine_host_config_,
+            if (engine_host::TryTranslate(host_cfg,
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
                                           host_out, host_err, served_model)) {
-                host_fail_streak_ = 0;  // the retry recovered the service
+                NoteHostSuccess();  // the retry recovered the service
                 set_status(TranslationStatus::Ok);
                 // REQ-057: served-vs-expected model id (diagnostic log only).
-                DiagnoseServedModelMismatch(preferred_type_, served_model);
+                DiagnoseServedModelMismatch(preferred, served_model);
                 return ToUtf16(host_out);
             }
-            // REQ-051 integration fix: NO second ++host_fail_streak_ here.
+            // REQ-051 integration fix: NO second streak increment here.
             // The streak is the CLIENT-SIDE REPAIR SIGNAL (V2-8.6) — one
             // signal per converged user request, not per pipe attempt; the
             // retry above is internal recovery. Counting both attempts broke
             // the frozen T5 contract (one Translate -> streak 1). The /047
             // line still logs the post-convergence streak.
             DIAG_F("ENGINE/Translate/047: transient retry failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
-                   host_err.c_str(), host_fail_streak_);
+                   host_err.c_str(), fail_streak);
         }
         // Local serving failed. Auto: seamless cloud fallback - the consented
         // contract above.
-        if (preferred_type_ == EngineType::Auto) {
+        if (preferred == EngineType::Auto) {
             DIAG_F("ENGINE/Translate/020: local serving failed, Auto policy falling back to cloud\n");
             return cloud_call();
         }
         // Explicit local: H2 privacy gate still decides.
-        if (cloud_fallback_enabled_) {
+        if (cloud_consent) {
             DIAG_F("ENGINE/Translate/021: local serving failed, explicit cloud fallback consent granted\n");
             return cloud_call();
         }
@@ -758,16 +829,16 @@ std::wstring TranslationManager::Translate(
         return {};
     }
     // Cloud paths in order of consent strength:
-    //  - preferred_type_ == GoogleTranslate: deliberate choice -> always allow.
-    //  - preferred_type_ == Auto: zero-install or host-absent path -> the
+    //  - preferred == GoogleTranslate: deliberate choice -> always allow.
+    //  - preferred == Auto: zero-install or host-absent path -> the
     //    Auto contract above makes this consented (REQ-R02 policy).
-    //  - preferred_type_ == LocalLlama with no local source: implicit cloud
+    //  - preferred == LocalLlama with no local source: implicit cloud
     //    path -> respect the H2 gate; empty+CloudConsentBlocked when disabled
     //    (strict on-device semantics: text must never leave the device
     //    silently).
-    if (preferred_type_ == EngineType::GoogleTranslate ||
-        preferred_type_ == EngineType::Auto ||
-        cloud_fallback_enabled_) {
+    if (preferred == EngineType::GoogleTranslate ||
+        preferred == EngineType::Auto ||
+        cloud_consent) {
         return cloud_call();
     }
     set_status(TranslationStatus::CloudConsentBlocked);

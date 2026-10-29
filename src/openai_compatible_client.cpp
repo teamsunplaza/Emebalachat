@@ -398,11 +398,24 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
     // REQ-045 security follow-up: disable redirects so the Authorization: Bearer
     // header can never be replayed to a redirect target (https→http downgrade /
     // host hop). OpenAI-compatible servers must not need redirects.
-    // WINHTTP_REDIRECT_POLICY_DISABLE == 0 (not exposed by the project's Windows
-    // SDK winhttp.h, so the literal 0 is used per MS docs).
+    // WINHTTP_OPTION_REDIRECT_POLICY_NEVER == 0 (winhttp.h defines the name;
+    // the literal keeps this block byte-identical to the Google client's, so a
+    // reviewer can diff the two clients against each other).
+    // R3 (261029_0001, round-3 P3, twin of the Google client's R2-11 fix): the
+    // result was ignored, so a failed policy set would silently leave WinHTTP's
+    // default (FOLLOW) in place and this client - the one that carries the
+    // Authorization: Bearer header - would replay it to a redirect target with
+    // no trace anywhere. Fail OPEN on purpose (the translate path must not die
+    // over a hardening knob), but make the degradation VISIBLE and shape-only:
+    // error code only, never the request or the key.
     DWORD redirect_policy_disable = 0;
-    ::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,
-                       &redirect_policy_disable, sizeof(redirect_policy_disable));
+    if (!::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,
+                            &redirect_policy_disable,
+                            sizeof(redirect_policy_disable))) {
+        DIAG_F("OPENAI/HttpRequest/005: WinHttpSetOption(WINHTTP_OPTION_REDIRECT_POLICY=NEVER) "
+               "failed (err=%lu); redirects may be followed on this session (fail-open, R3)\n",
+               ::GetLastError());
+    }
 
     ScopedHInternet hConnect(::WinHttpConnect(hSession.get(), host.c_str(), port, 0));
     if (!hConnect) return 0;

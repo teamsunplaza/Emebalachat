@@ -310,26 +310,33 @@ bool KeyboardHook::Start() {
     if (hReadyEvent_) {
         ::ResetEvent(hReadyEvent_);
     }
+    // R1-14 (code review mimoflash F-05): clear the late-install quit request
+    // (left set by a previous timed-out Start) and the published handle, so the
+    // handshake below observes THIS attempt only.
+    quit_requested_.store(false, std::memory_order_release);
+    hHook_.store(nullptr, std::memory_order_release);
 
     thread_ = std::thread(&KeyboardHook::HookThreadProc, this);
 
-    if (hReadyEvent_) {
-        ::WaitForSingleObject(hReadyEvent_, 2000);
+    // R1-14: bounded install handshake. It joins the pump on every non-installed
+    // outcome and takes a late install down via quit_requested_ + WM_QUIT, so
+    // there is no unbounded join and no leaked hook.
+    const HookInstallOutcome install =
+        FinishLowLevelHookStart(hReadyEvent_, hHook_, hook_thread_id_, quit_requested_, thread_);
+    if (install == HookInstallOutcome::kInstalled) {
+        return true;
     }
 
-    if (!hHook_) {
-        // Hook install failed: HookThreadProc already returned without pumping,
-        // so join the finished thread here (a joinable std::thread destroyed
-        // without join calls std::terminate). Then tear the async worker back
-        // down so the object stays in a clean, restartable state.
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-        StopAsyncWorker();
-        running_.store(false);
-        return false;
+    if (install == HookInstallOutcome::kReadyTimeout) {
+        DIAG_F("HOOK/Start/001: hook install exceeded the %lu ms ready window; pump stood down "
+               "(R1-14: startup continues, no leaked hook)\n",
+               static_cast<unsigned long>(kHookReadyWaitMs));
     }
-    return true;
+    // Tear the async worker back down so the object stays in a clean,
+    // restartable state (the handshake already joined the pump).
+    StopAsyncWorker();
+    running_.store(false);
+    return false;
 }
 
 void KeyboardHook::Stop() {
@@ -340,8 +347,11 @@ void KeyboardHook::Stop() {
         return;
     }
 
-    if (hook_thread_id_ != 0) {
-        ::PostThreadMessageW(hook_thread_id_, WM_QUIT, 0, 0);
+    // R1-14: acquire load - the pump stores this with release as its first
+    // action, so a Start() that returned kInstalled synchronizes with it.
+    const DWORD hook_tid = hook_thread_id_.load(std::memory_order_acquire);
+    if (hook_tid != 0) {
+        ::PostThreadMessageW(hook_tid, WM_QUIT, 0, 0);
     }
 
     if (thread_.joinable()) {
@@ -407,7 +417,57 @@ UINT VkFromKeyToken(const std::string& tok) {
     return 0;
 }
 
+// Reverse of VkFromKeyToken: the canonical token ParseHotkey accepts for a
+// virtual key, "" when the key is outside the config vocabulary (in which case
+// no valid spec could ever have been parsed from a config string).
+std::wstring KeyTokenFromVk(UINT vk) {
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return L"F" + std::to_wstring(vk - VK_F1 + 1);
+    }
+    switch (vk) {
+        case VK_RETURN: return L"Enter";
+        case VK_ESCAPE: return L"Esc";
+        case VK_TAB: return L"Tab";
+        case VK_SPACE: return L"Space";
+        case VK_INSERT: return L"Insert";
+        case VK_DELETE: return L"Delete";
+        case VK_HOME: return L"Home";
+        case VK_END: return L"End";
+        case VK_PRIOR: return L"PgUp";
+        case VK_NEXT: return L"PgDn";
+        case VK_UP: return L"Up";
+        case VK_DOWN: return L"Down";
+        case VK_LEFT: return L"Left";
+        case VK_RIGHT: return L"Right";
+        default: break;
+    }
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        return std::wstring(1, static_cast<wchar_t>(vk));
+    }
+    return std::wstring();
+}
+
 } // namespace
+
+// W5 (R1-22): display form of a compiled combo. One definition shared by the
+// cursor bubble (main.cpp) and the unit tests, so the label can never drift
+// from the combo the hook actually swallows.
+std::wstring KeyboardHook::HotkeySpecToDisplayString(const HotkeySpec& spec) {
+    if (!spec.valid || spec.vk == 0) {
+        return std::wstring();
+    }
+    const std::wstring key = KeyTokenFromVk(spec.vk);
+    if (key.empty()) {
+        return std::wstring(); // not expressible in the config vocabulary
+    }
+    std::wstring out;
+    if (spec.ctrl) out += L"Ctrl+";
+    if (spec.shift) out += L"Shift+";
+    if (spec.alt) out += L"Alt+";
+    if (spec.win) out += L"Win+";
+    out += key;
+    return out;
+}
 
 KeyboardHook::HotkeySpec KeyboardHook::ParseHotkey(std::string_view spec) {
     HotkeySpec out;
@@ -482,9 +542,13 @@ void KeyboardHook::SetActive(bool active) {
         // REQ-056: the hook paths refresh only RUNTIME state — the Engine
         // submenu's config-derived check index + user-model stem are derived
         // at open by main.cpp's resolver (single authority), not pushed here.
+        // R2-5 (FIX-B2): same rule for the tip's ENGINE segment. The persisted
+        // engine_type token ("auto"/"local"/"user_gguf") cannot name the model
+        // actually serving, so an empty view preserves the GUI-resolved stem
+        // refresh_tray() pushed from engine.GetActiveEngineName().
         tray_.UpdateStatus(
             active,
-            snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+            std::string_view{},
             snap.type_source_language,
             snap.type_target_language,
             snap.drag_source_language,
@@ -555,9 +619,10 @@ void KeyboardHook::CycleTargetLanguage() {
     badge_.SetLanguages(ToUtf16(snap.type_source_language), ToUtf16(snap.type_target_language));
     // REQ-056: runtime-state refresh only — the Engine submenu derives its
     // check index + user-model stem at open (main.cpp's resolver).
+    // R2-5 (FIX-B2): empty engine view = keep the GUI-resolved display stem.
     tray_.UpdateStatus(
         is_active_.load(),
-        snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+        std::string_view{},
         snap.type_source_language,
         snap.type_target_language,
         snap.drag_source_language,
@@ -584,9 +649,10 @@ void KeyboardHook::ToggleAutoSend() {
     // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
     // REQ-056: runtime-state refresh only — the Engine submenu derives its
     // check index + user-model stem at open (main.cpp's resolver).
+    // R2-5 (FIX-B2): empty engine view = keep the GUI-resolved display stem.
     tray_.UpdateStatus(
         is_active_.load(),
-        snap.engine_type == "auto" ? "Google Translate (Auto)" : snap.engine_type,
+        std::string_view{},
         snap.type_source_language,
         snap.type_target_language,
         snap.drag_source_language,
@@ -605,9 +671,11 @@ void KeyboardHook::HookThreadProc() {
     // RunLowLevelHookPump (src/hook_thread.hpp) after a line-by-line
     // byte-comparison with MouseHook::HookThreadProc proved the two pumps
     // identical modulo hook id + callback. SetEvent-before-fail-check and the
-    // WM_QUIT-terminated loop are documented invariants there.
+    // WM_QUIT-terminated loop are documented invariants there. R1-15 (priority
+    // boost) and R1-14 (late-install takeover) live in the shared pump, so both
+    // hook threads inherit them from this one site.
     RunLowLevelHookPump(WH_KEYBOARD_LL, KeyboardHook::LowLevelKeyboardProc,
-                        hReadyEvent_, running_, hHook_, hook_thread_id_);
+                        hReadyEvent_, running_, hHook_, hook_thread_id_, quit_requested_);
 }
 
 LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {

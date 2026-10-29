@@ -487,44 +487,77 @@ void TestReq052OpenAiAsyncFetchPins() {
                "REQ-052 pin: the IDOK save keeps digest-before-protect");
 
     // (d) Single-flight: the spawn bumps the generation; the completion
-    // handler drops any completion whose generation is not current.
+    // handler drops any completion whose generation is not current. R1-9: the
+    // comparison runs on the DRAINED VALUE (`result.`), never through a
+    // pointer the message handed over.
     TEST_CHECK(osw_src.find("++st->fetch_generation;") != std::string::npos &&
-                   osw_src.find("result->generation != st->fetch_generation") !=
+                   osw_src.find("result.generation != st->fetch_generation") !=
                        std::string::npos,
                "REQ-052 pin: single-flight generation — stale completions are dropped");
 
-    // (e) The heap result crosses PostMessageW with ownership transfer; the
-    // worker has a self-release fallback (failed post / dialog gone) and the
-    // GUI handler deletes on every path (current + stale/orphaned).
-    TEST_CHECK(osw_src.find("new OpenAiFetchResult") != std::string::npos &&
-                   osw_src.find("::PostMessageW(dlg, kOpenAiMsgFetchDone") !=
+    // (e) R1-9 (v0.10.4 sweep, CWE-822 fix): the fetch result travels BY
+    // VALUE through the mutex-guarded queue and the completion message is a
+    // PURE (0, 0) wake-up. The pre-fix transport handed a heap
+    // OpenAiFetchResult* to PostMessageW of a top-level system-class #32770
+    // dialog and the handler dereferenced + delete'd whatever LPARAM it got —
+    // an arbitrary-free primitive for any same-session same-IL peer. All three
+    // pieces of that shape must be gone, and the safe shape must be present.
+    TEST_CHECK(osw_src.find("new OpenAiFetchResult") == std::string::npos &&
+                   osw_src.find("reinterpret_cast<OpenAiFetchResult*>") ==
+                       std::string::npos &&
+                   osw_src.find("delete result") == std::string::npos,
+               "R1-9 pin: no heap result crosses PostMessageW (pointer transport removed)");
+    TEST_CHECK(osw_src.find("std::mutex g_openai_fetch_mu;") != std::string::npos &&
+                   osw_src.find("std::deque<OpenAiFetchResult> g_openai_fetch_queue;") !=
                        std::string::npos,
-               "REQ-052 pin: the worker delivers the heap result via PostMessage");
-    size_t release_count = 0;
-    for (size_t p = osw_src.find("delete result;"); p != std::string::npos;
-         p = osw_src.find("delete result;", p + 1)) {
-        ++release_count;
-    }
-    TEST_CHECK(release_count >= 2,
-               "REQ-052 pin: both the worker fallback and the GUI handler release the result");
+               "R1-9 pin: the by-value fetch-result queue and its mutex exist");
+    TEST_CHECK(osw_src.find("g_openai_fetch_queue.push_back(std::move(result));") !=
+                   std::string::npos,
+               "R1-9 pin: the worker enqueues the result BY VALUE under the queue mutex");
+    TEST_CHECK(osw_src.find("::PostMessageW(dlg, kOpenAiMsgFetchDone, 0, 0)") !=
+                   std::string::npos,
+               "R1-9 pin: the completion message is a pure (0,0) wake-up — no heap pointer "
+               "in LPARAM");
     const size_t done_pos = osw_src.find("case kOpenAiMsgFetchDone:");
-    TEST_CHECK(done_pos != std::string::npos &&
-                   osw_src.find("delete result;", done_pos) != std::string::npos &&
-                   osw_src.find("RefillOpenAiModelCombo(dlg, models);", done_pos) !=
-                       std::string::npos,
-               "REQ-052 pin: the completion handler refills via the extracted helper "
-               "and releases the result");
+    const size_t done_end = osw_src.find("case WM_DESTROY:", done_pos);
+    TEST_CHECK(done_pos != std::string::npos && done_end != std::string::npos &&
+                   done_pos < done_end,
+               "R1-9 pin: the completion handler is locatable");
+    if (done_pos != std::string::npos && done_end != std::string::npos && done_pos < done_end) {
+        const std::string done_branch = osw_src.substr(done_pos, done_end - done_pos);
+        TEST_CHECK(done_branch.find("reinterpret_cast") == std::string::npos &&
+                       done_branch.find("(lp)") == std::string::npos,
+                   "R1-9 pin: the completion handler never casts or dereferences the LPARAM");
+        TEST_CHECK(done_branch.find("g_openai_fetch_queue.pop_front();") != std::string::npos &&
+                       done_branch.find("RefillOpenAiModelCombo(dlg, models);") !=
+                           std::string::npos,
+                   "R1-9 pin: the completion handler drains the by-value queue and refills via "
+                   "the extracted helper");
+    }
+    // Teardown: every drain point the transport relies on is present — the
+    // in-dialog WM_INITDIALOG reset, the WM_DESTROY sweep, and the post-modal
+    // sweep after DialogBoxIndirectParamW returns.
+    size_t drain_count = 0;
+    for (size_t p = osw_src.find("DrainOpenAiFetchQueue();"); p != std::string::npos;
+         p = osw_src.find("DrainOpenAiFetchQueue();", p + 1)) {
+        ++drain_count;
+    }
+    TEST_CHECK(drain_count >= 3,
+               "R1-9 pin: the queue is drained on instance start, WM_DESTROY, and dialog return");
 
     // (f) WM_DESTROY liveness guard: no join (joining a worker still inside
     // its bounded network call would re-block the GUI thread this fix freed);
-    // the shared flag tells a finishing worker the receiver is gone.
+    // the shared flag tells a finishing worker the receiver is gone, and the
+    // same branch sweeps the by-value queue (R1-9).
     const size_t destroy_pos = osw_src.find("case WM_DESTROY:");
     TEST_CHECK(destroy_pos != std::string::npos,
                "REQ-052 pin: the dialog proc handles WM_DESTROY");
     if (destroy_pos != std::string::npos) {
-        const std::string destroy_branch = osw_src.substr(destroy_pos, 900);
+        const std::string destroy_branch = osw_src.substr(destroy_pos, 1400);
         TEST_CHECK(destroy_branch.find("fetch_alive->store(false") != std::string::npos,
                    "REQ-052 pin: WM_DESTROY flips the worker liveness flag");
+        TEST_CHECK(destroy_branch.find("DrainOpenAiFetchQueue();") != std::string::npos,
+                   "R1-9 pin: WM_DESTROY drains the by-value fetch-result queue");
     }
 
     // (g) The REQ-050/REQ-051 contracts survive the async move: the 800 ms

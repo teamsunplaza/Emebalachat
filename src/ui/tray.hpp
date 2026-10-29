@@ -23,6 +23,70 @@ inline int TrayPreferredEngineIndex(std::string_view engine_type) {
          : 0;
 }
 
+// ---- W1 (R1-22, session 261029_0001): hover-tip / status-row composition ----
+//
+// NOTIFYICONDATAW::szTip is a FIXED wchar_t buffer INCLUDING the terminator.
+// Shell_NotifyIcon silently drops an over-long tip and wcsncpy_s(_TRUNCATE)
+// cuts mid-word, so the composed tip is capped here - derived from the struct
+// itself so the number can never drift from the SDK.
+inline constexpr size_t kTrayTipMaxChars =
+    sizeof(NOTIFYICONDATAW{}.szTip) / sizeof(wchar_t) - 1;
+
+// The localized engine rows (MenuEngineGoogle / MenuEngineLocal / ...) are
+// full sentences of 26-44 characters and would eat the whole tip budget
+// (research §8 residual risk 1: "prefer engine short code over full localized
+// engine sentence"). This maps BOTH push shapes onto one short product/model
+// token: the GUI path passes TranslationManager::GetActiveEngineName()'s
+// display stem ("Hy-MT2-1.8B (Shared Host)"), the hook path passes the raw
+// persisted engine_type ("local"). Empty input stays empty (no engine segment).
+std::string TrayEngineLabel(std::string_view active_engine);
+
+// The pieces of the hover tip, already localized by the caller. Keeping the
+// composition pure (no I18n call inside) is what makes the szTip budget and
+// the drop order unit-testable headlessly.
+struct TrayTipParts {
+    std::wstring_view title;
+    std::wstring_view state;          // BadgeActive / BadgePaused
+    std::wstring_view engine;         // TrayEngineLabel result (may be empty)
+    std::wstring_view src_display;    // I18n::GetLanguageDisplayName(...)
+    std::wstring_view tgt_display;
+    std::wstring_view auto_send_label; // MenuAutoSend
+    bool auto_send = false;
+};
+
+// "Title (State) - Engine · SRC → TGT[ · AutoSend]", never longer than
+// kTrayTipMaxChars. Overflow drops the auto-send tail FIRST (it is the only
+// optional segment), then ellipsizes - a visible "…" instead of the silent
+// mid-word cut wcsncpy_s would produce.
+std::wstring ComposeTrayTip(const TrayTipParts& parts);
+
+// "State · SRC → TGT": appended to the tray's top status row (the localized
+// MenuStatus* sentence already carries the "상태:" prefix, so the row reads
+// "상태: 활성 (F9: 일시 정지) · 자동 감지 → 영어" - the research's W1 shape).
+std::wstring ComposeTrayStatusLabel(std::wstring_view state_label,
+                                    std::wstring_view src_display,
+                                    std::wstring_view tgt_display);
+
+// ---- W2 (R1-22): pure swap planner for BOTH language pairs ----
+//
+// The tray Swap row / badge double-click (TYPE pair) and the new 번역툴팁 Swap
+// row (DRAG pair) share ONE policy definition, so a product change to the
+// AUTO-pivot rule can never land on only one of the two surfaces:
+//   * source is AUTO Detect -> the concrete old target becomes the source and
+//     the new target falls back to the OS-native language (English when the
+//     OS language IS the old target, so the swap always reverses something);
+//   * otherwise the two concrete languages swap directly.
+// Result strings are name_en (the coordinator's stored form). Pure: the caller
+// passes the pair and the OS language code, so both arms and every OS-language
+// edge (including the unsupported -> "KO" fallback) are unit-testable.
+struct LanguageSwapPlan {
+    std::string source;
+    std::string target;
+};
+LanguageSwapPlan PlanLanguageSwap(std::string_view cur_source,
+                                  std::string_view cur_target,
+                                  std::string_view system_language_code);
+
 class SystemTray {
 public:
     struct Callbacks {
@@ -41,6 +105,11 @@ public:
         std::function<void(std::string_view code)> on_select_drag_source_lang;
         std::function<void(std::string_view code)> on_select_drag_target_lang;
         std::function<void()> on_swap_languages;
+        // W2 (R1-22, session 261029_0001): the 번역툴팁 group's own Swap row.
+        // Same policy as on_swap_languages (PlanLanguageSwap) but applied to the
+        // DRAG pair through ApplyLanguageChange(LanguageContext::Drag, ...).
+        // Appended (not reordered) so every existing wiring keeps its meaning.
+        std::function<void()> on_swap_drag_languages;
         std::function<void()> on_toggle_auto_send;
         std::function<void()> on_toggle_sound;
         std::function<void()> on_toggle_badge;
@@ -80,9 +149,20 @@ public:
 
     // Updates tray icon tooltip, status color, and checked state.
     // REQ-025: src/tgt are the TYPE pair (tip text + type submenu checks);
-    // drag_src/drag_tgt drive ONLY the new drag submenu check marks - the tip
+    // drag_src/drag_tgt drive ONLY the drag submenu check marks - the tip
     // always keeps displaying the type pair (Phase A §2.1.A3-25 design).
-    // active_engine stays a DISPLAY-ONLY string (tooltip + tray_update log).
+    // active_engine is display-only: W1 (R1-22) puts its SHORT token in the
+    // tip (TrayEngineLabel) and still logs it through tray_update; the Engine
+    // submenu check mark never reads it (REQ-056).
+    //
+    // R2-5 (FIX-B2): an EMPTY active_engine means "no resolved display stem"
+    // and PRESERVES the stored one. The GUI thread's refresh_tray() is the
+    // single authority (engine.GetActiveEngineName()); the hook-thread
+    // refreshes pass empty so an F9 / Ctrl+Shift+Enter / Ctrl+F9 can no
+    // longer clobber "Hy-MT2-1.8B" with the raw engine_type token.
+    //
+    // W1 (R1-22): the tip is now composed by ComposeTrayTip - state, engine,
+    // type pair and (when on) the auto-send tail, capped at kTrayTipMaxChars.
     //
     // REQ-056 (derive-at-open): the Engine submenu's two config-derived
     // values — the 4-way preferred-engine check index and the registered
@@ -102,6 +182,12 @@ public:
         bool sound_enabled,
         bool badge_visible
     );
+
+    // W1 (R1-22) test seam: the tip text UpdateStatus last composed and copied
+    // into szTip. run_tests exercises UpdateStatus on a non-Created tray (the
+    // Shell_NotifyIcon call is a harmless no-op), so this lets the suite prove
+    // the REAL surface honours the szTip budget, not just the pure helper.
+    std::wstring_view TipTextForTest() const noexcept { return nid_.szTip; }
 
     // REQ-056: derive-at-open view of the engine submenu's two config-derived
     // pieces. Invoked ON THE GUI THREAD from ShowContextMenu at menu build

@@ -27,6 +27,19 @@
 //       pick (text stays on-device), and the REQ-R16 cancel re-check guards
 //       the post-sleep retry. Same source-inspection technique as
 //       TestReq048CloudFailureSignaling / TestReq051CaptureRetryPolicy.
+//   (f)+(g) R1-25 (v0.10.4 sweep): an explicit truth table over EVERY token
+//       the frozen client emits (connect/busy/io/timeout transient;
+//       connect:peer - the R1-7 peer-identity gate - plus no_host_binary/
+//       no_token/disabled/unauthorized/version_mismatch/pin_mismatch/
+//       bad_request/model_missing/engine_failed and unknown/empty codes
+//       permanent), and the warrant evaluated for each code rather than for
+//       one representative.
+//   (h) R1-25 FIX (U-H4b): the client emits "connect:<oserr>"
+//       (engine_host_client.cpp), not the bare "connect" the predicate used to
+//       match, so real connect failures never retried. The errno form is
+//       Transient now (digits only), "connect:peer" stays Permanent, and the
+//       client's token construction is still pinned on its own side so the
+//       classifier can never drift away from what is actually emitted.
 // ---------------------------------------------------------------------------
 
 void TestReq051EngineRetryPolicy() {
@@ -166,6 +179,156 @@ void TestReq051EngineRetryPolicy() {
             const size_t auto_fallback = eng_src.find("return cloud_call();", retry_end);
             TEST_CHECK(auto_fallback != std::string::npos,
                        "REQ-051 pin: the consented Auto/fallback cloud legs remain");
+        }
+    }
+
+    // ---- (f) R1-25 (v0.10.4 sweep): exhaustive failure-class truth table ----
+    // The frozen client contract (engine_host_client.hpp) enumerates the tokens
+    // the local seam can emit. The table below is exhaustive over it and every
+    // row is explicit, so a code added to the client later cannot silently
+    // inherit a class without a decision recorded here.
+    struct WireRow {
+        const char* code;
+        EngineHostFailureClass expected;
+    };
+    const WireRow wire_rows[] = {
+        // Transient: the client contract documents these as recoverable by an
+        // identical-input retry.
+        {"connect", EngineHostFailureClass::Transient},
+        // R1-25 U-H4b FIX: the client's REAL connect token carries the OS errno
+        // (engine_host_client.cpp: "connect:" + std::to_string(last_err)); the
+        // bare "connect" row above covers only the empty-candidate case. 2 =
+        // ERROR_FILE_NOT_FOUND (no listener yet), 231 = ERROR_PIPE_BUSY (every
+        // instance busy): the "orchestrator still booting / spawn in flight"
+        // symptom the REQ-051 retry exists for.
+        {"connect:2", EngineHostFailureClass::Transient},
+        {"connect:231", EngineHostFailureClass::Transient},
+        {"busy", EngineHostFailureClass::Transient},
+        {"io", EngineHostFailureClass::Transient},
+        {"timeout", EngineHostFailureClass::Transient},
+        // R1-7 (U-D) peer-identity rejection: PERMANENT. The named pipe answered
+        // from a process that is not the installed host image; a 400 ms retry
+        // would re-run the same rejection (and re-log the shape-only line).
+        {"connect:peer", EngineHostFailureClass::Permanent},
+        // Deployment / handshake / request codes: each one has a cause that a
+        // second identical request cannot change.
+        {"no_host_binary", EngineHostFailureClass::Permanent},
+        {"no_token", EngineHostFailureClass::Permanent},
+        {"disabled", EngineHostFailureClass::Permanent},
+        {"unauthorized", EngineHostFailureClass::Permanent},
+        {"version_mismatch", EngineHostFailureClass::Permanent},
+        {"pin_mismatch", EngineHostFailureClass::Permanent},
+        {"bad_request", EngineHostFailureClass::Permanent},
+        {"model_missing", EngineHostFailureClass::Permanent},
+        {"engine_failed", EngineHostFailureClass::Permanent},
+    };
+    int wire_rows_ok = 0;
+    for (const WireRow& row : wire_rows) {
+        if (ClassifyEngineHostFailure(row.code) == row.expected) {
+            ++wire_rows_ok;
+        } else {
+            std::cout << "  [DETAIL] R1-25 table row disagreed for '" << row.code << "'"
+                      << std::endl;
+        }
+    }
+    TEST_CHECK(wire_rows_ok == static_cast<int>(sizeof(wire_rows) / sizeof(wire_rows[0])),
+               "R1-25: the failure-class table matches every client token (6 transient, 10 permanent)");
+    TEST_CHECK(ClassifyEngineHostFailure("connect:peer") !=
+                   ClassifyEngineHostFailure("connect") &&
+                   ClassifyEngineHostFailure("connect:peer") !=
+                       ClassifyEngineHostFailure("connect:231"),
+               "R1-25: connect:peer is PERMANENT while connect and connect:<errno> are transient "
+               "(U-D distinction survives any refactor)");
+
+    // ---- (g) R1-25: the warrant over the table, not just one code ----------
+    // Every transient code warrants exactly one retry under the fast-failure
+    // budget and loses it under each independent guard (cancel, spent budget,
+    // over-ceiling first attempt). connect:<errno> is included here (U-H4b): the
+    // warrant, not only the classifier, must see the retry actually fire.
+    int transient_warrant_ok = 0;
+    for (const char* code : {"connect", "connect:2", "connect:231", "busy", "io", "timeout"}) {
+        if (EngineHostTransientRetryWarranted(code, 0, 0, false) &&
+            !EngineHostTransientRetryWarranted(code, 0, 0, true) &&
+            !EngineHostTransientRetryWarranted(code, 1, 0, false) &&
+            !EngineHostTransientRetryWarranted(
+                code, 0, kEngineHostRetryFirstAttemptCeilingMs + 1, false)) {
+            ++transient_warrant_ok;
+        }
+    }
+    TEST_CHECK(transient_warrant_ok == 6,
+               "R1-25: all six transient codes (connect, connect:<errno> x2, busy, io, timeout) "
+               "warrant the retry, and each guard kills it "
+               "(cancel / budget spent / first attempt over the ceiling)");
+    int permanent_warrant_ok = 0;
+    for (const char* code : {"connect:peer", "no_host_binary", "no_token", "disabled",
+                             "unauthorized", "version_mismatch", "pin_mismatch", "bad_request",
+                             "model_missing", "engine_failed", "", "ENGINE_FAILED"}) {
+        if (!EngineHostTransientRetryWarranted(code, 0, 0, false)) {
+            ++permanent_warrant_ok;
+        }
+    }
+    TEST_CHECK(permanent_warrant_ok == 12,
+               "R1-25: no permanent/unknown code warrants a retry even on a 0 ms first attempt "
+               "(case-sensitive: ENGINE_FAILED is unknown -> fail-safe permanent)");
+
+    // ---- (h) R1-25 FIX (U-H4b): the errno-suffixed connect token -----------
+    // The client does NOT emit the bare "connect" for a refused/timed-out pipe:
+    // ConnectAndHandshake builds "connect:" + the last OS error
+    // (engine_host_client.cpp: `err = peer_rejected ? "connect:peer" : "connect:" +
+    // std::to_string(last_err);`); the bare form covers only the empty-candidate
+    // case. Until U-H4b the classifier compared the exact string "connect", so
+    // every real connect failure classified PERMANENT and the REQ-051 retry -
+    // built for exactly the "connect racing the orchestrator's spawn" symptom -
+    // never fired for it. The fix folds the errno form into Transient and keeps
+    // connect:peer Permanent. No retry count, backoff, or retry path changed.
+    TEST_CHECK(ClassifyEngineHostFailure("connect:2") == EngineHostFailureClass::Transient &&
+                   ClassifyEngineHostFailure("connect:231") == EngineHostFailureClass::Transient,
+               "R1-25 U-H4b: connect:2 (no listener) / connect:231 (all instances busy) are "
+               "TRANSIENT now, so the one-shot retry fires for a real connect failure");
+    TEST_CHECK(EngineHostTransientRetryWarranted("connect:2", 0, 2000, false) &&
+                   !EngineHostTransientRetryWarranted("connect:2", 1, 2000, false) &&
+                   !EngineHostTransientRetryWarranted("connect:2", 0, 2000, true),
+               "R1-25 U-H4b: connect:<errno> warrants exactly ONE retry (the budget and the "
+               "REQ-R16 cancel still outrank it)");
+    TEST_CHECK(EngineHostTransientRetryWarranted(
+                   "connect:231", 0, kEngineHostRetryFirstAttemptCeilingMs, false) &&
+                   !EngineHostTransientRetryWarranted(
+                       "connect:231", 0, kEngineHostRetryFirstAttemptCeilingMs + 1, false),
+               "R1-25 U-H4b: the 15 s fast-failure ceiling still bounds the connect:errno retry");
+    TEST_CHECK(ClassifyEngineHostFailure("connect:peer") == EngineHostFailureClass::Permanent &&
+                   !EngineHostTransientRetryWarranted("connect:peer", 0, 0, false),
+               "R1-25 U-H4b: connect:peer stays PERMANENT (the R1-7 peer-identity rejection is "
+               "never retried, not even on a 0 ms first attempt)");
+    // Fail-safe edges of the errno matcher itself: digits only, nothing else.
+    TEST_CHECK(IsEngineHostConnectErrnoCode("connect:0") &&
+                   IsEngineHostConnectErrnoCode("connect:1234567890") &&
+                   !IsEngineHostConnectErrnoCode("connect") &&
+                   !IsEngineHostConnectErrnoCode("connect:") &&
+                   !IsEngineHostConnectErrnoCode("connect: 2") &&
+                   !IsEngineHostConnectErrnoCode("connect:2x") &&
+                   !IsEngineHostConnectErrnoCode("connect:-2") &&
+                   !IsEngineHostConnectErrnoCode("connect:peer") &&
+                   !IsEngineHostConnectErrnoCode("Connect:2") &&
+                   !IsEngineHostConnectErrnoCode("connectx:2") &&
+                   !IsEngineHostConnectErrnoCode(""),
+               "R1-25 U-H4b: IsEngineHostConnectErrnoCode accepts digits only (empty / space / "
+               "sign / letters / case / wrong prefix fall back to PERMANENT)");
+    // The token construction stays pinned on the CLIENT side, so the classifier
+    // can never drift away from what is actually emitted.
+    {
+        const std::filesystem::path client = ResolveRepoFile(L"src\\engine_host_client.cpp");
+        if (client.empty()) {
+            std::cout << "[SKIP] src/engine_host_client.cpp not resolvable; R1-25 token "
+                         "construction pin skipped." << std::endl;
+        } else {
+            std::ifstream in(client, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("\"connect:\" + std::to_string(last_err)") != std::string::npos,
+                       "R1-25 U-H4b: the client still emits connect:<oserr>, the token the "
+                       "classifier now treats as Transient");
+            TEST_CHECK(src.find("\"connect:peer\"") != std::string::npos,
+                       "R1-25: the peer-identity rejection token is the literal connect:peer");
         }
     }
 

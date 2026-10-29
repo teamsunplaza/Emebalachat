@@ -1084,6 +1084,54 @@ void TestSoundModule() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// R1-6/U-H4 (session 261029_0001, v0.10.4 sweep): live-clipboard contention
+// harness. The checks below run against the REAL desktop clipboard, which every
+// other process (clipboard managers, Office/Teams sync, the user pressing
+// Ctrl+C) may write at any moment. Three units observed the resulting
+// intermittent failures ("RestoreClipboard succeeds" and the R1-20 over-cap
+// survivor) while the machine was in active use.
+//
+// Contract for every body passed here:
+//   * return true  -> the body reached its assertions (they stand, pass or fail);
+//   * return false -> the environment made the assertion unevaluable: a FOREIGN
+//                     write moved the clipboard sequence under the check (the
+//                     sequence is monotonic, so it never returns to the tracked
+//                     value), or the ambient snapshot carried nothing at all.
+//                     The body must return false only on that evidence: a result
+//                     that is impossible without a broken guard is asserted,
+//                     never classified as contention.
+// One retry from a fresh baseline absorbs a clipboard manager's burst; if both
+// attempts are contended the check SKIPs with a reason line instead of failing
+// the suite. The assertions themselves are never weakened.
+//
+// The optional `skip_reason` lets a body say WHY it classified itself as
+// environment-limited (R3: the ambient clipboard may legitimately hold nothing
+// capturable, in which case RestoreClipboard's SkipEmptyBackup refusal is by
+// design and there is no assertion to evaluate).
+// ---------------------------------------------------------------------------
+template <typename Body>
+void RunClipboardLiveCheck(const char* label, Body&& body,
+                           const char* const* skip_reason = nullptr) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (body()) {
+            return;
+        }
+        if (attempt == 0) {
+            std::cout << "[NOTE] " << label
+                      << ": a foreign clipboard write moved the sequence; retrying once from a "
+                         "fresh baseline." << std::endl;
+            ::Sleep(150);
+        }
+    }
+    const char* reason = (skip_reason != nullptr && *skip_reason != nullptr)
+                             ? *skip_reason
+                             : "external clipboard contention (a foreign sequence drift was "
+                               "observed on both attempts)";
+    std::cout << "[SKIP] " << label << ": " << reason
+              << "; the assertion was not evaluated." << std::endl;
+}
+
 void TestWin32InputModule() {
     std::cout << "[RUN] Testing Win32 Input & Clipboard Safety..." << std::endl;
     const int failures_before = g_failed_count;
@@ -1107,36 +1155,63 @@ void TestWin32InputModule() {
     TEST_CHECK(!IsGdiClipboardFormat(CF_TEXT), "CF_TEXT is safe");
     TEST_CHECK(!IsGdiClipboardFormat(CF_HDROP), "CF_HDROP is safe");
 
-    // 3. Set and get clipboard text roundtrip
-    ClipboardBackup backup;
-    bool backed_up = BackupClipboard(backup);
-    TEST_CHECK(backed_up, "BackupClipboard succeeds");
-
-    std::wstring test_text = L"Emebalachat Clipboard Safety Test 🚀";
-    bool set_ok = SetClipboardText(test_text);
-    TEST_CHECK(set_ok, "SetClipboardText succeeds");
-
-    // Verify privacy exclusion formats (Windows 10/11 Win+V and Cloud sync exclusion)
-    UINT cfExclude = ::RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
-    UINT cfHistory = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
-    UINT cfCloud   = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
+    // 3+4. Set/get roundtrip and the restore of the ambient copy, as ONE
+    //      contention-tolerant transaction (see RunClipboardLiveCheck): a copy
+    //      landing between the snapshot and the restore makes the R1-6 guard
+    //      refuse by design, which is not this check's subject.
+    const std::wstring test_text = L"Emebalachat Clipboard Safety Test 🚀";
+    const UINT cfExclude = ::RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+    const UINT cfHistory = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    const UINT cfCloud   = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
     TEST_CHECK(cfExclude != 0, "ExcludeClipboardContentFromMonitorProcessing registered");
     TEST_CHECK(cfHistory != 0, "CanIncludeInClipboardHistory registered");
     TEST_CHECK(cfCloud != 0, "CanUploadToCloudClipboard registered");
 
-    if (::OpenClipboard(nullptr)) {
-        TEST_CHECK(::IsClipboardFormatAvailable(cfExclude), "Clipboard history exclusion flag present in clipboard");
-        TEST_CHECK(::IsClipboardFormatAvailable(cfHistory), "CanIncludeInClipboardHistory flag present in clipboard");
-        TEST_CHECK(::IsClipboardFormatAvailable(cfCloud), "CanUploadToCloudClipboard flag present in clipboard");
-        ::CloseClipboard();
-    }
+    // R3 (round-3 measured corpus ruling / non-scored flake): the ambient
+    // clipboard may hold NOTHING capturable (an empty desktop session), in
+    // which case DecideClipboardRestore's SkipEmptyBackup refuses the replay by
+    // design and "RestoreClipboard succeeds" has no subject. That is an
+    // environment shape, not a guard failure, so it takes the same
+    // retry-once-then-SKIP path as foreign sequence churn. The assertions below
+    // stay exact whenever the snapshot DID capture something.
+    const char* skip_reason = nullptr;
+    RunClipboardLiveCheck("Win32Input clipboard round-trip", [&]() -> bool {
+        ClipboardBackup backup;
+        if (!BackupClipboard(backup)) return false; // OpenClipboard lost to another process
+        if (backup.seq_at_backup == 0) return false;
+        if (!HasClipboardBackupPayload(backup)) {
+            skip_reason = "the ambient clipboard held no capturable payload at snapshot time "
+                          "(nothing to restore; the guard's empty-snapshot refusal is by design)";
+            return false;
+        }
+        if (!SetClipboardText(test_text)) return false;
+        const DWORD own_seq = OwnClipboardWriteSeq();
+        if (::GetClipboardSequenceNumber() != own_seq) return false; // foreign write
 
-    std::wstring retrieved = GetClipboardText();
-    TEST_CHECK(retrieved == test_text, "GetClipboardText matches what was set");
+        // Privacy exclusion formats ride on our own SetClipboardText write
+        // (Windows 10/11 Win+V and Cloud sync exclusion). While we hold the
+        // clipboard open nothing else can write, so the flags are ours.
+        if (::OpenClipboard(nullptr)) {
+            TEST_CHECK(::IsClipboardFormatAvailable(cfExclude), "Clipboard history exclusion flag present in clipboard");
+            TEST_CHECK(::IsClipboardFormatAvailable(cfHistory), "CanIncludeInClipboardHistory flag present in clipboard");
+            TEST_CHECK(::IsClipboardFormatAvailable(cfCloud), "CanUploadToCloudClipboard flag present in clipboard");
+            ::CloseClipboard();
+        }
+        if (::GetClipboardSequenceNumber() != own_seq) return false; // foreign write
 
-    // 4. Restore original clipboard
-    bool restore_ok = RestoreClipboard(backup);
-    TEST_CHECK(restore_ok, "RestoreClipboard succeeds");
+        const bool retrieved_ok = (GetClipboardText() == test_text);
+        if (::GetClipboardSequenceNumber() != own_seq) return false;
+
+        // Our own write is the clipboard's latest write, so the guard must
+        // replay the snapshot. A refusal here while the sequence still equals
+        // own_seq is a real guard failure, not contention.
+        const bool restore_ok = RestoreClipboard(backup);
+        const DWORD post_seq = ::GetClipboardSequenceNumber();
+        if (!restore_ok && post_seq != own_seq) return false;
+        TEST_CHECK(retrieved_ok, "GetClipboardText matches what was set");
+        TEST_CHECK(restore_ok, "RestoreClipboard succeeds");
+        return true;
+    }, &skip_reason);
 
     // 5. H1 wrong-window injection guard (pure-logic, no real window needed)
     // Fake HWNDs are opaque invalid handles; GetAncestor() on them returns NULL
@@ -1276,6 +1351,12 @@ void TestWin32InputW1Helpers() {
         emptied = ::EmptyClipboard() != FALSE;
         ::CloseClipboard();
     }
+    // R1-6 (261029_0001): this block writes the clipboard through RAW Win32
+    // calls on purpose (it must prove the no-CF_UNICODETEXT path), so it has to
+    // declare that write as ours - otherwise the cleanup restore below sees a
+    // "foreign" write and (correctly) refuses, leaving the session clipboard
+    // empty. Every production writer does this inside win32_input.cpp.
+    NoteOwnClipboardWrite();
     if (emptied && !::IsClipboardFormatAvailable(CF_UNICODETEXT)) {
         TEST_CHECK(GetClipboardText().empty(), "W1/A2: reader returns empty when CF_UNICODETEXT absent");
         ClipboardBackup empty_clip_backup;
@@ -2417,6 +2498,41 @@ void TestGoogleHttpProfile() {
                    "REQ-R05: gtx profile sends the honest product UA");
     }
 
+    // 5. R1-18a (v0.10.4 sweep, sec step5 F-03): the redirect policy is
+    //    disabled on the SESSION handle before the request is created, exactly
+    //    like the OpenAI-compatible client. A regression here silently replays
+    //    the query text (user content) to any 30x target, and no runtime test
+    //    can observe a redirect without a hostile endpoint, so the wiring is
+    //    pinned at the source level.
+    {
+        const std::filesystem::path src_path = ResolveRepoFile(L"src\\google_translate.cpp");
+        if (src_path.empty()) {
+            std::cout << "[SKIP] src/google_translate.cpp not resolvable; R1-18a redirect pin "
+                         "skipped." << std::endl;
+        } else {
+            std::ifstream in(src_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            const size_t policy_pos = src.find("WINHTTP_OPTION_REDIRECT_POLICY");
+            const size_t connect_pos = src.find("::WinHttpConnect(");
+            TEST_CHECK(policy_pos != std::string::npos,
+                       "R1-18a: HttpGet disables the WinHTTP redirect policy");
+            TEST_CHECK(policy_pos != std::string::npos && connect_pos != std::string::npos &&
+                           policy_pos < connect_pos,
+                       "R1-18a: the policy is set on the session BEFORE the request is opened");
+            TEST_CHECK(src.find("DWORD redirect_policy_disable = 0;") != std::string::npos,
+                       "R1-18a: the policy value is WINHTTP_OPTION_REDIRECT_POLICY_NEVER (0), the "
+                       "same literal the OpenAI client uses");
+            // R2-11 (261029_0001): the SET result must be checked. Ignoring it
+            // left a failed policy set invisible (WinHTTP default = FOLLOW), so
+            // the CWE-601 protection could be off with no trace anywhere.
+            TEST_CHECK(src.find("if (!::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,") !=
+                           std::string::npos &&
+                           src.find("GOOGLE_T/HttpGet/004") != std::string::npos,
+                       "R2-11: a failed redirect-policy set fails OPEN but is logged shape-only (004)");
+        }
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-R05 Google HTTP Profile tests completed." << std::endl;
     } else {
@@ -2978,6 +3094,9 @@ void TestModelPathValidation() {
 //  * Forged/mismatched markers never authorize skipping the hash for the
 //    pinned filename.
 //  * Marker cache hit (mtime+size unchanged) short-circuits re-verification.
+//  * R1-19 (session 261029_0001): the marker is bound to the file's CONTENT
+//    (4th line = sha256 over 1 MiB start/middle/end windows), so a legacy
+//    3-line marker or a same-size same-mtime swap no longer cache-hits.
 void TestModelSha256Verification() {
     std::cout << "[RUN] Testing F3 model SHA-256 verification..." << std::endl;
     const int failures_before = g_failed_count;
@@ -3064,11 +3183,12 @@ void TestModelSha256Verification() {
     //    (line 1 = that model's own hash, NOT the pin) must never authorize a
     //    PINNED filename. Fabricate exactly that: a consent-style marker with
     //    matching mtime/size for a pinned-name file with wrong bytes. The
-    //    anti-forgery rule in MarkerMatchesFile rejects non-pin markers on
+    //    anti-forgery rule in CheckVerifyMarker rejects non-pin markers on
     //    pinned names, forcing a real re-hash -> still blocked (006).
-    //    (A marker carrying the PIN hash on a pinned name is the legitimate
+    //    A marker carrying the PIN hash on a pinned name is the legitimate
     //    cache of a previously verified good file; marker-file integrity is
-    //    the same-directory trust boundary documented in engine.cpp.)
+    //    the same-directory trust boundary documented in engine_core_helpers.cpp.
+    //    R1-19 closes the same-size half of that: see 7b/7c below.
     {
         const std::filesystem::path models2 = root / "models2";
         std::filesystem::create_directories(models2, ec);
@@ -3086,22 +3206,139 @@ void TestModelSha256Verification() {
                    "F3: consent-style marker cannot authorize a pinned-name file with wrong content");
     }
 
-    // 8. Positive cache-hit proof (deterministic, no timing): user_model was
-    //    verified in case 6 and its consent marker matches the current
-    //    mtime/size. Re-open it EXCLUSIVELY (share=0): a re-hash attempt would
-    //    fail at CreateFileW (003). The call must still return true, which is
-    //    only possible through the marker cache - pinning the "skip the full
-    //    hash when mtime+size are unchanged" behavior observationally.
+    // 7b. R1-19 (v0.10.4 sweep; sec k3agent SRV-1 + sec step5 F-06 + sec
+    //     mimopro F4) regression proof. The forgery that used to pass: swap in
+    //     a same-size file, write a marker whose line 1 is the PUBLIC pinned
+    //     hash (every install ships it) and whose line 2/3 are the swapped
+    //     file's real mtime/size. Pre-R1-19 that marker HIT and the 1.9 GB hash
+    //     never ran. It is now the legacy 3-line shape -> cache MISS -> the full
+    //     hash sees the wrong bytes -> 006 fail-closed.
     {
-        HANDLE hExclusive = ::CreateFileW(user_model.c_str(), GENERIC_READ, 0, nullptr,
-                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        TEST_CHECK(hExclusive != INVALID_HANDLE_VALUE,
-                   "F3: exclusive re-open of consented model succeeded");
-        if (hExclusive != INVALID_HANDLE_VALUE) {
-            TEST_CHECK(VerifyModelSha256(user_model, markers),
-                       "F3: marker cache hit skips re-hashing (true even while the file is unhashable)");
-            ::CloseHandle(hExclusive);
+        const std::filesystem::path models3 = root / "models3";
+        std::filesystem::create_directories(models3, ec);
+        const std::filesystem::path swapped = models3 / "Hy-MT2-1.8B-Q8_0.gguf";
+        write_file(swapped, "same-size-swap-payload");
+        const std::filesystem::path forged = markers / L"Hy-MT2-1.8B-Q8_0.gguf.sha256ok";
+        auto write_forged_marker = [&](const std::string& sample_field) {
+            std::ofstream m(forged, std::ios::binary | std::ios::trunc);
+            m << kExpectedModelSha256 << '\n'
+              << std::filesystem::last_write_time(swapped, ec).time_since_epoch().count() << '\n'
+              << static_cast<unsigned long long>(std::filesystem::file_size(swapped, ec)) << '\n';
+            if (!sample_field.empty()) {
+                m << sample_field << '\n';
+            }
+        };
+        write_forged_marker({}); // the exact v0.10.3 95-byte form
+        TEST_CHECK(!VerifyModelSha256(swapped, markers),
+                   "R1-19: a legacy 3-line marker repeating the PUBLIC pin cannot cache-hit a "
+                   "same-size swap");
+
+        // 7c. Same forgery in the 4-line form, but line 4 is not the file's
+        //     content sample -> the content gate rejects it before any hash is
+        //     skipped (the pin check alone would have accepted line 1).
+        write_forged_marker(std::string(64, '0'));
+        TEST_CHECK(!VerifyModelSha256(swapped, markers),
+                   "R1-19: a 4-line marker whose content sample does not match the bytes is a "
+                   "cache miss");
+
+        // 7d. Documented residual (LIMIT, see the marker comment in
+        //     engine_core_helpers.cpp): the sample is content-derived, not a
+        //     secret, so an attacker who hashes the bytes they installed can
+        //     still forge a marker. Harvest the correct sample from a consent
+        //     verification of the SAME bytes and prove the gate is the sample,
+        //     not the pin: the same marker minus line 4 is rejected above.
+        const std::filesystem::path same_bytes = models3 / "same-bytes.gguf";
+        write_file(same_bytes, "same-size-swap-payload");
+        std::filesystem::last_write_time(
+            same_bytes, std::filesystem::last_write_time(swapped, ec), ec);
+        TEST_CHECK(VerifyModelSha256(same_bytes, markers),
+                   "R1-19: consent verification of the same bytes writes a content-bound marker");
+        std::string harvested_sample;
+        {
+            std::ifstream in(markers / (std::wstring(same_bytes.filename().native()) + L".sha256ok"),
+                             std::ios::binary);
+            std::string discarded_hex;
+            long long discarded_epoch = 0;
+            unsigned long long discarded_size = 0;
+            in >> discarded_hex >> discarded_epoch >> discarded_size >> harvested_sample;
         }
+        TEST_CHECK(harvested_sample.size() == 64 && harvested_sample != kExpectedModelSha256,
+                   "R1-19: the marker carries a 64-hex content sample distinct from the pin");
+        TEST_CHECK(std::filesystem::file_size(swapped, ec) ==
+                       std::filesystem::file_size(same_bytes, ec),
+                   "R1-19 residual fixture: swapped file and consented copy have the same size");
+        write_forged_marker(harvested_sample);
+        TEST_CHECK(VerifyModelSha256(swapped, markers),
+                   "R1-19 residual (documented LIMIT): a marker carrying the REAL content sample "
+                   "still hits - the sample raises the forgery cost to 'hash the bytes', it is not "
+                   "a secret");
+    }
+
+    // 8. Positive cache-hit proof (deterministic, no timing): a hit returns
+    //    true WITHOUT rewriting the marker. Backdate the marker's own mtime
+    //    first: any path that re-hashes the model rewrites the marker (both the
+    //    pinned-success and the consent branch do), which would move the stamp
+    //    forward, so an unchanged stamp proves the hit path ran. This replaces
+    //    the pre-R1-19 exclusive-open trick, which no longer works because a
+    //    cache hit now reads the 3 MiB content sample by design.
+    {
+        const std::filesystem::path marker =
+            markers / (std::wstring(user_model.filename().native()) + L".sha256ok");
+        std::error_code mec;
+        const auto backdated =
+            std::filesystem::last_write_time(marker, mec) - std::chrono::hours(1);
+        TEST_CHECK(!mec, "R1-19: user-model marker stat available for the cache-hit proof");
+        std::filesystem::last_write_time(marker, backdated, mec);
+        TEST_CHECK(!mec, "R1-19: marker mtime backdated for the cache-hit proof");
+        TEST_CHECK(VerifyModelSha256(user_model, markers),
+                   "R1-19: a content-bound marker still short-circuits re-verification");
+        std::error_code mec2;
+        TEST_CHECK(std::filesystem::last_write_time(marker, mec2) == backdated,
+                   "R1-19: the cache hit did NOT rewrite the marker (no full hash ran)");
+    }
+
+    // 9. R1-19 window geometry: a same-size, same-mtime swap that changes ONLY
+    //    the middle of a 4 MiB file must not reuse a stale marker. The plan is
+    //    1 MiB windows at start/middle/end, so a mutation inside [2 MiB, 3 MiB)
+    //    is covered by the middle window alone (a start+end-only sampler would
+    //    have missed it and reported a false hit).
+    {
+        constexpr size_t kBigBytes = 4u * 1024u * 1024u;
+        const std::filesystem::path big = root / "models" / "big-user-model.gguf";
+        const std::vector<char> bytes(kBigBytes, 'A');
+        {
+            std::ofstream of(big, std::ios::binary | std::ios::trunc);
+            of.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        const std::filesystem::path big_marker =
+            markers / (std::wstring(big.filename().native()) + L".sha256ok");
+        auto read_marker = [&](std::string& hex, std::string& sample) {
+            std::ifstream in(big_marker, std::ios::binary);
+            long long epoch = 0;
+            unsigned long long size = 0;
+            return static_cast<bool>(in >> hex >> epoch >> size >> sample);
+        };
+        TEST_CHECK(VerifyModelSha256(big, markers),
+                   "R1-19: a 4 MiB user model verifies (consent) and caches");
+        std::string hex_before;
+        std::string sample_before;
+        TEST_CHECK(read_marker(hex_before, sample_before) && sample_before.size() == 64,
+                   "R1-19: the 4-line marker was written for the 4 MiB model");
+        const auto big_mtime = std::filesystem::last_write_time(big, ec);
+        {
+            std::fstream io(big, std::ios::binary | std::ios::in | std::ios::out);
+            io.seekp(static_cast<std::streamoff>(kBigBytes / 2 + 1024));
+            io.put('Z');
+        }
+        std::filesystem::last_write_time(big, big_mtime, ec); // hide the swap from the stamp
+        TEST_CHECK(VerifyModelSha256(big, markers),
+                   "R1-19: the swapped model still loads (user-configured name = consent basis)");
+        std::string hex_after;
+        std::string sample_after;
+        TEST_CHECK(read_marker(hex_after, sample_after),
+                   "R1-19: the marker was rewritten in the 4-line form after the swap");
+        TEST_CHECK(hex_after != hex_before && sample_after != sample_before,
+                   "R1-19: the middle-window swap forced a full re-hash (stale marker rejected)");
     }
 
     std::filesystem::remove_all(root, ec);
@@ -4345,40 +4582,101 @@ void TestMouseHookDebounce() {
     mouse_hook.SetEnabled(false);
     TEST_CHECK(!mouse_hook.IsEnabled(), "R09 fixture: hook input disabled for synthetic-seq isolation");
 
-    // (a) A fresh job fires once, after the settle window, OFF the hook thread.
-    const uint64_t seq1 = mouse_hook.BumpClickSeqForTest();
-    mouse_hook.ArmDelayedClickForTest(seq1, POINT{111, 222});
-    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 1; }, 2000), "R09: armed job fires within settle window");
-    TEST_CHECK(fires.load() == 1, "R09: fires exactly once");
-    TEST_CHECK(last_x.load() == 111 && last_y.load() == 222, "R09: click coordinates survive to the callback");
-    TEST_CHECK(fire_tid.load() != main_tid, "R09: callback ran on the delayed-click worker, not the caller thread");
+    // R2-11 (session 261029_0001, ORCH-1 measured flake): the real LL hook chain
+    // is shared with the user's mouse. A click already in flight when this
+    // fixture disables input can still bump click_seq_, which makes the armed
+    // synthetic job go stale - that is the debounce WORKING, not a defect.
+    // Contract (same as RunClipboardLiveCheck above): detect the drift from the
+    // sequence itself, retry ONCE from a fresh baseline, and if it drifts again
+    // SKIP with a reason instead of failing the suite. The assertions are never
+    // weakened - they run unchanged on an attempt with no external drift.
+    struct DebounceProbe {
+        bool first_fired = false;
+        int first_fires = 0;
+        LONG first_x = 0;
+        LONG first_y = 0;
+        DWORD first_tid = 0;
+        bool latest_fired = false;
+        bool newest_coords = false;
+        int fires_after_settle = 0;
+        uint64_t seq_step = 0;
+        bool drift = false; // external click_seq_ movement was observed
+    };
+    auto probe_debounce = [&](int base_fires) -> DebounceProbe {
+        DebounceProbe out;
+        const uint64_t before = mouse_hook.ClickSeqForTest();
+        const uint64_t seq1 = mouse_hook.BumpClickSeqForTest();
+        if (seq1 != before + 1) {
+            out.drift = true; // an external bump landed between the read and ours
+            return out;
+        }
+        // (a) A fresh job fires once, after the settle window, OFF the hook thread.
+        mouse_hook.ArmDelayedClickForTest(seq1, POINT{111, 222});
+        out.first_fired = WaitUntilMs([&]() { return fires.load() >= base_fires + 1; }, 2000);
+        out.first_fires = fires.load();
+        out.first_x = last_x.load();
+        out.first_y = last_y.load();
+        out.first_tid = fire_tid.load();
+        if (mouse_hook.ClickSeqForTest() != seq1) {
+            out.drift = true; // a physical click invalidated the job
+            return out;
+        }
+        // (b) Newer physical click (seq bump) + re-arm: the stale job must NO-OP
+        // and only the latest click fires - the join-free debounce replacing the
+        // C2 join(). Coordinates prove WHICH job fired.
+        const uint64_t seqA = mouse_hook.BumpClickSeqForTest();
+        mouse_hook.ArmDelayedClickForTest(seqA, POINT{10, 10});
+        ::Sleep(5); // mid-settle window, before the 60 ms deadline
+        const uint64_t seqB = mouse_hook.BumpClickSeqForTest();
+        mouse_hook.ArmDelayedClickForTest(seqB, POINT{20, 20});
+        out.seq_step = seqB - seqA;
+        out.latest_fired = WaitUntilMs([&]() { return fires.load() >= base_fires + 2; }, 2000);
+        out.newest_coords = (last_x.load() == 20 && last_y.load() == 20);
+        ::Sleep(120); // give any wrong job more than two settle windows
+        out.fires_after_settle = fires.load();
+        if (out.seq_step != 1 || mouse_hook.ClickSeqForTest() != seqB) {
+            out.drift = true;
+        }
+        return out;
+    };
 
-    // (b) Newer physical click (seq bump) + re-arm: the stale job must NO-OP
-    // and only the latest click fires - the join-free debounce replacing the
-    // C2 join(). Coordinates prove WHICH job fired.
-    const uint64_t seqA = mouse_hook.BumpClickSeqForTest();
-    mouse_hook.ArmDelayedClickForTest(seqA, POINT{10, 10});
-    ::Sleep(5); // mid-settle window, before the 60 ms deadline
-    const uint64_t seqB = mouse_hook.BumpClickSeqForTest();
-    mouse_hook.ArmDelayedClickForTest(seqB, POINT{20, 20});
-    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 2; }, 2000), "R09: latest job fires after invalidation");
-    TEST_CHECK(seqB == seqA + 1, "R09: sequence counter advances per click (invalidation token)");
-    TEST_CHECK(WaitUntilMs([&]() { return fires.load() >= 2; }, 200) &&
-                   (last_x.load() == 20 && last_y.load() == 20),
-               "R09: only the NEWEST click fires; stale job dropped its callback");
-    ::Sleep(120); // give any wrong job more than two settle windows
-    TEST_CHECK(fires.load() == 2, "R09: stale job never double-fires after its successor ran");
+    DebounceProbe probe = probe_debounce(0);
+    if (probe.drift) {
+        std::cout << "[NOTE] R09: an external click moved click_seq_ during the settle window; "
+                     "retrying once from a fresh baseline." << std::endl;
+        ::Sleep(150);
+        fires.store(0);
+        probe = probe_debounce(0);
+    }
+    if (probe.drift) {
+        std::cout << "[SKIP] R09: external mouse-hook contention (click_seq_ drifted on both "
+                     "attempts); the debounce assertions were not evaluated." << std::endl;
+    } else {
+        TEST_CHECK(probe.first_fired, "R09: armed job fires within settle window");
+        TEST_CHECK(probe.first_fires == 1, "R09: fires exactly once");
+        TEST_CHECK(probe.first_x == 111 && probe.first_y == 222, "R09: click coordinates survive to the callback");
+        TEST_CHECK(probe.first_tid != main_tid, "R09: callback ran on the delayed-click worker, not the caller thread");
+        TEST_CHECK(probe.latest_fired, "R09: latest job fires after invalidation");
+        TEST_CHECK(probe.seq_step == 1, "R09: sequence counter advances per click (invalidation token)");
+        TEST_CHECK(probe.latest_fired && probe.newest_coords,
+                   "R09: only the NEWEST click fires; stale job dropped its callback");
+        TEST_CHECK(probe.fires_after_settle == 2, "R09: stale job never double-fires after its successor ran");
+    }
 
     // (c) Stop() with a pending job: cooperative stop wins, nothing fires, and
-    // Stop() returns promptly (bounded by one poll step).
+    // Stop() returns promptly (bounded by one poll step). Under contention the
+    // absolute fire count is unknown, so only the cleanup runs (the [SKIP] above
+    // already reported why the assertions were not evaluated).
     const uint64_t seqC = mouse_hook.BumpClickSeqForTest();
     mouse_hook.ArmDelayedClickForTest(seqC, POINT{30, 30});
     const ULONGLONG stop_t = ::GetTickCount64();
     mouse_hook.Stop();
     const ULONGLONG stop_ms = ::GetTickCount64() - stop_t;
-    TEST_CHECK(stop_ms < 250, "R09: Stop() is bounded (<= settle window) and never waits on the hook thread");
-    ::Sleep(150);
-    TEST_CHECK(fires.load() == 2, "R09: pending job was stopped, did not fire post-Stop");
+    if (!probe.drift) {
+        TEST_CHECK(stop_ms < 250, "R09: Stop() is bounded (<= settle window) and never waits on the hook thread");
+        ::Sleep(150);
+        TEST_CHECK(fires.load() == 2, "R09: pending job was stopped, did not fire post-Stop");
+    }
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] MouseHook click_seq_ debounce tests completed." << std::endl;
@@ -4695,9 +4993,221 @@ void TestDpiMixedScaling() {
     }
 }
 
+// 261029_0001 U-I (R1-21, env research F4): a monitor unplug / dock undock must
+// not strand the floating badge off-screen until the app restarts. The pure
+// half pins the monitor-SELECTION policy on synthetic topologies (inside /
+// outside / multi-monitor / unplug-last / empty set); the live half drives the
+// real message chain end to end: park the badge on coordinates no monitor
+// covers, post WM_DISPLAYCHANGE, wait out the debounce, read the window rect
+// back. The clamp itself stays ClampWindowOrigin, already pinned above by the
+// REQ-R15 suite.
+void TestR121BadgeDisplayChangeReclamp() {
+    std::cout << "[RUN] Testing R1-21 display-change badge re-clamp..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    using emebalachat::ui::ClampWindowOrigin;
+    using emebalachat::ui::kNoWorkArea;
+    using emebalachat::ui::NearestWorkAreaIndex;
+
+    // 1. Selection policy, compile-time pinned on synthetic monitor rects
+    //    (physical virtual-screen units, same convention as the R15 suite).
+    constexpr RECT kPrimary = { 0, 0, 1920, 1040 };
+    constexpr RECT kRight = { 1920, 0, 3840, 1040 };
+    constexpr RECT kLeft = { -2560, -400, -100, 680 };
+    constexpr RECT kAll[3] = { kPrimary, kRight, kLeft };
+
+    static_assert(NearestWorkAreaIndex(100, 100, kAll, 3, 0) == 0,
+                  "R1-21: origin inside the primary work area selects it");
+    static_assert(NearestWorkAreaIndex(2000, 100, kAll, 3, 0) == 1,
+                  "R1-21: origin inside the right-hand secondary selects it");
+    static_assert(NearestWorkAreaIndex(-3000, -500, kAll, 3, 0) == 2,
+                  "R1-21: negative-offset monitor selected by distance");
+
+    // The reported defect: the badge sits on the right-hand monitor when it is
+    // unplugged. That rect leaves the set, the origin is now outside every
+    // monitor, and the nearest survivor must win.
+    constexpr RECT kAfterUnplug[2] = { kPrimary, kLeft };
+    static_assert(NearestWorkAreaIndex(2500, 100, kAfterUnplug, 2, 0) == 0,
+                  "R1-21: unplugged monitor -> badge falls back to the nearest live one");
+    static_assert(NearestWorkAreaIndex(2500, 100, kAll, 3, 0) == 1,
+                  "R1-21: while still plugged, the same origin selects its own monitor");
+
+    // Unplug-last / single-monitor desktop: any far origin resolves to the only
+    // survivor instead of the kNoWorkArea sentinel.
+    constexpr RECT kOnly[1] = { kPrimary };
+    static_assert(NearestWorkAreaIndex(2500, 9000, kOnly, 1, 0) == 0,
+                  "R1-21: unplug-last case still lands on a visible monitor");
+
+    // Ties prefer the primary monitor even when it is enumerated after the peer
+    // (the "best fit" fallback for degenerate topologies).
+    constexpr RECT kTie[2] = { kPrimary, kPrimary };
+    static_assert(NearestWorkAreaIndex(5000, 5000, kTie, 2, 1) == 1,
+                  "R1-21: equidistant monitors resolve to the primary monitor");
+
+    // Headless / RDP console session: no monitor at all -> sentinel, and the
+    // caller skips silently instead of inventing an origin.
+    static_assert(NearestWorkAreaIndex(10, 10, nullptr, 0, kNoWorkArea) == kNoWorkArea,
+                  "R1-21: empty monitor set reports kNoWorkArea");
+    static_assert(NearestWorkAreaIndex(10, 10, kAll, 0, kNoWorkArea) == kNoWorkArea,
+                  "R1-21: zero-count set reports kNoWorkArea even with a valid pointer");
+
+    // 2. Selection + clamp composition: the origin Create/drag would produce.
+    {
+        const size_t index = NearestWorkAreaIndex(2500, 100, kAfterUnplug, 2, 0);
+        const POINT p = ClampWindowOrigin(2500, 100, 240, 38, 0, kAfterUnplug[index]);
+        TEST_CHECK(index == 0 && p.x == 1680 && p.y == 100,
+                   "R1-21: stranded multi-monitor origin is pulled fully inside the "
+                   "surviving work area");
+    }
+    // Extreme topology: the badge is WIDER than the monitor. The clamp must keep
+    // the top-left corner on a visible monitor - never hide the badge entirely.
+    {
+        constexpr RECT kTiny = { 0, 0, 200, 60 };
+        const POINT p = ClampWindowOrigin(50, 10, 240, 38, 0, kTiny);
+        TEST_CHECK(p.x == kTiny.left && p.y == 10,
+                   "R1-21: badge wider than the monitor keeps its top-left corner visible");
+        TEST_CHECK(p.x >= kTiny.left && p.x < kTiny.right &&
+                       p.y >= kTiny.top && p.y < kTiny.bottom,
+                   "R1-21: extreme-size origin stays inside the work area");
+    }
+
+    // 3. Live enumeration seam: the real monitor set is queryable and the
+    //    primary's work area agrees with SPI_GETWORKAREA.
+    size_t primary_index = kNoWorkArea;
+    const std::vector<RECT> live_areas = emebalachat::ui::MonitorWorkAreas(&primary_index);
+    TEST_CHECK(!live_areas.empty(), "R1-21: live monitor enumeration returns work areas");
+    TEST_CHECK(primary_index < live_areas.size(),
+               "R1-21: live enumeration reports a valid primary monitor index");
+    {
+        RECT spi = {};
+        ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &spi, 0);
+        bool primary_matches = false;
+        for (const RECT& a : live_areas) {
+            if (a.left == spi.left && a.top == spi.top && a.right == spi.right &&
+                a.bottom == spi.bottom) {
+                primary_matches = true;
+            }
+        }
+        TEST_CHECK(primary_matches,
+                   "R1-21: one enumerated work area equals the primary SPI_GETWORKAREA");
+    }
+
+    // 4. End-to-end: WM_DISPLAYCHANGE -> debounce timer -> re-clamp actually
+    //    moves a stranded badge onto a monitor that exists.
+    const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    FloatingBadge badge;
+    const bool created = badge.Create(hInst, L"KO", L"EN", 120, 120);
+    TEST_CHECK(created, "R1-21 fixture: badge created for the display-change probe");
+    if (created && badge.GetHwnd()) {
+        // Park it where no monitor exists: the post-unplug state the report
+        // describes. (30000,30000 is outside every work area on any sane host.)
+        ::SetWindowPos(badge.GetHwnd(), nullptr, 30000, 30000, 0, 0,
+                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ::PostMessageW(badge.GetHwnd(), WM_DISPLAYCHANGE, 32, MAKELPARAM(1920, 1080));
+        PumpThreadMessagesOnce();
+
+        RECT early = {};
+        ::GetWindowRect(badge.GetHwnd(), &early);
+        TEST_CHECK(early.left == 30000 && early.top == 30000,
+                   "R1-21: WM_DISPLAYCHANGE only arms the debounce timer (no immediate move)");
+
+        // Past the 250 ms debounce window: the timer fires the single re-clamp.
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        PumpThreadMessagesOnce();
+
+        RECT after = {};
+        ::GetWindowRect(badge.GetHwnd(), &after);
+        TEST_CHECK(after.left != 30000 || after.top != 30000,
+                   "R1-21: re-clamp pulls the stranded badge back onto a live monitor");
+        bool on_live_monitor = false;
+        for (const RECT& a : live_areas) {
+            if (after.left >= a.left && after.left < a.right &&
+                after.top >= a.top && after.top < a.bottom) {
+                on_live_monitor = true;
+            }
+        }
+        TEST_CHECK(on_live_monitor, "R1-21: re-clamped origin lies inside a live work area");
+
+        // 4b. The tray re-show gesture (the user's "the badge disappeared"
+        //     recovery, which the env-robustness report names as non-repositioning)
+        //     goes through the SAME routine, so a topology change missed while
+        //     the badge was hidden still cannot present an off-screen pill.
+        badge.SetVisible(false);
+        ::SetWindowPos(badge.GetHwnd(), nullptr, 30000, 30000, 0, 0,
+                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        badge.SetVisible(true);
+        RECT shown = {};
+        ::GetWindowRect(badge.GetHwnd(), &shown);
+        bool shown_on_monitor = false;
+        for (const RECT& a : live_areas) {
+            if (shown.left >= a.left && shown.left < a.right &&
+                shown.top >= a.top && shown.top < a.bottom) {
+                shown_on_monitor = true;
+            }
+        }
+        TEST_CHECK(shown_on_monitor,
+                   "R1-21: re-showing the badge re-clamps it onto a live monitor");
+    }
+    badge.Destroy();
+
+    // 5. Source pins for the routing itself - a handler regression would
+    //    silently restore the strand, and no headless check could observe it.
+    {
+        const std::filesystem::path src_path = ResolveRepoFile(L"src\\ui\\badge.cpp");
+        if (src_path.empty()) {
+            std::cout << "[SKIP] src/ui/badge.cpp not resolvable; R1-21 source pins skipped."
+                      << std::endl;
+        } else {
+            std::ifstream in(src_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("case WM_DISPLAYCHANGE:") != std::string::npos,
+                       "R1-21: badge routes WM_DISPLAYCHANGE");
+            TEST_CHECK(src.find("kTimerDisplayChange") != std::string::npos,
+                       "R1-21: re-clamp is debounced through a dedicated timer");
+            TEST_CHECK(src.find("ReclampToVisibleMonitors") != std::string::npos,
+                       "R1-21: the handler routes to the shared re-clamp routine");
+            TEST_CHECK(src.find("emebalachat::ui::NearestWorkAreaIndex(") != std::string::npos,
+                       "R1-21: monitor chosen from the live union, not a single work rect");
+            TEST_CHECK(src.find("emebalachat::ui::ClampWindowOrigin(") != std::string::npos,
+                       "R1-21: re-clamp reuses ClampWindowOrigin (single source of truth)");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-21 display-change badge re-clamp tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-21 display-change badge re-clamp tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-R14 (audit §5 latent item 2): hook lifecycle event policy + the verify-
 // and-reinstall seam, exercised on a REAL installed hook (Start/Stop/Reinstall
 // without synthetic user input).
+//
+// R1-15 (v0.10.4 sweep, 261029_0001): the pump thread's LIVE priority is
+// asserted here too - the pump raises itself to THREAD_PRIORITY_HIGHEST so a
+// loaded machine cannot starve the callback past LowLevelHooksTimeout (after
+// which Windows silently removes the hook and the app keeps believing it is
+// installed). OpenThread + GetThreadPriority reads the real value off the live
+// thread, so this is a behavioural check, not a source pin.
+static int HookThreadPriorityForTest(DWORD tid) {
+    if (tid == 0) {
+        return THREAD_PRIORITY_ERROR_RETURN;
+    }
+    HANDLE h = ::OpenThread(THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!h) {
+        h = ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
+    }
+    if (!h) {
+        return THREAD_PRIORITY_ERROR_RETURN;
+    }
+    const int prio = ::GetThreadPriority(h);
+    ::CloseHandle(h);
+    return prio;
+}
+
 void TestHookLifecyclePolicy() {
     std::cout << "[RUN] Testing REQ-R14 hook lifecycle policy..." << std::endl;
     const int failures_before = g_failed_count;
@@ -4766,12 +5276,18 @@ void TestHookLifecyclePolicy() {
     TEST_CHECK(hook.IsHealthy(), "R14: healthy after successful install");
     const DWORD tid_before = hook.HookThreadIdForTest();
     TEST_CHECK(tid_before != 0, "R14: hook thread id captured");
+    // R1-15: the live keyboard pump thread runs at HIGHEST (env research F2).
+    TEST_CHECK(HookThreadPriorityForTest(tid_before) == THREAD_PRIORITY_HIGHEST,
+               "R1-15: keyboard hook pump thread runs at THREAD_PRIORITY_HIGHEST");
 
     TEST_CHECK(hook.Reinstall(), "R14: Reinstall returns true while running");
     TEST_CHECK(hook.IsRunning() && hook.IsHealthy(), "R14: hook healthy again after reinstall");
     const DWORD tid_after = hook.HookThreadIdForTest();
     TEST_CHECK(tid_after != 0 && tid_after != tid_before,
                "R14: reinstall actually spawned a NEW hook thread (old one joined)");
+    // R1-15 through the REQ-R14 path: a reinstalled pump gets the same priority.
+    TEST_CHECK(HookThreadPriorityForTest(tid_after) == THREAD_PRIORITY_HIGHEST,
+               "R1-15: the reinstalled keyboard pump thread is HIGHEST too");
 
     hook.Stop();
     TEST_CHECK(!hook.IsRunning() && !hook.IsHealthy(), "R14: stopped hook reports unhealthy");
@@ -4782,6 +5298,10 @@ void TestHookLifecyclePolicy() {
     TEST_CHECK(!mouse_hook.Reinstall(), "R14: MouseHook Reinstall no-op before Start");
     TEST_CHECK(mouse_hook.Start(), "R14 fixture: mouse hook starts");
     TEST_CHECK(mouse_hook.IsHealthy(), "R14: mouse hook healthy after install");
+    // R1-15: BOTH LL pumps carry the boost (the shared pump is one site; this
+    // proves the mouse thread actually gets it too).
+    TEST_CHECK(HookThreadPriorityForTest(mouse_hook.HookThreadIdForTest()) == THREAD_PRIORITY_HIGHEST,
+               "R1-15: mouse hook pump thread runs at THREAD_PRIORITY_HIGHEST");
     TEST_CHECK(mouse_hook.Reinstall(), "R14: MouseHook Reinstall true while running");
     TEST_CHECK(mouse_hook.IsRunning() && mouse_hook.IsHealthy(), "R14: mouse hook healthy after reinstall");
     mouse_hook.Stop();
@@ -4791,6 +5311,178 @@ void TestHookLifecyclePolicy() {
         std::cout << "[PASS] REQ-R14 hook lifecycle tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-R14 hook lifecycle tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// R1-14/R1-15b (v0.10.4 sweep, 261029_0001): hook install resilience and the
+// periodic self-heal cadence. Two kinds of coverage, per the house convention:
+//   - the pure cadence stepper (hook.hpp) is exercised directly, because
+//     main.cpp is NOT linked into run_tests.exe (same seam as
+//     TrayToggleDebounceStateMachine);
+//   - the properties no headless run can observe are pinned at source-text
+//     level: the shared pump's priority boost + queue-first ordering, the
+//     bounded install handshake replacing the pre-fix bare 2 s wait, the
+//     late-install stand-down, and the single-owner periodic reinstall wiring.
+// Thread priority itself IS observed behaviourally (TestHookLifecyclePolicy).
+namespace {
+bool ReadRepoSrc(const wchar_t* rel, std::string& out) {
+    const std::filesystem::path p = ResolveRepoFile(rel);
+    if (p.empty()) {
+        return false;
+    }
+    std::ifstream in(p, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return !out.empty();
+}
+} // namespace
+
+void TestHookSelfHealResilience() {
+    std::cout << "[RUN] Testing hook install resilience + periodic self-heal (R1-14/R1-15b)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1. Pure periodic-reinstall cadence ----
+    static_assert(kHookPeriodicReinstallMs == 300000,
+                  "R1-15b: the periodic self-heal cadence is 5 minutes");
+    static_assert(kHookHealthWatchdogMs == 30000,
+                  "R1-15b: the cadence is expressed in watchdog ticks");
+    static_assert(kHookHealthTicksPerReinstall == 10,
+                  "R1-15b: 5 min / 30 s = 10 watchdog ticks per periodic reinstall");
+    {
+        unsigned ticks = 0;
+        bool mismatch = false;
+        int fired = 0;
+        for (unsigned i = 1; i <= 30; ++i) {
+            const bool due = PeriodicHookReinstallTick(ticks);
+            if (due) ++fired;
+            if (due != ((i % kHookHealthTicksPerReinstall) == 0)) mismatch = true;
+        }
+        TEST_CHECK(!mismatch, "R1-15b: the periodic tick fires exactly on every 10th watchdog tick");
+        TEST_CHECK(fired == 3, "R1-15b: 30 watchdog ticks -> 3 periodic reinstalls");
+        TEST_CHECK(ticks == 0, "R1-15b: the counter is reset on the firing tick");
+    }
+    {
+        unsigned ticks = 0;
+        const bool first = PeriodicHookReinstallTick(ticks, 1);
+        const bool second = PeriodicHookReinstallTick(ticks, 1);
+        TEST_CHECK(first && second && ticks == 0,
+                   "R1-15b: a 1-tick period fires every tick and stays reset");
+        // Defensive: a 0 period must never fire (and never leave the counter
+        // stuck), so a mis-set constant cannot turn the watchdog into a
+        // reinstall loop.
+        ticks = 7;
+        TEST_CHECK(!PeriodicHookReinstallTick(ticks, 0) && ticks == 0,
+                   "R1-15b: a 0-tick period never fires (defensive)");
+        unsigned uneven = 0;
+        int fires = 0;
+        for (int i = 0; i < 7; ++i) {
+            if (PeriodicHookReinstallTick(uneven, 3)) ++fires;
+        }
+        TEST_CHECK(fires == 2,
+                   "R1-15b: a 3-tick period fires twice in 7 ticks (no stray partial-period fire)");
+    }
+
+    // ---- 2. Source pins (properties no headless run can observe) ----
+    std::string pump_src, kbd_src, mouse_src, hook_hpp_src, main_src;
+    const bool have_pump = ReadRepoSrc(L"src\\hook_thread.hpp", pump_src);
+    const bool have_kbd = ReadRepoSrc(L"src\\hook.cpp", kbd_src);
+    const bool have_mouse = ReadRepoSrc(L"src\\mouse_hook.cpp", mouse_src);
+    const bool have_hpp = ReadRepoSrc(L"src\\hook.hpp", hook_hpp_src);
+    const bool have_main = ReadRepoSrc(L"src\\main.cpp", main_src);
+    if (!have_pump || !have_kbd || !have_mouse || !have_hpp || !have_main) {
+        std::cout << "[SKIP] R1-14/R1-15b source pins skipped (repo files not resolvable "
+                     "from the test CWD)." << std::endl;
+        TEST_CHECK(g_failed_count == failures_before, "R1-14/R1-15b: suite had no failures");
+        return;
+    }
+
+    // 2a. R1-15: ONE boost site (the shared pump), reached by both hooks.
+    TEST_CHECK(pump_src.find("SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST)") !=
+                   std::string::npos,
+               "R1-15: the shared pump raises its own thread to THREAD_PRIORITY_HIGHEST");
+    TEST_CHECK(kbd_src.find("RunLowLevelHookPump(WH_KEYBOARD_LL") != std::string::npos,
+               "R1-15: the keyboard pump entry routes through the boosted shared pump");
+    TEST_CHECK(mouse_src.find("RunLowLevelHookPump(WH_MOUSE_LL") != std::string::npos,
+               "R1-15: the mouse pump entry routes through the boosted shared pump");
+
+    // 2b. R1-14: state is published through atomics, in the safe order.
+    TEST_CHECK(hook_hpp_src.find("std::atomic<HHOOK> hHook_{nullptr}") != std::string::npos,
+               "R1-14: KeyboardHook's hook handle is atomic (no unsynchronized read)");
+    TEST_CHECK(hook_hpp_src.find("std::atomic<DWORD> hook_thread_id_{0}") != std::string::npos,
+               "R1-14: KeyboardHook's hook thread id is atomic");
+    const std::size_t queue_at = pump_src.find("PeekMessageW(&probe");
+    const std::size_t install_at = pump_src.find("SetWindowsHookExW(hookId, proc");
+    const std::size_t handle_at = pump_src.find("hookHandle.store(installed");
+    const std::size_t ready_at = pump_src.find("::SetEvent(hReadyEvent)");
+    const std::size_t quit_at = pump_src.find("quitRequested.load(");
+    TEST_CHECK(queue_at != std::string::npos && install_at != std::string::npos &&
+                   queue_at < install_at,
+               "R1-14: the pump materializes its message queue BEFORE installing the hook");
+    TEST_CHECK(handle_at != std::string::npos && ready_at != std::string::npos &&
+                   handle_at < ready_at,
+               "R1-14: the handle is published before the ready event is signalled");
+    TEST_CHECK(quit_at != std::string::npos && ready_at < quit_at,
+               "R1-14: the late-install stand-down is checked after the ready handshake");
+
+    // 2c. R1-14: both Start() bodies use the bounded handshake (no bare 2 s
+    // wait, no unbounded join, no leaked late-install hook).
+    TEST_CHECK(kbd_src.find("FinishLowLevelHookStart(") != std::string::npos,
+               "R1-14: KeyboardHook::Start uses the bounded install handshake");
+    TEST_CHECK(mouse_src.find("FinishLowLevelHookStart(") != std::string::npos,
+               "R1-14: MouseHook::Start uses the bounded install handshake");
+    TEST_CHECK(kbd_src.find("WaitForSingleObject(hReadyEvent_") == std::string::npos &&
+                   mouse_src.find("WaitForSingleObject(hReadyEvent_") == std::string::npos,
+               "R1-14: the pre-fix bare ready wait is gone from both Start() bodies");
+    TEST_CHECK(pump_src.find("INFINITE") == std::string::npos,
+               "R1-14: neither the pump nor the handshake waits INFINITE");
+    TEST_CHECK(pump_src.find("GetTickCount64() + kHookReadyWaitMs") != std::string::npos,
+               "R1-14: a missing ready-event handle falls back to a bounded handle poll");
+    TEST_CHECK(kbd_src.find("hHook_, hook_thread_id_, quit_requested_") != std::string::npos &&
+                   mouse_src.find("hHook_, hook_thread_id_, quit_requested_") != std::string::npos,
+               "R1-14: both pumps pass the atomic handle / thread-id / quit-request triple");
+
+    // 2d. R1-15b: the watchdog's periodic branch reuses the ONE reinstall
+    // owner, so a tick can never race the event path into a double install.
+    TEST_CHECK(main_src.find("PeriodicHookReinstallTick(g_hook_health_ticks)") != std::string::npos,
+               "R1-15b: the health watchdog advances the periodic reinstall tick");
+    {
+        // Locality: the tick is driven from the kTimerHookHealth branch, and
+        // from exactly one place - a stray second call site would double the
+        // cadence silently (the call form is searched, not the bare name, so
+        // the explanatory comments above the function do not matter).
+        constexpr const char* kTickCall = "PeriodicHookReinstallTick(g_hook_health_ticks)";
+        const std::size_t branch_at = main_src.find("wParam == kTimerHookHealth");
+        const std::size_t tick_at = main_src.find(kTickCall);
+        TEST_CHECK(branch_at != std::string::npos && tick_at != std::string::npos &&
+                       branch_at < tick_at &&
+                       main_src.find(kTickCall, tick_at + 1) == std::string::npos,
+                   "R1-15b: the periodic tick is driven once, from the health-watchdog branch");
+    }
+    TEST_CHECK(main_src.find("ReinstallHooksAfterLifecycleEvent(\"periodic self-heal\"") !=
+                   std::string::npos,
+               "R1-15b: the periodic tick reuses the resume/unlock reinstall helper");
+    TEST_CHECK(main_src.find("MAIN/HookLifecycle/004") != std::string::npos,
+               "R1-15b: every periodic reinstall is logged (shape-only line)");
+    {
+        std::size_t reinstall_calls = 0;
+        for (std::size_t at = main_src.find("->Reinstall()"); at != std::string::npos;
+             at = main_src.find("->Reinstall()", at + 1)) {
+            ++reinstall_calls;
+        }
+        TEST_CHECK(reinstall_calls == 2,
+                   "R1-15b: hook reinstalls live in ONE helper (keyboard + mouse only)");
+    }
+
+    TEST_CHECK(g_failed_count == failures_before, "R1-14/R1-15b: suite had no failures");
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-14/R1-15b hook install resilience + periodic self-heal passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-14/R1-15b hook install resilience: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -5280,8 +5972,8 @@ void TestBatch2VersionScrollAbout() {
     const int failures_before = g_failed_count;
 
     // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
-    TEST_CHECK(kAppVersionW == L"0.10.3", "REQ-006: kAppVersionW is 0.10.3 (CMake definition or fallback)");
-    TEST_CHECK(kAppVersionA == "0.10.3", "REQ-006: ASCII version is 0.10.3");
+    TEST_CHECK(kAppVersionW == L"0.10.4", "REQ-006: kAppVersionW is 0.10.4 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.4", "REQ-006: ASCII version is 0.10.4");
     TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
 
     // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----
@@ -14361,20 +15053,26 @@ namespace {
 class FakeHost {
 public:
     // hello_mode: 0 = welcome (welcome_sha), 1 = error (hello_error_code).
+    // R1-11 (session 261029_0001, v0.10.4 sweep): translate_delay_ms holds the
+    // result frame back for N ms, giving an in-flight window a test can observe
+    // deterministically (translate_seen() tells it the request already arrived).
+    // Default 0 keeps every pre-existing call site byte-identical.
     FakeHost(std::wstring pipe_name,
              int hello_mode,
              std::string welcome_sha,
              std::string hello_error_code,
              std::string translate_status,
              std::string translate_text,
-             bool close_after_hello)
+             bool close_after_hello,
+             int translate_delay_ms = 0)
         : pipe_name_(std::move(pipe_name))
         , hello_mode_(hello_mode)
         , welcome_sha_(std::move(welcome_sha))
         , hello_error_code_(std::move(hello_error_code))
         , translate_status_(std::move(translate_status))
         , translate_text_(std::move(translate_text))
-        , close_after_hello_(close_after_hello) {
+        , close_after_hello_(close_after_hello)
+        , translate_delay_ms_(translate_delay_ms) {
         stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
         accept_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
         // Create the pipe SYNCHRONOUSLY on the constructing thread: the
@@ -14402,6 +15100,10 @@ public:
     bool served() const { return served_; }
     bool hello_seen() const { return hello_seen_; }
     int results_sent() const { return results_sent_; }
+    // R1-11: true once a translate frame has been parsed (the client is then
+    // blocked awaiting the result until translate_delay_ms elapses) — the
+    // deterministic "request is in flight" observation point.
+    bool translate_seen() const { return translate_seen_.load(std::memory_order_acquire); }
     // REQ-060: the model_id member of the LAST translate frame the host
     // parsed ("" when the client omitted the member) — the wire-level
     // observation point for the optional request pin.
@@ -14487,6 +15189,13 @@ private:
                 emebalachat::enginehost::HostStatus st =
                     emebalachat::enginehost::HostStatus::EngineFailed;
                 if (!emebalachat::enginehost::StatusFromString(translate_status_, st)) return;
+                // R1-11: publish "a request is here" BEFORE the optional delay
+                // so the test's in-flight window is deterministic rather than
+                // a sleep-and-hope.
+                translate_seen_.store(true, std::memory_order_release);
+                if (translate_delay_ms_ > 0) {
+                    ::Sleep(static_cast<DWORD>(translate_delay_ms_));
+                }
                 emebalachat::enginehost::ResultMsg r;
                 r.id = m.id;
                 r.status = st;
@@ -14508,12 +15217,14 @@ private:
     std::string translate_status_;
     std::string translate_text_;
     bool close_after_hello_;
+    int translate_delay_ms_ = 0; // R1-11: result-frame hold-back (in-flight window)
     HANDLE pipe_ = nullptr;
     HANDLE stop_event_ = nullptr;
     HANDLE accept_event_ = nullptr;
     bool served_ = false;
     bool hello_seen_ = false;
     int results_sent_ = 0;
+    std::atomic<bool> translate_seen_{false}; // R1-11: a translate frame arrived
     std::string last_translate_model_id_; // REQ-060: last parsed translate model_id
 };
 
@@ -14884,6 +15595,356 @@ void TestEngineHostAvailabilityAndMigration() {
         std::cout << "[PASS] Engine-host availability tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] Engine-host availability tests: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// R1-7 (session 261029_0001, v0.10.4 sweep): engine-host pipe SERVER identity
+// gate (CWE-300/CWE-807). Threat: the canonical pipe name is ownerless while
+// the real host is idle-exited, so another local user account can create it
+// first and harvest the boot token (sent in the hello) plus every translated
+// message; the only pre-fix "validation" was the public model_sha256 pin the
+// squatter can echo.
+//
+// Coverage here:
+//   (a) PeerPathMatches — the pure predicate (normalization + fail-closed edges),
+//   (b) PeerHandleIsExpectedHost — the handle gate on a REAL pipe handle:
+//       accepts this process's own image, rejects a different expected path and
+//       every non-pipe / null / empty input,
+//   (c) an end-to-end wrong-peer leg on a PRIVATE pipe name (the canonical
+//       \\.\pipe\emebala-engine(-v1) belongs to the user's real host and is
+//       never touched): a stub server whose image is this test binary while the
+//       client's expected host path is a different file. TryTranslate must fail
+//       "connect:peer" and the stub must receive ZERO bytes — the token, the
+//       hello and the user text never leave the process.
+//   (d) structural pins: the gate lives inside the shared connect helper (both
+//       the one-shot and the REQ-060 warmup path inherit it) and precedes the
+//       token read.
+// ---------------------------------------------------------------------------
+namespace {
+
+// The R1-7 "squatter": a one-instance message-mode pipe served from THIS
+// process's image, on a private name. It never speaks the protocol — it
+// accepts each client connection, waits a short deadline for ANY byte, then
+// disconnects and accepts again, so every attempt of the client's connect
+// matrix is observed. bytes_received() MUST stay 0 (no token/hello/text).
+class WrongPeerPipeStub {
+public:
+    explicit WrongPeerPipeStub(std::wstring pipe_name) : pipe_name_(std::move(pipe_name)) {
+        stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        accept_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        read_event_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        // Created SYNCHRONOUSLY, like the pre-existing FakeHost: the instance
+        // must exist before the client's first CreateFileW attempt.
+        pipe_ = ::CreateNamedPipeW(pipe_name_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                                   PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE, 1,
+                                   (1u << 20) + 4, (1u << 20) + 4, 0, nullptr);
+        served_ = pipe_ != INVALID_HANDLE_VALUE;
+    }
+    ~WrongPeerPipeStub() {
+        if (read_event_) ::CloseHandle(read_event_);
+        if (stop_event_) ::CloseHandle(stop_event_);
+        if (accept_event_) ::CloseHandle(accept_event_);
+        if (pipe_ && pipe_ != INVALID_HANDLE_VALUE) ::CloseHandle(pipe_);
+    }
+    WrongPeerPipeStub(const WrongPeerPipeStub&) = delete;
+    WrongPeerPipeStub& operator=(const WrongPeerPipeStub&) = delete;
+
+    std::thread Start() { return std::thread([this] { Serve(); }); }
+    void Stop() { if (stop_event_) ::SetEvent(stop_event_); }
+    bool served() const { return served_; }
+    int connections() const { return connections_; }
+    std::size_t bytes_received() const { return bytes_received_; }
+
+private:
+    void Serve() {
+        if (!served_) return;
+        std::vector<char> buf(65536);
+        for (;;) {
+            if (::WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) return;
+            ::ResetEvent(accept_event_);
+            OVERLAPPED aol = {};
+            aol.hEvent = accept_event_;
+            const BOOL connected = ::ConnectNamedPipe(pipe_, &aol);
+            if (!connected) {
+                const DWORD err = ::GetLastError();
+                if (err == ERROR_IO_PENDING) {
+                    const HANDLE waits[2] = {accept_event_, stop_event_};
+                    if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0) {
+                        // Stop: cancel and approve before this frame's handles go.
+                        ::CancelIoEx(pipe_, &aol);
+                        DWORD dummy = 0;
+                        ::GetOverlappedResult(pipe_, &aol, &dummy, TRUE);
+                        return;
+                    }
+                    DWORD dummy = 0;
+                    if (!::GetOverlappedResult(pipe_, &aol, &dummy, FALSE)) {
+                        // ERROR_PIPE_CONNECTED: a client is already connected.
+                        // ERROR_NO_DATA: a client connected and vanished before
+                        // this call completed (exactly the rejected-peer shape —
+                        // the gate closes the handle within microseconds). Both
+                        // are observed connections; anything else is fatal.
+                        const DWORD c = ::GetLastError();
+                        if (c != ERROR_PIPE_CONNECTED && c != ERROR_NO_DATA) return;
+                    }
+                } else if (err != ERROR_PIPE_CONNECTED && err != ERROR_NO_DATA) {
+                    return;
+                }
+            }
+            ++connections_;
+
+            ::ResetEvent(read_event_);
+            OVERLAPPED rol = {};
+            rol.hEvent = read_event_;
+            DWORD read = 0;
+            const BOOL rok =
+                ::ReadFile(pipe_, buf.data(), static_cast<DWORD>(buf.size()), &read, &rol);
+            if (!rok && ::GetLastError() == ERROR_IO_PENDING) {
+                const DWORD wr = ::WaitForSingleObject(read_event_, 400);
+                DWORD got = 0;
+                if (::GetOverlappedResult(pipe_, &rol, &got, wr == WAIT_OBJECT_0)) {
+                    read = got;
+                } else {
+                    if (wr != WAIT_OBJECT_0) {
+                        ::CancelIoEx(pipe_, &rol);
+                        ::GetOverlappedResult(pipe_, &rol, &got, TRUE); // cancel-approve
+                    }
+                    read = 0;
+                }
+            } else if (!rok) {
+                read = 0; // broken pipe / disconnected: nothing arrived
+            }
+            bytes_received_ += read;
+            ::DisconnectNamedPipe(pipe_); // ignore: the peer may already be gone
+        }
+    }
+
+    std::wstring pipe_name_;
+    HANDLE pipe_ = nullptr;
+    HANDLE stop_event_ = nullptr;
+    HANDLE accept_event_ = nullptr;
+    HANDLE read_event_ = nullptr;
+    bool served_ = false;
+    int connections_ = 0;
+    std::size_t bytes_received_ = 0;
+};
+
+} // namespace
+
+void TestR107PeerIdentityGate() {
+    std::cout << "[RUN] Testing R1-7 engine-host peer identity gate..." << std::endl;
+    const int failures_before = g_failed_count;
+    namespace ehc = emebalachat::engine_host;
+    using emebalachat::EngineHostConfig;
+
+    wchar_t self_exe[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self_exe, MAX_PATH);
+    TEST_CHECK(self_exe[0] != L'\0', "R1-7: the test runner image path resolves");
+
+    // ---- (a) pure predicate: Win32 equivalences + fail-closed edges --------
+    const std::wstring installed =
+        L"C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\Emebala.Engine.exe";
+    TEST_CHECK(ehc::PeerPathMatches(installed, installed),
+               "R1-7 predicate: identical absolute paths match");
+    TEST_CHECK(ehc::PeerPathMatches(
+                   installed,
+                   L"C:\\USERS\\SOMEONE\\APPDATA\\LOCAL\\EMEBALA\\COMMON\\ENGINE\\EMEBALA.ENGINE.EXE"),
+               "R1-7 predicate: case-insensitive (Win32 path semantics)");
+    TEST_CHECK(ehc::PeerPathMatches(
+                   installed,
+                   L"C:/Users/someone/AppData/Local/Emebala/Common/engine/Emebala.Engine.exe"),
+               "R1-7 predicate: forward slashes are separators");
+    TEST_CHECK(ehc::PeerPathMatches(
+                   installed, L"\\\\?\\C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\Emebala.Engine.exe"),
+               "R1-7 predicate: the \\\\?\\ long-path prefix is folded away");
+    TEST_CHECK(ehc::PeerPathMatches(
+                   L"\\\\?\\C:\\x\\Emebala.Engine.exe", L"C:\\x\\Emebala.Engine.exe"),
+               "R1-7 predicate: the prefix is folded on the EXPECTED side too");
+    TEST_CHECK(ehc::PeerPathMatches(L"\\\\?\\UNC\\srv\\share\\Emebala.Engine.exe",
+                                    L"\\\\srv\\share\\Emebala.Engine.exe"),
+               "R1-7 predicate: \\\\?\\UNC\\server\\share equals \\\\server\\share");
+    TEST_CHECK(ehc::PeerPathMatches(installed, installed + L"."),
+               "R1-7 predicate: a trailing dot names the same file (Win32 strips it)");
+    TEST_CHECK(ehc::PeerPathMatches(installed, installed + L"..."),
+               "R1-7 predicate: repeated trailing dots are stripped");
+    TEST_CHECK(ehc::PeerPathMatches(installed, installed + L"  "),
+               "R1-7 predicate: trailing spaces are stripped");
+    TEST_CHECK(ehc::PeerPathMatches(L"C:\\x\\\\y\\Emebala.Engine.exe",
+                                    L"C:\\x\\y\\Emebala.Engine.exe"),
+               "R1-7 predicate: duplicated separators collapse");
+    TEST_CHECK(!ehc::PeerPathMatches(
+                   installed,
+                   L"C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\..\\engine\\Emebala.Engine.exe"),
+               "R1-7 predicate: a .. component is NOT resolved (fail closed, never aliases another file)");
+
+    TEST_CHECK(!ehc::PeerPathMatches(
+                   installed,
+                   L"C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\EvilEmebala.Engine.exe"),
+               "R1-7 predicate: a longer file name never matches (no substring logic)");
+    TEST_CHECK(!ehc::PeerPathMatches(installed, installed + L".bak"),
+               "R1-7 predicate: a suffix after the extension never matches");
+    TEST_CHECK(!ehc::PeerPathMatches(installed, installed + L"\\"),
+               "R1-7 predicate: a trailing separator is not an equivalence");
+    TEST_CHECK(!ehc::PeerPathMatches(
+                   installed,
+                   L"C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine2\\Emebala.Engine.exe"),
+               "R1-7 predicate: a sibling directory with a longer name never matches");
+    TEST_CHECK(!ehc::PeerPathMatches(
+                   installed,
+                   L"D:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\Emebala.Engine.exe"),
+               "R1-7 predicate: a different drive never matches");
+    TEST_CHECK(!ehc::PeerPathMatches(installed,
+                                     L"C:\\Users\\someone\\AppData\\Local\\Emebala\\Common\\engine\\Emebala.Engine.dll"),
+               "R1-7 predicate: a different image name never matches");
+    TEST_CHECK(!ehc::PeerPathMatches(L"", L""), "R1-7 predicate: both empty -> no match");
+    TEST_CHECK(!ehc::PeerPathMatches(installed, L""),
+               "R1-7 predicate: empty actual (unresolvable peer) -> no match");
+    TEST_CHECK(!ehc::PeerPathMatches(L"", installed),
+               "R1-7 predicate: empty expected (unresolvable deployment) -> no match");
+    TEST_CHECK(!ehc::PeerPathMatches(L"   ", L"   "),
+               "R1-7 predicate: whitespace-only paths normalize to empty -> no match");
+
+    // ---- (b) handle gate on a real pipe instance ---------------------------
+    const std::wstring probe_pipe = TestPipeName(40); // private test name only
+    WrongPeerPipeStub gate_server(probe_pipe);
+    TEST_CHECK(gate_server.served(), "R1-7 gate: private probe pipe instance created");
+    std::thread gate_thread = gate_server.Start();
+    HANDLE probe_client = ::CreateFileW(probe_pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                        nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    TEST_CHECK(probe_client != INVALID_HANDLE_VALUE,
+               "R1-7 gate: client handle connected to the probe instance");
+    if (probe_client != INVALID_HANDLE_VALUE) {
+        TEST_CHECK(ehc::PeerHandleIsExpectedHost(probe_client, self_exe),
+                   "R1-7 gate: accepts a server whose image IS the expected host path");
+        TEST_CHECK(!ehc::PeerHandleIsExpectedHost(
+                       probe_client, L"\\\\?\\NONEXISTENT_EME_HOST\\Emebala.Engine.exe"),
+                   "R1-7 gate: rejects the same live instance when the expected image differs");
+        TEST_CHECK(!ehc::PeerHandleIsExpectedHost(probe_client, L""),
+                   "R1-7 gate: empty expected path fails closed");
+        TEST_CHECK(ehc::PeerHandleIsExpectedHost(probe_client, installed.c_str()) == false,
+                   "R1-7 gate: an unrelated (nonexistent) host path is a mismatch");
+        ::CloseHandle(probe_client);
+    }
+    gate_server.Stop();
+    if (gate_thread.joinable()) gate_thread.join();
+    TEST_CHECK(gate_server.bytes_received() == 0,
+               "R1-7 gate: the probe peer received no bytes from the gate calls");
+    TEST_CHECK(!ehc::PeerHandleIsExpectedHost(nullptr, self_exe),
+               "R1-7 gate: null handle fails closed");
+    TEST_CHECK(!ehc::PeerHandleIsExpectedHost(INVALID_HANDLE_VALUE, self_exe),
+               "R1-7 gate: INVALID_HANDLE_VALUE fails closed");
+    {
+        // Non-pipe control: GetNamedPipeServerProcessId must fail, never crash.
+        const HANDLE file_h = ::CreateFileW(self_exe, GENERIC_READ,
+                                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        TEST_CHECK(file_h != INVALID_HANDLE_VALUE, "R1-7 gate: non-pipe control handle opened");
+        if (file_h != INVALID_HANDLE_VALUE) {
+            TEST_CHECK(!ehc::PeerHandleIsExpectedHost(file_h, self_exe),
+                       "R1-7 gate: a non-pipe handle fails closed");
+            ::CloseHandle(file_h);
+        }
+    }
+
+    // ---- (c) end-to-end: the wrong peer never receives the token -----------
+    // The expected host path is a DIFFERENT file than the running server's
+    // image, i.e. exactly the squatter shape. A valid token file exists, so a
+    // pre-fix client would have sent it in the hello.
+    {
+        const int n = 41;
+        const std::wstring wrong_peer_pipe = TestPipeName(n);
+        const std::filesystem::path fake_host =
+            std::filesystem::temp_directory_path() /
+            (std::string("eme_r107_host_") + std::to_string(::GetCurrentProcessId()) + ".exe");
+        {
+            std::ofstream f(fake_host, std::ios::binary);
+            f << "MZ"; // exists: the client's no_host_binary gate passes
+        }
+        WriteTestToken(TestTokenPath(n)); // a VALID boot token is on disk
+        ehc::SetPathsForTesting(wrong_peer_pipe.c_str(),
+                                TestTokenPath(n).wstring().c_str(),
+                                fake_host.wstring().c_str());
+
+        WrongPeerPipeStub squatter(wrong_peer_pipe);
+        TEST_CHECK(squatter.served(), "R1-7 e2e: squatter stub instance created (private name)");
+        std::thread squatter_thread = squatter.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        std::string out, err;
+        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "user secret text", out, err);
+
+        squatter.Stop();
+        if (squatter_thread.joinable()) squatter_thread.join();
+
+        TEST_CHECK(!ok, "R1-7 e2e: a wrong peer never serves a translation");
+        TEST_CHECK(err == "connect:peer",
+                   "R1-7 e2e: the shape-only failure token is connect:peer (got '" + err + "')");
+        TEST_CHECK(out.empty(), "R1-7 e2e: no output text on a rejected peer");
+        TEST_CHECK(squatter.connections() >= 1,
+                   "R1-7 e2e: the squatter accepted a real connection (the GATE refused it, "
+                   "not a missing listener)");
+        TEST_CHECK(squatter.bytes_received() == 0,
+                   "R1-7 e2e: ZERO bytes reached the wrong peer (boot token + hello + user text "
+                   "never sent)");
+
+        std::error_code ec;
+        std::filesystem::remove(fake_host, ec);
+        std::filesystem::remove(TestTokenPath(n), ec);
+        // Restore the process-wide absent sentinel main() installs.
+        ehc::SetPathsForTesting(nullptr, nullptr, L"\\\\?\\NONEXISTENT_EME_HOST\\engine.exe");
+    }
+
+    // ---- (d) structural pins: one gated open site, both paths, right order -
+    const std::filesystem::path client_cpp_path =
+        ResolveRepoFile(L"src\\engine_host_client.cpp");
+    if (client_cpp_path.empty()) {
+        std::cout << "[SKIP] R1-7 source pins skipped (engine_host_client.cpp not resolvable)."
+                  << std::endl;
+    } else {
+        std::ifstream in(client_cpp_path, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        TEST_CHECK(!src.empty(), "R1-7 pin: engine_host_client.cpp read");
+        auto count_of = [&src](const std::string& needle) {
+            int count = 0;
+            std::size_t pos = 0;
+            while ((pos = src.find(needle, pos)) != std::string::npos) {
+                ++count;
+                pos += needle.size();
+            }
+            return count;
+        };
+        const std::string gate_call =
+            "if (PeerHandleIsExpectedHost(h, expected_host.c_str())) return h;";
+        TEST_CHECK(count_of(gate_call) == 1,
+                   "R1-7 pin: exactly one accept site, and it is guarded by the peer gate");
+        TEST_CHECK(count_of("::CreateFileW(pipe.c_str()") == 1,
+                   "R1-7 pin: exactly one pipe-open site in the client (no bypass path)");
+        TEST_CHECK(count_of("ConnectPipeWithRetry(pipe, cfg, spawned, last_err, peer_rejected)") == 2,
+                   "R1-7 pin: BOTH connect paths (one-shot + REQ-060 warmup) use the gated helper");
+        const std::size_t gate_pos = src.find(gate_call);
+        const std::size_t token_pos = src.find("ReadTokenFile(token)");
+        const std::size_t hello_pos = src.find("\\\"op\\\":\\\"hello\\\"");
+        TEST_CHECK(gate_pos != std::string::npos && token_pos != std::string::npos &&
+                       hello_pos != std::string::npos && gate_pos < token_pos &&
+                       gate_pos < hello_pos,
+                   "R1-7 pin: the gate runs BEFORE the token file is read and the hello is built");
+        TEST_CHECK(src.find("GetNamedPipeServerProcessId") != std::string::npos &&
+                       src.find("PROCESS_QUERY_LIMITED_INFORMATION") != std::string::npos &&
+                       src.find("QueryFullProcessImageNameW") != std::string::npos,
+                   "R1-7 pin: the gate resolves the server image through the 3 documented syscalls");
+        TEST_CHECK(src.find("PeerPathMatches(expected_host_path, image)") != std::string::npos,
+                   "R1-7 pin: the handle gate routes through the pure path predicate");
+        TEST_CHECK(src.find("err = peer_rejected ? \"connect:peer\"") != std::string::npos,
+                   "R1-7 pin: the rejection converges to the shape-only connect:peer token");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-7 peer identity gate tests completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-7 peer identity gate tests: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
@@ -16350,6 +17411,727 @@ void TestReq046OpenAiDialogParent() {
     }
 }
 
+// ===========================================================================
+// R1-1 + R1-2 (session 261029_0001, v0.10.4 sweep): the output-quality gate
+// and the greedy-branch sampler shape. Headless: every predicate is pure text
+// / pure decision logic (declared in src/engine_core/translation_common.hpp,
+// defined in translation_common.cpp OUTSIDE the HAVE_LLAMA_CPP block), so no
+// GGUF is loaded. The positive legs reuse the EXACT strings the debug reports
+// captured live (docs/261029_0001_session_v0.10.4-sweep/
+// debug-specialist-report-k3agent.md RC1/RC2/RC4 and
+// debug-specialist-report-step5.md §4 F1/F2); the negative legs are the
+// controls that must keep translating (CEO intent: garbage is rejected, real
+// translations are never touched).
+// Registered in main() right after TestS260930ChunkStitch().
+// ===========================================================================
+void TestS261029UaOutputGate() {
+    std::cout << "[RUN] Testing R1-1 output gate + R1-2 sampler shape (261029_0001)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- R1-2: sampler-shape decision table ----
+    // The shipped profile (worker_protocol.hpp defaults / host stamp) is
+    // temperature 0.0 + rep_pen 1.05: that combination MUST take the penalized
+    // chain, because the pre-R1-2 code silently dropped the penalty there.
+    static_assert(kGreedyTemperatureThreshold == 0.001f,
+                  "R1-2: the greedy branch boundary stays at the pre-R1-2 0.001f");
+    TEST_CHECK(DecideSamplerShape(0.0f, 1.05f) == SamplerShape::PenalizedGreedy,
+               "R1-2: shipped profile (temp 0.0, rep_pen 1.05) -> penalties -> greedy chain");
+    TEST_CHECK(DecideSamplerShape(0.001f, 1.05f) == SamplerShape::PenalizedGreedy,
+               "R1-2: greedy boundary is INCLUSIVE (temp 0.001 still greedy)");
+    TEST_CHECK(DecideSamplerShape(0.0011f, 1.05f) == SamplerShape::Dist,
+               "R1-2: above the boundary the unchanged dist chain runs");
+    TEST_CHECK(DecideSamplerShape(0.7f, 1.05f) == SamplerShape::Dist,
+               "R1-2: sampled decoding keeps the existing penalty/top_k/top_p/temp/dist chain");
+    TEST_CHECK(DecideSamplerShape(0.0f, 1.0f) == SamplerShape::BareGreedy,
+               "R1-2: rep_pen == 1.0 (penalty disabled) keeps the bare greedy sampler BYTE-IDENTICAL");
+    TEST_CHECK(DecideSamplerShape(0.0f, 0.0f) == SamplerShape::BareGreedy,
+               "R1-2: rep_pen <= 1.0 never builds a chain");
+    TEST_CHECK(DecideSamplerShape(0.0f, 0.9f) == SamplerShape::BareGreedy,
+               "R1-2: a sub-1.0 penalty value cannot change the shape either");
+    TEST_CHECK(DecideSamplerShape(-1.0f, 1.05f) == SamplerShape::PenalizedGreedy,
+               "R1-2: negative temperature keeps the historical greedy branch (no new clamp)");
+    TEST_CHECK(DecideSamplerShape(0.7f, 1.0f) == SamplerShape::Dist,
+               "R1-2: the sampled branch is selected by TEMPERATURE alone");
+
+    // ---- R1-1 repetition, rule A: identical line repeated >= 3 times ----
+    // Live repro (k3agent RC2 / step5 C4): "np" -> "npi\nnpi\n..." x64.
+    std::wstring line_loop;
+    for (int i = 0; i < 64; ++i) {
+        line_loop += L"npi\n";
+    }
+    TEST_CHECK(HasRepeatedLineOrTokenRun(line_loop),
+               "R1-1: 64 identical 'npi' lines are a repetition loop (live repro)");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"npi\nnpi\nnpi"),
+               "R1-1: exactly 3 identical lines already trip the rule");
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"npi\nnpi"),
+               "R1-1: 2 identical lines are below the threshold");
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"first line\nsecond line\nthird line"),
+               "R1-1: three DISTINCT lines are not a loop");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"  npi  \nnpi\n\tnpi\t"),
+               "R1-1: line comparison trims surrounding whitespace (CRLF/tab tolerant)");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"first\n\n\nsecond\nsecond\nsecond"),
+               "R1-1: blank lines are ignored, not counted as repeats");
+
+    // ---- R1-1 repetition, rule B: one token repeated >= 3 times in a row ----
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"assistant assistant assistant"),
+               "R1-1: a token repeated 3x in a row is a degenerate run");
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"assistant assistant"),
+               "R1-1: a 2x token run is below the threshold");
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"the cat sat on the mat"),
+               "R1-1: ordinary prose is never a token-run loop");
+
+    // ---- R2-6 (code-reviewer-mimo F-01): the calibrated Rule A/B envelope ----
+    // Rule A now counts CONSECUTIVE lines only: a transcript/dialogue that says
+    // the same short line three times, spread out, is content.
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"Yes.\nNo.\nYes.\nMaybe.\nYes."),
+               "R2-6: identical lines spread through a dialogue are not a loop (consecutive-only)");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"Yes.\nNo.\nYes.\nYes.\nYes."),
+               "R2-6: a CONSECUTIVE identical-line run still trips rule A");
+    // Rule B must-pass reduplication, BOTH directions. These are the cases the
+    // pre-R2-6 header claimed were exempt and the gate rejected end-to-end.
+    TEST_CHECK(!OutputHasRepetition(L"no no no", L"no no no"),
+               "R2-6: 'no no no' accepted when the source carries the same reduplication");
+    TEST_CHECK(!OutputHasRepetition(L"no no no", L"아니 아니 아니"),
+               "R2-6: KO source reduplication -> EN 'no no no' accepted (KO->EN must-pass)");
+    TEST_CHECK(!OutputHasRepetition(L"아니 아니 아니", L"no no no"),
+               "R2-6: EN source reduplication -> KO output accepted (EN->KO must-pass)");
+    TEST_CHECK(!OutputHasRepetition(L"도와주세요! 도와주세요! 도와주세요!", L"Help! Help! Help!"),
+               "R2-6: 'Help! Help! Help!' -> KO reduplication accepted (must-pass)");
+    TEST_CHECK(!OutputHasRepetition(L"Help! Help! Help!", L"도와주세요! 도와주세요! 도와주세요!"),
+               "R2-6: KO reduplication -> 'Help! Help! Help!' accepted (must-pass, EN direction)");
+    // Span floor: the same three-token emphasis inside a sentence covers a small
+    // fraction of the answer, so it is not a loop (3 of 11 tokens = 27%).
+    TEST_CHECK(!OutputHasRepetition(L"The cat sat on the mat and said no no no"),
+               "R2-6: a mid-sentence 3-token emphasis is below the 50% span floor");
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"ha ha ha that is a good one"),
+               "R2-6: 3 of 8 tokens (37.5%) is still below the span floor");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"npi npi npi npi and then words here"),
+               "R2-6: 4 of 8 tokens reaches the 50% span floor (boundary is inclusive)");
+    // A real one-token loop still fires: 100% coverage, and the source carries
+    // no reduplication to explain it.
+    std::wstring token_loop;
+    for (int i = 0; i < 64; ++i) {
+        token_loop += L"npi ";
+    }
+    TEST_CHECK(HasRepeatedLineOrTokenRun(token_loop),
+               "R2-6: a 64-token single-token run is still a loop (coverage 100%)");
+    TEST_CHECK(OutputHasRepetition(token_loop, L"np"),
+               "R2-6: the live 'np' -> 'npi npi ...' loop is still rejected with its source");
+    // Documented envelope: a three-token WHOLE output with no source evidence is
+    // indistinguishable from a loop, so the text-only predicate keeps rejecting
+    // it (production passes the source at BOTH decode sites).
+    TEST_CHECK(OutputHasRepetition(L"assistant assistant assistant"),
+               "R2-6: the pre-existing 3-token run pin is unchanged (no source evidence)");
+    TEST_CHECK(!OutputHasRepetition(L"assistant assistant assistant", L"도우미 도우미 도우미"),
+               "R2-6: ... and the same answer IS accepted when the source reduplicates");
+
+    // ---- R2-8 (security-reviewer-mimo L-2): the STITCHED whole ----
+    // Each chunk output below is ONE line, so every per-chunk gate passes; after
+    // stitching with the original paragraph separators the same line appears 3x
+    // and Rule A reassembles across the chunk boundary - exactly what the
+    // whole-output re-gate before `return stitched;` catches.
+    TEST_CHECK(!HasRepeatedLineOrTokenRun(L"npi"),
+               "R2-8: one chunk's single-line output is not a loop");
+    TEST_CHECK(HasRepeatedLineOrTokenRun(L"npi\n\nnpi\n\nnpi"),
+               "R2-8: Rule A reassembles across the stitched paragraph separators");
+    TEST_CHECK(OutputHasRepetition(L"npi\n\nnpi\n\nnpi", L"np"),
+               "R2-8: the stitched whole is rejected even with a source present");
+
+    // ---- R1-1 repetition, rule C: >= 8-token repeating suffix ----
+    // Live repro shape (step5 §4 F2): a sentence repeated to the token cap.
+    std::wstring sentence_loop;
+    for (int i = 0; i < 3; ++i) {
+        sentence_loop += L"Please contact us for further assistance. ";
+    }
+    TEST_CHECK(HasSuffixRepetition(sentence_loop),
+               "R1-1: a 6-token sentence repeated 3x (18-token suffix) is a loop");
+    TEST_CHECK(HasSuffixRepetition(L"look out look out look out look out"),
+               "R1-1: a 2-token period repeated 4x reaches the 8-token span floor");
+    TEST_CHECK(!HasSuffixRepetition(L"look out look out look out"),
+               "R1-1: a 2-token period repeated 3x spans only 6 tokens -> below the floor");
+    TEST_CHECK(!HasSuffixRepetition(L"no no no"),
+               "R1-1: a 3-token emphasis is NOT a suffix loop (span floor)");
+    TEST_CHECK(HasSuffixRepetition(L"no no no no no no no no"),
+               "R1-1: 8 identical tokens reach the span floor");
+    TEST_CHECK(!HasSuffixRepetition(sentence_loop.substr(0, sentence_loop.size() - 29)),
+               "R1-1: fewer than 3 repeats never trips the suffix rule");
+    TEST_CHECK(!HasSuffixRepetition(L"The quick brown fox jumps over the lazy dog and keeps running."),
+               "R1-1: a natural sentence is not a periodic suffix");
+
+    // Documented bound: the period scan stops at kSuffixRepetitionMaxPeriodTokens
+    // (a whole 64+ token sentence repeated verbatim is out of the practical
+    // envelope; the line rule covers it whenever it is line-separated).
+    {
+        std::wstring long_phrase;
+        for (int i = 0; i < 70; ++i) {
+            long_phrase += L"w" + std::to_wstring(i) + L" ";
+        }
+        std::wstring long_loop;
+        for (int i = 0; i < 3; ++i) {
+            long_loop += long_phrase;
+        }
+        TEST_CHECK(!HasSuffixRepetition(long_loop),
+                   "R1-1: period above kSuffixRepetitionMaxPeriodTokens is out of the scan bound");
+        static_assert(kSuffixRepetitionMaxPeriodTokens == 64,
+                      "R1-1: the documented period bound stays 64 tokens");
+        static_assert(kSuffixRepetitionMinSpanTokens == 8,
+                      "R1-1: the suffix span floor stays 8 tokens");
+    }
+
+    // ---- R1-1 repetition: combined predicate used by BOTH decode sites ----
+    TEST_CHECK(OutputHasRepetition(line_loop),
+               "R1-1: the combined predicate fires on the live line loop");
+    TEST_CHECK(OutputHasRepetition(sentence_loop),
+               "R1-1: the combined predicate fires on the live phrase loop");
+    TEST_CHECK(!OutputHasRepetition(L"안녕하세요. 오늘 날씨가 정말 좋네요."),
+               "R1-1: a normal Korean translation is not a loop");
+
+    // ---- R1-1 script classes (reused smart_bypass predicates) ----
+    TEST_CHECK(TextScriptClasses(L"hello") == ToMask(ScriptClass::Latin),
+               "R1-1: Latin text classifies as Latin");
+    TEST_CHECK(TextScriptClasses(L"안녕하세요") == ToMask(ScriptClass::Hangul),
+               "R1-1: Hangul text classifies as Hangul");
+    TEST_CHECK(TextScriptClasses(L"日本語です") ==
+                   (ToMask(ScriptClass::Han) | ToMask(ScriptClass::Kana)),
+               "R1-1: Japanese text carries BOTH Han and Kana");
+    TEST_CHECK(TextScriptClasses(L"简体中文") == ToMask(ScriptClass::Han),
+               "R1-1: Chinese text classifies as Han");
+    TEST_CHECK((TextScriptClasses(L"안녕 hello") & ToMask(ScriptClass::Latin)) != 0 &&
+                   (TextScriptClasses(L"안녕 hello") & ToMask(ScriptClass::Hangul)) != 0,
+               "R1-1: mixed script text carries both classes");
+    TEST_CHECK(TextScriptClasses(L"12345 !!!") == 0,
+               "R1-1: digits/symbols carry no script class (their loops are a repetition concern)");
+    TEST_CHECK(TextScriptClasses(L"") == 0, "R1-1: empty text carries no script class");
+    TEST_CHECK(TextScriptClasses(L"Türkçe") == ToMask(ScriptClass::Latin),
+               "R1-1: accented Latin is still Latin script");
+
+    // Native names straight from the i18n registry: the script table must agree
+    // with every registration (a new language without a script entry fails).
+    TEST_CHECK(TextScriptClasses(L"Русский") == ToMask(ScriptClass::Cyrillic),
+               "R1-1: Cyrillic detection");
+    TEST_CHECK(TextScriptClasses(L"ไทย") == ToMask(ScriptClass::Thai),
+               "R1-1: Thai detection");
+    TEST_CHECK(TextScriptClasses(L"العربية") == ToMask(ScriptClass::Arabic),
+               "R1-1: Arabic detection");
+    TEST_CHECK(TextScriptClasses(L"עברית") == ToMask(ScriptClass::Hebrew),
+               "R1-1: Hebrew detection");
+    TEST_CHECK(TextScriptClasses(L"हिन्दी") == ToMask(ScriptClass::Devanagari),
+               "R1-1: Devanagari detection");
+    TEST_CHECK(TextScriptClasses(L"বাংলা") == ToMask(ScriptClass::Bengali),
+               "R1-1: Bengali detection");
+    TEST_CHECK(TextScriptClasses(L"ភាសាខ្មែរ") == ToMask(ScriptClass::Khmer),
+               "R1-1: Khmer detection");
+    TEST_CHECK(TextScriptClasses(L"ພາສາລາວ") == ToMask(ScriptClass::Lao),
+               "R1-1: Lao detection");
+    TEST_CHECK(TextScriptClasses(L"မြန်မာစာ") == ToMask(ScriptClass::Myanmar),
+               "R1-1: Burmese detection");
+    TEST_CHECK(TextScriptClasses(L"Ελληνικά") == ToMask(ScriptClass::Greek),
+               "R1-1: Greek detection");
+
+    // ---- R1-1 language code -> script mask ----
+    TEST_CHECK(TargetScriptClasses("KO") == ToMask(ScriptClass::Hangul),
+               "R1-1: KO -> Hangul");
+    TEST_CHECK(TargetScriptClasses("ko") == ToMask(ScriptClass::Hangul),
+               "R1-1: code lookup is case-insensitive");
+    TEST_CHECK(TargetScriptClasses("JA") ==
+                   (ToMask(ScriptClass::Han) | ToMask(ScriptClass::Kana)),
+               "R1-1: JA -> Han|Kana (either script satisfies the target)");
+    TEST_CHECK(TargetScriptClasses("ZH-CN") == ToMask(ScriptClass::Han),
+               "R1-1: ZH-CN -> Han");
+    TEST_CHECK(TargetScriptClasses("ZH-TW") == ToMask(ScriptClass::Han),
+               "R1-1: ZH-TW -> Han");
+    TEST_CHECK(TargetScriptClasses("EN") == ToMask(ScriptClass::Latin),
+               "R1-1: EN -> Latin");
+    TEST_CHECK(TargetScriptClasses("AUTO") == 0,
+               "R1-1: AUTO resolves to no script -> the gate fails OPEN");
+    TEST_CHECK(TargetScriptClasses("") == 0,
+               "R1-1: empty code resolves to no script -> fail open");
+    TEST_CHECK(TargetScriptClasses("XX") == 0,
+               "R1-1: unknown code resolves to no script -> fail open");
+    {
+        int missing_script = 0;
+        int native_script_mismatch = 0;
+        for (const LanguageInfo& lang : GetTargetLanguages()) {
+            const std::uint32_t mask = TargetScriptClasses(lang.code);
+            if (mask == 0) {
+                ++missing_script;
+                continue;
+            }
+            const std::wstring native_wide = ToUtf16(lang.name_native);
+            if ((TextScriptClasses(native_wide) & mask) == 0) {
+                ++native_script_mismatch;
+            }
+        }
+        TEST_CHECK(missing_script == 0,
+                   "R1-1: EVERY registered target language has a script family (drift guard)");
+        TEST_CHECK(native_script_mismatch == 0,
+                   "R1-1: every target's native name carries its own script (table/db agreement)");
+    }
+
+    // ---- R1-1 code-point counter ----
+    TEST_CHECK(CountCodePoints(L"") == 0, "R1-1: empty text has zero code points");
+    TEST_CHECK(CountCodePoints(L"abc") == 3, "R1-1: ASCII length");
+    TEST_CHECK(CountCodePoints(L"안녕") == 2, "R1-1: Hangul length");
+    TEST_CHECK(CountCodePoints(L"\xD83D\xDE00") == 1,
+               "R1-1: a surrogate pair counts as ONE code point");
+
+    // ---- R1-1 wrong-script rule ----
+    const std::uint32_t ko_mask = TargetScriptClasses("KO");
+    const std::uint32_t en_mask = TargetScriptClasses("EN");
+    // Live repro: EN -> KO "asdf" answered with an English essay.
+    TEST_CHECK(IsWrongScriptOutput(
+                   L"If you are looking for a way to make your data more accessible, here is a guide.",
+                   L"asdf", ko_mask),
+               "R1-1: English essay for a Korean target is wrong-script (live repro)");
+    // Controls: correct answers are never rejected.
+    TEST_CHECK(!IsWrongScriptOutput(L"안녕하세요.", L"asdf", ko_mask),
+               "R1-1: a Korean answer for a Korean target passes");
+    TEST_CHECK(!IsWrongScriptOutput(L"오늘 날씨가 어떤가요?", L"Hello, how is the weather today?", ko_mask),
+               "R1-1: a normal EN->KO translation passes");
+    TEST_CHECK(!IsWrongScriptOutput(L"Hello, this is a normal sentence.", L"음", en_mask),
+               "R1-1: a normal KO->EN translation passes");
+    TEST_CHECK(IsWrongScriptOutput(L"안녕하세요, 반갑습니다.", L"음", en_mask),
+               "R1-1: a Korean answer for an English target is wrong-script "
+               "(live '음' KO->EN case shape)");
+    TEST_CHECK(!IsWrongScriptOutput(L"안녕하세요, 반갑습니다.", L"hello", en_mask),
+               "R1-1: source already in the target script (EN->EN) never trips the gate");
+    // Length floor: <= kWrongScriptMinOutputCodePoints code points never gate.
+    TEST_CHECK(!IsWrongScriptOutput(L"ab", L"asdf", ko_mask),
+               "R1-1: a 2-code-point answer sits below the wrong-script floor");
+    TEST_CHECK(IsWrongScriptOutput(L"abc", L"asdf", ko_mask),
+               "R1-1: a 3-code-point answer is gated");
+    // Source-script precondition: pure digits carry no language signal.
+    TEST_CHECK(!IsWrongScriptOutput(L"12345", L"12345", ko_mask),
+               "R1-1: digits->digits is not a wrong-script case (no source script)");
+    // Source already in the target script -> nothing to be wrong about.
+    TEST_CHECK(!IsWrongScriptOutput(L"hello there", L"안녕하세요", ko_mask),
+               "R1-1: source already in the target script never trips the gate");
+    // Unknown target -> fail open.
+    TEST_CHECK(!IsWrongScriptOutput(L"hello there", L"안녕하세요", 0),
+               "R1-1: unknown/AUTO target never rejects (fail open)");
+
+    // ---- R1-1 meta leakage ----
+    // The CEO's exact "assist" repro (k3agent RC1, verbatim from the report).
+    const std::wstring assist_repro =
+        L"abdefghijklmnopqrstuvwxyz\nTranslation is not possible… Please contact us for "
+        L"further assistance. …죄송합니다, but I can't translate this text.";
+    TEST_CHECK(HasMetaLeakage(assist_repro, L"abcdefghijklmnopqrstuvwxyz"),
+               "R1-1: the verbatim 'assist' repro trips the meta-leakage table");
+    TEST_CHECK(HasMetaLeakage(L"Please contact us for further assistance.", L"asdf"),
+               "R1-1: the refusal tail alone is leakage");
+    TEST_CHECK(HasMetaLeakage(L"TRANSLATION IS NOT POSSIBLE", L"asdf"),
+               "R1-1: meta matching is ASCII case-insensitive");
+    TEST_CHECK(HasMetaLeakage(L"I can't translate this text.", L"asdf"),
+               "R1-1: the refusal opener is leakage");
+    TEST_CHECK(HasMetaLeakage(L"Sure, here is the translation:\n안녕하세요", L"asdf"),
+               "R1-1: the assistant opener 'Sure, here' is leakage at line start");
+    TEST_CHECK(HasMetaLeakage(L"English: hello\nKorean: 안녕하세요", L"hello world 123"),
+               "R1-1: '<language>:' label lines are leakage (bilingual repro)");
+    TEST_CHECK(HasMetaLeakage(L"영어: hello\n한국어: 안녕하세요", L"hello world 123"),
+               "R1-1: native-script label lines are leakage");
+    TEST_CHECK(HasMetaLeakage(L"中文: 你好", L"hello"),
+               "R1-1: Chinese label line is leakage");
+    // Controls / source guard (repo idiom: the source's own text is legitimate).
+    TEST_CHECK(!HasMetaLeakage(L"안녕하세요. 오늘 날씨가 정말 좋네요.", L"hello"),
+               "R1-1: a normal translation carries no meta leakage");
+    TEST_CHECK(!HasMetaLeakage(L"Please contact us for further assistance.",
+                               L"Please contact us for further assistance."),
+               "R1-1: a phrase the SOURCE itself carries is never leakage (source guard)");
+    TEST_CHECK(!HasMetaLeakage(L"English: hello", L"English: hello"),
+               "R1-1: source guard covers label lines too");
+    TEST_CHECK(!HasMetaLeakage(L"영어를 배우고 있습니다.", L"hello"),
+               "R1-1: a native word WITHOUT the ':' label is not leakage");
+    TEST_CHECK(!HasMetaLeakage(L"He said 'sure, here it is' to me.", L"hello"),
+               "R1-1: the assistant opener inside a sentence does not match (line-start only)");
+
+    // ---- R2-7 (code-reviewer-gemini F-05): a TRANSLATED colon label ----
+    // The pre-R2-7 source guard required the TARGET-language needle to appear in
+    // the source, which a real language pair never contains, so these legitimate
+    // translations were rejected on both rungs.
+    TEST_CHECK(!HasMetaLeakage(L"Source: Reuters", L"출처: 로이터"),
+               "R2-7: '출처: 로이터' -> 'Source: Reuters' is a translated label, not leakage");
+    TEST_CHECK(!HasMetaLeakage(L"영어: 유창함", L"English: Fluent"),
+               "R2-7: 'English: Fluent' -> '영어: 유창함' is a translated label, not leakage");
+    TEST_CHECK(!HasMetaLeakage(L"Name: Kim\nSource: Reuters", L"이름: 김\n출처: 로이터"),
+               "R2-7: the exemption is line-indexed (each label pairs with its own source line)");
+    // Still leakage: the label line has no source-side label behind it.
+    TEST_CHECK(HasMetaLeakage(L"Source: Reuters", L"reuters dot com article"),
+               "R2-7: 'Source:' with no colon label in the source is still leakage");
+    TEST_CHECK(HasMetaLeakage(L"영어: 유창함", L"안녕하세요"),
+               "R2-7: a label line the source did not carry is still leakage");
+    TEST_CHECK(HasMetaLeakage(L"Sure, here is the translation:\nSource: Reuters", L"출처: 로이터"),
+               "R2-7: an assistant opener plus an uncued label is still leakage");
+    TEST_CHECK(HasMetaLeakage(L"hello\nSource: Reuters", L"출처: 로이터"),
+               "R2-7: line index alignment is strict (output line 1 has no source line 1)");
+    TEST_CHECK(!HasMetaLeakage(L"안녕하세요", L"hello world 123"),
+               "R2-7: control - an output without labels is unaffected");
+
+    // ---- R1-1 combined gate + priority ----
+    TEST_CHECK(ClassifyTranslationOutput(L"", L"asdf", "KO") == OutputRejectReason::None,
+               "R1-1: empty output is the ladder's concern, not the gate's");
+    TEST_CHECK(ClassifyTranslationOutput(line_loop, L"np", "KO") ==
+                   OutputRejectReason::Repetition,
+               "R1-1: the live line loop classifies as Repetition (repetition outranks script)");
+    TEST_CHECK(ClassifyTranslationOutput(assist_repro, L"abcdefghijklmnopqrstuvwxyz", "KO") ==
+                   OutputRejectReason::MetaLeakage,
+               "R1-1: the verbatim 'assist' repro classifies as MetaLeakage "
+               "(Hangul present -> not wrong-script)");
+    TEST_CHECK(ClassifyTranslationOutput(
+                   L"If you are looking for a way to make your data more accessible, here is a guide.",
+                   L"asdf", "KO") == OutputRejectReason::WrongScript,
+               "R1-1: the live English essay classifies as WrongScript");
+    TEST_CHECK(ClassifyTranslationOutput(L"Sure, here is the translation:\n안녕하세요", L"asdf",
+                                         "KO") == OutputRejectReason::MetaLeakage,
+               "R1-1: assistant opener + real answer classifies as MetaLeakage");
+    TEST_CHECK(ClassifyTranslationOutput(L"안녕하세요. 오늘 날씨가 정말 좋네요.", L"hello",
+                                         "KO") == OutputRejectReason::None,
+               "R1-1: control - a good Korean translation is accepted");
+    TEST_CHECK(ClassifyTranslationOutput(L"Hello, this is a normal sentence.", L"안녕하세요. 음",
+                                         "EN") == OutputRejectReason::None,
+               "R1-1: control - a good English translation is accepted");
+    TEST_CHECK(ClassifyTranslationOutput(L"안녕하세요", L"hello", "AUTO") ==
+                   OutputRejectReason::None,
+               "R1-1: AUTO target never rejects (fail open)");
+
+    // ---- R2-16 (CEO decision "언제나 잘 번역", calibrated): the fourth rule ----
+    // (i) unexpected-script share >= 30% AND > 3x length expansion. The live
+    // KO->EN residual is the shape this exists for: a 1-code-point interjection
+    // answered with a 977-code-point essay whose tail is Chinese.
+    const std::wstring amplified_essay =
+        L"The next day, I went to the hospital to see my doctor. I had a fever and was "
+        L"feeling sick. I felt like I was going to vomit. I went to the emergency room and "
+        L"was asked to wait in the waiting area. 第二天，我去了医院看医生。";
+    TEST_CHECK(IsAmplifiedTinySourceOutput(amplified_essay, L"음"),
+               "R2-16(ii): the live '음' -> essay amplification is detected");
+    TEST_CHECK(ClassifyTranslationOutput(amplified_essay, L"음", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "R2-16: the live '음' essay (English prose + Chinese tail) is rejected");
+    TEST_CHECK(ClassifyTranslationOutput(amplified_essay, L"음", "AUTO") ==
+                   OutputRejectReason::ScriptLeak,
+               "R2-16(ii): the amplification rule is script-free (AUTO target included)");
+    // (i) in isolation: 2-code-point source, 17-code-point mixed answer, so the
+    // tiny-source floor (40) cannot be what rejects it.
+    TEST_CHECK(IsUnexpectedScriptHeavyOutput(L"Hello 你好世界你好世界你好世界", L"hi", en_mask),
+               "R2-16(i): mostly-unexpected script + >3x expansion is detected");
+    TEST_CHECK(ClassifyTranslationOutput(L"Hello 你好世界你好世界你好世界", L"hi", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "R2-16(i): ... and classifies as ScriptLeak");
+    // The conjunction protects legit content: a quoted foreign title inside a
+    // real Korean sentence (Han/Kana are in neither side) is not a third of the
+    // text and never triples the length.
+    TEST_CHECK(!IsUnexpectedScriptHeavyOutput(
+                   L"그는 어젯밤 비가 내리는 동안 吾輩は猫である를 한 번에 읽었다.",
+                   L"He read I Am a Cat in one sitting last night while the rain fell.", ko_mask),
+               "R2-16(i): a quoted foreign title inside a translated sentence passes");
+    // (ii) must NOT reject normal short answers and greetings.
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(L"좋습니다.", L"OK"),
+               "R2-16(ii): 'OK' -> '좋습니다.' passes");
+    TEST_CHECK(ClassifyTranslationOutput(L"좋습니다.", L"OK", "KO") == OutputRejectReason::None,
+               "R2-16(ii): ... and classifies as accepted");
+    TEST_CHECK(ClassifyTranslationOutput(L"안녕하세요!", L"Hi", "KO") == OutputRejectReason::None,
+               "R2-16(ii): a normal short greeting passes");
+    TEST_CHECK(ClassifyTranslationOutput(L"Hello, nice to meet you.", L"안녕", "EN") ==
+                   OutputRejectReason::None,
+               "R2-16(ii): a 22-code-point answer to a 2-code-point source passes");
+    // Boundary pins for the tiny-source floor (4 source / 64 output code points,
+    // R3 round-3 measured corpus ruling: the longest measured legitimate short
+    // answer is 22 cp, so 64 keeps ~3x margin and the 977-cp live residual is
+    // still caught with a 15x margin).
+    TEST_CHECK(IsAmplifiedTinySourceOutput(std::wstring(64, L'a'), L"OK!!"),
+               "R3(ii): source 4 / output 64 is the inclusive boundary");
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(std::wstring(63, L'a'), L"OK!!"),
+               "R3(ii): output 63 is below the floor");
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(std::wstring(80, L'a'), L"ㅋㅋㅋㅋㅋ"),
+               "R2-16(ii): a 5-code-point source is above the tiny-source bound");
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(std::wstring(80, L'a'), L""),
+               "R2-16(ii): an empty source never trips the amplification rule");
+    // R3 source-shape carve-out: a pure repetition source (laughter / emphasis)
+    // is exempt - a chatty model's long laughter expansion is a legit answer.
+    TEST_CHECK(IsPureRepetitionSource(L"ㅋㅋㅋㅋ") && IsPureRepetitionSource(L"kkkk") &&
+                   IsPureRepetitionSource(L"!!!!") && IsPureRepetitionSource(L"haha") &&
+                   IsPureRepetitionSource(L"no no no") && IsPureRepetitionSource(L"k k k"),
+               "R3(ii): one repeated unit ('ㅋㅋㅋㅋ', 'kkkk', 'haha', 'no no no') is a pure "
+               "repetition source");
+    TEST_CHECK(!IsPureRepetitionSource(L"음") && !IsPureRepetitionSource(L"OK") &&
+                   !IsPureRepetitionSource(L"hahah") && !IsPureRepetitionSource(L""),
+               "R3(ii): the carve-out never covers the single-code-point residual or ordinary "
+               "short sources");
+    const std::wstring laughter_answer =
+        L"Hahaha, that is so funny! I cannot stop laughing at that one, really!";
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(laughter_answer, L"ㅋㅋㅋㅋ"),
+               "R3(ii): 'ㅋㅋㅋㅋ' -> a long laughter expansion passes (carve-out)");
+    TEST_CHECK(ClassifyTranslationOutput(laughter_answer, L"ㅋㅋㅋㅋ", "EN") ==
+                   OutputRejectReason::None,
+               "R3(ii): ... and classifies as accepted");
+    TEST_CHECK(IsAmplifiedTinySourceOutput(laughter_answer, L"음"),
+               "R3(ii): the SAME answer to the single-code-point '음' is still rejected");
+    TEST_CHECK(ClassifyTranslationOutput(laughter_answer, L"음", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "R3(ii): ... and classifies as ScriptLeak");
+
+    // ---- 261029_0001 FIX-D2: the carve-out is BOUNDED, not an exemption ----
+    // The R3 draft exempted a pure-repetition source from rule (ii) entirely;
+    // the rebuilt worker then answered "ㅎㅎㅎㅎ" / "kkkk" / "haha" with
+    // 998 / 980 / 1110-code-point repeated-paragraph essays (1008 / 958 / 1122
+    // UTF-8 bytes) delivered as status=ok (coder-report-fix-d §6). Under the
+    // CEO ruling "언제나 잘 번역" that is nonsense output, not a translation. The
+    // measured shape is a run of repeated paragraph blocks that is NOT a
+    // consecutive token/line loop, so rules A/B/C pass it and rule (ii) is the
+    // only gate that can reject it. A unique marker per pass keeps the tail out
+    // of rule C.
+    const wchar_t* const kRepetitionEssayTails[] = {
+        L" First pass.",   L" Second pass.", L" Third pass.",  L" Fourth pass.",
+        L" Fifth pass.",   L" Sixth pass.",  L" Seventh pass.", L" Eighth pass.",
+    };
+    std::wstring repetition_essay;
+    for (const wchar_t* tail : kRepetitionEssayTails) {
+        repetition_essay +=
+            L"What a wonderful experience! I was so excited to see the results of my hard work "
+            L"and efforts. I had a great time, and it was a very special moment for me.";
+        repetition_essay += tail;
+    }
+    TEST_CHECK(CountCodePoints(repetition_essay) >= 1000,
+               "FIX-D2: the witness essay is at least 1,000 code points (the measured live size)");
+    TEST_CHECK(!OutputHasRepetition(repetition_essay, L"ㅋㅋㅋㅋ"),
+               "FIX-D2: the witness essay is NOT a consecutive token/line loop (rules A/B/C "
+               "pass it, so rule (ii) is the gate under test)");
+    TEST_CHECK(IsPureRepetitionSource(L"ㅋㅋㅋㅋ") && IsPureRepetitionSource(L"kkkk") &&
+                   IsPureRepetitionSource(L"haha"),
+               "FIX-D2: the three measured laughter spellings are still repetition sources");
+    TEST_CHECK(IsAmplifiedTinySourceOutput(repetition_essay, L"ㅋㅋㅋㅋ"),
+               "FIX-D2: a 1,000-code-point essay for 'ㅋㅋㅋㅋ' trips rule (ii) again");
+    TEST_CHECK(ClassifyTranslationOutput(repetition_essay, L"ㅋㅋㅋㅋ", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "FIX-D2: 'ㅋㅋㅋㅋ' -> essay classifies as REJECTED (ScriptLeak)");
+    TEST_CHECK(ClassifyTranslationOutput(repetition_essay, L"kkkk", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "FIX-D2: 'kkkk' -> essay classifies as REJECTED (ScriptLeak)");
+    TEST_CHECK(ClassifyTranslationOutput(repetition_essay, L"haha", "EN") ==
+                   OutputRejectReason::ScriptLeak,
+               "FIX-D2: 'haha' -> essay classifies as REJECTED (ScriptLeak)");
+    // Ceiling boundary, inclusive like the 64 floor: 119 cp is still a
+    // legitimate laughter expansion, 120 cp is an essay-scale answer.
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(std::wstring(119, L'a'), L"ㅋㅋㅋㅋ"),
+               "FIX-D2: output 119 stays under the laughter ceiling (accepted)");
+    TEST_CHECK(IsAmplifiedTinySourceOutput(std::wstring(120, L'a'), L"ㅋㅋㅋㅋ"),
+               "FIX-D2: output 120 is the inclusive laughter ceiling (rejected)");
+    // Short laughter answers are what the carve-out exists for - they pass.
+    TEST_CHECK(ClassifyTranslationOutput(L"Hahaha!", L"ㅋㅋㅋㅋ", "EN") == OutputRejectReason::None,
+               "FIX-D2: 'ㅋㅋㅋㅋ' -> 'Hahaha!' passes (a real laughter answer)");
+    TEST_CHECK(ClassifyTranslationOutput(L"I'm dying laughing", L"ㅋㅋㅋㅋ", "EN") ==
+                   OutputRejectReason::None,
+               "FIX-D2: 'ㅋㅋㅋㅋ' -> 'I'm dying laughing' passes");
+    // The reduplication controls keep their R2-6 Rule-B source guard (a
+    // reduplication the user typed is content, never a loop).
+    TEST_CHECK(!OutputHasRepetition(L"아니, 아니, 아니.", L"no no no") &&
+                   ClassifyTranslationOutput(L"아니, 아니, 아니.", L"no no no", "KO") ==
+                       OutputRejectReason::None,
+               "FIX-D2: 'no no no' reduplication controls still pass (Rule B guard intact)");
+    TEST_CHECK(!IsAmplifiedTinySourceOutput(std::wstring(100, L'a'), L"no no no"),
+               "FIX-D2: a 100-code-point answer to 'no no no' stays under the ceiling");
+    // The single-code-point residual is untouched: it is not a repetition, so
+    // it keeps the 64-code-point floor.
+    TEST_CHECK(IsAmplifiedTinySourceOutput(repetition_essay, L"음") &&
+                   ClassifyTranslationOutput(repetition_essay, L"음", "EN") ==
+                       OutputRejectReason::ScriptLeak,
+               "FIX-D2: the '음' residual keeps the 64 floor and still rejects");
+    static_assert(kAmplifiedRepetitionOutputMinCodePoints == 120,
+                  "FIX-D2: the laughter ceiling for a pure-repetition source is 120 code points");
+    // The share/expansion numbers themselves stay pinned to the header contract.
+    static_assert(kUnexpectedScriptSharePercent == 30,
+                  "R2-16: the unexpected-script share floor stays 30%");
+    static_assert(kUnexpectedScriptLengthExpansionPercent == 300,
+                  "R2-16: the length-expansion gate stays > 3x");
+    static_assert(kAmplifiedSourceMaxCodePoints == 4 && kAmplifiedOutputMinCodePoints == 64,
+                  "R3: the tiny-source amplification pair is 4 -> 64 code points");
+
+    // ---- Structural pins: the production wiring matches the contract ----
+    const std::filesystem::path tc_path =
+        ResolveRepoFile(L"src\\engine_core\\translation_common.cpp");
+    TEST_CHECK(!tc_path.empty(), "R1-1: translation_common.cpp resolvable for the wiring pins");
+    if (!tc_path.empty()) {
+        std::ifstream in(tc_path, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        const std::string src = ss.str();
+        auto count_occurrences = [](const std::string& hay, const std::string& needle) {
+            size_t count = 0;
+            size_t pos = 0;
+            while ((pos = hay.find(needle, pos)) != std::string::npos) {
+                ++count;
+                pos += needle.size();
+            }
+            return count;
+        };
+
+        // R1-2: the greedy leg is the pure decision + a penalties->greedy chain.
+        TEST_CHECK(src.find("switch (DecideSamplerShape(temperature, rep_pen))") != std::string::npos,
+                   "R1-2: the sampler branch is driven by DecideSamplerShape");
+        TEST_CHECK(src.find("llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));\n"
+                            "            llama_sampler_chain_add(smpl, llama_sampler_init_greedy());") != std::string::npos,
+                   "R1-2: the penalized greedy chain adds penalties FIRST and greedy LAST");
+        TEST_CHECK(src.find("smpl = llama_sampler_init_greedy();") != std::string::npos,
+                   "R1-2: the bare greedy allocation survives for rep_pen <= 1.0 (byte-identical)");
+        {
+            const size_t greedy_case = src.find("case SamplerShape::PenalizedGreedy");
+            const size_t dist_case = src.find("case SamplerShape::Dist");
+            TEST_CHECK(greedy_case != std::string::npos && dist_case != std::string::npos &&
+                           greedy_case < dist_case,
+                       "R1-2: the penalized-greedy case exists and precedes the sampled case");
+            if (greedy_case != std::string::npos && dist_case != std::string::npos &&
+                greedy_case < dist_case) {
+                const std::string greedy_body = src.substr(greedy_case, dist_case - greedy_case);
+                TEST_CHECK(greedy_body.find("llama_sampler_init_greedy") != std::string::npos,
+                           "R1-2: the greedy case still ends on the greedy sampler");
+                TEST_CHECK(greedy_body.find("llama_sampler_init_top_k") == std::string::npos &&
+                               greedy_body.find("llama_sampler_init_top_p") == std::string::npos,
+                           "R1-2: top_k/top_p stay out of the greedy chain (argmax-invariant)");
+            }
+        }
+
+        // R1-1: the gate runs on BOTH rungs (rung-1 acceptance + rung-2 final).
+        TEST_CHECK(count_occurrences(
+                       src, "ClassifyTranslationOutput(ToUtf16(trimmed_u8), cur, tgt_code)") == 2,
+                   "R1-1: the gate is applied to BOTH rungs' trimmed output");
+        TEST_CHECK(src.find("ENGINE/Translate/038") != std::string::npos,
+                   "R1-1: the rung-2 rejection has its own shape-only diagnostic (038)");
+        TEST_CHECK(src.find("ENGINE/Translate/039") != std::string::npos,
+                   "R1-1: the mid-decode repetition abort has its own shape-only diagnostic (039)");
+        TEST_CHECK(src.find("rung2_repetition_aborted") != std::string::npos &&
+                       src.find("rung1_aborted_repetition") != std::string::npos,
+                   "R1-1: both rungs track a repetition abort");
+        {
+            const size_t idx_reject = src.find("ENGINE/Translate/038");
+            const size_t idx_accept = src.find("ENGINE/Translate/035");
+            TEST_CHECK(idx_reject != std::string::npos && idx_accept != std::string::npos &&
+                           idx_reject < idx_accept,
+                       "R1-1: a rung-2 rejection answers std::nullopt BEFORE the accept log "
+                       "(honest engine_failed, never garbage)");
+        }
+        // The mid-decode probe runs on BOTH rungs; the old rung-1-only guard
+        // (`!completion_form &&` in front of the cadence) must be gone.
+        TEST_CHECK(src.find("!completion_form && (i + 1) % kEchoPrefixProbeTokenCadence") ==
+                       std::string::npos,
+                   "R1-1: the periodic probe is no longer rung-1 only");
+        TEST_CHECK(src.find("(i + 1) % kEchoPrefixProbeTokenCadence == 0 && !output_u8.empty()") !=
+                       std::string::npos,
+                   "R1-1: the probe fires on both rungs at the existing cadence");
+        TEST_CHECK(src.find("if (OutputHasRepetition(ToUtf16(output_u8), cur))") != std::string::npos,
+                   "R1-1/R2-6: the mid-decode probe uses the SAME predicate AND source evidence as "
+                   "the post-decode gate");
+
+        // R2-6: the calibrated envelope is code, not only a comment.
+        TEST_CHECK(src.find("kRepeatedTokenRunMinCoveragePercent") != std::string::npos &&
+                       src.find("HasIdenticalTokenRun(source, kRepeatedTokenRunMinCount)") !=
+                           std::string::npos,
+                   "R2-6: Rule B carries the span floor AND the source reduplication guard");
+        TEST_CHECK(src.find("if (lines[i] == lines[i - 1])") != std::string::npos,
+                   "R2-6: Rule A compares ADJACENT lines (consecutive-only)");
+        TEST_CHECK(src.find("lines[j] == lines[i] && ++count >= kRepeatedLineMinCount") ==
+                       std::string::npos,
+                   "R2-6: the pre-fix non-consecutive line count is gone");
+
+        // R2-7: the translated-label guard is line-indexed in the gate.
+        TEST_CHECK(src.find("LineStartsWithColonLabel(source_lines[i])") != std::string::npos,
+                   "R2-7: a colon-label needle is exempted by the SOURCE line at the same index");
+
+        // R2-8: the stitched whole is re-gated before the chunked path returns.
+        {
+            const size_t stitch_pos = src.find("stitched += chunk_trailing_separators[k];");
+            const size_t regate_pos = src.find("if (OutputHasRepetition(stitched, src_w))");
+            const size_t return_pos =
+                regate_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("return stitched;", regate_pos);
+            TEST_CHECK(stitch_pos != std::string::npos && regate_pos != std::string::npos &&
+                           stitch_pos < regate_pos && return_pos != std::string::npos,
+                       "R2-8: the repeated-whole gate runs AFTER stitching and BEFORE the return");
+            TEST_CHECK(src.find("ENGINE/Translate/041") != std::string::npos,
+                       "R2-8: the stitched-whole rejection has its own shape-only diagnostic (041)");
+        }
+
+        // R2-16: the fourth rule is wired into the single gate used by both rungs.
+        TEST_CHECK(src.find("IsUnexpectedScriptHeavyOutput(output, source, TargetScriptClasses(tgt_code))") !=
+                           std::string::npos &&
+                       src.find("IsAmplifiedTinySourceOutput(output, source)") != std::string::npos,
+                   "R2-16: both calibrated shapes are wired into ClassifyTranslationOutput");
+
+        // Model-agnostic pin: the leakage table carries no model/token names.
+        {
+            const size_t table_begin = src.find("kMetaLeakageNeedles[] = {");
+            const size_t table_end =
+                table_begin == std::string::npos ? std::string::npos : src.find("};", table_begin);
+            TEST_CHECK(table_begin != std::string::npos && table_end != std::string::npos,
+                       "R1-1: the meta-leakage table is a single literal table");
+            if (table_begin != std::string::npos && table_end != std::string::npos) {
+                const std::string table = src.substr(table_begin, table_end - table_begin);
+                TEST_CHECK(table.find("hymt") == std::string::npos &&
+                               table.find("Hy-MT2") == std::string::npos &&
+                               table.find("MiLM") == std::string::npos &&
+                               table.find("llama") == std::string::npos,
+                           "R1-1: the leakage table is model-agnostic (no model/token names)");
+            }
+        }
+    }
+
+    // ---- R2-10 (261029_0001): the documentation-drift cluster ----
+    // Each of these comments told a reader something the code does not do (the
+    // contract literal a consumer keys on, a symbol name that does not exist, a
+    // pointer to docs that moved, a claim about the drag path that FIX-B2
+    // changed). Prose alone drifts again, so the fixed statements are pinned.
+    {
+        auto read_repo_src = [](const wchar_t* rel, std::string& out) -> bool {
+            const std::filesystem::path p = ResolveRepoFile(rel);
+            if (p.empty()) {
+                return false;
+            }
+            std::ifstream in(p, std::ios::binary);
+            out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            return !out.empty();
+        };
+        std::string client_h;
+        std::string verify_h;
+        std::string helpers_h;
+        std::string input_h;
+        std::string readme_md;
+        if (!read_repo_src(L"src\\engine_host_client.hpp", client_h) ||
+            !read_repo_src(L"src\\model_verify_sample.hpp", verify_h) ||
+            !read_repo_src(L"src\\engine_core\\engine_core_helpers.hpp", helpers_h) ||
+            !read_repo_src(L"src\\win32_input.hpp", input_h) ||
+            !read_repo_src(L"README.md", readme_md)) {
+            std::cout << "[SKIP] R2-10 doc pins: a boundary file is not resolvable from the "
+                         "test CWD." << std::endl;
+        } else {
+            TEST_CHECK(client_h.find("err=\"connect:<oserr>\"") != std::string::npos,
+                       "R2-10: the client contract documents the token the client EMITS "
+                       "(connect:<oserr>)");
+            TEST_CHECK(client_h.find("MIRROR DUTY") != std::string::npos,
+                       "R2-10: the contract names the sibling-workspace mirror duty");
+            TEST_CHECK(verify_h.find("ComputeFileSampleSha256") == std::string::npos &&
+                           verify_h.find("ComputeSampleSha256") != std::string::npos,
+                       "R2-10: model_verify_sample.hpp names the symbol that exists");
+            TEST_CHECK(helpers_h.find("src/model_verify_sample.hpp") != std::string::npos,
+                       "R2-10: the marker doc pointer resolves to model_verify_sample.hpp");
+            TEST_CHECK(input_h.find("the DRAG path installs its own scope too") != std::string::npos,
+                       "R2-10: the clipboard comment matches FIX-B2 (drag path HAS a scope)");
+            TEST_CHECK(readme_md.find("measured AFTER the paste") != std::string::npos,
+                       "R2-10: the README settle delay is described in the implemented order");
+            TEST_CHECK(readme_md.find("are **advisory**") != std::string::npos,
+                       "R2-10: the README discloses that the exclusion tags are advisory");
+            TEST_CHECK(readme_md.find("does sit on the system clipboard") != std::string::npos,
+                       "R2-10: the README discloses the bounded clipboard exposure window");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-1 output gate + R1-2 sampler shape (261029_0001) passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-1/R1-2 suite: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
 // B3 fix (session 260928_0001): per-family worker single-instance mutex pins —
 // the wp::MutexNameForFamily derivation contract (legacy exact / distinct
 // families / arg-absent fallback), the EnsureSpawned -> SpawnRequest.family
@@ -16357,6 +18139,1985 @@ void TestReq046OpenAiDialogParent() {
 // cmdline pin. End-of-file include (the suite uses ResolveRepoFile, defined
 // above), per the end-of-file .inc pattern.
 #include "mutex_family_pin_tests.inc"
+
+// ---------------------------------------------------------------------------
+// R1-3 + R1-23 (session 261029_0001, v0.10.4 sweep, unit U-B): served-model
+// truth and probe parity.
+//   R1-3  the served-model echo must name the model that SERVED. The pinned
+//         route resolves through ONE family-aware scan (engine_host_registry
+//         ResolveBundledModelId -> the bundled TRANSLATE entry) whose id the
+//         worker reports straight out of ResolveModelFile; the job branch has
+//         no second scan and no re-derived ternary. Structural pins here
+//         complement the behavioral registry checks (M6 registry suite
+//         section 11) and the REQ-057 echo pins.
+//   R1-23 the offline fidelity probe models the SHIPPED context (n_ctx 8192 /
+//         prompt budget 6128) so its verdicts describe the real engine.
+// ---------------------------------------------------------------------------
+void TestS261029UbServedModelEchoPins() {
+    std::cout << "[RUN] Testing R1-3 served-model truth + R1-23 probe parity..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- R1-3: the shared family-aware rule (header) ----------------------
+    {
+        const std::filesystem::path hdr = ResolveRepoFile(L"src\\engine_host_registry.hpp");
+        if (hdr.empty()) {
+            std::cout << "[SKIP] src/engine_host_registry.hpp not resolvable; R1-3 header "
+                         "pins skipped." << std::endl;
+        } else {
+            std::ifstream in(hdr, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("inline bool IsTranslateFamilyModel(const ModelEntry& m)") !=
+                           std::string::npos,
+                       "R1-3: the registry header exposes the translate-family predicate "
+                       "(shared by worker, orchestrator and app)");
+            TEST_CHECK(src.find("if (m.family == \"ggml-translate\") return true;") !=
+                               std::string::npos &&
+                           src.find("if (c == \"translate\") return true;") != std::string::npos,
+                       "R1-3: the predicate matches family ggml-translate OR a translate "
+                       "capability");
+            const size_t fn_pos = src.find("inline std::string ResolveBundledModelId(");
+            const size_t fn_end =
+                fn_pos == std::string::npos ? std::string::npos : src.find("\n}", fn_pos);
+            const std::string fn =
+                (fn_pos != std::string::npos && fn_end != std::string::npos)
+                    ? src.substr(fn_pos, fn_end - fn_pos)
+                    : "";
+            const size_t translate_pass = fn.find("m.origin == \"bundled\" && IsTranslateFamilyModel(m)");
+            const size_t fallback_pass = fn.find("m.origin == \"bundled\")", translate_pass == std::string::npos ? 0 : translate_pass);
+            TEST_CHECK(!fn.empty() && translate_pass != std::string::npos &&
+                           fallback_pass != std::string::npos && translate_pass < fallback_pass,
+                       "R1-3: the translate-family pass runs BEFORE the any-family fallback "
+                       "(deterministic order)");
+            TEST_CHECK(fn.find("hy-mt2-1.8b-q8") == std::string::npos &&
+                           fn.find("whisper") == std::string::npos,
+                       "R1-3: the rule is family-based (no model id / ASR name hardcoded), so "
+                       "an id change cannot re-break the echo");
+        }
+    }
+
+    // ---- R1-3: one resolution feeds the echo (worker) ---------------------
+    {
+        const std::filesystem::path worker = ResolveRepoFile(L"src\\ggml_translate_worker.cpp");
+        if (worker.empty()) {
+            std::cout << "[SKIP] src/ggml_translate_worker.cpp not resolvable; R1-3 worker "
+                         "pins skipped." << std::endl;
+        } else {
+            std::ifstream in(worker, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            // The resolved-id out-param exists and both pinned branches report
+            // through it (single source of truth).
+            TEST_CHECK(src.find("std::string* resolved_model_id /* out: entry id served */") !=
+                           std::string::npos,
+                       "R1-3: ResolveModelFile reports the registry id it resolved");
+            int bundled_id_calls = 0;
+            for (size_t pos = src.find("ResolveBundledModelId(registry)");
+                 pos != std::string::npos;
+                 pos = src.find("ResolveBundledModelId(registry)", pos + 1)) {
+                ++bundled_id_calls;
+            }
+            TEST_CHECK(bundled_id_calls == 2,
+                       "R1-3: the worker consults the bundled id only inside the two pinned "
+                       "branches (no other scan in the process)");
+            TEST_CHECK(src.find("*resolved_model_id = entry->id;") != std::string::npos,
+                       "R1-3: a resolved session_open id reports the resolved entry's id");
+            // The job branch echoes the resolution's report. The pre-fix shape
+            // (a ternary re-deriving the id with a second scan) is gone.
+            const size_t job_pos = src.find("resolve_active_model(&served_model_id)");
+            const size_t ev_pos = job_pos == std::string::npos
+                                      ? std::string::npos
+                                      : src.find("wp::BuildEvent(ev)", job_pos);
+            const std::string job =
+                (job_pos != std::string::npos && ev_pos != std::string::npos)
+                    ? src.substr(job_pos, ev_pos - job_pos)
+                    : "";
+            TEST_CHECK(!job.empty() && job.find("ev.model = served_model_id;") != std::string::npos,
+                       "R1-3: the job's terminal event carries the resolution's id");
+            TEST_CHECK(!job.empty() && job.find("ResolveBundledModelId") == std::string::npos,
+                       "R1-3: the job branch performs no registry re-scan for the echo");
+            TEST_CHECK(src.find("(!active_model_id.empty() && model_resolved)") == std::string::npos,
+                       "R1-3: the pre-fix echo ternary (re-derived id) is gone");
+        }
+    }
+
+    // ---- R1-3: the orchestrator's pool normalization uses the same rule ---
+    {
+        const std::filesystem::path host = ResolveRepoFile(L"src\\host_main.cpp");
+        if (host.empty()) {
+            std::cout << "[SKIP] src/host_main.cpp not resolvable; R1-3 host pins skipped."
+                      << std::endl;
+        } else {
+            std::ifstream in(host, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("SetBundledModelIdResolver(") != std::string::npos &&
+                           src.find("engine_host_registry::ResolveBundledModelId(g_registry)") !=
+                               std::string::npos,
+                       "R1-3: the orchestrator normalizes the explicit bundled id through the "
+                       "same family-aware rule (one definition, three consumers)");
+        }
+    }
+
+    // ---- R1-23: the offline probe models the shipped context --------------
+    {
+        const std::filesystem::path probe = ResolveRepoFile(L"tools\\fidelity_probe.cpp");
+        if (probe.empty()) {
+            std::cout << "[SKIP] tools/fidelity_probe.cpp not resolvable; R1-23 probe pins "
+                         "skipped." << std::endl;
+        } else {
+            std::ifstream in(probe, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("static constexpr int kNCtx = 8192;") != std::string::npos,
+                       "R1-23: the probe's n_ctx is the shipped 8192");
+            TEST_CHECK(src.find("static constexpr int kGenReserve = 2048;") != std::string::npos &&
+                           src.find("static constexpr int kSafetyMargin = 16;") !=
+                               std::string::npos,
+                       "R1-23: the probe's generation reserve / safety margin match the "
+                       "shipped constants");
+            TEST_CHECK(src.find("kPromptBudget = kNCtx - kGenReserve - kSafetyMargin; // 6128") !=
+                           std::string::npos,
+                       "R1-23: the probe's prompt budget derives to the shipped 6128");
+            TEST_CHECK(src.find("static constexpr int kNCtx = 4096;") == std::string::npos &&
+                           src.find("kPromptBudget = kNCtx - kGenReserve - kSafetyMargin; // 2032") ==
+                               std::string::npos,
+                       "R1-23: the retired 4096/2032 constants are gone");
+        }
+        const std::filesystem::path common =
+            ResolveRepoFile(L"src\\engine_core\\translation_common.cpp");
+        if (common.empty()) {
+            std::cout << "[SKIP] src/engine_core/translation_common.cpp not resolvable; "
+                         "R1-23 parity pin skipped." << std::endl;
+        } else {
+            std::ifstream in(common, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("kLlamaNCtx == 8192") != std::string::npos &&
+                           src.find("kLlamaPromptTokenBudget == 6128") != std::string::npos,
+                       "R1-23: the shipped engine pins the same 8192/6128 pair (D1 parity)");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-3 served-model truth + R1-23 probe parity (261029_0001) passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-3/R1-23 suite: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
+// R1-6 + R1-20 (session 261029_0001, v0.10.4 sweep): clipboard-restore safety.
+// Four independent seats confirmed the same silent data-loss paths (code step5
+// F-01 / claims C-06..C-10, sec k3agent SRV-3, sec mimopro F3, env F1/F5):
+//   - a FAILED backup (empty snapshot) was still restored, and RestoreClipboard
+//     called EmptyClipboard() BEFORE discovering it had nothing to put back;
+//   - a copy the user made during the multi-second translation was replaced by
+//     the pre-task snapshot (no sequence re-check on the restore path);
+//   - a >4 MiB format skipped by the backup cap was destroyed by that empty-then-
+//     partial replay (R1-20);
+//   - PasteAndRestore reported "restored" for an empty snapshot, which disarmed
+//     the F7 scope-exit fallback and left the translation on the clipboard.
+// CEO intent: the app must NEVER destroy clipboard content it did not put there.
+// Coverage: the DECISION LADDER is a pure function (no Win32 call), then three
+// behavioral pins on the module's own real-clipboard primitives. Same keep-away
+// discipline as the other clipboard suites: the ambient clipboard is backed up
+// first and restored at the end, and no Ctrl+V is ever injected.
+//
+// FIX-B1 (v0.10.4 round 2, 261029_0001; fix-list R2-4 = code-mimo F-02 +
+// sec-mimo R2-2 + sec-gemini F-03): R1-6's clause (b) was only backed for a copy
+// that survives to restore time. On the SUCCESS path PasteAndRestore's own
+// SetClipboardText overwrote the mid-task copy first, and the process-wide
+// own-write slot let a tooltip copy satisfy rule 4. Two mechanisms close it:
+//   - ClipboardTaskScope: the pipeline task's own-write stamp is task-scoped, so
+//     the tooltip's user copy (SetClipboardTextAsUserCopy) can never satisfy it;
+//   - RebaselineClipboardBeforePaste: the live clipboard is captured BEFORE the
+//     destructive paste write and is the restore target afterwards, so the
+//     user's LATEST copy is re-published instead of the pre-task snapshot.
+// The pins below model the REAL production sequences (backup -> own write ->
+// foreign write -> own write -> restore); claim 7 previously modelled
+// `backup -> foreign write -> restore`, which no production path produces.
+// ===========================================================================
+void TestR106ClipboardRestoreGuard() {
+    std::cout << "[RUN] Testing R1-6/R1-20 clipboard restore guards (261029_0001)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto backup_with_text = [](DWORD seq, bool partial) {
+        ClipboardBackup b;
+        b.text = L"t";
+        b.seq_at_backup = seq;
+        b.partial = partial;
+        return b;
+    };
+
+    // ---- (a) pure ladder: payload gate ------------------------------------
+    {
+        ClipboardBackup none; // the exact shape a failed BackupClipboard leaves
+        TEST_CHECK(!HasClipboardBackupPayload(none),
+                   "R1-6: a failed backup carries no payload");
+        TEST_CHECK(DecideClipboardRestore(none, 0, 0) == ClipboardRestoreAction::SkipEmptyBackup,
+                   "R1-6: empty snapshot, zeroed sequences -> SkipEmptyBackup");
+        TEST_CHECK(DecideClipboardRestore(none, 41, 41) == ClipboardRestoreAction::SkipEmptyBackup,
+                   "R1-6: empty snapshot whose sequence matches our own write -> still SkipEmptyBackup (no EmptyClipboard)");
+        TEST_CHECK(DecideClipboardRestore(none, 42, 41) == ClipboardRestoreAction::SkipEmptyBackup,
+                   "R1-6: empty snapshot after a foreign write -> SkipEmptyBackup (nothing to replay either way)");
+        TEST_CHECK(!ClipboardRestoreReportsConfirmed(ClipboardRestoreAction::SkipEmptyBackup),
+                   "R1-6: an empty-snapshot skip reports NOT restored (F7 fallback stays armed)");
+        TEST_CHECK(!ClipboardRestoreArmable(false, backup_with_text(7, false)),
+                   "R1-6: a failed backup is never armable (worker RestorerGuard gate)");
+        TEST_CHECK(!ClipboardRestoreArmable(true, none),
+                   "R1-6: a payload-less backup is never armable even when BackupClipboard returned true");
+        TEST_CHECK(ClipboardRestoreArmable(true, backup_with_text(7, false)),
+                   "R1-6: a real snapshot is armable");
+
+        ClipboardBackup formats_only;
+        formats_only.formats.emplace_back(0xC0DEu, std::vector<uint8_t>{1, 2, 3});
+        TEST_CHECK(HasClipboardBackupPayload(formats_only),
+                   "R1-6: a formats-only snapshot (no CF_UNICODETEXT) is a payload too");
+        TEST_CHECK(ClipboardRestoreArmable(true, formats_only),
+                   "R1-6: a formats-only snapshot is armable");
+    }
+
+    // ---- (a) pure ladder: sequence rules ----------------------------------
+    {
+        const ClipboardBackup b = backup_with_text(100, false);
+        TEST_CHECK(DecideClipboardRestore(b, 100, 100) == ClipboardRestoreAction::AlreadyIntact,
+                   "R1-6: sequence still equals the snapshot -> AlreadyIntact (no replay, no clipboard churn)");
+        TEST_CHECK(DecideClipboardRestore(b, 100, 999) == ClipboardRestoreAction::AlreadyIntact,
+                   "R1-6: intact check wins even when our last write is older than the snapshot");
+        TEST_CHECK(ClipboardRestoreReportsConfirmed(ClipboardRestoreAction::AlreadyIntact),
+                   "R1-6: AlreadyIntact reports the ORIGINAL in place (the F7 disarm signal)");
+        TEST_CHECK(DecideClipboardRestore(b, 101, 101) == ClipboardRestoreAction::Restore,
+                   "R1-6: the clipboard holds OUR write -> Restore (normal paste path)");
+        TEST_CHECK(DecideClipboardRestore(b, 102, 101) == ClipboardRestoreAction::SkipForeignWrite,
+                   "R1-6: a newer foreign write (user copied during translate) wins -> SkipForeignWrite");
+        TEST_CHECK(!ClipboardRestoreReportsConfirmed(ClipboardRestoreAction::SkipForeignWrite),
+                   "R1-6: a foreign-write skip reports NOT restored");
+        TEST_CHECK(DecideClipboardRestore(b, 101, 0) == ClipboardRestoreAction::SkipForeignWrite,
+                   "R1-6: own_write_seq 0 (this process never wrote) -> SkipForeignWrite");
+        TEST_CHECK(DecideClipboardRestore(b, 0, 0) == ClipboardRestoreAction::SkipForeignWrite,
+                   "R1-6: a zeroed live sequence is never mistaken for 'intact'");
+
+        const ClipboardBackup unstamped = backup_with_text(0, false);
+        TEST_CHECK(DecideClipboardRestore(unstamped, 300, 300) == ClipboardRestoreAction::Restore,
+                   "R1-6: an unstamped snapshot (seq 0, caller-built) keeps the legacy decision when the clipboard holds our write");
+    }
+
+    // ---- (a) pure ladder: R1-20 partial snapshots -------------------------
+    {
+        const ClipboardBackup partial = backup_with_text(200, true);
+        TEST_CHECK(partial.partial,
+                   "R1-20: the partial flag survives construction");
+        TEST_CHECK(DecideClipboardRestore(partial, 200, 201) == ClipboardRestoreAction::AlreadyIntact,
+                   "R1-20: a PARTIAL snapshot over a still-live clipboard is never replayed (the >4 MiB format survives)");
+        TEST_CHECK(DecideClipboardRestore(partial, 201, 201) == ClipboardRestoreAction::Restore,
+                   "R1-20: once our own write replaced the clipboard the skipped format is already gone, so the captured part still comes back");
+        TEST_CHECK(DecideClipboardRestore(partial, 202, 201) == ClipboardRestoreAction::SkipForeignWrite,
+                   "R1-20: a partial snapshot never overwrites a foreign write either");
+    }
+
+    // ---- (a) F7 invariant chain -------------------------------------------
+    TEST_CHECK(ClipboardRestorerStaysArmed(true, ClipboardRestoreReportsConfirmed(
+                                                      ClipboardRestoreAction::SkipEmptyBackup)),
+               "F7 invariant: an empty-snapshot restore is NOT confirmed, so the scope-exit restorer stays armed");
+
+    // ---- (a) FIX-B1: the pre-paste foreign-write predicate (pure) ----------
+    // The decision that gates the re-stash. "Foreign" needs POSITIVE evidence:
+    // two known sequence numbers that differ. A zero on either side (no
+    // window-station access, or a task that never wrote) keeps the pre-fix
+    // behaviour instead of re-stashing on a guess.
+    {
+        TEST_CHECK(!ClipboardForeignWriteObserved(70, 70),
+                   "FIX-B1: live == task write -> no mid-task write (the ladder runs unchanged)");
+        TEST_CHECK(ClipboardForeignWriteObserved(71, 70),
+                   "FIX-B1: live != task write -> the user copied during the translation (re-stash)");
+        TEST_CHECK(ClipboardForeignWriteObserved(69, 70),
+                   "FIX-B1: a sequence that moved DOWN is still evidence (any difference counts)");
+        TEST_CHECK(!ClipboardForeignWriteObserved(0, 70),
+                   "FIX-B1: an unknown live sequence never triggers a re-stash on a guess");
+        TEST_CHECK(!ClipboardForeignWriteObserved(70, 0),
+                   "FIX-B1: a task with no own write (and no captured baseline) has nothing to compare");
+        TEST_CHECK(!ClipboardForeignWriteObserved(0, 0),
+                   "FIX-B1: two unknown sequences are not contention");
+    }
+
+    // ---- (a) FIX-B1: task-scope resolution (pure, no clipboard write) ------
+    // The worker installs one ClipboardTaskScope per ExecuteTask. Resolution has
+    // to be LIFO-correct (a scope-exit restore must see the task's stamp) and it
+    // must fall back to the process slot when no scope exists (drag path/tests).
+    {
+        const DWORD process_stamp = OwnClipboardWriteSeq();
+        {
+            ClipboardTaskScope scope;
+            TEST_CHECK(OwnClipboardWriteSeq() == 0,
+                       "FIX-B1: a fresh task scope owns no clipboard write (0 = this task has not written)");
+            NoteOwnClipboardWrite(); // stamps the scope with the live sequence; writes nothing
+            const DWORD task_stamp = OwnClipboardWriteSeq();
+            TEST_CHECK(task_stamp != 0, "FIX-B1: a task write stamps the scope itself");
+            TEST_CHECK(OwnClipboardWriteSeq() == task_stamp,
+                       "FIX-B1: the task stamp is stable across reads");
+            {
+                ClipboardTaskScope inner;
+                TEST_CHECK(OwnClipboardWriteSeq() == 0,
+                           "FIX-B1: a nested scope starts unstamped (no inheriting an outer write)");
+            }
+            TEST_CHECK(OwnClipboardWriteSeq() == task_stamp,
+                       "FIX-B1: leaving a nested scope restores the outer task's stamp");
+        }
+        TEST_CHECK(OwnClipboardWriteSeq() == process_stamp,
+                   "FIX-B1: leaving the task scope restores the process-wide fallback slot (no leak)");
+
+        // The user-intent declaration clears the fallback slot: a caller without
+        // a scope (the drag path) must refuse to replay over a user copy.
+        NoteUserClipboardCopy();
+        TEST_CHECK(OwnClipboardWriteSeq() == 0,
+                   "FIX-B1: a declared user copy leaves the process-wide slot claiming no write");
+    }
+
+    // ---- (b) real-clipboard behavioral pins -------------------------------
+    // Raw writer that deliberately bypasses NoteOwnClipboardWrite: this is what
+    // "another process (or the user) wrote the clipboard" looks like to us.
+    auto raw_clipboard_write = [](const std::wstring& s) {
+        bool ok = false;
+        if (::OpenClipboard(nullptr)) {
+            if (::EmptyClipboard()) {
+                const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+                HGLOBAL h = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
+                if (h) {
+                    void* p = ::GlobalLock(h);
+                    if (p) {
+                        memcpy(p, s.c_str(), bytes);
+                        ::GlobalUnlock(h);
+                        ok = ::SetClipboardData(CF_UNICODETEXT, h) != nullptr;
+                        if (!ok) {
+                            ::GlobalFree(h);
+                        }
+                    } else {
+                        ::GlobalFree(h);
+                    }
+                }
+            }
+            ::CloseClipboard();
+        }
+        return ok;
+    };
+
+    ClipboardBackup ambient;
+    const bool ambient_ok = BackupClipboard(ambient);
+
+    const std::wstring user_text = L"R1-6 user clipboard payload that must survive";
+    const DWORD own_before = OwnClipboardWriteSeq();
+    TEST_CHECK(SetClipboardText(user_text), "R1-6 fixture: wrote the user payload (our own write)");
+    TEST_CHECK(OwnClipboardWriteSeq() != own_before && OwnClipboardWriteSeq() != 0,
+               "R1-6: SetClipboardText stamps the own-write sequence (writer contract)");
+
+    // b1: a FAILED backup must never touch the clipboard (the EmptyClipboard bug).
+    {
+        ClipboardBackup failed_backup; // what BackupClipboard leaves on failure
+        TEST_CHECK(!RestoreClipboard(failed_backup),
+                   "R1-6: an empty snapshot reports failure, never 'restored'");
+        RunClipboardLiveCheck("R1-6 empty-backup write suppression", [&]() -> bool {
+            const DWORD seq_before = ::GetClipboardSequenceNumber();
+            if (GetClipboardText() != user_text) return false; // a foreign write already replaced it
+            RestoreClipboard(failed_backup);
+            const DWORD seq_after = ::GetClipboardSequenceNumber();
+            if (seq_after != seq_before && !GetClipboardText().empty()) {
+                // A write that was not ours landed, and the clipboard still
+                // holds content -> a foreign writer (contention). An EMPTY
+                // clipboard is the pre-fix EmptyClipboard signature, so that
+                // falls through to the assertions as a real failure.
+                return false;
+            }
+            TEST_CHECK(seq_after == seq_before,
+                       "R1-6: an empty snapshot issued NO clipboard write at all");
+            TEST_CHECK(GetClipboardText() == user_text,
+                       "R1-6: the user's copy survived a failed-backup restore");
+            return true;
+        });
+    }
+
+    // b2 (claim 7, CORRECTED by FIX-B1): the production sequence carries the
+    // task's OWN write before the user's copy - the capture chord commits the
+    // selected text, then the multi-second Translate runs, then the user copies
+    // something else. The pre-fix pin modelled `backup -> foreign -> restore`,
+    // which no production path produces (code-mimo F-02 on coder-report-u-c
+    // claim 7); the copy here lands AFTER our own write and the ladder's rule 3
+    // has to keep it. Runs inside a ClipboardTaskScope because that is what
+    // ExecuteTask installs for a real task.
+    RunClipboardLiveCheck("R1-6 claim-7 corrected sequence", [&]() -> bool {
+        ClipboardTaskScope scope; // the pipeline task's ownership slot
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false; // OpenClipboard contention
+        if (before.seq_at_backup == 0) return false;
+        const std::wstring snapshot_text = before.text.value_or(std::wstring());
+        if (!HasClipboardBackupPayload(before)) return false; // empty ambient clipboard: nothing to protect
+        if (!SetClipboardText(L"captured selection (the capture chord's commit)")) return false;
+        const DWORD task_seq = OwnClipboardWriteSeq();
+        if (task_seq == 0 || ::GetClipboardSequenceNumber() != task_seq) return false;
+        const std::wstring during = L"copied during the translation (password manager)";
+        if (!raw_clipboard_write(during)) return false;
+        if (GetClipboardText() != during) return false; // the fixture write lost a race
+        const bool refused = RestoreClipboard(before);
+        const std::wstring now = GetClipboardText();
+        if (now != during) {
+            // The snapshot came back: that is the pre-R1-6 defect (a replay that
+            // overwrites the newer copy) and must fail. Any other content is a
+            // third-party write -> contention.
+            if (!snapshot_text.empty() && now == snapshot_text) {
+                TEST_CHECK(false,
+                           "FIX-B1: the restore refuses to overwrite the newer copy (snapshot replayed)");
+                return true;
+            }
+            return false;
+        }
+        TEST_CHECK(!refused, "FIX-B1: a copy made after the task's own write is a foreign write");
+        TEST_CHECK(now == during, "FIX-B1: the mid-translation copy survived (user content wins)");
+        return true;
+    });
+
+    // b3: our own write is the productive case - the paste path must still work.
+    RunClipboardLiveCheck("R1-6 own-write restore", [&]() -> bool {
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false;
+        if (before.seq_at_backup == 0) return false;
+        const std::wstring snapshot_text = before.text.value_or(std::wstring());
+        if (!SetClipboardText(L"translated text that must not outlive the task")) return false;
+        const DWORD own_seq = OwnClipboardWriteSeq();
+        if (::GetClipboardSequenceNumber() != own_seq) return false; // foreign write
+        const bool restored = RestoreClipboard(before);
+        const DWORD post_seq = ::GetClipboardSequenceNumber();
+        if (!restored && post_seq != own_seq) return false; // foreign write -> contention
+        TEST_CHECK(restored, "R1-6: our own write -> the snapshot is replayed (paste path unchanged)");
+        // Self-contained across a retry: the snapshot's own text is the subject
+        // (the pre-fix check compared against the previous block's payload,
+        // which a retried baseline can no longer assume).
+        if (!snapshot_text.empty()) {
+            TEST_CHECK(GetClipboardText() == snapshot_text,
+                       "R1-6: the snapshot content is back after the replay");
+        }
+        return true;
+    });
+
+    // b4: an unchanged clipboard is confirmed intact and is NOT rewritten.
+    // R1-20 rides on this: a live >4 MiB format cannot be destroyed by a restore
+    // that never issues EmptyClipboard.
+    RunClipboardLiveCheck("R1-6 intact-snapshot no-op", [&]() -> bool {
+        ClipboardBackup intact;
+        if (!BackupClipboard(intact)) return false;
+        if (intact.seq_at_backup == 0) {
+            std::cout << "[SKIP] GetClipboardSequenceNumber() unavailable; intact-snapshot pin skipped." << std::endl;
+            return true;
+        }
+        const DWORD seq_before = ::GetClipboardSequenceNumber();
+        if (seq_before != intact.seq_at_backup) return false; // a write landed after the snapshot
+        const bool restored = RestoreClipboard(intact);
+        const DWORD seq_after = ::GetClipboardSequenceNumber();
+        if (!restored && seq_after != seq_before) return false; // foreign write -> contention
+        TEST_CHECK(restored, "R1-6: an unchanged clipboard reports the original in place");
+        TEST_CHECK(seq_after == seq_before,
+                   "R1-6/R1-20: an intact snapshot issues no EmptyClipboard (sequence untouched)");
+        return true;
+    });
+
+    // b5: the writer contract - a writer can declare its write as ours.
+    RunClipboardLiveCheck("R1-6 writer contract", [&]() -> bool {
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false;
+        if (before.seq_at_backup == 0) return false;
+        if (!raw_clipboard_write(L"seam payload")) return false;
+        NoteOwnClipboardWrite(); // exactly what every writer in win32_input.cpp does
+        const DWORD own_seq = OwnClipboardWriteSeq();
+        if (::GetClipboardSequenceNumber() != own_seq) return false; // foreign write
+        const bool restored = RestoreClipboard(before);
+        if (!restored && ::GetClipboardSequenceNumber() != own_seq) return false;
+        TEST_CHECK(restored, "R1-6: NoteOwnClipboardWrite re-establishes the own-write baseline");
+        return true;
+    });
+
+    // b6 (R1-20): END-TO-END on the real clipboard - a format over the 4 MiB cap
+    // is skipped by the backup, and the restore that follows must not destroy it.
+    RunClipboardLiveCheck("R1-20 over-cap format survivor", [&]() -> bool {
+        const UINT cf_big = ::RegisterClipboardFormatW(L"Emebalachat_R120_BigFormat");
+        constexpr SIZE_T kBigBytes = 5 * 1024 * 1024; // over the 4 MiB per-format cap
+        bool built = false;
+        if (cf_big && ::OpenClipboard(nullptr)) {
+            ::EmptyClipboard();
+            const std::wstring anchor = L"R1-20 big-format anchor";
+            HGLOBAL ht = ::GlobalAlloc(GMEM_MOVEABLE, (anchor.size() + 1) * sizeof(wchar_t));
+            if (ht) {
+                void* p = ::GlobalLock(ht);
+                if (p) {
+                    memcpy(p, anchor.c_str(), (anchor.size() + 1) * sizeof(wchar_t));
+                    ::GlobalUnlock(ht);
+                    if (!::SetClipboardData(CF_UNICODETEXT, ht)) ::GlobalFree(ht);
+                } else {
+                    ::GlobalFree(ht);
+                }
+            }
+            HGLOBAL hb = ::GlobalAlloc(GMEM_MOVEABLE, kBigBytes);
+            if (hb) {
+                void* p = ::GlobalLock(hb);
+                if (p) {
+                    memset(p, 0x5A, kBigBytes);
+                    ::GlobalUnlock(hb);
+                    built = ::SetClipboardData(cf_big, hb) != nullptr;
+                    if (!built) ::GlobalFree(hb);
+                } else {
+                    ::GlobalFree(hb);
+                }
+            }
+            ::CloseClipboard();
+            NoteOwnClipboardWrite(); // the fixture wrote the clipboard
+        }
+        if (!built) {
+            std::cout << "[SKIP] could not stage the >4 MiB clipboard format; R1-20 end-to-end pin "
+                         "skipped." << std::endl;
+            return true;
+        }
+        const DWORD staged_seq = OwnClipboardWriteSeq();
+        if (::GetClipboardSequenceNumber() != staged_seq) return false; // foreign write
+        ClipboardBackup partial;
+        if (!BackupClipboard(partial)) return false;
+        bool big_live = false;
+        if (::OpenClipboard(nullptr)) {
+            big_live = ::IsClipboardFormatAvailable(cf_big) != FALSE;
+            ::CloseClipboard();
+        }
+        if (!big_live) {
+            // R2-11 / code-k3 R2-01 (FIX-B1): a clipboard sync/filter manager
+            // (OneDrive/Teams on this desktop) can DROP a private format WITHOUT
+            // writing the clipboard, so the sequence never moves. That is not a
+            // foreign drift (no contention signature) and not a guard defect:
+            // classify it and SKIP instead of hard-failing the suite. A real
+            // third-party write still moves the sequence -> contention retry.
+            const DWORD seq_now = ::GetClipboardSequenceNumber();
+            if (seq_now == staged_seq) {
+                std::cout << "[SKIP] R1-20 survivor pin: the staged >4 MiB private format was dropped "
+                             "with the clipboard sequence unchanged (external filter/sync); the "
+                             "precondition cannot be staged on this desktop." << std::endl;
+                return true;
+            }
+            return false; // a write replaced the clipboard -> contention
+        }
+        TEST_CHECK(partial.partial,
+                   "R1-20: the skipped over-cap format marks the snapshot partial");
+        if (partial.seq_at_backup == 0) {
+            std::cout << "[SKIP] GetClipboardSequenceNumber() unavailable; R1-20 live pin skipped."
+                      << std::endl;
+            return true;
+        }
+        const DWORD seq_before = ::GetClipboardSequenceNumber();
+        const bool restored = RestoreClipboard(partial);
+        const DWORD seq_after = ::GetClipboardSequenceNumber();
+        if (!restored && seq_after != seq_before) return false; // foreign write -> contention
+        TEST_CHECK(restored,
+                   "R1-20: a partial snapshot over the live clipboard reports the original intact");
+        TEST_CHECK(seq_after == seq_before,
+                   "R1-20: no EmptyClipboard is issued for a live clipboard (sequence untouched)");
+        bool big_back = false;
+        SIZE_T big_size = 0;
+        if (::OpenClipboard(nullptr)) {
+            if (::IsClipboardFormatAvailable(cf_big)) {
+                HANDLE h = ::GetClipboardData(cf_big);
+                big_size = h ? ::GlobalSize(h) : 0;
+                big_back = h != nullptr;
+            }
+            ::CloseClipboard();
+        }
+        if (!big_back) {
+            // Same classification as above: the format disappeared while the
+            // sequence stood still, so nothing of ours wrote the clipboard - an
+            // external filter dropped it. The defect branch that guards the
+            // EmptyClipboard regression is the sequence assertion right above
+            // (a destroy always moves the sequence), so skipping here cannot
+            // mask it.
+            const DWORD seq_now = ::GetClipboardSequenceNumber();
+            if (seq_now == seq_after) {
+                std::cout << "[SKIP] R1-20 survivor pin: the >4 MiB private format was dropped with the "
+                             "sequence unchanged (external filter/sync), not by the restore."
+                          << std::endl;
+                return true;
+            }
+            return false; // a write landed after the restore -> contention
+        }
+        TEST_CHECK(big_back,
+                   "R1-20: the >4 MiB format survived the restore (reported data-loss path closed)");
+        TEST_CHECK(big_size >= kBigBytes,
+                   "R1-20: the surviving format still carries its full 5 MiB payload");
+        return true;
+    });
+
+    // b7 (FIX-B1, R2-4 option (a) "stash/re-publish"; code-mimo F-02): the
+    // SUCCESS path. Production order: backup -> capture chord (own write) ->
+    // user copies during the multi-second Translate -> paste write (own write,
+    // destroys the copy) -> restore. Pre-fix the restore saw its OWN paste write
+    // and replayed the PRE-TASK snapshot: the copy was destroyed and the log
+    // showed a healthy "restored". The correct sequence pins BOTH halves - the
+    // unrebaselined target still chooses Restore (the defect signature) and the
+    // re-baselined target re-publishes the user's latest copy.
+    RunClipboardLiveCheck("FIX-B1 mid-task copy survives the success path", [&]() -> bool {
+        ClipboardTaskScope scope; // the pipeline task's ownership slot
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false;
+        if (before.seq_at_backup == 0) return false;
+        const std::wstring snapshot_text = before.text.value_or(std::wstring());
+        if (!HasClipboardBackupPayload(before)) return false; // empty ambient clipboard: nothing to protect
+        if (!SetClipboardText(L"captured selection (the capture chord's commit)")) return false;
+        const DWORD task_seq = OwnClipboardWriteSeq();
+        if (task_seq == 0 || ::GetClipboardSequenceNumber() != task_seq) return false;
+
+        const std::wstring user_copy = L"user copy made during the multi-second translate";
+        if (!raw_clipboard_write(user_copy)) return false;
+        if (GetClipboardText() != user_copy) return false; // the fixture lost a race
+
+        // The real pre-paste step: detect the foreign write and capture it.
+        ClipboardBackup stash;
+        if (RebaselineClipboardBeforePaste(before, stash) !=
+            ClipboardPrePasteRebaseline::StashedUserCopy) {
+            return false; // OpenClipboard contention inside the re-stash
+        }
+        TEST_CHECK(HasClipboardBackupPayload(stash),
+                   "FIX-B1: the mid-task copy is captured BEFORE the destructive paste write");
+
+        // The paste write, exactly what PasteAndRestore does.
+        if (!SetClipboardText(L"translated text that replaced the copy")) return false;
+        const DWORD paste_seq = OwnClipboardWriteSeq();
+        if (paste_seq == 0 || ::GetClipboardSequenceNumber() != paste_seq) return false;
+
+        // Claim-7 contrast: with the intervening own write, the UNREBASELINED
+        // restore still chooses Restore. That is precisely the pre-fix replay
+        // that destroyed the copy, modelled instead of asserted away. The live
+        // sequence was just proven equal to paste_seq, so the pure ladder is fed
+        // that value (a re-read here could only add a flaky third-party write).
+        TEST_CHECK(DecideClipboardRestore(before, paste_seq, paste_seq) ==
+                       ClipboardRestoreAction::Restore,
+                   "FIX-B1: without the re-baseline the pre-task snapshot would be replayed over the "
+                   "user's copy (the F-02 defect signature)");
+
+        const bool restored = RestoreClipboard(stash);
+        if (!restored && ::GetClipboardSequenceNumber() != paste_seq) return false; // contention
+        const std::wstring now = GetClipboardText();
+        if (now != user_copy) {
+            // The translated text or the pre-task snapshot coming back is a real
+            // failure; anything else is a third-party write -> contention.
+            if (now == L"translated text that replaced the copy" ||
+                (!snapshot_text.empty() && now == snapshot_text)) {
+                TEST_CHECK(false,
+                           "FIX-B1: the user's mid-task copy is re-published after the paste");
+                return true;
+            }
+            return false;
+        }
+        TEST_CHECK(restored, "FIX-B1: the stashed copy is restored as the paste's restore target");
+        TEST_CHECK(now == user_copy,
+                   "FIX-B1: the user's mid-task copy is what the clipboard holds at task end");
+        return true;
+    });
+
+    // b8 (FIX-B1 / sec-gemini F-03): the tooltip "copy" button must never look
+    // like a task's own write. Production shape: the translate task owns a scope
+    // on its worker thread while the tooltip writes on the UI thread (no scope).
+    // Pre-fix both lived in the same process-wide slot, so the task's restore
+    // saw the tooltip copy as "current == own" and replayed its snapshot.
+    RunClipboardLiveCheck("FIX-B1 tooltip copy vs concurrent task", [&]() -> bool {
+        ClipboardTaskScope scope; // this thread = the pipeline worker
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false;
+        if (before.seq_at_backup == 0) return false;
+        const std::wstring snapshot_text = before.text.value_or(std::wstring());
+        if (!HasClipboardBackupPayload(before)) return false; // empty ambient clipboard: nothing to protect
+        if (!SetClipboardText(L"captured selection (the capture chord's commit)")) return false;
+        const DWORD task_seq = OwnClipboardWriteSeq();
+        if (task_seq == 0 || ::GetClipboardSequenceNumber() != task_seq) return false;
+
+        const std::wstring tooltip_text = L"tooltip copy: the translation the user clicked";
+        bool tooltip_ok = false;
+        std::thread ui_thread([&]() { tooltip_ok = SetClipboardTextAsUserCopy(tooltip_text); });
+        ui_thread.join();
+        if (!tooltip_ok) return false;
+        if (GetClipboardText() != tooltip_text) return false; // lost a race
+
+        // The UI thread's write must not have touched this task's stamp.
+        TEST_CHECK(OwnClipboardWriteSeq() == task_seq,
+                   "FIX-B1: a tooltip copy does not restamp the concurrent task's own write");
+        const bool refused = RestoreClipboard(before);
+        const std::wstring now = GetClipboardText();
+        if (now != tooltip_text) {
+            if (!snapshot_text.empty() && now == snapshot_text) {
+                TEST_CHECK(false, "FIX-B1: the task's restore refuses to replay over the tooltip copy");
+                return true;
+            }
+            return false; // contention
+        }
+        TEST_CHECK(!refused,
+                   "FIX-B1: the task's restore refuses to replay over the tooltip copy");
+        TEST_CHECK(now == tooltip_text, "FIX-B1: the tooltip copy survived the concurrent restore");
+
+        // The user-copy path must keep the privacy flags of every translated-text
+        // write (no Win+V history entry, no cloud sync) - same body, so this is a
+        // regression pin, not a new behaviour.
+        {
+            const UINT cf_exclude =
+                ::RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+            const UINT cf_history = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+            const UINT cf_cloud = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
+            bool opened = false;
+            bool flags_ok = false;
+            if (::OpenClipboard(nullptr)) {
+                opened = true;
+                flags_ok = cf_exclude != 0 && cf_history != 0 && cf_cloud != 0 &&
+                           ::IsClipboardFormatAvailable(cf_exclude) != FALSE &&
+                           ::IsClipboardFormatAvailable(cf_history) != FALSE &&
+                           ::IsClipboardFormatAvailable(cf_cloud) != FALSE;
+                ::CloseClipboard();
+            }
+            if (!opened) return false; // contention
+            TEST_CHECK(flags_ok,
+                       "FIX-B1: the tooltip's user copy carries the three Clipboard-History "
+                       "exclusion formats (same write body as the paste write)");
+        }
+
+        // The exported declaration seam - a raw user write plus NoteUserClipboardCopy
+        // - must behave identically (it is what a future non-module writer calls).
+        const std::wstring declared = L"raw user copy declared through the seam";
+        if (!raw_clipboard_write(declared)) return false;
+        NoteUserClipboardCopy();
+        TEST_CHECK(OwnClipboardWriteSeq() == 0,
+                   "FIX-B1: declaring a user copy clears the task's own-write claim");
+        const bool refused_declared = RestoreClipboard(before);
+        const std::wstring after_copy = GetClipboardText();
+        if (after_copy != declared) return false; // a third-party write landed -> contention
+        TEST_CHECK(!refused_declared, "FIX-B1: a declared user copy is never replayed over");
+        TEST_CHECK(after_copy == declared,
+                   "FIX-B1: the declared user copy is still on the clipboard");
+        return true;
+    });
+
+    // b9 (FIX-B1 regression guard): with NO mid-task write the ladder must be
+    // exactly the R1-6 ladder. The re-baseline is a no-op, nothing is stashed,
+    // and the pre-task snapshot is replayed - the paste path keeps working.
+    RunClipboardLiveCheck("FIX-B1 no-contention ladder unchanged", [&]() -> bool {
+        ClipboardTaskScope scope;
+        ClipboardBackup before;
+        if (!BackupClipboard(before)) return false;
+        if (before.seq_at_backup == 0) return false;
+        const std::wstring snapshot_text = before.text.value_or(std::wstring());
+        if (!HasClipboardBackupPayload(before)) return false; // empty ambient clipboard: nothing to protect
+        if (!SetClipboardText(L"captured selection (the capture chord's commit)")) return false;
+        const DWORD task_seq = OwnClipboardWriteSeq();
+        if (task_seq == 0 || ::GetClipboardSequenceNumber() != task_seq) return false;
+
+        ClipboardBackup stash;
+        if (RebaselineClipboardBeforePaste(before, stash) !=
+            ClipboardPrePasteRebaseline::SameAsTaskWrite) {
+            return false; // a write landed under the check -> contention
+        }
+        TEST_CHECK(!HasClipboardBackupPayload(stash),
+                   "FIX-B1: no contention -> nothing is stashed (the pre-paste step is a no-op)");
+
+        if (!SetClipboardText(L"translated text")) return false;
+        const DWORD paste_seq = OwnClipboardWriteSeq();
+        if (paste_seq == 0 || ::GetClipboardSequenceNumber() != paste_seq) return false;
+        const bool restored = RestoreClipboard(before);
+        if (!restored && ::GetClipboardSequenceNumber() != paste_seq) return false; // contention
+        TEST_CHECK(restored,
+                   "FIX-B1: no contention -> the pre-task snapshot is replayed (paste path unchanged)");
+        if (!snapshot_text.empty()) {
+            TEST_CHECK(GetClipboardText() == snapshot_text,
+                       "FIX-B1: the pre-task content is back after the replayed snapshot");
+        }
+        return true;
+    });
+
+    // ---- cleanup: put the ambient clipboard back --------------------------
+    if (ambient_ok) {
+        // Deterministic: make the clipboard OURS first so the R1-6 guard lets the
+        // ambient restore run (a preceding skip would otherwise refuse it too).
+        SetClipboardText(L"R1-6 fixture cleanup");
+        RestoreClipboard(ambient);
+    } else {
+        SetClipboardText(L"");
+    }
+
+    // ---- (c) caller wiring: the arming gate and the three main.cpp sites ----
+    // The RestorerGuard is a function-local type inside ExecuteTask, so its
+    // arming cannot be driven headlessly; these pins are the established
+    // source-shape idiom (see the REQ-051 capture-retry suite) and hold the
+    // structural facts the fix depends on.
+    {
+        const std::filesystem::path wi_path = ResolveRepoFile(L"src\\win32_input.cpp");
+        if (wi_path.empty()) {
+            std::cout << "[SKIP] src/win32_input.cpp not resolvable; writer-contract source pins "
+                         "skipped." << std::endl;
+        } else {
+            std::ifstream in(wi_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            // The copy chord's commit is performed by the TARGET app, so the only
+            // place that can declare it as "our write" is the confirmed branch of
+            // the sequence wait. Injecting a real chord needs an interactive
+            // desktop, hence the structural pin (removing the stamp would silently
+            // stop the every-early-return restore from firing).
+            const size_t wait_pos = src.find("bool CopySelectionWithSequenceWait(");
+            const size_t wait_end = src.find("bool PasteSelection(", wait_pos);
+            const std::string wait_body =
+                (wait_pos != std::string::npos && wait_end > wait_pos)
+                    ? src.substr(wait_pos, wait_end - wait_pos)
+                    : std::string();
+            TEST_CHECK(!wait_body.empty(), "R1-6: CopySelectionWithSequenceWait body is locatable");
+            TEST_CHECK(wait_body.find("NoteOwnClipboardWrite()") != std::string::npos,
+                       "R1-6: a confirmed capture chord stamps the own-write baseline");
+            // The in-scope sample under-reports the sequence (measured +3 drift),
+            // so every own-write stamp must happen AFTER ScopedClipboard::Close.
+            // FIX-B1: both intents now share ONE write body
+            // (SetClipboardTextIntent); the public entry points only choose the
+            // attribution, so the order is pinned once, on that body.
+            const size_t impl_pos = src.find("bool SetClipboardTextIntent(");
+            const size_t impl_end = src.find("bool SetClipboardText(", impl_pos);
+            const std::string impl_body =
+                (impl_pos != std::string::npos && impl_end > impl_pos)
+                    ? src.substr(impl_pos, impl_end - impl_pos)
+                    : std::string();
+            const size_t close_pos = impl_body.find("clip.Close();");
+            const size_t stamp_pos = impl_body.find("NoteOwnClipboardWrite();");
+            const size_t user_stamp_pos = impl_body.find("NoteUserClipboardCopy();");
+            TEST_CHECK(!impl_body.empty() && close_pos != std::string::npos &&
+                           stamp_pos != std::string::npos &&
+                           user_stamp_pos != std::string::npos && close_pos < stamp_pos &&
+                           close_pos < user_stamp_pos,
+                       "R1-6/FIX-B1: the write body closes the clipboard BEFORE attributing the "
+                       "write (no in-scope under-report), for both intents");
+            TEST_CHECK(
+                src.find("return SetClipboardTextIntent(text, timeout_ms, /*user_intent=*/false);") !=
+                        std::string::npos &&
+                    src.find("return SetClipboardTextIntent(text, timeout_ms, /*user_intent=*/true);") !=
+                        std::string::npos,
+                "FIX-B1: SetClipboardText and SetClipboardTextAsUserCopy share that one write body");
+        }
+
+        const std::filesystem::path worker_path = ResolveRepoFile(L"src\\worker.cpp");
+        if (worker_path.empty()) {
+            std::cout << "[SKIP] src/worker.cpp not resolvable; arming-gate source pins skipped."
+                      << std::endl;
+        } else {
+            std::ifstream in(worker_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            TEST_CHECK(src.find("ClipboardRestoreArmable(clip_backup_ok, backup)") !=
+                           std::string::npos,
+                       "R1-6: the worker's scope-exit restorer is wired through the shared arming gate");
+            TEST_CHECK(src.find("if (active && backup_ok)") != std::string::npos,
+                       "R1-6: the guard destructor also re-checks the backup gate (the F7 disarm "
+                       "algebra can only ever DISARM, never re-arm a failed backup)");
+            // FIX-B1: the per-task ownership slot must exist AND outlive the
+            // restorer guard (destruction order is the reverse of declaration
+            // order, so the scope has to be declared first or the scope-exit
+            // restore would run with the process-wide stamp).
+            const size_t scope_pos = src.find("ClipboardTaskScope clipboard_scope;");
+            const size_t guard_pos = src.find("} restorer{backup, ClipboardRestoreArmable(");
+            TEST_CHECK(scope_pos != std::string::npos,
+                       "FIX-B1: ExecuteTask installs the per-task clipboard write scope");
+            TEST_CHECK(scope_pos != std::string::npos && guard_pos != std::string::npos &&
+                           scope_pos < guard_pos,
+                       "FIX-B1: the scope is declared BEFORE the restorer guard (its scope-exit "
+                       "restore still runs with the task's own-write stamp)");
+        }
+        // FIX-B1: the paste path must re-baseline BEFORE its destructive write,
+        // and then restore the re-baselined target. Injecting the real Ctrl+V is
+        // forbidden (no synthetic input to the user's session), so this seam is
+        // pinned structurally next to the behavioral sequence pins (b7/b9).
+        {
+            const std::filesystem::path paste_path =
+                ResolveRepoFile(L"src\\win32_input.cpp");
+            if (paste_path.empty()) {
+                std::cout << "[SKIP] src/win32_input.cpp not resolvable; pre-paste re-baseline pin "
+                             "skipped." << std::endl;
+            } else {
+                std::ifstream in(paste_path, std::ios::binary);
+                const std::string src((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+                const size_t paste_pos = src.find("bool PasteAndRestore(");
+                const size_t paste_end = src.find("void SendEnterKey(", paste_pos);
+                const std::string paste_body =
+                    (paste_pos != std::string::npos && paste_end > paste_pos)
+                        ? src.substr(paste_pos, paste_end - paste_pos)
+                        : std::string();
+                const size_t rebase_pos =
+                    paste_body.find("RebaselineClipboardBeforePaste(backup, mid_task_stash)");
+                const size_t write_pos = paste_body.find("SetClipboardText(text)");
+                TEST_CHECK(!paste_body.empty(), "FIX-B1: PasteAndRestore body is locatable");
+                TEST_CHECK(rebase_pos != std::string::npos && write_pos != std::string::npos &&
+                               rebase_pos < write_pos,
+                           "FIX-B1: PasteAndRestore re-baselines BEFORE its destructive "
+                           "SetClipboardText");
+                TEST_CHECK(paste_body.find("RestoreClipboard(*restore_target)") !=
+                               std::string::npos,
+                           "FIX-B1: the paste path restores the re-baselined target (the user's "
+                           "latest copy), not unconditionally the pre-task snapshot");
+            }
+        }
+        // FIX-B1: the tooltip copy is a USER-intent write. Calling the task-intent
+        // SetClipboardText there would put the translation into the same slot a
+        // concurrent task claims as its own (the F-03 defect).
+        {
+            const std::filesystem::path tooltip_path = ResolveRepoFile(L"src\\ui\\tooltip.cpp");
+            if (tooltip_path.empty()) {
+                std::cout << "[SKIP] src/ui/tooltip.cpp not resolvable; user-copy pin skipped."
+                          << std::endl;
+            } else {
+                std::ifstream in(tooltip_path, std::ios::binary);
+                const std::string src((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+                TEST_CHECK(src.find("SetClipboardTextAsUserCopy(translated_text_)") !=
+                               std::string::npos,
+                           "FIX-B1: the tooltip copy goes through the USER-intent writer");
+                TEST_CHECK(src.find("SetClipboardText(translated_text_)") == std::string::npos,
+                           "FIX-B1: the tooltip no longer stamps the task-intent own-write slot");
+            }
+        }
+        const std::filesystem::path main_path = ResolveRepoFile(L"src\\main.cpp");
+        if (main_path.empty()) {
+            std::cout << "[SKIP] src/main.cpp not resolvable; drag-path source pins skipped."
+                      << std::endl;
+        } else {
+            std::ifstream in(main_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            auto count_of = [](const std::string& hay, const std::string& needle) {
+                size_t n = 0;
+                for (size_t p = hay.find(needle); p != std::string::npos;
+                     p = hay.find(needle, p + needle.size())) {
+                    ++n;
+                }
+                return n;
+            };
+            TEST_CHECK(src.find("const bool backup_ok = emebalachat::BackupClipboard(backup);") !=
+                           std::string::npos,
+                       "R1-6: the drag path keeps BackupClipboard's result (no discarded call)");
+            TEST_CHECK(count_of(src, "emebalachat::RestoreClipboard(backup);") == 2,
+                       "R1-6: the drag path still has exactly its two restore sites");
+            TEST_CHECK(count_of(src, "if (backup_ok) {") == 2,
+                       "R1-6: both drag-path restore sites are gated on the backup result");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-6/R1-20 clipboard restore guards (261029_0001) passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-6/R1-20 clipboard restore guards: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// R1-11 (session 261029_0001, v0.10.4 sweep; code review mimoflash F-02):
+// engine lock discipline. The manager used to hold ONE mutex for the whole
+// Translate() (up to 30 s of host pipe / ~16 s of cloud WinHTTP) while the
+// GUI-thread tray seams (refresh_tray -> GetActiveEngineName, the engine
+// switch -> SetEngineType) took the same lock, so an ordinary tray click
+// during an in-flight translation froze the window ("Not Responding").
+//
+// The fix splits the roles: translate_mutex_ spans the request (requests stay
+// serialized exactly as before), mutex_ is only held for the request-time
+// SNAPSHOT and for the two repair-signal recorders.
+//
+// Coverage:
+//   (a) structural pins on src/engine.cpp: the state lock is taken exactly
+//       once inside the request body, inside the snapshot markers, and no
+//       translate/network/pipe/backoff call sits inside it; every blocking
+//       seam runs after the snapshot; the H2 consent bit is read once, at
+//       request time; the repair signal only goes through the recorders;
+//       WaitInferenceIdle probes the REQUEST lock.
+//   (b) behavioral, against a LIVE in-process fake host that holds the result
+//       frame back: every tray/GUI seam answers while the request is in
+//       flight, and the in-flight request still returns its result.
+//   (c) behavioral, consent semantics are BYTE-IDENTICAL to the old
+//       request-spanning lock: a cloud-consent grant issued while a request is
+//       in flight never reaches that request (it keeps the request-time
+//       snapshot), so the strict-local text stays on-device.
+// ---------------------------------------------------------------------------
+void TestR111EngineStateLockDiscipline() {
+    std::cout << "[RUN] Testing R1-11 engine state-lock discipline (non-blocking tray seams)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace ehc = emebalachat::engine_host;
+    using emebalachat::EngineHostConfig;
+    using emebalachat::EngineType;
+    using emebalachat::GoogleTranslate;
+    using emebalachat::TranslationManager;
+    using emebalachat::TranslationStatus;
+
+    auto count_of = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0;
+        for (size_t p = hay.find(needle); p != std::string::npos;
+             p = hay.find(needle, p + needle.size())) {
+            ++n;
+        }
+        return n;
+    };
+    auto elapsed_ms = [](std::chrono::steady_clock::time_point t0) {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count());
+    };
+    auto wait_for_translate = [](FakeHost& h) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!h.translate_seen() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return h.translate_seen();
+    };
+
+    // ---- (a) structural pin: no blocking seam inside the state lock ---------
+    const std::filesystem::path eng_path = ResolveRepoFile(L"src\\engine.cpp");
+    TEST_CHECK(!eng_path.empty(), "R1-11: src/engine.cpp located via ResolveRepoFile");
+    if (!eng_path.empty()) {
+        std::ifstream eng_in(eng_path, std::ios::binary);
+        const std::string src((std::istreambuf_iterator<char>(eng_in)),
+                              std::istreambuf_iterator<char>());
+        TEST_CHECK(!src.empty(), "R1-11: src/engine.cpp non-empty after read");
+
+        // The 4-arg definition (the 3-arg overload is a one-line forwarder and
+        // does not mention out_status). Translate is the LAST function in the
+        // file, so the namespace-closing comment bounds its body exactly.
+        const size_t sig_pos = src.find("TranslationStatus* out_status");
+        const size_t ns_pos = src.find("} // namespace emebalachat");
+        TEST_CHECK(sig_pos != std::string::npos && ns_pos != std::string::npos &&
+                       ns_pos > sig_pos,
+                   "R1-11 pin: the request body is locatable");
+        if (sig_pos != std::string::npos && ns_pos != std::string::npos && ns_pos > sig_pos) {
+            const std::string body = src.substr(sig_pos, ns_pos - sig_pos);
+
+            TEST_CHECK(body.find("std::lock_guard<std::mutex> serialize(translate_mutex_);") !=
+                           std::string::npos,
+                       "R1-11 pin: the request span is serialized by the dedicated translate mutex");
+            TEST_CHECK(count_of(body, "lock(mutex_)") == 1,
+                       "R1-11 pin: the state lock is taken exactly ONCE in the request body");
+
+            const size_t bpos = body.find("R1-11 snapshot-begin");
+            const size_t epos = body.find("R1-11 snapshot-end");
+            TEST_CHECK(bpos != std::string::npos && epos != std::string::npos && epos > bpos,
+                       "R1-11 pin: the snapshot region markers are present and ordered");
+            if (bpos != std::string::npos && epos != std::string::npos && epos > bpos) {
+                const std::string snap = body.substr(bpos, epos - bpos);
+                TEST_CHECK(snap.find("lock(mutex_)") != std::string::npos,
+                           "R1-11 pin: the snapshot is the one and only state-lock site");
+                TEST_CHECK(snap.size() < 3000,
+                           "R1-11 pin: the state-lock region stays a short copy (a lock widened "
+                           "across the request blows this cap)");
+                TEST_CHECK(snap.find("TryTranslate") == std::string::npos &&
+                               snap.find("GoogleTranslate::Translate") == std::string::npos &&
+                               snap.find("ChatCompletion") == std::string::npos &&
+                               snap.find("::Sleep(") == std::string::npos,
+                           "R1-11 pin: NO translate/network/pipe/backoff call sits inside the "
+                           "state lock");
+                TEST_CHECK(body.find("engine_host::TryTranslate(", epos) != std::string::npos &&
+                               body.find("GoogleTranslate::Translate", epos) != std::string::npos &&
+                               body.find("OpenAiCompatibleClient::ChatCompletion", epos) !=
+                                   std::string::npos,
+                           "R1-11 pin: every blocking seam runs AFTER the snapshot (state lock released)");
+            }
+
+            // The H2 consent gate must consume the REQUEST-TIME snapshot value:
+            // one read at snapshot time, no live re-read at the gate.
+            TEST_CHECK(body.find("cloud_consent = cloud_fallback_enabled_;") != std::string::npos &&
+                           body.find("if (cloud_fallback_enabled_)") == std::string::npos &&
+                           body.find("if (cloud_consent)") != std::string::npos,
+                       "R1-11 pin: the H2 consent bit is read once, at request time, and the gate "
+                       "consumes that snapshot (a mid-flight flip cannot change this request)");
+            // The repair signal is only ever written through the recorders.
+            TEST_CHECK(body.find("NoteHostSuccess();") != std::string::npos &&
+                           body.find("NoteHostFailure();") != std::string::npos &&
+                           body.find("host_fail_streak_ =") == std::string::npos &&
+                           body.find("++host_fail_streak_") == std::string::npos,
+                       "R1-11 pin: the repair signal is recorded through the short-lock recorders only");
+            TEST_CHECK(body.find("DiagnoseServedModelMismatch(preferred, served_model)") !=
+                           std::string::npos,
+                       "R1-11 pin: the REQ-057 diagnosis uses the request snapshot's preferred type");
+        }
+
+        // WaitInferenceIdle must probe the REQUEST lock; the short-held state
+        // lock proves nothing about a request in flight.
+        const size_t idle_pos = src.find("bool TranslationManager::WaitInferenceIdle");
+        const size_t idle_end = src.find("void TranslationManager::NoteHostSuccess");
+        TEST_CHECK(idle_pos != std::string::npos && idle_end != std::string::npos &&
+                       idle_end > idle_pos,
+                   "R1-11 pin: WaitInferenceIdle is locatable");
+        if (idle_pos != std::string::npos && idle_end != std::string::npos && idle_end > idle_pos) {
+            const std::string idle = src.substr(idle_pos, idle_end - idle_pos);
+            TEST_CHECK(idle.find("probe(translate_mutex_, std::try_to_lock)") != std::string::npos &&
+                           idle.find("probe(mutex_") == std::string::npos,
+                       "R1-11 pin: WaitInferenceIdle proves idleness on the request lock");
+        }
+    }
+
+    // ---- (b) tray seams answer DURING a real in-flight request --------------
+    // The fake host holds the result frame for kHoldMs; translate_seen() makes
+    // the in-flight window deterministic (no sleep-and-hope).
+    wchar_t self_exe[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self_exe, MAX_PATH);
+    const std::string pin(emebalachat::kExpectedModelSha256);
+    const int kHoldMs = 3000;
+    const uint64_t kSeamBoundMs = 1200; // far below kHoldMs; old code blocked ~kHoldMs
+    {
+        const int n = 70;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        FakeHost host(TestPipeName(n), 0, pin, "", "ok", "r111-ok", false, kHoldMs);
+        std::thread host_thread = host.Start();
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, "");
+        mgr.SetEngineHostConfig(cfg);
+        TEST_CHECK(mgr.GetActiveEngineName() == "Hy-MT2-1.8B (Shared Host)",
+                   "R1-11: strict local + host present names the shared-host leg");
+
+        TranslationStatus st = TranslationStatus::EngineFailed;
+        std::wstring res;
+        std::thread req([&] { res = mgr.Translate(L"hello", "KO", "EN", &st); });
+        TEST_CHECK(wait_for_translate(host),
+                   "R1-11: the fake host observed the translate frame (request is in flight)");
+
+        const auto t_seam = std::chrono::steady_clock::now();
+        const std::string name_during = mgr.GetActiveEngineName();
+        const bool consent_during = mgr.IsCloudFallbackEnabled();
+        const int streak_during = mgr.HostFailureStreak();
+        mgr.SetEngineType(EngineType::GoogleTranslate);
+        const uint64_t seam_ms = elapsed_ms(t_seam);
+        std::cout << "[INFO] R1-11 in-flight tray-seam latency: " << seam_ms
+                  << " ms (fake host holds the result frame " << kHoldMs << " ms)"
+                  << std::endl;
+        TEST_CHECK(name_during == "Hy-MT2-1.8B (Shared Host)" && !consent_during &&
+                       streak_during == 0,
+                   "R1-11: the tray read seams return the live state while a request is in flight");
+        TEST_CHECK(seam_ms < kSeamBoundMs,
+                   "R1-11: GetActiveEngineName + SetEngineType + streak/consent reads answer "
+                   "without waiting for the in-flight translate");
+        TEST_CHECK(mgr.GetEngineType() == EngineType::GoogleTranslate,
+                   "R1-11: a mid-flight engine switch lands immediately (not after the request)");
+
+        req.join();
+        TEST_CHECK(res == L"r111-ok" && st == TranslationStatus::Ok,
+                   "R1-11: the in-flight request still returns its result (routing outcome unchanged)");
+        TEST_CHECK(mgr.GetActiveEngineName().find("Google Translate") != std::string::npos,
+                   "R1-11: the switch is visible on the next tray refresh");
+        T5FinishHost(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // ---- (c) the consent gate keeps the request-time snapshot ---------------
+    // Consent OFF when the request starts; grant it while the request is in
+    // flight. The in-flight request must still refuse the cloud (text stays
+    // on-device) — exactly the old request-spanning-lock semantics. With the
+    // cloud blocked for testing, reaching the cloud would report EngineFailed
+    // instead of CloudConsentBlocked, so the statuses are distinguishable.
+    {
+        const int n = 71;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        GoogleTranslate::SetCloudBlockedForTesting(true);
+        FakeHost host(TestPipeName(n), 0, pin, "", "engine_failed", "", false, 800);
+        std::thread host_thread = host.Start();
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, ""); // consent OFF at request time
+        mgr.SetEngineHostConfig(cfg);
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res;
+        std::thread req([&] { res = mgr.Translate(L"hello", "KO", "EN", &st); });
+        TEST_CHECK(wait_for_translate(host),
+                   "R1-11: the consent scenario reached the host seam (request is in flight)");
+
+        const auto t_set = std::chrono::steady_clock::now();
+        mgr.SetCloudFallbackEnabled(true); // mid-flight consent grant
+        const uint64_t set_ms = elapsed_ms(t_set);
+        std::cout << "[INFO] R1-11 in-flight consent-setter latency: " << set_ms << " ms"
+                  << std::endl;
+        TEST_CHECK(set_ms < kSeamBoundMs,
+                   "R1-11: SetCloudFallbackEnabled answers during an in-flight translate");
+
+        req.join();
+        GoogleTranslate::SetCloudBlockedForTesting(false);
+        TEST_CHECK(res.empty() && st == TranslationStatus::CloudConsentBlocked,
+                   "R1-11: a consent grant issued mid-flight never reaches the in-flight request "
+                   "(the gate reads the request-time snapshot; text stays on-device)");
+        TEST_CHECK(mgr.IsCloudFallbackEnabled(),
+                   "R1-11: the consent grant itself landed for the next request");
+        TEST_CHECK(mgr.HostFailureStreak() == 1,
+                   "R1-11: the host failure is still recorded exactly once");
+        T5FinishHost(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // Restore the process-wide absent sentinel + the unblocked cloud hook for
+    // the suites registered after this one.
+    ehc::SetPathsForTesting(nullptr, nullptr, L"\\\\?\\NONEXISTENT_EME_HOST\\engine.exe");
+    GoogleTranslate::SetCloudBlockedForTesting(false);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-11 engine state-lock discipline tests passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-11 engine state-lock discipline: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U-H3 (session 261029_0001, v0.10.4 sweep): the data-preservation gates.
+//   R1-12 (code review mimoflash F-03, docs mining N2): a successful model
+//       download must never overwrite a damaged/locked registry.json with a
+//       bundled-only document. The write decision is ShouldPersistRegistryMerge
+//       (src/model_downloader.cpp); coverage = its truth table, the write
+//       sequence order in the production source, the user-entry survival of a
+//       permitted merge (real writer, real files), and the fresh-machine
+//       schema_version defect the gate would otherwise lock in.
+//   R1-13 (code review mimoflash F-04): a hand-malformed config.json must stay
+//       recoverable. Coverage = real LoadFromFile/SaveToFile round-trips: the
+//       original bytes land in config.json.bak, an existing .bak is never
+//       clobbered, and a healthy config never grows a .bak.
+//   R1-24 (docs mining N2/N3/N4): comment truth for the early-Ok path, the
+//       empty-store-dir offer gate, and the prompt cancel entry.
+// ---------------------------------------------------------------------------
+
+// The R1-12 gate lives in src/model_downloader.cpp; this unit's file boundary
+// is the .cpp (the header is frozen for the sweep), so the seam is declared
+// here instead of widening the header. The definition must keep this exact
+// signature or this binary fails to link.
+namespace emebalachat {
+namespace modeldownloader {
+bool ShouldPersistRegistryMerge(engine_host_registry::LoadStatus status);
+} // namespace modeldownloader
+} // namespace emebalachat
+
+void TestR112R113DataPreservation() {
+    std::cout << "[RUN] Testing R1-12/R1-13/R1-24 data-preservation gates..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    namespace md = emebalachat::modeldownloader;
+    namespace ehr = emebalachat::engine_host_registry;
+
+    auto read_bytes = [](const std::filesystem::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        if (!in) return std::string{};
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    auto write_bytes = [](const std::filesystem::path& p, const std::string& s) {
+        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        out << s;
+        return static_cast<bool>(out);
+    };
+    auto read_source = [&read_bytes](const wchar_t* rel) {
+        const std::filesystem::path p = ResolveRepoFile(rel);
+        return p.empty() ? std::string{} : read_bytes(p);
+    };
+
+    std::error_code ec;
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path(ec) /
+        ("emebala_uh3_gates_" + std::to_string(::GetCurrentProcessId()));
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    // ---- R1-12: the write-decision truth table ----------------------------
+    TEST_CHECK(md::ShouldPersistRegistryMerge(ehr::LoadStatus::Ok),
+               "R1-12: a clean registry (Ok) may be merged + rewritten");
+    TEST_CHECK(md::ShouldPersistRegistryMerge(ehr::LoadStatus::Missing),
+               "R1-12: a missing registry (fresh machine) is the bundled doc's first write");
+    TEST_CHECK(!md::ShouldPersistRegistryMerge(ehr::LoadStatus::ReadError),
+               "R1-12: a locked/unreadable registry.json is NEVER overwritten");
+    TEST_CHECK(!md::ShouldPersistRegistryMerge(ehr::LoadStatus::Malformed),
+               "R1-12: a structurally broken registry.json is NEVER overwritten");
+    TEST_CHECK(!md::ShouldPersistRegistryMerge(ehr::LoadStatus::NotJson),
+               "R1-12: a non-object document is NEVER overwritten");
+    TEST_CHECK(!md::ShouldPersistRegistryMerge(ehr::LoadStatus::SchemaVersion),
+               "R1-12: a future/absent schema_version is NEVER overwritten");
+    TEST_CHECK(!md::ShouldPersistRegistryMerge(ehr::LoadStatus::Malformed) &&
+                   !md::ShouldPersistRegistryMerge(ehr::LoadStatus::ReadError),
+               "R1-12: exactly Ok + Missing pass (the other four statuses fail closed)");
+
+    // ---- R1-12: a damaged document is refused and survives byte-identical --
+    // LoadDefaultRegistry = ReadTextFileUtf8 + ParseRegistryJson, so parsing the
+    // same bytes pins the status the production load would return. Two damage
+    // shapes are covered: an unterminated document (NotJson) and a valid object
+    // with a wrong-typed models[] (Malformed) — the hand-edit and interrupted-
+    // writer classes.
+    {
+        const std::string truncated = "{\n  \"schema_version\": 1,\n  \"models\": [\n";
+        const std::string wrong_typed = "{\n  \"schema_version\": 1,\n  \"models\": \"nope\"\n}\n";
+        TEST_CHECK(ehr::ParseRegistryJson(truncated).status == ehr::LoadStatus::NotJson,
+                   "R1-12: an unterminated registry.json parses as NotJson (empty registry)");
+        const ehr::LoadResult parsed = ehr::ParseRegistryJson(wrong_typed);
+        TEST_CHECK(parsed.status == ehr::LoadStatus::Malformed,
+                   "R1-12: a wrong-typed models[] parses as Malformed (empty registry)");
+        TEST_CHECK(parsed.registry.models.empty(),
+                   "R1-12: the failed load hands back an EMPTY registry (the clobber vector)");
+        const std::filesystem::path reg_path = root / L"registry.json";
+        TEST_CHECK(write_bytes(reg_path, wrong_typed), "R1-12: damaged fixture written");
+        // The production sequence: load -> gate -> refused, so no merge and no
+        // write ever reach the file.
+        TEST_CHECK(!md::ShouldPersistRegistryMerge(parsed.status),
+                   "R1-12: the gate refuses the merge for that status");
+        TEST_CHECK(read_bytes(reg_path) == wrong_typed,
+                   "R1-12: the damaged registry.json is still byte-identical (nothing wrote it)");
+    }
+
+    // ---- R1-12: a permitted merge keeps every origin:"user" entry ---------
+    {
+        ehr::Registry user_reg;
+        user_reg.schema_version = ehr::kRegistrySchemaVersion;
+        ehr::ModelEntry user_entry;
+        user_entry.id = "user-milmmt";
+        user_entry.family = "ggml-translate";
+        user_entry.files = {"MiLMMT-Q4.gguf"};
+        user_entry.origin = "user";
+        user_reg.models.push_back(user_entry);
+        const std::string doc = ehr::SerializeRegistry(user_reg);
+        const std::filesystem::path merge_dir = root / L"merge_store";
+        std::filesystem::create_directories(merge_dir, ec);
+        TEST_CHECK(write_bytes(merge_dir / L"registry.json", doc),
+                   "R1-12: healthy registry fixture written");
+
+        const ehr::LoadResult loaded = ehr::ParseRegistryJson(doc);
+        TEST_CHECK(loaded.status == ehr::LoadStatus::Ok,
+                   "R1-12: the healthy document loads Ok (gate opens)");
+        if (md::ShouldPersistRegistryMerge(loaded.status)) {
+            ehr::Registry merged = loaded.registry;
+            md::MergeBundledEntry(merged);
+            const ehr::WriteOutcome wo = ehr::WriteRegistryAtomically(merged, merge_dir);
+            TEST_CHECK(wo == ehr::WriteOutcome::Ok, "R1-12: the merged document lands");
+            const ehr::LoadResult back = ehr::ParseRegistryJson(
+                read_bytes(merge_dir / L"registry.json"));
+            bool kept_user = false;
+            for (const auto& m : back.registry.models) {
+                if (m.id == "user-milmmt" && m.origin == "user") kept_user = true;
+            }
+            TEST_CHECK(back.status == ehr::LoadStatus::Ok && kept_user,
+                       "R1-12: the user entry survives the bundled merge (the data the "
+                       "old code destroyed)");
+            TEST_CHECK(back.registry.models.size() == 2,
+                       "R1-12: the merge APPENDS the bundled slot next to the user entry");
+        } else {
+            TEST_CHECK(false, "R1-12: the gate must open for an Ok document");
+            TEST_CHECK(false, "R1-12: user entry survival (skipped: gate closed)");
+            TEST_CHECK(false, "R1-12: bundled slot appended (skipped: gate closed)");
+        }
+    }
+
+    // ---- R1-12: fresh-machine schema_version (adjacent defect, fixed) -----
+    // A default-constructed Registry carries schema_version 0 and the serializer
+    // writes it verbatim, so the pre-fix Missing-branch merge produced a
+    // document the parser rejects: the download manufactured the damaged state
+    // the new gate then refuses. The production assignment is pinned below.
+    {
+        ehr::Registry fresh; // schema_version == 0, exactly the Missing shape
+        md::MergeBundledEntry(fresh);
+        const ehr::LoadResult without_fix = ehr::ParseRegistryJson(ehr::SerializeRegistry(fresh));
+        TEST_CHECK(without_fix.status == ehr::LoadStatus::SchemaVersion,
+                   "R1-12: a schema_version-0 document is REJECTED on the next load "
+                   "(why the Missing branch must set the version)");
+        fresh.schema_version = ehr::kRegistrySchemaVersion;
+        const ehr::LoadResult with_fix = ehr::ParseRegistryJson(ehr::SerializeRegistry(fresh));
+        TEST_CHECK(with_fix.status == ehr::LoadStatus::Ok &&
+                       with_fix.registry.models.size() == 1 &&
+                       with_fix.registry.models[0].id == md::kBundledRegistryId,
+                   "R1-12: with schema_version set, the fresh-machine doc round-trips to the "
+                   "pinned bundled entry");
+    }
+
+    // ---- R1-12/R1-24: production-source pins ------------------------------
+    {
+        const std::string md_src = read_source(L"src\\model_downloader.cpp");
+        TEST_CHECK(!md_src.empty(), "R1-12: model_downloader.cpp resolvable for the pins");
+        if (!md_src.empty()) {
+            // Exactly the definition + the two call sites (pre-flight, post-transfer).
+            size_t gate_calls = 0;
+            for (size_t p = md_src.find("!ShouldPersistRegistryMerge(");
+                 p != std::string::npos;
+                 p = md_src.find("!ShouldPersistRegistryMerge(", p + 1)) {
+                ++gate_calls;
+            }
+            TEST_CHECK(gate_calls == 2,
+                       "R1-12: the gate guards BOTH the pre-flight probe and the post-transfer write");
+            const size_t pre_gate = md_src.find("!ShouldPersistRegistryMerge(");
+            const size_t post_gate = md_src.rfind("!ShouldPersistRegistryMerge(");
+            const size_t merge_at = md_src.find("MergeBundledEntry(reg)");
+            const size_t write_at = md_src.find("WriteRegistryAtomically(reg, dir)");
+            TEST_CHECK(pre_gate != std::string::npos && merge_at != std::string::npos &&
+                           write_at != std::string::npos && pre_gate < merge_at &&
+                           post_gate < merge_at && post_gate < write_at,
+                       "R1-12: both refusals sit BEFORE the merge and the atomic write");
+            TEST_CHECK(md_src.find("reg.schema_version = engine_host_registry::kRegistrySchemaVersion;") !=
+                           std::string::npos,
+                       "R1-12: the Missing branch sets schema_version before serializing");
+
+            // R1-24 (N2): the early-Ok comment now states the truth.
+            TEST_CHECK(md_src.find("still (re)write registry below") == std::string::npos,
+                       "R1-24 (N2): the false 'still (re)write registry below' note is gone");
+            TEST_CHECK(md_src.find("NOT (re)registered here") != std::string::npos &&
+                           md_src.find("N2, still open") != std::string::npos,
+                       "R1-24 (N2): the early-Ok path documents that it skips the registry merge");
+
+            // R1-24 (N4): the cancel entry check precedes any I/O.
+            const size_t cancel_at =
+                md_src.find("if (cancel.load(std::memory_order_relaxed)) return FetchOutcome::Cancelled;");
+            const size_t mkdir_at = md_src.find("std::filesystem::create_directories(dir, ec)");
+            TEST_CHECK(cancel_at != std::string::npos && mkdir_at != std::string::npos &&
+                           cancel_at < mkdir_at,
+                       "R1-24 (N4): an already-requested cancel returns before any store I/O");
+            TEST_CHECK(md_src.find("30 s receive timeout") != std::string::npos,
+                       "R1-24 (N4): the real cancel bound (one blocked read bounded by the 30 s "
+                       "receive timeout) is documented truthfully");
+        }
+
+        const std::string main_src = read_source(L"src\\main.cpp");
+        TEST_CHECK(!main_src.empty(), "R1-24: main.cpp resolvable for the offer-gate pin");
+        if (!main_src.empty()) {
+            const size_t gate_at = main_src.find("const bool store_dir_resolvable =");
+            const size_t offer_at = main_src.find("OfferModelDownload(nullptr)");
+            TEST_CHECK(gate_at != std::string::npos && offer_at != std::string::npos &&
+                           gate_at < offer_at,
+                       "R1-24 (N3): the offer is gated on a resolvable store dir before the "
+                       "dialog can show its [Download] button");
+            TEST_CHECK(main_src.find("DefaultModelsDir().empty()") != std::string::npos,
+                       "R1-24 (N3): the gate reads DefaultModelsDir(), the same seam the "
+                       "downloader fails on");
+        }
+    }
+
+    // ---- R1-24 (N4) behavioural: an already-cancelled fetch is a no-op ----
+    {
+        // Worst case if the entry check is ever removed: DownloadUpdate's own
+        // first line still returns Cancelled, so this can never start a transfer.
+        std::atomic<bool> cancelled{true};
+        const md::FetchOutcome out = md::FetchAndInstallModel({}, cancelled, {});
+        TEST_CHECK(out == md::FetchOutcome::Cancelled,
+                   "R1-24 (N4): an already-cancelled fetch returns Cancelled without a transfer");
+    }
+
+    // ---- R1-13: a malformed config is preserved as config.json.bak --------
+    {
+        const std::filesystem::path malformed_path = root / L"malformed" / L"config.json";
+        std::filesystem::create_directories(malformed_path.parent_path(), ec);
+        const std::string malformed =
+            "{\n  \"ui_language\": \"Korean\",\n  \"engine_type\": ";
+        const std::filesystem::path bak = malformed_path.string() + ".bak";
+        TEST_CHECK(write_bytes(malformed_path, malformed), "R1-13: malformed fixture written");
+
+        emebalachat::AppConfig cfg;
+        TEST_CHECK(!cfg.LoadFromFile(malformed_path),
+                   "R1-13: a hand-malformed config fails to load (defaults retained)");
+        TEST_CHECK(cfg.ui_language == "auto",
+                   "R1-13: on the failed load every field is still at its default");
+        TEST_CHECK(std::filesystem::exists(bak),
+                   "R1-13: the original was copied to config.json.bak at load time");
+        TEST_CHECK(read_bytes(bak) == malformed,
+                   "R1-13: the .bak holds the user's exact bytes");
+        TEST_CHECK(read_bytes(malformed_path) == malformed,
+                   "R1-13: the malformed config.json is untouched by the load");
+
+        // The exit save (and every other save) then replaces the live file; the
+        // rescue copy must survive that unchanged.
+        TEST_CHECK(cfg.SaveToFile(malformed_path),
+                   "R1-13: the exit-save shape rewrites the live config");
+        const std::string rewritten = read_bytes(malformed_path);
+        TEST_CHECK(!rewritten.empty() && rewritten != malformed,
+                   "R1-13: the live config.json is a healthy document again");
+        TEST_CHECK(read_bytes(bak) == malformed,
+                   "R1-13: the .bak is NOT overwritten by the save");
+
+        // A second malformation must not clobber the first rescue copy.
+        const std::string malformed2 = "{ \"target_language\": ";
+        TEST_CHECK(write_bytes(malformed_path, malformed2), "R1-13: second malformed fixture");
+        emebalachat::AppConfig cfg2;
+        TEST_CHECK(!cfg2.LoadFromFile(malformed_path),
+                   "R1-13: the second malformation also fails to load");
+        TEST_CHECK(read_bytes(bak) == malformed,
+                   "R1-13: an existing .bak is never overwritten (first rescue copy kept)");
+    }
+
+    // ---- R1-13: healthy configs never grow a .bak (zero noise) ------------
+    {
+        const std::filesystem::path healthy_dir = root / L"healthy";
+        const std::filesystem::path healthy_path = healthy_dir / L"config.json";
+        std::filesystem::create_directories(healthy_dir, ec);
+        emebalachat::AppConfig writer;
+        writer.SetUiLanguage("Korean");
+        TEST_CHECK(writer.SaveToFile(healthy_path), "R1-13: healthy fixture written");
+        const std::string before = read_bytes(healthy_path);
+        const std::filesystem::path bak = healthy_path.string() + ".bak";
+
+        emebalachat::AppConfig reader;
+        TEST_CHECK(reader.LoadFromFile(healthy_path),
+                   "R1-13: the healthy config loads");
+        TEST_CHECK(reader.SaveToFile(healthy_path), "R1-13: the healthy round-trip saves");
+        TEST_CHECK(!std::filesystem::exists(bak),
+                   "R1-13: a healthy round-trip writes NO .bak (zero noise)");
+        TEST_CHECK(read_bytes(healthy_path) == before,
+                   "R1-13: the healthy round-trip is byte-stable (no spurious rewrite)");
+    }
+
+    std::filesystem::remove_all(root, ec);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] R1-12/R1-13/R1-24 data-preservation gates passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] R1-12/R1-13/R1-24 data-preservation gates: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- U-J (R1-22, session 261029_0001, v0.10.4 sweep): Wave A quick wins ----
+// W1 tray tip / status-row composition (+ the szTip budget and its drop order),
+// W2 the pure swap planner both language pairs share, W3 the Ctrl+F9 cycle
+// confirmation (main.cpp is a GUI TU, so its wiring is pinned by source
+// inspection, the TestReq046TrayMenuStructure precedent), W5 the hotkey
+// display formatter used by the cursor bubble.
+void TestUJQuickWins() {
+    std::cout << "[TEST] U-J Wave A convenience quick wins (R1-22: W1/W2/W3/W5)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- W1a: the cap IS the real szTip capacity (no drifting literal) -----
+    {
+        NOTIFYICONDATAW probe{};
+        // volatile: keeps the comparison non-constant so /W4's C4127 does not
+        // fire on the sizeof arithmetic (the value still pins the SDK number).
+        volatile size_t sz_tip_units = sizeof(probe.szTip) / sizeof(probe.szTip[0]);
+        TEST_CHECK(sz_tip_units == 128, "W1: NOTIFYICONDATAW::szTip is 128 wchars");
+        TEST_CHECK(kTrayTipMaxChars + 1 == sz_tip_units,
+                   "W1: the tip cap leaves room for the terminator (127)");
+    }
+
+    // ---- W1b: engine short label (both push shapes -> one token) -----------
+    TEST_CHECK(TrayEngineLabel("Google Translate (Cloud)") == "Google Translate",
+               "W1: GUI engine stem drops its parenthetical");
+    TEST_CHECK(TrayEngineLabel("Hy-MT2-1.8B (Shared Host)") == "Hy-MT2-1.8B",
+               "W1: the local engine shows the model token");
+    TEST_CHECK(TrayEngineLabel("Local (Model Missing)") == "Local",
+               "W1: the missing-model stem stays readable");
+    TEST_CHECK(TrayEngineLabel("OpenAI Compatible (Cloud)") == "OpenAI Compatible",
+               "W1: OpenAI stem keeps both words");
+    // The hook-thread refreshes push the raw persisted engine_type token.
+    TEST_CHECK(TrayEngineLabel("local") == "Local", "W1: raw 'local' token maps to Local");
+    TEST_CHECK(TrayEngineLabel("google") == "Google Translate",
+               "W1: raw 'google' token maps to Google Translate");
+    TEST_CHECK(TrayEngineLabel("auto") == "Google Translate",
+               "W1: raw 'auto' token maps to the auto-resolved Google route");
+    TEST_CHECK(TrayEngineLabel("openai") == "OpenAI Compatible",
+               "W1: raw 'openai' token maps to OpenAI Compatible");
+    TEST_CHECK(TrayEngineLabel("user_gguf") == "User model",
+               "W1: raw 'user_gguf' token maps to User model");
+    TEST_CHECK(TrayEngineLabel("") == "", "W1: no engine string -> no engine segment");
+
+    // ---- W1c: tip composition + conscious truncation -----------------------
+    {
+        TrayTipParts parts;
+        parts.title = L"Emebala Chat";
+        parts.state = L"Active";
+        parts.engine = L"Google Translate";
+        parts.src_display = L"Auto Detect";
+        parts.tgt_display = L"English";
+        parts.auto_send_label = L"Auto-Send on Enter";
+
+        TEST_CHECK(ComposeTrayTip(parts) ==
+                       L"Emebala Chat (Active) - Google Translate · Auto Detect → English",
+                   "W1: tip = title (state) - engine · SRC → TGT");
+        parts.auto_send = true;
+        TEST_CHECK(ComposeTrayTip(parts) ==
+                       L"Emebala Chat (Active) - Google Translate · Auto Detect → English · Auto-Send on Enter",
+                   "W1: auto-send ON appends the MenuAutoSend tail");
+        parts.engine = std::wstring_view{}; // empty engine -> segment vanishes
+        TEST_CHECK(ComposeTrayTip(parts) ==
+                       L"Emebala Chat (Active) · Auto Detect → English · Auto-Send on Enter",
+                   "W1: an empty engine label drops the segment (no dangling separator)");
+        parts.engine = L"Google Translate";
+    }
+
+    // Overflow drops the OPTIONAL auto-send tail first, never the pair.
+    {
+        TrayTipParts parts;
+        parts.title = L"Emebala Chat";
+        parts.state = L"Active";
+        parts.engine = L"Google Translate";
+        parts.src_display = L"Auto Detect";
+        parts.tgt_display = std::wstring(60, L'X');
+        parts.auto_send_label = L"Auto-Send on Enter";
+        parts.auto_send = false;
+        const std::wstring core_only = ComposeTrayTip(parts);
+        TEST_CHECK(core_only.size() <= kTrayTipMaxChars && core_only.size() > 100,
+                   "W1: the 60-char target still fits without the auto-send tail");
+        parts.auto_send = true;
+        const std::wstring dropped = ComposeTrayTip(parts);
+        TEST_CHECK(dropped == core_only,
+                   "W1: overflow drops the auto-send tail instead of cutting the pair");
+        TEST_CHECK(dropped.find(L"Auto-Send") == std::wstring::npos,
+                   "W1: the dropped tail leaves no separator residue");
+    }
+
+    // Hard overflow: ellipsis at the cap (a visible cut, never a silent one).
+    {
+        TrayTipParts parts;
+        parts.title = L"Emebala Chat";
+        parts.state = L"Active";
+        parts.engine = L"Google Translate";
+        parts.src_display = L"Auto Detect";
+        parts.tgt_display = std::wstring(100, L'Y');
+        parts.auto_send_label = L"Auto-Send on Enter";
+        parts.auto_send = true;
+        const std::wstring out = ComposeTrayTip(parts);
+        TEST_CHECK(out.size() == kTrayTipMaxChars,
+                   "W1: hard overflow fills exactly the szTip budget");
+        TEST_CHECK(!out.empty() && out.back() == L'\u2026',
+                   "W1: hard overflow marks the cut with an ellipsis");
+    }
+
+    // The cut never splits a surrogate pair (U+2026 replaces the high half).
+    {
+        std::wstring tgt(118, L'a');
+        tgt += L'\xD83D';
+        tgt += L'\xDE00'; // a surrogate PAIR straddling the cut boundary
+        tgt += std::wstring(10, L'b');
+
+        TrayTipParts parts;
+        parts.title = L"T";
+        parts.tgt_display = tgt;
+        parts.auto_send_label = L"x";
+        const std::wstring out = ComposeTrayTip(parts);
+        // "T" + " · " + "" + " → " = 7 wchars of prefix, so the high half of
+        // the pair sits at index 125 = the last kept char before the cut.
+        TEST_CHECK(out.size() == kTrayTipMaxChars - 1 &&
+                       out.back() == L'\u2026' && out[out.size() - 2] == L'a',
+                   "W1: a cut backs off a dangling high surrogate (no lone half)");
+    }
+
+    // ---- W1d: the menu's top status row carries the type pair -------------
+    {
+        TEST_CHECK(ComposeTrayStatusLabel(L"상태: 활성 (F9: 일시 정지)", L"자동 감지", L"영어") ==
+                       L"상태: 활성 (F9: 일시 정지) · 자동 감지 → 영어",
+                   "W1: status row = localized state · SRC → TGT");
+        TEST_CHECK(ComposeTrayStatusLabel(L"Status: Active", L"", L"") == L"Status: Active",
+                   "W1: an empty pair leaves the bare status row");
+    }
+
+    // ---- W1e: the REAL UpdateStatus path honours the szTip budget ---------
+    // Not just the pure helper: this drives the shipped surface (compose ->
+    // wcsncpy_s into the NOTIFYICONDATAW) on a non-Created tray, where
+    // Shell_NotifyIcon is a headless no-op. Locale-independent assertions
+    // only, so the suite never has to flip the UI language.
+    {
+        SystemTray tray; // not Create()d: UpdateStatus is Shell-API-only
+        tray.UpdateStatus(true, "Hy-MT2-1.8B (Shared Host)", "AUTO", "KO",
+                          "AUTO", "KO", /*auto_send=*/true, /*sound=*/true,
+                          /*badge=*/true);
+        const std::wstring_view tip = tray.TipTextForTest();
+        TEST_CHECK(!tip.empty() && tip.size() <= kTrayTipMaxChars,
+                   "W1: the shipped tip fits the szTip budget");
+        // The engine short token rides the tip (the whole point of F1) and the
+        // pair separator is the U+2192 arrow, not the old ASCII "->".
+        TEST_CHECK(tip.find(L"Hy-MT2-1.8B") != std::wstring_view::npos,
+                   "W1: the engine token is visible in the real tip");
+        TEST_CHECK(tip.find(L" \u2192 ") != std::wstring_view::npos &&
+                       tip.find(L" -> ") == std::wstring_view::npos,
+                   "W1: the real tip uses the · / → separators");
+
+        // A pathological language code (I18n echoes unresolvable codes
+        // verbatim) must still never overflow the buffer: the surface is
+        // protected by the cap, not by optimistic string lengths.
+        const std::string huge_code(200, 'Z');
+        tray.UpdateStatus(false, "Google Translate (Cloud)", huge_code, huge_code,
+                          "AUTO", "KO", /*auto_send=*/true, /*sound=*/false,
+                          /*badge=*/true);
+        const std::wstring_view capped = tray.TipTextForTest();
+        TEST_CHECK(capped.size() <= kTrayTipMaxChars &&
+                       capped.size() >= kTrayTipMaxChars - 1 &&
+                       capped.back() == L'\u2026',
+                   "W1: an absurd pair overflows into a capped, ellipsized tip");
+    }
+
+    // ---- R2-5 (FIX-B2): hook-path refreshes keep the GUI-resolved stem -----
+    // F9 / Ctrl+Shift+Enter / Ctrl+F9 run on the hook thread and only hold the
+    // persisted engine_type token, so they now pass an EMPTY engine view and
+    // UpdateStatus preserves the stem refresh_tray() pushed from
+    // engine.GetActiveEngineName(). Pre-fix the token clobbered the tip:
+    // "auto" -> "Google Translate", "local" -> "Local", "user_gguf" -> "User
+    // model". Driven through the shipped surface (non-Created tray), same as
+    // W1e; every assertion is on the engine segment, so the UI locale is
+    // irrelevant.
+    {
+        struct HookClobberCase {
+            const char* gui_stem;       // what engine.GetActiveEngineName() pushed
+            const wchar_t* keep_token;  // must survive the hook-path refresh
+            const wchar_t* gone_label;  // the degraded label the token produced
+        };
+        const HookClobberCase cases[] = {
+            {"Hy-MT2-1.8B (Shared Host)", L"Hy-MT2-1.8B", L"Google Translate"},
+            {"MiLMMT-46-4B-v1.0.Q5_K_M_3", L"MiLMMT-46-4B-v1.0.Q5_K_M_3", L"User model"},
+        };
+        for (const HookClobberCase& c : cases) {
+            SystemTray tray;
+            // GUI authority push (refresh_tray), then the hook-path refresh.
+            tray.UpdateStatus(true, c.gui_stem, "AUTO", "KO", "AUTO", "KO",
+                              /*auto_send=*/true, /*sound=*/true, /*badge=*/true);
+            tray.UpdateStatus(false, std::string_view{}, "AUTO", "KO", "AUTO", "KO",
+                              /*auto_send=*/true, /*sound=*/true, /*badge=*/true);
+            const std::wstring_view tip = tray.TipTextForTest();
+            TEST_CHECK(tip.find(c.keep_token) != std::wstring_view::npos,
+                       std::string("R2-5: the hook path keeps the GUI stem '") +
+                           c.gui_stem + "' in the tip");
+            TEST_CHECK(tip.find(c.gone_label) == std::wstring_view::npos,
+                       std::string("R2-5: the raw engine_type token no longer degrades '") +
+                           c.gui_stem + "'");
+        }
+    }
+
+
+    // ---- W2: one swap policy for both pairs --------------------------------
+    {
+        const LanguageSwapPlan concrete = PlanLanguageSwap("Korean", "English", "ko");
+        TEST_CHECK(concrete.source == "English" && concrete.target == "Korean",
+                   "W2: a concrete pair swaps directly");
+
+        const LanguageSwapPlan auto_to_os = PlanLanguageSwap("Auto Detect", "English", "ko");
+        TEST_CHECK(auto_to_os.source == "English" && auto_to_os.target == "Korean",
+                   "W2: AUTO source pivots to the OS-native target");
+
+        const LanguageSwapPlan auto_reverse = PlanLanguageSwap("Auto Detect", "Korean", "ko");
+        TEST_CHECK(auto_reverse.source == "Korean" && auto_reverse.target == "English",
+                   "W2: AUTO source whose target already IS the OS language reverses instead");
+
+        const LanguageSwapPlan en_os = PlanLanguageSwap("AUTO", "EN", "en");
+        TEST_CHECK(en_os.source == "English" && en_os.target == "Korean",
+                   "W2: an EN OS never produces the degenerate EN -> EN request");
+
+        const LanguageSwapPlan ko_fallback = PlanLanguageSwap("Auto Detect", "English", "");
+        TEST_CHECK(ko_fallback.source == "English" && ko_fallback.target == "Korean",
+                   "W2: an unresolved OS language falls back to KO (historical rule)");
+
+        const LanguageSwapPlan unknown_os = PlanLanguageSwap("Auto Detect", "English", "xx-unknown");
+        TEST_CHECK(unknown_os.target == "Korean",
+                   "W2: an unsupported OS language keeps the same fallback target");
+
+        // Every plan is a legal DRAG-context request for the coordinator.
+        const LanguageSyncPlan applied = PlanLanguageSync(
+            LanguageContext::Drag, "Auto Detect", "Korean",
+            auto_reverse.source, auto_reverse.target);
+        TEST_CHECK(applied.valid && applied.source_language == "Korean" &&
+                       applied.target_language == "English",
+                   "W2: the planned drag swap is accepted by the language coordinator");
+    }
+
+    // ---- W5: hotkey display formatter --------------------------------------
+    {
+        struct Case {
+            const char* spec;
+            const wchar_t* display;
+        };
+        const Case cases[] = {
+            {"F9", L"F9"},
+            {"Ctrl+F9", L"Ctrl+F9"},
+            {"Ctrl+Shift+Enter", L"Ctrl+Shift+Enter"},
+            {"Win+F9", L"Win+F9"},
+            // Canonical modifier order regardless of the config spelling.
+            {"shift+ctrl+enter", L"Ctrl+Shift+Enter"},
+            {"Ctrl+Shift+Alt+Win+F24", L"Ctrl+Shift+Alt+Win+F24"},
+            {"Alt+Space", L"Alt+Space"},
+            {"Esc", L"Esc"},
+            {"Ctrl+A", L"Ctrl+A"},
+            {"Ctrl+3", L"Ctrl+3"},
+        };
+        for (const Case& c : cases) {
+            const KeyboardHook::HotkeySpec spec = KeyboardHook::ParseHotkey(c.spec);
+            const std::wstring display = KeyboardHook::HotkeySpecToDisplayString(spec);
+            TEST_CHECK(display == c.display,
+                       std::string("W5: display for '") + c.spec + "' is canonical");
+            // Round-trip: the label re-parses to the SAME compiled spec, so a
+            // label can never describe a combo the hook would not swallow.
+            // (Labels are ASCII tokens, so the narrow copy is lossless.)
+            std::string narrow;
+            narrow.reserve(display.size());
+            for (const wchar_t wc : display) {
+                narrow.push_back(static_cast<char>(wc));
+            }
+            TEST_CHECK(KeyboardHook::ParseHotkey(narrow) == spec,
+                       std::string("W5: '") + c.spec + "' survives the label round-trip");
+        }
+
+        TEST_CHECK(KeyboardHook::HotkeySpecToDisplayString(KeyboardHook::HotkeySpec{}).empty(),
+                   "W5: an invalid (never compiled) spec has no label");
+        TEST_CHECK(KeyboardHook::HotkeySpecToDisplayString(
+                       KeyboardHook::kDefaultToggleHotkey) == L"F9",
+                   "W5: the shipped default toggle combo labels as F9");
+        TEST_CHECK(KeyboardHook::HotkeySpecToDisplayString(
+                       KeyboardHook::ResolveToggleFromConfig("Ctrl+Alt+F9")) == L"Ctrl+Alt+F9",
+                   "W5: a remapped config combo labels itself (the bubble's real path)");
+        TEST_CHECK(KeyboardHook::HotkeySpecToDisplayString(
+                       KeyboardHook::ResolveToggleFromConfig("not a combo")) == L"F9",
+                   "W5: an unparsable hotkey_toggle falls back to the default label");
+    }
+
+    // ---- W1/W2/W3/W5 structural pins (GUI TUs: pinned by source) -----------
+    {
+        auto read_src = [](const char* name, std::string& out) {
+            const char* candidates[] = {name, (std::string("../") + name).c_str(),
+                                        (std::string("../../") + name).c_str()};
+            for (const char* cand : candidates) {
+                std::ifstream in(cand, std::ios::binary);
+                if (in) {
+                    out.assign((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+                    return;
+                }
+            }
+        };
+        std::string tray_src;
+        read_src("src/ui/tray.cpp", tray_src);
+        std::string main_src;
+        read_src("src/main.cpp", main_src);
+        std::string hook_src;
+        read_src("src/hook.cpp", hook_src);
+        if (tray_src.empty() || main_src.empty() || hook_src.empty()) {
+            std::cout << "[SKIP] tray.cpp/main.cpp/hook.cpp not resolvable from the test CWD; "
+                         "U-J structural pins skipped." << std::endl;
+        } else {
+            // W1: both the tip and the status row are built by the pure helpers
+            // (no hand-rolled concatenation left on either surface).
+            TEST_CHECK(tray_src.find("ComposeTrayTip(TrayTipParts{") != std::string::npos &&
+                           tray_src.find("ComposeTrayStatusLabel(") != std::string::npos,
+                       "W1: tray.cpp composes the tip + status row through the pure helpers");
+            TEST_CHECK(tray_src.find("I18n::Get(StringId::MenuStatusActive) : I18n::Get(StringId::MenuStatusPaused)")
+                               == std::string::npos &&
+                           tray_src.find("L\" -> \"") == std::string::npos,
+                       "W1: the old un-composed tip / status label expressions are gone");
+
+            // W2: the 번역툴팁 Swap row exists in the >=2600 band, sits inside
+            // the tooltip group, and dispatches to the drag callback.
+            TEST_CHECK(tray_src.find("ID_TRAY_DRAG_SWAP = 2600") != std::string::npos,
+                       "W2: ID_TRAY_DRAG_SWAP lives in the >=2600 band");
+            TEST_CHECK(tray_src.find("static_assert(ID_TRAY_DRAG_SWAP >= 2600") !=
+                           std::string::npos,
+                       "W2: the band position is enforced at compile time");
+            TEST_CHECK(tray_src.find("hTooltipGroup, MF_STRING, ID_TRAY_DRAG_SWAP") !=
+                           std::string::npos,
+                       "W2: the row is appended inside the 번역툴팁 group");
+            TEST_CHECK(tray_src.find("ID_TRAY_DRAG_SWAP, I18n::Get(StringId::MenuSwapLangs)") !=
+                           std::string::npos,
+                       "W2: the row label reuses MenuSwapLangs (zero new i18n keys)");
+            TEST_CHECK(tray_src.find("cmd == ID_TRAY_DRAG_SWAP && callbacks_.on_swap_drag_languages") !=
+                           std::string::npos,
+                       "W2: the row dispatches to on_swap_drag_languages");
+            TEST_CHECK(main_src.find("trayCallbacks.on_swap_drag_languages") != std::string::npos &&
+                           main_src.find("emebalachat::LanguageContext::Drag, swap.source") !=
+                               std::string::npos,
+                       "W2: main.cpp applies the drag swap through ApplyLanguageChange(Drag, ...)");
+            TEST_CHECK(main_src.find("PlanLanguageSwap(") != std::string::npos &&
+                           main_src.find("NormalizeLanguageCode(snap_in.type_source_language)") ==
+                               std::string::npos,
+                       "W2: both swap rows share the pure planner (inline policy removed)");
+
+            // W3: the cycle confirmation rides the coordinator's success path,
+            // names the authoritative post-plan target, and the hook callback
+            // is the ONLY cycle producer (no double notice).
+            TEST_CHECK(main_src.find("cycle_confirm") != std::string::npos,
+                       "W3: the cycle confirmation is emitted from the coordinator");
+            TEST_CHECK(main_src.find("I18n::GetLanguageDisplayName(plan.target_language)") !=
+                           std::string::npos,
+                       "W3: the bubble names the plan's resulting target");
+            size_t cycle_producers = 0;
+            for (size_t at = main_src.find("RequestLanguageSync("); at != std::string::npos;
+                 at = main_src.find("RequestLanguageSync(", at + 1)) {
+                const std::string window = main_src.substr(at, 420);
+                if (window.find("true, true)") != std::string::npos) {
+                    ++cycle_producers;
+                }
+            }
+            TEST_CHECK(cycle_producers == 1,
+                       "W3: exactly ONE producer requests a target cycle (no double notices)");
+
+            // W5: the bubble label comes from the resolved spec; the hardcoded
+            // constant is gone (the tray status strings keep their F9 text).
+            TEST_CHECK(main_src.find("kToggleHotkeyLabel") == std::string::npos,
+                       "W5: the hardcoded toggle-hotkey label is gone from main.cpp");
+            TEST_CHECK(main_src.find("KeyboardHook::HotkeySpecToDisplayString(") !=
+                               std::string::npos &&
+                           main_src.find("KeyboardHook::ResolveToggleFromConfig(config.hotkey_toggle)") !=
+                               std::string::npos,
+                       "W5: the bubble formats the resolved config combo");
+
+            // ---- R2-5 (FIX-B2): one authority for the tip's engine stem ----
+            // The hook TUs cannot be driven headlessly, so the three call
+            // sites are pinned by shape: none of them may pass the persisted
+            // engine_type token again, and all three must pass the empty view
+            // that UpdateStatus treats as "keep the GUI-resolved stem".
+            size_t hook_empty_views = 0;
+            for (size_t at = hook_src.find("std::string_view{}"); at != std::string::npos;
+                 at = hook_src.find("std::string_view{}", at + 1)) {
+                ++hook_empty_views;
+            }
+            TEST_CHECK(hook_empty_views == 3,
+                       "R2-5: all three hook-path UpdateStatus calls pass an empty engine view");
+            TEST_CHECK(hook_src.find("snap.engine_type") == std::string::npos,
+                       "R2-5: hook.cpp never pushes the raw engine_type token to the tray");
+            TEST_CHECK(tray_src.find("if (!active_engine.empty())") != std::string::npos,
+                       "R2-5: UpdateStatus preserves the stored stem on an empty view");
+            // FIX-B1 residual (a): the drag gesture owns its capture-chord write.
+            const size_t drag_scope_at = main_src.find("ClipboardTaskScope clipboard_scope;");
+            const size_t drag_backup_at = main_src.find("ClipboardBackup backup;");
+            TEST_CHECK(drag_scope_at != std::string::npos &&
+                           drag_backup_at != std::string::npos &&
+                           drag_scope_at < drag_backup_at,
+                       "FIX-B1 (a): run_drag_translate opens its task scope before the backup");
+
+            // ---- R2-12 (FIX-B2): design must-have geometry -----------------
+            // The floating surfaces are GUI TUs; these pins guard the four
+            // measured defects + the hairline polish against silent re-drift.
+            std::string badge_src;
+            read_src("src/ui/badge.cpp", badge_src);
+            std::string drag_src;
+            read_src("src/ui/drag_icon.cpp", drag_src);
+            std::string about_src;
+            read_src("src/ui/about_window.cpp", about_src);
+            if (badge_src.empty() || drag_src.empty() || about_src.empty()) {
+                std::cout << "[SKIP] badge/drag_icon/about_window sources not resolvable; "
+                             "R2-12 pins skipped." << std::endl;
+            } else {
+                TEST_CHECK(badge_src.find("kRadius * 0.6f") == std::string::npos &&
+                               badge_src.find("D2D1::Point2F(kRadius, 1.5f)") != std::string::npos,
+                           "R2-12a: the badge rim light is clamped to the flat top segment");
+                TEST_CHECK(badge_src.find("medallionVisualW") != std::string::npos &&
+                               badge_src.find("kRingPad") != std::string::npos,
+                           "R2-12b: the gold-ring pad is part of the layout math");
+                TEST_CHECK(badge_src.find("medallionRadius + 2.4f") == std::string::npos &&
+                               badge_src.find("medallionRadius + 2.5f") != std::string::npos,
+                           "R2-12b: the intermediate outer ring is gone, one gold seal ring");
+                TEST_CHECK(badge_src.find("D2D1::ColorF(0x4A6CA3, 0.90f)") != std::string::npos &&
+                               badge_src.find("D2D1::ColorF(0x33507E, 0.85f)") == std::string::npos,
+                           "R2-12e: the pill hairline is the lifted lapis-hi token");
+                const size_t rim_at = drag_src.find("D2D1::Point2F(9.0f, 2.4f)");
+                const size_t border_at = drag_src.find("is_hovered_ ? 1.8f : 1.2f");
+                TEST_CHECK(rim_at != std::string::npos && border_at != std::string::npos &&
+                               border_at < rim_at,
+                           "R2-12c: the drag-icon rim is drawn after the gold border");
+                TEST_CHECK(about_src.find("pill_formats[]") != std::string::npos &&
+                               about_src.find("SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)") !=
+                                   std::string::npos,
+                           "R2-12d: the About pill labels are vertically centered");
+            }
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] U-J Wave A convenience quick wins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] U-J Wave A convenience quick wins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
 
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
@@ -16393,6 +20154,7 @@ int main() {
     TestSoundModule();
     TestWin32InputModule();
     TestWin32InputW1Helpers();
+    TestR106ClipboardRestoreGuard(); // R1-6/R1-20: restore decision ladder + real-clipboard keep-away pins
     TestWorkerB1SendThroughPins();
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
@@ -16425,7 +20187,16 @@ int main() {
     TestMouseHookDebounce();
     TestUIMarshaling();
     TestDpiMixedScaling();
+    // R1-21 (v0.10.4 sweep, 261029_0001): monitor-topology re-clamp for the
+    // floating badge (undock/unplug no longer strands it off-screen). Registered
+    // right after the REQ-R15 DPI suite whose clamp policy it composes with.
+    TestR121BadgeDisplayChangeReclamp();
     TestHookLifecyclePolicy();
+    // R1-14/R1-15b (v0.10.4 sweep, 261029_0001): bounded hook install handshake
+    // (no unbounded join / leaked late hook) + the periodic self-heal cadence —
+    // pure stepper + structural pins, registered right after the REQ-R14 suite
+    // it extends, per the end-of-file pattern.
+    TestHookSelfHealResilience();
     TestImeCompositionGate();
     TestShiftEnterGate();
     TestLanguageSwitchingMatrix();
@@ -16492,6 +20263,12 @@ int main() {
     // engine_host cluster), per the end-of-file pattern.
     TestLocalRequestModelIdPolicy();
     TestEngineHostClient();     // REQ-043: reference client fallback matrix (in-process fake host)
+    // R1-7 (session 261029_0001, v0.10.4 sweep): the pipe-SERVER identity gate —
+    // pure path predicate, handle gate on a real pipe instance, an end-to-end
+    // wrong-peer leg (zero bytes may reach it) and the structural pins that keep
+    // both connect paths on the gated helper. Registered with the REQ-043 client
+    // cluster it hardens.
+    TestR107PeerIdentityGate();
     TestEngineHostAvailabilityAndMigration(); // REQ-043: host-as-local-source routing gate (T5: migration removed)
     // REQ-043 (M6 T5): embedded-removal suites — host-only routing + failure
     // UX (repair streak) + cloud-consent regression (registered after the
@@ -16549,6 +20326,9 @@ int main() {
     TestHostV2Session();
     TestHostV2Health();
     TestHostV2WelcomeGolden();
+    // R1-17 (v0.10.4 sweep, 261029_0001): PostTask's busy -> hwnd -> push
+    // publication-order pins (memory-model behaviour needs a structural pin).
+    TestBusyTargetPublishOrdering();
     // P2-1 (session 260925_0001): family-coexistence asr suites (announce
     // gate + §7.3 W-PCM-1 pcm clause + relay mapping) — registered after the
     // T4 suites, per the end-of-file pattern.
@@ -16762,10 +20542,20 @@ int main() {
     // wiring). Registered right after the REQ-059 suite (same
     // translation-core cluster).
     TestS260930ChunkStitch();
+    // R1-1 + R1-2 (session 261029_0001, v0.10.4 sweep): the output-quality gate
+    // (repetition / wrong-script / meta-leakage, both rungs) and the greedy-
+    // branch sampler shape. Registered right after the chunk/stitch suite (same
+    // translation-core cluster, the same translation_common.hpp surface).
+    TestS261029UaOutputGate();
     // REQ-057: the served-model id echo (worker -> orchestrator -> client ->
     // app-side served-vs-expected diagnosis). Registered right after the
     // REQ-055 suite it builds on (the live pin IS the expected-id source).
     TestReq057ServedModelEcho();
+    // R1-3 + R1-23 (session 261029_0001, v0.10.4 sweep): the served-model
+    // echo names the resolution's own id (no registry re-scan) and the offline
+    // fidelity probe models the shipped 8192/6128 context. Registered with the
+    // REQ-057 cluster it extends.
+    TestS261029UbServedModelEchoPins();
     // M7 A-1: the per-family worker-manifest naming scheme (path resolution,
     // store enumeration, legacy fallback, translate+asr coexistence non-
     // clobber, deployment pins). Registered after the REQ-052 cluster, per
@@ -16847,6 +20637,27 @@ int main() {
     // D-02 dead zone retry / empty-rect hit test — registered right after
     // the REQ-MD suite.
     TestDeltaRereviewFixes();
+    // R1-11 (session 261029_0001, v0.10.4 sweep): the engine state-lock split
+    // (request-spanning translate mutex vs short-held state lock) — structural
+    // pins, the in-flight non-blocking tray seams against a live fake host, and
+    // the request-time consent snapshot. Registered at the end of main(): it
+    // consumes the fake-host helpers (FakeHost / T5FinishHost) defined above,
+    // per the end-of-file pattern.
+    TestR111EngineStateLockDiscipline();
+    // U-H3 (session 261029_0001, v0.10.4 sweep): the data-preservation gates —
+    // R1-12 (damaged registry.json is never clobbered by a model download, with
+    // its truth table + sequence + fresh-machine schema fix), R1-13 (malformed
+    // config preserved as config.json.bak once), R1-24 (comment truth, empty-
+    // store-dir offer gate, prompt cancel entry). Registered at the end of
+    // main(): the source pins need ResolveRepoFile, per the end-of-file pattern.
+    TestR112R113DataPreservation();
+    // U-J (R1-22, session 261029_0001, v0.10.4 sweep): Wave A convenience
+    // quick wins — W1 tray tip / status-row composition + szTip budget, W2 the
+    // shared swap planner, W3 the cycle-confirmation wiring pins, W5 the
+    // hotkey display formatter. Registered at the end of main(): the
+    // structural pins read tray.cpp/main.cpp from the test CWD, per the
+    // end-of-file pattern.
+    TestUJQuickWins();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

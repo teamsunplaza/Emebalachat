@@ -139,19 +139,96 @@ void TestModelDownloadLogic() {
             out << "fake-gguf";
         }
         TEST_CHECK(md::WriteSha256OkMarker(file), "MD: marker writes");
-        // Mirror engine_core MarkerMatchesFile: 3-line shape, size+mtime match.
-        const std::filesystem::path marker = dir / (emebalachat::ToUtf16(md::kModelFilename) + L".sha256ok");
+        // R1-19 (U-H4b): the marker is the 4-line form - hex, mtime, size, then
+        // the content sample computed by the SAME llama-free helper the engine
+        // verifier calls (src/model_verify_sample.hpp). The 3-line prefix is
+        // unchanged, so cross-workspace readers keep working.
+        const std::filesystem::path marker =
+            dir / (emebalachat::ToUtf16(md::kModelFilename) + L".sha256ok");
         std::ifstream in(marker, std::ios::binary);
         std::string hex;
         long long epoch = -1;
         unsigned long long size = 0;
-        TEST_CHECK(static_cast<bool>(in >> hex >> epoch >> size),
-                   "MD: marker carries the 3-line shape");
+        std::string sample;
+        TEST_CHECK(static_cast<bool>(in >> hex >> epoch >> size >> sample),
+                   "MD: marker carries the 4-line shape (3-line prefix + content sample)");
         TEST_CHECK(hex == md::kModelSha256Pin, "MD: marker hex is the pinned hash");
         TEST_CHECK(size == 9, "MD: marker size matches the file");
         const auto mtime = std::filesystem::last_write_time(file, ec);
         TEST_CHECK(!ec && epoch == static_cast<long long>(mtime.time_since_epoch().count()),
-                   "MD: marker mtime stamp matches the file (engine_core cache will hit)");
+                   "MD: marker mtime stamp matches the file");
+        // A file smaller than two 1 MiB windows degenerates to "hash the whole
+        // file", which makes the 9-byte fixture's expected sample computable
+        // right here (independent of the shared helper's window plan).
+        std::string whole_file_hex;
+        TEST_CHECK(sample.size() == 64 && ComputeFileSha256(file, whole_file_hex) &&
+                       sample == whole_file_hex,
+                   "MD: the content sample of a sub-window file equals its whole-file SHA-256");
+        // The proof that matters: the ENGINE's verifier accepts this marker as a
+        // cache HIT. A miss on the pinned filename would re-hash and fail closed
+        // (006 -> false), so `true` here can only mean the downloader's line 4
+        // matched the verifier's own recomputation byte for byte.
+        TEST_CHECK(VerifyModelSha256(file, dir),
+                   "MD: engine_core VerifyModelSha256 HITS the marker the downloader wrote "
+                   "(no re-hash on the first load after a download)");
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    // ---- R1-19 (U-H4b): the downloader marker survives the real geometry ----
+    // 4 MiB fixture under the PINNED filename: the sample is now a windowed
+    // digest over [0,1MiB) + [2MiB,3MiB) + [3MiB,4MiB), not the whole-file hash,
+    // so this leg exercises the geometry the 1.9 GB model actually uses.
+    {
+        std::error_code ec;
+        constexpr size_t kBigBytes = 4u * 1024u * 1024u;
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path(ec) / L"emebala_md_marker_big";
+        std::filesystem::create_directories(dir, ec);
+        const std::filesystem::path file = dir / emebalachat::ToUtf16(md::kModelFilename);
+        {
+            const std::vector<char> bytes(kBigBytes, 'A');
+            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        TEST_CHECK(md::WriteSha256OkMarker(file), "MD/R1-19: marker writes for a 4 MiB model");
+        const std::filesystem::path marker =
+            dir / (emebalachat::ToUtf16(md::kModelFilename) + L".sha256ok");
+        auto read_marker = [&marker](std::string& hex, std::string& sample) {
+            std::ifstream in(marker, std::ios::binary);
+            long long epoch = 0;
+            unsigned long long size = 0;
+            return static_cast<bool>(in >> hex >> epoch >> size >> sample);
+        };
+        std::string hex_before;
+        std::string sample_before;
+        TEST_CHECK(read_marker(hex_before, sample_before) && hex_before == md::kModelSha256Pin &&
+                       sample_before.size() == 64,
+                   "MD/R1-19: the 4 MiB marker carries the pin and a 64-hex sample");
+        std::string full_hex;
+        TEST_CHECK(ComputeFileSha256(file, full_hex) && sample_before != full_hex,
+                   "MD/R1-19: the sample is a windowed digest, NOT the whole-file hash");
+        TEST_CHECK(VerifyModelSha256(file, dir),
+                   "MD/R1-19: the engine verifier HITS the downloader's marker for a >2-window "
+                   "file (writer and verifier share one geometry)");
+        std::string hex_after;
+        std::string sample_after;
+        TEST_CHECK(read_marker(hex_after, sample_after) && hex_after == hex_before &&
+                       sample_after == sample_before,
+                   "MD/R1-19: the hit path did not rewrite the marker");
+        // Same-size, same-mtime swap that changes ONLY the middle window: the
+        // content gate (not the mtime check) must reject it, and the pinned name
+        // then fails closed.
+        const auto big_mtime = std::filesystem::last_write_time(file, ec);
+        {
+            std::fstream io(file, std::ios::binary | std::ios::in | std::ios::out);
+            io.seekp(static_cast<std::streamoff>(kBigBytes / 2 + 4096));
+            io.put('Z');
+        }
+        std::filesystem::last_write_time(file, big_mtime, ec);
+        TEST_CHECK(!ec, "MD/R1-19: the swapped file's mtime was restored (size+mtime identical)");
+        TEST_CHECK(!VerifyModelSha256(file, dir),
+                   "MD/R1-19: a mutation inside the middle window re-hashes and fails closed on "
+                   "the pinned name (the marker cannot launder a same-size swap)");
         std::filesystem::remove_all(dir, ec);
     }
 

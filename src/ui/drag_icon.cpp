@@ -223,11 +223,15 @@ void DragIconWindow::Render() {
     ID2D1SolidColorBrush* bgBrush = nullptr;
     ID2D1SolidColorBrush* borderBrush = nullptr;
 
+    // DESIGN-261029 (session 261029_0001): brand navy family instead of the
+    // generic slate pill, so the drag icon reads as the same product as the
+    // tooltip card; gold border + new warm-white top rim light (the shared
+    // "seal" motif).
     if (is_hovered_) {
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x1E293B, 0.98f), &bgBrush);
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.98f), &bgBrush);
         dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xE5C158, 1.0f), &borderBrush);
     } else {
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0F172A, 0.92f), &bgBrush);
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.95f), &bgBrush);
         dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.90f), &borderBrush);
     }
 
@@ -236,6 +240,20 @@ void DragIconWindow::Render() {
     }
     if (borderBrush) {
         dc_render_target_->DrawRoundedRectangle(pill, borderBrush, is_hovered_ ? 1.8f : 1.2f);
+    }
+    // R2-12c (FIX-B2): the top rim light moved AFTER the gold border and down
+    // to y = 2.4f. Drawn first at y = 1.5f it was half-covered by the 1.2 DIP
+    // idle border and COMPLETELY erased by the 1.8 DIP hover border (which
+    // spans y = 0.1..1.9), and its x = 7.0f start reached 2 DIP into the
+    // r = 8.0f corner arc. At y = 2.4f (line body 1.9..2.9) it sits just
+    // inside the border in both states, and x = 9.0f is past the arc
+    // (x ~= 4.5 at that height).
+    if (bgBrush) {
+        bgBrush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
+        dc_render_target_->DrawLine(
+            D2D1::Point2F(9.0f, 2.4f),
+            D2D1::Point2F(static_cast<float>(kSize) - 9.0f, 2.4f),
+            bgBrush, 1.0f);
     }
 
     // Centered 1:1 squircle appicon (24x24 DIP centered in 32x32 container)

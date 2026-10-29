@@ -100,6 +100,15 @@ void TestEngineHostOnlyRouting() {
         std::ofstream f(fake_exe, std::ios::binary);
         f << "MZ";
     }
+    // R1-7 (session 261029_0001, v0.10.4 sweep): the live fake-host legs below
+    // are served from THIS process, so the client's pipe-server identity gate
+    // resolves the peer image to the test runner itself. The expected host path
+    // must therefore be that same image (a temp .exe would be a squatter shape
+    // and is now refused fail-closed). Section (2) keeps fake_exe: it only
+    // exercises the existence gate, never a live pipe.
+    wchar_t self_exe[MAX_PATH] = {0};
+    ::GetModuleFileNameW(nullptr, self_exe, MAX_PATH);
+    const std::wstring live_host_exe(self_exe);
     ehc::SetPathsForTesting(nullptr, nullptr, fake_exe.c_str());
     {
         EngineHostConfig off;
@@ -139,7 +148,7 @@ void TestEngineHostOnlyRouting() {
         // 3a. busy + Auto -> cloud fallback succeeds (UX chain c).
         const int n = 20;
         ehc::SetPathsForTesting(TestPipeName(n).c_str(),
-                                TestTokenPath(n).wstring().c_str(), fake_exe.c_str());
+                                TestTokenPath(n).wstring().c_str(), live_host_exe.c_str());
         WriteTestToken(TestTokenPath(n));
         FakeHost host(TestPipeName(n), 0, pin, "", "busy", "", false);
         std::thread t = host.Start();
@@ -164,7 +173,7 @@ void TestEngineHostOnlyRouting() {
         // 3b. busy + strict local + consent -> cloud Ok; streak grows per call.
         const int n = 21;
         ehc::SetPathsForTesting(TestPipeName(n).c_str(),
-                                TestTokenPath(n).wstring().c_str(), fake_exe.c_str());
+                                TestTokenPath(n).wstring().c_str(), live_host_exe.c_str());
         WriteTestToken(TestTokenPath(n));
         FakeHost host(TestPipeName(n), 0, pin, "", "busy", "", false);
         std::thread t = host.Start();
@@ -192,7 +201,7 @@ void TestEngineHostOnlyRouting() {
         //     the honest feature-disabled guidance; no silent failure, no crash).
         const int n = 22;
         ehc::SetPathsForTesting(TestPipeName(n).c_str(),
-                                TestTokenPath(n).wstring().c_str(), fake_exe.c_str());
+                                TestTokenPath(n).wstring().c_str(), live_host_exe.c_str());
         WriteTestToken(TestTokenPath(n));
         FakeHost host(TestPipeName(n), 0, pin, "", "busy", "", false);
         std::thread t = host.Start();
@@ -232,7 +241,7 @@ void TestEngineHostOnlyRouting() {
                    "T5: connect-refused host failure arms the streak (call 2)");
 
         ehc::SetPathsForTesting(TestPipeName(n).c_str(),
-                                TestTokenPath(n).wstring().c_str(), fake_exe.c_str());
+                                TestTokenPath(n).wstring().c_str(), live_host_exe.c_str());
         WriteTestToken(TestTokenPath(n));
         FakeHost ok(TestPipeName(n), 0, pin, "", "ok", "t5-ok", false);
         std::thread to = ok.Start();

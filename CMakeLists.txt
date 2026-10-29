@@ -2,8 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 
 # REQ-046 P4-4 history: the version bump in commit 3b3a426 was withdrawn
 # per user decision (2026-09-19) and shipped as 0.10.1 rereleases; promoted
-# to 0.10.2 on 2026-09-30 (session 260930_0003, CEO decision).
-project(Emebalachat VERSION 0.10.3 LANGUAGES C CXX RC)
+# to 0.10.2 on 2026-09-30 (session 260930_0003, CEO decision); promoted to
+# 0.10.4 on 2026-10-29 (session 261029_0001, see CHANGELOG "v0.10.4").
+project(Emebalachat VERSION 0.10.4 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

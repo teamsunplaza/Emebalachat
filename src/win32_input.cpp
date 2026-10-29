@@ -92,6 +92,20 @@ public:
     ScopedClipboard& operator=(const ScopedClipboard&) = delete;
     explicit operator bool() const { return opened_; }
 
+    // R1-6 (261029_0001): close EARLY. GetClipboardSequenceNumber() read while
+    // we still own the open clipboard under-reports the write by the number of
+    // not-yet-committed SetClipboardData calls (measured on this build: exactly
+    // +3 for SetClipboardText's three exclusion formats; the increments apply at
+    // CloseClipboard). Every sequence sample the own-write guard records must be
+    // the post-close value, otherwise a later restore mistakes its own write for
+    // somebody else's and skips (translated text left on the clipboard).
+    void Close() {
+        if (opened_) {
+            ::CloseClipboard();
+            opened_ = false;
+        }
+    }
+
 private:
     bool opened_;
 };
@@ -572,6 +586,15 @@ bool CopySelectionWithSequenceWait(uint32_t change_timeout_ms) {
     while (true) {
         const ClipboardCopyOutcome outcome = watcher.Update(::GetClipboardSequenceNumber(), SteadyNowMs());
         if (outcome == ClipboardCopyOutcome::Confirmed) {
+            // R1-6: the copy chord we injected just replaced the clipboard, so
+            // that write counts as OURS - the task's scope-exit restore may put
+            // the pre-task snapshot back over it. Any write after this point
+            // (the user copying during the translation) is somebody else's and
+            // wins over the snapshot.
+            // FIX-B1 (R2-2): "OURS" is the calling task's ClipboardTaskScope
+            // stamp when one is installed (the pipeline task), so a concurrent
+            // tooltip copy cannot later read this write as its own.
+            NoteOwnClipboardWrite();
             return true;
         }
         if (outcome == ClipboardCopyOutcome::Failed) {
@@ -626,6 +649,78 @@ static const UINT g_cfExcludeClipboardProcessing = ::RegisterClipboardFormatW(L"
 static const UINT g_cfCanIncludeInHistory = ::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
 static const UINT g_cfCanUploadToCloud = ::RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
 
+// R1-6 (v0.10.4 sweep, 261029_0001): sequence number of this process's last
+// clipboard write. Relaxed atomic: the value is a hint observed across threads
+// (pipeline worker, drag worker, UI), never part of a synchronization edge -
+// a stale read can only make a restore REFUSE (fail-safe), never destroy.
+//
+// FIX-B1 (R2-2/R2-4, 261029_0001): this slot is the FALLBACK only - a caller
+// with no ClipboardTaskScope installed (the drag path on its worker thread, the
+// unit tests). The pipeline task uses its own scope stamp so the tooltip's user
+// copy cannot borrow the task's "this was my write" claim.
+static std::atomic<DWORD> g_own_clipboard_write_seq{0};
+
+// Innermost ClipboardTaskScope installed on THIS thread, or nullptr. Only the
+// three friends of ClipboardTaskScope dereference it. thread_local is the whole
+// point: a task writes and restores on one thread, so "my write" can never leak
+// between a multi-second translate task and a UI writer.
+thread_local ClipboardTaskScope* t_active_clipboard_task_scope = nullptr;
+
+ClipboardTaskScope::ClipboardTaskScope() noexcept {
+    previous_ = t_active_clipboard_task_scope;
+    installed_ = true;
+    t_active_clipboard_task_scope = this;
+}
+
+ClipboardTaskScope::~ClipboardTaskScope() {
+    if (!installed_) {
+        return;
+    }
+    // Unlink from the chain wherever it sits, so a scope destroyed out of LIFO
+    // order can never leave a dangling `previous_` at the top. Depth is 1 for
+    // every shipped call site; the walk costs nothing there.
+    for (ClipboardTaskScope** link = &t_active_clipboard_task_scope; *link != nullptr;
+         link = &(*link)->previous_) {
+        if (*link == this) {
+            *link = previous_;
+            break;
+        }
+    }
+    installed_ = false;
+}
+
+DWORD OwnClipboardWriteSeq() {
+    if (ClipboardTaskScope* scope = t_active_clipboard_task_scope) {
+        return scope->own_write_seq_;
+    }
+    return g_own_clipboard_write_seq.load(std::memory_order_relaxed);
+}
+
+void NoteOwnClipboardWrite() {
+    const DWORD seq = ::GetClipboardSequenceNumber();
+    if (ClipboardTaskScope* scope = t_active_clipboard_task_scope) {
+        // Attribute the write to THIS task only. Publishing it process-wide
+        // as well would re-open F-02: a concurrent task (or the drag path)
+        // would read it as its own write and replay its snapshot over it.
+        scope->own_write_seq_ = seq;
+        return;
+    }
+    g_own_clipboard_write_seq.store(seq, std::memory_order_relaxed);
+}
+
+void NoteUserClipboardCopy() {
+    // FIX-B1 (R2-2): the clipboard now holds a USER write. Clear the fallback
+    // slot so a caller without a scope refuses to replay its snapshot over it,
+    // and invalidate a scope on the calling thread (a task cannot own a
+    // clipboard that was just filled by the user). Other threads' scopes are
+    // untouched by construction - thread_local - and their rule-4 test fails on
+    // the sequence number alone.
+    g_own_clipboard_write_seq.store(0, std::memory_order_relaxed);
+    if (ClipboardTaskScope* scope = t_active_clipboard_task_scope) {
+        scope->own_write_seq_ = 0;
+    }
+}
+
 // M1 (security): Clipboard observation window.
 // Between SetClipboardText() and RestoreClipboard() inside PasteAndRestore(), the
 // translated text is observable by any process polling GetClipboardData (third-party
@@ -639,7 +734,15 @@ static const UINT g_cfCanUploadToCloud = ::RegisterClipboardFormatW(L"CanUploadT
 // manual paste test against Discord/Slack/Teams, not by default.
 constexpr DWORD kPasteSettleDelayMs = 120;
 
-bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
+namespace {
+
+// FIX-B1 (R2-2, 261029_0001): ONE write body for both intents. The write shape
+// (empty -> text -> the three exclusion formats -> close -> stamp) must not
+// drift between the pipeline's paste write and the tooltip's user copy; only
+// the ATTRIBUTION differs, and it differs exactly on the last statement.
+// `user_intent` = the user pressed the card's copy button, so the result is a
+// USER write (NoteUserClipboardCopy) instead of this task's own write.
+bool SetClipboardTextIntent(std::wstring_view text, DWORD timeout_ms, bool user_intent) {
     // W1/A2: allocation + NUL-terminated copy lives in AllocGlobalUnicodeText
     // (byte-identical sequence; the helper already GlobalFreed on its internal
     // lock failure, so the !hMem branch below keeps the exact old behavior).
@@ -674,7 +777,27 @@ bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
     SetClipboardDword(g_cfCanIncludeInHistory, 0);
     SetClipboardDword(g_cfCanUploadToCloud, 0);
 
+    // R1-6: this write is OURS - RestoreClipboard may replace it with the
+    // snapshot a task took before it, while any LATER write by anyone else wins.
+    // Close FIRST: the sequence increments of the writes above only land at
+    // CloseClipboard (see ScopedClipboard::Close).
+    clip.Close();
+    if (user_intent) {
+        NoteUserClipboardCopy();
+    } else {
+        NoteOwnClipboardWrite();
+    }
     return true;
+}
+
+} // namespace
+
+bool SetClipboardText(std::wstring_view text, DWORD timeout_ms) {
+    return SetClipboardTextIntent(text, timeout_ms, /*user_intent=*/false);
+}
+
+bool SetClipboardTextAsUserCopy(std::wstring_view text, DWORD timeout_ms) {
+    return SetClipboardTextIntent(text, timeout_ms, /*user_intent=*/true);
 }
 
 // SEC Batch B (Medium 2, confirmed per 235500 §5): per-format cap for the
@@ -694,6 +817,8 @@ static constexpr SIZE_T kClipboardBackupFormatCap = 4 * 1024 * 1024; // 4 MiB pe
 bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     out.text.reset();
     out.formats.clear();
+    out.seq_at_backup = 0;
+    out.partial = false;
 
     // R6 Phase 3 (audit item 5): RAII scope - this is the function the
     // exception-safety note above is about (std::vector allocations inside).
@@ -701,6 +826,12 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     if (!clip) {
         return false;
     }
+
+    // R1-6: sample the sequence INSIDE the scope - while we own the open
+    // clipboard nobody else can write, so this number identifies exactly the
+    // state the snapshot below reproduces. RestoreClipboard compares against it
+    // to prove "the clipboard is still what we captured" (no replay needed).
+    out.seq_at_backup = ::GetClipboardSequenceNumber();
 
     // Capture text if available (W1/A2: shared reader; on success out.text is
     // assigned exactly like the old inline block; on every missing/empty/
@@ -734,7 +865,10 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
                 ::GlobalUnlock(hData);
             }
         } else if (sz > kClipboardBackupFormatCap) {
-            DIAG_F("WIN32_INPUT/BackupClipboard/001: format %u size %zu exceeds cap %zu; skipping backup of this format\n",
+            // R1-20: remember that this snapshot is PARTIAL - RestoreClipboard
+            // must never empty a clipboard it cannot fully reproduce.
+            out.partial = true;
+            DIAG_F("WIN32_INPUT/BackupClipboard/001: format %u size %zu exceeds cap %zu; skipping backup of this format (snapshot marked partial)\n",
                    fmt, sz, kClipboardBackupFormatCap);
         }
     }
@@ -742,11 +876,103 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     return true;
 }
 
+ClipboardRestoreAction DecideClipboardRestore(const ClipboardBackup& backup, DWORD current_seq,
+                                              DWORD own_write_seq) {
+    // 1) Nothing captured (a failed BackupClipboard, or a clipboard that held
+    //    only GDI formats). There is no snapshot to put back, so the only
+    //    possible effect of a restore is destruction: refuse.
+    if (!HasClipboardBackupPayload(backup)) {
+        return ClipboardRestoreAction::SkipEmptyBackup;
+    }
+    // 2) The live sequence is still the snapshot's. Nobody wrote the clipboard
+    //    since we captured it, so the user's content is ALREADY in place - and
+    //    an EmptyClipboard replay could only lose what the snapshot does not
+    //    contain (R1-20: a >4 MiB format skipped by the backup cap). No write.
+    if (backup.seq_at_backup != 0 && current_seq == backup.seq_at_backup) {
+        return ClipboardRestoreAction::AlreadyIntact;
+    }
+    // 3) The clipboard holds a write that is NOT ours (the user copied during
+    //    the multi-second translation, a clipboard manager wrote, ...). Their
+    //    content wins: replaying the pre-task snapshot would silently destroy a
+    //    copy they just made. own_write_seq == 0 means "we never wrote it".
+    if (own_write_seq == 0 || current_seq != own_write_seq) {
+        return ClipboardRestoreAction::SkipForeignWrite;
+    }
+    // 4) The clipboard provably holds OUR own last write (the capture chord's
+    //    copied selection or the translated text): replacing it with the user's
+    //    pre-task snapshot is exactly the restorer's job, and it destroys
+    //    nothing that was not ours.
+    return ClipboardRestoreAction::Restore;
+}
+
+namespace {
+
+// One shape-only line per restore decision: F-01/C-10 of the step-5 review note
+// that the pre-fix code logged nothing, so "restored the user's clipboard" and
+// "restored nothing" were indistinguishable in the field log. Sequence numbers
+// are counters, never user content.
+void LogClipboardRestoreDecision(ClipboardRestoreAction action, const ClipboardBackup& backup,
+                                 DWORD current_seq) {
+    const unsigned long backup_seq = static_cast<unsigned long>(backup.seq_at_backup);
+    const unsigned long cur = static_cast<unsigned long>(current_seq);
+    const unsigned long own = static_cast<unsigned long>(OwnClipboardWriteSeq());
+    switch (action) {
+    case ClipboardRestoreAction::SkipEmptyBackup:
+        DIAG_F("WIN32_INPUT/RestoreClipboard/001: backup carries no payload (failed or empty snapshot); clipboard left untouched "
+               "(seq_at_backup=%lu current=%lu own=%lu)\n",
+               backup_seq, cur, own);
+        break;
+    case ClipboardRestoreAction::AlreadyIntact:
+        DIAG_F("WIN32_INPUT/RestoreClipboard/002: clipboard sequence still equals the snapshot (seq=%lu partial=%d); nothing to restore, "
+               "no EmptyClipboard issued\n",
+               backup_seq, backup.partial ? 1 : 0);
+        break;
+    case ClipboardRestoreAction::SkipForeignWrite:
+        // scope=1 means the own slot is the calling TASK's stamp (FIX-B1), so a
+        // logged own= value that differs from current= is a foreign write seen
+        // from a task; scope=0 is the process-wide fallback (drag path/tests).
+        DIAG_F("WIN32_INPUT/RestoreClipboard/003: clipboard was written by someone else after our last write (seq_at_backup=%lu current=%lu "
+               "own=%lu scope=%d); keeping the newer content, restore skipped\n",
+               backup_seq, cur, own, t_active_clipboard_task_scope ? 1 : 0);
+        break;
+    case ClipboardRestoreAction::Restore:
+        DIAG_F("WIN32_INPUT/RestoreClipboard/004: clipboard holds our own write (seq=%lu partial=%d); replaying the snapshot\n", cur,
+               backup.partial ? 1 : 0);
+        break;
+    }
+}
+
+} // namespace
+
 bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
+    // R1-6/R1-20: decide BEFORE touching the clipboard. The pre-fix code opened
+    // the clipboard, called EmptyClipboard() unconditionally and only then
+    // discovered it had nothing (or something stale) to put back, which
+    // permanently wiped whatever the user had copied.
+    DWORD current_seq = ::GetClipboardSequenceNumber();
+    ClipboardRestoreAction action =
+        DecideClipboardRestore(in, current_seq, OwnClipboardWriteSeq());
+    if (action != ClipboardRestoreAction::Restore) {
+        LogClipboardRestoreDecision(action, in, current_seq);
+        return ClipboardRestoreReportsConfirmed(action);
+    }
+
     // R6 Phase 3 (audit item 5): RAII scope, see ScopedClipboard note.
     ScopedClipboard clip(nullptr, timeout_ms);
     if (!clip) {
         return false;
+    }
+
+    // Re-decide while we OWN the open clipboard: ScopedClipboard's contention
+    // retry can take up to the timeout budget, and a copy landing in that window
+    // must still win. With the clipboard open nobody can write between this
+    // check and the EmptyClipboard below, and no writes of ours are pending, so
+    // this sample is the fully committed value.
+    current_seq = ::GetClipboardSequenceNumber();
+    action = DecideClipboardRestore(in, current_seq, OwnClipboardWriteSeq());
+    if (action != ClipboardRestoreAction::Restore) {
+        LogClipboardRestoreDecision(action, in, current_seq);
+        return ClipboardRestoreReportsConfirmed(action);
     }
 
     ::EmptyClipboard();
@@ -802,7 +1028,59 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
         }
     }
 
+    // R1-6: the clipboard now holds what this process just restored, so a
+    // second restore attempt in the same task (F7's retry discipline) sees it
+    // as OUR write and is allowed to replay the same snapshot instead of
+    // mistaking it for a foreign copy. Close first: the sequence only shows the
+    // writes above after CloseClipboard (see ScopedClipboard::Close).
+    clip.Close();
+    NoteOwnClipboardWrite();
     return true;
+}
+
+ClipboardPrePasteRebaseline RebaselineClipboardBeforePaste(const ClipboardBackup& backup,
+                                                           ClipboardBackup& out_stash,
+                                                           DWORD timeout_ms) {
+    out_stash = ClipboardBackup{};
+
+    // Both samples are post-close reads: the committed value, exactly the sample
+    // the restore ladder uses (an in-scope read under-reports by the pending
+    // SetClipboardData count - see ScopedClipboard::Close).
+    const DWORD live_seq = ::GetClipboardSequenceNumber();
+    const DWORD task_seq = OwnClipboardWriteSeq() != 0 ? OwnClipboardWriteSeq() : backup.seq_at_backup;
+    if (live_seq == 0 || task_seq == 0) {
+        // No usable sequence on one side (window-station denial, or a task that
+        // neither wrote nor captured one). Keep the pre-fix behaviour instead of
+        // re-stashing on a guess.
+        return ClipboardPrePasteRebaseline::SequenceUnknown;
+    }
+    if (!ClipboardForeignWriteObserved(live_seq, task_seq)) {
+        return ClipboardPrePasteRebaseline::SameAsTaskWrite;
+    }
+
+    // Positive evidence: somebody wrote the clipboard after this task's own
+    // write (the user's tooltip copy, a password manager, a sync manager).
+    // SetClipboardText below is about to destroy that content, so capture it
+    // NOW and let the caller re-publish it after the paste.
+    const unsigned long live = static_cast<unsigned long>(live_seq);
+    const unsigned long task = static_cast<unsigned long>(task_seq);
+    if (BackupClipboard(out_stash, timeout_ms) && HasClipboardBackupPayload(out_stash)) {
+        DIAG_F("WIN32_INPUT/RebaselineClipboardBeforePaste/001: clipboard changed under this task (live=%lu task=%lu); re-stashed the "
+               "live content (formats=%zu partial=%d) to re-publish it after the paste\n",
+               live, task, out_stash.formats.size(), out_stash.partial ? 1 : 0);
+        return ClipboardPrePasteRebaseline::StashedUserCopy;
+    }
+
+    // The stash failed (clipboard contended, or nothing capturable in it). The
+    // fix-list's accepted fallback: keep the PRE-TASK snapshot as the restore
+    // target so the translated text never stays on the clipboard, and say so
+    // honestly - the mid-task content is forfeit because the paste write below
+    // overwrites it either way.
+    out_stash = ClipboardBackup{};
+    DIAG_F("WIN32_INPUT/RebaselineClipboardBeforePaste/002: clipboard changed under this task (live=%lu task=%lu) but it could not "
+           "be re-stashed; keeping the pre-task snapshot (the mid-task copy cannot be re-published)\n",
+           live, task);
+    return ClipboardPrePasteRebaseline::StashFailed;
 }
 
 // ---- REQ-027 (Phase A §A-2): EditCaretTracker --------------------------------
@@ -1869,6 +2147,31 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
         return false;
     }
 
+    // FIX-B1 (R2-2 / fix-list R2-4 option (a), 261029_0001): PRE-PASTE
+    // RE-BASELINE. The write below is destructive by construction (EmptyClipboard
+    // -> translated text), so a copy the user made during the multi-second
+    // translation must be captured BEFORE it disappears. Pre-fix that copy was
+    // destroyed here and the restore ladder then saw our own paste write
+    // (current == own) and replayed the PRE-TASK snapshot, so the loss was
+    // invisible in the log (code-mimo F-02). When a foreign write is observed,
+    // the restore target becomes the freshly stashed live clipboard, i.e. the
+    // user's LATEST copy is re-published instead of the pre-task snapshot.
+    ClipboardBackup mid_task_stash;
+    const ClipboardBackup* restore_target = &backup;
+    switch (RebaselineClipboardBeforePaste(backup, mid_task_stash)) {
+    case ClipboardPrePasteRebaseline::StashedUserCopy:
+        restore_target = &mid_task_stash;
+        break;
+    case ClipboardPrePasteRebaseline::StashFailed:
+        // Documented fallback: the mid-task content could not be captured, so
+        // the paste write forfeits it. Keep the pre-task snapshot as the target
+        // (privacy: the translated text never stays behind); /002 logged why.
+        break;
+    case ClipboardPrePasteRebaseline::SameAsTaskWrite:
+    case ClipboardPrePasteRebaseline::SequenceUnknown:
+        break; // no contention evidence: the pre-fix target, unchanged
+    }
+
     bool ok = SetClipboardText(text);
     if (ok) {
         PasteSelection();
@@ -1883,16 +2186,17 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
     // extra window (it may still be releasing the clipboard right after its
     // async read), then report the ACTUAL outcome so the caller never disarms
     // its own scope-exit restorer on a restore that did not happen.
-    bool restored = RestoreClipboard(backup);
+    bool restored = RestoreClipboard(*restore_target);
     if (!restored) {
         ::Sleep(50);
-        restored = RestoreClipboard(backup);
+        restored = RestoreClipboard(*restore_target);
     }
     if (clipboard_restored) {
         *clipboard_restored = restored;
     }
     if (!restored) {
-        DIAG_F("WIN32_INPUT/PasteAndRestore/001: original clipboard restore failed after retries; caller RAII restorer is the final fallback\n");
+        DIAG_F("WIN32_INPUT/PasteAndRestore/001: original clipboard restore NOT confirmed after retries (OpenClipboard contention, or a "
+               "deliberate skip logged as WIN32_INPUT/RestoreClipboard/001-003); caller RAII restorer is the final fallback\n");
     }
     return ok;
 }

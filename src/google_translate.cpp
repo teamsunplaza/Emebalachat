@@ -137,6 +137,37 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     ::WinHttpSetTimeouts(hSession.get(), profile.resolve_ms, profile.connect_ms,
                          profile.send_ms, profile.receive_ms);
 
+    // R1-18a (F-03, v0.10.4 sweep): parity with openai_compatible_client.cpp -
+    // never follow a redirect. The GET request line carries the user's text in
+    // q=, so a 30x answered by clients5/translate.googleapis.com would replay
+    // that text to the redirect target (CWE-601; TLS still validates the
+    // target, so this needs a compromised endpoint/CA, hence LOW). Neither
+    // endpoint needs a redirect: clients5.google.com and
+    // translate.googleapis.com answer the translate_a GET with 200. HttpGet
+    // treats every non-200 as an honest transport failure (a 3xx now stays a
+    // 3xx instead of being followed), which falls through to the gtx endpoint
+    // or the no-network path.
+    // WINHTTP_OPTION_REDIRECT_POLICY_NEVER == 0 (winhttp.h defines the name;
+    // the literal keeps this block byte-identical to the OpenAI client's, so a
+    // reviewer can diff the two clients against each other).
+    DWORD redirect_policy_disable = 0;
+    // R2-11 (session 261029_0001): the result of this call was ignored, so a
+    // failed policy set silently left WinHTTP's default (FOLLOW) in place and
+    // the CWE-601 protection this block exists for was gone - with no trace
+    // anywhere. Fail OPEN on purpose (neither endpoint needs a redirect and the
+    // translate path must not die over a hardening knob), but make the
+    // degradation VISIBLE and shape-only: error code only, never the request.
+    if (!::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,
+                            &redirect_policy_disable, sizeof(redirect_policy_disable))) {
+        // R3 (261029_0001, round-3 security L-2): stderr-only was the visibility
+        // gap - a windowless context has no stderr, so route it through DIAG_F
+        // (dual sink: stderr + the opt-in diagnostic log). Still fail-open and
+        // shape-only (error code only).
+        DIAG_F("GOOGLE_T/HttpGet/004: WinHttpSetOption(WINHTTP_OPTION_REDIRECT_POLICY=NEVER) "
+               "failed (err=%lu); redirects may be followed on this session (fail-open, R2-11)\n",
+               ::GetLastError());
+    }
+
     ScopedHInternet hConnect(::WinHttpConnect(
         hSession.get(),
         host.c_str(),

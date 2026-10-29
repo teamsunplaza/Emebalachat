@@ -49,29 +49,37 @@ bool MouseHook::Start() {
     if (hReadyEvent_) {
         ::ResetEvent(hReadyEvent_);
     }
+    // R1-14 (code review mimoflash F-05): clear the late-install stand-down and
+    // the published handle for THIS attempt (identical contract to
+    // KeyboardHook::Start).
+    quit_requested_.store(false, std::memory_order_release);
+    hHook_.store(nullptr, std::memory_order_release);
 
     thread_ = std::thread(&MouseHook::HookThreadProc, this);
 
-    if (hReadyEvent_) {
-        ::WaitForSingleObject(hReadyEvent_, 2000);
+    // R1-14: bounded install handshake (shared with KeyboardHook). It joins the
+    // pump on every non-installed outcome and takes a late install down via
+    // quit_requested_ + WM_QUIT, so there is no unbounded join and no leaked
+    // hook.
+    const HookInstallOutcome install =
+        FinishLowLevelHookStart(hReadyEvent_, hHook_, hook_thread_id_, quit_requested_, thread_);
+    if (install == HookInstallOutcome::kInstalled) {
+        return true;
     }
 
-    if (!hHook_) {
-        // Hook install failed: HookThreadProc returned without pumping; join the
-        // finished thread (joinable std::thread dtor would terminate), then tear
-        // down the delayed-click worker so the object is cleanly restartable.
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-        running_.store(false);
-        if (delayed_click_worker_.joinable()) {
-            delayed_click_worker_ = std::jthread{}; // request_stop + join
-        }
-        delayed_worker_live_.store(false, std::memory_order_release);
-        return false;
+    if (install == HookInstallOutcome::kReadyTimeout) {
+        DIAG_F("HOOK/Start/002: mouse hook install exceeded the %lu ms ready window; pump stood down "
+               "(R1-14: startup continues, no leaked hook)\n",
+               static_cast<unsigned long>(kHookReadyWaitMs));
     }
-
-    return true;
+    // The handshake already joined the pump; tear down the delayed-click worker
+    // so the object is cleanly restartable.
+    running_.store(false);
+    if (delayed_click_worker_.joinable()) {
+        delayed_click_worker_ = std::jthread{}; // request_stop + join
+    }
+    delayed_worker_live_.store(false, std::memory_order_release);
+    return false;
 }
 
 void MouseHook::Stop() {
@@ -79,8 +87,10 @@ void MouseHook::Stop() {
         return;
     }
 
-    if (hook_thread_id_ != 0) {
-        ::PostThreadMessageW(hook_thread_id_, WM_QUIT, 0, 0);
+    // R1-14: acquire load on the pump's release store (its first action).
+    const DWORD hook_tid = hook_thread_id_.load(std::memory_order_acquire);
+    if (hook_tid != 0) {
+        ::PostThreadMessageW(hook_tid, WM_QUIT, 0, 0);
     }
 
     if (thread_.joinable()) {
@@ -118,9 +128,11 @@ void MouseHook::HookThreadProc() {
     // C4 (session 260910_0007): body extracted verbatim to the shared
     // RunLowLevelHookPump (src/hook_thread.hpp) — same pump as the keyboard
     // hook, identical modulo hook id + callback (see the byte-comparison note
-    // and preserved invariants there).
+    // and preserved invariants there). R1-15 (priority boost) and R1-14
+    // (late-install takeover) live in that shared pump, so both hook threads
+    // inherit them from one site.
     RunLowLevelHookPump(WH_MOUSE_LL, MouseHook::LowLevelMouseProc,
-                        hReadyEvent_, running_, hHook_, hook_thread_id_);
+                        hReadyEvent_, running_, hHook_, hook_thread_id_, quit_requested_);
 }
 
 // ---- REQ-R09 (audit §3.3): delayed multi-click dispatch, hook-thread-safe ----

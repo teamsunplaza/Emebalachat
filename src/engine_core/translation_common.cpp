@@ -14,7 +14,8 @@
 #include "engine.hpp"        // TruncateHeadTailWindow / ScrubControlTokenTexts /
                              // CollectControlTokenTexts / IsValidModelPath /
                              // VerifyModelSha256 / kLlama* budget constants
-#include "unicode_utils.hpp" // ToUtf8 / ToUtf16
+#include "smart_bypass.hpp"  // R1-1: the shared script predicates (Is* ranges)
+#include "unicode_utils.hpp" // ToUtf8 / ToUtf16 / DecodeNextCodePoint
 
 #include <algorithm>
 #include <chrono>
@@ -141,6 +142,567 @@ std::wstring JoinParagraphBlocks(const ParagraphSplit& split, size_t first, size
         out += split.blocks[i];
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// R1-1 + R1-2 (session 261029_0001, v0.10.4 sweep): pure output-quality gate
+// helpers. Both the gate and the sampler-shape decision are model-agnostic and
+// llama-independent, so they live OUTSIDE the HAVE_LLAMA_CPP block: the
+// no-llama build compiles them too and the unit suite pins every predicate
+// without loading a GGUF. See translation_common.hpp for the WHY (the live
+// "assist" symptom and the dropped repetition penalty).
+// ---------------------------------------------------------------------------
+namespace {
+
+// ASCII-only fold, mirroring unicode_utils' EqualsIgnoreCaseAscii idiom: the
+// CRT is never setlocale'd in this project, so an explicit A-Z fold keeps the
+// meta-leakage verdict deterministic and leaves Korean/Han untouched.
+wchar_t FoldAsciiCaseWide(wchar_t c) {
+    return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
+}
+
+std::wstring FoldAsciiCaseWide(std::wstring_view text) {
+    std::wstring out;
+    out.reserve(text.size());
+    for (const wchar_t c : text) {
+        out.push_back(FoldAsciiCaseWide(c));
+    }
+    return out;
+}
+
+bool IsOutputSpace(wchar_t c) {
+    return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n' || c == L'\v' || c == L'\f';
+}
+
+std::wstring_view TrimOutputSpace(std::wstring_view text) {
+    size_t begin = 0;
+    while (begin < text.size() && IsOutputSpace(text[begin])) {
+        ++begin;
+    }
+    size_t end = text.size();
+    while (end > begin && IsOutputSpace(text[end - 1])) {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+// Whitespace-delimited tokens (words). CJK text without spaces stays ONE token
+// — that is why the line rule matters for CJK loops and why the suffix rule
+// also works on the same token stream.
+std::vector<std::wstring_view> SplitOutputTokens(std::wstring_view text) {
+    std::vector<std::wstring_view> tokens;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        while (pos < text.size() && IsOutputSpace(text[pos])) {
+            ++pos;
+        }
+        const size_t begin = pos;
+        while (pos < text.size() && !IsOutputSpace(text[pos])) {
+            ++pos;
+        }
+        if (pos > begin) {
+            tokens.push_back(text.substr(begin, pos - begin));
+        }
+    }
+    return tokens;
+}
+
+// R1-1 meta-leakage table. Line-start needles are the shapes that only appear
+// as an ANSWER PREFIX (label lines, assistant openers); anywhere needles are
+// refusal phrasing that cannot sit inside a real translation without the source
+// meaning it (and the source guard then skips them). ASCII needles are
+// pre-folded; non-ASCII needles (Korean/Chinese label words) have no case.
+struct MetaLeakageNeedle {
+    const wchar_t* needle;
+    bool line_start_only;
+};
+
+constexpr MetaLeakageNeedle kMetaLeakageNeedles[] = {
+    // Refusal openers — the CEO's "assist" repro verbatim
+    // ("Translation is not possible… Please contact us for further assistance.").
+    {L"translation is not possible", false},
+    {L"translation is not available", false},
+    {L"i can't translate", false},
+    {L"i cannot translate", false},
+    {L"i can not translate", false},
+    {L"i'm unable to translate", false},
+    {L"i am unable to translate", false},
+    {L"can't translate this text", false},
+    {L"cannot translate this text", false},
+    {L"please contact us for", false},
+    // Assistant-style answer openers (live essays/label loops).
+    {L"as an ai", true},
+    {L"as a language model", true},
+    {L"sure, here", true},
+    {L"sure! here", true},
+    {L"here is a translation", true},
+    {L"here's a translation", true},
+    {L"here are some tips", true},
+    // "<language>:" label lines — the bilingual/listing loops.
+    {L"english:", true},   {L"korean:", true},  {L"chinese:", true},
+    {L"japanese:", true},  {L"spanish:", true}, {L"french:", true},
+    {L"german:", true},    {L"russian:", true}, {L"vietnamese:", true},
+    {L"thai:", true},      {L"arabic:", true},
+    {L"source:", true},    {L"target:", true},  {L"translation:", true},
+    // Native-script label words (Korean/Chinese label loops).
+    {L"영어:", true},     {L"한국어:", true},  {L"중국어:", true},
+    {L"일본어:", true},   {L"스페인어:", true}, {L"프랑스어:", true},
+    {L"독일어:", true},   {L"러시아어:", true},
+    {L"中文:", true},     {L"日本語:", true},   {L"英語:", true},
+};
+
+} // namespace
+
+std::uint32_t TargetScriptClasses(std::string_view tgt_code) {
+    for (const LanguageScriptEntry& entry : kLanguageScriptTable) {
+        if (EqualsIgnoreCaseAscii(tgt_code, std::string_view(entry.code))) {
+            return entry.script_mask;
+        }
+    }
+    return 0; // AUTO / unknown / empty -> the wrong-script gate fails open
+}
+
+std::uint32_t TextScriptClasses(std::wstring_view text) {
+    std::uint32_t mask = 0;
+    if (ContainsLatin(text)) mask |= ToMask(ScriptClass::Latin);
+    if (ContainsKorean(text)) mask |= ToMask(ScriptClass::Hangul);
+    if (ContainsHanzi(text)) mask |= ToMask(ScriptClass::Han);
+    if (ContainsKana(text)) mask |= ToMask(ScriptClass::Kana);
+    if (ContainsCyrillic(text)) mask |= ToMask(ScriptClass::Cyrillic);
+    if (ContainsThai(text)) mask |= ToMask(ScriptClass::Thai);
+    if (ContainsArabic(text)) mask |= ToMask(ScriptClass::Arabic);
+    if (ContainsDevanagari(text)) mask |= ToMask(ScriptClass::Devanagari);
+    if (ContainsBengali(text)) mask |= ToMask(ScriptClass::Bengali);
+    if (ContainsKhmer(text)) mask |= ToMask(ScriptClass::Khmer);
+    if (ContainsLao(text)) mask |= ToMask(ScriptClass::Lao);
+    if (ContainsHebrew(text)) mask |= ToMask(ScriptClass::Hebrew);
+    if (ContainsGreek(text)) mask |= ToMask(ScriptClass::Greek);
+    if (ContainsMyanmar(text)) mask |= ToMask(ScriptClass::Myanmar);
+    return mask;
+}
+
+std::size_t CountCodePoints(std::wstring_view text) {
+    std::size_t count = 0;
+    std::size_t idx = 0;
+    while (idx < text.size()) {
+        (void)DecodeNextCodePoint(text, idx);
+        ++count;
+    }
+    return count;
+}
+
+bool IsWrongScriptOutput(std::wstring_view output, std::wstring_view source,
+                         std::uint32_t tgt_script_classes) {
+    if (tgt_script_classes == 0) {
+        return false; // unknown/AUTO target: never guess
+    }
+    if (CountCodePoints(output) <= kWrongScriptMinOutputCodePoints) {
+        return false; // a two-character answer is below the gate's floor
+    }
+    if ((TextScriptClasses(output) & tgt_script_classes) != 0) {
+        return false; // target script present -> answered in the right language
+    }
+    // The gate only fires when the SOURCE carried a script the target does not
+    // use. Pure digits/symbols ("12345") therefore pass this rule: there is no
+    // language signal to be wrong about (their loops are caught by repetition).
+    return (TextScriptClasses(source) & ~tgt_script_classes) != 0;
+}
+
+namespace {
+
+// R2-6 (session 261029_0001, code-reviewer-mimo F-01): the longest run of
+// consecutive identical whitespace tokens. Rule B's span floor reads this.
+int LongestIdenticalTokenRun(const std::vector<std::wstring_view>& tokens) {
+    if (tokens.empty()) {
+        return 0;
+    }
+    int best = 1;
+    int run = 1;
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        if (tokens[i] == tokens[i - 1]) {
+            ++run;
+        } else {
+            run = 1;
+        }
+        if (run > best) {
+            best = run;
+        }
+    }
+    return best;
+}
+
+// R2-6: does this text itself carry a run of `min_run` identical whitespace
+// tokens? The Rule-B source guard. Language-agnostic by construction: a
+// token-identity match across a language pair is impossible, so the SHAPE (a
+// reduplicated token run) is what is compared.
+bool HasIdenticalTokenRun(std::wstring_view text, int min_run) {
+    return LongestIdenticalTokenRun(SplitOutputTokens(text)) >= min_run;
+}
+
+// R2-7 (code-reviewer-gemini F-05): a line that starts (after leading spaces or
+// tabs) with a colon-delimited LABEL - at most kColonLabelMaxCodeUnits
+// characters, no sentence-ending punctuation before the colon. This is the
+// source-side evidence that makes a translated label ("Source: Reuters" for
+// "출처: 로이터") legitimate content instead of meta leakage.
+// HONEST ENVELOPE (R3, round-3 F-04): the predicate is a SHAPE test, not a
+// prose test - a short sentence that reaches its colon before any . ! or ?
+// qualifies too ("The answer: 42" passes, 10 units), and that line would then
+// exempt a same-index output needle. The bound is the shape itself (short
+// pre-colon run, no sentence punctuation); do not read it as "prose can never
+// widen the guard".
+bool LineStartsWithColonLabel(std::wstring_view line) {
+    size_t pos = 0;
+    while (pos < line.size() && (line[pos] == L' ' || line[pos] == L'\t')) {
+        ++pos;
+    }
+    const size_t label_begin = pos;
+    while (pos < line.size() && line[pos] != L':') {
+        const wchar_t c = line[pos];
+        if (c == L'.' || c == L'!' || c == L'?' || c == L'\n') {
+            return false; // sentence punctuation before the colon: prose, not a label
+        }
+        if (pos - label_begin >= kColonLabelMaxCodeUnits) {
+            return false; // too long to be a label
+        }
+        ++pos;
+    }
+    return pos < line.size() && pos > label_begin;
+}
+
+// R2-7: split on '\n' WITHOUT dropping empty lines, so an output line index
+// maps 1:1 onto the source line index (a translated label sits on the line its
+// source label sat on).
+std::vector<std::wstring_view> SplitLinesKeepingEmpties(std::wstring_view text) {
+    std::vector<std::wstring_view> lines;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t end = text.find(L'\n', start);
+        if (end == std::wstring_view::npos) {
+            end = text.size();
+        }
+        lines.push_back(text.substr(start, end - start));
+        if (end >= text.size()) {
+            break;
+        }
+        start = end + 1;
+    }
+    return lines;
+}
+
+// R2-16: code points of `text` whose script class is not part of
+// `allowed_mask`. Script-less code points (digits, punctuation, whitespace,
+// emoji) never count: they carry no language signal.
+std::size_t CountUnexpectedScriptCodePoints(std::wstring_view text,
+                                            std::uint32_t allowed_mask) {
+    std::size_t count = 0;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const size_t begin = idx;
+        (void)DecodeNextCodePoint(text, idx);
+        wchar_t units[2] = {0, 0};
+        const size_t n = idx - begin;
+        for (size_t k = 0; k < n && k < 2; ++k) {
+            units[k] = text[begin + k];
+        }
+        const std::uint32_t mask = TextScriptClasses(std::wstring_view(units, n));
+        if (mask != 0 && (mask & ~allowed_mask) != 0) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+bool HasRepeatedLineOrTokenRun(std::wstring_view text, std::wstring_view source) {
+    // Rule A (R2-6): a non-empty trimmed line repeated kRepeatedLineMinCount
+    // times CONSECUTIVELY. Pre-R2-6 the rule counted a repeat anywhere after the
+    // first occurrence, so a transcript/form translation saying "Yes." three
+    // times across a dialogue was rejected as a loop; a loop is by definition
+    // consecutive. Only the trailing kRepetitionMaxScannedLines lines are
+    // compared - a loop lives at the tail, and the bound keeps the scan cheap
+    // on long multi-line outputs.
+    std::vector<std::wstring_view> lines;
+    size_t line_start = 0;
+    while (line_start <= text.size()) {
+        size_t line_end = text.find(L'\n', line_start);
+        if (line_end == std::wstring_view::npos) {
+            line_end = text.size();
+        }
+        const std::wstring_view line =
+            TrimOutputSpace(text.substr(line_start, line_end - line_start));
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+        if (line_end >= text.size()) {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    if (static_cast<int>(lines.size()) >= kRepeatedLineMinCount) {
+        const size_t scanned = static_cast<size_t>(kRepetitionMaxScannedLines);
+        const size_t first = lines.size() > scanned ? lines.size() - scanned : 0;
+        int consecutive = 1;
+        for (size_t i = first + 1; i < lines.size(); ++i) {
+            if (lines[i] == lines[i - 1]) {
+                if (++consecutive >= kRepeatedLineMinCount) {
+                    return true;
+                }
+            } else {
+                consecutive = 1;
+            }
+        }
+    }
+
+    // Rule B (R2-6): one whitespace token repeated kRepeatedTokenRunMinCount
+    // times in a row, with TWO guards so ordinary human emphasis survives
+    // ("no no no", "Help! Help! Help!", "ha ha ha"):
+    //   (a) span floor - the run must cover at least
+    //       kRepeatedTokenRunMinCoveragePercent of the output's tokens (a real
+    //       one-token loop runs to the token cap: coverage ~100%; an emphasis
+    //       inside a sentence covers a small fraction);
+    //   (b) source guard - a reduplication the SOURCE itself carries is the
+    //       user's content, not a loop (repo idiom, same rule as
+    //       HasMetaLeakage below).
+    const std::vector<std::wstring_view> tokens = SplitOutputTokens(text);
+    if (tokens.empty()) {
+        return false;
+    }
+    const int longest_run = LongestIdenticalTokenRun(tokens);
+    if (longest_run < kRepeatedTokenRunMinCount) {
+        return false;
+    }
+    // Integer form of `longest_run >= tokens.size() * percent / 100`. Truncation
+    // makes the floor at most one token LOOSER than the exact product (11
+    // tokens -> floor 5, so a 5-token run = 45% clears it); the unit suite pins
+    // both sides of the boundary.
+    const int coverage_floor = static_cast<int>(
+        (static_cast<long long>(tokens.size()) * kRepeatedTokenRunMinCoveragePercent) / 100);
+    if (longest_run < coverage_floor) {
+        return false;
+    }
+    return !HasIdenticalTokenRun(source, kRepeatedTokenRunMinCount);
+}
+
+bool HasSuffixRepetition(std::wstring_view text) {
+    const std::vector<std::wstring_view> tokens = SplitOutputTokens(text);
+    const int n = static_cast<int>(tokens.size());
+    if (n < kSuffixRepetitionMinSpanTokens) {
+        return false;
+    }
+    // Rule C: the trailing tokens are >= kSuffixRepetitionMinRepeats identical
+    // consecutive blocks of period p, and the repeated span covers at least
+    // kSuffixRepetitionMinSpanTokens tokens (so "no no no" — 3 tokens — is not
+    // a loop, while "no no no no no no no no" is).
+    // (No std::min here: this TU includes windows.h through the project
+    // headers, where the min/max macros would mangle `std::min(`.)
+    int max_period = n / kSuffixRepetitionMinRepeats;
+    if (max_period > kSuffixRepetitionMaxPeriodTokens) {
+        max_period = kSuffixRepetitionMaxPeriodTokens;
+    }
+    for (int period = 1; period <= max_period; ++period) {
+        int repeats = 1;
+        while ((repeats + 1) * period <= n) {
+            const int base = n - (repeats + 1) * period;
+            bool equal = true;
+            for (int t = 0; t < period; ++t) {
+                if (tokens[base + t] != tokens[base + period + t]) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (!equal) {
+                break;
+            }
+            ++repeats;
+        }
+        if (repeats >= kSuffixRepetitionMinRepeats &&
+            repeats * period >= kSuffixRepetitionMinSpanTokens) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool OutputHasRepetition(std::wstring_view text, std::wstring_view source) {
+    return HasRepeatedLineOrTokenRun(text, source) || HasSuffixRepetition(text);
+}
+
+bool HasMetaLeakage(std::wstring_view text, std::wstring_view source) {
+    if (text.empty()) {
+        return false;
+    }
+    const std::wstring folded = FoldAsciiCaseWide(text);
+    const std::wstring folded_source = FoldAsciiCaseWide(source);
+    // R2-7: line indices of the source, so a translated label can be matched to
+    // the source line it came from.
+    const std::vector<std::wstring_view> output_lines = SplitLinesKeepingEmpties(folded);
+    const std::vector<std::wstring_view> source_lines =
+        SplitLinesKeepingEmpties(folded_source);
+    for (const MetaLeakageNeedle& needle : kMetaLeakageNeedles) {
+        const std::wstring_view pattern(needle.needle);
+        if (pattern.empty()) {
+            continue;
+        }
+        // Source guard (repo idiom, same rule as StripEndOfConversationMarkers):
+        // phrasing the SOURCE itself carries is legitimate content, never
+        // leakage — a user who typed it must get it translated, not rejected.
+        if (!folded_source.empty() && folded_source.find(pattern) != std::wstring::npos) {
+            continue;
+        }
+        if (!needle.line_start_only) {
+            if (folded.find(pattern) != std::wstring::npos) {
+                return true;
+            }
+            continue;
+        }
+        // R2-7 (code-reviewer-gemini F-05): a colon-label needle is legitimate
+        // when the source line at the SAME index starts with its own colon
+        // label — the model translated a label into a label ("출처: 로이터" ->
+        // "Source: Reuters", "English: Fluent" -> "영어: 유창함"). The
+        // pre-R2-7 guard could not see this: it only skipped a needle whose
+        // exact TARGET-language spelling appeared in the source, which a real
+        // language pair never contains.
+        const bool colon_label = pattern.back() == L':';
+        for (size_t i = 0; i < output_lines.size(); ++i) {
+            const std::wstring_view line = output_lines[i];
+            size_t content_start = 0;
+            while (content_start < line.size() &&
+                   (line[content_start] == L' ' || line[content_start] == L'\t')) {
+                ++content_start;
+            }
+            if (line.compare(content_start, pattern.size(), pattern) != 0) {
+                continue;
+            }
+            if (colon_label && i < source_lines.size() &&
+                LineStartsWithColonLabel(source_lines[i])) {
+                continue;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsUnexpectedScriptHeavyOutput(std::wstring_view output, std::wstring_view source,
+                                   std::uint32_t tgt_script_classes) {
+    if (tgt_script_classes == 0) {
+        return false; // AUTO / unknown target: nothing can be "unexpected"
+    }
+    const std::size_t output_cp = CountCodePoints(output);
+    const std::size_t source_cp = CountCodePoints(source);
+    if (output_cp == 0 || source_cp == 0) {
+        return false;
+    }
+    // Both halves are required: a quoted foreign term inside a faithful
+    // translation is neither a third of the text nor a >3x expansion.
+    if (static_cast<long long>(output_cp) * 100 <=
+        static_cast<long long>(source_cp) * kUnexpectedScriptLengthExpansionPercent) {
+        return false;
+    }
+    const std::uint32_t allowed = tgt_script_classes | TextScriptClasses(source);
+    const std::size_t unexpected = CountUnexpectedScriptCodePoints(output, allowed);
+    return static_cast<long long>(unexpected) * 100 >=
+           static_cast<long long>(output_cp) * kUnexpectedScriptSharePercent;
+}
+
+bool IsPureRepetitionSource(std::wstring_view source) {
+    // The code-point sequence with whitespace dropped: the shape is a
+    // repetition whether or not the user separated the repeats ("ㅋㅋㅋㅋ" vs
+    // "k k k k"). Surrogate pairs stay one unit.
+    std::vector<std::wstring> units;
+    size_t idx = 0;
+    while (idx < source.size()) {
+        const size_t begin = idx;
+        (void)DecodeNextCodePoint(source, idx);
+        if (idx - begin == 1) {
+            const wchar_t c = source[begin];
+            if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') {
+                continue;
+            }
+        }
+        units.emplace_back(source.substr(begin, idx - begin));
+    }
+    const size_t n = units.size();
+    if (n < 2) {
+        return false; // one unit is not a repetition (the live "음" shape)
+    }
+    // A repetition needs a period that divides the WHOLE sequence into at
+    // least two identical blocks ("ㅋㅋㅋㅋ", "haha", "no no").
+    for (size_t period = 1; period * 2 <= n; ++period) {
+        if (n % period != 0) {
+            continue;
+        }
+        bool all_same = true;
+        for (size_t i = period; i < n && all_same; ++i) {
+            all_same = (units[i] == units[i % period]);
+        }
+        if (all_same) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view source) {
+    const std::size_t source_cp = CountCodePoints(source);
+    if (source_cp == 0 || source_cp > kAmplifiedSourceMaxCodePoints) {
+        return false;
+    }
+    const std::size_t output_cp = CountCodePoints(output);
+    // R3 source-shape carve-out (round-3 measured corpus ruling), BOUNDED by
+    // 261029_0001 FIX-D2: a source that is nothing but one repeated unit is
+    // laughter / emphasis, and a chatty model's laughter expansion of it is a
+    // legitimate answer - but only under the laughter-legitimate ceiling. The
+    // R3 draft made that exemption unbounded, and the rebuilt worker then
+    // shipped 980 / 998 / 1110-code-point repeated-paragraph essays (958 / 1008
+    // / 1122 UTF-8 bytes) for "kkkk" / "ㅎㅎㅎㅎ" / "haha" as status=ok; that is
+    // nonsense output, not laughter (the longest legitimate reduplication
+    // answer measures 19 code points). At or above
+    // kAmplifiedRepetitionOutputMinCodePoints rule (ii) applies again. The
+    // single-code-point residual ("음") is never a repetition, so it keeps the
+    // 64-code-point floor unchanged.
+    if (IsPureRepetitionSource(source)) {
+        return output_cp >= kAmplifiedRepetitionOutputMinCodePoints;
+    }
+    return output_cp >= kAmplifiedOutputMinCodePoints;
+}
+
+const char* OutputRejectReasonName(OutputRejectReason reason) {
+    switch (reason) {
+        case OutputRejectReason::Repetition:  return "repetition";
+        case OutputRejectReason::WrongScript: return "wrong-script";
+        case OutputRejectReason::MetaLeakage: return "meta-leakage";
+        case OutputRejectReason::ScriptLeak:  return "script-leak";
+        case OutputRejectReason::None:        break;
+    }
+    return "none";
+}
+
+OutputRejectReason ClassifyTranslationOutput(std::wstring_view output,
+                                             std::wstring_view source,
+                                             std::string_view tgt_code) {
+    if (output.empty()) {
+        return OutputRejectReason::None; // empty is the ladder's own concern
+    }
+    if (OutputHasRepetition(output, source)) {
+        return OutputRejectReason::Repetition;
+    }
+    if (IsWrongScriptOutput(output, source, TargetScriptClasses(tgt_code))) {
+        return OutputRejectReason::WrongScript;
+    }
+    if (HasMetaLeakage(output, source)) {
+        return OutputRejectReason::MetaLeakage;
+    }
+    // R2-16 (CEO decision "언제나 잘 번역", calibrated thresholds above): the
+    // answer is in the target script but is mostly a script neither side uses,
+    // or a four-character source was answered with an essay. Runs LAST so a
+    // more specific reason keeps its own diagnostic name.
+    if (IsUnexpectedScriptHeavyOutput(output, source, TargetScriptClasses(tgt_code)) ||
+        IsAmplifiedTinySourceOutput(output, source)) {
+        return OutputRejectReason::ScriptLeak;
+    }
+    return OutputRejectReason::None;
 }
 
 #ifdef HAVE_LLAMA_CPP
@@ -590,6 +1152,14 @@ std::wstring LocalInferenceEngine::Translate(
     // after this point) stay intact. The shrink loop below only re-slices
     // this already-scrubbed copy, so every rebuild inherits the scrub.
     src_w = ScrubControlTokenTexts(src_w, control_token_texts);
+    // R1-1 (261029_0001): the target SCRIPT family is resolved ONCE per call
+    // from the i18n language-registry code. tgt_name is the registry's name_en
+    // ("Korean"/"English"/..., the worker parity contract in
+    // ggml_translate_worker.cpp) and NormalizeLanguageCode accepts either form;
+    // an unknown/AUTO target resolves to mask 0 and the wrong-script gate then
+    // fails open. Model-agnostic by construction: the script table is keyed by
+    // language code, never by model or template.
+    const std::string tgt_code = NormalizeLanguageCode(tgt_name);
     // REQ-059: the prompt build + tokenize + decode body runs per attempt
     // (attempt 0 = rung-1 chat form; attempt 1 = rung-2 completion form,
     // only after an empty/echo rung 1). The shrink loop, hard cap, sampler,
@@ -667,6 +1237,12 @@ std::wstring LocalInferenceEngine::Translate(
     // is only a source PREFIX at that point, so the full-equality echo
     // compare alone could not catch it).
     bool rung1_aborted_echo = false;
+    // R1-1 (261029_0001): set when the periodic repetition probe aborts a
+    // rung's decode. Rung 1 -> the acceptance test degrades to the completion
+    // form; rung 2 -> the ladder has no rung left, so the attempt answers
+    // std::nullopt instead of returning the partial loop.
+    bool rung1_aborted_repetition = false;
+    bool rung2_repetition_aborted = false;
     for (int attempt = 0; attempt < 2; ++attempt) {
     const bool completion_form = (attempt == 1);
     std::string prompt = build_final_prompt(cur, completion_form);
@@ -746,23 +1322,45 @@ std::wstring LocalInferenceEngine::Translate(
     }
 
     // Initialize sampler according to Tencent Hy-MT2 official specifications
+    // R1-2 (261029_0001): the temperature<=0.001 leg is chosen by the pure
+    // DecideSamplerShape decision (pinned headlessly). With a configured
+    // repetition penalty the chain now APPLIES it (penalties -> greedy); the
+    // pre-R1-2 code built a bare greedy sampler and silently dropped the
+    // shipped rep_pen=1.05, which is what let greedy decodes loop. rep_pen
+    // <= 1.0 keeps the historical bare-greedy allocation byte-identically.
     llama_sampler* smpl = nullptr;
-    if (temperature <= 0.001f) {
-        smpl = llama_sampler_init_greedy();
-    } else {
-        llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-        smpl = llama_sampler_chain_init(sparams);
-        if (rep_pen > 1.0f) {
+    switch (DecideSamplerShape(temperature, rep_pen)) {
+        case SamplerShape::BareGreedy:
+            smpl = llama_sampler_init_greedy();
+            break;
+        case SamplerShape::PenalizedGreedy: {
+            llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+            smpl = llama_sampler_chain_init(sparams);
+            // Penalty FIRST, greedy LAST: the chain's final sampler owns the
+            // selection (llama_sampling.cpp llama_sampler_sample reads the
+            // `selected` index), so greedy is an argmax over the PENALIZED,
+            // optionally filtered logits. top_k/top_p are deliberately absent
+            // (see DecideSamplerShape: argmax-invariant at temperature 0).
             llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));
+            llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+            break;
         }
-        if (top_k > 0) {
-            llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+        case SamplerShape::Dist: {
+            llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+            smpl = llama_sampler_chain_init(sparams);
+            if (rep_pen > 1.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));
+            }
+            if (top_k > 0) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+            }
+            if (top_p > 0.0f && top_p < 1.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+            }
+            llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+            llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+            break;
         }
-        if (top_p > 0.0f && top_p < 1.0f) {
-            llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
-        }
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
-        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
     if (!smpl) {
         return std::nullopt;
@@ -893,13 +1491,34 @@ std::wstring LocalInferenceEngine::Translate(
         // completion form. Exact compare only, no fuzzy heuristic: Hy-MT2
         // translations never track the source for 16+ tokens, and even a
         // false fire still answers correctly via rung 2.
-        if (!completion_form && (i + 1) % kEchoPrefixProbeTokenCadence == 0 &&
-            !output_u8.empty() && output_u8.size() <= src_u8.size() &&
-            output_u8.compare(0, output_u8.size(), src_u8, 0, output_u8.size()) == 0) {
-            DIAG_F("ENGINE/Translate/037: rung-1 output tracks the source prefix at token %d (out=%zu src=%zu); aborting to the completion form\n",
-                   i + 1, output_u8.size(), src_u8.size());
-            rung1_aborted_echo = true;
-            break;
+        //
+        // R1-1 (261029_0001): the same cadence now also runs the repetition
+        // predicate on BOTH rungs. A loop that starts mid-decode otherwise
+        // burns the entire generation budget (the live "np" -> "npi" x64 run
+        // took 8.2 s for nothing) before the post-decode gate could reject it.
+        // Same predicate as the post-decode gate (OutputHasRepetition), so the
+        // two sites can never disagree; the per-rung FRESH decode budget and
+        // the input-scaled cap are untouched. Shape-only diagnostic (token
+        // index only, no content). R2-6: the source rides along so the Rule-B
+        // reduplication guard sees the same evidence at both sites.
+        if ((i + 1) % kEchoPrefixProbeTokenCadence == 0 && !output_u8.empty()) {
+            if (OutputHasRepetition(ToUtf16(output_u8), cur)) {
+                if (completion_form) {
+                    rung2_repetition_aborted = true;
+                } else {
+                    rung1_aborted_repetition = true;
+                }
+                DIAG_F("ENGINE/Translate/039: %s output is repeating at token %d; aborting the decode (R1-1)\n",
+                       completion_form ? "completion-form" : "rung-1", i + 1);
+                break;
+            }
+            if (!completion_form && output_u8.size() <= src_u8.size() &&
+                output_u8.compare(0, output_u8.size(), src_u8, 0, output_u8.size()) == 0) {
+                DIAG_F("ENGINE/Translate/037: rung-1 output tracks the source prefix at token %d (out=%zu src=%zu); aborting to the completion form\n",
+                       i + 1, output_u8.size(), src_u8.size());
+                rung1_aborted_echo = true;
+                break;
+            }
         }
 
         batch = llama_batch_get_one(&token, 1);
@@ -961,6 +1580,13 @@ std::wstring LocalInferenceEngine::Translate(
     // decode with a fresh wall-clock budget. Hy-MT2 never trips this (its
     // rung-1 output is a real translation), so its path stays byte-identical
     // end to end.
+    //
+    // R1-1 (261029_0001): a rung-1 output that is non-empty but GARBAGE
+    // (repetition loop / wrong script / meta-assistant leakage) degrades the
+    // same way — one completion-form retry instead of shipping the garbage.
+    // The gate runs on the TRIMMED rung-1 output; a mid-decode repetition
+    // abort is classified as Repetition without re-scanning (it already fired
+    // on the partial text).
     if (attempt == 0) {
         std::string src_cmp = src_u8;
         size_t cs = 0;
@@ -978,15 +1604,25 @@ std::wstring LocalInferenceEngine::Translate(
         const bool rung1_empty = trimmed_u8.empty();
         const bool rung1_echo = !rung1_empty && !src_cmp.empty() && trimmed_u8 == src_cmp;
         const bool rung1_bare_special = output_is_bare_special(trimmed_u8);
-        if (!rung1_empty && !rung1_echo && !rung1_bare_special && !rung1_aborted_echo) {
+        const OutputRejectReason rung1_reject =
+            rung1_aborted_repetition
+                ? OutputRejectReason::Repetition
+                : (rung1_empty ? OutputRejectReason::None
+                               : ClassifyTranslationOutput(ToUtf16(trimmed_u8), cur, tgt_code));
+        if (!rung1_empty && !rung1_echo && !rung1_bare_special && !rung1_aborted_echo &&
+            rung1_reject == OutputRejectReason::None) {
             break; // acceptable rung-1 output — no completion-form retry
         }
         degraded_to_completion = true;
         DIAG_F("ENGINE/Translate/034: rung-1 chat form produced %s; retrying with the completion form (shape-only)\n",
                rung1_aborted_echo ? "a source-prefix echo (early abort)"
-                                  : (rung1_empty ? "an empty decode"
-                                                 : (rung1_echo ? "an echo of the source"
-                                                               : "a bare special marker")));
+                                  : rung1_aborted_repetition
+                                        ? "a repetition loop (R1-1 early abort)"
+                                        : (rung1_empty ? "an empty decode"
+                                                       : (rung1_echo ? "an echo of the source"
+                                                                     : (rung1_bare_special
+                                                                            ? "a bare special marker"
+                                                                            : OutputRejectReasonName(rung1_reject)))));
     }
     } // REQ-059 attempt loop (rung 1 chat -> rung 2 completion)
 
@@ -1000,6 +1636,20 @@ std::wstring LocalInferenceEngine::Translate(
     }
 
     if (degraded_to_completion) {
+        // R1-1 (261029_0001): the SAME gate runs on the completion-form result
+        // (both rungs, model-agnostic). This rung is the last one, so a
+        // rejection here is an HONEST failure: std::nullopt -> the worker maps
+        // it to the frozen engine_failed (transient-retry / fallback UX is the
+        // app's existing behavior). Garbage is never handed to the user.
+        const OutputRejectReason rung2_reject =
+            rung2_repetition_aborted
+                ? OutputRejectReason::Repetition
+                : ClassifyTranslationOutput(ToUtf16(trimmed_u8), cur, tgt_code);
+        if (rung2_reject != OutputRejectReason::None) {
+            DIAG_F("ENGINE/Translate/038: completion-form output rejected by the R1-1 gate (%s); answering engine_failed\n",
+                   OutputRejectReasonName(rung2_reject));
+            return std::nullopt;
+        }
         DIAG_F("ENGINE/Translate/035: returning the completion-form result (shape-only)\n");
     }
     return trimmed_u8;
@@ -1090,6 +1740,21 @@ std::wstring LocalInferenceEngine::Translate(
             }
             stitched += ToUtf16(*part);
             stitched += chunk_trailing_separators[k];
+        }
+        // R2-8 (session 261029_0001, security-reviewer-mimo L-2): every chunk
+        // passed the output gate on its OWN trimmed text, so a shape that only
+        // exists after stitching (the live case: >= 3 chunks each emitting the
+        // same non-needle line -> Rule A reassembles across the separators)
+        // would ship un-gated. Re-run the CHEAP, model-agnostic repetition
+        // predicate over the stitched whole: same predicate as the per-chunk
+        // gate, no second decode, no second tokenize. The per-chunk gates stay
+        // (cost boundary: a chunk must fail before the next one is decoded);
+        // meta-leakage needles cannot reassemble across a chunk separator
+        // (separators carry >= 2 line breaks and a needle is line-start only),
+        // so repetition is the one predicate stitching can create.
+        if (OutputHasRepetition(stitched, src_w)) {
+            DIAG_F("ENGINE/Translate/041: stitched output is repeating (R2-8 whole-output re-gate); answering engine_failed\n");
+            return {};
         }
         return stitched;
     }

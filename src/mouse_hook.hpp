@@ -100,9 +100,10 @@ public:
     // handle-validity check is a fast-path guard; the OS can silently remove
     // WH_MOUSE_LL past LowLevelHooksTimeout WITHOUT invalidating our local
     // HHOOK, so the resume/unlock policy is always verify-and-reinstall).
+    // R1-14: acquire load on the pump's release-published handle.
     bool IsHealthy() const {
         return running_.load(std::memory_order_acquire) &&
-               hHook_ != nullptr;
+               hHook_.load(std::memory_order_acquire) != nullptr;
     }
     // Verify-and-reinstall after Sleep/Resume, Win+L unlock, or secure-desktop
     // transitions. Refuses to resurrect a hook that was never started / was
@@ -115,6 +116,11 @@ public:
         Stop();
         return Start();
     }
+
+    // R1-15 test seam (mirrors KeyboardHook::HookThreadIdForTest): the OS
+    // thread id of the running pump, so the suite can assert the pump thread's
+    // live priority. 0 when not started.
+    DWORD HookThreadIdForTest() const { return hook_thread_id_.load(std::memory_order_acquire); }
 
     void SetDragReleaseCallback(DragReleaseCallback cb);
     void SetMouseDownCallback(MouseDownCallback cb);
@@ -170,8 +176,14 @@ private:
 
     std::atomic<bool> enabled_{true};
     std::atomic<bool> running_{false};
-    DWORD hook_thread_id_ = 0;
-    HHOOK hHook_ = nullptr;
+    // R1-14 (code review mimoflash F-05): atomics - the pump publishes both
+    // (thread id first, then the handle before it signals the ready event) while
+    // Start()'s bounded handshake and the watchdog's IsHealthy() read them.
+    std::atomic<DWORD> hook_thread_id_{0};
+    std::atomic<HHOOK> hHook_{nullptr};
+    // R1-14: late-install stand-down request (see hook.hpp's member of the same
+    // name and FinishLowLevelHookStart in hook_thread.hpp).
+    std::atomic<bool> quit_requested_{false};
     HANDLE hReadyEvent_ = nullptr;
     std::thread thread_;
 

@@ -388,6 +388,57 @@ std::wstring ExePath() {
     return g_exe_override.empty() ? DefaultExePath() : g_exe_override;
 }
 
+// R1-7 (v0.10.4 sweep): normalize a path for the peer-identity compare. ONLY
+// the equivalences Win32 itself applies are folded in — dropping anything else
+// could make two different files compare equal, the one direction a fail-closed
+// gate must never take:
+//   * trailing dots/spaces (stripped from every Win32 file name),
+//   * forward slashes (Win32 treats them as separators),
+//   * the \\?\ long-path prefix and its \\?\UNC\ form,
+//   * duplicated separators (the object manager ignores them).
+// Case folding is NOT done here: CompareStringOrdinal(ignore-case) applies
+// proper Unicode simple case folding (user profile names can be non-ASCII).
+std::wstring NormalizePeerPath(std::wstring_view path) {
+    std::size_t end = path.size();
+    while (end > 0 && (path[end - 1] == L'.' || path[end - 1] == L' ')) --end;
+
+    std::wstring out;
+    out.reserve(end);
+    for (std::size_t i = 0; i < end; ++i) {
+        out.push_back(path[i] == L'/' ? L'\\' : path[i]);
+    }
+
+    auto ascii_lower = [](wchar_t c) -> wchar_t {
+        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
+    };
+    auto starts_with_ci = [&](std::wstring_view s, std::wstring_view prefix) {
+        if (s.size() < prefix.size()) return false;
+        for (std::size_t i = 0; i < prefix.size(); ++i) {
+            if (ascii_lower(s[i]) != ascii_lower(prefix[i])) return false;
+        }
+        return true;
+    };
+    if (out.size() > 4 && out[0] == L'\\' && out[1] == L'\\' && out[2] == L'?' &&
+        out[3] == L'\\') {
+        std::wstring rest = out.substr(4);
+        // \\?\UNC\server\share -> \\server\share (the same object path).
+        out = starts_with_ci(rest, L"UNC\\") ? L"\\\\" + rest.substr(4) : std::move(rest);
+    }
+
+    // Keep a leading UNC "\\" (one separator there names a device path),
+    // collapse every other run of separators to one.
+    std::wstring collapsed;
+    collapsed.reserve(out.size());
+    const std::size_t lead =
+        (out.size() >= 2 && out[0] == L'\\' && out[1] == L'\\') ? 2 : 0;
+    collapsed.append(out, 0, lead);
+    for (std::size_t i = lead; i < out.size(); ++i) {
+        if (out[i] == L'\\' && i > lead && collapsed.back() == L'\\') continue;
+        collapsed.push_back(out[i]);
+    }
+    return collapsed;
+}
+
 // ---- session ----------------------------------------------------------------
 struct Session {
     HANDLE pipe = nullptr;             // nullptr = not connected
@@ -560,14 +611,38 @@ ReadOutcome ReadFrame(HANDLE pipe, std::string& json, long long timeout_ms) {
 // (WaitNamedPipe + CreateFile, then retries paced at 500 ms x3). `spawned`
 // tracks the spawn-on-demand-once rule ACROSS candidates. Returns a live
 // handle or INVALID_HANDLE_VALUE (the last OS error is stored in last_err).
+//
+// R1-7 (v0.10.4 sweep): a successful CreateFileW is NOT yet a live handle. The
+// pipe SERVER must be the host image this client itself spawns, verified here —
+// before the caller can read the boot token or write the hello — because the
+// canonical name is ownerless while the real host is idle-exited and any local
+// user can pre-create it. A wrong peer is closed immediately and counted as a
+// connect failure (`peer_rejected`), so the retry matrix and the next candidate
+// still run, and the final err token becomes "connect:peer". The check is three
+// cheap syscalls once per connection, no polling.
 HANDLE ConnectPipeWithRetry(const std::wstring& pipe, const EngineHostConfig& cfg,
-                            bool& spawned, DWORD& last_err) {
+                            bool& spawned, DWORD& last_err, bool& peer_rejected) {
+    // The expected image is the SAME ExePath() SpawnHost launches (resolved
+    // once: the path cannot change under a test override mid-call).
+    const std::wstring expected_host = ExePath();
+    bool peer_logged = false; // one shape-only line per candidate, not per attempt
     for (int attempt = 0;; ++attempt) {
         ::WaitNamedPipeW(pipe.c_str(), kConnectRetryIntervalMs);
         HANDLE h = ::CreateFileW(pipe.c_str(), GENERIC_READ | GENERIC_WRITE,
                                  0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-        if (h != INVALID_HANDLE_VALUE) return h;
-        last_err = ::GetLastError();
+        if (h != INVALID_HANDLE_VALUE) {
+            if (PeerHandleIsExpectedHost(h, expected_host.c_str())) return h;
+            // Fail closed: never hand a wrong peer to the handshake. The token
+            // file is not even read for this attempt.
+            ::CloseHandle(h);
+            peer_rejected = true;
+            if (!peer_logged) {
+                LogHandshakeMismatch("peer identity mismatch");
+                peer_logged = true;
+            }
+        } else {
+            last_err = ::GetLastError();
+        }
         if (attempt >= kConnectRetryCount) return INVALID_HANDLE_VALUE;
         // §5.1-4: spawn on demand (once), then retries paced at 500 ms (x3).
         // The fixed sleep is load-bearing: WaitNamedPipe returns IMMEDIATELY
@@ -598,15 +673,19 @@ bool ConnectAndHandshake(const EngineHostConfig& cfg, std::string& err) {
 
     HANDLE h = INVALID_HANDLE_VALUE;
     bool spawned = false;
+    bool peer_rejected = false; // R1-7: a candidate answered from a non-host image
     DWORD last_err = ERROR_SUCCESS;
     for (const std::wstring& pipe : candidates) {
-        h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err);
+        h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err, peer_rejected);
         if (h != INVALID_HANDLE_VALUE) break;
     }
     if (h == INVALID_HANDLE_VALUE) {
         // Shape-only diagnostic: the bare code lets logs distinguish
-        // "no listener" (2) from "all instances busy" (231) etc.
-        err = "connect:" + std::to_string(last_err);
+        // "no listener" (2) from "all instances busy" (231) etc. R1-7: when any
+        // candidate's instance existed but its process image was not the host,
+        // the token is "peer" (sticky for the cycle: that is the reason local
+        // serving was refused, and the gate already logged one line).
+        err = peer_rejected ? "connect:peer" : "connect:" + std::to_string(last_err);
         return false;
     }
     g_session.pipe = h;
@@ -658,6 +737,45 @@ bool ConnectAndHandshake(const EngineHostConfig& cfg, std::string& err) {
 }
 
 } // namespace
+
+// R1-7 (v0.10.4 sweep): the pure peer-path predicate. See the header contract:
+// only Win32's own path equivalences are folded in, and empty input never
+// matches (a deployment whose ExePath() cannot be resolved must fail closed).
+bool PeerPathMatches(std::wstring_view expected, std::wstring_view actual) {
+    const std::wstring e = NormalizePeerPath(expected);
+    const std::wstring a = NormalizePeerPath(actual);
+    if (e.empty() || a.empty()) return false;
+    // Ordinal (not locale) comparison with ignore-case: deterministic for the
+    // whole process lifetime and correct for non-ASCII profile directories.
+    return ::CompareStringOrdinal(a.data(), static_cast<int>(a.size()), e.data(),
+                                  static_cast<int>(e.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool PeerHandleIsExpectedHost(void* pipe_handle, const wchar_t* expected_host_path) {
+    if (!pipe_handle || pipe_handle == INVALID_HANDLE_VALUE || !expected_host_path) {
+        return false;
+    }
+    const HANDLE pipe = static_cast<HANDLE>(pipe_handle);
+    DWORD server_pid = 0;
+    if (!::GetNamedPipeServerProcessId(pipe, &server_pid) || server_pid == 0) {
+        return false; // not a pipe handle, or the server end is gone
+    }
+    // PROCESS_QUERY_LIMITED_INFORMATION only: enough for the image path and the
+    // one access right that still works across integrity levels. A peer we are
+    // not allowed to query (another user's process) is a mismatch, which is
+    // exactly the R1-7 attack shape.
+    const HANDLE proc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
+    if (!proc) return false;
+    // NT paths can reach 32767 characters; a MAX_PATH buffer would turn a
+    // long-path deployment into a silent false rejection.
+    std::wstring image(32767, L'\0');
+    DWORD len = static_cast<DWORD>(image.size());
+    const BOOL ok = ::QueryFullProcessImageNameW(proc, 0, image.data(), &len);
+    ::CloseHandle(proc);
+    if (!ok || len == 0) return false;
+    image.resize(len);
+    return PeerPathMatches(expected_host_path, image);
+}
 
 // REQ-043 (plan §5.1-2): see the header for the contract. Pure existence
 // check — the engine manager uses it to keep Auto/strict-local routing
@@ -980,9 +1098,14 @@ private:
         const std::vector<std::wstring> candidates = PipeCandidates();
         HANDLE h = INVALID_HANDLE_VALUE;
         bool spawned = false;
+        // R1-7: the warmup connection inherits the peer-identity gate through
+        // the shared helper (the REQ-060 hold must never authenticate a
+        // squatter either). The rejection already logged its one shape-only
+        // line; this path stays silent otherwise, as documented above.
+        bool peer_rejected = false;
         DWORD last_err = ERROR_SUCCESS;
         for (const std::wstring& pipe : candidates) {
-            h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err);
+            h = ConnectPipeWithRetry(pipe, cfg, spawned, last_err, peer_rejected);
             if (h != INVALID_HANDLE_VALUE) break;
             if (StopRequested()) return nullptr;
         }

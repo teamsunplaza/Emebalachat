@@ -506,7 +506,14 @@ public:
                   int shift_enter_count = 0);
 
     // Returns true if the worker is actively executing a task.
-    bool IsBusy() const { return is_busy_.load(std::memory_order_relaxed); }
+    // R1-17 (v0.10.4 sweep, 261029_0001): ACQUIRE - the consumer half of the
+    // release/acquire pair PostTask publishes. The relaxed load that used to
+    // sit here matched nothing: an acquire is what makes the publication
+    // ordered (busy true -> in-flight target -> queued task) for the hook
+    // thread reading it. Benign on the shipped x64 build (TSO); on a weakly
+    // ordered architecture the missing edge could hand the hook busy=true
+    // with the REQ-003 same-window target not yet visible.
+    bool IsBusy() const { return is_busy_.load(std::memory_order_acquire); }
 
     // REQ-003 (Issue C, session 260910_0003): the target_hwnd of the task
     // currently in flight, for the hook thread's same-window bare-Enter
@@ -515,11 +522,14 @@ public:
     // BEFORE the queue push (the hook may read it as soon as IsBusy() flips
     // true), cleared in ExecuteTask's BusyGuard destructor right AFTER
     // is_busy_ goes false, so the pair (busy, hwnd) never advertises a
-    // finished task. Relaxed ordering suffices - same as IsBusy(): the
-    // consumer re-checks nothing finer-grained off this value, and HWND is
-    // a pointer-sized scalar. Hook-thread read + worker-thread write only.
+    // finished task. R1-17: ACQUIRE, not relaxed - this load is the consumer
+    // half of PostTask's `busy_target_hwnd_.store(..., release)` (sequenced
+    // after the winning acq_rel exchange), so acquiring it is what guarantees
+    // the in-flight target is visible to the hook once busy reads true. The
+    // pre-fix comment claimed relaxed sufficed; it did not (a release store
+    // pairs only with an acquire load of the same atomic).
     HWND BusyTargetHwnd() const {
-        return busy_target_hwnd_.load(std::memory_order_relaxed);
+        return busy_target_hwnd_.load(std::memory_order_acquire);
     }
 
     // R5 (Debug-Surgical): called (on the worker thread, never the hook

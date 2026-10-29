@@ -44,13 +44,15 @@ AppName=Emebala Chat
 ; REQ-046 P4-4 history: version bump withdrawn per user decision (2026-09-19),
 ; shipped as 0.10.1 rereleases; promoted to 0.10.2 on 2026-09-30 (session
 ; 260930_0003, CEO decision - see CHANGELOG "v0.10.2"); promoted to 0.10.3 on
-; 2026-10-10 (session 261009_0001, REQ-060 - see CHANGELOG "v0.10.3").
-AppVersion=0.10.3
+; 2026-10-10 (session 261009_0001, REQ-060 - see CHANGELOG "v0.10.3");
+; promoted to 0.10.4 on 2026-10-29 (session 261029_0001, see CHANGELOG
+; "v0.10.4").
+AppVersion=0.10.4
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.3
+OutputBaseFilename=Emebalachat_Setup_0.10.4
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
@@ -830,6 +832,20 @@ const
   ENGINE_WORKER_ENGINE = 'llama.cpp';
   ENGINE_WORKER_ENGINE_VERSION = 'b6099';
 
+  // 261029_0001 R1-8/R2-1/R2-3 (v0.10.4 sweep): constants used by the
+  // reparse-point and exchange-path helpers below. They live HERE because Inno
+  // Setup's Pascal Script rejects a local `const` section inside a function
+  // ('BEGIN expected' at the `const` token), so a per-function constant is a
+  // compile error - the round-3 verification compile caught exactly that
+  // (ISCC, line 1190). FILE_ATTRIBUTE_REPARSE_POINT needs no entry: it is an
+  // Inno Pascal Script built-in (declaring it again is a duplicate-identifier
+  // compile error). EXCHANGE_* are call 1's per-run exchange dir + generated
+  // value-file name.
+  EXCHANGE_DIR_MARKER = '\emebalachat_install\';
+  EXCHANGE_VALUE_PREFIX = 'user_localappdata_';
+  EXCHANGE_VALUE_SUFFIX = '.txt';
+  LOCALAPPDATA_SUFFIX = '\appdata\local';
+
   // M7 A-2 (session 260922_0001, plan §V2-5.1): registry.json multi-writer
   // merge contract. This installer owns EXACTLY ONE models[] item - the
   // bundled translate model - identified by REGISTRY_BUNDLED_ID. The item is
@@ -866,11 +882,34 @@ const
   // admin profile - hence the same exchange pattern Chat's sibling already
   // proves in the field. Adaptation notes inline at each function.
   // ------------------------------------------------------------------
-  // {commondocs} (C:\Users\Public\Documents) is readable/writable by both
-  // the elevated installer and the original user's PowerShell (SO 42256690).
+  // 261029_0001 R1-8 (fix-list round1 row R1-8; secF2 F1 remediation R1):
+  // the exchange MOVED OUT of {commondocs}\Emebalachat_install. That folder
+  // (C:\Users\Public\Documents, SO 42256690) is readable/writable by both
+  // principals of this flow - and world-CREATABLE/attacker-ownable by every
+  // OTHER standard user (verification-report-secF2 C4/C5), so a different
+  // user could swap the path the elevated installer trusts. The exchange is
+  // now split (full protocol in ResolveUserLocalAppData):
+  //   VALUE - the original user's PowerShell writes the path into a random
+  //     per-run file under the ORIGINAL user's own %TEMP%
+  //     (Emebalachat_install\user_localappdata_<guid>.txt): that temp tree is
+  //     ACL-private to the profile owner, so no other standard user can read
+  //     or swap it. Inno's {tmp} was rejected for the VALUE: it is per-
+  //     elevated-process (the admin profile under over-the-shoulder
+  //     elevation) and differs between the elevated and original-user
+  //     contexts - the user-temp location IS the R1-8 intent.
+  //   POINTER + VERIFY - per-run files under the elevated {tmp} exchange dir,
+  //     which carries an ACL create-only grant to BUILTIN\Users (*S-1-5-11)
+  //     so the unelevated PowerShell can CREATE the pointer (it never needs
+  //     to read {tmp}) and can READ the verify file; the elevated side then
+  //     authenticates the value with a second PowerShell exit-code round
+  //     trip, so even a blind overwrite of the pointer can only ABORT the
+  //     resolution, never redirect an elevated write (R4).
   // Product-specific staging dir so the two family installers can never
   // collide on the exchange file.
   PATH_EXCHANGE_DIR = 'Emebalachat_install';
+  // Pointer filename inside the per-run {tmp} exchange dir. The VALUE file
+  // lives in the original user's %TEMP%\PATH_EXCHANGE_DIR with a random
+  // per-run name (user_localappdata_<guid>.txt, see ResolveUserLocalAppData).
   PATH_EXCHANGE_FILE = 'user_localappdata.txt';
 
   REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
@@ -915,6 +954,18 @@ var
   // profile).
   UserLocalAppDataPath: String;   // resolved ORIGINAL-user LocalAppData root
   ModelTargetDir: String;         // Common models dir (original-user aware)
+  // 261029_0001 R2-1: the profile root ModelTargetDir was assembled from (the
+  // original-user path, or the elevated {localappdata} fallback). The write-time
+  // reparse re-checks need the Base/Sub pair - ModelTargetDir alone cannot tell
+  // the profile root apart from the app subtree, and re-testing the root would
+  // hard-fail legitimately redirected (FSLogix) profiles.
+  StoreRootDir: String;           // profile root behind ModelTargetDir
+  // 261029_0001 R3: the ModelTargetDirError box is the SAME message for every
+  // refused/broken store chain, and one refusal makes up to four callers take
+  // it in a single run (SetupModelTargetDir -> DownloadModel ->
+  // WriteRegistryFile -> CreateConfigFile). Announce it at most ONCE per run;
+  // every Log line is still written (the log carries the per-site detail).
+  ModelTargetDirErrorAnnounced: Boolean;
   // B-2 (session 260910_0002): consent page shown after wpReady, before the
   // ~2 GB model download. ModelDeclined is latched from the user's radio
   // choice in ReadConsentChoice() during ssInstall (before any file copy),
@@ -1132,6 +1183,287 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// 261029_0001 R1-8 (secF2 F2 remediation R3) + R2-1/R2-3 (round-2 dispute:
+// sec-gemini F-01/F-02, sec-mimoflash R2-1, verification-report-r2-junction
+// SUPPORTED): reparse-point refusal. Plain Pascal Script has no reparse-aware
+// API, so this minimal kernel32 import walks every prefix of Path with
+// GetFileAttributesW and fails closed when any component carries
+// FILE_ATTRIBUTE_REPARSE_POINT (directory junction / symlink / mount point:
+// creatable by a standard user with no privileges - the deterministic F2 /
+// CWE-59 variant that survives a perfect exchange fix). Components that do
+// not exist yet cannot be reparse points and are skipped (lookup returns
+// INVALID_FILE_ATTRIBUTES = -1); existing components are all checked, and
+// IsValidUserLocalAppData runs its DirExists parent-chain walk first.
+// PLACEMENT (R2): this block precedes ResolveUserLocalAppData, which now
+// validates the exchange value path (R2-3) BEFORE any elevated read/delete.
+// Pascal Script has no forward declarations, so a helper must be defined
+// above its first caller.
+// ------------------------------------------------------------------------
+function GetFileAttributesW(lpFileName: String): Integer;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function ContainsReparsePoint(const Path: String): Boolean;
+var
+  I, Attr: Integer;
+  Prefix: String;
+begin
+  Result := False;
+  if Path = '' then Exit;
+  for I := 1 to Length(Path) do
+    if Path[I] = '\' then
+    begin
+      Prefix := Copy(Path, 1, I);
+      // GetFileAttributesW dislikes a trailing separator on non-root paths;
+      // keep 'X:\' (drive root) as-is, strip it elsewhere.
+      if (Length(Prefix) > 3) and (Prefix[Length(Prefix)] = '\') then
+        Prefix := Copy(Prefix, 1, Length(Prefix) - 1);
+      Attr := GetFileAttributesW(Prefix);
+      if (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+      begin
+        Log('INSTALLER/ContainsReparsePoint: reparse point refused at: ' + Prefix);
+        Result := True;
+        Exit;
+      end;
+    end;
+  // The full path itself when it carries no trailing separator (the final
+  // component must be checked too: ForceDirectories/CopyFile/SaveStringToFile
+  // all FOLLOW the last link).
+  if Path[Length(Path)] <> '\' then
+  begin
+    Attr := GetFileAttributesW(Path);
+    if (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Log('INSTALLER/ContainsReparsePoint: reparse point refused at: ' + Path);
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// SubtreeReparsePoint - R2-1 (261029_0001 R2 dispute): subtree-scoped twin of
+// ContainsReparsePoint. Only the components BELOW Base (the resolved profile
+// root) are inspected. Reason: a %LOCALAPPDATA% that is LEGITIMATELY redirected
+// (FSLogix / Folder Redirection make the profile root itself a reparse point)
+// must not be turned into a hard failure - the round-2 ruling keeps the
+// warn-not-silent fallback for genuine resolution failures only. The link that
+// matters is the one a profile owner can pre-plant inside the app subtree
+// (%LOCALAPPDATA%\Emebala\...), so the walk starts at Base+Sub. Fail-closed:
+// any FILE_ATTRIBUTE_REPARSE_POINT hit refuses; missing components cannot be
+// links and are skipped.
+function SubtreeReparsePoint(const Base, Sub: String): Boolean;
+var
+  I, Attr, SkipLen: Integer;
+  B, Full, Prefix: String;
+begin
+  Result := False;
+  if (Base = '') or (Sub = '') then Exit;
+  B := Base;
+  if (Length(B) > 3) and (B[Length(B)] = '\') then
+    B := Copy(B, 1, Length(B) - 1);
+  Full := B + Sub;
+  SkipLen := Length(B);
+  for I := 1 to Length(Full) do
+    // I > SkipLen + 1: the stripped prefix Copy(Full, 1, I) is LONGER than
+    // Base, so Base itself (the profile root) is never tested.
+    if (Full[I] = '\') and (I > SkipLen + 1) then
+    begin
+      Prefix := Copy(Full, 1, I);
+      if (Length(Prefix) > 3) and (Prefix[Length(Prefix)] = '\') then
+        Prefix := Copy(Prefix, 1, Length(Prefix) - 1);
+      Attr := GetFileAttributesW(Prefix);
+      if (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+      begin
+        Log('INSTALLER/SubtreeReparsePoint: reparse point refused at: ' + Prefix);
+        Result := True;
+        Exit;
+      end;
+    end;
+  if Full[Length(Full)] <> '\' then
+  begin
+    Attr := GetFileAttributesW(Full);
+    if (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Log('INSTALLER/SubtreeReparsePoint: reparse point refused at: ' + Full);
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// StoreChainRefused - R2-1 write-time predicate: True when a reparse point sits
+// anywhere in Path below Base. Path must be Base plus an app-owned tail (the
+// resolvers below build exactly that); any other pair cannot be verified here
+// and is REFUSED (fail-closed), never waved through.
+function StoreChainRefused(const Base, Path: String): Boolean;
+var
+  B, T: String;
+begin
+  Result := True;
+  if (Base = '') or (Path = '') then Exit;
+  B := Base;
+  T := Path;
+  if (Length(B) > 3) and (B[Length(B)] = '\') then
+    B := Copy(B, 1, Length(B) - 1);
+  if (Length(T) > 3) and (T[Length(T)] = '\') then
+    T := Copy(T, 1, Length(T) - 1);
+  if Length(T) <= Length(B) + 1 then Exit;
+  if Copy(T, 1, Length(B)) <> B then Exit;
+  if T[Length(B) + 1] <> '\' then Exit;
+  Result := SubtreeReparsePoint(B, Copy(T, Length(B) + 1, Length(T) - Length(B)));
+end;
+
+// AnnounceModelTargetDirError - the single ModelTargetDirError announcement
+// for this run. R3 (round-3 measured corpus ruling, installer noise): one
+// refused or broken store chain is reported by up to four callers
+// (SetupModelTargetDir/pre-create -> DownloadModel/001 -> WriteRegistryFile
+// resolve -> CreateConfigFile via ResolveCommonStoreDir), and four identical
+// boxes for one condition is avoidable noise. Each caller still writes its own
+// INSTALLER/* Log line (the log keeps the full per-site detail); only the user
+// facing box is collapsed. Silent-install aware (SuppressibleMsgBox).
+procedure AnnounceModelTargetDirError();
+begin
+  if ModelTargetDirErrorAnnounced then Exit;
+  ModelTargetDirErrorAnnounced := True;
+  SuppressibleMsgBox(CustomMessage('ModelTargetDirError'), mbError, MB_OK, IDOK);
+end;
+
+// ModelStorePathRefused - R2-1 absorber, LEAF-INCLUSIVE (261029_0001 R3,
+// round-3 F-01): re-runs the subtree-scoped check on an exact store path
+// (Base = StoreRootDir, the profile root the path was built from). Passing
+// the written FILE path (not just its directory) is the same shape
+// WriteRegistryFile has always used for registry.json: SubtreeReparsePoint's
+// final-component test covers the leaf, so a file symlink planted at a fixed
+// name during the write window is refused instead of being followed by the
+// elevated write. On a hit the refusal routes into the EXISTING
+// warn-not-silent skip every consumer already guards on: ModelTargetDir := ''
+// plus the (once-per-run) ModelTargetDirError box. The install CONTINUES
+// without the store write. Hard links are NOT reparse points and are not
+// detectable this way; the junction / dev-mode-symlink class is what this
+// predicate owns. Returns True = refused.
+// Call only while ModelTargetDir <> '' (every caller checks that first).
+function ModelStorePathRefused(const Site, Target: String): Boolean;
+begin
+  Result := StoreChainRefused(StoreRootDir, Target);
+  if not Result then Exit;
+  Log('INSTALLER/ModelStoreRefused/001: ' + Site +
+      ': reparse point in the FINAL model store chain; refusing the elevated write and skipping the store steps (261029_0001 R2-1): ' + Target);
+  ModelTargetDir := '';
+  AnnounceModelTargetDirError();
+end;
+
+// ModelStoreRefused - R2-1: the directory-level form of the same absorber
+// (every pre-existing call site keeps this signature).
+function ModelStoreRefused(const Site: String): Boolean;
+begin
+  Result := ModelStorePathRefused(Site, ModelTargetDir);
+end;
+
+// EngineStoreRefused - R2-1: the shared ENGINE store
+// ('{localappdata}\Emebala\Common\engine') is written by [Files] (the staged
+// host / worker / asr binaries) and by the [Code] stampers, with NO reparse
+// check anywhere - verification-report-r2-junction §9 flagged it as the same
+// unchecked class. Base is the elevated {localappdata} constant the store is
+// built from, so the subtree walk starts at '\Emebala' and never tests the
+// profile root. Log-only by design: the engine store has no user-facing skip
+// path, and its own stampers are already log-only on write failure.
+function EngineStoreRefused(const Site: String): Boolean;
+begin
+  Result := SubtreeReparsePoint(ExpandConstant('{localappdata}'),
+                                COMMON_STORE_SUFFIX + '\engine');
+  if Result then
+    Log('INSTALLER/EngineStoreRefused/001: ' + Site +
+        ': reparse point in the shared engine store chain; refusing the elevated write (261029_0001 R2-1).');
+end;
+
+// EngineStoreLeafRefused - R3 (261029_0001, round-3 F-01): the engine-store
+// re-check above stops at the '\engine' DIRECTORY, so the FILE a stamper is
+// about to write was never tested. A file symlink (Windows Developer Mode)
+// planted at the fixed name (engine.version / components.json) is followed by
+// SaveStringToFile with the admin token, i.e. an elevated fixed-name overwrite
+// outside the user's write scope. This is the leaf-inclusive twin: the same
+// subtree walk as EngineStoreRefused (Base = the elevated {localappdata}
+// constant, so the profile root is never re-tested), applied to the exact
+// written path. Log-only, matching EngineStoreRefused and the stampers'
+// write-failure posture. Returns True = refused.
+function EngineStoreLeafRefused(const Site, FilePath: String): Boolean;
+begin
+  Result := StoreChainRefused(ExpandConstant('{localappdata}'), FilePath);
+  if Result then
+    Log('INSTALLER/EngineStoreLeafRefused/001: ' + Site +
+        ': reparse point at the written engine-store file (or its chain); refusing the elevated write (261029_0001 R3): ' + FilePath);
+end;
+
+// IsValidExchangeValuePath - R2-3 (261029_0001 R2 dispute: code-gemini F-02 /
+// sec-gemini F-02): shape gate on the path the group-writable exchange POINTER
+// hands the ELEVATED side. Before R2 the pointer target went straight into
+// FileExists / LoadStringsFromFile and - after acceptance - DeleteFile with the
+// admin token: a swapped pointer could aim it at '\\.\pipe\<name>' (admin
+// CreateFileW with default impersonation), a UNC share (SMB / NetNTLM relay) or
+// any admin-writable file (elevated delete primitive). Contract:
+//   * canonical drive path 'x:\...' - no UNC, no '/' separators, no '..'
+//     component, no doubled separator, no 'systemprofile' (the same shape rules
+//     IsValidUserLocalAppData applies to the resolved value);
+//   * the file must sit inside call 1's own exchange dir
+//     '...\Emebalachat_install\' and carry its generated name shape
+//     'user_localappdata_<guid>.txt' (suffix-exact, no path escape);
+//   * no reparse point anywhere in the chain (fail-closed).
+// A refusal aborts the exchange, which lands on the existing warn-not-silent
+// elevated-path fallback - the install itself still completes.
+function IsValidExchangeValuePath(const Path: String): Boolean;
+var
+  P, FileName: String;
+  MarkerPos, I, NameEnd: Integer;
+begin
+  Result := False;
+  if (Path = '') or (Path <> Trim(Path)) then Exit;
+  P := LowerCase(Path);
+  if (Length(P) < 6) or (P[2] <> ':') or (P[3] <> '\') or
+     (P[1] < 'a') or (P[1] > 'z') then Exit;
+  if Pos('/', P) > 0 then Exit;
+  if Pos('\\', P) > 0 then Exit;
+  if Pos('\..\', '\' + P + '\') > 0 then Exit;
+  if Pos('systemprofile', P) > 0 then Exit;
+  // Must live inside call 1's exchange dir ...
+  MarkerPos := Pos(EXCHANGE_DIR_MARKER, P);
+  if MarkerPos = 0 then Exit;
+  FileName := Copy(P, MarkerPos + Length(EXCHANGE_DIR_MARKER), Length(P));
+  // ... under call 1's own generated name (guid = 32 hex chars, 'N' format).
+  if Copy(FileName, 1, Length(EXCHANGE_VALUE_PREFIX)) <> EXCHANGE_VALUE_PREFIX then Exit;
+  if Length(FileName) <= Length(EXCHANGE_VALUE_PREFIX) + Length(EXCHANGE_VALUE_SUFFIX) then Exit;
+  if Copy(FileName, Length(FileName) - Length(EXCHANGE_VALUE_SUFFIX) + 1,
+          Length(EXCHANGE_VALUE_SUFFIX)) <> EXCHANGE_VALUE_SUFFIX then Exit;
+  NameEnd := Length(FileName) - Length(EXCHANGE_VALUE_SUFFIX);
+  for I := Length(EXCHANGE_VALUE_PREFIX) + 1 to NameEnd do
+    if not (((FileName[I] >= '0') and (FileName[I] <= '9')) or
+            ((FileName[I] >= 'a') and (FileName[I] <= 'f')) or
+            ((FileName[I] >= 'A') and (FileName[I] <= 'F')) or
+            (FileName[I] = '-')) then Exit;
+  // Fail-closed: a link in the chain means the elevated read/delete could be
+  // redirected somewhere else entirely.
+  if ContainsReparsePoint(Path) then Exit;
+  Result := True;
+end;
+
+// PsSingleQuote - R2-2 (261029_0001 R2 dispute: code-gemini F-01 /
+// sec-gemini F-02): wrap a path interpolated into a -Command "..." PowerShell
+// script in PowerShell SINGLE quotes, with embedded apostrophes doubled.
+// BUG CLASS (never reintroduce): an inner double quote -
+//   '... -FilePath "' + Path + '" ...'
+// - CLOSES the outer -Command "..." argument at CommandLineToArgvW level, so
+// the path reaches PowerShell UNQUOTED: any profile %TEMP% containing a space
+// ('C:\Users\John Doe\...') splits into extra arguments and the call fails
+// deterministically, and PowerShell metacharacters in the path would be parsed
+// as script. Single quotes are literal for both parsers.
+function PsSingleQuote(const S: String): String;
+var
+  T: String;
+begin
+  T := S;
+  StringChangeEx(T, '''', '''''', True);
+  Result := '''' + T + '''';
+end;
+
+// ------------------------------------------------------------------------
 // Plan-B REQ-B006 / gate A1 (session 260928_0001): original-user LocalAppData
 // resolution, mirrored from the Listener installer (the field-proven pattern
 // for the exact same always-elevated UAC trap, SO 40613608):
@@ -1154,21 +1486,100 @@ end;
 // ------------------------------------------------------------------------
 function ResolveUserLocalAppData(): Boolean;
 var
-  TempFile, PsCmd: String;
+  PointerDir, PointerFile, VerifyFile: String;
+  ValueFile, PsCmd, Value: String;
   ResultCode: Integer;
   Buf: TArrayOfString;
 begin
   Result := False;
-  TempFile := ExpandConstant('{commondocs}\') + PATH_EXCHANGE_DIR + '\' + PATH_EXCHANGE_FILE;
-  ForceDirectories(ExtractFileDir(TempFile));
 
-  // Remove leftovers from a previous attempt (retry race guard).
-  if FileExists(TempFile) then DeleteFile(TempFile);
+  // ======================================================================
+  // 261029_0001 R1-8 exchange protocol (fix-list R1-8; secF2 F1/R1+R4):
+  //   elevated  -> per-run {tmp}\PATH_EXCHANGE_DIR with a create-only Users
+  //                grant + a pre-delete residue check (R4);
+  //   call 1    -> original-user PowerShell writes the VALUE into its OWN
+  //                %TEMP%\PATH_EXCHANGE_DIR\user_localappdata_<guid>.txt
+  //                (random per-run name, owner-only ACL) and the POINTER to
+  //                that file into {tmp} (the value never rides a world-
+  //                writable channel anymore);
+  //   elevated  -> reads pointer, reads the value from the USER's %TEMP%;
+  //   call 2    -> a second original-user PowerShell recomputes the genuine
+  //                LocalApplicationData folder and confirms the exact bytes
+  //                we hold via its exit code. The pointer dir is group-
+  //                writable by design (create-only grant), so this exit code
+  //                is what makes a swapped pointer/value fail CLOSED: exit 0
+  //                = the value IS the genuine path, anything else aborts the
+  //                exchange (R4) and the caller takes the warn-not-silent
+  //                elevated-path fallback - never a stale or attacker value.
+  // ======================================================================
+  PointerDir := ExpandConstant('{tmp}\') + PATH_EXCHANGE_DIR;
+  PointerFile := PointerDir + '\' + PATH_EXCHANGE_FILE;
+  VerifyFile := ExpandConstant('{tmp}\') + 'emebala_userpath_verify.txt';
+  if not ForceDirectories(PointerDir) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/007: cannot create the per-run exchange dir: ' + PointerDir);
+    Exit;
+  end;
+  // Create-only grant (fix-list R1-8: "per-run {tmp} exchange under ACL
+  // create-only grant"): the unelevated PowerShell must be able to CREATE
+  // the pointer file inside the elevated temp tree; it never reads {tmp}.
+  // WD (create/write files, inherited via OI to the pointer file) + AD
+  // (create subdirs). No list/read rights, so other users cannot enumerate
+  // the per-run exchange dir at all.
+  if not Exec(ExpandConstant('{sys}\icacls.exe'),
+       '"' + PointerDir + '" /grant *S-1-5-11:(OI)(CI)(WD,AD)',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/008: icacls (pointer create-only grant) failed to launch.');
+    Exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    Log(Format('INSTALLER/ResolveUserLocalAppData/009: icacls (pointer create-only grant) exited with code %d.', [ResultCode]));
+    Exit;
+  end;
 
-  PsCmd := '-NoProfile -NonInteractive -Command "[Environment]::GetFolderPath(''LocalApplicationData'') | Out-File -FilePath "' + TempFile + '" -Encoding UTF8"';
+  // R4: pre-delete with a RESIDUE check - never fall through to a stale
+  // pointer (the old code discarded the DeleteFile result; secF2 R4).
+  if FileExists(PointerFile) then
+  begin
+    if not DeleteFile(PointerFile) then
+    begin
+      Log('INSTALLER/ResolveUserLocalAppData/010: cannot delete the stale exchange pointer: ' + PointerFile);
+      Exit;
+    end;
+  end;
+  if FileExists(PointerFile) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/011: exchange pointer residue after pre-delete; aborting the exchange.');
+    Exit;
+  end;
+  // R2-3 (261029_0001): the pointer dir is group-writable by design, and
+  // creating a junction inside a writable directory needs no privilege - so a
+  // standard user can plant one AT the pointer path and aim the elevated read
+  // at an arbitrary target. The pointer is only ever a one-line file in this
+  // per-run dir; refuse a link outright.
+  // R3 (261029_0001, round-3 F-05): the CHECK cannot live here - at this
+  // instant the pointer was just deleted and residue-checked absent, so it
+  // could never see the file the elevated read consumes. It runs below,
+  // immediately before LoadStringsFromFile (the pre-R3 placement was vacuous).
+
+  // ---- call 1 (original user): value -> own %TEMP%, pointer -> {tmp} -----
+  // Every write carries -ErrorAction Stop, so a failed write is a
+  // TERMINATING error and powershell exits non-zero (round-trip fail-closed).
+  // R2-2 (261029_0001): PointerFile goes through PsSingleQuote - never as an
+  // inner double-quoted path (BUG CLASS above PsSingleQuote).
+  PsCmd := '-NoProfile -NonInteractive -Command "' +
+    '$d = Join-Path $env:TEMP ''' + PATH_EXCHANGE_DIR + '''; ' +
+    'New-Item -ItemType Directory -Force -Path $d | Out-Null; ' +
+    'Get-ChildItem -Path $d -Filter ''user_localappdata_*.txt'' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; ' +
+    '$v = [Environment]::GetFolderPath(''LocalApplicationData''); ' +
+    '$f = Join-Path $d (''user_localappdata_'' + [Guid]::NewGuid().ToString(''N'') + ''.txt''); ' +
+    '$v | Out-File -FilePath $f -Encoding UTF8 -ErrorAction Stop; ' +
+    '$f | Out-File -FilePath ' + PsSingleQuote(PointerFile) + ' -Encoding UTF8 -ErrorAction Stop;"';
 
   // ewWaitUntilTerminated blocks until PowerShell has fully exited, so the
-  // file is closed and complete when we return - no sleep needed.
+  // files are closed and complete when we return - no sleep needed.
   if not ExecAsOriginalUser('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     Log('INSTALLER/ResolveUserLocalAppData/001: ExecAsOriginalUser failed to launch powershell.');
@@ -1179,51 +1590,201 @@ begin
     Log(Format('INSTALLER/ResolveUserLocalAppData/002: powershell exited with code %d', [ResultCode]));
     Exit;
   end;
-  if not FileExists(TempFile) then
+
+  // ---- pointer round-trip (R4) ------------------------------------------
+  if not FileExists(PointerFile) then
   begin
-    Log('INSTALLER/ResolveUserLocalAppData/003: exchange file not found after powershell exit.');
+    Log('INSTALLER/ResolveUserLocalAppData/003: exchange pointer not found after powershell exit.');
     Exit;
   end;
-  if not LoadStringsFromFile(TempFile, Buf) then
+  // R3 (261029_0001, round-3 F-05): the pointer dir is group-writable by design
+  // and creating a junction needs no privilege, so the elevated read below can
+  // be aimed at an arbitrary target. Re-check HERE - the pointer exists at this
+  // instant and this is the last moment before it is consumed (the pre-R3 check
+  // sat before call 1 created the file, where it could never fire).
+  if ContainsReparsePoint(PointerFile) then
   begin
-    Log('INSTALLER/ResolveUserLocalAppData/004: LoadStringsFromFile failed.');
+    Log('INSTALLER/ResolveUserLocalAppData/024: exchange pointer is a reparse point; aborting the exchange (261029_0001 R2-3/R3).');
+    Exit;
+  end;
+  if not LoadStringsFromFile(PointerFile, Buf) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/004: exchange pointer unreadable.');
     Exit;
   end;
   if GetArrayLength(Buf) = 0 then
   begin
-    Log('INSTALLER/ResolveUserLocalAppData/005: exchange file is empty.');
+    Log('INSTALLER/ResolveUserLocalAppData/005: exchange pointer is empty.');
     Exit;
   end;
-
-  UserLocalAppDataPath := Trim(Buf[0]);
-
-  // Delete the shared exchange file right after retrieval - it contains the
-  // user profile path and should not linger world-readable in Public Documents.
-  DeleteFile(TempFile);
-
-  if UserLocalAppDataPath = '' then
+  ValueFile := Trim(Buf[0]);
+  if ValueFile = '' then
   begin
-    Log('INSTALLER/ResolveUserLocalAppData/006: resolved path is empty.');
+    Log('INSTALLER/ResolveUserLocalAppData/006: exchange pointer target is empty.');
+    Exit;
+  end;
+  // R2-3 (261029_0001, code-gemini F-02 / sec-gemini F-02): the pointer is
+  // group-writable, so its target is UNTRUSTED input to the elevated process.
+  // Validate the shape BEFORE the first elevated FileExists /
+  // LoadStringsFromFile / DeleteFile: the value must be call 1's own file
+  // ('...\Emebalachat_install\user_localappdata_<guid>.txt', canonical drive
+  // path, no link in the chain). A '\\.\pipe\...' or UNC target would make the
+  // admin token open a pipe (impersonation) or an SMB share (NetNTLM relay),
+  // and the post-accept DeleteFile would be an elevated arbitrary-file delete.
+  if not IsValidExchangeValuePath(ValueFile) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/025: exchange pointer target failed the path-shape gate; refusing the elevated read (261029_0001 R2-3).');
     Exit;
   end;
 
+  // ---- value round-trip: the elevated side reads the USER's %TEMP% --------
+  if not FileExists(ValueFile) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/012: exchange value file not found at the pointer target.');
+    Exit;
+  end;
+  if not LoadStringsFromFile(ValueFile, Buf) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/013: exchange value file unreadable.');
+    Exit;
+  end;
+  if GetArrayLength(Buf) = 0 then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/014: exchange value file is empty.');
+    Exit;
+  end;
+  Value := Trim(Buf[0]);
+  if Value = '' then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/015: resolved path is empty.');
+    Exit;
+  end;
+
+  // ---- authenticity (R1-8 + R4): the exact bytes we hold must equal the
+  // genuine LocalApplicationData of the original user. The value travels to
+  // call 2 through a file in the elevated {tmp} that carries ONLY a Users
+  // read grant (no write/list), so no other principal can alter what call 2
+  // compares - and what call 2 compares IS the in-memory Value we publish.
+  SetArrayLength(Buf, 1);
+  Buf[0] := Value;
+  if not SaveStringsToUTF8File(VerifyFile, Buf, False) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/016: cannot write the verify file: ' + VerifyFile);
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{sys}\icacls.exe'),
+       '"' + VerifyFile + '" /grant *S-1-5-11:(R)',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/017: icacls (verify read grant) failed to launch.');
+    Exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    Log(Format('INSTALLER/ResolveUserLocalAppData/018: icacls (verify read grant) exited with code %d.', [ResultCode]));
+    Exit;
+  end;
+  // R2-2 (261029_0001): VerifyFile goes through PsSingleQuote for the same
+  // reason as the pointer above - an inner double quote would close the outer
+  // -Command "..." argument and a spaced profile path would fail (BUG CLASS
+  // documented above PsSingleQuote).
+  PsCmd := '-NoProfile -NonInteractive -Command "' +
+    'try { $x = (Get-Content -LiteralPath ' + PsSingleQuote(VerifyFile) + ' -Encoding UTF8 -TotalCount 1 -ErrorAction Stop) } catch { exit 1 }; ' +
+    '$t = [Environment]::GetFolderPath(''LocalApplicationData''); ' +
+    'if (([string]$x).Trim() -eq ([string]$t).Trim()) { exit 0 } else { exit 1 }"';
+  if not ExecAsOriginalUser('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('INSTALLER/ResolveUserLocalAppData/019: ExecAsOriginalUser failed to launch the authenticity-check powershell.');
+    Exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    Log(Format('INSTALLER/ResolveUserLocalAppData/020: exchange authenticity check FAILED (powershell exit %d); refusing the exchanged path.', [ResultCode]));
+    Exit;
+  end;
+
+  // ---- accepted: publish + best-effort cleanup ---------------------------
+  UserLocalAppDataPath := Value;
+  // Post-cleanup is log-only (R4 only mandates aborting on PRE-delete
+  // residue): the {tmp} files die with this run's temp dir anyway, and a
+  // leftover value file in the user's own %TEMP% is pre-cleaned by call 1
+  // of the next run and is never re-read (per-run guid name).
+  if FileExists(ValueFile) then
+    if not DeleteFile(ValueFile) then
+      Log('INSTALLER/ResolveUserLocalAppData/021: WARNING could not delete the exchange value file: ' + ValueFile);
+  if FileExists(PointerFile) then
+    if not DeleteFile(PointerFile) then
+      Log('INSTALLER/ResolveUserLocalAppData/022: WARNING could not delete the exchange pointer: ' + PointerFile);
+  if FileExists(VerifyFile) then
+    if not DeleteFile(VerifyFile) then
+      Log('INSTALLER/ResolveUserLocalAppData/023: WARNING could not delete the verify file: ' + VerifyFile);
   Result := True;
 end;
 
+// The reparse-point helpers (GetFileAttributesW / ContainsReparsePoint /
+// SubtreeReparsePoint / StoreChainRefused and the R2-1 store guards) moved
+// ABOVE ResolveUserLocalAppData in the R2 round: the exchange value path is
+// now validated (R2-3) before any elevated read/delete, and Pascal Script has
+// no forward declarations. See the block above the A1 resolution header.
+
 // IsValidUserLocalAppData - sanity gate on the retrieved path (Listener
 // L1143-1159): blocks session-0/SERVICE contexts and malformed paths.
+// 261029_0001 R1-8 (secF2 F2 remediation R2 + R3): the old checks were a
+// substring Pos() test plus a grandparent-only DirExists, which accepted
+// 'C:\x\AppData\Local\..\..\evil' and never looked at reparse points
+// (verification-report-secF2 C3/C7). Hardened contract now:
+//   R2 - the path must END with '\appdata\local' (case-insensitive; a
+//        trailing separator or whitespace breaks the END match by
+//        construction), drive-letter shape only, no '/' alternate
+//        separators, no '..' path component, Path itself exists
+//        (DirExists(Path)), and EVERY parent up to the drive root exists;
+//   R3 - no FILE_ATTRIBUTE_REPARSE_POINT anywhere in the chain
+//        (ContainsReparsePoint), closing the junction variant (F2/CWE-59).
+// All consumers (SetupModelTargetDir, ResolveCommonStoreDir,
+// IsCommonStoreAbsentForPolicySeed, WritePolicySeedIfAbsent) share this
+// single choke point.
 function IsValidUserLocalAppData(const Path: String): Boolean;
+var
+  P, W, Cur, Parent: String;
 begin
   Result := False;
-  // 1. Shape check: must look like '...\AppData\Local' (case-insensitive).
-  //    NOTE: Pos() is case-sensitive in PascalScript, so lowercase BOTH
-  //    sides (Listener's own comment documents this pitfall).
-  if Pos('\appdata\local', LowerCase(Path)) = 0 then Exit;
-  // 2. Block service/SYSTEM contexts (C:\Windows\System32\config\systemprofile\...).
-  if Pos('systemprofile', LowerCase(Path)) > 0 then Exit;
-  // 3. Profile root must exist: with Path = <root>\AppData\Local, TWO
-  //    ExtractFileDir calls yield the profile root.
-  if not DirExists(ExtractFileDir(ExtractFileDir(Path))) then Exit;
+  // Whitespace variants: the caller already Trims, but never trust a path
+  // that is not already trimmed here (a trailing tab/space would otherwise
+  // defeat the END match below).
+  if (Path = '') or (Path <> Trim(Path)) then Exit;
+  // Pos() is case-sensitive in PascalScript, so lowercase first (Listener's
+  // own comment documents this pitfall).
+  P := LowerCase(Path);
+  // R2.1: must END with the suffix - not merely contain it anywhere.
+  if (Length(P) <= Length(LOCALAPPDATA_SUFFIX)) or
+     (Copy(P, Length(P) - Length(LOCALAPPDATA_SUFFIX) + 1,
+           Length(LOCALAPPDATA_SUFFIX)) <> LOCALAPPDATA_SUFFIX) then Exit;
+  // R2.2: canonical drive-letter shape 'x:\...' - rejects UNC, relative and
+  // mangled forms before any filesystem call.
+  if (Length(P) < 6) or (P[2] <> ':') or (P[3] <> '\') or
+     (P[1] < 'a') or (P[1] > 'z') then Exit;
+  // R2.3: no alternate separators.
+  if Pos('/', P) > 0 then Exit;
+  // R2.4: reject any '..' path component (wrap so a name like 'foo..bar'
+  // stays legal while '..' as a component never does).
+  W := '\' + P + '\';
+  if Pos('\..\', W) > 0 then Exit;
+  // Block service/SYSTEM contexts (C:\Windows\System32\config\systemprofile\...).
+  if Pos('systemprofile', P) > 0 then Exit;
+  // R2.5: the LocalAppData dir itself must exist (the old check only ever
+  // tested the profile root two levels up).
+  if not DirExists(Path) then Exit;
+  // R2.6: the FULL parent chain must exist, not just the profile root.
+  Cur := Path;
+  while Cur <> '' do
+  begin
+    if not DirExists(Cur) then Exit;
+    Parent := ExtractFileDir(Cur);
+    if (Parent = '') or (Parent = Cur) then Break;
+    Cur := Parent;
+  end;
+  // R3: no junction/symlink anywhere in the trusted chain (fail closed).
+  if ContainsReparsePoint(Path) then Exit;
   Result := True;
 end;
 
@@ -1241,11 +1802,26 @@ end;
 function SetupModelTargetDir(): Boolean;
 var
   FallbackDir: String;
+  Resolved: Boolean;
 begin
   ModelTargetDir := '';
-  if ResolveUserLocalAppData() and IsValidUserLocalAppData(UserLocalAppDataPath) then
+  StoreRootDir := '';
+  Resolved := ResolveUserLocalAppData() and IsValidUserLocalAppData(UserLocalAppDataPath);
+  // 261029_0001 R1-8 (secF2 F2 remediation R3): the model chain extends BELOW
+  // the validated LocalAppData root (...\Emebala\Common\models), and a
+  // standard user can pre-plant a junction at any of those components - so
+  // walk the FULL final path, not just the root. Refusal is a resolution
+  // failure: it falls into the existing warn-not-silent elevated-path
+  // fallback instead of writing through the link with the admin token.
+  if Resolved and ContainsReparsePoint(UserLocalAppDataPath + COMMON_MODELS_DIR_SUFFIX) then
+  begin
+    Log('INSTALLER/SetupModelTargetDir/003: reparse point in the original-user model store chain; refusing the elevated write (verification F2, 261029_0001 R1-8).');
+    Resolved := False;
+  end;
+  if Resolved then
   begin
     ModelTargetDir := UserLocalAppDataPath + COMMON_MODELS_DIR_SUFFIX;
+    StoreRootDir := UserLocalAppDataPath;
     Log('Original-user LocalAppData resolved: ' + UserLocalAppDataPath);
     Log('Model target directory (common store): ' + ModelTargetDir);
     Result := True;
@@ -1260,14 +1836,37 @@ begin
     Log('INSTALLER/SetupModelTargetDir/001: original-user LocalAppData could not be resolved; falling back to the elevated-context path: ' + FallbackDir);
     SuppressibleMsgBox(CustomMessage('UserPathFallbackWarning'), mbInformation, MB_OK, IDOK);
     ModelTargetDir := FallbackDir + COMMON_MODELS_DIR_SUFFIX;
+    StoreRootDir := FallbackDir;
     Result := False;
+  end;
+
+  // 261029_0001 R2-1 (round-2 dispute: sec-gemini F-01, sec-mimoflash R2-1,
+  // verification SUPPORTED): UNCONDITIONAL re-check of the FINAL path after the
+  // branch merge. The resolution-time check above only refuses the resolved
+  // original-user chain, and under same-account (consent) elevation the
+  // warn-not-silent fallback re-adopts the very SAME string - so without this
+  // check the junction the profile owner planted is walked with the admin token,
+  // exactly what the comment above the R1-8 check promises will not happen.
+  // One check covers both branches and any future branch; the refusal absorbs
+  // into the defined skip state (ModelTargetDir := '' + the existing
+  // ModelTargetDirError box via ModelStoreRefused) instead of hard-failing the
+  // install, and it never re-adopts the refused path. Subtree-scoped, so a
+  // redirected (FSLogix) profile root is not re-tested.
+  if ModelTargetDir <> '' then
+  begin
+    if ModelStoreRefused('SetupModelTargetDir/pre-create') then
+    begin
+      Log('INSTALLER/SetupModelTargetDir/004: model store chain refused before creation; the model / registry store writes will be skipped (261029_0001 R2-1).');
+      Result := False;
+      Exit;
+    end;
   end;
 
   // Create the full directory chain (the profile may not exist yet).
   if not ForceDirectories(ModelTargetDir) then
   begin
     Log('INSTALLER/SetupModelTargetDir/002: cannot create model target directory: ' + ModelTargetDir);
-    SuppressibleMsgBox(CustomMessage('ModelTargetDirError'), mbError, MB_OK, IDOK);
+    AnnounceModelTargetDirError();
     ModelTargetDir := '';
   end;
   Result := Result and (ModelTargetDir <> '');
@@ -1284,7 +1883,16 @@ function ResolveCommonStoreDir(): String;
 var
   FallbackDir: String;
 begin
-  if (UserLocalAppDataPath <> '') and IsValidUserLocalAppData(UserLocalAppDataPath) then
+  // R1-8/R3 (261029_0001, secF2 F2): additionally refuse the store root when
+  // a junction is planted anywhere under ...\Emebala\Common - otherwise the
+  // registry/config consumers would write through it with the admin token
+  // even after SetupModelTargetDir refused the models chain.
+  // R2-1 (round-2 dispute): the CALLERS append '\models\' to the returned
+  // root, so the walk must reach that LEAF - the pre-R2 check stopped one level
+  // above it, leaving a junction AT ...\Common\models invisible. Subtree-scoped
+  // (the profile root is never re-tested) so redirected profiles still resolve.
+  if (UserLocalAppDataPath <> '') and IsValidUserLocalAppData(UserLocalAppDataPath) and
+     (not SubtreeReparsePoint(UserLocalAppDataPath, COMMON_MODELS_DIR_SUFFIX)) then
   begin
     Result := UserLocalAppDataPath + COMMON_STORE_SUFFIX;
     Exit;
@@ -1292,7 +1900,18 @@ begin
   // Warn-not-silent fallback (Listener UserPathFallbackWarning precedent):
   // a resolved-but-empty original-user path never silently drops into the
   // admin profile.
-  FallbackDir := ExpandConstant('{localappdata}') + COMMON_STORE_SUFFIX;
+  FallbackDir := ExpandConstant('{localappdata}');
+  // R2-1: the fallback is checked as well and refused with '' - an empty
+  // return makes every caller SKIP the store write instead of quietly falling
+  // through to another resolver (the pre-R2 code returned the unchecked path).
+  if SubtreeReparsePoint(FallbackDir, COMMON_MODELS_DIR_SUFFIX) then
+  begin
+    Log('INSTALLER/ResolveCommonStoreDir/002: reparse point in the FINAL elevated-context store chain; refusing the store write (261029_0001 R2-1).');
+    AnnounceModelTargetDirError();
+    Result := '';
+    Exit;
+  end;
+  FallbackDir := FallbackDir + COMMON_STORE_SUFFIX;
   Log('INSTALLER/ResolveCommonStoreDir/001: original-user LocalAppData unavailable; using the elevated-context store: ' + FallbackDir);
   SuppressibleMsgBox(CustomMessage('UserPathFallbackWarning'), mbInformation, MB_OK, IDOK);
   Result := FallbackDir;
@@ -1312,6 +1931,19 @@ end;
 // only - never creates or deletes anything.
 function IsCommonStoreAbsentForPolicySeed(): Boolean;
 begin
+  // R3 (261029_0001, round-3 F-R3-02 / F-1): this Check gates the [Files] copy
+  // of the policy seed into the CONSTANT {localappdata}\Emebala\Common store run
+  // with the admin token. The existence probes below follow a junction, so a
+  // profile owner who pre-plants one over an empty target would make them all
+  // read "absent" and get the elevated copy written through the link. Same
+  // reparse refusal as every other store writer (precise predicate = the Common
+  // root this DestDir targets; the profile root is never re-tested).
+  if SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX) then
+  begin
+    Log('REQ-B006/A1: reparse point in the constant Common store chain; the [Files] policy-seed copy is refused (261029_0001 R3).');
+    Result := False;
+    Exit;
+  end;
   if DirExists(ExpandConstant(COMMON_ENGINE_DIR)) or
      DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
   begin
@@ -1368,9 +2000,32 @@ begin
     Log('REQ-B006/A1: WARNING could not read the embedded policy seed; original-user store not seeded.');
     Exit;
   end;
+  // R1-8/R3 (261029_0001, secF2 F2) + R2-1 (round-2 dispute): never
+  // create/write the seed through a planted junction - refuse the whole seed
+  // when the store chain carries a reparse point (log-only skip, matching this
+  // procedure's other guards). Subtree-scoped since R2-1: the profile root is
+  // already vetted by IsValidUserLocalAppData on the resolved path, and a
+  // redirected profile must not be refused here.
+  if SubtreeReparsePoint(UserLocalAppDataPath, COMMON_STORE_SUFFIX) then
+  begin
+    Log('REQ-B006/A1: WARNING reparse point in the original-user Common store chain; refusing to seed: ' + DestDir);
+    Exit;
+  end;
   if not ForceDirectories(DestDir) then
   begin
     Log('REQ-B006/A1: WARNING could not create the original-user Common store: ' + DestDir);
+    Exit;
+  end;
+  // R2-1: re-check the FINAL chain immediately before the elevated write, so a
+  // link swapped in after ForceDirectories cannot be written through either.
+  // R3 (261029_0001, round-3 F-01): the check is LEAF-INCLUSIVE now - the
+  // pre-R3 form walked only down to the Common store directory, so a file
+  // symlink planted at the seed name was followed by SaveStringToFile with the
+  // admin token. StoreChainRefused covers the exact written path (the same
+  // shape WriteRegistryFile uses for registry.json).
+  if StoreChainRefused(UserLocalAppDataPath, DestPath) then
+  begin
+    Log('REQ-B006/A1: WARNING reparse point in the FINAL original-user store chain (leaf included); refusing to seed (261029_0001 R2-1/R3): ' + DestPath);
     Exit;
   end;
   if SaveStringToFile(DestPath, Raw, False) then
@@ -2019,6 +2674,16 @@ end;
 // ------------------------------------------------------------------------
 function ShouldInstallEngineHost(): Boolean;
 begin
+  // 261029_0001 R2-1 (round-2 dispute): the [Files] copy that this Check gates
+  // writes the host into the shared engine store with the admin token. The
+  // store had no reparse check at all (verification-report-r2-junction §9), so
+  // a link planted before the copy would redirect the write; refuse the copy
+  // (fail-closed, log-only) when the FINAL chain carries one.
+  if EngineStoreRefused('ShouldInstallEngineHost') then
+  begin
+    Result := False;
+    Exit;
+  end;
   // REQ-L32 P2-2: Chat OWNS the orchestrator slot (IsOwner=True): repair hole
   // + rule A via SharedSlotReplaceDecision. The defensive ggml-translate
   // mirror of the original inline rule A is preserved (both deploy together).
@@ -2056,6 +2721,13 @@ end;
 function ShouldInstallEngineWorker(): Boolean;
 begin
   EngineWorkerUpdated := False;
+  // 261029_0001 R2-1: same write-time engine-store reparse guard as the host
+  // Check above (the worker exe + its manifest are copied into the same store).
+  if EngineStoreRefused('ShouldInstallEngineWorker') then
+  begin
+    Result := False;
+    Exit;
+  end;
   // REQ-L32 P2-2: Chat OWNS the ggml-translate slot (IsOwner=True): repair
   // hole + rule A via SharedSlotReplaceDecision. The no-llama loud-fail
   // policy still holds — the [Files] entries above carry no
@@ -2097,6 +2769,12 @@ var
   UnifiedPath: String;
 begin
   EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
+  // 261029_0001 R2-1: this procedure DELETES or RENAMES inside the shared
+  // engine store at ssInstall, i.e. with the admin token and before any other
+  // guard runs - refuse when the chain carries a reparse point (log-only; the
+  // absorb is idempotent and retried on the next reinstall).
+  if EngineStoreRefused('AbsorbLegacyWorkerFileName') then
+    Exit;
   // The pre-unification Chat-deployed worker name (session 260930_0003);
   // WORKER_FILENAME is the unified name.
   LegacyPath := EngineDir + '\Emebalachat.Engine.ggml-translate.exe';
@@ -2129,6 +2807,13 @@ end;
 // ------------------------------------------------------------------------
 function ShouldInstallEngineWorkerAsr(): Boolean;
 begin
+  // 261029_0001 R2-1: same write-time engine-store reparse guard (the staged
+  // asr pair + CUDA DLLs land in the same shared engine store).
+  if EngineStoreRefused('ShouldInstallEngineWorkerAsr') then
+  begin
+    Result := False;
+    Exit;
+  end;
   Result := SharedSlotReplaceDecision('listener', 'ggml-asr',
       WORKER_ASR_FILENAME, ENGINE_WORKER_ASR_ABI_VERSION, False);
 end;
@@ -2180,7 +2865,16 @@ var
 begin
   if not EngineHostUpdated then
     Exit;
+  // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
+  // chain (log-only skip, like every other failure in this stamping path).
+  if EngineStoreRefused('WriteEngineVersionFile') then
+    Exit;
   VersionPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + ENGINE_VERSION_FILENAME;
+  // R3 (261029_0001, round-3 F-01): the chain check above stops at the
+  // '\engine' directory; re-check the written FILE leaf as well (a dev-mode
+  // file symlink at the fixed name would be followed by the admin write).
+  if EngineStoreLeafRefused('WriteEngineVersionFile/leaf', VersionPath) then
+    Exit;
   if SaveStringToFile(VersionPath, ENGINE_BUNDLED_VERSION, False) then
     Log('REQ-043: engine.version written: ' + VersionPath + ' = ' +
         ENGINE_BUNDLED_VERSION)
@@ -2238,7 +2932,15 @@ var
 begin
   if (not EngineHostUpdated) and (not EngineWorkerUpdated) then
     Exit;
+  // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
+  // chain (log-only skip, matching this procedure's safe-failure posture).
+  if EngineStoreRefused('WriteComponentsFile') then
+    Exit;
   ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  // R3 (261029_0001, round-3 F-01): leaf-inclusive re-check - the write below
+  // targets this exact file, and the chain check above stops at the directory.
+  if EngineStoreLeafRefused('WriteComponentsFile/leaf', ComponentsPath) then
+    Exit;
   OutJson := '';
   if FileExists(ComponentsPath) then
   begin
@@ -2393,6 +3095,11 @@ begin
     end;
     OutJson := OutJson + '}}';
   end;
+  // 261029_0001 R2-1: re-check immediately before the elevated write.
+  // R3 (round-3 F-01): the immediately-before-write check is the one that has
+  // to cover the FILE leaf too, so this call checks both the chain and the leaf.
+  if EngineStoreLeafRefused('WriteComponentsFile/pre-write', ComponentsPath) then
+    Exit;
   if SaveStringToFile(ComponentsPath, OutJson, False) then
     Log('REQ-006: components.json written: ' + ComponentsPath + ' = ' + OutJson)
   else
@@ -2828,7 +3535,22 @@ begin
   if ModelTargetDir = '' then
   begin
     Log('INSTALLER/DownloadModel/001: model target directory unresolved; aborting model download.');
-    SuppressibleMsgBox(CustomMessage('ModelTargetDirError'), mbError, MB_OK, IDOK);
+    AnnounceModelTargetDirError();
+    ModelSkipped := True;
+    Exit;
+  end;
+
+  // 261029_0001 R2-1 (round-2 dispute: sec-mimoflash R2-1 HIGH, gemini F-01,
+  // verification SUPPORTED): the target was resolved at ssPostInstall, but a
+  // profile owner can swap a link into that chain at ANY later moment. Re-run
+  // the subtree check on the FINAL chain right before the first elevated write
+  // of this procedure (the unverified-model DeleteFile below, then the
+  // ForceDirectories), and absorb a refusal into the existing warn-not-silent
+  // skip (ModelTargetDir cleared by ModelStoreRefused, ModelSkipped here) so
+  // nothing is ever written through a freshly planted link.
+  if ModelStoreRefused('DownloadModel/pre-write') then
+  begin
+    Log('INSTALLER/DownloadModel/002: model store chain refused before the store writes; model download skipped (261029_0001 R2-1).');
     ModelSkipped := True;
     Exit;
   end;
@@ -2889,6 +3611,15 @@ begin
 
     if SuppressibleMsgBox(MismatchQuestion, mbConfirmation, MB_YESNO, IDNO) = IDYES then
     begin
+      // 261029_0001 R2-1: the exit code runs AFTER hashing the pre-existing
+      // file (a multi-second window on a ~2 GB GGUF), so re-check the chain
+      // right before this elevated DELETE as well.
+      if ModelStoreRefused('DownloadModel/pre-delete-unverified') then
+      begin
+        Log('INSTALLER/DownloadModel/003: model store chain refused before the unverified-model delete; download skipped (261029_0001 R2-1).');
+        ModelSkipped := True;
+        Exit;
+      end;
       if DeleteFile(ModelDestPath) then
       begin
         Log('F2: user chose to delete the unverified pre-existing model; re-downloading to: ' + ModelDestPath);
@@ -2911,6 +3642,15 @@ begin
       Log('F2: user chose to keep the unverified pre-existing model; download skipped. It was NOT touched by this installer.');
       Exit;
     end;
+  end;
+
+  // 261029_0001 R2-1: re-check immediately before the store-create write (the
+  // F2 delete and the hash checks above ran after the last check).
+  if ModelStoreRefused('DownloadModel/pre-create') then
+  begin
+    Log('INSTALLER/DownloadModel/004: model store chain refused before directory creation; model download skipped (261029_0001 R2-1).');
+    ModelSkipped := True;
+    Exit;
   end;
 
   // Create the models directory if it does not exist
@@ -2957,6 +3697,29 @@ begin
 
     if DownloadSuccess then
     begin
+      // 261029_0001 R2-1 (the CORE of the round-2 finding): the download above
+      // takes MINUTES on a real link (~2 GB), which is exactly the window a
+      // profile owner needs to plant a junction inside the models chain. Re-run
+      // the subtree check on the FINAL chain immediately before the place step
+      // - a refusal leaves the downloaded bytes in {tmp} (they die with the run)
+      // and skips the model instead of writing through the link.
+      if ModelStoreRefused('DownloadModel/pre-place') then
+      begin
+        Log('INSTALLER/DownloadModel/005: model store chain refused after the download completed; the model was NOT placed (261029_0001 R2-1).');
+        ModelSkipped := True;
+        Exit;
+      end;
+      // R3 (261029_0001, round-3 F-01): the re-check above walks the chain down
+      // to the models DIRECTORY; the written FILE leaf was not tested. A file
+      // symlink planted at MODEL_FILENAME during the download window would be
+      // followed by RenameFile / CopyFile with the admin token. Leaf-inclusive
+      // re-check, same absorber as the directory check.
+      if ModelStorePathRefused('DownloadModel/pre-place-leaf', ModelDestPath) then
+      begin
+        Log('INSTALLER/DownloadModel/006: reparse point at the model file leaf; the model was NOT placed (261029_0001 R3): ' + ModelDestPath);
+        ModelSkipped := True;
+        Exit;
+      end;
       // Try rename first (zero-copy if same volume), fall back to copy+delete
       if RenameFile(ModelTmpPath, ModelDestPath) then
       begin
@@ -3078,6 +3841,7 @@ end;
 procedure WriteRegistryFile();
 var
   RegistryPath: String;
+  StoreBase: String;   // R2-1: profile root behind RegistryPath
   Doc: String;
   Items, Merged: TArrayOfString;
   BundledItem, Id, Origin, SlotNote: String;
@@ -3090,16 +3854,46 @@ begin
   // The store root comes from ModelTargetDir (the resolved models dir), so the
   // registry ALWAYS lands in the same directory the app's runtime resolver
   // (engine_host_registry.cpp %LOCALAPPDATA%-based) reads.
+  // 261029_0001 R2-1 (round-2 dispute: sec-gemini F-01, sec-mimoflash R2-1):
+  // both branches derive the path from a resolver that ran EARLIER, so the
+  // FINAL chain is re-validated here (write-time check). A refused store means
+  // NO registry write at all - the skip must not fall through to the other
+  // resolver, which is exactly the hole the pre-R2 code had. StoreBase carries
+  // the profile root the path was built from, so the create/merge re-checks
+  // below can re-derive the same subtree.
+  StoreBase := '';
   if ModelTargetDir <> '' then
-    RegistryPath := ModelTargetDir + '\' + REGISTRY_FILENAME
+  begin
+    if ModelStoreRefused('WriteRegistryFile/resolve') then
+    begin
+      Log('M7 A-2: model store chain refused; registry.json not written (261029_0001 R2-1).');
+      Exit;
+    end;
+    StoreBase := StoreRootDir;
+    RegistryPath := ModelTargetDir + '\' + REGISTRY_FILENAME;
+  end
   else
-    RegistryPath := ResolveCommonStoreDir() + '\models\' + REGISTRY_FILENAME;
+  begin
+    StoreBase := ResolveCommonStoreDir();
+    if StoreBase = '' then
+    begin
+      Log('M7 A-2: no trusted Common store root (reparse point refused); registry.json not written (261029_0001 R2-1).');
+      Exit;
+    end;
+    RegistryPath := StoreBase + '\models\' + REGISTRY_FILENAME;
+  end;
   BundledItem := REGISTRY_BUNDLED_ITEM_PREFIX + MODEL_FILENAME +
                  REGISTRY_BUNDLED_ITEM_SUFFIX;
 
   // ---- missing file: fresh one-item document (REQ-045 path) --------------
   if not FileExists(RegistryPath) then
   begin
+    // R2-1: re-check immediately before the elevated create write.
+    if StoreChainRefused(StoreBase, RegistryPath) then
+    begin
+      Log('M7 A-2: WARNING reparse point in the FINAL registry chain; registry.json not created (261029_0001 R2-1): ' + RegistryPath);
+      Exit;
+    end;
     // DownloadModel normally ForceDirectories the same dir at ssPostInstall,
     // but it may exit early (consent declined); the fresh-create must not
     // depend on that side effect.
@@ -3175,6 +3969,13 @@ begin
     SlotNote := 'refreshed/preserved'
   else
     SlotNote := 'appended';
+  // R2-1: re-check immediately before the elevated merge write (atomic writer:
+  // SaveStringToFile of the .tmp + RenameFile + its replace-existing DeleteFile).
+  if StoreChainRefused(StoreBase, RegistryPath) then
+  begin
+    Log('M7 A-2: WARNING reparse point in the FINAL registry chain; merged registry.json not written; previous document left intact at: ' + RegistryPath);
+    Exit;
+  end;
   if WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Merged)) then
     Log('M7 A-2: registry.json merged (' + IntToStr(MergedCount) +
         ' item(s), bundled slot ' + SlotNote + '): ' + RegistryPath)
@@ -3208,7 +4009,16 @@ begin
   if ModelTargetDir <> '' then
     ModelPath := ModelTargetDir + '\' + MODEL_FILENAME
   else
-    ModelPath := ResolveCommonStoreDir() + '\models\' + MODEL_FILENAME;
+  begin
+    // 261029_0001 R2-1: ResolveCommonStoreDir returns '' when the FINAL store
+    // chain carries a reparse point. Advertise NO store path in that case rather
+    // than assembling one from an empty root ('\models\...'): config.json still
+    // lands in {app} (no traversal), and the runtime resolver finds the store on
+    // its own, so the only loss is this legacy passthrough string.
+    ModelPath := ResolveCommonStoreDir();
+    if ModelPath <> '' then
+      ModelPath := ModelPath + '\models\' + MODEL_FILENAME;
+  end;
 
   // Choose engine type based on whether the model was downloaded.
   // SEC-1 (session 260911_0002, design 144800 §2.6 option (i)): writing
@@ -3460,6 +4270,17 @@ begin
   EngineDir := CommonDir + '\engine';
   RegistryPath := ModelsDir + '\' + REGISTRY_FILENAME;
 
+  // 261029_0001 R2-1: the uninstall cleanup DELETES inside the shared store
+  // with the elevated token, and it takes CommonDir as a plain argument - so it
+  // needs the same write-time reparse guard as the install side. Refusing here
+  // preserves EVERYTHING (the fail-closed direction this contract already
+  // uses for a damaged registry); a junction is not a legitimate store state.
+  if SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX) then
+  begin
+    Log('M7 A-3: reparse point in the shared store chain; the ENTIRE shared store is preserved (261029_0001 R2-1).');
+    Exit;
+  end;
+
   // ---- 1. registry-aware model cleanup (bundled only) --------------------
   if FileExists(RegistryPath) then
   begin
@@ -3601,14 +4422,23 @@ begin
     if not DirExists(ExpandConstant(COMMON_ENGINE_DIR)) and
        not DirExists(ExpandConstant(COMMON_MODELS_DIR)) then
     begin
-      PolicySeed := ExpandConstant('{localappdata}') + COMMON_STORE_SUFFIX + '\' +
-                    'engine_' + 'client_' + 'policy' + '.json';
-      if FileExists(PolicySeed) then
+      // R3 (261029_0001, round-3 F-1): the two DirExists probes above follow a
+      // planted junction, so without this guard the elevated DeleteFile below
+      // would delete the fixed policy name inside an attacker-chosen directory.
+      // Preserve the seed (fail-safe: nothing is destroyed) and say so.
+      if SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX) then
+        Log('REQ-B006/A1: reparse point in the shared store chain; the policy seed is preserved (261029_0001 R3 F-1).')
+      else
       begin
-        if DeleteFile(PolicySeed) then
-          Log('REQ-B006/A1: removed the policy seed this installer created (empty Common store): ' + PolicySeed)
-        else
-          Log('REQ-B006/A1: WARNING could not remove the policy seed: ' + PolicySeed);
+        PolicySeed := ExpandConstant('{localappdata}') + COMMON_STORE_SUFFIX + '\' +
+                      'engine_' + 'client_' + 'policy' + '.json';
+        if FileExists(PolicySeed) then
+        begin
+          if DeleteFile(PolicySeed) then
+            Log('REQ-B006/A1: removed the policy seed this installer created (empty Common store): ' + PolicySeed)
+          else
+            Log('REQ-B006/A1: WARNING could not remove the policy seed: ' + PolicySeed);
+        end;
       end;
     end;
 
@@ -3616,7 +4446,15 @@ begin
     LocalAppData := ExpandConstant('{localappdata}\Emebalachat');
     if DirExists(LocalAppData) then
     begin
-      if SuppressibleMsgBox(CustomMessage('UninstallCleanupPrompt'),
+      // R3 (261029_0001, round-3 F-R3-01): the profile owner can pre-plant a
+      // junction at this exact path with no privilege (it is inside their own
+      // profile), which would turn this elevated recursive delete into an
+      // arbitrary-tree delete. Refuse up front - before the prompt, so the user
+      // is never asked a question whose answer would be ignored - and keep the
+      // log honest about why nothing was removed.
+      if SubtreeReparsePoint(ExpandConstant('{localappdata}'), '\Emebalachat') then
+        Log('INSTALLER/CurUninstallStepChanged/001: reparse point at the user-data path; the elevated cleanup is refused and the directory is left untouched (261029_0001 R3 F-R3-01): ' + LocalAppData)
+      else if SuppressibleMsgBox(CustomMessage('UninstallCleanupPrompt'),
                             mbConfirmation, MB_YESNO, IDNO) = IDYES then
       begin
         DelTree(LocalAppData, True, True, True);

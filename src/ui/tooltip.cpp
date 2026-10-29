@@ -1303,7 +1303,14 @@ void TooltipWindow::ShowNoVoiceNotice() {
 
 void TooltipWindow::CopyToClipboard() {
     if (translated_text_.empty()) return;
-    SetClipboardText(translated_text_);
+    // FIX-B1 (R2-2/R2-4, 261029_0001): this is a USER-intent write - the user
+    // pressed the card's copy button. It must NOT be attributed to a translate
+    // task that happens to be in flight (the pre-fix SetClipboardText stamped
+    // the shared process slot, so a concurrent task's restore saw the user's
+    // copy as "our own write" and replayed the pre-task snapshot over it).
+    // SetClipboardTextAsUserCopy writes the identical clip (text + the three
+    // Clipboard-History exclusion formats) and declares the USER as the owner.
+    SetClipboardTextAsUserCopy(translated_text_);
     copied_feedback_ = true;
     if (hwnd_) {
         ::SetTimer(hwnd_, kTimerCopiedFeedback, 1500, nullptr);
@@ -1348,6 +1355,13 @@ void TooltipWindow::Render() {
     // #CBD5E1 (last pass's P1 contrast fix) becomes the sand-tinted
     // #D6DCEA at the same WCAG-safe lightness (>= 11:1 on #0C1830). Hover
     // fills, close #EF4444 semantics, and all geometry are untouched.
+    // DESIGN-261029 chrome pass (session 261029_0001): the interactive chrome
+    // (header/footer pills, scrollbar, copied-feedback, close glyph) moves off
+    // the generic Tailwind slate family onto the brand navy family already
+    // owned by the About window — pill fill #1E293B -> #14243F (navy-3),
+    // hover fill #334155 -> #1F3A63, scrollbar/track + close idles harmonized
+    // to lapis-gray (#93A3C7 / #8FA0C0), copied-feedback deepened to #0A3B2E.
+    // All geometry, hit rects, and hover logic are untouched.
     // C1 (session 260910_0007): these palette entries are now SetColor
     // arguments on the single scratch_brush_ instead of 6 per-frame
     // CreateSolidColorBrush calls - identical ColorF values, identical draw
@@ -1410,7 +1424,7 @@ void TooltipWindow::Render() {
     // --- Header Area ---
     // 1. Emebala Brand Logo (Far Left, 1:1 round/squircle frame without horizontal stretching)
     D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 36.0f, 30.0f), 6.0f, 6.0f);
-    scratch_brush_->SetColor(D2D1::ColorF(0x1E293B, 0.9f));
+    scratch_brush_->SetColor(D2D1::ColorF(0x14243F, 0.9f));
     dc_render_target_->FillRoundedRectangle(logoFrame, scratch_brush_);
     scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.85f));
     dc_render_target_->DrawRoundedRectangle(logoFrame, scratch_brush_, 1.0f);
@@ -1448,8 +1462,8 @@ void TooltipWindow::Render() {
     // F8: persist the button rect as a member for hover/click hit tests.
     src_btn_rect_ = D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f);
     D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(src_btn_rect_, 4.0f, 4.0f);
-    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0x334155, 1.0f)
-                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0x1F3A63, 1.0f)
+                                                 : D2D1::ColorF(0x14243F, 0.9f));
     dc_render_target_->FillRoundedRectangle(srcTagRect, scratch_brush_);
     // F8: hover highlight mirrors the target button's hovered_btn_==3
     // pattern - accent border when hovered (tooltip.cpp:1269-1275 model).
@@ -1488,8 +1502,8 @@ void TooltipWindow::Render() {
     lang_btn_rect_ = D2D1::RectF(tgt_plan.x, 8.0f, tgt_plan.x + tgt_plan.width, 30.0f);
     D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, 4.0f, 4.0f);
 
-    scratch_brush_->SetColor((hovered_btn_ == 3) ? D2D1::ColorF(0x334155, 1.0f)
-                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    scratch_brush_->SetColor((hovered_btn_ == 3) ? D2D1::ColorF(0x1F3A63, 1.0f)
+                                                 : D2D1::ColorF(0x14243F, 0.9f));
     dc_render_target_->FillRoundedRectangle(tgtTagRect, scratch_brush_);
     scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
     dc_render_target_->DrawRoundedRectangle(tgtTagRect, scratch_brush_, 1.0f);
@@ -1502,7 +1516,7 @@ void TooltipWindow::Render() {
     close_btn_rect_ = D2D1::RectF(static_cast<float>(current_width_) - 32.0f, 8.0f, static_cast<float>(current_width_) - 12.0f, 28.0f);
     if (header_format_) {
         scratch_brush_->SetColor((hovered_btn_ == 4) ? D2D1::ColorF(0xEF4444, 1.0f)
-                                                     : D2D1::ColorF(0x94A3B8, 0.8f));
+                                                     : D2D1::ColorF(0x93A3C7, 0.8f));
         dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
     }
 
@@ -1563,11 +1577,11 @@ void TooltipWindow::Render() {
         // created, then each filled once). One scratch brush with SetColor
         // interleaved keeps the identical draw order (track first, thumb on
         // top), so the compositing result is unchanged.
-        scratch_brush_->SetColor(D2D1::ColorF(0x1E293B, 0.7f));
+        scratch_brush_->SetColor(D2D1::ColorF(0x14243F, 0.7f));
         dc_render_target_->FillRoundedRectangle(
             D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), scratch_brush_);
         scratch_brush_->SetColor(thumb_active ? D2D1::ColorF(0xF8FAFC, 1.0f)
-                                              : D2D1::ColorF(0x94A3B8, 1.0f));
+                                              : D2D1::ColorF(0x8FA0C0, 1.0f));
         dc_render_target_->FillRoundedRectangle(
             D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), scratch_brush_);
     } else {
@@ -1606,7 +1620,7 @@ void TooltipWindow::Render() {
     D2D1_ROUNDED_RECT copyBtnRect = D2D1::RoundedRect(copy_btn_rect_, 4.0f, 4.0f);
 
     if (copied_feedback_) {
-        scratch_brush_->SetColor(D2D1::ColorF(0x064E3B, 0.95f));
+        scratch_brush_->SetColor(D2D1::ColorF(0x0A3B2E, 0.95f));
         dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
         scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
         dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.2f);
@@ -1617,8 +1631,8 @@ void TooltipWindow::Render() {
             dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copy_btn_rect_, scratch_brush_);
         }
     } else {
-        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0x334155, 1.0f)
-                                                     : D2D1::ColorF(0x1E293B, 0.9f));
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0x1F3A63, 1.0f)
+                                                     : D2D1::ColorF(0x14243F, 0.9f));
         dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
         // DESIGN-260910 (P3 affordance): a hovered pill gains the accent
         // border, matching the header language buttons' hover so
@@ -1639,8 +1653,8 @@ void TooltipWindow::Render() {
     tts_btn_rect_ = D2D1::RectF(tts_left, footer_div_y + 7.0f, tts_left + tts_btn_w, footer_div_y + 31.0f);
     D2D1_ROUNDED_RECT ttsBtnRect = D2D1::RoundedRect(tts_btn_rect_, 4.0f, 4.0f);
 
-    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0x334155, 1.0f)
-                                                 : D2D1::ColorF(0x1E293B, 0.9f));
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0x1F3A63, 1.0f)
+                                                 : D2D1::ColorF(0x14243F, 0.9f));
     dc_render_target_->FillRoundedRectangle(ttsBtnRect, scratch_brush_);
     // DESIGN-260910 (P3 affordance): same accent-on-hover as the Copy pill.
     scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0xD9B45A, 1.0f)

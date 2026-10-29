@@ -107,11 +107,15 @@ void MergeBundledEntry(engine_host_registry::Registry& reg);
 // REGISTRY_BUNDLED_ITEM_*). Exposed for tests.
 engine_host_registry::ModelEntry BuildBundledEntry();
 
-// Write the engine_core-compatible <model>.sha256ok marker (3 lines:
-// hex, raw file_clock epoch ticks, size) so the worker's VerifyModelSha256
-// marker cache skips the one-time 1.91 GB re-hash. Mirrors
-// engine_core_helpers WriteVerifyMarker/VerifyModelSha256 semantics. The
-// mtime/size are read AFTER the atomic move (rename preserves both).
+// Write the engine_core-compatible <model>.sha256ok marker (4 lines: hex, raw
+// file_clock epoch ticks, size, content sample - SHA-256 over three 1 MiB
+// windows, R1-19) so the engine's VerifyModelSha256 marker cache is a HIT on
+// the first load after a download instead of re-hashing the whole 1.9 GB once.
+// The sample comes from the shared llama-free helper
+// (src/model_verify_sample.hpp) that the verifier itself uses, so the two
+// sides cannot drift. The mtime/size are read AFTER the atomic move (rename
+// preserves both). Returns false when the sample cannot be computed; the
+// engine then re-hashes once and rewrites the marker itself.
 bool WriteSha256OkMarker(const std::filesystem::path& model_path);
 
 // ---- I/O ------------------------------------------------------------------

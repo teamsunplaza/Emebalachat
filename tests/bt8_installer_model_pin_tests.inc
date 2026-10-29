@@ -145,6 +145,175 @@ void TestBt8InstallerModelBundling() {
                    "retained (runtime store alignment; never the program-data store)");
     }
 
+    // ---- R2-1/R2-2/R2-3 (round-2 dispute, session 261029_0001) --------------
+    // These pins extend (never rewrite) the A1 block above: the junction
+    // refusal had to become a WRITE-TIME check (the resolution-time one is
+    // check-then-act across the minutes-long download), the PowerShell
+    // -Command paths had to become single-quoted, and the group-writable
+    // exchange pointer target had to pass a shape gate before the elevated
+    // read/delete. Source-text pins only - the runtime proofs are Phase-4.
+    if (!iss.empty()) {
+        // (R2-1a) subtree-scoped helper exists; the profile root itself is
+        // never re-tested (FSLogix/folder-redirection false hard-fail).
+        TEST_CHECK(iss.find("function SubtreeReparsePoint(const Base, Sub: String): Boolean;") !=
+                       std::string::npos,
+                   "pin (R2-1): SubtreeReparsePoint (app-subtree-scoped check, profile "
+                   "root excluded) is present");
+        TEST_CHECK(iss.find("(not SubtreeReparsePoint(UserLocalAppDataPath, "
+                            "COMMON_MODELS_DIR_SUFFIX))") != std::string::npos,
+                   "pin (R2-1): ResolveCommonStoreDir checks the \\models LEAF it hands "
+                   "to its callers, not only the store root");
+        // (R2-1b) the fallback branch is re-checked UNCONDITIONALLY after the
+        // branch merge, before ForceDirectories.
+        const size_t r21_setup = iss.find("ModelStoreRefused('SetupModelTargetDir/pre-create')");
+        TEST_CHECK(r21_setup != std::string::npos &&
+                       r21_setup < iss.find("if not ForceDirectories(ModelTargetDir) then"),
+                   "pin (R2-1): the FINAL model target is re-checked after the branch "
+                   "merge, before the store is created (same-account fallback covered)");
+        // (R2-1c) DownloadModel re-checks before the store create, before the
+        // unverified-model delete, and - the core finding - AFTER the download
+        // completes and BEFORE the rename/copy that places the model.
+        TEST_CHECK(iss.find("ModelStoreRefused('DownloadModel/pre-create')") != std::string::npos,
+                   "pin (R2-1): the store-create write is guarded");
+        TEST_CHECK(iss.find("ModelStoreRefused('DownloadModel/pre-delete-unverified')") !=
+                       std::string::npos,
+                   "pin (R2-1): the F2 unverified-model delete is guarded");
+        const size_t r21_place = iss.find("ModelStoreRefused('DownloadModel/pre-place')");
+        TEST_CHECK(r21_place != std::string::npos &&
+                       r21_place < iss.find("RenameFile(ModelTmpPath, ModelDestPath)"),
+                   "pin (R2-1): the chain is re-checked after the download completes and "
+                   "before the rename/copy (minutes-long window closed)");
+        // (R2-1d) the registry write path is guarded at resolve time and right
+        // before BOTH atomic writes; the refusal skips instead of falling
+        // through to the other resolver.
+        TEST_CHECK(iss.find("ModelStoreRefused('WriteRegistryFile/resolve')") != std::string::npos,
+                   "pin (R2-1): WriteRegistryFile re-validates the final chain at resolve "
+                   "time and skips on refusal");
+        const size_t r21_reg = iss.find("StoreChainRefused(StoreBase, RegistryPath)");
+        TEST_CHECK(r21_reg != std::string::npos &&
+                       r21_reg < iss.find("WriteTextFileAtomic(RegistryPath, "
+                                          "JsonBuildRegistryDoc("),
+                   "pin (R2-1): the fresh-create registry write is re-checked immediately "
+                   "before WriteTextFileAtomic");
+        TEST_CHECK(iss.find("reparse point in the FINAL registry chain; merged "
+                            "registry.json not written") != std::string::npos,
+                   "pin (R2-1): the merge write is re-checked too (no registry write "
+                   "through a link swapped in after the resolve)");
+        // (R2-1e) the previously-unchecked COMMON_ENGINE_DIR write sites.
+        TEST_CHECK(iss.find("EngineStoreRefused('AbsorbLegacyWorkerFileName')") !=
+                       std::string::npos &&
+                       iss.find("EngineStoreRefused('AbsorbLegacyWorkerFileName')") <
+                           iss.find("RenameFile(LegacyPath, UnifiedPath)"),
+                   "pin (R2-1): the ssInstall engine-store rename/delete is guarded "
+                   "(same class, previously unchecked)");
+        TEST_CHECK(iss.find("EngineStoreRefused('WriteEngineVersionFile')") != std::string::npos &&
+                       iss.find("EngineStoreRefused('WriteComponentsFile')") != std::string::npos,
+                   "pin (R2-1): both engine-store stampers are guarded");
+        // (R2-2) PowerShell quoting: every interpolated -Command path goes
+        // through PsSingleQuote (apostrophes doubled), and the nested
+        // double-quote form that CommandLineToArgvW strips is GONE.
+        TEST_CHECK(iss.find("function PsSingleQuote(const S: String): String;") !=
+                       std::string::npos &&
+                       iss.find("StringChangeEx(T, '''', '''''', True);") != std::string::npos,
+                   "pin (R2-2): PsSingleQuote doubles embedded apostrophes");
+        TEST_CHECK(iss.find("PsSingleQuote(PointerFile)") != std::string::npos &&
+                       iss.find("PsSingleQuote(VerifyFile)") != std::string::npos,
+                   "pin (R2-2): both exchange paths are single-quoted inside -Command");
+        TEST_CHECK(iss.find("-FilePath \"' + PointerFile") == std::string::npos &&
+                       iss.find("-LiteralPath \"' + VerifyFile") == std::string::npos,
+                   "pin (R2-2): no nested double-quoted path is re-introduced (spaced "
+                   "%TEMP% regression class)");
+        // (R2-3) the group-writable pointer target is shape-gated BEFORE the
+        // elevated FileExists / LoadStringsFromFile / DeleteFile, and the
+        // pointer itself is refused when it is a link.
+        const size_t r23_gate = iss.find("if not IsValidExchangeValuePath(ValueFile) then");
+        TEST_CHECK(r23_gate != std::string::npos &&
+                       r23_gate < iss.find("if not FileExists(ValueFile) then"),
+                   "pin (R2-3): the value path is validated before the first elevated "
+                   "read of the pointer target");
+        TEST_CHECK(iss.find("function IsValidExchangeValuePath(const Path: String): Boolean;") !=
+                       std::string::npos &&
+                       iss.find("ContainsReparsePoint(PointerFile)") != std::string::npos,
+                   "pin (R2-3): exchange-dir + name-shape + reparse-chain gate present, "
+                   "and a reparse-point pointer is refused");
+    }
+
+    // ---- R3 (round-3 preemptive fixes, session 261029_0001) ------------------
+    // Source-text pins for the round-3 hardening: the write-time reparse checks
+    // now cover the WRITTEN FILE leaf (not only the directory chain), the
+    // uninstall side refuses a link instead of deleting through it, the [Files]
+    // policy-seed copy is gated, the exchange pointer check sits where it can
+    // actually fire, and one refused store chain announces its box only once.
+    if (!iss.empty()) {
+        auto occurrences = [&iss](const std::string& needle) {
+            size_t count = 0;
+            for (size_t pos = iss.find(needle); pos != std::string::npos;
+                 pos = iss.find(needle, pos + needle.size())) {
+                ++count;
+            }
+            return count;
+        };
+        // (R3-1) leaf-inclusive model re-check immediately before the place step.
+        const size_t r3_model_leaf =
+            iss.find("ModelStorePathRefused('DownloadModel/pre-place-leaf', ModelDestPath)");
+        TEST_CHECK(r3_model_leaf != std::string::npos &&
+                       r3_model_leaf < iss.find("RenameFile(ModelTmpPath, ModelDestPath)"),
+                   "pin (R3-1): the model file LEAF is re-checked immediately before "
+                   "RenameFile/CopyFile places it");
+        // (R3-1b) the policy seed's final pre-write check covers the written file.
+        const size_t r3_seed_leaf = iss.find("StoreChainRefused(UserLocalAppDataPath, DestPath)");
+        TEST_CHECK(r3_seed_leaf != std::string::npos &&
+                       r3_seed_leaf < iss.find("SaveStringToFile(DestPath, Raw, False)"),
+                   "pin (R3-1): the policy seed's re-check includes the written file leaf");
+        // (R3-1c) both engine-store stampers check the file they write.
+        const size_t r3_version_leaf =
+            iss.find("EngineStoreLeafRefused('WriteEngineVersionFile/leaf', VersionPath)");
+        TEST_CHECK(r3_version_leaf != std::string::npos &&
+                       r3_version_leaf <
+                           iss.find("SaveStringToFile(VersionPath, ENGINE_BUNDLED_VERSION, False)"),
+                   "pin (R3-1): engine.version is leaf-checked before SaveStringToFile");
+        const size_t r3_components_leaf =
+            iss.find("EngineStoreLeafRefused('WriteComponentsFile/pre-write', ComponentsPath)");
+        TEST_CHECK(r3_components_leaf != std::string::npos &&
+                       r3_components_leaf <
+                           iss.find("SaveStringToFile(ComponentsPath, OutJson, False)"),
+                   "pin (R3-1): components.json's immediately-before-write check is "
+                   "leaf-inclusive");
+        // (R3-2) uninstall-side guards: no elevated recursive delete / seed delete
+        // through a pre-planted link.
+        const size_t r3_uninstall_guard =
+            iss.find("SubtreeReparsePoint(ExpandConstant('{localappdata}'), '\\Emebalachat')");
+        TEST_CHECK(r3_uninstall_guard != std::string::npos &&
+                       r3_uninstall_guard < iss.find("DelTree(LocalAppData"),
+                   "pin (R3-2): the user-data DelTree is refused when the path is a link");
+        const size_t r3_seed_preserve =
+            iss.find("the policy seed is preserved (261029_0001 R3 F-1)");
+        TEST_CHECK(r3_seed_preserve != std::string::npos &&
+                       r3_seed_preserve < iss.find("DeleteFile(PolicySeed)"),
+                   "pin (R3-2): the uninstall policy-seed delete is guarded (preserve on a "
+                   "reparse hit)");
+        // (R3-3) the [Files] policy-seed Check itself refuses a linked store chain.
+        TEST_CHECK(iss.find("the [Files] policy-seed copy is refused") != std::string::npos,
+                   "pin (R3-3): IsCommonStoreAbsentForPolicySeed refuses a reparse chain "
+                   "(the elevated [Files] copy is gated)");
+        // (R3-4) the pointer reparse check runs where the pointer EXISTS, i.e.
+        // after call 1 and immediately before the elevated read.
+        const size_t r3_pointer_check = iss.find("ContainsReparsePoint(PointerFile)");
+        TEST_CHECK(r3_pointer_check != std::string::npos &&
+                       r3_pointer_check > iss.find("exchange pointer not found after powershell exit") &&
+                       r3_pointer_check < iss.find("LoadStringsFromFile(PointerFile, Buf)"),
+                   "pin (R3-4): the pointer re-check sits after call 1 and immediately before "
+                   "LoadStringsFromFile (not at a moment the file cannot exist)");
+        // (R3-5) one ModelTargetDirError announcement per run, every Log kept.
+        TEST_CHECK(iss.find("if ModelTargetDirErrorAnnounced then Exit;") != std::string::npos &&
+                       occurrences("SuppressibleMsgBox(CustomMessage('ModelTargetDirError')") == 1,
+                   "pin (R3-5): the ModelTargetDirError box is announced at most once per run "
+                   "(a single SuppressibleMsgBox call site, flag-guarded)");
+        TEST_CHECK(occurrences("AnnounceModelTargetDirError();") >= 4,
+                   "pin (R3-5): every refusal/creation-failure site routes through the "
+                   "announce-once helper (Log lines stay per-site)");
+    }
+
     // ---- Structural: bundling + ownership + uninstall-survival (§6.1) --------
     if (!iss.empty()) {
         // Scenario-3 (uninstall survival): the bundled slot must be written by

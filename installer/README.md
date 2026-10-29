@@ -123,7 +123,7 @@ iscc.exe setup.iss
 After a successful compile, the installer will be created at:
 
 ```
-output\Emebalachat_Setup_0.10.3.exe
+output\Emebalachat_Setup_0.10.4.exe
 ```
 
 ## Optional: Custom Icons and Images
@@ -252,7 +252,9 @@ Pre-existing model files left by earlier installs are hash-checked too. On
 mismatch (or an unreadable file) the user is asked an explicit Yes/No: **Yes**
 deletes the unverified file and re-downloads the verified model; **No** keeps the
 file untouched and skips the download. The app additionally re-verifies the model
-SHA-256 at load time (with a `.sha256ok` marker cache) and refuses tampered files.
+SHA-256 at load time (with a `.sha256ok` marker cache keyed on size, mtime and a
+content sample of three fixed 1 MiB windows, so a same-size swap triggers a full
+re-hash) and refuses tampered files.
 
 ## Inno Setup License Notes (for distribution)
 

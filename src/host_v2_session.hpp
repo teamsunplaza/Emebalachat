@@ -28,7 +28,25 @@
 //
 // Privacy: sessions store identity/lifecycle fields only (ids, strings named
 // by the client's open request — capability/model/profile names, not user
-// text). No logging here; the host owns shape-only diagnostics.
+// text). No CONTENT logging here; the host owns shape-only diagnostics, and
+// the one oversize signal this table emits carries counts only.
+//
+// Bounded growth (R1-10, v0.10.4 sweep session 261029_0001): Open() is called
+// once per translate job while the host process persists for the machine's
+// uptime, so terminal records are pruned opportunistically inside Open()
+// under the table mutex (see PruneLocked). The safety invariant the erase
+// relies on: NO pointer, reference or iterator into the record vector ever
+// escapes this class — every accessor copies (Find) or returns numeric ids
+// (CloseOwnedByConnection), and callers hold session IDS, never records.
+// Erasing a terminal record can therefore not dangle, and Close/Abort on a
+// pruned id return false while NextEventSeq returns 0 — identical to the
+// already-terminal answer every caller handles today. The one disclosed
+// delta is Find(): a PRUNED id answers false instead of a Closed copy. The
+// newest-terminal retention window (kPruneKeepTerminal opens) keeps a
+// just-closed id resolvable, so the only caller that reads a record field —
+// the v2 dispatcher's session-model lookup, which can race a close — still
+// finds it; a lookup arriving more than that many opens late falls back to
+// the policy/live pin, which is the same answer a sessionless job gets.
 // ---------------------------------------------------------------------------
 
 #include <atomic>
@@ -110,11 +128,42 @@ public:
     // Number of sessions currently OPEN (idle-exit input).
     std::size_t OpenCount() const;
 
+    // Number of RETAINED records (open + the terminal retention tail). This is
+    // the table's memory footprint in records, and the prune bound is stated
+    // in these terms; exposed for diagnostics and the R1-10 unit pins.
+    std::size_t TotalCount() const;
+
+    // R1-10 prune bounds (public so the tests pin the ceiling instead of
+    // hardcoding the numbers):
+    //   * no prune scan while the table holds <= kPruneSlack records;
+    //   * prune once size() > kPruneOpenFactor * OpenCount() + kPruneSlack;
+    //   * the newest kPruneKeepTerminal terminal records always survive (the
+    //     id-stability window: a dispatcher lookup racing a close still finds
+    //     the closed record for that many opens).
+    // The retained ceiling is therefore kPruneOpenFactor*OpenCount() +
+    // kPruneSlack + 1 records, independent of how long the host has run.
+    static constexpr std::size_t kPruneSlack = 256;
+    static constexpr std::size_t kPruneOpenFactor = 4;
+    static constexpr std::size_t kPruneKeepTerminal = 32;
+    // A retained count above this AFTER a prune is a prune bug (it would take
+    // > 2435 simultaneous open sessions to reach it legally), not a workload:
+    // one shape-only signal per table instance (the host has exactly one),
+    // never per call.
+    static constexpr std::size_t kOversizeSignal = 10000;
+
 private:
+    // R1-10 prune mechanics; callers must hold mu_.
+    void PruneLocked();
+
     mutable std::mutex mu_;
     std::vector<std::string> served_;
-    std::vector<SessionRecord> sessions_; // all records, terminal ones kept for id stability
+    // Retained records: every OPEN session plus the newest
+    // kPruneKeepTerminal terminal ones. Ids stay unique and monotonic across
+    // a prune (next_id_ is never rewound), so a pruned id is simply "an
+    // already-terminal session" to every caller.
+    std::vector<SessionRecord> sessions_;
     std::atomic<std::uint64_t> next_id_{1}; // host-global increment, 1-based
+    bool oversize_reported_ = false;        // R1-10: one signal per process, under mu_
 };
 
 } // namespace host_v2

@@ -30,10 +30,17 @@ static std::string slurp_file(const std::string& path) {
     return s;
 }
 
-static constexpr int kNCtx = 4096;
+// D1 parity (v0.10.4 R1-23): the probe must model the SHIPPED engine context,
+// or its verdicts describe a configuration no user runs. Shipped constants
+// (src/engine_core/translation_common.cpp:50-54, compile-time pinned there):
+//   n_ctx 8192, generation reserve 2048, safety margin 16
+//   -> prompt budget 6128
+// The pre-R1-23 probe kept the retired n_ctx 4096 / budget 2032 pair
+// (260930_0003 re-pinned both; the probe was missed).
+static constexpr int kNCtx = 8192;
 static constexpr int kGenReserve = 2048;
 static constexpr int kSafetyMargin = 16;
-static constexpr int kPromptBudget = kNCtx - kGenReserve - kSafetyMargin; // 2032
+static constexpr int kPromptBudget = kNCtx - kGenReserve - kSafetyMargin; // 6128
 
 struct Run {
     std::string id;

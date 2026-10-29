@@ -42,6 +42,30 @@ GetDpiForMonitorFn ResolveGetDpiForMonitor() {
     return fn;
 }
 
+// 261029_0001 U-I (R1-21): EnumDisplayMonitors callback state. One work area
+// per attached monitor, plus the index of the one flagged
+// MONITORINFOF_PRIMARY (the fallback target when a stranded window is
+// equidistant from several displays).
+struct MonitorCollectContext {
+    std::vector<RECT>* areas;
+    size_t* primary_index;
+};
+
+BOOL CALLBACK CollectMonitorWorkAreaProc(HMONITOR hmon, HDC, LPRECT, LPARAM lp) {
+    auto* ctx = reinterpret_cast<MonitorCollectContext*>(lp);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (!::GetMonitorInfoW(hmon, &mi)) {
+        return TRUE; // enumerated but not queryable: skip this display
+    }
+    if ((mi.dwFlags & MONITORINFOF_PRIMARY) && ctx->primary_index &&
+        *ctx->primary_index == kNoWorkArea) {
+        *ctx->primary_index = ctx->areas->size();
+    }
+    ctx->areas->push_back(mi.rcWork);
+    return TRUE;
+}
+
 } // namespace
 
 bool EnsurePerMonitorV2ProcessDpiAwareness() {
@@ -147,6 +171,18 @@ UINT WindowDpi(HWND hwnd) {
         return MonitorDpiAtPoint(center);
     }
     return kDpiBase;
+}
+
+std::vector<RECT> MonitorWorkAreas(size_t* primary_index) {
+    std::vector<RECT> areas;
+    size_t primary = kNoWorkArea;
+    MonitorCollectContext ctx{ &areas, &primary };
+    ::EnumDisplayMonitors(nullptr, nullptr, CollectMonitorWorkAreaProc,
+                          reinterpret_cast<LPARAM>(&ctx));
+    if (primary_index) {
+        *primary_index = primary;
+    }
+    return areas;
 }
 
 } // namespace ui

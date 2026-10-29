@@ -6,6 +6,9 @@
 #include "dpi.hpp"
 
 #include <cmath>
+#include <vector>
+
+#include <dwrite_1.h>  // v0.10.4 design sweep: IDWriteTextLayout1 tracking
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -162,6 +165,7 @@ void FloatingBadge::Destroy() {
     if (hwnd_) {
         ::KillTimer(hwnd_, kTimerIdle);
         ::KillTimer(hwnd_, kTimerSingleClick);
+        ::KillTimer(hwnd_, kTimerDisplayChange);
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -222,6 +226,15 @@ void FloatingBadge::SetVisible(bool visible) {
     if (hwnd_) {
         ::ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
         if (visible) {
+            // 261029_0001 U-I (R1-21): re-showing is the user's recovery gesture
+            // after "the badge disappeared" (tray double-click / tray toggle),
+            // and the env-robustness report notes that this gesture used to show
+            // the pill wherever it was left. If the topology changed while the
+            // badge was hidden - or the OS broadcast never reached this window -
+            // pull it back onto a live monitor BEFORE drawing, so the recovery
+            // gesture cannot present an off-screen pill. No-op when the current
+            // position is already inside a monitor (the common case).
+            ReclampToVisibleMonitors();
             Render();
             ResetIdleTimer();
         }
@@ -235,6 +248,93 @@ bool FloatingBadge::IsVisible() const {
 void FloatingBadge::SetPosition(int x, int y) {
     if (hwnd_) {
         ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_NOSIZE);
+    }
+}
+
+// 261029_0001 U-I (R1-21, env research F4): undocking a laptop or unplugging
+// the display that hosted the badge left this layered window at absolute
+// coordinates on a monitor that no longer exists, so the pill vanished until
+// the app restarted - Create() and the drag path were the only clamps. This
+// re-runs that exact policy against the CURRENT monitor union: pick the nearest
+// live monitor from the enumerated work areas, refresh that monitor's DPI
+// (physical extents depend on it), then ClampWindowOrigin - one clamp
+// implementation shared with Create/drag, no second copy of the edge math.
+//
+// The persisted badge_x/badge_y are deliberately NOT rewritten: they are the
+// user's intent (restored on the next launch, when the display may be back),
+// and main.cpp's position callback is the only writer that persists - drag is
+// the only gesture the design ever re-persisted.
+void FloatingBadge::ReclampToVisibleMonitors() {
+    if (!hwnd_) {
+        return;
+    }
+    if (is_dragging_) {
+        // The drag path owns the position and re-clamps per WM_MOUSEMOVE
+        // against the monitor under the cursor; moving the window underneath
+        // the pointer mid-gesture would fight it.
+        return;
+    }
+
+    size_t primary_index = emebalachat::ui::kNoWorkArea;
+    const std::vector<RECT> work_areas = emebalachat::ui::MonitorWorkAreas(&primary_index);
+    if (work_areas.empty()) {
+        // Headless / RDP console session: no monitor exists to clamp into.
+        // Skipping is the documented degradation - inventing an origin would be
+        // worse than leaving the window where the OS put it.
+        DIAG_F("BADGE/Reclamp/003: no monitor enumerated; display-change re-clamp skipped\n");
+        return;
+    }
+
+    RECT rc = {};
+    if (!::GetWindowRect(hwnd_, &rc)) {
+        return;
+    }
+    const int old_x = rc.left;
+    const int old_y = rc.top;
+
+    const size_t index = emebalachat::ui::NearestWorkAreaIndex(
+        old_x, old_y, work_areas.data(), work_areas.size(), primary_index);
+    if (index == emebalachat::ui::kNoWorkArea) {
+        return;
+    }
+    const RECT& work = work_areas[index];
+
+    // Refresh the DPI BEFORE measuring PhysW/PhysH: an undocked 150% laptop
+    // panel and a 100% external monitor give different physical extents, and
+    // clamping with the stale scale would leave the pill over the new edge.
+    // The 1x1 clamp turns the chosen work rect into a point inside itself, so
+    // MonitorDpiAtPoint cannot fall back to a neighbouring display.
+    const POINT probe = emebalachat::ui::ClampWindowOrigin(old_x, old_y, 1, 1, 0, work);
+    const UINT target_dpi = emebalachat::ui::MonitorDpiAtPoint(probe);
+
+    bool resized = false;
+    if (target_dpi != dpi_) {
+        dpi_ = target_dpi;
+        ReallocateBuffer(PhysW(), PhysH());
+        resized = true;
+    }
+
+    const POINT clamped = emebalachat::ui::ClampWindowOrigin(
+        old_x, old_y, PhysW(), PhysH(), 0, work);
+
+    if (clamped.x == old_x && clamped.y == old_y && !resized) {
+        return; // already on a live monitor at the right scale: no jitter
+    }
+
+    DIAG_F("BADGE/Reclamp/001: display change; badge %d,%d -> %d,%d (monitor %llu/%llu, dpi %u)\n",
+           old_x, old_y, clamped.x, clamped.y,
+           static_cast<unsigned long long>(index),
+           static_cast<unsigned long long>(work_areas.size()), target_dpi);
+
+    // Size is only re-applied when the DPI change reallocated the DIB at a new
+    // physical extent; SWP_NOSIZE otherwise (same contract as the drag path).
+    ::SetWindowPos(hwnd_, nullptr, clamped.x, clamped.y, PhysW(), PhysH(),
+                   SWP_NOZORDER | SWP_NOACTIVATE | (resized ? 0 : SWP_NOSIZE));
+    if (resized) {
+        // ReallocateBuffer destroyed the DIB, so its contents must be redrawn;
+        // Render() terminates in UpdateAlpha(), i.e. the re-blit happens inside
+        // this call (mirrors the WM_DPICHANGED house pattern below).
+        Render();
     }
 }
 
@@ -365,6 +465,22 @@ void FloatingBadge::Render(bool reentry_allowed) {
             &textLayout
         );
         if (textLayout) {
+            // v0.10.4 design sweep (session 261029_0001): +0.3 DIP character
+            // tracking across the whole label — the badge is the brand's most
+            // visible surface and the extra air reads premium rather than
+            // utilitarian. IDWriteTextLayout1 is Win8+; the QI simply fails on
+            // anything older and the label renders untracked (safe no-op).
+            // Metrics are read AFTER the spacing is applied, so the
+            // centering math below and the dynamic pill width stay exact.
+            IDWriteTextLayout1* layout1 = nullptr;
+            if (SUCCEEDED(textLayout->QueryInterface(
+                    __uuidof(IDWriteTextLayout1),
+                    reinterpret_cast<void**>(&layout1))) && layout1) {
+                layout1->SetCharacterSpacing(
+                    0.3f, 0.3f, 0.0f,
+                    DWRITE_TEXT_RANGE{0, static_cast<UINT32>(display_label.size())});
+                layout1->Release();
+            }
             textLayout->GetMetrics(&metrics);
         }
     }
@@ -374,8 +490,16 @@ void FloatingBadge::Render(bool reentry_allowed) {
     float medallionSize = 18.0f;
     float medallionRadius = medallionSize * 0.5f; // 9.0f
     float gap = 8.5f;
+    // R2-12b (FIX-B2): the gold seal ring is drawn OUTSIDE medallionSize. The
+    // layout used to size the medallion at 18 DIP while the ring's outer edge
+    // reached 22.4 DIP (r=13.0 + 0.4 stroke), so it ate 4.4 DIP of the gap
+    // before the label (8.5 -> 4.1 DIP) and shifted the group 2.2 DIP left.
+    // kRingPad is the ring's reserved half-width: the ring now sits at
+    // medallionRadius + 2.5f (= 11.5, outer edge 11.95) inside the 12.0 pad.
+    const float kRingPad = 3.0f;
+    const float medallionVisualW = medallionSize + kRingPad * 2.0f; // 24.0f
     float textWidth = metrics.widthIncludingTrailingWhitespace;
-    float totalContentWidth = medallionSize + gap + textWidth;
+    float totalContentWidth = medallionVisualW + gap + textWidth;
     float sidePadding = 18.0f; // pill curvature breathing room on each side
 
     int needed_width = static_cast<int>(std::ceil(totalContentWidth + (sidePadding * 2.0f)));
@@ -398,11 +522,13 @@ void FloatingBadge::Render(bool reentry_allowed) {
 
     // Exact horizontal and vertical dead-center coordinates
     // Mathematical symmetry: Left margin to medallion == Right margin from text end to pill edge
+    // R2-12b (FIX-B2): the VISUAL medallion (ring included) is the layout box,
+    // so the ring's outer edge and the label's start are what get balanced.
     float startX = (static_cast<float>(current_width_) - totalContentWidth) / 2.0f;
-    float dotCenterX = startX + medallionRadius;
+    float dotCenterX = startX + medallionVisualW * 0.5f;
     float dotCenterY = static_cast<float>(kHeight) / 2.0f;
 
-    float textX = startX + medallionSize + gap;
+    float textX = startX + medallionVisualW + gap;
 
     // REQ-R15 note: everything above is authored in DIPs; the render target
     // DPI converts to physical at rasterization. The DirectWrite layout was
@@ -421,13 +547,16 @@ void FloatingBadge::Render(bool reentry_allowed) {
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    // 1. Pill background: deep obsidian glass with subtle top-to-bottom illumination
+    // 1. Pill background: Emebala navy (brand palette, session 261029_0001) —
+    //    a subtle top-to-bottom illumination over the poster navy, matching
+    //    the tooltip card / About window family instead of the old generic
+    //    obsidian AI-pill gradient.
     ID2D1GradientStopCollection* pBgStops = nullptr;
     D2D1_GRADIENT_STOP bgStops[2];
     bgStops[0].position = 0.0f;
-    bgStops[0].color = D2D1::ColorF(0x181A20, 0.95f); // Subtle top specular illumination
+    bgStops[0].color = D2D1::ColorF(0x101F3E, 0.95f); // navy-1 top illumination
     bgStops[1].position = 1.0f;
-    bgStops[1].color = D2D1::ColorF(0x0E1014, 0.96f); // Deep obsidian base
+    bgStops[1].color = D2D1::ColorF(0x0C1830, 0.97f); // navy-0 poster base
 
     ID2D1LinearGradientBrush* bgGradient = nullptr;
     if (SUCCEEDED(dc_render_target_->CreateGradientStopCollection(bgStops, 2, &pBgStops)) && pBgStops) {
@@ -453,33 +582,22 @@ void FloatingBadge::Render(bool reentry_allowed) {
         bgGradient->Release();
     } else {
         ID2D1SolidColorBrush* solidBg = nullptr;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x121418, 0.95f), &solidBg);
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &solidBg);
         if (solidBg) {
             dc_render_target_->FillRoundedRectangle(&fillRect, solidBg);
             solidBg->Release();
         }
     }
 
-    // 2. Refined 1px dual-tone Fluent border (soft top rim light + status accent tint)
-    ID2D1GradientStopCollection* pBorderStops = nullptr;
-    D2D1_GRADIENT_STOP borderStops[2];
-    borderStops[0].position = 0.0f;
-    borderStops[0].color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f); // Top rim light
-    borderStops[1].position = 1.0f;
-    borderStops[1].color = D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.38f); // Status tint
-
-    ID2D1LinearGradientBrush* borderGradient = nullptr;
-    if (SUCCEEDED(dc_render_target_->CreateGradientStopCollection(borderStops, 2, &pBorderStops)) && pBorderStops) {
-        dc_render_target_->CreateLinearGradientBrush(
-            D2D1::LinearGradientBrushProperties(
-                D2D1::Point2F(0.0f, 0.0f),
-                D2D1::Point2F(0.0f, static_cast<float>(kHeight))
-            ),
-            pBorderStops,
-            &borderGradient
-        );
-        pBorderStops->Release();
-    }
+    // 2. Hairline border: 1px lapis + warm-white top rim light (the "seal"
+    //    motif shared with the tooltip card and the About window; replaces
+    //    the old white→status gradient rim that read as a generic glow pill).
+    //    R2-12e (FIX-B2): the hairline was #33507E @0.85, which measures only
+    //    1.96:1 against a dark-navy IDE backdrop (#0B1324) and let the pill's
+    //    silhouette dissolve. #4A6CA3 (lapis-hi) @0.90 keeps the same brand
+    //    hue while the edge stays readable over dark apps.
+    ID2D1SolidColorBrush* borderBrush = nullptr;
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x4A6CA3, 0.90f), &borderBrush);
 
     D2D1_ROUNDED_RECT strokeRect = D2D1::RoundedRect(
         D2D1::RectF(0.5f, 0.5f, static_cast<float>(current_width_) - 0.5f, static_cast<float>(kHeight) - 0.5f),
@@ -487,38 +605,31 @@ void FloatingBadge::Render(bool reentry_allowed) {
         kRadius - 0.5f
     );
 
-    if (borderGradient) {
-        dc_render_target_->DrawRoundedRectangle(&strokeRect, borderGradient, 1.0f);
-        borderGradient->Release();
-    } else {
-        ID2D1SolidColorBrush* solidBorder = nullptr;
-        dc_render_target_->CreateSolidColorBrush(
-            D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.35f),
-            &solidBorder
-        );
-        if (solidBorder) {
-            dc_render_target_->DrawRoundedRectangle(&strokeRect, solidBorder, 1.0f);
-            solidBorder->Release();
-        }
+    if (borderBrush) {
+        dc_render_target_->DrawRoundedRectangle(&strokeRect, borderBrush, 1.0f);
+        borderBrush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f));
+        // R2-12a (FIX-B2): the rim light must stay inside the capsule's flat
+        // top tangent segment. At y = 1.5f the border curve sits at
+        // x = kRadius - sqrt((kRadius-0.5)^2 - (kRadius-1.5)^2) ~= 13.0 DIP,
+        // so the old 0.6 x kRadius start (11.4) poked ~1.6 DIP of white line
+        // outside the rounded corners (the "whisker" visible at 144 DPI).
+        dc_render_target_->DrawLine(
+            D2D1::Point2F(kRadius, 1.5f),
+            D2D1::Point2F(static_cast<float>(current_width_) - kRadius, 1.5f),
+            borderBrush, 1.0f);
+        borderBrush->Release();
     }
 
-    // 3. Logo medallion with status glow ring (18x18 mini circular medallion)
-    // Ambient status glow halo
-    ID2D1SolidColorBrush* haloBrush = nullptr;
-    // R6 Phase 3 (audit item 7): use the locked local snapshot taken at the
-    // top of Render() instead of reading status_ directly. status_ is written
-    // under data_mutex_ by SetStatus/WM_BADGE_SET_STATUS (possibly another
-    // thread); every other read here already uses the snapshot.
-    float haloAlpha = (status == BadgeStatus::Disabled) ? 0.15f : 0.28f;
-    dc_render_target_->CreateSolidColorBrush(
-        D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, haloAlpha),
-        &haloBrush
-    );
-    if (haloBrush) {
-        D2D1_ELLIPSE glow = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), 11.5f, 11.5f);
-        dc_render_target_->FillEllipse(&glow, haloBrush);
-        haloBrush->Release();
-    }
+    // 3. Logo medallion (18x18) — "signet" treatment (session 261029_0001):
+    //    the status disc stays saturated for glanceability, ringed by its own
+    //    crisp status ring and a thin antique-gold outer ring echoing the About
+    //    window's twin-gold seal.
+    //    R2-12b (FIX-B2): the intermediate status-tinted outerRing that used to
+    //    sit at r + 2.4f is GONE. With the gold ring near it the two warm rings
+    //    read as one fuzzy "onion ring" in the Translating state (amber #F59E0B
+    //    @0.38 and gold #D4AF37 were only 0.7 px apart), so the medallion is now
+    //    a clean 2-ring signet: saturated status disc ring + gold seal ring.
+    D2D1_ELLIPSE medalCircle = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), medallionRadius, medallionRadius);
 
     // Medallion base (REQ-024: circular background tinted with the status
     // color — Active=emerald, Translating=amber, Disabled=slate — instead of
@@ -526,7 +637,6 @@ void FloatingBadge::Render(bool reentry_allowed) {
     // switch above; halo/ring/text/alpha logic untouched, same 0.95f alpha.)
     ID2D1SolidColorBrush* medalBgBrush = nullptr;
     dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.95f), &medalBgBrush);
-    D2D1_ELLIPSE medalCircle = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY), medallionRadius, medallionRadius);
     if (medalBgBrush) {
         dc_render_target_->FillEllipse(&medalCircle, medalBgBrush);
         medalBgBrush->Release();
@@ -560,13 +670,29 @@ void FloatingBadge::Render(bool reentry_allowed) {
         statusRingBrush->Release();
     }
 
-    // 4. Label text (multi-tone typography & mathematically centered)
+    // Gold signet ring — the outermost, thinnest ring (About-window seal cue).
+    // R2-12b (FIX-B2): r = medallionRadius + 2.5f with a 0.9 stroke puts the
+    // ring's outer edge at 11.95 DIP, exactly inside the kRingPad (12.0) the
+    // layout above reserved; 0.60 alpha keeps it a whisper over the navy.
+    {
+        ID2D1SolidColorBrush* goldRingBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.60f), &goldRingBrush);
+        if (goldRingBrush) {
+            D2D1_ELLIPSE goldRing = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY),
+                                                  medallionRadius + 2.5f, medallionRadius + 2.5f);
+            dc_render_target_->DrawEllipse(&goldRing, goldRingBrush, 0.9f);
+            goldRingBrush->Release();
+        }
+    }
+
+    // 4. Label text (multi-tone typography & mathematically centered;
+    //    brand sand-white + lapis-gray divider per the 261029_0001 palette)
     ID2D1SolidColorBrush* langBrush = nullptr;
     ID2D1SolidColorBrush* divBrush = nullptr;
     ID2D1SolidColorBrush* statusTextBrush = nullptr;
 
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF9FAFB, 1.0f), &langBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x6B7280, 0.70f), &divBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &langBrush);
+    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 0.75f), &divBrush);
     dc_render_target_->CreateSolidColorBrush(statusTextColor, &statusTextBrush);
 
     if (textLayout) {
@@ -841,6 +967,11 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 if (!self->is_hovered_ && !self->is_mouse_down_ && self->current_alpha_ > 51) {
                     self->UpdateAlpha(51);
                 }
+            } else if (wParam == kTimerDisplayChange) {
+                // 261029_0001 U-I (R1-21): the topology burst has settled -
+                // re-clamp once, through the same routine Create/drag use.
+                ::KillTimer(hwnd, kTimerDisplayChange);
+                self->ReclampToVisibleMonitors();
             }
             return 0;
         }
@@ -848,6 +979,19 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case WM_NCDESTROY: {
             ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
+
+        // 261029_0001 U-I (R1-21, env research F4): monitor topology change
+        // (undock / unplug / resolution change). Windows broadcasts
+        // WM_DISPLAYCHANGE to every top-level window, and this badge is a
+        // WS_POPUP top-level window, so it hears the event directly - no
+        // main.cpp routing needed. A single topology change arrives as a burst
+        // (mode set, then the arrangement/DPI settle), so the handler only
+        // arms a short timer and each further message restarts it (SetTimer on
+        // an existing id resets the countdown). WM_TIMER then re-clamps once.
+        case WM_DISPLAYCHANGE: {
+            ::SetTimer(hwnd, kTimerDisplayChange, kDisplayChangeDebounceMs, nullptr);
+            return 0;
         }
 
         // 260922_0001 A3 (fix plan §5 A3): live per-monitor DPI change. The

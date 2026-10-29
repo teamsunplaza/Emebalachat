@@ -1,6 +1,59 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.4 - 2026-10-29
+====================
+
+Patch release. Translation reliability, clipboard safety, and installation
+security were audited end-to-end by independent review teams and hardened.
+Upgrading from any 0.10.x build is fully supported.
+
+What's new in this build
+------------------------
+* Nonsense-output guard: the local engine now rejects assistant-style replies,
+  repetition loops, wrong-language answers, and meta text ("I can't
+  translate", "Please contact us for assistance") instead of shipping them.
+  Rejected output follows the existing honest failure path (retry / cloud
+  consent rules / clear notice). Works with any model, including models you
+  add yourself.
+* Repetition-penalty sampling is now actually applied during local
+  translation (previously dropped silently when temperature was 0), which
+  stops most loops before they are produced.
+* Clipboard protection: a copy you make while a translation is in flight now
+  survives: the app re-checks the clipboard before restoring and keeps your
+  newest content. A failed backup can no longer wipe the clipboard, and large
+  (over 4 MiB) clipboard content is no longer destroyed.
+* The floating badge repositions itself when you unplug a monitor or change
+  display scale, so it can no longer be stranded off-screen.
+* Engine-host privacy hardening: the app verifies the identity of the local
+  translation engine before sending any text or token, closing a same-machine
+  interception path.
+* Installer hardening: elevated install and uninstall steps refuse to write
+  through planted directory links, and the shared-store cleanup path is
+  guarded too.
+* Model verification now samples actual file content in its cache, raising
+  the cost of tampering; the served-model label in diagnostics names the
+  correct model (previously mislabeled as the speech model on the default
+  route).
+* Transient engine connection failures retry once as designed (a label
+  mismatch previously disabled the retry entirely).
+* UI refresh: the badge, tooltip, and drag icon adopt the Emebala brand navy
+  and gold "signet" design with improved contrast and typography.
+* Tray convenience: the hover tip shows the active engine and language pair;
+  the tip menu gains a Swap item for the drag pair; Ctrl+F9 shows an on-screen
+  bubble naming the new target language; the pause bubble shows your actual
+  configured hotkey instead of a hardcoded "F9".
+* Cloud clients now ask WinHTTP to refuse HTTP redirects (with a logged
+  fallback when the policy cannot be applied), so request text and tokens are
+  never replayed to a redirect target.
+* Docs: README corrected on engine idle-exit semantics; the clipboard
+  exposure window is now disclosed.
+
+Known limitations (documented): translated text is momentarily on the system
+clipboard during paste (~120 ms settle); Clipboard-History exclusion tags are
+advisory. The model-verification cache is a tamper-cost measure, not a
+security boundary against a same-user attacker.
+
 v0.10.3 - 2026-10-10
 ====================
 

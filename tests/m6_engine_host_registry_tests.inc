@@ -245,6 +245,140 @@ void TestEngineHostRegistry() {
         }
     }
 
+    // ---- 11. REQ-057 + v0.10.4 R1-3: bundled TRANSLATE-family selection ----
+    // registry.json is family-shared (the Listener's ASR family writes into the
+    // same document), so "first origin==bundled entry" named an ASR model on
+    // every real install and the served-model echo lied while Hy-MT2 served.
+    // The pinned default is the first bundled TRANSLATE-family entry; the
+    // first-bundled-of-any-family scan stays as the deterministic fallback.
+    {
+        // The reporter's machine, in document order: ASR first, a user entry,
+        // then the bundled translate entry, then more ASR entries.
+        const char* machine_doc =
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"whisper-large-v3-turbo-q8-0-v1\",\"family\":\"ggml-asr\","
+            "\"files\":[\"ggml-large-v3-turbo-q8_0.bin\"],\"capabilities\":[\"asr\"],"
+            "\"origin\":\"bundled\"},"
+            "{\"id\":\"user-MiLMMT-46-4B-v1\",\"family\":\"ggml-translate\","
+            "\"files\":[\"MiLMMT.gguf\"],\"origin\":\"user\"},"
+            "{\"id\":\"hy-mt2-1.8b-q8\",\"family\":\"ggml-translate\","
+            "\"files\":[\"Hy-MT2-1.8B-Q8_0.gguf\"],\"capabilities\":[\"translate\"],"
+            "\"origin\":\"bundled\"},"
+            "{\"id\":\"qwen3-asr-1.7b-q8-v1\",\"family\":\"ggml-asr\","
+            "\"files\":[\"qwen.gguf\"],\"capabilities\":[\"asr\"],\"origin\":\"bundled\"}"
+            "]}";
+        const auto r = ehr::ParseRegistryJson(machine_doc);
+        TEST_CHECK(r.status == LoadStatus::Ok && r.registry.models.size() == 4,
+                   "R1-3: the ASR-first machine registry parses Ok (4 entries)");
+        TEST_CHECK(ehr::ResolveBundledModelId(r.registry) == "hy-mt2-1.8b-q8",
+                   "R1-3: the bundled TRANSLATE entry is the pinned default, not the "
+                   "first-bundled ASR entry");
+        TEST_CHECK(ehr::ResolveBundledModelId(r.registry) != "whisper-large-v3-turbo-q8-0-v1",
+                   "R1-3: the whisper ASR id is never echoed as the served model");
+        TEST_CHECK(ehr::IsTranslateFamilyModel(r.registry.models[0]) == false &&
+                       ehr::IsTranslateFamilyModel(r.registry.models[2]) == true,
+                   "R1-3: the family predicate splits ASR from translate");
+        TEST_CHECK(ehr::ResolveBundledModelId(r.registry) != "user-MiLMMT-46-4B-v1",
+                   "R1-3: a user-origin translate entry is never the bundled slot");
+        TEST_CHECK(ehr::ResolveBundledModelId(r.registry) != "qwen3-asr-1.7b-q8-v1",
+                   "R1-3: a later bundled ASR entry never wins either");
+    }
+    {
+        // capabilities-only marker (family spelled differently) still matches.
+        const auto r = ehr::ParseRegistryJson(
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"asr-a\",\"family\":\"ggml-asr\",\"files\":[\"a.bin\"],"
+            "\"capabilities\":[\"asr\"],\"origin\":\"bundled\"},"
+            "{\"id\":\"cust-tr\",\"family\":\"custom-family\",\"files\":[\"t.gguf\"],"
+            "\"capabilities\":[\"translate\"],\"origin\":\"bundled\"}"
+            "]}");
+        TEST_CHECK(r.status == LoadStatus::Ok &&
+                       ehr::ResolveBundledModelId(r.registry) == "cust-tr",
+                   "R1-3: capabilities[] containing translate selects the entry "
+                   "(family spelling not required)");
+    }
+    {
+        // family-only marker (capabilities absent) still matches.
+        const auto r = ehr::ParseRegistryJson(
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"asr-a\",\"family\":\"ggml-asr\",\"files\":[\"a.bin\"],"
+            "\"origin\":\"bundled\"},"
+            "{\"id\":\"fam-tr\",\"family\":\"ggml-translate\",\"files\":[\"t.gguf\"],"
+            "\"origin\":\"bundled\"}"
+            "]}");
+        TEST_CHECK(r.status == LoadStatus::Ok &&
+                       ehr::ResolveBundledModelId(r.registry) == "fam-tr",
+                   "R1-3: family ggml-translate alone selects the entry "
+                   "(capabilities[] absent)");
+    }
+    {
+        // No bundled translate entry: deterministic fallback = first bundled.
+        const auto r = ehr::ParseRegistryJson(
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"asr-a\",\"family\":\"ggml-asr\",\"files\":[\"a.bin\"],"
+            "\"capabilities\":[\"asr\"],\"origin\":\"bundled\"},"
+            "{\"id\":\"asr-b\",\"family\":\"ggml-asr\",\"files\":[\"b.bin\"],"
+            "\"capabilities\":[\"asr\"],\"origin\":\"bundled\"}"
+            "]}");
+        TEST_CHECK(r.status == LoadStatus::Ok &&
+                       ehr::ResolveBundledModelId(r.registry) == "asr-a",
+                   "R1-3: with no bundled translate entry the first bundled entry is "
+                   "the deterministic fallback (registry order)");
+    }
+    {
+        // Two bundled translate entries: the FIRST in document order wins, so
+        // the id is stable across runs (no map/pointer-order nondeterminism).
+        const auto r = ehr::ParseRegistryJson(
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"tr-first\",\"family\":\"ggml-translate\",\"files\":[\"1.gguf\"],"
+            "\"capabilities\":[\"translate\"],\"origin\":\"bundled\"},"
+            "{\"id\":\"tr-second\",\"family\":\"ggml-translate\",\"files\":[\"2.gguf\"],"
+            "\"capabilities\":[\"translate\"],\"origin\":\"bundled\"}"
+            "]}");
+        TEST_CHECK(r.status == LoadStatus::Ok &&
+                       ehr::ResolveBundledModelId(r.registry) == "tr-first",
+                   "R1-3: the first bundled translate entry wins (deterministic order)");
+    }
+    {
+        // A user translate entry preceding every bundled entry never becomes
+        // the bundled slot; the fallback still prefers a BUNDLED entry.
+        const auto r = ehr::ParseRegistryJson(
+            "{\"schema_version\":1,\"models\":["
+            "{\"id\":\"user-tr\",\"family\":\"ggml-translate\",\"files\":[\"u.gguf\"],"
+            "\"capabilities\":[\"translate\"],\"origin\":\"user\"},"
+            "{\"id\":\"asr-a\",\"family\":\"ggml-asr\",\"files\":[\"a.bin\"],"
+            "\"capabilities\":[\"asr\"],\"origin\":\"bundled\"}"
+            "]}");
+        TEST_CHECK(r.status == LoadStatus::Ok &&
+                       ehr::ResolveBundledModelId(r.registry) == "asr-a",
+                   "R1-3: origin separation holds before the fallback (user translate "
+                   "entry never fills the bundled slot)");
+    }
+    {
+        // Live store (read-only): when a bundled translate entry exists, the
+        // resolved id MUST belong to a translate-family entry. This is the
+        // machine-state guard for the actual installer-written registry.json.
+        const auto dir = ehr::DefaultModelsDir();
+        if (!dir.empty()) {
+            const auto r = ehr::LoadDefaultRegistry();
+            if (r.status == LoadStatus::Ok) {
+                bool has_bundled_translate = false;
+                for (const auto& m : r.registry.models) {
+                    if (m.origin == "bundled" && ehr::IsTranslateFamilyModel(m)) {
+                        has_bundled_translate = true;
+                        break;
+                    }
+                }
+                const std::string id = ehr::ResolveBundledModelId(r.registry);
+                const ehr::ModelEntry* picked = r.registry.FindModel(id);
+                TEST_CHECK(!has_bundled_translate ||
+                               (picked != nullptr && ehr::IsTranslateFamilyModel(*picked)),
+                           "R1-3: the live registry resolves a translate-family id "
+                           "whenever one is bundled");
+            }
+        }
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Engine-host registry parser tests completed." << std::endl;
     } else {

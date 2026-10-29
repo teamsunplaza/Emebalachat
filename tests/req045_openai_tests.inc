@@ -284,6 +284,18 @@ void TestReq050OpenAiEndpointJoin() {
                    "REQ-050: the double-/v1 ListModels join (.../v1/v1/models) is gone");
         TEST_CHECK(src.find("prefix + L\"/v1/chat/completions\"") == std::string::npos,
                    "REQ-050: the double-/v1 ChatCompletion join is gone");
+        // R3 (261029_0001, round-3 security L-2 / code-k3 P3): this client
+        // carries the Authorization: Bearer header the redirect block exists to
+        // protect, so the WinHttpSetOption result must be CHECKED - an ignored
+        // failure silently leaves WinHTTP's FOLLOW default in place.
+        const std::string::size_type r3_policy = src.find(
+            "if (!::WinHttpSetOption(hSession.get(), WINHTTP_OPTION_REDIRECT_POLICY,");
+        TEST_CHECK(r3_policy != std::string::npos &&
+                       src.find("OPENAI/HttpRequest/005") != std::string::npos,
+                   "R3: a failed redirect-policy set fails OPEN but is logged shape-only (005)");
+        TEST_CHECK(r3_policy != std::string::npos &&
+                       r3_policy < src.find("::WinHttpConnect("),
+                   "R3: the checked policy set precedes the request (session default cannot win)");
     }
 
     // REQ-050 (B): the pre-save fetch button must ask the SAME http consent

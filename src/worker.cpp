@@ -217,7 +217,16 @@ void PipelineWorker::Stop() {
 
 bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd,
                               int shift_enter_count) {
-    if (is_busy_.exchange(true, std::memory_order_acquire)) {
+    // R1-17 (v0.10.4 sweep, 261029_0001): acq_rel, not acquire. An
+    // acquire-only RMW's store half is relaxed, so a reader that acquires
+    // is_busy_ gets a happens-before edge only from transitions whose store
+    // side was a release (this exchange is one of the two publication points;
+    // BusyGuard below is the other). On the shipped x64 build the ordering is
+    // benign (TSO preserves store-store order); on a weakly ordered
+    // architecture (a future ARM64 Windows build) the missing edge could hand
+    // the hook thread busy=true with nothing ordered behind it and defeat the
+    // REQ-003 same-window Enter suppression for one keystroke window.
+    if (is_busy_.exchange(true, std::memory_order_acq_rel)) {
         return false; // Busy with existing translation task
     }
     // REQ-003 (Issue C, session 260910_0003): publish the in-flight target
@@ -226,7 +235,14 @@ bool PipelineWorker::PostTask(bool is_shift_enter, HWND target_hwnd,
     // target as soon as IsBusy() can observe true. Published only from the
     // one caller that won the exchange, so no write race exists; nullptr
     // (untargeted callers/tests) simply never matches a live window.
-    busy_target_hwnd_.store(target_hwnd, std::memory_order_relaxed);
+    // R1-17: RELEASE, not relaxed. This store is sequenced AFTER the winning
+    // exchange, so the exchange's release half cannot publish it, and it is
+    // the exact value the hook's same-window guard consumes. A release store
+    // pairs with an acquire load of the same atomic; relaxed pairs with
+    // nothing. Reader side: worker.hpp's IsBusy()/BusyTargetHwnd() now load
+    // with ACQUIRE (the U-G residual half, closed in this unit), so both
+    // publication points have their matching half.
+    busy_target_hwnd_.store(target_hwnd, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         queue_.push(PipelineTask{is_shift_enter, target_hwnd, shift_enter_count});
@@ -270,22 +286,50 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     DIAG_LOG("PIPELINE", "task_received source=enter_pipeline target_hwnd=%p shift_enter=%d",
              reinterpret_cast<const void*>(task.target_hwnd), task.is_shift_enter ? 1 : 0);
 
+    // FIX-B1 (R2-2/R2-4, 261029_0001): per-task clipboard write ownership.
+    // Installed BEFORE the first clipboard touch and outliving the RestorerGuard
+    // below (declaration order = destruction order, reverse), so the guard's
+    // scope-exit restore also runs with this task's stamp. Effect: every write
+    // this task makes - the capture chord, the paste, a restore - is attributed
+    // to this task only, and a copy the user makes in between (the tooltip's
+    // copy button, a password manager) can never satisfy the restore ladder's
+    // "current == our write" rule. PasteAndRestore additionally re-baselines
+    // before its destructive paste write; see RebaselineClipboardBeforePaste.
+    ClipboardTaskScope clipboard_scope;
+
     ClipboardBackup backup;
     const bool clip_backup_ok = BackupClipboard(backup);
-    DIAG_LOG("PIPELINE", "clipboard_backup ok=%d has_text=%d extra_formats=%zu",
-             clip_backup_ok ? 1 : 0, backup.text.has_value() ? 1 : 0, backup.formats.size());
+    DIAG_LOG("PIPELINE", "clipboard_backup ok=%d has_text=%d extra_formats=%zu partial=%d seq=%lu",
+             clip_backup_ok ? 1 : 0, backup.text.has_value() ? 1 : 0, backup.formats.size(),
+             backup.partial ? 1 : 0, static_cast<unsigned long>(backup.seq_at_backup));
 
     // RAII guard ensuring the user's original clipboard is always restored
-    // upon any early return, error, or unexpected exception
+    // upon any early return, error, or unexpected exception.
+    //
+    // R1-6 (v0.10.4 sweep, 261029_0001): the guard is ARMED ONLY when the
+    // backup actually produced a restorable snapshot (ClipboardRestoreArmable).
+    // Pre-fix, `active` defaulted to true and BackupClipboard's failure was only
+    // logged, so every early return (IME backstop, empty-capture hold, F3 arms,
+    // capture guard abort) reached the destructor and called RestoreClipboard on
+    // an EMPTY snapshot - which emptied the user's clipboard. The `backup_ok`
+    // field is separate from `active` because `active` is also assigned by the
+    // F7 disarm algebra (ClipboardRestorerStaysArmed) further down; a failed
+    // backup must never be re-armed by that assignment.
     struct RestorerGuard {
         const ClipboardBackup& b;
+        const bool backup_ok;
         bool active = true;
         ~RestorerGuard() {
-            if (active) {
+            if (active && backup_ok) {
                 RestoreClipboard(b);
             }
         }
-    } restorer{backup};
+    } restorer{backup, ClipboardRestoreArmable(clip_backup_ok, backup)};
+    if (!restorer.backup_ok) {
+        DIAG_F("WORKER/ExecuteTask/052: no restorable clipboard snapshot (backup ok=%d); scope-exit restorer NOT armed, "
+               "the clipboard is left untouched\n",
+               clip_backup_ok ? 1 : 0);
+    }
 
     // RAII guard ensuring is_busy_ is released upon function exit.
     // REQ-003 (Issue C): BusyTargetHwnd is cleared AFTER is_busy_ inside

@@ -67,6 +67,8 @@
 // ---------------------------------------------------------------------------
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -156,6 +158,346 @@ constexpr int ScaledMaxGenTokens(int input_token_count) {
     const int scaled = input_token_count * kScaledGenPerInputToken + kScaledGenFlatTokens;
     return scaled < kScaledGenFloorTokens ? kScaledGenFloorTokens : scaled;
 }
+
+// ---------------------------------------------------------------------------
+// R1-2 (session 261029_0001, v0.10.4 sweep): sampler shape for ONE decode
+// attempt. Why: the shipped profile is temperature=0.0 / top_p=0.6 / top_k=20 /
+// repetition_penalty=1.05 (worker_protocol.hpp sampling defaults, stamped on
+// every job by the host), but the temp<=0.001 branch built a BARE greedy
+// sampler, so the configured penalty was silently dropped — on out-of-
+// distribution input a greedy 1.8B translator then degenerates into exact
+// repetition loops (debug-specialist reports RC3 / C3). R1-2 builds
+// penalties -> greedy when a penalty is configured. The decision is pure so
+// the unit suite pins the whole matrix without a model, and the no-llama build
+// keeps it (no llama types involved).
+//
+// Byte-identity contract: with rep_pen <= 1.0 the shape is BareGreedy — the
+// historical single llama_sampler_init_greedy() allocation, unchanged. Only a
+// rep_pen > 1.0 takes the chain, so every existing configuration that did not
+// ask for a penalty keeps the exact pre-R1-2 token stream.
+// top_k / top_p stay OUT of the greedy chain on purpose: both only prune
+// lower-logit candidates (top_k keeps the k best; top_p with min_keep=1 always
+// keeps the argmax), so at temperature 0 they are mathematically argmax-
+// invariant — they cannot change one sampled token and would only add a
+// per-token sort. Greedy determinism is what the REQ-059 golden pins rely on.
+// ---------------------------------------------------------------------------
+enum class SamplerShape {
+    Dist,            // temperature > kGreedyTemperatureThreshold (unchanged chain)
+    BareGreedy,      // greedy, no penalty configured (pre-R1-2 shape, byte-identical)
+    PenalizedGreedy, // greedy with the configured repetition penalty (R1-2)
+};
+
+// The greedy branch boundary inherited from the pre-R1-2 code
+// (`temperature <= 0.001f`); named so the production branch and the pins cannot
+// drift apart.
+inline constexpr float kGreedyTemperatureThreshold = 0.001f;
+
+constexpr SamplerShape DecideSamplerShape(float temperature, float rep_pen) {
+    if (temperature > kGreedyTemperatureThreshold) {
+        return SamplerShape::Dist;
+    }
+    return rep_pen > 1.0f ? SamplerShape::PenalizedGreedy : SamplerShape::BareGreedy;
+}
+
+// ---------------------------------------------------------------------------
+// R1-1 (session 261029_0001, v0.10.4 sweep): the output-validation ladder.
+// Why: the pre-R1-1 acceptance predicate only rejected empty / exact-echo /
+// bare-special-token outputs, so assistant-style prose, wrong-language essays
+// and repetition loops reached the user with status=ok — the CEO's "assist
+// symptom" (debug-specialist reports RC1/RC2/RC4, live repro
+// "abcdefghijklmnopqrstuvwxyz" -> "Translation is not possible... Please
+// contact us for further assistance..."). The gates below are MODEL-AGNOSTIC
+// text predicates (no Hy-MT2 tokens, no chat-template assumptions, no model
+// names), so they protect any current or future GGUF — that is the "works with
+// ANY model" requirement. All three operate on the TRIMMED output of BOTH
+// rungs of the REQ-059 ladder; a rung-1 rejection degrades to the completion
+// form, and a rung-2 rejection answers std::nullopt (honest engine_failed)
+// instead of shipping garbage.
+//
+// Script families come from the i18n language registry codes (kAllLanguages in
+// config.cpp) and the codepoint predicates come from smart_bypass.cpp — no
+// second, drifting script table. Unknown/AUTO targets fail OPEN (mask 0), so
+// the gate can never reject on a language the registry does not know.
+// ---------------------------------------------------------------------------
+
+// R1-1 repetition thresholds, CALIBRATED in R2-6 (session 261029_0001,
+// code-reviewer-mimo F-01). The line/token-run rule mirrors the debug reports'
+// "repeated >= 3 times"; the suffix rule needs an 8-token minimum span.
+//
+// R2-6 calibration (why the envelope below, not the pre-R2-6 one):
+//   * Rule A now requires CONSECUTIVE identical lines. The pre-R2-6 rule
+//     counted a line repeated anywhere after it, so a transcript with "Yes."
+//     three times spread across a dialogue was read as a loop.
+//   * Rule B (one token repeated in a row) gained TWO guards, because a
+//     three-token reduplication is ordinary human emphasis ("no no no",
+//     "Help! Help! Help!", "ha ha ha"):
+//       (a) SPAN FLOOR: the longest identical-token run must cover at least
+//           kRepeatedTokenRunMinCoveragePercent of the output's whitespace
+//           tokens. A degenerate one-token loop runs to the token cap, so its
+//           coverage approaches 100%; an emphatic reduplication inside a real
+//           sentence is a small fraction (3 of 11 tokens = 27%).
+//       (b) SOURCE GUARD (same repo idiom as HasMetaLeakage): when the SOURCE
+//           itself carries a run of kRepeatedTokenRunMinCount identical
+//           whitespace tokens, the repetition is the user's own content, not a
+//           loop - the two sides translate a reduplication into a
+//           reduplication, so a token-identity match across a language pair is
+//           impossible but the SHAPE match is exact.
+//   * Threshold choice (justified with the pinned cases): 50% coverage keeps
+//     "the cat sat on the mat and said no no no" (3/11 = 27%) accepted while a
+//     cap-length one-token loop (100%) is still rejected. Any coverage floor
+//     below 50% starts accepting a token run that occupies most of the answer;
+//     100% would re-admit a mid-sentence emphasis once the model repeats four
+//     tokens. The span floor alone cannot separate a three-token WHOLE output
+//     ("no no no") from a three-token loop - only the source guard can, which
+//     is why both guards are required.
+inline constexpr int kRepeatedLineMinCount = 3;
+inline constexpr int kRepeatedTokenRunMinCount = 3;
+inline constexpr int kRepeatedTokenRunMinCoveragePercent = 50;
+inline constexpr int kSuffixRepetitionMinRepeats = 3;
+inline constexpr int kSuffixRepetitionMinSpanTokens = 8;
+// A loop whose period exceeds this many whitespace tokens is out of the
+// practical envelope: a whole 64+ token sentence repeated verbatim is caught
+// by the line rule whenever it is line-separated, and the bound keeps the
+// periodic scan cheap enough for the mid-decode probe below.
+inline constexpr int kSuffixRepetitionMaxPeriodTokens = 64;
+// The line rule scans at most this many trailing non-empty lines (a loop lives
+// at the tail; the bound keeps the probe O(1)-ish on long multi-line outputs).
+inline constexpr int kRepetitionMaxScannedLines = 256;
+
+// R1-1 wrong-script boundary: the rule only applies above this many output
+// code points, so a two-character legitimate answer is never gated.
+inline constexpr std::size_t kWrongScriptMinOutputCodePoints = 2;
+
+// R2-7 (session 261029_0001, code-reviewer-gemini F-05): the longest run of
+// characters before a line-start ':' that still counts as a LABEL ("Source:",
+// "영어:", "Target language:"). Longer than this, OR carrying sentence-ending
+// punctuation before the colon, the line is not a label. The predicate is
+// shape-only (R3, round-3 F-04): a short sentence that reaches its colon with
+// no . ! ? before it ("The answer: 42") still qualifies, so the exemption is
+// bounded by that shape - not by a claim that prose can never widen the guard.
+inline constexpr std::size_t kColonLabelMaxCodeUnits = 32;
+
+// R2-16 (session 261029_0001, CEO decision "언제나 잘 번역"; thresholds RULED by
+// measurement in round 3 - see the ruling note at the end of this block): the
+// FOURTH output rule, for an answer that is in the target script but mostly
+// something else. Two independent shapes, both required to be extreme because
+// a single quoted foreign name must never be rejected:
+//   (i)  unexpected-script share >= kUnexpectedScriptSharePercent of the
+//        output's code points AND the output is more than
+//        kUnexpectedScriptLengthExpansionPercent/100 times the source length.
+//        "Unexpected" = a script carried by NEITHER the target NOR the source.
+//        The conjunction is what protects legit quoting: a foreign term inside
+//        a long sentence is a small share, and a faithful translation does not
+//        triple in length. Calibration data (measured against the live worker,
+//        and pinned in the unit suite): the live KO->EN "음" essay is 977 code
+//        points against 1 source code point (~977x) but only 6.3% of it is Han,
+//        so rule (i) ALONE would not reject it - which is exactly why rule (ii)
+//        exists; a legit Korean sentence quoting a Japanese title
+//        (吾輩は猫である) measures 0.54x length expansion with a 20%
+//        foreign-script share, so neither rule fires on it.
+//   (ii) tiny-source amplification: a source of at most
+//        kAmplifiedSourceMaxCodePoints code points answered with at least
+//        kAmplifiedOutputMinCodePoints. The live residual is exactly this
+//        shape ("음" -> a 977-code-point essay).
+//        SOURCE-SHAPE CARVE-OUT, BOUNDED (R3, ceiling added by 261029_0001
+//        FIX-D2): a source that is nothing but one unit repeated ("ㅋㅋㅋㅋ",
+//        "kkkk", "haha", "no no no") is laughter / emphasis reduplication, and
+//        a chatty model's laughter expansion of it is a legitimate translation.
+//        Such a source is exempt from rule (ii) only UP TO the
+//        laughter-legitimate ceiling kAmplifiedRepetitionOutputMinCodePoints
+//        (120 code points); at or above it the rule applies again
+//        (IsPureRepetitionSource). The ceiling is what keeps the carve-out
+//        honest: a real laughter answer measures well under it (the longest
+//        legitimate reduplication answer measured on the rebuilt worker is 19
+//        code points: "no no no no no no" -> "아니, 아니, 아니, 아니, 아니."),
+//        while the SAME sources are answered by the shipped model with
+//        980-1110-code-point repeated-paragraph essays - nonsense output, not
+//        laughter, which the CEO ruling "언제나 잘 번역" must never ship as `ok`.
+//        The carve-out is narrow in the other direction too: it must cover the
+//        WHOLE source. A token/line loop in the ANSWER is still caught earlier
+//        by rules A/B; a NON-consecutive period-N prose loop is not covered by
+//        them, which is exactly why the ceiling exists instead of a blanket
+//        exemption (the R3 draft exempted those essays; FIX-D2 measured that
+//        cost and closed it).
+//
+// THRESHOLD RULING (round-3 measured corpus ruling, recorded here so the
+// numbers are not re-litigated from memory): the calibration corpus's longest
+// legitimate short-source answer is 22 code points ("안녕" -> "Hello, nice to
+// meet you."), so the previous 40-code-point floor left under 2x margin for a
+// chattier model; the floor is 64, which keeps ~3x margin over the measured
+// legitimate maximum while the live residual (977 code points) is still caught
+// with a 15x margin. The repetition-source ceiling is 120 code points: 6x the
+// longest legitimate reduplication answer measured on the rebuilt worker
+// (19 code points) and still 8x BELOW the shortest measured nonsense essay
+// (980 code points, i.e. 958 UTF-8 bytes for "kkkk").
+// Rule (i) keeps the >3x length gate rather than the >10x number floated as a
+// caution: the 30%-share conjunct already suppresses the quoting false positive
+// the >10x number was protecting, and no case in the measured corpus sits
+// between 3x and 10x. All three numbers are pinned by static_assert in the unit
+// suite; changing any of them requires a new measurement.
+inline constexpr int kUnexpectedScriptSharePercent = 30;
+inline constexpr int kUnexpectedScriptLengthExpansionPercent = 300;
+inline constexpr std::size_t kAmplifiedSourceMaxCodePoints = 4;
+inline constexpr std::size_t kAmplifiedOutputMinCodePoints = 64;
+// 261029_0001 FIX-D2: the ceiling of the pure-repetition source carve-out.
+// Below it a laughter expansion of "ㅋㅋㅋㅋ" / "kkkk" / "haha" is accepted; at
+// or above it the answer is no longer laughter (the measured essays are
+// 980-1110 code points) and rule (ii) rejects it again.
+inline constexpr std::size_t kAmplifiedRepetitionOutputMinCodePoints = 120;
+
+// Script classes a text can carry. Bit flags so "target script present" is a
+// single mask test; JA is the one multi-script target (Han|Kana).
+enum class ScriptClass : std::uint32_t {
+    None = 0u,
+    Latin = 1u << 0,
+    Hangul = 1u << 1,
+    Han = 1u << 2,
+    Kana = 1u << 3,
+    Cyrillic = 1u << 4,
+    Thai = 1u << 5,
+    Arabic = 1u << 6,
+    Devanagari = 1u << 7,
+    Bengali = 1u << 8,
+    Khmer = 1u << 9,
+    Lao = 1u << 10,
+    Hebrew = 1u << 11,
+    Greek = 1u << 12,
+    Myanmar = 1u << 13,
+};
+
+constexpr std::uint32_t ToMask(ScriptClass script) {
+    return static_cast<std::uint32_t>(script);
+}
+
+// Language-registry code -> script mask (the codes are kAllLanguages' `code`
+// column; the unit suite pins that EVERY registered target resolves non-zero,
+// so adding a language without a script entry fails the build's test run).
+struct LanguageScriptEntry {
+    const char* code;
+    std::uint32_t script_mask;
+};
+
+inline constexpr LanguageScriptEntry kLanguageScriptTable[] = {
+    {"EN", ToMask(ScriptClass::Latin)},   {"VI", ToMask(ScriptClass::Latin)},
+    {"ES", ToMask(ScriptClass::Latin)},   {"FR", ToMask(ScriptClass::Latin)},
+    {"DE", ToMask(ScriptClass::Latin)},   {"PT", ToMask(ScriptClass::Latin)},
+    {"IT", ToMask(ScriptClass::Latin)},   {"ID", ToMask(ScriptClass::Latin)},
+    {"MS", ToMask(ScriptClass::Latin)},   {"FIL", ToMask(ScriptClass::Latin)},
+    {"TR", ToMask(ScriptClass::Latin)},   {"PL", ToMask(ScriptClass::Latin)},
+    {"NL", ToMask(ScriptClass::Latin)},   {"CS", ToMask(ScriptClass::Latin)},
+    {"HU", ToMask(ScriptClass::Latin)},   {"SV", ToMask(ScriptClass::Latin)},
+    {"RO", ToMask(ScriptClass::Latin)},   {"DA", ToMask(ScriptClass::Latin)},
+    {"FI", ToMask(ScriptClass::Latin)},   {"NO", ToMask(ScriptClass::Latin)},
+    {"KO", ToMask(ScriptClass::Hangul)},
+    {"ZH-CN", ToMask(ScriptClass::Han)},
+    {"ZH-TW", ToMask(ScriptClass::Han)},
+    {"JA", ToMask(ScriptClass::Han) | ToMask(ScriptClass::Kana)},
+    {"RU", ToMask(ScriptClass::Cyrillic)},
+    {"UK", ToMask(ScriptClass::Cyrillic)},
+    {"TH", ToMask(ScriptClass::Thai)},
+    {"AR", ToMask(ScriptClass::Arabic)},
+    {"FA", ToMask(ScriptClass::Arabic)},
+    {"UR", ToMask(ScriptClass::Arabic)},
+    {"HI", ToMask(ScriptClass::Devanagari)},
+    {"BN", ToMask(ScriptClass::Bengali)},
+    {"KM", ToMask(ScriptClass::Khmer)},
+    {"LO", ToMask(ScriptClass::Lao)},
+    {"HE", ToMask(ScriptClass::Hebrew)},
+    {"EL", ToMask(ScriptClass::Greek)},
+    {"MY", ToMask(ScriptClass::Myanmar)},
+};
+
+// Script mask for an i18n language code ("KO", "ZH-CN", ...). Case-insensitive;
+// an unknown / AUTO / empty code returns 0 (the wrong-script gate then fails
+// open rather than guessing a script).
+std::uint32_t TargetScriptClasses(std::string_view tgt_code);
+
+// Script mask of every class present in `text` (bitwise OR).
+std::uint32_t TextScriptClasses(std::wstring_view text);
+
+// Number of Unicode code points in `text` (surrogate-pair aware).
+std::size_t CountCodePoints(std::wstring_view text);
+
+// R1-1 wrong script: zero target-script code points in a non-trivial output
+// while the source carried a script the target does not use. Reads as: the
+// engine answered in some other language (the live "asdf" EN->KO English
+// essay, "ㅋㅋㅋ" KO->EN Korean/Chinese loops). `tgt_script_classes == 0`
+// (unknown target) never rejects.
+bool IsWrongScriptOutput(std::wstring_view output, std::wstring_view source,
+                         std::uint32_t tgt_script_classes);
+
+// R1-1 repetition, rules A + B (R2-6 calibrated envelope):
+//   A: >= kRepeatedLineMinCount CONSECUTIVE identical non-empty lines (blank
+//      lines ignored). Non-consecutive repeats are not a loop.
+//   B: one whitespace token repeated >= kRepeatedTokenRunMinCount times in a
+//      row, the run covering >= kRepeatedTokenRunMinCoveragePercent of the
+//      output's tokens, AND the source carrying no identical-token run of its
+//      own (the user's reduplication is content - see the threshold block).
+bool HasRepeatedLineOrTokenRun(std::wstring_view text, std::wstring_view source = {});
+
+// R1-1 repetition, rule C: the output's trailing tokens form >= 3 identical
+// consecutive blocks (period 1..kSuffixRepetitionMaxPeriodTokens) covering at
+// least kSuffixRepetitionMinSpanTokens tokens.
+bool HasSuffixRepetition(std::wstring_view text);
+
+// R1-1 repetition, combined: the single predicate used by the post-decode gate
+// AND the mid-decode probe, so both sites always agree. `source` feeds the R2-6
+// Rule-B source guard (a reduplication the user typed is content, not a loop);
+// the default-empty overload keeps the pre-R2-6 text-only envelope for callers
+// that genuinely have no source (and for the pure predicate pins).
+bool OutputHasRepetition(std::wstring_view text, std::wstring_view source = {});
+
+// R1-1 meta leakage: a table-driven refusal opener ("translation is not
+// possible", "i can't translate", "please contact us for"), an assistant-style
+// opener ("sure, here", "as an ai", "here are some tips"), or a "<language>:"
+// label line. A string the SOURCE text itself carries is never leakage (repo
+// idiom, same source-guard as StripEndOfConversationMarkers), so user text
+// about these phrases survives untouched. R2-7 extends the guard to a
+// legitimately TRANSLATED label: when the source line at the same index starts
+// with its own colon label, the translated label on that line is content
+// ("출처: 로이터" -> "Source: Reuters", "English: Fluent" -> "영어: 유창함").
+bool HasMetaLeakage(std::wstring_view text, std::wstring_view source);
+
+// R2-16 rule (i), pure: an answer whose code points are at least
+// kUnexpectedScriptSharePercent carried by a script in NEITHER the target nor
+// the source, AND longer than kUnexpectedScriptLengthExpansionPercent/100 x the
+// source. `tgt_script_classes == 0` (AUTO/unknown target) fails OPEN: without a
+// target there is no "unexpected" to measure.
+bool IsUnexpectedScriptHeavyOutput(std::wstring_view output, std::wstring_view source,
+                                   std::uint32_t tgt_script_classes);
+
+// R2-16 rule (ii), pure: a source of at most kAmplifiedSourceMaxCodePoints code
+// points answered with at least kAmplifiedOutputMinCodePoints (the live
+// KO->EN "음" essay). A source that is itself a pure repetition (see below)
+// gets the laughter ceiling instead of the 64-code-point floor, so a real
+// laughter expansion passes and a ~1,000-code-point nonsense essay does not.
+bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view source);
+
+// R3 source-shape carve-out for rule (ii), pure: true when the WHOLE source is
+// one unit repeated ("ㅋㅋㅋㅋ", "kkkk", "!!!!", "haha", "no no no"). Whitespace
+// is ignored for the shape test; one code point alone is never a repetition
+// (that is the live "음" residual the rule exists for). Used by rule (ii) to
+// give such a source the bounded laughter ceiling
+// (kAmplifiedRepetitionOutputMinCodePoints) rather than a blanket exemption: a
+// laughter answer passes, a 980-1110-code-point essay is still rejected.
+bool IsPureRepetitionSource(std::wstring_view source);
+
+enum class OutputRejectReason : std::uint8_t {
+    None = 0,
+    Repetition = 1,
+    WrongScript = 2,
+    MetaLeakage = 3,
+    ScriptLeak = 4, // R2-16: unexpected-script / amplified-tiny-source answer
+};
+
+// Short stable name for the shape-only diagnostic lines (never the content).
+const char* OutputRejectReasonName(OutputRejectReason reason);
+
+// R1-1 combined gate over one trimmed rung output. Empty output returns None
+// (the ladder's own empty/echo handling owns that case).
+OutputRejectReason ClassifyTranslationOutput(std::wstring_view output,
+                                             std::wstring_view source,
+                                             std::string_view tgt_code);
 
 // 260930_0003 (다, CEO decision session 260930_0003): paragraph-boundary
 // chunking of over-budget inputs. When the prompt token count exceeds

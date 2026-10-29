@@ -70,6 +70,10 @@ private:
     void Render(bool reentry_allowed = true);
     void UpdateAlpha(BYTE alpha);
     void ResetIdleTimer();
+    // 261029_0001 U-I (R1-21): re-run the Create/drag clamp against the live
+    // monitor union after the display topology changed (monitor unplugged /
+    // undocked / resolution changed). No-op when no monitor is attached.
+    void ReclampToVisibleMonitors();
     void ReallocateBuffer(int width, int height); // physical px buffer
     // REQ-R15 (audit §5 latent item 3): the layout (current_width_, kHeight)
     // is authored in DIPs; the window, DIB buffer, and UpdateLayeredWindow
@@ -135,6 +139,13 @@ private:
     static constexpr float kRadius = 19.0f;
     static constexpr UINT_PTR kTimerIdle = 1001;
     static constexpr UINT_PTR kTimerSingleClick = 1002;
+    // 261029_0001 U-I (R1-21): one topology change arrives as a BURST of
+    // WM_DISPLAYCHANGE messages (mode set, then the DPI/arrangement settle), so
+    // the re-clamp is armed on this timer and re-armed by each further message:
+    // SetTimer with an existing id restarts the countdown, collapsing the burst
+    // into one reposition. Same SetTimer/WM_TIMER idiom as kTimerIdle above.
+    static constexpr UINT_PTR kTimerDisplayChange = 1003;
+    static constexpr DWORD kDisplayChangeDebounceMs = 250;
     static constexpr DWORD kIdleTimeoutMs = 5000;
 
     bool is_mouse_down_ = false;

@@ -175,11 +175,19 @@ WorkerArgs ParseArgs(const wchar_t* cmd) {
 //  * The registry parser ALREADY enforces bare filenames in files[]
 //    (IsBareFilename rejects separators/escapes), so no path-injection escape
 //    is possible here — we only concatenate onto the fixed models dir.
+//  * v0.10.4 R1-3: `resolved_model_id` reports the registry id of the entry
+//    the returned path came from. Both pinned branches resolve through
+//    ResolveBundledModelId (family-aware) and report that id, so the REQ-057
+//    served-model echo reads the id from THIS resolution instead of scanning
+//    the registry a second time (single source of truth — the pre-fix echo
+//    re-scanned and named the first bundled entry, an ASR model).
 std::string ResolveModelFile(const std::string& models_dir,
                              const emebalachat::engine_host_registry::Registry& registry,
                              const std::string& model_id,
-                             bool* resolved /* out: false -> pinned fallback */) {
+                             bool* resolved /* out: false -> pinned fallback */,
+                             std::string* resolved_model_id /* out: entry id served */) {
     if (resolved) *resolved = true;
+    if (resolved_model_id) resolved_model_id->clear();
     // REQ-048 R2: the pinned branches must return the SAME ABSOLUTE shape as
     // the registry branch below. The bare filename used to make the load
     // resolve against the worker's cwd (the engine dir, via the inherited
@@ -193,6 +201,12 @@ std::string ResolveModelFile(const std::string& models_dir,
         return models_dir + "\\" + pinned_name;
     };
     if (model_id.empty()) {
+        // R1-3: the pinned default IS the bundled translate entry; report the
+        // id of the same family-aware scan the app's expectation uses.
+        if (resolved_model_id) {
+            *resolved_model_id =
+                emebalachat::engine_host_registry::ResolveBundledModelId(registry);
+        }
         return pinned_abs();
     }
     const emebalachat::engine_host_registry::ModelEntry* entry = registry.FindModel(model_id);
@@ -200,8 +214,15 @@ std::string ResolveModelFile(const std::string& models_dir,
         // Unregistered id, or a registry we could not load: fall back to the
         // pinned model and flag it so the caller can log the one-time notice.
         if (resolved) *resolved = false;
+        if (resolved_model_id) {
+            *resolved_model_id =
+                emebalachat::engine_host_registry::ResolveBundledModelId(registry);
+        }
         return pinned_abs();
     }
+    // R1-3: the entry RESOLVED (its id is what this call serves, whether or
+    // not the file check below passes) — the echo reads this, not a rescan.
+    if (resolved_model_id) *resolved_model_id = entry->id;
     if (models_dir.empty()) return std::string{};
     const std::wstring w = emebalachat::ToUtf16(models_dir) + L"\\" +
         emebalachat::ToUtf16(entry->files[0]);
@@ -391,12 +412,16 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
     // Lazily-reported fallback notice (c3): set on the first unresolved
     // model_id, logged once, then cleared.
     bool fallback_notice_pending = false;
-    // REQ-057: `resolved_out` additionally reports whether the id RESOLVED
-    // against the registry (false = the pinned fallback was taken) — the
-    // served-model echo needs the same distinction the one-time notice uses.
-    auto resolve_active_model = [&](bool* resolved_out) -> std::string {
+    // REQ-057 + v0.10.4 R1-3: `resolved_model_id` is the served-model echo's
+    // SINGLE source of truth — the registry id of the entry the resolved path
+    // came from (both pinned branches report the family-aware bundled id).
+    // Reported by ResolveModelFile; the caller must NOT re-scan the registry
+    // (the pre-fix job branch did, and named the first bundled entry — an ASR
+    // model — while the pinned Hy-MT2 served).
+    auto resolve_active_model = [&](std::string* resolved_model_id) -> std::string {
         bool resolved = true;
-        const std::string path = ResolveModelFile(models_dir, registry, active_model_id, &resolved);
+        const std::string path =
+            ResolveModelFile(models_dir, registry, active_model_id, &resolved, resolved_model_id);
         if (!resolved && !fallback_notice_pending) {
             fallback_notice_pending = true; // one-time pinned-path notice (c3)
             DIAG_LOG("ENGINEHOST",
@@ -404,7 +429,6 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                      "falling back to the pinned model",
                      active_model_id.c_str(), registry_loaded ? 1 : 0);
         }
-        if (resolved_out) *resolved_out = resolved;
         return path;
     };
 
@@ -465,20 +489,16 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // REQ-045 P4-4: resolve the model for THIS job from the latest
             // session_open model_id ("" -> pinned; unresolvable -> pinned with
             // the one-time notice; referenced-but-absent -> model_missing).
-            bool model_resolved = true;
-            const std::string model_path = resolve_active_model(&model_resolved);
+            // REQ-057 + v0.10.4 R1-3: the ACTUALLY-SERVED model id echo
+            // (privacy-safe: registry id metadata, never user content) is
+            // reported by the SAME resolution that produced the path — no
+            // second registry scan. A resolved non-empty id names itself; the
+            // pinned branches report the bundled TRANSLATE-family entry (the
+            // same family-aware id the app's expected-id check uses). Empty
+            // when the registry names no bundled entry -> pre-REQ-057 shape.
+            std::string served_model_id;
+            const std::string model_path = resolve_active_model(&served_model_id);
             const bool model_ok = !model_path.empty();
-            // REQ-057: the ACTUALLY-SERVED model id echo (privacy-safe: the
-            // registry id metadata, never user content). Rule: a non-empty
-            // active id that RESOLVED names itself; an empty or unresolved id
-            // serves the pinned default, so the echo names the bundled
-            // registry entry (ResolveBundledModelId, the same scan the
-            // app's expected-id check uses). Empty when the registry names
-            // no bundled entry -> the frame stays in the pre-REQ-057 shape.
-            const std::string served_model_id =
-                (!active_model_id.empty() && model_resolved)
-                    ? active_model_id
-                    : emebalachat::engine_host_registry::ResolveBundledModelId(registry);
             bool loaded = false;
             std::wstring out;
             if (model_ok) {

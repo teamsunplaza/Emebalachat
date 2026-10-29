@@ -6,7 +6,9 @@
 #include "../unicode_utils.hpp"
 
 #include <atomic>
+#include <deque>   // R1-9: by-value fetch-result queue (SEC-B5 house transport)
 #include <memory>
+#include <mutex>   // R1-9: guards the fetch-result queue
 #include <string>
 #include <string_view>
 #include <thread>
@@ -60,8 +62,8 @@ struct OpenAiDialogState {
     bool fetch_button_busy = false;
     // REQ-052 (async fetch): liveness shared with every detached worker
     // (one shared_ptr copy each). WM_DESTROY flips it to false so a worker
-    // finishing after the dialog is gone drops its heap result instead of
-    // posting to a destroyed hwnd.
+    // finishing after the dialog is gone drops its own result value (R1-9: it
+    // is never a heap object) instead of posting to a destroyed hwnd.
     std::shared_ptr<std::atomic<bool>> fetch_alive =
         std::make_shared<std::atomic<bool>>(true);
 };
@@ -94,24 +96,58 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
 constexpr UINT_PTR kFetchTimerId = 101;
 constexpr UINT kFetchDebounceMs = 800;
 
-// REQ-052 (async fetch): worker->dialog completion message. lParam carries a
-// heap-allocated OpenAiFetchResult* whose ownership transfers to the GUI
-// completion handler (which deletes it); the worker deletes the result
-// itself when the post fails or the dialog is already closing. WM_APP band —
-// this dialog owns its ids (the GGUF add dialog uses WM_APP+0x10/+0x11).
+// REQ-052 (async fetch): worker->dialog completion message. R1-9 (v0.10.4
+// sweep, CWE-822 fix): the message is a PURE (0, 0) WAKE-UP and carries NO
+// payload. This dialog is a top-level system-class #32770 owned by a
+// medium-IL asInvoker process, and the id is a compile-time WM_APP constant,
+// so ANY same-session same-IL process can post it with an arbitrary LPARAM.
+// Transporting a heap pointer in lParam therefore handed a peer an
+// arbitrary-free primitive (deref + delete of attacker memory). The result
+// now travels BY VALUE through the mutex-guarded deque below, exactly the
+// SEC-B5 / SEC-ADJ house pattern (src/main.cpp kMsgApplyLanguageSync,
+// src/ui/tooltip.cpp's three marshal seams): producer enqueues then posts;
+// the handler ignores wParam/lParam and drains; teardown drains. WM_APP band
+// — this dialog owns its ids (the GGUF add dialog uses WM_APP+0x10/+0x11).
 constexpr UINT kOpenAiMsgFetchDone = WM_APP + 0x20;
 
-// REQ-052 (async fetch): the heap result delivered through lParam. The
-// worker fills it, posts it, and forgets it; the GUI handler owns it from a
-// successful PostMessageW on and deletes it on EVERY path (current,
-// stale-generation, or post-destroy). `generation` is the single-flight key:
-// a completion older than the dialog's current fetch generation is stale (a
-// newer fetch superseded it) and must be dropped, not refilled.
+// REQ-052 (async fetch): the fetch result, delivered BY VALUE (R1-9). The
+// worker builds it on its own stack, pushes a copy into the queue and forgets
+// it; the GUI handler drains the queue and applies the generation filter to
+// the drained VALUE (`generation` is the single-flight key: a completion older
+// than the dialog's current fetch generation is stale — a newer fetch
+// superseded it — and must be dropped, not refilled). No pointer ever crosses
+// PostMessageW, so an externally posted message cannot name any memory.
 struct OpenAiFetchResult {
     unsigned long long generation;
     bool manual; // button-originated spawn (may show the failure notice)
     std::vector<std::string> models; // empty == fetch failed / server gave none
 };
+
+// R1-9: the lifetime-safe holder for the in-flight results. The queue is
+// file-static (tooltip.cpp's solution), NOT a dialog-state member: a detached
+// worker may finish after the dialog is gone and must still have a valid
+// object to enqueue into. Scope note copied from the tooltip contract: this
+// dialog is modal on the GUI thread, so one instance is live at a time; the
+// WM_INITDIALOG drain discards anything a post-teardown worker left behind, so
+// no entry is ever applied to a later instance (its generation is >= 1, and a
+// fresh dialog starts at 0, so even the in-band path drops it). Sole
+// consumers: the GUI-thread completion drain and the teardown sweeps
+// (WM_INITDIALOG / WM_DESTROY / dialog-return).
+std::mutex g_openai_fetch_mu;
+std::deque<OpenAiFetchResult> g_openai_fetch_queue;
+
+// R1-9: discard every result still queued, REMOVING without applying (the
+// tooltip DrainMarshalQueue semantics). Called on the GUI thread only: at
+// WM_INITDIALOG (never apply a pre-instance entry), at WM_DESTROY (a closing
+// dialog must not keep a worker's models alive), and right after
+// DialogBoxIndirectParamW returns (catches a worker that passed the liveness
+// check just before the flag flipped).
+size_t DrainOpenAiFetchQueue() {
+    std::lock_guard<std::mutex> lk(g_openai_fetch_mu);
+    const size_t drained = g_openai_fetch_queue.size();
+    g_openai_fetch_queue.clear();
+    return drained;
+}
 
 // REQ-052 (async fetch): the network boundary of the model-list fetch,
 // split out of the old synchronous DoFetchModels(dlg, st) body. Runs ONLY
@@ -125,23 +161,39 @@ std::vector<std::string> DoFetchModels(const OpenAiConfig& probe) {
 }
 
 // REQ-052 (async fetch): the detached worker body. It owns ONLY the probe
-// copy it was handed and its heap result — no dialog state, no config — so
-// a dialog destroyed mid-fetch can never catch it touching freed memory.
-// After the bounded network call it posts the result to the dialog; when
-// the dialog already closed (or is closing) the liveness flag / the failed
-// PostMessageW makes it delete the result itself. Detached at spawn: its
-// whole lifetime is the bounded WinHTTP budget, and the generation check
-// (not a join) is what keeps a late completion off the combo — joining here
-// would reintroduce the very GUI-thread block this fix removes.
+// copy it was handed and its own result VALUE — no dialog state, no config —
+// so a dialog destroyed mid-fetch can never catch it touching freed memory.
+// After the bounded network call it pushes the result into the shared queue
+// and posts the pure (0, 0) wake-up; a dialog that already closed is caught by
+// the liveness flag (drop the value locally, nothing was queued) or by the
+// failed post (the entry stays queued for the next drain — the tooltip
+// contract, see g_openai_fetch_queue). Detached at spawn: its whole lifetime
+// is the bounded WinHTTP budget, and the generation check (not a join) is what
+// keeps a late completion off the combo — joining here would reintroduce the
+// very GUI-thread block this fix removes.
 void OpenAiFetchWorker(std::shared_ptr<std::atomic<bool>> alive, HWND dlg,
                        unsigned long long generation, bool manual,
                        OpenAiConfig probe) {
-    OpenAiFetchResult* result =
-        new OpenAiFetchResult{generation, manual, DoFetchModels(probe)};
-    if (!alive->load(std::memory_order_acquire) ||
-        !::PostMessageW(dlg, kOpenAiMsgFetchDone, 0,
-                        reinterpret_cast<LPARAM>(result))) {
-        delete result; // dialog gone: no GUI handler will take ownership
+    // R1-9: BY VALUE — no heap object, no ownership transfer over the message
+    // queue. The dialog-gone check runs AFTER the fetch (the answer is only
+    // interesting if someone is still listening) and the value simply dies
+    // here when nobody is.
+    OpenAiFetchResult result{generation, manual, DoFetchModels(probe)};
+    if (!alive->load(std::memory_order_acquire)) {
+        return; // dialog gone: nothing to deliver, nothing leaked
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_openai_fetch_mu);
+        g_openai_fetch_queue.push_back(std::move(result));
+    }
+    // R1-9: pure (0, 0) wake-up — the payload is already in the queue, so an
+    // external post of this id can name no memory and drain nothing it did not
+    // enqueue. A failed post leaves the entry queued (drain-safe): the next
+    // wake-up or a teardown sweep pops it exactly once.
+    if (::PostMessageW(dlg, kOpenAiMsgFetchDone, 0, 0) == FALSE) {
+        DIAG_F("UI/OpenAiSettings/009: PostMessage kOpenAiMsgFetchDone failed (GLE %lu); "
+               "result left queued\n",
+               ::GetLastError());
     }
 }
 
@@ -248,7 +300,7 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     // REQ-052: single-flight — bump the generation BEFORE the spawn so the
     // completion handler drops any older in-flight completion (a newer
     // fetch supersedes it; the stale worker only wasted its bounded
-    // WinHTTP budget and its dropped heap result).
+    // WinHTTP budget and its drained result value).
     ++st->fetch_generation;
     // REQ-052: the probe (base URL + DPAPI key pair + consent) crosses into
     // the worker BY VALUE — the cleartext key never leaves this thread (it
@@ -283,6 +335,13 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_INITDIALOG: {
         st = reinterpret_cast<OpenAiDialogState*>(lp);
         ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        // R1-9: a fresh instance starts with an EMPTY queue. A worker from a
+        // previous dialog whose post failed leaves its entry behind (the
+        // tooltip "left queued" contract); it must never be applied here, so
+        // the leftover is discarded rather than filtered (its generation is
+        // >= 1 against this instance's 0, but the drain is the deterministic
+        // guarantee).
+        DrainOpenAiFetchQueue();
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
         // template itself is proven-good (11 controls incl. OK/Cancel and the
         // REQ-051 delete button), but
@@ -509,53 +568,74 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         return FALSE;
     case kOpenAiMsgFetchDone: {
         // REQ-052: a fetch worker finished its bounded network call.
-        // Ownership of the heap result crossed PostMessageW in lParam —
-        // take it here, on the GUI thread, and delete it on EVERY path.
-        auto* result = reinterpret_cast<OpenAiFetchResult*>(lp);
-        if (!st || result->generation != st->fetch_generation) {
-            // 260922_0001 A6: this exit restores the button too — a
-            // superseded (stale) fetch must not leave it gray while the
-            // newer worker it yielded to is still running. `st` is null
-            // only if WM_INITDIALOG never stored it, so the button was
-            // never disabled in that case.
-            if (st) {
+        // R1-9 (v0.10.4, CWE-822 fix): lp is IGNORED — it is not read, not
+        // cast, not dereferenced. The completion payload lives in
+        // g_openai_fetch_queue BY VALUE, so a message this process did not
+        // enqueue (any same-session peer can post the id) drains nothing.
+        // Drain one entry at a time under the lock so a result enqueued while
+        // an earlier one is being applied is consumed by this same wake-up,
+        // and apply the single-flight generation filter to the DRAINED VALUE —
+        // never to memory the message named.
+        for (;;) {
+            OpenAiFetchResult result{};
+            {
+                std::lock_guard<std::mutex> lk(g_openai_fetch_mu);
+                if (g_openai_fetch_queue.empty()) {
+                    break;
+                }
+                result = std::move(g_openai_fetch_queue.front());
+                g_openai_fetch_queue.pop_front();
+            }
+            if (!st) {
+                // Pre-WM_INITDIALOG window: no state to apply and no button to
+                // restore (it was never disabled). The value dies here.
+                continue;
+            }
+            if (result.generation != st->fetch_generation) {
+                // 260922_0001 A6: this exit restores the button too — a
+                // superseded (stale) fetch must not leave it gray while the
+                // newer worker it yielded to is still running.
                 st->fetch_button_busy = false;
                 ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
+                continue; // stale (a newer fetch superseded it) or orphaned
             }
-            delete result; // stale (a newer fetch superseded it) or orphaned
-            return TRUE;
-        }
-        const bool manual = result->manual;
-        std::vector<std::string> models = std::move(result->models);
-        delete result;
-        // 260922_0001 A6: the in-flight fetch is done — restore the button
-        // BEFORE the refill/notice below so the failure box never sits over
-        // a still-gray button.
-        st->fetch_button_busy = false;
-        ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
-        // Same post-success logic as before REQ-052 (RefillOpenAiModelCombo
-        // is the extracted inline path): an empty fetch leaves the combo
-        // untouched so the typed/current model stays visible; the manual
-        // button keeps its failure notice, the silent auto path stays
-        // silent.
-        RefillOpenAiModelCombo(dlg, models);
-        if (manual && models.empty()) {
-            ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
-                          I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
-                          MB_OK | MB_ICONINFORMATION);
+            const bool manual = result.manual;
+            std::vector<std::string> models = std::move(result.models);
+            // 260922_0001 A6: the in-flight fetch is done — restore the button
+            // BEFORE the refill/notice below so the failure box never sits over
+            // a still-gray button.
+            st->fetch_button_busy = false;
+            ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
+            // Same post-success logic as before REQ-052 (RefillOpenAiModelCombo
+            // is the extracted inline path): an empty fetch leaves the combo
+            // untouched so the typed/current model stays visible; the manual
+            // button keeps its failure notice, the silent auto path stays
+            // silent.
+            RefillOpenAiModelCombo(dlg, models);
+            if (manual && models.empty()) {
+                ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
+                              I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                              MB_OK | MB_ICONINFORMATION);
+            }
         }
         return TRUE;
     }
     case WM_DESTROY:
         // REQ-052: a detached fetch worker may still be inside its bounded
         // network call when the dialog closes. The worker never touches
-        // this state — it owns only its heap result and the hwnd value — so
-        // there is nothing to join; flipping the liveness flag tells a
-        // finishing worker the receiver is gone, so it deletes its result
-        // instead of posting to a destroyed hwnd.
+        // this state — it owns only its own result value and the hwnd value —
+        // so there is nothing to join; flipping the liveness flag tells a
+        // finishing worker the receiver is gone, so it drops its value instead
+        // of posting to a destroyed hwnd.
         if (st && st->fetch_alive) {
             st->fetch_alive->store(false, std::memory_order_release);
         }
+        // R1-9 teardown sweep: discard every result still queued (a superseded
+        // fetch, or one whose wake-up will never be dispatched) — REMOVE
+        // without applying, mirroring the tooltip DrainMarshalQueue contract.
+        // Nothing heap-allocated exists on this path, so nothing can leak past
+        // the dialog.
+        DrainOpenAiFetchQueue();
         return TRUE;
     }
     return FALSE;
@@ -753,6 +833,13 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg)
     const INT_PTR rc = ::DialogBoxIndirectParamW(
         ::GetModuleHandleW(nullptr), tb.Get(), parent, OpenAiSettingsProc,
         reinterpret_cast<LPARAM>(&st));
+    // R1-9 teardown sweep (after the modal loop): a worker that passed the
+    // liveness check just before WM_DESTROY flipped the flag may have enqueued
+    // after the in-dialog drain ran, and its wake-up has no live receiver any
+    // more. Discard it here so no instance leaves a payload behind; anything
+    // that races THIS sweep is caught by the next instance's WM_INITDIALOG
+    // drain (the accepted bounded trade-off of not joining a detached worker).
+    DrainOpenAiFetchQueue();
     // REQ-051 (Symptom D): the [삭제] button persisted the cleared block
     // itself and ended with a NON-IDOK code; report it distinctly so the
     // caller never routes a deletion through the save/switch (engine-flip)

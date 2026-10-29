@@ -580,7 +580,16 @@ void RequestLanguageSync(HWND hController, LanguageContext ctx,
 // falls through to the historical notice.
 void ShowLocalEngineUnavailableModal(std::wstring_view title, std::wstring_view body,
                                      bool offer_model_download) {
-    if (offer_model_download && !emebalachat::modeldownloader::ModelFilePresent()) {
+    // R1-24 (docs mining N3): an unresolvable store directory (DefaultModelsDir()
+    // empty, i.e. LOCALAPPDATA absent) makes every transfer fail on
+    // FetchAndInstallModel's first gate, and the dialog's own disk-space probe
+    // is skipped when the directory is empty, so its consent page would offer a
+    // [Download] button that cannot possibly succeed. Keep the historical
+    // notice in that state instead of a dead-end offer.
+    const bool store_dir_resolvable =
+        !emebalachat::engine_host_registry::DefaultModelsDir().empty();
+    if (offer_model_download && !emebalachat::modeldownloader::ModelFilePresent() &&
+        store_dir_resolvable) {
         if (emebalachat::OfferModelDownload(nullptr)) {
             return; // installed (or already present) — no notice warranted
         }
@@ -712,8 +721,12 @@ const wchar_t kControllerClassName[] = L"Emebalachat_ControllerWindowClass";
 // so the same ControllerWndProc sees resume events; WTS session
 // notifications are registered on it as well.
 const wchar_t kPowerSinkClassName[] = L"Emebalachat_PowerSinkWindowClass";
-// User-facing label of the default toggle combo (F9).
-const wchar_t kToggleHotkeyLabel[] = L"F9";
+// W5 (R1-22, session 261029_0001): the cursor bubble used to label the toggle
+// hotkey with a hardcoded L"F9", which lied as soon as config.hotkey_toggle was
+// remapped. The label is now formatted from the RESOLVED spec at bubble time
+// (KeyboardHook::HotkeySpecToDisplayString over ResolveToggleFromConfig - the
+// exact seam Start() compiles the hook from), so the bubble and the swallowed
+// combo can never drift. See the active-change callback wiring below.
 HWND g_hControllerWnd = nullptr;
 HWND g_hPowerWnd = nullptr; // REQ-R14 top-level sink for WM_POWERBROADCAST
 SystemTray* g_pTray = nullptr;
@@ -741,12 +754,25 @@ constexpr UINT_PTR kTimerHookHealth = 5002;
 // the hook-lifecycle watchdog and the tray debounce can never collide.
 constexpr UINT_PTR kTimerTrayToggle = 5003;
 
+// R1-15b (env research F2): watchdog ticks elapsed since the last periodic
+// self-heal reinstall. WndProc-owned (GUI thread only), advanced by the
+// kTimerHookHealth tick through the pure PeriodicHookReinstallTick stepper in
+// hook.hpp (which pins the cadence headlessly: 5 min / 30 s = 10 ticks).
+// main.cpp is not linked into run_tests.exe, so the counter lives here and the
+// decision logic stays in the header.
+unsigned g_hook_health_ticks = 0;
+
 // Re-register whichever LL hooks are installed, on the GUI thread (the only
 // threads allowed to Start/Stop the hooks). Always reinstall on the event
 // path: an OS silent-removal (LowLevelHooksTimeout during a desktop switch)
 // leaves our HHOOK handle looking valid while the hook is dead, so the
 // handle check is only the fast filter, never the decision. Reinstall()
 // returns false (no-op) for hooks that are not running by design.
+//
+// This is the ONLY hook-lifecycle mutation site outside Start/Stop: the
+// resume/unlock debounce timer and the R1-15b periodic self-heal both call
+// here, on this thread, so a periodic tick can never race an event-driven
+// reinstall into a double install.
 void ReinstallHooksAfterLifecycleEvent(const char* reason, HWND debounce_wnd) {
     // KeyboardHook::Stop() joins the REQ-R06 async worker; if a double-Ctrl+C
     // translation is mid-flight (seconds), re-installing right now would
@@ -991,9 +1017,29 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             if (g_pMouseHook && g_pMouseHook->IsRunning() && !g_pMouseHook->IsHealthy()) {
                 unhealthy = true;
             }
+            // R1-15b (env research F2): the state the check above can never
+            // see. Windows removes a WH_KEYBOARD_LL/WH_MOUSE_LL hook that blew
+            // LowLevelHooksTimeout while leaving our HHOOK valid and the pump
+            // thread alive - "live-but-dead", no tray/badge signal, and the
+            // error only surfaced when the user pressed Enter and nothing
+            // happened. There is no user-mode "is my hook still in the chain"
+            // query, so the only truthful detector is a blind re-registration:
+            // every kHookPeriodicReinstallMs of ticks rebuild the hook through
+            // the SAME helper and debounce timer as the resume/unlock path
+            // (single hook-lifecycle owner on this thread, never a double
+            // install; the helper defers while a double-Ctrl+C body runs).
+            const bool periodic_due = PeriodicHookReinstallTick(g_hook_health_ticks);
             if (unhealthy) {
                 DIAG_F("MAIN/HookLifecycle/003: health watchdog detected dead hook thread; reinstalling\n");
                 ReinstallHooksAfterLifecycleEvent("health check", hwnd);
+            } else if (periodic_due &&
+                       ((g_pHook && g_pHook->IsRunning()) ||
+                        (g_pMouseHook && g_pMouseHook->IsRunning()))) {
+                // Shape-only cadence line: no user content, no hwnd, no state.
+                DIAG_F("MAIN/HookLifecycle/004: periodic hook self-heal reinstall "
+                       "(every %lu min)\n",
+                       static_cast<unsigned long>(kHookPeriodicReinstallMs / 60000u));
+                ReinstallHooksAfterLifecycleEvent("periodic self-heal", hwnd);
             }
             return 0;
         }
@@ -1971,6 +2017,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (plan.changed && play_chime) {
             emebalachat::PlayLangChange();
         }
+        // W3 (R1-22): Ctrl+F9 used to be a blind cycle - a chime and nothing
+        // else, so stepping through 37 targets gave no feedback about which one
+        // landed. Confirm the NEW target at the cursor, through the same
+        // thread-safe tooltip seam the F9 toggle bubble uses (it marshals to
+        // the GUI thread, and this coordinator only ever runs there).
+        // Exactly ONE notice per cycle: the hook Ctrl+F9 callback is the only
+        // producer that sets cycle_target, so no other source can double it.
+        if (cycle_target) {
+            POINT cursor = {};
+            ::GetCursorPos(&cursor);
+            tooltip.ShowMessageThreadSafe(
+                cursor.x + 12, cursor.y + 12,
+                emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                emebalachat::I18n::GetLanguageDisplayName(plan.target_language));
+            DIAG_LOG("UI", "cycle_confirm tgt=%s ctx=%s",
+                     plan.target_language.c_str(), drag ? "drag" : "type");
+        }
         return true;
     };
     // Publish for the controller WndProc (hook/worker-thread marshal target).
@@ -2466,42 +2529,40 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // one place instead of this hand-maintained sequence.
         // Phase 3 Batch 2 (plan §2.4): tray Swap / badge double-click swap the
         // TYPE pair, so the swap INPUT read is the type pair as well.
+        // W2 (R1-22): the policy now lives in the pure PlanLanguageSwap planner
+        // (src/ui/tray.hpp) so the drag-pair Swap row below applies the exact
+        // same rule - one definition, both pairs.
         const auto snap_in = config.GetSnapshot(); // I4: consistent read for the swap logic
-        std::string current_src_norm = emebalachat::NormalizeLanguageCode(snap_in.type_source_language);
-        std::string current_tgt_norm = emebalachat::NormalizeLanguageCode(snap_in.type_target_language);
-
-        std::string new_src;
-        std::string new_tgt;
-
-        if (current_src_norm == "AUTO") {
-            // When source is Auto Detect (e.g. Auto Detect -> English)
-            // new source becomes current target (English)
-            const auto* pTgtInfo = emebalachat::FindLanguageByCode(current_tgt_norm);
-            new_src = pTgtInfo ? pTgtInfo->name_en : snap_in.type_target_language;
-
-            // new target becomes user's OS native language (or English if native is English)
-            std::string sys_lang = emebalachat::I18n::GetSystemLanguageCode();
-            std::string sys_norm = emebalachat::NormalizeLanguageCode(sys_lang);
-            if (sys_norm == "AUTO" || sys_norm.empty()) sys_norm = "KO";
-
-            if (current_tgt_norm == sys_norm) {
-                new_tgt = (sys_norm == "EN") ? "Korean" : "English";
-            } else {
-                const auto* pSysInfo = emebalachat::FindLanguageByCode(sys_norm);
-                new_tgt = pSysInfo ? pSysInfo->name_en : "Korean";
-            }
-        } else {
-            // Direct swap between two concrete languages (e.g. Korean <-> English)
-            new_src = snap_in.type_target_language;
-            new_tgt = snap_in.type_source_language;
-        }
+        const emebalachat::LanguageSwapPlan swap = emebalachat::PlanLanguageSwap(
+            snap_in.type_source_language, snap_in.type_target_language,
+            emebalachat::I18n::GetSystemLanguageCode());
 
         // Coordinator is the ONLY writer from here (INV-2): canonicalizes,
         // persists synchronously (INV-3), refreshes badge -> tray -> tooltip.
         // The chime plays only on an actual change (same semantics as before,
         // which always played; a swap can never be a no-op except K<->K).
-        ApplyLanguageChange(emebalachat::LanguageContext::Type, new_src, new_tgt,
-                            false, true);
+        ApplyLanguageChange(emebalachat::LanguageContext::Type, swap.source,
+                            swap.target, false, true);
+    };
+
+    // W2 (R1-22, session 261029_0001): the 번역툴팁 group's own Swap row. Same
+    // planner, same chime, applied to the DRAG pair - the drag users previously
+    // had to walk two deep submenus to reverse a pair.
+    // Pin semantics (main.cpp ApplyLanguageChange + F2): a swap carries a
+    // concrete target, so it is an EXPLICIT target request and pins
+    // drag_target_pinned exactly like picking the target from the submenu -
+    // the pair the user just chose must not be re-pivoted later.
+    trayCallbacks.on_swap_drag_languages = [&]() {
+        const auto snap_in = config.GetSnapshot(); // I4: consistent read
+        const emebalachat::LanguageSwapPlan swap = emebalachat::PlanLanguageSwap(
+            snap_in.drag_source_language, snap_in.drag_target_language,
+            emebalachat::I18n::GetSystemLanguageCode());
+        DIAG_LOG("STATE", "drag_swap_apply %s/%s -> %s/%s",
+                 snap_in.drag_source_language.c_str(),
+                 snap_in.drag_target_language.c_str(),
+                 swap.source.c_str(), swap.target.c_str());
+        ApplyLanguageChange(emebalachat::LanguageContext::Drag, swap.source,
+                            swap.target, false, true);
     };
 
     trayCallbacks.on_toggle_auto_send = [&]() {
@@ -2835,6 +2896,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // references are now provably safe - the worker is joined BEFORE those
     // objects can leave scope, and before the surfaces' Destroy() runs.
     auto run_drag_translate = [&](int click_x, int click_y, uint64_t gen) {
+        // FIX-B1 residual (a), FIX-B2: the drag gesture owns its capture-chord
+        // write through a task scope, so a concurrent pipeline task can never
+        // read it as its own (and vice versa). Declared before the backup and
+        // the chord; every restore below runs while it is alive.
+        emebalachat::ClipboardTaskScope clipboard_scope;
         // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): console/terminal
         // SIGINT guard. In conhost/Windows Terminal a synthetic Ctrl+C is a
         // process interrupt (SIGINT), not "copy selection", so the drag
@@ -2857,7 +2923,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
 
         emebalachat::ClipboardBackup backup;
-        emebalachat::BackupClipboard(backup);
+        // R1-6 (v0.10.4 sweep, 261029_0001): the backup RESULT gates both restore
+        // calls below. Pre-fix the value was discarded and RestoreClipboard ran
+        // unconditionally, so a backup that lost the OpenClipboard race (password
+        // managers, OneDrive clipboard sync, Teams, a shell copy in flight - the
+        // documented 100 ms budget) still emptied the user's clipboard and put
+        // nothing back. RestoreClipboard now also refuses an empty snapshot by
+        // itself; this gate keeps the CALLER honest (no restore call at all).
+        const bool backup_ok = emebalachat::BackupClipboard(backup);
+        DIAG_F("MAIN/DragIconClick/005: clipboard backup ok=%d has_text=%d extra_formats=%zu partial=%d\n",
+               backup_ok ? 1 : 0, backup.text.has_value() ? 1 : 0, backup.formats.size(),
+               backup.partial ? 1 : 0);
 
         // D2-flagged (report issue 1): the old CopySelection(); Sleep(35);
         // pattern had the same stale-read race as audit §2.3 for slow
@@ -2890,7 +2966,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         bool copy_confirmed = emebalachat::CopyChordWithSettledRetry(
             emebalachat::kDragCopyChordAttempts, emebalachat::kDragCopyRetryBackoffMs);
         if (!copy_confirmed) {
-            emebalachat::RestoreClipboard(backup);
+            // R1-6: only a backup that produced a snapshot may touch the
+            // clipboard; RestoreClipboard additionally refuses a snapshot the
+            // user's newer copy has already superseded.
+            if (backup_ok) {
+                emebalachat::RestoreClipboard(backup);
+            }
             DIAG_F("MAIN/DragIconClick/001: clipboard copy not confirmed after %d attempt(s); selection lost or target too slow\n",
                    emebalachat::kDragCopyChordAttempts);
             // REQ-R1(b): failure is now user-visible, not silent.
@@ -2903,7 +2984,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             return;
         }
         std::wstring selected = emebalachat::GetClipboardText();
-        emebalachat::RestoreClipboard(backup);
+        if (backup_ok) {
+            emebalachat::RestoreClipboard(backup);
+        }
 
         if (selected.empty() || selected.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
             DIAG_F("MAIN/DragIconClick/002: clipboard copy confirmed but text empty\n");
@@ -3465,12 +3548,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);
+        // W5 (R1-22): label the combo the hook was actually compiled with, not
+        // a hardcoded "F9". Resolved from config.hotkey_toggle through the same
+        // pure seam Start() uses (hotkey_* is a startup-only field, so this
+        // read needs no lock); an unmapped-to-display spec can only come from a
+        // broken config, and ResolveToggleFromConfig never returns an invalid
+        // one, but the default-spec fallback keeps the bubble well-formed.
+        std::wstring hotkey_label = emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+            emebalachat::KeyboardHook::ResolveToggleFromConfig(config.hotkey_toggle));
+        if (hotkey_label.empty()) {
+            hotkey_label = emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+                emebalachat::KeyboardHook::kDefaultToggleHotkey);
+        }
         const std::wstring body = std::wstring(active
                 ? emebalachat::I18n::Get(emebalachat::StringId::BadgeActive)
                 : emebalachat::I18n::Get(emebalachat::StringId::BadgePaused))
-            + L" (" + emebalachat::kToggleHotkeyLabel + L")";
+            + L" (" + hotkey_label + L")";
         tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
-                                       emebalachat::kToggleHotkeyLabel, body);
+                                      hotkey_label, body);
     });
 
     // Badge Mouse Controls:

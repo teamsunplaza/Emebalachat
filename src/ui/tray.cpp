@@ -71,7 +71,14 @@ enum TrayMenuId : UINT {
     // existing 2100/2200 bands stay TYPE-only (regression guard); the drag
     // pair gets fresh non-overlapping bands. 2400..2437 / 2500..2536.
     ID_TRAY_DRAG_SRC_BASE = 2400,
-    ID_TRAY_DRAG_TGT_BASE = 2500
+    ID_TRAY_DRAG_TGT_BASE = 2500,
+    // W2 (R1-22, session 261029_0001): the 번역툴팁 group's Swap row — a plain
+    // item BELOW the two drag pickers, in a fresh ≥2600 band (the 2500 band
+    // ends at 2536, so 2600 keeps a 63-ID gap for future target languages).
+    // Label reuses MenuSwapLangs (zero new i18n keys); the dispatch mirrors the
+    // type-swap AUTO-pivot policy through PlanLanguageSwap and applies it to
+    // the DRAG pair (ApplyLanguageChange(LanguageContext::Drag, ...)).
+    ID_TRAY_DRAG_SWAP = 2600
 };
 
 // REQ-037/B-4 compile-time guard for the band layout asserted above: the
@@ -81,6 +88,15 @@ enum TrayMenuId : UINT {
 // hand submenu IDs straight into DRAG_SRC territory.
 static_assert(ID_TRAY_UILANG_BASE + 37 <= ID_TRAY_DRAG_SRC_BASE,
               "tray UI-language ID band must not collide with the drag band");
+
+// W2 (R1-22): the same guard for the two new neighbours — the drag TARGET
+// picker must stay strictly below the DRAG_SWAP row, and that row must sit in
+// the ≥2600 band the W2 research assigned it. Widen the band here FIRST if a
+// target language is ever added past the 63-ID headroom.
+static_assert(ID_TRAY_DRAG_TGT_BASE + 37 <= ID_TRAY_DRAG_SWAP,
+              "tray drag-target ID band must not collide with the drag-swap row");
+static_assert(ID_TRAY_DRAG_SWAP >= 2600,
+              "the drag-pair Swap row belongs to the >=2600 band (W2/R1-22)");
 
 } // namespace
 
@@ -154,12 +170,18 @@ HICON SystemTray::CreateStatusIcon(bool active) {
         }
 
         // Status badge overlay at bottom-right corner
+        // DESIGN-261029 (session 261029_0001): the dot rim moved onto the
+        // poster navy (#0C1830) so the overlay reads as the same product as
+        // the badge medallion. The inactive dot hue stays the W6/C3-pinned
+        // slate #64748B (tests/run_tests.cpp:1777 structure pin — the paused
+        // state is primarily signaled by the badge/tray check marks anyway);
+        // active emerald is unchanged.
         const float dot_cx = 24.5f;
         const float dot_cy = 24.5f;
         const float outer_r = 5.5f;
         const float inner_r = 4.0f;
-        const uint32_t status_color = active ? 0xFF10B981 : 0xFF64748B; // Active Emerald vs Inactive Slate Gray
-        const uint32_t border_color = 0xFF0F172A; // Dark contrast rim
+        const uint32_t status_color = active ? 0xFF10B981 : 0xFF64748B; // Active Emerald vs Inactive Slate Gray (W6/C3 pin)
+        const uint32_t border_color = 0xFF0C1830; // Poster-navy contrast rim
 
         for (int y = 18; y < size; ++y) {
             for (int x = 18; x < size; ++x) {
@@ -218,6 +240,142 @@ HICON SystemTray::CreateStatusIcon(bool active) {
     return hIcon;
 }
 
+// ---- W1 (R1-22, session 261029_0001): pure tip / status-row composition ----
+namespace {
+
+// Caps a composed string at max_chars, backing off a dangling high surrogate
+// (a cut must never split a surrogate pair) and marking the cut with "…".
+// Used only as the last resort: ComposeTrayTip drops whole optional segments
+// before it falls back to this.
+std::wstring TruncateWithEllipsis(std::wstring text, size_t max_chars) {
+    if (text.size() <= max_chars) {
+        return text;
+    }
+    size_t keep = max_chars ? max_chars - 1 : 0; // room for the ellipsis
+    if (keep > 0 && text[keep - 1] >= 0xD800 && text[keep - 1] <= 0xDBFF) {
+        --keep; // the next code unit was the low half of that pair
+    }
+    text.resize(keep);
+    text += L'\u2026';
+    return text;
+}
+
+// Narrow ASCII view of the engine stem for the token comparisons below.
+std::string AsciiUpper(std::string_view s) {
+    std::string out(s);
+    for (char& c : out) {
+        if (c >= 'a' && c <= 'z') {
+            c = static_cast<char>(c - 'a' + 'A');
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::string TrayEngineLabel(std::string_view active_engine) {
+    std::string stem(active_engine);
+    // Strip the descriptive parenthetical ("Hy-MT2-1.8B (Shared Host)" ->
+    // "Hy-MT2-1.8B") - the szTip budget cannot carry the full stem.
+    const size_t paren = stem.find(" (");
+    if (paren != std::string::npos) {
+        stem.resize(paren);
+    }
+    // R2-5 (261029_0001): the hook-thread refreshes push an EMPTY view (the
+    // engine segment is authoritative on the GUI thread), so this mapping is
+    // NOT a hook-path token translator any more - it serves the legacy/GUI
+    // stems that still arrive as a raw token, and passes a display stem
+    // through unchanged.
+    const std::string token = AsciiUpper(stem);
+    if (token == "LOCAL") return "Local";
+    if (token == "GOOGLE" || token == "AUTO") return "Google Translate";
+    if (token == "OPENAI") return "OpenAI Compatible";
+    if (token == "USER_GGUF") return "User model";
+    return stem; // already a display stem (or empty: no engine segment)
+}
+
+std::wstring ComposeTrayTip(const TrayTipParts& parts) {
+    std::wstring core(parts.title);
+    if (!parts.state.empty()) {
+        core += L" (";
+        core += parts.state;
+        core += L")";
+    }
+    if (!parts.engine.empty()) {
+        core += L" - ";
+        core += parts.engine;
+    }
+    if (!parts.src_display.empty() || !parts.tgt_display.empty()) {
+        core += L" \u00B7 "; // " · "
+        core += parts.src_display;
+        core += L" \u2192 "; // " → "
+        core += parts.tgt_display;
+    }
+    if (parts.auto_send && !parts.auto_send_label.empty()) {
+        std::wstring full = core;
+        full += L" \u00B7 ";
+        full += parts.auto_send_label;
+        if (full.size() <= kTrayTipMaxChars) {
+            return full;
+        }
+        // Overflow: the auto-send tail is the only optional segment, so it is
+        // the first thing dropped (documented order, pinned by the tests).
+    }
+    if (core.size() <= kTrayTipMaxChars) {
+        return core;
+    }
+    DIAG_LOG("UI", "tray_tip_truncated len=%zu cap=%zu",
+             core.size(), kTrayTipMaxChars);
+    return TruncateWithEllipsis(std::move(core), kTrayTipMaxChars);
+}
+
+std::wstring ComposeTrayStatusLabel(std::wstring_view state_label,
+                                    std::wstring_view src_display,
+                                    std::wstring_view tgt_display) {
+    std::wstring out(state_label);
+    if (src_display.empty() && tgt_display.empty()) {
+        return out;
+    }
+    out += L" \u00B7 ";
+    out += src_display;
+    out += L" \u2192 ";
+    out += tgt_display;
+    return out;
+}
+
+// ---- W2 (R1-22): one swap policy for both language pairs ----
+LanguageSwapPlan PlanLanguageSwap(std::string_view cur_source,
+                                  std::string_view cur_target,
+                                  std::string_view system_language_code) {
+    const std::string cur_src_norm = NormalizeLanguageCode(cur_source);
+    const std::string cur_tgt_norm = NormalizeLanguageCode(cur_target);
+
+    LanguageSwapPlan plan;
+    if (cur_src_norm == "AUTO") {
+        // Auto Detect -> English becomes English -> <OS native>: the concrete
+        // old target moves to the source, and the target becomes the user's OS
+        // language (or the other of EN/KO so the swap always reverses).
+        const LanguageInfo* const p_tgt = FindLanguageByCode(cur_tgt_norm);
+        plan.source = p_tgt ? p_tgt->name_en : std::string(cur_target);
+
+        std::string sys_norm = NormalizeLanguageCode(system_language_code);
+        if (sys_norm == "AUTO" || sys_norm.empty()) {
+            sys_norm = "KO";
+        }
+        if (cur_tgt_norm == sys_norm) {
+            plan.target = (sys_norm == "EN") ? "Korean" : "English";
+        } else {
+            const LanguageInfo* const p_sys = FindLanguageByCode(sys_norm);
+            plan.target = p_sys ? p_sys->name_en : "Korean";
+        }
+    } else {
+        // Two concrete languages swap directly.
+        plan.source = std::string(cur_target);
+        plan.target = std::string(cur_source);
+    }
+    return plan;
+}
+
 bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callbacks) {
     hOwner_ = hOwner;
     hInstance_ = hInstance;
@@ -238,8 +396,20 @@ bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callb
     // localized pieces UpdateStatus uses, against the initial state members,
     // so the very first hover already honors the active UI locale. (Create()
     // runs after I18n::Initialize in wWinMain.)
-    std::wstring tip = I18n::Get(StringId::TooltipTitle) + L" (" + I18n::Get(StringId::BadgeActive) + L") - "
-        + I18n::GetLanguageDisplayName(src_code_) + L" -> " + I18n::GetLanguageDisplayName(tgt_code_);
+    // W1 (R1-22): same composer, so the first hover already carries the engine
+    // + auto-send segments the later UpdateStatus tips carry.
+    const std::wstring engine_label = ToUtf16(TrayEngineLabel(active_engine_));
+    const std::wstring src_label = I18n::GetLanguageDisplayName(src_code_);
+    const std::wstring tgt_label = I18n::GetLanguageDisplayName(tgt_code_);
+    const std::wstring auto_send_label = I18n::Get(StringId::MenuAutoSend);
+    const std::wstring tip = ComposeTrayTip(TrayTipParts{
+        I18n::Get(StringId::TooltipTitle),
+        I18n::Get(StringId::BadgeActive),
+        engine_label,
+        src_label,
+        tgt_label,
+        auto_send_label,
+        auto_send_});
     wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
 
     return ::Shell_NotifyIconW(NIM_ADD, &nid_) == TRUE;
@@ -283,7 +453,21 @@ void SystemTray::UpdateStatus(
     // REQ-029-B: display-only capture (tooltip + tray_update log below); the
     // Engine submenu check mark is derived at open (REQ-056), never from
     // this string.
-    active_engine_ = active_engine;
+    //
+    // R2-5 (FIX-B2): an EMPTY view means "the caller has no resolved display
+    // stem" - the hook-thread refreshes (F9 pause/resume, Ctrl+Shift+Enter
+    // auto-send, Ctrl+F9 cycle). Those paths only hold the persisted
+    // engine_type TOKEN, which cannot answer "which model is serving": under
+    // "auto"/"local" the real answer is the shared host's Hy-MT2-1.8B, and
+    // under "user_gguf" it is the user's model stem. Pushing the token here
+    // overwrote the GUI-resolved stem in the hover tip ("Hy-MT2-1.8B" flipped
+    // to "Google Translate", "Local" or "User model" after every F9). The
+    // single authority for that string is the GUI thread's refresh_tray()
+    // (engine.GetActiveEngineName()), so an empty push preserves it - and
+    // leaves the non-atomic std::string untouched from the hook thread.
+    if (!active_engine.empty()) {
+        active_engine_ = active_engine;
+    }
     src_code_ = src_code;
     tgt_code_ = tgt_code;
     // REQ-025: drag pair feeds ONLY the "번역툴팁" submenu check marks; the
@@ -302,8 +486,23 @@ void SystemTray::UpdateStatus(
         nid_.hIcon = hCurrentIcon_;
     }
 
-    std::wstring tip = I18n::Get(StringId::TooltipTitle) + L" (" + (is_active_ ? I18n::Get(StringId::BadgeActive) : I18n::Get(StringId::BadgePaused)) + L") - "
-        + I18n::GetLanguageDisplayName(src_code_) + L" -> " + I18n::GetLanguageDisplayName(tgt_code_);
+    // W1 (R1-22): the hover tip now answers "which engine / which pair / is
+    // auto-send on?" without opening any submenu. Composition (and the szTip
+    // 128-wchar budget) lives in the pure ComposeTrayTip helper so both the
+    // drop order and the cap are unit-tested headlessly; the engine segment
+    // uses the SHORT token because the localized MenuEngine* rows are full
+    // sentences (research §8 residual risk 1).
+    const std::wstring state_label = is_active_ ? I18n::Get(StringId::BadgeActive)
+                                                : I18n::Get(StringId::BadgePaused);
+    const std::wstring engine_label = ToUtf16(TrayEngineLabel(active_engine_));
+    const std::wstring src_label = I18n::GetLanguageDisplayName(src_code_);
+    const std::wstring tgt_label = I18n::GetLanguageDisplayName(tgt_code_);
+    const std::wstring auto_send_label = I18n::Get(StringId::MenuAutoSend);
+    const std::wstring tip = ComposeTrayTip(TrayTipParts{
+        I18n::Get(StringId::TooltipTitle), state_label, engine_label,
+        src_label, tgt_label, auto_send_label, auto_send});
+    // Defensive: ComposeTrayTip already caps at kTrayTipMaxChars, _TRUNCATE
+    // keeps the copy safe even if that invariant is ever broken.
     wcsncpy_s(nid_.szTip, tip.c_str(), _TRUNCATE);
 
     ::Shell_NotifyIconW(NIM_MODIFY, &nid_);
@@ -312,7 +511,7 @@ void SystemTray::UpdateStatus(
     // pair so the DP-2 check (drag change must NOT alter src/tgt = type tip)
     // is directly readable from this log line.
     DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s drag_src=%s drag_tgt=%s auto_send=%d icon_changed=%d",
-             active ? 1 : 0, std::string(active_engine).c_str(),
+             active ? 1 : 0, active_engine_.c_str(),
              std::string(src_code).c_str(), std::string(tgt_code).c_str(),
              std::string(drag_src_code).c_str(), std::string(drag_tgt_code).c_str(),
              auto_send ? 1 : 0, iconChanged ? 1 : 0);
@@ -323,7 +522,16 @@ void SystemTray::ShowContextMenu() {
     if (!hMenu) return;
 
     // 1. Status toggle item
-    std::wstring statusLabel = is_active_ ? I18n::Get(StringId::MenuStatusActive) : I18n::Get(StringId::MenuStatusPaused);
+    // W1 (R1-22): the top row now carries the TYPE pair as well, so the pair
+    // is readable without hovering the icon or walking the 3-level language
+    // menus: "상태: 활성 (F9: 일시 정지) · 자동 감지 → 영어" (research shape
+    // "상태: … · KO → EN"; display names via GetLanguageDisplayName, zero new
+    // i18n keys).
+    const std::wstring statusLabel = ComposeTrayStatusLabel(
+        is_active_ ? I18n::Get(StringId::MenuStatusActive)
+                   : I18n::Get(StringId::MenuStatusPaused),
+        I18n::GetLanguageDisplayName(src_code_),
+        I18n::GetLanguageDisplayName(tgt_code_));
     ::AppendMenuW(hMenu, MF_STRING | (is_active_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_STATUS, statusLabel.c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
@@ -472,6 +680,15 @@ void SystemTray::ShowContextMenu() {
     HMENU hTooltipGroup = ::CreatePopupMenu();
     ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
     ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
+    // W2 (R1-22): the drag pair gets its OWN Swap row inside the 번역툴팁 group
+    // (the type pair's Swap stays on the top level). PLAIN item, ID in the
+    // >=2600 band, label reused from MenuSwapLangs - zero new i18n keys. The
+    // dispatch applies the same AUTO-pivot policy as the type swap through the
+    // shared PlanLanguageSwap planner, then routes through
+    // ApplyLanguageChange(LanguageContext::Drag, ...) so persistence, the
+    // drag-pair check marks, the tooltip label and the pin write all ride the
+    // single language authority (INV-2/INV-3).
+    ::AppendMenuW(hTooltipGroup, MF_STRING, ID_TRAY_DRAG_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTooltipGroup), I18n::Get(StringId::MenuTooltipGroup).c_str());
 
     // 5. Swap languages
@@ -581,6 +798,12 @@ void SystemTray::ShowContextMenu() {
         }
     } else if (cmd == ID_TRAY_UILANG_AUTO && callbacks_.on_select_ui_language) {
         callbacks_.on_select_ui_language("auto");
+    } else if (cmd == ID_TRAY_DRAG_SWAP && callbacks_.on_swap_drag_languages) {
+        // W2 (R1-22): reverse the 번역툴팁 pair. The callback resolves the pair
+        // through the shared PlanLanguageSwap planner and applies it via
+        // ApplyLanguageChange(LanguageContext::Drag, ...), so a drag swap pins
+        // the target exactly like an explicit drag-target pick (F2 contract).
+        callbacks_.on_swap_drag_languages();
     } else if (cmd >= ID_TRAY_UILANG_BASE &&
                cmd < ID_TRAY_UILANG_BASE + static_cast<UINT>(GetSupportedUiLocales().size()) &&
                callbacks_.on_select_ui_language) {
