@@ -785,12 +785,13 @@ bool IsHostBinaryPresent() {
     return FileExists(g_exe_override.empty() ? DefaultExePath() : g_exe_override);
 }
 
-// REQ-043: common model location (pure-ASCII path, so widening IS the UTF-8).
+// REQ-043: common model location, as UTF-8.
 // Honors the test override (SetCommonModelPathForTesting).
-// REQ-043 P6 fold2: the path is pure-ASCII by contract (fixed "Emebala\Common\"
-// tail + an ASCII-only %LOCALAPPDATA% directory on every supported install),
-// so the wchar_t->char narrowing below is lossless; the explicit cast makes
-// the C4244 surface quiet under /W4. Behavior unchanged: spawn/existence only.
+// Backend P1-4 (v0.10.5): %LOCALAPPDATA% is NOT guaranteed ASCII — a
+// Korean/Japanese/Cyrillic Windows account name lands in the path — and the
+// old per-char wchar_t narrowing corrupted every non-ASCII character. The
+// proper CP_UTF8 conversion (the same one NormalizePeerPath uses in this
+// file) keeps the repair path honest after a local engine failure.
 bool TryGetCommonModelPath(std::string& out_utf8) {
     out_utf8.clear();
     std::wstring path;
@@ -805,10 +806,16 @@ bool TryGetCommonModelPath(std::string& out_utf8) {
         if (lad.empty()) return false;
         path = lad + L"\\Emebala\\Common\\models\\Hy-MT2-1.8B-Q8_0.gguf";
     }
-    out_utf8.clear();
-    out_utf8.reserve(path.size());
-    for (const wchar_t ch : path) {
-        out_utf8.push_back(static_cast<char>(ch));
+    const int needed = ::WideCharToMultiByte(
+        CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return false;
+    out_utf8.resize(static_cast<size_t>(needed));
+    const int written = ::WideCharToMultiByte(
+        CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()),
+        out_utf8.data(), needed, nullptr, nullptr);
+    if (written != needed) {
+        out_utf8.clear();
+        return false;
     }
     return true;
 }

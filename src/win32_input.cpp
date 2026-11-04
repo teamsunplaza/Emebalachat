@@ -131,6 +131,32 @@ uint64_t SteadyNowMs() {
 // NOTE: worker.cpp ReleaseSelectionOnce is a DIFFERENT 2-input raw primitive
 // (no modifier, no CreateKeyInput) and intentionally stays outside this helper.
 bool SendModifiedKey(WORD mod, WORD key) {
+    // Input P2-2 (v0.10.5): release EVERY physically held modifier BEFORE the
+    // chord. Without this a Win key held across the injection (or stuck down
+    // by the old suppress_win_keyup_ bug) upgrades the synthetic chord:
+    // Ctrl+C -> Win+Ctrl+C (Color Filters), Ctrl+V -> Win+Ctrl+V (Sound
+    // flyout), Ctrl+A likewise. Same discipline as SendEnterKey's W1/A5 batch:
+    // sample all async states first, ONE SendInput, EXTRA_INFO_MARKER on every
+    // event, and the release result stays ignored exactly like the Enter path
+    // (only the 4-event chord below reports success).
+    const WORD held_mods[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+        VK_LMENU, VK_RMENU, VK_MENU,
+        VK_LWIN, VK_RWIN
+    };
+    INPUT ups[sizeof(held_mods) / sizeof(held_mods[0])];
+    UINT n_up = 0;
+    for (WORD m : held_mods) {
+        if ((::GetAsyncKeyState(m) & 0x8000) != 0) {
+            ups[n_up++] = CreateKeyInput(m, true, EXTRA_INFO_MARKER);
+        }
+    }
+    if (n_up > 0) {
+        ::SendInput(n_up, ups, sizeof(INPUT));
+        ::Sleep(10); // let the releases land before the chord (SendEnterKey parity)
+    }
+
     INPUT inputs[4] = {
         CreateKeyInput(mod, false, EXTRA_INFO_MARKER),
         CreateKeyInput(key, false, EXTRA_INFO_MARKER),
@@ -819,6 +845,7 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     out.formats.clear();
     out.seq_at_backup = 0;
     out.partial = false;
+    out.was_originally_empty = false;
 
     // R6 Phase 3 (audit item 5): RAII scope - this is the function the
     // exception-safety note above is about (std::vector allocations inside).
@@ -832,6 +859,12 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms) {
     // state the snapshot below reproduces. RestoreClipboard compares against it
     // to prove "the clipboard is still what we captured" (no replay needed).
     out.seq_at_backup = ::GetClipboardSequenceNumber();
+
+    // Input P2-3 (v0.10.5): remember an ORIGINALLY EMPTY clipboard so
+    // RestoreClipboard can return it to empty instead of leaving our temporary
+    // paste text behind. Sampled under the open clipboard, so no other process
+    // can add or remove formats between the count and the capture below.
+    out.was_originally_empty = (::CountClipboardFormats() == 0);
 
     // Capture text if available (W1/A2: shared reader; on success out.text is
     // assigned exactly like the old inline block; on every missing/empty/
@@ -954,6 +987,34 @@ bool RestoreClipboard(const ClipboardBackup& in, DWORD timeout_ms) {
         DecideClipboardRestore(in, current_seq, OwnClipboardWriteSeq());
     if (action != ClipboardRestoreAction::Restore) {
         LogClipboardRestoreDecision(action, in, current_seq);
+        // Input P2-3 (v0.10.5): an originally-empty clipboard has no payload,
+        // so the ladder above refuses to replay it (SkipEmptyBackup) - but the
+        // paste path's temporary translated text must not LINGER on a clipboard
+        // that held nothing before the task. Empty it back IF AND ONLY IF the
+        // live sequence still proves it holds THIS process's own write: a user
+        // copy made after the paste is a foreign write and always wins.
+        if (action == ClipboardRestoreAction::SkipEmptyBackup && in.was_originally_empty) {
+            if (OwnClipboardWriteSeq() != 0 && current_seq == OwnClipboardWriteSeq()) {
+                ScopedClipboard clip(nullptr, timeout_ms);
+                if (!clip) {
+                    return false;
+                }
+                // Re-verify under the open clipboard exactly like the Restore
+                // branch below: the OpenClipboard contention backoff can take
+                // the whole timeout, and a copy landing in that window wins.
+                current_seq = ::GetClipboardSequenceNumber();
+                if (OwnClipboardWriteSeq() == 0 || current_seq != OwnClipboardWriteSeq()) {
+                    return false;
+                }
+                ::EmptyClipboard();
+                clip.Close();
+                NoteOwnClipboardWrite();
+                DIAG_F("WIN32_INPUT/RestoreClipboard/005: originally-empty clipboard restored to empty "
+                       "(our paste write removed; seq=%lu)\n",
+                       static_cast<unsigned long>(current_seq));
+                return true;
+            }
+        }
         return ClipboardRestoreReportsConfirmed(action);
     }
 
@@ -1197,13 +1258,49 @@ void ClassNameUtf8(HWND hwnd, char (&out)[128]) {
 
 // §2.5.A2: EVERY cross-process EM_* call goes through this wrapper so a hung
 // or message-pump-busy target can never stall the worker beyond
-// kEmTimeoutMs. Returns false on any failure or timeout. result is the
-// DWORD_PTR out-parameter (EM_GETSEL packs its reply into the low 32 bits).
+// kEmTimeoutMs. Returns false on any failure or timeout. result receives the
+// message return value (callers that need out-parameters, e.g. EM_GETSEL,
+// pass their own buffers - see QueryEmSelection below).
 bool SendEm(HWND hwnd, UINT msg, WPARAM w, LPARAM l, ULONG_PTR& result) {
     result = 0;
     return ::SendMessageTimeoutW(hwnd, msg, w, l,
                                  SMTO_ABORTIFHUNG | SMTO_BLOCK, kEmTimeoutMs,
                                  &result) != 0;
+}
+
+// Input P2-1 (v0.10.5): the ONE read of the current EM selection range, shared
+// by every EditCaretTracker consumer below. The offsets come back through the
+// EM_GETSEL OUT-POINTER parameters as full 32-bit DWORDs - win32k marshals
+// both pointers for the calling process even across process boundaries
+// (EM_GETSEL owns the dedicated SfnOPTOUTLPDWORDOPTOUTLPDWORD thunk), so the
+// old packed-return LOWORD/HIWORD path and its 65,535-code-unit saturation
+// (false empty selection / EM_SETSEL(0, 65535) whole-document overwrite on
+// long documents) are gone.
+// Input P2-1 round 2 (v0.10.5): the thunk copies its staging buffer back
+// UNCONDITIONALLY, so a target that does NOT handle EM_GETSEL (DefWindowProc
+// returns 0 without touching the out DWORDs) hands us uninitialized
+// kernel-pool garbage where the pre-pointer code read the packed return 0.
+// A real edit control always reports through BOTH channels consistently:
+// the documented return is the packed selection, which is 0 ONLY for a (0,0)
+// caret (where its out DWORDs are (0,0) too) and -1 past 64K (out DWORDs
+// still valid). So a zero return with nonzero out DWORDs is proof the target
+// ignored the message: coerce back to the established (0,0) "unhandled"
+// shape. This restores the pre-change classification of generic windows
+// (B-6b: NotCapable / kEditCaretUnknown) while keeping full 32-bit offsets
+// for every target that actually answers EM_GETSEL.
+bool QueryEmSelection(HWND focus, DWORD& out_start, DWORD& out_end) {
+    out_start = 0;
+    out_end = 0;
+    ULONG_PTR em_result = 0;
+    if (!SendEm(focus, EM_GETSEL, reinterpret_cast<WPARAM>(&out_start),
+                reinterpret_cast<LPARAM>(&out_end), em_result)) {
+        return false;
+    }
+    if (em_result == 0) {
+        out_start = 0;
+        out_end = 0;
+    }
+    return true;
 }
 
 // §2.3.B-6b: read-only EM_* capability probe. Every message goes through
@@ -1219,13 +1316,12 @@ bool SendEm(HWND hwnd, UINT msg, WPARAM w, LPARAM l, ULONG_PTR& result) {
 // selection) cost a single message, same traffic as the pre-B-6b hot path.
 EmCapability ProbeEmCapability(HWND focus) {
     EmProbeSignals s{};
-    ULONG_PTR getsel = 0;
-    s.getsel_handled = SendEm(focus, EM_GETSEL, 0, 0, getsel);
-    if (s.getsel_handled) {
-        const DWORD sel = static_cast<DWORD>(getsel);
-        s.sel_start = LOWORD(sel);
-        s.sel_end = HIWORD(sel);
-    }
+    // Input P2-1: full 32-bit offsets via the out-pointers (QueryEmSelection,
+    // which coerces the kernel-marshaled garbage of non-EM targets back to
+    // (0,0) - see its round-2 contract); the (0,0) ambiguous case the
+    // cross-checks below disambiguate is therefore unchanged from the
+    // pre-pointer behavior.
+    s.getsel_handled = edit_caret::QueryEmSelection(focus, s.sel_start, s.sel_end);
     if (!s.getsel_handled || s.sel_start != 0 || s.sel_end != 0) {
         return ClassifyEmProbe(s); // NotCapable (timeout) or Capable (meaningful reply)
     }
@@ -1333,20 +1429,18 @@ bool EditCaretTracker_TrySelectNewText(HWND hwnd) {
     DIAG_LOG("EditCaretTracker", "focus_class=%s hwnd=%p capability=capable",
              cls_u8, reinterpret_cast<const void*>(key.focus_hwnd));
 
-    // EM_GETSEL with NULL pointer params: the selection comes back in the
-    // return value (LOWORD start, HIWORD end), so no cross-process pointer
-    // marshalling is needed. NOTE: the documented EM_GETSEL return is
-    // WORD-scaled (>65535 saturates) - acceptable for message-sized editor
-    // blocks, and both read and write paths below use the same encoding, so
-    // a saturated offset stays self-consistent.
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    // EM_GETSEL through the out-pointer form: the offsets come back as full
+    // 32-bit DWORDs (win32k marshals both pointers cross-process, so documents
+    // past 65,535 UTF-16 units no longer saturate into a false empty selection
+    // or a truncated EM_SETSEL - Input P2-1, v0.10.5).
+    DWORD sel_start = 0;
+    DWORD sel_end = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, sel_end)) {
         DIAG_F("WIN32_INPUT/EditCaretTracker/001: EM_GETSEL failed/timed out (hwnd=%p gle=%lu); fallback\n",
                reinterpret_cast<void*>(key.focus_hwnd), ::GetLastError());
         return false;
     }
-    const DWORD get_sel = static_cast<DWORD>(em_result);
-    const DWORD sel_end = HIWORD(get_sel);
+    (void)sel_start; // the selection start is not consulted on this path
 
     // REQ-034 F2-B': baseline document length sampled with the start point
     // (auxiliary DIAG signal only - see Entry::baseline_textlen). The stored
@@ -1405,11 +1499,12 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd) {
     if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return false; // fallback geometry never drifts this way (design §2.1.1)
     }
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    DWORD sel_start = 0;
+    DWORD sel_end = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, sel_end)) {
         return false;
     }
-    const DWORD sel_end = HIWORD(static_cast<DWORD>(em_result));
+    (void)sel_start; // only the caret (selection end) drives the re-select
     ULONG_PTR textlen_res = 0;
     const bool len_ok =
         edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
@@ -1468,13 +1563,11 @@ bool EditCaretTracker_CompensateLeadingNewlines(HWND hwnd, std::wstring_view cap
     if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return false; // no EM session: the map holds nothing meaningful
     }
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    DWORD sel_start = 0;
+    DWORD sel_end = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, sel_end)) {
         return false;
     }
-    const DWORD sel = static_cast<DWORD>(em_result);
-    const DWORD sel_start = LOWORD(sel);
-    const DWORD sel_end = HIWORD(sel);
 
     std::lock_guard<std::mutex> lock(edit_caret::g_mutex);
     edit_caret::PurgeDeadEntriesLocked();
@@ -1555,12 +1648,12 @@ void EditCaretTracker_NotifyReplacement(HWND hwnd, bool pasted, size_t pasted_cc
     }
 
     DWORD caret = 0;
+    DWORD sel_start = 0;
     bool have_caret = false;
-    ULONG_PTR em_result = 0;
-    if (edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
-        caret = HIWORD(static_cast<DWORD>(em_result));
+    if (edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, caret)) {
         have_caret = true;
     }
+    (void)sel_start; // only the caret (selection end) advances the stored offset
     // REQ-034 F2-B': record the document length AT SAVE TIME on both branches
     // (requery success and estimate alike) so the next Enter's self-correct
     // DIAG can attribute drift. Purely auxiliary: the B-6a offset contract
@@ -1611,11 +1704,13 @@ DWORD EditCaretTracker_SampleCaret(HWND hwnd) {
         edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return kEditCaretUnknown;
     }
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    DWORD sel_start = 0;
+    DWORD sel_end = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, sel_end)) {
         return kEditCaretUnknown;
     }
-    return HIWORD(static_cast<DWORD>(em_result));
+    (void)sel_start; // read-only caret probe: only the selection end matters
+    return sel_end;
 }
 
 // REQ-039: read-only EM-selection emptiness probe for the copy-chord retry
@@ -1633,12 +1728,12 @@ bool EditCaretTracker_SelectionProvablyEmpty(HWND hwnd) {
     if (edit_caret::ProbeEmCapability(key.focus_hwnd) != EmCapability::Capable) {
         return false;
     }
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    DWORD sel_start = 0;
+    DWORD sel_end = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, sel_end)) {
         return false;
     }
-    const DWORD sel = static_cast<DWORD>(em_result);
-    return LOWORD(sel) == HIWORD(sel);
+    return sel_start == sel_end;
 }
 
 // REQ-027 B-6a settle (design §2.2 mandatory companion): SendEnterKey injects
@@ -1699,11 +1794,12 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
     // async; waiting for the caret to move off the pre-sample proves the
     // newline is visible to EM_GETSEL before we store it.
     EditCaretTracker_SettleNewlineVisible(hwnd, pre_newline_caret);
-    ULONG_PTR em_result = 0;
-    if (!edit_caret::SendEm(key.focus_hwnd, EM_GETSEL, 0, 0, em_result)) {
+    DWORD sel_start = 0;
+    DWORD caret = 0;
+    if (!edit_caret::QueryEmSelection(key.focus_hwnd, sel_start, caret)) {
         return;
     }
-    const DWORD caret = HIWORD(static_cast<DWORD>(em_result));
+    (void)sel_start; // only the measured caret advances the stored offset
     ULONG_PTR textlen_res = 0;
     const bool len_ok =
         edit_caret::SendEm(key.focus_hwnd, WM_GETTEXTLENGTH, 0, 0, textlen_res);
@@ -1724,9 +1820,44 @@ void EditCaretTracker_NotifySentNewline(HWND hwnd, DWORD pre_newline_caret) {
            caret, reinterpret_cast<void*>(key.focus_hwnd));
 }
 
+// Input P1-4 (fix-list F-03, review round 1): capture-time focus control of
+// the pipeline worker thread. CopySelectedText (the capture seam) records it;
+// PasteAndRestore (the injection gate of the SAME task, same thread)
+// re-resolves the captured window thread's current hwndFocus and refuses the
+// paste when the focus drifted to a sibling control of the same top-level
+// window during the translation. thread_local is the binding: capture and
+// paste both run on the single-slot pipeline worker thread, the drag path
+// never calls either function, and a fresh record is written at every capture.
+// An invalid record (failed capture-time GetGUIThreadInfo) degrades the gate
+// to the legacy behavior - the same contract the worker's release gate uses
+// for a failed focus probe.
+struct PasteCaptureFocus {
+    bool valid = false;
+    HWND focus_hwnd = nullptr;
+};
+thread_local PasteCaptureFocus t_paste_capture_focus;
+
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                               EnterCaptureResult* capture_result,
                               RescueProvenance* provenance) {
+    // Input P1-4 (fix-list F-03): snapshot the focus control of the captured
+    // window's thread BEFORE the selection chord, so the PasteAndRestore gate
+    // of this task can detect a focus drift to a sibling control. Recorded
+    // first: every exit path of this function must leave a record that belongs
+    // to THIS task (an aborted capture still belongs to it - no paste of this
+    // task will run afterwards).
+    t_paste_capture_focus.valid = false;
+    t_paste_capture_focus.focus_hwnd = nullptr;
+    if (hwnd) {
+        DWORD focus_pid = 0;
+        const DWORD focus_tid = ::GetWindowThreadProcessId(hwnd, &focus_pid);
+        GUITHREADINFO focus_gti{};
+        focus_gti.cbSize = sizeof(focus_gti);
+        if (focus_tid != 0 && ::GetGUIThreadInfo(focus_tid, &focus_gti)) {
+            t_paste_capture_focus.valid = true;
+            t_paste_capture_focus.focus_hwnd = focus_gti.hwndFocus; // null possible
+        }
+    }
     // Session 260913_0001 (Phase B): report the shape-only verdict of every
     // seam decision below so the worker's capture log distinguishes empty-
     // capture causes (guard_abort / copy_chord_failed / empty_selection /
@@ -2147,6 +2278,54 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
         return false;
     }
 
+    // Input P1-4 (fix-list F-03, review round 1): the strict paste leg. The
+    // legacy H1 check above tolerates ANY window under the same GA_ROOTOWNER
+    // and never verifies the FOCUS CONTROL: selecting text in control A,
+    // clicking a sibling control B of the same top-level window during the
+    // multi-second translation, leaves the legacy check satisfied and pastes
+    // the translation into B (security seat evidence). Two additional gates,
+    // both fail-closed, same suppression shape as the H1 abort (no clipboard
+    // write, no Ctrl+V; the caller's RAII restorer preserves the original):
+    //   1. EXACT ROOT: the current foreground must resolve to the SAME GA_ROOT
+    //      (parent chain) as the captured target. An owned popup/dialog shares
+    //      the GA_ROOTOWNER but is a DIFFERENT GA_ROOT, and is now refused.
+    //      (Tightened HERE, not inside IsSameWindowForInjection: worker.cpp's
+    //      release gate and Enter send gate consume that helper's root-owner
+    //      tolerance as their established contract - the round-2 release leg
+    //      already carries its own hwndFocus check.)
+    //   2. FOCUS CONTROL: the captured window thread's CURRENT hwndFocus must
+    //      equal the capture-time hwndFocus recorded by CopySelectedText on
+    //      this same thread (see t_paste_capture_focus). An invalid record
+    //      (failed capture-time probe) degrades to the legacy behavior.
+    if (expected_target) {
+        const HWND gate_fg = ::GetForegroundWindow();
+        const HWND expected_root = ::GetAncestor(expected_target, GA_ROOT);
+        const HWND current_root = gate_fg ? ::GetAncestor(gate_fg, GA_ROOT) : nullptr;
+        if (expected_root == nullptr || expected_root != current_root) {
+            DIAG_F("WIN32_INPUT/PasteAndRestore/002: paste suppressed (Input P1-4): foreground root drifted "
+                   "(owned popup / different GA_ROOT; expected_root=%p current_root=%p)\n",
+                   reinterpret_cast<void*>(expected_root), reinterpret_cast<void*>(current_root));
+            return false;
+        }
+        if (t_paste_capture_focus.valid) {
+            DWORD gate_pid = 0;
+            const DWORD gate_tid = ::GetWindowThreadProcessId(expected_target, &gate_pid);
+            GUITHREADINFO gate_gti{};
+            gate_gti.cbSize = sizeof(gate_gti);
+            const HWND current_focus =
+                (gate_tid != 0 && ::GetGUIThreadInfo(gate_tid, &gate_gti))
+                    ? gate_gti.hwndFocus
+                    : nullptr; // unreadable focus is a drift, not a pass
+            if (current_focus != t_paste_capture_focus.focus_hwnd) {
+                DIAG_F("WIN32_INPUT/PasteAndRestore/003: paste suppressed (Input P1-4): focus control drifted "
+                       "during translation (capture=%p current=%p)\n",
+                       reinterpret_cast<void*>(t_paste_capture_focus.focus_hwnd),
+                       reinterpret_cast<void*>(current_focus));
+                return false;
+            }
+        }
+    }
+
     // FIX-B1 (R2-2 / fix-list R2-4 option (a), 261029_0001): PRE-PASTE
     // RE-BASELINE. The write below is destructive by construction (EmptyClipboard
     // -> translated text), so a copy the user made during the multi-second
@@ -2204,12 +2383,15 @@ bool PasteAndRestore(std::wstring_view text, const ClipboardBackup& backup, HWND
 void SendEnterKey(bool release_shift) {
     (void)release_shift;
     // Explicitly release all modifier keys to prevent Shift+Enter / Ctrl+Enter misinterpretation
+    // Input P2-2 (v0.10.5): VK_LWIN/VK_RWIN join the release list - a held Win
+    // would otherwise turn the synthetic Enter into Win+Enter (Narrator).
     const WORD mods[] = {
         VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
         VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
-        VK_LMENU, VK_RMENU, VK_MENU
+        VK_LMENU, VK_RMENU, VK_MENU,
+        VK_LWIN, VK_RWIN
     };
-    // W1/A5 (session 260910_0007): batched release. All 9 GetAsyncKeyState
+    // W1/A5 (session 260910_0007): batched release. All GetAsyncKeyState
     // samples are taken BEFORE any injection (same states observed, same
     // mods[] order as the old per-modifier sends), the released modifiers are
     // collected into one INPUT array, and a single SendInput injects them —

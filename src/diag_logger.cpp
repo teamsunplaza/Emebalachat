@@ -705,6 +705,22 @@ void MirrorF(const char* fmt, ...) {
     if (!fmt) {
         return;
     }
+    // Backend P3-4 (v0.10.5): the format + the stderr fwrite/fflush run only
+    // when SOMETHING can consume them. In the shipped WIN32 app stderr is not
+    // attached to a console or a redirect, and diag defaults to disabled, so
+    // the steady-state DIAG_F was pure overhead on the translation hot path.
+    // The attachment probe is computed once (process-lifetime stable: a
+    // redirect is set by the parent at CreateProcess time).
+    static const bool stderr_attached = [] {
+        const HANDLE h = ::GetStdHandle(STD_ERROR_HANDLE);
+        return h != nullptr && h != INVALID_HANDLE_VALUE &&
+               ::GetFileType(h) != FILE_TYPE_UNKNOWN;
+    }();
+    const bool file_sink = g.initialized.load(std::memory_order_acquire) &&
+                           g.enabled.load(std::memory_order_relaxed);
+    if (!file_sink && !stderr_attached) {
+        return;
+    }
     try {
         std::string text;
         va_list args;
@@ -719,8 +735,7 @@ void MirrorF(const char* fmt, ...) {
         std::fwrite(text.data(), 1, text.size(), stderr);
         std::fflush(stderr);
         // Sink 2: the diag file with the MODULE/site/NNN token as TAG.
-        if (g.initialized.load(std::memory_order_acquire) &&
-            g.enabled.load(std::memory_order_relaxed)) {
+        if (file_sink) {
             std::string tag;
             std::string body;
             SplitMirrorTag(TrimTrailingNewline(text), tag, body);

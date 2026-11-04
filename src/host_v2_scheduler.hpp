@@ -66,6 +66,12 @@ struct SchedItem {
     // hardcoded 0 made every v2 session-level translate unmatchable. Inert
     // data like `client`: the scheduler never reads it.
     std::uint64_t request_id = 0;             // client request id echoed in the v2 result
+    // Backend P0-2 (v0.10.5): the Connection generation captured at enqueue
+    // time. The v2 dispatcher re-verifies it (under the connection write lock)
+    // before answering, so a recycled Connection slot can never receive the
+    // previous client's result. Inert data like `client`: the scheduler never
+    // reads it.
+    std::uint64_t conn_epoch = 0;             // enqueue-time Connection generation
     void* user = nullptr;                     // opaque caller context (never touched)
     // Item D (session 260928_0001): hello.client captured at enqueue time so
     // the dispatcher can gate the config-pin relay when the request carries

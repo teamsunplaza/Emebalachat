@@ -4,8 +4,10 @@
 // family name since session 260930_0003).
 //
 // Second frozen contract (난부 계약, §V2-3): the orchestrator creates the
-// PRIVATE named pipe (server side) and spawns this exe with the pipe name +
-// boot-scoped token on the command line; this process connects as a CLIENT.
+// PRIVATE named pipe (server side) and spawns this exe with the pipe name on
+// the command line and the boot-scoped token in the child ENVIRONMENT
+// (EMEBALA_WORKER_TOKEN, review round 1 F-11; an old orchestrator still passes
+// --token, which remains the fallback); this process connects as a CLIENT.
 // Wire frames are the §4.3 [u32 LE][UTF-8 JSON] reused unmodified (1 MiB cap,
 // one frame = one pipe message); the message vocabulary lives in
 // worker_protocol.hpp (header-only, unit-tested without any process).
@@ -13,17 +15,22 @@
 // Lifecycle (design §1.2):
 //   1. wWinMain: SetDllDirectoryW(L""), diag::Init, EnsureVulkanGuard,
 //      single-instance mutex Local\EmebalaEngine_Worker_ggml_translate.
-//   2. Parse argv: --pipe <name> --token <hex32>. Missing/garbled -> exit 2
+//   2. Parse argv: --pipe <name> [--mutex <family>] (the legacy --token argv
+//      is still parsed as the old-host fallback; the 0.10.5+ host passes the
+//      token via the environment instead). Missing/garbled -> exit 2
 //      (the orchestrator ReaperLoop judges the exit code).
 //   3. Connect to the pipe (user-only SD enforced by the kernel — the
 //      orchestrator built the pipe with the BuildUserOnlySd pattern; this
 //      process just CreateFileWs it), send announce (worker.manifest §3.4).
-//   4. Frame loop (single inference thread): job -> LocalInferenceEngine::
-//      Translate (per-request sampling profile; cancel_flag address stability
-//      contract from translation_common.hpp — one process-lifetime atomic,
-//      D-2 chain b->c) -> event final | error. abort -> cancel_flag store.
-//      close -> closed. heartbeats every 5 s while idle. shutdown -> unload
-//      model -> shutdown_ack -> exit 0.
+//   4. Frame loop, SPLIT (Backend P0-1, v0.10.5): a dedicated READER thread
+//      owns the pipe; the wWinMain thread is the INFERENCE executor (job ->
+//      LocalInferenceEngine::Translate, per-request sampling profile;
+//      cancel_flag address stability contract from translation_common.hpp —
+//      one process-lifetime atomic, D-2 chain b->c) -> event final | error.
+//      abort -> cancel_flag store (unwinds a running decode within ms) or a
+//      queued-job marker. close -> closed. heartbeats every 5 s while idle.
+//      shutdown -> cancel_flag store -> unload model -> shutdown_ack ->
+//      exit 0. Pipe breakage cancels the in-flight decode too.
 //   5. M-2 (tech gate): DisconnectNamedPipe purges unconsumed frames (v1
 //      measured, host_main.cpp:363-372), so the final exchange of a dying
 //      session is protected by ORDERING: every WriteFrame here completes
@@ -34,10 +41,10 @@
 //      DisconnectNamedPipe.
 //
 // Security (design §10): no config file, no token file (the token lives only
-// on the command line of this short-lived child; the user-only pipe ACL is
-// enforced at the kernel boundary), shape-only ENGINEHOST/worker/NNN
-// diagnostics (stderr mirror only; the file sink stays off — diag defaults),
-// user text never logged from this layer.
+// in THIS process environment / on the command line of a legacy spawn; the
+// user-only pipe ACL is enforced at the kernel boundary), shape-only
+// ENGINEHOST/worker/NNN diagnostics (stderr mirror only; the file sink stays
+// off — diag defaults), user text never logged from this layer.
 // Delay-load rules identical to the host: CUDA (+Vulkan when built) DLLs are
 // delay-loaded by CMake; on a driverless machine EnsureVulkanGuard + the
 // EnsureLoaded CUDA->CPU retry keep inference alive.
@@ -82,10 +89,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable> // Backend P0-1: the reader<->inference command queue
 #include <cstdint>
 #include <cwchar>
 #include <memory>
+#include <mutex> // Backend P0-1: g_pipe_write_mu serializes the two threads' frames
 #include <string>
+#include <thread> // Backend P0-1: the dedicated pipe reader thread
 #include <vector>
 
 namespace {
@@ -96,15 +106,24 @@ namespace enginehost = emebalachat::enginehost;
 
 constexpr DWORD kPipeBufSize = (1u << 20) + 4; // fits the max legal frame
 
+// Backend FIX 4 (review round 1, F-11): the boot-scoped worker token arrives
+// as this ENVIRONMENT variable — the 0.10.5+ orchestrator never puts it on
+// the command line (same-user processes can read a child argv). This literal
+// is the frozen cross-process contract with host_v2_worker_manager.cpp
+// (kWorkerTokenEnvName there, same spelling); keep the two in sync.
+constexpr wchar_t kWorkerTokenEnvName[] = L"EMEBALA_WORKER_TOKEN";
+
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// ---- command line (§1.2 handshake: pipe name + boot-scoped token) ----------
+// ---- command line (§1.2 handshake: pipe name [+ legacy boot token]) --------
 struct WorkerArgs {
     std::wstring pipe_name;
-    std::string token;
+    std::string token; // LEGACY argv token (old orchestrators); the 0.10.5+
+                       // host passes EMEBALA_WORKER_TOKEN in the environment
+                       // instead (review round 1 F-11).
     // B3 fix (session 260928_0001): the orchestrator passes the family it is
     // spawning this worker for as --mutex <family>; the worker derives its
     // PER-FAMILY single-instance mutex from it (wp::MutexNameForFamily). Empty
@@ -304,6 +323,11 @@ ReadOutcome ReadFrame(HANDLE pipe, std::string& json, DWORD timeout_ms) {
         }
         if (w != WAIT_OBJECT_0) {
             ::CancelIoEx(pipe, &ol);
+            // Backend P1-1: drain the kernel cancel-ack BEFORE the stack
+            // OVERLAPPED/buffer go out of scope (the overlapped_io_util
+            // contract — REQ-L02).
+            DWORD cancelled = 0;
+            (void)::GetOverlappedResult(pipe, &ol, &cancelled, TRUE);
             ::CloseHandle(ol.hEvent);
             return ReadOutcome::IoError;
         }
@@ -348,6 +372,25 @@ std::atomic<bool> g_never_cancel_load{false};
 // context at a time (registry max_sessions=1), so a single slot suffices.
 std::atomic<std::uint64_t> g_current_job{0};
 
+// Backend P0-1 (v0.10.5): abort frames are consumed by the READER thread, so
+// an abort targeting a job still sitting in the single-slot queue (not yet
+// started) is remembered here; the inference thread exchanges the session id
+// at job start and answers "timeout" without ever running the work. The
+// wire contract carries only the session (worker_protocol.hpp BuildAbort),
+// and JobMsg.session is the matching handle.
+std::atomic<std::uint64_t> g_pending_abort_session{0};
+
+// Backend P0-1: both threads write frames now (the reader: heartbeats and
+// control replies; the inference thread: terminal events). WriteFrame itself
+// is not thread-safe; this mutex serializes the writes so two frames can
+// never interleave on the pipe.
+std::mutex g_pipe_write_mu;
+
+bool WriteFrameThreadSafe(HANDLE pipe, std::string_view json) {
+    std::lock_guard<std::mutex> lk(g_pipe_write_mu);
+    return WriteFrame(pipe, json);
+}
+
 // Per-family single-instance mutex handle (design §4.2).
 HANDLE g_mutex = nullptr;
 
@@ -363,7 +406,14 @@ wp::WorkerManifest g_manifest;
 // (security audit finding 2, M6 T6) — never logged (shape-only discipline).
 int FrameLoop(HANDLE pipe, std::string_view token) {
     // Engine created ON this thread: llama_backend_init + the model lifecycle
-    // stay single-threaded (v1 InferenceLoop discipline, §4.5).
+    // stay single-threaded (v1 InferenceLoop discipline, §4.5). Backend P0-1
+    // (v0.10.5): this thread is the INFERENCE executor; the dedicated reader
+    // thread below owns the pipe, so an abort/shutdown frame (or a pipe break)
+    // is consumed WHILE engine->Translate() runs instead of sitting unread in
+    // the kernel buffer for the whole decode budget. The pre-fix single-
+    // threaded loop answered aborts only after Translate returned, making
+    // host cancellation a no-op mid-inference and stranding the worker's
+    // ~2 GiB of VRAM for up to 30 s after a host give-up.
     auto engine = std::make_unique<LocalInferenceEngine>();
     engine->cancel_flag = &g_cancel; // address-stability contract (D-2)
     // REQ-051 U-1 FIX 2: the load leg never cancels on a per-job abort — a
@@ -442,49 +492,206 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
              g_manifest.family.c_str(), g_manifest.abi_version,
              g_manifest.protocol_min, g_manifest.protocol_max, token.size());
 
-    std::uint64_t last_heartbeat_ms = static_cast<std::uint64_t>(NowMs());
-    std::uint64_t event_seq = 0;
-
-    for (;;) {
-        // Bounded read so the heartbeat cadence holds with no inbound traffic.
+    // ---- Backend P0-1: the reader thread and the single-slot command queue --
+    // Ordered commands (job / session_open / close) flow reader -> inference;
+    // control frames (abort / shutdown / heartbeat) are acted on by the reader
+    // the moment they arrive, so they are never hostage to a running decode.
+    struct Command {
+        std::string op;
         std::string json;
-        const ReadOutcome rc = ReadFrame(pipe, json, 250);
-        if (rc == ReadOutcome::IoError) {
-            DIAG_F("ENGINEHOST/worker/012: pipe read failed; exiting (err=%lu)\n",
-                   ::GetLastError());
-            return 3;
-        }
-        if (rc == ReadOutcome::Timeout) {
-            const std::uint64_t now = static_cast<std::uint64_t>(NowMs());
-            if (now - last_heartbeat_ms >= wp::kWorkerHeartbeatIntervalMs) {
-                if (!WriteFrame(pipe, wp::BuildHeartbeat(now))) {
-                    DIAG_F("ENGINEHOST/worker/022: heartbeat write failed (orchestrator gone)\n");
-                    return 3;
-                }
-                last_heartbeat_ms = now;
+        bool shutdown = false;
+    };
+    struct CommandQueue {
+        std::mutex mu;
+        std::condition_variable cv;
+        Command cmd;       // one pending ordered command; empty json = none
+        bool stop = false; // the reader decided the process must exit ...
+        int exit_code = 0; // ...with this code (3 = protocol/IO break)
+    } queue;
+    std::atomic<bool> shutdown_ordered{false};
+    // Backend FIX 3 (review round 1, F-08): set by the inference thread on
+    // EVERY exit path (error breaks and the normal shutdown alike) so the
+    // reader leaves its 250 ms read slice and reader.join() returns promptly
+    // even when the peer holds its pipe end open. Previously the join relied
+    // on the peer closing the pipe.
+    std::atomic<bool> stop_reader{false};
+
+    std::thread reader([&] {
+        std::uint64_t last_heartbeat_ms = static_cast<std::uint64_t>(NowMs());
+        const auto die = [&](int code) {
+            // Unwind any in-flight decode/load promptly (pipe break or
+            // protocol error) and hand the exit decision to the inference
+            // thread, which owns the model teardown.
+            g_cancel.store(true, std::memory_order_release);
+            std::lock_guard<std::mutex> lk(queue.mu);
+            queue.stop = true;
+            queue.exit_code = code;
+            queue.cv.notify_one();
+        };
+        for (;;) {
+            if (shutdown_ordered.load(std::memory_order_acquire) ||
+                stop_reader.load(std::memory_order_acquire)) {
+                return; // shutdown ack below, or the inference thread is done
             }
-            continue;
-        }
-        last_heartbeat_ms = NowMs(); // inbound traffic also proves liveness
+            // Bounded read so the heartbeat cadence holds with no inbound
+            // traffic.
+            std::string json;
+            const ReadOutcome rc = ReadFrame(pipe, json, 250);
+            if (rc == ReadOutcome::IoError) {
+                DIAG_F("ENGINEHOST/worker/012: pipe read failed; exiting (err=%lu)\n",
+                       ::GetLastError());
+                die(3);
+                return;
+            }
+            if (rc == ReadOutcome::Timeout) {
+                const std::uint64_t now = static_cast<std::uint64_t>(NowMs());
+                if (now - last_heartbeat_ms >= wp::kWorkerHeartbeatIntervalMs) {
+                    if (!WriteFrameThreadSafe(pipe, wp::BuildHeartbeat(now))) {
+                        DIAG_F("ENGINEHOST/worker/022: heartbeat write failed (orchestrator gone)\n");
+                        die(3);
+                        return;
+                    }
+                    last_heartbeat_ms = now;
+                }
+                continue;
+            }
+            last_heartbeat_ms = NowMs(); // inbound traffic also proves liveness
 
-        enginehost::JsonPairs fields;
-        if (!enginehost::JsonParseObject(json, fields)) {
-            (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-            return 3; // protocol violation -> the orchestrator tears the session
-        }
-        const auto* opField = enginehost::detail::FindField(fields, "op");
-        const std::string op = (opField && opField->is_string) ? opField->text : "";
+            enginehost::JsonPairs fields;
+            if (!enginehost::JsonParseObject(json, fields)) {
+                (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                die(3);
+                return; // protocol violation -> the orchestrator tears the session
+            }
+            const auto* opField = enginehost::detail::FindField(fields, "op");
+            const std::string op = (opField && opField->is_string) ? opField->text : "";
 
+            if (op == "abort") {
+                wp::AbortMsg msg;
+                if (!wp::ParseAbort(json, msg)) {
+                    (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                    die(3);
+                    return;
+                }
+                // D-2 chain b: g_cancel's address is wired into the llama
+                // abort/progress callbacks, so this unwinds a RUNNING decode
+                // or load between tokens within milliseconds. A job still
+                // QUEUED behind the running one is remembered by id; the
+                // inference thread answers it "timeout" without starting the
+                // work. An abort for an unknown id stays a no-op (the v1
+                // rule: only the in-flight job is aborted).
+                if (g_current_job.load(std::memory_order_acquire) != 0) {
+                    g_cancel.store(true, std::memory_order_release);
+                }
+                g_pending_abort_session.store(msg.session, std::memory_order_release);
+                continue;
+            }
+            if (op == "heartbeat") {
+                wp::HeartbeatMsg hb;
+                if (!wp::ParseHeartbeat(json, hb)) {
+                    (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                    die(3);
+                    return;
+                }
+                continue; // liveness marker only; nothing to answer (§1.2)
+            }
+            if (op == "shutdown") {
+                if (!wp::ParseShutdown(json)) {
+                    (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                    die(3);
+                    return;
+                }
+                // M-2 order kept: the reader only unwinds the in-flight decode
+                // (g_cancel) so the inference thread's Unload below is not
+                // blocked by a multi-second llama call; unload + shutdown_ack
+                // (the LAST write) + exit 0 run on the inference thread.
+                DIAG_LOG("ENGINEHOST", "worker/024: shutdown requested; aborting + unloading model");
+                g_cancel.store(true, std::memory_order_release);
+                shutdown_ordered.store(true, std::memory_order_release);
+                {
+                    std::lock_guard<std::mutex> lk(queue.mu);
+                    queue.cmd = Command{std::string(), std::move(json), /*shutdown=*/true};
+                    queue.cv.notify_one();
+                }
+                return; // nothing further is read after a shutdown
+            }
+            // Ordered commands (job / session_open / close): the single slot.
+            // The orchestrator contract is ONE job in flight, so the slot is
+            // almost always empty; a superseded unstarted frame is dropped
+            // (newest wins) and logged shape-only.
+            {
+                std::lock_guard<std::mutex> lk(queue.mu);
+                if (!queue.cmd.json.empty()) {
+                    DIAG_F("ENGINEHOST/worker/031: an unstarted command was superseded (op=%s len=%zu)\n",
+                           queue.cmd.op.c_str(), queue.cmd.json.size());
+                }
+                queue.cmd = Command{op, std::move(json), /*shutdown=*/false};
+                queue.cv.notify_one();
+            }
+        }
+    });
+
+    // ---- the inference loop (this thread owns the engine) ----
+    std::uint64_t event_seq = 0;
+    int exit_code = 0;
+    for (;;) {
+        Command cmd;
+        {
+            std::unique_lock<std::mutex> lk(queue.mu);
+            queue.cv.wait(lk, [&] { return queue.stop || !queue.cmd.json.empty(); });
+            if (!queue.cmd.json.empty()) {
+                cmd = std::move(queue.cmd);
+                queue.cmd = Command{};
+            } else {
+                exit_code = queue.exit_code;
+                break; // reader stop with no further command
+            }
+        }
+
+        if (cmd.shutdown) {
+            // M-2 order (worker half): every prior event was flushed
+            // synchronously (WriteFrameThreadSafe) before this point. Unload
+            // the model, send shutdown_ack LAST, exit 0. The orchestrator
+            // waits for this ack (or EOF) BEFORE closing the pipe.
+            engine->Unload();
+            if (!WriteFrameThreadSafe(pipe, wp::BuildShutdownAck())) {
+                DIAG_F("ENGINEHOST/worker/025: shutdown_ack write failed (orchestrator gone)\n");
+                exit_code = 0; // the pipe is already dead; graceful-enough exit
+                break;
+            }
+            exit_code = 0;
+            break; // FrameLoop returns 0 -> wWinMain exits 0
+        }
+
+        const std::string& op = cmd.op;
         if (op == "job") {
             wp::JobMsg job;
-            if (!wp::ParseJob(json, job)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
+            if (!wp::ParseJob(cmd.json, job)) {
+                (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                exit_code = 3;
+                break;
             }
             g_current_job.store(job.job, std::memory_order_release);
             // Clear the cancel flag BEFORE the work starts so a stale abort
             // can never kill the next job (v1 InferenceLoop discipline).
             g_cancel.store(false, std::memory_order_release);
+            // Backend P0-1: an abort that landed while this job sat in the
+            // queue is honored here — the work never starts and the job gets
+            // the same "timeout" answer as a mid-decode abort.
+            if (g_pending_abort_session.exchange(0, std::memory_order_acq_rel) == job.session) {
+                g_current_job.store(0, std::memory_order_release);
+                wp::EventMsg ev;
+                ev.session = job.session;
+                ev.seq = ++event_seq;
+                ev.kind = wp::EventKind::Error;
+                ev.code = "timeout";
+                if (!WriteFrameThreadSafe(pipe, wp::BuildEvent(ev))) {
+                    DIAG_F("ENGINEHOST/worker/023: event write failed (orchestrator gone)\n");
+                    exit_code = 3;
+                    break;
+                }
+                continue;
+            }
 
             // REQ-045 P4-4: resolve the model for THIS job from the latest
             // session_open model_id ("" -> pinned; unresolvable -> pinned with
@@ -581,9 +788,10 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // REQ-057: echo the served id on EVERY terminal event of the job
             // (final AND error kinds) — diagnosability on failures matters.
             ev.model = served_model_id;
-            if (!WriteFrame(pipe, wp::BuildEvent(ev))) {
+            if (!WriteFrameThreadSafe(pipe, wp::BuildEvent(ev))) {
                 DIAG_F("ENGINEHOST/worker/023: event write failed (orchestrator gone)\n");
-                return 3;
+                exit_code = 3;
+                break;
             }
             DIAG_LOG("ENGINEHOST", "worker/002: job %llu answered (kind=%s seq=%llu)",
                      static_cast<unsigned long long>(job.job),
@@ -591,14 +799,15 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                      static_cast<unsigned long long>(ev.seq));
         } else if (op == "session_open") {
             wp::SessionOpenMsg msg;
-            if (!wp::ParseSessionOpen(json, msg)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
+            if (!wp::ParseSessionOpen(cmd.json, msg)) {
+                (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                exit_code = 3;
+                break;
             }
             if (msg.capability != "translate") {
                 // Not our capability: inline refusal (fail-closed, no tear-down
                 // — the orchestrator routes capability mismatches).
-                (void)WriteFrame(pipe, wp::BuildError("unavailable"));
+                (void)WriteFrameThreadSafe(pipe, wp::BuildError("unavailable"));
                 continue;
             }
             // REQ-045 P4-4: the session opens unconditionally still, but the
@@ -612,9 +821,11 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
             // the model sits resident in VRAM before the opened ack (the first
             // real job then skips the multi-second load; the worker holds one
             // model without unload, so post-load residency is automatic).
-            // This IO thread blocks for the whole load — acceptable by design
-            // (one process per worker, this thread owns the frame loop, and
-            // the orchestrator awaits opened before dispatching anyway).
+            // The load runs on the inference thread — the engine's owning
+            // thread — and blocks for the whole load, which is acceptable by
+            // design (the orchestrator awaits opened before dispatching
+            // anyway, and Backend P0-1 keeps the pipe reader independent, so
+            // abort/shutdown stay responsive for the whole preload window).
             // Failure is NON-fatal: one shape-only diag line and the session
             // still opens normally — the first job re-attempts EnsureLoaded
             // through the ordinary model_missing path.
@@ -632,64 +843,45 @@ int FrameLoop(HANDLE pipe, std::string_view token) {
                              "(first job retries EnsureLoaded)");
                 }
             }
-            if (!WriteFrame(pipe, wp::BuildOpened(msg.session))) {
-                return 3;
+            if (!WriteFrameThreadSafe(pipe, wp::BuildOpened(msg.session))) {
+                exit_code = 3;
+                break;
             }
         } else if (op == "close") {
             std::uint64_t session = 0;
-            if (!wp::ParseClose(json, session)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
+            if (!wp::ParseClose(cmd.json, session)) {
+                (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+                exit_code = 3;
+                break;
             }
-            if (!WriteFrame(pipe, wp::BuildClosed(session))) {
-                return 3;
+            if (!WriteFrameThreadSafe(pipe, wp::BuildClosed(session))) {
+                exit_code = 3;
+                break;
             }
-        } else if (op == "abort") {
-            wp::AbortMsg msg;
-            if (!wp::ParseAbort(json, msg)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
-            }
-            // D-2 chain b: store the flag; the llama abort/progress callbacks
-            // (already wired to THIS atomic's address) unwind the decode/load.
-            // An abort for a job that is not in flight is a no-op (v1 rule:
-            // only the in-flight job is aborted).
-            if (g_current_job.load(std::memory_order_acquire) != 0) {
-                g_cancel.store(true, std::memory_order_release);
-            }
-        } else if (op == "heartbeat") {
-            wp::HeartbeatMsg hb;
-            if (!wp::ParseHeartbeat(json, hb)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
-            }
-            // Liveness marker only; nothing to answer (§1.2 one-way ping).
-        } else if (op == "shutdown") {
-            if (!wp::ParseShutdown(json)) {
-                (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-                return 3;
-            }
-            // M-2 order (worker half): every prior event was flushed
-            // synchronously by WriteFrame. Now: abort any in-flight decode
-            // (so Unload is not blocked by a multi-second llama call), unload
-            // the model, send shutdown_ack LAST, exit 0. The orchestrator
-            // waits for this ack (or EOF) BEFORE closing the pipe.
-            DIAG_LOG("ENGINEHOST", "worker/024: shutdown requested; aborting + unloading model");
-            g_cancel.store(true, std::memory_order_release);
-            engine->Unload();
-            if (!WriteFrame(pipe, wp::BuildShutdownAck())) {
-                DIAG_F("ENGINEHOST/worker/025: shutdown_ack write failed (orchestrator gone)\n");
-                return 0; // the pipe is already dead; graceful-enough exit
-            }
-            break; // FrameLoop returns 0 -> wWinMain exits 0
+        } else if (op == "abort" || op == "heartbeat") {
+            // Backend P0-1: reader-owned control frames. Unreachable here (the
+            // reader intercepts them before queueing); kept harmless if a
+            // future change ever routes one into the queue.
+            continue;
         } else {
             // §V2-12-2: unknown ops converge to error + close (fail-closed).
-            DIAG_F("ENGINEHOST/worker/026: unknown op rejected (len=%zu)\n", json.size());
-            (void)WriteFrame(pipe, wp::BuildError(enginehost::kErrBadRequest));
-            return 3;
+            DIAG_F("ENGINEHOST/worker/026: unknown op rejected (len=%zu)\n", cmd.json.size());
+            (void)WriteFrameThreadSafe(pipe, wp::BuildError(enginehost::kErrBadRequest));
+            exit_code = 3;
+            break;
         }
     }
-    return 0;
+    // Backend FIX 3 (review round 1, F-08): reached from EVERY inference exit
+    // path (all `exit_code = 3; break;` error branches, the shutdown branch
+    // and the reader-stop branch alike) — signal the reader so it leaves its
+    // read slice and the join below returns promptly even when the peer holds
+    // its pipe end open.
+    stop_reader.store(true, std::memory_order_release);
+    // Join the reader before returning: no thread may touch the pipe after
+    // wWinMain closes it, and a reader blocked in its 250 ms read slice must
+    // not outlive the engine teardown.
+    if (reader.joinable()) reader.join();
+    return exit_code;
 }
 
 } // namespace
@@ -732,13 +924,37 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
         diag::Shutdown();
         return 0;
     }
-    const bool token_ok = args.token.size() == 32 &&
-        std::all_of(args.token.begin(), args.token.end(), [](char c) {
+    // Backend FIX 4 (review round 1, F-11): the boot token arrives via the
+    // child ENVIRONMENT (the 0.10.5+ orchestrator never puts it on the
+    // command line — same-user processes can read a child argv). An OLD
+    // orchestrator still passes --token, so the argv value remains the
+    // fallback. Shape-only discipline: the token is never logged.
+    std::string token;
+    {
+        // Query size first: the return value counts the terminating NUL, so
+        // the read buffer must hold `need` characters (capacity need, then
+        // resize down to the returned length).
+        const DWORD need = ::GetEnvironmentVariableW(kWorkerTokenEnvName, nullptr, 0);
+        if (need > 1) {
+            std::wstring buf(need, L'\0');
+            if (::GetEnvironmentVariableW(kWorkerTokenEnvName, buf.data(), need) == need - 1) {
+                buf.resize(need - 1);
+                token.reserve(buf.size());
+                for (const wchar_t c : buf) {
+                    if (c < 0x80) token.push_back(static_cast<char>(c));
+                }
+            }
+        }
+    }
+    if (token.empty()) token = args.token; // old-host --token fallback
+
+    const bool token_ok = token.size() == 32 &&
+        std::all_of(token.begin(), token.end(), [](char c) {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
         });
     if (args.pipe_name.empty() || args.pipe_name.size() > 200 || !token_ok) {
         DIAG_F("ENGINEHOST/worker/002: bad command line (pipe=%zu token=%zu)\n",
-               args.pipe_name.size(), args.token.size());
+               args.pipe_name.size(), token.size());
         ::ReleaseMutex(g_mutex);
         ::CloseHandle(g_mutex);
         diag::Shutdown();
@@ -771,7 +987,7 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE, PWSTR pCmdLine, int) {
         return 3;
     }
 
-    const int exit_code = FrameLoop(pipe, args.token);
+    const int exit_code = FrameLoop(pipe, token);
     ::CloseHandle(pipe);
     DIAG_LOG("ENGINEHOST", "worker/027: exiting (code=%d)", exit_code);
     diag::Shutdown();

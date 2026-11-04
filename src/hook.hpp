@@ -8,6 +8,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <stop_token>
@@ -227,6 +228,10 @@ constexpr bool ImeMirrorNext(bool composing, UINT vk_code) {
         // (e.g. the user clicked away, or the app/Electron swallowed the
         // commit) could leave the mirror stuck true and silently gate out the
         // NEXT bare Enter - the exact "typed text never translates" failure.
+        // Input P1-6 (v0.10.5) closes the click and focus-switch half of that
+        // residual: MouseHook resets the mirror on every real click and
+        // LowLevelKeyboardProc resets it on every foreground HWND change (see
+        // ResetImeCompositionMirror).
         case VK_UP:
         case VK_DOWN:
         case VK_PRIOR: // Page Up
@@ -505,6 +510,21 @@ public:
         return s_instance ? s_instance->double_ctrl_c_busy_.load(std::memory_order_relaxed) : false;
     }
 
+    // ---- Input P1-6 (v0.10.5): cross-hook IME mirror reset ------------------
+    // MouseHook (and the foreground-window-change detection inside
+    // LowLevelKeyboardProc) calls this on every real left/right click and on
+    // every foreground HWND change. Rationale: a click dismisses or commits an
+    // IME composition without the keyboard hook ever seeing a composition-
+    // finalising key, so the hook-local VK_PROCESSKEY mirror would stay stuck
+    // true and silently gate out the next bare Enter (the "typed text never
+    // translates" failure). O(1) relaxed atomic store; callable from any
+    // thread (the mouse hook thread).
+    static void ResetImeCompositionMirror() {
+        if (s_instance) {
+            s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+        }
+    }
+
     // Read-only accessor of the compiled toggle combo (set in Start()).
     HotkeySpec ToggleHotkey() const { return toggle_spec_; }
 
@@ -531,13 +551,13 @@ private:
     std::atomic<bool> ime_composing_{false};
 
     // F3 (session 260908_0003): Shift+Enter passthrough counter K for the
-    // block-slice engine (see ShiftEnterKNext). Hook-thread only (written in
-    // LowLevelKeyboardProc's shift-Enter branch, consumed + reset in the
-    // bare-Enter branch) - plain members, same single-thread discipline as
-    // last_ctrl_c_time_. k_anchor_hwnd_ is the foreground window K was last
-    // counting for: a switch lazily re-anchors K to 0 on the next counting
-    // event (aligned with the worker ledger's per-hwnd identity, V5/F6).
-    int shift_enter_k_ = 0;
+    // block-slice engine (see ShiftEnterKNext). Written in LowLevelKeyboardProc
+    // and consumed + reset at the bare-Enter branch; Input P1-5 (v0.10.5) made
+    // it a relaxed std::atomic<int> because the Ctrl+V arm (below) additionally
+    // counts the pasted clipboard's real newlines on the hotkey-effects worker
+    // thread (a plain int would be a data race). k_anchor_hwnd_ stays a plain
+    // member: it is only ever touched from the hook thread.
+    std::atomic<int> shift_enter_k_{0};
     HWND k_anchor_hwnd_ = nullptr;
 
     // REQ-R06 persistent-worker lifecycle. Start() spawns the loop, Stop() (and
@@ -601,6 +621,46 @@ private:
     std::condition_variable double_ctrl_c_cv_;
     std::atomic<bool> double_ctrl_c_pending_{false};
     std::atomic<bool> double_ctrl_c_busy_{false};
+
+    // ---- Input P0-1 (v0.10.5): hotkey side-effects worker -------------------
+    // The bound-hotkey dispatch (toggle / language-cycle / auto-send) used to
+    // run config_.SaveToFile() (CreateFileW + FlushFileBuffers + MoveFileExW)
+    // and tray_.UpdateStatus() (synchronous Shell_NotifyIconW IPC into
+    // explorer.exe) INSIDE LowLevelKeyboardProc. A slow disk flush or a busy
+    // shell past LowLevelHooksTimeout (~300 ms) gets WH_KEYBOARD_LL silently
+    // removed. The heavy bodies are queued here and run off the hook thread;
+    // only the in-memory atomic state flips stay in the callback. Same
+    // persistent-jthread + deterministic-join discipline as the REQ-R06 worker
+    // above (spawned in Start(), joined in Stop()/~KeyboardHook).
+    // removed two one-line spawners: the fx worker lifecycle is folded into
+    // StartAsyncWorker()/StopAsyncWorker() above, so the spawn and the join can
+    // never drift apart between the two persistent workers.
+    void HotkeyFxWorkerLoop(std::stop_token st);
+    // Non-blocking handoff: lock + push + notify_one, returns in microseconds.
+    // F-10 (fix-list round 1): NO inline fallback exists. While the worker is
+    // not live the body is DROPPED (pre-Start / post-Stop, plus a diag line in
+    // the impossible "running but not live" state) - never executed on the
+    // caller, because the one thing P0-1 forbids is running these effects
+    // (SaveToFile disk I/O, Shell_NotifyIconW, clipboard reads) on the hook
+    // thread. The old `allow_inline_fallback` parameter claimed a spawn-
+    // failure inline path, but StartAsyncWorker() CASes the live flag BEFORE
+    // the jthread spawn and every dispatching caller postdates Start(), so
+    // that state was unreachable; a genuine spawn failure unwinds Start()
+    // instead (see the definition comment).
+    void DispatchHotkeyFx(std::function<void()> body);
+    std::jthread hotkey_fx_worker_;
+    std::atomic<bool> hotkey_fx_worker_live_{false};
+    std::mutex hotkey_fx_mutex_;
+    // Input P0-1 round 3 (v0.10.5): condition_variable_any, NOT
+    // condition_variable - MSVC's STL provides the C++20 stop-token wait
+    // overload wait(lock, stop_token, pred) ONLY on condition_variable_any
+    // (condition_variable's layout is ABI-locked), and that overload is what
+    // makes the StopAsyncWorker() join deterministic. Same <condition_variable>
+    // header; works with std::unique_lock<std::mutex>; its small per-wait
+    // shared-state allocation is irrelevant for a worker that parks idle
+    // almost always (woken only by a hotkey effect or the stop).
+    std::condition_variable_any hotkey_fx_cv_;
+    std::deque<std::function<void()>> hotkey_fx_queue_;
 
     static KeyboardHook* s_instance;
 };

@@ -118,6 +118,15 @@ inline constexpr int kDecodeWallClockBudgetMs = 12000;
 inline constexpr int kDecodeMsPerAssumedToken = 20;
 inline constexpr int kDecodeWallClockBudgetMaxMs = 27000;
 
+// Backend P1-3 (v0.10.5 handoff section 4.4 item 3): the over-budget paragraph
+// chunking path runs the per-chunk attempt ladder with a FRESH decode budget
+// per chunk, so N chunks could accumulate N x (up to 27 s) and blow the
+// frozen 30 s host/client IPC timeout. The whole chunked request therefore
+// carries ONE accumulated deadline from the request start: every chunk's
+// decode deadline is clamped to it, and the chunk loop refuses to start a
+// new chunk past it. 28 s leaves ~2 s of headroom for IPC + stitching.
+inline constexpr int kChunkedRequestBudgetMs = 28000;
+
 // REQ-059 perf: budget_ms = clamp(max_gen_tokens * kDecodeMsPerAssumedToken,
 // kDecodeWallClockBudgetMs, kDecodeWallClockBudgetMaxMs). Pure/constexpr so
 // the unit suite pins the clamp headlessly (mirrors ScaledMaxGenTokens).
@@ -157,6 +166,27 @@ constexpr int ScaledMaxGenTokens(int input_token_count) {
     }
     const int scaled = input_token_count * kScaledGenPerInputToken + kScaledGenFlatTokens;
     return scaled < kScaledGenFloorTokens ? kScaledGenFloorTokens : scaled;
+}
+
+// RC-4 (v0.10.5 handoff section 2.5): short-input generation cap. The
+// historical floor hands every input at least kScaledGenFloorTokens (256)
+// generation tokens, and the caller passes the WHOLE formatted prompt token
+// count (template wrapper included), so a one-word translation carried a
+// 256-token runway for hallucinated essays. A short single-line source
+// (<= 16 UTF-8 bytes, no line break) can only ever produce a word or one
+// sentence, so its budget is capped to 64 tokens. kLlamaGenReserve is the
+// "no additional constraint" sentinel: the caller takes the lesser of
+// ScaledMaxGenTokens and this cap, so longer inputs keep their historical
+// budget byte-identically. Pure/constexpr so the unit suite pins it
+// headlessly (mirrors ScaledMaxGenTokens).
+inline constexpr std::size_t kShortSourceMaxUtf8Bytes = 16;
+inline constexpr int kShortSourceGenCapTokens = 64;
+constexpr int ShortSourceGenTokenCap(std::size_t source_utf8_bytes,
+                                     bool source_has_line_break) noexcept {
+    if (!source_has_line_break && source_utf8_bytes <= kShortSourceMaxUtf8Bytes) {
+        return kShortSourceGenCapTokens;
+    }
+    return kLlamaGenReserve;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +375,21 @@ inline constexpr std::size_t kAmplifiedOutputMinCodePoints = 64;
 // 980-1110 code points) and rule (ii) rejects it again.
 inline constexpr std::size_t kAmplifiedRepetitionOutputMinCodePoints = 120;
 
+// RC-2 (v0.10.5 handoff section 2.3): the two-tier tiny-source amplification
+// guard. Tier 1 covers sources of at most kAmplifiedSourceMaxCodePoints code
+// points (the pinned constant above is UNCHANGED): the flat floor is lowered
+// from 64 to 32 AND paired with a 10x ratio, so a 1-4 character word
+// answered with 32+ characters (>= 10x) is rejected. Tier 2 covers 5..15
+// code point sources PLUS single-token (whitespace-free) sources of any
+// length: 64+ characters at a 6x ratio is an amplification hallucination
+// for a single word ("hello" -> a dictionary essay). The historical pinned
+// constants keep their values (unit-suite static_asserts); the new
+// thresholds are separate constants.
+inline constexpr std::size_t kAmplifiedTinyTier1OutputMinCodePoints = 32;
+inline constexpr std::size_t kAmplifiedTinyTier1Ratio = 10;
+inline constexpr std::size_t kAmplifiedTinyTier2SourceMaxCodePoints = 15;
+inline constexpr std::size_t kAmplifiedTinyTier2Ratio = 6;
+
 // Script classes a text can carry. Bit flags so "target script present" is a
 // single mask test; JA is the one multi-script target (Han|Kana).
 enum class ScriptClass : std::uint32_t {
@@ -447,6 +492,16 @@ bool HasSuffixRepetition(std::wstring_view text);
 // that genuinely have no source (and for the pure predicate pins).
 bool OutputHasRepetition(std::wstring_view text, std::wstring_view source = {});
 
+// F-04 (v0.10.5 review round 1): conversational meta-leakage needles (apology
+// openers, "the following is", assistant offers) only fire for a SHORT source.
+// The talk-back failure mode exists only when the model answers a word or a
+// short phrase instead of translating; an opener-leading output for a longer
+// source is its translation ("Sorry, but I cannot" -> "죄송하지만 ...") and
+// must never be rejected. Label-style prefixes ending in a colon stay
+// unconditional. The handoff source guard is untouched: a needle the SOURCE
+// itself carries never fires.
+inline constexpr std::size_t kConversationalNeedleMaxSourceCodePoints = 15;
+
 // R1-1 meta leakage: a table-driven refusal opener ("translation is not
 // possible", "i can't translate", "please contact us for"), an assistant-style
 // opener ("sure, here", "as an ai", "here are some tips"), or a "<language>:"
@@ -466,17 +521,23 @@ bool HasMetaLeakage(std::wstring_view text, std::wstring_view source);
 bool IsUnexpectedScriptHeavyOutput(std::wstring_view output, std::wstring_view source,
                                    std::uint32_t tgt_script_classes);
 
-// R2-16 rule (ii), pure: a source of at most kAmplifiedSourceMaxCodePoints code
-// points answered with at least kAmplifiedOutputMinCodePoints (the live
-// KO->EN "음" essay). A source that is itself a pure repetition (see below)
-// gets the laughter ceiling instead of the 64-code-point floor, so a real
-// laughter expansion passes and a ~1,000-code-point nonsense essay does not.
+// R2-16 rule (ii), pure: the two-tier tiny-source amplification guard (RC-2,
+// v0.10.5). Tier 1: a source of at most kAmplifiedSourceMaxCodePoints code
+// points answered with >= kAmplifiedTinyTier1OutputMinCodePoints (32) at a
+// >= kAmplifiedTinyTier1Ratio (10x) expansion. Tier 2: a 5..15 code point
+// source, or a single whitespace-free token of any length, answered with >=
+// kAmplifiedOutputMinCodePoints (64) at a >= kAmplifiedTinyTier2Ratio (6x)
+// expansion. A source that is itself a pure repetition (see below) keeps the
+// bounded laughter ceiling instead of the flat floor.
 bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view source);
 
 // R3 source-shape carve-out for rule (ii), pure: true when the WHOLE source is
-// one unit repeated ("ㅋㅋㅋㅋ", "kkkk", "!!!!", "haha", "no no no"). Whitespace
-// is ignored for the shape test; one code point alone is never a repetition
-// (that is the live "음" residual the rule exists for). Used by rule (ii) to
+// one unit repeated AT LEAST THREE TIMES ("ㅋㅋㅋㅋ", "kkkk", "!!!!", "no no
+// no"; RC-2, v0.10.5: the floor is three repetitions, so everyday 2-char AA
+// words ("점점", "妈妈") and 4-char ABAB words ("바이바이", "haha") are NOT
+// laughter). Whitespace is ignored for the shape test; one code point alone
+// is never a repetition (that is the live "음" residual the rule exists for).
+// Used by rule (ii) to
 // give such a source the bounded laughter ceiling
 // (kAmplifiedRepetitionOutputMinCodePoints) rather than a blanket exemption: a
 // laughter answer passes, a 980-1110-code-point essay is still rejected.

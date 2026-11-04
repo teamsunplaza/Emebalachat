@@ -115,6 +115,63 @@ inline bool IsVietnameseCodePoint(uint32_t cp) {
     return false;
 }
 
+// RC-6 (v0.10.5 handoff section 2.7): the Vietnamese predicate is split in
+// two. VI-EXCLUSIVE codepoints (the 1EA0 tone block plus the horns, which no
+// other supported language writes) confirm Vietnamese immediately. The shared
+// A-breve / D-stroke (Romanian / Croatian-Serbian orthography) no longer
+// hijack a whole sentence by themselves: they count only when a VI-exclusive
+// marker OR a Vietnamese stopword coexists, otherwise detection falls through
+// to the Latin-script path (DetectLatinLanguage).
+inline bool IsVietnameseExclusiveCodePoint(uint32_t cp) {
+    return (cp >= 0x1EA0 && cp <= 0x1EF9) || // Latin Extended Additional (tone marks)
+           cp == 0x01A0 || cp == 0x01A1 ||   // O-horn, o-horn
+           cp == 0x01AF || cp == 0x01B0;    // U-horn, u-horn
+}
+
+inline bool IsVietnameseSharedCodePoint(uint32_t cp) {
+    return cp == 0x0102 || cp == 0x0103 ||   // A-breve, a-breve (Romanian shares)
+           cp == 0x0110 || cp == 0x0111;     // D-stroke, d-stroke (Croatian/Serbian share)
+}
+
+// RC-6: high-frequency Vietnamese words used as the corroborating signal for
+// shared-letter-only text. Kept separate from kLatinLangs: Vietnamese is
+// script-detected, not stopword-voted, and this list is only consulted when
+// the text already carries a shared VI letter.
+const wchar_t* const kVietnameseStopWords[] = {
+    L"không", L"của", L"một", L"và", L"là", L"cho", L"được", L"người",
+    L"những", L"trong", L"có", L"với", L"đã", L"sẽ", L"về", L"từ",
+    L"này", L"khi", L"ra", L"để", L"anh", L"em", L"gì", L"sao",
+    L"nào", L"rất", L"thì", L"mà", L"tôi", L"bạn", L"họ", L"chúng",
+    L"vì", L"thế", L"đây", L"ấy", L"ở", L"theo", L"như", L"sau",
+    L"trước", L"cũng", L"lại", L"hơn", L"rồi", L"năm", L"ngày",
+};
+
+// RC-6: does the text carry any Vietnamese stopword? Only consulted AFTER a
+// shared VI letter was found, as the corroborating coexistence signal.
+bool ContainsVietnameseStopWord(std::wstring_view text) {
+    std::wstring token;
+    const auto flush = [&]() -> bool {
+        if (token.empty()) return false;
+        for (size_t i = 0; i < std::size(kVietnameseStopWords); ++i) {
+            if (token == kVietnameseStopWords[i]) {
+                token.clear();
+                return true;
+            }
+        }
+        token.clear();
+        return false;
+    };
+    for (wchar_t c : text) {
+        if (iswalpha(c)) {
+            token += towlower(c);
+        } else if (flush()) {
+            return true;
+        }
+    }
+    return flush();
+}
+
+
 // Latin SCRIPT letters - a script-family classifier, NOT a language assertion.
 // F1 (session 260908_0003): widened beyond A-Za-z so accented Latin text
 // (Portuguese a-tilde/o-tilde/c-cedilla, French e-acute/e-grave, Spanish
@@ -218,7 +275,17 @@ bool ContainsThai(std::wstring_view text) {
 }
 
 bool ContainsVietnamese(std::wstring_view text) {
-    return ContainsCodePointMatching(text, IsVietnameseCodePoint);
+    // RC-6 (v0.10.5 handoff section 2.7): VI-exclusive markers confirm
+    // Vietnamese immediately; the shared A-breve/D-stroke only count with a
+    // VI-exclusive marker or a Vietnamese stopword coexisting. Shared-only
+    // text (Romanian "casă", Croatian "đak") falls through to the Latin path.
+    if (ContainsCodePointMatching(text, IsVietnameseExclusiveCodePoint)) {
+        return true;
+    }
+    if (!ContainsCodePointMatching(text, IsVietnameseSharedCodePoint)) {
+        return false;
+    }
+    return ContainsVietnameseStopWord(text);
 }
 
 bool ContainsLatin(std::wstring_view text) {
@@ -371,6 +438,82 @@ const LangStopWords kLatinLangs[] = {
     { "Norwegian", kStopWordsNO, std::size(kStopWordsNO), 2 }
 };
 
+// RC-1 (v0.10.5 handoff section 2.2): high-frequency English core vocabulary.
+// A 1-2 token Latin input matching one of these (or an English stopword) is
+// high-confidence English, so single words like "hello" / "good morning" no
+// longer collapse into the AUTO marker (which skipped the already-target
+// bypass and, after a rung-1 echo, fed raw completion to the chat template).
+const wchar_t* const kEnglishCoreWords[] = {
+    L"hello", L"world", L"thanks", L"thank", L"yes", L"no", L"ok", L"okay",
+    L"good", L"morning", L"please", L"sorry", L"help", L"test", L"update",
+    L"file", L"error", L"hi", L"hey", L"bye", L"goodbye", L"welcome",
+    L"night", L"evening", L"afternoon", L"name", L"love", L"time", L"day",
+    L"today", L"tomorrow", L"yesterday", L"work", L"home", L"water",
+    L"friend", L"family", L"happy"
+};
+
+// RC-1: non-English distinctive diacritics - letters that (among the 37
+// supported languages) appear in exactly one language's orthography, so a
+// 1-2 token word carrying one is immediately classifiable. Shared letters
+// (á, é, ü, ç, ...) are deliberately ABSENT: they stay the AUTO marker (F1).
+struct DistinctiveDiacriticEntry {
+    uint32_t cp;
+    const char* lang_name;
+};
+
+const DistinctiveDiacriticEntry kDistinctiveDiacritics[] = {
+    {0x00F1, "Spanish"},              // ñ
+    {0x00DF, "German"},               // ß
+    {0x0153, "French"},               // œ
+    {0x00E3, "Portuguese"},           // ã
+    {0x00F5, "Portuguese"},           // õ
+    {0x011F, "Turkish"},              // ğ
+    {0x0131, "Turkish"},              // dotless ı
+    {0x0105, "Polish"},               // ą
+    {0x0119, "Polish"},               // ę
+    {0x0142, "Polish"},               // ł
+    {0x0144, "Polish"},               // ń
+    {0x015B, "Polish"},               // ś
+    {0x017A, "Polish"},               // ź
+    {0x017C, "Polish"},               // ż
+    {0x016F, "Czech"},                // ů
+    {0x011B, "Czech"},                // ě
+    {0x0159, "Czech"},                // ř
+    {0x0165, "Czech"},                // ť
+    {0x010F, "Czech"},                // ď
+    {0x0103, "Romanian"},             // ă
+    {0x00EE, "Romanian"},             // î
+    {0x0219, "Romanian"},             // ș (comma-below; Romanian-only)
+    {0x021B, "Romanian"},             // ț (comma-below; Romanian-only)
+    {0x0163, "Romanian"},             // ţ
+    {0x0151, "Hungarian"},            // ő
+    {0x0171, "Hungarian"},            // ű
+};
+// F-13 (v0.10.5 review round 1): deliberately ABSENT from the table - ù
+// (French AND Italian "piu'"/"giu'") and ş (Romanian legacy AND Turkish) are
+// shared letters, so a 1-2 token Italian/Turkish word would be mislabeled;
+// shared letters stay the AUTO marker (F1).
+
+bool TokenInWordList(std::wstring_view token, const wchar_t* const* words, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (token == words[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const char* DistinctiveDiacriticLanguage(std::wstring_view token) {
+    for (wchar_t c : token) {
+        for (const DistinctiveDiacriticEntry& entry : kDistinctiveDiacritics) {
+            if (c == entry.cp) {
+                return entry.lang_name;
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::string DetectLatinLanguage(std::wstring_view text) {
     std::vector<std::wstring> tokens;
     std::wstring current_token;
@@ -387,6 +530,52 @@ std::string DetectLatinLanguage(std::wstring_view text) {
     }
 
     if (tokens.size() < 3) {
+        // RC-1 (v0.10.5 handoff section 2.2): the <3-token floor used to force
+        // every single word ("hello", "apple", "good morning") into the AUTO
+        // marker. Resolve 1-2 token inputs immediately instead: a non-English
+        // distinctive diacritic, an English core-vocabulary/stopword hit
+        // (high-confidence English), or a single non-English stopword hit
+        // (ties stay ambiguous). Anything else keeps the AUTO marker.
+        for (const auto& token : tokens) {
+            if (const char* lang = DistinctiveDiacriticLanguage(token)) {
+                DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s (distinctive diacritic)\n", lang);
+                return lang;
+            }
+        }
+        for (const auto& token : tokens) {
+            if (TokenInWordList(token, kEnglishCoreWords, std::size(kEnglishCoreWords)) ||
+                TokenInWordList(token, kStopWordsEN, std::size(kStopWordsEN))) {
+                DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=English\n");
+                return "English";
+            }
+        }
+        int best_hits = 0;
+        const char* best_lang = nullptr;
+        bool tie = false;
+        for (const auto& lang : kLatinLangs) {
+            if (EqualsIgnoreCaseAscii(std::string_view{lang.lang_name}, std::string_view{"English"})) {
+                continue; // English resolved above
+            }
+            int hits = 0;
+            for (const auto& token : tokens) {
+                if (TokenInWordList(token, lang.words, lang.count)) {
+                    ++hits;
+                }
+            }
+            if (hits >= 1) {
+                if (hits > best_hits) {
+                    best_hits = hits;
+                    best_lang = lang.lang_name;
+                    tie = false;
+                } else if (hits == best_hits) {
+                    tie = true;
+                }
+            }
+        }
+        if (best_lang && !tie) {
+            DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s with %d hits\n", best_lang, best_hits);
+            return best_lang;
+        }
         return "Auto Detect";
     }
 
@@ -514,24 +703,24 @@ std::string DetectLanguage(std::wstring_view text) {
     //     Latin->English request (Claim C), and
     // (c) got INJECTED as the engine source under Auto Detect (ADR-A1-2),
     //     overriding Hy-MT2's own language ID with a wrong label.
-    // F1 Phase 1 kept the "English" label for PURE-ASCII Latin so the EN->EN
-    // identity bypass survived. F5 Phase 2 (this session, ask audit 181530
-    // condition 1 Option B, VP/user adjudication of the user SCOPE DIRECTIVE
-    // "Hy-MT2에서 지원하는 모든 언어쌍을 정확하게 100% 지원") removes the
-    // residue: pure-ASCII Latin cannot distinguish English from Indonesian/
-    // Malay/Tagalog/Swahili (all Hy-MT2-supported, all ASCII-Latin), so
-    // asserting "English" re-opened a SILENT untranslated passthrough for
-    // exactly the multilingual users the directive champions. Policy now: ANY
-    // Latin-script text returns the canonical AUTO name - NormalizeLanguageCode
-    // maps it to "AUTO", BuildPrompt injects no source token, and Hy-MT2's
+    // F5 Phase 2 (session 260908_0003, ask audit 181530 condition 1 Option B,
+    // VP/user adjudication of the user SCOPE DIRECTIVE "Hy-MT2에서 지원하는
+    // 모든 언어쌍을 정확하게 100% 지원"): pure-ASCII Latin SENTENCES keep the
+    // canonical AUTO name - ASCII Latin cannot distinguish English from
+    // Indonesian/Malay/Tagalog/Swahili (all Hy-MT2-supported), so asserting
+    // "English" re-opened a SILENT untranslated passthrough for exactly the
+    // multilingual users the directive champions. NormalizeLanguageCode maps
+    // AUTO to "AUTO", BuildPrompt injects no source token, and Hy-MT2's
     // built-in language ID decides (it separates Indonesian from English).
-    // Accepted cost, per the audit: a short English sentence targeting English
-    // spends one local inference and returns near-identical text (no user
-    // harm; the old failure was silent). The true EN->EN identity bypass now
-    // exists ONLY for an explicitly pinned English source (ShouldTranslate
-    // step 7; step 5 can never see an "English" label again). Non-Latin
-    // scripts keep the contract above unchanged - their labels are script-
-    // certain and still drive the already-target bypass.
+    // RC-1 (v0.10.5, F-10 review round 1) amends the blanket claim the old
+    // comment made ("ANY Latin-script text returns Auto Detect", "step 5 can
+    // never see an English label again"): DetectLatinLanguage's 1-2 token
+    // path DOES resolve single words - English core vocabulary/stopwords read
+    // "English" (so the already-target bypass fires for "hello" targeting
+    // English), and a non-English distinctive diacritic or stopword reads its
+    // language. Sentences (>= 3 tokens) are unchanged: AUTO, model decides.
+    // Non-Latin scripts keep the contract above unchanged - their labels are
+    // script-certain and still drive the already-target bypass.
     if (ContainsLatin(trimmed)) {
         std::string latin_detected = DetectLatinLanguage(trimmed);
         return latin_detected;
@@ -539,6 +728,116 @@ std::string DetectLanguage(std::wstring_view text) {
 
     return "Unknown";
 }
+
+namespace {
+
+// RC-6 (v0.10.5 handoff section 2.7): Japanese shinjitai-only ideographs.
+// Curated set (bounded, not exhaustive): characters a simplified-Chinese
+// writer would not use (駅, 図, 読, 語, 訳, ...). Pure-kanji words carrying
+// one of these cannot be Chinese Simplified, so an ambiguous short word is
+// labeled Japanese instead when the user's pair involves Japanese.
+constexpr uint32_t kJapaneseOnlyKanji[] = {
+    0x4E9C, 0x4FA1, 0x50CD, 0x5186, 0x53B3, 0x55B6, 0x56E3, 0x56F2,
+    0x56F3, 0x5727, 0x58CA, 0x5909, 0x5A2F, 0x5BDB, 0x5BFE, 0x5E2F,
+    0x5EC3, 0x5F10, 0x5F3E, 0x5F93, 0x6075, 0x6255, 0x62E1, 0x6319,
+    0x635C, 0x63B2, 0x63FA, 0x65C9, 0x66C9, 0x67FB, 0x6804, 0x6848,
+    0x685C, 0x691C, 0x6B69, 0x6B73, 0x6B8B, 0x6BCE, 0x6C17, 0x6CA2,
+    0x6D45, 0x6D5C, 0x6DDD, 0x6E08, 0x6E80, 0x6EDE, 0x6F5C, 0x702C,
+    0x713C, 0x72A0, 0x72ED, 0x7363, 0x7573, 0x767A, 0x770C, 0x7815,
+    0x7A0E, 0x7A83, 0x7ADC, 0x7C8B, 0x7D04, 0x7D9A, 0x7DD1, 0x7E01,
+    0x7E26, 0x8074, 0x81D3, 0x8217, 0x8535, 0x85AC, 0x899A, 0x89A7,
+    0x89B3, 0x8A33, 0x8A9E, 0x8AAD, 0x8B21, 0x8CCE, 0x8DF4, 0x8EF1,
+    0x8FBC, 0x905F, 0x90F7, 0x9154, 0x91C8, 0x9244, 0x9271, 0x9332,
+    0x933C, 0x967A, 0x96D1, 0x970A, 0x99C4, 0x99C7, 0x9A12, 0x9A13,
+    0x9AED, 0x9D8F, 0x9EBA, 0x9ED2,
+};
+
+// RC-6: traditional-only ideographs (Traditional Chinese but neither
+// simplified Chinese nor Japanese, e.g. 學, 體, 國, 這, 龍).
+constexpr uint32_t kTraditionalOnlyKanji[] = {
+    0x5011, 0x570B, 0x5B78, 0x5E6B, 0x6C92, 0x7063, 0x70BA, 0x8166,
+    0x81FA, 0x88E1, 0x8AAA, 0x8B80, 0x8B93, 0x8C93, 0x9019, 0x908A,
+    0x91AB, 0x95DC, 0x96DC, 0x9748, 0x975C, 0x9910, 0x9AD4, 0x9DC4,
+    0x9E7D, 0x9EB5, 0x9EBC, 0x9EDE, 0x9EE8, 0x9F8D,
+};
+
+bool CodePointInTable(uint32_t cp, const uint32_t* table, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (table[i] == cp) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// BUG-7 (v0.10.5 handoff section 2.8): does a code point belong to the
+// script family the target language is written in? Latin-script targets
+// accept the whole Latin family; JA accepts Han + Kana. AUTO/unknown
+// targets accept nothing (the dominance gate then never fires).
+bool MatchesTargetScriptCodePoint(uint32_t cp, std::string_view target_code) {
+    const std::string code = NormalizeLanguageCode(target_code);
+    if (code.empty() || code == "AUTO") return false;
+    if (code == "KO") return IsKoreanCodePoint(cp);
+    if (code == "JA") return IsHanziCodePoint(cp) || IsKanaCodePoint(cp);
+    if (code.starts_with("ZH")) return IsHanziCodePoint(cp);
+    if (code == "RU" || code == "UK") return IsCyrillicCodePoint(cp);
+    if (code == "TH") return IsThaiCodePoint(cp);
+    if (code == "AR" || code == "FA" || code == "UR") return IsArabicCodePoint(cp);
+    if (code == "HE") return IsHebrewScriptCodePoint(cp);
+    if (code == "HI") return IsDevanagariCodePoint(cp);
+    if (code == "BN") return IsBengaliCodePoint(cp);
+    if (code == "KM") return IsKhmerCodePoint(cp);
+    if (code == "LO") return IsLaoCodePoint(cp);
+    if (code == "MY") return IsMyanmarCodePoint(cp);
+    if (code == "EL") return IsGreekCodePoint(cp);
+    return IsLatinCodePoint(cp); // the Latin-script family targets
+}
+
+// BUG-7: the already-target skip may fire only when the target script is
+// DOMINANT (>= 70% of the letters). DetectLanguage labels by script PRIORITY
+// (one Hangul syllable makes "Please review the 기획 document" "Korean"), so
+// without this gate a foreign sentence carrying a single target-script word
+// was silently never translated.
+bool TargetScriptDominant(std::wstring_view text, std::string_view target_code) {
+    size_t letters = 0;
+    size_t target_letters = 0;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (!IsLinguisticCodePoint(cp)) {
+            continue; // digits, punctuation, emoji carry no language signal
+        }
+        ++letters;
+        if (MatchesTargetScriptCodePoint(cp, target_code)) {
+            ++target_letters;
+        }
+    }
+    return letters > 0 && target_letters * 10 >= letters * 7;
+}
+
+// RC-6: the configured pair for this decision involves Japanese or
+// Traditional Chinese, where a short pure-kanji word is genuinely ambiguous
+// (翻訳 is Japanese, 翻译 is simplified; the ZH-CN label must not be forced).
+bool PairInvolvesJapaneseOrTraditional(std::string_view target_code,
+                                       std::string_view source_norm) {
+    const std::string tgt = NormalizeLanguageCode(target_code);
+    const std::string src = NormalizeLanguageCode(source_norm);
+    return tgt == "JA" || tgt == "ZH-TW" || src == "JA" || src == "ZH-TW";
+}
+
+size_t CountHanziCodePoints(std::wstring_view text) {
+    size_t count = 0;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (IsHanziCodePoint(cp)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+} // namespace
 
 bool ShouldTranslate(
     std::wstring_view text,
@@ -588,19 +887,51 @@ bool ShouldTranslate(
     //    "Auto Detect" detection outcome (diacritic Latin - script-certain,
     //    language-ambiguous) must never match a real target, so it is skipped
     //    here as well: the request passes through to the engine.
-    //    F5 (audit 181530 Option B): DetectLanguage now returns "Auto Detect"
-    //    for ALL Latin script (pure-ASCII included), so the labels that can
-    //    still reach this comparison are script-certain languages only (KO/JA/
-    //    ZH/TH/AR/HE/RU + true-VI markers). The detection-based "English"
-    //    bypass retired with the label; the identity-bypass predicate is now
-    //    keyed on script CERTAINTY, not on the "English" name: an ASCII-Latin
-    //    sentence targeting English routes as AUTO translation (the model's
-    //    language ID owns the call), while pinned English -> English still
-    //    bypasses through step 7 (a user pin is ground truth).
+    //    F5 (audit 181530 Option B): DetectLanguage returns "Auto Detect"
+    //    for ALL Latin script (pure-ASCII included) EXCEPT the RC-1 (v0.10.5)
+    //    1-2 token path: single high-frequency English words ("hello",
+    //    "good morning") resolve to "English" deliberately, so the already-
+    //    target bypass fires for them instead of spending an engine round
+    //    trip that a rung-1 echo would poison. The labels that reach this
+    //    comparison are script-certain (KO/JA/ZH/TH/AR/HE/RU + true-VI) or
+    //    the RC-1 short-English read; an ASCII-Latin SENTENCE targeting
+    //    English still routes as AUTO translation (the model's language ID
+    //    owns the call), and pinned English -> English still bypasses
+    //    through step 7 (a user pin is ground truth).
     std::string detected = DetectLanguage(trimmed);
     if (!src_pinned && detected != "Unknown" && detected != "Auto Detect") {
-        if (EqualsIgnoreCaseAscii(std::string_view{detected}, std::string_view{target_name}) ||
-            EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(detected)}, std::string_view{target_code})) {
+        // RC-6 (v0.10.5 handoff section 2.7): a short pure-kanji word (<= 4
+        // ideographs, no kana) is not force-labeled "Chinese Simplified" when
+        // the configured pair involves Japanese or Traditional Chinese - the
+        // label would both falsely bypass Japanese text under a ZH target and
+        // poison the prompt source. Japanese-only shinjitai confirm Japanese,
+        // traditional-only ideographs confirm Chinese Traditional, and
+        // anything ambiguous stays the AUTO marker so the model decides.
+        if (detected == "Chinese Simplified" &&
+            PairInvolvesJapaneseOrTraditional(target_code, source_norm)) {
+            const size_t hanzi_count = CountHanziCodePoints(trimmed);
+            if (hanzi_count >= 1 && hanzi_count <= 4 && !ContainsKana(trimmed)) {
+                if (ContainsCodePointMatching(trimmed, [](uint32_t cp) {
+                        return CodePointInTable(cp, kJapaneseOnlyKanji, std::size(kJapaneseOnlyKanji));
+                    })) {
+                    detected = "Japanese";
+                } else if (ContainsCodePointMatching(trimmed, [](uint32_t cp) {
+                               return CodePointInTable(cp, kTraditionalOnlyKanji, std::size(kTraditionalOnlyKanji));
+                           })) {
+                    detected = "Chinese Traditional";
+                } else {
+                    detected = "Auto Detect";
+                }
+            }
+        }
+        // BUG-7 (v0.10.5 handoff section 2.8): the detection-based already-
+        // target skip fires only while the target script is DOMINANT (>= 70%
+        // of the letters), so "Please review the 기획 document" still
+        // translates to Korean instead of being silently skipped.
+        const bool target_script_dominant = TargetScriptDominant(trimmed, target_code);
+        if (target_script_dominant &&
+            (EqualsIgnoreCaseAscii(std::string_view{detected}, std::string_view{target_name}) ||
+             EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(detected)}, std::string_view{target_code}))) {
             // R5 observability: pin the exact bypass so "didn't translate after
             // a language switch" is attributable at runtime.
             DIAG_F(
@@ -608,7 +939,8 @@ bool ShouldTranslate(
                     detected.c_str(), target_name.c_str(), target_code.c_str());
             return false;
         }
-        if (target_code.starts_with("ZH") && detected.find("Chinese") != std::string::npos) {
+        if (target_script_dominant && target_code.starts_with("ZH") &&
+            detected.find("Chinese") != std::string::npos) {
             if (EqualsIgnoreCaseAscii(std::string_view{detected}, std::string_view{target_name})) {
                 DIAG_F(
                         "SMART_BYPASS/ShouldTranslate/002: Chinese-variant bypass (detected=%s, target=%s/%s)\n",
@@ -629,13 +961,25 @@ bool ShouldTranslate(
 
     // 7. Check if configured source matches target
     if (effective_source_name != "Unknown") {
-        if (EqualsIgnoreCaseAscii(std::string_view{effective_source_name}, std::string_view{target_name}) ||
-            EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(effective_source_name)}, std::string_view{target_code})) {
+        // BUG-7 (v0.10.5, round 2): the config-based same-language skip runs
+        // through the SAME TargetScriptDominant gate as the detection-based
+        // skip in step 5. For an unpinned source effective_source_name IS
+        // detected, so without this gate step 7 re-applied the detected ==
+        // target bypass for mixed-script text ("Please review the 기획
+        // document" under a Korean target) that step 5 had just refused -
+        // the sentence was silently never translated. The skip now fires
+        // only while the target script carries >= 70% of the letters, for
+        // the configured source exactly as for the detected one.
+        const bool target_script_dominant = TargetScriptDominant(trimmed, target_code);
+        if (target_script_dominant &&
+            (EqualsIgnoreCaseAscii(std::string_view{effective_source_name}, std::string_view{target_name}) ||
+             EqualsIgnoreCaseAscii(std::string_view{NormalizeLanguageCode(effective_source_name)}, std::string_view{target_code}))) {
             return false;
         }
 
         // Chinese variant normalization
-        if (target_code.starts_with("ZH") && (effective_source_name.find("Chinese") != std::string::npos)) {
+        if (target_script_dominant && target_code.starts_with("ZH") &&
+            (effective_source_name.find("Chinese") != std::string::npos)) {
             if (EqualsIgnoreCaseAscii(std::string_view{effective_source_name}, std::string_view{target_name})) {
                 return false;
             }

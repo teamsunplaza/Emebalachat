@@ -215,6 +215,17 @@ std::vector<std::wstring_view> SplitOutputTokens(std::wstring_view text) {
 struct MetaLeakageNeedle {
     const wchar_t* needle;
     bool line_start_only;
+    // BUG-10 (v0.10.5 handoff section 2.11): conversational PREFIX needles
+    // fire only when content follows the opener, so a legitimate ONE-WORD
+    // translation ("sorry" -> "죄송합니다") is never mistaken for a refusal
+    // preamble. Label-style needles keep the historical line-start shape.
+    bool require_continuation = false;
+    // F-04 (v0.10.5 review round 1): conversational openers additionally fire
+    // only for a short source (<= kConversationalNeedleMaxSourceCodePoints):
+    // "Sorry, but I cannot" legitimately translates into an apology-opener
+    // output, while the model only talks BACK to a word or a short phrase.
+    // Label-style prefixes (colon-terminated) stay unconditional.
+    bool short_source_only = false;
 };
 
 constexpr MetaLeakageNeedle kMetaLeakageNeedles[] = {
@@ -249,6 +260,38 @@ constexpr MetaLeakageNeedle kMetaLeakageNeedles[] = {
     {L"일본어:", true},   {L"스페인어:", true}, {L"프랑스어:", true},
     {L"독일어:", true},   {L"러시아어:", true},
     {L"中文:", true},     {L"日本語:", true},   {L"英語:", true},
+    // BUG-10 (v0.10.5 handoff section 2.11): localized conversational /
+    // refusal openers the shipped table missed entirely. Every needle keeps
+    // the source guard below (a needle the SOURCE text itself carries is
+    // legitimate content and is skipped). F-04 (review round 1) narrows the
+    // conversational ones two ways: require_continuation prefixes fire only
+    // when real content follows the opener (a legitimate one-word translation
+    // passes), and short_source_only limits them to a short source (a real
+    // sentence's translation may itself open with an apology). Colon-
+    // terminated label prefixes stay unconditional, plus their fullwidth-
+    // colon spellings.
+    {L"번역 결과:", true, false, false},
+    {L"번역문:", true, false, false},
+    {L"翻译：", true, false, false},
+    {L"翻译结果：", true, false, false},
+    {L"翻訳結果：", true, false, false},
+    {L"번역 결과", true, true, true},
+    {L"다음은", true, true, true},
+    {L"다음과 같습니다", true, true, true},
+    {L"죄송합니다", true, true, true},
+    {L"죄송하지만", true, true, true},
+    {L"알겠습니다", true, true, true},
+    {L"무엇을 도와드릴까요", true, true, true},
+    {L"도움이 필요하신가요", true, true, true},
+    {L"申し訳", true, true, true},
+    {L"翻訳結果", true, true, true},
+    {L"以下は", true, true, true},
+    {L"お手伝い", true, true, true},
+    {L"翻译结果", true, true, true},
+    {L"以下是", true, true, true},
+    {L"对不起", true, true, true},
+    {L"抱歉", true, true, true},
+    {L"有什么可以帮您", true, true, true},
 };
 
 } // namespace
@@ -550,6 +593,15 @@ bool HasMetaLeakage(std::wstring_view text, std::wstring_view source) {
         if (!folded_source.empty() && folded_source.find(pattern) != std::wstring::npos) {
             continue;
         }
+        // F-04 (v0.10.5 review round 1): conversational openers fire only for a
+        // short source. The model talks back to a word or a short phrase; an
+        // opener-leading output for a longer source is that source's
+        // translation ("Sorry, but I cannot" -> "죄송하지만 ...") and must
+        // never be rejected as meta leakage.
+        if (needle.short_source_only &&
+            CountCodePoints(source) > kConversationalNeedleMaxSourceCodePoints) {
+            continue;
+        }
         if (!needle.line_start_only) {
             if (folded.find(pattern) != std::wstring::npos) {
                 return true;
@@ -573,6 +625,26 @@ bool HasMetaLeakage(std::wstring_view text, std::wstring_view source) {
             }
             if (line.compare(content_start, pattern.size(), pattern) != 0) {
                 continue;
+            }
+            // BUG-10 (v0.10.5): a conversational PREFIX needle only fires when
+            // real content follows the opener (punctuation alone does not
+            // count) - "죄송합니다, 저는 ..." is a refusal preamble, while the
+            // legitimate one-word translation "죄송합니다" must pass.
+            if (needle.require_continuation) {
+                bool has_more = false;
+                for (size_t k = content_start + pattern.size(); k < line.size(); ++k) {
+                    const wchar_t c = line[k];
+                    if (c != L' ' && c != L'\t' && c != L'.' && c != L',' && c != L'!' &&
+                        c != L'?' && c != L':' && c != L';' &&
+                        c != L'，' && c != L'。' && c != L'、' && c != L'！' &&
+                        c != L'？' && c != L'：' && c != L'；') {
+                        has_more = true;
+                        break;
+                    }
+                }
+                if (!has_more) {
+                    continue;
+                }
             }
             if (colon_label && i < source_lines.size() &&
                 LineStartsWithColonLabel(source_lines[i])) {
@@ -624,12 +696,17 @@ bool IsPureRepetitionSource(std::wstring_view source) {
         units.emplace_back(source.substr(begin, idx - begin));
     }
     const size_t n = units.size();
-    if (n < 2) {
-        return false; // one unit is not a repetition (the live "음" shape)
+    if (n < 3) {
+        return false; // fewer than three units is never a repetition
     }
     // A repetition needs a period that divides the WHOLE sequence into at
-    // least two identical blocks ("ㅋㅋㅋㅋ", "haha", "no no").
-    for (size_t period = 1; period * 2 <= n; ++period) {
+    // least THREE identical blocks ("ㅋㅋㅋㅋ", "hahaha", "no no no").
+    // RC-2 (v0.10.5 handoff section 2.3): the pre-fix floor of two blocks
+    // classified everyday reduplicated WORDS as laugh-track repetition -
+    // 2-char AA ("점점", "妈妈", "谢谢") and 4-char ABAB ("바이바이", "haha")
+    // - and handed them the 120-code-point laughter ceiling. ("음" stays
+    // non-repetition: n < 3 covers the single-unit residual.)
+    for (size_t period = 1; period * 3 <= n; ++period) {
         if (n % period != 0) {
             continue;
         }
@@ -646,7 +723,7 @@ bool IsPureRepetitionSource(std::wstring_view source) {
 
 bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view source) {
     const std::size_t source_cp = CountCodePoints(source);
-    if (source_cp == 0 || source_cp > kAmplifiedSourceMaxCodePoints) {
+    if (source_cp == 0) {
         return false;
     }
     const std::size_t output_cp = CountCodePoints(output);
@@ -661,11 +738,29 @@ bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view sou
     // answer measures 19 code points). At or above
     // kAmplifiedRepetitionOutputMinCodePoints rule (ii) applies again. The
     // single-code-point residual ("음") is never a repetition, so it keeps the
-    // 64-code-point floor unchanged.
+    // tier-1 floor below.
     if (IsPureRepetitionSource(source)) {
         return output_cp >= kAmplifiedRepetitionOutputMinCodePoints;
     }
-    return output_cp >= kAmplifiedOutputMinCodePoints;
+    // RC-2 (v0.10.5 handoff section 2.3): two-tier guard. Tier 1 (1-4 code
+    // points): the flat floor drops 64 -> 32 AND gains a 10x ratio, so a
+    // 63-character answer to a 4-character word is now rejected. Tier 2
+    // (5..15 code points, or ANY single whitespace-free token): 64+ characters
+    // at a 6x ratio is an amplification hallucination for one word - the
+    // pre-fix code returned false unconditionally for every 5+ code point
+    // source ("hello" -> a 300-character essay passed every gate).
+    if (source_cp <= kAmplifiedSourceMaxCodePoints) {
+        return output_cp >= kAmplifiedTinyTier1OutputMinCodePoints &&
+               output_cp >= source_cp * kAmplifiedTinyTier1Ratio;
+    }
+    const bool tier2_source =
+        source_cp <= kAmplifiedTinyTier2SourceMaxCodePoints ||
+        source.find_first_of(L" \t\r\n") == std::wstring_view::npos;
+    if (!tier2_source) {
+        return false;
+    }
+    return output_cp >= kAmplifiedOutputMinCodePoints &&
+           output_cp >= source_cp * kAmplifiedTinyTier2Ratio;
 }
 
 const char* OutputRejectReasonName(OutputRejectReason reason) {
@@ -1036,9 +1131,16 @@ std::wstring LocalInferenceEngine::Translate(
         }
     }
     // REQ-059: two fixed prompt forms, selected per attempt (rung 1 = chat,
-    // rung 2 = completion); rung 2 exists only for trivial-template user
-    // models — the completion form is never applied to the Hy-MT2 path's
-    // non-trivial template (attempt 1 only follows an empty/echo rung 1).
+    // rung 2 = completion). RC-5 (v0.10.5 handoff section 2.6) corrects the
+    // historical claim that "the completion form is never applied to the
+    // Hy-MT2 path's non-trivial template": the code below DOES reach rung 2
+    // for any model after an empty/echo/garbage rung 1, and raw completion on
+    // a chat-template model is exactly the single-word hallucination chain
+    // the handoff documents. Rung 2 therefore stays for trivial/absent-
+    // template user models, while a rung-1 ECHO on a NON-trivial chat
+    // template (Hy-MT2) is accepted as-is instead of degrading (see the
+    // acceptance test below).
+    const bool has_nontrivial_chat_template = chat_tmpl && !chat_tmpl_is_trivial;
     auto build_final_prompt = [&](std::wstring_view s, bool completion_form,
                                   bool suppress_debug_log = false) -> std::string {
         std::string u8 = ToUtf8(s);
@@ -1228,7 +1330,9 @@ std::wstring LocalInferenceEngine::Translate(
     // `return {}` failures; a completed attempt ladder returns the trimmed
     // UTF-8 output even when empty (the caller treats empty as engine_failed,
     // exactly like the pre-chunking code).
-    auto translate_once = [&](std::wstring_view chunk_text) -> std::optional<std::string> {
+    auto translate_once = [&](std::wstring_view chunk_text,
+                              const std::optional<std::chrono::steady_clock::time_point>&
+                                  whole_request_deadline) -> std::optional<std::string> {
     std::wstring cur(chunk_text);
     std::string trimmed_u8;
     bool degraded_to_completion = false;
@@ -1309,6 +1413,11 @@ std::wstring LocalInferenceEngine::Translate(
     // ORIGINAL source quoting; recompute UTF-8 from the (possibly shrunk)
     // working copy so the comparison reflects what was actually sent.
     std::string src_u8 = ToUtf8(cur);
+    // RC-5 (v0.10.5 handoff section 2.6): a source with no line break can
+    // only be answered with a single line; the rung-2 completion form stops
+    // decoding at the first generated newline (see the token loop).
+    const bool single_line_source =
+        cur.find_first_of(L"\r\n") == std::wstring::npos;
 
     // Clear KV memory for clean inference sequence
     llama_memory_clear(llama_get_memory(ctx), true);
@@ -1375,6 +1484,18 @@ std::wstring LocalInferenceEngine::Translate(
     // below is the second, VRAM-contention-proof backstop: whichever trips
     // first wins.
     const int max_gen_tokens = ScaledMaxGenTokens(n_prompt_tokens);
+    // RC-4 (v0.10.5 handoff section 2.5): short single-line source cap. The
+    // historical 256-token floor scaled off the WHOLE formatted prompt, so a
+    // one-word translation carried a 256-token runway for hallucinated
+    // essays. A <= 16 UTF-8 byte single-line source can only produce a word
+    // or one sentence: cap its generation budget to 64 tokens. The wall-
+    // clock budget below stays scaled off the historical max_gen_tokens -
+    // whenever this cap fires both budgets land on the 12 s floor, so the
+    // budget is unchanged in practice.
+    const int short_source_gen_cap = ShortSourceGenTokenCap(
+        src_u8.size(), src_u8.find_first_of("\r\n") != std::string::npos);
+    const int effective_max_gen_tokens =
+        max_gen_tokens < short_source_gen_cap ? max_gen_tokens : short_source_gen_cap;
     // REQ-051 U-1 FIX 1: the decode wall-clock budget starts HERE (after the
     // prompt decode + sampler setup) and covers token GENERATION only — a
     // model load is governed by the REQ-051 U-1 FIX 2 finish-once-started
@@ -1384,10 +1505,18 @@ std::wstring LocalInferenceEngine::Translate(
     // floor for typical inputs, scaling to 27 s for long translations on
     // slow 4B user models. REQ-051 U-1 latch semantics unchanged.
     const auto decode_start = std::chrono::steady_clock::now();
-    const auto decode_deadline = decode_start +
+    auto decode_deadline = decode_start +
         std::chrono::milliseconds(ScaledDecodeWallClockBudgetMs(max_gen_tokens));
+    // Backend P1-3 (v0.10.5 handoff section 4.4 item 3): a chunked whole-
+    // request deadline clamps this chunk's budget so the per-chunk decode
+    // scale (up to 27 s) cannot accumulate past the frozen 30 s host/client
+    // IPC timeout across N chunks. std::nullopt (the single-shot path) keeps
+    // the historical deadline byte-identically.
+    if (whole_request_deadline.has_value() && *whole_request_deadline < decode_deadline) {
+        decode_deadline = *whole_request_deadline;
+    }
 
-    for (int i = 0; i < max_gen_tokens; ++i) {
+    for (int i = 0; i < effective_max_gen_tokens; ++i) {
         // REQ-R16: cancellation check BETWEEN DECODE STEPS - the token
         // loop is the app-level seam: shutdown posts the flag, and at
         // most one more sampled token (+ its batched decode, the
@@ -1477,6 +1606,19 @@ std::wstring LocalInferenceEngine::Translate(
                     control_token_texts.end()) {
                     output_u8.append(big_piece.data(), written);
                 }
+            }
+        }
+
+        // RC-5 (v0.10.5 handoff section 2.6): the rung-2 raw completion form
+        // invites few-shot continuations ("Korean: ...\nEnglish: ...") after
+        // the answer. When the source itself is a single line, the first
+        // generated newline ends the answer - everything after it is the
+        // model continuing the pattern, not translation.
+        if (completion_form && single_line_source) {
+            const size_t newline_pos = output_u8.find_first_of("\r\n");
+            if (newline_pos != std::string::npos) {
+                output_u8.resize(newline_pos);
+                break;
             }
         }
 
@@ -1577,9 +1719,10 @@ std::wstring LocalInferenceEngine::Translate(
     // bare marker stripped to empty just above), an ECHO (trimmed output
     // equals the trimmed source — the live MiLM KO->EN behavior), or a
     // bare special marker degrades to the completion form for ONE more
-    // decode with a fresh wall-clock budget. Hy-MT2 never trips this (its
-    // rung-1 output is a real translation), so its path stays byte-identical
-    // end to end.
+    // decode with a fresh wall-clock budget. RC-5 (v0.10.5) amendment: the
+    // ECHO case degrades only for trivial/absent-template user models; on a
+    // real chat template (Hy-MT2) the echo is accepted as-is right below, so
+    // a chat-tuned model never sees the raw completion form.
     //
     // R1-1 (261029_0001): a rung-1 output that is non-empty but GARBAGE
     // (repetition loop / wrong script / meta-assistant leakage) degrades the
@@ -1612,6 +1755,18 @@ std::wstring LocalInferenceEngine::Translate(
         if (!rung1_empty && !rung1_echo && !rung1_bare_special && !rung1_aborted_echo &&
             rung1_reject == OutputRejectReason::None) {
             break; // acceptable rung-1 output — no completion-form retry
+        }
+        // RC-5 (v0.10.5 handoff section 2.6): a rung-1 ECHO on a model with a
+        // real chat template (Hy-MT2) must NOT degrade to the raw completion
+        // form - BuildCompletionPrompt has no template, and a chat-tuned
+        // model continues it into hallucinated dialogue/definitions (the
+        // RC-1 chain). Accept the echo: identity text is a legitimate answer
+        // for loanwords and already-target words, and the caller's exact-echo
+        // pass-through (EqualsSourceNeedsSendThrough) then forwards Enter
+        // cleanly.
+        if (rung1_echo && !rung1_bare_special && has_nontrivial_chat_template) {
+            DIAG_F("ENGINE/Translate/048: rung-1 echo on a chat-template model accepted as-is (no raw-completion fallback)\n");
+            break;
         }
         degraded_to_completion = true;
         DIAG_F("ENGINE/Translate/034: rung-1 chat form produced %s; retrying with the completion form (shape-only)\n",
@@ -1669,7 +1824,7 @@ std::wstring LocalInferenceEngine::Translate(
             return {};
         }
         if (!PromptNeedsChunking(n_full_prompt)) {
-            const std::optional<std::string> single = translate_once(src_w);
+            const std::optional<std::string> single = translate_once(src_w, std::nullopt);
             if (!single) {
                 return {};
             }
@@ -1732,9 +1887,23 @@ std::wstring LocalInferenceEngine::Translate(
         // honestly - never a partial stitch. A single chunk that alone
         // exceeds the budget keeps the historical head+tail fallback through
         // the REQ-R01 shrink loop inside translate_once.
+        // Backend P1-3 (v0.10.5 handoff section 4.4 item 3): ONE accumulated
+        // whole-request deadline (from here, the request start) bounds the
+        // sequential chunk loop. Each chunk's decode budget is additionally
+        // clamped to the remaining time inside translate_once; the loop
+        // refuses to START a chunk past the deadline. Without this, N chunks
+        // each burning up to 27 s blew the frozen 30 s host/client IPC
+        // timeout cumulatively.
+        const auto whole_request_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kChunkedRequestBudgetMs);
         std::wstring stitched;
         for (size_t k = 0; k < chunks.size(); ++k) {
-            const std::optional<std::string> part = translate_once(chunks[k]);
+            if (std::chrono::steady_clock::now() >= whole_request_deadline) {
+                DIAG_F("ENGINE/Translate/049: chunked whole-request budget (%d ms) exhausted before chunk %zu/%zu; answering engine_failed\n",
+                       kChunkedRequestBudgetMs, k + 1, chunks.size());
+                return {};
+            }
+            const std::optional<std::string> part = translate_once(chunks[k], whole_request_deadline);
             if (!part) {
                 return {};
             }

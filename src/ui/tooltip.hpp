@@ -14,6 +14,7 @@
 #include <sapi.h>
 
 #include "layered_renderer.hpp"
+#include "ui/theme.hpp"
 
 namespace emebalachat {
 
@@ -317,6 +318,9 @@ public:
     // the GUI-thread WndProc through kRefreshTargetLangMessage like the other
     // REQ-R10 seams, so hook/worker-thread coordinators can call it directly.
     void RefreshTargetLanguageFromConfig(std::string_view new_target);
+
+    // Repaints the tooltip immediately when the active UI theme changes.
+    void RefreshTheme();
 
     // Audio & Clipboard actions
     void SpeakCurrentText();

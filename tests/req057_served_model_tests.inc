@@ -246,12 +246,26 @@ void TestReq057ServedModelEcho() {
         // request id (SchedItem.request_id, set at the v2 enqueue site) instead
         // of the pre-fix hardcoded 0 — the served-model echo rides the same
         // single answer call in both dispatchers.
-        TEST_CHECK(src.find("SendResult(job.id, status, out_text, std::move(served_model))") !=
-                       std::string::npos &&
-                       src.find(
-                           "SendResult(item.request_id, status, out_text, std::move(served_model))") !=
-                       std::string::npos,
-                   "REQ-057 (b): both SendResult answer paths carry the echo");
+        // Backend P0-2 + review F-02 (v0.10.5): BOTH final answers are
+        // epoch-guarded (the served-model echo rides each call, with the
+        // connection/item epoch as the trailing argument). Offset windows pin
+        // each epoch argument to its own call without embedding the source
+        // file's CRLF newline in the needle.
+        const size_t v1_answer_at = src.find(
+            "SendResult(job.id, status, out_text, std::move(served_model),");
+        const size_t v1_epoch_at = v1_answer_at == std::string::npos
+                                       ? std::string::npos
+                                       : src.find("job.conn_epoch)", v1_answer_at);
+        const size_t v2_answer_at = src.find(
+            "SendResult(item.request_id, status, out_text, std::move(served_model),");
+        const size_t v2_epoch_at = v2_answer_at == std::string::npos
+                                       ? std::string::npos
+                                       : src.find("item.conn_epoch);", v2_answer_at);
+        TEST_CHECK(v1_answer_at != std::string::npos && v1_epoch_at != std::string::npos &&
+                       v1_epoch_at - v1_answer_at < 200 &&
+                       v2_answer_at != std::string::npos && v2_epoch_at != std::string::npos &&
+                       v2_epoch_at - v2_answer_at < 200,
+                   "REQ-057 (b): both SendResult answer paths carry the echo (both epoch-guarded)");
     }
 
     const std::filesystem::path frozen_proto = ResolveRepoFile(L"src\\engine_host_protocol.hpp");

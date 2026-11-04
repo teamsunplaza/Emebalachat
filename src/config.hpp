@@ -329,6 +329,7 @@ struct AppConfig {
     // SetUiLanguage() and read via GetSnapshot().ui_language once threads
     // exist; direct field access is startup-only (before any thread exists).
     std::string ui_language = "auto";
+    std::string ui_theme = "fluent"; // "fluent" (Direction A), "editorial" (Direction B), "monolith" (Direction C)
     std::string engine_type = "auto";
     std::string model_path = "models/Hy-MT2-1.8B-Q8_0.gguf";
     // REQ-045 P4-5 (item 3a-2, design §A.3): the registry id of the user's
@@ -476,6 +477,7 @@ struct AppConfig {
         std::string type_source_language;  // Phase 3
         std::string type_target_language;  // Phase 3
         std::string ui_language; // R6 Phase 6: selector read-back (test seam)
+        std::string ui_theme = "fluent";
         bool auto_send = false;
         bool sound_enabled = true;
         bool drag_to_translate = true;
@@ -508,6 +510,8 @@ struct AppConfig {
     // R6 Phase 6: locked mutator for the tray UI-language selector (same
     // discipline as SetEngineTypeName; SaveToFile() serializes under mutex_).
     void SetUiLanguage(std::string value);
+    void SetUiTheme(std::string value);
+    static std::string NormalizeUiTheme(std::string_view value);
     // REQ-045 P4-5 (item 3a-2): locked mutator for the third-party .gguf
     // registry id (same discipline as SetEngineTypeName; SaveToFile()
     // serializes under mutex_). Written by the tray registration pipeline on
@@ -551,5 +555,7 @@ private:
     std::string ToJsonStringLocked() const;
     bool SaveToFileLocked(const std::filesystem::path& target_path) const;
 };
+
+using Config = AppConfig;
 
 } // namespace emebalachat

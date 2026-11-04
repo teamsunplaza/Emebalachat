@@ -7,6 +7,8 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include "ui/theme.hpp"
+
 namespace emebalachat {
 
 // REQ-054/REQ-056: the engine submenu's 4-way check-mark index (0 = Google/
@@ -89,6 +91,12 @@ LanguageSwapPlan PlanLanguageSwap(std::string_view cur_source,
 
 class SystemTray {
 public:
+    using ThemeSelectCallback = std::function<void(const std::string&)>;
+
+    static constexpr UINT kCmdThemeFluent    = 2381;
+    static constexpr UINT kCmdThemeEditorial = 2382;
+    static constexpr UINT kCmdThemeMonolith  = 2383;
+
     struct Callbacks {
         std::function<void()> on_toggle_active;
         // REQ-045 P4-3 + REQ-046 P4-2 (Rev2 §B-3): engine_idx 0 = Google
@@ -136,6 +144,7 @@ public:
         // to the controller window past the TrackPopupMenuEx teardown (the
         // REQ-047 D3 contract shared with the manager/OpenAI rows).
         std::function<void()> on_open_engine_load_settings;
+        ThemeSelectCallback on_select_theme;
     };
 
     SystemTray();
@@ -204,6 +213,9 @@ public:
     // at startup and from RefreshAllUiForLocaleChange (menu itself rebuilds
     // lazily on every ShowContextMenu, so no explicit rebuild nudge is needed).
     void SetUiLanguage(std::string_view persisted_code);
+    void SetOnThemeSelectCallback(ThemeSelectCallback cb);
+    void SetUiTheme(std::string_view theme_key);
+    void RefreshTheme();
 
     // Displays popup context menu at current cursor coordinates
     void ShowContextMenu();
@@ -218,6 +230,7 @@ private:
     NOTIFYICONDATAW nid_ = {};
     HICON hCurrentIcon_ = nullptr;
     Callbacks callbacks_;
+    ThemeSelectCallback on_theme_select_;
 
     bool is_active_ = true;
     // REQ-029-B: display-only engine name (tooltip + tray_update log). The
@@ -236,6 +249,7 @@ private:
     bool sound_enabled_ = true;
     bool badge_visible_ = true;
     std::string ui_language_ = "auto"; // R6 Phase 6: submenu check state
+    std::string ui_theme_ = "fluent";
 };
 
 } // namespace emebalachat

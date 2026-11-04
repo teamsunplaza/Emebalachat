@@ -25,6 +25,7 @@
 #include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
 #include "ui/dpi.hpp"
+#include "ui/theme.hpp"
 #include "ui/tooltip.hpp"
 #include "ui/tray.hpp"
 #include "worker.hpp"
@@ -1052,14 +1053,11 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         } else if (lParam == WM_LBUTTONUP) {
-            // 260922_0001 A1: arm the debounce instead of toggling immediately,
-            // so a double-click does not flip the engine (it only toggles the
-            // badge below). A second click within the window just re-arms it.
-            const TrayToggleDecision decision = TrayToggleDebounceStateMachine(
-                TrayToggleEvent::kLeftButtonUp, g_tray_toggle_pending);
-            g_tray_toggle_pending = decision.timer_pending;
-            if (decision.action == TrayToggleAction::kArmTimer) {
-                ::SetTimer(hwnd, kTimerTrayToggle, ::GetDoubleClickTime(), nullptr);
+            // Fix Bug 3 (500ms Tray Single-Click Lag): toggle active state immediately
+            // on left-click with 0ms latency instead of delaying by GetDoubleClickTime().
+            g_tray_toggle_pending = false;
+            if (g_pHook) {
+                g_pHook->ToggleActive();
             }
             return 0;
         } else if (lParam == WM_LBUTTONDBLCLK) {
@@ -1309,6 +1307,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 3. Load or create AppConfig
     emebalachat::AppConfig config;
     const bool config_ok = config.LoadFromFile();
+    emebalachat::ui::SetActiveTheme(config.ui_theme);
 
     // REQ-201/202 (session 260911_0002): apply the MASTER log-file opt-in
     // switch from config exactly once, here after the load and before any
@@ -2194,6 +2193,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         config.SetDragTargetPinned(false);                               // F2
         config.SetTypeLanguages(defs.type_source, defs.type_target);     // I4 locked
         config.SetUiLanguage("auto");                                    // G-1, I4 locked
+        config.SetUiTheme("fluent");
+        emebalachat::ui::SetActiveTheme(config.ui_theme);
         config.SaveToFile();                                             // (1) atomic swap
         const auto snap = config.GetSnapshot();
         DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s ui=auto (REQ-020/B-6 G-1)",
@@ -2204,6 +2205,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // no duplicate surface nudges. The About window's own reset-feedback
         // repaint rides inside it (RequestLocaleRefresh).
         RefreshAllUiForLocaleChange();
+        tray.SetUiTheme(config.ui_theme);
+        tray.RefreshTheme();
+        tooltip.RefreshTheme();
+        about_window.RefreshTheme();
+        if (drag_icon.IsVisible() && drag_icon.GetHwnd()) {
+            RECT rcDrag = {};
+            if (::GetWindowRect(drag_icon.GetHwnd(), &rcDrag)) {
+                drag_icon.ShowAt(rcDrag.left, rcDrag.top);
+            }
+        }
         emebalachat::PlayLangChange();
     };
     // R6 Phase 1 (B3): Ctrl+F9 cycle now routes through the SAME coordinator.
@@ -2609,6 +2620,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Create failed: the callback is stored regardless of hwnd_ state.
     about_window.SetResetCallback(apply_system_defaults);
 
+    // Shared UI Theme change coordinator wired to both SystemTray and AboutWindow.
+    auto apply_theme_change = [&](const std::string& theme_key) {
+        const std::string canonical = emebalachat::AppConfig::NormalizeUiTheme(theme_key);
+        config.SetUiTheme(canonical);
+        emebalachat::ui::SetActiveTheme(canonical);
+        config.SaveToFile();
+
+        const auto snap = config.GetSnapshot();
+        badge.SetLanguages(emebalachat::ToUtf16(snap.type_source_language),
+                           emebalachat::ToUtf16(snap.type_target_language));
+        badge.SetStatus(hook.IsActive() ? emebalachat::BadgeStatus::Active
+                                        : emebalachat::BadgeStatus::Disabled);
+        if (badge.GetHwnd()) {
+            ::InvalidateRect(badge.GetHwnd(), nullptr, FALSE);
+        }
+        tooltip.RefreshTheme();
+        about_window.RefreshTheme();
+        if (drag_icon.IsVisible() && drag_icon.GetHwnd()) {
+            RECT rcDrag = {};
+            if (::GetWindowRect(drag_icon.GetHwnd(), &rcDrag)) {
+                drag_icon.ShowAt(rcDrag.left, rcDrag.top);
+            }
+        }
+        tray.SetUiTheme(canonical);
+        tray.RefreshTheme();
+        refresh_tray();
+    };
+    trayCallbacks.on_select_theme = apply_theme_change;
+    tray.SetOnThemeSelectCallback(apply_theme_change);
+    about_window.SetOnThemeChangeCallback(apply_theme_change);
+
     // R6 Phase 6 (plan §5.4): tray UI-language selector. Runs on the GUI
     // thread (tray callback). Validation + canonicalization + refusal of
     // unknown/removed codes (fr/de/ru) live in the pure PlanUiLocaleChange
@@ -2682,6 +2724,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // R6 Phase 6: mirror the persisted ui_language into the tray's selector
     // check state (snapshot read; the warmup thread already exists here).
     tray.SetUiLanguage(config.GetSnapshot().ui_language);
+    tray.SetUiTheme(config.GetSnapshot().ui_theme);
     // REQ-056 (derive-at-open): the engine submenu's two config-derived
     // values — the 4-way check index (REQ-054's TrayPreferredEngineIndex) and
     // the registered user-model stem — are resolved HERE, on demand, when the
@@ -3068,6 +3111,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                  eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
                  tgt_user_explicit ? 1 : 0);
 
+        // PIPE-1 (session 261104_0001, handoff section 2.1): the drag path
+        // used to send the selection to the engine unconditionally, so URLs,
+        // pure numbers, pure punctuation and emoji were translated (or at
+        // least run through inference) every time. Run the shared SmartBypass
+        // gate on the EFFECTIVE pair: the pivot above has already fired, so
+        // text in the configured drag target still auto-pivots to the user's
+        // native language and never reaches this check as a rejection. The
+        // source argument stays the AUTO marker: a user-pinned drag source
+        // must not silently skip mixed-script selections (ShouldTranslate
+        // step 4 stays disarmed on this path). Bypassed gestures exit before
+        // the transient badge flip below, so the label never flickers.
+        if (!emebalachat::ShouldTranslate(selected, tgt_lang, "Auto Detect")) {
+            DIAG_LOG("STATE", "drag_bypass path=icon detected=%s tgt=%s",
+                     detected.c_str(), tgt_lang.c_str());
+            DIAG_F("MAIN/DragIconClick/006: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
+            return;
+        }
+
         // REQ-013 (user ruling 260913 22:02): while THIS drag translation
         // runs, the badge label briefly shows the DRAG pair (the effective
         // pair, post-pivot - the same pair the tooltip below displays); on
@@ -3376,6 +3437,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                  snap.drag_source_language.c_str(), detected.c_str(),
                  eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
                  tgt_user_explicit ? 1 : 0);
+
+        // PIPE-1 (session 261104_0001, handoff section 2.1): same smart-bypass
+        // gate as the drag icon path above - the double-Ctrl+C entry point is
+        // a drag-context translation and must filter URLs, pure numbers,
+        // pure punctuation and emoji the same way. The pivot has already
+        // fired, so same-language text still auto-pivots to the user's
+        // native language (established drag UX preserved). Bypassed gestures
+        // exit before the transient badge flip below (no label flicker).
+        if (!emebalachat::ShouldTranslate(copied, tgt_lang, "Auto Detect")) {
+            DIAG_LOG("STATE", "drag_bypass path=dbl_ctrl_c detected=%s tgt=%s",
+                     detected.c_str(), tgt_lang.c_str());
+            DIAG_F("MAIN/DoubleCtrlC/002: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
+            return;
+        }
 
         POINT cursor = {};
         ::GetCursorPos(&cursor);

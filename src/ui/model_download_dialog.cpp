@@ -233,7 +233,7 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
             const HDC hdc = reinterpret_cast<HDC>(wParam);
             const HWND ctl = reinterpret_cast<HWND>(lParam);
             if (ctl == ::GetDlgItem(dlg, IDC_MD_BODY) && st && st->hash_failed) {
-                ::SetTextColor(hdc, RGB(0xF2, 0xC1, 0xBD)); // danger-ink (the only red)
+                ::SetTextColor(hdc, RGB(0xB9, 0x1C, 0x1C)); // #B91C1C (6.4:1 contrast on COLOR_BTNFACE)
                 ::SetBkMode(hdc, TRANSPARENT);
             }
             return reinterpret_cast<INT_PTR>(::GetSysColorBrush(COLOR_BTNFACE));

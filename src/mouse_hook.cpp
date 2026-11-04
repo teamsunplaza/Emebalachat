@@ -1,5 +1,6 @@
 #include "mouse_hook.hpp"
 #include "diag_logger.hpp"
+#include "hook.hpp" // Input P1-6: KeyboardHook::ResetImeCompositionMirror on real clicks
 #include "hook_thread.hpp"
 #include "win32_input.hpp"
 
@@ -124,6 +125,20 @@ void MouseHook::SetMouseWheelCallback(MouseWheelCallback cb) {
     mouse_wheel_cb_ = std::move(cb);
 }
 
+void MouseHook::SetEnabled(bool enabled) {
+    enabled_.store(enabled, std::memory_order_relaxed);
+    if (!enabled) {
+        // Input P2-4 (v0.10.5): a disable mid-press used to strand
+        // is_lbutton_down_ = true: the matching WM_LBUTTONUP early-returned at
+        // the enabled_ gate below (before clearing the flag), so the next
+        // SetEnabled(true) treated ordinary WM_MOUSEMOVE as a drag completion.
+        // The click count dies with the gesture too - a paused hook must not
+        // resurrect a stale double-click for the next press.
+        is_lbutton_down_.store(false, std::memory_order_relaxed);
+        click_count_.store(0, std::memory_order_relaxed);
+    }
+}
+
 void MouseHook::HookThreadProc() {
     // C4 (session 260910_0007): body extracted verbatim to the shared
     // RunLowLevelHookPump (src/hook_thread.hpp) — same pump as the keyboard
@@ -231,6 +246,18 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
 
+    // Input P1-6 (v0.10.5): any real click retires the keyboard hook's IME
+    // composition mirror. A click commits or dismisses an open IME composition
+    // without the keyboard hook ever seeing a composition-finalising key, so
+    // the mirror would otherwise stay stuck true and silently gate out the
+    // NEXT bare Enter (the "typed text never translates" failure). Placed
+    // BEFORE the enabled_ gate: mirror staleness is not translation-state
+    // dependent, and pausing/re-enabling must not inherit a stale mirror.
+    // Never swallows the event; one relaxed atomic store.
+    if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN) {
+        KeyboardHook::ResetImeCompositionMirror();
+    }
+
     // REQ-002: wheel forwarding for the WS_EX_NOACTIVATE tooltip happens
     // BEFORE the enabled_ gate: reading an already-shown tooltip is unrelated
     // to the translation-active state, so scrolling must work while paused.
@@ -323,12 +350,21 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         if (s_instance->is_lbutton_down_.load(std::memory_order_relaxed)) {
             s_instance->is_lbutton_down_.store(false, std::memory_order_relaxed);
 
-            int dx = ms->pt.x - s_instance->lbutton_down_pt_.x;
-            int dy = ms->pt.y - s_instance->lbutton_down_pt_.y;
-            int dist_sq = dx * dx + dy * dy;
+            // 64-bit delta math (Input P2-4, v0.10.5): the 32-bit int square
+            // overflowed for cross-screen drags, wrapping dist_sq negative and
+            // misfiring (or never firing) the drag gate.
+            const int64_t dx = static_cast<int64_t>(ms->pt.x) - s_instance->lbutton_down_pt_.x;
+            const int64_t dy = static_cast<int64_t>(ms->pt.y) - s_instance->lbutton_down_pt_.y;
+            const int64_t dist_sq = dx * dx + dy * dy;
 
             // Trigger drag release when Euclidean drag distance exceeds 15 pixels
             if (dist_sq >= (15 * 15)) {
+                // Input P2-4 (v0.10.5): a completed drag is not a click. The
+                // press had already incremented click_count_; leaving it armed
+                // made the NEXT press within GetDoubleClickTime() count as a
+                // double-click and fire a false delayed selection. Reset it
+                // with the gesture.
+                s_instance->click_count_.store(0, std::memory_order_relaxed);
                 if (s_instance->drag_cb_) {
                     s_instance->drag_cb_(ms->pt.x, ms->pt.y);
                 }

@@ -362,6 +362,12 @@ enum class StringId {
     GgufManagerDedupeDone,     // "중복 파일을 휴지통으로 옮겼습니다." / "The duplicate files were moved to the Recycle Bin."
     GgufManagerDedupeFailed,   // "중복 파일을 정리하지 못했습니다. 파일이 다른 프로그램에서 사용 중인지 확인하세요." / "The duplicate files could not be cleaned up. Check whether another program is using them."
 
+    // UI Theme selector (Direction A: Fluent, Direction B: Editorial, Direction C: Monolith)
+    MenuUiTheme,
+    ThemeFluent,
+    ThemeEditorial,
+    ThemeMonolith,
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
@@ -469,6 +475,13 @@ UiLocaleChangePlan PlanUiLocaleChangeWithSelector(const std::vector<UiLocaleEntr
                                                   std::string_view current_persisted,
                                                   std::string_view requested);
 
+struct I18nStrings {
+    std::wstring menu_ui_theme = L"UI Theme";
+    std::wstring theme_fluent = L"Fluent Craft";
+    std::wstring theme_editorial = L"Warm Editorial";
+    std::wstring theme_monolith = L"Refined Monolith";
+};
+
 class I18n {
 public:
     // Initializes localization state based on config override or Windows OS UI language
@@ -487,6 +500,9 @@ public:
 
     // Returns localized UI string for given StringId
     static std::wstring Get(StringId id);
+
+    // Returns localized UI theme strings bundle
+    static I18nStrings GetThemeStrings();
 
     // Returns localized language display name for a given language code (e.g. "KO" -> "한국어 (Korean)")
     static std::wstring GetLanguageDisplayName(std::string_view lang_code);

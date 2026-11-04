@@ -50,25 +50,33 @@ bool ContainsGreek(std::wstring_view text);
 
 // Detects language of given text based on script analysis.
 // Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian",
-// "Thai", "Arabic", "Hebrew", "Auto Detect", or "Unknown". ("English" was
-// removed as a return value by F5; see below.)
+// "Thai", "Arabic", "Hebrew", "Auto Detect", or "Unknown". ("English" as a
+// SENTENCE label was removed by F5; the RC-1 1-2 token path below restores it
+// for single words; see below.)
 // ("Hebrew" added by G-4, REQ-040 batch B-6, user-approved 2026-09-07:
 // Hebrew text must never be reported as "Arabic" - the name feeds
 // NormalizeLanguageCode -> registry "HE" and the already-target bypass.)
 // (F1, session 260908_0003, verify 220010: diacritic-bearing LATIN text
 // returns the canonical AUTO name "Auto Detect" instead of a forced language
 // identity - NormalizeLanguageCode maps it to "AUTO", so the drag/typing
-// chains inject NO source token and Hy-MT2's built-in language ID decides.)
+// chains inject NO source token and Hy-MT2's built-in language ID decides.
+// F-10/RC-1 (v0.10.5) carve the narrow exception: 1-2 token inputs are
+// resolved by DetectLatinLanguage before this rule is reached.)
 // (F5 Phase 2, session 260908_0003, ask audit 181530 condition 1 Option B,
-// VP/user adjudication: the pure-ASCII "English" label is REMOVED. ASCII
-// Latin cannot separate English from Indonesian/Malay/Tagalog/Swahili (all
-// Hy-MT2-supported), so keeping it re-opened a silent untranslated passthrough
-// for Latin-script non-English users targeting English. ALL Latin-script text
-// now returns "Auto Detect" and the model's built-in language ID decides. The
-// true EN->EN identity bypass survives ONLY for an explicitly pinned English
-// source (ShouldTranslate step 7). Accepted cost per the audit: English text
-// under Auto targeting English spends one local inference and returns
-// near-identical output.)
+// VP/user adjudication: the pure-ASCII "English" label is REMOVED for general
+// Latin text. ASCII Latin cannot separate English from Indonesian/Malay/
+// Tagalog/Swahili (all Hy-MT2-supported), so keeping it re-opened a silent
+// untranslated passthrough for Latin-script non-English users targeting
+// English: SENTENCES return "Auto Detect" and the model's built-in language
+// ID decides. RC-1 (v0.10.5 handoff section 2.2) restores a NARROW exception:
+// 1-2 token inputs matching high-frequency English core vocabulary or
+// stopwords resolve to "English" (single common words spend no engine round
+// trip), and 1-2 token words with a non-English distinctive diacritic or
+// stopword resolve to that language. The true EN->EN identity bypass for
+// sentences survives ONLY for an explicitly pinned English source
+// (ShouldTranslate step 7). Accepted cost per the audit: a multi-word English
+// sentence under Auto targeting English spends one local inference and
+// returns near-identical output.)
 std::string DetectLanguage(std::wstring_view text);
 
 // Returns true if text represents a standalone URL or web domain.
