@@ -10,6 +10,7 @@
 #include <dwrite.h>
 
 #include "layered_renderer.hpp"
+#include "theme.hpp"
 
 namespace emebalachat {
 
@@ -56,18 +57,20 @@ public:
 
     HWND GetHwnd() const { return hwnd_; }
     int GetCurrentWidth() const { return current_width_; }
-
-    static constexpr UINT WM_BADGE_SET_STATUS = WM_USER + 201;
-    static constexpr UINT WM_BADGE_SET_LANGS  = WM_USER + 202;
-
-private:
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void Invalidate() { Render(); }
+    void RefreshTheme() { Render(); }
     // 260922_0001 A4 (fix plan §4.1-A): after an EndDraw device-lost, Render()
     // recreates the target and re-renders exactly once. reentry_allowed caps
     // the recursion depth at 2 (top pass true -> recovery pass false); the
     // recovery pass is a plain call on the same (GUI) thread, so the only
     // re-lock it performs is render_mutex_ — hence the recursive mutex below.
     void Render(bool reentry_allowed = true);
+
+    static constexpr UINT WM_BADGE_SET_STATUS = WM_USER + 201;
+    static constexpr UINT WM_BADGE_SET_LANGS  = WM_USER + 202;
+
+private:
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void UpdateAlpha(BYTE alpha);
     void ResetIdleTimer();
     // 261029_0001 U-I (R1-21): re-run the Create/drag clamp against the live

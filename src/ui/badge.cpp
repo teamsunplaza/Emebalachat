@@ -4,6 +4,7 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 #include "dpi.hpp"
+#include "theme.hpp"
 
 #include <cmath>
 #include <vector>
@@ -151,6 +152,23 @@ bool FloatingBadge::Create(HINSTANCE hInstance, std::wstring_view src_code, std:
         text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
+    dwrite_factory_->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"",
+        &code_format_
+    );
+
+    if (code_format_) {
+        code_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        code_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        code_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
+
     LoadLogoBitmap();
 
     // Initial render and show
@@ -173,6 +191,7 @@ void FloatingBadge::Destroy() {
 
     if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
     if (text_format_) { text_format_->Release(); text_format_ = nullptr; }
+    if (code_format_) { code_format_->Release(); code_format_ = nullptr; }
     if (dwrite_factory_) { dwrite_factory_->Release(); dwrite_factory_ = nullptr; }
     renderer_.ReleaseTarget(&dc_render_target_);
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
@@ -422,25 +441,25 @@ void FloatingBadge::Render(bool reentry_allowed) {
         tgt_code = tgt_code_;
     }
 
-    // Status colors and typography accents matching Windows 11 Fluent / Dynamic Island theme
+    const auto& theme = ui::GetActiveTheme();
     D2D1_COLOR_F statusColor;
     D2D1_COLOR_F statusTextColor;
     std::wstring statusText;
     switch (status) {
         case BadgeStatus::Active:
-            statusColor = D2D1::ColorF(0x10B981);       // Vibrant Emerald (#10B981)
-            statusTextColor = D2D1::ColorF(0x34D399);   // Glowing Mint (#34D399)
+            statusColor = ui::ColorFromHex(theme.state_ready);
+            statusTextColor = ui::ColorFromHex(theme.state_ready);
             statusText = I18n::Get(StringId::BadgeActive);
             break;
         case BadgeStatus::Translating:
-            statusColor = D2D1::ColorF(0xF59E0B);       // Warm Amber (#F59E0B)
-            statusTextColor = D2D1::ColorF(0xFBBF24);   // Glowing Gold/Amber (#FBBF24)
+            statusColor = ui::ColorFromHex(theme.state_busy);
+            statusTextColor = ui::ColorFromHex(theme.state_busy);
             statusText = I18n::Get(StringId::BadgeTranslating);
             break;
         case BadgeStatus::Disabled:
         default:
-            statusColor = D2D1::ColorF(0x9CA3AF);       // Slate (#9CA3AF)
-            statusTextColor = D2D1::ColorF(0x9CA3AF);   // Slate (#9CA3AF)
+            statusColor = ui::ColorFromHex(theme.state_off);
+            statusTextColor = ui::ColorFromHex(theme.text_secondary);
             statusText = I18n::Get(StringId::BadgePaused);
             break;
     }
@@ -455,11 +474,12 @@ void FloatingBadge::Render(bool reentry_allowed) {
     // Measure exact text dimensions using DirectWrite TextLayout
     IDWriteTextLayout* textLayout = nullptr;
     DWRITE_TEXT_METRICS metrics = {};
-    if (dwrite_factory_ && text_format_) {
+    IDWriteTextFormat* baseFormat = text_format_ ? text_format_ : code_format_;
+    if (dwrite_factory_ && baseFormat) {
         dwrite_factory_->CreateTextLayout(
             display_label.c_str(),
             static_cast<UINT32>(display_label.size()),
-            text_format_,
+            baseFormat,
             2000.0f,
             static_cast<float>(kHeight),
             &textLayout
@@ -472,14 +492,17 @@ void FloatingBadge::Render(bool reentry_allowed) {
             // anything older and the label renders untracked (safe no-op).
             // Metrics are read AFTER the spacing is applied, so the
             // centering math below and the dynamic pill width stay exact.
-            IDWriteTextLayout1* layout1 = nullptr;
-            if (SUCCEEDED(textLayout->QueryInterface(
-                    __uuidof(IDWriteTextLayout1),
-                    reinterpret_cast<void**>(&layout1))) && layout1) {
-                layout1->SetCharacterSpacing(
-                    0.3f, 0.3f, 0.0f,
-                    DWRITE_TEXT_RANGE{0, static_cast<UINT32>(display_label.size())});
-                layout1->Release();
+            if (theme.use_mono_tags) {
+                textLayout->SetFontFamilyName(
+                    theme.font_mono,
+                    DWRITE_TEXT_RANGE{0, static_cast<UINT32>(lang_part.size())});
+
+
+
+
+
+
+
             }
             textLayout->GetMetrics(&metrics);
         }
@@ -496,7 +519,7 @@ void FloatingBadge::Render(bool reentry_allowed) {
     // before the label (8.5 -> 4.1 DIP) and shifted the group 2.2 DIP left.
     // kRingPad is the ring's reserved half-width: the ring now sits at
     // medallionRadius + 2.5f (= 11.5, outer edge 11.95) inside the 12.0 pad.
-    const float kRingPad = 3.0f;
+    const float kRingPad = 0.0f;
     const float medallionVisualW = medallionSize + kRingPad * 2.0f; // 24.0f
     float textWidth = metrics.widthIncludingTrailingWhitespace;
     float totalContentWidth = medallionVisualW + gap + textWidth;
@@ -551,28 +574,52 @@ void FloatingBadge::Render(bool reentry_allowed) {
     //    a subtle top-to-bottom illumination over the poster navy, matching
     //    the tooltip card / About window family instead of the old generic
     //    obsidian AI-pill gradient.
-    ID2D1GradientStopCollection* pBgStops = nullptr;
-    D2D1_GRADIENT_STOP bgStops[2];
-    bgStops[0].position = 0.0f;
-    bgStops[0].color = D2D1::ColorF(0x101F3E, 0.95f); // navy-1 top illumination
-    bgStops[1].position = 1.0f;
-    bgStops[1].color = D2D1::ColorF(0x0C1830, 0.97f); // navy-0 poster base
+    const D2D1_RECT_F cardRect = D2D1::RectF(
+        0.5f, 0.5f,
+        static_cast<float>(current_width_) - 0.5f,
+        static_cast<float>(kHeight) - 0.5f);
+    ui::DrawElevatedCard(
+        dc_render_target_,
+        cardRect,
+        theme.badge_radius,
+        1.0f,
+        theme,
+        1.0f,
+        0.0f);
+    if (is_hovered_) {
+        ID2D1SolidColorBrush* hoverBorderBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha),
+            &hoverBorderBrush);
+        if (hoverBorderBrush) {
+            const D2D1_ROUNDED_RECT hoverRr = D2D1::RoundedRect(
+                cardRect, theme.badge_radius, theme.badge_radius);
+            dc_render_target_->DrawRoundedRectangle(hoverRr, hoverBorderBrush, 1.0f);
+            hoverBorderBrush->Release();
+        }
+    }
+    /*
 
-    ID2D1LinearGradientBrush* bgGradient = nullptr;
-    if (SUCCEEDED(dc_render_target_->CreateGradientStopCollection(bgStops, 2, &pBgStops)) && pBgStops) {
-        dc_render_target_->CreateLinearGradientBrush(
-            D2D1::LinearGradientBrushProperties(
-                D2D1::Point2F(0.0f, 0.0f),
-                D2D1::Point2F(0.0f, static_cast<float>(kHeight))
+
+
+
+
+
+
+
+
+
+
+
             ),
-            pBgStops,
-            &bgGradient
+
+
         );
-        pBgStops->Release();
+
     }
 
-    D2D1_ROUNDED_RECT fillRect = D2D1::RoundedRect(
-        D2D1::RectF(0.0f, 0.0f, static_cast<float>(current_width_), static_cast<float>(kHeight)),
+
+
         kRadius,
         kRadius
     );
@@ -582,7 +629,7 @@ void FloatingBadge::Render(bool reentry_allowed) {
         bgGradient->Release();
     } else {
         ID2D1SolidColorBrush* solidBg = nullptr;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.96f), &solidBg);
+
         if (solidBg) {
             dc_render_target_->FillRoundedRectangle(&fillRect, solidBg);
             solidBg->Release();
@@ -597,7 +644,7 @@ void FloatingBadge::Render(bool reentry_allowed) {
     //    silhouette dissolve. #4A6CA3 (lapis-hi) @0.90 keeps the same brand
     //    hue while the edge stays readable over dark apps.
     ID2D1SolidColorBrush* borderBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x4A6CA3, 0.90f), &borderBrush);
+
 
     D2D1_ROUNDED_RECT strokeRect = D2D1::RoundedRect(
         D2D1::RectF(0.5f, 0.5f, static_cast<float>(current_width_) - 0.5f, static_cast<float>(kHeight) - 0.5f),
@@ -613,14 +660,15 @@ void FloatingBadge::Render(bool reentry_allowed) {
         // x = kRadius - sqrt((kRadius-0.5)^2 - (kRadius-1.5)^2) ~= 13.0 DIP,
         // so the old 0.6 x kRadius start (11.4) poked ~1.6 DIP of white line
         // outside the rounded corners (the "whisker" visible at 144 DPI).
-        dc_render_target_->DrawLine(
+
             D2D1::Point2F(kRadius, 1.5f),
             D2D1::Point2F(static_cast<float>(current_width_) - kRadius, 1.5f),
             borderBrush, 1.0f);
         borderBrush->Release();
     }
 
-    // 3. Logo medallion (18x18) — "signet" treatment (session 261029_0001):
+    */
+    // 3. Logo medallion (18x18): status-tinted disc with crisp status ring.
     //    the status disc stays saturated for glanceability, ringed by its own
     //    crisp status ring and a thin antique-gold outer ring echoing the About
     //    window's twin-gold seal.
@@ -636,7 +684,10 @@ void FloatingBadge::Render(bool reentry_allowed) {
     // the previous fixed dark fill. statusColor is already computed by the
     // switch above; halo/ring/text/alpha logic untouched, same 0.95f alpha.)
     ID2D1SolidColorBrush* medalBgBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.95f), &medalBgBrush);
+    const D2D1_COLOR_F medalFill = (status == BadgeStatus::Disabled)
+        ? ui::ColorFromHex(theme.surface_elevated, 0.95f)
+        : D2D1::ColorF(statusColor.r, statusColor.g, statusColor.b, 0.95f);
+    dc_render_target_->CreateSolidColorBrush(medalFill, &medalBgBrush);
     if (medalBgBrush) {
         dc_render_target_->FillEllipse(&medalCircle, medalBgBrush);
         medalBgBrush->Release();
@@ -664,7 +715,10 @@ void FloatingBadge::Render(bool reentry_allowed) {
 
     // Status ring stroke around the medallion
     ID2D1SolidColorBrush* statusRingBrush = nullptr;
-    dc_render_target_->CreateSolidColorBrush(statusColor, &statusRingBrush);
+    const D2D1_COLOR_F medalRing = (status == BadgeStatus::Disabled)
+        ? ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha)
+        : statusColor;
+    dc_render_target_->CreateSolidColorBrush(medalRing, &statusRingBrush);
     if (statusRingBrush) {
         dc_render_target_->DrawEllipse(&medalCircle, statusRingBrush, 1.2f);
         statusRingBrush->Release();
@@ -673,10 +727,10 @@ void FloatingBadge::Render(bool reentry_allowed) {
     // Gold signet ring — the outermost, thinnest ring (About-window seal cue).
     // R2-12b (FIX-B2): r = medallionRadius + 2.5f with a 0.9 stroke puts the
     // ring's outer edge at 11.95 DIP, exactly inside the kRingPad (12.0) the
-    // layout above reserved; 0.60 alpha keeps it a whisper over the navy.
+    /*
     {
-        ID2D1SolidColorBrush* goldRingBrush = nullptr;
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.60f), &goldRingBrush);
+
+
         if (goldRingBrush) {
             D2D1_ELLIPSE goldRing = D2D1::Ellipse(D2D1::Point2F(dotCenterX, dotCenterY),
                                                   medallionRadius + 2.5f, medallionRadius + 2.5f);
@@ -685,14 +739,15 @@ void FloatingBadge::Render(bool reentry_allowed) {
         }
     }
 
-    // 4. Label text (multi-tone typography & mathematically centered;
+    */
+    // 4. Label text (multi-tone typography & mathematically centered)
     //    brand sand-white + lapis-gray divider per the 261029_0001 palette)
     ID2D1SolidColorBrush* langBrush = nullptr;
     ID2D1SolidColorBrush* divBrush = nullptr;
     ID2D1SolidColorBrush* statusTextBrush = nullptr;
 
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xF2ECDC, 1.0f), &langBrush);
-    dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x93A3C7, 0.75f), &divBrush);
+    dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.text_primary, 1.0f), &langBrush);
+    dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.text_secondary, 0.65f), &divBrush);
     dc_render_target_->CreateSolidColorBrush(statusTextColor, &statusTextBrush);
 
     if (textLayout) {
@@ -877,7 +932,8 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             } else {
                 if (!self->is_hovered_) {
                     self->is_hovered_ = true;
-                    self->UpdateAlpha(217); // Restore full opacity on hover
+                    self->current_alpha_ = 217;
+                    self->Render(); // Re-render hover border & restore full opacity on hover
 
                     TRACKMOUSEEVENT tme = {};
                     tme.cbSize = sizeof(TRACKMOUSEEVENT);
@@ -908,7 +964,9 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 // Click in place: start single-click timer (sized to the OS
                 // double-click window captured at Create) to allow double-click
                 // detection
-                ::SetTimer(hwnd, kTimerSingleClick, self->single_click_delay_ms_, nullptr);
+                if (self->click_callback_) {
+                    self->click_callback_();
+                }
             }
             return 0;
         }
@@ -951,6 +1009,8 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_MOUSELEAVE: {
+            self->is_hovered_ = false;
+            self->Render();
             self->is_hovered_ = false;
             self->ResetIdleTimer();
             return 0;
@@ -1016,6 +1076,14 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // Render() terminates in UpdateAlpha(current_alpha_), so the
             // re-blit happens inside this call (no separate Present needed);
             // the A4 reentry_allowed guard applies through it too.
+            self->Render();
+            return 0;
+        }
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps = {};
+            ::BeginPaint(hwnd, &ps);
+            ::EndPaint(hwnd, &ps);
             self->Render();
             return 0;
         }

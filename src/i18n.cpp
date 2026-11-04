@@ -195,6 +195,10 @@ struct LocalizedStrings {
 #define EMEBALA_LSTR_FIELD(name) const wchar_t* name;
     EMEBALA_LSTR_FIELDS(EMEBALA_LSTR_FIELD)
 #undef EMEBALA_LSTR_FIELD
+    const wchar_t* menu_ui_theme = L"UI Theme";
+    const wchar_t* theme_fluent = L"Fluent Craft";
+    const wchar_t* theme_editorial = L"Warm Editorial";
+    const wchar_t* theme_monolith = L"Refined Monolith";
 };
 
 // Compile-time field count — generated from the SAME X-macro list above,
@@ -430,6 +434,10 @@ const LocalizedStrings kStringsKorean = {
     .gguf_manager_dedupe = L"중복 정리",
     .gguf_manager_dedupe_done = L"중복 파일을 휴지통으로 옮겼습니다.",
     .gguf_manager_dedupe_failed = L"중복 파일을 정리하지 못했습니다. 파일이 다른 프로그램에서 사용 중인지 확인하세요.",
+    .menu_ui_theme = L"디자인 테마",
+    .theme_fluent = L"플루언트 크래프트 (기본)",
+    .theme_editorial = L"웜 에디토리얼",
+    .theme_monolith = L"리파인드 모놀리스",
 };
 
 // 2. Japanese (ja)
@@ -638,6 +646,10 @@ const LocalizedStrings kStringsJapanese = {
     L"重複を整理",
     L"重複ファイルをごみ箱に移動しました。",
     L"重複ファイルを整理できませんでした。他のプログラムがファイルを使用していないか確認してください。",
+    L"デザインテーマ",
+    L"フルーエント・クラフト (標準)",
+    L"ウォーム・エディトリアル",
+    L"リファインド・モノリス",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -846,6 +858,10 @@ const LocalizedStrings kStringsChineseSimp = {
     L"清理重复",
     L"重复文件已移至回收站。",
     L"无法清理重复文件。请检查是否有其他程序正在使用这些文件。",
+    L"界面主题",
+    L"流畅工艺 (默认)",
+    L"温暖社论",
+    L"精致碑铭",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -1054,6 +1070,10 @@ const LocalizedStrings kStringsChineseTrad = {
     L"清理重複",
     L"重複檔案已移至資源回收筒。",
     L"無法清理重複檔案。請檢查是否有其他程式正在使用這些檔案。",
+    L"介面主題",
+    L"流暢工藝 (預設)",
+    L"溫暖社論",
+    L"精緻碑銘",
 };
 
 // 5. Vietnamese (vi)
@@ -8296,10 +8316,25 @@ std::wstring I18n::Get(StringId id) {
         case StringId::GgufManagerDedupeDone:     return s.gguf_manager_dedupe_done;
         case StringId::GgufManagerDedupeFailed:   return s.gguf_manager_dedupe_failed;
 
+        case StringId::MenuUiTheme:               return s.menu_ui_theme;
+        case StringId::ThemeFluent:               return s.theme_fluent;
+        case StringId::ThemeEditorial:            return s.theme_editorial;
+        case StringId::ThemeMonolith:             return s.theme_monolith;
+
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it
     }
     // unreachable
+}
+
+I18nStrings I18n::GetThemeStrings() {
+    const auto& s = GetStrings(GetCurrentLocale());
+    return I18nStrings{
+        s.menu_ui_theme,
+        s.theme_fluent,
+        s.theme_editorial,
+        s.theme_monolith
+    };
 }
 
 std::wstring I18n::GetLanguageDisplayName(std::string_view lang_code) {

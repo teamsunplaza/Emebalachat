@@ -1,6 +1,62 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.5 - 2026-11-04
+====================
+
+Patch release. Single-word translation hallucinations, input-pipeline
+defects (a stuck Win key, stray keypresses into other apps, over-long
+selections), and engine-host reliability (mid-translation abort, orphaned
+workers, version comparison) were audited by independent review teams and
+fixed. Three selectable UI design themes join the tray and About window.
+Upgrading from any 0.10.x build is fully supported.
+
+What's new in this build
+------------------------
+* Three UI design themes you can switch live: Fluent Craft (default), Warm
+  Editorial, and Refined Monolith. Pick one from the tray "UI Theme"
+  submenu or the 3-pill switcher at the top of the About window; the choice
+  is remembered in the new "ui_theme" setting ("fluent" / "editorial" /
+  "monolith").
+* Copy, check, speaker, and swap icons are now drawn as crisp vector
+  graphics in the active theme instead of emoji stand-ins.
+
+What's fixed
+------------
+* Typing a single word or a very short phrase (like "hello" or "good
+  morning") no longer comes back as an invented sentence or a dictionary
+  essay: short inputs resolve to a real language, the engine is told the
+  detected source language, prompts treat your text as literal text, and
+  the generation budget for short inputs is capped.
+* Two-character repeated words ("각각", "妈妈") and four-character alternating
+  words ("바이바이") are no longer mistaken for laughter; short words can no
+  longer balloon into 60-plus-character invented text.
+* An English sentence that happens to contain one Korean word is no longer
+  skipped as "already Korean": the skip now needs the target script to
+  dominate the text.
+* Google Translate answers containing square brackets in the translated
+  text no longer truncate or misalign.
+* Pressing a Win-key hotkey no longer leaves the Win key stuck down
+  system-wide, and diagnostic key logging no longer breaks dead keys on
+  European keyboards.
+* Switching to another app mid-translation no longer presses a stray
+  right-arrow key into the app you switched to.
+* Pasting a single line no longer arms a selection of up to 64 lines; the
+  internal counter follows the real number of pasted line breaks.
+* Hotkeys no longer write to disk or update the tray icon on the
+  low-level keyboard hook thread, removing the risk of Windows silently
+  unhooking the app.
+* The translation worker now reacts to abort and shutdown within
+  milliseconds while a translation is still running, and the engine host
+  can no longer answer a new client with a dead client's queued jobs.
+* Version comparison between app and engine host is now numeric
+  ("0.10.10" correctly beats "0.10.9").
+* Selection offsets in huge documents (over 65,535 characters) are read
+  as full 32-bit values.
+* Badge single-click and tray left-click act immediately; the old 500 ms
+  delay is gone. The model-download dialog's error text now meets WCAG AA
+  contrast, and the tray status dot is antialiased.
+
 v0.10.4 - 2026-10-29
 ====================
 

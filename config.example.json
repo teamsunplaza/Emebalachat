@@ -1,5 +1,6 @@
 {
   "ui_language": "auto",
+  "ui_theme": "fluent",
   "engine_type": "auto",
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
   "source_language": "Auto Detect",

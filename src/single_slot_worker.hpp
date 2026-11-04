@@ -38,8 +38,12 @@
 //     by cv.notify_all(): the loop registers NO stop_callback on the cv, so
 //     request_stop alone could leave a cv.wait-blocked worker asleep while
 //     ~jthread's join hangs. Join() mirrors `if (w.joinable()) w.join();`.
-//     The jthread destructor remains the same unreachable-but-identical
-//     fallback it is today (main.cpp always Stops+Joins before scope exit).
+//     Input P1-1 (v0.10.5): the class now ENFORCES that teardown in
+//     ~SingleSlotWorker() (Stop()+Join()), so the ~jthread fallback the old
+//     comment claimed can never be reached with a live cv waiter - the
+//     destructor stops and joins the thread before member destruction
+//     (main.cpp still Stops+Joins explicitly; the destructor is the safety
+//     net for every future call site).
 
 #include <condition_variable>
 #include <functional>
@@ -65,6 +69,17 @@ public:
 
     SingleSlotWorker(const SingleSlotWorker&) = delete;
     SingleSlotWorker& operator=(const SingleSlotWorker&) = delete;
+
+    // Input P1-1 (v0.10.5): the loop waits on a plain std::condition_variable,
+    // which ~jthread() can never wake (it only request_stop()+joins; the cv
+    // predicate reads stop_/pending_, never the stop_token). A destruction
+    // without an explicit Stop() therefore deadlocked the join. The destructor
+    // runs the established teardown (Stop wakes the cv, Join bounds the exit)
+    // so the object is always safe to destroy, from any call site.
+    ~SingleSlotWorker() noexcept {
+        Stop();
+        Join();
+    }
 
     // Producer side: overwrite the pending slot (latest-wins) under the
     // mutex, then wake one waiting consumer outside the lock.

@@ -8,6 +8,7 @@
 #include <dwrite.h>
 
 #include "layered_renderer.hpp"
+#include "theme.hpp"
 
 namespace emebalachat {
 
@@ -27,6 +28,8 @@ public:
     // Same-thread callers run inline.
     void ShowAt(int x, int y);
     void Hide();
+    void Invalidate() { if (IsVisible()) { Render(); UpdateLayered(); } }
+    void RefreshTheme() { Invalidate(); }
     bool IsVisible() const { return visible_.load(std::memory_order_relaxed); }
 
     HWND GetHwnd() const { return hwnd_; }

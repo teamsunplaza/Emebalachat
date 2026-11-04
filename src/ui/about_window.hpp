@@ -12,6 +12,7 @@
 #include <dwrite.h>
 
 #include "layered_renderer.hpp"
+#include "ui/theme.hpp"
 #include "../update_checker.hpp" // REQ-UC: ReleaseInfo + check/download outcomes
 
 namespace emebalachat {
@@ -73,6 +74,7 @@ public:
     // payloads — the outcomes travel through the mutex-guarded UpdateJob slot.
     static constexpr UINT kUpdateCheckDoneMessage = WM_APP + 0x304;
     static constexpr UINT kUpdateDownloadDoneMessage = WM_APP + 0x305;
+    static constexpr UINT kUpdateProgressMessage = WM_APP + 0x306;
 
     // Coordinate packing for kShowMessage (SEC-ADJ): x travels in WPARAM, y
     // in LPARAM, as sign-extended int values — the exact DragIconWindow
@@ -99,6 +101,12 @@ public:
     // window stays a pure view: on click it invokes this callback (GUI
     // thread — the WndProc runs there) after an explicit Yes confirm.
     void SetResetCallback(std::function<void()> cb) { reset_callback_ = std::move(cb); }
+
+    // Multi-theme live switcher callback & repaint trigger.
+    using ThemeChangeCallback = std::function<void(const std::string&)>;
+    void SetOnThemeChangeCallback(ThemeChangeCallback cb) { theme_change_callback_ = std::move(cb); }
+    void RefreshTheme();
+    void Invalidate() { RefreshTheme(); }
 
     // R6 Phase 5 (plan §5.2): pure localized-content snapshot resolved from the
     // i18n tables for the CURRENT locale. Headless test seam; Render consumes
@@ -331,6 +339,7 @@ private:
 
     // Interactive rectangles, DIP window coords (recomputed every Render).
     D2D1_RECT_F close_btn_rect_ = {};
+    D2D1_RECT_F theme_rects_[3] = {};        // 3-pill Theme Switcher bar (Fluent / Editorial / Monolith)
     D2D1_RECT_F link_rects_[kNumLinks] = {}; // restored intro link pills
     D2D1_RECT_F reset_rect_ = {};            // footer reset pill (REQ-020 confirm)
     D2D1_RECT_F update_check_rect_ = {};     // REQ-UC: idle footer / zone retry
@@ -352,17 +361,21 @@ private:
     static constexpr int kHoverRetry = 9;
     static constexpr int kHoverReadyLater = 10;
     static constexpr int kHoverReadyInstall = 11;
+    static constexpr int kHoverTheme0 = 20; // theme switcher pills 20..22
+    static constexpr int kHoverTheme2 = 22;
 
     // REQ-020: reset feedback + the REQ-052 confirm gate.
     static constexpr UINT_PTR kResetFeedbackTimerId = 0xB1B1; // unique on this hwnd
     static constexpr UINT kResetFeedbackMs = 1600;
     ULONGLONG reset_feedback_until_ = 0;
     std::function<void()> reset_callback_;
+    ThemeChangeCallback theme_change_callback_;
     bool confirm_pending_ = false;
 
-    // REQ-UC timers: 50 ms animation (spinner rotation + progress chase) and
+    // REQ-UC timers: 50 ms animation (indeterminate spinner rotation) and
     // the ~6 s up-to-date auto-return.
     static constexpr UINT_PTR kUpdateAnimTimerId = 0xB2;
+    static constexpr UINT_PTR kTimerProgressAnim = kUpdateAnimTimerId;
     static constexpr UINT_PTR kUpToDateReturnTimerId = 0xB3;
     static constexpr UINT kUpToDateReturnMs = 6000;
 

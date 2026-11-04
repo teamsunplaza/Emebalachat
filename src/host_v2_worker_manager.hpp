@@ -6,7 +6,8 @@
 //
 // Responsibilities (design §1.1 "워커 매니저"):
 //   * EnsureSpawned  — spawn the family worker exe (hidden, same user, boot-
-//                      scoped token on the command line — NO token file),
+//                      scoped token in the child ENVIRONMENT since review
+//                      round 1 F-11 — never the command line; NO token file),
 //                      create the private pipe (server end, user-only SD),
 //                      and complete the announce handshake (family/abi/
 //                      protocol-range validation; a mismatch marks the family
@@ -31,8 +32,9 @@
 // decisions, backoff math and crash transitions WITHOUT any process.
 //
 // Security (design §10): pipe = user-only SD (same SDDL builder pattern as
-// host_main.cpp BuildUserOnlySd), token = boot-scoped random hex32 passed on
-// the command line only, shape-only ENGINEHOST/wmgr/NNN diagnostics, no user
+// host_main.cpp BuildUserOnlySd), token = boot-scoped random hex32 passed in
+// the child environment only (review round 1 F-11), shape-only
+// ENGINEHOST/wmgr/NNN diagnostics, no user
 // text, no config file, loopback TCP forbidden (named pipe only).
 // ---------------------------------------------------------------------------
 
@@ -129,18 +131,20 @@ inline bool AsrSpawnRetryWarranted(WorkerState s, int64_t now_ms, int64_t deadli
 
 // ---- injectable spawn seam (unit tests substitute a fake launcher) ---------
 // The real launcher spawns "Emebala.Engine.<family>.exe" hidden with
-// --pipe/--token. Tests inject a process handle + fake exit behavior so the
-// state machine runs process-free.
+// --pipe/--mutex on the command line and the boot token in the child
+// environment (review round 1 F-11). Tests inject a process handle + fake
+// exit behavior so the state machine runs process-free.
 struct SpawnRequest {
     std::wstring exe_path;      // absolute path to the worker exe
     std::wstring pipe_name;     // \\.\pipe\emebala-engine-worker-<pid>-<tick>-<seq>
-    std::string token;          // 32 hex chars
+    std::string token;          // 32 hex chars (consumed by the launcher as the
+                                //   EMEBALA_WORKER_TOKEN env value, never argv)
     // Plan-B (REQ-B004) B-T3, technical gate A-4: per-spawn environment block
-    // override. Empty -> the child inherits the parent's environment verbatim
-    // (the pre-B-T3 behavior, lpEnvironment=nullptr). Non-empty -> a
-    // double-null-terminated Unicode environment block built by
-    // BuildTranslateSpawnEnvironment (parent env + the boot-scoped overrides),
-    // passed to CreateProcessW as lpEnvironment.
+    // override (the CPU leg). Empty -> GPU-permitted leg: the launcher still
+    // builds a block (parent env + the EMEBALA_WORKER_TOKEN assignment, review
+    // round 1 F-11), it just carries no EMEBALA_MT_GPU pin. Non-empty -> the
+    // launcher re-applies EMEBALA_MT_GPU=0 alongside the token in ONE built
+    // block (this staged block itself is superseded, never merged).
     std::vector<wchar_t> environment_block;
     // B3 fix (session 260928_0001): the worker family this spawn serves. The
     // launcher forwards it to the child as `--mutex <family>` so the worker
@@ -399,6 +403,24 @@ public:
     SettleOutcome SettleWorkerPipe(const std::wstring& family, int timeout_ms,
                                    const std::atomic<bool>* cancel = nullptr,
                                    int max_frames = 512);
+
+    // Backend P0-1 part 2 (review round 1, F-05): terminate an unresponsive
+    // worker after a give-up settle EXPIRED its full budget without
+    // delivering the aborted job's terminal event. With the worker-side
+    // reader thread a healthy worker answers an abort within milliseconds,
+    // so a DeadlineExpired settle means the worker is wedged (hung GPU/driver
+    // call) or already dying: kill it NOW, reclaim the family's reserved VRAM
+    // and let the backoff gate pace the respawn. The caller must own the
+    // family Busy (the give-up settle window) — the post-answer SetBusy(false)
+    // is a no-op on the Crashed state this writes, exactly like the
+    // SendToWorker stall-kill path. Call ONLY for the DeadlineExpired outcome:
+    // TerminalDiscarded (healthy worker), PipeIoError (the reaper owns the
+    // crash transition) and Cancelled (host shutdown owns teardown) leave the
+    // family untouched — that gating is what keeps every S1-S9 settle-suite
+    // pin green (the suite drives the settle primitive directly and never
+    // reaches this API; the fixture's fake process handle is an event, so a
+    // behavioral pin here is impossible anyway).
+    bool TerminateUnresponsiveWorker(const std::wstring& family);
 
     // 260927_0003 F-01 (review round 2): single-flight family acquire. Under
     // ONE mutex acquisition: succeeds only when the family is Ready and flips

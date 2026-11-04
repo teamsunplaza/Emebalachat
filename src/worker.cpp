@@ -401,6 +401,19 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
              snap.type_source_language.c_str(), snap.type_target_language.c_str(),
              snap.engine_type.c_str(), snap.auto_send ? 1 : 0);
 
+    // Input P1-4 (session 261104_0001, input-pipeline-audit section 3.5):
+    // record the foreground thread's focused CHILD control at capture time.
+    // The REQ-R03 release gate below re-verifies it before injecting
+    // VK_RIGHT: a same-root-owner child focus shift (owned dialog, address
+    // bar, tab switch) during the translation window must suppress the
+    // release exactly like a foreground switch, because SendInput delivers
+    // the keystroke to whatever control has focus NOW, not to the control
+    // that held the capture-time selection.
+    GUITHREADINFO gti_at_capture{};
+    gti_at_capture.cbSize = sizeof(gti_at_capture);
+    const bool focus_at_capture_ok =
+        ::GetGUIThreadInfo(/*idThread=*/0, &gti_at_capture) != FALSE;
+
     const ULONGLONG t_capture_start = ::GetTickCount64();
     // A-004 Option A: baseline the clipboard sequence BEFORE the copy chords (fast-path proof).
     const DWORD clip_seq_at_capture = ::GetClipboardSequenceNumber();
@@ -917,16 +930,34 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // and the paste recomposes prefix + tail translation so the whole-input
     // selection geometry is still fully covered by the replacement.
     const std::wstring& engine_input = untranslated_tail.empty() ? line : untranslated_tail;
-    DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu%s",
+    // PIPE-1 (session 261104_0001, handoff section 2.1): the Enter pipeline
+    // used to hand the engine the raw snap.type_source_language, which under
+    // the default config is the "Auto Detect" marker. ShouldTranslate (above)
+    // already computed a script detection internally and discarded it, so
+    // the prompt lost the source language entirely. Re-detect on the ACTUAL
+    // engine input (the REQ-F2 tail slice can differ from `line`) and
+    // resolve it through the shared source rule (ADR-A1-2): a pinned
+    // type_source_language still wins, while an unambiguous script-specific
+    // detection (Korean, kana-bearing Japanese, Russian, Arabic, Thai...)
+    // now reaches the engine named. Latin-script text still resolves to the
+    // AUTO marker (F5), so the engine's built-in language-ID path is
+    // unchanged there. The "Unknown" guard keeps the legacy AUTO marker on
+    // the empty/garbage edge DetectLanguage cannot classify.
+    const std::string detected_engine_src = DetectLanguage(engine_input);
+    const std::string resolved_engine_src = ResolveEffectiveSource(
+        snap.type_source_language,
+        detected_engine_src == "Unknown" ? "Auto Detect" : detected_engine_src);
+    DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu%s src=%s",
              engine_.GetActiveEngineName().c_str(), engine_input.size(),
-             untranslated_tail.empty() ? "" : " (req_f2 tail_only; prefix held verbatim)");
+             untranslated_tail.empty() ? "" : " (req_f2 tail_only; prefix held verbatim)",
+             resolved_engine_src.c_str());
 
     // REQ-R02: capture the explicit engine status. An empty result is no longer
     // silent - the status below distinguishes privacy-block from engine failure.
     TranslationStatus status = TranslationStatus::Ok;
     const ULONGLONG t_translate_start = ::GetTickCount64();
     std::wstring translated =
-        NormalizeNewlinesToCRLF(engine_.Translate(engine_input, snap.type_source_language, snap.type_target_language, &status));
+        NormalizeNewlinesToCRLF(engine_.Translate(engine_input, resolved_engine_src, snap.type_target_language, &status));
     if (!untranslated_tail.empty() && !translated.empty()) {
         // Recompose: [remembered verbatim prefix][tail translation]. The
         // pasted result must equal the full input span so the selection is
@@ -1054,10 +1085,17 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  pasted ? 1 : 0, reinterpret_cast<const void*>(task.target_hwnd),
                  ::GetTickCount64() - t_paste_start, restore_ok ? 1 : 0);
         // If !pasted (focus shifted): clipboard untouched, nothing leaked. The
-        // block selection is still live and MUST be released - a VK_RIGHT into a
-        // possibly different foreground window is a benign cursor move, while
-        // leaving it selected destroys the user's whole message on their next
-        // keystroke (audit §2.2 / §5-3, REQ-R03). Enter remains H1-gated below.
+        // block selection is still live and is released ONLY when the
+        // injection target is verifiably the captured window: the Input P1-4
+        // gate below (release_injection_safe, session 261104_0001) suppresses
+        // the VK_RIGHT when the foreground window or the focused child
+        // control drifted during translation, because SendInput would then
+        // deliver the keystroke to the foreign window/control (a video seek,
+        // a slide advance, a caret move) and the backgrounded target would
+        // receive nothing anyway. When the target is unchanged the release
+        // stays mandatory: a live selection destroys the user's whole message
+        // on their next keystroke (audit §2.2 / §5-3, REQ-R03). Enter remains
+        // H1-gated below.
         if (pasted) {
             // F7: one shared definition (worker.hpp ClipboardRestorerStaysArmed)
             // decides the guard. Disarmed ONLY when PasteAndRestore confirmed it
@@ -1141,37 +1179,64 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
     }
 
+    // Input P1-4 (session 261104_0001, input-pipeline-audit section 3.5):
+    // the VK_RIGHT release is injected through SendInput, which ALWAYS lands
+    // in the CURRENT foreground window. When the user switched applications
+    // during the translation window (an H1 abort inside PasteAndRestore
+    // proves the foreground no longer matches task.target_hwnd) or the focus
+    // moved to a different child control of the same root owner, the release
+    // must be SUPPRESSED: otherwise it injects VK_RIGHT into the foreign
+    // window/control (a video seek, a slide advance, a caret move), while
+    // the backgrounded capture window receives nothing anyway. The selection
+    // staying live in the background window is the audit-accepted trade:
+    // REQ-R03 is a same-window contract that cannot be honored cross-window.
+    // A failed capture-time GetGUIThreadInfo degrades to the legacy behavior
+    // (the foreground check alone gates the release).
+    const bool release_fg_matches =
+        IsSameWindowForInjection(task.target_hwnd, ::GetForegroundWindow());
+    GUITHREADINFO gti_at_release{};
+    gti_at_release.cbSize = sizeof(gti_at_release);
+    const bool release_focus_matches =
+        !focus_at_capture_ok ||
+        (::GetGUIThreadInfo(/*idThread=*/0, &gti_at_release) != FALSE &&
+         gti_at_release.hwndFocus == gti_at_capture.hwndFocus);
+    const bool release_injection_safe = release_fg_matches && release_focus_matches;
+
     // REQ-R03: exactly-once selection release on every non-paste outcome. The
     // single call site below is the guarantee; the constexpr matrix above pins
     // it at compile time.
     if (SelectionReleaseRequired(pasted)) {
-        // BUG-005 4th gate (represcription 061500, Light Gate 060150 REJECT ->
-        // paths A/B/C): placed INSIDE this !pasted-only block, BEFORE the
-        // VK_RIGHT release. Equivalence proof (report 061500 §1-B): reaching
-        // this block with pasted==false means this task injected ZERO editor
-        // selection-changing actions (no Ctrl+V - H1 abort pre-emits nothing;
-        // no Enter - the send gate is below), so the selection here is
-        // IDENTICAL to the capture-exit state S0: a select_all_rescued capture
-        // means a LIVE whole-document selection, provably, regardless of
-        // whether the release below will be honored or silently dropped
-        // (BUG-002 class - unobservable by design). Consuming it here makes
-        // the identity paste a replacement over its own selection (byte-safe
-        // no-op content edit that collapses the selection editor-owned), so
-        // the release below and the send-through Enter can never replace a
-        // live selected span. Scope: the predicate's identity_arm input
-        // (3-arg form, 061500 §3-E) is identity_outcome, which is false on
-        // path B (translated empty: L720 requires non-empty) and path C
-        // (successful paste: translated != line); pasted==true cannot enter
-        // this block at all (L102 static_assert) - the 1st-Enter mainline
-        // rescue paste-back is untouched.
-        if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty(), identity_outcome) &&
-            ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
-            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste BEFORE the REQ-R03 release (identity arm, pre-release gate); arm=identity_pre_release\n");
+        if (release_injection_safe) {
+            // BUG-005 4th gate (represcription 061500, Light Gate 060150 REJECT ->
+            // paths A/B/C): placed INSIDE this !pasted-only block, BEFORE the
+            // VK_RIGHT release. Equivalence proof (report 061500 §1-B): reaching
+            // this block with pasted==false means this task injected ZERO editor
+            // selection-changing actions (no Ctrl+V - H1 abort pre-emits nothing;
+            // no Enter - the send gate is below), so the selection here is
+            // IDENTICAL to the capture-exit state S0: a select_all_rescued capture
+            // means a LIVE whole-document selection, provably, regardless of
+            // whether the release below will be honored or silently dropped
+            // (BUG-002 class - unobservable by design). Consuming it here makes
+            // the identity paste a replacement over its own selection (byte-safe
+            // no-op content edit that collapses the selection editor-owned), so
+            // the release below and the send-through Enter can never replace a
+            // live selected span. Scope: the predicate's identity_arm input
+            // (3-arg form, 061500 §3-E) is identity_outcome, which is false on
+            // path B (translated empty: L720 requires non-empty) and path C
+            // (successful paste: translated != line); pasted==true cannot enter
+            // this block at all (L102 static_assert) - the 1st-Enter mainline
+            // rescue paste-back is untouched.
+            if (RescueLiveSelectionNeedsConsume(provenance.rescued, !line.empty(), identity_outcome) &&
+                ConsumeRescueSelectionIdentityPaste(line, task.target_hwnd, backup, restorer.active, nullptr)) {
+                DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste BEFORE the REQ-R03 release (identity arm, pre-release gate); arm=identity_pre_release\n");
+            }
+            // consume failure (H1 abort) falls through to the legacy contract:
+            // the release below runs exactly once (REQ-R03 unchanged), and the
+            // Enter below stays H1-gated. Pre-fix behavior byte-identical.
+            ReleaseSelectionOnce();
+        } else {
+            DIAG_F("WORKER/ExecuteTask/054: REQ-R03 release suppressed (Input P1-4): foreground or focus shifted during translation; VK_RIGHT would land in a foreign window or control\n");
         }
-        // consume failure (H1 abort) falls through to the legacy contract:
-        // the release below runs exactly once (REQ-R03 unchanged), and the
-        // Enter below stays H1-gated. Pre-fix behavior byte-identical.
-        ReleaseSelectionOnce();
     }
 
     // REQ-R02: failure is user-visible, not silent. When the engine produced no

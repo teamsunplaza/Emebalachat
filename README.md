@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/teamsunplaza/Emebalachat/releases"><img src="https://img.shields.io/badge/Release-v0.10.4-blue.svg?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/teamsunplaza/Emebalachat/releases"><img src="https://img.shields.io/badge/Release-v0.10.5-blue.svg?style=flat-square" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://microsoft.com/windows"><img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-0078D6.svg?style=flat-square&logo=windows" alt="Platform" /></a>
   <a href="https://teamsunplaza.gumroad.com/l/emebala"><img src="https://img.shields.io/badge/Sponsor-Gumroad-FF90A0.svg?style=flat-square&logo=gumroad&logoColor=white" alt="Sponsor" /></a>
@@ -62,7 +62,7 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 
 ## Download (Windows 10 / 11 x64)
 
-Download **`Emebalachat_Setup_0.10.4.exe`** from [**Releases**](https://github.com/teamsunplaza/Emebalachat/releases) and run it. The installer offers:
+Download **`Emebalachat_Setup_0.10.5.exe`** from [**Releases**](https://github.com/teamsunplaza/Emebalachat/releases) and run it. The installer offers:
 
 - Automatic installation to `%ProgramFiles%\Emebalachat`
 - Optional auto-start with Windows login
@@ -203,6 +203,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 ```json
 {
   "ui_language": "auto",
+  "ui_theme": "fluent",
   "engine_type": "auto",
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
   "source_language": "Auto Detect",
@@ -234,6 +235,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 <summary><strong>Parameter details (all keys)</strong></summary>
 
 - `ui_language`: Interface language (`"auto"` = follow Windows display language, or a locale code such as `"ko"`, `"en"`, `"ja"`, `"zh-CN"`, `"zh-TW"`). Changeable live from the tray menu.
+- `ui_theme` (0.10.5+): UI design theme: `"fluent"` (default, Fluent Craft), `"editorial"` (Warm Editorial), or `"monolith"` (Refined Monolith). Changeable live from the tray **UI Theme** submenu or the 3-pill switcher at the top of the About window; the picked value persists in this key. Unknown values fall back to `"fluent"`.
 - `engine_type`:
   - `"auto"` (default): Prefers local LLM if the model exists; falls back to Google Translate when the model is absent or a local attempt fails.
   - `"local"`: Strictly forces the local llama.cpp model. Cloud use then requires `cloud_fallback_enabled: true`.
@@ -484,7 +486,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (7,213 checks as of v0.10.4) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (7,257 checks as of v0.10.5) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe
@@ -524,7 +526,7 @@ To package Emebala Chat into a single, self-extracting Windows installer:
 The compiled installer will be output to:
 
 ```text
-installer\output\Emebalachat_Setup_0.10.4.exe
+installer\output\Emebalachat_Setup_0.10.5.exe
 ```
 
 </details>
@@ -542,7 +544,7 @@ C:\path\to\Emebalachat\
 ├── config.example.json         # Reference configuration template
 ├── installer\                  # Inno Setup 6.x packaging scripts
 │   ├── README.md               # Installer build guide
-│   ├── setup.iss               # Inno Setup installer script (0.10.4)
+│   ├── setup.iss               # Inno Setup installer script (0.10.5)
 │   ├── languages\              # Bundled non-default .isl files (Chinese S/T)
 │   ├── assets\                 # Optional setup icons & wizard graphics
 │   └── output\                 # Compiled installer binaries

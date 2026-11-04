@@ -69,6 +69,9 @@ HWND RefreshForegroundWindowInfo(std::string& out_title_utf8, std::string& out_c
 // char and MapVirtualKey yields none. IME-composing keys arrive as
 // VK_PROCESSKEY and are marked ime=1 with char='?' instead (no meaningful
 // per-key char exists for them).
+// Input P1-3 (v0.10.5): the call passes wFlags=0x4, so the dead-key state
+// machine is only READ, never advanced - the diagnostic char lookup can no
+// longer corrupt composed characters in the foreground app.
 char KeyChar(UINT vk, UINT scan, bool ctrl, bool shift, bool alt) {
     // ToUnicodeEx is only interesting for character-producing vks; every other
     // key would return 0/-1 anyway and the negative return touches the
@@ -98,7 +101,12 @@ char KeyChar(UINT vk, UINT scan, bool ctrl, bool shift, bool alt) {
         if (alt) ks[VK_MENU] = 0x80;
         if ((::GetAsyncKeyState(VK_CAPITAL) & 1) != 0) ks[VK_CAPITAL] = 1;
         wchar_t buf[4] = {};
-        const int n = ::ToUnicodeEx(vk, scan, ks, buf, 3, 0, nullptr);
+        // Input P1-3 (v0.10.5): wFlags 0x4 (Windows 10 1607+) - ToUnicodeEx
+        // resolves the character WITHOUT touching the kernel dead-key state
+        // machine. The old wFlags=0 consumed the dead-key (^, `, ~) buffer
+        // before the keystroke reached the foreground app, breaking composed
+        // characters on international layouts whenever content logging was on.
+        const int n = ::ToUnicodeEx(vk, scan, ks, buf, 3, 4u, nullptr);
         if (n >= 1 && buf[0] >= 0x20 && buf[0] < 0x7F) {
             return static_cast<char>(buf[0]);
         }
@@ -134,6 +142,35 @@ const char* KeyCharToken(char c, char (&buf)[8]) {
         buf[0] = c; buf[1] = 0;
     }
     return buf;
+}
+
+// Input P1-2 (v0.10.5) + F-09 (fix-list round 1): dummy Ctrl mask injected
+// while the Win key is still physically down, so the shell reads the Win
+// release as a consumed Win+Ctrl combo instead of a bare Win tap - Explorer
+// keeps the Start menu closed. Every event carries EXTRA_INFO_MARKER, so this
+// process's own hooks bypass it at the top of their procs. SendInput is a
+// fast non-blocking syscall; this stays inside the LL-hook latency budget.
+// F-09: the mask is a Ctrl KEYDOWN ONLY while Ctrl is physically held (the
+// shipped Win combos are Ctrl-bearing, e.g. Ctrl+Win+Space): an injected
+// keyUP would logically release the physically held Ctrl until the user
+// re-presses it. When Ctrl is NOT physically held (a Win-only custom combo
+// is bound), the synthetic down is balanced with an immediate up so the
+// modifier state stays consistent with the physical hold in both cases. The
+// hold probe MUST run BEFORE the injection: after SendInput the async key
+// state table already reflects the synthetic down.
+void InjectDummyCtrl() {
+    const bool ctrl_physically_held = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+    inputs[0].ki.wScan = static_cast<WORD>(::MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
+    inputs[0].ki.dwExtraInfo = EXTRA_INFO_MARKER;
+    inputs[1] = inputs[0];
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    // Down always (that is what masks the Start menu); the up only when it
+    // cannot clobber a physically held Ctrl (F-09). A lone down with no
+    // physical hold would leave the modifier stuck for every later keystroke.
+    ::SendInput(ctrl_physically_held ? 1u : 2u, inputs, sizeof(INPUT));
 }
 
 } // namespace
@@ -184,6 +221,14 @@ void KeyboardHook::StartAsyncWorker() {
     double_ctrl_c_worker_ = std::jthread([this](std::stop_token st) {
         DoubleCtrlCWorkerLoop(st);
     });
+    // Input P0-1 (v0.10.5): the hotkey side-effects worker spawns (and joins)
+    // under the same lifecycle as the REQ-R06 worker above.
+    bool fx_expected = false;
+    if (hotkey_fx_worker_live_.compare_exchange_strong(fx_expected, true)) {
+        hotkey_fx_worker_ = std::jthread([this](std::stop_token st) {
+            HotkeyFxWorkerLoop(st);
+        });
+    }
 }
 
 void KeyboardHook::StopAsyncWorker() {
@@ -197,6 +242,106 @@ void KeyboardHook::StopAsyncWorker() {
         double_ctrl_c_worker_ = std::jthread{};
     }
     double_ctrl_c_worker_live_.store(false, std::memory_order_release);
+    // Input P0-1: drop every pending side effect and join the fx worker. The
+    // worker waits with the C++20 stop-token overload
+    // (hotkey_fx_cv_.wait(lk, st, pred)), whose stop callback NOTIFYs on
+    // request_stop(), so the jthread move-assign join below always wakes the
+    // worker and returns; the notify_all here is the belt-and-braces twin of
+    // that guarantee (the queue is drained under the same mutex either way).
+    {
+        std::lock_guard<std::mutex> lk(hotkey_fx_mutex_);
+        hotkey_fx_queue_.clear();
+        hotkey_fx_cv_.notify_all();
+    }
+    if (hotkey_fx_worker_.joinable()) {
+        hotkey_fx_worker_ = std::jthread{};
+    }
+    hotkey_fx_worker_live_.store(false, std::memory_order_release);
+}
+
+// ---- Input P0-1 (v0.10.5): hotkey side-effects worker ----------------------
+//
+// SetActive()/ToggleAutoSend() used to run config_.SaveToFile() (synchronous
+// disk I/O: CreateFileW + WriteFile + FlushFileBuffers + MoveFileExW) and
+// tray_.UpdateStatus() (synchronous Shell_NotifyIconW RPC into explorer.exe)
+// directly inside LowLevelKeyboardProc. Either can stall for hundreds of
+// milliseconds under antivirus scanning or a busy shell, and Windows silently
+// unhooks any WH_KEYBOARD_LL callback that outlives LowLevelHooksTimeout
+// (~300 ms). The bodies below queue on this persistent worker; the hook
+// callback only flips the in-memory atomic state (is_active_ /
+// config_.auto_send) and returns in microseconds. Dispatch discipline is the
+// REQ-R06 one: the hook thread never takes a lock the worker holds across a
+// body, never sleeps, never joins.
+
+void KeyboardHook::HotkeyFxWorkerLoop(std::stop_token st) {
+    std::unique_lock<std::mutex> lk(hotkey_fx_mutex_);
+    while (true) {
+        // Input P0-1 round 2 (v0.10.5): the C++20 stop-token wait overload
+        // registers a stop callback that NOTIFYs this cv on request_stop(), so
+        // the StopAsyncWorker() jthread move-assign join always wakes the
+        // worker. The plain predicate overload used before NEVER observes the
+        // token (the predicate is only re-evaluated after a notify, and only
+        // DispatchHotkeyFx notifies), so an idle worker parked here deadlocked
+        // the join and hung KeyboardHook::Stop() forever.
+        hotkey_fx_cv_.wait(lk, st, [&] {
+            return !hotkey_fx_queue_.empty();
+        });
+        if (st.stop_requested()) {
+            break; // StopAsyncWorker() already cleared the queue: drop and exit
+        }
+        // Pop the whole batch and run it with the mutex UNLOCKED: a body can
+        // take the config lock, call Shell_NotifyIconW, and play a sound -
+        // none of that may hold this queue mutex against a hook-thread push.
+        std::deque<std::function<void()>> batch;
+        batch.swap(hotkey_fx_queue_);
+        lk.unlock();
+        for (auto& body : batch) {
+            try {
+                body();
+            } catch (const std::exception& e) {
+                DIAG_F("HOOK/HotkeyFxWorkerLoop/001: effect threw: %s\n", e.what());
+            } catch (...) {
+                DIAG_F("HOOK/HotkeyFxWorkerLoop/002: effect threw unknown exception\n");
+            }
+        }
+        lk.lock();
+    }
+}
+
+void KeyboardHook::DispatchHotkeyFx(std::function<void()> body) {
+    KeyboardHook* self = s_instance;
+    if (!self) {
+        return;
+    }
+    // F-10 (fix-list round 1): there is deliberately NO inline fallback. The
+    // old code claimed a spawn-failure fallback that ran the effect on the
+    // caller; that state is unreachable - StartAsyncWorker() CASes
+    // hotkey_fx_worker_live_ true BEFORE the jthread spawn, and every
+    // dispatching caller (hook thread, GUI thread) only exists after Start()
+    // returned, so "worker not live while running" can never be observed. A
+    // genuine spawn failure (jthread ctor throw) unwinds Start() instead,
+    // after which dispatches queue into a worker that will never run -
+    // catastrophic-resource-exhaustion semantics, with the process already
+    // going down together with Start's caller. While the hook is not running
+    // (pre-Start / post-Stop) effects are DROPPED, with the diag line below
+    // if the impossible running-but-not-live state is ever seen. Nothing is
+    // ever executed inline: that is the P0-1 rule (no SaveToFile disk I/O,
+    // no Shell_NotifyIconW on the hook thread).
+    if (!self->hotkey_fx_worker_live_.load(std::memory_order_acquire)) {
+        if (self->running_.load(std::memory_order_acquire)) {
+            DIAG_F("HOOK/DispatchHotkeyFx/001: fx worker not live while hook running; effect dropped\n");
+        }
+        return;
+    }
+    // Non-blocking: one short mutex section (the worker never holds it
+    // across a body) + notify_one. The deque is unbounded in theory; in
+    // practice a human hotkey press rate can queue only a handful of
+    // one-shot effects between worker pops.
+    {
+        std::lock_guard<std::mutex> lk(self->hotkey_fx_mutex_);
+        self->hotkey_fx_queue_.push_back(std::move(body));
+    }
+    self->hotkey_fx_cv_.notify_one();
 }
 
 void KeyboardHook::DoubleCtrlCWorkerLoop(std::stop_token st) {
@@ -533,44 +678,56 @@ void KeyboardHook::SetActive(bool active) {
         DIAG_LOG("STATE", "active %d -> %d (badge/tray/sound/observers refresh)",
                  active ? 0 : 1, active ? 1 : 0);
         badge_.SetStatus(active ? BadgeStatus::Active : BadgeStatus::Disabled);
-        // I4: this runs on the hook thread; read shared fields via a locked
-        // snapshot instead of touching std::string members unsynchronized.
-        // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
-        // REQ-025: drag pair passed through (drives the 번역툴팁 submenu
-        // check marks only; the tip keeps the type pair).
-        const AppConfig::Snapshot snap = config_.GetSnapshot();
-        // REQ-056: the hook paths refresh only RUNTIME state — the Engine
-        // submenu's config-derived check index + user-model stem are derived
-        // at open by main.cpp's resolver (single authority), not pushed here.
-        // R2-5 (FIX-B2): same rule for the tip's ENGINE segment. The persisted
-        // engine_type token ("auto"/"local"/"user_gguf") cannot name the model
-        // actually serving, so an empty view preserves the GUI-resolved stem
-        // refresh_tray() pushed from engine.GetActiveEngineName().
-        tray_.UpdateStatus(
-            active,
-            std::string_view{},
-            snap.type_source_language,
-            snap.type_target_language,
-            snap.drag_source_language,
-            snap.drag_target_language,
-            snap.auto_send,
-            snap.sound_enabled,
-            badge_.IsVisible()
-            // REQ-054/REQ-056 history: this call used to carry an explicit
-            // empty user-model stem (wiping the tray's cached entry until
-            // REQ-054 made it optional) and then a TrayPreferredEngineIndex
-            // check index (wrong formula until REQ-054's helper); REQ-056
-            // removed both from UpdateStatus entirely — the menu derives at
-            // open, so no hook-thread push can go stale.
-        );
-        // REQ-R08 visual feedback: the floating badge above IS the visual
-        // state indicator (green=active/gray=disabled, and it renders even
-        // when the tray tooltip is not hovered), plus the audible chime below.
-        if (active) {
-            PlayToggleOn();
-        } else {
-            PlayToggleOff();
-        }
+        // Input P0-1 (v0.10.5): the config snapshot (mutex), the tray refresh
+        // (synchronous Shell_NotifyIconW RPC into explorer.exe) and the toggle
+        // chime move to the hotkey-effects worker - none of them may run inside
+        // LowLevelKeyboardProc, or a busy shell / slow flush past
+        // LowLevelHooksTimeout silently removes WH_KEYBOARD_LL. The in-memory
+        // state (is_active_ above, config_.auto_send in ToggleAutoSend) flips
+        // synchronously, so every reader sees the new value immediately; the
+        // observers callback stays synchronous too (main.cpp drives
+        // mouse_hook.SetEnabled from it, and the R07 contract requires the
+        // sync edge to land before SetActive returns).
+        DispatchHotkeyFx([this, active] {
+            // I4: this runs on the fx worker; read shared fields via a locked
+            // snapshot instead of touching std::string members unsynchronized.
+            // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
+            // REQ-025: drag pair passed through (drives the 번역툴팁 submenu
+            // check marks only; the tip keeps the type pair).
+            const AppConfig::Snapshot snap = config_.GetSnapshot();
+            // REQ-056: the hook paths refresh only RUNTIME state — the Engine
+            // submenu's config-derived check index + user-model stem are derived
+            // at open by main.cpp's resolver (single authority), not pushed here.
+            // R2-5 (FIX-B2): same rule for the tip's ENGINE segment. The persisted
+            // engine_type token ("auto"/"local"/"user_gguf") cannot name the model
+            // actually serving, so an empty view preserves the GUI-resolved stem
+            // refresh_tray() pushed from engine.GetActiveEngineName().
+            tray_.UpdateStatus(
+                active,
+                std::string_view{},
+                snap.type_source_language,
+                snap.type_target_language,
+                snap.drag_source_language,
+                snap.drag_target_language,
+                snap.auto_send,
+                snap.sound_enabled,
+                badge_.IsVisible()
+                // REQ-054/REQ-056 history: this call used to carry an explicit
+                // empty user-model stem (wiping the tray's cached entry until
+                // REQ-054 made it optional) and then a TrayPreferredEngineIndex
+                // check index (wrong formula until REQ-054's helper); REQ-056
+                // removed both from UpdateStatus entirely — the menu derives at
+                // open, so no hook-thread push can go stale.
+            );
+            // REQ-R08 visual feedback: the floating badge above IS the visual
+            // state indicator (green=active/gray=disabled, and it renders even
+            // when the tray tooltip is not hovered), plus the audible chime below.
+            if (active) {
+                PlayToggleOn();
+            } else {
+                PlayToggleOff();
+            }
+        });
         // REQ-R07: single choke point for external state observers. Fires on
         // EVERY real change, including the F9/Win+F9 path inside the hook, so
         // main.cpp keeps mouse_hook.SetEnabled() 1:1 in sync with is_active_.
@@ -638,32 +795,38 @@ void KeyboardHook::CycleTargetLanguage() {
 
 void KeyboardHook::ToggleAutoSend() {
     // I4: auto_send is std::atomic; this read-modify-write happens on the hook
-    // thread while the worker thread reads it per task.
+    // thread while the worker thread reads it per task. Input P0-1 (v0.10.5):
+    // ONLY the in-memory flip stays synchronous - the disk persist
+    // (config_.SaveToFile: CreateFileW + FlushFileBuffers + MoveFileExW) and
+    // the tray refresh (synchronous Shell_NotifyIconW) move to the fx worker,
+    // so LowLevelKeyboardProc returns in microseconds.
     const bool next = !config_.auto_send.load(std::memory_order_relaxed);
     DIAG_LOG("STATE", "auto_send %d -> %d (Ctrl+Shift+Enter / toggle path)",
              !next ? 1 : 0, next ? 1 : 0);
     config_.auto_send.store(next, std::memory_order_relaxed);
-    config_.SaveToFile();
-    const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: hook-thread reads
-    // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
-    // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
-    // REQ-056: runtime-state refresh only — the Engine submenu derives its
-    // check index + user-model stem at open (main.cpp's resolver).
-    // R2-5 (FIX-B2): empty engine view = keep the GUI-resolved display stem.
-    tray_.UpdateStatus(
-        is_active_.load(),
-        std::string_view{},
-        snap.type_source_language,
-        snap.type_target_language,
-        snap.drag_source_language,
-        snap.drag_target_language,
-        next,
-        snap.sound_enabled,
-        badge_.IsVisible()
-        // REQ-054/REQ-056: same contract as SetActive — engine-menu values
-        // are derive-at-open now, nothing pushed from the hook thread.
-    );
-    PlayModeChange();
+    DispatchHotkeyFx([this, next] {
+        config_.SaveToFile();
+        const AppConfig::Snapshot snap = config_.GetSnapshot(); // I4: locked read
+        // Phase 3 Batch 2 (plan §2.4): the tray tip displays the TYPE pair.
+        // REQ-025: drag pair mirrors the snapshot for the 번역툴팁 submenu checks.
+        // REQ-056: runtime-state refresh only — the Engine submenu derives its
+        // check index + user-model stem at open (main.cpp's resolver).
+        // R2-5 (FIX-B2): empty engine view = keep the GUI-resolved display stem.
+        tray_.UpdateStatus(
+            is_active_.load(std::memory_order_relaxed),
+            std::string_view{},
+            snap.type_source_language,
+            snap.type_target_language,
+            snap.drag_source_language,
+            snap.drag_target_language,
+            next,
+            snap.sound_enabled,
+            badge_.IsVisible()
+            // REQ-054/REQ-056: same contract as SetActive — engine-menu values
+            // are derive-at-open now, nothing pushed from the hook thread.
+        );
+        PlayModeChange();
+    });
 }
 
 void KeyboardHook::HookThreadProc() {
@@ -691,21 +854,43 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
     }
 
     // REQ-R08: after a Win+<combo> swallow, Explorer would otherwise open the
-    // Start menu on the Win key release (the shell sees the Win press without
+    // Start menu on the Win key release (the shell saw the Win press without
     // its normal key-up pair). Consume exactly one Win key-up after each
-    // consumed Win combo. One relaxed atomic CAS; no allocation, no blocking.
+    // consumed Win combo. Input P1-2 (v0.10.5): the Win WM_KEYUP itself is
+    // NEVER swallowed with return 1 anymore - the old swallow left the Win
+    // modifier logically held down OS-wide (typing e/d/l triggered Explorer /
+    // minimize-all / lock). The consumed flag now only arms the dummy Ctrl tap
+    // that masks the Start menu; the physical key-up ALWAYS reaches the OS via
+    // CallNextHookEx below, so win32k clears the Win pressed state.
     if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
         if (IsWinKey(kbd->vkCode)) {
             bool expected = true;
             if (s_instance->suppress_win_keyup_.compare_exchange_strong(
                     expected, false, std::memory_order_relaxed)) {
-                return 1;
+                InjectDummyCtrl();
             }
         }
         return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
     }
 
     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+        // Input P1-6 (v0.10.5): a foreground HWND change retires the hook-local
+        // IME composition mirror BEFORE the ImeMirrorNext update below can
+        // re-arm it with this very key's vk (the new window's first jamo
+        // arrives as VK_PROCESSKEY and must keep the mirror true for its own
+        // session). A focus switch cancels or commits an open composition
+        // without the keyboard hook ever seeing a composition-finalising key,
+        // which used to leave the mirror stuck true and silently gate out the
+        // next bare Enter in the new window. The hook thread is the only
+        // writer/reader of this static (same single-thread discipline as
+        // g_fg_cache).
+        static HWND s_last_mirror_fg = nullptr;
+        const HWND mirror_fg = ::GetForegroundWindow();
+        if (mirror_fg != s_last_mirror_fg) {
+            s_last_mirror_fg = mirror_fg;
+            s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+        }
+
         // REQ-R17 (audit §5 latent item 5): O(1) hook-local IME mirror update
         // (pure ImeMirrorNext, no cross-thread calls). Must run BEFORE the
         // Enter branch reads the flag; VK_RETURN keeps the state so an Enter
@@ -820,7 +1005,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // lines on the next capture (the destruction direction). Only
             // VK_RETURN matters; other Alt/Win combos keep K untouched.
             if (kbd->vkCode == VK_RETURN) {
-                s_instance->shift_enter_k_ = 0;
+                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
             }
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -833,23 +1018,67 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             }
         }
 
-        // F3 (session 260908_0003): a user Ctrl+V deposits an UNKNOWN number
-        // of logical newlines that no Shift+Enter keystroke ever announced, so
-        // the K counter would under-count separators and slice a pasted
-        // multi-line block down to its last line (the typed-block contract
-        // cannot know paste geometry). Saturate K to the guard's newline
-        // ceiling instead: FindCurrentBlockStart asks for K+1 = 65 boundaries
-        // while a guard-passing capture holds at most 32 (64 newline CHARS),
-        // so the next bare Enter translates the WHOLE capture (one-time, like
-        // the pre-F3 behavior for paste). The saturated value is consumed and
-        // reset by the very next bare-Enter exit (K=0 re-anchor), bounding the
-        // no-slice window to the paste's own block. Synthetic pastes (our own
-        // PasteAndRestore, drag path) carry EXTRA_INFO_MARKER and return at
+        // F3 (session 260908_0003) + Input P1-5 (v0.10.5): a user Ctrl+V
+        // deposits an UNKNOWN number of logical newlines that no Shift+Enter
+        // keystroke ever announced, so the K counter would under-count
+        // separators and slice a pasted multi-line block down to its last
+        // line (the typed-block contract cannot know paste geometry). The
+        // pre-fix answer saturated K to the guard ceiling (64) UNCONDITIONALLY,
+        // which backfired on a SINGLE-LINE paste: the next bare Enter's
+        // whole-capture slice then reached back up to 64 lines and re-wrote
+        // already-translated history (the audit P1-5 report). The fix counts
+        // the REAL newline sequences in the clipboard text and ADDS that
+        // (clamped to the guard ceiling) to K: a single-line paste adds 0 and
+        // the counter keeps its exact typed-block semantics. The clipboard
+        // read rides the fx worker - it may block on OpenClipboard and must
+        // NEVER run on the hook thread (F-10: a not-live worker drops the body
+        // instead); an Enter landing before the count applies merely
+        // under-slices - the documented safe direction. Synthetic pastes (our
+        // own PasteAndRestore, drag path) carry EXTRA_INFO_MARKER and return at
         // the top of this proc - they never reach here.
         if (kbd->vkCode == 'V' && ctrl && !shift && !alt && !win) {
-            s_instance->shift_enter_k_ = static_cast<int>(kMaxEnterTranslateNewlines);
             s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
+            KeyboardHook* self = s_instance;
+            // NOTE (F-10): nothing here can ever run inline - a not-live
+            // worker drops this body (see DispatchHotkeyFx), which is exactly
+            // right: this read may block on OpenClipboard and must never run
+            // on the hook thread.
+            self->DispatchHotkeyFx([self] {
+                const std::wstring clip = GetClipboardText();
+                const int pasted_nl =
+                    static_cast<int>(EditCaretTracker_CountNewlineSequences(clip));
+                if (pasted_nl <= 0) {
+                    return; // single-line paste (or empty clipboard): no K change
+                }
+                const int cap = static_cast<int>(kMaxEnterTranslateNewlines);
+                const int add = pasted_nl > cap ? cap : pasted_nl;
+                int k = self->shift_enter_k_.load(std::memory_order_relaxed) + add;
+                if (k > cap) {
+                    k = cap; // the capture guard admits at most this many anyway
+                }
+                self->shift_enter_k_.store(k, std::memory_order_relaxed);
+                DIAG_LOG("ENTER_GATE", "ctrl_v pasted_newlines=%d K=%d", add, k);
+            });
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }
+
+        // Input P1-5 (v0.10.5): keep the F3 newline count honest across
+        // deletions and wholesale edits. Backspace may delete a Shift+Enter
+        // newline; decrementing K per press can only UNDER-slice (the
+        // documented safe direction - an over-counted K is what destroys
+        // already-translated lines). Ctrl+A / Ctrl+X / Ctrl+Z restructure the
+        // whole block, so the counted K is void: reset it (and re-anchor) the
+        // same way the Ctrl+Enter / Alt+Win+Enter exits do.
+        if (kbd->vkCode == VK_BACK) {
+            const int k = s_instance->shift_enter_k_.load(std::memory_order_relaxed);
+            if (k > 0) {
+                s_instance->shift_enter_k_.store(k - 1, std::memory_order_relaxed);
+            }
+        }
+        if (ctrl && !alt && !win &&
+            (kbd->vkCode == 'A' || kbd->vkCode == 'X' || kbd->vkCode == 'Z')) {
+            s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+            s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
         }
 
         // Double Ctrl+C hotkey detection (< 400ms)
@@ -913,7 +1142,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // being typed if the app inserts a newline, so K resets
                 // (conservative direction: an uncounted separator can only
                 // UNDER-slice the block - safe - never over-slice it).
-                s_instance->shift_enter_k_ = 0;
+                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
@@ -948,15 +1177,19 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     const HWND k_fg = ::GetForegroundWindow();
                     if (k_fg != s_instance->k_anchor_hwnd_) {
                         s_instance->k_anchor_hwnd_ = k_fg;
-                        s_instance->shift_enter_k_ = 0;
+                        s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
                     }
-                    s_instance->shift_enter_k_ =
-                        ShiftEnterKNext(s_instance->shift_enter_k_, dbg_composing);
+                    s_instance->shift_enter_k_.store(
+                        ShiftEnterKNext(
+                            s_instance->shift_enter_k_.load(std::memory_order_relaxed),
+                            dbg_composing),
+                        std::memory_order_relaxed);
                     DIAG_LOG("ENTER_GATE",
                              "outcome=pass_through reason=shift_enter_newline active=%d busy=%d "
                              "ime_composing=%d shift=1 K=%d",
                              s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
-                             dbg_composing ? 1 : 0, s_instance->shift_enter_k_);
+                             dbg_composing ? 1 : 0,
+                             s_instance->shift_enter_k_.load(std::memory_order_relaxed));
                 }
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
@@ -1020,10 +1253,11 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     // to a different context -> K=0 (whole capture).
                     const int k_composing =
                         (s_instance->k_anchor_hwnd_ == composing_hwnd)
-                            ? s_instance->shift_enter_k_ : 0;
+                            ? s_instance->shift_enter_k_.load(std::memory_order_relaxed)
+                            : 0;
                     if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
                                                      composing_hwnd, k_composing)) {
-                        s_instance->shift_enter_k_ = 0;
+                        s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
                         s_instance->k_anchor_hwnd_ = composing_hwnd;
                         DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
                                "posted (commit-then-translate, hwnd=%p K=%d)\n",
@@ -1045,7 +1279,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // F3: this Enter reaches the app (chat send / editor newline)
                 // and terminates the block, so the counted K is consumed
                 // WITHOUT being carried to a capture (nothing was posted).
-                s_instance->shift_enter_k_ = 0;
+                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
                          "ime_composing=1 shift=0 (mirror cleared, K consumed by passthrough)",
@@ -1079,8 +1313,9 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             HWND target_hwnd = ::GetForegroundWindow();
             const int k_bare =
                 (s_instance->k_anchor_hwnd_ == target_hwnd)
-                    ? s_instance->shift_enter_k_ : 0;
-            s_instance->shift_enter_k_ = 0;
+                    ? s_instance->shift_enter_k_.load(std::memory_order_relaxed)
+                    : 0;
+            s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
             s_instance->k_anchor_hwnd_ = target_hwnd;
             // Full decision record EVERY time (file sink; the stderr sites
             // below keep their historical spam discipline unchanged):

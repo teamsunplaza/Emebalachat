@@ -24,21 +24,36 @@ std::wstring NormalizeNFC(std::wstring_view input) {
         return std::wstring(input);
     }
 
-    std::wstring result(needed, L'\0');
-    int written = ::NormalizeString(
-        NormalizationC,
-        input.data(),
-        static_cast<int>(input.size()),
-        result.data(),
-        needed
-    );
-
-    if (written <= 0) {
-        return std::wstring(input);
+    // Input P3-2 (v0.10.5): the size probe above returns an ESTIMATE - per the
+    // NormalizeString contract the conversion call can still fail with
+    // ERROR_INSUFFICIENT_BUFFER and return the new required size negated
+    // (dense combining-mark / Hangul sequences out-expand the estimate). Retry
+    // with the exact requested size, bounded, instead of silently returning
+    // the unnormalized input (which broke CanonicalFormForLedger matches).
+    std::wstring result(static_cast<size_t>(needed), L'\0');
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const int written = ::NormalizeString(
+            NormalizationC,
+            input.data(),
+            static_cast<int>(input.size()),
+            result.data(),
+            static_cast<int>(result.size())
+        );
+        if (written > 0) {
+            result.resize(static_cast<size_t>(written));
+            return result;
+        }
+        if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER || written >= 0) {
+            break; // a real failure (invalid input, ...): keep the fallback
+        }
+        const int resized = -written; // the exact size the API now asks for
+        if (resized <= 0 || resized <= needed) {
+            break; // no progress: never loop on a stale size
+        }
+        needed = resized;
+        result.assign(static_cast<size_t>(needed), L'\0');
     }
-
-    result.resize(written);
-    return result;
+    return std::wstring(input);
 }
 
 std::wstring NormalizeNewlinesToCRLF(std::wstring_view input) {

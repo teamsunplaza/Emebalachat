@@ -40,6 +40,15 @@ struct ClipboardBackup {
     // restore decision treats a partial snapshot as "never empty on top of it"
     // (see DecideClipboardRestore) and only reports the shape in the diag log.
     bool partial = false;
+    // Input P2-3 (v0.10.5): true when the clipboard held ZERO formats at
+    // backup time (CountClipboardFormats() == 0 while we owned the open
+    // clipboard). The snapshot then has no payload, so the restore ladder
+    // refuses to replay it - but the paste path's temporary translated text
+    // must not LINGER on a clipboard that was originally empty. RestoreClipboard
+    // uses this flag (plus the own-write sequence guard) to EmptyClipboard()
+    // back to the original empty state; it never destroys a write made after
+    // ours. Default false keeps every caller-built backup on the legacy path.
+    bool was_originally_empty = false;
 };
 
 // Returns true if format is a GDI handle (CF_BITMAP, CF_PALETTE, CF_METAFILEPICT, CF_ENHMETAFILE)
@@ -87,6 +96,12 @@ bool BackupClipboard(ClipboardBackup& out, DWORD timeout_ms = 100);
 //     -> nothing to do, returns true: the ORIGINAL content is confirmed in
 //     place. This is also the R1-20 guard: a live >4 MiB format that the
 //     backup cap skipped survives because no EmptyClipboard is ever issued.
+//   - Input P2-3 (v0.10.5): a snapshot that captured an ORIGINALLY EMPTY
+//     clipboard (was_originally_empty) has no payload, so the ladder below
+//     still refuses to replay it; RestoreClipboard then empties the clipboard
+//     back IF AND ONLY IF the live sequence proves it still holds this
+//     process's OWN write (the translated paste text) - a user copy made
+//     after the paste always wins and is left untouched.
 // FIX-B1 (R2-2, 261029_0001): "OUR last write" is the calling TASK's own write
 // when a ClipboardTaskScope is installed (the pipeline worker), not the
 // process's last write, so a tooltip copy during the translation is a foreign
@@ -112,9 +127,12 @@ enum class ClipboardRestoreAction : unsigned char {
 //   2. current == backup.seq_at_backup    -> AlreadyIntact
 //   3. own_write_seq == 0 || current != own_write_seq -> SkipForeignWrite
 //   4. otherwise                          -> Restore
-// Rules 1-3 never write; rule 4 is the only one that may EmptyClipboard, and it
-// does so only when the clipboard provably holds this process's own last write
-// (so the data being replaced is ours, never a copy the user just made).
+// Rules 1-3 never write; rule 4 is the only LADDER branch that may
+// EmptyClipboard, and it does so only when the clipboard provably holds this
+// process's own last write (so the data being replaced is ours, never a copy
+// the user just made). RestoreClipboard has ONE further EmptyClipboard site
+// outside this pure ladder: the Input P2-3 originally-empty restore (see the
+// RestoreClipboard contract above), gated on the same own-write proof.
 // FIX-B1 (R2-2): `own_write_seq` is the CALLING TASK's stamp when a
 // ClipboardTaskScope is active (OwnClipboardWriteSeq() resolves it), so a
 // concurrent writer of this process (the tooltip copy) can never satisfy rule 4
@@ -984,10 +1002,14 @@ enum class EmCapability { Capable, NotCapable, Unknown };
 // Raw observations of one ProbeEmCapability run. Plain data so the decision
 // core below is pure (zero Win32 contact) and unit-testable headlessly -
 // the same seam pattern as EditCaretTracker_EstimateNextOffset.
+// Input P2-1 (v0.10.5): the selection is read through the EM_GETSEL OUT-pointer
+// parameters (full 32-bit DWORDs each - win32k marshals both pointers cross-
+// process via the SfnOPTOUTLPDWORDOPTOUTLPDWORD thunk, so no 16-bit
+// LOWORD/HIWORD saturation at 65,535 code units can occur).
 struct EmProbeSignals {
     bool getsel_handled = false; // EM_GETSEL answered within the timeout
-    DWORD sel_start = 0;         // LOWORD of the EM_GETSEL reply
-    DWORD sel_end = 0;           // HIWORD of the EM_GETSEL reply
+    DWORD sel_start = 0;         // 32-bit start offset (EM_GETSEL out-pointer)
+    DWORD sel_end = 0;           // 32-bit end offset (EM_GETSEL out-pointer)
     bool limit_ok = false;       // EM_GETLIMITTEXT answered
     ULONG_PTR limittext = 0;
     bool len_ok = false;         // WM_GETTEXTLENGTH answered
@@ -1310,6 +1332,14 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count = 0,
 // If expected_target is non-null, re-verifies the foreground window immediately before
 // injecting Ctrl+V and aborts (returns false, no paste) when focus has shifted to a
 // different window root. Prevents translated text leaking into the wrong application.
+// Input P1-4 (fix-list F-03, review round 1): the abort condition is STRICTER than
+// the legacy H1 root-owner tolerance above - the paste additionally refuses when
+// the foreground resolves to a different GA_ROOT (owned popup/dialog) OR when the
+// captured window thread's focus control drifted since capture (recorded by
+// CopySelectedText on this same thread; see t_paste_capture_focus in win32_input.cpp).
+// Both gates fail closed; an unavailable capture-time record degrades to the legacy
+// behavior. The suppression shape is unchanged: no clipboard write, no Ctrl+V,
+// returns false.
 //
 // F7 (session 260908_0002, log 문제2 clipboard_restored=0): when clipboard_restored
 // is non-null it receives whether RestoreClipboard actually confirmed putting the

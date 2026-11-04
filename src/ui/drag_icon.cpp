@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
+#include "theme.hpp"
 
 namespace emebalachat {
 
@@ -214,10 +215,13 @@ void DragIconWindow::Render() {
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
+    const auto& theme = ui::GetActiveTheme();
+    const float pill_radius = theme.badge_radius + 1.0f;
+
     // Outer rounded pill container (32x32 rounded icon pill)
     D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(
         D2D1::RectF(1.0f, 1.0f, static_cast<float>(kSize) - 1.0f, static_cast<float>(kSize) - 1.0f),
-        8.0f, 8.0f
+        pill_radius, pill_radius
     );
 
     ID2D1SolidColorBrush* bgBrush = nullptr;
@@ -228,11 +232,11 @@ void DragIconWindow::Render() {
     // tooltip card; gold border + new warm-white top rim light (the shared
     // "seal" motif).
     if (is_hovered_) {
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x14243F, 0.98f), &bgBrush);
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xE5C158, 1.0f), &borderBrush);
+        dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.surface_hover, 0.98f), &bgBrush);
+        dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha), &borderBrush);
     } else {
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0x0C1830, 0.95f), &bgBrush);
-        dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0xD4AF37, 0.90f), &borderBrush);
+        dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.surface_canvas, theme.surface_canvas_alpha), &bgBrush);
+        dc_render_target_->CreateSolidColorBrush(ui::ColorFromHex(theme.border_outer, theme.border_outer_alpha), &borderBrush);
     }
 
     if (bgBrush) {
@@ -249,11 +253,17 @@ void DragIconWindow::Render() {
     // inside the border in both states, and x = 9.0f is past the arc
     // (x ~= 4.5 at that height).
     if (bgBrush) {
-        bgBrush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
-        dc_render_target_->DrawLine(
-            D2D1::Point2F(9.0f, 2.4f),
-            D2D1::Point2F(static_cast<float>(kSize) - 9.0f, 2.4f),
-            bgBrush, 1.0f);
+        const float inner_r = (std::max)(1.0f, pill_radius - 1.0f);
+        const D2D1_ROUNDED_RECT inner_pill = D2D1::RoundedRect(
+            D2D1::RectF(2.0f, 2.0f, static_cast<float>(kSize) - 2.0f, static_cast<float>(kSize) - 2.0f),
+            inner_r, inner_r
+        );
+        bgBrush->SetColor(ui::ColorFromHex(theme.border_inner, theme.border_inner_alpha));
+        dc_render_target_->DrawRoundedRectangle(inner_pill, bgBrush, 1.0f);
+
+
+
+
     }
 
     // Centered 1:1 squircle appicon (24x24 DIP centered in 32x32 container)
@@ -389,6 +399,17 @@ LRESULT CALLBACK DragIconWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 return 0;
             }
             break;
+        }
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps = {};
+            ::BeginPaint(hwnd, &ps);
+            ::EndPaint(hwnd, &ps);
+            if (pThis->IsVisible()) {
+                pThis->Render();
+                pThis->UpdateLayered();
+            }
+            return 0;
         }
 
         case WM_DESTROY:

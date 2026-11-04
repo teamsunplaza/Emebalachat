@@ -129,11 +129,45 @@ constexpr unsigned long long kDefaultTranslateModelVramBytes = 2048ull * 1024 * 
 // B-T3, technical gate A-4: the child-environment key the CPU leg forces.
 constexpr wchar_t kMtGpuEnvName[] = L"EMEBALA_MT_GPU";
 
+// Backend FIX 4 (review round 1, F-11): the boot-scoped token travels to the
+// child as this ENVIRONMENT variable, never on the command line — same-user
+// processes can read a child argv. This literal is the frozen cross-process
+// contract with ggml_translate_worker.cpp (same spelling there,
+// kWorkerTokenEnvName); keep the two in sync.
+constexpr wchar_t kWorkerTokenEnvName[] = L"EMEBALA_WORKER_TOKEN";
+
 // Hard kill for a child that cannot be ordered down (handshake failure /
 // orphan guard). Best effort: a race-lost kill still gets closed by the
 // caller's CloseProcess (the reaper never waits on a zombie handle).
 void TerminateProcessHandle(HANDLE process) {
     if (process) ::TerminateProcess(process, 1);
+}
+
+// Backend P1-5 (v0.10.5): the process-lifetime Job Object every spawned worker
+// is assigned to. JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE means the kernel kills
+// ALL assigned workers the moment the LAST job handle closes — and the last
+// handle is ours, closed only by the host's own death (handle-table teardown
+// on crash / TerminateProcess / kill). The ordered GracefulStop + orphan
+// guard in ShutdownAll cannot run when the host itself dies; this closes that
+// hole so a ~2 GiB-VRAM worker can never outlive a dead orchestrator (and
+// never holds the exe/model file locks past the host's death). The handle is
+// INTENTIONALLY leaked for the host process lifetime: closing it early is
+// exactly what kills the workers.
+HANDLE WorkerJobObjectHandle() {
+    static HANDLE job = [] {
+        HANDLE h = ::CreateJobObjectW(nullptr, nullptr);
+        if (!h) return h;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+        info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        if (!::SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info,
+                                       sizeof(info))) {
+            ::CloseHandle(h);
+            h = nullptr;
+        }
+        return h;
+    }();
+    return job;
 }
 
 // ---- default Win32 seams ----------------------------------------------------
@@ -155,8 +189,11 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
     // existing --pipe value. An EMPTY family (defensive; every real call site
     // populates it from w->family) is omitted — the worker then falls back to
     // the exact legacy constant (arg-absent backward compat).
-    std::wstring cmd = L"\"" + req.exe_path + L"\" --pipe " + req.pipe_name +
-                       L" --token " + token_w;
+    // Backend FIX 4 (review round 1, F-11): the boot token is NOT appended
+    // here anymore — it rides the child environment (kWorkerTokenEnvName),
+    // see the env block below. --pipe/--mutex stay on the command line
+    // (not secrets).
+    std::wstring cmd = L"\"" + req.exe_path + L"\" --pipe " + req.pipe_name;
     if (!req.family.empty()) cmd += L" --mutex " + req.family;
     // P2-1 stabilization observability (temporary diagnostic): when THIS
     // host's own stderr is a real handle (a logging run started with
@@ -184,15 +221,29 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
     // (every CreateEventW/CreateNamedPipeW/CreateFileW uses a non-inheritable
     // default or an explicit FALSE), so the child receives exactly the two
     // standard handles named above.
-    // B-T3 (technical gate A-4): per-spawn environment. An empty
-    // environment_block keeps the pre-B-T3 behavior (lpEnvironment=nullptr ->
-    // inherit the parent env verbatim); a non-empty block is the built
-    // parent-env copy + overrides (double-null-terminated Unicode), which
-    // CreateProcessW forwards as lpEnvironment (the block itself is read-only
-    // here and dies with this scope — the child received a COPY).
-    // (const-cast: the block is read-only here; CreateProcessW only reads it.)
+    // B-T3 (technical gate A-4) + Backend FIX 4 (review round 1, F-11): the
+    // child environment is ALWAYS a built block now — the parent environment
+    // copy (BuildTranslateSpawnEnvironment) plus the boot token under
+    // kWorkerTokenEnvName (never argv) and, when the caller staged the B-T3
+    // CPU leg (a non-empty req.environment_block), the EMEBALA_MT_GPU=0 pin
+    // re-applied as a second assignment so all overrides share ONE block
+    // (the staged block itself is superseded, never merged). Build failure
+    // (the parent block cannot be read — near-impossible) falls back to the
+    // legacy argv token so the spawn still lives; that degraded path
+    // re-exposes the token to same-user argv readers (the pre-F-11 threat
+    // model) and is surfaced with a shape-only line.
+    std::vector<std::pair<std::wstring, std::wstring>> env_assignments;
+    env_assignments.emplace_back(kWorkerTokenEnvName, token_w);
+    if (!req.environment_block.empty()) env_assignments.emplace_back(kMtGpuEnvName, L"0");
+    std::vector<wchar_t> env_block;
     const void* env = nullptr;
-    if (!req.environment_block.empty()) env = req.environment_block.data();
+    if (BuildTranslateSpawnEnvironment(env_assignments, env_block) && !env_block.empty()) {
+        env = env_block.data();
+    } else {
+        DIAG_F("ENGINEHOST/wmgr/026: spawn env block build failed; token falls back to argv (err=%lu)\n",
+               ::GetLastError());
+        cmd += L" --token " + token_w; // degraded fallback only (see above)
+    }
     const BOOL ok = ::CreateProcessW(req.exe_path.c_str(), cmd.data(), nullptr, nullptr,
                                      TRUE, CREATE_NO_WINDOW,
                                      const_cast<LPVOID>(env), nullptr, &si, &pi);
@@ -201,6 +252,16 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
         return r;
     }
     ::CloseHandle(pi.hThread);
+    // Backend P1-5: bind the child to the kill-on-close job (best effort — a
+    // failed assign never fails the spawn: the ordered GracefulStop / orphan
+    // guard still covers a living host, and ERROR_ACCESS_DENIED here simply
+    // means the host itself runs inside a foreign job without breakaway).
+    if (HANDLE job = WorkerJobObjectHandle()) {
+        if (!::AssignProcessToJobObject(job, pi.hProcess)) {
+            DIAG_F("ENGINEHOST/wmgr/018: AssignProcessToJobObject failed (err=%lu)\n",
+                   ::GetLastError());
+        }
+    }
     // The process handle doubles as the done_event (signaled on child exit) —
     // the ReaperLoop's 250 ms WaitForSingleObject target (design §1.1 rule 3).
     r.ok = true;
@@ -298,6 +359,12 @@ PipeRead ReadPipeFrame(HANDLE pipe, std::string& json, DWORD timeout_ms) {
             }
         } else if (w != WAIT_OBJECT_0) {
             ::CancelIoEx(pipe, &ol);
+            // Backend P1-1: drain the kernel cancel-ack BEFORE the stack
+            // OVERLAPPED/buffer go out of scope (the overlapped_io_util
+            // contract — a cancelled IRP may still touch them until the
+            // GetOverlappedResult wait returns).
+            DWORD cancelled = 0;
+            (void)::GetOverlappedResult(pipe, &ol, &cancelled, TRUE);
             ::CloseHandle(ol.hEvent);
             return PipeRead::IoError;
         } else {
@@ -844,7 +911,15 @@ bool WorkerManager::SendToWorker(const std::wstring& family, std::string_view js
     WorkerHandle* w = impl_->FindLocked(family);
     if (!w || (w->state != WorkerState::Ready && w->state != WorkerState::Busy)) return false;
     const FrameWriteResult rc = WritePipeFrame(w->pipe, json);
-    if (rc == FrameWriteResult::Ok) return true;
+    if (rc == FrameWriteResult::Ok) {
+        // Backend P2-3: a worker that accepted a frame is provably alive —
+        // refresh the heartbeat clock the reaper's heartbeat-staleness judge
+        // reads (the send is host->worker traffic, the same liveness class as
+        // the frames ReadFromWorker stamps). The ReaperPass `!w.pipe` guard
+        // contract is untouched: this only moves last_heartbeat_ms forward.
+        w->last_heartbeat_ms = NowMs();
+        return true;
+    }
     if (WorkerWriteFailureNeedsKill(rc)) {
         // P2-1 stabilization (live wedge): the worker is alive but not
         // draining. Kill it NOW — otherwise its per-family single-instance
@@ -861,13 +936,27 @@ bool WorkerManager::SendToWorker(const std::wstring& family, std::string_view js
         w->state = WorkerState::Crashed;
         w->spawn_failures++;
         w->next_spawn_allowed_ms = NowMs() + BackoffDelayMs(w->spawn_failures);
+        // Backend P2-2: release the family's reserved VRAM + relay snapshot.
+        // The reaper skips Crashed workers (and the handles are closed above),
+        // so without this the ~2 GiB entry contribution stayed subtracted from
+        // translate_pool_reserved_vram_bytes_ forever, starving later pool
+        // spawns into unnecessary CPU fallback. ResetTranslatePoolAccounting
+        // is the exact-once subtract + relay clear (lock order mu -> pool mu
+        // -> vram mu, the established global order).
+        (void)ResetTranslatePoolAccounting(impl_->PoolModelIdForFamily(family));
         return false;
     }
-    // A dead pipe is a crashed worker in waiting: mark it so the reaper's
-    // next pass finalizes the transition (no respawn from this thread).
+    // A dead pipe is a crashed worker in waiting: finalize it HERE (the reaper
+    // skips Crashed states, so nothing else would close these handles) and
+    // Backend P2-2: reclaim the reserved VRAM + relay snapshot exactly like
+    // the stalled branch above.
+    TerminateProcessHandle(w->process);
+    impl_->ClosePipeLocked(*w);
+    impl_->CloseProcessLocked(*w);
     w->state = WorkerState::Crashed;
     DIAG_F("ENGINEHOST/wmgr/002: frame write failed; family marked crashed (family=%ws)\n",
            family.c_str());
+    (void)ResetTranslatePoolAccounting(impl_->PoolModelIdForFamily(family));
     return false;
 }
 
@@ -1015,6 +1104,29 @@ WorkerManager::SettleOutcome WorkerManager::SettleWorkerPipe(
              family.c_str(), outcome_name, drained,
              static_cast<long long>(NowMs() - started_ms));
     return outcome;
+}
+
+bool WorkerManager::TerminateUnresponsiveWorker(const std::wstring& family) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    WorkerHandle* w = impl_->FindLocked(family);
+    // Already finalized (Stopped/Crashed/Unavailable) or mid-handshake: the
+    // reaper / EnsureSpawned own those transitions — nothing to kill here.
+    if (!w || (w->state != WorkerState::Ready && w->state != WorkerState::Busy)) {
+        return false;
+    }
+    DIAG_F("ENGINEHOST/wmgr/025: unresponsive worker terminated after an expired settle (family=%ws)\n",
+           family.c_str());
+    TerminateProcessHandle(w->process);
+    impl_->ClosePipeLocked(*w);
+    impl_->CloseProcessLocked(*w);
+    w->state = WorkerState::Crashed;
+    w->spawn_failures++;
+    w->next_spawn_allowed_ms = NowMs() + BackoffDelayMs(w->spawn_failures);
+    // Reclaim the family's reserved VRAM + relay snapshot exactly like the
+    // SendToWorker crash paths (exact-once discipline; lock order mu -> pool
+    // mu -> vram mu, the established global order).
+    (void)ResetTranslatePoolAccounting(impl_->PoolModelIdForFamily(family));
+    return true;
 }
 
 // ---- spawn + handshake (design §1.1 rules 1-2 / §3.4) -----------------------
@@ -1192,6 +1304,11 @@ WorkerHandle* WorkerManager::EnsureSpawned(const std::wstring& family) {
                     connected = ::GetOverlappedResult(w->pipe, &ol, &dummy, FALSE) != FALSE;
                 } else {
                     ::CancelIoEx(w->pipe, &ol);
+                    // Backend P1-1: drain the kernel cancel-ack BEFORE the
+                    // stack OVERLAPPED goes out of scope (the
+                    // overlapped_io_util contract).
+                    DWORD cancelled = 0;
+                    (void)::GetOverlappedResult(w->pipe, &ol, &cancelled, TRUE);
                 }
             } else if (ok || err == ERROR_PIPE_CONNECTED) {
                 connected = true; // the client already connected (spawn race)

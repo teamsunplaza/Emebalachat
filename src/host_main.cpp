@@ -405,6 +405,11 @@ struct Job {
     std::string text;
     int timeout_ms = enginehost::kDefaultTranslateTimeoutMs;
     Connection* conn = nullptr;
+    // Backend P0-2: the Connection generation captured at enqueue time. The
+    // dispatcher re-verifies it (under the connection write lock) before
+    // answering, so a recycled Connection slot can never receive the previous
+    // client's result.
+    std::uint64_t conn_epoch = 0;
     // Item D (session 260928_0001): hello.client identity captured at enqueue
     // time so the dispatcher can gate the config-pin relay per originating
     // client family ("emebala-chat" relays the live user pin; every other
@@ -441,6 +446,18 @@ public:
         stop_ = true;
         cv_.notify_all();
     }
+    // Backend P0-2: drop every pending job owned by `conn` (called from
+    // ConnectionLoop when its session ends, BEFORE the slot is recycled).
+    // In-flight jobs the dispatcher already popped are retired separately by
+    // the per-response epoch check. Returns the dropped count.
+    size_t Purge(const Connection* conn) {
+        std::lock_guard<std::mutex> lk(mu_);
+        const size_t before = q_.size();
+        q_.erase(std::remove_if(q_.begin(), q_.end(),
+                                [conn](const Job& j) { return j.conn == conn; }),
+                 q_.end());
+        return before - q_.size();
+    }
 
 private:
     std::mutex mu_;
@@ -456,6 +473,9 @@ struct CurrentJob {
     std::mutex mu;
     std::condition_variable cv;
     uint64_t id = 0;
+    Connection* conn = nullptr; // Backend P1-2: the owning connection (cancel
+                                // ownership check — the id alone can collide
+                                // across v1/v2 clients).
     bool done = true;
     int64_t deadline_ms = 0;
 };
@@ -474,6 +494,12 @@ std::atomic<bool> g_abort{false};
 // one session thread at a time, and the protocol branch is terminal, so the
 // single plain field mirrors the existing connection-scoped write patterns.
 struct Connection {
+    // Backend P0-2: monotonic per-connection generation. Bumped by
+    // ConnectionLoop when a session ends, BEFORE the slot can be recycled for
+    // the next client; every response carries the enqueue-time generation and
+    // is re-verified (under write_mu) at write time, so a recycled slot can
+    // never receive the previous client's translation.
+    std::atomic<std::uint64_t> conn_epoch{0};
     HANDLE pipe = nullptr;
     std::string client;
     // REQ-043: duplicated server end used EXCLUSIVELY for frame writes. The
@@ -488,7 +514,17 @@ struct Connection {
     // session thread; one mutex serializes frame writes per connection.
     std::mutex write_mu;
 
+    // Backend P0-2 sentinel: WriteFrame calls that carry this expected
+    // generation skip the epoch re-check (the session thread's own frames —
+    // welcome/acks — are written while the session is live by construction).
+    static constexpr std::uint64_t kNoEpochGate = 0xFFFFFFFFFFFFFFFFULL;
+
     bool WriteFrame(std::string_view json, DWORD timeout_ms = 15000) {
+        return WriteFrameImpl(json, timeout_ms, kNoEpochGate);
+    }
+
+    bool WriteFrameImpl(std::string_view json, DWORD timeout_ms,
+                        std::uint64_t expected_epoch) {
         std::string frame;
         frame.reserve(4 + json.size());
         const uint32_t len = static_cast<uint32_t>(json.size());
@@ -497,6 +533,15 @@ struct Connection {
         }
         frame.append(json);
         std::lock_guard<std::mutex> lk(write_mu);
+        // Backend P0-2: a dispatcher response carries the connection
+        // generation captured at enqueue time; re-verified UNDER write_mu so
+        // the session-end bump in ConnectionLoop can never be raced by a
+        // check-then-write window — a stale frame is dropped, never written
+        // into a recycled slot's stream.
+        if (expected_epoch != kNoEpochGate &&
+            conn_epoch.load(std::memory_order_acquire) != expected_epoch) {
+            return false;
+        }
         OVERLAPPED ol = {};
         ol.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!ol.hEvent) return false;
@@ -540,7 +585,7 @@ struct Connection {
     // the frozen shape interops both ways). status/text stay byte-identical:
     // the member is spliced onto the BuildResult bytes only when non-empty.
     void SendResult(uint64_t id, enginehost::HostStatus status, std::string text = {},
-                    std::string model = {}) {
+                    std::string model = {}, std::uint64_t expected_epoch = kNoEpochGate) {
         enginehost::ResultMsg m;
         m.id = id;
         m.status = status;
@@ -550,7 +595,7 @@ struct Connection {
             frame.insert(frame.size() - 1,
                          ",\"model\":\"" + enginehost::JsonEscape(model) + "\"");
         }
-        if (!WriteFrame(frame)) {
+        if (!WriteFrameImpl(frame, 15000, expected_epoch)) {
             DIAG_LOG("ENGINEHOST", "conn/%03d: result write failed (client gone)", index);
         }
     }
@@ -1014,7 +1059,9 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // pre-T4 response latency for a fresh machine).
         if (!ModelFileExistsFor(pin)) {
             // §8: the process stays alive and answers model_missing.
-            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
+            // Backend P0-2: the epoch-guarded write — a recycled slot drops it.
+            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing, {}, {},
+                                 job.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             TouchActivity();
             continue;
@@ -1034,14 +1081,16 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // EnsureSpawned-fail path below (§V2-4.7 precedent).
         host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(pin);
         if (!e) {
-            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
+            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing, {}, {},
+                                 job.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
             continue;
         }
         host_v2::WorkerHandle* w = wmgr.EnsureSpawned(e->family);
         if (!w) {
-            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing);
+            job.conn->SendResult(job.id, enginehost::HostStatus::ModelMissing, {}, {},
+                                 job.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
             continue;
@@ -1060,7 +1109,7 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         // and the sibling could win the race for our late stray (the
         // original re-stamp skew, cross-dispatcher edition).
         if (!wmgr.TrySetBusy(e->family)) {
-            job.conn->SendResult(job.id, enginehost::HostStatus::Busy);
+            job.conn->SendResult(job.id, enginehost::HostStatus::Busy, {}, {}, job.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             TouchActivity();
             continue;
@@ -1108,6 +1157,7 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
         {
             std::lock_guard<std::mutex> lk(g_current.mu);
             g_current.id = job.id;
+            g_current.conn = job.conn; // Backend P1-2: cancel ownership check
             g_current.done = false;
             g_current.deadline_ms = NowMs() + job.timeout_ms;
         }
@@ -1149,15 +1199,21 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
             // Dead pipe: the manager already marked the family Crashed; the
             // reaper owns the respawn. Answer NOW — never leave a v1 id
             // unmatched (§4.4: every request gets exactly one result).
-            job.conn->SendResult(job.id, enginehost::HostStatus::EngineFailed);
+            job.conn->SendResult(job.id, enginehost::HostStatus::EngineFailed, {}, {},
+                                 job.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
-            wmgr.SetBusy(e->family, false);
+            // Backend P1-2: clear the in-flight bookkeeping BEFORE releasing
+            // the family — the sibling dispatcher can only acquire after the
+            // release, so its g_current registration can never be clobbered
+            // by our cleanup.
             {
                 std::lock_guard<std::mutex> lk(g_current.mu);
                 g_current.done = true;
                 g_current.id = 0;
+                g_current.conn = nullptr;
             }
             g_current.cv.notify_all();
+            wmgr.SetBusy(e->family, false);
             TouchActivity();
             continue;
         }
@@ -1253,14 +1309,34 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                 // off-by-one pairing skew (clean rows showing translations
                 // generated for neighboring inputs).
                 (void)wmgr.SendToWorker(e->family, wp::BuildAbort(0));
-                (void)wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
+                const host_v2::WorkerManager::SettleOutcome settle_rc =
+                    wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
+                // Backend P0-1 part 2 (review round 1, F-05): a healthy worker
+                // answers the abort within milliseconds (the worker-side
+                // reader thread), so a settle budget that EXPIRES means the
+                // worker is wedged or dead — terminate it and reclaim its
+                // reserved VRAM before the timeout answer leaves. The reaper
+                // skips Crashed states and the backoff gate paces the
+                // respawn. Only DeadlineExpired qualifies: TerminalDiscarded
+                // (healthy), PipeIoError (the reaper owns the crash) and
+                // Cancelled (shutdown owns teardown) leave the family alone,
+                // which keeps every S1-S9 settle-suite pin green (the suite
+                // drives the settle primitive directly and never reaches
+                // TerminateUnresponsiveWorker).
+                if (settle_rc == host_v2::WorkerManager::SettleOutcome::DeadlineExpired) {
+                    (void)wmgr.TerminateUnresponsiveWorker(e->family);
+                }
                 status = enginehost::HostStatus::Timeout;
                 answered = true;
                 break;
             }
         }
         if (answered || !g_shutdown.load(std::memory_order_acquire)) {
-            job.conn->SendResult(job.id, status, out_text, std::move(served_model));
+            // Backend P0-2: the epoch-guarded write (verified again under
+            // write_mu inside) — a slot recycled since the enqueue drops the
+            // stale frame instead of leaking it to the next client.
+            job.conn->SendResult(job.id, status, out_text, std::move(served_model),
+                                 job.conn_epoch);
             // Health (REQ-008): the host-observable outcome bucket.
             if (status == enginehost::HostStatus::Ok) {
                 g_health.RecordJob(host_v2::HealthOutcome::Success);
@@ -1271,13 +1347,16 @@ void DispatcherLoop(host_v2::WorkerManager& wmgr) {
                 g_health.RecordJob(host_v2::HealthOutcome::Failure);
             }
         }
-        wmgr.SetBusy(e->family, false);
+        // Backend P1-2: clear the in-flight bookkeeping BEFORE releasing the
+        // family (see the !sent branch above).
         {
             std::lock_guard<std::mutex> lk(g_current.mu);
             g_current.done = true;
             g_current.id = 0;
+            g_current.conn = nullptr;
         }
         g_current.cv.notify_all();
+        wmgr.SetBusy(e->family, false);
         TouchActivity();
     }
 }
@@ -1306,9 +1385,11 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         }
         if (had_expired) {
             // §V2-4.6 deadline: queued-too-long requests answer timeout.
+            // Backend P0-2: epoch-guarded write (recycled slot drops it).
             if (expired.user) {
                 static_cast<Connection*>(expired.user)->SendResult(
-                    expired.request_id, enginehost::HostStatus::Timeout); // 260930_0003 (3-2): echo the id
+                    expired.request_id, enginehost::HostStatus::Timeout, {}, {},
+                    expired.conn_epoch); // 260930_0003 (3-2): echo the id
             }
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
@@ -1349,7 +1430,8 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         const emebalachat::enginehost::clientpolicy::ClientPolicy item_policy =
             enginehost::LoadClientPolicyLive(item.client, L"");
         if (!ModelFileExistsFor(model_id)) {
-            requester->SendResult(item.request_id, enginehost::HostStatus::ModelMissing);
+            requester->SendResult(item.request_id, enginehost::HostStatus::ModelMissing, {},
+                                  {}, item.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
             continue;
         }
@@ -1360,13 +1442,15 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // Busy — the frozen status set has no "pool_refused").
         host_v2::TranslatePoolEntry* e = wmgr.TranslatePoolEnsure(model_id);
         if (!e) {
-            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy, {}, {},
+                                  item.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
         host_v2::WorkerHandle* w = wmgr.EnsureSpawned(e->family);
         if (!w) {
-            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy, {}, {},
+                                  item.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
@@ -1375,7 +1459,8 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         // the sibling dispatcher can never publish/drain/relay into our job
         // or our give-up settle; it fails fast here and answers Busy.
         if (!wmgr.TrySetBusy(e->family)) {
-            requester->SendResult(item.request_id, enginehost::HostStatus::Busy);
+            requester->SendResult(item.request_id, enginehost::HostStatus::Busy, {}, {},
+                                  item.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Fallback);
             continue;
         }
@@ -1403,6 +1488,23 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 wmgr.TranslatePoolMarkRelayed(model_id, w->process);
             }
         }
+        // Backend P1-2: publish the in-flight job exactly like the v1 loop so
+        // the v2 `cancel` op (ownership-checked in RunSessionV2) and the
+        // per-job watchdog can unwind it. The F-01 single-flight acquire
+        // above guarantees the two dispatchers never overlap their g_current
+        // windows over the translate family, so the shared bookkeeping is
+        // safe. The cancel op matches the CLIENT request id (item.request_id)
+        // — the worker's synthetic job id (enqueue_seq) stays internal.
+        g_abort.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(g_current.mu);
+            g_current.id = item.request_id;
+            g_current.conn = requester;
+            g_current.done = false;
+            g_current.deadline_ms =
+                item.deadline_ms != 0 ? item.deadline_ms : NowMs() + 30000;
+        }
+        g_current.cv.notify_all();
         // The v2 profile forwards the request with a synthetic in-flight id
         // (the client's id space stays untouched — results here answer the
         // session/request that enqueued, not an id echo; §V2-4.3 sessions
@@ -1437,8 +1539,16 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         jm.prompt_template = item_policy.prompt_template_ref;
         const bool sent = wmgr.SendToWorker(e->family, wp::BuildJob(jm));
         if (!sent) {
-            requester->SendResult(item.request_id, enginehost::HostStatus::EngineFailed);
+            requester->SendResult(item.request_id, enginehost::HostStatus::EngineFailed, {},
+                                  {}, item.conn_epoch);
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
+            {
+                std::lock_guard<std::mutex> lk(g_current.mu);
+                g_current.done = true;
+                g_current.id = 0;
+                g_current.conn = nullptr;
+            }
+            g_current.cv.notify_all();
             wmgr.SetBusy(e->family, false);
             continue;
         }
@@ -1486,7 +1596,13 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 status = enginehost::HostStatus::EngineFailed;
                 break;
             }
-            if (NowMs() >= give_up_ms) {
+            // Backend P1-2: the v2 in-flight job is published in g_current now
+            // (see above), so the ownership-checked v2 `cancel` op surfaces
+            // here through the SAME shared g_abort flag the v1 loop re-checks
+            // every poll slice. One give-up branch, one abort + settle (the
+            // 260927_0003 single-settle pin).
+            const bool aborted = g_abort.load(std::memory_order_acquire);
+            if (aborted || NowMs() >= give_up_ms) {
                 // 260927_0003 (MT audit Q1 fix A): the same bounded settle as
                 // the v1 dispatcher's give-up branch (see DispatcherLoop) —
                 // this loop shares ClassifyJobWaitFrame and therefore the
@@ -1494,12 +1610,29 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
                 // given-up job's terminal event arrives and discard it,
                 // BEFORE answering and BEFORE the next job frame is published.
                 (void)wmgr.SendToWorker(e->family, wp::BuildAbort(0));
-                (void)wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
+                const host_v2::WorkerManager::SettleOutcome settle_rc =
+                    wmgr.SettleWorkerPipe(e->family, kWorkerSettleMs, &g_shutdown);
+                // Backend P0-1 part 2 (review round 1, F-05): the same
+                // wedged-worker termination as the v1 dispatcher's give-up
+                // branch (see DispatcherLoop) — an EXPIRED settle budget with
+                // the abort already on the wire means the worker cannot serve
+                // anything until it is respawned, so kill it and reclaim the
+                // reserved VRAM now.
+                if (settle_rc == host_v2::WorkerManager::SettleOutcome::DeadlineExpired) {
+                    (void)wmgr.TerminateUnresponsiveWorker(e->family);
+                }
                 status = enginehost::HostStatus::Timeout;
                 break;
             }
         }
-        requester->SendResult(item.request_id, status, out_text, std::move(served_model));
+        // Backend P0-2 + review round 1 (F-02): the v2 final answer rides the
+        // SAME under-write_mu epoch re-check as every other answer path (the
+        // epoch-parameterized SendResult). The sched/id source pin
+        // (tests/m6_engine_host_orchestrator_tests.inc ~L235) still pins the
+        // old 4-arg call text — reported to the tests owner for a pin update;
+        // do not revert this guard.
+        requester->SendResult(item.request_id, status, out_text, std::move(served_model),
+                              item.conn_epoch);
         if (status == enginehost::HostStatus::Ok) {
             g_health.RecordJob(host_v2::HealthOutcome::Success);
         } else if (status == enginehost::HostStatus::Timeout ||
@@ -1508,6 +1641,13 @@ void DispatcherV2Loop(host_v2::WorkerManager& wmgr) {
         } else {
             g_health.RecordJob(host_v2::HealthOutcome::Failure);
         }
+        {
+            std::lock_guard<std::mutex> lk(g_current.mu);
+            g_current.done = true;
+            g_current.id = 0;
+            g_current.conn = nullptr;
+        }
+        g_current.cv.notify_all();
         wmgr.SetBusy(e->family, false);
         TouchActivity();
     }
@@ -1534,6 +1674,11 @@ bool ReadMessage(Connection& conn, std::string& json) {
         const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (w != WAIT_OBJECT_0) {
             ::CancelIoEx(conn.pipe, &ol);
+            // Backend P1-1: drain the kernel cancel-ack BEFORE the stack
+            // OVERLAPPED/buffer go out of scope (the overlapped_io_util
+            // contract — REQ-L02).
+            DWORD cancelled = 0;
+            (void)::GetOverlappedResult(conn.pipe, &ol, &cancelled, TRUE);
             ::CloseHandle(ol.hEvent);
             return false;
         }
@@ -1664,6 +1809,7 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello,
             job.text = std::move(msg.text);
             job.timeout_ms = msg.timeout_ms;
             job.conn = &conn;
+            job.conn_epoch = conn.conn_epoch.load(std::memory_order_acquire); // Backend P0-2
             job.client = conn.client; // Item D: pin-relay gate identity
             job.model_id = std::move(msg.model_id); // REQ-060: "" = legacy relay path
             if (!g_queue.Push(job)) {
@@ -1677,8 +1823,12 @@ void RunSessionV1(Connection& conn, const enginehost::HelloMsg& hello,
                 return;
             }
             // §4.4: only the in-flight job is aborted; anything else is ignored.
+            // Backend P1-2: the id match alone is not ownership — a v2 (or
+            // another v1) client's request can carry the same numeric id, and
+            // without the connection check one client could abort another
+            // client's in-flight job.
             std::lock_guard<std::mutex> lk(g_current.mu);
-            if (!g_current.done && g_current.id == msg.id) {
+            if (!g_current.done && g_current.id == msg.id && g_current.conn == &conn) {
                 g_abort.store(true, std::memory_order_release);
             }
         } else if (op == "hello") {
@@ -2299,6 +2449,22 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
                 continue;
             }
             host_v2::SchedItem item;
+            // Backend P0-3: the OPTIONAL session id must ride the item — the
+            // dispatcher applies the session's model binding through it
+            // (g_sessions.Get(item.session), the §V2-4.3 session model) and
+            // the session/connection teardown drops queued items by it. The
+            // pre-fix code never parsed "session" here, so every v2 translate
+            // silently ran sessionless (item.session stayed 0) and the
+            // session model + DropSession were dead code.
+            if (const auto* s = enginehost::detail::FindField(fields, "session")) {
+                if (!enginehost::detail::ParseUInt64(s->text, item.session)) {
+                    conn.SendErrorThenClose(enginehost::kErrBadRequest);
+                    break; // P2-1 stabilization: the loop-end teardown frees the claim
+                }
+            }
+            // Backend P0-2: capture the connection generation at enqueue time
+            // so the v2 dispatcher's response write is epoch-guarded.
+            item.conn_epoch = conn.conn_epoch.load(std::memory_order_acquire);
             if (const auto* p = enginehost::detail::FindField(fields, "priority")) {
                 int v = 0;
                 if (enginehost::detail::ParseInt(p->text, v)) item.priority = v;
@@ -2453,8 +2619,12 @@ void RunSessionV2(Connection& conn, const enginehost::HelloMsg& hello,
             }
             // §4.4 cancel rule carried into v2: only the in-flight job is
             // aborted (the dispatcher's g_current), everything else ignored.
+            // Backend P1-2: connection ownership is checked alongside the id —
+            // without it a v2 cancel whose id collides with a v1 job's would
+            // cross-abort that job (and the v2 in-flight job IS published in
+            // g_current by DispatcherV2Loop, so the ownership check matches).
             std::lock_guard<std::mutex> lk(g_current.mu);
-            if (!g_current.done && g_current.id == msg.id) {
+            if (!g_current.done && g_current.id == msg.id && g_current.conn == &conn) {
                 g_abort.store(true, std::memory_order_release);
             }
         } else if (op == "list_models") {
@@ -2578,6 +2748,14 @@ void ConnectionLoop(Connection* conn, host_v2::WorkerManager& wmgr) {
             conn->write_pipe = nullptr;
         }
         RunSession(*conn, wmgr);
+        // Backend P0-2: retire this session's generation BEFORE the slot can
+        // be recycled for the next client. The bump is atomic and the pending
+        // v1 queue entries of the dead session are purged right here; every
+        // in-flight response still carries the old generation and is dropped
+        // by the epoch re-check (under write_mu) at write time, so a recycled
+        // Connection can never receive the previous client's translation.
+        conn->conn_epoch.fetch_add(1, std::memory_order_acq_rel);
+        g_queue.Purge(conn);
         g_active_connections.fetch_sub(1, std::memory_order_acq_rel);
         TouchActivity();
         if (conn->write_pipe) {

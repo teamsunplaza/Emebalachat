@@ -1,4 +1,5 @@
 #include "asset_loader.hpp"
+#include "theme.hpp"
 
 #include <filesystem>
 #include <vector>
@@ -291,110 +292,48 @@ void DrawTabletLogoVector(
 ) {
     if (!pRenderTarget) return;
 
-    // Outer diptych tablet container
-    D2D1_ROUNDED_RECT tablet = D2D1::RoundedRect(rect, 3.0f, 3.0f);
+    const float width  = rect.right - rect.left;
+    const float height = rect.bottom - rect.top;
+    if (width <= 0.0f || height <= 0.0f) return;
 
-    ID2D1SolidColorBrush* pageBgBrush = nullptr;
-    ID2D1SolidColorBrush* goldBrush = nullptr;
-    ID2D1SolidColorBrush* darkGoldBrush = nullptr;
+    const auto& theme = ui::GetActiveTheme();
+    const float min_dim = (std::min)(width, height);
+    const float radius  = (std::max)(2.5f, min_dim * 0.22f);
+    const D2D1_ROUNDED_RECT badge_rr = D2D1::RoundedRect(rect, radius, radius);
 
-    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0x182029, 0.95f), &pageBgBrush);
-    pRenderTarget->CreateSolidColorBrush(
-        hovered ? D2D1::ColorF(0xE5C158, 1.0f) : D2D1::ColorF(0xD4AF37, 0.92f),
-        &goldBrush
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1.0f), &brush)) || !brush) {
+        return;
+    }
+
+    // 1. Minimal geometric emblem container using active theme surface & border tokens.
+    brush->SetColor(ui::ColorFromHex(hovered ? theme.surface_hover : theme.surface_elevated, 0.98f));
+    pRenderTarget->FillRoundedRectangle(badge_rr, brush.Get());
+
+    if (width > 3.0f && height > 3.0f) {
+        const D2D1_RECT_F inner_rect = D2D1::RectF(
+            rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f
+        );
+        const float inner_r = (std::max)(1.5f, radius - 1.0f);
+        brush->SetColor(ui::ColorFromHex(theme.border_inner, theme.border_inner_alpha));
+        pRenderTarget->DrawRoundedRectangle(D2D1::RoundedRect(inner_rect, inner_r, inner_r), brush.Get(), 1.0f);
+    }
+
+    brush->SetColor(hovered
+        ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+        : ui::ColorFromHex(theme.border_subtle, (std::max)(0.25f, theme.border_subtle_alpha)));
+    pRenderTarget->DrawRoundedRectangle(badge_rr, brush.Get(), hovered ? 1.25f : 1.0f);
+
+    // 2. Clean minimal geometric translation emblem (opposing horizontal arrows / glyph).
+    const D2D1_RECT_F glyph_bounds = D2D1::RectF(
+        rect.left   + width  * 0.18f,
+        rect.top    + height * 0.18f,
+        rect.right  - width  * 0.18f,
+        rect.bottom - height * 0.18f
     );
-    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0x9E7B30, 0.85f), &darkGoldBrush);
-
-    if (pageBgBrush) {
-        pRenderTarget->FillRoundedRectangle(tablet, pageBgBrush);
-    }
-    if (goldBrush) {
-        pRenderTarget->DrawRoundedRectangle(tablet, goldBrush, hovered ? 1.5f : 1.0f);
-    }
-
-    float width = rect.right - rect.left;
-    float height = rect.bottom - rect.top;
-    float midX = rect.left + width * 0.5f;
-
-    // Central tablet crease/spine
-    if (darkGoldBrush) {
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(midX, rect.top + 2.0f),
-            D2D1::Point2F(midX, rect.bottom - 2.0f),
-            darkGoldBrush,
-            1.2f
-        );
-    }
-
-    // Top Cuneiform Frieze Line (Left & Right)
-    float friezeY = rect.top + height * 0.28f;
-    if (goldBrush) {
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(rect.left + 3.0f, friezeY),
-            D2D1::Point2F(midX - 2.0f, friezeY),
-            goldBrush,
-            0.9f
-        );
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(midX + 2.0f, friezeY),
-            D2D1::Point2F(rect.right - 3.0f, friezeY),
-            goldBrush,
-            0.9f
-        );
-    }
-
-    // Left Page: Stylized Enki Living Water curves
-    if (goldBrush) {
-        float waterLeft = rect.left + width * 0.22f;
-        float waterMidY = rect.top + height * 0.55f;
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(waterLeft, waterMidY - 2.0f),
-            D2D1::Point2F(waterLeft + width * 0.16f, waterMidY + 2.0f),
-            goldBrush,
-            1.2f
-        );
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(waterLeft, waterMidY + 3.0f),
-            D2D1::Point2F(waterLeft + width * 0.16f, waterMidY + 7.0f),
-            goldBrush,
-            1.2f
-        );
-    }
-
-    // Right Page: Stylized Winged Bull / Tree of life curves
-    if (goldBrush) {
-        float wingLeft = midX + width * 0.12f;
-        float wingTop = rect.top + height * 0.40f;
-        // Wing upward sweep
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(wingLeft, wingTop + 7.0f),
-            D2D1::Point2F(wingLeft + width * 0.22f, wingTop),
-            goldBrush,
-            1.2f
-        );
-        // Tree trunk
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(wingLeft + width * 0.10f, wingTop + 2.0f),
-            D2D1::Point2F(wingLeft + width * 0.10f, rect.bottom - 4.0f),
-            darkGoldBrush ? darkGoldBrush : goldBrush,
-            1.0f
-        );
-    }
-
-    // Bottom Inscription Bar
-    if (darkGoldBrush) {
-        float barY = rect.bottom - height * 0.16f;
-        pRenderTarget->DrawLine(
-            D2D1::Point2F(rect.left + 5.0f, barY),
-            D2D1::Point2F(rect.right - 5.0f, barY),
-            darkGoldBrush,
-            1.0f
-        );
-    }
-
-    if (darkGoldBrush) darkGoldBrush->Release();
-    if (goldBrush) goldBrush->Release();
-    if (pageBgBrush) pageBgBrush->Release();
+    const float stroke_w = (std::max)(1.2f, min_dim * 0.085f);
+    brush->SetColor(ui::ColorFromHex(theme.accent_primary, hovered ? 1.0f : 0.92f));
+    ui::DrawSwapIcon(pRenderTarget, glyph_bounds, brush.Get(), stroke_w);
 }
 
 } // namespace emebalachat

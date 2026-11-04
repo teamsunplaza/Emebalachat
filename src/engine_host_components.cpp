@@ -7,6 +7,8 @@
 
 #include "diag_logger.hpp"
 
+#include <cstdlib> // Backend P2-1: std::strtoull (numeric version segments)
+
 namespace emebalachat {
 namespace engine_host_components {
 
@@ -105,13 +107,35 @@ LoadResult ParseComponentsJson(std::string_view json) {
 
 namespace {
 
-// Lexicographic version compare with the installer's existing semantics
-// (setup.iss compares dotted version strings the same way for equal shapes;
-// a plain lexicographic compare keeps "0.10.2" > "0.10.1" and equal-length
-// dotted triples ordered — the pinned 0.10.1 release train never mixes
-// shapes). True when bundled > installed.
+// Backend P2-1 (v0.10.5): dotted-INTEGER segment compare. The old plain
+// lexicographic `bundled > installed` mis-orders every mixed-width pair
+// ("0.9.0" > "0.10.4" was true, "0.10.10" > "0.10.9" was false — the 0.10.10
+// component upgrade would have been refused). Numeric major.minor.patch(.build)
+// segments fix both while keeping every equal-shape triple ordered exactly as
+// before (the pinned release-train contract in
+// m6_engine_host_manifest_components_tests.inc is unchanged). A non-numeric
+// segment tail parses as its leading digits (strtoull), so "0.10.1-beta"
+// compares as 0.10.1. True when bundled > installed.
 bool VersionNewer(const std::string& bundled, const std::string& installed) {
-    return bundled > installed;
+    auto segments = [](const std::string& v, unsigned long long out[4]) {
+        for (size_t k = 0; k < 4; ++k) out[k] = 0; // param decays to a pointer
+        size_t pos = 0;                             // — index, do not range-for
+        for (size_t i = 0; i < 4 && pos <= v.size(); ++i) {
+            const size_t dot = v.find('.', pos);
+            const std::string part =
+                v.substr(pos, dot == std::string::npos ? std::string::npos : dot - pos);
+            out[i] = std::strtoull(part.c_str(), nullptr, 10);
+            if (dot == std::string::npos) break;
+            pos = dot + 1;
+        }
+    };
+    unsigned long long b[4] = {}, n[4] = {};
+    segments(bundled, b);
+    segments(installed, n);
+    for (size_t i = 0; i < 4; ++i) {
+        if (b[i] != n[i]) return b[i] > n[i];
+    }
+    return false; // every segment equal -> not newer
 }
 
 } // namespace

@@ -1,10 +1,13 @@
 #include "tray.hpp"
+#include "ui/theme.hpp"
 #include "../diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "../config.hpp"
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -67,6 +70,10 @@ enum TrayMenuId : UINT {
     // headroom, no collision (design §2-Q3 verified).
     ID_TRAY_UILANG_AUTO = 2300,
     ID_TRAY_UILANG_BASE = 2301, // 2301..2337 (Auto + 37 locales = 38 items)
+    // UI Theme selector submenu (Fluent / Editorial / Monolith = 2381..2383).
+    ID_TRAY_THEME_FLUENT = SystemTray::kCmdThemeFluent,
+    ID_TRAY_THEME_EDITORIAL = SystemTray::kCmdThemeEditorial,
+    ID_TRAY_THEME_MONOLITH = SystemTray::kCmdThemeMonolith,
     // REQ-025 (Phase A §2.1.A3-25): DRAG ("번역툴팁") pair submenu IDs. The
     // existing 2100/2200 bands stay TYPE-only (regression guard); the drag
     // pair gets fresh non-overlapping bands. 2400..2437 / 2500..2536.
@@ -150,6 +157,15 @@ HICON SystemTray::CreateStatusIcon(bool active) {
         }
     }
 
+    const auto& theme = ui::GetActiveTheme();
+    auto smoothstep_coverage = [](float edge, float dist, float feather) noexcept -> float {
+        const float half_f = feather * 0.5f;
+        if (dist <= edge - half_f) return 1.0f;
+        if (dist >= edge + half_f) return 0.0f;
+        const float t = (dist - (edge - half_f)) / feather;
+        return 1.0f - (t * t * (3.0f - 2.0f * t));
+    };
+
     if (loaded_icon) {
         // If inactive, desaturate / dim icon slightly so paused state is immediately clear
         if (!active) {
@@ -169,53 +185,96 @@ HICON SystemTray::CreateStatusIcon(bool active) {
             }
         }
 
-        // Status badge overlay at bottom-right corner
-        // DESIGN-261029 (session 261029_0001): the dot rim moved onto the
-        // poster navy (#0C1830) so the overlay reads as the same product as
-        // the badge medallion. The inactive dot hue stays the W6/C3-pinned
-        // slate #64748B (tests/run_tests.cpp:1777 structure pin — the paused
-        // state is primarily signaled by the badge/tray check marks anyway);
-        // active emerald is unchanged.
+        // Status badge overlay at bottom-right corner with sub-pixel smoothstep coverage
+        // (1.2f feathering ramp at both inner_r and outer_r) and active theme colors.
         const float dot_cx = 24.5f;
         const float dot_cy = 24.5f;
         const float outer_r = 5.5f;
         const float inner_r = 4.0f;
-        const uint32_t status_color = active ? 0xFF10B981 : 0xFF64748B; // Active Emerald vs Inactive Slate Gray (W6/C3 pin)
-        const uint32_t border_color = 0xFF0C1830; // Poster-navy contrast rim
+        const float feather = 1.2f;
+        const uint32_t status_rgb = active ? theme.state_ready : theme.state_off;
+        (void)theme.state_busy;
+        const uint32_t border_rgb = theme.surface_canvas;
+
+        const float sr = static_cast<float>((status_rgb >> 16) & 0xFF);
+        const float sg = static_cast<float>((status_rgb >> 8) & 0xFF);
+        const float sb = static_cast<float>(status_rgb & 0xFF);
+        const float br = static_cast<float>((border_rgb >> 16) & 0xFF);
+        const float bg = static_cast<float>((border_rgb >> 8) & 0xFF);
+        const float bb = static_cast<float>(border_rgb & 0xFF);
 
         for (int y = 18; y < size; ++y) {
             for (int x = 18; x < size; ++x) {
-                float dx = x - dot_cx;
-                float dy = y - dot_cy;
-                float d = sqrtf(dx * dx + dy * dy);
-                if (d <= inner_r) {
-                    pixels[y * size + x] = status_color;
-                } else if (d <= outer_r) {
-                    pixels[y * size + x] = border_color;
+                const float dx = static_cast<float>(x) - dot_cx;
+                const float dy = static_cast<float>(y) - dot_cy;
+                float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+
+                const float outer_cov = smoothstep_coverage(outer_r, dist, feather);
+                if (outer_cov <= 0.0f) {
+                    continue;
                 }
+                const float inner_cov = smoothstep_coverage(inner_r, dist, feather);
+
+                // Mix inner status fill with outer border rim using inner_cov
+                const float fg_r = sr * inner_cov + br * (1.0f - inner_cov);
+                const float fg_g = sg * inner_cov + bg * (1.0f - inner_cov);
+                const float fg_b = sb * inner_cov + bb * (1.0f - inner_cov);
+
+                // Alpha-composite over existing premultiplied-BGRA icon pixel
+                const uint32_t dst = pixels[y * size + x];
+                const float dst_a = static_cast<float>((dst >> 24) & 0xFF) / 255.0f;
+                const float dst_r = static_cast<float>((dst >> 16) & 0xFF);
+                const float dst_g = static_cast<float>((dst >> 8) & 0xFF);
+                const float dst_b = static_cast<float>(dst & 0xFF);
+
+                const float inv_a = 1.0f - outer_cov;
+                const float out_a = outer_cov + dst_a * inv_a;
+                const uint32_t out_a8 = static_cast<uint32_t>(std::clamp(out_a * 255.0f + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_r8 = static_cast<uint32_t>(std::clamp(fg_r * outer_cov + dst_r * inv_a + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_g8 = static_cast<uint32_t>(std::clamp(fg_g * outer_cov + dst_g * inv_a + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_b8 = static_cast<uint32_t>(std::clamp(fg_b * outer_cov + dst_b * inv_a + 0.5f, 0.0f, 255.0f));
+
+                pixels[y * size + x] = (out_a8 << 24) | (out_r8 << 16) | (out_g8 << 8) | out_b8;
             }
         }
     } else {
         // Fallback: geometric status ring if app icon asset cannot be found
-        uint32_t ringColor = active ? 0xFF10B981 : 0xFF6B7280;
-        uint32_t innerColor = 0xFF1E2025;
+        const uint32_t ring_rgb = active ? theme.state_ready : theme.state_off;
+        const uint32_t inner_rgb = theme.surface_canvas;
 
-        float cx = (size - 1) / 2.0f;
-        float cy = (size - 1) / 2.0f;
-        float outerR = 13.0f;
-        float innerR = 8.5f;
+        const float rr = static_cast<float>((ring_rgb >> 16) & 0xFF);
+        const float rg = static_cast<float>((ring_rgb >> 8) & 0xFF);
+        const float rb = static_cast<float>(ring_rgb & 0xFF);
+        const float ir = static_cast<float>((inner_rgb >> 16) & 0xFF);
+        const float ig = static_cast<float>((inner_rgb >> 8) & 0xFF);
+        const float ib = static_cast<float>(inner_rgb & 0xFF);
+
+        const float cx = (size - 1) / 2.0f;
+        const float cy = (size - 1) / 2.0f;
+        const float outerR = 13.0f;
+        const float innerR = 8.5f;
+        const float feather = 1.2f;
 
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size; ++x) {
-                float dx = x - cx;
-                float dy = y - cy;
-                float dist = sqrtf(dx * dx + dy * dy);
+                const float dx = static_cast<float>(x) - cx;
+                const float dy = static_cast<float>(y) - cy;
+                float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
 
-                if (dist <= outerR && dist >= innerR) {
-                    pixels[y * size + x] = ringColor;
-                } else if (dist < innerR) {
-                    pixels[y * size + x] = innerColor;
+                const float outer_cov = smoothstep_coverage(outerR, dist, feather);
+                if (outer_cov <= 0.0f) {
+                    continue;
                 }
+                const float inner_cov = smoothstep_coverage(innerR, dist, feather);
+                const float fg_r = ir * inner_cov + rr * (1.0f - inner_cov);
+                const float fg_g = ig * inner_cov + rg * (1.0f - inner_cov);
+                const float fg_b = ib * inner_cov + rb * (1.0f - inner_cov);
+
+                const uint32_t out_a8 = static_cast<uint32_t>(std::clamp(outer_cov * 255.0f + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_r8 = static_cast<uint32_t>(std::clamp(fg_r * outer_cov + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_g8 = static_cast<uint32_t>(std::clamp(fg_g * outer_cov + 0.5f, 0.0f, 255.0f));
+                const uint32_t out_b8 = static_cast<uint32_t>(std::clamp(fg_b * outer_cov + 0.5f, 0.0f, 255.0f));
+                pixels[y * size + x] = (out_a8 << 24) | (out_r8 << 16) | (out_g8 << 8) | out_b8;
             }
         }
     }
@@ -380,6 +439,9 @@ bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callb
     hOwner_ = hOwner;
     hInstance_ = hInstance;
     callbacks_ = callbacks;
+    if (callbacks_.on_select_theme && !on_theme_select_) {
+        on_theme_select_ = callbacks_.on_select_theme;
+    }
 
     hCurrentIcon_ = CreateStatusIcon(is_active_);
 
@@ -420,6 +482,27 @@ bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callb
 // no invalidation is required here.
 void SystemTray::SetUiLanguage(std::string_view persisted_code) {
     ui_language_ = persisted_code;
+}
+
+void SystemTray::SetOnThemeSelectCallback(ThemeSelectCallback cb) {
+    on_theme_select_ = std::move(cb);
+    callbacks_.on_select_theme = on_theme_select_;
+}
+
+void SystemTray::SetUiTheme(std::string_view theme_key) {
+    ui_theme_ = ui::ThemeIdToKey(ui::ParseThemeId(theme_key));
+}
+
+void SystemTray::RefreshTheme() {
+    ui_theme_ = ui::ThemeIdToKey(ui::GetActiveThemeId());
+    if (hCurrentIcon_) {
+        ::DestroyIcon(hCurrentIcon_);
+    }
+    hCurrentIcon_ = CreateStatusIcon(is_active_);
+    nid_.hIcon = hCurrentIcon_;
+    if (nid_.hWnd) {
+        ::Shell_NotifyIconW(NIM_MODIFY, &nid_);
+    }
 }
 
 void SystemTray::Destroy() {
@@ -630,6 +713,23 @@ void SystemTray::ShowContextMenu() {
     }
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), I18n::Get(StringId::MenuUiLanguage).c_str());
 
+    // 2c. UI Theme selector submenu (Fluent Craft / Warm Editorial / Refined Monolith)
+    const I18nStrings i18n_ = I18n::GetThemeStrings();
+    HMENU hThemeMenu = ::CreatePopupMenu();
+    {
+        const ui::ThemeId activeThemeId = ui::GetActiveThemeId();
+        ::AppendMenuW(hThemeMenu,
+                      MF_STRING | (activeThemeId == ui::ThemeId::Fluent ? MF_CHECKED : MF_UNCHECKED),
+                      kCmdThemeFluent, i18n_.theme_fluent.c_str());
+        ::AppendMenuW(hThemeMenu,
+                      MF_STRING | (activeThemeId == ui::ThemeId::Editorial ? MF_CHECKED : MF_UNCHECKED),
+                      kCmdThemeEditorial, i18n_.theme_editorial.c_str());
+        ::AppendMenuW(hThemeMenu,
+                      MF_STRING | (activeThemeId == ui::ThemeId::Monolith ? MF_CHECKED : MF_UNCHECKED),
+                      kCmdThemeMonolith, i18n_.theme_monolith.c_str());
+    }
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hThemeMenu), i18n_.menu_ui_theme.c_str());
+
     // 3+4. REQ-025 (Phase A §2.1.A3-25): the language pickers are grouped into
     // TWO contexts so typing-translation and drag-tooltip translations can use
     // different source/target pairs:
@@ -809,6 +909,17 @@ void SystemTray::ShowContextMenu() {
                callbacks_.on_select_ui_language) {
         size_t idx = cmd - ID_TRAY_UILANG_BASE;
         callbacks_.on_select_ui_language(I18n::LocaleToString(GetSupportedUiLocales()[idx].locale));
+    } else if (cmd == kCmdThemeFluent || cmd == kCmdThemeEditorial || cmd == kCmdThemeMonolith) {
+        const std::string selected_theme =
+            (cmd == kCmdThemeEditorial) ? "editorial"
+            : (cmd == kCmdThemeMonolith) ? "monolith"
+            : "fluent";
+        ui_theme_ = selected_theme;
+        if (on_theme_select_) {
+            on_theme_select_(selected_theme);
+        } else if (callbacks_.on_select_theme) {
+            callbacks_.on_select_theme(selected_theme);
+        }
     }
 
     ::DestroyMenu(hMenu);

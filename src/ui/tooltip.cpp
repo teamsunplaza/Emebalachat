@@ -1,4 +1,5 @@
 #include "tooltip.hpp"
+#include "ui/theme.hpp"
 #include "diag_logger.hpp"
 #include "asset_loader.hpp"
 #include "dpi.hpp"
@@ -59,6 +60,26 @@ std::deque<TooltipWindow::TargetLangPayload> g_tt_targetlang_queue;
 
 namespace {
 const wchar_t kTooltipClassName[] = L"Emebalachat_TooltipClass";
+
+// Strip LEADING emoji/symbol pseudo-icons (📋 \xD83D\xDCCB, 🔊 \xD83D\xDD0A, ✓ \x2713, ✔ \x2714)
+// and any run of leading separators (checkmarks, VS16, spaces) so Copy/Copied/
+// Speak labels pair cleanly with vector icons. F-10 (fix-list round 1): the
+// old comment claimed TRAILING-space stripping, which this front-anchored
+// loop never performs - only the front of the string is ever erased.
+std::wstring StripLeadingEmojiIcon(std::wstring s) {
+    while (!s.empty()) {
+        if (s.size() >= 2 && s[0] >= 0xD800 && s[0] <= 0xDBFF &&
+            s[1] >= 0xDC00 && s[1] <= 0xDFFF) {
+            s.erase(0, 2);
+        } else if (s[0] == L'\x2713' || s[0] == L'\x2714' ||
+                   s[0] == L'\xFE0F' || s[0] == L' ') {
+            s.erase(0, 1);
+        } else {
+            break;
+        }
+    }
+    return s;
+}
 
 // REF-3.7 (session 260910_0006 T6, verification §10a/§10c): the file-local
 // IsPointInRect and CloneFormatWithLocale (with its B-2 creation-only-locale
@@ -506,9 +527,9 @@ void TooltipWindow::EnsureMeasuredLayouts() {
 
     // --- sites 4-6: footer pill widths (button_format_) ---
     if (button_format_) {
-        const std::wstring copy_label = I18n::Get(StringId::TooltipButtonCopy);
-        const std::wstring copied_label = I18n::Get(StringId::TooltipCopied);
-        const std::wstring tts_label = I18n::Get(StringId::TooltipButtonTts);
+        const std::wstring copy_label = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipButtonCopy));
+        const std::wstring copied_label = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipCopied));
+        const std::wstring tts_label = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipButtonTts));
         const std::wstring labels_key = copy_label + L'\0' + copied_label + L'\0' + tts_label;
         if (labels_key != footer_labels_key_) {
             float copy_w = 88.0f; // floors == the pre-DESIGN-260910 hardcoded boxes
@@ -519,7 +540,7 @@ void TooltipWindow::EnsureMeasuredLayouts() {
                     copy_label.c_str(), static_cast<UINT32>(copy_label.size()),
                     button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
                 if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                    copy_w = lbl_metrics.width + 20.0f;
+                    copy_w = lbl_metrics.width + 36.0f;
                     if (copy_w < 88.0f) copy_w = 88.0f;
                     if (copy_w > 180.0f) copy_w = 180.0f;
                 }
@@ -530,7 +551,7 @@ void TooltipWindow::EnsureMeasuredLayouts() {
                     copied_label.c_str(), static_cast<UINT32>(copied_label.size()),
                     button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
                 if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                    const float w_feedback = lbl_metrics.width + 20.0f;
+                    const float w_feedback = lbl_metrics.width + 36.0f;
                     if (w_feedback > copy_w) copy_w = w_feedback;
                     if (copy_w > 180.0f) copy_w = 180.0f;
                 }
@@ -541,7 +562,7 @@ void TooltipWindow::EnsureMeasuredLayouts() {
                     tts_label.c_str(), static_cast<UINT32>(tts_label.size()),
                     button_format_, 512.0f, 24.0f, &lbl_layout)) && lbl_layout) {
                 if (SUCCEEDED(lbl_layout->GetMetrics(&lbl_metrics)) && lbl_metrics.width > 0.0f) {
-                    tts_w = lbl_metrics.width + 20.0f;
+                    tts_w = lbl_metrics.width + 36.0f;
                     if (tts_w < 82.0f) tts_w = 82.0f;
                     if (tts_w > 150.0f) tts_w = 150.0f;
                 }
@@ -1190,6 +1211,17 @@ void TooltipWindow::RefreshTargetLanguageFromConfig(std::string_view new_target)
     UpdateLayered();
 }
 
+void TooltipWindow::RefreshTheme() {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        return;
+    }
+    if (visible_.load(std::memory_order_relaxed)) {
+        Render();
+        UpdateLayered();
+    }
+}
+
 void TooltipWindow::Dismiss() {
     if (!hwnd_) return;
     // REQ-R10 companion: the ESC (keyboard hook) and outside-click (mouse hook)
@@ -1342,69 +1374,28 @@ void TooltipWindow::Render() {
     dc_render_target_->BeginDraw();
     dc_render_target_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    // Outer acrylic card container with rounded corners
-    D2D1_ROUNDED_RECT card = D2D1::RoundedRect(
-        D2D1::RectF(0.5f, 0.5f, static_cast<float>(current_width_) - 0.5f, static_cast<float>(current_height_) - 0.5f),
-        10.0f, 10.0f
-    );
+    const auto& theme = ui::GetActiveTheme();
 
-    // DESIGN-260910 brand pass (session 260910_0005): mirrors about_window.cpp
-    // — palette re-anchored to the Emebala brand DNA (lapis blue / antique
-    // gold / warm sandstone from assets/). Same slot mapping: slate family ->
-    // lapis-tinted equivalents, emerald accent -> brand gold. Message-body
-    // #CBD5E1 (last pass's P1 contrast fix) becomes the sand-tinted
-    // #D6DCEA at the same WCAG-safe lightness (>= 11:1 on #0C1830). Hover
-    // fills, close #EF4444 semantics, and all geometry are untouched.
-    // DESIGN-261029 chrome pass (session 261029_0001): the interactive chrome
-    // (header/footer pills, scrollbar, copied-feedback, close glyph) moves off
-    // the generic Tailwind slate family onto the brand navy family already
-    // owned by the About window — pill fill #1E293B -> #14243F (navy-3),
-    // hover fill #334155 -> #1F3A63, scrollbar/track + close idles harmonized
-    // to lapis-gray (#93A3C7 / #8FA0C0), copied-feedback deepened to #0A3B2E.
-    // All geometry, hit rects, and hover logic are untouched.
-    // C1 (session 260910_0007): these palette entries are now SetColor
-    // arguments on the single scratch_brush_ instead of 6 per-frame
-    // CreateSolidColorBrush calls - identical ColorF values, identical draw
-    // order. SetColor-just-before-use is safe because the old code consumed
-    // every brush immediately at its draw call (aliasing audit: no site held
-    // two different-color brushes across each other's use).
-    scratch_brush_->SetColor(D2D1::ColorF(0x0C1830, 0.96f));  // poster navy (lapis shadow)
-    dc_render_target_->FillRoundedRectangle(card, scratch_brush_);
-    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.85f));  // lapis mid
-    dc_render_target_->DrawRoundedRectangle(card, scratch_brush_, 1.0f);
-
-    // DESIGN-260910 (P2 glass depth): 1px warm-white rim light inset along the
-    // top edge - a Fluent-style specular cue that separates the card from
-    // bright / low-contrast host backgrounds. The DIB-sized layered window
-    // cannot host a spread outer glow (it would clip at the buffer edge), so
-    // the rim is the clipped-safe equivalent of elevation shading. Shared by
-    // both the translation card and the message-mode notice below.
-    {
-        scratch_brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
-        dc_render_target_->DrawLine(
-            D2D1::Point2F(9.0f, 1.5f),
-            D2D1::Point2F(static_cast<float>(current_width_) - 9.0f, 1.5f),
-            scratch_brush_, 1.0f);
-    }
+    // Outer elevated card container with theme surface + outer/inner borders
+    const D2D1_RECT_F card_rect = D2D1::RectF(
+        0.5f, 0.5f,
+        static_cast<float>(current_width_) - 0.5f,
+        static_cast<float>(current_height_) - 0.5f);
+    ui::DrawElevatedCard(dc_render_target_, card_rect, theme.card_radius, 1.0f, theme);
 
     // --- REQ-R08 message mode: compact header + body notice, no action buttons ---
     if (is_message_mode_) {
         D2D1_RECT_F msgHeaderRect = D2D1::RectF(14.0f, 10.0f, static_cast<float>(current_width_) - 14.0f, 36.0f);
         if (header_format_) {
-            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(
                 message_header_.c_str(), static_cast<UINT32>(message_header_.size()),
                 header_format_, msgHeaderRect, scratch_brush_);
         }
         D2D1_RECT_F msgBodyRect = D2D1::RectF(14.0f, 38.0f, static_cast<float>(current_width_) - 14.0f,
                                               static_cast<float>(current_height_) - 10.0f);
-        // DESIGN-260910 (P1 readability): the notice body IS the primary
-        // content of a message-mode card, but slate-400 #94A3B8 muted it a
-        // full step below the header hierarchy on the small 11px format.
-        // Slate-300 #CBD5E1 keeps the hierarchy and clears WCAG AA at that
-        // size on the #0F172A card.
         if (small_format_) {
-            scratch_brush_->SetColor(D2D1::ColorF(0xD6DCEA, 1.0f));  // brand pass: lapis-tinted sand body
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_secondary, 1.0f));
             dc_render_target_->DrawText(
                 translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),
                 small_format_, msgBodyRect, scratch_brush_);
@@ -1423,10 +1414,10 @@ void TooltipWindow::Render() {
 
     // --- Header Area ---
     // 1. Emebala Brand Logo (Far Left, 1:1 round/squircle frame without horizontal stretching)
-    D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 36.0f, 30.0f), 6.0f, 6.0f);
-    scratch_brush_->SetColor(D2D1::ColorF(0x14243F, 0.9f));
+    D2D1_ROUNDED_RECT logoFrame = D2D1::RoundedRect(D2D1::RectF(14.0f, 8.0f, 36.0f, 30.0f), theme.control_radius, theme.control_radius);
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.95f));
     dc_render_target_->FillRoundedRectangle(logoFrame, scratch_brush_);
-    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.85f));
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawRoundedRectangle(logoFrame, scratch_brush_, 1.0f);
 
     D2D1_RECT_F logoRect = D2D1::RectF(16.0f, 10.0f, 34.0f, 28.0f);
@@ -1441,8 +1432,6 @@ void TooltipWindow::Render() {
         DrawTabletLogoVector(dc_render_target_, logoRect, false);
     }
 
-    // C1: logo-frame brushes were released here; the scratch brush persists.
-
     // 2. Source language dropdown button (clean layout following 1:1 logo
     // frame). F8 (ADR-A1-4): the source tag is now interactive exactly like
     // the target button - a "▾" label, a MEMBER rect (src_btn_rect_) so the
@@ -1453,75 +1442,62 @@ void TooltipWindow::Render() {
     std::wstring src_tag_text = source_lang_code_.empty() ? I18n::Get(StringId::AutoDetect)
                                                           : ToUtf16(source_lang_code_);
     std::wstring src_tag = src_tag_text + L" ▾";
-    // F8 (ADR-A1-4): DYNAMIC width - the hardcoded 44.0f box clipped localized
-    // Auto-Detect strings and wider codes (e.g. "ZH-CN"). C2 (session
-    // 260910_0007): the shaping moved to EnsureMeasuredLayouts (keyed on this
-    // exact label string); Render consumes the cached DIP width. 44.0f stays
-    // the floor there so measurement failure degrades identically.
     const float src_tag_width = src_tag_width_;
-    // F8: persist the button rect as a member for hover/click hit tests.
     src_btn_rect_ = D2D1::RectF(src_tag_x, 8.0f, src_tag_x + src_tag_width, 30.0f);
-    D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(src_btn_rect_, 4.0f, 4.0f);
-    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0x1F3A63, 1.0f)
-                                                 : D2D1::ColorF(0x14243F, 0.9f));
+    D2D1_ROUNDED_RECT srcTagRect = D2D1::RoundedRect(src_btn_rect_, theme.control_radius, theme.control_radius);
+    scratch_brush_->SetColor((hovered_btn_ == 5) ? ui::ColorFromHex(theme.surface_hover, 1.0f)
+                                                 : ui::ColorFromHex(theme.surface_elevated, 0.95f));
     dc_render_target_->FillRoundedRectangle(srcTagRect, scratch_brush_);
-    // F8: hover highlight mirrors the target button's hovered_btn_==3
-    // pattern - accent border when hovered (tooltip.cpp:1269-1275 model).
-    scratch_brush_->SetColor((hovered_btn_ == 5) ? D2D1::ColorF(0xD9B45A, 1.0f)
-                                                 : D2D1::ColorF(0x33507E, 0.85f));
+    scratch_brush_->SetColor((hovered_btn_ == 5) ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                                                 : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawRoundedRectangle(srcTagRect, scratch_brush_, 1.0f);
     if (header_format_) {
-        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray
+        scratch_brush_->SetColor((hovered_btn_ == 5) ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                                     : ui::ColorFromHex(theme.text_secondary, 1.0f));
         dc_render_target_->DrawText(src_tag.c_str(), static_cast<UINT32>(src_tag.size()), header_format_, srcTagRect.rect, scratch_brush_);
     }
 
     // 3. Arrow indicator
     if (header_format_) {
         D2D1_RECT_F arrowRect = D2D1::RectF(src_tag_x + src_tag_width + 4.0f, 8.0f, src_tag_x + src_tag_width + 24.0f, 30.0f);
-        scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
         dc_render_target_->DrawText(L"→", 1, header_format_, arrowRect, scratch_brush_);
     }
 
     // 4. Target language switcher dropdown button
-    // R6 Phase 5 (plan §5.3): the empty-target fallback was a hardcoded
-    // L"English"; it now resolves through the localized language registry.
     std::wstring tgt_name = target_lang_.empty() ? I18n::GetLanguageDisplayName("English")
                                                  : ToUtf16(target_lang_);
     std::wstring tgt_label = tgt_name + L" ▾";
-    // REQ-052 (audit P1): the old hardcoded 90.0f box overlapped the close ✕
-    // whenever the measured source tag ran wide (e.g. German "Automatische
-    // Erkennung ▾" ~165 DIP: right edge ~327 DIP vs the ✕ left edge at
-    // current_width_ - 32 = 328 DIP on the 360 DIP card). The rect now comes
-    // from the pure PlanHeaderTargetButton planner (tooltip.hpp): the
-    // measured label width (C2 site 7, tgt_btn_w_) clamped to
-    // [40, close_left - 8 - x], with the start itself pulled left when even
-    // the minimum would not fit. Close button position and card width are
-    // unchanged; the language menu anchors at lang_btn_rect_ as before.
     const HeaderTargetButtonPlan tgt_plan = PlanHeaderTargetButton(
         src_tag_x, src_tag_width, static_cast<float>(current_width_), tgt_btn_w_);
     lang_btn_rect_ = D2D1::RectF(tgt_plan.x, 8.0f, tgt_plan.x + tgt_plan.width, 30.0f);
-    D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, 4.0f, 4.0f);
+    D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, theme.control_radius, theme.control_radius);
 
-    scratch_brush_->SetColor((hovered_btn_ == 3) ? D2D1::ColorF(0x1F3A63, 1.0f)
-                                                 : D2D1::ColorF(0x14243F, 0.9f));
+    // Fix Anti-Pattern 5: both Source and Target pills use surface_elevated and
+    // border_subtle at rest, transitioning to surface_hover and border_hover on
+    // hover, with accent_primary text on Target so hierarchy is clean without
+    // permanent gold borders at rest.
+    scratch_brush_->SetColor((hovered_btn_ == 3) ? ui::ColorFromHex(theme.surface_hover, 1.0f)
+                                                 : ui::ColorFromHex(theme.surface_elevated, 0.95f));
     dc_render_target_->FillRoundedRectangle(tgtTagRect, scratch_brush_);
-    scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
+    scratch_brush_->SetColor((hovered_btn_ == 3) ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                                                 : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawRoundedRectangle(tgtTagRect, scratch_brush_, 1.0f);
     if (button_format_) {
-        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
         dc_render_target_->DrawText(tgt_label.c_str(), static_cast<UINT32>(tgt_label.size()), button_format_, lang_btn_rect_, scratch_brush_);
     }
 
     // Close button (top right)
     close_btn_rect_ = D2D1::RectF(static_cast<float>(current_width_) - 32.0f, 8.0f, static_cast<float>(current_width_) - 12.0f, 28.0f);
     if (header_format_) {
-        scratch_brush_->SetColor((hovered_btn_ == 4) ? D2D1::ColorF(0xEF4444, 1.0f)
-                                                     : D2D1::ColorF(0x93A3C7, 0.8f));
+        scratch_brush_->SetColor((hovered_btn_ == 4) ? ui::ColorFromHex(theme.state_danger, 1.0f)
+                                                     : ui::ColorFromHex(theme.text_muted, 0.85f));
         dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
     }
 
     // Header divider line
-    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawLine(
         D2D1::Point2F(14.0f, 37.0f),
         D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, 37.0f),
@@ -1539,11 +1515,7 @@ void TooltipWindow::Render() {
     body_viewport_rect_ = D2D1::RectF(14.0f, body_y, 14.0f + max_body_width, body_y + body_height);
 
     if (!translated_text_.empty() && body_format_) {
-        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
-        // Clip to the viewport and draw the FULL layout (huge layout extent,
-        // never trimmed) shifted up by the scroll offset: overflow becomes
-        // reachable via scrolling instead of silently clipped (static
-        // re-check: replaces the pre-Batch-2 truncating behavior).
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->PushAxisAlignedClip(body_viewport_rect_, D2D1_ANTIALIAS_MODE_ALIASED);
         D2D1_RECT_F bodyRect = D2D1::RectF(
             14.0f,
@@ -1560,9 +1532,7 @@ void TooltipWindow::Render() {
         dc_render_target_->PopAxisAlignedClip();
     }
 
-    // --- Custom D2D scrollbar (plan §2.1 Option A-lite: native WS_VSCROLL is
-    // incompatible with UpdateLayeredWindow; 8 DIP track at the body's right
-    // edge, proportional thumb, min 24 DIP) ---
+    // --- Custom D2D scrollbar (plan §2.1 Option A-lite) ---
     if (scrollable_) {
         const float track_left = static_cast<float>(current_width_) - 12.0f;
         scrollbar_track_rect_ = D2D1::RectF(track_left, body_y, track_left + 8.0f, body_y + body_height);
@@ -1573,15 +1543,11 @@ void TooltipWindow::Render() {
         scrollbar_thumb_rect_ = D2D1::RectF(track_left, thumb_top, track_left + 8.0f, thumb_top + thumb_h);
 
         const bool thumb_active = thumb_hover_ || dragging_thumb_;
-        // C1: track + thumb brushes used to be alive simultaneously (both
-        // created, then each filled once). One scratch brush with SetColor
-        // interleaved keeps the identical draw order (track first, thumb on
-        // top), so the compositing result is unchanged.
-        scratch_brush_->SetColor(D2D1::ColorF(0x14243F, 0.7f));
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.75f));
         dc_render_target_->FillRoundedRectangle(
             D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), scratch_brush_);
-        scratch_brush_->SetColor(thumb_active ? D2D1::ColorF(0xF8FAFC, 1.0f)
-                                              : D2D1::ColorF(0x8FA0C0, 1.0f));
+        scratch_brush_->SetColor(thumb_active ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                              : ui::ColorFromHex(theme.text_muted, 1.0f));
         dc_render_target_->FillRoundedRectangle(
             D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), scratch_brush_);
     } else {
@@ -1591,7 +1557,7 @@ void TooltipWindow::Render() {
 
     // Footer divider line
     float footer_div_y = static_cast<float>(current_height_) - 40.0f;
-    scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawLine(
         D2D1::Point2F(14.0f, footer_div_y),
         D2D1::Point2F(static_cast<float>(current_width_) - 14.0f, footer_div_y),
@@ -1600,75 +1566,74 @@ void TooltipWindow::Render() {
     );
 
     // --- Footer Action Buttons ---
-    // DESIGN-260910 (P1 fit): footer pills size to their LOCALIZED labels
-    // (37-locale i18n) measured with the exact button_format_ they are drawn
-    // in, so no locale's Copy / Read-aloud label can clip against the old
-    // hardcoded 88/82 DIP boxes. Floors keep the previous geometry when
-    // measurement fails; caps keep the row inside the 360 DIP card (worst case
-    // right edge: 14 + 180 + 8 + 150 = 352 < 360). The copied-feedback label
-    // is measured too, so the success state can never outgrow its pill.
-    // C2 (session 260910_0007): the three CreateTextLayout measurements moved
-    // to EnsureMeasuredLayouts (keyed on the concatenated label strings, so a
-    // locale switch re-measures exactly once); Render consumes the cached
-    // DIP widths. copy_btn_rect_/tts_btn_rect_ hit-test rects are rebuilt
-    // here from the same cached values - measure and hit-test share one
-    // source of truth by construction.
     const float copy_btn_w = copy_btn_w_;
     const float tts_btn_w = tts_btn_w_;
-    // [📋 Copy] button
-    copy_btn_rect_ = D2D1::RectF(14.0f, footer_div_y + 7.0f, 14.0f + copy_btn_w, footer_div_y + 31.0f);
-    D2D1_ROUNDED_RECT copyBtnRect = D2D1::RoundedRect(copy_btn_rect_, 4.0f, 4.0f);
+    const float btn_top = footer_div_y + 7.0f;
+    const float btn_bottom = footer_div_y + 31.0f;
+    const float icon_cy = (btn_top + btn_bottom) * 0.5f;
+
+    // Copy button (with 12x12 DIP vector icon on left, no emoji prefix)
+    copy_btn_rect_ = D2D1::RectF(14.0f, btn_top, 14.0f + copy_btn_w, btn_bottom);
+    D2D1_ROUNDED_RECT copyBtnRect = D2D1::RoundedRect(copy_btn_rect_, theme.control_radius, theme.control_radius);
+    const D2D1_RECT_F copyIconRect = D2D1::RectF(
+        copy_btn_rect_.left + 10.0f, icon_cy - 6.0f,
+        copy_btn_rect_.left + 22.0f, icon_cy + 6.0f);
+    const D2D1_RECT_F copyTextRect = D2D1::RectF(
+        copy_btn_rect_.left + 24.0f, copy_btn_rect_.top,
+        copy_btn_rect_.right - 6.0f, copy_btn_rect_.bottom);
 
     if (copied_feedback_) {
-        scratch_brush_->SetColor(D2D1::ColorF(0x0A3B2E, 0.95f));
+        // Fix Anti-Pattern 1: cohesive state_ready tint/border/text + DrawCheckIcon
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 0.15f));
         dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
-        scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
-        dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.2f);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 0.65f));
+        dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.0f);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 1.0f));
+        ui::DrawCheckIcon(dc_render_target_, copyIconRect, scratch_brush_, 1.5f);
         if (button_format_) {
-            // R6 Phase 5 (plan §5.3): L"✓ Copied!" literal -> StringId.
-            const std::wstring feedback = I18n::Get(StringId::TooltipCopied);
-            scratch_brush_->SetColor(D2D1::ColorF(0x34D399, 1.0f));
-            dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copy_btn_rect_, scratch_brush_);
+            const std::wstring feedback = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipCopied));
+            dc_render_target_->DrawText(feedback.c_str(), static_cast<UINT32>(feedback.size()), button_format_, copyTextRect, scratch_brush_);
         }
     } else {
-        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0x1F3A63, 1.0f)
-                                                     : D2D1::ColorF(0x14243F, 0.9f));
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? ui::ColorFromHex(theme.surface_hover, 1.0f)
+                                                     : ui::ColorFromHex(theme.surface_elevated, 0.95f));
         dc_render_target_->FillRoundedRectangle(copyBtnRect, scratch_brush_);
-        // DESIGN-260910 (P3 affordance): a hovered pill gains the accent
-        // border, matching the header language buttons' hover so
-        // interactivity reads identically across the card.
-        scratch_brush_->SetColor((hovered_btn_ == 1) ? D2D1::ColorF(0xD9B45A, 1.0f)
-                                                     : D2D1::ColorF(0x33507E, 0.85f));
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                                                     : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
         dc_render_target_->DrawRoundedRectangle(copyBtnRect, scratch_brush_, 1.0f);
+        scratch_brush_->SetColor((hovered_btn_ == 1) ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                                     : ui::ColorFromHex(theme.text_secondary, 1.0f));
+        ui::DrawCopyIcon(dc_render_target_, copyIconRect, scratch_brush_, 1.4f);
         if (button_format_) {
-            // R6 Phase 5 (plan §5.3): footer button labels -> StringIds.
-            const std::wstring label = I18n::Get(StringId::TooltipButtonCopy);
-            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
-            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, copy_btn_rect_, scratch_brush_);
+            const std::wstring label = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipButtonCopy));
+            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, copyTextRect, scratch_brush_);
         }
     }
 
-    // [🔊 TTS] button
+    // TTS / Speak button (with 12x12 DIP vector speaker icon on left, no emoji prefix)
     const float tts_left = 14.0f + copy_btn_w + 8.0f;
-    tts_btn_rect_ = D2D1::RectF(tts_left, footer_div_y + 7.0f, tts_left + tts_btn_w, footer_div_y + 31.0f);
-    D2D1_ROUNDED_RECT ttsBtnRect = D2D1::RoundedRect(tts_btn_rect_, 4.0f, 4.0f);
+    tts_btn_rect_ = D2D1::RectF(tts_left, btn_top, tts_left + tts_btn_w, btn_bottom);
+    D2D1_ROUNDED_RECT ttsBtnRect = D2D1::RoundedRect(tts_btn_rect_, theme.control_radius, theme.control_radius);
+    const D2D1_RECT_F ttsIconRect = D2D1::RectF(
+        tts_btn_rect_.left + 10.0f, icon_cy - 6.0f,
+        tts_btn_rect_.left + 22.0f, icon_cy + 6.0f);
+    const D2D1_RECT_F ttsTextRect = D2D1::RectF(
+        tts_btn_rect_.left + 24.0f, tts_btn_rect_.top,
+        tts_btn_rect_.right - 6.0f, tts_btn_rect_.bottom);
 
-    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0x1F3A63, 1.0f)
-                                                 : D2D1::ColorF(0x14243F, 0.9f));
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? ui::ColorFromHex(theme.surface_hover, 1.0f)
+                                                 : ui::ColorFromHex(theme.surface_elevated, 0.95f));
     dc_render_target_->FillRoundedRectangle(ttsBtnRect, scratch_brush_);
-    // DESIGN-260910 (P3 affordance): same accent-on-hover as the Copy pill.
-    scratch_brush_->SetColor((hovered_btn_ == 2) ? D2D1::ColorF(0xD9B45A, 1.0f)
-                                                 : D2D1::ColorF(0x33507E, 0.85f));
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                                                 : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
     dc_render_target_->DrawRoundedRectangle(ttsBtnRect, scratch_brush_, 1.0f);
+    scratch_brush_->SetColor((hovered_btn_ == 2) ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                                 : ui::ColorFromHex(theme.text_secondary, 1.0f));
+    ui::DrawSpeakerIcon(dc_render_target_, ttsIconRect, scratch_brush_, 1.4f, true);
     if (button_format_) {
-        // R6 Phase 5 (plan §5.3): TTS button label -> StringId.
-        const std::wstring label = I18n::Get(StringId::TooltipButtonTts);
-        scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
-        dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, tts_btn_rect_, scratch_brush_);
+        const std::wstring label = StripLeadingEmojiIcon(I18n::Get(StringId::TooltipButtonTts));
+        dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()), button_format_, ttsTextRect, scratch_brush_);
     }
-
-    // C1: the six palette brushes used to be released here; the persistent
-    // scratch_brush_ survives the frame (released at Destroy/device-lost).
 
     // R6 Phase 3 (audit item 4, plan §3.1 A3): see the message-mode note above
     // - identical device-lost recovery on the normal render path.

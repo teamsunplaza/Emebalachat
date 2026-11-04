@@ -131,7 +131,11 @@ public:
     // app's own scrolling. The callback must be cheap (PostMessage only).
     void SetMouseWheelCallback(MouseWheelCallback cb);
 
-    void SetEnabled(bool enabled) { enabled_.store(enabled, std::memory_order_relaxed); }
+    // Input P2-4 (v0.10.5): defined in mouse_hook.cpp. Disabling ALSO resets
+    // the press/drag tracking state (is_lbutton_down_, click_count_): a
+    // disable while the button is held used to strand is_lbutton_down_=true,
+    // so the re-enable fired on_drag_completed_ on plain cursor movement.
+    void SetEnabled(bool enabled);
     bool IsEnabled() const { return enabled_.load(std::memory_order_relaxed); }
     int GetClickCount() const { return click_count_.load(std::memory_order_relaxed); }
 

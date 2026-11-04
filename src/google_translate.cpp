@@ -337,6 +337,35 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
 
     std::string accumulated_utf8;
 
+    // BUG-8 (v0.10.5 handoff section 2.9): the segment-tail skip must track
+    // nested '[' / ']' depth AND string literals. The historical scan for
+    // the next ']' desynchronized on any nested sub-array (or a ']' inside a
+    // quoted string), making the outer loop parse metadata arrays as
+    // translated text. This helper skips to the segment's OWN closing ']'.
+    auto skip_to_segment_close = [&json](size_t& p) {
+        int depth = 0;
+        while (p < json.size()) {
+            const char c = json[p];
+            if (c == '"') {
+                std::string dummy;
+                if (!ParseJsonString(json, p, dummy)) {
+                    return; // unterminated string: give up the skip
+                }
+            } else if (c == '[') {
+                ++depth;
+                ++p;
+            } else if (c == ']') {
+                if (depth == 0) {
+                    return;
+                }
+                --depth;
+                ++p;
+            } else {
+                ++p;
+            }
+        }
+    };
+
     if (json[pos] == '\"') {
         // Format 3: ["translated text"]
         std::string text;
@@ -362,14 +391,7 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
                         }
                     }
                     // Skip remaining segment elements until ']'
-                    while (pos < json.size() && json[pos] != ']') {
-                        if (json[pos] == '\"') {
-                            std::string dummy;
-                            ParseJsonString(json, pos, dummy);
-                        } else {
-                            pos++;
-                        }
-                    }
+                    skip_to_segment_close(pos);
                     if (pos < json.size() && json[pos] == ']') pos++;
                 }
                 SkipWhitespace(json, pos);
@@ -383,14 +405,7 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
                 accumulated_utf8.append(seg);
             }
             // Skip until ']'
-            while (pos < json.size() && json[pos] != ']') {
-                if (json[pos] == '\"') {
-                    std::string dummy;
-                    ParseJsonString(json, pos, dummy);
-                } else {
-                    pos++;
-                }
-            }
+            skip_to_segment_close(pos);
             if (pos < json.size() && json[pos] == ']') pos++;
 
             // Check if there are subsequent segments
@@ -408,14 +423,7 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
                             accumulated_utf8.append(next_seg);
                         }
                     }
-                    while (pos < json.size() && json[pos] != ']') {
-                        if (json[pos] == '\"') {
-                            std::string dummy;
-                            ParseJsonString(json, pos, dummy);
-                        } else {
-                            pos++;
-                        }
-                    }
+                    skip_to_segment_close(pos);
                     if (pos < json.size() && json[pos] == ']') pos++;
                 } else {
                     break;

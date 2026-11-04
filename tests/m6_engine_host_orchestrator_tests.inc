@@ -232,9 +232,20 @@ void TestHostV2Scheduler() {
                                        std::istreambuf_iterator<char>());
             TEST_CHECK(host_src.find("item.request_id = msg.id;") != std::string::npos,
                        "sched/id: the v2 enqueue site captures the client's request id");
-            TEST_CHECK(host_src.find("requester->SendResult(item.request_id, status, out_text, "
-                                     "std::move(served_model))") != std::string::npos,
-                       "sched/id: the v2 success answer echoes the client's request id");
+            // Review round 1 (F-02): the v2 final answer is now epoch-guarded
+            // exactly like v1 — the same under-write_mu re-check rides the
+            // 5-argument SendResult (host_main.cpp:1634-1635). The offset
+            // window pins the epoch argument to THIS call without embedding
+            // the file's CRLF newline in the needle.
+            const size_t v2_answer_at = host_src.find(
+                "requester->SendResult(item.request_id, status, out_text, "
+                "std::move(served_model),");
+            const size_t v2_epoch_at = v2_answer_at == std::string::npos
+                                           ? std::string::npos
+                                           : host_src.find("item.conn_epoch);", v2_answer_at);
+            TEST_CHECK(v2_answer_at != std::string::npos && v2_epoch_at != std::string::npos &&
+                           v2_epoch_at - v2_answer_at < 200,
+                       "sched/id: the v2 success answer echoes the client's request id (epoch-guarded 5-arg form)");
             TEST_CHECK(host_src.find("expired.request_id, enginehost::HostStatus::Timeout") !=
                            std::string::npos,
                        "sched/id: the v2 deadline-expiry answer echoes the request id");

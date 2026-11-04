@@ -299,13 +299,33 @@ void TestReq052BadgeSingleClickUsesDoubleClickTime() {
     TEST_CHECK(badge_h.find("UINT single_click_delay_ms_ = 220;") != std::string::npos,
                "REQ-052 pin: the delay is an instance member (default 220, overwritten at Create)");
 
-    // Create() captures the OS double-click window once; the click-in-place
-    // timer uses the captured value.
+    // Create() captures the OS double-click window once (kept for reference;
+    // the v0.10.5 UI-BUG-3 change below retired the timer that consumed it).
     TEST_CHECK(badge.find("single_click_delay_ms_ = ::GetDoubleClickTime();") != std::string::npos,
                "REQ-052 pin: Create() captures GetDoubleClickTime() (the OS double-click window)");
-    TEST_CHECK(badge.find("::SetTimer(hwnd, kTimerSingleClick, self->single_click_delay_ms_, nullptr);") !=
-                   std::string::npos,
-               "REQ-052 pin: the single-click timer is sized to the captured double-click window");
+    // UI-BUG-3 (v0.10.5, Antigravity 261104_0001): the delayed single-click
+    // toggle is REMOVED. The click-in-place branch of WM_LBUTTONUP now invokes
+    // click_callback_ immediately; the kTimerSingleClick timer is never armed
+    // (badge.cpp). The KillTimer/WM_TIMER leftovers are inert no-op guards
+    // (a timer that is never armed never fires; the double-click path still
+    // cancels it defensively).
+    TEST_CHECK(badge.find("::SetTimer(hwnd, kTimerSingleClick") == std::string::npos &&
+                   badge.find("SetTimer(hwnd, kTimerSingleClick") == std::string::npos,
+               "REQ-052 pin: the single-click timer is never armed (immediate execution)");
+    {
+        const size_t btn_up = badge.find("case WM_LBUTTONUP: {");
+        const size_t btn_up_end = badge.find("case WM_LBUTTONDBLCLK", btn_up);
+        TEST_CHECK(btn_up != std::string::npos && btn_up_end != std::string::npos &&
+                       btn_up_end > btn_up,
+                   "REQ-052 pin: the WM_LBUTTONUP case body is locatable");
+        if (btn_up != std::string::npos && btn_up_end != std::string::npos &&
+            btn_up_end > btn_up) {
+            const std::string up_body = badge.substr(btn_up, btn_up_end - btn_up);
+            TEST_CHECK(up_body.find("self->click_callback_();") != std::string::npos &&
+                           up_body.find("SetTimer") == std::string::npos,
+                       "REQ-052 pin: click-in-place runs the toggle immediately (no timer in WM_LBUTTONUP)");
+        }
+    }
     TEST_CHECK(badge.find("kSingleClickDelayMs") == std::string::npos,
                "REQ-052 pin: no stale kSingleClickDelayMs use remains in the cpp");
 

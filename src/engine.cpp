@@ -479,6 +479,27 @@ void DiagnoseServedModelMismatch(EngineType preferred_type,
              served_model.size(), expected.size(), engine_type);
 }
 
+// Backend P3-3 (v0.10.5): the config path is constant for the process
+// lifetime (%LOCALAPPD%\Emebalachat\config.json), so resolve it ONCE — the
+// per-request SHGetKnownFolderPath shell call was pure hot-path overhead. The
+// (mtime, size) cache below still invalidates on every edit and the
+// GetFileAttributesExW probe stays per-request (cheap, local) so an
+// engine_type edit is picked up immediately.
+const std::filesystem::path& LiveConfigPath() {
+    static const std::filesystem::path path = [] {
+        PWSTR known = nullptr;
+        std::wstring lad;
+        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known)) &&
+            known) {
+            lad.assign(known);
+            ::CoTaskMemFree(known);
+        }
+        return lad.empty() ? std::filesystem::path{}
+                           : std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+    }();
+    return path;
+}
+
 // REQ-060: mtime/size-cached LIVE read of config.json's engine_type ==
 // "user_gguf" discriminator — the second half of the C1 pair (the first half
 // is LoadUserModelIdFromConfigLive's pin). The reader module cannot gain a
@@ -489,14 +510,8 @@ void DiagnoseServedModelMismatch(EngineType preferred_type,
 // the host reads the same file live per job, and the request pin must track
 // the host's decision source. Shape-only: the value is a route boolean.
 bool LocalUserGgufRouteActiveLive() {
-    PWSTR known = nullptr;
-    std::wstring lad;
-    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known)) && known) {
-        lad.assign(known);
-        ::CoTaskMemFree(known);
-    }
-    if (lad.empty()) return false;
-    const std::filesystem::path path = std::filesystem::path(lad) / L"Emebalachat" / L"config.json";
+    const std::filesystem::path path = LiveConfigPath();
+    if (path.empty()) return false;
 
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {

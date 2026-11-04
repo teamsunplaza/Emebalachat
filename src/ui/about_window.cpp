@@ -3,12 +3,14 @@
 #include "asset_loader.hpp"
 #include "dpi.hpp"
 #include "dwrite_helpers.hpp"  // REF-3.7: shared IsPointInRect / CloneFormatWithLocale
+#include "ui/theme.hpp"
 #include "../bidi_utils.hpp"  // DirectionForLocale / TextDirection
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 #include "../version.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cwchar>
@@ -56,25 +58,10 @@ std::wstring LocaleTagForUi(UiLocale locale) {
     return L"en-US";
 }
 
-// ---- REQ-UC (260930_0004, design spec §2): the exact palette -------------
-const D2D1_COLOR_F kColCard      = D2D1::ColorF(0x0C1830, 0.96f); // navy-0
-const D2D1_COLOR_F kColDialog    = D2D1::ColorF(0x101F3E, 1.0f);  // navy-1
-const D2D1_COLOR_F kColLogoTile  = D2D1::ColorF(0x0F1E3D, 1.0f);  // navy-2
-const D2D1_COLOR_F kColLapis     = D2D1::ColorF(0x33507E, 1.0f);
-const D2D1_COLOR_F kColLapisHi   = D2D1::ColorF(0x4A6CA3, 1.0f);
-const D2D1_COLOR_F kColGold      = D2D1::ColorF(0xD4AF37, 1.0f);
-const D2D1_COLOR_F kColGoldHi    = D2D1::ColorF(0xE4C86B, 1.0f);
-const D2D1_COLOR_F kColInk       = D2D1::ColorF(0xFFFFFF, 1.0f);
-const D2D1_COLOR_F kColMut       = D2D1::ColorF(0xA9B6CF, 1.0f);
-const D2D1_COLOR_F kColMut2      = D2D1::ColorF(0x8FA0C0, 1.0f);
-const D2D1_COLOR_F kColFaint     = D2D1::ColorF(0x8093B5, 1.0f);
-const D2D1_COLOR_F kColDanger    = D2D1::ColorF(0xE5645E, 1.0f);
-const D2D1_COLOR_F kColDangerInk = D2D1::ColorF(0xF2C1BD, 1.0f);
-const D2D1_COLOR_F kColTrack     = D2D1::ColorF(0x182A50, 1.0f);
-const D2D1_COLOR_F kColScrim     = D2D1::ColorF(0x040812, 0.62f);
-const D2D1_COLOR_F kColCardEdge  = D2D1::ColorF(0x5D7CB6, 0.38f);
-const D2D1_COLOR_F kColOnGold    = D2D1::ColorF(0x0A1428, 1.0f); // button text
-const D2D1_COLOR_F kColOnLapis   = D2D1::ColorF(0xDCE5F5, 1.0f); // secondary text
+// ---- REQ-UC (260930_0004): palette tokens are now dynamically resolved
+// from ui::GetActiveTheme() on every Render() / EnsureScratchBrush() so
+// switching themes live repaints AboutWindow in Fluent Craft, Warm Editorial,
+// or Refined Monolith.
 
 // Button variants (design spec §5).
 enum UcButtonVariant { kUcPrimary, kUcSecondary, kUcDanger, kUcText };
@@ -362,22 +349,22 @@ void AboutWindow::Destroy() {
 }
 
 // C1: the single persistent scratch brush (SetColor just before use) plus the
-// REQ-UC gold progress gradient, both rebuilt on the live target.
+// REQ-UC theme-aware progress gradient, both rebuilt on the live target.
 void AboutWindow::EnsureScratchBrush() {
     if (!scratch_brush_ && dc_render_target_) {
         dc_render_target_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f),
                                                  &scratch_brush_);
     }
     if (!progress_brush_ && dc_render_target_) {
-        const D2D1_GRADIENT_STOP stops[4] = {
-            { 0.00f, D2D1::ColorF(0xB8962C, 1.0f) }, // gold-lo
-            { 0.45f, D2D1::ColorF(0xD4AF37, 1.0f) }, // gold
-            { 0.72f, D2D1::ColorF(0xE4C86B, 1.0f) }, // gold-hi
-            { 1.00f, D2D1::ColorF(0xD4AF37, 1.0f) }, // gold
+        const auto& theme = ui::GetActiveTheme();
+        const D2D1_GRADIENT_STOP stops[3] = {
+            { 0.00f, ui::ColorFromHex(theme.accent_primary, 0.85f) },
+            { 0.60f, ui::ColorFromHex(theme.accent_primary, 1.00f) },
+            { 1.00f, ui::ColorFromHex(theme.state_ready, 0.95f) },
         };
         ID2D1GradientStopCollection* collection = nullptr;
         if (SUCCEEDED(dc_render_target_->CreateGradientStopCollection(
-                stops, 4, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection)) && collection) {
+                stops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &collection)) && collection) {
             dc_render_target_->CreateLinearGradientBrush(
                 D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.0f),
                                                     D2D1::Point2F(1.0f, 0.0f)),
@@ -459,6 +446,14 @@ void AboutWindow::ShowAt(int x, int y) {
     ::SetFocus(hwnd_);
     visible_ = true;
 
+    const bool indeterminate =
+        (zone_state_ == UpdateZoneState::Checking) ||
+        (zone_state_ == UpdateZoneState::Downloading &&
+         (!job_ || job_->total.load(std::memory_order_relaxed) == 0));
+    if (indeterminate) {
+        ::SetTimer(hwnd_, kUpdateAnimTimerId, 50, nullptr);
+    }
+
     Render();
     UpdateLayered();
 }
@@ -471,10 +466,29 @@ void AboutWindow::Dismiss() {
     }
     if (!visible_.load(std::memory_order_relaxed)) return;
     ::KillTimer(hwnd_, kResetFeedbackTimerId);
+    ::KillTimer(hwnd_, kUpdateAnimTimerId);
+    ::KillTimer(hwnd_, kUpToDateReturnTimerId);
     reset_feedback_until_ = 0;
     visible_ = false;
     hovered_ctl_ = -1;
     ::ShowWindow(hwnd_, SW_HIDE);
+}
+
+void AboutWindow::RefreshTheme() {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ::PostMessageW(hwnd_, kLocaleRefreshMessage, 0, 0);
+        return;
+    }
+    if (progress_brush_) {
+        progress_brush_->Release();
+        progress_brush_ = nullptr;
+    }
+    EnsureScratchBrush();
+    if (visible_.load(std::memory_order_relaxed)) {
+        Render();
+        UpdateLayered();
+    }
 }
 
 void AboutWindow::RequestLocaleRefresh() {
@@ -485,6 +499,11 @@ void AboutWindow::RequestLocaleRefresh() {
     }
     ::SetWindowTextW(hwnd_, I18n::Get(StringId::AboutTitle).c_str());
     ApplyLocaleFormatting();
+    if (progress_brush_) {
+        progress_brush_->Release();
+        progress_brush_ = nullptr;
+    }
+    EnsureScratchBrush();
     if (visible_.load(std::memory_order_relaxed)) {
         Render();
         UpdateLayered();
@@ -604,9 +623,14 @@ void AboutWindow::SetZoneState(UpdateZoneState state) {
         dlg_focus_ = 1; // Enter == Download (design spec §8)
     }
     if (hwnd_) {
-        const bool animate = (state == UpdateZoneState::Checking ||
-                              state == UpdateZoneState::Downloading);
-        if (animate) {
+        // Bug 6 fix: only run the 50ms animation timer when progress is indeterminate
+        // (Checking spinner or Downloading before total size is known); stop it once
+        // determinate progress or idle is reached.
+        const bool indeterminate =
+            (state == UpdateZoneState::Checking) ||
+            (state == UpdateZoneState::Downloading &&
+             (!job_ || job_->total.load(std::memory_order_relaxed) == 0));
+        if (indeterminate && visible_.load(std::memory_order_relaxed)) {
             ::SetTimer(hwnd_, kUpdateAnimTimerId, 50, nullptr);
         } else {
             ::KillTimer(hwnd_, kUpdateAnimTimerId);
@@ -696,9 +720,10 @@ void AboutWindow::StartDownload() {
     std::thread([hwnd, job, url, dest, expected, advertised_size]() {
         const UpdateDownloadStatus status = DownloadUpdate(
             url, dest, advertised_size, expected,
-            [job](std::uint64_t received, std::uint64_t total) {
+            [hwnd, job](std::uint64_t received, std::uint64_t total) {
                 job->received.store(received, std::memory_order_relaxed);
                 job->total.store(total, std::memory_order_relaxed);
+                ::PostMessageW(hwnd, AboutWindow::kUpdateProgressMessage, 0, 0);
             },
             job->cancel);
         {
@@ -769,31 +794,26 @@ void AboutWindow::Render() {
     const float cx = w / 2.0f;
 
     const LocalizedContent content = BuildLocalizedContent();
+    const auto& theme = ui::GetActiveTheme();
+    const I18nStrings theme_strings = I18n::GetThemeStrings();
 
     // ------------------------------------------------------------------
-    // (1) Card fill + border + top rim light (design spec §13).
+    // (1) Card fill + outer border + inset inner border via DrawElevatedCard.
     // ------------------------------------------------------------------
-    D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f),
-                                               10.0f, 10.0f);
-    scratch_brush_->SetColor(kColCard);
-    dc_render_target_->FillRoundedRectangle(card, scratch_brush_);
-    scratch_brush_->SetColor(kColCardEdge);
-    dc_render_target_->DrawRoundedRectangle(card, scratch_brush_, 1.0f);
-    scratch_brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f));
-    dc_render_target_->DrawLine(D2D1::Point2F(9.0f, 1.5f), D2D1::Point2F(w - 9.0f, 1.5f),
-                                scratch_brush_, 1.0f);
+    const D2D1_RECT_F card_rect = D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f);
+    ui::DrawElevatedCard(dc_render_target_, card_rect, theme.card_radius, 1.0f, theme);
 
     // ------------------------------------------------------------------
-    // (2) REQ-UC brand chrome: logo tile (80 DIP, r16, 1.5 px gold border),
-    // 16 pt name, 11 pt version, signature twin-gold-hairline seal.
+    // (2) Brand chrome: logo tile (80 DIP), 16 pt name, 11 pt version,
+    // and interactive 3-pill Theme Switcher bar (Fluent | Editorial | Monolith).
     // ------------------------------------------------------------------
-    const D2D1_RECT_F logoTile = D2D1::RectF(cx - 40.0f, 26.0f, cx + 40.0f, 106.0f);
-    scratch_brush_->SetColor(kColLogoTile);
-    dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(logoTile, 16.0f, 16.0f),
-                                            scratch_brush_);
-    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.9f));
-    dc_render_target_->DrawRoundedRectangle(D2D1::RoundedRect(logoTile, 16.0f, 16.0f),
-                                            scratch_brush_, 1.5f);
+    const D2D1_RECT_F logoTile = D2D1::RectF(cx - 40.0f, 22.0f, cx + 40.0f, 102.0f);
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 1.0f));
+    dc_render_target_->FillRoundedRectangle(
+        D2D1::RoundedRect(logoTile, theme.card_radius, theme.card_radius), scratch_brush_);
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+    dc_render_target_->DrawRoundedRectangle(
+        D2D1::RoundedRect(logoTile, theme.card_radius, theme.card_radius), scratch_brush_, 1.0f);
     const D2D1_RECT_F logoRect = D2D1::RectF(logoTile.left + 8.0f, logoTile.top + 8.0f,
                                              logoTile.right - 8.0f, logoTile.bottom - 8.0f);
     if (logo_bitmap_) {
@@ -805,27 +825,18 @@ void AboutWindow::Render() {
 
     const std::wstring titleText = I18n::Get(StringId::AppName);
     if (title_format_) {
-        scratch_brush_->SetColor(kColInk);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.size()),
-                                    title_format_, D2D1::RectF(24.0f, 118.0f, w - 24.0f, 138.0f),
+                                    title_format_, D2D1::RectF(24.0f, 112.0f, w - 24.0f, 132.0f),
                                     scratch_brush_);
     }
     const std::wstring versionText = L"v" + std::wstring(kAppVersionW);
     if (version_format_) {
-        scratch_brush_->SetColor(kColMut2);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
         dc_render_target_->DrawText(versionText.c_str(), static_cast<UINT32>(versionText.size()),
-                                    version_format_, D2D1::RectF(24.0f, 142.0f, w - 24.0f, 157.0f),
+                                    version_format_, D2D1::RectF(24.0f, 135.0f, w - 24.0f, 150.0f),
                                     scratch_brush_);
     }
-
-    // Signature "twin gold hairline" seal (spec §4/§0): two 150 DIP lines,
-    // 4 px apart, at y=176.5 / 181.5, gold 55% + 22%.
-    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.55f));
-    dc_render_target_->DrawLine(D2D1::Point2F(cx - 75.0f, 176.5f),
-                                D2D1::Point2F(cx + 75.0f, 176.5f), scratch_brush_, 1.0f);
-    scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.22f));
-    dc_render_target_->DrawLine(D2D1::Point2F(cx - 75.0f, 181.5f),
-                                D2D1::Point2F(cx + 75.0f, 181.5f), scratch_brush_, 1.0f);
 
     // ------------------------------------------------------------------
     // Shared helpers for the middle region + footer.
@@ -836,39 +847,98 @@ void AboutWindow::Render() {
         return MeasureTextWidth(format, text);
     };
 
-    // Button painter (design spec §5).
+    // Interactive 3-pill Theme Switcher bar (Fluent | Editorial | Monolith)
+    // replacing the removed twin gold hairlines in the header band (y = 158..182).
+    {
+        const std::wstring theme_labels[3] = {
+            theme_strings.theme_fluent,
+            theme_strings.theme_editorial,
+            theme_strings.theme_monolith
+        };
+        const float t_pill_w = 112.0f;
+        const float t_pill_gap = 6.0f;
+        const float t_total_w = t_pill_w * 3.0f + t_pill_gap * 2.0f;
+        const float t_start_x = cx - t_total_w / 2.0f;
+        const float t_top = 158.0f;
+        const float t_bottom = 182.0f;
+
+        for (int i = 0; i < 3; ++i) {
+            const float px = t_start_x + static_cast<float>(i) * (t_pill_w + t_pill_gap);
+            theme_rects_[i] = D2D1::RectF(px, t_top, px + t_pill_w, t_bottom);
+            const bool is_active = (static_cast<int>(theme.id) == i);
+            const bool is_hovered = (hover == kHoverTheme0 + i);
+            const D2D1_ROUNDED_RECT rpill = D2D1::RoundedRect(
+                theme_rects_[i], theme.control_radius, theme.control_radius);
+
+            if (is_active) {
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_subtle, 0.95f));
+                dc_render_target_->FillRoundedRectangle(rpill, scratch_brush_);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 0.90f));
+                dc_render_target_->DrawRoundedRectangle(rpill, scratch_brush_, 1.2f);
+            } else {
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    is_hovered ? theme.surface_hover : theme.surface_elevated, 0.90f));
+                dc_render_target_->FillRoundedRectangle(rpill, scratch_brush_);
+                scratch_brush_->SetColor(is_hovered
+                    ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                    : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+                dc_render_target_->DrawRoundedRectangle(rpill, scratch_brush_, 1.0f);
+            }
+
+            if (uz_textbtn_format_) {
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    is_active ? theme.accent_primary
+                              : (is_hovered ? theme.text_primary : theme.text_secondary),
+                    1.0f));
+                dc_render_target_->DrawText(
+                    theme_labels[i].c_str(),
+                    static_cast<UINT32>(theme_labels[i].size()),
+                    uz_textbtn_format_, theme_rects_[i], scratch_brush_,
+                    D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+    }
+
+    // Button painter (design spec §5, theme-aware).
     auto draw_button = [&](D2D1_RECT_F rect, const std::wstring& label, UcButtonVariant variant,
                            bool hovered) {
         if (variant == kUcText) {
-            scratch_brush_->SetColor(hovered ? kColGoldHi : kColMut);
+            scratch_brush_->SetColor(ui::ColorFromHex(
+                hovered ? theme.accent_primary : theme.text_secondary, 1.0f));
             if (uz_textbtn_format_) {
                 dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
                                             uz_textbtn_format_, rect, scratch_brush_);
             }
             return;
         }
-        const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(rect, 6.0f, 6.0f);
+        const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(
+            rect, theme.control_radius, theme.control_radius);
         switch (variant) {
             case kUcPrimary:
-                scratch_brush_->SetColor(hovered ? kColGoldHi : kColGold);
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    theme.accent_primary, hovered ? 0.90f : 1.0f));
                 dc_render_target_->FillRoundedRectangle(btn, scratch_brush_);
-                scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.0f));
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha));
                 dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_, 1.0f);
-                scratch_brush_->SetColor(kColOnGold);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_canvas, 1.0f));
                 break;
             case kUcDanger:
-                scratch_brush_->SetColor(D2D1::ColorF(0xE5645E, hovered ? 0.22f : 0.10f));
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    hovered ? theme.danger_hover : theme.danger_fill, 1.0f));
                 dc_render_target_->FillRoundedRectangle(btn, scratch_brush_);
-                scratch_brush_->SetColor(kColDanger);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.danger_stroke, 1.0f));
                 dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_, 1.0f);
-                scratch_brush_->SetColor(kColDangerInk);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.danger_ink, 1.0f));
                 break;
             default: // kUcSecondary
-                scratch_brush_->SetColor(D2D1::ColorF(0x33507E, hovered ? 0.42f : 0.28f));
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    hovered ? theme.surface_hover : theme.surface_elevated, 0.95f));
                 dc_render_target_->FillRoundedRectangle(btn, scratch_brush_);
-                scratch_brush_->SetColor(kColLapisHi);
+                scratch_brush_->SetColor(hovered
+                    ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                    : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
                 dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_, 1.0f);
-                scratch_brush_->SetColor(kColOnLapis);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
                 break;
         }
         if (uz_button_format_) {
@@ -959,7 +1029,7 @@ void AboutWindow::Render() {
                                     D2D1::RectF(text_x, top, text_x + head_w, top + 36.0f),
                                     scratch_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if (!sub_line.empty() && uz_sub_format_) {
-            scratch_brush_->SetColor(kColMut2);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             dc_render_target_->DrawText(sub_line.c_str(), static_cast<UINT32>(sub_line.size()),
                                         uz_sub_format_,
                                         D2D1::RectF(text_x, top + 19.0f,
@@ -1008,7 +1078,7 @@ void AboutWindow::Render() {
 
         // 3. Tagline (body 12, wrap, centered).
         if (tagline_format_) {
-            scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(content.tagline.c_str(),
                                         static_cast<UINT32>(content.tagline.size()),
                                         tagline_format_,
@@ -1017,7 +1087,7 @@ void AboutWindow::Render() {
         }
 
         // Divider 1
-        scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));  // lapis divider
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
         dc_render_target_->DrawLine(D2D1::Point2F(24.0f, 218.0f + iy),
                                     D2D1::Point2F(w - 24.0f, 218.0f + iy),
                                     scratch_brush_, 1.0f);
@@ -1034,9 +1104,9 @@ void AboutWindow::Render() {
                     D2D1::RectF(plan.marker_x[i], top + 7.0f,
                                 plan.marker_x[i] + 5.0f, top + 12.0f),
                     2.5f, 2.5f);
-                scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold marker
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
                 dc_render_target_->FillRoundedRectangle(dot, scratch_brush_);
-                scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
                 dc_render_target_->DrawText(content.features[i].c_str(),
                                             static_cast<UINT32>(content.features[i].size()),
                                             body_format_,
@@ -1048,7 +1118,7 @@ void AboutWindow::Render() {
 
         // 5. Etymology (italic 11, subtext).
         if (etymology_format_) {
-            scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_secondary, 1.0f));
             dc_render_target_->DrawText(content.etymology.c_str(),
                                         static_cast<UINT32>(content.etymology.size()),
                                         etymology_format_,
@@ -1057,7 +1127,7 @@ void AboutWindow::Render() {
         }
 
         // Divider 2
-        scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.5f));  // lapis divider
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
         dc_render_target_->DrawLine(D2D1::Point2F(24.0f, base + 60.0f),
                                     D2D1::Point2F(w - 24.0f, base + 60.0f),
                                     scratch_brush_, 1.0f);
@@ -1073,15 +1143,18 @@ void AboutWindow::Render() {
                                          pills_x + static_cast<float>(i) * (pill_w + pill_gap) + pill_w,
                                          base + 102.0f);
             const bool link_hover = (hover == kHoverLink0 + i);
-            const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(link_rects_[i], 4.0f, 4.0f);
-            scratch_brush_->SetColor(link_hover ? D2D1::ColorF(0x22406B, 1.0f)     // pill hover
-                                                : D2D1::ColorF(0x14243F, 0.9f));   // lapis-deep pill
+            const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(
+                link_rects_[i], theme.control_radius, theme.control_radius);
+            scratch_brush_->SetColor(ui::ColorFromHex(
+                link_hover ? theme.surface_hover : theme.surface_elevated, 0.95f));
             dc_render_target_->FillRoundedRectangle(pill, scratch_brush_);
-            scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
-            dc_render_target_->DrawRoundedRectangle(pill, scratch_brush_,
-                                                    link_hover ? 1.4f : 1.0f);
+            scratch_brush_->SetColor(link_hover
+                ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+            dc_render_target_->DrawRoundedRectangle(pill, scratch_brush_, 1.0f);
             if (link_format_) {
-                scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    link_hover ? theme.text_primary : theme.text_secondary, 1.0f));
                 dc_render_target_->DrawText(content.link_labels[i].c_str(),
                                             static_cast<UINT32>(content.link_labels[i].size()),
                                             link_format_, link_rects_[i], scratch_brush_);
@@ -1090,7 +1163,7 @@ void AboutWindow::Render() {
 
         // 7. Contact block (small 10.5, subtext, centered).
         if (small_format_) {
-            scratch_brush_->SetColor(D2D1::ColorF(0x93A3C7, 1.0f));  // lapis-gray subtext
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             for (int i = 0; i < 3; ++i) {
                 const float top = base + 118.0f + static_cast<float>(i) * 22.0f;
                 dc_render_target_->DrawText(content.contacts[i].c_str(),
@@ -1112,7 +1185,7 @@ void AboutWindow::Render() {
             const float gx = cx - group_w / 2.0f;
             const float row_top = block_top(62.0f);
             const D2D1_POINT_2F spin_c = D2D1::Point2F(gx + 10.0f, row_top + 10.0f);
-            scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.22f));
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
             dc_render_target_->DrawEllipse(D2D1::Ellipse(spin_c, 10.0f, 10.0f),
                                            scratch_brush_, 2.0f);
             if (spinner_arc_) {
@@ -1127,11 +1200,11 @@ void AboutWindow::Render() {
                 dc_render_target_->SetTransform(
                     D2D1::Matrix3x2F::Rotation(angle) *
                     D2D1::Matrix3x2F::Translation(spin_c.x, spin_c.y));
-                scratch_brush_->SetColor(kColGold);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
                 dc_render_target_->DrawGeometry(spinner_arc_, scratch_brush_, 2.0f);
                 dc_render_target_->SetTransform(D2D1::Matrix3x2F::Identity());
             }
-            scratch_brush_->SetColor(kColInk);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(head.c_str(), static_cast<UINT32>(head.size()),
                                         uz_head_format_,
                                         D2D1::RectF(gx + 30.0f, row_top, gx + 40.0f + head_w,
@@ -1139,7 +1212,7 @@ void AboutWindow::Render() {
                                         scratch_brush_);
             const std::wstring hint = I18n::Get(StringId::UpdateCheckingHint);
             if (uz_sub_format_) {
-                scratch_brush_->SetColor(kColMut);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.text_secondary, 1.0f));
                 dc_render_target_->DrawText(hint.c_str(), static_cast<UINT32>(hint.size()),
                                             uz_sub_format_,
                                             D2D1::RectF(cx - 170.0f, row_top + 40.0f,
@@ -1149,12 +1222,13 @@ void AboutWindow::Render() {
             break;
         }
         case UpdateZoneState::UpToDate: {
-            // Gold-outlined check + headline + bare "vX.Y.Z" subline, centered
+            // Check + headline + bare "vX.Y.Z" subline, centered
             // as one group (no leading middle dot); auto-returns to Idle on a
             // timer or a click inside the ZONE band only.
             const std::wstring head = I18n::Get(StringId::UpdateUptodate);
             const std::wstring ver = L"v" + std::wstring(kAppVersionW);
-            draw_status_line(kGlyphCheck, kColGold, head, kColInk, ver,
+            draw_status_line(kGlyphCheck, ui::ColorFromHex(theme.state_ready, 1.0f),
+                             head, ui::ColorFromHex(theme.text_primary, 1.0f), ver,
                              block_top(36.0f), 300.0f, uz_head_format_);
             break;
         }
@@ -1175,23 +1249,23 @@ void AboutWindow::Render() {
             const std::wstring label = I18n::Get(StringId::UpdateDlProgress);
             const float label_left = ui_rtl ? x0 + 56.0f : x0;
             const float pct_left = ui_rtl ? x0 : x0 + 316.0f - 48.0f;
-            scratch_brush_->SetColor(kColInk);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
                                         uz_value_format_,
                                         D2D1::RectF(label_left, top, x0 + 316.0f, top + 18.0f),
                                         scratch_brush_);
             wchar_t pct_buf[16] = {};
             std::swprintf(pct_buf, 16, L"%d%%", static_cast<int>(displayed_pct_));
-            scratch_brush_->SetColor(kColGoldHi);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
             dc_render_target_->DrawText(pct_buf, static_cast<UINT32>(std::wcslen(pct_buf)),
                                         uz_pct_format_,
                                         D2D1::RectF(pct_left, top, pct_left + 48.0f, top + 18.0f),
                                         scratch_brush_);
             const D2D1_RECT_F track = D2D1::RectF(x0, top + 26.0f, x0 + 316.0f, top + 34.0f);
-            scratch_brush_->SetColor(kColTrack);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 1.0f));
             dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(track, 4.0f, 4.0f),
                                                     scratch_brush_);
-            scratch_brush_->SetColor(D2D1::ColorF(0x4A6CA3, 0.55f));
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
             dc_render_target_->DrawRoundedRectangle(D2D1::RoundedRect(track, 4.0f, 4.0f),
                                                     scratch_brush_, 1.0f);
             if (progress_brush_) {
@@ -1210,13 +1284,13 @@ void AboutWindow::Render() {
             const std::wstring meta = updatelogic::FormatProgressMb(received, total);
             const float meta_left_x = ui_rtl ? x0 + 116.0f : x0;
             const float meta_right_x = ui_rtl ? x0 : x0 + 116.0f;
-            scratch_brush_->SetColor(kColMut2);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             dc_render_target_->DrawText(meta.c_str(), static_cast<UINT32>(meta.size()),
                                         uz_label_format_,
                                         D2D1::RectF(meta_left_x, top + 42.0f,
                                                     meta_left_x + 200.0f, top + 57.0f),
                                         scratch_brush_);
-            scratch_brush_->SetColor(kColMut2);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
                                         uz_label_format_,
                                         D2D1::RectF(meta_right_x, top + 42.0f,
@@ -1226,7 +1300,8 @@ void AboutWindow::Render() {
             const float cw = measure(uz_textbtn_format_, cancel) + 12.0f;
             dl_cancel_rect_ = D2D1::RectF(cx - cw / 2.0f - 4.0f, top + 66.0f - 4.0f,
                                           cx + cw / 2.0f + 4.0f, top + 82.0f + 4.0f);
-            scratch_brush_->SetColor(hover == kHoverDlCancel ? kColGoldHi : kColMut);
+            scratch_brush_->SetColor(ui::ColorFromHex(
+                hover == kHoverDlCancel ? theme.accent_primary : theme.text_secondary, 1.0f));
             if (uz_textbtn_format_) {
                 dc_render_target_->DrawText(cancel.c_str(), static_cast<UINT32>(cancel.size()),
                                             uz_textbtn_format_,
@@ -1237,31 +1312,28 @@ void AboutWindow::Render() {
             break;
         }
         case UpdateZoneState::Ready: {
-            // Twin-ring gold seal + check + headline + warn + [Later]/[Install now].
+            // Single clean status circle + vector check icon (replaces double concentric signet rings).
             const float top = block_top(140.0f);
             const D2D1_POINT_2F seal_c = D2D1::Point2F(cx, top + 22.0f);
-            scratch_brush_->SetColor(kColGold);
-            dc_render_target_->DrawEllipse(D2D1::Ellipse(seal_c, 22.0f, 22.0f),
-                                           scratch_brush_, 1.5f);
-            scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.28f));
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 0.14f));
+            dc_render_target_->FillEllipse(D2D1::Ellipse(seal_c, 18.0f, 18.0f), scratch_brush_);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 0.75f));
             dc_render_target_->DrawEllipse(D2D1::Ellipse(seal_c, 18.0f, 18.0f),
-                                           scratch_brush_, 1.0f);
-            scratch_brush_->SetColor(kColGold);
-            dc_render_target_->DrawLine(D2D1::Point2F(seal_c.x - 6.0f, seal_c.y),
-                                        D2D1::Point2F(seal_c.x - 1.5f, seal_c.y + 4.5f),
-                                        scratch_brush_, 1.6f);
-            dc_render_target_->DrawLine(D2D1::Point2F(seal_c.x - 1.5f, seal_c.y + 4.5f),
-                                        D2D1::Point2F(seal_c.x + 6.5f, seal_c.y - 5.0f),
-                                        scratch_brush_, 1.6f);
+                                           scratch_brush_, 1.25f);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.state_ready, 1.0f));
+            ui::DrawCheckIcon(dc_render_target_,
+                              D2D1::RectF(seal_c.x - 7.0f, seal_c.y - 7.0f,
+                                          seal_c.x + 7.0f, seal_c.y + 7.0f),
+                              scratch_brush_, 1.6f);
             const std::wstring head = I18n::Get(StringId::UpdateReadyTitle);
-            scratch_brush_->SetColor(kColInk);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(head.c_str(), static_cast<UINT32>(head.size()),
                                         uz_head_format_,
                                         D2D1::RectF(24.0f, top + 52.0f, w - 24.0f, top + 70.0f),
                                         scratch_brush_);
             const std::wstring warn = I18n::Get(StringId::UpdateReadyWarn);
             if (uz_sub_format_) {
-                scratch_brush_->SetColor(kColMut2);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
                 dc_render_target_->DrawText(warn.c_str(), static_cast<UINT32>(warn.size()),
                                             uz_sub_format_,
                                             D2D1::RectF(24.0f, top + 73.0f, w - 24.0f,
@@ -1290,7 +1362,9 @@ void AboutWindow::Render() {
             const bool snoozed = (zone_state_ == UpdateZoneState::Snoozed);
             const std::wstring line =
                 I18n::Get(snoozed ? StringId::UpdateSnoozedLine : StringId::UpdateDlCancelled);
-            draw_status_line(snoozed ? kGlyphClock : kGlyphCross, kColMut, line, kColMut,
+            draw_status_line(snoozed ? kGlyphClock : kGlyphCross,
+                             ui::ColorFromHex(theme.text_secondary, 1.0f), line,
+                             ui::ColorFromHex(theme.text_secondary, 1.0f),
                              L"", block_top(70.0f), 316.0f, uz_head_format_);
             const float top = block_top(70.0f);
             update_check_rect_ = plan_button(check_label, cx, top + 38.0f);
@@ -1303,7 +1377,8 @@ void AboutWindow::Render() {
             const std::wstring line = I18n::Get(zone_state_ == UpdateZoneState::ErrRate
                                                     ? StringId::UpdateErrRate
                                                     : StringId::UpdateErrOffline);
-            draw_status_line(kGlyphWarn, kColLapisHi, line, kColMut, L"",
+            draw_status_line(kGlyphWarn, ui::ColorFromHex(theme.state_busy, 1.0f),
+                             line, ui::ColorFromHex(theme.text_secondary, 1.0f), L"",
                              block_top(70.0f), 316.0f, uz_head_format_);
             const float top = block_top(70.0f);
             update_check_rect_ = plan_button(check_label, cx, top + 38.0f);
@@ -1314,7 +1389,8 @@ void AboutWindow::Render() {
         case UpdateZoneState::ErrHash: {
             // The ONLY red state (spec §9.10).
             const std::wstring line = I18n::Get(StringId::UpdateErrHash);
-            draw_status_line(kGlyphWarn, kColDanger, line, kColDangerInk, L"",
+            draw_status_line(kGlyphWarn, ui::ColorFromHex(theme.state_danger, 1.0f),
+                             line, ui::ColorFromHex(theme.danger_ink, 1.0f), L"",
                              block_top(70.0f), 316.0f, uz_head_format_);
             const std::wstring retry = I18n::Get(StringId::UpdateErrRetry);
             const float top = block_top(70.0f);
@@ -1389,32 +1465,39 @@ void AboutWindow::Render() {
         }
 
         if (upd_w > 0.0f) {
-            const D2D1_ROUNDED_RECT upd_btn =
-                D2D1::RoundedRect(update_check_rect_, 6.0f, 6.0f);
-            scratch_brush_->SetColor(D2D1::ColorF(0x33507E, hover == kHoverUpdateCheck ? 0.28f : 0.16f));
+            const bool upd_hover = (hover == kHoverUpdateCheck);
+            const D2D1_ROUNDED_RECT upd_btn = D2D1::RoundedRect(
+                update_check_rect_, theme.control_radius, theme.control_radius);
+            scratch_brush_->SetColor(ui::ColorFromHex(
+                upd_hover ? theme.surface_hover : theme.surface_elevated, 0.95f));
             dc_render_target_->FillRoundedRectangle(upd_btn, scratch_brush_);
-            scratch_brush_->SetColor(kColLapisHi);
+            scratch_brush_->SetColor(upd_hover
+                ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
             dc_render_target_->DrawRoundedRectangle(upd_btn, scratch_brush_, 1.0f);
             if (uz_textbtn_format_) {
-                scratch_brush_->SetColor(hover == kHoverUpdateCheck ? kColGoldHi : kColMut);
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    upd_hover ? theme.text_primary : theme.text_secondary, 1.0f));
                 dc_render_target_->DrawText(check_label.c_str(),
                                             static_cast<UINT32>(check_label.size()),
                                             uz_textbtn_format_, update_check_rect_, scratch_brush_);
             }
         }
-        // Reset pill (original REQ-020 styling; wraps to two lines when the
-        // localized label needs it).
+        // Reset pill: unified corner radius (theme.control_radius) and subtle border at rest.
         {
-            const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(reset_rect_, 4.0f, 4.0f);
-            scratch_brush_->SetColor(hover == kHoverReset
-                                         ? D2D1::ColorF(0x22406B, 1.0f)     // pill hover
-                                         : D2D1::ColorF(0x14243F, 0.9f));   // lapis-deep pill
+            const bool rst_hover = (hover == kHoverReset);
+            const D2D1_ROUNDED_RECT btn = D2D1::RoundedRect(
+                reset_rect_, theme.control_radius, theme.control_radius);
+            scratch_brush_->SetColor(ui::ColorFromHex(
+                rst_hover ? theme.surface_hover : theme.surface_elevated, 0.95f));
             dc_render_target_->FillRoundedRectangle(btn, scratch_brush_);
-            scratch_brush_->SetColor(D2D1::ColorF(0xD9B45A, 1.0f));  // antique gold accent
-            dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_,
-                                                    hover == kHoverReset ? 1.4f : 1.0f);
+            scratch_brush_->SetColor(rst_hover
+                ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+            dc_render_target_->DrawRoundedRectangle(btn, scratch_brush_, 1.0f);
             if (reset_footer_format_) {
-                scratch_brush_->SetColor(D2D1::ColorF(0xF2ECDC, 1.0f));  // warm sand-white
+                scratch_brush_->SetColor(ui::ColorFromHex(
+                    rst_hover ? theme.text_primary : theme.text_secondary, 1.0f));
                 dc_render_target_->DrawText(reset_text.c_str(),
                                             static_cast<UINT32>(reset_text.size()),
                                             reset_footer_format_,
@@ -1424,7 +1507,7 @@ void AboutWindow::Render() {
             }
         }
         if (copyright_format_) {
-            scratch_brush_->SetColor(kColFaint);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_dim, 1.0f));
             dc_render_target_->DrawText(kCopyrightText,
                                         static_cast<UINT32>(std::wcslen(kCopyrightText)),
                                         copyright_format_,
@@ -1439,18 +1522,18 @@ void AboutWindow::Render() {
     close_btn_rect_ = D2D1::RectF(w - 32.0f, 12.0f, w - 12.0f, 32.0f);
     if (header_format_) {
         scratch_brush_->SetColor((hover == kHoverClose)
-                                     ? D2D1::ColorF(0xEF4444, 1.0f)
-                                     : D2D1::ColorF(0x93A3C7, 0.8f));
+                                     ? ui::ColorFromHex(theme.state_danger, 1.0f)
+                                     : ui::ColorFromHex(theme.text_muted, 0.85f));
         dc_render_target_->DrawText(L"\u2715", 1, header_format_, close_btn_rect_,
                                     scratch_brush_);
     }
 
     // ------------------------------------------------------------------
     // (4+5) Consent dialog (spec §8): scrim over the WHOLE card, then the
-    // raised panel with the twin hairline, rows, privacy note, buttons.
+    // raised panel with rows, privacy note badge, and buttons.
     // ------------------------------------------------------------------
     if (zone_state_ == UpdateZoneState::Available) {
-        scratch_brush_->SetColor(kColScrim);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_canvas, 0.72f));
         dc_render_target_->FillRectangle(D2D1::RectF(0.0f, 0.0f, w, h), scratch_brush_);
 
         const float dlg_w = 372.0f;
@@ -1476,29 +1559,15 @@ void AboutWindow::Render() {
         const float dlg_h = 177.0f + note_h;
         const float dlg_y = (h - dlg_h) / 2.0f;
 
-        const D2D1_ROUNDED_RECT dlg = D2D1::RoundedRect(
-            D2D1::RectF(dlg_x, dlg_y, dlg_x + dlg_w, dlg_y + dlg_h), 10.0f, 10.0f);
-        scratch_brush_->SetColor(kColDialog);
-        dc_render_target_->FillRoundedRectangle(dlg, scratch_brush_);
-        scratch_brush_->SetColor(D2D1::ColorF(0x5D7CB6, 0.5f));
-        dc_render_target_->DrawRoundedRectangle(dlg, scratch_brush_, 1.0f);
-
-        // Top twin hairline (the signature motif, 4 px apart).
-        scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.55f));
-        dc_render_target_->DrawLine(D2D1::Point2F(dlg_x + 20.0f, dlg_y + 7.5f),
-                                    D2D1::Point2F(dlg_x + dlg_w - 20.0f, dlg_y + 7.5f),
-                                    scratch_brush_, 1.0f);
-        scratch_brush_->SetColor(D2D1::ColorF(0xD4AF37, 0.22f));
-        dc_render_target_->DrawLine(D2D1::Point2F(dlg_x + 20.0f, dlg_y + 11.5f),
-                                    D2D1::Point2F(dlg_x + dlg_w - 20.0f, dlg_y + 11.5f),
-                                    scratch_brush_, 1.0f);
+        const D2D1_RECT_F dlg_rect = D2D1::RectF(dlg_x, dlg_y, dlg_x + dlg_w, dlg_y + dlg_h);
+        ui::DrawElevatedCard(dc_render_target_, dlg_rect, theme.card_radius, 1.0f, theme);
 
         const std::wstring dlg_title = I18n::Get(StringId::UpdateDlgTitle);
-        scratch_brush_->SetColor(kColInk);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->DrawText(dlg_title.c_str(), static_cast<UINT32>(dlg_title.size()),
                                     uz_dlgtitle_format_,
-                                    D2D1::RectF(dlg_x, dlg_y + 22.0f, dlg_x + dlg_w,
-                                                dlg_y + 40.0f),
+                                    D2D1::RectF(dlg_x, dlg_y + 18.0f, dlg_x + dlg_w,
+                                                dlg_y + 38.0f),
                                     scratch_brush_);
 
         // Two rows: 58 DIP label column + value (12/600) with a 10.5 mut-2
@@ -1514,7 +1583,7 @@ void AboutWindow::Render() {
 
         auto draw_row = [&](float row_y, const std::wstring& label, const std::wstring& main,
                             const std::wstring& paren) {
-            scratch_brush_->SetColor(kColMut2);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
                                         uz_label_format_,
                                         D2D1::RectF(label_x, row_y, label_x + label_w,
@@ -1524,14 +1593,14 @@ void AboutWindow::Render() {
             const float paren_w = paren.empty() ? 0.0f : measure(uz_label_format_, paren);
             const bool paren_below = !paren.empty() &&
                                      main_w + 4.0f + paren_w > value_w;
-            scratch_brush_->SetColor(kColInk);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
             dc_render_target_->DrawText(main.c_str(), static_cast<UINT32>(main.size()),
                                         uz_value_format_,
                                         D2D1::RectF(value_x, row_y, value_x + value_w,
                                                     row_y + 36.0f),
                                         scratch_brush_);
             if (!paren.empty()) {
-                scratch_brush_->SetColor(kColMut2);
+                scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
                 dc_render_target_->DrawText(
                     paren.c_str(), static_cast<UINT32>(paren.size()), uz_label_format_,
                     D2D1::RectF(value_x, row_y + (paren_below ? 18.0f : 1.0f),
@@ -1554,34 +1623,27 @@ void AboutWindow::Render() {
         // Privacy note panel (the GitHub notice — the consent surface).
         const float note_y = row2_y + 32.0f;
         const D2D1_ROUNDED_RECT note = D2D1::RoundedRect(
-            D2D1::RectF(pad_x, note_y, pad_x + dlg_w - 40.0f, note_y + note_h), 6.0f, 6.0f);
-        scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.14f));
+            D2D1::RectF(pad_x, note_y, pad_x + dlg_w - 40.0f, note_y + note_h),
+            theme.control_radius, theme.control_radius);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.95f));
         dc_render_target_->FillRoundedRectangle(note, scratch_brush_);
-        scratch_brush_->SetColor(D2D1::ColorF(0x33507E, 0.35f));
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
         dc_render_target_->DrawRoundedRectangle(note, scratch_brush_, 1.0f);
-        // Flask glyph (inline-start), hand-drawn, 12 DIP, lapis-hi.
+        // Clean minimal info badge/chip (replaces 5-line stick-figure flask).
         {
-            const float fx = pad_x + 10.0f;
-            const float fy = note_y + 9.0f;
-            scratch_brush_->SetColor(kColLapisHi);
-            dc_render_target_->DrawLine(D2D1::Point2F(fx + 4.0f, fy),
-                                        D2D1::Point2F(fx + 4.0f, fy + 3.0f),
-                                        scratch_brush_, 1.2f);
-            dc_render_target_->DrawLine(D2D1::Point2F(fx + 8.0f, fy),
-                                        D2D1::Point2F(fx + 8.0f, fy + 3.0f),
-                                        scratch_brush_, 1.2f);
-            dc_render_target_->DrawLine(D2D1::Point2F(fx + 4.0f, fy + 3.0f),
-                                        D2D1::Point2F(fx + 1.5f, fy + 10.0f),
-                                        scratch_brush_, 1.2f);
-            dc_render_target_->DrawLine(D2D1::Point2F(fx + 8.0f, fy + 3.0f),
-                                        D2D1::Point2F(fx + 10.5f, fy + 10.0f),
-                                        scratch_brush_, 1.2f);
-            dc_render_target_->DrawLine(D2D1::Point2F(fx + 1.5f, fy + 10.0f),
-                                        D2D1::Point2F(fx + 10.5f, fy + 10.0f),
-                                        scratch_brush_, 1.2f);
+            const D2D1_RECT_F badge_rect = D2D1::RectF(
+                pad_x + 10.0f, note_y + 9.0f, pad_x + 22.0f, note_y + 21.0f);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_subtle, 1.0f));
+            dc_render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(badge_rect, 3.0f, 3.0f), scratch_brush_);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 0.85f));
+            dc_render_target_->DrawRoundedRectangle(
+                D2D1::RoundedRect(badge_rect, 3.0f, 3.0f), scratch_brush_, 1.0f);
+            const D2D1_POINT_2F dot_c = D2D1::Point2F(pad_x + 16.0f, note_y + 15.0f);
+            dc_render_target_->FillEllipse(D2D1::Ellipse(dot_c, 2.0f, 2.0f), scratch_brush_);
         }
         if (note_layout) {
-            scratch_brush_->SetColor(kColMut2);
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_secondary, 1.0f));
             dc_render_target_->DrawTextLayout(
                 D2D1::Point2F(pad_x + 10.0f + 12.0f + 7.0f, note_y + 8.0f), note_layout,
                 scratch_brush_);
@@ -1604,15 +1666,15 @@ void AboutWindow::Render() {
         draw_button(dlg_later_rect_, later, kUcSecondary, hover == kHoverDlgLater);
         draw_button(dlg_download_rect_, download, kUcPrimary, hover == kHoverDlgDownload);
 
-        // (6) Focus ring on top of everything (spec §5): 2 px gold-hi, 2 DIP
+        // (6) Focus ring on top of everything (spec §5): 2 px accent, 2 DIP
         // offset around the focused dialog button.
         const D2D1_RECT_F& focus_rect = (dlg_focus_ == 0) ? dlg_later_rect_ : dlg_download_rect_;
-        scratch_brush_->SetColor(kColGoldHi);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
         dc_render_target_->DrawRoundedRectangle(
             D2D1::RoundedRect(
                 D2D1::RectF(focus_rect.left - 2.0f, focus_rect.top - 2.0f,
                             focus_rect.right + 2.0f, focus_rect.bottom + 2.0f),
-                8.0f, 8.0f),
+                theme.control_radius + 2.0f, theme.control_radius + 2.0f),
             scratch_brush_, 2.0f);
     }
 
@@ -1687,6 +1749,25 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             pThis->HandleUpdateDownloadDone();
             return 0;
         }
+        case kUpdateProgressMessage: {
+            if (pThis->zone_state_ == UpdateZoneState::Downloading && pThis->job_) {
+                const std::uint64_t total = pThis->job_->total.load(std::memory_order_relaxed);
+                const std::uint64_t received = pThis->job_->received.load(std::memory_order_relaxed);
+                if (total > 0) {
+                    pThis->displayed_pct_ =
+                        static_cast<float>(received) * 100.0f / static_cast<float>(total);
+                    if (pThis->displayed_pct_ > 100.0f) pThis->displayed_pct_ = 100.0f;
+                    // Bug 6 fix: once progress is determinate (total > 0), stop the 50ms
+                    // timer and repaint directly on chunk arrival.
+                    ::KillTimer(hwnd, kUpdateAnimTimerId);
+                }
+                if (pThis->visible_.load(std::memory_order_relaxed)) {
+                    pThis->Render();
+                    pThis->UpdateLayered();
+                }
+            }
+            return 0;
+        }
 
         case WM_SETCURSOR: {
             POINT pt = {};
@@ -1696,6 +1777,14 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             const float y = static_cast<float>(emebalachat::ui::ScalePixelsToDips(pt.y, pThis->dpi_));
             bool interactive = IsPointInRect(pThis->close_btn_rect_, x, y) ||
                                IsPointInRect(pThis->reset_rect_, x, y);
+            if (!interactive && pThis->zone_state_ != UpdateZoneState::Available) {
+                for (int i = 0; i < 3; ++i) {
+                    if (IsPointInRect(pThis->theme_rects_[i], x, y)) {
+                        interactive = true;
+                        break;
+                    }
+                }
+            }
             if (!interactive && pThis->zone_state_ == UpdateZoneState::Idle) {
                 for (int i = 0; i < kNumLinks; ++i) {
                     if (IsPointInRect(pThis->link_rects_[i], x, y)) {
@@ -1742,34 +1831,44 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 hover = kHoverClose;
             } else if (IsPointInRect(pThis->reset_rect_, x, y)) {
                 hover = kHoverReset;
-            } else if (pThis->zone_state_ == UpdateZoneState::Idle &&
-                       IsPointInRect(pThis->update_check_rect_, x, y)) {
-                hover = kHoverUpdateCheck;
-            } else if (pThis->zone_state_ == UpdateZoneState::Idle) {
-                for (int i = 0; i < kNumLinks; ++i) {
-                    if (IsPointInRect(pThis->link_rects_[i], x, y)) {
-                        hover = kHoverLink0 + i;
+            } else if (pThis->zone_state_ != UpdateZoneState::Available) {
+                for (int i = 0; i < 3; ++i) {
+                    if (IsPointInRect(pThis->theme_rects_[i], x, y)) {
+                        hover = kHoverTheme0 + i;
                         break;
                     }
                 }
-            } else {
-                switch (pThis->zone_state_) {
-                    case UpdateZoneState::Available:
-                        if (IsPointInRect(pThis->dlg_download_rect_, x, y)) hover = kHoverDlgDownload;
-                        else if (IsPointInRect(pThis->dlg_later_rect_, x, y)) hover = kHoverDlgLater;
-                        break;
-                    case UpdateZoneState::Downloading:
-                        if (IsPointInRect(pThis->dl_cancel_rect_, x, y)) hover = kHoverDlCancel;
-                        break;
-                    case UpdateZoneState::Ready:
-                        if (IsPointInRect(pThis->ready_install_rect_, x, y)) hover = kHoverReadyInstall;
-                        else if (IsPointInRect(pThis->ready_later_rect_, x, y)) hover = kHoverReadyLater;
-                        break;
-                    case UpdateZoneState::ErrHash:
-                        if (IsPointInRect(pThis->retry_rect_, x, y)) hover = kHoverRetry;
-                        break;
-                    default:
-                        break;
+            }
+            if (hover == -1) {
+                if (pThis->zone_state_ == UpdateZoneState::Idle &&
+                    IsPointInRect(pThis->update_check_rect_, x, y)) {
+                    hover = kHoverUpdateCheck;
+                } else if (pThis->zone_state_ == UpdateZoneState::Idle) {
+                    for (int i = 0; i < kNumLinks; ++i) {
+                        if (IsPointInRect(pThis->link_rects_[i], x, y)) {
+                            hover = kHoverLink0 + i;
+                            break;
+                        }
+                    }
+                } else {
+                    switch (pThis->zone_state_) {
+                        case UpdateZoneState::Available:
+                            if (IsPointInRect(pThis->dlg_download_rect_, x, y)) hover = kHoverDlgDownload;
+                            else if (IsPointInRect(pThis->dlg_later_rect_, x, y)) hover = kHoverDlgLater;
+                            break;
+                        case UpdateZoneState::Downloading:
+                            if (IsPointInRect(pThis->dl_cancel_rect_, x, y)) hover = kHoverDlCancel;
+                            break;
+                        case UpdateZoneState::Ready:
+                            if (IsPointInRect(pThis->ready_install_rect_, x, y)) hover = kHoverReadyInstall;
+                            else if (IsPointInRect(pThis->ready_later_rect_, x, y)) hover = kHoverReadyLater;
+                            break;
+                        case UpdateZoneState::ErrHash:
+                            if (IsPointInRect(pThis->retry_rect_, x, y)) hover = kHoverRetry;
+                            break;
+                        default:
+                            break;
+                    }
                 }
             }
 
@@ -1805,6 +1904,19 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             if (IsPointInRect(pThis->close_btn_rect_, x, y)) {
                 pThis->Dismiss();
                 return 0;
+            }
+            if (pThis->zone_state_ != UpdateZoneState::Available) {
+                static constexpr const char* kThemeKeys[3] = { "fluent", "editorial", "monolith" };
+                for (int i = 0; i < 3; ++i) {
+                    if (IsPointInRect(pThis->theme_rects_[i], x, y)) {
+                        ui::SetActiveTheme(kThemeKeys[i]);
+                        if (pThis->theme_change_callback_) {
+                            pThis->theme_change_callback_(kThemeKeys[i]);
+                        }
+                        pThis->RefreshTheme();
+                        return 0;
+                    }
+                }
             }
             // Intro link pills (Idle only — they are not rendered in flow
             // states, and the zone swap owns the middle region then).
@@ -1929,22 +2041,27 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 return 0;
             }
             if (wParam == kUpdateAnimTimerId) {
-                // Spinner rotation (checking) + progress chase (downloading).
+                // Bug 6 fix: only run the 50ms animation timer while progress is indeterminate;
+                // stop it once determinate progress or idle/hidden is reached.
+                if (!pThis->visible_.load(std::memory_order_relaxed) ||
+                    (pThis->zone_state_ != UpdateZoneState::Checking &&
+                     pThis->zone_state_ != UpdateZoneState::Downloading)) {
+                    ::KillTimer(hwnd, kUpdateAnimTimerId);
+                    return 0;
+                }
                 if (pThis->zone_state_ == UpdateZoneState::Downloading && pThis->job_) {
                     const std::uint64_t total = pThis->job_->total.load(std::memory_order_relaxed);
                     const std::uint64_t received =
                         pThis->job_->received.load(std::memory_order_relaxed);
-                    const float target = total > 0
-                        ? (static_cast<float>(received) * 100.0f / static_cast<float>(total))
-                        : pThis->displayed_pct_;
-                    // 150-200 ms linear chase (spec §6).
-                    pThis->displayed_pct_ += (target - pThis->displayed_pct_) * 0.3f;
-                    if (pThis->displayed_pct_ > 100.0f) pThis->displayed_pct_ = 100.0f;
+                    if (total > 0) {
+                        pThis->displayed_pct_ =
+                            static_cast<float>(received) * 100.0f / static_cast<float>(total);
+                        if (pThis->displayed_pct_ > 100.0f) pThis->displayed_pct_ = 100.0f;
+                        ::KillTimer(hwnd, kUpdateAnimTimerId);
+                    }
                 }
-                if (pThis->visible_.load(std::memory_order_relaxed)) {
-                    pThis->Render();
-                    pThis->UpdateLayered();
-                }
+                pThis->Render();
+                pThis->UpdateLayered();
                 return 0;
             }
             if (wParam == kUpToDateReturnTimerId) {
