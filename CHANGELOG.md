@@ -19,7 +19,8 @@ from any 0.10.x build is fully supported.
   **Warm Editorial**, and **Refined Monolith**, switchable live from the
   tray "UI Theme" submenu or the 3-pill switcher at the top of the About
   window; the choice persists in the new `ui_theme` config key
-  (`"fluent"` / `"editorial"` / `"monolith"`).
+  (`"fluent"` / `"editorial"` / `"monolith"`). The theme UI is translated
+  in all 37 interface languages, including right-to-left languages.
 - Direct2D vector icons (Copy, Check, Speak, Swap) rendered in the active
   theme, replacing the emoji-style stand-ins.
 
@@ -144,6 +145,10 @@ Backend & Engine Host:
   handles are now reclaimed.
 - `Backend P2-3`: a successful worker send now refreshes the heartbeat
   timestamp.
+- `Backend FIX`: the translation worker is spawned with the correct
+  environment flags, so the built-in local engine and user-registered
+  custom models translate again (an early 0.10.5 build could refuse to
+  start the worker and answer every local request as `model_missing`).
 - `Backend P2-6`: the config parser now skips `/* ... */` block comments,
   and config saving retries the atomic replace on transient sharing
   violations.

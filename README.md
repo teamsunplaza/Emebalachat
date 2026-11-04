@@ -486,7 +486,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (7,257 checks as of v0.10.5) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (7,363 checks as of v0.10.5) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe

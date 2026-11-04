@@ -51,6 +51,12 @@ What's fixed
   can no longer answer a new client with a dead client's queued jobs.
 * Version comparison between app and engine host is now numeric
   ("0.10.10" correctly beats "0.10.9").
+* The translation worker is spawned with the correct environment flags, so
+  the built-in local engine and your own custom models translate again (an
+  early 0.10.5 build could refuse to start the worker and answer every local
+  request as "model missing").
+* The new UI theme strings are translated in all 37 interface languages
+  (an early 0.10.5 build showed them in English outside Korean).
 * Selection offsets in huge documents (over 65,535 characters) are read
   as full 32-bit values.
 * Badge single-click and tray left-click act immediately; the old 500 ms

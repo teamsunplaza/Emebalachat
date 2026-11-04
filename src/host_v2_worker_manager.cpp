@@ -244,8 +244,17 @@ SpawnResult LaunchWorkerProcess(const SpawnRequest& req, void* /*user*/) {
                ::GetLastError());
         cmd += L" --token " + token_w; // degraded fallback only (see above)
     }
+    // Backend FIX 5 (session 261104_0001): the staged block is WIDE-CHAR, so
+    // the create MUST carry CREATE_UNICODE_ENVIRONMENT. Without the flag the
+    // kernel parses the wide bytes as ANSI, finds no NAME=VALUE pairs, and
+    // fails with ERROR_INVALID_PARAMETER, killing EVERY worker spawn (the
+    // family converges to model_missing and local serving never starts). This
+    // is the v0.10.5 "local engine never serves" regression: F-11 made the
+    // token env block unconditional, while the pre-F-11 GPU-leg spawn passed
+    // lpEnvironment=nullptr and never exercised the wide-block path. The flag
+    // is harmless on the inherit/degraded paths (env == nullptr).
     const BOOL ok = ::CreateProcessW(req.exe_path.c_str(), cmd.data(), nullptr, nullptr,
-                                     TRUE, CREATE_NO_WINDOW,
+                                     TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
                                      const_cast<LPVOID>(env), nullptr, &si, &pi);
     if (!ok) {
         r.last_error = ::GetLastError();

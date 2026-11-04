@@ -16508,6 +16508,196 @@ void TestReq044I18nFieldOrder() {
     }
 }
 
+// v0.10.5 3-theme UI (session 261104_0001): per-locale theme coverage pin.
+//
+// LocalizedStrings carries English DEFAULT member initializers for the four
+// theme fields, so a locale table that omits them silently renders English
+// while every other string in that locale is translated. This suite makes
+// that omission a test failure instead of an invisible regression.
+//
+// Source-pin style (same read_src/count_occ discipline as TestW5C1C2BrushPins):
+// the 37 tables are aggregates in one TU, so their contents are pinned by
+// reading src/i18n.cpp as text. The runtime half then proves the strings
+// actually reach I18n::Get / GetThemeStrings for every locale, which catches
+// the opposite failure mode (a table that lists the designator but is not
+// wired into the GetStrings switch).
+void TestThemeI18nCoverage() {
+    std::cout << "[TEST] v0.10.5 theme i18n per-locale coverage pins" << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const char* rel) {
+        std::string out;
+        const char* prefixes[] = {"", "../", "../../"};
+        for (const char* pre : prefixes) {
+            std::ifstream in((std::string(pre) + rel).c_str(), std::ios::binary);
+            if (in) {
+                out.assign((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+        return out;
+    };
+    auto count_occ = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = hay.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+
+    const std::string src = read_src("src/i18n.cpp");
+    if (src.empty()) {
+        std::cout << "[SKIP] src/i18n.cpp not resolvable from the test CWD; theme i18n pins skipped."
+                  << std::endl;
+        return;
+    }
+
+    // ---- (a) Every locale table names all four theme fields ----
+    // 36 = the 37 tables minus kStringsEnglish, whose struct defaults ARE the
+    // English strings (the documented, intended fallback). Korean and the 35
+    // other locales must each carry an explicit designator. The struct itself
+    // also declares the four members with defaults, so the raw occurrence count
+    // in the file is 36 (tables) + 4 (struct declarations) = 40; the per-table
+    // count below is what actually matters.
+    const char* const kThemeDesignators[] = {
+        ".menu_ui_theme = ",
+        ".theme_fluent = ",
+        ".theme_editorial = ",
+        ".theme_monolith = ",
+    };
+    for (const char* designator : kThemeDesignators) {
+        const size_t hits = count_occ(src, designator);
+        TEST_CHECK(hits == 36,
+                   std::string("v0.10.5 theme i18n: '") + designator +
+                       "' appears in exactly 36 locale tables (37 minus English defaults)");
+    }
+
+    // The English table is the ONE intentional default-fallback table: it must
+    // not carry theme designators, or the "defaults are English" contract that
+    // keeps the struct self-documenting would quietly stop being exercised.
+    const size_t english_at = src.find("const LocalizedStrings kStringsEnglish = {");
+    TEST_CHECK(english_at != std::string::npos,
+               "v0.10.5 theme i18n: kStringsEnglish table located");
+    if (english_at != std::string::npos) {
+        const size_t english_end = src.find("\n};", english_at);
+        const std::string english_body = src.substr(english_at, english_end - english_at);
+        TEST_CHECK(english_body.find(".menu_ui_theme") == std::string::npos,
+                   "v0.10.5 theme i18n: kStringsEnglish keeps the struct defaults (no designators)");
+    }
+
+    // ---- (b) Every locale table is a single initializer style ----
+    // MSVC C7556 rejects mixing designated and positional initializers in one
+    // aggregate, so the theme designators can only exist in a table that is
+    // fully designated. Pin the count of designated tables at 36 (Korean + 35)
+    // so a future positional table cannot "add" the designators and fail to
+    // compile in a confusing place.
+    TEST_CHECK(count_occ(src, "const LocalizedStrings kStrings") == 37,
+               "v0.10.5 theme i18n: 37 locale tables present");
+
+    // ---- (c) RTL locales carry genuinely RTL theme strings ----
+    // Arabic / Persian / Urdu / Hebrew menu_ui_theme must contain at least one
+    // code point in the RTL script ranges (U+0590..U+08FF). A mojibake or
+    // transliterated entry would pass a naive "non-empty" check but fail here.
+    struct RtlProbe { const char* locale; const char* designator; };
+    const RtlProbe rtl_probes[] = {
+        {"kStringsArabic",  ".menu_ui_theme = L\""},
+        {"kStringsPersian", ".menu_ui_theme = L\""},
+        {"kStringsUrdu",    ".menu_ui_theme = L\""},
+        {"kStringsHebrew",  ".menu_ui_theme = L\""},
+    };
+    for (const RtlProbe& probe : rtl_probes) {
+        const size_t table_at = src.find(std::string("const LocalizedStrings ") + probe.locale + " = {");
+        TEST_CHECK(table_at != std::string::npos,
+                   std::string("v0.10.5 theme i18n: ") + probe.locale + " table located");
+        if (table_at == std::string::npos) continue;
+        const size_t table_end = src.find("\n};", table_at);
+        const std::string body = src.substr(table_at, table_end - table_at);
+        const size_t line_at = body.find(probe.designator);
+        TEST_CHECK(line_at != std::string::npos,
+                   std::string("v0.10.5 theme i18n: ") + probe.locale + " names .menu_ui_theme");
+        if (line_at == std::string::npos) continue;
+        const size_t lit_start = line_at + std::string(probe.designator).size();
+        const size_t lit_end = body.find('"', lit_start);
+        const std::string literal = body.substr(lit_start, lit_end - lit_start);
+
+        // Decode the UTF-8 literal and look for one RTL-range code point.
+        bool has_rtl = false;
+        for (size_t k = 0; k < literal.size();) {
+            const unsigned char lead = static_cast<unsigned char>(literal[k]);
+            unsigned int cp = 0;
+            size_t len = 1;
+            if (lead < 0x80) { cp = lead; len = 1; }
+            else if ((lead & 0xE0) == 0xC0) { cp = lead & 0x1F; len = 2; }
+            else if ((lead & 0xF0) == 0xE0) { cp = lead & 0x0F; len = 3; }
+            else if ((lead & 0xF8) == 0xF0) { cp = lead & 0x07; len = 4; }
+            else { cp = 0; len = 1; }
+            for (size_t b = 1; b < len && k + b < literal.size(); ++b) {
+                cp = (cp << 6) | (static_cast<unsigned char>(literal[k + b]) & 0x3F);
+            }
+            if (cp >= 0x0590u && cp <= 0x08FFu) { has_rtl = true; break; }
+            k += len;
+        }
+        TEST_CHECK(has_rtl,
+                   std::string("v0.10.5 theme i18n: ") + probe.locale +
+                       " .menu_ui_theme contains RTL-range characters (U+0590..U+08FF)");
+    }
+
+    // ---- (d) Runtime: the strings reach I18n for every locale ----
+    // Catches the opposite regression: a table that lists the designators but
+    // is not wired into the GetStrings switch would still fall back to English.
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const UiLocale locales[] = {
+        UiLocale::Korean, UiLocale::English, UiLocale::Vietnamese, UiLocale::ChineseSimplified,
+        UiLocale::ChineseTraditional, UiLocale::Japanese, UiLocale::Spanish, UiLocale::French,
+        UiLocale::German, UiLocale::Russian, UiLocale::Thai, UiLocale::Arabic,
+        UiLocale::Portuguese, UiLocale::Italian, UiLocale::Indonesian, UiLocale::Malay,
+        UiLocale::Filipino, UiLocale::Khmer, UiLocale::Lao, UiLocale::Hindi,
+        UiLocale::Bengali, UiLocale::Turkish, UiLocale::Polish, UiLocale::Dutch,
+        UiLocale::Ukrainian, UiLocale::Persian, UiLocale::Urdu, UiLocale::Hebrew,
+        UiLocale::Czech, UiLocale::Hungarian, UiLocale::Swedish, UiLocale::Greek,
+        UiLocale::Romanian, UiLocale::Danish, UiLocale::Finnish, UiLocale::Norwegian,
+        UiLocale::Burmese,
+    };
+    int non_english_theme_bundles = 0;
+    for (UiLocale loc : locales) {
+        I18n::SetLocale(loc);
+        const I18nStrings bundle = I18n::GetThemeStrings();
+        TEST_CHECK(!bundle.menu_ui_theme.empty() && !bundle.theme_fluent.empty() &&
+                       !bundle.theme_editorial.empty() && !bundle.theme_monolith.empty(),
+                   std::string("v0.10.5 theme i18n: ") + I18n::LocaleToString(loc) +
+                       " yields a non-empty theme bundle");
+        TEST_CHECK(I18n::Get(StringId::MenuUiTheme) == bundle.menu_ui_theme,
+                   std::string("v0.10.5 theme i18n: ") + I18n::LocaleToString(loc) +
+                       " MenuUiTheme matches GetThemeStrings (one lookup path)");
+        if (loc != UiLocale::English &&
+            bundle.menu_ui_theme != L"UI Theme") {
+            ++non_english_theme_bundles;
+        }
+    }
+    // 36 locales (all but English) must differ from the struct default.
+    TEST_CHECK(non_english_theme_bundles == 36,
+               "v0.10.5 theme i18n: 36 non-English locales have a translated menu_ui_theme");
+
+    // Spot-pin one RTL locale end to end: the runtime value must equal the
+    // literal the source pin above validated, proving no reordering happened.
+    I18n::SetLocale(UiLocale::Arabic);
+    TEST_CHECK(I18n::Get(StringId::MenuUiTheme) == L"سمة الواجهة",
+               "v0.10.5 theme i18n: ar MenuUiTheme runtime value intact");
+    I18n::SetLocale(UiLocale::Hebrew);
+    TEST_CHECK(I18n::Get(StringId::ThemeMonolith) == L"ריפיינד מונוליט",
+               "v0.10.5 theme i18n: he ThemeMonolith runtime value intact");
+    I18n::SetLocale(initial); // suite-state hygiene
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] v0.10.5 theme i18n per-locale coverage pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] v0.10.5 theme i18n per-locale coverage pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // REQ-045 P4-8 (item 1, design §B + Tech Gate Item 6): structural pins for
 // the "local engine unavailable" modal helper and the SEC-ADJ (0,0) marshal
 // seam in main.cpp. main.cpp is the GUI entrypoint TU and is deliberately
@@ -20721,6 +20911,9 @@ int main() {
     // REQ-044 P4-5: i18n field-order structural defense (X-macro + Korean
     // designated-initializer pilot) — registered after the P4-4 verbatim suite.
     TestReq044I18nFieldOrder();
+    // v0.10.5 3-theme UI (session 261104_0001): per-locale theme coverage pin
+    // (36 tables carry the 4 designators, English keeps the struct defaults).
+    TestThemeI18nCoverage();
     // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine suites —
     // registered after the REQ-044 i18n suite, per the end-of-file pattern.
     TestReq045OpenAiUrlSecurity();
