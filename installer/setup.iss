@@ -792,7 +792,8 @@ const
 // the v2 scheduler header changed, so the engine revision bumps per the
 // component-model rule A-2 (a same-version rebuild must replace the stale
 // store copy).
-#define ENGINE_REVISION ".r12"
+// Session 261104 round 2: the v0.10.5 emergency re-publish (commit 7258f07, host CREATE_UNICODE_ENVIRONMENT fix) changed engine binaries without a revision bump; rule A's equal-version skip kept buggy store binaries on reinstall, so r13 carries the fixed engine.
+#define ENGINE_REVISION ".r13"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
