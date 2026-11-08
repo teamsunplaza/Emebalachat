@@ -586,11 +586,12 @@ void TestReq053OpenAiButtonDisablePins() {
 
     // No new i18n strings in A6: the fix is graying feedback only (CPO scope).
     // The running StringId total moves only with a tracked batch — currently
-    // 161 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
-    // strings; the v0.10.5 theme batch added 4; A6 itself added none).
+    // 165 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
+    // strings; the v0.10.5 theme batch added 4; the 261108_0002 WS3
+    // back-translation batch added 4; A6 itself added none).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 161,
-               "REQ-053 pin: StringId::EnumCount is 161 (the tracked REQ-060 total + the v0.10.5 theme strings; A6 added no strings)");
+    TEST_CHECK(enum_count == 165,
+               "REQ-053 pin: StringId::EnumCount is 165 (the tracked REQ-060 total + the v0.10.5 theme strings + the 261108_0002 WS3 back-translation ids; A6 added no strings)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 
