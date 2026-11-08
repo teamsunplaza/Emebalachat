@@ -237,8 +237,8 @@ void TestReq045OpenAiI18nPresent() {
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 165,
-                "StringId::EnumCount is 165 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 4 261108_0002 WS3 back-translation strings");
+    TEST_CHECK(enum_count == 166,
+                "StringId::EnumCount is 166 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference)");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }

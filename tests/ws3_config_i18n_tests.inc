@@ -257,6 +257,9 @@ void TestWs3BackTranslationI18n() {
         StringId::BackTranslateHeader,
         StringId::BackTranslateMatchExact,
         StringId::BackTranslateMatchCheck,
+        // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label,
+        // which used to be a hardcoded Korean literal in tooltip.cpp.
+        StringId::BackTranslateReference,
     };
 
     // Ordering invariant: the four ids were appended AFTER the theme block and
@@ -264,15 +267,15 @@ void TestWs3BackTranslationI18n() {
     // values ride through volatile ints so the comparisons stay genuine runtime
     // checks (a bare constant expression trips C4127 under /W4).
     volatile int first_new = static_cast<int>(StringId::MenuBackTranslation);
-    volatile int last_new = static_cast<int>(StringId::BackTranslateMatchCheck);
+    volatile int last_new = static_cast<int>(StringId::BackTranslateReference);
     volatile int theme_tail = static_cast<int>(StringId::ThemeMonolith);
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(first_new < sentinel && first_new > theme_tail,
                "WS3 i18n: MenuBackTranslation sits between ThemeMonolith and EnumCount");
     TEST_CHECK(last_new == sentinel - 1,
-               "WS3 i18n: BackTranslateMatchCheck is the last id before EnumCount");
-    TEST_CHECK(last_new - first_new == 3,
-               "WS3 i18n: the four new ids are contiguous");
+               "WS3 i18n: BackTranslateReference is the last id before EnumCount");
+    TEST_CHECK(last_new - first_new == 4,
+               "WS3 i18n: the five new ids are contiguous");
 
     // Korean literal pins (the user-facing strings the design names verbatim).
     I18n::SetLocale(UiLocale::Korean);
@@ -284,6 +287,8 @@ void TestWs3BackTranslationI18n() {
                "WS3 i18n ko: BackTranslateMatchExact literal");
     TEST_CHECK(I18n::Get(StringId::BackTranslateMatchCheck) == L"⚡ 표현 확인",
                "WS3 i18n ko: BackTranslateMatchCheck literal");
+    TEST_CHECK(I18n::Get(StringId::BackTranslateReference) == L"↳ 원문: ",
+               "WS3 i18n ko: BackTranslateReference literal (FIX-WS3B)");
 
     // English literals (the struct defaults; the card's fallback language).
     I18n::SetLocale(UiLocale::English);
@@ -295,6 +300,8 @@ void TestWs3BackTranslationI18n() {
                "WS3 i18n en: BackTranslateMatchExact literal");
     TEST_CHECK(I18n::Get(StringId::BackTranslateMatchCheck) == L"⚡ Check Nuance",
                "WS3 i18n en: BackTranslateMatchCheck literal");
+    TEST_CHECK(I18n::Get(StringId::BackTranslateReference) == L"↳ Original: ",
+               "WS3 i18n en: BackTranslateReference literal (FIX-WS3B)");
 
     // All 37 selectable locales: every new id non-empty. The generic
     // EnumCount loop in TestR6P5P6I18n covers this too; the per-key count here
@@ -329,6 +336,14 @@ void TestWs3BackTranslationI18n() {
                        Ws3CountOcc(i18n_src, ".back_translate_match_exact = ") == 36 &&
                        Ws3CountOcc(i18n_src, ".back_translate_match_check = ") == 36,
                    "WS3 i18n: the other three designators appear in the same 36 tables");
+        // 261108_0002 (FIX-WS3B): the fifth field follows the same pattern.
+        TEST_CHECK(i18n_src.find("const wchar_t* back_translate_reference = L\"↳ Original: \";") !=
+                       std::string::npos,
+                   "WS3 i18n: LocalizedStrings declares the back_translate_reference default");
+        TEST_CHECK(Ws3CountOcc(i18n_src, ".back_translate_reference = ") == 36,
+                   "WS3 i18n: 36 non-English tables name .back_translate_reference");
+        TEST_CHECK(i18n_src.find("case StringId::BackTranslateReference:") != std::string::npos,
+                   "WS3 i18n: I18n::Get maps BackTranslateReference");
         TEST_CHECK(i18n_src.find("case StringId::MenuBackTranslation:") != std::string::npos &&
                        i18n_src.find("case StringId::BackTranslateHeader:") != std::string::npos &&
                        i18n_src.find("case StringId::BackTranslateMatchExact:") != std::string::npos &&

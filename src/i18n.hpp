@@ -377,6 +377,11 @@ enum class StringId {
     BackTranslateHeader,     // "🔄 역번역 확인" / "🔄 Back-Translation"
     BackTranslateMatchExact, // "✓ 원문 일치" / "✓ Meaning Matched"
     BackTranslateMatchCheck, // "⚡ 표현 확인" / "⚡ Check Nuance"
+    // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label. It was
+    // a hardcoded Korean literal in tooltip.cpp, so "원문:" leaked into all 37
+    // UI languages while the header and the two pills were localized. Appended
+    // (not inserted) so every pre-existing StringId keeps its numeric value.
+    BackTranslateReference,  // "↳ 원문: " / "↳ Original: "
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales

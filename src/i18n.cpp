@@ -204,10 +204,15 @@ struct LocalizedStrings {
     // four theme strings above: they are NOT part of EMEBALA_LSTR_FIELDS, so
     // kLocalizedStringsFieldCount (157) and the X-macro stay untouched, and
     // the 37 locale tables carry their own explicit designators below.
+    // FIX-WS3B added the fifth (back_translate_reference): the card's
+    // reference-line label, which used to be a hardcoded Korean literal.
     const wchar_t* menu_back_translation = L"Floating Back-Translation";
     const wchar_t* back_translate_header = L"🔄 Back-Translation";
     const wchar_t* back_translate_match_exact = L"✓ Meaning Matched";
     const wchar_t* back_translate_match_check = L"⚡ Check Nuance";
+    // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label
+    // ("↳ 원문: " in Korean). Trailing default like its four siblings.
+    const wchar_t* back_translate_reference = L"↳ Original: ";
 };
 
 // Compile-time field count — generated from the SAME X-macro list above,
@@ -469,6 +474,7 @@ const LocalizedStrings kStringsKorean = {
     .back_translate_header = L"🔄 역번역 확인",
     .back_translate_match_exact = L"✓ 원문 일치",
     .back_translate_match_check = L"⚡ 표현 확인",
+    .back_translate_reference = L"↳ 원문: ",
 };
 
 // 2. Japanese (ja)
@@ -685,6 +691,7 @@ const LocalizedStrings kStringsJapanese = {
     .back_translate_header = L"🔄 逆翻訳チェック",
     .back_translate_match_exact = L"✓ 原文一致",
     .back_translate_match_check = L"⚡ 表現チェック",
+    .back_translate_reference = L"↳ 原文: ",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -901,6 +908,7 @@ const LocalizedStrings kStringsChineseSimp = {
     .back_translate_header = L"🔄 回译核对",
     .back_translate_match_exact = L"✓ 与原文一致",
     .back_translate_match_check = L"⚡ 检查表达",
+    .back_translate_reference = L"↳ 原文: ",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -1117,6 +1125,7 @@ const LocalizedStrings kStringsChineseTrad = {
     .back_translate_header = L"🔄 回譯核對",
     .back_translate_match_exact = L"✓ 與原文一致",
     .back_translate_match_check = L"⚡ 檢查表達",
+    .back_translate_reference = L"↳ 原文: ",
 };
 
 // 5. Vietnamese (vi)
@@ -1333,6 +1342,7 @@ const LocalizedStrings kStringsVietnamese = {
     .back_translate_header = L"🔄 Kiểm tra dịch ngược",
     .back_translate_match_exact = L"✓ Khớp nghĩa gốc",
     .back_translate_match_check = L"⚡ Kiểm tra sắc thái",
+    .back_translate_reference = L"↳ Bản gốc: ",
 };
 
 // 6. Spanish (es)
@@ -1546,6 +1556,7 @@ const LocalizedStrings kStringsSpanish = {
     .back_translate_header = L"🔄 Verificación de retrotraducción",
     .back_translate_match_exact = L"✓ Significado coincidente",
     .back_translate_match_check = L"⚡ Revisar matiz",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 7. English (en) - Default Fallback
@@ -1760,8 +1771,9 @@ const LocalizedStrings kStringsEnglish = {
     //   [158..161] menu_ui_theme / theme_fluent / theme_editorial / theme_monolith
     //   [162..165] menu_back_translation / back_translate_header /
     //              back_translate_match_exact / back_translate_match_check
-    // = 165 initializers for 165 members. Before this fix the four theme slots
-    // were skipped, so the WS3 strings took 158..161 and the EN tray theme
+    //   [166]      back_translate_reference  (261108_0002 FIX-WS3B)
+    // = 166 initializers for 166 members. Before the FIX-R1 fix the four theme
+    // slots were skipped, so the WS3 strings took 158..161 and the EN tray theme
     // submenu rendered "🔄 Back-Translation" while the WS3 fields silently kept
     // their struct defaults. The four theme values below are the struct defaults
     // spelled out (this is the English table, so they ARE the English strings).
@@ -1778,6 +1790,8 @@ const LocalizedStrings kStringsEnglish = {
     L"🔄 Back-Translation",
     L"✓ Meaning Matched",
     L"⚡ Check Nuance",
+    // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label, slot 166.
+    L"↳ Original: ",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -2006,6 +2020,7 @@ const LocalizedStrings kStringsFrench = {
     .back_translate_header = L"🔄 Vérification de rétrotraduction",
     .back_translate_match_exact = L"✓ Sens concordant",
     .back_translate_match_check = L"⚡ Vérifier la nuance",
+    .back_translate_reference = L"↳ Original : ",
 };
 
 // 9. German (de)
@@ -2222,6 +2237,7 @@ const LocalizedStrings kStringsGerman = {
     .back_translate_header = L"🔄 Rückübersetzungs-Prüfung",
     .back_translate_match_exact = L"✓ Bedeutung stimmt überein",
     .back_translate_match_check = L"⚡ Nuance prüfen",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 10. Russian (ru)
@@ -2438,6 +2454,7 @@ const LocalizedStrings kStringsRussian = {
     .back_translate_header = L"🔄 Проверка обратного перевода",
     .back_translate_match_exact = L"✓ Смысл совпадает",
     .back_translate_match_check = L"⚡ Проверить оттенок",
+    .back_translate_reference = L"↳ Оригинал: ",
 };
 
 // 11. Portuguese (pt)
@@ -2654,6 +2671,7 @@ const LocalizedStrings kStringsPortuguese = {
     .back_translate_header = L"🔄 Verificação da retrotradução",
     .back_translate_match_exact = L"✓ Significado correspondente",
     .back_translate_match_check = L"⚡ Verificar nuance",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 12. Italian (it)
@@ -2870,6 +2888,7 @@ const LocalizedStrings kStringsItalian = {
     .back_translate_header = L"🔄 Verifica retrotraduzione",
     .back_translate_match_exact = L"✓ Significato corrispondente",
     .back_translate_match_check = L"⚡ Controlla la sfumatura",
+    .back_translate_reference = L"↳ Originale: ",
 };
 
 // 13. Dutch (nl)
@@ -3086,6 +3105,7 @@ const LocalizedStrings kStringsDutch = {
     .back_translate_header = L"🔄 Terugvertaling controleren",
     .back_translate_match_exact = L"✓ Betekenis komt overeen",
     .back_translate_match_check = L"⚡ Nuance controleren",
+    .back_translate_reference = L"↳ Origineel: ",
 };
 
 // 14. Polish (pl)
@@ -3302,6 +3322,7 @@ const LocalizedStrings kStringsPolish = {
     .back_translate_header = L"🔄 Sprawdzenie tłumaczenia zwrotnego",
     .back_translate_match_exact = L"✓ Znaczenie zgodne",
     .back_translate_match_check = L"⚡ Sprawdź niuans",
+    .back_translate_reference = L"↳ Oryginał: ",
 };
 
 // 15. Czech (cs)
@@ -3518,6 +3539,7 @@ const LocalizedStrings kStringsCzech = {
     .back_translate_header = L"🔄 Ověření zpětného překladu",
     .back_translate_match_exact = L"✓ Význam odpovídá",
     .back_translate_match_check = L"⚡ Zkontrolovat odstín",
+    .back_translate_reference = L"↳ Originál: ",
 };
 
 // 16. Hungarian (hu)
@@ -3734,6 +3756,7 @@ const LocalizedStrings kStringsHungarian = {
     .back_translate_header = L"🔄 Visszafordítás ellenőrzése",
     .back_translate_match_exact = L"✓ Jelentés egyezik",
     .back_translate_match_check = L"⚡ Árnyalat ellenőrzése",
+    .back_translate_reference = L"↳ Eredeti: ",
 };
 
 // 17. Romanian (ro)
@@ -3950,6 +3973,7 @@ const LocalizedStrings kStringsRomanian = {
     .back_translate_header = L"🔄 Verificare traducere inversă",
     .back_translate_match_exact = L"✓ Sens identic",
     .back_translate_match_check = L"⚡ Verifică nuanța",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 18. Swedish (sv)
@@ -4166,6 +4190,7 @@ const LocalizedStrings kStringsSwedish = {
     .back_translate_header = L"🔄 Kontroll av återöversättning",
     .back_translate_match_exact = L"✓ Betydelsen stämmer",
     .back_translate_match_check = L"⚡ Kontrollera nyans",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 19. Danish (da)
@@ -4382,6 +4407,7 @@ const LocalizedStrings kStringsDanish = {
     .back_translate_header = L"🔄 Kontrol af tilbagetranslation",
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Kontroller nuance",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 20. Finnish (fi)
@@ -4598,6 +4624,7 @@ const LocalizedStrings kStringsFinnish = {
     .back_translate_header = L"🔄 Takaisinkäännöksen tarkistus",
     .back_translate_match_exact = L"✓ Merkitys täsmää",
     .back_translate_match_check = L"⚡ Tarkista sävy",
+    .back_translate_reference = L"↳ Alkuperäinen: ",
 };
 
 // 21. Norwegian (no / nb)
@@ -4814,6 +4841,7 @@ const LocalizedStrings kStringsNorwegian = {
     .back_translate_header = L"🔄 Kontroll av tilbakeoversettelse",
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Sjekk nyanse",
+    .back_translate_reference = L"↳ Original: ",
 };
 
 // 22. Greek (el)
@@ -5030,6 +5058,7 @@ const LocalizedStrings kStringsGreek = {
     .back_translate_header = L"🔄 Έλεγχος αντίστροφης μετάφρασης",
     .back_translate_match_exact = L"✓ Το νόημα ταιριάζει",
     .back_translate_match_check = L"⚡ Έλεγχος απόχρωσης",
+    .back_translate_reference = L"↳ Πρωτότυπο: ",
 };
 
 // 23. Turkish (tr)
@@ -5246,6 +5275,7 @@ const LocalizedStrings kStringsTurkish = {
     .back_translate_header = L"🔄 Geri çeviri kontrolü",
     .back_translate_match_exact = L"✓ Anlam eşleşti",
     .back_translate_match_check = L"⚡ Nüansı kontrol et",
+    .back_translate_reference = L"↳ Orijinal: ",
 };
 
 // 24. Ukrainian (uk)
@@ -5462,6 +5492,7 @@ const LocalizedStrings kStringsUkrainian = {
     .back_translate_header = L"🔄 Перевірка зворотного перекладу",
     .back_translate_match_exact = L"✓ Зміст збігається",
     .back_translate_match_check = L"⚡ Перевірити відтінок",
+    .back_translate_reference = L"↳ Оригінал: ",
 };
 
 // 25. Thai (th)
@@ -5678,6 +5709,7 @@ const LocalizedStrings kStringsThai = {
     .back_translate_header = L"🔄 ตรวจสอบการแปลย้อนกลับ",
     .back_translate_match_exact = L"✓ ความหมายตรงกัน",
     .back_translate_match_check = L"⚡ ตรวจสอบน้ำเสียง",
+    .back_translate_reference = L"↳ ต้นฉบับ: ",
 };
 
 // 26. Indonesian (id)
@@ -5894,6 +5926,7 @@ const LocalizedStrings kStringsIndonesian = {
     .back_translate_header = L"🔄 Verifikasi terjemahan balik",
     .back_translate_match_exact = L"✓ Makna sesuai",
     .back_translate_match_check = L"⚡ Periksa nuansa",
+    .back_translate_reference = L"↳ Asli: ",
 };
 
 // 27. Malay (ms)
@@ -6110,6 +6143,7 @@ const LocalizedStrings kStringsMalay = {
     .back_translate_header = L"🔄 Pengesahan terjemahan balik",
     .back_translate_match_exact = L"✓ Makna sepadan",
     .back_translate_match_check = L"⚡ Semak nuansa",
+    .back_translate_reference = L"↳ Asal: ",
 };
 
 // 28. Filipino (fil)
@@ -6328,6 +6362,7 @@ const LocalizedStrings kStringsFilipino = {
     .back_translate_header = L"🔄 Pagpapatunay ng pabalik na salin",
     .back_translate_match_exact = L"✓ Tumutugma ang kahulugan",
     .back_translate_match_check = L"⚡ Suriin ang nuance",
+    .back_translate_reference = L"↳ Orihinal: ",
 };
 
 // 29. Hindi (hi)
@@ -6544,6 +6579,7 @@ const LocalizedStrings kStringsHindi = {
     .back_translate_header = L"🔄 पश्च-अनुवाद जाँच",
     .back_translate_match_exact = L"✓ अर्थ मेल खाता है",
     .back_translate_match_check = L"⚡ भाव जाँचें",
+    .back_translate_reference = L"↳ मूल: ",
 };
 
 // 30. Bengali (bn)
@@ -6760,6 +6796,7 @@ const LocalizedStrings kStringsBengali = {
     .back_translate_header = L"🔄 ব্যাক-অনুবাদ যাচাই",
     .back_translate_match_exact = L"✓ অর্থ মিলে গেছে",
     .back_translate_match_check = L"⚡ সূক্ষ্মতা যাচাই করুন",
+    .back_translate_reference = L"↳ মূল: ",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -6977,6 +7014,7 @@ const LocalizedStrings kStringsArabic = {
     .back_translate_header = L"🔄 تحقق من الترجمة العكسية",
     .back_translate_match_exact = L"✓ المعنى مطابق",
     .back_translate_match_check = L"⚡ تحقق من الفارق الدقيق",
+    .back_translate_reference = L"↳ الأصل: ",
 };
 
 // 32. Persian (fa) — RTL
@@ -7193,6 +7231,7 @@ const LocalizedStrings kStringsPersian = {
     .back_translate_header = L"🔄 بررسی ترجمهٔ معکوس",
     .back_translate_match_exact = L"✓ معنا مطابقت دارد",
     .back_translate_match_check = L"⚡ بررسی ظرافت معنا",
+    .back_translate_reference = L"↳ اصلی: ",
 };
 
 // 33. Urdu (ur) — RTL
@@ -7409,6 +7448,7 @@ const LocalizedStrings kStringsUrdu = {
     .back_translate_header = L"🔄 معکوس ترجمے کی تصدیق",
     .back_translate_match_exact = L"✓ معنی مطابق ہے",
     .back_translate_match_check = L"⚡ باریکی کی جانچ کریں",
+    .back_translate_reference = L"↳ اصل: ",
 };
 
 // 34. Hebrew (he) — RTL
@@ -7625,6 +7665,7 @@ const LocalizedStrings kStringsHebrew = {
     .back_translate_header = L"🔄 אימות תרגום חוזר",
     .back_translate_match_exact = L"✓ המשמעות תואמת",
     .back_translate_match_check = L"⚡ בדיקת ניואנס",
+    .back_translate_reference = L"↳ מקור: ",
 };
 
 // 35. Khmer (km)
@@ -7841,6 +7882,7 @@ const LocalizedStrings kStringsKhmer = {
     .back_translate_header = L"🔄 ផ្ទៀងផ្ទាត់ការបកប្រែត្រឡប់",
     .back_translate_match_exact = L"✓ អត្ថន័យត្រូវគ្នា",
     .back_translate_match_check = L"⚡ ពិនិត្យអត្ថរស",
+    .back_translate_reference = L"↳ ដើម: ",
 };
 
 // 36. Lao (lo)
@@ -8057,6 +8099,7 @@ const LocalizedStrings kStringsLao = {
     .back_translate_header = L"🔄 ກວດສອບການແປຍ້ອນກັບ",
     .back_translate_match_exact = L"✓ ຄວາມໝາຍກົງກັນ",
     .back_translate_match_check = L"⚡ ກວດສອບນ້ຳສຽງ",
+    .back_translate_reference = L"↳ ຕົ້ນສະບັບ: ",
 };
 
 // 37. Burmese (my)
@@ -8273,6 +8316,7 @@ const LocalizedStrings kStringsBurmese = {
     .back_translate_header = L"🔄 ပြန်လည်ဘာသာပြန် စစ်ဆေးမှု",
     .back_translate_match_exact = L"✓ အဓိပ္ပာယ် ကိုက်ညီသည်",
     .back_translate_match_check = L"⚡ အဓိပ္ပာယ်ကွဲပြားမှု စစ်ဆေးရန်",
+    .back_translate_reference = L"↳ မူရင်း: ",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -8652,6 +8696,8 @@ std::wstring I18n::Get(StringId id) {
         case StringId::BackTranslateHeader:       return s.back_translate_header;
         case StringId::BackTranslateMatchExact:   return s.back_translate_match_exact;
         case StringId::BackTranslateMatchCheck:   return s.back_translate_match_check;
+        // 261108_0002 (FIX-WS3B): the card's reference-line label.
+        case StringId::BackTranslateReference:    return s.back_translate_reference;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

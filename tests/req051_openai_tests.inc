@@ -243,8 +243,8 @@ void TestReq051I18nCountAndCoverage() {
     // strings). Read through a volatile to keep the runtime
     // comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 165,
-               "REQ-051: StringId::EnumCount is 165 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 4 261108_0002 WS3 back-translation ids");
+    TEST_CHECK(enum_count == 166,
+               "REQ-051: StringId::EnumCount is 166 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference)");
 
     // The new caption resolves non-empty in all 37 authored tables, and no
     // non-English locale falls back to the English text (real translations

@@ -16498,9 +16498,10 @@ namespace {
 // solely so the sizeof-based count below is checked against a struct with an
 // identical layout. It must be kept in sync; the static_assert catches drift.
 // 261108_0002 (FIX-R1): the 161 both mirrors carried was the PRE-WS3 value, so
-// this one and the req048_r2_tests.inc copy contradicted the EnumCount==165 pin
+// this one and the req048_r2_tests.inc copy contradicted the EnumCount pin
 // three lines below (two mirrors drifting against each other = no defense).
-// Both are now 165. The authoritative invariant no longer lives in a mirror: it
+// Both are now 166 (FIX-WS3B added BackTranslateReference). The authoritative
+// invariant no longer lives in a mirror: it
 // is the sizeof(LocalizedStrings)/sizeof(const wchar_t*) == StringId::EnumCount
 // static_assert in src/i18n.cpp, which sees the REAL struct (it is in that TU's
 // anonymous namespace, hence not linkable here). What this TU still owns is the
@@ -16523,8 +16524,9 @@ struct Req044LstrMirror {
     // 4 theme strings appended (157 -> 161: MenuUiTheme + ThemeFluent/
     // ThemeEditorial/ThemeMonolith); 261108_0002 WS3 (v0.10.6): 4 floating
     // back-translation strings appended (161 -> 165: MenuBackTranslation +
-    // BackTranslateHeader/MatchExact/MatchCheck).
-    const wchar_t* f[165];
+    // BackTranslateHeader/MatchExact/MatchCheck), then FIX-WS3B added the
+    // card's reference-line label (165 -> 166: BackTranslateReference).
+    const wchar_t* f[166];
 };
 
 } // namespace
@@ -16537,8 +16539,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 165
-    static_assert(kExpectedFieldCount == 165,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 166
+    static_assert(kExpectedFieldCount == 166,
                    "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -16547,11 +16549,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 165,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3: LocalizedStrings field count is 165 "
+    TEST_CHECK(observed_field_count == 166,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/FIX-WS3B: LocalizedStrings field count is 166 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 165,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3: StringId::EnumCount is 165 (struct fields == switch cases; 157 X-macro + 4 theme + 4 WS3 back-translation ids)");
+    TEST_CHECK(observed_enum_count == 166,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/FIX-WS3B: StringId::EnumCount is 166 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -16650,7 +16652,7 @@ void TestReq044I18nFieldOrder() {
         const int element_count = static_cast<int>(elements);
         TEST_CHECK(element_count == static_cast<int>(StringId::EnumCount),
                    "REQ-044 (c1): kStringsEnglish has one initializer per LocalizedStrings "
-                   "member (positional tail aligned; 157 X-macro + 4 theme + 4 back-translation)");
+                   "member (positional tail aligned; 157 X-macro + 4 theme + 5 back-translation)");
 
         // (c2) The four theme slots and the four WS3 slots must hold their own
         // strings. Before the FIX-R1 alignment, MenuUiTheme returned
@@ -16675,6 +16677,10 @@ void TestReq044I18nFieldOrder() {
                    "REQ-044 (c2): en BackTranslateMatchExact landed on its own struct slot");
         TEST_CHECK(I18n::Get(StringId::BackTranslateMatchCheck) == L"⚡ Check Nuance",
                    "REQ-044 (c2): en BackTranslateMatchCheck landed on its own struct slot");
+        // 261108_0002 (FIX-WS3B): the fifth WS3 slot (166) must hold its own
+        // string too - the exact drift this suite exists to catch.
+        TEST_CHECK(I18n::Get(StringId::BackTranslateReference) == L"↳ Original: ",
+                   "REQ-044 (c2): en BackTranslateReference landed on its own struct slot");
         I18n::SetLocale(english_initial); // suite-state hygiene
     }
 

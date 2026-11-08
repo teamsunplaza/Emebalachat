@@ -1292,14 +1292,21 @@ std::wstring TooltipWindow::FormatBackTransHeader(const std::wstring& title,
     return out;
 }
 
-// Reference line: "↳ 원문: AAAAA". There is no i18n key for this label (the
-// 261108_0002 i18n unit added the header + the two pill strings only), so the
-// spec's literal is used verbatim, per the "plain format with the existing
-// string-utils idiom" instruction.
+// Reference line: "<localized label>AAAAA", e.g. "↳ 원문: AAAAA" in Korean and
+// "↳ Original: AAAAA" in English.
+// 261108_0002 (FIX-WS3B, v0.10.6): the label used to be a hardcoded Korean
+// literal here, so "원문:" leaked into all 37 UI languages while the header and
+// the two pills were localized. It now comes from StringId::BackTranslateReference
+// (the arrow is part of the localized string, so RTL locales own their own
+// placement of it). The empty-string fallback keeps the line readable if a
+// future table forgets the field - the 37-locale completeness test would catch
+// that first, but a card with no label beats a card with a crash.
 std::wstring TooltipWindow::FormatBackTransReference(const std::wstring& original_text) {
-    std::wstring out = L"↳ 원문: ";
-    out += original_text;
-    return out;
+    std::wstring label = I18n::Get(StringId::BackTranslateReference);
+    if (label.empty()) {
+        label = L"↳ ";
+    }
+    return label + original_text;
 }
 
 // AAAAA' == AAAAA means the round trip was textually exact: repeating the body
@@ -1522,13 +1529,55 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
     backtrans_close_hover_ = false;
 
     // Size: the pure character-count plan is the floor; a real DirectWrite
-    // measurement refines the body height when the factory is alive (same
-    // measure-then-lay-out discipline as ShowTranslation, but the card width
-    // is FIXED at 360 DIP so the estimate stays honest).
+    // measurement refines both the body height and the header row when the
+    // factory is alive (same measure-then-lay-out discipline as
+    // ShowTranslation, but the card width is FIXED at 360 DIP so the estimate
+    // stays honest).
+    //
+    // 261108_0002 (FIX-WS3B, v0.10.6): the header row is planned BEFORE the
+    // height is computed, because a wrapped pill adds a row. The plan is
+    // measured here once and stored in backtrans_header_plan_ so Render draws
+    // exactly the geometry that was measured (measure/render lockstep by
+    // construction).
     const int text_column = kBackTransCardWidthDip - 28;
+    const std::wstring pill_text = I18n::Get(backtrans_matched_ ? StringId::BackTranslateMatchExact
+                                                               : StringId::BackTranslateMatchCheck);
+    float header_w = static_cast<float>(backtrans_header_.size()) * kBackTransHeaderCharDip;
+    float pill_w = static_cast<float>(pill_text.size()) * kBackTransPillCharDip + kBackTransPillPadDip;
+    if (dwrite_factory_) {
+        if (backtrans_header_format_ && !backtrans_header_.empty()) {
+            IDWriteTextLayout* hl = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    backtrans_header_.c_str(), static_cast<UINT32>(backtrans_header_.size()),
+                    backtrans_header_format_, 4096.0f, 24.0f, &hl)) && hl) {
+                DWRITE_TEXT_METRICS hm = {};
+                if (SUCCEEDED(hl->GetMetrics(&hm)) && hm.width > 0.0f) {
+                    header_w = hm.width;
+                }
+                hl->Release();
+            }
+        }
+        if (button_format_ && !pill_text.empty()) {
+            IDWriteTextLayout* pl = nullptr;
+            if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                    pill_text.c_str(), static_cast<UINT32>(pill_text.size()),
+                    button_format_, 4096.0f, 24.0f, &pl)) && pl) {
+                DWRITE_TEXT_METRICS pm = {};
+                if (SUCCEEDED(pl->GetMetrics(&pm)) && pm.width > 0.0f) {
+                    pill_w = pm.width + kBackTransPillPadDip;
+                }
+                pl->Release();
+            }
+        }
+    }
+    backtrans_header_plan_ =
+        PlanBackTransHeaderRowDip(header_w, pill_w, static_cast<float>(kBackTransCardWidthDip));
+    const int header_extra_h = static_cast<int>(backtrans_header_plan_.pill_row_h);
+
     BackTransCardSize size = ComputeBackTransCardSize(
         static_cast<int>(backtrans_text_.size()),
-        static_cast<int>(backtrans_ref_line_.size()));
+        static_cast<int>(backtrans_ref_line_.size()),
+        header_extra_h);
     if (dwrite_factory_ && backtrans_body_format_) {
         IDWriteTextLayout* layout = nullptr;
         if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
@@ -1537,7 +1586,7 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
                 &layout)) && layout) {
             DWRITE_TEXT_METRICS m = {};
             if (SUCCEEDED(layout->GetMetrics(&m))) {
-                int h = kBackTransChromeDip + static_cast<int>(std::ceil(m.height));
+                int h = kBackTransChromeDip + static_cast<int>(std::ceil(m.height)) + header_extra_h;
                 if (!backtrans_ref_line_.empty()) {
                     h += kBackTransRefGapDip + kBackTransRefLineDip;
                 }
@@ -1820,45 +1869,42 @@ void TooltipWindow::CopyToClipboard() {
 // target already begun. Layout (all DIP, card width 360):
 //   row 1  y  9..33   header title (12pt SemiBold) + match pill + ✕
 //   body   y 40..    AAAAA' (13pt SemiBold, text_primary)
-//   ref    bottom    "↳ 원문: AAAAA" (11pt, text_muted)
-// The pill is the caller's verdict: status_ready green for "✓ 원문 일치",
+//   ref    bottom    "<localized label>AAAAA" (11pt, text_muted)
+// The pill is the caller's verdict: state_ready green for "✓ 원문 일치",
 // accent_primary for "⚡ 표현 확인" (the theme has no `status_active` token -
 // state_ready is its equivalent semantic slot).
+//
+// 261108_0002 (FIX-WS3B, v0.10.6): the header row now follows
+// backtrans_header_plan_ (planned in ShowBackTranslation from real DirectWrite
+// measurements). In long-string locales the pill drops to its OWN row below
+// the header instead of overlapping it; the ✕ stays top-right on the header
+// row, and the body starts below whichever rows are in use.
 void TooltipWindow::RenderBackTranslation() {
     if (!dc_render_target_ || !scratch_brush_) return;
     const auto& theme = ui::GetActiveTheme();
     const float w = static_cast<float>(current_width_);
+    const BackTransHeaderPlan& plan = backtrans_header_plan_;
 
-    // ---- header row: title + pill + close ----
-    const float row_top = 9.0f;
-    const float row_bottom = 33.0f;
-    close_btn_rect_ = D2D1::RectF(w - 32.0f, row_top, w - 12.0f, row_bottom);
+    // ---- header row: title + (maybe) pill + close ----
+    const float row_top = kBackTransRowTopDip;
+    const float row_bottom = row_top + kBackTransRowHeightDip;
+    close_btn_rect_ = D2D1::RectF(w - kBackTransCloseRightDip - kBackTransCloseW, row_top,
+                                  w - kBackTransCloseRightDip, row_bottom);
     backtrans_close_rect_ = close_btn_rect_;
 
-    // Pill: measured through the shared button_format_ (11.5pt medium) so it
-    // matches the translation card's language pills. The width is measured
-    // here (once per show, not per frame: the card is static while up).
     const std::wstring pill_text = I18n::Get(backtrans_matched_ ? StringId::BackTranslateMatchExact
                                                                : StringId::BackTranslateMatchCheck);
-    float pill_w = 0.0f;
-    if (dwrite_factory_ && button_format_ && !pill_text.empty()) {
-        IDWriteTextLayout* pill_layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                pill_text.c_str(), static_cast<UINT32>(pill_text.size()),
-                button_format_, 512.0f, 24.0f, &pill_layout)) && pill_layout) {
-            DWRITE_TEXT_METRICS pm = {};
-            if (SUCCEEDED(pill_layout->GetMetrics(&pm)) && pm.width > 0.0f) {
-                pill_w = pm.width + 16.0f;
-            }
-            pill_layout->Release();
-        }
-    }
-    if (pill_w <= 0.0f) {
-        pill_w = 96.0f; // fallback floor when measurement is unavailable
-    }
-    const float pill_right = close_btn_rect_.left - 8.0f;
-    const float pill_left = pill_right - pill_w;
-    const D2D1_RECT_F pill_rect = D2D1::RectF(pill_left, row_top, pill_right, row_bottom);
+    const float pill_w = plan.pill_width_dip;
+    // Single row: the pill sits immediately left of the ✕. Wrapped: it starts
+    // at the card's left padding, under the header.
+    const float pill_left = (plan.layout == BackTransHeaderLayout::SingleRow)
+                                ? (close_btn_rect_.left - kBackTransCloseGapDip - pill_w)
+                                : kBackTransPadDip;
+    const float pill_top = (plan.layout == BackTransHeaderLayout::SingleRow)
+                               ? row_top
+                               : row_bottom + kBackTransPillRowGapDip;
+    const D2D1_RECT_F pill_rect = D2D1::RectF(pill_left, pill_top, pill_left + pill_w,
+                                              pill_top + kBackTransRowHeightDip);
     const D2D1_ROUNDED_RECT pill_rr =
         D2D1::RoundedRect(pill_rect, theme.control_radius, theme.control_radius);
     const UINT32 pill_color = backtrans_matched_ ? theme.state_ready : theme.accent_primary;
@@ -1873,10 +1919,13 @@ void TooltipWindow::RenderBackTranslation() {
                                     button_format_, pill_rect, scratch_brush_);
     }
 
-    // Title: clipped to the space left of the pill so a long localized header
-    // ("🔄 Verificación de retrotraducción (EN → ES)") can never run under it.
+    // Title: bounded by the plan's header budget, which already excludes the
+    // pill and the ✕. When the plan says the header cannot fit even alone, the
+    // box simply ends at that budget and DirectWrite trims with an ellipsis
+    // (NO_WRAP + a bounded rect) - the documented last-resort branch.
     if (backtrans_header_format_) {
-        const D2D1_RECT_F title_rect = D2D1::RectF(14.0f, row_top, pill_left - 8.0f, row_bottom);
+        const D2D1_RECT_F title_rect = D2D1::RectF(
+            kBackTransPadDip, row_top, kBackTransPadDip + plan.header_width_dip, row_bottom);
         scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->DrawText(backtrans_header_.c_str(),
                                     static_cast<UINT32>(backtrans_header_.size()),
@@ -1891,20 +1940,24 @@ void TooltipWindow::RenderBackTranslation() {
         dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
     }
 
-    // Header divider (same 14 DIP inset as the translation card).
+    // Header divider: below whichever rows the plan used, so a wrapped pill
+    // never straddles the rule.
+    const float divider_y = row_bottom + plan.pill_row_h + 4.0f;
     scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
-    dc_render_target_->DrawLine(D2D1::Point2F(14.0f, 37.0f),
-                                D2D1::Point2F(w - 14.0f, 37.0f), scratch_brush_, 1.0f);
+    dc_render_target_->DrawLine(D2D1::Point2F(kBackTransPadDip, divider_y),
+                                D2D1::Point2F(w - kBackTransPadDip, divider_y),
+                                scratch_brush_, 1.0f);
 
     // ---- body: AAAAA' (13pt SemiBold) ----
-    const float body_top = 44.0f;
+    const float body_top = divider_y + 7.0f;
     const float ref_block = backtrans_ref_line_.empty()
                                 ? 0.0f
                                 : static_cast<float>(kBackTransRefGapDip + kBackTransRefLineDip);
     float body_bottom = static_cast<float>(current_height_) - 12.0f - ref_block;
     if (body_bottom < body_top) body_bottom = body_top;
     if (backtrans_body_format_ && !backtrans_text_.empty()) {
-        const D2D1_RECT_F body_rect = D2D1::RectF(14.0f, body_top, w - 14.0f, body_bottom);
+        const D2D1_RECT_F body_rect = D2D1::RectF(kBackTransPadDip, body_top,
+                                                  w - kBackTransPadDip, body_bottom);
         scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->DrawText(backtrans_text_.c_str(),
                                     static_cast<UINT32>(backtrans_text_.size()),

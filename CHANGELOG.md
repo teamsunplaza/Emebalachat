@@ -61,6 +61,24 @@ Translation:
     continuations, the leading-colon stripper no longer eats `:shortcode:`
     emoji, and untranslated source-script dominance is rejected.
 
+Interface:
+
+- **The back-translation card's reference line is now localized.** Its
+  "↳ 원문:" label was a hardcoded Korean literal, so it appeared in Korean
+  under every one of the 37 interface languages while the card's header and
+  verdict chips were translated. The label is now a translated string
+  ("↳ Original: ", "↳ Originale: ", "↳ 原文: ", ...) with the arrow carried
+  inside the localized text.
+- **The back-translation card no longer overlaps its header and verdict
+  chip in long-string languages.** On the fixed 360-pixel-wide card, long
+  localized headers and chips (Italian "Verifica retrotraduzione" +
+  "Controlla la sfumatura", German "Rückübersetzungs-Prüfung" + "Nuance
+  prüfen") ran into each other. The card now measures both and, when they
+  cannot share a row, moves the chip to its own row below the header and
+  grows by exactly that row; the close button stays on the header row. The
+  chip is never clipped, and the header is only trimmed when it cannot fit
+  even alone.
+
 Installer & upgrade safety:
 
 - The installer now SHA-256-verifies every engine binary after copying it,

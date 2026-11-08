@@ -307,12 +307,105 @@ public:
         int height;
     };
 
+    // ---- 261108_0002 (FIX-WS3B, v0.10.6): header-row layout planner ----
+    // The card row is [header text] [verdict pill] [✕] inside a FIXED 360 DIP
+    // width. In long-string locales (Italian "Verifica retrotraduzione" +
+    // "Controlla la sfumatura", German "Rückübersetzungs-Prüfung" + "Nuance
+    // prüfen") the header and the pill overlapped on the shipped v0.10.6
+    // card. The rule below is the fix, expressed as pure geometry so it is
+    // headless-testable:
+    //   1. both fit on one row          -> SingleRow
+    //   2. they do not                  -> PillOnOwnRow (pill left-aligned
+    //                                      under the header, same styling;
+    //                                      the ✕ stays on the header row)
+    //   3. the header alone still does
+    //      not fit on its row           -> EllipsizeHeader (also a pill row:
+    //                                      the pill never shares a row with a
+    //                                      clipped header)
+    // The pill is NEVER clipped: its box is the measured/estimated width.
+    static constexpr float kBackTransPadDip = 14.0f;       // card side padding
+    static constexpr float kBackTransCloseW = 20.0f;       // ✕ box width
+    static constexpr float kBackTransCloseRightDip = 12.0f; // ✕ to card right edge
+    static constexpr float kBackTransCloseGapDip = 8.0f;   // pill -> ✕ gap
+    static constexpr float kBackTransHeaderGapDip = 8.0f;  // header -> pill gap
+    static constexpr float kBackTransRowTopDip = 9.0f;
+    static constexpr float kBackTransRowHeightDip = 24.0f;
+    static constexpr float kBackTransPillPadDip = 16.0f;   // pill horizontal padding
+    static constexpr float kBackTransPillMinWidthDip = 96.0f;
+    static constexpr float kBackTransPillRowGapDip = 6.0f; // header row -> pill row
+    // Per-character width estimates (DIP) used ONLY by the character-count
+    // entry point below. The live show path prefers a real DirectWrite
+    // measurement and falls back to these; they are a lower bound for CJK
+    // (wide glyphs), which is safe: an under-estimate can only keep a row
+    // single when the measurement would also keep it single.
+    static constexpr float kBackTransHeaderCharDip = 6.6f; // 12pt SemiBold
+    static constexpr float kBackTransPillCharDip = 6.4f;   // 11.5pt Medium
+
+    enum class BackTransHeaderLayout { SingleRow, PillOnOwnRow, EllipsizeHeader };
+
+    struct BackTransHeaderPlan {
+        BackTransHeaderLayout layout;
+        float header_width_dip; // width available to the header text
+        float pill_width_dip;   // pill box width (never clipped)
+        float header_row_h;     // header row height (constant)
+        float pill_row_h;       // EXTRA height the wrapped pill row adds (0 single-row)
+        bool ellipsize;         // the header must be trimmed to header_width_dip
+    };
+
+    // Geometry core, in DIP. Both public entry points funnel through here, so
+    // the measured live path and the character-count test path can never
+    // disagree about the RULE - only about the inputs.
+    static constexpr BackTransHeaderPlan PlanBackTransHeaderRowDip(float header_w_dip,
+                                                                  float pill_w_dip,
+                                                                  float row_width_dip) {
+        const float close_left = row_width_dip - kBackTransCloseRightDip - kBackTransCloseW;
+        // Pill box: its measured width, floored, and never wider than the
+        // card's content column (a pill wider than the card cannot be shown
+        // without clipping, which the contract forbids).
+        float pill_w = pill_w_dip;
+        if (pill_w < kBackTransPillMinWidthDip) pill_w = kBackTransPillMinWidthDip;
+        const float content_w = row_width_dip - 2.0f * kBackTransPadDip;
+        if (pill_w > content_w) pill_w = content_w;
+
+        const float single_row_header_w =
+            close_left - kBackTransCloseGapDip - pill_w - kBackTransHeaderGapDip - kBackTransPadDip;
+        const float own_row_header_w =
+            close_left - kBackTransCloseGapDip - kBackTransPadDip;
+
+        if (header_w_dip <= single_row_header_w) {
+            return {BackTransHeaderLayout::SingleRow, single_row_header_w, pill_w,
+                    kBackTransRowHeightDip, 0.0f, false};
+        }
+        const float extra = kBackTransPillRowGapDip + kBackTransRowHeightDip;
+        if (header_w_dip <= own_row_header_w) {
+            return {BackTransHeaderLayout::PillOnOwnRow, own_row_header_w, pill_w,
+                    kBackTransRowHeightDip, extra, false};
+        }
+        return {BackTransHeaderLayout::EllipsizeHeader, own_row_header_w, pill_w,
+                kBackTransRowHeightDip, extra, true};
+    }
+
+    // Character-count entry point (the headless/testable form the unit tests
+    // drive): converts both strings to an estimated DIP width first.
+    static constexpr BackTransHeaderPlan PlanBackTransHeaderRow(int header_cp, int pill_cp,
+                                                               int row_width_dip) {
+        const int hcp = header_cp > 0 ? header_cp : 0;
+        const int pcp = pill_cp > 0 ? pill_cp : 0;
+        return PlanBackTransHeaderRowDip(static_cast<float>(hcp) * kBackTransHeaderCharDip,
+                                         static_cast<float>(pcp) * kBackTransPillCharDip +
+                                             kBackTransPillPadDip,
+                                         static_cast<float>(row_width_dip));
+    }
+
     // Card extent from the two text lengths (character counts, not DIP).
     // Monotonic non-decreasing in BOTH lengths by construction: each extra
     // wrapped line adds exactly one line height, and both are clamped to
     // [min, max] so a pathological body cannot grow the card off-screen.
+    // `header_extra_h_dip` is the wrapped-pill row height from
+    // PlanBackTransHeaderRow (0 keeps the single-row card byte-identical).
     static constexpr BackTransCardSize ComputeBackTransCardSize(int back_text_len,
-                                                                int ref_text_len) {
+                                                                int ref_text_len,
+                                                                int header_extra_h_dip = 0) {
         const int back_len = back_text_len > 0 ? back_text_len : 0;
         const int ref_len = ref_text_len > 0 ? ref_text_len : 0;
         int lines = (back_len + kBackTransCharsPerLine - 1) / kBackTransCharsPerLine;
@@ -323,6 +416,7 @@ public:
             if (ref_lines < 1) ref_lines = 1;
             h += kBackTransRefGapDip + ref_lines * kBackTransRefLineDip;
         }
+        if (header_extra_h_dip > 0) h += header_extra_h_dip;
         if (h < kBackTransCardMinHeightDip) h = kBackTransCardMinHeightDip;
         if (h > kBackTransCardMaxHeightDip) h = kBackTransCardMaxHeightDip;
         return {kBackTransCardWidthDip, h};
@@ -733,6 +827,12 @@ private:
     std::wstring backtrans_header_;     // pre-formatted "🔄 ... (EN → KO)"
     std::wstring backtrans_ref_line_;   // pre-formatted "↳ 원문: AAAAA" (empty = hidden)
     bool backtrans_matched_ = false;    // caller's pill verdict
+    // 261108_0002 (FIX-WS3B): the resolved header-row plan for the CURRENT
+    // card (computed once in ShowBackTranslation, consumed by Render). Storing
+    // it keeps measure and render in lockstep by construction - the same
+    // single-source-of-truth discipline the C2 measured-layout cache uses.
+    BackTransHeaderPlan backtrans_header_plan_ =
+        {BackTransHeaderLayout::SingleRow, 0.0f, 0.0f, 0.0f, 0.0f, false};
     // Hover pause state: true between WM_MOUSEMOVE-over-card and
     // WM_MOUSELEAVE (the autohide countdown is paused while it is true).
     bool backtrans_hover_paused_ = false;
@@ -820,6 +920,50 @@ static_assert(TooltipWindow::ComputeBackTransCardSize(100000, 100000).height ==
               "WS3: a pathological body clamps at the maximum card height");
 static_assert(TooltipWindow::ComputeBackTransCardSize(100000, 100000).width == 360,
               "WS3: the clamp never widens the card");
+
+// 261108_0002 (FIX-WS3B, v0.10.6): compile-time proof of the header-row
+// planner. On the 360 DIP card the ✕'s left edge sits at 328 DIP, so:
+//   single-row header budget = 328 - 8 (close gap) - pill - 8 (header gap) - 14 (pad)
+//   own-row header budget    = 328 - 8 (close gap) - 14 (pad) = 306
+using Ws3bPlan = TooltipWindow::BackTransHeaderPlan;
+using Ws3bLayout = TooltipWindow::BackTransHeaderLayout;
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(120.0f, 90.0f, 360.0f).layout ==
+                  Ws3bLayout::SingleRow,
+              "FIX-WS3B: a short header + short pill stay on one row");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(120.0f, 90.0f, 360.0f).pill_row_h == 0.0f,
+              "FIX-WS3B: the single-row plan adds no height");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(200.0f, 120.0f, 360.0f).layout ==
+                  Ws3bLayout::PillOnOwnRow,
+              "FIX-WS3B: a long header + long pill wrap the pill to its own row");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(200.0f, 120.0f, 360.0f).pill_row_h > 0.0f,
+              "FIX-WS3B: the wrapped pill row adds height");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(200.0f, 120.0f, 360.0f).ellipsize == false,
+              "FIX-WS3B: the pill wraps BEFORE the header is ever clipped");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(400.0f, 120.0f, 360.0f).layout ==
+                  Ws3bLayout::EllipsizeHeader,
+              "FIX-WS3B: only a header that cannot fit alone is ellipsized");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(400.0f, 120.0f, 360.0f).ellipsize,
+              "FIX-WS3B: the ellipsize flag is set only in that case");
+// The pill is never clipped: its box is exactly what the planner reports, and
+// it never exceeds the card's content column.
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(120.0f, 90.0f, 360.0f).pill_width_dip ==
+                  TooltipWindow::kBackTransPillMinWidthDip,
+              "FIX-WS3B: a sub-minimum pill measurement floors at 96 DIP");
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(120.0f, 900.0f, 360.0f).pill_width_dip ==
+                  360.0f - 2.0f * TooltipWindow::kBackTransPadDip,
+              "FIX-WS3B: an oversized pill clamps to the content column, never past the card");
+// Every plan keeps the header clear of the ✕ and the pill clear of the ✕.
+static_assert(TooltipWindow::PlanBackTransHeaderRowDip(400.0f, 120.0f, 360.0f).header_width_dip +
+                      TooltipWindow::kBackTransPadDip + TooltipWindow::kBackTransCloseGapDip <=
+                  360.0f - TooltipWindow::kBackTransCloseRightDip - TooltipWindow::kBackTransCloseW,
+              "FIX-WS3B: the header budget never reaches the close button");
+// The wrapped pill row grows the card by exactly the plan's extra height.
+static_assert(TooltipWindow::ComputeBackTransCardSize(80, 20, 30).height ==
+                  TooltipWindow::ComputeBackTransCardSize(80, 20, 0).height + 30,
+              "FIX-WS3B: the card height includes the wrapped pill row");
+static_assert(TooltipWindow::ComputeBackTransCardSize(80, 20, 0).height ==
+                  TooltipWindow::ComputeBackTransCardSize(80, 20).height,
+              "FIX-WS3B: the default argument keeps the single-row card byte-identical");
 
 // Hover pause / auto-dismiss state machine (spec: 4500 ms autohide, pause on
 // hover, 1500 ms grace on leave).

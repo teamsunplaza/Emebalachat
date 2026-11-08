@@ -328,13 +328,38 @@ void TestWs3BackTransLabels() {
     TEST_CHECK(TT::FormatBackTransHeader(L"T", L"", L"KO") == L"T (KO)",
                "WS3 label: a missing source drops the arrow");
 
-    // Reference line: "↳ 원문: AAAAA".
+    // Reference line: "<localized label>AAAAA".
+    // 261108_0002 (FIX-WS3B): the label is no longer a hardcoded Korean
+    // literal - it comes from StringId::BackTranslateReference, so the test
+    // must SET the locale it asserts against instead of relying on whatever
+    // the host machine's UI locale happens to be.
     {
-        const std::wstring r = TT::FormatBackTransReference(L"안녕하세요");
-        TEST_CHECK(r == L"↳ 원문: 안녕하세요",
-                   "WS3 label: the reference line carries the U+21B3 marker and the original");
-        TEST_CHECK(r.rfind(L"↳ 원문: ", 0) == 0,
-                   "WS3 label: the reference prefix is front-anchored");
+        const UiLocale initial = I18n::GetCurrentLocale();
+
+        I18n::SetLocale(UiLocale::Korean);
+        const std::wstring ko = TT::FormatBackTransReference(L"안녕하세요");
+        TEST_CHECK(ko == L"↳ 원문: 안녕하세요",
+                   "WS3 label ko: the reference line carries the U+21B3 marker and the original");
+        TEST_CHECK(ko.rfind(L"↳ 원문: ", 0) == 0,
+                   "WS3 label ko: the reference prefix is front-anchored");
+
+        I18n::SetLocale(UiLocale::English);
+        const std::wstring en = TT::FormatBackTransReference(L"hello");
+        TEST_CHECK(en == L"↳ Original: hello",
+                   "WS3 label en: the reference label is the English string, not Korean");
+        TEST_CHECK(en.find(L"원문") == std::wstring::npos,
+                   "WS3 label en: the Korean label never leaks into a non-Korean locale");
+
+        // FIX-WS3B's whole point: a non-Korean, non-English locale also gets
+        // its own label (this is the regression the CEO reported).
+        I18n::SetLocale(UiLocale::Italian);
+        const std::wstring it = TT::FormatBackTransReference(L"ciao");
+        TEST_CHECK(it == L"↳ Originale: ciao",
+                   "WS3 label it: the Italian label is used");
+        TEST_CHECK(it.find(L"원문") == std::wstring::npos,
+                   "WS3 label it: the Korean label never leaks into Italian");
+
+        I18n::SetLocale(initial);
     }
 
     // The reference line is suppressed on an exact round trip.
@@ -363,6 +388,11 @@ void TestWs3BackTransMarshalSeam() {
 
     using TT = emebalachat::TooltipWindow;
     const HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    // 261108_0002 (FIX-WS3B): the reference line is localized now, so this
+    // suite pins the Korean form against an explicitly-set locale instead of
+    // the host machine's UI locale.
+    const UiLocale initial = I18n::GetCurrentLocale();
+    I18n::SetLocale(UiLocale::Korean);
 
     TT tooltip;
     if (!tooltip.Create(hInst)) {
@@ -464,6 +494,7 @@ void TestWs3BackTransMarshalSeam() {
     }
 
     tooltip.Destroy();
+    I18n::SetLocale(initial); // suite-state hygiene
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] WS3 back-translation marshal seam passed." << std::endl;
@@ -675,12 +706,190 @@ void TestWs3BackTransStructuralPins() {
     }
 }
 
+// ---- (g) 261108_0002 (FIX-WS3B): header-row layout planner ----------------
+// The shipped v0.10.6 card put the header and the verdict pill on one fixed
+// 360 DIP row, so long-string locales (Italian "Verifica retrotraduzione" +
+// "Controlla la sfumatura", German "Rückübersetzungs-Prüfung" + "Nuance
+// prüfen") overlapped. The planner below wraps the pill to its own row; this
+// suite pins the rule with the REAL i18n strings, not synthetic lengths.
+void TestWs3BackTransHeaderRowPlan() {
+    std::cout << "[RUN] Testing WS3 FIX-WS3B header-row plan..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    using TT = emebalachat::TooltipWindow;
+    using Layout = TT::BackTransHeaderLayout;
+    const UiLocale initial = I18n::GetCurrentLocale();
+
+    // ---- constants the planner depends on ----
+    volatile float pad = TT::kBackTransPadDip;
+    volatile float close_w = TT::kBackTransCloseW;
+    volatile float close_right = TT::kBackTransCloseRightDip;
+    volatile float close_gap = TT::kBackTransCloseGapDip;
+    volatile float header_gap = TT::kBackTransHeaderGapDip;
+    TEST_CHECK(pad == 14.0f && close_w == 20.0f && close_right == 12.0f &&
+                   close_gap == 8.0f && header_gap == 8.0f,
+               "FIX-WS3B: the header-row geometry constants are the documented values");
+    // The close button's left edge on the 360 DIP card is 328 DIP.
+    TEST_CHECK(360.0f - close_right - close_w == 328.0f,
+               "FIX-WS3B: the close button's left edge is 328 DIP on the 360 DIP card");
+
+    // ---- the three-way rule, on raw DIP widths ----
+    {
+        const TT::BackTransHeaderPlan single = TT::PlanBackTransHeaderRowDip(120.0f, 90.0f, 360.0f);
+        TEST_CHECK(single.layout == Layout::SingleRow,
+                   "FIX-WS3B: a short header + short pill stay on one row");
+        TEST_CHECK(single.pill_row_h == 0.0f,
+                   "FIX-WS3B: the single-row plan adds no height");
+        TEST_CHECK(single.ellipsize == false,
+                   "FIX-WS3B: the single-row plan never ellipsizes");
+
+        const TT::BackTransHeaderPlan wrapped = TT::PlanBackTransHeaderRowDip(200.0f, 120.0f, 360.0f);
+        TEST_CHECK(wrapped.layout == Layout::PillOnOwnRow,
+                   "FIX-WS3B: a long header + long pill wrap the pill to its own row");
+        TEST_CHECK(wrapped.pill_row_h > 0.0f,
+                   "FIX-WS3B: the wrapped pill row grows the card");
+        TEST_CHECK(wrapped.ellipsize == false,
+                   "FIX-WS3B: the pill wraps BEFORE the header is ever clipped");
+
+        const TT::BackTransHeaderPlan clipped = TT::PlanBackTransHeaderRowDip(400.0f, 120.0f, 360.0f);
+        TEST_CHECK(clipped.layout == Layout::EllipsizeHeader,
+                   "FIX-WS3B: only a header that cannot fit alone is ellipsized");
+        TEST_CHECK(clipped.ellipsize == true,
+                   "FIX-WS3B: the ellipsize flag is set in that case");
+        TEST_CHECK(clipped.header_width_dip == wrapped.header_width_dip,
+                   "FIX-WS3B: the ellipsized header uses the same own-row budget");
+    }
+
+    // ---- the pill is never clipped ----
+    {
+        const TT::BackTransHeaderPlan tiny = TT::PlanBackTransHeaderRowDip(120.0f, 10.0f, 360.0f);
+        TEST_CHECK(tiny.pill_width_dip == TT::kBackTransPillMinWidthDip,
+                   "FIX-WS3B: a sub-minimum pill measurement floors at 96 DIP");
+        const TT::BackTransHeaderPlan huge = TT::PlanBackTransHeaderRowDip(120.0f, 900.0f, 360.0f);
+        TEST_CHECK(huge.pill_width_dip == 360.0f - 2.0f * TT::kBackTransPadDip,
+                   "FIX-WS3B: an oversized pill clamps to the content column");
+        TEST_CHECK(huge.pill_width_dip <= 360.0f,
+                   "FIX-WS3B: the pill box never exceeds the card width");
+    }
+
+    // ---- the header never reaches the close button ----
+    {
+        for (int hdr_cp = 0; hdr_cp <= 120; hdr_cp += 7) {
+            for (int pill_cp = 0; pill_cp <= 60; pill_cp += 11) {
+                const TT::BackTransHeaderPlan p =
+                    TT::PlanBackTransHeaderRow(hdr_cp, pill_cp, 360);
+                const float header_right = TT::kBackTransPadDip + p.header_width_dip;
+                TEST_CHECK(header_right <= 328.0f - TT::kBackTransCloseGapDip,
+                           "FIX-WS3B: the header budget never reaches the close button");
+                TEST_CHECK(p.pill_width_dip > 0.0f,
+                           "FIX-WS3B: the pill always has a positive width");
+            }
+        }
+    }
+
+    // ---- REAL locale strings: short locales stay single-row ----
+    // The header the card actually renders is "<localized title> (KO → EN)",
+    // so the measured input is the title plus the 9-character label suffix.
+    const auto header_for = [](UiLocale loc) -> std::wstring {
+        I18n::SetLocale(loc);
+        return I18n::Get(StringId::BackTranslateHeader) + L" (KO → EN)";
+    };
+    const auto pill_for = [](UiLocale loc) -> std::wstring {
+        I18n::SetLocale(loc);
+        return I18n::Get(StringId::BackTranslateMatchCheck);
+    };
+
+    struct LocaleCase {
+        UiLocale locale;
+        const char* code;
+        bool expect_single_row;
+    };
+    const LocaleCase kCases[] = {
+        {UiLocale::Korean,             "ko",    true},
+        {UiLocale::Japanese,           "ja",    true},
+        {UiLocale::ChineseSimplified,  "zh-CN", true},
+        {UiLocale::English,            "en",    true},
+        {UiLocale::Italian,            "it",    false},
+        {UiLocale::German,             "de",    false},
+    };
+    for (const LocaleCase& c : kCases) {
+        const std::wstring header = header_for(c.locale);
+        const std::wstring pill = pill_for(c.locale);
+        const TT::BackTransHeaderPlan p = TT::PlanBackTransHeaderRow(
+            static_cast<int>(header.size()), static_cast<int>(pill.size()), 360);
+        if (c.expect_single_row) {
+            TEST_CHECK(p.layout == Layout::SingleRow,
+                       "FIX-WS3B: a short locale keeps the single-row layout");
+            TEST_CHECK(p.pill_row_h == 0.0f,
+                       "FIX-WS3B: a short locale adds no pill row height");
+        } else {
+            TEST_CHECK(p.layout != Layout::SingleRow,
+                       "FIX-WS3B: a long locale wraps the pill off the header row");
+            TEST_CHECK(p.pill_row_h > 0.0f,
+                       "FIX-WS3B: a long locale grows the card by the pill row");
+            TEST_CHECK(p.ellipsize == false,
+                       "FIX-WS3B: a long locale wraps the pill instead of clipping the header");
+        }
+    }
+
+    // The German and Italian header strings are the CEO-reported overlap cases;
+    // pin their literal lengths so a future shortening is a visible test change.
+    I18n::SetLocale(UiLocale::German);
+    TEST_CHECK(I18n::Get(StringId::BackTranslateHeader) == L"🔄 Rückübersetzungs-Prüfung",
+               "FIX-WS3B de: the header literal is the reported long string");
+    I18n::SetLocale(UiLocale::Italian);
+    TEST_CHECK(I18n::Get(StringId::BackTranslateHeader) == L"🔄 Verifica retrotraduzione",
+               "FIX-WS3B it: the header literal is the reported long string");
+    TEST_CHECK(I18n::Get(StringId::BackTranslateMatchCheck) == L"⚡ Controlla la sfumatura",
+               "FIX-WS3B it: the pill literal is the reported long string");
+
+    // ---- card height math includes the extra row ----
+    {
+        const TT::BackTransHeaderPlan p = TT::PlanBackTransHeaderRow(60, 30, 360);
+        const int extra = static_cast<int>(p.pill_row_h);
+        const TT::BackTransCardSize single = TT::ComputeBackTransCardSize(80, 20, 0);
+        const TT::BackTransCardSize wrapped = TT::ComputeBackTransCardSize(80, 20, extra);
+        TEST_CHECK(extra > 0, "FIX-WS3B: the long-locale plan produces a positive extra row");
+        TEST_CHECK(wrapped.height == single.height + extra,
+                   "FIX-WS3B: the card height includes the wrapped pill row");
+        TEST_CHECK(wrapped.width == single.width,
+                   "FIX-WS3B: wrapping the pill never changes the card width");
+        // The default argument keeps every pre-FIX-WS3B call site byte-identical.
+        TEST_CHECK(TT::ComputeBackTransCardSize(80, 20).height == single.height,
+                   "FIX-WS3B: the default extra-row argument preserves the old height");
+    }
+
+    // ---- the wrapped row is strictly taller than the single row ----
+    // (Both operands must actually land in different branches: a "long" pair
+    // that still fits one row would make this comparison vacuous.)
+    {
+        const TT::BackTransHeaderPlan single = TT::PlanBackTransHeaderRow(20, 10, 360);
+        const TT::BackTransHeaderPlan wrapped = TT::PlanBackTransHeaderRow(60, 30, 360);
+        TEST_CHECK(single.layout == Layout::SingleRow,
+                   "FIX-WS3B: the short pair is a single-row plan");
+        TEST_CHECK(wrapped.layout != Layout::SingleRow,
+                   "FIX-WS3B: the long pair is a wrapped plan");
+        TEST_CHECK(wrapped.pill_row_h > single.pill_row_h,
+                   "FIX-WS3B: the wrapped plan is taller than the single-row plan");
+    }
+
+    I18n::SetLocale(initial); // suite-state hygiene
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] WS3 FIX-WS3B header-row plan passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] WS3 FIX-WS3B header-row plan: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // Orchestrator entry point (wired from tests/run_tests.cpp).
 void TestWs3Tooltip() {
     TestWs3BackTransCardSize();
     TestWs3BackTransTimerPlan();
     TestWs3BackTransCardPlacement();
     TestWs3BackTransLabels();
+    TestWs3BackTransHeaderRowPlan();
     TestWs3BackTransMarshalSeam();
     TestWs3BackTransStructuralPins();
 }
