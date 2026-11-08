@@ -199,6 +199,15 @@ struct LocalizedStrings {
     const wchar_t* theme_fluent = L"Fluent Craft";
     const wchar_t* theme_editorial = L"Warm Editorial";
     const wchar_t* theme_monolith = L"Refined Monolith";
+    // 261108_0002 (WS3, v0.10.6): floating back-translation verification card
+    // + tray toggle. TRAILING default-initialized fields, exactly like the
+    // four theme strings above: they are NOT part of EMEBALA_LSTR_FIELDS, so
+    // kLocalizedStringsFieldCount (157) and the X-macro stay untouched, and
+    // the 37 locale tables carry their own explicit designators below.
+    const wchar_t* menu_back_translation = L"Floating Back-Translation";
+    const wchar_t* back_translate_header = L"🔄 Back-Translation";
+    const wchar_t* back_translate_match_exact = L"✓ Meaning Matched";
+    const wchar_t* back_translate_match_check = L"⚡ Check Nuance";
 };
 
 // Compile-time field count — generated from the SAME X-macro list above,
@@ -226,6 +235,23 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // switch maps exactly these 157 named fields.
 static_assert(kLocalizedStringsFieldCount == 157,
     "LocalizedStrings field count changed - update all 37 locale tables");
+
+// 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
+// above is generated from the same X-macro that generates the struct, so it can
+// never notice the 8 trailing NON-X-macro members (4 theme + 4 back-translation)
+// - and the test-side mirror in tests/run_tests.cpp is a hand-kept copy that
+// catches drift only after someone remembers to update it. This one compares the
+// actual struct layout against StringId::EnumCount (the Get() switch's case
+// count, i18n.hpp): one member per pointer-sized slot means
+// sizeof / sizeof(const wchar_t*) IS the member count. Every LocalizedStrings
+// member is a const wchar_t* (X-macro fields + the 8 trailing), so the divisor
+// is exact; adding a member of another type would change the quotient and trip
+// this assert, which is the intended signal to revisit both sides.
+// Fires when: a member is added/removed without a StringId, or a StringId is
+// added without a member - the two drift modes the old mirror could not see.
+static_assert(sizeof(LocalizedStrings) / sizeof(const wchar_t*) ==
+                  static_cast<std::size_t>(StringId::EnumCount),
+    "LocalizedStrings member count must equal StringId::EnumCount");
 
 // 1. Korean (ko)
 // REQ-044 (P3 item 4, option b — Tech Gate E-3b): designated-initializer
@@ -438,6 +464,11 @@ const LocalizedStrings kStringsKorean = {
     .theme_fluent = L"플루언트 크래프트 (기본)",
     .theme_editorial = L"웜 에디토리얼",
     .theme_monolith = L"리파인드 모놀리스",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"역번역 플로팅 표시 (번역 검증)",
+    .back_translate_header = L"🔄 역번역 확인",
+    .back_translate_match_exact = L"✓ 원문 일치",
+    .back_translate_match_check = L"⚡ 표현 확인",
 };
 
 // 2. Japanese (ja)
@@ -649,6 +680,11 @@ const LocalizedStrings kStringsJapanese = {
     .theme_fluent = L"フルーエント・クラフト (標準)",
     .theme_editorial = L"ウォーム・エディトリアル",
     .theme_monolith = L"リファインド・モノリス",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"逆翻訳フローティング表示 (翻訳検証)",
+    .back_translate_header = L"🔄 逆翻訳チェック",
+    .back_translate_match_exact = L"✓ 原文一致",
+    .back_translate_match_check = L"⚡ 表現チェック",
 };
 
 // 3. Chinese Simplified (zh-CN)
@@ -860,6 +896,11 @@ const LocalizedStrings kStringsChineseSimp = {
     .theme_fluent = L"流畅工艺 (默认)",
     .theme_editorial = L"温暖社论",
     .theme_monolith = L"精致碑铭",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"回译浮动显示（译文验证）",
+    .back_translate_header = L"🔄 回译核对",
+    .back_translate_match_exact = L"✓ 与原文一致",
+    .back_translate_match_check = L"⚡ 检查表达",
 };
 
 // 4. Chinese Traditional (zh-TW)
@@ -1071,6 +1112,11 @@ const LocalizedStrings kStringsChineseTrad = {
     .theme_fluent = L"流暢工藝 (預設)",
     .theme_editorial = L"溫暖社論",
     .theme_monolith = L"精緻碑銘",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"回譯浮動顯示（譯文驗證）",
+    .back_translate_header = L"🔄 回譯核對",
+    .back_translate_match_exact = L"✓ 與原文一致",
+    .back_translate_match_check = L"⚡ 檢查表達",
 };
 
 // 5. Vietnamese (vi)
@@ -1282,6 +1328,11 @@ const LocalizedStrings kStringsVietnamese = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Warm Editorial",
     .theme_monolith = L"Refined Monolith",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Hiển thị dịch ngược nổi (kiểm chứng bản dịch)",
+    .back_translate_header = L"🔄 Kiểm tra dịch ngược",
+    .back_translate_match_exact = L"✓ Khớp nghĩa gốc",
+    .back_translate_match_check = L"⚡ Kiểm tra sắc thái",
 };
 
 // 6. Spanish (es)
@@ -1490,6 +1541,11 @@ const LocalizedStrings kStringsSpanish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editorial cálido",
     .theme_monolith = L"Monolito refinado",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Mostrar retrotraducción flotante (verificación)",
+    .back_translate_header = L"🔄 Verificación de retrotraducción",
+    .back_translate_match_exact = L"✓ Significado coincidente",
+    .back_translate_match_check = L"⚡ Revisar matiz",
 };
 
 // 7. English (en) - Default Fallback
@@ -1696,6 +1752,32 @@ const LocalizedStrings kStringsEnglish = {
     L"Clean up duplicates",
     L"The duplicate files were moved to the Recycle Bin.",
     L"The duplicate files could not be cleaned up. Check whether another program is using them.",
+    // 261108_0002 (FIX-R1, v0.10.6): POSITIONAL TAIL ALIGNMENT - verified, not
+    // assumed. This table is a positional aggregate (MSVC C7556 forbids mixing
+    // styles in one aggregate), so every initializer lands on the struct member
+    // at the SAME index. LocalizedStrings member order is:
+    //   [1..157]   EMEBALA_LSTR_FIELDS X-macro (kLocalizedStringsFieldCount)
+    //   [158..161] menu_ui_theme / theme_fluent / theme_editorial / theme_monolith
+    //   [162..165] menu_back_translation / back_translate_header /
+    //              back_translate_match_exact / back_translate_match_check
+    // = 165 initializers for 165 members. Before this fix the four theme slots
+    // were skipped, so the WS3 strings took 158..161 and the EN tray theme
+    // submenu rendered "🔄 Back-Translation" while the WS3 fields silently kept
+    // their struct defaults. The four theme values below are the struct defaults
+    // spelled out (this is the English table, so they ARE the English strings).
+    // Drift is now caught in three places: the sizeof static_assert next to
+    // kLocalizedStringsFieldCount, the English element-count/alignment pins in
+    // tests/run_tests.cpp, and MSVC itself for any wrong tail order.
+    L"UI Theme",
+    L"Fluent Craft",
+    L"Warm Editorial",
+    L"Refined Monolith",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle,
+    // on struct slots 162..165.
+    L"Floating Back-Translation",
+    L"🔄 Back-Translation",
+    L"✓ Meaning Matched",
+    L"⚡ Check Nuance",
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -1919,6 +2001,11 @@ const LocalizedStrings kStringsFrench = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Éditorial chaleureux",
     .theme_monolith = L"Monolithe raffiné",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Afficher la rétrotraduction flottante (vérification)",
+    .back_translate_header = L"🔄 Vérification de rétrotraduction",
+    .back_translate_match_exact = L"✓ Sens concordant",
+    .back_translate_match_check = L"⚡ Vérifier la nuance",
 };
 
 // 9. German (de)
@@ -2130,6 +2217,11 @@ const LocalizedStrings kStringsGerman = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Warmes Editorial",
     .theme_monolith = L"Reduzierter Monolith",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Schwebende Rückübersetzung anzeigen (Prüfung)",
+    .back_translate_header = L"🔄 Rückübersetzungs-Prüfung",
+    .back_translate_match_exact = L"✓ Bedeutung stimmt überein",
+    .back_translate_match_check = L"⚡ Nuance prüfen",
 };
 
 // 10. Russian (ru)
@@ -2341,6 +2433,11 @@ const LocalizedStrings kStringsRussian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Тёплый Editorial",
     .theme_monolith = L"Утончённый Монолит",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Плавающий обратный перевод (проверка)",
+    .back_translate_header = L"🔄 Проверка обратного перевода",
+    .back_translate_match_exact = L"✓ Смысл совпадает",
+    .back_translate_match_check = L"⚡ Проверить оттенок",
 };
 
 // 11. Portuguese (pt)
@@ -2552,6 +2649,11 @@ const LocalizedStrings kStringsPortuguese = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editorial aconchegante",
     .theme_monolith = L"Monólito refinado",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Mostrar retrotradução flutuante (verificação)",
+    .back_translate_header = L"🔄 Verificação da retrotradução",
+    .back_translate_match_exact = L"✓ Significado correspondente",
+    .back_translate_match_check = L"⚡ Verificar nuance",
 };
 
 // 12. Italian (it)
@@ -2763,6 +2865,11 @@ const LocalizedStrings kStringsItalian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editoriale caldo",
     .theme_monolith = L"Monolito raffinato",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Mostra retrotraduzione flottante (verifica)",
+    .back_translate_header = L"🔄 Verifica retrotraduzione",
+    .back_translate_match_exact = L"✓ Significato corrispondente",
+    .back_translate_match_check = L"⚡ Controlla la sfumatura",
 };
 
 // 13. Dutch (nl)
@@ -2974,6 +3081,11 @@ const LocalizedStrings kStringsDutch = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Warm Editorial",
     .theme_monolith = L"Verfijnde monolith",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Zwevende terugvertaling tonen (controle)",
+    .back_translate_header = L"🔄 Terugvertaling controleren",
+    .back_translate_match_exact = L"✓ Betekenis komt overeen",
+    .back_translate_match_check = L"⚡ Nuance controleren",
 };
 
 // 14. Polish (pl)
@@ -3185,6 +3297,11 @@ const LocalizedStrings kStringsPolish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Ciepły Editorial",
     .theme_monolith = L"Dopracowany monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Pływające tłumaczenie zwrotne (weryfikacja)",
+    .back_translate_header = L"🔄 Sprawdzenie tłumaczenia zwrotnego",
+    .back_translate_match_exact = L"✓ Znaczenie zgodne",
+    .back_translate_match_check = L"⚡ Sprawdź niuans",
 };
 
 // 15. Czech (cs)
@@ -3396,6 +3513,11 @@ const LocalizedStrings kStringsCzech = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Teplý Editorial",
     .theme_monolith = L"Ušlechtilý monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Plovoucí zpětný překlad (ověření)",
+    .back_translate_header = L"🔄 Ověření zpětného překladu",
+    .back_translate_match_exact = L"✓ Význam odpovídá",
+    .back_translate_match_check = L"⚡ Zkontrolovat odstín",
 };
 
 // 16. Hungarian (hu)
@@ -3607,6 +3729,11 @@ const LocalizedStrings kStringsHungarian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Meleg Editorial",
     .theme_monolith = L"Finom monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Lebegő visszafordítás megjelenítése (ellenőrzés)",
+    .back_translate_header = L"🔄 Visszafordítás ellenőrzése",
+    .back_translate_match_exact = L"✓ Jelentés egyezik",
+    .back_translate_match_check = L"⚡ Árnyalat ellenőrzése",
 };
 
 // 17. Romanian (ro)
@@ -3818,6 +3945,11 @@ const LocalizedStrings kStringsRomanian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editorial cald",
     .theme_monolith = L"Monolit rafinat",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Afișare traducere inversă flotantă (verificare)",
+    .back_translate_header = L"🔄 Verificare traducere inversă",
+    .back_translate_match_exact = L"✓ Sens identic",
+    .back_translate_match_check = L"⚡ Verifică nuanța",
 };
 
 // 18. Swedish (sv)
@@ -4029,6 +4161,11 @@ const LocalizedStrings kStringsSwedish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Varm Editorial",
     .theme_monolith = L"Förfinad monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Flytande återöversättning (verifiering)",
+    .back_translate_header = L"🔄 Kontroll av återöversättning",
+    .back_translate_match_exact = L"✓ Betydelsen stämmer",
+    .back_translate_match_check = L"⚡ Kontrollera nyans",
 };
 
 // 19. Danish (da)
@@ -4240,6 +4377,11 @@ const LocalizedStrings kStringsDanish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Varm Editorial",
     .theme_monolith = L"Finpudset monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Flydende tilbagetranslation (kontrol)",
+    .back_translate_header = L"🔄 Kontrol af tilbagetranslation",
+    .back_translate_match_exact = L"✓ Betydningen stemmer",
+    .back_translate_match_check = L"⚡ Kontroller nuance",
 };
 
 // 20. Finnish (fi)
@@ -4451,6 +4593,11 @@ const LocalizedStrings kStringsFinnish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Lämmin Editorial",
     .theme_monolith = L"Hienostunut monoliitti",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Kelluva takaisinkäännös (tarkistus)",
+    .back_translate_header = L"🔄 Takaisinkäännöksen tarkistus",
+    .back_translate_match_exact = L"✓ Merkitys täsmää",
+    .back_translate_match_check = L"⚡ Tarkista sävy",
 };
 
 // 21. Norwegian (no / nb)
@@ -4662,6 +4809,11 @@ const LocalizedStrings kStringsNorwegian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Varm Editorial",
     .theme_monolith = L"Forfinet monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Flytende tilbakeoversettelse (kontroll)",
+    .back_translate_header = L"🔄 Kontroll av tilbakeoversettelse",
+    .back_translate_match_exact = L"✓ Betydningen stemmer",
+    .back_translate_match_check = L"⚡ Sjekk nyanse",
 };
 
 // 22. Greek (el)
@@ -4873,6 +5025,11 @@ const LocalizedStrings kStringsGreek = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Θερμό Editorial",
     .theme_monolith = L"Εξεζητημένο μονόλιθος",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Αιωρούμενη αντίστροφη μετάφραση (έλεγχος)",
+    .back_translate_header = L"🔄 Έλεγχος αντίστροφης μετάφρασης",
+    .back_translate_match_exact = L"✓ Το νόημα ταιριάζει",
+    .back_translate_match_check = L"⚡ Έλεγχος απόχρωσης",
 };
 
 // 23. Turkish (tr)
@@ -5084,6 +5241,11 @@ const LocalizedStrings kStringsTurkish = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Sıcak Editorial",
     .theme_monolith = L"Rafine monolit",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Yüzen geri çeviri göster (doğrulama)",
+    .back_translate_header = L"🔄 Geri çeviri kontrolü",
+    .back_translate_match_exact = L"✓ Anlam eşleşti",
+    .back_translate_match_check = L"⚡ Nüansı kontrol et",
 };
 
 // 24. Ukrainian (uk)
@@ -5295,6 +5457,11 @@ const LocalizedStrings kStringsUkrainian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Теплий Editorial",
     .theme_monolith = L"Вигладний моноліт",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Плаваючий зворотний переклад (перевірка)",
+    .back_translate_header = L"🔄 Перевірка зворотного перекладу",
+    .back_translate_match_exact = L"✓ Зміст збігається",
+    .back_translate_match_check = L"⚡ Перевірити відтінок",
 };
 
 // 25. Thai (th)
@@ -5506,6 +5673,11 @@ const LocalizedStrings kStringsThai = {
     .theme_fluent = L"ฟลูเอ็นต์คราฟต์",
     .theme_editorial = L"วอร์มเอดิทอเรียล",
     .theme_monolith = L"รีไฟน์ดโมโนลิธ",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"แสดงการแปลย้อนกลับแบบลอย (ตรวจสอบ)",
+    .back_translate_header = L"🔄 ตรวจสอบการแปลย้อนกลับ",
+    .back_translate_match_exact = L"✓ ความหมายตรงกัน",
+    .back_translate_match_check = L"⚡ ตรวจสอบน้ำเสียง",
 };
 
 // 26. Indonesian (id)
@@ -5717,6 +5889,11 @@ const LocalizedStrings kStringsIndonesian = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editorial hangat",
     .theme_monolith = L"Monolit halus",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Tampilkan terjemahan balik mengambang (verifikasi)",
+    .back_translate_header = L"🔄 Verifikasi terjemahan balik",
+    .back_translate_match_exact = L"✓ Makna sesuai",
+    .back_translate_match_check = L"⚡ Periksa nuansa",
 };
 
 // 27. Malay (ms)
@@ -5928,6 +6105,11 @@ const LocalizedStrings kStringsMalay = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Editorial hangat",
     .theme_monolith = L"Monolit halus",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Paparkan terjemahan balik terapung (pengesahan)",
+    .back_translate_header = L"🔄 Pengesahan terjemahan balik",
+    .back_translate_match_exact = L"✓ Makna sepadan",
+    .back_translate_match_check = L"⚡ Semak nuansa",
 };
 
 // 28. Filipino (fil)
@@ -6141,6 +6323,11 @@ const LocalizedStrings kStringsFilipino = {
     .theme_fluent = L"Fluent Craft",
     .theme_editorial = L"Mainit na Editorial",
     .theme_monolith = L"Pinong Monolito",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"Ipakita ang lumulutang na pabalik na salin (pagpapatunay)",
+    .back_translate_header = L"🔄 Pagpapatunay ng pabalik na salin",
+    .back_translate_match_exact = L"✓ Tumutugma ang kahulugan",
+    .back_translate_match_check = L"⚡ Suriin ang nuance",
 };
 
 // 29. Hindi (hi)
@@ -6352,6 +6539,11 @@ const LocalizedStrings kStringsHindi = {
     .theme_fluent = L"फ़्लूएंट क्राफ्ट",
     .theme_editorial = L"वॉर्म एडिटोरियल",
     .theme_monolith = L"रिफ़ाइंड मोनोलिथ",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"फ़्लोटिंग पश्च-अनुवाद दिखाएँ (सत्यापन)",
+    .back_translate_header = L"🔄 पश्च-अनुवाद जाँच",
+    .back_translate_match_exact = L"✓ अर्थ मेल खाता है",
+    .back_translate_match_check = L"⚡ भाव जाँचें",
 };
 
 // 30. Bengali (bn)
@@ -6563,6 +6755,11 @@ const LocalizedStrings kStringsBengali = {
     .theme_fluent = L"ফ্লুয়েন্ট ক্রাফ্ট",
     .theme_editorial = L"ওয়ার্ম এডিটোরিয়াল",
     .theme_monolith = L"রিফাইন্ড মনোলিথ",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"ভাসমান ব্যাক-অনুবাদ দেখান (যাচাই)",
+    .back_translate_header = L"🔄 ব্যাক-অনুবাদ যাচাই",
+    .back_translate_match_exact = L"✓ অর্থ মিলে গেছে",
+    .back_translate_match_check = L"⚡ সূক্ষ্মতা যাচাই করুন",
 };
 
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -6775,6 +6972,11 @@ const LocalizedStrings kStringsArabic = {
     .theme_fluent = L"فلووينت كرافت",
     .theme_editorial = L"وورم إيديتوريال",
     .theme_monolith = L"ريفايند مونوليث",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"إظهار الترجمة العكسية العائمة (تحقق)",
+    .back_translate_header = L"🔄 تحقق من الترجمة العكسية",
+    .back_translate_match_exact = L"✓ المعنى مطابق",
+    .back_translate_match_check = L"⚡ تحقق من الفارق الدقيق",
 };
 
 // 32. Persian (fa) — RTL
@@ -6986,6 +7188,11 @@ const LocalizedStrings kStringsPersian = {
     .theme_fluent = L"فلوئنت کرافت",
     .theme_editorial = L"وارم ادیتوریال",
     .theme_monolith = L"ریفایند مونولیت",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"نمایش ترجمهٔ معکوس شناور (بررسی)",
+    .back_translate_header = L"🔄 بررسی ترجمهٔ معکوس",
+    .back_translate_match_exact = L"✓ معنا مطابقت دارد",
+    .back_translate_match_check = L"⚡ بررسی ظرافت معنا",
 };
 
 // 33. Urdu (ur) — RTL
@@ -7197,6 +7404,11 @@ const LocalizedStrings kStringsUrdu = {
     .theme_fluent = L"فلوئنٹ کرافٹ",
     .theme_editorial = L"وارم ایڈیٹوریل",
     .theme_monolith = L"ریفائنڈ مونولٹ",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"فلوٹنگ معکوس ترجمہ دکھائیں (تصدیق)",
+    .back_translate_header = L"🔄 معکوس ترجمے کی تصدیق",
+    .back_translate_match_exact = L"✓ معنی مطابق ہے",
+    .back_translate_match_check = L"⚡ باریکی کی جانچ کریں",
 };
 
 // 34. Hebrew (he) — RTL
@@ -7408,6 +7620,11 @@ const LocalizedStrings kStringsHebrew = {
     .theme_fluent = L"פלואנט קראפט",
     .theme_editorial = L"ווארם אדיטוריאל",
     .theme_monolith = L"ריפיינד מונוליט",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"הצגת תרגום חוזר צף (אימות)",
+    .back_translate_header = L"🔄 אימות תרגום חוזר",
+    .back_translate_match_exact = L"✓ המשמעות תואמת",
+    .back_translate_match_check = L"⚡ בדיקת ניואנס",
 };
 
 // 35. Khmer (km)
@@ -7619,6 +7836,11 @@ const LocalizedStrings kStringsKhmer = {
     .theme_fluent = L"ហ្វ៉លូអង់គ្រាហ្វ",
     .theme_editorial = L"វ៉ាមអេឌីទូរៀល",
     .theme_monolith = L"រីហ្វែយរិនម៉ូណូលីត",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"បង្ហាញការបកប្រែត្រឡប់អណ្តែត (ផ្ទៀងផ្ទាត់)",
+    .back_translate_header = L"🔄 ផ្ទៀងផ្ទាត់ការបកប្រែត្រឡប់",
+    .back_translate_match_exact = L"✓ អត្ថន័យត្រូវគ្នា",
+    .back_translate_match_check = L"⚡ ពិនិត្យអត្ថរស",
 };
 
 // 36. Lao (lo)
@@ -7830,6 +8052,11 @@ const LocalizedStrings kStringsLao = {
     .theme_fluent = L"ຟລູເອນກຣາບ",
     .theme_editorial = L"ວໍມເອດິໂຕຣຽວ",
     .theme_monolith = L"ຣີໄຟນດມອນໂລລິດ",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"ສະແດງການແປຍ້ອນກັບແບບລອຍ (ກວດສອບ)",
+    .back_translate_header = L"🔄 ກວດສອບການແປຍ້ອນກັບ",
+    .back_translate_match_exact = L"✓ ຄວາມໝາຍກົງກັນ",
+    .back_translate_match_check = L"⚡ ກວດສອບນ້ຳສຽງ",
 };
 
 // 37. Burmese (my)
@@ -8041,6 +8268,11 @@ const LocalizedStrings kStringsBurmese = {
     .theme_fluent = L"ဖလူးအန့်ကရွတ်",
     .theme_editorial = L"ဝမ်အက်ဒီတိုရီရယ်",
     .theme_monolith = L"ရီဖိုင်န့်မိုနိုလစ်",
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle.
+    .menu_back_translation = L"မျောနေသော ပြန်လည်ဘာသာပြန်ပြသမှု (စစ်ဆေးရန်)",
+    .back_translate_header = L"🔄 ပြန်လည်ဘာသာပြန် စစ်ဆေးမှု",
+    .back_translate_match_exact = L"✓ အဓိပ္ပာယ် ကိုက်ညီသည်",
+    .back_translate_match_check = L"⚡ အဓိပ္ပာယ်ကွဲပြားမှု စစ်ဆေးရန်",
 };
 
 const LocalizedStrings& GetStrings(UiLocale loc) {
@@ -8413,6 +8645,13 @@ std::wstring I18n::Get(StringId id) {
         case StringId::ThemeFluent:               return s.theme_fluent;
         case StringId::ThemeEditorial:            return s.theme_editorial;
         case StringId::ThemeMonolith:             return s.theme_monolith;
+
+        // 261108_0002 (WS3): floating back-translation verification card +
+        // its tray toggle (same trailing-field wiring as the theme block).
+        case StringId::MenuBackTranslation:       return s.menu_back_translation;
+        case StringId::BackTranslateHeader:       return s.back_translate_header;
+        case StringId::BackTranslateMatchExact:   return s.back_translate_match_exact;
+        case StringId::BackTranslateMatchCheck:   return s.back_translate_match_check;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

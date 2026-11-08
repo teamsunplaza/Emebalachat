@@ -8,6 +8,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <new>        // 261108_0002 (FIX-R2): std::bad_alloc for the shape-only exception class
+#include <stdexcept>  // 261108_0002 (FIX-R2): length_error/logic_error/runtime_error classification
 
 namespace emebalachat {
 
@@ -173,6 +175,28 @@ void InjectDummyCtrl() {
     ::SendInput(ctrl_physically_held ? 1u : 2u, inputs, sizeof(INPUT));
 }
 
+// 261108_0002 (FIX-R2, R1-05 class): the unconditional DIAG channel is
+// SHAPE-ONLY, so raw exception text (e.what()) must never reach it - a
+// std::filesystem_error prints a path, a std::length_error a size. Classify the
+// failure instead, typeid-free, against the standard bases an effect/callback
+// can realistically throw. Same treatment as the back-translate catch in
+// src/worker.cpp (261108_0002 FIX-R1, R1-05).
+const char* ExceptionClassToken(const std::exception& e) {
+    if (dynamic_cast<const std::bad_alloc*>(&e) != nullptr) {
+        return "bad_alloc";
+    }
+    if (dynamic_cast<const std::length_error*>(&e) != nullptr) {
+        return "length_error";
+    }
+    if (dynamic_cast<const std::logic_error*>(&e) != nullptr) {
+        return "logic_error";
+    }
+    if (dynamic_cast<const std::runtime_error*>(&e) != nullptr) {
+        return "runtime_error";
+    }
+    return "std_exception";
+}
+
 } // namespace
 
 KeyboardHook* KeyboardHook::s_instance = nullptr;
@@ -299,7 +323,8 @@ void KeyboardHook::HotkeyFxWorkerLoop(std::stop_token st) {
             try {
                 body();
             } catch (const std::exception& e) {
-                DIAG_F("HOOK/HotkeyFxWorkerLoop/001: effect threw: %s\n", e.what());
+                DIAG_F("HOOK/HotkeyFxWorkerLoop/001: effect threw class=%s\n",
+                       ExceptionClassToken(e));
             } catch (...) {
                 DIAG_F("HOOK/HotkeyFxWorkerLoop/002: effect threw unknown exception\n");
             }
@@ -415,7 +440,8 @@ void KeyboardHook::RunDoubleCtrlCBody() {
     try {
         double_ctrl_c_cb_();
     } catch (const std::exception& e) {
-        DIAG_F("HOOK/RunDoubleCtrlCBody/001: callback threw: %s\n", e.what());
+        DIAG_F("HOOK/RunDoubleCtrlCBody/001: callback threw class=%s\n",
+               ExceptionClassToken(e));
     } catch (...) {
         DIAG_F("HOOK/RunDoubleCtrlCBody/002: callback threw unknown exception\n");
     }

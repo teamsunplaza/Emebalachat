@@ -56,6 +56,13 @@ std::deque<TooltipWindow::MessagePayload> g_tt_message_queue;
 std::mutex g_tt_targetlang_mu;
 std::deque<TooltipWindow::TargetLangPayload> g_tt_targetlang_queue;
 
+// 261108_0002 (WS3, v0.10.6): the floating back-translation card's value
+// queue. Own mutex (never inter-blocks with the three above), same SEC-ADJ
+// by-value transport: the posted kShowBackTranslationMessage is a pure
+// (0, 0) wake-up notification.
+std::mutex g_tt_backtrans_mu;
+std::deque<TooltipWindow::BackTranslationPayload> g_tt_backtrans_queue;
+
 } // namespace
 
 namespace {
@@ -404,6 +411,60 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         &small_format_
     );
 
+    // 261108_0002 (WS3, v0.10.6): the floating back-translation card's two
+    // formats. backtrans_body_format_ is the 13pt SEMI-BOLD card body the spec
+    // calls for (body_format_ is 13.5pt regular - reusing it would silently
+    // drop the weight); backtrans_ref_format_ is the muted 11pt reference
+    // line. Both are created here, never per render (C1 discipline) and
+    // released in Destroy.
+    dwrite_factory_->CreateTextFormat(
+        fontName,
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"",
+        &backtrans_body_format_
+    );
+    if (backtrans_body_format_) {
+        backtrans_body_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        backtrans_body_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
+
+    dwrite_factory_->CreateTextFormat(
+        fontName,
+        nullptr,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.0f,
+        L"",
+        &backtrans_ref_format_
+    );
+    if (backtrans_ref_format_) {
+        backtrans_ref_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        backtrans_ref_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
+
+    // Header row: LEFT-aligned (the shared header_format_ is CENTER-aligned
+    // for the translation card's pills, which would centre the card title).
+    dwrite_factory_->CreateTextFormat(
+        fontName,
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"",
+        &backtrans_header_format_
+    );
+    if (backtrans_header_format_) {
+        backtrans_header_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        backtrans_header_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        backtrans_header_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
     InitSapi();
     return true;
 }
@@ -425,12 +486,16 @@ void TooltipWindow::Destroy() {
         }
         ::KillTimer(hwnd_, kTimerCopiedFeedback);
         ::KillTimer(hwnd_, kTimerMessageAutohide);
+        ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
         ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
 
     if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
+    if (backtrans_header_format_) { backtrans_header_format_->Release(); backtrans_header_format_ = nullptr; }
+    if (backtrans_ref_format_) { backtrans_ref_format_->Release(); backtrans_ref_format_ = nullptr; }
+    if (backtrans_body_format_) { backtrans_body_format_->Release(); backtrans_body_format_ = nullptr; }
     if (small_format_) { small_format_->Release(); small_format_ = nullptr; }
     if (button_format_) { button_format_->Release(); button_format_ = nullptr; }
     if (body_format_) { body_format_->Release(); body_format_ = nullptr; }
@@ -824,6 +889,17 @@ void TooltipWindow::ShowTranslation(
     is_message_mode_ = false;
     no_voice_notice_active_ = false; // P4 Batch-3 (D7): card replaced by translation content
     ::KillTimer(hwnd_, kTimerMessageAutohide);
+    // 261108_0002 (WS3, v0.10.6): "the next translation dismisses the
+    // back-translation card". Hiding here (before the model is rewritten)
+    // means the card is gone even if this show is later superseded, and the
+    // translation card takes the window straight back over below.
+    HideBackTranslationCard();
+    // 261108_0002 (WS3, v0.10.6): width reset. ShowMessage narrows the card to
+    // 320 DIP and the back-translation card is 360 DIP wide; without this
+    // reset a translation shown after either of them kept the narrower width
+    // (the body measured against current_width_ - 28 and the header pill
+    // planner both read it), clipping the header and mis-wrapping the body.
+    current_width_ = kBackTransCardWidthDip;
 
     source_text_ = source_text;
     source_lang_code_ = source_lang_code;
@@ -1008,6 +1084,9 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     // P4 Batch-3 (D7): any generic message resets the no-voice click arming —
     // only ShowNoVoiceNotice re-arms it, AFTER this function returns.
     no_voice_notice_active_ = false;
+    // 261108_0002 (WS3, v0.10.6): a notice also replaces the back-translation
+    // card (one display mode at a time on the shared layered window).
+    HideBackTranslationCard();
     message_header_ = header;
     translated_text_ = body;
     source_text_.clear();
@@ -1174,6 +1253,369 @@ void TooltipWindow::DismissThreadSafe() {
     ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
 }
 
+// ===========================================================================
+// 261108_0002 (WS3, v0.10.6): floating back-translation verification card
+// ===========================================================================
+// User intent (verbatim): "역번역 플로팅 확인 UI: 번역 결과(BBBBB)를 원문
+// 언어로 자동 역번역(AAAAA')하여 플로팅 카드로 보여주기".
+//
+// The card is a THIRD display mode on the SAME layered window (translation /
+// REQ-R08 notice / back-translation). Reusing the existing window is
+// deliberate: one WS_EX_LAYERED | TOPMOST | TOOLWINDOW | NOACTIVATE popup,
+// one D2D target, one marshal-queue family, one timer band. Showing the card
+// replaces whatever was displayed; the next ShowTranslation or ShowMessage
+// replaces it back.
+//
+// Threading: the back-translation worker calls ShowBackTranslationThreadSafe,
+// which enqueues a value payload and posts a parameter-less wake-up (SEC-ADJ
+// Blocker-5 contract). Everything below the GUI-thread entry runs on the
+// thread that owns the D2D target.
+
+// ---- pure label helpers ---------------------------------------------------
+// Header: "<localized title> (SRC → TGT)". Empty labels are dropped instead of
+// rendering an empty "()" - a caller that could not resolve a language still
+// gets a clean title line.
+std::wstring TooltipWindow::FormatBackTransHeader(const std::wstring& title,
+                                                  const std::wstring& source_label,
+                                                  const std::wstring& target_label) {
+    std::wstring out = title;
+    if (source_label.empty() && target_label.empty()) {
+        return out;
+    }
+    out += L" (";
+    out += source_label;
+    if (!source_label.empty() && !target_label.empty()) {
+        out += L" → ";
+    }
+    out += target_label;
+    out += L")";
+    return out;
+}
+
+// Reference line: "↳ 원문: AAAAA". There is no i18n key for this label (the
+// 261108_0002 i18n unit added the header + the two pill strings only), so the
+// spec's literal is used verbatim, per the "plain format with the existing
+// string-utils idiom" instruction.
+std::wstring TooltipWindow::FormatBackTransReference(const std::wstring& original_text) {
+    std::wstring out = L"↳ 원문: ";
+    out += original_text;
+    return out;
+}
+
+// AAAAA' == AAAAA means the round trip was textually exact: repeating the body
+// as a "reference" would be noise, so the line is suppressed.
+bool TooltipWindow::BackTransNeedsReferenceLine(const std::wstring& original_text,
+                                                const std::wstring& back_text) {
+    if (original_text.empty()) return false;
+    return original_text != back_text;
+}
+
+// ---- timer plan application ----------------------------------------------
+void TooltipWindow::ApplyBackTransTimerPlan(BackTransTimerEvent ev) {
+    if (!hwnd_) return;
+    const BackTransTimerPlan plan = PlanBackTransTimer(ev, backtrans_hover_paused_);
+    switch (plan.action) {
+        case BackTransTimerAction::ArmAutohide:
+            ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+            ::SetTimer(hwnd_, kTimerBackTranslateAutohide, plan.delay_ms, nullptr);
+            break;
+        case BackTransTimerAction::ArmGrace:
+            // The pointer is no longer over the card, so the pause flag is
+            // released here: re-entering during the grace window must pause
+            // the countdown again (spec: "pause on hover"), and without this
+            // reset the planner would treat the re-entry as a repeated move
+            // and let the grace timer run out under the pointer.
+            ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+            ::SetTimer(hwnd_, kTimerBackTranslateAutohide, plan.delay_ms, nullptr);
+            backtrans_hover_paused_ = false;
+            break;
+        case BackTransTimerAction::PauseAutohide:
+            ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+            backtrans_hover_paused_ = true;
+            break;
+        case BackTransTimerAction::KillTimers:
+            ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+            backtrans_hover_paused_ = false;
+            break;
+        case BackTransTimerAction::None:
+            break;
+    }
+}
+
+// Hide the card WITHOUT touching the translation model. Used by the
+// dismiss-on-new-translation rule (which re-shows the card immediately with
+// fresh content) and by the mode-switch paths in ShowTranslation/ShowMessage.
+void TooltipWindow::HideBackTranslationCard() {
+    ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+    backtrans_hover_paused_ = false;
+    backtrans_close_hover_ = false;
+    backtrans_close_rect_ = {};
+    if (!is_backtrans_mode_) {
+        return; // nothing displayed in this mode: leave the other modes alone
+    }
+    is_backtrans_mode_ = false;
+    backtrans_original_.clear();
+    backtrans_text_.clear();
+    backtrans_header_.clear();
+    backtrans_ref_line_.clear();
+    backtrans_matched_ = false;
+}
+
+// ---- 3-tier anchor resolution --------------------------------------------
+// Tier 1 (caret): GetGUIThreadInfo on the TARGET's thread. The caret rect is in
+//   the focus window's client coordinates, so it is mapped through that window
+//   (ClientToScreen) - not through target_hwnd, which may be an ancestor. When
+//   the caret is empty/absent, the focus window itself is used, but only while
+//   it is a compact control (<= 180 px tall: an edit box, not a whole app
+//   window whose top edge would put the card in the title bar).
+// Tier 2 (badge): the floating badge's window rect, when it is visible.
+// Tier 3 (fallback): the target window's bottom-left inner area, or the mouse
+//   cursor when no usable target window exists.
+// Every tier funnels through the pure PlaceBackTransCard, so the geometry and
+// the work-area clamp are shared and unit-tested.
+POINT TooltipWindow::ResolveBackTranslationAnchor(HWND target_hwnd, HWND badge_hwnd,
+                                                  int card_w_phys, int card_h_phys) const {
+    if (card_w_phys <= 0) card_w_phys = emebalachat::ui::ScaleDipsToPixels(kBackTransCardWidthDip, dpi_);
+    if (card_h_phys <= 0) card_h_phys = emebalachat::ui::ScaleDipsToPixels(kBackTransCardMinHeightDip, dpi_);
+    const int gap_px = emebalachat::ui::ScaleDipsToPixels(12, dpi_);
+
+    // Work area of the monitor the anchor lives on; resolved per tier below.
+    const auto work_area_for = [](POINT pt) -> RECT {
+        HMONITOR hMon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(MONITORINFO);
+        if (::GetMonitorInfoW(hMon, &mi)) {
+            return mi.rcWork;
+        }
+        RECT fallback = {0, 0, ::GetSystemMetrics(SM_CXSCREEN), ::GetSystemMetrics(SM_CYSCREEN)};
+        return fallback;
+    };
+
+    // ---- Tier 1: caret of the target's GUI thread ----
+    if (target_hwnd && ::IsWindow(target_hwnd)) {
+        const DWORD tid = ::GetWindowThreadProcessId(target_hwnd, nullptr);
+        GUITHREADINFO gti = {};
+        gti.cbSize = sizeof(GUITHREADINFO);
+        if (tid != 0 && ::GetGUIThreadInfo(tid, &gti)) {
+            RECT anchor = {};
+            bool have_anchor = false;
+            if (gti.hwndCaret && (gti.rcCaret.right > gti.rcCaret.left ||
+                                  gti.rcCaret.bottom > gti.rcCaret.top)) {
+                // rcCaret is in hwndCaret's CLIENT coordinates.
+                POINT tl = {gti.rcCaret.left, gti.rcCaret.top};
+                POINT br = {gti.rcCaret.right, gti.rcCaret.bottom};
+                if (::ClientToScreen(gti.hwndCaret, &tl) && ::ClientToScreen(gti.hwndCaret, &br)) {
+                    anchor = RECT{tl.x, tl.y, br.x, br.y};
+                    have_anchor = true;
+                }
+            }
+            if (!have_anchor && gti.hwndFocus && ::IsWindow(gti.hwndFocus)) {
+                RECT fr = {};
+                if (::GetWindowRect(gti.hwndFocus, &fr)) {
+                    const int focus_h = static_cast<int>(fr.bottom - fr.top);
+                    // Compact control only: a whole-app focus window would
+                    // anchor the card against the title bar.
+                    if (focus_h > 0 && focus_h <= emebalachat::ui::ScaleDipsToPixels(180, dpi_)) {
+                        anchor = fr;
+                        have_anchor = true;
+                    }
+                }
+            }
+            if (have_anchor) {
+                const POINT probe = {static_cast<LONG>(anchor.left), static_cast<LONG>(anchor.top)};
+                return PlaceBackTransCard(anchor, /*above=*/true, gap_px,
+                                          card_w_phys, card_h_phys, work_area_for(probe));
+            }
+        }
+    }
+
+    // ---- Tier 2: the floating badge ----
+    if (badge_hwnd && ::IsWindow(badge_hwnd) && ::IsWindowVisible(badge_hwnd)) {
+        RECT br = {};
+        if (::GetWindowRect(badge_hwnd, &br)) {
+            const POINT probe = {static_cast<LONG>((br.left + br.right) / 2),
+                                 static_cast<LONG>((br.top + br.bottom) / 2)};
+            return PlaceBackTransCard(br, /*above=*/true, gap_px,
+                                      card_w_phys, card_h_phys, work_area_for(probe));
+        }
+    }
+
+    // ---- Tier 3: bottom-left inner area of the target, else the cursor ----
+    if (target_hwnd && ::IsWindow(target_hwnd)) {
+        RECT tr = {};
+        if (::GetWindowRect(target_hwnd, &tr)) {
+            // A thin synthetic anchor at the window's inner bottom-left: the
+            // card is placed ABOVE it, i.e. inside the lower part of the
+            // window rather than hanging off the taskbar.
+            const int inset = emebalachat::ui::ScaleDipsToPixels(24, dpi_);
+            const int bar_h = emebalachat::ui::ScaleDipsToPixels(8, dpi_);
+            RECT anchor = {tr.left + inset, tr.bottom - inset - bar_h,
+                           tr.left + inset + emebalachat::ui::ScaleDipsToPixels(2, dpi_),
+                           tr.bottom - inset};
+            const POINT probe = {static_cast<LONG>(anchor.left), static_cast<LONG>(anchor.top)};
+            return PlaceBackTransCard(anchor, /*above=*/true, gap_px,
+                                      card_w_phys, card_h_phys, work_area_for(probe));
+        }
+    }
+
+    POINT cursor = {};
+    if (!::GetCursorPos(&cursor)) {
+        cursor = POINT{0, 0};
+    }
+    RECT anchor = {cursor.x, cursor.y, cursor.x + 1, cursor.y + 1};
+    return PlaceBackTransCard(anchor, /*above=*/false, gap_px,
+                              card_w_phys, card_h_phys, work_area_for(cursor));
+}
+
+// ---- GUI-thread show ------------------------------------------------------
+void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
+                                        const std::wstring& back_text,
+                                        const std::wstring& source_lang_label,
+                                        const std::wstring& target_lang_label,
+                                        bool meaning_matched,
+                                        HWND target_hwnd, HWND badge_hwnd) {
+    if (!hwnd_) return;
+    // REQ-R10 thread-affinity guard: any off-thread caller is marshaled.
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ShowBackTranslationThreadSafe(original_text, back_text, source_lang_label,
+                                      target_lang_label, meaning_matched,
+                                      target_hwnd, badge_hwnd);
+        return;
+    }
+
+    DIAG_LOG("UI", "tooltip_show kind=backtrans src_len=%zu back_len=%zu matched=%d",
+             original_text.size(), back_text.size(), meaning_matched ? 1 : 0);
+
+    // The card owns the window while it is up: the translation card and the
+    // REQ-R08 notice are both replaced (one display mode at a time).
+    is_message_mode_ = false;
+    no_voice_notice_active_ = false;
+    ::KillTimer(hwnd_, kTimerMessageAutohide);
+    copied_feedback_ = false;
+    hovered_btn_ = 0;
+    // The translation model is released with the card: the footer buttons and
+    // the language dropdowns are not rendered in this mode, and leaving the
+    // old body behind would let a WM_DPICHANGED repaint resurrect it.
+    source_text_.clear();
+    source_lang_code_.clear();
+    target_lang_.clear();
+    translated_text_.clear();
+    message_header_.clear();
+
+    is_backtrans_mode_ = true;
+    backtrans_original_ = original_text;
+    backtrans_text_ = back_text;
+    backtrans_matched_ = meaning_matched;
+    backtrans_header_ = FormatBackTransHeader(I18n::Get(StringId::BackTranslateHeader),
+                                              source_lang_label, target_lang_label);
+    backtrans_ref_line_ = BackTransNeedsReferenceLine(original_text, back_text)
+                              ? FormatBackTransReference(original_text)
+                              : std::wstring();
+
+    // The card never scrolls and never carries the translation model's footer.
+    scroll_offset_dip_ = 0.0f;
+    scrollable_ = false;
+    content_height_dip_ = 0.0f;
+    dragging_thumb_ = false;
+    thumb_hover_ = false;
+    backtrans_hover_paused_ = false;
+    backtrans_close_hover_ = false;
+
+    // Size: the pure character-count plan is the floor; a real DirectWrite
+    // measurement refines the body height when the factory is alive (same
+    // measure-then-lay-out discipline as ShowTranslation, but the card width
+    // is FIXED at 360 DIP so the estimate stays honest).
+    const int text_column = kBackTransCardWidthDip - 28;
+    BackTransCardSize size = ComputeBackTransCardSize(
+        static_cast<int>(backtrans_text_.size()),
+        static_cast<int>(backtrans_ref_line_.size()));
+    if (dwrite_factory_ && backtrans_body_format_) {
+        IDWriteTextLayout* layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                backtrans_text_.c_str(), static_cast<UINT32>(backtrans_text_.size()),
+                backtrans_body_format_, static_cast<float>(text_column), 100000.0f,
+                &layout)) && layout) {
+            DWRITE_TEXT_METRICS m = {};
+            if (SUCCEEDED(layout->GetMetrics(&m))) {
+                int h = kBackTransChromeDip + static_cast<int>(std::ceil(m.height));
+                if (!backtrans_ref_line_.empty()) {
+                    h += kBackTransRefGapDip + kBackTransRefLineDip;
+                }
+                if (h < kBackTransCardMinHeightDip) h = kBackTransCardMinHeightDip;
+                if (h > kBackTransCardMaxHeightDip) h = kBackTransCardMaxHeightDip;
+                size.height = h;
+            }
+            layout->Release();
+        }
+    }
+    current_width_ = size.width;
+    current_height_ = size.height;
+
+    // DPI + physical buffer, then the anchor (which needs the physical card
+    // extents to clamp correctly).
+    POINT probe = {};
+    if (!::GetCursorPos(&probe)) {
+        probe = POINT{0, 0};
+    }
+    dpi_ = emebalachat::ui::MonitorDpiAtPoint(probe);
+    ReallocateBuffer(PhysW(), PhysH());
+
+    const POINT origin = ResolveBackTranslationAnchor(target_hwnd, badge_hwnd, PhysW(), PhysH());
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, origin.x, origin.y, PhysW(), PhysH(),
+                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    visible_ = true;
+
+    Render();
+    UpdateLayered();
+
+    // Auto-dismiss: 4500 ms, paused on hover (PlanBackTransTimer owns the
+    // decision; the WndProc only dispatches events into it).
+    ApplyBackTransTimerPlan(BackTransTimerEvent::Shown);
+}
+
+void TooltipWindow::ShowBackTranslationThreadSafe(const std::wstring& original_text,
+                                                  const std::wstring& back_text,
+                                                  const std::wstring& source_lang_label,
+                                                  const std::wstring& target_lang_label,
+                                                  bool meaning_matched,
+                                                  HWND target_hwnd, HWND badge_hwnd) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() == gui_thread_id_) {
+        ShowBackTranslation(original_text, back_text, source_lang_label, target_lang_label,
+                            meaning_matched, target_hwnd, badge_hwnd);
+        return;
+    }
+    // SEC-ADJ: by-value transport through g_tt_backtrans_queue; the posted
+    // message is a pure (0, 0) wake-up. A failed post leaves the entry queued
+    // (drain-safe) - same contract as the other three seams.
+    BackTranslationPayload payload;
+    payload.original_text = original_text;
+    payload.back_text = back_text;
+    payload.source_lang_label = source_lang_label;
+    payload.target_lang_label = target_lang_label;
+    payload.meaning_matched = meaning_matched;
+    payload.target_hwnd = target_hwnd;
+    payload.badge_hwnd = badge_hwnd;
+    {
+        std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+        // 261108_0002 (FIX-R1, v0.10.6): LATEST-WINS bound. A deque that grows
+        // per request retains full original + back-translated strings whenever
+        // the posted wake-up is dropped (queue full / window gone) or the GUI
+        // pump stalls, and none of those retention paths is user-reversible.
+        // The card can only ever show one card, so an older pending payload has
+        // no value: clear then push keeps exactly the newest one, matching the
+        // SingleSlotWorker latest-wins producer. The WndProc drain loop stays
+        // correct unchanged - it applies whatever entries exist (0 or 1 now)
+        // and therefore coalesces to the newest by construction.
+        g_tt_backtrans_queue.clear();
+        g_tt_backtrans_queue.push_back(std::move(payload));
+    }
+    if (::PostMessageW(hwnd_, kShowBackTranslationMessage, 0, 0) == FALSE) {
+        DIAG_F("TT/Marshal/004: PostMessage kShowBackTranslation failed (GLE %lu); payload left queued\n",
+               ::GetLastError());
+    }
+}
+
 // R6 Phase 1 (B3, plan §2.4 step 6/7 companion): view-only sync of the target
 // language label after ANY surface mutated the persisted pair (tray menu,
 // swap, Ctrl+F9 cycle, config reload). Best-effort by design: hidden or
@@ -1224,6 +1666,16 @@ void TooltipWindow::RefreshTheme() {
 
 void TooltipWindow::Dismiss() {
     if (!hwnd_) return;
+    // 261108_0002 (WS3, v0.10.6): a dismissal also discards back-translation
+    // payloads still queued for this window. Without it, a show enqueued a
+    // moment before the user pressed ✕/ESC (or before the autohide fired)
+    // would resurrect the card on the next wake-up - the "I closed it and it
+    // came back" race. Only this unit's queue is touched; the translation /
+    // message / target-lang queues keep their existing semantics.
+    {
+        std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+        g_tt_backtrans_queue.clear();
+    }
     // REQ-R10 companion: the ESC (keyboard hook) and outside-click (mouse hook)
     // dismissal paths call Dismiss() off the GUI thread. ShowWindow/SAPI on
     // another thread's window can block until that pump is free (e.g. mid
@@ -1239,11 +1691,23 @@ void TooltipWindow::Dismiss() {
              static_cast<unsigned long long>(latest_request_gen_.load(std::memory_order_relaxed)));
     StopTTS();
     ::KillTimer(hwnd_, kTimerMessageAutohide);
+    ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
     visible_ = false;
     hovered_btn_ = 0;
     copied_feedback_ = false;
     is_message_mode_ = false;
     no_voice_notice_active_ = false; // P4 Batch-3 (D7): notice released on every dismissal path
+    // 261108_0002 (WS3, v0.10.6): the back-translation card is released by the
+    // same dismissal (✕ / ESC / outside click / autohide timer).
+    is_backtrans_mode_ = false;
+    backtrans_hover_paused_ = false;
+    backtrans_close_hover_ = false;
+    backtrans_close_rect_ = {};
+    backtrans_original_.clear();
+    backtrans_text_.clear();
+    backtrans_header_.clear();
+    backtrans_ref_line_.clear();
+    backtrans_matched_ = false;
     // R6 Phase 2 (B1-H2, plan §1 B1-H2 fix direction): clear the content
     // buffers on dismissal. WM_DPICHANGED re-renders the CURRENT model while
     // visible, and any future re-show path that skips a fresh ShowTranslation
@@ -1351,6 +1815,113 @@ void TooltipWindow::CopyToClipboard() {
     UpdateLayered();
 }
 
+// 261108_0002 (WS3, v0.10.6): the floating back-translation card body.
+// Called from Render() after the shared elevated-card chrome, with the D2D
+// target already begun. Layout (all DIP, card width 360):
+//   row 1  y  9..33   header title (12pt SemiBold) + match pill + ✕
+//   body   y 40..    AAAAA' (13pt SemiBold, text_primary)
+//   ref    bottom    "↳ 원문: AAAAA" (11pt, text_muted)
+// The pill is the caller's verdict: status_ready green for "✓ 원문 일치",
+// accent_primary for "⚡ 표현 확인" (the theme has no `status_active` token -
+// state_ready is its equivalent semantic slot).
+void TooltipWindow::RenderBackTranslation() {
+    if (!dc_render_target_ || !scratch_brush_) return;
+    const auto& theme = ui::GetActiveTheme();
+    const float w = static_cast<float>(current_width_);
+
+    // ---- header row: title + pill + close ----
+    const float row_top = 9.0f;
+    const float row_bottom = 33.0f;
+    close_btn_rect_ = D2D1::RectF(w - 32.0f, row_top, w - 12.0f, row_bottom);
+    backtrans_close_rect_ = close_btn_rect_;
+
+    // Pill: measured through the shared button_format_ (11.5pt medium) so it
+    // matches the translation card's language pills. The width is measured
+    // here (once per show, not per frame: the card is static while up).
+    const std::wstring pill_text = I18n::Get(backtrans_matched_ ? StringId::BackTranslateMatchExact
+                                                               : StringId::BackTranslateMatchCheck);
+    float pill_w = 0.0f;
+    if (dwrite_factory_ && button_format_ && !pill_text.empty()) {
+        IDWriteTextLayout* pill_layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                pill_text.c_str(), static_cast<UINT32>(pill_text.size()),
+                button_format_, 512.0f, 24.0f, &pill_layout)) && pill_layout) {
+            DWRITE_TEXT_METRICS pm = {};
+            if (SUCCEEDED(pill_layout->GetMetrics(&pm)) && pm.width > 0.0f) {
+                pill_w = pm.width + 16.0f;
+            }
+            pill_layout->Release();
+        }
+    }
+    if (pill_w <= 0.0f) {
+        pill_w = 96.0f; // fallback floor when measurement is unavailable
+    }
+    const float pill_right = close_btn_rect_.left - 8.0f;
+    const float pill_left = pill_right - pill_w;
+    const D2D1_RECT_F pill_rect = D2D1::RectF(pill_left, row_top, pill_right, row_bottom);
+    const D2D1_ROUNDED_RECT pill_rr =
+        D2D1::RoundedRect(pill_rect, theme.control_radius, theme.control_radius);
+    const UINT32 pill_color = backtrans_matched_ ? theme.state_ready : theme.accent_primary;
+
+    scratch_brush_->SetColor(ui::ColorFromHex(pill_color, 0.16f));
+    dc_render_target_->FillRoundedRectangle(pill_rr, scratch_brush_);
+    scratch_brush_->SetColor(ui::ColorFromHex(pill_color, 0.55f));
+    dc_render_target_->DrawRoundedRectangle(pill_rr, scratch_brush_, 1.0f);
+    if (button_format_) {
+        scratch_brush_->SetColor(ui::ColorFromHex(pill_color, 1.0f));
+        dc_render_target_->DrawText(pill_text.c_str(), static_cast<UINT32>(pill_text.size()),
+                                    button_format_, pill_rect, scratch_brush_);
+    }
+
+    // Title: clipped to the space left of the pill so a long localized header
+    // ("🔄 Verificación de retrotraducción (EN → ES)") can never run under it.
+    if (backtrans_header_format_) {
+        const D2D1_RECT_F title_rect = D2D1::RectF(14.0f, row_top, pill_left - 8.0f, row_bottom);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
+        dc_render_target_->DrawText(backtrans_header_.c_str(),
+                                    static_cast<UINT32>(backtrans_header_.size()),
+                                    backtrans_header_format_, title_rect, scratch_brush_);
+    }
+
+    // Close ✕ (hover turns it danger-red, matching the translation card).
+    if (header_format_) {
+        scratch_brush_->SetColor(backtrans_close_hover_
+                                     ? ui::ColorFromHex(theme.state_danger, 1.0f)
+                                     : ui::ColorFromHex(theme.text_muted, 0.85f));
+        dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
+    }
+
+    // Header divider (same 14 DIP inset as the translation card).
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+    dc_render_target_->DrawLine(D2D1::Point2F(14.0f, 37.0f),
+                                D2D1::Point2F(w - 14.0f, 37.0f), scratch_brush_, 1.0f);
+
+    // ---- body: AAAAA' (13pt SemiBold) ----
+    const float body_top = 44.0f;
+    const float ref_block = backtrans_ref_line_.empty()
+                                ? 0.0f
+                                : static_cast<float>(kBackTransRefGapDip + kBackTransRefLineDip);
+    float body_bottom = static_cast<float>(current_height_) - 12.0f - ref_block;
+    if (body_bottom < body_top) body_bottom = body_top;
+    if (backtrans_body_format_ && !backtrans_text_.empty()) {
+        const D2D1_RECT_F body_rect = D2D1::RectF(14.0f, body_top, w - 14.0f, body_bottom);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
+        dc_render_target_->DrawText(backtrans_text_.c_str(),
+                                    static_cast<UINT32>(backtrans_text_.size()),
+                                    backtrans_body_format_, body_rect, scratch_brush_);
+    }
+
+    // ---- muted reference line: "↳ 원문: AAAAA" ----
+    if (backtrans_ref_format_ && !backtrans_ref_line_.empty()) {
+        const D2D1_RECT_F ref_rect = D2D1::RectF(14.0f, static_cast<float>(current_height_) - 26.0f,
+                                                 w - 14.0f, static_cast<float>(current_height_) - 10.0f);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
+        dc_render_target_->DrawText(backtrans_ref_line_.c_str(),
+                                    static_cast<UINT32>(backtrans_ref_line_.size()),
+                                    backtrans_ref_format_, ref_rect, scratch_brush_);
+    }
+}
+
 void TooltipWindow::Render() {
     if (!dc_render_target_) return;
 
@@ -1382,6 +1953,18 @@ void TooltipWindow::Render() {
         static_cast<float>(current_width_) - 0.5f,
         static_cast<float>(current_height_) - 0.5f);
     ui::DrawElevatedCard(dc_render_target_, card_rect, theme.card_radius, 1.0f, theme);
+
+    // --- 261108_0002 (WS3, v0.10.6): floating back-translation card ---
+    // Dispatched here (after the shared elevated-card chrome) so the card
+    // shares the exact surface/border treatment of the other two modes.
+    if (is_backtrans_mode_) {
+        RenderBackTranslation();
+        const HRESULT hr_back = dc_render_target_->EndDraw();
+        if (IsRecoverableDeviceLost(hr_back)) {
+            RecreateAfterDeviceLost();
+        }
+        return;
+    }
 
     // --- REQ-R08 message mode: compact header + body notice, no action buttons ---
     if (is_message_mode_) {
@@ -1701,6 +2284,13 @@ int TooltipWindow::DrainMarshalQueue() {
         drained += static_cast<int>(g_tt_targetlang_queue.size());
         g_tt_targetlang_queue.clear();
     }
+    // 261108_0002 (WS3, v0.10.6): the back-translation queue joins the
+    // teardown sweep (same discard-without-apply semantics).
+    {
+        std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+        drained += static_cast<int>(g_tt_backtrans_queue.size());
+        g_tt_backtrans_queue.clear();
+    }
     return drained;
 }
 
@@ -1730,6 +2320,12 @@ bool TooltipWindow::PostPayloadForTest(HWND hwnd, UINT msg, const void* payload)
             std::lock_guard<std::mutex> lk(g_tt_targetlang_mu);
             g_tt_targetlang_queue.push_back(
                 *static_cast<const TargetLangPayload*>(payload));
+            break;
+        }
+        case kShowBackTranslationMessage: {
+            std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+            g_tt_backtrans_queue.push_back(
+                *static_cast<const BackTranslationPayload*>(payload));
             break;
         }
         default:
@@ -1809,6 +2405,29 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // 261108_0002 (WS3, v0.10.6): marshaled floating back-translation
+        // card. Same SEC-ADJ value-queue drain as the show handlers above; the
+        // HWNDs travel inside the payload and are re-validated with IsWindow
+        // by ResolveBackTranslationAnchor, so a stale/foreign handle degrades
+        // to the next anchor tier instead of being dereferenced.
+        case kShowBackTranslationMessage: {
+            for (;;) {
+                BackTranslationPayload p;
+                {
+                    std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+                    if (g_tt_backtrans_queue.empty()) {
+                        break;
+                    }
+                    p = std::move(g_tt_backtrans_queue.front());
+                    g_tt_backtrans_queue.pop_front();
+                }
+                pThis->ShowBackTranslation(p.original_text, p.back_text,
+                                           p.source_lang_label, p.target_lang_label,
+                                           p.meaning_matched, p.target_hwnd, p.badge_hwnd);
+            }
+            return 0;
+        }
+
         // R6 Phase 1 (B3): marshaled target-language view refresh. Same
         // SEC-ADJ value-queue drain as the show handlers above. Running
         // RefreshTargetLanguageFromConfig here is on the GUI thread, so it
@@ -1863,6 +2482,17 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return TRUE;
             }
 
+            // 261108_0002 (WS3): the back-translation card has exactly one
+            // interactive control (✕) - hand cursor over it, arrow elsewhere.
+            if (pThis->is_backtrans_mode_) {
+                if (IsPointInRect(pThis->backtrans_close_rect_, x, y)) {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
+                } else {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
+                }
+                return TRUE;
+            }
+
             if (IsPointInRect(pThis->copy_btn_rect_, x, y) ||
                 IsPointInRect(pThis->tts_btn_rect_, x, y) ||
                 // F8 (ADR-A1-4): the source button is interactive now.
@@ -1886,6 +2516,28 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
 
             bool repaint = false;
+
+            // 261108_0002 (WS3, v0.10.6): hovering the back-translation card
+            // PAUSES the 4500 ms auto-dismiss (spec). The planner makes the
+            // first move the only timer action; the close-button hover is the
+            // only repaint trigger (the card is otherwise static).
+            if (pThis->is_backtrans_mode_) {
+                pThis->ApplyBackTransTimerPlan(TooltipWindow::BackTransTimerEvent::PointerMoved);
+                const bool close_hover = IsPointInRect(pThis->backtrans_close_rect_, x, y);
+                if (close_hover != pThis->backtrans_close_hover_) {
+                    pThis->backtrans_close_hover_ = close_hover;
+                    pThis->Render();
+                    pThis->UpdateLayered();
+                }
+                // TrackMouseEvent so WM_MOUSELEAVE arrives and the grace timer
+                // can resume the countdown.
+                TRACKMOUSEEVENT tme_back = {};
+                tme_back.cbSize = sizeof(TRACKMOUSEEVENT);
+                tme_back.dwFlags = TME_LEAVE;
+                tme_back.hwndTrack = hwnd;
+                ::TrackMouseEvent(&tme_back);
+                return 0;
+            }
 
             // REQ-002: thumb drag (SetCapture held since WM_LBUTTONDOWN).
             // Relative mapping keeps the grab point under the cursor:
@@ -1949,6 +2601,17 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_MOUSELEAVE: {
+            // 261108_0002 (WS3, v0.10.6): leaving the back-translation card
+            // resumes the countdown with the 1500 ms grace window.
+            if (pThis->is_backtrans_mode_) {
+                if (pThis->backtrans_close_hover_) {
+                    pThis->backtrans_close_hover_ = false;
+                    pThis->Render();
+                    pThis->UpdateLayered();
+                }
+                pThis->ApplyBackTransTimerPlan(TooltipWindow::BackTransTimerEvent::PointerLeft);
+                return 0;
+            }
             // During a thumb drag the capture keeps mouse events coming even
             // when the pointer leaves; ignore leave until the drag ends.
             if (pThis->dragging_thumb_) {
@@ -1964,6 +2627,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_LBUTTONDOWN: {
+            // 261108_0002 (WS3, v0.10.6): the back-translation card's only
+            // control is ✕; a press anywhere else is inert (no drag, no
+            // scroll). Dismiss on UP so the press/release pair stays honest.
+            if (pThis->is_backtrans_mode_) {
+                return 0;
+            }
             // P4 Batch-3 (REQ-C-002 / D7): while the no-voice notice is up, a
             // click ANYWHERE on the card opens the official Windows speech
             // settings page (free voice-packs store, ms-settings:speech deep
@@ -2007,6 +2676,20 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_LBUTTONUP: {
+            // 261108_0002 (WS3, v0.10.6): ✕ dismisses the back-translation
+            // card immediately (spec). Checked before every other control so a
+            // stale footer rect from the previous mode can never fire.
+            if (pThis->is_backtrans_mode_) {
+                float bx = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                    static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
+                float by = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                    static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
+                if (IsPointInRect(pThis->backtrans_close_rect_, bx, by)) {
+                    DIAG_LOG("UI", "tooltip_backtrans_dismiss reason=close_button");
+                    pThis->Dismiss();
+                }
+                return 0;
+            }
             // REQ-002: end a thumb drag first; swallow the release so a drag
             // that ends over a footer button does not also fire its action.
             if (pThis->dragging_thumb_) {
@@ -2186,6 +2869,20 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // 261108_0002 (WS3, v0.10.6): ESC dismisses the back-translation card
+        // immediately. The window is WS_EX_NOACTIVATE so it never holds focus;
+        // the global ESC path (main.cpp's hook esc_cb_ -> Dismiss) also covers
+        // this mode, and this handler is the in-window belt-and-braces case
+        // (e.g. a future activating variant).
+        case WM_KEYDOWN: {
+            if (pThis->is_backtrans_mode_ && wParam == VK_ESCAPE) {
+                DIAG_LOG("UI", "tooltip_backtrans_dismiss reason=esc");
+                pThis->Dismiss();
+                return 0;
+            }
+            break;
+        }
+
         case WM_TIMER: {
             if (wParam == kTimerCopiedFeedback) {
                 ::KillTimer(hwnd, kTimerCopiedFeedback);
@@ -2196,6 +2893,19 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
             if (wParam == kTimerMessageAutohide) {
                 pThis->Dismiss();
+                return 0;
+            }
+            // 261108_0002 (WS3, v0.10.6): auto-dismiss (4500 ms) or the hover
+            // grace expiry (1500 ms) - both land here; the card is hidden
+            // either way. A timer that fires after the card was replaced is
+            // harmless: the mode flag is already false and Dismiss is a no-op
+            // for an invisible window.
+            if (wParam == kTimerBackTranslateAutohide) {
+                ::KillTimer(hwnd, kTimerBackTranslateAutohide);
+                if (pThis->is_backtrans_mode_) {
+                    DIAG_LOG("UI", "tooltip_backtrans_dismiss reason=autohide");
+                    pThis->Dismiss();
+                }
                 return 0;
             }
             break;

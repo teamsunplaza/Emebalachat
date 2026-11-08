@@ -368,6 +368,16 @@ enum class StringId {
     ThemeEditorial,
     ThemeMonolith,
 
+    // 261108_0002 (WS3, v0.10.6): floating back-translation verification card
+    // + its tray toggle. The tray row carries the check mark
+    // (ID_TRAY_BACK_TRANSLATE); the card itself renders the header line and
+    // the two meaning-verdict chips. Appended at the tail so the EnumCount
+    // completeness loop covers them automatically (161x37 -> 165x37).
+    MenuBackTranslation,     // "역번역 플로팅 표시 (번역 검증)" / "Floating Back-Translation"
+    BackTranslateHeader,     // "🔄 역번역 확인" / "🔄 Back-Translation"
+    BackTranslateMatchExact, // "✓ 원문 일치" / "✓ Meaning Matched"
+    BackTranslateMatchCheck, // "⚡ 표현 확인" / "⚡ Check Nuance"
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

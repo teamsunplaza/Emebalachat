@@ -1788,6 +1788,177 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipUntranslatedAbove));
     });
 
+    // ---- 261108_0002 (WS3, v0.10.6): floating back-translation card --------
+    // The user rule (verbatim): "config.back_translation_enabled 이 true 면
+    // ExecuteTask 가 콜백을 발화하고, back_translate_worker 가 BBBBB 를 원문
+    // 언어로 역번역하여 TooltipWindow 플로팅 카드로 표시." worker.cpp fires the
+    // pipeline-thread callback only AFTER a successful paste (the moment the
+    // user's own words have already been replaced by BBBBB), so this block is
+    // the ONE owner of the second engine round trip:
+    //   * the registered wrapper runs on the PIPELINE thread (worker.hpp
+    //     contract: non-blocking). It resolves the reverse source language with
+    //     the pure four-tier ladder config.cpp already provides and hands a job
+    //     over - no clipboard, no ledger, no inference, no D2D;
+    //   * the dedicated SingleSlotWorker below (the drag/F9 precedent in this
+    //     file) runs engine.Translate on its own thread and marshals the result
+    //     through the tooltip's existing REQ-R10 thread-safe seam.
+    // The whole path is IN-MEMORY: nothing is pasted, the clipboard is never
+    // read or written, and the paste ledger is untouched. The card is read-only
+    // verification UI, so a failure only means "no card".
+
+    // 261108_0002 (WS3): 2-char ASCII language label for the card header
+    // ("Korean" -> "KO", "Chinese Simplified" -> "ZH"). The canonical short code
+    // comes from the language registry, so the header never has to render a
+    // non-Latin name; an unresolvable name degrades to its first two ASCII
+    // letters. The tooltip owns the header layout, so the label stays tiny.
+    auto short_lang_label = [](std::string_view name_en) -> std::wstring {
+        const emebalachat::LanguageInfo* info = emebalachat::FindLanguageByName(name_en);
+        const std::string short_code = info ? info->display_short : std::string();
+        std::wstring label;
+        label.reserve(2);
+        for (const char c : short_code) {
+            if (c == '-' || label.size() >= 2) {
+                break; // "ZH-CN" -> "ZH"; the header budget is two glyphs
+            }
+            if (c >= 'a' && c <= 'z') {
+                label.push_back(static_cast<wchar_t>(c - 'a' + 'A'));
+            } else if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+                label.push_back(static_cast<wchar_t>(c));
+            }
+        }
+        if (label.empty()) {
+            for (const char c : name_en) {
+                if (label.size() >= 2) {
+                    break;
+                }
+                if (c >= 'a' && c <= 'z') {
+                    label.push_back(static_cast<wchar_t>(c - 'a' + 'A'));
+                } else if (c >= 'A' && c <= 'Z') {
+                    label.push_back(static_cast<wchar_t>(c));
+                }
+            }
+        }
+        return label;
+    };
+
+    // One verification job = one finished forward translation awaiting its round
+    // trip. worker.hpp's BackTranslateRequest carries the languages as the
+    // pipeline saw them (configured/detected source, forward target); the
+    // resolved reverse target and BOTH header labels are computed here on the
+    // producer side, so the worker thread only translates and shows.
+    struct BackTranslateJob {
+        std::wstring original_text;  // AAAAA - what the user actually typed
+        std::wstring forward_text;   // BBBBB - translated segment (never the
+                                     // verbatim prefix of a tail translation)
+        std::string forward_target;  // BBBBB's language (Translate source)
+        std::string back_target;     // AAAAA's language (Translate target)
+        std::wstring source_label;   // header: AAAAA's short code ("KO")
+        std::wstring target_label;   // header: BBBBB's short code ("EN")
+        HWND target_hwnd = nullptr;  // the window that received BBBBB
+        HWND badge_hwnd = nullptr;   // Tier-2 card anchor (null when no badge)
+    };
+
+    // Runs ON back_translate_worker. Pure in-memory verification: engine round
+    // trip -> canonical comparison -> marshal. Any failure keeps the screen
+    // untouched (no card) - the required silent-skip policy.
+    auto run_back_translate = [&config, &engine, &tooltip](const BackTranslateJob& job) {
+        if (job.forward_text.empty() || job.forward_target.empty() ||
+            job.back_target.empty()) {
+            return;
+        }
+        // 261108_0002 (FIX-R1, v0.10.6): "off means off" is checked BEFORE the
+        // engine round trip, not only before the display. A job can sit in the
+        // SingleSlotWorker after the user already toggled the feature off; the
+        // post-translate gate alone still transmitted the finished forward
+        // translation to the engine (local inference or the cloud consent path)
+        // for a feature the user just disabled. The flag is read LIVE from the
+        // config snapshot (never captured at enqueue time), so this reflects the
+        // toggle as of the instant the worker picks the job up; the gate after
+        // the round trip stays as defense in depth for a toggle that lands while
+        // the request is in flight.
+        if (!config.GetSnapshot().back_translation_enabled) {
+            DIAG_LOG("UI", "back_translate_skip_disabled fwd_len=%zu",
+                     job.forward_text.size());
+            return;
+        }
+        // Same engine manager the Enter pipeline and the drag/F9 paths use, so
+        // consent gating, cancel latch and engine selection are IDENTICAL to the
+        // forward translation (no privacy path is bypassed or added here).
+        emebalachat::TranslationStatus bt_status = emebalachat::TranslationStatus::Ok;
+        const std::wstring back_text =
+            engine.Translate(job.forward_text, job.forward_target, job.back_target, &bt_status);
+        if (bt_status != emebalachat::TranslationStatus::Ok || back_text.empty()) {
+            DIAG_LOG("UI", "back_translate_skip status=%d fwd_len=%zu back_tgt=%s",
+                     static_cast<int>(bt_status), job.forward_text.size(),
+                     job.back_target.c_str());
+            return;
+        }
+        // Meaning check: the SAME canonical form the paste ledger uses
+        // (ADR-001 - byte-exact after CRLF/NBSP/NFC normalization, never fuzzy),
+        // so an editor re-serialization cannot flip the verdict.
+        const bool meaning_matched =
+            emebalachat::CanonicalFormForLedger(back_text) ==
+            emebalachat::CanonicalFormForLedger(job.original_text);
+        // Defense in depth (261108_0002 FIX-R1): the pre-call gate above covers
+        // a job picked up after the toggle; this one covers a toggle that lands
+        // WHILE this round trip is in flight (the toggle already dismissed the
+        // visible card), so a late result must not pop a fresh one - "off means
+        // off". The engine has no per-request cancel, so the completed round
+        // trip is simply discarded.
+        if (!config.GetSnapshot().back_translation_enabled) {
+            DIAG_LOG("UI", "back_translate_drop_disabled fwd_len=%zu",
+                     job.forward_text.size());
+            return;
+        }
+        DIAG_LOG("UI",
+                 "back_translate_done fwd_len=%zu back_len=%zu orig_len=%zu matched=%d back_tgt=%s",
+                 job.forward_text.size(), back_text.size(), job.original_text.size(),
+                 meaning_matched ? 1 : 0, job.back_target.c_str());
+        tooltip.ShowBackTranslationThreadSafe(job.original_text, back_text, job.source_label,
+                                              job.target_label, meaning_matched,
+                                              job.target_hwnd, job.badge_hwnd);
+    };
+
+    // Dedicated worker: the second inference call costs the same seconds the
+    // first one did, and the pipeline must stay free for the user's next Enter.
+    // Single slot + latest-wins Submit (the template's producer contract): a
+    // superseded verification is REPLACED, never queued behind a slow one, and
+    // the pipeline thread never blocks.
+    emebalachat::SingleSlotWorker<BackTranslateJob> back_translate_worker(run_back_translate);
+
+    // Register BEFORE the engine-unavailable registration below. PLACEMENT
+    // CONSTRAINT (req047_tests.inc P5-F1): that suite isolates the file's LAST
+    // worker callback registration - it must stay the engine-unavailable one.
+    // The badge HWND is sampled here on the GUI thread (Create ran long before
+    // this line), so the pipeline thread never reads the badge's plain member.
+    const HWND back_translate_badge_hwnd = badge.GetHwnd();
+    worker.SetBackTranslateCallback(
+        [&back_translate_worker, &short_lang_label,
+         back_translate_badge_hwnd](const emebalachat::BackTranslateRequest& req) {
+            if (req.original_text.empty() || req.forward_text.empty()) {
+                return;
+            }
+            // Four-tier ladder (pinned source -> detection -> OS UI language ->
+            // ADR-A1-7 neutral pivot). Pure: snapshot values in, name_en out.
+            const std::string back_target = emebalachat::ResolveBackTranslationTarget(
+                req.configured_source, req.detected_source, req.forward_target,
+                emebalachat::I18n::GetSystemLanguageCode());
+            BackTranslateJob job;
+            job.original_text = req.original_text;
+            job.forward_text = req.forward_text;
+            job.forward_target = req.forward_target;
+            job.back_target = back_target;
+            job.source_label = short_lang_label(back_target);
+            job.target_label = short_lang_label(req.forward_target);
+            job.target_hwnd = req.target_hwnd;
+            job.badge_hwnd = back_translate_badge_hwnd;
+            DIAG_LOG("UI",
+                     "back_translate_enqueue fwd_len=%zu orig_len=%zu back_tgt=%s fwd_tgt=%s",
+                     job.forward_text.size(), job.original_text.size(),
+                     job.back_target.c_str(), job.forward_target.c_str());
+            back_translate_worker.Submit(std::move(job));
+        });
+
     // REQ-047 D1 (design §A-1/A.4, Tech Gate §D1) + P5-F1 (technical review
     // 175600 finding #1): surface the strict local failure that REQ-046
     // d4d5108 deleted — the "Enter pressed, nothing translated, no notice"
@@ -1873,6 +2044,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             snap.sound_enabled,
             badge.IsVisible()
         );
+        // 261108_0002 (WS3): the floating-back-translation check mark rides the
+        // SAME single-writer refresh as every other tray state, so the startup
+        // call, the toggle callback and any later refresh_tray() site can never
+        // leave the row out of sync with config.json (the SC-02 discipline).
+        tray.SetBackTranslationEnabled(snap.back_translation_enabled);
     };
 
     // R6 Phase 1 (B3, architect plan §2.3/§2.4 Option A): the single-source-of-
@@ -2605,6 +2781,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // State toggled inside tray menu
     };
 
+    // 261108_0002 (WS3, v0.10.6): the "역번역 플로팅 표시 (번역 검증)" check row.
+    // Same idiom as on_toggle_sound above (GUI-thread callback, I4 relaxed
+    // atomic flip, synchronous persist, single-writer tray refresh). Turning
+    // the feature OFF also retires a card that is already on screen: "off"
+    // must never leave stale verification content floating, and a round trip
+    // still in flight is discarded by the consumer's config re-check.
+    trayCallbacks.on_toggle_back_translate = [&]() {
+        const bool next = !config.back_translation_enabled.load(std::memory_order_relaxed);
+        config.back_translation_enabled.store(next, std::memory_order_relaxed);
+        config.SaveToFile();
+        refresh_tray();
+        if (!next) {
+            tooltip.DismissThreadSafe();
+        }
+        DIAG_LOG("STATE", "back_translation_enabled=%d", next ? 1 : 0);
+    };
+
     // REQ-005: tray menu "About Emebala Chat…" (Batch 1's guarded hook, now
     // wired). Tray callbacks run on the GUI thread; AboutWindow::Show centers
     // on the monitor under the current cursor position.
@@ -2725,6 +2918,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // check state (snapshot read; the warmup thread already exists here).
     tray.SetUiLanguage(config.GetSnapshot().ui_language);
     tray.SetUiTheme(config.GetSnapshot().ui_theme);
+    // 261108_0002 (WS3): mirror the persisted floating-back-translation switch
+    // into its check row at startup (same contract as SetUiLanguage above);
+    // every later refresh_tray() keeps it in sync from then on.
+    tray.SetBackTranslationEnabled(config.GetSnapshot().back_translation_enabled);
     // REQ-056 (derive-at-open): the engine submenu's two config-derived
     // values — the 4-way check index (REQ-054's TrayPreferredEngineIndex) and
     // the registered user-model stem — are resolved HERE, on demand, when the
@@ -3725,6 +3922,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // boundary, and a superseded/empty result renders nothing anyway.
     retranslate_worker.Stop(); // request_stop() + cv.notify_all()
     retranslate_worker.Join(); // if (joinable()) join()
+    // 261108_0002 (WS3): the back-translation worker owns the SAME engine
+    // manager and marshals into the SAME tooltip, so it is torn down at this
+    // identical position - after every producer is down (worker.Stop() above
+    // means the pipeline can no longer fire the callback) and before any
+    // surface Destroy(). Bounded like the two joins above: engine.RequestCancel()
+    // (latched at the top of this block) short-circuits an in-flight or queued
+    // round trip, and an empty/canceled result renders nothing.
+    back_translate_worker.Stop(); // request_stop() + cv.notify_all()
+    back_translate_worker.Join(); // if (joinable()) join()
     // R6 Phase 1 (B3): drain any language-sync requests still queued before
     // the coordinator is retired, so a cycle posted a moment before shutdown
     // still persists instead of being silently dropped. SEC-B5: the payloads

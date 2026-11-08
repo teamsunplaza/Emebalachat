@@ -7,6 +7,8 @@
   "target_language": "English",
   "auto_send": false,
   "sound_enabled": true,
+  "back_translation_enabled": false,
+  "_back_translation_enabled_doc": "Floating back-translation verification card (tray row: 'Floating Back-Translation'). When true, every successful translation is translated BACK into the language you typed and shown in a floating card so you can judge whether the meaning survived the round trip. Default false (opt-in): the card costs a second engine round trip per translation. The key is absent on config.json files written before v0.10.6 and then reads as false.",
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000, "worker_idle_ms": 90000, "warmup": false },

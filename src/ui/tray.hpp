@@ -145,6 +145,12 @@ public:
         // REQ-047 D3 contract shared with the manager/OpenAI rows).
         std::function<void()> on_open_engine_load_settings;
         ThemeSelectCallback on_select_theme;
+        // 261108_0002 (WS3, v0.10.6): the "역번역 플로팅 표시 (번역 검증)" check
+        // row (ID_TRAY_BACK_TRANSLATE). Appended (not reordered) so every
+        // existing main.cpp wiring keeps its meaning. main.cpp flips
+        // AppConfig::back_translation_enabled, persists it, and refreshes the
+        // check mark through SetBackTranslationEnabled.
+        std::function<void()> on_toggle_back_translate;
     };
 
     SystemTray();
@@ -216,6 +222,12 @@ public:
     void SetOnThemeSelectCallback(ThemeSelectCallback cb);
     void SetUiTheme(std::string_view theme_key);
     void RefreshTheme();
+    // 261108_0002 (WS3, v0.10.6): mirrors AppConfig::back_translation_enabled
+    // for the "역번역 플로팅 표시" check mark. The context menu rebuilds on
+    // every ShowContextMenu, so this only has to store the state (same
+    // discipline as SetUiLanguage); main.cpp calls it at startup and from the
+    // toggle callback's refresh.
+    void SetBackTranslationEnabled(bool enabled);
 
     // Displays popup context menu at current cursor coordinates
     void ShowContextMenu();
@@ -248,6 +260,7 @@ private:
     bool auto_send_ = false;
     bool sound_enabled_ = true;
     bool badge_visible_ = true;
+    bool back_translation_enabled_ = false; // 261108_0002 (WS3): check state
     std::string ui_language_ = "auto"; // R6 Phase 6: submenu check state
     std::string ui_theme_ = "fluent";
 };

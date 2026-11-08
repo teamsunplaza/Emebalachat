@@ -30,6 +30,17 @@ struct PipelineTask {
     int shift_enter_count = 0;
 };
 
+// 261108_0002 (WS3): successful-paste handoff for in-memory back-translation.
+struct BackTranslateRequest {
+    std::wstring original_text;
+    std::wstring forward_text;
+    std::string forward_target;
+    std::string detected_source;
+    std::string configured_source;
+    HWND target_hwnd = nullptr;
+};
+using BackTranslateCallback = std::function<void(const BackTranslateRequest&)>;
+
 // REQ-R03 (Batch D1) path-matrix predicate - single source of truth, shared by
 // worker.cpp (pinned there with static_assert at each call decision) and the
 // unit tests. ExecuteTask attempts a paste only when the translation is
@@ -572,6 +583,10 @@ public:
         copy_chord_failed_cb_ = std::move(cb);
     }
 
+    // 261108_0002 (WS3): registered once before Start(); the worker-thread
+    // callback must marshal to the back-translate worker without blocking.
+    void SetBackTranslateCallback(BackTranslateCallback cb);
+
     // REQ-047 D1 (design §A-1, Tech Gate §D1 #2/#3): called on the worker
     // thread exactly when ExecuteTask's Translate() surfaces a strict local
     // failure (TranslationStatus::CloudConsentBlocked or
@@ -618,6 +633,9 @@ private:
     // REQ-051 (symptom A-2): set once at startup via SetCopyChordFailedCallback
     // (see contract there). Single-worker-thread read inside ExecuteTask.
     std::function<void()> copy_chord_failed_cb_;
+
+    // 261108_0002 (WS3): single-worker-thread read inside ExecuteTask.
+    BackTranslateCallback back_translate_cb_;
 
     // REQ-051 (symptom A-2): consecutive dropped-chord captures on the Enter
     // path (EnterCaptureResult::CopyChordDropped verdicts that took the loud

@@ -503,6 +503,42 @@ bool TokenInWordList(std::wstring_view token, const wchar_t* const* words, size_
     return false;
 }
 
+// WS1 (261108_0002): English word shape for the SINGLE-token fallback below.
+// A token is "English-shaped" when it is a pure-ASCII alphabetic word of at
+// least 3 letters carrying at least one ASCII vowel (a/e/i/o/u/y). Short
+// function words ("de", "la", "ng") and acronyms ("hr", "pdf") are excluded
+// by the length floor; non-ASCII letters (señor, café, Grüße) are excluded by
+// the ASCII test, so every distinctive-diacritic and stopword decision above
+// keeps precedence.
+//
+// SCOPE: the fallback applies to a SINGLE token only, deliberately. A 2-token
+// ASCII-Latin phrase cannot be told apart from Swahili/Tagalog/Indonesian
+// ("Sisitiki sana", "Hindi ko"), and the F5 adjudication (audit 181530
+// Option B) forbids re-opening the silent untranslated passthrough for
+// exactly those users - ShouldTranslate must keep translating them toward an
+// English target. Single words carry no such ambiguity in practice and are
+// the shape the user report covers (cyber, company, astrology, clue, nature,
+// medicine).
+bool IsAsciiEnglishShapedToken(std::wstring_view token) {
+    if (token.size() < 3) {
+        return false;
+    }
+    bool has_vowel = false;
+    for (wchar_t c : token) {
+        if (c > 0x7F || !iswalpha(c)) {
+            return false;
+        }
+        switch (c) {
+            case L'a': case L'e': case L'i': case L'o': case L'u': case L'y':
+                has_vowel = true;
+                break;
+            default:
+                break;
+        }
+    }
+    return has_vowel;
+}
+
 const char* DistinctiveDiacriticLanguage(std::wstring_view token) {
     for (wchar_t c : token) {
         for (const DistinctiveDiacriticEntry& entry : kDistinctiveDiacritics) {
@@ -575,6 +611,25 @@ std::string DetectLatinLanguage(std::wstring_view text) {
         if (best_lang && !tie) {
             DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s with %d hits\n", best_lang, best_hits);
             return best_lang;
+        }
+        // WS1 (261108_0002): deterministic English fallback for the words that
+        // reach here - the reported single words (cyber, company, astrology,
+        // clue, nature, medicine) are in no core-vocabulary or stopword list,
+        // so they used to fall through to the AUTO marker. That marker is what
+        // routed them into the AUTO-source prompt branch, where the RC-3
+        // brand fences primed the hallucinations this session removes. A
+        // pure-ASCII alphabetic word of >= 3 letters with a vowel is
+        // English-shaped; anything else (short function words, non-ASCII
+        // letters, digits, a stopword tie) keeps the AUTO marker so Hy-MT2's
+        // built-in language ID still decides.
+        //
+        // SINGLE token only (see IsAsciiEnglishShapedToken): a 2-token
+        // ASCII-Latin phrase stays AUTO so the F5 adjudication keeps
+        // translating Swahili/Tagalog/Indonesian toward English instead of
+        // silently bypassing them as "already English".
+        if (tokens.size() == 1 && IsAsciiEnglishShapedToken(tokens.front())) {
+            DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=English (ASCII word shape)\n");
+            return "English";
         }
         return "Auto Detect";
     }

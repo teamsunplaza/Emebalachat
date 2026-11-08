@@ -95,6 +95,39 @@ std::optional<std::string> ResolveEffectiveTarget(std::string_view detected_src,
 std::string ResolveEffectiveSource(std::string_view persisted_src,
                                    std::string_view detected_or_fallback);
 
+// 261108_0002 (WS3, v0.10.6): the back-translation SOURCE language for the
+// floating verification card. The card re-translates the forward output
+// (BBBBB) back into the language the user originally typed (AAAAA') so the
+// user can judge whether the meaning survived. That source is resolved with a
+// four-tier ladder, all tiers canonicalized through NormalizeLanguageCode
+// (so "Auto Detect", "AUTO", "", and any unresolvable token read as AUTO):
+//   1. type_source_language      - the user's PINNED typing source is ground
+//                                  truth ("once the user changes it, it stays
+//                                  changed", the F3/ADR-A1-2 rule);
+//   2. detected_source_language  - the per-request detection (the engine's
+//                                  resolved source), used while the pinned
+//                                  source is AUTO;
+//   3. system_language_code      - the OS UI language, the same read-only
+//                                  locale fallback ResolveEffectiveTarget
+//                                  ranks first (ADR-A1-7);
+//   4. the ADR-A1-7 neutral pivot, which ResolveEffectiveTarget owns. Because
+//      tier 3 already consumed that helper's rank-1 outcome (the OS language),
+//      tier 4 replays its rank-2/3 tail: English when the forward target is
+//      not EN, else the forward target itself (the user already reads it, so
+//      the card shows the same text as an explicit "nothing to verify"
+//      signal). The function therefore never returns an empty string.
+// Every tier SKIPS a candidate that canonicalizes to the forward target: a
+// back-translation into the language the text was just translated INTO would
+// be a no-op round trip (src==tgt) and prove nothing about the meaning.
+// The result is the LanguageInfo::name_en spelling (the stored form every
+// language surface uses). Pure: the caller passes the snapshot values and the
+// OS code, so all four tiers and the skip rule are unit-testable headlessly
+// (TestWs3BackTranslationTarget).
+std::string ResolveBackTranslationTarget(std::string_view type_source_language,
+                                         std::string_view detected_source_language,
+                                         std::string_view forward_target_language,
+                                         std::string_view system_language_code);
+
 // Phase 3 (REQ-007, plan §1.4): resolves the drag-context default target from
 // the OS system language (REQ-007). F2 (session 260908_0003, decisions.md
 // 2026-09-08 22:10 APPROVED OVERRIDE): returns the canonical name_en of the
@@ -363,6 +396,13 @@ struct AppConfig {
     std::string type_target_language = "English";      // REQ-016: English
     std::atomic<bool> auto_send{false};
     std::atomic<bool> sound_enabled{true};
+    // 261108_0002 (WS3, v0.10.6): floating back-translation verification card
+    // master switch (the tray "역번역 플로팅 표시" check row). Default FALSE -
+    // the card costs a SECOND engine round trip per translation, so it stays
+    // opt-in and the pre-261108 config.json (key absent) keeps it off. Read by
+    // the pipeline worker thread through GetSnapshot() while the tray/GUI
+    // thread writes it, hence std::atomic like auto_send/sound_enabled.
+    std::atomic<bool> back_translation_enabled{false};
     bool drag_to_translate = true;
     // Privacy-first consent gate (H2 fix): when false, typed text is NEVER sent to
     // the Google Translate cloud — neither as a fallback after a local-LLM failure
@@ -480,6 +520,9 @@ struct AppConfig {
         std::string ui_theme = "fluent";
         bool auto_send = false;
         bool sound_enabled = true;
+        // 261108_0002 (WS3): the pipeline worker's gate for the floating
+        // back-translation card (worker.cpp reads snap.back_translation_enabled).
+        bool back_translation_enabled = false;
         bool drag_to_translate = true;
     };
 

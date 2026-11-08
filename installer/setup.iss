@@ -47,13 +47,14 @@ AppName=Emebala Chat
 ; 2026-10-10 (session 261009_0001, REQ-060 - see CHANGELOG "v0.10.3");
 ; promoted to 0.10.4 on 2026-10-29 (session 261029_0001, see CHANGELOG
 ; "v0.10.4"); promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see
-; CHANGELOG "v0.10.5").
-AppVersion=0.10.5
+; CHANGELOG "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002,
+; see CHANGELOG "v0.10.6").
+AppVersion=0.10.6
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.5
+OutputBaseFilename=Emebalachat_Setup_0.10.6
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
@@ -585,7 +586,12 @@ Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; other Emebala app remains installed and the user confirms.
 ; No skipifsourcedoesntexist on purpose: a missing build\Emebala.Engine.exe
 ; must fail the compile (the host is a mandatory release component).
-Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineHost
+; 261108_0002 (FIX-R2, R1-10 CONFIRMED): BeforeInstall performs the WRITE-TIME
+; leaf re-check (Inno cannot skip one file from BeforeInstall - it requires a
+; procedure; see RefuseIfEngineLeafReparse). The Check: gate above refuses a
+; planted leaf BEFORE the entry is accepted; this hook re-tests the leaf in the
+; Check -> copy window and removes the link (never its target) if it reappeared.
+Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineHost; BeforeInstall: RefuseIfEngineLeafReparse('Emebala.Engine.exe')
 ; REQ-006/M6 (engine-host v2, plan §V2-8.2, design §6.2): bundle the
 ; ggml-translate worker exe and its worker manifest into the SAME per-user
 ; COMMON store as the orchestrator. The orchestrator spawns the worker by
@@ -613,8 +619,19 @@ Source: "..\build\Emebala.Engine.exe"; DestDir: "{localappdata}\Emebala\Common\e
 ; so a second family (ggml-asr, deployed by Listener) sharing the common
 ; store can never overwrite this file. Reads keep accepting the legacy bare
 ; worker.manifest (bootstrap fallback); this installer WRITES the new name only.
-Source: "..\build\Emebala.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
-Source: "..\build\worker.ggml-translate.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker
+; 261108_0002 (FIX-R2, R1-10 CONFIRMED): write-time leaf re-check (see the host
+; entry's note above and RefuseIfEngineLeafReparse).
+Source: "..\build\Emebala.Engine.ggml-translate.exe"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorker; BeforeInstall: RefuseIfEngineLeafReparse('Emebala.Engine.ggml-translate.exe')
+; 261108_0002 (WS4, audit gap G4): the manifest entry carries its OWN Check
+; (ShouldInstallEngineWorkerManifest). Both Checks consult the same
+; EngineWorkerStoreDecision, so a missing/stale manifest repairs the pair even
+; when the worker exe record is current - previously the manifest rode the
+; exe entry's Check, whose repair hole only tested the exe, so a lost manifest
+; was never restored (the orchestrator then refuses the worker: "manifest
+; missing" for every translation).
+; 261108_0002 (FIX-R2, R1-10 CONFIRMED): write-time leaf re-check (see the host
+; entry's note above and RefuseIfEngineLeafReparse).
+Source: "..\build\worker.ggml-translate.manifest"; DestDir: "{localappdata}\Emebala\Common\engine"; Flags: ignoreversion uninsneveruninstall; Check: ShouldInstallEngineWorkerManifest; BeforeInstall: RefuseIfEngineLeafReparse('worker.ggml-translate.manifest')
 ; REQ-L32 P2-2 (session 260925, design v2 §A-4.6): the ggml-asr worker exe,
 ; its per-family manifest (M7 A-1 worker.ggml-asr.manifest) and the CUDA
 ; runtime DLLs (which ride the ggml-asr slot per the family matrix) are
@@ -767,10 +784,14 @@ const
   // token (PrivilegesRequired=admin) the {localappdata} constant expands to
   // the ADMINISTRATOR profile (SO 40613608), so ExpandConstant(COMMON_MODELS_DIR)
   // is the WRONG store for the model + registry.json + the config model_path.
-  // Engine binaries stay constant-based: the store was historically populated
-  // under the elevated token (pre-A1 builds), and the apps resolve the engine
-  // dir from the SAME elevated {localappdata} constant family
-  // (engine_host_paths), so a runtime flip would strand existing installs.
+  // Engine binaries are copied to the constant store (backward compatibility
+  // for pre-A1 installs and for the engine_host_paths resolution family) AND,
+  // since 261108_0002 (WS4), mirrored into the ORIGINAL-user store as well:
+  // the running app resolves the store from ITS OWN token
+  // (SHGetKnownFolderPath(FOLDERID_LocalAppData) at
+  // src/engine_host_bootstrap_client.cpp), so an over-the-shoulder UAC install
+  // (standard user + different admin credentials) must populate the user's
+  // store or the app keeps running the old engine (audit gap G3).
   // NEVER the program-data store ("{" + "commonappdata" + "}"): C:\ProgramData,
   // a different store. The token is written split here so the B-T8 source-text
   // pin (which bans the raw program-data store constant from the model-store
@@ -793,7 +814,15 @@ const
 // component-model rule A-2 (a same-version rebuild must replace the stale
 // store copy).
 // Session 261104 round 2: the v0.10.5 emergency re-publish (commit 7258f07, host CREATE_UNICODE_ENVIRONMENT fix) changed engine binaries without a revision bump; rule A's equal-version skip kept buggy store binaries on reinstall, so r13 carries the fixed engine.
-#define ENGINE_REVISION ".r13"
+// 261108_0002 (WS4, v0.10.6 installer upgrade safety): the engine binaries
+// changed again (engine-core decode gates + host), so the revision bumps to
+// r14. From this release the OWNED-slot decision no longer relies on a
+// version ORDER comparison at all: an owned component whose components.json
+// record differs from ENGINE_BUNDLED_VERSION (or is unreadable/absent) is
+// replaced, and a same-version rebuild or a corrupt "newer" record can no
+// longer strand a stale store binary (audit gaps G1/G2). The bump is still
+// required so the record advances for users upgrading from r13.
+#define ENGINE_REVISION ".r14"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
@@ -833,6 +862,25 @@ const
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
   ENGINE_WORKER_ENGINE_VERSION = 'b6099';
+
+  // 261108_0002 (WS4, v0.10.6 installer upgrade safety): upgrade-replacement
+  // hardening constants.
+  // LEGACY_WORKER_FILENAME: the pre-unification Chat-deployed worker name
+  //   (260930_0003). StopRunningEngineHost kills it too - a running legacy
+  //   worker holds a handle on its own image, so the ssInstall absorb
+  //   (rename/delete) and the follow-up copy can silently fail (audit gap G6).
+  // ENGINE_EXIT_WAIT_STEPS / ENGINE_EXIT_POLL_MS: bounded post-taskkill wait
+  //   (40 x 250 ms = ~10 s) so the [Files] copy does not race a dying process
+  //   and land on a locked exe (G6). Best-effort by design - the loop can
+  //   never hang the installer, and Inno's file-in-use retry stays the
+  //   backstop.
+  // PROC_PROBE_FILENAME: the tasklist redirect target inside {tmp} used by the
+  //   process-existence probe (Inno Pascal Script cannot capture stdout
+  //   without a file).
+  LEGACY_WORKER_FILENAME = 'Emebalachat.Engine.ggml-translate.exe';
+  ENGINE_EXIT_WAIT_STEPS = 40;
+  ENGINE_EXIT_POLL_MS = 250;
+  PROC_PROBE_FILENAME = 'emebala_proc_probe.txt';
 
   // 261029_0001 R1-8/R2-1/R2-3 (v0.10.4 sweep): constants used by the
   // reparse-point and exchange-path helpers below. They live HERE because Inno
@@ -929,11 +977,59 @@ var
   UninstallGuardFailed: Boolean;
   // REQ-043: set by ShouldInstallEngineHost() when this run installs/replaces
   // the shared host; consumed at ssPostInstall to (re)write engine.version.
+  // 261108_0002 (WS4): ssPostInstall RE-LATCHES this from the post-copy
+  // SHA-256 verification (VerifyEngineOwnedStoreCopy), so the version record
+  // can only advance when the store binary is byte-identical to the bundle
+  // (audit gap G2: the old code latched on the Check verdict and stamped a
+  // new record over a copy that had silently failed).
   EngineHostUpdated: Boolean;
   // REQ-006/M6: set by ShouldInstallEngineWorker() when this run installs/
   // replaces the ggml-translate worker exe; consumed at ssPostInstall to
-  // (re)write the worker entry in components.json.
+  // (re)write the worker entry in components.json. WS4: re-latched from the
+  // verification of BOTH the worker exe and its manifest.
   EngineWorkerUpdated: Boolean;
+  // 261108_0002 (WS4): v0.10.6 upgrade-safety state.
+  //   EngineStoreVerifyFailed - a deployed owned engine file is MISSING or
+  //     does not hash-match the bundle; surfaced as one loud MsgBox at ssDone.
+  //   EngineBundledHash* - SHA-256 of the BUNDLED copy extracted from
+  //     setup.exe (captured once at ssPostInstall; '' = extraction failed, in
+  //     which case the record is not advanced and the ssDone re-check is
+  //     skipped for that file).
+  //   OriginalUserEngineDir - the ORIGINAL-user engine store this run also
+  //     deployed into ('' = not applicable / refused, audit gap G3). The
+  //     running app resolves the store from its own token, not the elevated
+  //     one.
+  EngineStoreVerifyFailed: Boolean;
+  EngineBundledHashHost: String;
+  EngineBundledHashWorker: String;
+  EngineBundledHashManifest: String;
+  // 261108_0002 (FIX-R1, R1-11): probe-once flags for the pre-copy SHA-256
+  // input of the owned-slot install decision. The [Files] Checks ask the same
+  // question up to four times per install (host, the defensive worker mirror,
+  // the worker exe, the manifest), and obtaining the bundled bytes means
+  // ExtractTemporaryFile of a ~150 MB exe - so each bundled hash is computed at
+  // most once per run and reused by VerifyEngineOwnedStoreCopy at ssPostInstall.
+  EngineBundledHashHostProbed: Boolean;
+  EngineBundledHashWorkerProbed: Boolean;
+  // 261108_0002 (FIX-R3, R2-04): the manifest rides the same probe-once cache.
+  EngineBundledHashManifestProbed: Boolean;
+  // 261108_0002 (FIX-R2, item C): one-shot marker for the bundled-bytes
+  // extraction-path log line (shape-only, once per run).
+  EngineBundledProbeLogged: Boolean;
+  OriginalUserEngineDir: String;
+  // 261108_0002 (FIX-R1, R1-06): per-file outcome of THIS run's original-user
+  // store deployment. The original-user records (engine.version /
+  // components.json) are gated on THESE, never on the elevated-store latches -
+  // a failed FileCopy into the original-user store must never stamp a fresh
+  // record beside the stale or missing binary it failed to replace.
+  //   OrigUserHostVerified - the host exe was copied into the original-user
+  //     store AND hash-verified there.
+  //   OrigUserWorkerVerified - the worker exe AND its manifest were both copied
+  //     AND hash-verified there (the record covers the pair).
+  OrigUserHostVerified: Boolean;
+  OrigUserWorkerVerified: Boolean;
+  OrigUserWorkerExeVerified: Boolean;
+  OrigUserManifestVerified: Boolean;
   // B-3 (session 260910_0002, architect plan 1.4): About page (after
   // wpWelcome) and Usage Guide page (after wpInstalling, before Finish).
   // F1 (REQ-048) adds the Shared Engine info page right after AboutPage.
@@ -1027,6 +1123,15 @@ begin
   while (Idx <= Length(S)) and ((S[Idx] = ' ') or (S[Idx] = #9) or
         (S[Idx] = #13) or (S[Idx] = #10)) do
     Idx := Idx + 1;
+end;
+
+// ------------------------------------------------------------------------
+// JsonIsSpace - 261108_0002 (WS4): single-char whitespace predicate used by
+// EngineComponentRecordedVersion (the owned-slot replace-if-different scan).
+// ------------------------------------------------------------------------
+function JsonIsSpace(const C: Char): Boolean;
+begin
+  Result := (C = ' ') or (C = #9) or (C = #13) or (C = #10);
 end;
 
 // ------------------------------------------------------------------------
@@ -1360,6 +1465,83 @@ begin
   Result := ModelStorePathRefused(Site, ModelTargetDir);
 end;
 
+// ------------------------------------------------------------------------
+// DirTreeHasReparsePoint - 261108_0002 (FIX-R4, round-2 HIGH-2 / MED-3): does
+// ANY entry below Dir (files and directories, recursively) carry
+// FILE_ATTRIBUTE_REPARSE_POINT?
+//
+// Why: every existing guard (SubtreeReparsePoint / StoreChainRefused) walks the
+// PREFIXES of a path, i.e. the chain down to one fixed leaf. That is enough
+// before a write to that path, but not before a DELETE that sweeps a whole
+// subtree: the uninstall cleanup enumerates 12 fixed names under
+// `...\Common\engine` and the models bundled-file loop deletes bare names under
+// `...\Common\models`. A junction planted AT those children (or anywhere below)
+// is never a prefix of `...\Common`, so the old guard missed it and the
+// elevated deletes resolved into an attacker-chosen directory.
+//
+// Fail-closed by construction: any hit at any depth => the caller preserves the
+// whole store. Missing directories cannot contain links and return False.
+// FindFirst/FindNext report the LINK's own attributes (they do not follow the
+// reparse point), so a junction shows up as REPARSE|DIRECTORY at the listing
+// level and a dangling file link still shows REPARSE.
+// ------------------------------------------------------------------------
+function DirTreeHasReparsePoint(const Dir: String): Boolean;
+var
+  FindRec: TFindRec;
+  Child: String;
+  Hit: Boolean;
+begin
+  Result := False;
+  if not DirExists(Dir) then Exit;
+  Hit := False;
+  if FindFirst(Dir + '\*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          Child := Dir + '\' + FindRec.Name;
+          if (FindRec.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
+            Hit := True
+          else if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
+                  DirTreeHasReparsePoint(Child) then
+            Hit := True;
+        end;
+      until Hit or (not FindNext(FindRec));
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+  Result := Hit;
+end;
+
+// ------------------------------------------------------------------------
+// StoreTreeRefused - 261108_0002 (FIX-R4, round-2 HIGH-2): the guard the
+// uninstall cleanup consults before ANY delete.
+//
+// It covers four levels, because each of them is independently plantable by the
+// profile owner with no privilege:
+//   1. the chain down to `\Emebala\Common`      (the pre-FIX-R4 guard);
+//   2. the `engine` child itself;
+//   3. the `models` child itself;
+//   4. every entry below both children (DirTreeHasReparsePoint), which also
+//      catches a link planted at a file name the delete list uses.
+// On a hit the caller PRESERVES EVERYTHING (the fail-closed direction this
+// contract already uses for a damaged registry).
+// ------------------------------------------------------------------------
+function StoreTreeRefused(const Site, CommonDir: String): Boolean;
+begin
+  Result :=
+    SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX) or
+    SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX + '\engine') or
+    SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX + '\models') or
+    DirTreeHasReparsePoint(CommonDir + '\engine') or
+    DirTreeHasReparsePoint(CommonDir + '\models');
+  if Result then
+    Log('261108_0002 (FIX-R4) HIGH-2: ' + Site +
+        ': reparse point at the shared-store root, the engine/models child or any descendant; refusing every delete and preserving the ENTIRE store.');
+end;
+
 // EngineStoreRefused - R2-1: the shared ENGINE store
 // ('{localappdata}\Emebala\Common\engine') is written by [Files] (the staged
 // host / worker / asr binaries) and by the [Code] stampers, with NO reparse
@@ -1393,6 +1575,229 @@ begin
   if Result then
     Log('INSTALLER/EngineStoreLeafRefused/001: ' + Site +
         ': reparse point at the written engine-store file (or its chain); refusing the elevated write (261029_0001 R3): ' + FilePath);
+end;
+
+// ------------------------------------------------------------------------
+// LatchEngineStoreVerifyFailed - 261108_0002 (FIX-R3, round-2 P2 / R2-02): the
+// ONE place that latches the ssDone failure flag.
+//
+// Round 2 found refusal branches that only logged: the original-user deployment
+// chain reparse refusal (which also leaves OriginalUserEngineDir empty, so the
+// ssDone original-user verification treated it as "not applicable"), the two
+// original-user record-chain refusals, the two original-user SaveStringToFile
+// failures, and the three elevated EngineStoreRefused branches. Each of them
+// left the user with a success UI over a partial deployment. Every such
+// refusal now funnels through this helper, so the existing ssDone
+// `if EngineStoreVerifyFailed then ... mbError` path surfaces it (the loud box
+// already existed; only the flag was missing).
+// ------------------------------------------------------------------------
+procedure LatchEngineStoreVerifyFailed(const Reason: String);
+begin
+  EngineStoreVerifyFailed := True;
+  Log('261108_0002 (FIX-R3) R2-02: EngineStoreVerifyFailed latched - ' + Reason);
+end;
+
+// ------------------------------------------------------------------------
+// StoreWriteRefused - 261108_0002 (FIX-R4, MEDIUM write-time hardening): the
+// [Code] twin of FIX-R3's BeforeInstall hook.
+//
+// The decision-time guards (StoreChainRefused / EngineStoreRefused /
+// EngineStoreLeafRefused) run when the installer decides WHAT to do; the
+// actual FileCopy / SaveStringToFile happens later. The [Files] entries got a
+// write-time hook in FIX-R3; the [Code] writers did not. This helper re-tests
+// the FULL chain INCLUDING the leaf immediately before the write (that is what
+// StoreChainRefused does - its trailing full-path attribute test is the leaf),
+// and latches through the one helper so a refusal is never silent.
+//
+// Refuse = skip the write, latch, log. The caller must not fall through to a
+// different writer (the else-if chains below treat a refusal as a clean skip).
+
+function StoreWriteRefused(const Site, Base, DestPath: String): Boolean;
+begin
+  Result := StoreChainRefused(Base, DestPath);
+  if Result then
+  begin
+    LatchEngineStoreVerifyFailed(Site + ': write-time chain/leaf reparse refusal: ' + DestPath);
+    Log('261108_0002 (FIX-R4) MEDIUM: ' + Site +
+        ': reparse point at the write target or its chain; the write is skipped (no write, no delete): ' + DestPath);
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// LeafIsReparsePoint - 261108_0002 (FIX-R3, round-2 P0): LEAF-ONLY attribute
+// test. True only when the FINAL path component itself carries
+// FILE_ATTRIBUTE_REPARSE_POINT.
+//
+// Why a separate predicate: EngineStoreLeafRefused/StoreChainRefused are
+// CHAIN-scoped (they walk every component below the profile root AND the leaf),
+// which is exactly right for a refusal decision but wrong as the pre-condition
+// of a DELETE. A parent junction makes Windows resolve the composed DestPath
+// outside the approved store, so "chain says reparse" must never authorize a
+// DeleteFile on that path. This test looks at the final component only, and it
+// is an ATTRIBUTE test, not a readability test: a DANGLING link reports
+// 0x00080420 with REPARSE set (measured, FIX-R2), so it is refused too.
+// ------------------------------------------------------------------------
+function LeafIsReparsePoint(const FilePath: String): Boolean;
+var
+  Attr: Integer;
+begin
+  Result := False;
+  if FilePath = '' then Exit;
+  Attr := GetFileAttributesW(FilePath);
+  Result := (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0);
+end;
+
+// ------------------------------------------------------------------------
+// ParentChainReparsePoint - 261108_0002 (FIX-R3, round-2 P0): PARENT-CHAIN-only
+// attribute walk. True when any ANCESTOR component of FilePath below Base is a
+// reparse point; the final component is deliberately NOT tested (that is
+// LeafIsReparsePoint's job).
+//
+// The walk is the same prefix loop SubtreeReparsePoint uses (every component
+// ending at a '\' is a directory on a canonical path, so the loop can never
+// touch the file itself), with the same base-skip rule: the profile root is
+// never re-tested (redirected/FSLogix profiles). Offender returns the exact
+// component that hit, for the refusal log.
+// ------------------------------------------------------------------------
+function ParentChainReparsePoint(const Base, FilePath: String; out Offender: String): Boolean;
+var
+  I, Attr, SkipLen: Integer;
+  B, Prefix: String;
+begin
+  Result := False;
+  Offender := '';
+  if (Base = '') or (FilePath = '') then Exit;
+  B := Base;
+  if (Length(B) > 3) and (B[Length(B)] = '\') then
+    B := Copy(B, 1, Length(B) - 1);
+  // Same path-shape contract StoreChainRefused enforces: refuse nothing when
+  // the path is not Base plus an app-owned tail (the caller built it that way).
+  if Length(FilePath) <= Length(B) + 1 then Exit;
+  if Copy(FilePath, 1, Length(B)) <> B then Exit;
+  if FilePath[Length(B) + 1] <> '\' then Exit;
+  SkipLen := Length(B);
+  for I := 1 to Length(FilePath) do
+    if (FilePath[I] = '\') and (I > SkipLen + 1) then
+    begin
+      Prefix := Copy(FilePath, 1, I);
+      if (Length(Prefix) > 3) and (Prefix[Length(Prefix)] = '\') then
+        Prefix := Copy(Prefix, 1, Length(Prefix) - 1);
+      Attr := GetFileAttributesW(Prefix);
+      if (Attr <> -1) and ((Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+      begin
+        Offender := Prefix;
+        Result := True;
+        Exit;
+      end;
+    end;
+end;
+
+// EngineStoreDestinationPath - 261108_0002 (FIX-R2, R1-10): the elevated
+// [Files] destination of ONE engine-store file. The three install entries and
+// every guard below build the path the same way, so a future DestDir change is
+// a one-line edit instead of five.
+// ------------------------------------------------------------------------
+function EngineStoreDestinationPath(const DeployedFileName: String): String;
+begin
+  Result := ExpandConstant(COMMON_ENGINE_DIR) + '\' + DeployedFileName;
+end;
+
+// ------------------------------------------------------------------------
+// EngineStoreLeafRefusedFor - 261108_0002 (FIX-R2, R1-10 CONFIRMED by the
+// dispute-verification instance): the PRE-COPY leaf gate for one elevated
+// [Files] destination.
+//
+// Why this exists: the three elevated engine-store entries (host exe, worker
+// exe, worker manifest) were guarded only by EngineStoreRefused, whose subtree
+// walk STOPS AT THE '\engine' DIRECTORY - so a reparse point planted at one of
+// the fixed FILE names was never tested before Inno's copy. EngineStoreLeafRefused
+// (the R3 twin written for the [Code] stampers) already is the right predicate:
+// StoreChainRefused(localappdata, <exact file path>) => SubtreeReparsePoint
+// walks every component below the profile root AND the final component, using
+// GetFileAttributesW's FILE_ATTRIBUTE_REPARSE_POINT test (not a readability
+// test), so a DANGLING leaf symlink is refused as well as a live one.
+// MEASURED on this host (261108_0002 FIX-R2): a dangling file symlink reports
+// GetFileAttributesW = 0x00080420 (REPARSE set), i.e. the attribute test covers
+// the dangling nuance the verification report called out.
+//
+// A refusal is a skip (fail-closed: no write, the link is never followed) AND
+// it latches EngineStoreVerifyFailed, so the existing ssDone verification turns
+// it into the loud MsgBox instead of a silent "installed fine" - the same
+// surfacing the elevated-store copy failures already get.
+// ------------------------------------------------------------------------
+function EngineStoreLeafRefusedFor(const Site, DeployedFileName: String): Boolean;
+begin
+  Result := EngineStoreLeafRefused(Site + '/before-copy', EngineStoreDestinationPath(DeployedFileName));
+  if Result then
+  begin
+    LatchEngineStoreVerifyFailed(Site + ': pre-copy leaf/chain reparse refusal (' +
+                                 DeployedFileName + ')');
+    Log('261108_0002 (FIX-R2) R1-10: ' + Site + ': refusing the elevated engine-store copy of ' +
+        DeployedFileName + ' - a reparse point sits at the destination leaf (never followed). ' +
+        'The copy is skipped and the ssDone verification reports it.');
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// RefuseIfEngineLeafReparse - 261108_0002 (FIX-R2, R1-10): the WRITE-TIME
+// re-check, wired as BeforeInstall on each of the three elevated entries.
+//
+// It closes the check-then-copy window: the Check: gate above runs when Inno
+// starts processing the entry, and this hook runs immediately before that
+// entry's copy, so a link planted in between is caught.
+//
+// 261108_0002 (FIX-R3, round-2 P0): the hook is now LEAF-ONLY for anything it
+// deletes, and it refuses a parent-chain reparse point WITHOUT touching the
+// composed path. Rationale: EngineStoreLeafRefused is chain-scoped, so using it
+// as the pre-condition of DeleteFile let a parent junction (swapped in after the
+// Check) redirect the elevated delete to a same-named file outside the store.
+// Order matters and is part of the contract:
+//   1. parent chain below the profile root (PARENT-CHAIN-only predicate): on a
+//      hit -> latch EngineStoreVerifyFailed, log the offending component, and
+//      Exit WITHOUT any DeleteFile (fail-closed: no write, no delete);
+//   2. leaf (LEAF-ONLY attribute predicate, dangling covered): on a hit ->
+//      latch EngineStoreVerifyFailed, log, and DeleteFile the LEAF path, which
+//      deletes the reparse entry itself and never follows it;
+//   3. otherwise -> nothing to do.
+//
+// Inno constraint (measured, 261108_0002 FIX-R2): BeforeInstall cannot skip a
+// single file - Inno requires a PROCEDURE (no return value) with an optional
+// call-argument list in the entry (a Boolean-returning function is rejected
+// with "Invalid prototype"; see Examples/CodeExample1.iss). The residual
+// Check -> copy race is documented as an accepted residual in the release
+// record: Inno's file install replaces a destination reparse entry rather than
+// writing through it (measured with LIVE, DANGLING and '<dest>.tmp' planted
+// leaves) and VerifyEngineOwnedStoreCopy re-hashes the result at ssPostInstall.
+// ------------------------------------------------------------------------
+procedure RefuseIfEngineLeafReparse(const DeployedFileName: String);
+var
+  DestPath, Offender: String;
+begin
+  DestPath := EngineStoreDestinationPath(DeployedFileName);
+
+  // (1) PARENT CHAIN FIRST - a junctioned ancestor would make DestPath resolve
+  // outside the store, so this branch must never reach DeleteFile.
+  if ParentChainReparsePoint(ExpandConstant('{localappdata}'), DestPath, Offender) then
+  begin
+    LatchEngineStoreVerifyFailed('BeforeInstall parent-chain reparse refusal (' +
+                                 DeployedFileName + ' at ' + Offender + ')');
+    Log('261108_0002 (FIX-R3) R1-10/P0: BeforeInstall ' + DeployedFileName +
+        ': parent-chain reparse point at ' + Offender +
+        ' - refusing (no write, NO delete on the composed path; the link is never followed).');
+    Exit;
+  end;
+
+  // (2) LEAF ONLY - safe to remove the reparse entry itself.
+  if not LeafIsReparsePoint(DestPath) then
+    Exit; // still clear at write time: nothing to do
+  LatchEngineStoreVerifyFailed('BeforeInstall leaf reparse refusal (' +
+                               DeployedFileName + ')');
+  if DeleteFile(DestPath) then
+    Log('261108_0002 (FIX-R2) R1-10: BeforeInstall ' + DeployedFileName +
+        ': planted LEAF link removed before the copy (the link only, never its target); the copy will create a real file.')
+  else
+    Log('261108_0002 (FIX-R2) R1-10: BeforeInstall ' + DeployedFileName +
+        ': WARNING could not remove the planted LEAF link; the copy is still safe (Inno replaces a destination reparse entry instead of writing through it - measured) and the ssDone verification re-hashes the store.');
 end;
 
 // IsValidExchangeValuePath - R2-3 (261029_0001 R2 dispute: code-gemini F-02 /
@@ -2557,21 +2962,80 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// EngineComponentRecordedVersion - 261108_0002 (WS4, audit gap G1): read the
+// version STRING recorded for ONE component entry in components.json.
+// ComponentNeedsReplace() only returns a keep/replace boolean, so the owned-
+// slot rule below could not tell "records exactly the bundled version" from
+// "records something newer" - the exact value is what the replace-if-
+// different contract needs.
+//
+// Scope/limits (documented, fail-closed toward REPLACE):
+//   * the entry KEY must sit before a ':' (a member key, never a string
+//     value), and the "version" member must appear within a 64-char window
+//     after that colon - the writers of this store (this installer,
+//     WriteComponentsFile) emit {"version":"<v>","abi_version":N,...} with
+//     version first, so the window can never reach the NEXT entry;
+//   * any deviation (compact/pretty spacing is tolerated, everything else is
+//     not) yields '' - the caller then replaces, which is the safe direction:
+//     a record we cannot read must never protect a stale binary.
+// ------------------------------------------------------------------------
+function EngineComponentRecordedVersion(const ComponentsJson,
+                                       ComponentName: String): String;
+var
+  KeyPos, AfterKey, VerPos, Idx, Start: Integer;
+  Window: String;
+begin
+  Result := '';
+  KeyPos := Pos('"' + ComponentName + '"', ComponentsJson);
+  if KeyPos = 0 then Exit;
+  AfterKey := KeyPos + Length(ComponentName) + 2;
+  while (AfterKey <= Length(ComponentsJson)) and
+        JsonIsSpace(ComponentsJson[AfterKey]) do
+    AfterKey := AfterKey + 1;
+  if (AfterKey > Length(ComponentsJson)) or
+     (ComponentsJson[AfterKey] <> ':') then Exit;
+  Window := Copy(ComponentsJson, AfterKey, 64);
+  VerPos := Pos('"version"', Window);
+  if VerPos = 0 then Exit;
+  Idx := AfterKey + VerPos - 1 + Length('"version"');
+  while (Idx <= Length(ComponentsJson)) and JsonIsSpace(ComponentsJson[Idx]) do
+    Idx := Idx + 1;
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> ':') then Exit;
+  Idx := Idx + 1;
+  while (Idx <= Length(ComponentsJson)) and JsonIsSpace(ComponentsJson[Idx]) do
+    Idx := Idx + 1;
+  if (Idx > Length(ComponentsJson)) or (ComponentsJson[Idx] <> '"') then Exit;
+  Start := Idx + 1;
+  Idx := Start;
+  while (Idx <= Length(ComponentsJson)) and (ComponentsJson[Idx] <> '"') do
+    Idx := Idx + 1;
+  if Idx > Length(ComponentsJson) then Exit;
+  Result := Copy(ComponentsJson, Start, Idx - Start);
+end;
+
+// ------------------------------------------------------------------------
 // EngineComponentRuleA - REQ-L32 P2-2 (session 260925, transfer of Listener
 // setup.iss:1830): the rule A verdict for ONE component, factored out of the
 // ShouldInstall* bodies so the shared-slot decision below can reuse it.
 //   components.json ABSENT  -> replace (rule A-1: v1-generation install).
-//   components.json PRESENT -> ComponentNeedsReplace for the named entry.
+//   components.json PRESENT -> ReplaceOnVersionMismatch ? exact-version
+//                              equality : ComponentNeedsReplace(abi+version).
 //   components.json UNREADABLE -> fail-closed, replace.
+// 261108_0002 (WS4, audit gap G1): ReplaceOnVersionMismatch=True is what the
+// OWNED slots (orchestrator / ggml-translate) now use - replace unless the
+// record names EXACTLY ENGINE_BUNDLED_VERSION. The ordered comparison
+// (ComponentNeedsReplace) stays available for any future non-owned caller.
 // Callers apply their own gates BEFORE calling (staged-bundle gate for
 // cross-app slots, store-existence repair hole for owned slots).
 // ------------------------------------------------------------------------
 function EngineComponentRuleA(const ComponentName: String;
-                              BundledAbi: Integer): Boolean;
+                              BundledAbi: Integer;
+                              ReplaceOnVersionMismatch: Boolean): Boolean;
 var
   ComponentsPath: String;
   ComponentsAnsi: AnsiString;
   ComponentsJson: String;
+  RecordedVersion: String;
 begin
   ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
   Result := True;
@@ -2584,15 +3048,216 @@ begin
   else if LoadStringFromFile(ComponentsPath, ComponentsAnsi) then
   begin
     ComponentsJson := Trim(ComponentsAnsi);
-    Result := ComponentNeedsReplace(ComponentsJson, ComponentName,
-                                    BundledAbi, ENGINE_BUNDLED_VERSION);
-    if not Result then
-      Log('REQ-L32: components.json present and "' + ComponentName + '" up-to-date - keeping existing component.');
+    if ReplaceOnVersionMismatch then
+    begin
+      // 261108_0002 (WS4, audit gap G1): OWNED slots are replace-if-
+      // DIFFERENT, not replace-if-older. The pre-WS4 rule compared the
+      // recorded version with the bundle and KEPT anything "equal or newer",
+      // so (a) a same-version rebuild with changed bytes stayed in the store
+      // forever, and (b) a stale or corrupt store exe whose record claimed a
+      // newer version was never replaced - the "new installer, old engine"
+      // report. An unreadable/absent record is treated as replace (fail-
+      // closed, same direction as rule A-1).
+      RecordedVersion := EngineComponentRecordedVersion(ComponentsJson, ComponentName);
+      if RecordedVersion = '' then
+      begin
+        Log('261108_0002 (WS4) G1: components.json carries no readable "version" for "' +
+            ComponentName + '" - replace (fail-closed).');
+        Result := True;
+      end
+      else if RecordedVersion <> ENGINE_BUNDLED_VERSION then
+      begin
+        Log('261108_0002 (WS4) G1: "' + ComponentName + '" records "' +
+            RecordedVersion + '" <> bundled "' + ENGINE_BUNDLED_VERSION +
+            '" - replace (owned slot: replace-if-different).');
+        Result := True;
+      end
+      else
+      begin
+        Log('REQ-L32: components.json present and "' + ComponentName +
+            '" records exactly the bundled version - keeping existing component.');
+        Result := False;
+      end;
+    end
+    else
+    begin
+      Result := ComponentNeedsReplace(ComponentsJson, ComponentName,
+                                      BundledAbi, ENGINE_BUNDLED_VERSION);
+      if not Result then
+        Log('REQ-L32: components.json present and "' + ComponentName + '" up-to-date - keeping existing component.');
+    end;
   end
   else
   begin
     // components.json exists but cannot be read: fail-closed, replace.
     Log('REQ-L32: WARNING components.json unreadable - treating as absent (rule A-1 replace).');
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// EngineBundledHashProbe - 261108_0002 (FIX-R1, R1-11): SHA-256 of the BUNDLED
+// copy of FileName, computed at most once per run per file.
+//
+// The staged bytes live INSIDE setup.exe (a release ships a bare setup.exe;
+// {src}\..\build\ is not a trustworthy reference and may hold a different
+// build), so ExtractTemporaryFile is the only authoritative access. That is
+// expensive for the ~150 MB engine exes, and the owned-slot decision below is
+// asked the same question several times per install (host entry, the defensive
+// worker mirror, the worker exe entry, the manifest entry), so the result is
+// cached in EngineBundledHash{Host,Worker} behind the *Probed flags. The
+// ssPostInstall verification reuses the same cache.
+//
+// Returns '' when the bytes cannot be obtained. Callers must treat '' as
+// "verification unavailable" - NOT as a store defect.
+// ------------------------------------------------------------------------
+function EngineBundledHashProbe(const FileName: String): String;
+var
+  TmpPath: String;
+begin
+  // 261108_0002 (FIX-R2, item C): record the PROVEN byte source once per run.
+  // A throwaway probe setup (tools_tmp_261108_fixr2/probe/probe_nodc.iss, the
+  // same [Files] shape as the engine entries - NO dontcopy, Source carrying a
+  // '..\' prefix) proved on Inno Setup 6 that
+  //   ExtractTemporaryFile('..\payload\probe_payload.txt')  -> FAIL "not found"
+  //   ExtractTemporaryFile('probe_payload.txt')             -> OK
+  // so the BASE-NAME form used below is the correct argument, and the
+  // documented dontcopy requirement does NOT apply to this compiler build: the
+  // post-copy verification and the pre-copy byte-status arm are live, not
+  // inert. Shape-only: names and outcome, never file content.
+  if not EngineBundledProbeLogged then
+  begin
+    EngineBundledProbeLogged := True;
+    Log('261108_0002 (FIX-R2) C: bundled-bytes source = the install [Files] entry addressed by BASE NAME ' +
+        '(probe: ExtractTemporaryFile works WITHOUT dontcopy; the "..\build"-prefixed form fails).');
+  end;
+  // 261108_0002 (FIX-R3, R2-04): the ATTEMPT is latched BEFORE the extraction,
+  // not only the success. A failed probe used to return '' with its *Probed flag
+  // still false, so every later decision caller (three [Files] Checks +
+  // ssPostInstall) retried the ~150 MB extraction - the opposite of the
+  // at-most-once contract, and worst exactly when extraction is failing.
+  // Cached '' now means "attempted, verification unavailable", which callers
+  // must treat as status 0 (no defect claim, no record advance), never as
+  // evidence of corruption. The manifest is cached too (round-2 P3: it was
+  // re-extracted at every probe site while the comment claimed "per file").
+  if FileName = ENGINE_HOST_FILENAME then
+  begin
+    if EngineBundledHashHostProbed then
+    begin
+      Result := EngineBundledHashHost;
+      Exit;
+    end;
+    EngineBundledHashHostProbed := True;
+  end
+  else if FileName = WORKER_FILENAME then
+  begin
+    if EngineBundledHashWorkerProbed then
+    begin
+      Result := EngineBundledHashWorker;
+      Exit;
+    end;
+    EngineBundledHashWorkerProbed := True;
+  end
+  else if FileName = WORKER_MANIFEST_FILENAME then
+  begin
+    if EngineBundledHashManifestProbed then
+    begin
+      Result := EngineBundledHashManifest;
+      Exit;
+    end;
+    EngineBundledHashManifestProbed := True;
+  end;
+  Result := '';
+  TmpPath := ExpandConstant('{tmp}\') + FileName;
+  try
+    ExtractTemporaryFile(FileName);
+  except
+    try
+      ExtractTemporaryFile('..\build\' + FileName);
+    except
+      Log('261108_0002: WARNING could not extract the bundled copy of ' + FileName +
+          ' from setup.exe; SHA-256 verification is UNAVAILABLE for it.');
+      Exit;
+    end;
+  end;
+  if not FileExists(TmpPath) then
+  begin
+    Log('261108_0002: WARNING the extracted bundled copy of ' + FileName +
+        ' is not at ' + TmpPath + '; SHA-256 verification is UNAVAILABLE for it.');
+    Exit;
+  end;
+  try
+    Result := GetSHA256OfFile(TmpPath);
+  except
+    Result := '';
+    Log('261108_0002: WARNING hashing the bundled copy of ' + FileName +
+        ' failed; SHA-256 verification is UNAVAILABLE for it.');
+    Exit;
+  end;
+  Log('261108_0002: bundled ' + FileName + ' SHA-256 = ' + Result);
+  // The *Probed flags were already latched before the attempt (R2-04); only the
+  // value is stored here, including the manifest's.
+  if FileName = ENGINE_HOST_FILENAME then
+    EngineBundledHashHost := Result
+  else if FileName = WORKER_FILENAME then
+    EngineBundledHashWorker := Result
+  else if FileName = WORKER_MANIFEST_FILENAME then
+    EngineBundledHashManifest := Result;
+end;
+
+// ------------------------------------------------------------------------
+// EngineOwnedStoreBytesStatus - 261108_0002 (FIX-R1, R1-11): the pre-copy
+// SHA-256 status of ONE owned store file, as an INPUT to the install decision.
+//
+// Why: before this, a corrupt or half-written store exe with a CURRENT
+// components.json record was never replaced - the record match kept it, the
+// post-copy verification reported it, and re-running the same installer took
+// the same no-copy branch (the "repair by reinstalling does not repair"
+// report). The decision side now sees the bytes.
+//
+//   0 = bundled hash unavailable -> NO defect claim; the record verdict stands
+//       (the installer's verification is unavailable, which is not the store's
+//       fault, and a forced re-copy would be a blind write)
+//   1 = store bytes are byte-identical to the bundle
+//   2 = store bytes DIFFER (or cannot be hashed) -> replace-needed
+//
+// Only called when rule A already returned "keep", so the hashing cost is paid
+// exactly on the run that would otherwise skip the copy. The bundled side comes
+// from the probe-once cache, so the two ~150 MB extractions happen at most once
+// per run, never once per decision call.
+// ------------------------------------------------------------------------
+function EngineOwnedStoreBytesStatus(const DeployedFileName: String): Integer;
+var
+  StorePath: String;
+  BundledHash: String;
+  StoreHash: String;
+begin
+  Result := 0;
+  StorePath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + DeployedFileName;
+  if not FileExists(StorePath) then
+    Exit; // presence is the repair hole's job, not the byte comparison's
+  BundledHash := EngineBundledHashProbe(DeployedFileName);
+  if BundledHash = '' then
+    Exit; // 0: no bundled reference available
+  try
+    StoreHash := GetSHA256OfFile(StorePath);
+  except
+    Log('261108_0002 (FIX-R1) R1-11: could not hash the store copy ' + StorePath +
+        ' - treating it as a defect (fail-closed replace).');
+    Result := 2;
+    Exit;
+  end;
+  if StoreHash <> BundledHash then
+  begin
+    Log('261108_0002 (FIX-R1) R1-11: store ' + DeployedFileName + ' SHA-256 ' +
+        StoreHash + ' <> bundled ' + BundledHash +
+        ' (corrupt/stale bytes under a current record) => replace-needed.');
+    Result := 2;
+  end
+  else
+  begin
+    Log('261108_0002 (FIX-R1) R1-11: store ' + DeployedFileName +
+        ' is byte-identical to the bundle (record and bytes agree).');
+    Result := 1;
   end;
 end;
 
@@ -2607,10 +3272,17 @@ end;
 //                    Repair hole (G3-symmetric): a missing
 //                    COMMON_ENGINE_DIR\<DeployedFileName> reinstalls even
 //                    when components.json claims the slot is current; both
-//                    store files present -> rule A (EngineComponentRuleA).
+//                    store files present -> rule A (EngineComponentRuleA),
+//                    called with ReplaceOnVersionMismatch=True since
+//                    261108_0002 (WS4, audit gap G1): an owned slot is
+//                    replace-if-DIFFERENT, so a same-version rebuild or a
+//                    corrupt "newer" record can no longer strand an old
+//                    binary.
 //   IsOwner=False -> staged gate FIRST (no staged source = nothing to
 //                    install), then the G3 branches UNCHANGED: store file
 //                    EXISTS -> NEVER replace; ABSENT -> first install.
+//                    (The non-owner branch is byte-identical to pre-WS4: the
+//                    ggml-asr downgrade guard is intentional and untouched.)
 // ------------------------------------------------------------------------
 function SharedSlotReplaceDecision(const Ownership, ComponentName,
                                    DeployedFileName: String; BundledAbi: Integer;
@@ -2628,8 +3300,30 @@ begin
       Result := True;
       Exit;
     end;
-    // Both store files present: the rule A abi/version decision preserved.
-    Result := EngineComponentRuleA(ComponentName, BundledAbi);
+    // Both store files present: owned slot -> replace-if-different.
+    // 261108_0002 (WS4, G1): ReplaceOnVersionMismatch=True drops the "recorded
+    // newer => keep" arm for owned slots ONLY (the caller below is never an
+    // owned slot, so the non-owner G3 branches stay untouched).
+    Result := EngineComponentRuleA(ComponentName, BundledAbi, True);
+    if not Result then
+    begin
+      // 261108_0002 (FIX-R1, R1-11): the record says "current", so the BYTES
+      // decide. Without this, a corrupt or half-written store exe under a
+      // current components.json record was never replaced: the copy was
+      // skipped, the post-copy verification only WARNED, and re-running the
+      // same installer followed the same no-copy branch - the "reinstall does
+      // not repair the engine" report. Only the two owned engine exes are
+      // hashed (EngineOwnedStoreBytesStatus), and only on this keep path, so
+      // the install pays the cost exactly when it is about to skip a copy.
+      // Status 0 (bundled bytes unobtainable) keeps the record verdict: an
+      // unavailable reference is not evidence of corruption.
+      if EngineOwnedStoreBytesStatus(DeployedFileName) = 2 then
+      begin
+        Log('261108_0002 (FIX-R1) R1-11: owned slot "' + ComponentName +
+            '" records the bundled version but its store bytes differ - replace-needed.');
+        Result := True;
+      end;
+    end;
     Exit;
   end;
   // Non-owned (cross-app) slot: staged-bundle gate FIRST - without the
@@ -2683,6 +3377,16 @@ begin
   // (fail-closed, log-only) when the FINAL chain carries one.
   if EngineStoreRefused('ShouldInstallEngineHost') then
   begin
+    LatchEngineStoreVerifyFailed('ShouldInstallEngineHost: elevated engine-store chain reparse refusal (host)');
+    Result := False;
+    Exit;
+  end;
+  // 261108_0002 (FIX-R2, R1-10 CONFIRMED): the chain check above stops at the
+  // '\engine' DIRECTORY, so the destination FILE was never tested before the
+  // copy. Leaf-inclusive refusal on the host exe; a hit skips the copy and
+  // latches EngineStoreVerifyFailed (ssDone surfaces it).
+  if EngineStoreLeafRefusedFor('ShouldInstallEngineHost', ENGINE_HOST_FILENAME) then
+  begin
     Result := False;
     Exit;
   end;
@@ -2700,11 +3404,90 @@ begin
 end;
 
 // ------------------------------------------------------------------------
+// EngineWorkerManifestNamesBundle - 261108_0002 (WS4, audit gap G4): does the
+// STORE manifest name the bundle this setup.exe carries?
+//
+// The manifest has no app-version field (see worker_protocol.hpp: schema
+// version, family, engine, engine_version, ops, abi_version, protocol_min,
+// protocol_max), so "names the bundled version" means the backend-identity
+// pins this installer records in components.json as well: family +
+// engine + engine_version + abi_version (+ schema_version 1). Byte-level
+// equality with the bundled manifest is enforced AFTER the copy by the
+// SHA-256 verification (VerifyEngineOwnedStoreCopy), which catches every
+// other content drift.
+//
+// Whitespace-insensitive (the store file may be pretty-printed); anything
+// unreadable/garbled returns False, i.e. "not the bundle" -> repair.
+// ------------------------------------------------------------------------
+function EngineWorkerManifestNamesBundle(const Path: String): Boolean;
+var
+  Raw: AnsiString;
+  Doc: String;
+begin
+  Result := False;
+  if not FileExists(Path) then Exit;
+  if not LoadStringFromFile(Path, Raw) then Exit;
+  Doc := Trim(Raw);
+  if Doc = '' then Exit;
+  StringChangeEx(Doc, ' ', '', True);
+  StringChangeEx(Doc, #9, '', True);
+  StringChangeEx(Doc, #13, '', True);
+  StringChangeEx(Doc, #10, '', True);
+  Result := (Pos('"schema_version":1', Doc) > 0) and
+            (Pos('"family":"ggml-translate"', Doc) > 0) and
+            (Pos('"engine":"' + ENGINE_WORKER_ENGINE + '"', Doc) > 0) and
+            (Pos('"engine_version":"' + ENGINE_WORKER_ENGINE_VERSION + '"', Doc) > 0) and
+            // 261108_0002 (FIX-R1, R1-07): the needle must include the value's
+            // CLOSING DELIMITER. Without it, a pinned abi 1 also matched a
+            // record carrying abi 10/11/100 - a cross-digit prefix match that
+            // silently accepted a forward-incompatible worker as "the bundle".
+            // The deployed record is BuildManifestJson (worker_protocol.hpp:
+            // ..."abi_version":N,"protocol_min":...), whose normalized form
+            // always terminates the number with ','; '}' is accepted too so a
+            // future field reorder cannot turn this check into a false
+            // negative (fail-closed direction: refusing a valid manifest only
+            // costs one redundant copy, accepting a wrong one breaks serving).
+            ((Pos('"abi_version":' + IntToStr(ENGINE_WORKER_ABI_VERSION) + ',', Doc) > 0) or
+             (Pos('"abi_version":' + IntToStr(ENGINE_WORKER_ABI_VERSION) + '}', Doc) > 0));
+  if not Result then
+    Log('261108_0002 (WS4) G4: worker manifest does not name the bundled backend identity (' +
+        ENGINE_WORKER_ENGINE + '/' + ENGINE_WORKER_ENGINE_VERSION + ' abi ' +
+        IntToStr(ENGINE_WORKER_ABI_VERSION) + '): ' + Path);
+end;
+
+// ------------------------------------------------------------------------
+// EngineWorkerStoreDecision - 261108_0002 (WS4, audit gaps G4 + G6): the ONE
+// decision both worker [Files] Checks consult, so the worker exe entry and the
+// manifest entry can never disagree about whether this run replaces the slot.
+// Order of the tests matters:
+//   1. the MANIFEST repair leg runs first: a missing/garbled manifest must
+//      force the pair to install even when the exe record is current
+//      (pre-WS4 the manifest rode ShouldInstallEngineWorker, whose repair
+//      hole only looked at the exe - a lost manifest was never repaired);
+//   2. otherwise the owned-slot repair hole + replace-if-different rule.
+// ------------------------------------------------------------------------
+function EngineWorkerStoreDecision(): Boolean;
+var
+  ManifestPath: String;
+begin
+  ManifestPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + WORKER_MANIFEST_FILENAME;
+  if not EngineWorkerManifestNamesBundle(ManifestPath) then
+  begin
+    Log('261108_0002 (WS4) G4: worker manifest missing or stale - (re)installing the worker + manifest pair (independent repair target).');
+    Result := True;
+    Exit;
+  end;
+  Result := SharedSlotReplaceDecision('listener', 'ggml-translate',
+      WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+end;
+
+// ------------------------------------------------------------------------
 // ShouldInstallEngineWorker - REQ-006/M6 (plan §V2-8.2): Check function for
-// the bundled [Files] entries of the ggml-translate worker exe and its
-// worker manifest (M7 A-1: worker.ggml-translate.manifest). Mirrors
-// ShouldInstallEngineHost but targets the
-// 'ggml-translate' component entry only.
+// the bundled [Files] entry of the ggml-translate worker exe. Mirrors
+// ShouldInstallEngineHost but targets the 'ggml-translate' component entry
+// only, and delegates the verdict to EngineWorkerStoreDecision so the
+// manifest entry's own Check (ShouldInstallEngineWorkerManifest) can never
+// drift from it.
 //
 // No-llama guard (REQ-006 design §4.1 / T3 report), REQ-045 (P4-1, item 2a)
 // loud-fail: when the build tree lacks build\Emebala.Engine.ggml-
@@ -2727,19 +3510,57 @@ begin
   // Check above (the worker exe + its manifest are copied into the same store).
   if EngineStoreRefused('ShouldInstallEngineWorker') then
   begin
+    LatchEngineStoreVerifyFailed('ShouldInstallEngineWorker: elevated engine-store chain reparse refusal (worker)');
     Result := False;
     Exit;
   end;
-  // REQ-L32 P2-2: Chat OWNS the ggml-translate slot (IsOwner=True): repair
-  // hole + rule A via SharedSlotReplaceDecision. The no-llama loud-fail
-  // policy still holds — the [Files] entries above carry no
+  // 261108_0002 (FIX-R2, R1-10 CONFIRMED): leaf-inclusive refusal on the worker
+  // exe destination (the chain guard above stops at the '\engine' directory).
+  if EngineStoreLeafRefusedFor('ShouldInstallEngineWorker', WORKER_FILENAME) then
+  begin
+    Result := False;
+    Exit;
+  end;
+  // REQ-L32 P2-2: Chat OWNS the ggml-translate slot (IsOwner=True). The
+  // no-llama loud-fail policy still holds - the [Files] entries above carry no
   // skipifsourcedoesntexist, so a missing build-tree worker exe fails the
   // ISCC compile before this Check can ever run.
-  EngineWorkerUpdated := SharedSlotReplaceDecision('listener', 'ggml-translate',
-      WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+  EngineWorkerUpdated := EngineWorkerStoreDecision();
   Result := EngineWorkerUpdated;
   if Result then
     Log('REQ-006: worker will be (re)installed.');
+end;
+
+// ------------------------------------------------------------------------
+// ShouldInstallEngineWorkerManifest - 261108_0002 (WS4, audit gap G4): the
+// [Files] Check of worker.ggml-translate.manifest as its OWN repair target.
+// Same verdict as the exe entry (EngineWorkerStoreDecision), latched with
+// "set, never clear" so an earlier True from the exe entry survives any
+// evaluation-order surprise. A manifest-only repair therefore copies BOTH
+// entries (the exe entry's Check returns True for the same reason).
+// ------------------------------------------------------------------------
+function ShouldInstallEngineWorkerManifest(): Boolean;
+begin
+  if EngineStoreRefused('ShouldInstallEngineWorkerManifest') then
+  begin
+    LatchEngineStoreVerifyFailed('ShouldInstallEngineWorkerManifest: elevated engine-store chain reparse refusal (manifest)');
+    Result := False;
+    Exit;
+  end;
+  // 261108_0002 (FIX-R2, R1-10 CONFIRMED): leaf-inclusive refusal on the
+  // manifest destination (the chain guard above stops at the '\engine'
+  // directory). A lost/planted manifest leaf is the same fixed-name class.
+  if EngineStoreLeafRefusedFor('ShouldInstallEngineWorkerManifest', WORKER_MANIFEST_FILENAME) then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := EngineWorkerStoreDecision();
+  if Result then
+  begin
+    EngineWorkerUpdated := True;
+    Log('REQ-006: worker manifest will be (re)installed.');
+  end;
 end;
 
 // ------------------------------------------------------------------------
@@ -2769,6 +3590,7 @@ var
   EngineDir: String;
   LegacyPath: String;
   UnifiedPath: String;
+  Offender: String;
 begin
   EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
   // 261029_0001 R2-1: this procedure DELETES or RENAMES inside the shared
@@ -2776,13 +3598,29 @@ begin
   // guard runs - refuse when the chain carries a reparse point (log-only; the
   // absorb is idempotent and retried on the next reinstall).
   if EngineStoreRefused('AbsorbLegacyWorkerFileName') then
+  begin
+    LatchEngineStoreVerifyFailed('AbsorbLegacyWorkerFileName: elevated engine-store chain reparse refusal');
     Exit;
+  end;
   // The pre-unification Chat-deployed worker name (session 260930_0003);
   // WORKER_FILENAME is the unified name.
   LegacyPath := EngineDir + '\Emebalachat.Engine.ggml-translate.exe';
   UnifiedPath := EngineDir + '\' + WORKER_FILENAME;
   if not FileExists(LegacyPath) then
     Exit;
+  // 261108_0002 (FIX-R4, MEDIUM / MED-1b): this procedure DELETE- and
+  // RENAME-s inside the elevated store. Re-test the PARENT CHAIN at the last
+  // instant: a `engine` junction swapped in after the chain check above would
+  // otherwise redirect the DeleteFile of the fixed legacy name outside the
+  // store (DeleteFile never follows a LEAF link, but it does resolve a
+  // junctioned parent). Refuse + latch, no write, no delete.
+  if ParentChainReparsePoint(ExpandConstant('{localappdata}'), LegacyPath, Offender) or
+     ParentChainReparsePoint(ExpandConstant('{localappdata}'), UnifiedPath, Offender) then
+  begin
+    LatchEngineStoreVerifyFailed('AbsorbLegacyWorkerFileName: parent-chain reparse refusal (' + Offender + ')');
+    Log('260930_0003: WARNING reparse point in the legacy-absorb parent chain; the legacy name is left untouched (261108_0002 FIX-R4): ' + Offender);
+    Exit;
+  end;
   if FileExists(UnifiedPath) then
   begin
     if DeleteFile(LegacyPath) then
@@ -2813,11 +3651,115 @@ begin
   // asr pair + CUDA DLLs land in the same shared engine store).
   if EngineStoreRefused('ShouldInstallEngineWorkerAsr') then
   begin
+    LatchEngineStoreVerifyFailed('ShouldInstallEngineWorkerAsr: elevated engine-store chain reparse refusal (asr slot)');
     Result := False;
     Exit;
   end;
   Result := SharedSlotReplaceDecision('listener', 'ggml-asr',
       WORKER_ASR_FILENAME, ENGINE_WORKER_ASR_ABI_VERSION, False);
+end;
+
+// ------------------------------------------------------------------------
+// IsProcessImageRunning - 261108_0002 (WS4, audit gap G6): process-existence
+// probe for the post-taskkill wait below.
+//
+// Inno Pascal Script cannot capture a child's stdout, so the probe redirects
+// `tasklist /FI "IMAGENAME eq <name>" /NH` into a per-run file under {tmp} and
+// looks for the image name in the captured text. No match prints the
+// "INFO: No tasks are running ..." notice, which does not contain the name.
+//
+// Returns False on ANY probe failure (missing tool, redirect failure,
+// unreadable output) and says so in the log: the wait loop then stops
+// immediately instead of burning its 10 s budget on a broken probe, and the
+// copy proceeds with Inno's file-in-use retry as the backstop - the same
+// best-effort posture the taskkills themselves have.
+// ------------------------------------------------------------------------
+function IsProcessImageRunning(const ImageName: String): Boolean;
+var
+  ProbePath, Params: String;
+  ResultCode: Integer;
+  Buf: AnsiString;
+  Text: String;
+begin
+  Result := False;
+  ProbePath := ExpandConstant('{tmp}\') + PROC_PROBE_FILENAME;
+  if FileExists(ProbePath) then
+  begin
+    if not DeleteFile(ProbePath) then
+    begin
+      Log('261108_0002 (WS4) G6: WARNING cannot clear the process probe file (' +
+          ProbePath + '); skipping the wait for ' + ImageName + '.');
+      Exit;
+    end;
+  end;
+  Params := '/c tasklist /FI "IMAGENAME eq ' + ImageName + '" /NH > "' +
+            ProbePath + '" 2>&1';
+  if not Exec(ExpandConstant('{sys}\cmd.exe'), Params, '', SW_HIDE,
+              ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('261108_0002 (WS4) G6: WARNING process probe could not launch; skipping the wait for ' +
+        ImageName + '.');
+    Exit;
+  end;
+  if not FileExists(ProbePath) then
+  begin
+    Log('261108_0002 (WS4) G6: WARNING process probe produced no output; skipping the wait for ' +
+        ImageName + '.');
+    Exit;
+  end;
+  if not LoadStringFromFile(ProbePath, Buf) then
+  begin
+    Log('261108_0002 (WS4) G6: WARNING process probe output unreadable; skipping the wait for ' +
+        ImageName + '.');
+    Exit;
+  end;
+  Text := LowerCase(Buf);
+  Result := Pos(LowerCase(ImageName), Text) > 0;
+end;
+
+// ------------------------------------------------------------------------
+// KillProcessImage - one best-effort taskkill of an engine image, with the
+// historical log wording (the exit-code line is what field logs carry).
+// ------------------------------------------------------------------------
+procedure KillProcessImage(const ImageName, LogTag: String);
+var
+  ResultCode: Integer;
+begin
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ImageName,
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log(LogTag + ': taskkill ' + ImageName + ' issued, exit code ' +
+        IntToStr(ResultCode))
+  else
+    Log(LogTag + ': taskkill ' + ImageName + ' could not be started; continuing anyway.');
+end;
+
+// ------------------------------------------------------------------------
+// WaitForProcessImageExit - bounded wait (ENGINE_EXIT_WAIT_STEPS x
+// ENGINE_EXIT_POLL_MS = ~10 s) for a killed image to actually disappear.
+// 261108_0002 (WS4, audit gap G6): taskkill is fire-and-forget. The pre-WS4
+// flow returned as soon as taskkill exited, so Inno's [Files] copy could land
+// while the process was still tearing down its image/handles - the "new
+// installer, old engine" failure mode once the copy failed and (pre-G2) the
+// version record was stamped anyway. Never fatal: after the budget expires we
+// log and let Inno's retry dialog handle the lock.
+// ------------------------------------------------------------------------
+procedure WaitForProcessImageExit(const ImageName: String);
+var
+  I: Integer;
+begin
+  for I := 1 to ENGINE_EXIT_WAIT_STEPS do
+  begin
+    if not IsProcessImageRunning(ImageName) then
+    begin
+      Log('261108_0002 (WS4) G6: ' + ImageName + ' is gone (wait round ' +
+          IntToStr(I) + ').');
+      Exit;
+    end;
+    Sleep(ENGINE_EXIT_POLL_MS);
+  end;
+  Log('261108_0002 (WS4) G6: WARNING ' + ImageName + ' is still running after ~' +
+      IntToStr((ENGINE_EXIT_WAIT_STEPS * ENGINE_EXIT_POLL_MS) div 1000) +
+      's; the [Files] copy may hit a locked file (Inno retry dialog is the backstop).');
 end;
 
 // ------------------------------------------------------------------------
@@ -2829,28 +3771,161 @@ end;
 // mid-upgrade is safe. Failure is non-fatal: Inno's file-in-use retry
 // dialog is the backstop.
 //
-// REQ-006/M6: the worker (Emebala.Engine.ggml-translate.exe — unified name
+// REQ-006/M6: the worker (Emebala.Engine.ggml-translate.exe - unified name
 // since 260930_0003, decisions.md D2) is spawned
 // on demand by the orchestrator; killing the host alone would leave the
 // worker running with a stale pipe. Both must be stopped.
+//
+// 261108_0002 (WS4, audit gaps G6): three changes.
+//   (1) The LEGACY worker name (Emebalachat.Engine.ggml-translate.exe) is
+//       killed too - it is absorbed/renamed at ssInstall and a live handle on
+//       it silently defeated that absorb on the pre-unification install.
+//   (2) Every kill is followed by a bounded process-exit wait, so the copy
+//       below starts only after the images are actually gone (~10 s cap per
+//       image; the installer never hangs).
+//   (3) The caller runs this whenever EITHER the host or the worker/manifest
+//       slot needs replacement (CurStepChanged ssInstall), not only when the
+//       host does - a stale worker alone can fail the copy.
 // ------------------------------------------------------------------------
 procedure StopRunningEngineHost();
-var
-  ResultCode: Integer;
 begin
-  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ENGINE_HOST_FILENAME,
-          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Log('REQ-043: taskkill ' + ENGINE_HOST_FILENAME + ' issued, exit code ' +
-        IntToStr(ResultCode))
-  else
-    Log('REQ-043: taskkill could not be started; continuing anyway.');
-  // REQ-006/M6: also stop the ggml-translate worker.
-  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + WORKER_FILENAME,
-          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Log('REQ-006: taskkill ' + WORKER_FILENAME + ' issued, exit code ' +
-        IntToStr(ResultCode))
-  else
-    Log('REQ-006: worker taskkill could not be started; continuing anyway.');
+  KillProcessImage(ENGINE_HOST_FILENAME, 'REQ-043');
+  KillProcessImage(WORKER_FILENAME, 'REQ-006');
+  KillProcessImage(LEGACY_WORKER_FILENAME, '261108_0002 (WS4) G6 legacy');
+  WaitForProcessImageExit(ENGINE_HOST_FILENAME);
+  WaitForProcessImageExit(WORKER_FILENAME);
+  WaitForProcessImageExit(LEGACY_WORKER_FILENAME);
+end;
+
+// ------------------------------------------------------------------------
+// EngineBundledFileSha256 - 261108_0002 (WS4, audit gap G2): SHA-256 of the
+// BUNDLED copy of FileName, i.e. the bytes this setup.exe carries in its
+// [Files] archive.
+//
+// The staged bytes live INSIDE setup.exe at run time (a release ships a bare
+// setup.exe; {src}\..\build\ is not a trustworthy reference and may hold a
+// different build), so ExtractTemporaryFile is the only authoritative access.
+// Inno resolves the entry by the BASE NAME of its Source parameter, so the
+// path-qualified [Files] entries ('..\build\Emebala.Engine.exe') are addressed
+// by their bare names; the relative form is a defensive second attempt.
+//
+// Returns '' when the bytes cannot be obtained - the caller then refuses to
+// advance the version record (fail-closed) but must NOT claim a store defect:
+// the installer's verification is unavailable, which is not the store's fault.
+//
+// 261108_0002 (FIX-R1, R1-11): the extraction+hashing body now lives in
+// EngineBundledHashProbe (defined earlier, next to the install decision that
+// needs it) so the [Files] Checks and this ssPostInstall verification SHARE one
+// probe-once cache. Same contract, same '' semantics.
+// ------------------------------------------------------------------------
+function EngineBundledFileSha256(const FileName: String): String;
+begin
+  Result := EngineBundledHashProbe(FileName);
+end;
+
+// ------------------------------------------------------------------------
+// EngineStoreFileStatus - 261108_0002 (WS4, audit gaps G1/G2): compare ONE
+// deployed engine-store file with the bundled bytes.
+//   0 = bundled hash unavailable -> verification NOT possible (no defect claim)
+//   1 = VERIFIED: the store file's SHA-256 equals the bundle's
+//   2 = DEFECT: the store file is missing or differs from the bundle
+// A defect is what the pre-WS4 code could not see at all: the replacement
+// decision came only from the components.json record, so a stale/corrupt or
+// half-copied store exe kept a "current" record forever.
+// ------------------------------------------------------------------------
+function EngineStoreFileStatus(const Site, StoreDir, FileName,
+                               BundledHash: String): Integer;
+var
+  StorePath, Actual: String;
+begin
+  Result := 0;
+  if BundledHash = '' then
+  begin
+    Log('261108_0002 (WS4) G2: ' + Site + ': no bundled hash for ' + FileName +
+        ' - the store copy is UNVERIFIED; its version record will not advance.');
+    Exit;
+  end;
+  StorePath := StoreDir + '\' + FileName;
+  if not FileExists(StorePath) then
+  begin
+    Log('261108_0002 (WS4) G2: ' + Site + ': MISSING ' + StorePath +
+        ' - the copy did not land; its version record will not advance.');
+    Result := 2;
+    Exit;
+  end;
+  try
+    Actual := GetSHA256OfFile(StorePath);
+  except
+    Actual := '';
+  end;
+  if Actual = '' then
+  begin
+    Log('261108_0002 (WS4) G2: ' + Site + ': ' + StorePath +
+        ' could not be hashed - the copy is UNVERIFIED; its version record will not advance.');
+    Exit;
+  end;
+  if SameText(Actual, BundledHash) then
+  begin
+    Log('261108_0002 (WS4) G2: ' + Site + ': VERIFIED ' + StorePath + ' (' + Actual + ')');
+    Result := 1;
+    Exit;
+  end;
+  Log('261108_0002 (WS4) G2: ERROR ' + Site + ': ' + StorePath + ' SHA-256 MISMATCH - expected ' +
+      BundledHash + ', got ' + Actual + ' (stale, corrupt or locked store copy).');
+  Result := 2;
+end;
+
+// ------------------------------------------------------------------------
+// VerifyEngineOwnedStoreCopy - 261108_0002 (WS4, audit gap G2): the post-copy
+// verification gate that runs at ssPostInstall BEFORE any version record is
+// written.
+//
+// Contract: EngineHostUpdated / EngineWorkerUpdated are RE-LATCHED from the
+// VERIFIED store state, not from the [Files] Check verdicts. Only a component
+// whose store bytes equal the bundle may advance engine.version /
+// components.json; a component whose copy silently failed keeps its previous
+// record (WriteComponentsFile preserves it verbatim - audit gap G9) and is
+// reported once, loudly, at ssDone via EngineStoreVerifyFailed.
+// ------------------------------------------------------------------------
+procedure VerifyEngineOwnedStoreCopy();
+var
+  EngineDir: String;
+  Status: Integer;
+begin
+  EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
+  // Capture the bundled hashes ONCE. ssDone reuses them (a second
+  // ExtractTemporaryFile at ssDone is not guaranteed to succeed), and the
+  // original-user deployment copies only files verified here.
+  EngineBundledHashHost := EngineBundledFileSha256(ENGINE_HOST_FILENAME);
+  EngineBundledHashWorker := EngineBundledFileSha256(WORKER_FILENAME);
+  EngineBundledHashManifest := EngineBundledFileSha256(WORKER_MANIFEST_FILENAME);
+
+  Status := EngineStoreFileStatus('post-copy', EngineDir, ENGINE_HOST_FILENAME,
+                                  EngineBundledHashHost);
+  EngineHostUpdated := (Status = 1);
+  if Status = 2 then
+    LatchEngineStoreVerifyFailed('post-copy: orchestrator store copy is a defect');
+  if not EngineHostUpdated then
+    Log('261108_0002 (WS4) G2: the orchestrator store copy is NOT verified - engine.version and the orchestrator record stay at their previous value.');
+
+  Status := EngineStoreFileStatus('post-copy', EngineDir, WORKER_FILENAME,
+                                  EngineBundledHashWorker);
+  EngineWorkerUpdated := (Status = 1);
+  if Status = 2 then
+    LatchEngineStoreVerifyFailed('post-copy: worker exe store copy is a defect');
+  Status := EngineStoreFileStatus('post-copy', EngineDir, WORKER_MANIFEST_FILENAME,
+                                  EngineBundledHashManifest);
+  if Status <> 1 then
+  begin
+    EngineWorkerUpdated := False;
+    if Status = 2 then
+      LatchEngineStoreVerifyFailed('post-copy: worker manifest store copy is a defect');
+  end;
+  if not EngineWorkerUpdated then
+    Log('261108_0002 (WS4) G2: the ggml-translate store copy (exe + manifest) is NOT verified - the ggml-translate record stays at its previous value.');
+
+  if EngineStoreVerifyFailed then
+    Log('261108_0002 (WS4) G2: at least one owned engine store file is missing or differs from the bundle; a warning is shown when setup finishes.');
 end;
 
 // ------------------------------------------------------------------------
@@ -2860,6 +3935,9 @@ end;
 // run actually installed/replaced the host (EngineHostUpdated latch).
 // FROZEN v1 contract: kept alongside WriteComponentsFile() (REQ-006/M6) -
 // plan §V2-8.1: "v1 engine.version 기록/비교 규칙 자체는 동결 유지".
+// 261108_0002 (WS4): the latch is now set by VerifyEngineOwnedStoreCopy()
+// (post-copy SHA-256 verification), so this stamp can only be written over a
+// store binary that is byte-identical to the bundle (audit gap G2).
 // ------------------------------------------------------------------------
 procedure WriteEngineVersionFile();
 var
@@ -2870,18 +3948,33 @@ begin
   // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
   // chain (log-only skip, like every other failure in this stamping path).
   if EngineStoreRefused('WriteEngineVersionFile') then
+  begin
+    LatchEngineStoreVerifyFailed('WriteEngineVersionFile: elevated engine-store chain reparse refusal');
     Exit;
+  end;
   VersionPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + ENGINE_VERSION_FILENAME;
   // R3 (261029_0001, round-3 F-01): the chain check above stops at the
   // '\engine' directory; re-check the written FILE leaf as well (a dev-mode
   // file symlink at the fixed name would be followed by the admin write).
   if EngineStoreLeafRefused('WriteEngineVersionFile/leaf', VersionPath) then
+  begin
+    LatchEngineStoreVerifyFailed('WriteEngineVersionFile: leaf reparse refusal');
+    Exit;
+  end;
+  // 261108_0002 (FIX-R4, MEDIUM): the [Code] twin of the FIX-R3 BeforeInstall
+  // hook - re-test the FULL chain including the leaf at the LAST instant before
+  // the elevated write (the checks above ran earlier in this procedure).
+  if StoreWriteRefused('WriteEngineVersionFile/pre-write',
+                        ExpandConstant('{localappdata}'), VersionPath) then
     Exit;
   if SaveStringToFile(VersionPath, ENGINE_BUNDLED_VERSION, False) then
     Log('REQ-043: engine.version written: ' + VersionPath + ' = ' +
         ENGINE_BUNDLED_VERSION)
   else
+  begin
+    LatchEngineStoreVerifyFailed('WriteEngineVersionFile: write failed: ' + VersionPath);
     Log('REQ-043: WARNING could not write ' + VersionPath);
+  end;
 end;
 
 // ------------------------------------------------------------------------
@@ -2917,12 +4010,33 @@ end;
 // schema minimal avoids implying an automated gate log that does not yet
 // exist (M6 defers gate recording to a manual procedure).
 // ------------------------------------------------------------------------
-procedure WriteComponentsFile();
+// ------------------------------------------------------------------------
+// ComposeComponentsJson - 261108_0002 (WS4): the MERGE half of
+// WriteComponentsFile, factored out so the same document can be written into
+// the elevated-context engine store AND (audit gap G3) the original-user
+// engine store without duplicating the walk.
+//
+// Returns False when the existing document must be left untouched (the
+// documented safe-failure path); OutJson is the document to persist otherwise.
+// The walk itself is byte-identical to the pre-WS4 WriteComponentsFile body
+// except for the G9 carry-over below (an owned entry this run did NOT
+// verified-replace is preserved verbatim instead of being dropped).
+//
+// 261108_0002 (FIX-R1, R1-06): HostVerified/WorkerVerified are PARAMETERS, not
+// the EngineHostUpdated/EngineWorkerUpdated globals. Both stores share this
+// walk, but "verified" means different things for them: the elevated store's
+// latches come from the post-copy verification of COMMON_ENGINE_DIR, while the
+// original-user store must speak about ITS OWN files - a failed FileCopy into
+// the user store used to be stamped as a current record because the elevated
+// latch was set. WriteComponentsFile passes the globals; the original-user
+// writer passes its per-file deployment flags.
+// ------------------------------------------------------------------------
+function ComposeComponentsJson(const ComponentsPath: String;
+                               HostVerified, WorkerVerified: Boolean;
+                               out OutJson: String): Boolean;
 var
-  ComponentsPath: String;
   ComponentsAnsi: AnsiString;
   ComponentsJson: String;
-  OutJson: String;
   Idx: Integer;
   Key: String;
   EntryStart: Integer;
@@ -2932,17 +4046,7 @@ var
   HaveWorker: Boolean;
   FirstEntry: Boolean;
 begin
-  if (not EngineHostUpdated) and (not EngineWorkerUpdated) then
-    Exit;
-  // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
-  // chain (log-only skip, matching this procedure's safe-failure posture).
-  if EngineStoreRefused('WriteComponentsFile') then
-    Exit;
-  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
-  // R3 (261029_0001, round-3 F-01): leaf-inclusive re-check - the write below
-  // targets this exact file, and the chain check above stops at the directory.
-  if EngineStoreLeafRefused('WriteComponentsFile/leaf', ComponentsPath) then
-    Exit;
+  Result := False;
   OutJson := '';
   if FileExists(ComponentsPath) then
   begin
@@ -3037,9 +4141,35 @@ begin
       EntryEnd := Idx - 1;
       EntryText := Copy(ComponentsJson, EntryStart, EntryEnd - EntryStart + 1);
       if SameText(Key, 'orchestrator') then
-        HaveOrchestrator := True
+      begin
+        HaveOrchestrator := True;
+        // 261108_0002 (WS4, audit gap G9): an owned entry this run did NOT
+        // verified-replace must be carried over VERBATIM. The pre-WS4 walk
+        // dropped every owned entry unconditionally and re-added only the
+        // latched ones, so a run whose host copy failed (or that only touched
+        // the worker) erased the other component's record - and the NEXT
+        // installer then saw "absent" and reinstalled for the wrong reason.
+        if not HostVerified then
+        begin
+          if not FirstEntry then
+            OutJson := OutJson + ',';
+          FirstEntry := False;
+          OutJson := OutJson + '"' + Key + '":' + EntryText;
+          Log('261108_0002 (WS4) G9: preserving the existing "orchestrator" record verbatim (this run did not verified-replace it).');
+        end;
+      end
       else if SameText(Key, 'ggml-translate') then
-        HaveWorker := True
+      begin
+        HaveWorker := True;
+        if not WorkerVerified then
+        begin
+          if not FirstEntry then
+            OutJson := OutJson + ',';
+          FirstEntry := False;
+          OutJson := OutJson + '"' + Key + '":' + EntryText;
+          Log('261108_0002 (WS4) G9: preserving the existing "ggml-translate" record verbatim (this run did not verified-replace it).');
+        end;
+      end
       else
       begin
         // Preserve every non-owned entry verbatim (partial-update merge).
@@ -3053,7 +4183,7 @@ begin
         Idx := Idx + 1;
     end;
     // ---- overwrite only the components this installer owns ---------------
-    if EngineHostUpdated then
+    if HostVerified then
     begin
       if not FirstEntry then
         OutJson := OutJson + ',';
@@ -3061,7 +4191,7 @@ begin
       OutJson := OutJson + '"orchestrator":{"version":"' + ENGINE_BUNDLED_VERSION +
                  '","abi_version":' + IntToStr(ENGINE_ORCHESTRATOR_ABI_VERSION) + '}';
     end;
-    if EngineWorkerUpdated then
+    if WorkerVerified then
     begin
       if not FirstEntry then
         OutJson := OutJson + ',';
@@ -3080,13 +4210,13 @@ begin
     // Fresh install: no components.json exists -> write the full document.
     OutJson := '{"schema_version":1,"components":{';
     FirstEntry := False;
-    if EngineHostUpdated then
+    if HostVerified then
     begin
       OutJson := OutJson + '"orchestrator":{"version":"' + ENGINE_BUNDLED_VERSION +
                  '","abi_version":' + IntToStr(ENGINE_ORCHESTRATOR_ABI_VERSION) + '}';
       FirstEntry := True;
     end;
-    if EngineWorkerUpdated then
+    if WorkerVerified then
     begin
       if FirstEntry then
         OutJson := OutJson + ',';
@@ -3097,15 +4227,392 @@ begin
     end;
     OutJson := OutJson + '}}';
   end;
+  Result := True;
+end;
+
+// ------------------------------------------------------------------------
+// WriteComponentsFile - 261108_0002 (WS4) form: guards + MERGE
+// (ComposeComponentsJson) + the immediately-before-write leaf re-check + the
+// elevated write of the ELEVATED-context store's components.json.
+// The merge/ownership contract is documented above ComposeComponentsJson.
+// ------------------------------------------------------------------------
+procedure WriteComponentsFile();
+var
+  ComponentsPath: String;
+  OutJson: String;
+begin
+  if (not EngineHostUpdated) and (not EngineWorkerUpdated) then
+    Exit;
+  // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
+  // chain (log-only skip, matching this procedure's safe-failure posture).
+  if EngineStoreRefused('WriteComponentsFile') then
+  begin
+    LatchEngineStoreVerifyFailed('WriteComponentsFile: elevated engine-store chain reparse refusal');
+    Exit;
+  end;
+  ComponentsPath := ExpandConstant(COMMON_ENGINE_DIR) + '\' + COMPONENTS_FILENAME;
+  // R3 (261029_0001, round-3 F-01): leaf-inclusive re-check - the write below
+  // targets this exact file, and the chain check above stops at the directory.
+  if EngineStoreLeafRefused('WriteComponentsFile/leaf', ComponentsPath) then
+  begin
+    LatchEngineStoreVerifyFailed('WriteComponentsFile: leaf reparse refusal');
+    Exit;
+  end;
+  // Elevated store: its own post-copy verification latches are the verdicts.
+  if not ComposeComponentsJson(ComponentsPath, EngineHostUpdated, EngineWorkerUpdated,
+                               OutJson) then
+  begin
+    LatchEngineStoreVerifyFailed('WriteComponentsFile: components merge refused (unreadable existing document)');
+    Exit;
+  end;
   // 261029_0001 R2-1: re-check immediately before the elevated write.
   // R3 (round-3 F-01): the immediately-before-write check is the one that has
   // to cover the FILE leaf too, so this call checks both the chain and the leaf.
   if EngineStoreLeafRefused('WriteComponentsFile/pre-write', ComponentsPath) then
+  begin
+    LatchEngineStoreVerifyFailed('WriteComponentsFile: pre-write leaf reparse refusal');
+    Exit;
+  end;
+  // 261108_0002 (FIX-R4, MEDIUM): write-time re-test at the last instant (the
+  // [Code] twin of the FIX-R3 BeforeInstall hook).
+  if StoreWriteRefused('WriteComponentsFile/pre-write',
+                        ExpandConstant('{localappdata}'), ComponentsPath) then
     Exit;
   if SaveStringToFile(ComponentsPath, OutJson, False) then
     Log('REQ-006: components.json written: ' + ComponentsPath + ' = ' + OutJson)
   else
+  begin
+    LatchEngineStoreVerifyFailed('WriteComponentsFile: write failed: ' + ComponentsPath);
     Log('REQ-006: WARNING could not write ' + ComponentsPath);
+  end;
+end;
+
+// ------------------------------------------------------------------------
+// DeployOwnedEngineStoreForOriginalUser - 261108_0002 (WS4, audit gap G3).
+//
+// WHY: this installer is ALWAYS elevated (PrivilegesRequired=admin), so the
+// [Files] entries above land in the ELEVATED token's {localappdata} - the
+// administrator's profile on an over-the-shoulder UAC install. The running app
+// resolves the engine store from ITS OWN token
+// (SHGetKnownFolderPath(FOLDERID_LocalAppData), src/engine_host_bootstrap_client.cpp),
+// so on that (very common) upgrade path the new engine was never visible: the
+// app kept loading the OLD store binaries while the installer reported success
+// - the exact "installed the new version, engine did not change" report. The
+// models side already solved this with UserLocalAppDataPath (gate A1); this
+// procedure closes the engine side the same way, KEEPING the elevated-store
+// write for backward compatibility.
+//
+// CONTRACT
+//   * only runs when ResolveUserLocalAppData/IsValidUserLocalAppData produced
+//     a usable original-user root that DIFFERS from the elevated constant;
+//   * copies ONLY files whose post-copy verification passed
+//     (VerifyEngineOwnedStoreCopy), i.e. the source is byte-identical to the
+//     bundle - a failed copy is never laundered into the user's store;
+//   * every write is reparse-guarded exactly like the models path
+//     (SubtreeReparsePoint for the directory chain, StoreChainRefused for the
+//     written file leaf). A planted junction is REFUSED with a log-only skip -
+//     never a hard install failure, matching the existing pattern;
+//   * records (engine.version / components.json) go through the same merge
+//     and gating contracts as the elevated store: only verified components are
+//     stamped, existing owned entries are preserved (G9);
+//   * 261108_0002 (FIX-R1, R1-06): "verified" here means verified IN THIS
+//     STORE. Each record write is gated on that file's own copy+hash success
+//     (OrigUserHostVerified / OrigUserWorkerVerified), never on the elevated
+//     EngineHostUpdated/EngineWorkerUpdated latches - a failed FileCopy into the
+//     user store used to be stamped as current beside the stale binary it
+//     failed to replace. Every refusal (reparse/junction/leaf refusal,
+//     directory-creation failure, failed copy, failed post-copy hash) also sets
+//     EngineStoreVerifyFailed, so the ssDone verification surfaces it through
+//     the same loud MsgBox the elevated store uses.
+// ------------------------------------------------------------------------
+procedure WriteOriginalUserEngineVersionFile(const OrigEngineDir: String);
+var
+  VersionPath: String;
+begin
+  // 261108_0002 (FIX-R1, R1-06): gate on THIS store's own verified copy, never
+  // on the elevated-store latch. EngineHostUpdated only says the copy into
+  // COMMON_ENGINE_DIR verified; if the FileCopy into the original-user store
+  // failed (locked file, quota, AV), stamping ENGINE_BUNDLED_VERSION here would
+  // tell the app "this store carries the bundled host" beside a stale or
+  // missing binary - the next installer would then keep that binary because the
+  // record looks current.
+  if not OrigUserHostVerified then
+  begin
+    Log('261108_0002 (FIX-R1) R1-06: original-user engine.version NOT advanced - the host copy into this store was not verified this run.');
+    Exit;
+  end;
+  VersionPath := OrigEngineDir + '\' + ENGINE_VERSION_FILENAME;
+  if StoreWriteRefused('WriteOriginalUserEngineVersionFile/pre-write',
+                       UserLocalAppDataPath, VersionPath) then
+  begin
+    Log('261108_0002 (WS4) G3: reparse point in the original-user engine.version chain; refusing the write (no write, no delete): ' + VersionPath);
+    Exit;
+  end;
+  if SaveStringToFile(VersionPath, ENGINE_BUNDLED_VERSION, False) then
+    Log('261108_0002 (WS4) G3: original-user engine.version written: ' + VersionPath +
+        ' = ' + ENGINE_BUNDLED_VERSION)
+  else
+  begin
+    LatchEngineStoreVerifyFailed('original-user engine.version write failed: ' + VersionPath);
+    Log('261108_0002 (WS4) G3: WARNING could not write ' + VersionPath);
+  end;
+end;
+
+procedure WriteOriginalUserComponentsFile(const OrigEngineDir: String);
+var
+  ComponentsPath: String;
+  OutJson: String;
+begin
+  // 261108_0002 (FIX-R1, R1-06): per-file gating, same reason as the
+  // engine.version stamp above - the elevated latches say nothing about what
+  // actually landed in THIS store. ComposeComponentsJson receives the
+  // original-user verdicts, so an entry whose file did not verified-copy is
+  // carried over verbatim (G9) instead of being re-stamped as current.
+  if (not OrigUserHostVerified) and (not OrigUserWorkerVerified) then
+  begin
+    Log('261108_0002 (FIX-R1) R1-06: original-user components.json NOT advanced - no owned component verified in this store this run.');
+    Exit;
+  end;
+  ComponentsPath := OrigEngineDir + '\' + COMPONENTS_FILENAME;
+  if StoreChainRefused(UserLocalAppDataPath, ComponentsPath) then
+  begin
+    LatchEngineStoreVerifyFailed('original-user components.json chain reparse refusal: ' + ComponentsPath);
+    Log('261108_0002 (WS4) G3: reparse point in the original-user components.json chain; refusing the write (no write, no delete): ' + ComponentsPath);
+    Exit;
+  end;
+  if not ComposeComponentsJson(ComponentsPath, OrigUserHostVerified, OrigUserWorkerVerified,
+                               OutJson) then
+  begin
+    LatchEngineStoreVerifyFailed('original-user components.json merge refused (unreadable existing document): ' + ComponentsPath);
+    Exit;
+  end;
+  // Same leaf-inclusive re-check as the elevated writer, immediately before
+  // the elevated write (the profile owner can plant a link at any moment).
+  if StoreWriteRefused('WriteOriginalUserComponentsFile/pre-write',
+                       UserLocalAppDataPath, ComponentsPath) then
+  begin
+    Log('261108_0002 (WS4) G3: reparse point at the written original-user components.json (leaf included); refusing the write: ' + ComponentsPath);
+    Exit;
+  end;
+  if SaveStringToFile(ComponentsPath, OutJson, False) then
+    Log('261108_0002 (WS4) G3: original-user components.json written: ' +
+        ComponentsPath + ' = ' + OutJson)
+  else
+  begin
+    LatchEngineStoreVerifyFailed('original-user components.json write failed: ' + ComponentsPath);
+    Log('261108_0002 (WS4) G3: WARNING could not write ' + ComponentsPath);
+  end;
+end;
+
+procedure DeployOwnedEngineStoreForOriginalUser();
+var
+  ElevatedEngineDir, OrigEngineDir, SrcPath, DestPath: String;
+  I: Integer;
+  CopyWanted: Boolean;
+  Names: TArrayOfString;
+  Hashes: TArrayOfString;
+begin
+  OriginalUserEngineDir := '';
+  // 261108_0002 (FIX-R1, R1-06): reset the per-file verdicts up front, so every
+  // early refusal below leaves them False (no record is stamped on a run that
+  // deployed nothing).
+  OrigUserHostVerified := False;
+  OrigUserWorkerExeVerified := False;
+  OrigUserManifestVerified := False;
+  OrigUserWorkerVerified := False;
+  if (UserLocalAppDataPath = '') or (not IsValidUserLocalAppData(UserLocalAppDataPath)) then
+  begin
+    Log('261108_0002 (WS4) G3: no valid original-user LocalAppData; the engine store stays elevated-context only (same-account elevation or an unresolved profile).');
+    Exit;
+  end;
+  ElevatedEngineDir := ExpandConstant(COMMON_ENGINE_DIR);
+  OrigEngineDir := UserLocalAppDataPath + COMMON_STORE_SUFFIX + '\engine';
+  if SameText(OrigEngineDir, ElevatedEngineDir) then
+  begin
+    Log('261108_0002 (WS4) G3: the original-user engine store IS the elevated-context store (' +
+        OrigEngineDir + '); nothing extra to deploy.');
+    Exit;
+  end;
+  // Directory-chain refusal (log-only skip, matching the models path). The
+  // profile root itself is never re-tested (redirected/FSLogix profiles).
+  if SubtreeReparsePoint(UserLocalAppDataPath, COMMON_STORE_SUFFIX + '\engine') then
+  begin
+    LatchEngineStoreVerifyFailed('original-user deployment chain reparse refusal: ' + OrigEngineDir);
+    Log('261108_0002 (WS4) G3: reparse point in the original-user engine store chain; refusing the deployment (no write, no delete): ' + OrigEngineDir);
+    Exit;
+  end;
+  if not ForceDirectories(OrigEngineDir) then
+  begin
+    // 261108_0002 (FIX-R1, R1-06b): a refusal is surfaced, not just logged -
+    // the ssDone verification turns this flag into the loud MsgBox (the
+    // elevated-store path already had that visibility).
+    LatchEngineStoreVerifyFailed('original-user engine store could not be created: ' + OrigEngineDir);
+    Log('261108_0002 (WS4) G3: WARNING could not create the original-user engine store: ' + OrigEngineDir);
+    Exit;
+  end;
+
+  // Copy ONLY verified files. The parallel name/hash arrays keep the three
+  // files (and their verification bases) in one place without repeating the
+  // copy block; an empty hash means "verification unavailable" -> skip.
+  // (No Continue statements: Inno's Pascal Script dialect support for
+  // Continue is not exercised anywhere in this script, so the loop nests
+  // instead.)
+  // 261108_0002 (FIX-R1, R1-06): the per-file verdicts above are what the
+  // original-user records are gated on (OrigUserHostVerified /
+  // OrigUserWorkerVerified); a refusal or a failed copy also sets
+  // EngineStoreVerifyFailed so it is not silent.
+  SetArrayLength(Names, 3);
+  SetArrayLength(Hashes, 3);
+  Names[0] := ENGINE_HOST_FILENAME;
+  Hashes[0] := EngineBundledHashHost;
+  Names[1] := WORKER_FILENAME;
+  Hashes[1] := EngineBundledHashWorker;
+  Names[2] := WORKER_MANIFEST_FILENAME;
+  Hashes[2] := EngineBundledHashManifest;
+  for I := 0 to 2 do
+  begin
+    if Names[I] = ENGINE_HOST_FILENAME then
+      CopyWanted := EngineHostUpdated
+    else
+      CopyWanted := EngineWorkerUpdated;
+    if not CopyWanted then
+      Log('261108_0002 (WS4) G3: ' + Names[I] + ' was not verified this run; not deployed to the original-user store.')
+    else
+    begin
+      SrcPath := ElevatedEngineDir + '\' + Names[I];
+      DestPath := OrigEngineDir + '\' + Names[I];
+      // 261108_0002 (FIX-R4, MED-1a): a missing bundled hash must NOT withhold
+      // the engine upgrade from the store the app READS - that is the user's
+      // reported defect class (a stale engine after a successful install).
+      // Deploy anyway, say it is unverified, and stamp NOTHING: the record
+      // stays at its previous value, so the next run re-copies and re-verifies
+      // (self-healing) instead of keeping the stale binary under a fresh stamp.
+      if Hashes[I] = '' then
+        Log('261108_0002 (FIX-R4) MED-1a: no bundled hash for ' + Names[I] +
+            '; deploying UNVERIFIED anyway (the record is NOT advanced; the next run re-verifies).');
+      // 261108_0002 (FIX-R4, MEDIUM): write-time re-test immediately before
+      // the elevated FileCopy (the round-2 finding: CopyFileW follows a
+      // destination reparse point, so the check must be the last thing done).
+      if StoreWriteRefused('DeployOwnedEngineStoreForOriginalUser/pre-copy',
+                           UserLocalAppDataPath, DestPath) then
+      begin
+        // Refused write: never stamped, and reported (R1-06b).
+        Log('261108_0002 (WS4) G3: reparse point at the original-user destination (leaf included); refusing the copy: ' + DestPath);
+      end
+      else if FileCopy(SrcPath, DestPath, False) then
+      begin
+        Log('261108_0002 (WS4) G3: deployed ' + Names[I] + ' to the original-user engine store: ' + DestPath);
+        // The destination is the store the APP reads, so it is verified here
+        // too: a half-written user-store file must fail loudly, not silently.
+        if Hashes[I] = '' then
+          // MED-1a: deployed without a reference hash - nothing to compare and
+          // nothing to stamp (no defect claim: verification was unavailable).
+          Log('261108_0002 (FIX-R4) MED-1a: ' + Names[I] +
+              ' deployed UNVERIFIED (no bundled hash); its record is not advanced.')
+        else if EngineStoreFileStatus('original-user', OrigEngineDir, Names[I], Hashes[I]) = 1 then
+        begin
+          if Names[I] = ENGINE_HOST_FILENAME then
+            OrigUserHostVerified := True
+          else if Names[I] = WORKER_FILENAME then
+            OrigUserWorkerExeVerified := True
+          else
+            OrigUserManifestVerified := True;
+        end
+        else
+        begin
+          LatchEngineStoreVerifyFailed('original-user post-copy hash mismatch for ' + Names[I]);
+          Log('261108_0002 (FIX-R1) R1-06: the original-user copy of ' + Names[I] +
+              ' is NOT verified; its record will not be advanced.');
+        end;
+      end
+      else
+      begin
+        // Failed copy: no record for this file, and report it (R1-06a/b).
+        LatchEngineStoreVerifyFailed('original-user FileCopy failed for ' + Names[I]);
+        Log('261108_0002 (WS4) G3: WARNING could not copy ' + SrcPath + ' -> ' +
+            DestPath + '; its original-user record will not be advanced.');
+      end;
+    end;
+  end;
+  // The worker record covers the exe AND its manifest (the pair is what the
+  // orchestrator consumes), so it needs both verified copies.
+  OrigUserWorkerVerified := OrigUserWorkerExeVerified and OrigUserManifestVerified;
+
+  WriteOriginalUserEngineVersionFile(OrigEngineDir);
+  WriteOriginalUserComponentsFile(OrigEngineDir);
+  OriginalUserEngineDir := OrigEngineDir;
+  Log('261108_0002 (WS4) G3: original-user engine store deployment finished: ' + OrigEngineDir);
+end;
+
+// ------------------------------------------------------------------------
+// VerifyEngineStoreDeployment - 261108_0002 (WS4, item: post-install
+// verification). The ssDone twin of VerifyEngineOwnedStoreCopy: it re-hashes
+// the FINAL on-disk state of every owned engine store file (the
+// elevated-context store always, the original-user store when this run
+// deployed into it) and compares it with the bundled hashes captured at
+// ssPostInstall. No re-extraction is attempted here (the {tmp} copies are not
+// guaranteed to exist any more), so an unavailable bundled hash simply skips
+// that file.
+//
+// Sets EngineStoreVerifyFailed, which CurStepChanged surfaces as one loud
+// MsgBox - the pre-WS4 completion check only looked at unins000.exe, so a
+// store holding an old engine still reported a clean install.
+// ------------------------------------------------------------------------
+procedure VerifyEngineStoreDeployment();
+var
+  EngineDir: String;
+  Status: Integer;
+begin
+  EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
+  if EngineBundledHashHost = '' then
+    Log('261108_0002 (WS4): ssDone store verification skipped for the orchestrator (bundled hash unavailable).')
+  else
+  begin
+    Status := EngineStoreFileStatus('ssDone', EngineDir, ENGINE_HOST_FILENAME,
+                                    EngineBundledHashHost);
+    if Status = 2 then
+      LatchEngineStoreVerifyFailed('ssDone: elevated orchestrator defect');
+  end;
+  if (EngineBundledHashWorker = '') or (EngineBundledHashManifest = '') then
+    Log('261108_0002 (WS4): ssDone store verification skipped for the worker pair (bundled hash unavailable).')
+  else
+  begin
+    Status := EngineStoreFileStatus('ssDone', EngineDir, WORKER_FILENAME,
+                                    EngineBundledHashWorker);
+    if Status = 2 then
+      LatchEngineStoreVerifyFailed('ssDone: elevated worker exe defect');
+    Status := EngineStoreFileStatus('ssDone', EngineDir, WORKER_MANIFEST_FILENAME,
+                                    EngineBundledHashManifest);
+    if Status = 2 then
+      LatchEngineStoreVerifyFailed('ssDone: elevated worker manifest defect');
+  end;
+  if OriginalUserEngineDir <> '' then
+  begin
+    if EngineBundledHashHost <> '' then
+    begin
+      Status := EngineStoreFileStatus('ssDone-original-user', OriginalUserEngineDir,
+                                      ENGINE_HOST_FILENAME, EngineBundledHashHost);
+      if Status = 2 then
+        LatchEngineStoreVerifyFailed('ssDone-original-user: orchestrator defect');
+    end;
+    if (EngineBundledHashWorker <> '') and (EngineBundledHashManifest <> '') then
+    begin
+      Status := EngineStoreFileStatus('ssDone-original-user', OriginalUserEngineDir,
+                                      WORKER_FILENAME, EngineBundledHashWorker);
+      if Status = 2 then
+        LatchEngineStoreVerifyFailed('ssDone-original-user: worker exe defect');
+      Status := EngineStoreFileStatus('ssDone-original-user', OriginalUserEngineDir,
+                                      WORKER_MANIFEST_FILENAME, EngineBundledHashManifest);
+      if Status = 2 then
+        LatchEngineStoreVerifyFailed('ssDone-original-user: worker manifest defect');
+    end;
+  end
+  else
+    Log('261108_0002 (WS4): no original-user engine store was deployed this run; ssDone verifies the elevated-context store only.');
+  if EngineStoreVerifyFailed then
+    Log('261108_0002 (WS4) ERROR: the shared engine store does not hold the bundled binaries after install; the user is warned at ssDone.')
+  else
+    Log('261108_0002 (WS4): shared engine store verified against the bundled binaries.');
 end;
 
 // ------------------------------------------------------------------------
@@ -3896,6 +5403,16 @@ begin
       Log('M7 A-2: WARNING reparse point in the FINAL registry chain; registry.json not created (261029_0001 R2-1): ' + RegistryPath);
       Exit;
     end;
+    // 261108_0002 (FIX-R4, MEDIUM): write-time re-test at the last instant,
+    // for the target AND for the atomic writer's staging leaf
+    // (registry.json.tmp is a separate write that the target check cannot
+    // cover; SaveStringToFile would follow a planted link there).
+    if StoreWriteRefused('WriteRegistryFile/create-pre-write',
+                         StoreBase, RegistryPath) then
+      Exit;
+    if StoreWriteRefused('WriteRegistryFile/create-pre-write-tmp',
+                         StoreBase, RegistryPath + '.tmp') then
+      Exit;
     // DownloadModel normally ForceDirectories the same dir at ssPostInstall,
     // but it may exit early (consent declined); the fresh-create must not
     // depend on that side effect.
@@ -3978,6 +5495,14 @@ begin
     Log('M7 A-2: WARNING reparse point in the FINAL registry chain; merged registry.json not written; previous document left intact at: ' + RegistryPath);
     Exit;
   end;
+  // 261108_0002 (FIX-R4, MEDIUM): last-instant re-test (target + the atomic
+  // writer's staging leaf).
+  if StoreWriteRefused('WriteRegistryFile/merge-pre-write',
+                       StoreBase, RegistryPath) then
+    Exit;
+  if StoreWriteRefused('WriteRegistryFile/merge-pre-write-tmp',
+                       StoreBase, RegistryPath + '.tmp') then
+    Exit;
   if WriteTextFileAtomic(RegistryPath, JsonBuildRegistryDoc(Merged)) then
     Log('M7 A-2: registry.json merged (' + IntToStr(MergedCount) +
         ' item(s), bundled slot ' + SlotNote + '): ' + RegistryPath)
@@ -4083,7 +5608,13 @@ begin
     // REQ-043: when the engine-version compare says this run replaces the
     // shared host, stop a running instance first so the [Files] copy cannot
     // hit a locked exe. Best-effort; the Check re-evaluates the same rule.
-    if ShouldInstallEngineHost() then
+    // 261108_0002 (WS4, audit gap G6): the worker/manifest slot can need
+    // replacement on its own (manifest repair, worker-only revision), and a
+    // live worker holding its exe is just as fatal for the copy - so the stop
+    // now runs when EITHER owned slot is scheduled for replacement. Both
+    // Checks are pure reads (they only latch the same flags the [Files] Checks
+    // latch anyway).
+    if ShouldInstallEngineHost() or ShouldInstallEngineWorker() then
       StopRunningEngineHost();
   end;
   if CurStep = ssPostInstall then
@@ -4114,6 +5645,14 @@ begin
     // documents are fail-closed PRESERVED, never overwritten.
     WriteRegistryFile();
     CreateConfigFile();
+    // 261108_0002 (WS4, audit gap G2): verify the owned engine store copies
+    // FIRST - this RE-LATCHES EngineHostUpdated/EngineWorkerUpdated from the
+    // verified on-disk bytes, so no version record below can describe a copy
+    // that did not land. Then deploy the verified binaries + records into the
+    // ORIGINAL-user store (audit gap G3: that is the store the running app
+    // reads), and only then stamp the elevated-context records.
+    VerifyEngineOwnedStoreCopy();
+    DeployOwnedEngineStoreForOriginalUser();
     // REQ-043 + REQ-006/M6: stamp the v1 engine.version (frozen contract) and
     // the v2 components.json in parallel (design §6.3).
     WriteEngineVersionFile();
@@ -4150,6 +5689,15 @@ begin
       UninstallGuardFailed := True;
     end;
 
+    // 261108_0002 (WS4, item 7): completion verification of the SHARED ENGINE
+    // store. The pre-WS4 completion check only looked at unins000.exe, so a
+    // store still holding the old engine (failed copy, locked file, refused
+    // reparse chain) reported a perfectly clean install - the user's report.
+    // Every owned engine file is re-hashed against the bundled bytes captured
+    // at ssPostInstall; any missing/mismatched file sets EngineStoreVerifyFailed
+    // and is surfaced below.
+    VerifyEngineStoreDeployment();
+
     // REQ-045 (P4-2, item 4) + REQ-047 D4: surface one aggregated warning
     // to the user if any guard in the chain failed. MsgBox at ssDone is
     // acceptable because install has completed; a blocking popup during
@@ -4161,6 +5709,18 @@ begin
       MsgBox('Warning: the uninstaller registration could not be verified (unins000.exe missing).' + #13#10 +
              'You may not be able to remove this app from Settings > Apps.' + #13#10 +
              'Please re-run the installer to repair.',
+             mbError, MB_OK);
+
+    // 261108_0002 (WS4, item 7): the engine-store failure gets its OWN loud
+    // box. Re-running the installer is the remedy in every case (the owned
+    // decision is replace-if-different, so a rerun re-copies the store), and
+    // the log carries the per-file SHA-256 detail.
+    if EngineStoreVerifyFailed then
+      MsgBox('Warning: the shared Emebala engine could not be verified after this install.' + #13#10 +
+             'The installed engine or its manifest does not match this version, so Emebala Chat may' + #13#10 +
+             'keep using the previous engine.' + #13#10 +
+             'Please re-run this installer to repair. If the problem persists, close any running' + #13#10 +
+             'Emebala app (or reboot) and install again.',
              mbError, MB_OK);
   end;
 end;
@@ -4277,9 +5837,17 @@ begin
   // needs the same write-time reparse guard as the install side. Refusing here
   // preserves EVERYTHING (the fail-closed direction this contract already
   // uses for a damaged registry); a junction is not a legitimate store state.
-  if SubtreeReparsePoint(ExpandConstant('{localappdata}'), COMMON_STORE_SUFFIX) then
+  // 261108_0002 (FIX-R4, round-2 HIGH-2): the pre-FIX-R4 guard walked only the
+  // PREFIXES of `\Emebala\Common`, so a junction planted AT the `engine` or
+  // `models` child (or at any file name below them) was never tested - and the
+  // 12 DeleteOwnedFile targets plus the models bundled-file loop would then
+  // resolve into an attacker-chosen directory with the elevated token, with no
+  // race required. StoreTreeRefused covers the root, both children AND every
+  // descendant; a hit preserves the ENTIRE store (same fail-closed direction as
+  // a damaged registry).
+  if StoreTreeRefused('CleanupSharedEngineStore', CommonDir) then
   begin
-    Log('M7 A-3: reparse point in the shared store chain; the ENTIRE shared store is preserved (261029_0001 R2-1).');
+    Log('M7 A-3: reparse point in the shared store tree (root, engine/models child or descendant); the ENTIRE shared store is preserved (261108_0002 FIX-R4 HIGH-2).');
     Exit;
   end;
 
@@ -4454,8 +6022,14 @@ begin
       // arbitrary-tree delete. Refuse up front - before the prompt, so the user
       // is never asked a question whose answer would be ignored - and keep the
       // log honest about why nothing was removed.
-      if SubtreeReparsePoint(ExpandConstant('{localappdata}'), '\Emebalachat') then
-        Log('INSTALLER/CurUninstallStepChanged/001: reparse point at the user-data path; the elevated cleanup is refused and the directory is left untouched (261029_0001 R3 F-R3-01): ' + LocalAppData)
+      // 261108_0002 (FIX-R4, round-2 MED-3): the round-3 guard tested only the
+      // chain down to `\Emebalachat`; a junction planted at ANY DESCENDANT
+      // (e.g. settings) would be walked by DelTree. DirTreeHasReparsePoint
+      // refuses on any descendant link, so the delete is skipped entirely
+      // (fail-closed: the user's data is preserved, the log says why).
+      if SubtreeReparsePoint(ExpandConstant('{localappdata}'), '\Emebalachat') or
+         DirTreeHasReparsePoint(LocalAppData) then
+        Log('INSTALLER/CurUninstallStepChanged/001: reparse point at the user-data path or any descendant; the elevated cleanup is refused and the directory is left untouched (261029_0001 R3 F-R3-01 / 261108_0002 FIX-R4 MED-3): ' + LocalAppData)
       else if SuppressibleMsgBox(CustomMessage('UninstallCleanupPrompt'),
                             mbConfirmation, MB_YESNO, IDNO) = IDYES then
       begin

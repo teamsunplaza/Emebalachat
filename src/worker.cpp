@@ -6,7 +6,10 @@
 #include "win32_input.hpp"
 
 #include <cstdio>
+#include <exception>
+#include <new>        // 261108_0002 (FIX-R1): std::bad_alloc for the shape-only callback failure class
 #include <optional>
+#include <stdexcept>  // 261108_0002 (FIX-R1): std::length_error/logic_error/runtime_error classification
 
 namespace emebalachat {
 
@@ -192,6 +195,10 @@ PipelineWorker::PipelineWorker(AppConfig& config, TranslationManager& engine, Fl
 
 PipelineWorker::~PipelineWorker() {
     Stop();
+}
+
+void PipelineWorker::SetBackTranslateCallback(BackTranslateCallback cb) {
+    back_translate_cb_ = std::move(cb);
 }
 
 void PipelineWorker::Start() {
@@ -634,6 +641,66 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                      pasted_prefix_text.size(), untranslated_tail.size());
         }
     }
+    // 261108_0002 (WS2) item 4: same-line target-language prefix splitter.
+    // The user report: after a first translation the user keeps typing in the
+    // SAME input box, so ONE logical line becomes [translated text][newly
+    // typed source text]. FindCurrentBlockStart only splits on line breaks,
+    // and ShouldTranslate(line) sees a mixed-script line whose dominant script
+    // is the TARGET one - so the whole line was smart-bypassed and the
+    // appended sentences were never translated. This seam splits the line at
+    // a deterministic boundary (sentence terminator / emoji / shortcode /
+    // zero-width / ellipsis), keeps the leading target-language run verbatim
+    // and sends only the source-script suffix to the engine.
+    //
+    // Guards (all must hold; each one keeps a pre-WS2 behavior intact):
+    //   - the F3 slice left NO tail (a real ledger/block tail always wins:
+    //     it is a proven byte boundary, this splitter is a heuristic one);
+    //   - NOT an ExactMatch ledger verdict (that capture is our own output;
+    //     splitting it would translate our own translation).
+    // The empty-block arm returned above, and the splitter itself refuses
+    // multi-line captures and an AUTO/unknown target (fail open to the legacy
+    // whole-line path), so this seam only adds a boundary F3 could not see.
+    if (!line.empty() && !pasted_prefix_skip &&
+        untranslated_tail.empty() && ledger_verdict != PasteLedgerVerdict::ExactMatch) {
+        const std::uint32_t target_script_mask =
+            ScriptMaskForLanguageCode(NormalizeLanguageCode(snap.type_target_language));
+        const SameLinePrefixSplit same_line =
+            SplitSameLineTargetPrefix(line, target_script_mask);
+        if (same_line.split) {
+            pasted_prefix_text.assign(line, 0, same_line.prefix_len);
+            untranslated_tail.assign(line, same_line.prefix_len,
+                                     line.size() - same_line.prefix_len);
+            DIAG_LOG("PIPELINE", "stage=same_line_split capture_len=%zu prefix_len=%zu tail_len=%zu target_mask=%u",
+                     line.size(), pasted_prefix_text.size(), untranslated_tail.size(),
+                     static_cast<unsigned int>(target_script_mask));
+        }
+    }
+    // 261108_0002 (WS2) item 1: the ledger/block split leaves the separator
+    // space at the FRONT of the tail (CanonicalFormForLedger trims trailing
+    // whitespace only, so "<ledger> :laughing: ..." splits into
+    // " :laughing: ..."). The engine must not receive that leading space.
+    // The ORIGINAL first character is recorded first: the recomposition below
+    // (item 5) inserts the boundary space between prefix and translation based
+    // on it, and trimming must not change that verdict.
+    const bool tail_had_leading_ws =
+        !untranslated_tail.empty() && IsSameLineBoundarySpace(untranslated_tail.front());
+    const std::wstring tail_for_engine =
+        untranslated_tail.empty() ? std::wstring() : TrimLeadingHorizontalSpace(untranslated_tail);
+    // 261108_0002 (WS2) item 2: tail-level smart-bypass re-evaluation. The
+    // whole-line flag (was_smart_bypassed, above) keeps its existing
+    // semantics for every consumer that predates WS2 (ExactMatch skip, the
+    // empty-capture gates, the DIAG lines, the identity-outcome predicate).
+    // The TRANSLATION decision, however, must judge the text the engine will
+    // actually receive: a target-dominant line whose appended tail is in the
+    // source language is "already target language" as a WHOLE line, yet the
+    // tail itself is exactly what the user wants translated. Computed only
+    // when a tail exists; the empty-tail case keeps the whole-line verdict
+    // byte-identical.
+    const bool tail_smart_bypassed =
+        !tail_for_engine.empty() &&
+        !ShouldTranslate(tail_for_engine, snap.type_target_language, snap.type_source_language);
+    const bool translate_decision_bypassed =
+        untranslated_tail.empty() ? was_smart_bypassed : tail_smart_bypassed;
     // REQ-042 (session 260917_0002, 사용자 Reddit 현장 검증 후속): the
     // tail-unchanged short-circuit. On the REQ-041-capped arm (dead ledger +
     // NoMatch -> k_eff=0) the block is the capture's last logical line; when
@@ -721,7 +788,11 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // against clearing on non-EM CategoryB ExactMatch).
         return;
     }
-    const bool should_translate = !line.empty() && !was_smart_bypassed;
+    // 261108_0002 (WS2) item 2: the translation decision reads the TAIL-level
+    // bypass when a tail exists (see the tail_smart_bypassed computation
+    // above). With an empty tail translate_decision_bypassed IS
+    // was_smart_bypassed, so every pre-WS2 arm is byte-identical.
+    const bool should_translate = !line.empty() && !translate_decision_bypassed;
     DIAG_F("WORKER/ExecuteTask/034: captured %zu chars, should_translate=%d\n",
             line.size(), should_translate ? 1 : 0);
     // REQ-051 (symptom A-2): a non-empty capture is the recovery signal for
@@ -739,10 +810,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // empty_selection / empty_tail / editor_excluded) names the cause,
     // which is exactly what made the Reddit long-post incident
     // undiagnosable from the user's description alone.
-    DIAG_LOG("PIPELINE", "stage=bypass_decision smart_bypass=%d should_translate=%d reason=%s",
+    // 261108_0002 (WS2) item 2: the trailing tail_bypass= field names the
+    // gate that actually decided when a tail exists (0 = no tail, the
+    // whole-line flag owns the decision; 1 = tail-level re-evaluation ran).
+    // Appended AFTER reason= so every existing log parser keeps its match.
+    DIAG_LOG("PIPELINE", "stage=bypass_decision smart_bypass=%d should_translate=%d reason=%s tail_bypass=%d",
              was_smart_bypassed ? 1 : 0, should_translate ? 1 : 0,
              line.empty() ? EnterCaptureResultName(capture_result)
-                          : (was_smart_bypassed ? "already_target_language" : "translate"));
+                          : (translate_decision_bypassed ? "already_target_language" : "translate"),
+             untranslated_tail.empty() ? 0 : (tail_smart_bypassed ? 1 : 0));
 
     // R5 (Debug-Surgical): the bare-Enter path's empty capture is no longer
     // silent. Gate-11 evidence (R5 report section 2.2): CopySelectedText
@@ -905,6 +981,38 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                              "duration_ms=%llu",
                  line.empty() ? "empty_capture_no_notice" : "smart_bypass",
                  ::GetTickCount64() - t_task_start);
+        // 261108_0002 (WS2) item 3: ledger re-anchor on a smart-bypassed
+        // Enter after a prior paste. The reported sequence: the user typed
+        // ":laughing:", the editor's emoji popup opened, and the Enter that
+        // ACCEPTED the popup was intercepted here (punctuation/emoji carries
+        // no linguistic content, so the whole line is smart-bypassed). That
+        // Enter deposited the shortcode/emoji into the input, so the live
+        // text no longer matched the remembered ledger END; the next Enter
+        // (after the user typed Korean) then carried the shortcode in its
+        // tail and shipped it to the engine. Re-anchoring here keeps the
+        // memory pointing at the text that is actually live, so the next
+        // capture's tail is only the newly typed text.
+        //
+        // Guards: a ledger must exist for THIS window, and the capture must
+        // still START with it (strict canonical byte prefix, ADR-001 - no
+        // fuzzy matching). A capture that already diverged is left alone; the
+        // existing self-invalidation then routes the next Enter to F3.
+        // This arm RETURNS below, so the task-end ledger-maintenance block
+        // (which clears on cross-window / empty-ledger shapes) never runs
+        // here - the re-anchor is the only ledger action on this path.
+        if (!line.empty() && last_paste_target_ == task.target_hwnd &&
+            !last_paste_canonical_.empty()) {
+            const std::wstring line_canonical_reanchor = CanonicalFormForLedger(line);
+            if (line_canonical_reanchor.size() >= last_paste_canonical_.size() &&
+                line_canonical_reanchor.compare(0, last_paste_canonical_.size(),
+                                                last_paste_canonical_) == 0) {
+                DIAG_LOG("PIPELINE", "stage=ledger_maint decision=reanchor reason=smart_bypass_after_paste target=%p old_len=%zu new_len=%zu",
+                         reinterpret_cast<const void*>(task.target_hwnd),
+                         last_paste_canonical_.size(), line_canonical_reanchor.size());
+                last_paste_text_ = line;
+                last_paste_canonical_ = line_canonical_reanchor;
+            }
+        }
         // BUG-005: the smart-bypass arm is a send-through terminal that can be
         // reached with a live rescue-captured whole-document selection (all
         // capture scripts already in the target language). Same identity-
@@ -929,7 +1037,11 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // compounding defect was the whole capture re-entering translation),
     // and the paste recomposes prefix + tail translation so the whole-input
     // selection geometry is still fully covered by the replacement.
-    const std::wstring& engine_input = untranslated_tail.empty() ? line : untranslated_tail;
+    // 261108_0002 (WS2) item 1: the tail reaches the engine WITHOUT the
+    // separator whitespace the ledger/block split left at its front
+    // (tail_for_engine, computed next to the split). With an empty tail this
+    // is `line` exactly as before.
+    const std::wstring& engine_input = untranslated_tail.empty() ? line : tail_for_engine;
     // PIPE-1 (session 261104_0001, handoff section 2.1): the Enter pipeline
     // used to hand the engine the raw snap.type_source_language, which under
     // the default config is the "Auto Detect" marker. ShouldTranslate (above)
@@ -958,16 +1070,31 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     const ULONGLONG t_translate_start = ::GetTickCount64();
     std::wstring translated =
         NormalizeNewlinesToCRLF(engine_.Translate(engine_input, resolved_engine_src, snap.type_target_language, &status));
+    const bool back_translate_armed = snap.back_translation_enabled && back_translate_cb_;
+    std::wstring back_translate_forward_text;
+    if (untranslated_tail.empty() && back_translate_armed) {
+        back_translate_forward_text = translated;
+    }
     if (!untranslated_tail.empty() && !translated.empty()) {
         // Recompose: [remembered verbatim prefix][tail translation]. The
         // pasted result must equal the full input span so the selection is
         // wholly consumed by Ctrl+V (same guarantee as the normal path).
+        // 261108_0002 (WS2) item 5: the boundary-space verdict reads
+        // tail_had_leading_ws - the ORIGINAL first character of the tail -
+        // because the engine input is now trimmed (item 1). Reading the
+        // trimmed string here would silently drop the separator space the
+        // user typed between the two sentences.
         auto is_ws = [](wchar_t c) { return c == L' ' || c == L'\n' || c == L'\r' || c == L'\t'; };
         if (!pasted_prefix_text.empty() && !is_ws(pasted_prefix_text.back()) &&
             !translated.empty() && !is_ws(translated.front()) &&
-            !untranslated_tail.empty() && is_ws(untranslated_tail.front())) {
+            tail_had_leading_ws) {
             translated.insert(translated.begin(), L' ');
             DIAG_F("WORKER: Added boundary whitespace between prefix and translation\n");
+        }
+        // 261108_0002 (WS3): keep the translated segment only, before the
+        // verbatim prefix is prepended; no copy occurs when the seam is off.
+        if (back_translate_armed) {
+            back_translate_forward_text = translated;
         }
         translated.insert(translated.begin(), pasted_prefix_text.begin(), pasted_prefix_text.end());
     }
@@ -1132,6 +1259,38 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             // live caret sits at exactly this offset proves "no edit since
             // the paste" and promotes to send-of-output instead of hold_send.
             last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);
+            if (snap.back_translation_enabled && back_translate_cb_) {
+                // 261108_0002 (WS3): this pipeline-thread callback must stay non-blocking; main.cpp marshals the job.
+                const BackTranslateRequest request{engine_input, back_translate_forward_text,
+                                                   snap.type_target_language, resolved_engine_src,
+                                                   snap.type_source_language, task.target_hwnd};
+                try {
+                    back_translate_cb_(request);
+                } catch (const std::exception& e) {
+                    // 261108_0002 (FIX-R1, v0.10.6): SHAPE-ONLY. This is the
+                    // unconditional stderr channel, and e.what() is free-form
+                    // text (a std::filesystem_error prints a path, a
+                    // std::length_error prints a size), so the message never
+                    // belongs here. Log the failure CLASS instead - typeid-free,
+                    // just dynamic_cast against the standard bases a callback
+                    // can realistically throw. The try/catch boundary is
+                    // unchanged; only the payload of the log is narrowed.
+                    const char* failure_class = "std_exception";
+                    if (dynamic_cast<const std::bad_alloc*>(&e) != nullptr) {
+                        failure_class = "bad_alloc";
+                    } else if (dynamic_cast<const std::length_error*>(&e) != nullptr) {
+                        failure_class = "length_error";
+                    } else if (dynamic_cast<const std::logic_error*>(&e) != nullptr) {
+                        failure_class = "logic_error";
+                    } else if (dynamic_cast<const std::runtime_error*>(&e) != nullptr) {
+                        failure_class = "runtime_error";
+                    }
+                    DIAG_F("WORKER/ExecuteTask/055: back-translate callback threw class=%s\n",
+                           failure_class);
+                } catch (...) {
+                    DIAG_F("WORKER/ExecuteTask/056: back-translate callback threw unknown exception\n");
+                }
+            }
             // BUG-004 F2 (debug analysis 020300 §7, user approval decisions.md
             // 23:05): after the rescue's whole-document paste-back the
             // editor/browser owns the landing - the user saw a lingering

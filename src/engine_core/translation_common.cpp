@@ -207,6 +207,12 @@ std::vector<std::wstring_view> SplitOutputTokens(std::wstring_view text) {
     return tokens;
 }
 
+// WS1 (261108_0002): defined in the gate-helper block further down (same
+// anonymous namespace). IsWrongScriptOutput sits between the two blocks and
+// uses it for the leak-dominance count.
+std::size_t CountUnexpectedScriptCodePoints(std::wstring_view text,
+                                            std::uint32_t allowed_mask);
+
 // R1-1 meta-leakage table. Line-start needles are the shapes that only appear
 // as an ANSWER PREFIX (label lines, assistant openers); anywhere needles are
 // refusal phrasing that cannot sit inside a real translation without the source
@@ -292,6 +298,33 @@ constexpr MetaLeakageNeedle kMetaLeakageNeedles[] = {
     {L"对不起", true, true, true},
     {L"抱歉", true, true, true},
     {L"有什么可以帮您", true, true, true},
+    // WS1 (261108_0002, WS1-gates): DIALOGUE-ROLE and BRAND leakage - the
+    // single-word hallucination chain the user report nailed down.
+    //   * "<role>:" follows the colon-LABEL semantics of the language-label
+    //     entries above: line-start only (after leading spaces/tabs), and
+    //     exempted by the R2-7 translated-label rule, so "모델: GPT-4" ->
+    //     "Model: GPT-4" stays content. "user:" / "system:" are reject-only
+    //     values on purpose: StripLeadingRoleHeader does NOT salvage them - a
+    //     turn from a role other than the assistant means the model continued
+    //     a conversation the app never started, and only "assistant"/"model"/
+    //     "ai"/"bot" can be a leaked header in front of a real answer.
+    //   * "<|im_start|>" / "<|im_end|>" are ANYWHERE needles: a turn marker is
+    //     never content, and it follows an answer as often as it leads one.
+    //   * "emebala" / "이메발라" are ANYWHERE needles because the invented
+    //     provenance sits mid-sentence ("이 문서는 Emebala의 출처를 기반으로
+    //     작성되었습니다"). "emebala_source" is already subsumed by "emebala"
+    //     and stays explicit so the fence token the prompt used to expose
+    //     remains greppable. The source guard below still exempts a user who
+    //     literally typed any of these.
+    {L"assistant:", true, false, false},
+    {L"user:", true, false, false},
+    {L"system:", true, false, false},
+    {L"model:", true, false, false},
+    {L"<|im_start|>", false, false, false},
+    {L"<|im_end|>", false, false, false},
+    {L"emebala", false, false, false},
+    {L"emebala_source", false, false, false},
+    {L"이메발라", false, false, false},
 };
 
 } // namespace
@@ -339,16 +372,39 @@ bool IsWrongScriptOutput(std::wstring_view output, std::wstring_view source,
     if (tgt_script_classes == 0) {
         return false; // unknown/AUTO target: never guess
     }
-    if (CountCodePoints(output) <= kWrongScriptMinOutputCodePoints) {
+    const std::size_t output_cp = CountCodePoints(output);
+    if (output_cp <= kWrongScriptMinOutputCodePoints) {
         return false; // a two-character answer is below the gate's floor
-    }
-    if ((TextScriptClasses(output) & tgt_script_classes) != 0) {
-        return false; // target script present -> answered in the right language
     }
     // The gate only fires when the SOURCE carried a script the target does not
     // use. Pure digits/symbols ("12345") therefore pass this rule: there is no
     // language signal to be wrong about (their loops are caught by repetition).
-    return (TextScriptClasses(source) & ~tgt_script_classes) != 0;
+    const std::uint32_t source_classes = TextScriptClasses(source);
+    const std::uint32_t foreign_classes = source_classes & ~tgt_script_classes;
+    if ((TextScriptClasses(output) & tgt_script_classes) != 0) {
+        // R1-1: target script present -> answered in the right language.
+        // WS1 (261108_0002, WS1-gates): EXCEPT the leak-dominance shape. One
+        // embedded target-script word is not proof of a translation: the live
+        // repro is a Korean source answered with 58 Hangul code points plus the
+        // untranslated English word "astrology" for an English target, which
+        // shipped as status=ok because this early exit saw "Latin present".
+        // Reject when the source carried a real word's worth of the other
+        // script (>= kWrongScriptLeakMinSourceCodePoints) and the output still
+        // retains at least kWrongScriptLeakRetainedPercent of it.
+        if (foreign_classes == 0) {
+            return false; // nothing was supposed to be translated away
+        }
+        const std::size_t foreign_source_cp =
+            CountUnexpectedScriptCodePoints(source, tgt_script_classes);
+        if (foreign_source_cp < kWrongScriptLeakMinSourceCodePoints) {
+            return false; // too little foreign text to establish dominance
+        }
+        const std::size_t retained_cp =
+            CountUnexpectedScriptCodePoints(output, tgt_script_classes);
+        return static_cast<long long>(retained_cp) * 100 >=
+               static_cast<long long>(foreign_source_cp) * kWrongScriptLeakRetainedPercent;
+    }
+    return foreign_classes != 0;
 }
 
 namespace {
@@ -456,6 +512,238 @@ std::size_t CountUnexpectedScriptCodePoints(std::wstring_view text,
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// WS1 (261108_0002, WS1-gates): DECODE-SIDE normalisation. The user report's
+// decode cause #1 lives here (the prompt/detection causes were fixed in
+// config.cpp / smart_bypass.cpp by another unit): a leaked assistant/dialogue
+// header wrapped around a real answer ("assistant: 사이버",
+// "<|assistant|>\n사이버"). The header is garbage, the answer may not be:
+// stripping it BEFORE the rung acceptance compares lets the remainder be judged
+// on its own merits instead of being rejected as meta leakage.
+// Pure (no llama types), so the no-llama build keeps it and the unit suite pins
+// it headlessly.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// ASCII whitespace trim over a UTF-8 view. Trimming only ASCII bytes is safe in
+// UTF-8: every continuation byte is >= 0x80, so a multi-byte sequence can never
+// be cut in half.
+std::string_view TrimAsciiWhitespaceView(std::string_view text) {
+    size_t begin = 0;
+    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' ||
+                                   text[begin] == '\r' || text[begin] == '\n')) {
+        ++begin;
+    }
+    size_t end = text.size();
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' ||
+                           text[end - 1] == '\r' || text[end - 1] == '\n')) {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+std::string_view TrimAsciiLeadingWhitespaceView(std::string_view text) {
+    size_t begin = 0;
+    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' ||
+                                   text[begin] == '\r' || text[begin] == '\n')) {
+        ++begin;
+    }
+    return text.substr(begin);
+}
+
+char FoldAsciiCaseByte(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// Case-insensitive (ASCII) prefix test over UTF-8 bytes. Folding an ASCII byte
+// can never make it equal a byte >= 0x80, so non-ASCII text never matches.
+bool StartsWithAsciiNoCase(std::string_view text, std::string_view prefix) {
+    if (text.size() < prefix.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (FoldAsciiCaseByte(text[i]) != FoldAsciiCaseByte(prefix[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// WS1: emoji :shortcode: shape (^:[A-Za-z0-9_+-]+:). The leading-colon stripper
+// must never eat one - ":laughing: 하하" is an emoji answer, not a stray ChatML
+// ':' token.
+bool StartsWithEmojiShortcode(std::string_view text) {
+    if (text.size() < 3 || text.front() != ':') {
+        return false;
+    }
+    size_t i = 1;
+    while (i < text.size()) {
+        const char c = text[i];
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '_' || c == '+' || c == '-';
+        if (!allowed) {
+            break;
+        }
+        ++i;
+    }
+    return i > 1 && i < text.size() && text[i] == ':';
+}
+
+// WS1: code points that make a source "not a word". ASCII punctuation plus the
+// CJK/fullwidth punctuation a Korean/Chinese/Japanese input actually carries. A
+// false "not a word" only makes the structural gate fail OPEN (no rejection),
+// so a cheap range set is enough - no Unicode category scan.
+bool IsWordPunctuation(wchar_t c) {
+    if (c >= 0x21 && c <= 0x2F) return true; // ! " # $ % & ' ( ) * + , - . /
+    if (c >= 0x3A && c <= 0x40) return true; // : ; < = > ? @
+    if (c >= 0x5B && c <= 0x60) return true; // [ \ ] ^ _ `
+    if (c >= 0x7B && c <= 0x7E) return true; // { | } ~
+    if (c >= 0x3000 && c <= 0x303F) return true; // CJK symbols/punctuation (+ ideographic space)
+    if (c >= 0xFF00 && c <= 0xFF65) return true; // fullwidth ASCII forms + halfwidth CJK punctuation
+    switch (c) {
+        case 0x00AB: case 0x00BB:              // « »
+        case 0x2013: case 0x2014:              // - (en/em dash forms)
+        case 0x2018: case 0x2019:              // curly single quotes
+        case 0x201C: case 0x201D:              // curly double quotes
+        case 0x2026: case 0x00B7: case 0x30FB: // ellipsis, middle dot, katakana middle dot
+            return true;
+        default:
+            return false;
+    }
+}
+
+// WS1: the numbered / bullet opener a one-word answer must never have
+// ("1.", "1)", "1、", "- ...", "* ..."). A digit run followed by a list
+// terminator, or a bullet character followed by whitespace/digit.
+bool StartsWithListMarker(std::wstring_view text) {
+    if (text.empty()) {
+        return false;
+    }
+    const wchar_t first = text.front();
+    if (first == L'-' || first == L'*' || first == L'\u2022' || first == L'\u00B7' ||
+        first == L'\u30FB') {
+        return text.size() == 1 || text[1] == L' ' || text[1] == L'\t' ||
+               (text[1] >= L'0' && text[1] <= L'9');
+    }
+    if (first < L'0' || first > L'9') {
+        return false;
+    }
+    size_t i = 0;
+    while (i < text.size() && text[i] >= L'0' && text[i] <= L'9') {
+        ++i;
+    }
+    if (i >= text.size()) {
+        return false;
+    }
+    const wchar_t terminator = text[i];
+    return terminator == L'.' || terminator == L')' || terminator == L'\uFF09' ||
+           terminator == L'\u3001' || terminator == L'\uFF0E';
+}
+
+// WS1: the sentence terminator that closes a one-word "explanation" (ASCII
+// period/exclamation plus the CJK full stop and fullwidth exclamation),
+// ignoring trailing whitespace and closing quotes/brackets.
+bool EndsWithSentenceTerminator(std::wstring_view text) {
+    const std::wstring_view trimmed = TrimOutputSpace(text);
+    size_t end = trimmed.size();
+    while (end > 0) {
+        const wchar_t c = trimmed[end - 1];
+        if (c != L'"' && c != L'\'' && c != L'\u201D' && c != L'\u2019' &&
+            c != L'\u300D' && c != L'\u300F' && c != L')' && c != L'\uFF09') {
+            break;
+        }
+        --end;
+    }
+    if (end == 0) {
+        return false;
+    }
+    const wchar_t last = trimmed[end - 1];
+    return last == L'.' || last == L'!' || last == L'\u3002' || last == L'\uFF01';
+}
+
+// WS1: whitespace-token count of an output (the ">= 3 words" clause of the
+// structural gate). Reuses the gate's own tokenizer so the two rules can never
+// disagree about what a word is.
+int CountWhitespaceTokens(std::wstring_view text) {
+    return static_cast<int>(SplitOutputTokens(text).size());
+}
+
+} // namespace
+
+bool StripLeadingRoleHeader(std::string& text, std::string_view source) {
+    // The prefixes are the roles a translator turn can be attributed to. "user"
+    // and "system" are deliberately ABSENT: those are rejected as meta leakage
+    // (kMetaLeakageNeedles) instead of salvaged - a turn from another role is a
+    // conversation continuation, not a header in front of a real answer.
+    static constexpr std::string_view kRolePrefixes[] = {
+        "assistant:", "model:", "ai:", "bot:", "<|assistant|>",
+    };
+    const std::string_view view = TrimAsciiLeadingWhitespaceView(text);
+    if (view.empty()) {
+        return false;
+    }
+    const std::string_view src_view = TrimAsciiLeadingWhitespaceView(source);
+    for (const std::string_view prefix : kRolePrefixes) {
+        if (!StartsWithAsciiNoCase(view, prefix)) {
+            continue;
+        }
+        // Source guard (repo idiom, same rule as StripEndOfConversationMarkers
+        // and HasMetaLeakage): text the SOURCE itself begins with is content,
+        // never a leaked header.
+        if (!src_view.empty() && StartsWithAsciiNoCase(src_view, prefix)) {
+            return false;
+        }
+        // R2-7 label guard: when the source's first line carries its own colon
+        // label, a leading target-language label is that label TRANSLATED
+        // ("모델: GPT-4" -> "Model: GPT-4") and must survive verbatim.
+        if (!src_view.empty()) {
+            const std::wstring src_w = ToUtf16(std::string(src_view));
+            const std::wstring_view src_first_line =
+                std::wstring_view(src_w).substr(0, src_w.find(L'\n'));
+            if (LineStartsWithColonLabel(src_first_line)) {
+                return false;
+            }
+        }
+        // The header's own trailing separator goes with it: horizontal
+        // whitespace always, and the line break of the "<|assistant|>\n<answer>"
+        // marker form (the ladder already trimmed the string, so any leading
+        // whitespace left here belongs to the header).
+        size_t cut = prefix.size();
+        while (cut < view.size() && (view[cut] == ' ' || view[cut] == '\t' ||
+                                     view[cut] == '\r' || view[cut] == '\n')) {
+            ++cut;
+        }
+        const size_t leading = static_cast<size_t>(view.data() - text.data());
+        text.erase(0, leading + cut);
+        return true;
+    }
+    return false;
+}
+
+bool IsUntranslatedEchoPrefix(std::wstring_view prefix, std::wstring_view source,
+                              std::uint32_t tgt_script_classes) {
+    const std::uint32_t source_scripts = TextScriptClasses(source);
+    const std::uint32_t must_translate = source_scripts & ~tgt_script_classes;
+    if (must_translate != 0 && must_translate == source_scripts) {
+        return true; // script-homogeneous source: exact tracking can only be copying
+    }
+    const std::size_t untranslated_prefix_cp =
+        CountUnexpectedScriptCodePoints(prefix, tgt_script_classes);
+    return untranslated_prefix_cp != 0;
+}
+
+bool ShouldStripLeadingColon(std::string_view output, std::string_view source) {
+    if (output.empty() || output.front() != ':') {
+        return false;
+    }
+    const std::string_view src_lead = TrimAsciiLeadingWhitespaceView(source);
+    if (!src_lead.empty() && src_lead.front() == ':') {
+        return false; // the user's own leading colon is content
+    }
+    return !StartsWithEmojiShortcode(output);
+}
 
 bool HasRepeatedLineOrTokenRun(std::wstring_view text, std::wstring_view source) {
     // Rule A (R2-6): a non-empty trimmed line repeated kRepeatedLineMinCount
@@ -742,25 +1030,86 @@ bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view sou
     if (IsPureRepetitionSource(source)) {
         return output_cp >= kAmplifiedRepetitionOutputMinCodePoints;
     }
-    // RC-2 (v0.10.5 handoff section 2.3): two-tier guard. Tier 1 (1-4 code
-    // points): the flat floor drops 64 -> 32 AND gains a 10x ratio, so a
-    // 63-character answer to a 4-character word is now rejected. Tier 2
-    // (5..15 code points, or ANY single whitespace-free token): 64+ characters
-    // at a 6x ratio is an amplification hallucination for one word - the
-    // pre-fix code returned false unconditionally for every 5+ code point
-    // source ("hello" -> a 300-character essay passed every gate).
+    // WS1 (261108_0002, WS1-gates) RE-CALIBRATED tiers (see the constant block
+    // in translation_common.hpp for the measurement rationale). Tier 1 (1-4
+    // code points): output >= max(16, 4x source) - the RC-2 32-at-10x floor
+    // sat above the reported 14-32 code-point hallucinations, so every one of
+    // them passed. Tier 2 (5..15 code points, or ANY single whitespace-free
+    // token): a single WORD of <= 15 code points gets floor 20 at 4x (the
+    // user-report window), a multi-word phrase of 5..15 code points and a
+    // 16+ code point single token keep the RC-2 64-at-6x envelope (a phrase
+    // legitimately expands more than a word).
     if (source_cp <= kAmplifiedSourceMaxCodePoints) {
-        return output_cp >= kAmplifiedTinyTier1OutputMinCodePoints &&
+        return output_cp >= kAmplifiedTinyTier1MinOutputCodePoints &&
                output_cp >= source_cp * kAmplifiedTinyTier1Ratio;
     }
-    const bool tier2_source =
-        source_cp <= kAmplifiedTinyTier2SourceMaxCodePoints ||
+    const bool single_token_source =
         source.find_first_of(L" \t\r\n") == std::wstring_view::npos;
+    const bool tier2_source =
+        source_cp <= kAmplifiedTinyTier2SourceMaxCodePoints || single_token_source;
     if (!tier2_source) {
         return false;
     }
+    if (single_token_source && source_cp <= kAmplifiedTinyTier2SourceMaxCodePoints) {
+        // The user-report window: ONE word, 5..15 code points, answered with a
+        // sentence ("astrology" -> "이메발라의 별자리 운세는 어떨까요?" = 19).
+        return output_cp >= kAmplifiedSingleWordOutputMinCodePoints &&
+               output_cp >= source_cp * kAmplifiedSingleWordRatio;
+    }
     return output_cp >= kAmplifiedOutputMinCodePoints &&
            output_cp >= source_cp * kAmplifiedTinyTier2Ratio;
+}
+
+bool IsSingleWordSource(std::wstring_view source) {
+    // The laughter/emphasis carve-out applies here too (WS1 keeps the RC-2
+    // ruling intact): "ㅋㅋㅋㅋ" is a reduplication, not a word whose answer must
+    // be one word, and its expansion has its own bounded ceiling above.
+    if (IsPureRepetitionSource(source)) {
+        return false;
+    }
+    const std::wstring_view trimmed = TrimOutputSpace(source);
+    if (trimmed.empty() || CountCodePoints(trimmed) > kSingleWordSourceMaxCodePoints) {
+        return false;
+    }
+    bool has_letter = false;
+    size_t idx = 0;
+    while (idx < trimmed.size()) {
+        const size_t begin = idx;
+        (void)DecodeNextCodePoint(trimmed, idx);
+        const size_t n = idx - begin;
+        if (n == 1) {
+            const wchar_t c = trimmed[begin];
+            if (IsOutputSpace(c) || c == L'\u3000' || IsWordPunctuation(c)) {
+                return false;
+            }
+        }
+        wchar_t units[2] = {0, 0};
+        for (size_t k = 0; k < n && k < 2; ++k) {
+            units[k] = trimmed[begin + k];
+        }
+        if (TextScriptClasses(std::wstring_view(units, n)) != 0) {
+            has_letter = true;
+        }
+    }
+    return has_letter;
+}
+
+bool IsSingleWordToSentenceHallucination(std::wstring_view output,
+                                         std::wstring_view source) {
+    if (output.empty() || !IsSingleWordSource(source)) {
+        return false;
+    }
+    // (a) the numbered / bullet quiz answer.
+    if (StartsWithListMarker(TrimOutputSpace(output))) {
+        return true;
+    }
+    // (b) an answer to a word is never a question.
+    if (output.find(L'?') != std::wstring_view::npos ||
+        output.find(L'\uFF1F') != std::wstring_view::npos) {
+        return true;
+    }
+    // (c) the "explanation" shape: a closed sentence with real word count.
+    return EndsWithSentenceTerminator(output) && CountWhitespaceTokens(output) >= 3;
 }
 
 const char* OutputRejectReasonName(OutputRejectReason reason) {
@@ -769,6 +1118,7 @@ const char* OutputRejectReasonName(OutputRejectReason reason) {
         case OutputRejectReason::WrongScript: return "wrong-script";
         case OutputRejectReason::MetaLeakage: return "meta-leakage";
         case OutputRejectReason::ScriptLeak:  return "script-leak";
+        case OutputRejectReason::SingleWordSentence: return "single-word-sentence";
         case OutputRejectReason::None:        break;
     }
     return "none";
@@ -783,11 +1133,19 @@ OutputRejectReason ClassifyTranslationOutput(std::wstring_view output,
     if (OutputHasRepetition(output, source)) {
         return OutputRejectReason::Repetition;
     }
-    if (IsWrongScriptOutput(output, source, TargetScriptClasses(tgt_code))) {
-        return OutputRejectReason::WrongScript;
-    }
+    // WS1 (261108_0002, WS1-gates): META LEAKAGE now precedes WRONG SCRIPT.
+    // The new leak-dominance clause in IsWrongScriptOutput fires on "foreign
+    // text retained in the answer", which is exactly what a source echo inside a
+    // refusal preamble looks like (the verbatim 'assist' repro: the English
+    // source echoed back plus "죄송합니다"); the refusal diagnosis is strictly
+    // more informative than "wrong script" and both reject, so the more specific
+    // name wins. A plain wrong-language essay carries no needle and still
+    // classifies as WrongScript.
     if (HasMetaLeakage(output, source)) {
         return OutputRejectReason::MetaLeakage;
+    }
+    if (IsWrongScriptOutput(output, source, TargetScriptClasses(tgt_code))) {
+        return OutputRejectReason::WrongScript;
     }
     // R2-16 (CEO decision "언제나 잘 번역", calibrated thresholds above): the
     // answer is in the target script but is mostly a script neither side uses,
@@ -796,6 +1154,15 @@ OutputRejectReason ClassifyTranslationOutput(std::wstring_view output,
     if (IsUnexpectedScriptHeavyOutput(output, source, TargetScriptClasses(tgt_code)) ||
         IsAmplifiedTinySourceOutput(output, source)) {
         return OutputRejectReason::ScriptLeak;
+    }
+    // WS1 (261108_0002, WS1-gates): the STRUCTURAL one-word-to-sentence shape
+    // ("clue" -> "1. 당신은 어떤 방식으로..." / "astrology" -> "이메발라의 별자리
+    // 운세는 어떨까요?"). Runs after every calibrated rule so their reason names
+    // stay specific; it claims exactly the answers those floors still miss (the
+    // window between the new single-word floor and the old 64-code-point one,
+    // where the reported 19-code-point question sits).
+    if (IsSingleWordToSentenceHallucination(output, source)) {
+        return OutputRejectReason::SingleWordSentence;
     }
     return OutputRejectReason::None;
 }
@@ -822,6 +1189,42 @@ constexpr const char* kEndOfConversationMarkers[] = {
 // real translation never tracks the source for that long), and the probe
 // stays negligible against a 4B decode.
 constexpr int kEchoPrefixProbeTokenCadence = 16;
+
+// WS1 (261108_0002, WS1-gates) item 3: does the loaded vocab carry the ChatML
+// turn markers as REAL CONTROL tokens? The REQ-059 rung-1 fallback wraps the
+// fixed instruction in llama's BUILT-IN default template (ChatML) for a trivial
+// or absent GGUF template. On a vocab that has no <|im_start|> control token,
+// llama_chat_apply_template still emits the marker TEXT, which the tokenizer
+// then breaks into NORMAL tokens - the model sees a literal "<|im_start|>user"
+// string, attends to it, and the decode drifts into a literal role header
+// ("assistant: ...") that IS the user report's hallucination shape. Tokenize
+// the marker exactly the way tokenize_prompt does (parse_special=true, no BOS)
+// and require: ONE token, CONTROL attribute. Any other outcome means the wrap
+// must not be used for this model.
+//
+// API note (llama.cpp pinned tag b6099, build/_deps/llama_cpp-src/include/
+// llama.h): the historical llama_token_get_attr is DEPRECATED in this tag in
+// favour of llama_vocab_get_attr (L1003), and LLAMA_TOKEN_ATTR_CONTROL is
+// L106 (1 << 3). Verified against the vendored header; the integration build
+// re-checks it at compile time through the ordinary declaration use below.
+bool VocabCarriesChatmlControlToken(const llama_vocab* vocab, const char* marker) {
+    if (!vocab || !marker || !*marker) {
+        return false;
+    }
+    const std::string_view marker_view(marker);
+    const int32_t marker_len = static_cast<int32_t>(marker_view.size());
+    if (marker_len <= 0) {
+        return false;
+    }
+    llama_token tokens[8] = {};
+    const int32_t n =
+        llama_tokenize(vocab, marker, marker_len, tokens, 8, /*add_special=*/false,
+                       /*parse_special=*/true);
+    if (n != 1) {
+        return false; // spelled out of NORMAL tokens (or rejected): not a control token
+    }
+    return (llama_vocab_get_attr(vocab, tokens[0]) & LLAMA_TOKEN_ATTR_CONTROL) != 0;
+}
 
 // REQ-R16 (audit §5 latent item 4): llama.cpp abort callback. ggml calls this
 // between tensor-evaluation chunks of an in-flight llama_decode(); returning
@@ -1141,6 +1544,17 @@ std::wstring LocalInferenceEngine::Translate(
     // template (Hy-MT2) is accepted as-is instead of degrading (see the
     // acceptance test below).
     const bool has_nontrivial_chat_template = chat_tmpl && !chat_tmpl_is_trivial;
+    // WS1 (261108_0002, WS1-gates) item 3: the built-in ChatML wrap is only
+    // usable when the vocab declares <|im_start|> as a CONTROL token. Probing
+    // costs one tokenize per Translate() and only when the rung-1 fallback
+    // branch would actually run (trivial/absent template), so Hy-MT2 and any
+    // user model with a real template pay nothing.
+    const bool builtin_chatml_wrap_available =
+        !has_nontrivial_chat_template &&
+        VocabCarriesChatmlControlToken(vocab, "<|im_start|>");
+    if (!has_nontrivial_chat_template && !builtin_chatml_wrap_available) {
+        DIAG_F("ENGINE/Translate/051: vocab has no ChatML CONTROL token; rung 1 uses the completion form instead of a literal-marker wrap (WS1)\n");
+    }
     auto build_final_prompt = [&](std::wstring_view s, bool completion_form,
                                   bool suppress_debug_log = false) -> std::string {
         std::string u8 = ToUtf8(s);
@@ -1152,7 +1566,18 @@ std::wstring LocalInferenceEngine::Translate(
         // template-independent form for ALL templates, preserving the REQ-059
         // byte-identity golden pins. template_ref defaults to "" (hymt2-
         // official) so the pre-T5 default path is byte-identical.
-        std::string p = completion_form
+        //
+        // WS1 (261108_0002, WS1-gates) item 3: a trivial/absent-template model
+        // whose vocab has no ChatML control token gets the completion form on
+        // rung 1 as well. Wrapping it would inject the markers as literal NORMAL
+        // text, which is the in-distribution-for-nothing prompt that produces
+        // the "assistant: ..." dialogue hallucination; the completion form is the
+        // untemplated shape such a model was actually trained on. Byte-identical
+        // for every other configuration (non-trivial template / usable ChatML /
+        // rung 2).
+        const bool rung1_without_chatml =
+            !completion_form && !has_nontrivial_chat_template && !builtin_chatml_wrap_available;
+        std::string p = (completion_form || rung1_without_chatml)
             ? BuildCompletionPrompt(u8, tgt_name, src_name)
             : BuildPrompt(u8, tgt_name, src_name, template_ref);
         if (!completion_form) {
@@ -1166,7 +1591,7 @@ std::wstring LocalInferenceEngine::Translate(
                         p.assign(formatted.data(), written);
                     }
                 }
-            } else {
+            } else if (builtin_chatml_wrap_available) {
                 // REQ-059 rung 1: trivial (concat-only) or absent template —
                 // wrap with llama's BUILT-IN default template (ChatML) so the
                 // fixed instruction is in-distribution for Gemma-style user
@@ -1414,10 +1839,20 @@ std::wstring LocalInferenceEngine::Translate(
     // working copy so the comparison reflects what was actually sent.
     std::string src_u8 = ToUtf8(cur);
     // RC-5 (v0.10.5 handoff section 2.6): a source with no line break can
-    // only be answered with a single line; the rung-2 completion form stops
-    // decoding at the first generated newline (see the token loop).
+    // only be answered with a single line; the decode stops at the first
+    // generated newline on BOTH rungs (see the token loop - WS1
+    // 261108_0002 extended it from the completion form to rung 1, because a
+    // single word answered with "사이버\n\nassistant: ..." leaked the trailing
+    // dialogue turn through rung 1).
     const bool single_line_source =
         cur.find_first_of(L"\r\n") == std::wstring::npos;
+    // WS1 (261108_0002, WS1-gates) item 9: the echo probe's mixed-script rule
+    // is the pure IsUntranslatedEchoPrefix decision (pinned headlessly); the
+    // only thing it needs from here is the target script family.
+    const std::uint32_t echo_target_scripts = TargetScriptClasses(tgt_code);
+    // Trimmed source for the prefix compare: a leading separator space or a
+    // trailing one must not defeat the probe (WS1 item 9a).
+    const std::string_view src_probe_view = TrimAsciiWhitespaceView(src_u8);
 
     // Clear KV memory for clean inference sequence
     llama_memory_clear(llama_get_memory(ctx), true);
@@ -1488,12 +1923,16 @@ std::wstring LocalInferenceEngine::Translate(
     // historical 256-token floor scaled off the WHOLE formatted prompt, so a
     // one-word translation carried a 256-token runway for hallucinated
     // essays. A <= 16 UTF-8 byte single-line source can only produce a word
-    // or one sentence: cap its generation budget to 64 tokens. The wall-
-    // clock budget below stays scaled off the historical max_gen_tokens -
-    // whenever this cap fires both budgets land on the 12 s floor, so the
-    // budget is unchanged in practice.
+    // or one sentence: cap its generation budget to 64 tokens, and to
+    // kSingleWordSourceGenCapTokens (16) when the source carries no whitespace
+    // at all (WS1 261108_0002: ONE word cannot legitimately need more, and the
+    // 64-token runway is what let a 1.8B model continue the word into a
+    // paragraph or a dialogue turn). The wall-clock budget below stays scaled
+    // off the historical max_gen_tokens - whenever this cap fires both budgets
+    // land on the 12 s floor, so the budget is unchanged in practice.
     const int short_source_gen_cap = ShortSourceGenTokenCap(
-        src_u8.size(), src_u8.find_first_of("\r\n") != std::string::npos);
+        src_u8.size(), src_u8.find_first_of("\r\n") != std::string::npos,
+        src_u8.find_first_of(" \t\v\f") != std::string::npos);
     const int effective_max_gen_tokens =
         max_gen_tokens < short_source_gen_cap ? max_gen_tokens : short_source_gen_cap;
     // REQ-051 U-1 FIX 1: the decode wall-clock budget starts HERE (after the
@@ -1614,7 +2053,14 @@ std::wstring LocalInferenceEngine::Translate(
         // the answer. When the source itself is a single line, the first
         // generated newline ends the answer - everything after it is the
         // model continuing the pattern, not translation.
-        if (completion_form && single_line_source) {
+        // WS1 (261108_0002, WS1-gates) item 6: BOTH rungs, not only the
+        // completion form. A single-line source can never legitimately be
+        // answered with two lines, and the live single-word leak was exactly a
+        // rung-1 answer followed by a second line ("사이버\n\nassistant: ..."),
+        // which the post-decode gate only sees AFTER the model has spent the
+        // tokens. Multi-line sources are untouched (they legitimately produce
+        // line breaks and keep the old behavior).
+        if (single_line_source) {
             const size_t newline_pos = output_u8.find_first_of("\r\n");
             if (newline_pos != std::string::npos) {
                 output_u8.resize(newline_pos);
@@ -1654,12 +2100,48 @@ std::wstring LocalInferenceEngine::Translate(
                        completion_form ? "completion-form" : "rung-1", i + 1);
                 break;
             }
-            if (!completion_form && output_u8.size() <= src_u8.size() &&
-                output_u8.compare(0, output_u8.size(), src_u8, 0, output_u8.size()) == 0) {
-                DIAG_F("ENGINE/Translate/037: rung-1 output tracks the source prefix at token %d (out=%zu src=%zu); aborting to the completion form\n",
-                       i + 1, output_u8.size(), src_u8.size());
-                rung1_aborted_echo = true;
-                break;
+            if (!completion_form) {
+                // WS1 (261108_0002, WS1-gates) item 9a: compare a
+                // LEADING-WHITESPACE-TRIMMED output prefix against a TRIMMED
+                // source. The pre-WS1 compare used the raw byte prefix, so the
+                // separator space the chat form leaves in front of the answer
+                // ("...:\n\n cyber") - or a leading space in the user's own
+                // source - made every prefix compare fail and the echo probe
+                // never fired.
+                const std::string_view out_probe_view =
+                    TrimAsciiLeadingWhitespaceView(output_u8);
+                // Two legs, both required to be cheap:
+                //   * the RAW prefix compare is the pre-WS1 fast path, kept
+                //     byte-identical for sources that carry no surrounding
+                //     whitespace (and the REQ-059 (b) source pin keys on it);
+                //   * the TRIMMED compare is the WS1 fix - it also fires when
+                //     the chat form left a separator space in front of the
+                //     answer or the source itself begins with one.
+                const bool raw_prefix_match =
+                    output_u8.size() <= src_u8.size() &&
+                    output_u8.compare(0, output_u8.size(), src_u8, 0, output_u8.size()) == 0;
+                const bool trimmed_prefix_match =
+                    !out_probe_view.empty() && out_probe_view.size() <= src_probe_view.size() &&
+                    out_probe_view.compare(0, out_probe_view.size(), src_probe_view, 0,
+                                           out_probe_view.size()) == 0;
+                if (raw_prefix_match || trimmed_prefix_match) {
+                    // WS1 item 9b: MIXED-SCRIPT CONTINUATION must not abort. The
+                    // decision is the pure IsUntranslatedEchoPrefix predicate:
+                    // abort only when the matched prefix itself carries a code
+                    // point of a script the target does not use (proof the model
+                    // is still copying untranslated text) OR the source is
+                    // script-homogeneous (no part of it can be "already in the
+                    // target", so any exact tracking is copying).
+                    const std::wstring prefix_w = ToUtf16(std::string(out_probe_view));
+                    if (IsUntranslatedEchoPrefix(prefix_w, cur, echo_target_scripts)) {
+                        DIAG_F("ENGINE/Translate/037: rung-1 output tracks the source prefix at token %d (out=%zu src=%zu); aborting to the completion form\n",
+                               i + 1, output_u8.size(), src_u8.size());
+                        rung1_aborted_echo = true;
+                        break;
+                    }
+                    DIAG_F("ENGINE/Translate/053: rung-1 prefix match at token %d is already in the target script (mixed-script source); continuing (WS1)\n",
+                           i + 1);
+                }
             }
         }
 
@@ -1696,11 +2178,32 @@ std::wstring LocalInferenceEngine::Translate(
     // judged an ECHO (rung 2).
     StripEndOfConversationMarkers(trimmed_u8, src_u8);
 
+    // WS1 (261108_0002, WS1-gates) item 1: strip a leaked assistant/role header
+    // BEFORE the acceptance compares, so the answer behind it is judged on its
+    // own merits ("assistant: 사이버" -> "사이버" is a correct translation;
+    // "<|assistant|>\n사이버" likewise). Source-guarded (a prefix the SOURCE
+    // begins with is content) and label-guarded (a translated colon label the
+    // source itself labels is content) - see StripLeadingRoleHeader.
+    if (StripLeadingRoleHeader(trimmed_u8, src_u8)) {
+        DIAG_F("ENGINE/Translate/050: stripped a leading assistant/role header from the %s output (WS1; shape-only)\n",
+               completion_form ? "completion-form" : "rung-1");
+    }
+
     // REQ-059: leading-colon cleanup — Gemma-style models answering through
     // the ChatML wrap start with a stray ':' token; drop the colon (and any
     // spaces after it) when the source itself did not start with one.
+    // WS1 (261108_0002, WS1-gates) item 10 closes two pre-existing misses and
+    // moves the decision into the pure ShouldStripLeadingColon:
+    //   (a) the source test now looks at the source's LEADING-WHITESPACE-TRIMMED
+    //       start, so a source that begins with a separator space does not make
+    //       the stripper eat a legitimate answer's colon (" : 사과");
+    //   (b) an emoji :shortcode: is never a stray ChatML ':' - ":laughing: 하하"
+    //       keeps its first colon (the pre-fix code turned it into "laughing:
+    //       하하", a mangle the user sees verbatim).
+    // The leading ':' test stays at the call site (the REQ-059 (b) source pin
+    // keys on it); the erase below is the unchanged cleanup shape.
     if (!trimmed_u8.empty() && trimmed_u8.front() == ':' &&
-        (src_u8.empty() || src_u8.front() != ':')) {
+        ShouldStripLeadingColon(trimmed_u8, src_u8)) {
         size_t colon_drop = 1;
         while (colon_drop < trimmed_u8.size() && trimmed_u8[colon_drop] == ' ') {
             ++colon_drop;
@@ -1763,10 +2266,44 @@ std::wstring LocalInferenceEngine::Translate(
         // RC-1 chain). Accept the echo: identity text is a legitimate answer
         // for loanwords and already-target words, and the caller's exact-echo
         // pass-through (EqualsSourceNeedsSendThrough) then forwards Enter
-        // cleanly.
+        // cleanly. This arm covers the FULL echo ONLY (unchanged by the WS1
+        // adjudication below).
         if (rung1_echo && !rung1_bare_special && has_nontrivial_chat_template) {
             DIAG_F("ENGINE/Translate/048: rung-1 echo on a chat-template model accepted as-is (no raw-completion fallback)\n");
             break;
+        }
+        // WS1 (261108_0002, WS1-gates) ADJUDICATED 2026-11 follow-up: an
+        // EARLY-ABORTED echo is NOT identity text - it is a PARTIAL SOURCE
+        // PREFIX, and after the item-9b mixed-script fix the probe only aborts
+        // when that prefix carries untranslated source-script characters (or
+        // the source is script-homogeneous), i.e. exactly the case where the
+        // model is copying rather than translating. Shipping the prefix would
+        // overwrite the user's text with a truncated copy of itself; degrading
+        // to the raw completion form on a chat-tuned model is the documented
+        // hallucination chain (RC-5). The honest answer is engine_failed - the
+        // app's Auto fallback / strict-local notice already covers it. The
+        // diagnostic is separate (054) from the generic rejected-output arm so
+        // the two shapes never get confused in a live log.
+        if (rung1_aborted_echo && has_nontrivial_chat_template && !rung1_bare_special) {
+            DIAG_F("ENGINE/Translate/054: rung-1 early-aborted source echo on a chat-template model; answering engine_failed (a partial source prefix is never shipped, WS1)\n");
+            return std::nullopt;
+        }
+        // WS1 (261108_0002, WS1-gates) item 4b: a chat-template model never
+        // runs the UNTEMPLATED rung 2. Rung 1 produced a real answer and the
+        // output gate rejected it (or the repetition probe aborted it): the
+        // raw completion form is the exact prompt that makes a chat-tuned model
+        // continue into hallucinated dialogue, and the sampler is greedy at
+        // temperature 0, so a re-decode of the same content cannot rescue it.
+        // An honest engine_failed is strictly better than shipping garbage or
+        // burning a second multi-second decode for a known-bad result. The
+        // EMPTY decode and the bare special marker keep the historical retry
+        // (rung 1 produced no answer at all, so there is nothing to preserve -
+        // those arms are unchanged).
+        if (has_nontrivial_chat_template && !rung1_empty && !rung1_bare_special) {
+            DIAG_F("ENGINE/Translate/052: rung-1 output rejected on a chat-template model (%s); answering engine_failed instead of the untemplated completion form (WS1)\n",
+                   rung1_aborted_repetition ? "repetition loop (early abort)"
+                                            : OutputRejectReasonName(rung1_reject));
+            return std::nullopt;
         }
         degraded_to_completion = true;
         DIAG_F("ENGINE/Translate/034: rung-1 chat form produced %s; retrying with the completion form (shape-only)\n",

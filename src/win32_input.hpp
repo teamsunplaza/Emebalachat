@@ -7,6 +7,14 @@
 #include <vector>
 #include <windows.h>
 
+// 261108_0002 (WS2): the same-line prefix splitter below needs the script
+// predicates (ContainsKorean/ContainsLatin/...) and DecodeNextCodePoint /
+// EqualsIgnoreCaseAscii. Both headers are dependency-free (STL only), and
+// smart_bypass.hpp is already included by worker.cpp/run_tests.cpp BEFORE this
+// header, so the include order stays harmless (pragma once).
+#include "smart_bypass.hpp"
+#include "unicode_utils.hpp"
+
 namespace emebalachat {
 
 // Synthetic input marker placed in dwExtraInfo to prevent recursive hook
@@ -648,6 +656,360 @@ inline F3BlockSliceSplit F3BlockSliceRefine(const std::wstring& line,
         r.sliced = true;
     }
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// 261108_0002 (WS2) - v0.10.6 "appended sentences stay untranslated" bundle.
+//
+// Pure, headless-testable helpers for the three ExecuteTask seams this
+// workstream owns (tests/ws2_capture_tests.inc drives them directly):
+//   item 1  TrimLeadingHorizontalSpace   - the separator space the ledger/
+//                                          block split leaves at the front of
+//                                          untranslated_tail must not reach
+//                                          the engine;
+//   item 4  SplitSameLineTargetPrefix    - a single-line capture whose leading
+//                                          run is already in the TARGET
+//                                          language and whose suffix carries
+//                                          SOURCE-script characters splits at
+//                                          that boundary (prefix verbatim,
+//                                          suffix translated);
+//   both    ScriptMaskOfText /
+//           ScriptMaskForLanguageCode    - the script masks those two need.
+//
+// Script-mask boundary note (verified against CMakeLists.txt, session
+// 261108_0002): worker.cpp is compiled into Emebalachat_core, and
+// Emebalachat_core links NO engine_core (the T1 boundary "no core->
+// engine_core reverse link" keeps the Chat exe llama-free). The masks
+// therefore CANNOT come from engine_core's TargetScriptClasses /
+// TextScriptClasses here - doing so would leave the Chat exe with unresolved
+// externals. These two helpers are built from the SAME smart_bypass
+// predicates engine_core's TextScriptClasses calls (ContainsLatin /
+// ContainsKorean / ...), and the bit values below mirror engine_core's
+// ScriptClass ordinals one for one. tests/ws2_capture_tests.inc pins BOTH
+// equalities against the engine_core definitions for the whole language
+// registry, so the two tables cannot drift silently.
+// ---------------------------------------------------------------------------
+
+// Bit values MUST equal emebalachat::ScriptClass's ordinals in
+// src/engine_core/translation_common.hpp (pinned by tests/ws2_capture_tests.inc).
+inline constexpr std::uint32_t kScriptMaskLatin = 1u << 0;
+inline constexpr std::uint32_t kScriptMaskHangul = 1u << 1;
+inline constexpr std::uint32_t kScriptMaskHan = 1u << 2;
+inline constexpr std::uint32_t kScriptMaskKana = 1u << 3;
+inline constexpr std::uint32_t kScriptMaskCyrillic = 1u << 4;
+inline constexpr std::uint32_t kScriptMaskThai = 1u << 5;
+inline constexpr std::uint32_t kScriptMaskArabic = 1u << 6;
+inline constexpr std::uint32_t kScriptMaskDevanagari = 1u << 7;
+inline constexpr std::uint32_t kScriptMaskBengali = 1u << 8;
+inline constexpr std::uint32_t kScriptMaskKhmer = 1u << 9;
+inline constexpr std::uint32_t kScriptMaskLao = 1u << 10;
+inline constexpr std::uint32_t kScriptMaskHebrew = 1u << 11;
+inline constexpr std::uint32_t kScriptMaskGreek = 1u << 12;
+inline constexpr std::uint32_t kScriptMaskMyanmar = 1u << 13;
+
+// Script mask of every class present in `text` (bitwise OR). Same predicates
+// and same OR order as engine_core's TextScriptClasses, so the two agree by
+// construction (pinned by the test inc).
+inline std::uint32_t ScriptMaskOfText(std::wstring_view text) {
+    std::uint32_t mask = 0;
+    if (ContainsLatin(text)) mask |= kScriptMaskLatin;
+    if (ContainsKorean(text)) mask |= kScriptMaskHangul;
+    if (ContainsHanzi(text)) mask |= kScriptMaskHan;
+    if (ContainsKana(text)) mask |= kScriptMaskKana;
+    if (ContainsCyrillic(text)) mask |= kScriptMaskCyrillic;
+    if (ContainsThai(text)) mask |= kScriptMaskThai;
+    if (ContainsArabic(text)) mask |= kScriptMaskArabic;
+    if (ContainsDevanagari(text)) mask |= kScriptMaskDevanagari;
+    if (ContainsBengali(text)) mask |= kScriptMaskBengali;
+    if (ContainsKhmer(text)) mask |= kScriptMaskKhmer;
+    if (ContainsLao(text)) mask |= kScriptMaskLao;
+    if (ContainsHebrew(text)) mask |= kScriptMaskHebrew;
+    if (ContainsGreek(text)) mask |= kScriptMaskGreek;
+    if (ContainsMyanmar(text)) mask |= kScriptMaskMyanmar;
+    return mask;
+}
+
+// Script mask for a NORMALIZED language code (config NormalizeLanguageCode
+// output: "KO", "ZH-CN", "JA", "EN", ...). ASCII case-insensitive. Returns 0
+// for AUTO / empty / unknown - and 0 is the splitter's "never split" signal,
+// i.e. an unknown target fails OPEN (the pre-WS2 whole-line behavior), never
+// into a guess. The Latin family is enumerated explicitly because those codes
+// share one script; a language added to the registry without a row here fails
+// the ws2 test pin (it compares against engine_core for every registry code).
+inline std::uint32_t ScriptMaskForLanguageCode(std::string_view code) {
+    auto eq = [&code](std::string_view candidate) {
+        return EqualsIgnoreCaseAscii(code, candidate);
+    };
+    if (eq("KO")) return kScriptMaskHangul;
+    if (eq("ZH-CN") || eq("ZH-TW")) return kScriptMaskHan;
+    if (eq("JA")) return kScriptMaskHan | kScriptMaskKana;
+    if (eq("RU") || eq("UK")) return kScriptMaskCyrillic;
+    if (eq("TH")) return kScriptMaskThai;
+    if (eq("AR") || eq("FA") || eq("UR")) return kScriptMaskArabic;
+    if (eq("HI")) return kScriptMaskDevanagari;
+    if (eq("BN")) return kScriptMaskBengali;
+    if (eq("KM")) return kScriptMaskKhmer;
+    if (eq("LO")) return kScriptMaskLao;
+    if (eq("HE")) return kScriptMaskHebrew;
+    if (eq("EL")) return kScriptMaskGreek;
+    if (eq("MY")) return kScriptMaskMyanmar;
+    if (eq("EN") || eq("VI") || eq("ES") || eq("FR") || eq("DE") || eq("PT") ||
+        eq("IT") || eq("ID") || eq("MS") || eq("FIL") || eq("TR") || eq("PL") ||
+        eq("NL") || eq("CS") || eq("HU") || eq("SV") || eq("RO") || eq("DA") ||
+        eq("FI") || eq("NO")) {
+        return kScriptMaskLatin;
+    }
+    return 0; // AUTO / unknown: the splitter refuses (fail-open to legacy)
+}
+
+// 261108_0002 (WS2) item 1: strip the leading horizontal-whitespace run. The
+// ledger/block split leaves the separator space at the FRONT of the tail
+// (CanonicalFormForLedger trims per-line TRAILING whitespace only, so
+// "<ledger> :laughing: ..." splits into tail " :laughing: ..."), and that
+// space has no business in the engine prompt. NBSP joins the run for the same
+// reason CanonicalFormForLedger treats it as whitespace. The caller keeps the
+// ORIGINAL tail for the recomposition boundary-space decision.
+inline std::wstring TrimLeadingHorizontalSpace(std::wstring_view text) {
+    std::size_t start = 0;
+    while (start < text.size() && (text[start] == L' ' || text[start] == L'\t' ||
+                                   text[start] == L'\u00A0')) {
+        ++start;
+    }
+    return std::wstring(text.substr(start));
+}
+
+// A character the splitter may absorb into the prefix after a boundary marker
+// (horizontal whitespace only: a newline would mean a multi-line capture,
+// which the splitter refuses outright).
+inline bool IsSameLineBoundarySpace(wchar_t c) {
+    return c == L' ' || c == L'\t' || c == L'\u00A0';
+}
+
+// Emoji / pictographic boundary code points. Deliberately a fixed range list
+// (no Unicode table, no category lookup): the splitter must be deterministic
+// and unit-testable without locale or ICU. Ranges cover arrows, the misc-
+// symbols/dingbats blocks, the supplemental symbol-arrow block and the whole
+// 1F000-1FAFF emoji area (emoticons, transport, supplemental, extended-A,
+// regional-indicator flags), plus VS16 and ZWJ which only ever appear inside
+// emoji sequences.
+inline bool IsEmojiBoundaryCodePoint(std::uint32_t cp) {
+    return (cp >= 0x2190u && cp <= 0x21FFu) ||
+           (cp >= 0x2600u && cp <= 0x27BFu) ||
+           (cp >= 0x2B00u && cp <= 0x2BFFu) ||
+           (cp >= 0x1F000u && cp <= 0x1FAFFu) ||
+           cp == 0xFE0Fu || cp == 0x200Du;
+}
+
+// ":shortcode:" ending at `colon_pos` (which MUST index a ':'). Returns the
+// index one past the closing ':' or npos. The body is [A-Za-z0-9_+-]{1,32};
+// it must carry at least one ASCII letter or start with a sign, which rejects
+// clock/ratio shapes ("12:30:45" -> body "30" carries neither) while keeping
+// Discord/GitHub forms (":laughing:", ":+1:", ":-1:") valid.
+inline std::size_t SameLineShortcodeEnd(std::wstring_view line, std::size_t colon_pos) {
+    std::size_t p = colon_pos + 1;
+    const std::size_t body_start = p;
+    bool has_letter = false;
+    while (p < line.size() && (p - body_start) < 32) {
+        const wchar_t c = line[p];
+        const bool letter = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
+        const bool digit = (c >= L'0' && c <= L'9');
+        if (!letter && !digit && c != L'_' && c != L'+' && c != L'-') break;
+        if (letter) has_letter = true;
+        ++p;
+    }
+    if (p == body_start || p >= line.size() || line[p] != L':') {
+        return std::wstring_view::npos;
+    }
+    const bool signed_body = (line[body_start] == L'+' || line[body_start] == L'-');
+    if (!has_letter && !signed_body) {
+        return std::wstring_view::npos;
+    }
+    return p + 1;
+}
+
+struct SameLinePrefixSplit {
+    bool split = false;         // the split fired
+    std::size_t prefix_len = 0; // line[0, prefix_len) is the verbatim prefix
+};
+
+// Script mask of `text` with every ":shortcode:" span removed. The shortcode
+// BODY is ASCII letters ("tada"), so a plain ScriptMaskOfText would report
+// Latin for a Korean prefix that merely ends with ":tada:" and the splitter
+// would refuse its own boundary. Removing the spans first keeps the mask test
+// about the languages the text is actually written in. Emoji, ZWSP and the
+// ellipsis are already non-linguistic and need no filtering.
+inline std::uint32_t SameLineLinguisticMask(std::wstring_view text) {
+    std::wstring filtered;
+    filtered.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == L':') {
+            const std::size_t end = SameLineShortcodeEnd(text, i);
+            if (end != std::wstring_view::npos) {
+                i = end; // drop the whole ":body:" span
+                continue;
+            }
+        }
+        filtered.push_back(text[i]);
+        ++i;
+    }
+    return ScriptMaskOfText(filtered);
+}
+
+// 261108_0002 (WS2) item 4: same-line target-language prefix splitter.
+//
+// WHY: after a first translation, a user who keeps typing in the SAME input
+// box produces ONE logical line = [already-translated text][newly typed
+// source text]. FindCurrentBlockStart can only split on '\r'/'\n', so on a
+// single-line capture the whole mixed line reaches the engine (or, when the
+// new text does not shift the script detection, the whole line is
+// smart-bypassed and NOTHING is translated - the reported symptom).
+//
+// CONTRACT (deterministic, ADR-001-safe: no fuzzy matching, no similarity,
+// no edit distance - a strict positional scan over a fixed boundary set):
+//   * single-line captures only (any '\r'/'\n' -> refuse);
+//   * boundary markers:
+//       - '.' / '!' / '?' immediately followed by horizontal whitespace;
+//       - ":shortcode:" (SameLineShortcodeEnd);
+//       - an emoji / pictographic code point (IsEmojiBoundaryCodePoint);
+//       - ZWSP U+200B, BOM/ZWNBSP U+FEFF, HORIZONTAL ELLIPSIS U+2026;
+//     the horizontal-whitespace run AFTER the marker is absorbed into the
+//     prefix (so the prefix keeps the user's own separator space and the
+//     recomposition adds none);
+//   * the prefix must carry at least one TARGET-script character and NO
+//     non-target script character (shortcode spans excluded from the mask);
+//   * the suffix must be non-empty and carry at least one non-target
+//     ("source") script character;
+//   * target_script_mask == 0 (AUTO / unknown target) -> never split.
+// Emoji, shortcodes and zero-width characters therefore always land on the
+// PREFIX side (they are non-linguistic, so they cannot satisfy either mask
+// test on their own).
+//
+// LAST qualifying boundary wins, not the first: the prefix is the text the
+// user has ALREADY translated, so the split must keep as much of it verbatim
+// as the contract allows. "Ah... I fell asleep yesterday. :laughing: 사실..."
+// must split after ":laughing: ", not after "Ah... " (the first boundary),
+// otherwise the already-translated English would be re-translated.
+//
+// The caller owns the remaining guards: it must only call this when the F3
+// slice left untranslated_tail EMPTY (a real ledger/block tail always wins),
+// and it must not call it on an ExactMatch ledger verdict (that capture is
+// our own output; re-splitting it would re-translate our own translation).
+inline SameLinePrefixSplit SplitSameLineTargetPrefix(std::wstring_view line,
+                                                     std::uint32_t target_script_mask) {
+    SameLinePrefixSplit result{};
+    if (line.empty() || target_script_mask == 0) {
+        return result;
+    }
+    for (const wchar_t c : line) {
+        if (c == L'\r' || c == L'\n') {
+            return result; // multi-line capture: FindCurrentBlockStart owns it
+        }
+    }
+    std::size_t idx = 0;
+    // 261108_0002 (FIX-R1, v0.10.6): incremental decision input.
+    //
+    // The three mask tests below used to rebuild SameLineLinguisticMask over a
+    // growing prefix (and, worse, over the suffix) at EVERY candidate boundary:
+    // each call allocates a filtered copy and runs 14 full Contains* scans, so a
+    // 100 KB single-line capture with ~2000 boundaries cost seconds on the
+    // pipeline worker thread.
+    //
+    // SameLineLinguisticMask(text) is ScriptMaskOfText(text with shortcode spans
+    // removed), and ScriptMaskOfText is a bitwise OR of the per-code-point class
+    // sets (each Contains* predicate is a pure "some cp matches" scan). Therefore,
+    // for ANY boundary b, with the shortcode spans excluded exactly as the filter
+    // does:
+    //   (prefix_mask & target)  != 0  <=>  an included cp STARTING BEFORE b has a TARGET class
+    //   (prefix_mask & ~target) == 0  <=>  NO included cp starting before b has a non-target class
+    //   (suffix_mask & ~target) != 0  <=>  an included cp starting AT/AFTER b has a NON-target class
+    // The last two together mean "all non-target characters sit at/after b", so
+    // the whole decision collapses to two first-hit positions:
+    //   first_target     - first included cp carrying a target class
+    //   first_nontarget  - first included cp carrying a non-target class
+    // and a boundary b qualifies EXACTLY when first_target < b <= first_nontarget.
+    // No mask is ever rebuilt per boundary, so the scan is O(n) with no
+    // allocation, and the split DECISION is unchanged (tests/ws2_capture_tests.inc
+    // is the oracle: same last-qualifying-boundary-wins result for every cell).
+    //
+    // Boundary/shortcode disjointness (why the exclusion is boundary-independent):
+    // a shortcode body is [A-Za-z0-9_+-]{1,32}, so no boundary marker can fall
+    // inside a span - a '.'/'!'/'?'-before-space, ZWSP/BOM/ellipsis or emoji
+    // cannot start one, and the closing ':' is the span's own end. A prefix slice
+    // therefore never truncates a span, and this whole-line exclusion equals the
+    // per-slice filter for every boundary the scanner can produce.
+    std::size_t first_target = std::wstring_view::npos;
+    std::size_t first_nontarget = std::wstring_view::npos;
+    while (idx < line.size() &&
+           (first_target == std::wstring_view::npos ||
+            first_nontarget == std::wstring_view::npos)) {
+        const std::size_t cp_start = idx;
+        const std::uint32_t cp = DecodeNextCodePoint(line, idx);
+        if (cp == static_cast<std::uint32_t>(L':')) {
+            const std::size_t span_end = SameLineShortcodeEnd(line, cp_start);
+            if (span_end != std::wstring_view::npos) {
+                idx = span_end; // whole ":body:" span dropped from the mask
+                continue;
+            }
+        }
+        // Per-code-point class set, through the SAME entry point the filter uses
+        // (no second classification table to drift). OR over code points equals
+        // the mask of their concatenation for every class predicate.
+        const std::uint32_t cp_mask = ScriptMaskOfText(line.substr(cp_start, idx - cp_start));
+        if (first_target == std::wstring_view::npos && (cp_mask & target_script_mask) != 0) {
+            first_target = cp_start;
+        }
+        if (first_nontarget == std::wstring_view::npos && (cp_mask & ~target_script_mask) != 0) {
+            first_nontarget = cp_start;
+        }
+    }
+    if (first_target == std::wstring_view::npos || first_nontarget == std::wstring_view::npos) {
+        // One of the two runs is missing from the whole capture, so no boundary
+        // can satisfy both the prefix and the suffix test.
+        return result;
+    }
+    idx = 0;
+    while (idx < line.size()) {
+        const std::size_t cp_start = idx;
+        const std::uint32_t cp = DecodeNextCodePoint(line, idx);
+        std::size_t marker_end = std::wstring_view::npos;
+        if (cp == static_cast<std::uint32_t>(L'.') ||
+            cp == static_cast<std::uint32_t>(L'!') ||
+            cp == static_cast<std::uint32_t>(L'?')) {
+            if (idx < line.size() && IsSameLineBoundarySpace(line[idx])) {
+                marker_end = idx; // the terminator itself; spaces absorbed below
+            }
+        } else if (cp == static_cast<std::uint32_t>(L':')) {
+            marker_end = SameLineShortcodeEnd(line, cp_start);
+        } else if (cp == 0x200Bu || cp == 0xFEFFu || cp == 0x2026u) {
+            marker_end = idx;
+        } else if (IsEmojiBoundaryCodePoint(cp)) {
+            marker_end = idx;
+        }
+        if (marker_end == std::wstring_view::npos) {
+            continue;
+        }
+        std::size_t boundary = marker_end;
+        while (boundary < line.size() && IsSameLineBoundarySpace(line[boundary])) {
+            ++boundary;
+        }
+        if (boundary == 0 || boundary >= line.size()) {
+            continue; // empty prefix or empty suffix: nothing to split
+        }
+        if (boundary <= first_target) {
+            continue; // the leading run has no target-script character yet
+        }
+        if (boundary > first_nontarget) {
+            // The source-script run starts BEFORE this boundary, so the leading
+            // run already mixes scripts: not a clean target prefix. Boundaries
+            // only grow, so no later candidate can pass either.
+            break;
+        }
+        // Qualifying boundary: remember it and keep scanning (last one wins).
+        result.split = true;
+        result.prefix_len = boundary;
+    }
+    return result;
 }
 
 // Phase 8 Batch 1 (REQ-005, plan 225900 §1.5/§4.1): true when hwnd belongs to

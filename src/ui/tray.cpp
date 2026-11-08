@@ -53,6 +53,12 @@ enum TrayMenuId : UINT {
     ID_TRAY_ENGINE_LOAD_SETTINGS = 2016,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
+    // 261108_0002 (WS3, v0.10.6): the "역번역 플로팅 표시 (번역 검증)" check row,
+    // appended directly BELOW the auto-send row in the toggles group. 2035 is
+    // the next free slot in the 2020~2054 control band (2030 auto-send, 2040
+    // sound, 2050 badge, 2055 start-with-Windows) — no existing id is
+    // renumbered and the 2010~2016 engine band stays untouched.
+    ID_TRAY_BACK_TRANSLATE = 2035,
     ID_TRAY_SOUND = 2040,
     ID_TRAY_BADGE = 2050,
     ID_TRAY_START_WITH_WINDOWS = 2055,
@@ -493,6 +499,13 @@ void SystemTray::SetUiTheme(std::string_view theme_key) {
     ui_theme_ = ui::ThemeIdToKey(ui::ParseThemeId(theme_key));
 }
 
+// 261108_0002 (WS3): mirror of AppConfig::back_translation_enabled for the
+// "역번역 플로팅 표시" check mark (same lazy-rebuild contract as
+// SetUiLanguage - ShowContextMenu re-reads this on every open).
+void SystemTray::SetBackTranslationEnabled(bool enabled) {
+    back_translation_enabled_ = enabled;
+}
+
 void SystemTray::RefreshTheme() {
     ui_theme_ = ui::ThemeIdToKey(ui::GetActiveThemeId());
     if (hCurrentIcon_) {
@@ -797,6 +810,10 @@ void SystemTray::ShowContextMenu() {
 
     // 6. Modes and toggles
     ::AppendMenuW(hMenu, MF_STRING | (auto_send_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_AUTOSEND, I18n::Get(StringId::MenuAutoSend).c_str());
+    // 261108_0002 (WS3): floating back-translation verification card toggle,
+    // directly below the auto-send row (its natural neighbour in the toggles
+    // group). Checkable row; the card itself is drawn by the UI layer.
+    ::AppendMenuW(hMenu, MF_STRING | (back_translation_enabled_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_BACK_TRANSLATE, I18n::Get(StringId::MenuBackTranslation).c_str());
     ::AppendMenuW(hMenu, MF_STRING | (sound_enabled_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_SOUND, I18n::Get(StringId::MenuSoundFeedback).c_str());
     ::AppendMenuW(hMenu, MF_STRING | (badge_visible_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_BADGE, I18n::Get(StringId::MenuShowBadge).c_str());
 
@@ -860,6 +877,10 @@ void SystemTray::ShowContextMenu() {
         callbacks_.on_swap_languages();
     } else if (cmd == ID_TRAY_AUTOSEND && callbacks_.on_toggle_auto_send) {
         callbacks_.on_toggle_auto_send();
+    } else if (cmd == ID_TRAY_BACK_TRANSLATE && callbacks_.on_toggle_back_translate) {
+        // 261108_0002 (WS3): flip AppConfig::back_translation_enabled. main.cpp
+        // owns the persist + the SetBackTranslationEnabled refresh.
+        callbacks_.on_toggle_back_translate();
     } else if (cmd == ID_TRAY_SOUND && callbacks_.on_toggle_sound) {
         callbacks_.on_toggle_sound();
     } else if (cmd == ID_TRAY_BADGE && callbacks_.on_toggle_badge) {

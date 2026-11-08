@@ -174,19 +174,32 @@ constexpr int ScaledMaxGenTokens(int input_token_count) {
 // count (template wrapper included), so a one-word translation carried a
 // 256-token runway for hallucinated essays. A short single-line source
 // (<= 16 UTF-8 bytes, no line break) can only ever produce a word or one
-// sentence, so its budget is capped to 64 tokens. kLlamaGenReserve is the
+// sentence, so its budget is capped to 64 tokens. WS1 (261108_0002) narrows
+// that further for a source that is ONE word (see
+// kSingleWordSourceGenCapTokens below). kLlamaGenReserve is the
 // "no additional constraint" sentinel: the caller takes the lesser of
 // ScaledMaxGenTokens and this cap, so longer inputs keep their historical
 // budget byte-identically. Pure/constexpr so the unit suite pins it
 // headlessly (mirrors ScaledMaxGenTokens).
 inline constexpr std::size_t kShortSourceMaxUtf8Bytes = 16;
 inline constexpr int kShortSourceGenCapTokens = 64;
+// WS1 (261108_0002, WS1-gates): the SINGLE-WORD cap. The user report's
+// hallucinations all start from ONE word ("cyber", "company", "astrology",
+// "clue", "nature", "medicine"), and 64 tokens of runway is what lets a 1.8B
+// model continue the word into a paragraph, a numbered quiz answer or a
+// dialogue turn ("assistant: ..."). A whitespace-free <= 16-byte source is a
+// single word, whose translation (measured on the shipped model: 1-10 code
+// points, well under 10 tokens for every shipped pair) can never legitimately
+// need more than 16 tokens. Multi-word short sources keep the RC-4 64-token
+// cap. kLlamaGenReserve stays the "no additional constraint" sentinel.
+inline constexpr int kSingleWordSourceGenCapTokens = 16;
 constexpr int ShortSourceGenTokenCap(std::size_t source_utf8_bytes,
-                                     bool source_has_line_break) noexcept {
-    if (!source_has_line_break && source_utf8_bytes <= kShortSourceMaxUtf8Bytes) {
-        return kShortSourceGenCapTokens;
+                                     bool source_has_line_break,
+                                     bool source_has_whitespace = true) noexcept {
+    if (source_has_line_break || source_utf8_bytes > kShortSourceMaxUtf8Bytes) {
+        return kLlamaGenReserve;
     }
-    return kLlamaGenReserve;
+    return source_has_whitespace ? kShortSourceGenCapTokens : kSingleWordSourceGenCapTokens;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,18 +390,43 @@ inline constexpr std::size_t kAmplifiedRepetitionOutputMinCodePoints = 120;
 
 // RC-2 (v0.10.5 handoff section 2.3): the two-tier tiny-source amplification
 // guard. Tier 1 covers sources of at most kAmplifiedSourceMaxCodePoints code
-// points (the pinned constant above is UNCHANGED): the flat floor is lowered
-// from 64 to 32 AND paired with a 10x ratio, so a 1-4 character word
-// answered with 32+ characters (>= 10x) is rejected. Tier 2 covers 5..15
-// code point sources PLUS single-token (whitespace-free) sources of any
-// length: 64+ characters at a 6x ratio is an amplification hallucination
-// for a single word ("hello" -> a dictionary essay). The historical pinned
-// constants keep their values (unit-suite static_asserts); the new
-// thresholds are separate constants.
-inline constexpr std::size_t kAmplifiedTinyTier1OutputMinCodePoints = 32;
-inline constexpr std::size_t kAmplifiedTinyTier1Ratio = 10;
+// points (the pinned 4 stays UNCHANGED). Tier 2 covers 5..15 code point
+// sources PLUS single-token (whitespace-free) sources of any length. The
+// historical pinned constants (kAmplifiedSourceMaxCodePoints /
+// kAmplifiedOutputMinCodePoints) keep their values (unit-suite
+// static_asserts); the tier thresholds are separate constants.
+//
+// WS1 (261108_0002, WS1-gates) RE-CALIBRATION of both tiers. Why the RC-2
+// numbers (Tier 1 = 32 cp at 10x, Tier 2 = 64 cp at 6x) missed the user
+// report: the hallucinations for the reported single words measure 14-32 code
+// points ("이메발라의 별자리 운세는 어떨까요?" = 19 for "astrology", "이메일은
+// 어떻게 보내나요?" = 14, "이 문서는 Emebala의 출처를 기반으로 작성되었습니다." = 32
+// for "cyber", "1. 당신은 어떤 방식으로 번역하나요" = 20), i.e. all UNDER the 64
+// Tier-2 floor, so every one of them shipped as status=ok. The floors are now
+// expressed against the SOURCE LENGTH the way the hallucination actually
+// scales (a model that "explains" a word writes a sentence, not 6x the word):
+//   * Tier 1 (1-4 code points): output >= max(16, 4x source). A 1-code-point
+//     interjection answered with a 16-code-point sentence is already the
+//     chatty shape; 16 is the smallest floor that leaves a real one-word
+//     translation untouched (measured legit: "OK" -> "좋습니다." = 5,
+//     "Hi" -> "안녕하세요!" = 6, "음" -> "네, 그렇습니다." = 9).
+//   * Tier 2, SINGLE WORD (whitespace-free, <= 15 code points): output >=
+//     max(20, 4x source). This is the user-report window: 20 code points is
+//     ~2x the longest measured legit one-word answer and ~4x the shortest
+//     reported hallucination; the 4x ratio keeps a longer word's proportional
+//     answer (e.g. 14 cp -> 56 cp) legal.
+//   * Tier 2, 5..15 code points WITH whitespace, and single words LONGER than
+//     15 code points: the RC-2 64 cp at 6x envelope is UNCHANGED (a phrase
+//     legitimately expands more than a word, and a 20+ code point single token
+//     is a compound whose translation is correspondingly long).
+// The pure-repetition laughter carve-out (above) is applied FIRST and is
+// untouched: a laughter answer to "ㅋㅋㅋㅋ" still passes under its own ceiling.
+inline constexpr std::size_t kAmplifiedTinyTier1MinOutputCodePoints = 16;
+inline constexpr std::size_t kAmplifiedTinyTier1Ratio = 4;
 inline constexpr std::size_t kAmplifiedTinyTier2SourceMaxCodePoints = 15;
 inline constexpr std::size_t kAmplifiedTinyTier2Ratio = 6;
+inline constexpr std::size_t kAmplifiedSingleWordOutputMinCodePoints = 20;
+inline constexpr std::size_t kAmplifiedSingleWordRatio = 4;
 
 // Script classes a text can carry. Bit flags so "target script present" is a
 // single mask test; JA is the one multi-script target (Han|Kana).
@@ -468,6 +506,22 @@ std::size_t CountCodePoints(std::wstring_view text);
 // engine answered in some other language (the live "asdf" EN->KO English
 // essay, "ㅋㅋㅋ" KO->EN Korean/Chinese loops). `tgt_script_classes == 0`
 // (unknown target) never rejects.
+//
+// WS1 (261108_0002, WS1-gates) LEAK DOMINANCE. Why the pre-WS1 rule missed the
+// user report: the early "target script present -> pass" exit treated ONE
+// embedded Latin word as proof of a Korean translation, so a 58-Hangul +
+// "astrology" answer to a Korean source shipped as status=ok for an English
+// target. The gate now also rejects the leak shape: the source carried at
+// least kWrongScriptLeakMinSourceCodePoints (10) code points in scripts the
+// target does not use, and the output STILL retains at least
+// kWrongScriptLeakRetainedPercent (40%) of them. 10 is the smallest source
+// that can carry a real word in the other script (a 9-code-point quote is
+// noise, and the base rule never fires on it anyway); 40% is the point where
+// "a term kept verbatim" becomes "the answer was not translated". A faithful
+// translation that quotes one foreign name stays far below both bounds (a
+// 5-character Korean quote inside a 100-character source retains 5%).
+inline constexpr std::size_t kWrongScriptLeakMinSourceCodePoints = 10;
+inline constexpr int kWrongScriptLeakRetainedPercent = 40;
 bool IsWrongScriptOutput(std::wstring_view output, std::wstring_view source,
                          std::uint32_t tgt_script_classes);
 
@@ -522,13 +576,21 @@ bool IsUnexpectedScriptHeavyOutput(std::wstring_view output, std::wstring_view s
                                    std::uint32_t tgt_script_classes);
 
 // R2-16 rule (ii), pure: the two-tier tiny-source amplification guard (RC-2,
-// v0.10.5). Tier 1: a source of at most kAmplifiedSourceMaxCodePoints code
-// points answered with >= kAmplifiedTinyTier1OutputMinCodePoints (32) at a
-// >= kAmplifiedTinyTier1Ratio (10x) expansion. Tier 2: a 5..15 code point
-// source, or a single whitespace-free token of any length, answered with >=
-// kAmplifiedOutputMinCodePoints (64) at a >= kAmplifiedTinyTier2Ratio (6x)
-// expansion. A source that is itself a pure repetition (see below) keeps the
-// bounded laughter ceiling instead of the flat floor.
+// v0.10.5; floors RE-CALIBRATED by WS1 261108_0002). A source that is itself a
+// pure repetition (see below) keeps the bounded laughter ceiling instead of
+// the flat floors. Otherwise:
+//   Tier 1 (source <= kAmplifiedSourceMaxCodePoints = 4 code points):
+//     output >= max(kAmplifiedTinyTier1MinOutputCodePoints = 16,
+//                   source_cp * kAmplifiedTinyTier1Ratio = 4x).
+//   Tier 2 (5..15 code points, or any single whitespace-free token):
+//     output >= kAmplifiedOutputMinCodePoints (64) at a
+//     >= kAmplifiedTinyTier2Ratio (6x) expansion EXCEPT for a single
+//     whitespace-free word of <= 15 code points, whose floor is
+//     max(kAmplifiedSingleWordOutputMinCodePoints = 20,
+//         source_cp * kAmplifiedSingleWordRatio = 4x) - the user-report
+//     window (the 14-32 code-point hallucinations measured for the reported
+//     words; a real one-word answer is 2-11: 회사, 점성학, 사이버, 자연, 의학,
+//     Unternehmen, Cyberspace).
 bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view source);
 
 // R3 source-shape carve-out for rule (ii), pure: true when the WHOLE source is
@@ -543,12 +605,89 @@ bool IsAmplifiedTinySourceOutput(std::wstring_view output, std::wstring_view sou
 // laughter answer passes, a 980-1110-code-point essay is still rejected.
 bool IsPureRepetitionSource(std::wstring_view source);
 
+// WS1 (261108_0002, WS1-gates) source shape: true when the WHOLE (trimmed)
+// source is ONE word - 1..kSingleWordSourceMaxCodePoints (20) code points, no
+// whitespace, no punctuation, and at least one letter (a script-bearing code
+// point, so "12345" / "..." / "???" are not words). A pure repetition source
+// ("ㅋㅋㅋㅋ", "no no no") is never a word here: it keeps the R3/RC-2 laughter
+// carve-out. This is the shape every reported hallucination started from and
+// the precondition of the structural gate below; the amplification tier uses
+// the slightly broader "single whitespace-free token" shape RC-2 defined, so a
+// punctuated token ("OK!!") keeps its historical tier.
+inline constexpr std::size_t kSingleWordSourceMaxCodePoints = 20;
+bool IsSingleWordSource(std::wstring_view source);
+
+// WS1 (261108_0002, WS1-gates) STRUCTURAL single-word gate, pure: "the model
+// answered a word with a SENTENCE". Fires only when the source is one word
+// (IsSingleWordSource) and the output carries a sentence shape that no
+// one-word translation can legitimately have:
+//   (a) it OPENS with a numbered/bullet marker ("1.", "1)", "1、", "- ..."), the
+//       numbered-quiz hallucination;
+//   (b) it contains '?' or '？' anywhere - an answer to a word is not a
+//       question;
+//   (c) it ENDS a sentence ('.', '!', '。') AND carries >= 3 whitespace
+//       separated words - the "explanation" shape.
+// A real one-word translation is one word, so every clause is impossible for
+// it by construction; multi-word sources and multi-line sources never reach
+// the gate at all (a sentence translation legitimately ends with '.').
+bool IsSingleWordToSentenceHallucination(std::wstring_view output, std::wstring_view source);
+
+// WS1 (261108_0002, WS1-gates) DECODE NORMALIZATION, pure: strip a leading
+// assistant/role header from a rung output ("assistant: 사이버" -> "사이버").
+// The reported single-word hallucinations arrive as a dialogue turn
+// ("assistant: <answer>", "model: <answer>", "<|assistant|>\n<answer>"), and
+// the header itself is garbage: dropping it lets the answer be judged on its
+// own merits instead of being rejected as meta leakage.
+//   * prefixes (ASCII case-insensitive, at offset 0): "assistant:", "model:",
+//     "ai:", "bot:", "<|assistant|>"; the immediate horizontal whitespace
+//     after the prefix goes with it.
+//   * SOURCE GUARD (the repo idiom used by StripEndOfConversationMarkers and
+//     HasMetaLeakage): a prefix the SOURCE text itself begins with is never
+//     stripped - it is the user's content, not a leaked header.
+//   * LABEL GUARD (the R2-7 idiom): when the SOURCE's first line starts with
+//     its own colon label, a leading target-language label is a TRANSLATED
+//     label ("모델: GPT-4" -> "Model: GPT-4") and is never stripped.
+// Returns true when something was stripped. In-place on UTF-8 (the prefixes are
+// pure ASCII, and UTF-8 continuation bytes can never collide with them).
+bool StripLeadingRoleHeader(std::string& text, std::string_view source);
+
+// WS1 (261108_0002, WS1-gates) item 10, pure: the leading-colon cleanup
+// decision. A stray ':' is dropped only when
+//   * the (already trimmed) output starts with ':',
+//   * the LEADING-WHITESPACE-TRIMMED source does NOT start with ':' (the user's
+//     own colon is content), and
+//   * the output does not open an emoji :shortcode: (^:[A-Za-z0-9_+-]+:) -
+//     ":laughing: 하하" is an emoji answer, not a ChatML artefact.
+bool ShouldStripLeadingColon(std::string_view output, std::string_view source);
+
+// WS1 (261108_0002, WS1-gates) item 9b, pure: does an exactly-matching echo
+// PREFIX prove the model is still copying untranslated text? Used by the
+// mid-decode echo probe to spare a mixed-script continuation: a source that
+// mixes the target script with another one ("Ah... I fell asleep... :laughing:
+// 사실 저는..." translated into English) legitimately starts its translation with
+// the part that is ALREADY in the target script, so an exact prefix match there
+// is not an echo. True when
+//   * the prefix carries a code point whose script the target does not use
+//     (proof of untranslated text), or
+//   * every script the source carries is outside the target (script-homogeneous
+//     source: no part of it can be "already in the target", so exact tracking
+//     can only be copying).
+bool IsUntranslatedEchoPrefix(std::wstring_view prefix, std::wstring_view source,
+                              std::uint32_t tgt_script_classes);
+
 enum class OutputRejectReason : std::uint8_t {
     None = 0,
     Repetition = 1,
     WrongScript = 2,
     MetaLeakage = 3,
     ScriptLeak = 4, // R2-16: unexpected-script / amplified-tiny-source answer
+    // WS1 (261108_0002, WS1-gates): the structural one-word-to-sentence shape
+    // (IsSingleWordToSentenceHallucination). Its own value because the shape
+    // is a different failure from a script leak and the shape-only diagnostic
+    // must be able to tell them apart; every consumer is in this library plus
+    // the unit suite (no wire vocabulary keys on OutputRejectReason), so the
+    // extra enumerator costs one switch case and one pin.
+    SingleWordSentence = 5,
 };
 
 // Short stable name for the shape-only diagnostic lines (never the content).
@@ -556,6 +695,19 @@ const char* OutputRejectReasonName(OutputRejectReason reason);
 
 // R1-1 combined gate over one trimmed rung output. Empty output returns None
 // (the ladder's own empty/echo handling owns that case).
+//
+// Rule order (first match wins, most specific diagnostic name first):
+// Repetition -> MetaLeakage -> WrongScript -> ScriptLeak (rule (i) | rule (ii))
+// -> SingleWordSentence. WS1 (261108_0002) puts the structural single-word
+// gate LAST on purpose: a calibrated shape that already rejects an essay keeps
+// its own reason name, and the structural gate only claims the answers the
+// calibrated floors still miss (the "explanation" of one word that sits
+// between the new single-word floor and the old 64-code-point one). Rejecting is
+// what both do; the order only decides the diagnostic.
+// WS1 also moved MetaLeakage in front of WrongScript: the new wrong-script
+// leak-dominance clause fires on retained foreign text, which is exactly what a
+// source echo inside a refusal preamble looks like, and the refusal name is the
+// more useful one.
 OutputRejectReason ClassifyTranslationOutput(std::wstring_view output,
                                              std::wstring_view source,
                                              std::string_view tgt_code);
