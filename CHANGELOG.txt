@@ -1,6 +1,68 @@
 Emebala Chat - Changelog
 ========================
 
+v0.10.6 - 2026-11-08
+====================
+
+Feature and fix release. Single-word hallucinations from the local engine
+are closed at the prompt, decode, and output-gate layers; consecutive
+multi-sentence in-place translation works after the first translation; and
+a floating back-translation card lets you check that the meaning survived.
+The installer verifies the engine binaries it copies, repairs stale engine
+slots on upgrade, and no longer reports success over a broken engine.
+Upgrading from any 0.10.x build is fully supported.
+
+What's new in this build
+------------------------
+* Floating back-translation verification: an optional floating card shows
+  your translation translated back into the language you typed, so you can
+  judge whether the meaning survived the round trip. It is off by default
+  (it costs a second engine round trip per translation); turn it on from
+  the tray "Floating Back-Translation" row or with the new
+  "back_translation_enabled" setting (false by default; configs written
+  before 0.10.6 read it as off). The card, its tray row, and its strings
+  are translated in all 37 interface languages, right-to-left included.
+
+What's fixed
+------------
+Translation:
+* Single-word hallucinations from the built-in local engine and
+  user-registered .gguf models: the "Auto Detect" source prompt no longer
+  wraps your text in brand-name fence markers or a 46-word meta
+  instruction, a single ASCII-shaped word resolves to English instead of
+  collapsing into "Auto Detect", decoded output is stripped of role
+  headers, the meta-leakage filter now catches assistant:/user:/system:/
+  model:/<|im_start|>/<|im_end|>/emebala/emebala_source/이메발라, a
+  single-word-to-sentence structural gate rejects one word answered as a
+  sentence, generation is capped at 16 tokens for single words, and the
+  amplification floors are lowered to catch 14-32 code-point invented
+  text. Chat-template models no longer fall back to the untemplated
+  completion form when an answer is rejected; the request fails honestly
+  instead of inventing text.
+* Consecutive multi-sentence in-place translation after a first
+  translation: the tail no longer starts with a space, the tail gets its
+  own language decision, the paste ledger re-anchors on a smart-bypassed
+  Enter, a deterministic same-line splitter separates already-translated
+  sentences from newly typed text when the ledger cannot match, the
+  16-token echo probe no longer false-aborts on mixed-script
+  continuations, the leading-colon stripper no longer eats :shortcode:
+  emoji, and untranslated source-script dominance is rejected.
+
+Installer and upgrade safety:
+* Engine binaries are SHA-256-verified after copying, and only verified
+  components advance the recorded version.
+* Owned engine slots are replaced whenever the recorded version or the
+  bytes on disk differ, so a same-version reinstall cannot keep stale
+  binaries; the worker manifest is an independent repair target.
+* Engine processes are terminated with a bounded wait before the store is
+  touched, including the legacy worker name.
+* When the elevated profile differs from the invoking user's, the engine
+  store is also deployed to that user's own profile.
+* The uninstall shared-store cleanup refuses junction/symlink redirection.
+* Post-install verification reports failures loudly instead of finishing
+  "successfully" with a broken engine.
+* ENGINE_REVISION is bumped to .r14 (the engine binaries changed).
+
 v0.10.5 - 2026-11-04
 ====================
 

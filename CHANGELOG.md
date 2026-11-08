@@ -5,6 +5,80 @@ All notable changes to Emebala Chat are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6] - 2026-11-08
+
+Feature and fix release. Single-word hallucinations from the local engine are
+closed at the prompt, decode, and output-gate layers; consecutive
+multi-sentence in-place translation now works after the first translation;
+and a floating back-translation card lets you check that the meaning
+survived. The installer verifies the engine binaries it copies, repairs
+stale engine slots on upgrade, and no longer reports success over a broken
+engine. Upgrading from any 0.10.x build is fully supported.
+
+### Added
+
+- **Floating Back-Translation Verification** (역번역 플로팅 확인): an
+  optional floating card that shows your translation translated back into
+  the language you typed, so you can judge whether the meaning survived the
+  round trip. Off by default because it costs a second engine round trip per
+  translation; toggle it from the tray **Floating Back-Translation** row or
+  the new `back_translation_enabled` config key (`false` by default; configs
+  written before 0.10.6 lack the key and read it as off). The card, its tray
+  row, and its strings are translated in all 37 interface languages,
+  including right-to-left languages.
+
+### Fixed
+
+Translation:
+
+- **Single-word hallucinations** from the built-in local engine and
+  user-registered GGUF models no longer produce invented sentences:
+  - The "Auto Detect" source prompt no longer wraps your text in brand-name
+    fence markers or appends a 46-word meta-instruction, so a one-word input
+    is no longer treated as a chat command.
+  - A single ASCII-shaped word now resolves to English instead of collapsing
+    into "Auto Detect" and taking the two-stage completion path.
+  - Decoded output is stripped of role headers (`assistant:`, `model:`,
+    `<|assistant|>`, ...); the meta-leakage needle table now covers
+    `assistant:`, `user:`, `system:`, `model:`, `<|im_start|>`,
+    `<|im_end|>`, `emebala`, `emebala_source` and `이메발라`; and a
+    single-word-to-sentence structural gate rejects answers that turn one
+    word into a whole sentence.
+  - Single-word generation is capped at 16 tokens, and the amplification
+    floors are lowered so 14-32 code-point hallucinations are caught.
+  - Chat-template models no longer degrade to the untemplated completion form
+    when an answer is rejected: the request fails honestly (retry, cloud
+    consent rules, or a clear notice) instead of inventing continuations.
+- **Consecutive multi-sentence in-place translation** after a first
+  translation:
+  - Tail slicing no longer feeds the engine a leading space, and the tail
+    gets its own language decision instead of inheriting the first
+    sentence's.
+  - The paste ledger re-anchors on a smart-bypassed Enter, and a
+    deterministic same-line splitter separates already-translated sentences
+    from newly typed source-language text when the ledger cannot match.
+  - The 16-token echo probe no longer false-aborts on mixed-script
+    continuations, the leading-colon stripper no longer eats `:shortcode:`
+    emoji, and untranslated source-script dominance is rejected.
+
+Installer & upgrade safety:
+
+- The installer now SHA-256-verifies every engine binary after copying it,
+  and only verified components advance the recorded version.
+- Owned engine slots are replaced whenever the recorded version or the bytes
+  on disk differ, so a same-version reinstall can no longer keep stale
+  binaries; the worker manifest is an independent repair target.
+- Engine processes are terminated with a bounded wait before the store is
+  touched, the legacy worker name included.
+- When the elevated profile differs from the invoking user's, the engine
+  store is also deployed to the user's own profile, so the app running as
+  that user finds a working engine.
+- The uninstall shared-store cleanup refuses junction/symlink redirection.
+- Post-install verification surfaces failures loudly instead of finishing
+  "successfully" with a broken engine.
+- `ENGINE_REVISION` is bumped to `.r14` (the engine binaries changed in this
+  release).
+
 ## [0.10.5] - 2026-11-04
 
 Patch release. Single-word translation hallucinations, input-pipeline
@@ -214,5 +288,6 @@ Upgrading from any 0.10.x build is fully supported.
 - The model-verification cache is a tamper-cost measure, not a security
   boundary against a same-user attacker.
 
+[0.10.6]: https://github.com/teamsunplaza/Emebalachat/releases/tag/v0.10.6
 [0.10.5]: https://github.com/teamsunplaza/Emebalachat/releases/tag/v0.10.5
 [0.10.4]: https://github.com/teamsunplaza/Emebalachat/releases/tag/v0.10.4
