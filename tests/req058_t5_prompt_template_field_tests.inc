@@ -153,7 +153,7 @@ void TestReq058T5PromptTemplateField() {
                                   std::ios::binary | std::ios::trunc);
                 out << "{\"schema_version\":1,\"clients\":{"
                        "\"emebala-listner\":{\"model_id\":\"\",\"profile_name\":\"\","
-                       "\"sampling\":{\"temperature\":0.0,\"top_p\":0.6,\"top_k\":20,\"rep_pen\":1.05},"
+                       "\"sampling\":{\"temperature\":0.0,\"top_p\":0.6,\"top_k\":20,\"rep_pen\":1.0},"
                        "\"prompt_template_ref\":\"subtitle-realtime-v1\"}}}";
             }
             // Margin for coarse-mtime filesystems (the req055 rewrite discipline).

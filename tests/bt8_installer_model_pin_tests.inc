@@ -67,7 +67,7 @@ void TestBt8InstallerModelBundling() {
         "2400, \"ctx\": 4096, \"max_sessions\": 1, \"residency\": \"ondemand\", "
         "\"eviction\": \"evict\", \"priority\": 9}, \"profiles\": "
         "{\"default\": {\"temperature\": 0.0, \"top_p\": 0.6, \"top_k\": 20, "
-        "\"rep_pen\": 1.05, \"prompt_template_ref\": \"hymt2-official\"}}, "
+        "\"rep_pen\": 1.0, \"prompt_template_ref\": \"hymt2-official\"}}, "
         "\"lang_pairs\": [\"*\"]}";
 
     const auto read_src = [](const wchar_t* rel, std::string& out) {

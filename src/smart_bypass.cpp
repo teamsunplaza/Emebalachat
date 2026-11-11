@@ -137,10 +137,20 @@ inline bool IsVietnameseSharedCodePoint(uint32_t cp) {
 // shared-letter-only text. Kept separate from kLatinLangs: Vietnamese is
 // script-detected, not stopword-voted, and this list is only consulted when
 // the text already carries a shared VI letter.
+//
+// R2-G-05 (261111_0001 fix-list round 2): "em" is DELIBERATELY ABSENT. It is
+// ordinary Portuguese (the single most frequent word of the language), so
+// keeping it here let a Portuguese sentence carrying ONE stray VI-exclusive
+// letter corroborate ITSELF into "Vietnamese" - and under a Vietnamese target
+// the TargetScriptDominant + already-target gate then silently skipped a real
+// translation. A single exclusive marker now needs a genuinely VI-only
+// function word from this list (or a second exclusive marker / two shared
+// letters), so the pinned samples are unaffected: "không được" still hits
+// không/được and "Xin chào bạn nhé" still hits bạn.
 const wchar_t* const kVietnameseStopWords[] = {
     L"không", L"của", L"một", L"và", L"là", L"cho", L"được", L"người",
     L"những", L"trong", L"có", L"với", L"đã", L"sẽ", L"về", L"từ",
-    L"này", L"khi", L"ra", L"để", L"anh", L"em", L"gì", L"sao",
+    L"này", L"khi", L"ra", L"để", L"anh", L"gì", L"sao",
     L"nào", L"rất", L"thì", L"mà", L"tôi", L"bạn", L"họ", L"chúng",
     L"vì", L"thế", L"đây", L"ấy", L"ở", L"theo", L"như", L"sau",
     L"trước", L"cũng", L"lại", L"hơn", L"rồi", L"năm", L"ngày",
@@ -169,6 +179,112 @@ bool ContainsVietnameseStopWord(std::wstring_view text) {
         }
     }
     return flush();
+}
+
+// R1-C (v0.10.7, 261111_0001 fix-list round 1): single-occurrence variant
+// markers corroborate through high-frequency function words, same role as
+// kVietnameseStopWords above. One marker + one stopword is real morphology;
+// one stray marker inside foreign text is not. Kept small on purpose - every
+// added word is a possible false corroboration for a neighboring language
+// sharing the script (Arabic/Urdu share many loanwords); the 2-occurrence
+// rule stays the primary signal, stopwords only rescue the 1-marker case.
+// Literals are \x-escaped so the encoding gate never sees raw RTL text.
+const wchar_t* const kUrduStopWords[] = {
+    L"\x06C1\x06D2",       // he (hai, "is")
+    L"\x06C1\x06CC\x06BA", // hain ("are")
+    L"\x06A9\x0627",       // ka
+    L"\x06A9\x06CC",       // ki
+    L"\x06A9\x0648",       // ko
+    L"\x0633\x06D2",       // se
+    L"\x0646\x06C1\x06CC\x06BA", // nahin ("not")
+    L"\x0627\x0648\x0631", // aur ("and")
+    L"\x0645\x06CC\x06BA", // mein ("in")
+    L"\x06CC\x06C1",       // yeh ("this")
+};
+
+// R2-G-05 (261111_0001 fix-list round 2): "ham" (\x0647\x0645, "also") is
+// REMOVED. It is also ordinary Arabic, so one stray Persian-exclusive letter
+// inside an Arabic sentence corroborated ITSELF through this word and relabeled
+// the whole text Persian. Every remaining entry is Persian-only among the
+// script-sharing languages (Farsi function words; the Urdu list above covers
+// Urdu).
+const wchar_t* const kPersianStopWords[] = {
+    L"\x0627\x0633\x062A",       // ast ("is")
+    L"\x0627\x06CC\x0646",       // in ("this")
+    L"\x06A9\x0647",             // ke
+    L"\x0631\x0627",             // ra
+    L"\x0628\x0627",             // ba ("with")
+    L"\x0628\x0631\x0627\x06cc", // baraye ("for")
+    L"\x0646\x0647",             // na ("no")
+    L"\x0645\x06CC",             // mi (verbal prefix)
+    L"\x062A\x0627",             // ta ("until")
+    L"\x0686\x0637\x0648\x0631", // chotor ("how") - R1-C: corroborates a lone Persian marker
+};                               //   (e.g. "chotor hasti": one marker + this word -> Persian)
+
+const wchar_t* const kUkrainianStopWords[] = {
+    // R1-C (v0.10.7, 261111_0001): the U+0456 letter (Cyrillic i, also the
+    // word "and") is DELIBERATELY ABSENT. It is both a Ukrainian-exclusive
+    // variant marker AND a stopword, so keeping it here let a lone marker
+    // corroborate ITSELF (ukrainian_marks==1 && ContainsUkrainianStopWord
+    // matched the same letter), defeating the R1-C rule and relabeling Russian
+    // text carrying one stray letter as "Ukrainian". Genuine Ukrainian has 2+
+    // such letters (the count rule) or one of the function words below, so the
+    // single-marker rescue is unaffected.
+    //
+    // R2-G-05 (261111_0001 fix-list round 2): "ta", "ne" and "dlya" are
+    // REMOVED - they are ordinary Russian words (та/не/для), so "Это не для
+    // тебя" plus one stray і corroborated the Ukrainian claim and relabeled
+    // Russian text Ukrainian. Only words Russian does not use remain (або,
+    // але, це, що, його, ць are all Ukrainian-only), which is the whole point
+    // of the corroboration rule: a shared neighbor word is not evidence.
+    L"\x0430\x0431\x043E", // abo (partial)
+    L"\x0430\x043B\x0435", // ale ("but")
+    L"\x0446\x0435",       // tse ("this")
+    L"\x0449\x043E",       // shcho ("that")
+    L"\x0457\x0433\x043E", // yoho ("his")
+    L"\x0446\x044C",       // ts' (particle)
+};
+
+// Shared scanner with ContainsVietnameseStopWord: tokenizes on non-letters
+// and reports whether any word matches the list. The tokenizer is deliberately
+// length-agnostic (it reports one-letter tokens too - the token is non-empty at
+// every boundary), so a future short function word needs no scanner change.
+// (R1-C removed the only single-letter entry, the Cyrillic U+0456 stopword that
+// coincided with its own variant marker.)
+template <size_t N>
+bool ContainsAnyStopWord(std::wstring_view text, const wchar_t* const (&words)[N]) {
+    std::wstring token;
+    const auto flush = [&]() -> bool {
+        if (token.empty()) return false;
+        for (size_t i = 0; i < N; ++i) {
+            if (token == words[i]) {
+                token.clear();
+                return true;
+            }
+        }
+        token.clear();
+        return false;
+    };
+    for (wchar_t c : text) {
+        if (iswalpha(c)) {
+            token += towlower(c);
+        } else if (flush()) {
+            return true;
+        }
+    }
+    return flush();
+}
+
+bool ContainsUrduStopWord(std::wstring_view text) {
+    return ContainsAnyStopWord(text, kUrduStopWords);
+}
+
+bool ContainsPersianStopWord(std::wstring_view text) {
+    return ContainsAnyStopWord(text, kPersianStopWords);
+}
+
+bool ContainsUkrainianStopWord(std::wstring_view text) {
+    return ContainsAnyStopWord(text, kUkrainianStopWords);
 }
 
 
@@ -240,6 +356,22 @@ bool ContainsCodePointMatching(std::wstring_view text, Predicate pred) {
     return false;
 }
 
+// R1-C (v0.10.7, 261111_0001 fix-list round 1): OCCURRENCE-count twin of the
+// single-ANY scan above, for the sub-language corroboration rules (one
+// exclusive marker amid foreign text is not a language claim; several are).
+template <typename Predicate>
+size_t CountCodePointsMatching(std::wstring_view text, Predicate pred) {
+    size_t count = 0;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (pred(cp)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 } // namespace
 
 bool ContainsKorean(std::wstring_view text) {
@@ -279,12 +411,42 @@ bool ContainsVietnamese(std::wstring_view text) {
     // Vietnamese immediately; the shared A-breve/D-stroke only count with a
     // VI-exclusive marker or a Vietnamese stopword coexisting. Shared-only
     // text (Romanian "casă", Croatian "đak") falls through to the Latin path.
-    if (ContainsCodePointMatching(text, IsVietnameseExclusiveCodePoint)) {
+    //
+    // R1-C (v0.10.7, 261111_0001 fix-list round 1): an EXCLUSIVE marker alone
+    // no longer confirms Vietnamese. One U+01A1 inside an otherwise-English
+    // sentence ("... with one mark: ơ") used to flip the whole label to
+    // "Vietnamese" (ContainsVietnamese runs BEFORE DetectLatinLanguage in
+    // LabelForFamilyAndDetectLanguageByScriptPriority), and under a
+    // Vietnamese target TargetScriptDominant + the already-target check
+    // then silently skipped the translation. A sub-language claim now needs
+    // CORROBORATION: at least one exclusive marker AND at least two
+    // shared-language markers (or a Vietnamese stopword). The pinned
+    // "Đừng ăn đó" sample (tests/run_tests.cpp:981) carries 1 exclusive (ừ)
+    // + 3 shared (Đ, ă, đ) and stays Vietnamese; a lone exclusive in
+    // Latin-dominant text falls through to the Latin decision.
+    const size_t exclusive = CountCodePointsMatching(text, IsVietnameseExclusiveCodePoint);
+    if (exclusive == 0) {
+        // No exclusive marker: shared letters alone never claim Vietnamese
+        // (RC-6, unchanged) - but a stopword still corroborates shared
+        // letters exactly as before.
+        if (!ContainsCodePointMatching(text, IsVietnameseSharedCodePoint)) {
+            return false;
+        }
+        return ContainsVietnameseStopWord(text);
+    }
+    if (exclusive >= 2) {
+        // Two independent tone-marked letters are real Vietnamese
+        // morphology ("Xin chào thế giới": ế + ộ); the defect class is a
+        // SINGLE stray marker, not two.
         return true;
     }
-    if (!ContainsCodePointMatching(text, IsVietnameseSharedCodePoint)) {
-        return false;
+    const size_t shared = CountCodePointsMatching(text, IsVietnameseSharedCodePoint);
+    if (shared >= 2) {
+        return true;
     }
+    // A single exclusive marker needs a second signal: two shared letters
+    // ("Đừng ăn đó": ừ + Đ, ă, đ) or a Vietnamese stopword. A lone marker in
+    // otherwise-foreign text falls through to the Latin decision.
     return ContainsVietnameseStopWord(text);
 }
 
@@ -503,41 +665,35 @@ bool TokenInWordList(std::wstring_view token, const wchar_t* const* words, size_
     return false;
 }
 
-// WS1 (261108_0002): English word shape for the SINGLE-token fallback below.
-// A token is "English-shaped" when it is a pure-ASCII alphabetic word of at
-// least 3 letters carrying at least one ASCII vowel (a/e/i/o/u/y). Short
-// function words ("de", "la", "ng") and acronyms ("hr", "pdf") are excluded
-// by the length floor; non-ASCII letters (señor, café, Grüße) are excluded by
-// the ASCII test, so every distinctive-diacritic and stopword decision above
-// keeps precedence.
+// v0.10.7 (session 261111_0001 U2, CEO language-fairness requirement): the
+// WS1 (261108_0002) "ASCII word shape" fallback is replaced by an explicit
+// English positive-evidence lexicon. The retired helper
+// (IsAsciiEnglishShapedToken) resolved ANY pure-ASCII word of >= 3 letters
+// carrying a vowel to "English", so a French/Spanish/Vietnamese/Indonesian
+// single word ("bonjour", "informazione") read as English and ShouldTranslate
+// then SILENTLY skipped the translation toward an English target. Letter
+// shape cannot decide word identity, so a single token now resolves English
+// only when the token itself is known English; every other single word keeps
+// the AUTO marker and the engine's built-in language ID decides.
 //
-// SCOPE: the fallback applies to a SINGLE token only, deliberately. A 2-token
-// ASCII-Latin phrase cannot be told apart from Swahili/Tagalog/Indonesian
-// ("Sisitiki sana", "Hindi ko"), and the F5 adjudication (audit 181530
-// Option B) forbids re-opening the silent untranslated passthrough for
-// exactly those users - ShouldTranslate must keep translating them toward an
-// English target. Single words carry no such ambiguity in practice and are
-// the shape the user report covers (cyber, company, astrology, clue, nature,
-// medicine).
-bool IsAsciiEnglishShapedToken(std::wstring_view token) {
-    if (token.size() < 3) {
-        return false;
-    }
-    bool has_vowel = false;
-    for (wchar_t c : token) {
-        if (c > 0x7F || !iswalpha(c)) {
-            return false;
-        }
-        switch (c) {
-            case L'a': case L'e': case L'i': case L'o': case L'u': case L'y':
-                has_vowel = true;
-                break;
-            default:
-                break;
-        }
-    }
-    return has_vowel;
-}
+// Membership rules (keep this list SMALL - every added word is a possible
+// false-English read that silently skips a real translation):
+//   * the WS1 reported single words, whose English read is a pinned contract
+//     (tests/run_tests.cpp and tests/ws1_singleword_tests.inc pin them);
+//   * "hotel", the RC-1 loanword pin that flipped to English in WS1.
+// English function words, stopwords and the frequent core vocabulary are
+// handled EARLIER by kStopWordsEN / kEnglishCoreWords (precedence unchanged),
+// and a distinctive non-English diacritic still wins over this list.
+//
+// SCOPE: a SINGLE token only, deliberately. A 2-token ASCII-Latin phrase
+// cannot be told apart from Swahili/Tagalog/Indonesian ("Sisitiki sana",
+// "Hindi ko"), and the F5 adjudication (audit 181530 Option B) forbids
+// re-opening the silent untranslated passthrough for exactly those users -
+// ShouldTranslate must keep translating them toward an English target.
+const wchar_t* const kEnglishSingleWordEvidence[] = {
+    L"cyber", L"company", L"astrology", L"clue", L"nature", L"medicine",
+    L"hotel",
+};
 
 const char* DistinctiveDiacriticLanguage(std::wstring_view token) {
     for (wchar_t c : token) {
@@ -572,11 +728,71 @@ std::string DetectLatinLanguage(std::wstring_view text) {
         // distinctive diacritic, an English core-vocabulary/stopword hit
         // (high-confidence English), or a single non-English stopword hit
         // (ties stay ambiguous). Anything else keeps the AUTO marker.
+        //
+        // R1-C (v0.10.7, 261111_0001 fix-list round 1): the distinctive-
+        // diacritic claim is corroborated the only way a 1-2 token sample
+        // allows. The RC-1/WS1 contract (pinned in tests/run_tests.cpp:941
+        // "señor" -> Spanish and :1002 "Liebe Grüße" -> German, plus
+        // tests/ws1_singleword_tests.inc) keeps a lone distinctive diacritic
+        // SUFFICIENT for 1-2 token words - a content-blind sample that small
+        // offers no second lexical signal, and that adjudication is not
+        // re-opened here. What IS new: the claim is REFUSED on
+        // COUNTER-EVIDENCE - (a) a second, DIFFERENT language's distinctive
+        // diacritic in the same sample (mixed markers = ambiguous), (b) an
+        // English CORE-VOCABULARY word (G-04 below), or (c) another Latin
+        // language's stopword hit (lexical evidence for a neighbor). A
+        // refused claim keeps the AUTO marker so the engine's built-in
+        // language ID decides, exactly like the other corroboration
+        // fallbacks in this file.
+        const char* diacritic_lang = nullptr;
+        bool mixed_diacritics = false;
         for (const auto& token : tokens) {
             if (const char* lang = DistinctiveDiacriticLanguage(token)) {
-                DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s (distinctive diacritic)\n", lang);
-                return lang;
+                if (diacritic_lang && !EqualsIgnoreCaseAscii(
+                        std::string_view{diacritic_lang}, std::string_view{lang})) {
+                    mixed_diacritics = true;
+                }
+                if (!diacritic_lang) {
+                    diacritic_lang = lang;
+                }
             }
+        }
+        if (diacritic_lang) {
+            // G-04 (261111_0001 fix-list round 2): the counter-evidence scan
+            // consults the English CORE VOCABULARY as well as kLatinLangs
+            // stopwords. "hello" / "thanks" / "good" are in neither
+            // kStopWordsEN nor any other word list here, so "hello senor"
+            // (hello + the Spanish n-tilde) used to resolve "Spanish" - and
+            // under a Spanish target the already-target gate then silently
+            // skipped an English speaker's request (no translation, no
+            // message). A high-frequency English core word beside a diacritic
+            // token is positive evidence for a DIFFERENT language, so it
+            // blocks the diacritic's claim symmetrically with a neighbor
+            // stopword; the engine's language ID then decides.
+            const char* counter_reason = nullptr;
+            for (const auto& token : tokens) {
+                if (TokenInWordList(token, kEnglishCoreWords,
+                                    std::size(kEnglishCoreWords))) {
+                    counter_reason = "counter-evidence English core word";
+                    break;
+                }
+                for (const auto& lang : kLatinLangs) {
+                    if (!EqualsIgnoreCaseAscii(std::string_view{lang.lang_name},
+                                               std::string_view{diacritic_lang}) &&
+                        TokenInWordList(token, lang.words, lang.count)) {
+                        counter_reason = "counter-evidence stopword";
+                        break;
+                    }
+                }
+                if (counter_reason) break;
+            }
+            if (!mixed_diacritics && counter_reason == nullptr) {
+                DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s (distinctive diacritic)\n", diacritic_lang);
+                return diacritic_lang;
+            }
+            DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token diacritic %s uncorroborated (%s); AUTO marker\n",
+                   diacritic_lang, mixed_diacritics ? "mixed diacritics" : counter_reason);
+            return "Auto Detect";
         }
         for (const auto& token : tokens) {
             if (TokenInWordList(token, kEnglishCoreWords, std::size(kEnglishCoreWords)) ||
@@ -612,23 +828,24 @@ std::string DetectLatinLanguage(std::wstring_view text) {
             DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=%s with %d hits\n", best_lang, best_hits);
             return best_lang;
         }
-        // WS1 (261108_0002): deterministic English fallback for the words that
-        // reach here - the reported single words (cyber, company, astrology,
-        // clue, nature, medicine) are in no core-vocabulary or stopword list,
-        // so they used to fall through to the AUTO marker. That marker is what
+        // WS1 (261108_0002): English resolution for the single words that
+        // reach here - the reported words (cyber, company, astrology, clue,
+        // nature, medicine) are in no core-vocabulary or stopword list, so
+        // they used to fall through to the AUTO marker. That marker is what
         // routed them into the AUTO-source prompt branch, where the RC-3
-        // brand fences primed the hallucinations this session removes. A
-        // pure-ASCII alphabetic word of >= 3 letters with a vowel is
-        // English-shaped; anything else (short function words, non-ASCII
-        // letters, digits, a stopword tie) keeps the AUTO marker so Hy-MT2's
-        // built-in language ID still decides.
+        // brand fences primed the hallucinations WS1 removed. The evidence is
+        // now LEXICAL (kEnglishSingleWordEvidence above), not shape-based:
+        // v0.10.7 (261111_0001 U2) removed the "any ASCII word with a vowel is
+        // English" rule because it silently skipped French/Spanish/
+        // Vietnamese/Indonesian single words toward an English target.
         //
-        // SINGLE token only (see IsAsciiEnglishShapedToken): a 2-token
-        // ASCII-Latin phrase stays AUTO so the F5 adjudication keeps
-        // translating Swahili/Tagalog/Indonesian toward English instead of
-        // silently bypassing them as "already English".
-        if (tokens.size() == 1 && IsAsciiEnglishShapedToken(tokens.front())) {
-            DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=English (ASCII word shape)\n");
+        // SINGLE token only: a 2-token ASCII-Latin phrase stays AUTO so the F5
+        // adjudication keeps translating Swahili/Tagalog/Indonesian toward
+        // English instead of silently bypassing them as "already English".
+        if (tokens.size() == 1 &&
+            TokenInWordList(tokens.front(), kEnglishSingleWordEvidence,
+                            std::size(kEnglishSingleWordEvidence))) {
+            DIAG_F("SMART_BYPASS/DetectLatinLanguage: 1-2 token path detected=English (single-token English evidence)\n");
             return "English";
         }
         return "Auto Detect";
@@ -676,48 +893,223 @@ std::string DetectLatinLanguage(std::wstring_view text) {
 // pure-ASCII Latin now share one policy (AUTO), so the distinction no longer
 // gates anything.
 
-std::string DetectLanguage(std::wstring_view text) {
-    std::wstring norm = NormalizeNFC(text);
+namespace {
 
-    // Trim whitespace
-    size_t start = 0;
-    while (start < norm.size() && iswspace(norm[start])) start++;
-    size_t end = norm.size();
-    while (end > start && iswspace(norm[end - 1])) end--;
-    if (start >= end) {
-        return "Unknown";
+// ---------------------------------------------------------------------------
+// v0.10.7 (session 261111_0001 U2, CEO language-fairness requirement):
+// DOMINANT-SCRIPT model for DetectLanguage.
+//
+// The previous decision was an ANY-CONTAINS priority cascade: ContainsKorean
+// ran first, so ONE Hangul syllable anywhere in an otherwise English sentence
+// ("The configuration file is corrupted. 한") labeled the whole selection
+// "Korean". Under a Korean target that became a Korean->Korean request - the
+// typing prompt read "Translate the following Korean text into Korean" - and
+// on the drag path a spurious ResolveEffectiveTarget pivot; the sentence was
+// never translated correctly. Every other branch carried the same bias one
+// script down (a single Thai/Arabic/Cyrillic character hijacked the label).
+//
+// The model below counts LETTERS per script family over the trimmed text
+// (spaces, punctuation, digits and symbols carry no language signal and are
+// skipped) and lets a family own the label only when it holds an absolute
+// majority of the letters AND clearly leads the runner-up. Two documented
+// escape hatches keep every existing pure-script outcome byte-identical:
+//   * a near-tie (the runner-up within 10% of the leader), and
+//   * no clear majority (the leader holds at most 50% of the letters)
+// both fall through to DetectLanguageByScriptPriority, the historical chain.
+// ---------------------------------------------------------------------------
+enum class ScriptFamily {
+    Korean = 0,
+    Japanese,   // Hiragana / Katakana (folds Hanzi in when kana is present)
+    Chinese,    // Hanzi without any kana
+    Thai,
+    Arabic,
+    Hebrew,
+    Cyrillic,
+    Devanagari,
+    Bengali,
+    Khmer,
+    Lao,
+    Myanmar,
+    Greek,
+    Latin,
+    Other,      // other alphabetic code points (Armenian, Georgian, ...)
+    Count
+};
+
+constexpr size_t kScriptFamilyCount = static_cast<size_t>(ScriptFamily::Count);
+
+struct ScriptTally {
+    size_t by_family[kScriptFamilyCount] = {};
+    size_t letters = 0;
+};
+
+ScriptFamily ScriptFamilyOfCodePoint(uint32_t cp) {
+    if (IsKoreanCodePoint(cp)) return ScriptFamily::Korean;
+    if (IsKanaCodePoint(cp)) return ScriptFamily::Japanese;
+    if (IsHanziCodePoint(cp)) return ScriptFamily::Chinese;
+    if (IsThaiCodePoint(cp)) return ScriptFamily::Thai;
+    if (IsArabicCodePoint(cp)) return ScriptFamily::Arabic;
+    if (IsHebrewScriptCodePoint(cp)) return ScriptFamily::Hebrew;
+    if (IsCyrillicCodePoint(cp)) return ScriptFamily::Cyrillic;
+    if (IsDevanagariCodePoint(cp)) return ScriptFamily::Devanagari;
+    if (IsBengaliCodePoint(cp)) return ScriptFamily::Bengali;
+    if (IsKhmerCodePoint(cp)) return ScriptFamily::Khmer;
+    if (IsLaoCodePoint(cp)) return ScriptFamily::Lao;
+    if (IsMyanmarCodePoint(cp)) return ScriptFamily::Myanmar;
+    if (IsGreekCodePoint(cp)) return ScriptFamily::Greek;
+    if (IsLatinCodePoint(cp)) return ScriptFamily::Latin;
+    return ScriptFamily::Other;
+}
+
+ScriptTally TallyScriptFamilies(std::wstring_view text) {
+    ScriptTally tally;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (!IsLinguisticCodePoint(cp)) {
+            continue;
+        }
+        ++tally.letters;
+        ++tally.by_family[static_cast<size_t>(ScriptFamilyOfCodePoint(cp))];
     }
-
-    std::wstring_view trimmed = std::wstring_view(norm).substr(start, end - start);
-
-    if (!HasLinguisticContent(trimmed)) {
-        return "Unknown";
+    // Kana is written by Japanese alone (no other supported language shares
+    // it), so the documented "kana takes precedence over Hanzi" rule survives
+    // the ratio model: a text carrying any kana is measured as one Japanese
+    // family, otherwise a kanji-heavy Japanese sentence would read Chinese.
+    const size_t japanese = static_cast<size_t>(ScriptFamily::Japanese);
+    const size_t chinese = static_cast<size_t>(ScriptFamily::Chinese);
+    if (tally.by_family[japanese] > 0) {
+        tally.by_family[japanese] += tally.by_family[chinese];
+        tally.by_family[chinese] = 0;
     }
+    return tally;
+}
 
+// Fills `out_family` and returns true only for a CLEAR winner; false means
+// "mixed, plural, or unclassifiable - keep the historical priority order".
+bool TryDominantScriptFamily(const ScriptTally& tally, ScriptFamily& out_family) {
+    size_t best = 0;
+    size_t second = 0;
+    ScriptFamily best_family = ScriptFamily::Count;
+    for (size_t i = 0; i < kScriptFamilyCount; ++i) {
+        const size_t count = tally.by_family[i];
+        if (count > best) {
+            second = best;
+            best = count;
+            best_family = static_cast<ScriptFamily>(i);
+        } else if (count > second) {
+            second = count;
+        }
+    }
+    if (tally.letters == 0 || best == 0 || best_family == ScriptFamily::Count) {
+        return false;
+    }
+    if (best_family == ScriptFamily::Other) {
+        // Nothing this table can name (Armenian/Georgian/...): the priority
+        // chain below keeps its "Unknown" answer.
+        return false;
+    }
+    if (best * 2 <= tally.letters) {
+        return false; // plurality, not a majority
+    }
+    if (second * 10 >= best * 9) {
+        return false; // near-tie: the runner-up is within 10% of the leader
+    }
+    out_family = best_family;
+    return true;
+}
+
+// Arabic script serves three supported languages; these variant letters are
+// the documented disambiguation, moved here verbatim from the old chain so the
+// dominant branch and the fallback chain cannot drift.
+//
+// R1-C (v0.10.7, 261111_0001 fix-list round 1): a SINGLE variant letter no
+// longer flips the sub-language label. One Urdu-exclusive letter inside an
+// otherwise-Arabic sentence used to relabel the whole text "Urdu" (and one
+// Persian letter "Persian"), so under an Urdu/Persian target the
+// TargetScriptDominant + already-target gates silently skipped a genuine
+// Arabic->Urdu translation (Arabic and Urdu share the script family, so the
+// 70%-gate always passed). Variant claims now need CORROBORATION: at least
+// two variant-letter occurrences, or one occurrence plus a language stopword.
+// Pure Arabic (no variant letter) keeps the exact "Arabic" answer.
+std::string DetectArabicVariant(std::wstring_view text) {
+    size_t urdu_marks = 0;
+    size_t persian_marks = 0;
+    size_t idx = 0;
+    while (idx < text.size()) {
+        const uint32_t cp = DecodeNextCodePoint(text, idx);
+        if (cp == 0x0679 || cp == 0x0688 || cp == 0x0691 || cp == 0x06BA || cp == 0x06D2 || cp == 0x06BE) {
+            ++urdu_marks;
+        } else if (cp == 0x067E || cp == 0x0686 || cp == 0x0698 || cp == 0x06AF) {
+            ++persian_marks;
+        }
+    }
+    if (urdu_marks >= 2) return "Urdu";
+    if (persian_marks >= 2) return "Persian";
+    if (urdu_marks == 1 && ContainsUrduStopWord(text)) return "Urdu";
+    if (persian_marks == 1 && ContainsPersianStopWord(text)) return "Persian";
+    return "Arabic";
+}
+
+// Cyrillic script serves Russian and Ukrainian; the four variant letters are
+// the documented disambiguation (also moved verbatim).
+//
+// R1-C corroboration (same rule as DetectArabicVariant above): one
+// Ukrainian-exclusive letter (ґ, є, і, ї) inside Russian text used to
+// relabel the WHOLE selection "Ukrainian" - a stray і in Russian prose is
+// common (a Latin i typed on the wrong layout lands on the same key). Two
+// occurrences, or one plus a Ukrainian stopword, are required now; pure
+// Russian keeps the exact "Russian" answer.
+std::string DetectCyrillicVariant(std::wstring_view text) {
+    const size_t ukrainian_marks = CountCodePointsMatching(text, [](uint32_t cp) {
+        return cp == 0x0491 || cp == 0x0454 || cp == 0x0456 || cp == 0x0457;
+    });
+    if (ukrainian_marks >= 2) return "Ukrainian";
+    if (ukrainian_marks == 1 && ContainsUkrainianStopWord(text)) return "Ukrainian";
+    return "Russian";
+}
+
+// Script family -> language label. Empty means "no label from this family";
+// DetectLanguage then re-runs the priority chain (never reached for a family
+// TryDominantScriptFamily accepted, kept as a total-function guard).
+std::string LabelForScriptFamily(ScriptFamily family, std::wstring_view text) {
+    switch (family) {
+        case ScriptFamily::Korean: return "Korean";
+        case ScriptFamily::Japanese: return "Japanese";
+        case ScriptFamily::Chinese: return "Chinese Simplified";
+        case ScriptFamily::Thai: return "Thai";
+        case ScriptFamily::Arabic: return DetectArabicVariant(text);
+        case ScriptFamily::Hebrew: return "Hebrew";
+        case ScriptFamily::Cyrillic: return DetectCyrillicVariant(text);
+        case ScriptFamily::Devanagari: return "Hindi";
+        case ScriptFamily::Bengali: return "Bengali";
+        case ScriptFamily::Khmer: return "Khmer";
+        case ScriptFamily::Lao: return "Lao";
+        case ScriptFamily::Myanmar: return "Burmese";
+        case ScriptFamily::Greek: return "Greek";
+        case ScriptFamily::Latin:
+            // Vietnamese shares the Latin script and is confirmed by its
+            // VI-exclusive code points (RC-6 rule, unchanged); every other
+            // Latin text goes through the Latin language path.
+            if (ContainsVietnamese(text)) return "Vietnamese";
+            return DetectLatinLanguage(text);
+        case ScriptFamily::Other:
+        case ScriptFamily::Count:
+            break;
+    }
+    return std::string();
+}
+
+// The historical script-priority chain, kept verbatim as (a) the decision for
+// pure-script text, where the dominant family IS the first matching branch,
+// and (b) the documented fallback for near-ties and pluralities.
+std::string DetectLanguageByScriptPriority(std::wstring_view trimmed) {
     // Script priority order:
     if (ContainsKorean(trimmed)) return "Korean";
     if (ContainsKana(trimmed)) return "Japanese"; // Kana takes precedence over Hanzi for Japanese
     if (ContainsThai(trimmed)) return "Thai";
     
-    if (ContainsArabic(trimmed)) {
-        // Disambiguate Arabic, Persian, Urdu
-        bool is_urdu = false;
-        bool is_persian = false;
-        size_t idx = 0;
-        while (idx < trimmed.size()) {
-            uint32_t cp = DecodeNextCodePoint(trimmed, idx);
-            if (cp == 0x0679 || cp == 0x0688 || cp == 0x0691 || cp == 0x06BA || cp == 0x06D2 || cp == 0x06BE) {
-                is_urdu = true;
-                break;
-            }
-            if (cp == 0x067E || cp == 0x0686 || cp == 0x0698 || cp == 0x06AF) {
-                is_persian = true;
-            }
-        }
-        if (is_urdu) return "Urdu";
-        if (is_persian) return "Persian";
-        return "Arabic";
-    }
+    if (ContainsArabic(trimmed)) return DetectArabicVariant(trimmed);
 
     // G-4 (user-approved 2026-09-07): Hebrew gets its OWN label immediately
     // after Arabic (same pattern) - reporting Hebrew as "Arabic" would corrupt
@@ -726,20 +1118,7 @@ std::string DetectLanguage(std::wstring_view text) {
     // Hebrew text under a Hebrew target instead of shipping it to the engine).
     if (ContainsHebrew(trimmed)) return "Hebrew";
     
-    if (ContainsCyrillic(trimmed)) {
-        // Disambiguate Russian vs Ukrainian
-        bool is_ukrainian = false;
-        size_t idx = 0;
-        while (idx < trimmed.size()) {
-            uint32_t cp = DecodeNextCodePoint(trimmed, idx);
-            if (cp == 0x0491 || cp == 0x0454 || cp == 0x0456 || cp == 0x0457) {
-                is_ukrainian = true;
-                break;
-            }
-        }
-        if (is_ukrainian) return "Ukrainian";
-        return "Russian";
-    }
+    if (ContainsCyrillic(trimmed)) return DetectCyrillicVariant(trimmed);
     
     if (ContainsVietnamese(trimmed)) return "Vietnamese";
     if (ContainsHanzi(trimmed)) return "Chinese Simplified";
@@ -782,6 +1161,56 @@ std::string DetectLanguage(std::wstring_view text) {
     }
 
     return "Unknown";
+}
+
+} // namespace
+
+// v0.10.7 (session 261111_0001 U2, CEO language-fairness requirement):
+// DOMINANT-SCRIPT decision before the historical priority chain.
+//
+// The old body was the any-contains cascade now kept as
+// DetectLanguageByScriptPriority: `ContainsKorean(trimmed)` ran first, so one
+// Hangul syllable anywhere in an otherwise English sentence ("The
+// configuration file is corrupted. 한") labeled the WHOLE selection "Korean".
+// Under a Korean target that became a Korean->Korean identity request (the
+// prompt read "Translate the following Korean text into Korean") and on the
+// drag path a spurious ResolveEffectiveTarget pivot. The ratio model below
+// labels by MAJORITY script instead, and the two documented mixed-text cases
+// (near-tie, no majority) keep the historical chain, so pure-script input is
+// byte-identical to the pre-v0.10.7 answer.
+std::string DetectLanguage(std::wstring_view text) {
+    std::wstring norm = NormalizeNFC(text);
+
+    // Trim whitespace
+    size_t start = 0;
+    while (start < norm.size() && iswspace(norm[start])) start++;
+    size_t end = norm.size();
+    while (end > start && iswspace(norm[end - 1])) end--;
+    if (start >= end) {
+        return "Unknown";
+    }
+
+    std::wstring_view trimmed = std::wstring_view(norm).substr(start, end - start);
+
+    if (!HasLinguisticContent(trimmed)) {
+        return "Unknown";
+    }
+
+    const ScriptTally tally = TallyScriptFamilies(trimmed);
+    ScriptFamily dominant = ScriptFamily::Count;
+    if (TryDominantScriptFamily(tally, dominant)) {
+        const std::string label = LabelForScriptFamily(dominant, trimmed);
+        if (!label.empty()) {
+            DIAG_F("SMART_BYPASS/DetectLanguage: dominant script family=%d letters=%zu label=%s\n",
+                   static_cast<int>(dominant), tally.letters, label.c_str());
+            return label;
+        }
+    } else {
+        DIAG_F("SMART_BYPASS/DetectLanguage: no dominant script (letters=%zu), priority order decides\n",
+               tally.letters);
+    }
+
+    return DetectLanguageByScriptPriority(trimmed);
 }
 
 namespace {

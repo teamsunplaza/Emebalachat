@@ -21,7 +21,9 @@
 
 #include <windows.h>
 
-#include "../engine_host_client.hpp" // EngineHostConfig (warmup field, REQ-060)
+// 261111_0001 U7: engine headers moved to the shared engine repo (EMEBALA_ENGINE_DIR);
+// they resolve through Emebala_engine_host's PUBLIC include dir (engine src/).
+#include "engine_host_client.hpp" // EngineHostConfig (warmup field, REQ-060)
 #include "openai_settings_window.hpp" // TemplateBuilder (proven DLGTEMPLATE contract)
 
 namespace emebalachat {

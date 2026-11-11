@@ -31,7 +31,7 @@
   "temperature": 0.0,
   "top_p": 0.6,
   "top_k": 20,
-  "repetition_penalty": 1.05,
+  "repetition_penalty": 1.0,
   "badge_x": -1,
   "badge_y": -1
 }

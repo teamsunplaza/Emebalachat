@@ -22,6 +22,123 @@ namespace emebalachat {
 // Returns the Windows LCID for a given language code or name. Returns 0 if unknown.
 DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code);
 
+// 261111_0001 (v0.10.7) fix-list round 2, G-06: the tooltip card's
+// show/dismiss publication state. ONE mutex makes {visible, dismissal-owed,
+// card generation} a single indivisible unit, so an off-thread Dismiss() can
+// never be observed half-applied while a fresh Show* publishes a card in
+// between.
+//
+// The defect this replaces: Dismiss() cleared the atomic visible_ and THEN
+// stored a separate `dismiss_teardown_pending_` stamp. A GUI-side Show*
+// landing in that window published a FRESH card and cleared the stamp; the
+// worker's late store then set it again and the queued kDismissMessage tore
+// the fresh card down (a card the user never dismissed vanished).
+//
+// The generation names the CARD: every Show* publication bumps it, Dismiss
+// captures the generation of the card it began on, and the posted
+// kDismissMessage completes only while that generation is still current. A
+// card published after the dismissal began therefore can never be torn down
+// by it, and a duplicate/stale message is a pure no-op.
+//
+// Pure (no Win32), so every interleaving is unit-testable headlessly
+// (tests/v107_drag_tooltip_tests.inc drives the adversarial sequence); the
+// live TooltipWindow holds one instance and every read/write goes through it.
+struct TooltipCardVisibility {
+    // Sentinel for "no card generation". Generations start at 1, so 0 can
+    // never match a published card (same rule as TooltipWindow::kGenNone).
+    static constexpr uint64_t kNoGeneration = 0;
+
+    // GUI thread (Show*): publish a fresh card. Bumps the card generation, so
+    // every dismissal begun against an older card is stale from here on.
+    uint64_t PublishShow() {
+        std::lock_guard<std::mutex> lk(mu_);
+        visible_ = true;
+        teardown_owed_ = false;
+        return ++generation_;
+    }
+
+    // ANY thread (Dismiss): begin a dismissal as ONE unit - clear visibility,
+    // owe the GUI teardown, and capture the generation of the card being
+    // dismissed. Returns false when nothing is visible (the caller's early
+    // return, unchanged from the pre-fix contract).
+    bool TryBeginDismiss(uint64_t& out_generation) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!visible_) {
+            return false;
+        }
+        visible_ = false;
+        teardown_owed_ = true;
+        out_generation = generation_;
+        return true;
+    }
+
+    // GUI thread (kDismissMessage handler): true only when THIS dismissal is
+    // still current (no newer card was published) AND a teardown is owed;
+    // consumes the owed stamp so a second message cannot double-teardown.
+    bool TryCompleteDismiss(uint64_t generation) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (generation == kNoGeneration || generation != generation_ || !teardown_owed_) {
+            return false;
+        }
+        teardown_owed_ = false;
+        return true;
+    }
+
+    // GUI thread (TeardownCard): the card is off screen. The owed stamp is
+    // irrelevant once the teardown has run; the caller clears it explicitly.
+    void MarkHidden() {
+        std::lock_guard<std::mutex> lk(mu_);
+        visible_ = false;
+    }
+
+    // ANY thread (R1-G restore): a failed dismissal post restores the coherent
+    // pre-post state - card shown, nothing owed - so a later dismissal path
+    // retries instead of leaving a ghost card. Restores ONLY while this very
+    // dismissal is still the current one: a fresh card published meanwhile has
+    // its own visibility state, and a stale restore would resurrect a card the
+    // user just dismissed (or strip a newer dismissal of its owed teardown).
+    bool RestoreShown(uint64_t dismiss_generation) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (dismiss_generation == kNoGeneration || dismiss_generation != generation_ ||
+            !teardown_owed_) {
+            return false;
+        }
+        visible_ = true;
+        teardown_owed_ = false;
+        return true;
+    }
+
+    // ANY thread: drop a pending teardown stamp (TeardownCard's idempotence
+    // step; a duplicate message then finds nothing to do).
+    void ClearDismissalOwed() {
+        std::lock_guard<std::mutex> lk(mu_);
+        teardown_owed_ = false;
+    }
+
+    // ANY thread (IsVisible() is read from the keyboard/mouse hook threads).
+    // A short mutex acquisition, never a Win32 call inside the lock.
+    bool IsVisible() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return visible_;
+    }
+
+    // Test/diagnostic seams (assert the coherent triple, never a torn pair).
+    bool DismissalOwed() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return teardown_owed_;
+    }
+    uint64_t Generation() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return generation_;
+    }
+
+private:
+    mutable std::mutex mu_;
+    bool visible_ = false;
+    bool teardown_owed_ = false;
+    uint64_t generation_ = kNoGeneration;
+};
+
 class TooltipWindow {
 public:
     using LanguageChangeCallback = std::function<void(std::string_view new_target_lang)>;
@@ -60,7 +177,11 @@ public:
     );
 
     void Dismiss();
-    bool IsVisible() const { return visible_.load(std::memory_order_relaxed); }
+    // G-06 (round 2): visibility is owned by card_visibility_, whose
+    // {visible, dismissal-owed, card generation} triple is one mutex-guarded
+    // unit. Still callable from ANY thread (the keyboard/mouse hook threads
+    // read it); the acquisition is a few loads, no Win32 call inside the lock.
+    bool IsVisible() const { return card_visibility_.IsVisible(); }
     HWND GetHwnd() const { return hwnd_; }
 
     // ---- REQ-R08 (audit §3.2): transient message-bubble mode ----
@@ -664,6 +785,14 @@ public:
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b): the GUI-side teardown half of
+    // Dismiss() (StopTTS + timer kills + model clears + SW_HIDE), extracted so
+    // the kDismissMessage handler can run it exactly once even when an
+    // off-thread Dismiss() already cleared visibility before posting (G-06
+    // round 2: the handler first proves the dismissal is still current via
+    // TooltipCardVisibility::TryCompleteDismiss). Idempotent by construction
+    // (every step is a no-op on the second run).
+    void TeardownCard();
     void Render();
     void UpdateLayered();
     void ReallocateBuffer(int width, int height); // physical px buffer
@@ -725,9 +854,18 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
     DWORD gui_thread_id_ = 0; // thread that ran Create(); WndProc dispatch owner
-    // Hook/worker threads read IsVisible() concurrently with GUI-thread writes
-    // (same rule that made badge/tray state atomics mandatory in I4).
-    std::atomic<bool> visible_{false};
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b) + fix-list round 2 G-06: the
+    // card's show/dismiss publication state. An off-thread Dismiss()/
+    // DismissThreadSafe() clears visibility IMMEDIATELY (so IsVisible() is
+    // false the moment the call returns on any thread), owes the GUI teardown,
+    // and captures the generation of the card it is dismissing - all three in
+    // ONE mutex section (TooltipCardVisibility above), so a fresh Show* can
+    // never slip between them. The kDismissMessage handler completes the
+    // dismissal only while that generation is still current, and every Show*
+    // path publishes through the same type (fresh card, no teardown owed, new
+    // generation), so a queued/duplicate dismissal of an older card is a pure
+    // no-op instead of tearing a fresher card down.
+    TooltipCardVisibility card_visibility_;
 
     std::wstring source_text_;
     std::string source_lang_code_;

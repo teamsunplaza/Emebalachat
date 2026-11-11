@@ -383,6 +383,20 @@ enum class StringId {
     // (not inserted) so every pre-existing StringId keeps its numeric value.
     BackTranslateReference,  // "↳ 원문: " / "↳ Original: "
 
+    // 261111_0001 (v0.10.7) U6 — user-model surface completeness (R1 P1):
+    //   * GgufInvalidModelBody: the registration-time GGUF gate rejection
+    //     (src/gguf_validator.* wired into the manager's HF/orphan add
+    //     paths) — a truncated/corrupt/non-GGUF file is refused BEFORE the
+    //     registry write;
+    //   * GgufManagerActiveSuffix: the model-manager list marker on the
+    //     currently active user-model binding (double-click switches it);
+    //   * GgufManagerActivated: the post-switch confirmation notice.
+    // Appended at the tail so the EnumCount completeness loop covers them
+    // automatically (166x37 -> 169x37).
+    GgufInvalidModelBody,  // "올바른 GGUF 모델 파일이 아니어서 등록하지 않았습니다." / "Not a valid GGUF model file; it was not registered."
+    GgufManagerActiveSuffix, // "(사용 중)" / "(in use)"
+    GgufManagerActivated,  // "사용 중인 모델로 설정했습니다." / "This model is now in use."
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

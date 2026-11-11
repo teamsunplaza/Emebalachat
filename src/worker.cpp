@@ -1053,12 +1053,18 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // detection (Korean, kana-bearing Japanese, Russian, Arabic, Thai...)
     // now reaches the engine named. Latin-script text still resolves to the
     // AUTO marker (F5), so the engine's built-in language-ID path is
-    // unchanged there. The "Unknown" guard keeps the legacy AUTO marker on
-    // the empty/garbage edge DetectLanguage cannot classify.
-    const std::string detected_engine_src = DetectLanguage(engine_input);
+    // unchanged there. (261111_0001 U6: the "Unknown" guard moved into the
+    // DetectLanguageForPrompt accessor below.)
+    // 261111_0001 U6 (v0.10.7, R2-02/R2-04): the prompt label comes from
+    // the GATED accessor (dominant-script model + Unknown->AUTO), never a
+    // raw DetectLanguage call — the same label also feeds the
+    // back-translation request below, so the ladder source is governed by
+    // this one seam. PIPE-1 contract otherwise unchanged: a pinned
+    // type_source_language still wins, script-certain detections reach the
+    // engine named, and the "Unknown" guard now lives inside the accessor.
+    const std::string detected_engine_src = DetectLanguageForPrompt(engine_input);
     const std::string resolved_engine_src = ResolveEffectiveSource(
-        snap.type_source_language,
-        detected_engine_src == "Unknown" ? "Auto Detect" : detected_engine_src);
+        snap.type_source_language, detected_engine_src);
     DIAG_LOG("PIPELINE", "stage=translate begin engine=%s src_len=%zu%s src=%s",
              engine_.GetActiveEngineName().c_str(), engine_input.size(),
              untranslated_tail.empty() ? "" : " (req_f2 tail_only; prefix held verbatim)",
@@ -1412,6 +1418,19 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
          status == TranslationStatus::LocalModelMissing)) {
         DIAG_F("WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
                 static_cast<int>(status));
+        // 261111_0001 U6 (v0.10.7, R1 P1-3): an OpenAI-leg failure records its
+        // sanitized, key-masked cause in the client slot; the opt-in DIAG line
+        // stays SHAPE-ONLY (detail length only — a provider error body can
+        // echo user text, so it never goes to the log). The user-visible
+        // surface is the drag failure notice (main.cpp); the typing path
+        // keeps its established error-tone-only contract (a text notice
+        // there needs a new marshaled callback — see the unit report).
+        if (status == TranslationStatus::EngineFailed &&
+            engine_.GetEngineType() == EngineType::OpenAi) {
+            const std::string detail = OpenAiCompatibleClient::LastChatErrorDetail();
+            DIAG_F("WORKER/ExecuteTask/055: openai leg failed (detail_len=%zu)\n",
+                   detail.size());
+        }
         PlaySoundAsync(SoundType::Disable);
     }
 

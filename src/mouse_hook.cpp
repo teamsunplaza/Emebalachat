@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "hook.hpp" // Input P1-6: KeyboardHook::ResetImeCompositionMirror on real clicks
 #include "hook_thread.hpp"
+#include "ui/dpi.hpp"  // ISSUE-013: ui::MonitorDpiAtPoint for the drag threshold
 #include "win32_input.hpp"
 
 #include <chrono>
@@ -9,6 +10,37 @@
 #include <cstdio>
 
 namespace emebalachat {
+
+namespace {
+
+// ISSUE-013 (v0.10.7): the Win32 half of the drag-release threshold. The LL
+// hook delivers PHYSICAL pixels of the monitor under the cursor, so the
+// system drag metrics must be read for THAT monitor's DPI:
+// GetSystemMetricsForDpi (user32, Win10 1607+) returns the metric already
+// expressed in that monitor's physical pixels. Resolved through
+// GetProcAddress (the dpi.cpp shcore discipline) so an older host degrades
+// to the DPI-unaware GetSystemMetrics instead of failing to load. Cost: one
+// MonitorDpiAtPoint + two metric reads per drag RELEASE (never per move) -
+// the hook thread already calls GetSystemMetrics freely for the double-click
+// detection in the WM_LBUTTONDOWN branch.
+int DragThresholdPixelsForPress(POINT press_pt) {
+    const UINT dpi = ui::MonitorDpiAtPoint(press_pt);
+    typedef int(WINAPI* GetSystemMetricsForDpiFn)(int, UINT);
+    static GetSystemMetricsForDpiFn metrics_for_dpi = []() -> GetSystemMetricsForDpiFn {
+        HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+        return user32 ? reinterpret_cast<GetSystemMetricsForDpiFn>(
+                            ::GetProcAddress(user32, "GetSystemMetricsForDpi"))
+                      : nullptr;
+    }();
+    if (metrics_for_dpi) {
+        return MouseHook::DragThresholdFromMetrics(metrics_for_dpi(SM_CXDRAG, dpi),
+                                                   metrics_for_dpi(SM_CYDRAG, dpi));
+    }
+    return MouseHook::DragThresholdFromMetrics(::GetSystemMetrics(SM_CXDRAG),
+                                               ::GetSystemMetrics(SM_CYDRAG));
+}
+
+} // namespace
 
 MouseHook* MouseHook::s_instance = nullptr;
 
@@ -299,7 +331,7 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         // REQ-052 (audit P1): never let a pen/touch press (0xFF515700
         // dwExtraInfo signature) arm the drag origin or the double-click
         // tracking below - without this, the matching touch release trips the
-        // 15 px drag gate and spawns the drag-translate icon on every pen
+        // drag gate and spawns the drag-translate icon on every pen
         // stroke or touch scroll. Real mouse input has dwExtraInfo == 0 and
         // never matches. Pure touch sequences never enter the state machine
         // because the press is filtered here, before is_lbutton_down_ is set.
@@ -357,8 +389,18 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
             const int64_t dy = static_cast<int64_t>(ms->pt.y) - s_instance->lbutton_down_pt_.y;
             const int64_t dist_sq = dx * dx + dy * dy;
 
-            // Trigger drag release when Euclidean drag distance exceeds 15 pixels
-            if (dist_sq >= (15 * 15)) {
+            // ISSUE-013 (v0.10.7): the threshold comes from the system drag
+            // metrics for the press monitor's DPI (SM_CXDRAG / SM_CYDRAG max,
+            // GetSystemMetricsForDpi), replacing the hard-coded 15 px that
+            // ignored both the user's setting and high-DPI panels.
+            const int drag_threshold =
+                DragThresholdPixelsForPress(s_instance->lbutton_down_pt_);
+            const int64_t threshold_sq =
+                static_cast<int64_t>(drag_threshold) * drag_threshold;
+
+            // Trigger drag release when Euclidean drag distance exceeds the
+            // system drag threshold
+            if (dist_sq >= threshold_sq) {
                 // Input P2-4 (v0.10.5): a completed drag is not a click. The
                 // press had already incremented click_count_; leaving it armed
                 // made the NEXT press within GetDoubleClickTime() count as a

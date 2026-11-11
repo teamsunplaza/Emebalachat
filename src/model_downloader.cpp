@@ -34,7 +34,7 @@ engine_host_registry::ModelEntry BuildBundledEntry() {
     def.temperature = 0.0;
     def.top_p = 0.6;
     def.top_k = 20;
-    def.rep_pen = 1.05;
+    def.rep_pen = 1.0;
     def.prompt_template_ref = "hymt2-official";
     e.profiles.emplace("default", def);
     e.lang_pairs.emplace_back("*");

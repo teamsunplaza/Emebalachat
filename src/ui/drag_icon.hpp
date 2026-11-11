@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint> // 261111_0001 U1 (v0.10.7): uint64_t show/hide generation stamp
 #include <functional>
 #include <mutex>
 #include <windows.h>
@@ -11,6 +12,96 @@
 #include "theme.hpp"
 
 namespace emebalachat {
+
+// 261111_0001 U1 (v0.10.7, R1-D): pure staleness decision for the drag-icon
+// show slot. A show message applies only when its stamp still matches the
+// pending slot: 0 means there is no pending show (a Hide() emptied it, or
+// nothing was ever requested), and a mismatch means a newer show superseded
+// this one (or a forged stamp). DragIconWindow::ShouldApplyShowAt delegates
+// here so the decision has ONE source of truth shared with
+// DragShowArbiter::TryApply below.
+constexpr bool ShouldApplyDragShowAt(uint64_t stamped_gen, uint64_t pending_gen) {
+    return stamped_gen != 0 && stamped_gen == pending_gen;
+}
+
+// 261111_0001 U1 (v0.10.7, R1-D): the SINGLE arbiter for the drag-icon
+// show/hide publication protocol. Every producer (RequestShowAt) and the Hide
+// invalidation run under ONE mutex, so {token, coords, slot} publish as one
+// atomic unit. This closes three races the previous split-atomic design had
+// (four independent atomics: show_gen / pending_show_gen / pending_show_x /
+// pending_show_y):
+//   (1) a preempted producer could publish an OLDER generation last, so the
+//       newest show was dropped and the stale one rendered (the pending slot,
+//       not the monotonic counter, was the de-facto arbiter);
+//   (2) a Hide() invalidation (slot := 0) could be overwritten by a show whose
+//       token predated the hide, resurrecting the icon at a dead selection site;
+//   (3) x and y were two separate atomics, so a preempted producer tore the
+//       coordinates (x from one show, y from another).
+// Pure (no Win32), so the interleaving rules are unit-testable headlessly; the
+// live DragIconWindow holds one instance as a file-static (one icon window per
+// process, hook/GUI threads share it). Copies the tooltip.cpp:1248
+// mutex-guarded by-value publication pattern (single slot, latest-wins).
+struct DragShowArbiter {
+    // Begin a show under the lock: assign the next monotonic token and publish
+    // {token, coords} into the slot as ONE unit. Returns the token to carry in
+    // the kShowAtMessage WPARAM. The caller posts OUTSIDE the lock - the slot is
+    // the arbiter, so a reordered post still resolves latest-wins.
+    uint64_t BeginShow(int x, int y) {
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_x_ = x;
+        pending_y_ = y;
+        pending_gen_ = ++show_gen_;
+        return pending_gen_;
+    }
+    // Invalidate (Hide) under the lock: empty the slot and bump the token so
+    // every show stamped before this is dropped. A BeginShow that ran before the
+    // invalidate but posts after is dropped; a BeginShow after it gets a fresh,
+    // higher token and applies.
+    //
+    // 261111_0001 (v0.10.7) fix-list round 2, G-10: returns the HIDE token -
+    // the generation this hide owns. The marshaled kHideMessage carries it and
+    // the GUI-side handler re-invalidates only while it is still current
+    // (InvalidateIfCurrent below), so a Hide() requested BEFORE a newer
+    // BeginShow can no longer empty that newer show's slot when its message is
+    // finally drained.
+    uint64_t Invalidate() {
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_gen_ = 0;
+        return ++show_gen_;
+    }
+    // GUI-side completion of a marshaled hide. Returns true when `hide_token`
+    // is still the current generation - i.e. no BeginShow/Invalidate has
+    // advanced it since this hide was stamped - and re-invalidates in that
+    // case; false means a NEWER request owns the state and must be left
+    // untouched. Same mutex as BeginShow/TryApply, so the check and the
+    // invalidate cannot be split by a concurrent producer.
+    bool InvalidateIfCurrent(uint64_t hide_token) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (hide_token == 0 || show_gen_ != hide_token) {
+            return false;
+        }
+        pending_gen_ = 0;
+        ++show_gen_;
+        return true;
+    }
+    // Decide whether a stamped show still applies and, if so, copy its coords
+    // out ATOMICALLY with the decision (no torn read). Runs under the lock.
+    bool TryApply(uint64_t stamped, int& out_x, int& out_y) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!ShouldApplyDragShowAt(stamped, pending_gen_)) {
+            return false;
+        }
+        out_x = pending_x_;
+        out_y = pending_y_;
+        return true;
+    }
+private:
+    mutable std::mutex mu_;
+    uint64_t show_gen_ = 0;
+    uint64_t pending_gen_ = 0;
+    int pending_x_ = 0;
+    int pending_y_ = 0;
+};
 
 class DragIconWindow {
 public:
@@ -54,17 +145,37 @@ public:
     // from ANY thread including LowLevelMouseProc (PostMessageW never blocks on
     // the target queue; it only enqueues and returns).
     //
-    // Coordinate packing choice: x travels in WPARAM, y in LPARAM, as
-    // sign-extended int values. MAKELPARAM(x, y) was deliberately NOT used:
-    // it truncates each coordinate to 16 bits, which corrupts large negative
-    // virtual-screen offsets on multi-monitor rigs (primary spans can push
-    // coordinates past INT16). WPARAM/LPARAM are pointer-sized (64-bit on x64,
-    // 32-bit on x86, int is 32-bit on both), so the int round-trip is lossless.
-    // No heap-allocated struct either: nothing to leak or double-free, and
-    // rapid drag releases coalesce naturally in the queue (latest wins).
+    // ---- 261111_0001 U1 (v0.10.7, audit D4/ISSUE-009): show/hide generation seam ----
+    //
+    // A kShowAtMessage posted BEFORE a Hide() used to land AFTER it (an inline
+    // GUI-thread Hide() bypasses the posted queue) and strand a clickable icon
+    // at a dead selection site. RequestShowAt() now stamps a monotonically
+    // increasing generation: the stamp travels in WPARAM and the x/y pair is
+    // held in a single-slot pending request (filled by RequestShowAt just
+    // before the post). The kShowAtMessage handler drops any message whose
+    // stamp no longer matches the pending slot - a show posted before a Hide()
+    // (which empties the slot and bumps the generation) or one superseded by a
+    // newer show (rapid releases coalesce, latest wins). The stamp also closes
+    // the old coords-in-message forgery surface: a foreign process posting
+    // kShowAtMessage can no longer choose WHERE the icon appears (coordinates
+    // come from this process's own slot, and a guessed stamp never matches).
+    //
+    // The Pack* helpers keep the historical full-int coordinate packing as a
+    // standalone, test-pinned contract (TestUIMarshaling in tests/run_tests.cpp):
+    // MAKELPARAM(x, y) was deliberately NOT used - it truncates each coordinate
+    // to 16 bits, which corrupts large negative virtual-screen offsets on
+    // multi-monitor rigs (primary spans can push coordinates past INT16).
+    // WPARAM/LPARAM are pointer-sized (64-bit on x64, 32-bit on x86, int is
+    // 32-bit on both), so the int round-trip is lossless.
     static constexpr UINT kShowAtMessage = WM_APP + 0x101;
     // Hide marshaled the same way (ESC/outside-click dismiss paths run on the
-    // keyboard/mouse hook threads).
+    // keyboard/mouse hook threads). Hide() bumps the generation and empties the
+    // pending slot at REQUEST time, so a later-processed stale show is dropped.
+    // G-10 (fix-list round 2): WPARAM carries the HIDE TOKEN - the generation
+    // that hide owns - and the handler re-invalidates only while that token is
+    // still current, so a BeginShow that landed while this message sat in the
+    // queue keeps its pending slot (the old unconditional re-invalidation
+    // emptied it and dropped the newer show).
     static constexpr UINT kHideMessage = WM_APP + 0x102;
 
     static constexpr WPARAM PackShowAtX(int x) {
@@ -80,17 +191,33 @@ public:
         return static_cast<int>(static_cast<INT_PTR>(l));
     }
 
+    // 261111_0001 U1 (v0.10.7, audit D4 / R1-D): pure staleness decision
+    // (headless-testable, same pattern as TooltipWindow::ShouldRenderForGeneration).
+    // Delegates to the free ShouldApplyDragShowAt so the decision has ONE source
+    // of truth shared with DragShowArbiter::TryApply.
+    static constexpr bool ShouldApplyShowAt(uint64_t stamped_gen, uint64_t pending_gen) {
+        return ShouldApplyDragShowAt(stamped_gen, pending_gen);
+    }
+
     // Returns false when hwnd is null (icon Create() failed or was Destroy()d)
     // or when PostMessage failed; callers may treat false as "no icon shown".
-    static bool RequestShowAt(HWND hwnd, int x, int y) {
-        if (!hwnd) {
-            return false;
-        }
-        return ::PostMessageW(hwnd, kShowAtMessage, PackShowAtX(x), PackShowAtY(y)) == TRUE;
-    }
+    // Thread-safe (REQ-R10): stamps the show/hide generation and fills the
+    // single-slot pending coordinates consumed by the kShowAtMessage handler.
+    static bool RequestShowAt(HWND hwnd, int x, int y);
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    // 261111_0001 (v0.10.7) fix-list round 2, G-10: Hide() is split into
+    // (a) request-time invalidation + marshal, and (b) these two GUI-side
+    // steps. HideWindow() is the pure GUI teardown (hidden flag + SW_HIDE);
+    // CompleteHide() runs from the kHideMessage handler and re-invalidates the
+    // arbiter ONLY while the hide's own token is still current, so a newer
+    // BeginShow that landed while the hide was queued keeps its pending slot.
+    // Round 3 (F-2): when the token is NOT current the newer show already
+    // owns the slot, so CompleteHide also skips HideWindow() - a stale hide
+    // must not tear down a newer show that already drained.
+    void HideWindow();
+    void CompleteHide(uint64_t hide_token);
     void Render();
     void UpdateLayered();
     void StartFadeoutTimer();

@@ -262,18 +262,23 @@ void TestWs3BackTranslationI18n() {
         StringId::BackTranslateReference,
     };
 
-    // Ordering invariant: the four ids were appended AFTER the theme block and
+    // Ordering invariant: the five ids were appended AFTER the theme block and
     // BEFORE the sentinel, so the EnumCount completeness loop covers them. The
     // values ride through volatile ints so the comparisons stay genuine runtime
     // checks (a bare constant expression trips C4127 under /W4).
+    // 261111_0001 U6 (v0.10.7): the user-model ids (GgufInvalidModelBody +
+    // GgufManagerActiveSuffix/GgufManagerActivated) were appended AFTER this
+    // block, so BackTranslateReference is no longer the enum tail — the pin
+    // now asserts the block sits below the sentinel (contiguity + the
+    // theme-tail bound are unchanged).
     volatile int first_new = static_cast<int>(StringId::MenuBackTranslation);
     volatile int last_new = static_cast<int>(StringId::BackTranslateReference);
     volatile int theme_tail = static_cast<int>(StringId::ThemeMonolith);
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(first_new < sentinel && first_new > theme_tail,
                "WS3 i18n: MenuBackTranslation sits between ThemeMonolith and EnumCount");
-    TEST_CHECK(last_new == sentinel - 1,
-               "WS3 i18n: BackTranslateReference is the last id before EnumCount");
+    TEST_CHECK(last_new < sentinel,
+               "WS3 i18n: BackTranslateReference sits below EnumCount (261111_0001 U6 user-model ids follow it)");
     TEST_CHECK(last_new - first_new == 4,
                "WS3 i18n: the five new ids are contiguous");
 

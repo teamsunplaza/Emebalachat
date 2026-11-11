@@ -79,6 +79,60 @@ bool OpenAiSha256Hex(std::string_view data, std::string& out_hex);
 // so no usable prefix of a short secret leaks. Pure.
 std::string MaskOpenAiApiKey(std::string_view cleartext);
 
+// ---- 261111_0001 U6 (v0.10.7, R1 P1-3) + R2-L/R2-M (261111_0001)
+// + G-02/G-11 (261111_0001 round 2) --------
+// external-provider failure detail --
+//
+// Sanitizes a provider error message for user-visible display. Pass order
+// (G-02, the security invariant — see the .cpp): NORMALIZE first (drop
+// Unicode bidi controls whole: U+202A-202E, U+2066-2069, U+200E-200F,
+// U+061C, U+2060-2064, U+FEFF — display spoofing vectors, R2-M; plus the
+// zero-width / invisible separators added by F-4 (261111_0001 R3):
+// U+200B ZWSP, U+00AD SOFT HYPHEN, U+034F CGJ, U+180E MVS, which render as
+// nothing and so could hide a key split from the mask pass; ZWNJ/ZWJ
+// U+200C/200D stay — legitimate Persian/Indic text; collapse
+// control whitespace to single spaces), THEN mask EVERY occurrence of the
+// request's cleartext API key as "***" (masking after the only
+// text-joining transforms means a control-interleaved key — e.g.
+// "sk-sec<U+202E>ret" for key "sk-secret" — can never reassemble past it),
+// and finally bound + trim. The bound is applied on WHOLE UTF-8 sequences
+// so the cap can never split a multi-byte character into a replacement
+// glyph (R2-L). Pure and unit-testable; the masking guarantee is pinned by
+// the v107 suite, including the adversarial interleaved-key cases.
+inline constexpr std::size_t kMaxOpenAiErrorDetailChars = 160;
+std::string SanitizeOpenAiErrorDetail(std::string_view message,
+                                      std::string_view api_key);
+
+// Extracts the provider's error.message out of a non-2xx response body
+// ({"error":{"message":"...", ...}}), falling back to a bounded raw prefix
+// when the body is not that shape. Returns "" for an empty body. G-11
+// (261111_0001 round 2): every return path stops on a UTF-8 boundary — an
+// incomplete trailing sequence (from the 160-byte fallback cap or a body
+// that ends mid-sequence) is dropped, so the extract -> sanitize chain can
+// never surface a replacement glyph. Pure; never logs.
+std::string ExtractOpenAiErrorMessage(std::string_view body);
+
+// ---- 261111_0001 R3 (F-1/F-7): the /v1/models body walker ----
+//
+// Parses an OpenAI-style model list ({"object":"list","data":[{"id":"...",
+// ...},...]}) into the id list. Exposed as a PURE seam (no WinHTTP involved)
+// so the unit suite can pin the malformed-body walk the ListModels worker
+// runs:
+//   * F-1 (security): the walk must ALWAYS terminate. The array loop had no
+//     progress guard, and SkipValue's scalar arm stops AT a close delimiter
+//     without consuming it, so a provider 200 body like {"data":[} or
+//     {"data":[123}]} left the cursor frozen and the detached ListModels
+//     worker spun at 100% CPU forever (each retry leaking another thread).
+//   * F-7: the collected list is BOUNDED — at most kMaxOpenAiModelIds ids of
+//     at most kMaxOpenAiModelIdChars bytes each; collection stops cleanly at
+//     the cap instead of letting a 10 MiB hostile body flood the settings
+//     combo. Out-of-range ids are dropped (shape-only DIAG: length only).
+// A non-object body, a truncated body and a body without "data" all return
+// whatever ids were collected before the walk ended. Never logs content.
+inline constexpr std::size_t kMaxOpenAiModelIds = 512;
+inline constexpr std::size_t kMaxOpenAiModelIdChars = 256;
+std::vector<std::string> ParseOpenAiModelsJson(std::string_view json);
+
 // ---- WinHTTP client (synchronous; worker thread) ----
 
 class OpenAiCompatibleClient {
@@ -95,10 +149,35 @@ public:
     //                           {"role":"user","content":text}],"temperature":0}
     // Returns choices[0].message.content on success, empty on any failure.
     // 1500-unit input cap + 10 MiB response cap mirror the Google policy.
+    //
+    // 261111_0001 U6 (v0.10.7, R1 P1-3) + R2-E/R2-P (261111_0001): MINIMAL
+    // failure-detail extension — when the request fails (non-2xx HTTP
+    // status, transport error, or an unparseable 200 body) and
+    // out_error_detail is non-null, it receives a bounded, sanitized,
+    // key-masked single-line cause ("HTTP 503: <provider message>", or
+    // "HTTP 503" when the body carried no message, or "" on transport
+    // failure / unparseable 200 — R2-E: no unlocalized English literals,
+    // the localized notice already carries the message). The default
+    // nullptr keeps every existing call site source-compatible. The same
+    // sanitized cause is recorded in the process-wide
+    // LastChatErrorDetail() slot, so UI surfaces can read it WITHOUT
+    // growing the Translate() signature. R2-P: the masking happens inside
+    // the single failure recorder, so every recorded detail is guaranteed
+    // masked and bounded.
     static std::wstring ChatCompletion(const OpenAiConfig& cfg,
                                        std::string_view source_lang,
                                        std::string_view target_lang,
-                                       std::wstring_view text);
+                                       std::wstring_view text,
+                                       std::string* out_error_detail = nullptr);
+
+    // 261111_0001 U6: the most recent ChatCompletion FAILURE cause (the
+    // sanitized detail above), or "" when the last chat request succeeded
+    // or none ran. Process-wide, mutex-guarded; written only by
+    // ChatCompletion (Translate serializes requests on translate_mutex_,
+    // so "last" is unambiguous for consumers). The API key can never
+    // appear — the failure recorder masks it via SanitizeOpenAiErrorDetail
+    // before recording.
+    static std::string LastChatErrorDetail();
 };
 
 } // namespace emebalachat

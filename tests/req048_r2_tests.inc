@@ -144,7 +144,7 @@ namespace req048_r2d_detail {
 // 8 merged-manager/HF fields + the 2 OpenAI cue-banner hints + the REQ-051
 // OpenAI delete-button caption + the 25 REQ-UC update-zone strings).
 // TestReq044I18nFieldOrder pins the count with the identical sizeof technique;
-// its copy lives in run_tests.cpp. Both mirrors now record the SAME 166
+// its copy lives in run_tests.cpp. Both mirrors now record the SAME 169
 // (157 X-macro + the 4 v0.10.5 theme strings: MenuUiTheme/ThemeFluent/
 // ThemeEditorial/ThemeMonolith + the 5 261108_0002 WS3 back-translation
 // strings, the fifth being FIX-WS3B's BackTranslateReference). 261108_0002
@@ -154,7 +154,7 @@ namespace req048_r2d_detail {
 // now the sizeof static_assert in src/i18n.cpp (struct layout vs EnumCount),
 // and these mirrors are the per-TU record that it held.
 struct Req048R2LstrMirror {
-    const wchar_t* f[166];
+    const wchar_t* f[169];
 };
 
 } // namespace req048_r2d_detail
@@ -167,21 +167,21 @@ void TestReq048R2GgufManager() {
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 166
-    static_assert(kR2dFieldCount == 166,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/FIX-WS3B: LocalizedStrings field count is 166 "
-                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation) - update the i18n.cpp X-macro, "
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 169
+    static_assert(kR2dFieldCount == 169,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: LocalizedStrings field count is 169 "
+                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 3 user-model) - update the i18n.cpp X-macro, "
                   "all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 166,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 166");
-    TEST_CHECK(observed_enum_count == 166,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 166 (struct fields == "
+    TEST_CHECK(observed_field_count == 169,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 169");
+    TEST_CHECK(observed_enum_count == 169,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 169 (struct fields == "
                "switch cases, through the REQ-060 load-mode/policy block, the v0.10.5 theme "
-               "strings and the 261108_0002 WS3 back-translation ids)");
+               "strings, the 261108_0002 WS3 back-translation ids and the 261111_0001 U6 user-model ids)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.

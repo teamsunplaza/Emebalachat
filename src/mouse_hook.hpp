@@ -13,8 +13,9 @@ namespace emebalachat {
 
 class MouseHook {
 public:
-    // Callback invoked when mouse drag release exceeds threshold (> 15px), or
-    // after the double/triple-click settle window confirms a multi-click.
+    // Callback invoked when mouse drag release exceeds the system drag
+    // threshold (SM_CXDRAG / SM_CYDRAG, DPI-scaled - ISSUE-013), or after
+    // the double/triple-click settle window confirms a multi-click.
     using DragReleaseCallback = std::function<void(int x, int y)>;
 
     // Callback invoked on mouse button down (used for outside-click dismissals)
@@ -85,6 +86,25 @@ public:
     // both filters perform the identical side-effect-free bypass.
     static constexpr bool IsFromTouchInjection(DWORD extra_info) {
         return (extra_info & kFromTouchMask) == kFromTouchSignature;
+    }
+
+    // ---- ISSUE-013 (v0.10.7): system-metric drag threshold -----------------
+    // The drag-release threshold used to be a hard-coded 15 px, which ignored
+    // the user's system drag setting (SM_CXDRAG / SM_CYDRAG) and the monitor
+    // DPI: on a 200%-scaled panel 15 physical px is a much smaller physical
+    // distance than the user configured, and a user who raised the system
+    // drag rectangle to stop click tremor still got drags from a 15 px
+    // twitch. Pure half (headless-testable): combine the two system drag
+    // metrics into ONE threshold. The larger axis wins (the historical gate
+    // was a single Euclidean radius), and a registry-set 0 metric falls back
+    // to the REQ-052 P2 3 px floor so mere click tremor can never become a
+    // drag. The Win32 half (mouse_hook.cpp DragThresholdPixelsForPress)
+    // reads the metrics for the press monitor's DPI via
+    // GetSystemMetricsForDpi, so the value it feeds here is already in that
+    // monitor's physical pixels.
+    static constexpr int DragThresholdFromMetrics(int cx_drag, int cy_drag) {
+        const int threshold = (cx_drag > cy_drag) ? cx_drag : cy_drag;
+        return threshold > 0 ? threshold : 3;
     }
 
     MouseHook();

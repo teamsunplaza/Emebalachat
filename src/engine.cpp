@@ -91,7 +91,7 @@ std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side
 // main.cpp owns the one LoadFromFile() call and pushes the loaded values in via
 // the existing public setters (SetSamplingParams / SetCloudFallbackEnabled)
 // AFTER construction; the constructor here keeps pure in-class defaults
-// (0.0 / 0.6 / 20 / 1.05 - identical to AppConfig's defaults) so a
+// (0.0 / 0.6 / 20 / 1.0 - identical to AppConfig's defaults) so a
 // stand-alone constructed manager still behaves as before for tests.
 //
 // REQ-043 (M6 T5): the model_path_ field is retained as a legacy config
@@ -697,9 +697,21 @@ std::wstring TranslationManager::Translate(
     // cloud_fallback_enabled/google_consent gate. A request that produces
     // nothing records EngineFailed exactly like the google leg; the failure is
     // surfaced as an OpenAI failure, never masqueraded as a local/google one.
+    // 261111_0001 U6 (R1 P1-3): the failure detail (HTTP status + the
+    // provider's sanitized, key-masked message) is captured through the
+    // defaulted out-param; the DIAG line stays SHAPE-ONLY (length only —
+    // a provider error body can echo user text, so it never goes to the
+    // log). The same detail is user-visible through the client-side
+    // LastChatErrorDetail() slot (drag failure notice).
     auto openai_call = [&]() -> std::wstring {
+        std::string openai_error_detail;
         std::wstring res = OpenAiCompatibleClient::ChatCompletion(
-            openai_cfg, src_code_or_name, tgt_code_or_name, text);
+            openai_cfg, src_code_or_name, tgt_code_or_name, text,
+            &openai_error_detail);
+        if (res.empty()) {
+            DIAG_F("ENGINE/Translate/045b: openai leg failed (detail_len=%zu)\n",
+                   openai_error_detail.size());
+        }
         set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
         return res;
     };

@@ -143,11 +143,16 @@ constexpr bool ImeCommitEnterPromoted(bool active, bool worker_busy) {
 // Enter is a hard pass-through upstream (the app inserts the newline
 // itself), so the hook never otherwise sees it - this O(1) mirror is the
 // ONLY consumer, and it must stay IME-safe and ledger-coherent:
-//   - ime_composing == true: the key arrives mid-composition; its newline
-//     semantics are IME-dependent, so the count is FROZEN (verify 220750
-//     §6-(iii): K must never fire during composition; the F2 composing-
-//     Enter promotion carries the block as-is with the K observed BEFORE
-//     the composition opened).
+//   - v0.10.7 E1 (session 261111_0001): K advances ALWAYS, including while
+//     ime_composing is true. The old freeze (verify 220750 §6-(iii) "K must
+//     never fire during composition") starved Korean users: the Korean IME
+//     keeps the hook-local VK_PROCESSKEY mirror true across spaces and
+//     periods (each arrives as VK_PROCESSKEY), so a whole sentence's
+//     Shift+Enter never incremented K, and with K=0 the F3 block slice
+//     treated only the LAST logical line as new - the earlier lines were
+//     assumed already-translated and the message went out half-translated.
+//     A Shift+Enter pass-through delivers a REAL newline to the target app
+//     whatever the IME is doing, so the separator count must advance.
 //   - clamped at kMaxEnterTranslateNewlines: the capture guard would abort
 //     a capture with more separators than that anyway, and the clamp keeps
 //     an over-count (stale K from an un-captured region) from ever slicing
@@ -159,12 +164,138 @@ constexpr bool ImeCommitEnterPromoted(bool active, bool worker_busy) {
 // window change re-anchors the counter to the new block context - the same
 // "one window, one accumulation" world view the ledger enforces via
 // last_paste_target_ (worker.cpp C3) and V5/F6 via hwnd identity.
-constexpr int ShiftEnterKNext(int k, bool ime_composing) {
-    if (ime_composing) {
-        return k;
-    }
+
+// The ONE K advance: +1 saturated at the guard's newline ceiling (shared
+// with kMaxEnterTranslateNewlines so the block slice can never ask for more
+// lines than the capture guard admits).
+constexpr int ShiftEnterKAdvance(int k) {
     constexpr int kCap = static_cast<int>(kMaxEnterTranslateNewlines);
     return k < kCap ? k + 1 : k;
+}
+
+// The historical entry point, signature RETAINED so every existing caller
+// and the pinned contract keep compiling unchanged. v0.10.7 E1 removed the
+// ime_composing freeze (see the F3 block above): the parameter is now
+// ignored and marked maybe_unused, and the body is the shared
+// ShiftEnterKAdvance so the two definitions can never drift. Production
+// wiring goes through LineBreakTracker::OnShiftEnter below.
+constexpr int ShiftEnterKNext(int k, [[maybe_unused]] bool ime_composing) {
+    return ShiftEnterKAdvance(k);
+}
+
+// ---- v0.10.7 E1/E2 (session 261111_0001): the line-break accounting ------
+//
+// WHY: two audit defects broke multi-line translation for Korean/IME users.
+//   E1 - ShiftEnterKNext froze K while ime_composing was true. The Korean
+//     IME keeps the VK_PROCESSKEY mirror true across spaces and periods, so
+//     a sentence's Shift+Enter never incremented K; with K=0 the F3 block
+//     slice (FindCurrentBlockStart) treated only the last logical line as
+//     new and the earlier lines were assumed already-translated
+//     (half-translated messages).
+//   E2 - the hook decremented K on EVERY Backspace. Fixing a typo on line
+//     3 of a 3-line message erased a line-breaker count, so the earlier
+//     lines dropped out of the translation.
+//
+// WHAT: this pure tracker owns the per-current-line input counter and the
+// block's separator count K as plain ints - NO thread state, NO atomics, NO
+// allocation, O(1) per keystroke (the LowLevelHooksTimeout budget), fully
+// unit-testable headlessly. The hook mirrors its k into the shared
+// shift_enter_k_ atomic (the Ctrl+V fx worker's paste-newline channel) at
+// every mutation and re-syncs from that atomic at the top of every keydown,
+// so the tracker and the cross-thread paste path can never drift apart.
+//
+// Semantics:
+//   - Shift+Enter: K advances ALWAYS (a real newline is delivered to the
+//     target app by the pass-through regardless of IME state); the line
+//     counter resets to 0.
+//   - any text-producing key (printable virtual keys, VK_PROCESSKEY IME
+//     composition keys, a Ctrl+V paste - see IsTextProducingKey): the line
+//     counter increments, saturating at kLineInputCap (only zero vs
+//     non-zero plus a rough magnitude ever matter).
+//   - Backspace/Delete: line counter > 0 -> decrement it and DO NOT touch K
+//     (a typo fix inside a line must not erase a separator). Line counter
+//     == 0 && K > 0 -> the user is merging the current EMPTY line with the
+//     previous one, so K decrements.
+//
+// LIMITATION (R1-F, v0.10.7 261111_0001 fix-list round 1 - DOCUMENTED, NOT
+// fixed): line_input is a KEYSTROKE proxy, not a character count.
+//   - Composing ONE Korean syllable takes 2-3 jamo KEYSTROKES, but the line
+//     then holds ONE syllable character and ONE Backspace deletes it: the
+//     proxy counted 2-3 text-producing keys for that single character while
+//     the Backspace decrements once, so line_input drifts HIGH after
+//     composition (by keys minus committed syllables).
+//   - A Ctrl+V paste is ONE key that can insert many characters, so
+//     line_input increments by 1 for a whole pasted block (drifts low).
+// The drift is harmless BY DESIGN: only zero vs non-zero (plus a rough
+// magnitude) ever matters, and it is bounded by kLineInputCap below and by
+// REQ-041's dead-ledger K-cap on the separator count. Making line_input
+// character-accurate would require reading typed/pasted CONTENT, which this
+// hook never does (privacy design - the hook is content-blind). Accepted as-is;
+// the caret-tracking redesign is separate architecture work.
+struct LineBreakTracker {
+    // Saturating cap for the per-line counter. 255 is far above any real
+    // line length and keeps every field comfortably inside an int.
+    static constexpr int kLineInputCap = 255;
+
+    int k = 0;          // Shift+Enter separators since the last bare-Enter capture (the F3 block depth)
+    int line_input = 0; // saturating count of text-producing keys on the CURRENT line
+
+    void Reset() {
+        k = 0;
+        line_input = 0;
+    }
+
+    void OnShiftEnter() {
+        k = ShiftEnterKAdvance(k);
+        line_input = 0;
+    }
+
+    void OnTextInput() {
+        if (line_input < kLineInputCap) {
+            ++line_input;
+        }
+    }
+
+    void OnBackspace() {
+        if (line_input > 0) {
+            --line_input; // E2: a typo fix inside a non-empty line never touches K
+        } else if (k > 0) {
+            --k; // empty line: the user merges it with the previous one
+        }
+    }
+};
+
+// v0.10.7 E1/E2: the text-producing-key classifier behind
+// LineBreakTracker::OnTextInput. Pure (no Win32 calls) so the full key
+// matrix is pinned headlessly. Modifier chords are COMMANDS, not text
+// (Ctrl+A/X/Z restructure the block, Ctrl+V is counted at its own hook
+// site), so Ctrl/Alt/Win disqualify; Shift does NOT (Shift+a emits 'A').
+// VK_PROCESSKEY is the IME composition signal (Korean jamo, and the
+// spaces/periods the IME keeps composing) and IS text. Over-counting is
+// harmless - the counter only needs zero vs non-zero - and the classes
+// below cover every virtual key that can deposit a character into the
+// target app's edit control.
+constexpr bool IsTextProducingKey(UINT vk, bool ctrl, bool alt, bool win) {
+    if (ctrl || alt || win) {
+        return false;
+    }
+    switch (vk) {
+        case VK_PROCESSKEY: // IME-intercepted key (composition in progress)
+        case VK_SPACE:
+            return true;
+        default:
+            break;
+    }
+    if (vk >= 0x30 && vk <= 0x5A) {
+        return true; // 0-9, :;<=>?@, A-Z
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) {
+        return true; // numpad digits plus * + , - . /
+    }
+    if (vk >= VK_OEM_1 && vk <= VK_OEM_102) {
+        return true; // OEM punctuation cluster (reserved gaps inside the range never arrive as keydowns)
+    }
+    return false;
 }
 
 // Hook-local IME composition mirror, updated on every REAL (non-synthetic)
@@ -559,6 +690,15 @@ private:
     // member: it is only ever touched from the hook thread.
     std::atomic<int> shift_enter_k_{0};
     HWND k_anchor_hwnd_ = nullptr;
+
+    // v0.10.7 E1/E2 (session 261111_0001): the LineBreakTracker behind the
+    // K accounting (E1: K advances on every Shift+Enter; E2: Backspace on a
+    // non-empty line never touches K). Plain member - the hook thread is
+    // its ONLY writer/reader; the Ctrl+V fx worker never touches it. It
+    // re-syncs its k from the shift_enter_k_ atomic (the paste channel) at
+    // the top of every keydown and mirrors every mutation back, so the two
+    // can never drift apart.
+    LineBreakTracker line_break_;
 
     // REQ-R06 persistent-worker lifecycle. Start() spawns the loop, Stop() (and
     // therefore ~KeyboardHook) request_stop()+joins it deterministically so the

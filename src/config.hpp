@@ -500,11 +500,16 @@ struct AppConfig {
     // decoding (engine.cpp temp<=0.001 branch) measured highest source↔target
     // fidelity with zero hallucinations and byte-stable repeatability for the
     // 1.8B model in a real-time messenger context. Tencent's official safety
-    // rails below (top_p 0.6 / top_k 20 / repetition_penalty 1.05) are kept.
+    // rails below keep top_p 0.6 / top_k 20. v0.10.7 (261111_0001, U4): the
+    // shipped repetition_penalty default is now 1.0 (penalty-free greedy first
+    // pass; the engine retries once with 1.10 only when the repetition
+    // detector fires), because an unconditional 1.05 mutated recurring
+    // domain terminology. Existing config.json files keep their stored
+    // value; new installs get 1.0.
     float temperature = 0.0f;
     float top_p = 0.6f;
     int top_k = 20;
-    float repetition_penalty = 1.05f;
+    float repetition_penalty = 1.0f;
 
     // I4: point-in-time, thread-safe copy of the fields read by hook/worker threads.
     struct Snapshot {

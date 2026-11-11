@@ -48,6 +48,24 @@ bool ContainsLao(std::wstring_view text);
 bool ContainsMyanmar(std::wstring_view text);
 bool ContainsGreek(std::wstring_view text);
 
+// 261111_0001 U6 (v0.10.7, R2-02/R2-04 prompt-label governance): the ONE
+// accessor every engine-prompt source label must come from. DetectLanguage
+// itself carries the v0.10.7 dominant-script gate (U2's ratio model: a
+// family owns the label only with an absolute majority and a clear lead;
+// near-ties fall back to the historical priority chain), so a raw call is
+// already dominance-gated — this wrapper adds the prompt-side contract on
+// top, with NO duplicated logic:
+//   * "Unknown" (empty/garbage input) resolves to the canonical AUTO
+//     marker, so the engine's built-in language ID decides instead of a
+//     bogus label reaching the prompt;
+//   * every prompt consumer (typing path src/worker.cpp, drag path
+//     src/main.cpp, and the back-translation ladder source that rides the
+//     same resolved label) goes through ONE documented seam, so a future
+//     label-governance rule has a single insertion point.
+// Deliberately NOT folded into DetectLanguage itself: ShouldTranslate
+// consumes the raw label for the already-target bypass and its own RC-6
+// kanji pair gate, and DetectLanguage must stay a pure text->label fn.
+//
 // Detects language of given text based on script analysis.
 // Returns "Korean", "Japanese", "Vietnamese", "Chinese Simplified", "Russian",
 // "Thai", "Arabic", "Hebrew", "Auto Detect", or "Unknown". ("English" as a
@@ -77,7 +95,23 @@ bool ContainsGreek(std::wstring_view text);
 // (ShouldTranslate step 7). Accepted cost per the audit: a multi-word English
 // sentence under Auto targeting English spends one local inference and
 // returns near-identical output.)
+// (G-04, 261111_0001 fix-list round 2: that short-sample claim is REFUSED on
+// counter-evidence - a second language's distinctive diacritic, another Latin
+// language's stopword, or an English core-vocabulary word - and then falls
+// back to the AUTO marker, so "hello senor" is no longer asserted Spanish.)
 std::string DetectLanguage(std::wstring_view text);
+
+// THE PROMPT-LABEL ACCESSOR (governance contract documented above):
+// dominance-gated via DetectLanguage, plus the "Unknown" -> "Auto Detect"
+// normalization every engine-prompt consumer must share. Inline, thin — the
+// logic lives exclusively in DetectLanguage (U2); no duplication here.
+inline std::string DetectLanguageForPrompt(std::wstring_view text) {
+    std::string label = DetectLanguage(text);
+    if (label == "Unknown") {
+        return "Auto Detect";
+    }
+    return label;
+}
 
 // Returns true if text represents a standalone URL or web domain.
 bool IsUrl(std::wstring_view text);

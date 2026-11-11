@@ -492,7 +492,7 @@ private:
     float temperature_ = 0.0f;
     float top_p_ = 0.6f;
     int top_k_ = 20;
-    float repetition_penalty_ = 1.05f;
+    float repetition_penalty_ = 1.0f; // v0.10.7 (U4/R2-C): shipped default is penalty-free greedy
 
     // REQ-043 (M6 T5): consecutive engine-host failures (the repair signal
     // getter above); guarded by mutex_ like the rest of the manager state and

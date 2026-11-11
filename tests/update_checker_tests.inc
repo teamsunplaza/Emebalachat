@@ -46,7 +46,7 @@ void TestUpdateCheckerVersionParse() {
     // Three-way compare matrix.
     const auto a = updatelogic::ParseVersion("0.10.2");
     const auto b = updatelogic::ParseVersion("0.11.0");
-    const auto c = updatelogic::ParseVersion("0.10.6");
+    const auto c = updatelogic::ParseVersion("0.10.7");
     const auto d = updatelogic::ParseVersion("0.9.9");
     TEST_CHECK(updatelogic::CompareVersions(*a, *a) == 0, "UC: equal versions compare 0");
     TEST_CHECK(updatelogic::CompareVersions(*b, *a) > 0, "UC: 0.11.0 > 0.10.2");
@@ -54,17 +54,17 @@ void TestUpdateCheckerVersionParse() {
     TEST_CHECK(updatelogic::CompareVersions(*c, *a) > 0, "UC: patch bump is newer");
     TEST_CHECK(updatelogic::CompareVersions(*a, *d) > 0, "UC: 0.10.2 > 0.9.9 (minor over patch)");
 
-    // The offer decision against the running build (kAppVersionA == 0.10.6
-    // since the v0.10.6 CMake project() bump).
+    // The offer decision against the running build (kAppVersionA == 0.10.7
+    // since the v0.10.7 CMake project() bump).
     const auto current = updatelogic::ParseVersion(kAppVersionA);
     TEST_CHECK(current && updatelogic::CompareVersions(*current, *c) == 0,
-               "UC: kAppVersionA parses and equals 0.10.6");
+               "UC: kAppVersionA parses and equals 0.10.7");
     TEST_CHECK(updatelogic::CompareVersions(*b, *current) > 0,
-               "UC: v0.11.0 offered over 0.10.6 -> UpdateAvailable");
+               "UC: v0.11.0 offered over 0.10.7 -> UpdateAvailable");
     TEST_CHECK(updatelogic::CompareVersions(*c, *current) == 0,
-               "UC: v0.10.6 offered over 0.10.6 -> UpToDate (never self-update)");
+               "UC: v0.10.7 offered over 0.10.7 -> UpToDate (never self-update)");
     TEST_CHECK(updatelogic::CompareVersions(*d, *current) < 0,
-               "UC: v0.9.9 offered over 0.10.6 -> UpToDate");
+               "UC: v0.9.9 offered over 0.10.7 -> UpToDate");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-UC version parse + compare passed." << std::endl;

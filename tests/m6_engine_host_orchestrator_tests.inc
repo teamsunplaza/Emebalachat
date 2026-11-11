@@ -222,7 +222,11 @@ void TestHostV2Scheduler() {
     // item/expired/evicted/d.request_id — if either half regresses, the v2
     // result id returns to the unmatchable hardcoded 0.
     {
-        std::ifstream host_in("src/host_main.cpp", std::ios::binary);
+        // 261111_0001 U7 (v0.10.7): host_main.cpp moved to the shared engine
+        // repo — ResolveRepoFile (which gains the engine repo as a fallback
+        // base) keeps this pin running instead of silently skipping.
+        const std::filesystem::path host_path = ResolveRepoFile(L"src\\host_main.cpp");
+        std::ifstream host_in(host_path, std::ios::binary);
         if (!host_in) {
             std::cout << "[SKIP] src/host_main.cpp not resolvable from the test CWD; "
                          "260930_0003 v2 id-echo wiring pins skipped."

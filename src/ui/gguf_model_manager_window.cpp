@@ -1,7 +1,8 @@
 #include "gguf_model_manager_window.hpp"
 
 #include "../diag_logger.hpp" // REQ-047 D3 §C.4-style control/IO verification logging
-#include "../engine_host_json_util.hpp" // REQ-050: IsBareFilename (HF filename gate)
+#include "engine_host_json_util.hpp" // REQ-050: IsBareFilename (HF filename gate) — 261111_0001 U7: engine repo header (bare form; resolves via the engine libs' PUBLIC include dirs)
+#include "../gguf_validator.hpp" // 261111_0001 U6: registration-time GGUF header gate (R1 P1-4)
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
@@ -146,6 +147,16 @@ void RebuildManagerList(HWND dlg, ManagerDialogState* st) {
         // normalizes to the on-use leg, matching the registry parser's evict
         // default).
         label += L" " + I18n::Get(ManagerPolicySuffixId(m->resource.eviction));
+        // 261111_0001 U6 (v0.10.7, R1 P1-1): the ACTIVE binding is marked
+        // distinctly (same "(...)" suffix grammar as the policy marker).
+        // Same predicate as the dblclk activate handler: the binding id
+        // matches AND the user_gguf route is live, so a stale id left over
+        // under another engine type never wears the marker. The REQ-060
+        // policy toggle semantics are untouched by activation.
+        if (st->config && st->config->user_model_id == m->id &&
+            st->config->engine_type == "user_gguf") {
+            label += L" " + I18n::Get(StringId::GgufManagerActiveSuffix);
+        }
         const int row = static_cast<int>(
             ::SendMessageW(list, LB_ADDSTRING, 0,
                            reinterpret_cast<LPARAM>(label.c_str())));
@@ -241,6 +252,27 @@ bool WriteRegistryLoud(HWND owner, const engine_host_registry::Registry& registr
         DIAG_F("UI/GgufManager/003: registry.json atomic write failed (IoError)\n");
         return false;
     }
+    return true;
+}
+
+// 261111_0001 U6 (v0.10.7, R1 P1-4): the registration-time GGUF gate. Runs
+// the bounded header probe (magic/version/counts + the general.architecture
+// metadata key, never the tensor data) over `file`; on a structural failure
+// surfaces the localized rejection and returns true, so the caller abandons
+// the registration BEFORE any registry write or engine binding. Shape-only
+// DIAG (verdict code + arch length, never paths/ids).
+bool RejectInvalidGguf(HWND owner, const std::filesystem::path& file) {
+    ggufvalidator::GgufHeaderInfo info;
+    const auto verdict = ggufvalidator::ValidateGgufFile(file, &info);
+    if (verdict == ggufvalidator::GgufValidationResult::Ok) {
+        return false;
+    }
+    ::MessageBoxW(owner, I18n::Get(StringId::GgufInvalidModelBody).c_str(),
+                  I18n::Get(StringId::GgufManagerTitle).c_str(),
+                  MB_OK | MB_ICONERROR);
+    DIAG_F("UI/GgufManager/021: GGUF validation refused registration "
+           "(verdict=%d arch_len=%zu)\n",
+           static_cast<int>(verdict), info.architecture.size());
     return true;
 }
 
@@ -1094,6 +1126,13 @@ HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
     // same engine switch) and report an honest done status; the download
     // never starts.
     if (std::filesystem::exists(models_dir / ToUtf16(filename), ec)) {
+        // 261111_0001 U6 (v0.10.7, R1 P1-4): the orphan file is registered
+        // verbatim — validate its GGUF header BEFORE the registry write so
+        // a truncated/corrupt copy is rejected at registration, not at the
+        // first translate.
+        if (RejectInvalidGguf(dlg, models_dir / ToUtf16(filename))) {
+            return HfPreFlightResult::Refused;
+        }
         const HfFreshIdentity ident = HfDeriveFreshIdentity(res.registry, filename);
         engine_host_registry::ModelEntry entry;
         entry.id = ident.model_id;
@@ -1142,6 +1181,15 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
         return false;
     }
     const std::filesystem::path final_path = models_dir / ToUtf16(st->worker_filename);
+    // 261111_0001 U6 (v0.10.7, R1 P1-4): the completed download is validated
+    // BEFORE anything is renamed or registered — a truncated/corrupt
+    // download (the HF path has no hash to verify against) is rejected at
+    // registration with the localized message, and the temp file is
+    // discarded exactly like every other failure path.
+    if (RejectInvalidGguf(dlg, st->worker_tmp)) {
+        discard_tmp();
+        return false;
+    }
     auto res = engine_host_registry::LoadDefaultRegistry();
     if (res.status != engine_host_registry::LoadStatus::Ok &&
         res.status != engine_host_registry::LoadStatus::Missing) {
@@ -1509,9 +1557,68 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case IDC_MGR_LIST:
             // 260922_0001 A7: LBN_SELCHANGE (mouse click, arrow keys,
-            // Ctrl+click deselection) drives the action-button pair. Other
-            // list notifications (LBN_DBLCLK) have no handler — return FALSE.
+            // Ctrl+click deselection) drives the action-button set.
             if (HIWORD(wp) == LBN_SELCHANGE) {
+                SyncManagerActionButtons(dlg, st);
+                return TRUE;
+            }
+            // 261111_0001 U6 (v0.10.7, R1 P1-1): LBN_DBLCLK ACTIVATES the
+            // selected registered model — the missing switch among multiple
+            // user models. The binding rides the EXISTING config path
+            // (user_model_id + engine_type="user_gguf" + the runtime
+            // re-point); both the app (engine.cpp LocalSeamRequestModelId,
+            // REQ-060) and the host (host_main.cpp ResolveTranslatePin,
+            // REQ-055) read the pin LIVE per request, so the switch takes
+            // effect on the next translation — no restart, NO new IPC. The
+            // binding body is intentionally the same statement set as the
+            // add-pipeline reuse paths (HfPreFlight / HfRegisterDownloaded
+            // / RegisterUserGgufModel §5) so every route switches config
+            // identically. The REQ-060 resident-policy toggle is NOT
+            // touched. An already-active row re-selects without re-binding.
+            if (HIWORD(wp) == LBN_DBLCLK) {
+                const int idx = SelectedUserIndex(dlg, st);
+                if (idx < 0) return TRUE;
+                const std::string id = st->user_ids[static_cast<size_t>(idx)];
+                const bool already_active =
+                    st->config->user_model_id == id &&
+                    st->config->engine_type == "user_gguf";
+                if (!already_active) {
+                    std::string stem = id; // registry miss: the raw id never lies
+                    if (const auto* m = st->registry.FindModel(id)) {
+                        if (!m->files.empty()) {
+                            stem = ManagerModelStem(m->files[0]);
+                        }
+                    }
+                    st->config->SetUserModelId(id);
+                    st->config->SetEngineTypeName("user_gguf");
+                    st->engine->SetEngineType(EngineType::LocalLlama);
+                    // REQ-051 U-2: the display stem rides the switch.
+                    st->engine->SetUserModelDisplayStem(stem);
+                    st->config->SaveToFile();
+                    ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerActivated).c_str(),
+                                  I18n::Get(StringId::GgufManagerTitle).c_str(),
+                                  MB_OK | MB_ICONINFORMATION);
+                    DIAG_F("UI/GgufManager/022: activated registered model "
+                           "(id_len=%zu)\n", id.size());
+                }
+                RebuildManagerList(dlg, st);
+                // Re-select the activated row so the next action is obvious
+                // (the RunRenameFlow re-select precedent).
+                if (HWND list = ::GetDlgItem(dlg, IDC_MGR_LIST)) {
+                    const int count =
+                        static_cast<int>(::SendMessageW(list, LB_GETCOUNT, 0, 0));
+                    for (int row = 0; row < count; ++row) {
+                        const LPARAM data = ::SendMessageW(
+                            list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+                        if (data >= 0 &&
+                            static_cast<size_t>(data) < st->user_ids.size() &&
+                            st->user_ids[static_cast<size_t>(data)] == id) {
+                            ::SendMessageW(list, LB_SETCURSEL,
+                                           static_cast<WPARAM>(row), 0);
+                            break;
+                        }
+                    }
+                }
                 SyncManagerActionButtons(dlg, st);
                 return TRUE;
             }

@@ -31,7 +31,18 @@
 // Fix pinned here: the AUTO-source branches emit the SAME clean SFT form as
 // the pinned-source branches, minus the source-language name, with no brand
 // or meta vocabulary around the text; and DetectLatinLanguage gained a final
-// deterministic English fallback for ASCII-shaped words.
+// English fallback for the reported words.
+//
+// v0.10.7 (session 261111_0001 U2) AMENDS the shape of that fallback: it was
+// "any pure-ASCII word of >= 3 letters with a vowel", which also resolved
+// French/Spanish/Vietnamese/Indonesian single words ("bonjour",
+// "informazione") to English and made ShouldTranslate SILENTLY skip them
+// toward an English target. It is now a small positive-evidence lexicon
+// (kEnglishSingleWordEvidence) holding the reported words and the RC-1
+// "Hotel" pin; every other single word keeps the AUTO marker and the engine's
+// built-in language ID decides. The assertions below are unchanged where the
+// reported words are concerned (they are in the lexicon), and the retraction
+// itself is pinned in TestWs1SingleWordSourcePins.
 //
 // Coverage:
 //   (a) TestWs1SingleWordDetection   — the reported words + the preserved
@@ -110,7 +121,9 @@ void TestWs1SingleWordDetection() {
     // ---- 1) The reported words: AUTO marker -> "English" -------------------
     // These are the exact inputs from the user report. Before WS1 every one
     // of them returned "Auto Detect", which is what selected the fenced
-    // AUTO-source prompt branch.
+    // AUTO-source prompt branch. v0.10.7 (261111_0001 U2) keeps this English
+    // read by putting the words in the positive-evidence lexicon; the read is
+    // lexical, never a letter-shape rule (see the fairness block below).
     struct Ws1Word { const wchar_t* text; const char* label; };
     const Ws1Word reported[] = {
         { L"cyber",     "cyber" },
@@ -157,20 +170,21 @@ void TestWs1SingleWordDetection() {
     TEST_CHECK(DetectLanguage(L"This for testing purposes") == "Auto Detect",
                "WS1: 2-hit English sentence still keeps the AUTO marker (N4 threshold intact)");
 
-    // ---- 3) The shapes the fallback deliberately EXCLUDES ------------------
-    // No vowel: not English-shaped, so the AUTO marker survives and the
-    // model's built-in language ID still decides.
+    // ---- 3) The shapes the lexical fallback excludes -----------------------
+    // No English evidence (v0.10.7: the check is word identity, not shape), so
+    // the AUTO marker survives and the model's built-in language ID decides.
     TEST_CHECK(DetectLanguage(L"pdf") == "Auto Detect",
-               "WS1: vowel-less ASCII token keeps the AUTO marker");
+               "WS1: 'pdf' is not in the English evidence lexicon -> AUTO marker");
     TEST_CHECK(DetectLanguage(L"nth") == "Auto Detect",
-               "WS1: vowel-less ASCII token keeps the AUTO marker (second shape)");
+               "WS1: 'nth' is not in the English evidence lexicon -> AUTO marker");
     // Under 3 letters and not core vocabulary: too short to claim English.
     TEST_CHECK(DetectLanguage(L"ab") == "Auto Detect",
                "WS1: sub-3-letter non-core token keeps the AUTO marker");
-    // Non-ASCII letters are never English-shaped (the diacritic path above
-    // already claimed the distinctive ones; shared accents stay ambiguous).
+    // Non-ASCII letters never match an ASCII evidence entry (the diacritic
+    // path above already claimed the distinctive ones; shared accents stay
+    // ambiguous).
     TEST_CHECK(DetectLanguage(L"r\u00e1pido coraz\u00f3n") == "Auto Detect",
-               "WS1: shared-accent Latin keeps the AUTO marker (not English-shaped)");
+               "WS1: shared-accent Latin keeps the AUTO marker (no English evidence)");
     // A stopword tie between two non-English languages stays ambiguous.
     TEST_CHECK(DetectLanguage(L"el le") == "Auto Detect",
                "WS1: Spanish/French stopword tie keeps the AUTO marker (tie path intact)");
@@ -184,6 +198,24 @@ void TestWs1SingleWordDetection() {
                "WS1: a 2-token ASCII phrase keeps the AUTO marker (fallback is single-token only)");
     TEST_CHECK(ShouldTranslate(L"Sisitiki sana", "English"),
                "WS1: Swahili -> English still translates (F5 invariant intact)");
+
+    // ---- 3b) v0.10.7 fairness: a Latin-script single word with NO English
+    // evidence must not be asserted English. The retired shape rule made every
+    // ASCII word of >= 3 letters with a vowel English, so a French/Italian/
+    // Spanish/Vietnamese user targeting English hit the already-target bypass
+    // and got a silent no-op instead of a translation.
+    TEST_CHECK(DetectLanguage(L"bonjour") == "Auto Detect",
+               "WS1 (v0.10.7): 'bonjour' has no English evidence -> AUTO marker (was English)");
+    TEST_CHECK(DetectLanguage(L"informazione") == "Auto Detect",
+               "WS1 (v0.10.7): 'informazione' has no English evidence -> AUTO marker (was English)");
+    TEST_CHECK(ShouldTranslate(L"bonjour", "English"),
+               "WS1 (v0.10.7): 'bonjour' -> English TRANSLATES (was a silent already-target skip)");
+    TEST_CHECK(ShouldTranslate(L"informazione", "English"),
+               "WS1 (v0.10.7): 'informazione' -> English TRANSLATES (was a silent already-target skip)");
+    // The reported words still hold their English read through the lexicon, so
+    // the real-English identity bypass is untouched.
+    TEST_CHECK(!ShouldTranslate(L"astrology", "English"),
+               "WS1 (v0.10.7): the lexicon keeps 'astrology' an English identity request");
     // Non-linguistic input is unchanged.
     TEST_CHECK(DetectLanguage(L"") == "Unknown", "WS1: empty text stays Unknown");
     TEST_CHECK(DetectLanguage(L"123456") == "Unknown", "WS1: digits stay Unknown");
@@ -344,16 +376,31 @@ void TestWs1SingleWordSourcePins() {
         std::ifstream in(sb_cpp, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        // The fallback helper exists and is consulted before the AUTO return.
-        const size_t helper = src.find("IsAsciiEnglishShapedToken");
-        const size_t fallback = src.find("ASCII word shape");
-        const size_t auto_return = src.find("return \"Auto Detect\";");
-        TEST_CHECK(helper != std::string::npos,
-                   "WS1 pin: smart_bypass.cpp carries the English word-shape helper");
+        // v0.10.7 (261111_0001 U2): the shape rule is RETIRED. The helper
+        // DEFINITION must be gone (an unused static function would trip /W4
+        // C4505 anyway; the prose comments may still name it when explaining
+        // the retraction), and the lexical evidence list plus its DIAG line
+        // must sit before the AUTO return.
+        const size_t retired_helper = src.find("bool IsAsciiEnglishShapedToken(");
+        const size_t lexicon = src.find("kEnglishSingleWordEvidence");
+        const size_t fallback = src.find("single-token English evidence");
+        // Orchestrator pin-repair round (R1-H follow-up): search for the AUTO
+        // return AFTER the fallback marker. A whole-file first-occurrence search
+        // hits the DetectLatinLanguage DIACRITIC-path return (smart_bypass.cpp:759),
+        // which precedes the fallback DIAG at :812 - the product code is correct
+        // (the single-token-evidence DIAG at :812 is immediately followed by the
+        // function's own AUTO return at :815). Assert the fallback's OWN return is
+        // adjacent (small window below), not the earlier diacritic-path one.
+        const size_t auto_return = src.find("return \"Auto Detect\";", fallback);
+        TEST_CHECK(retired_helper == std::string::npos,
+                   "WS1 pin (v0.10.7): the ASCII word-shape helper is removed (no shape-only English read)");
+        TEST_CHECK(lexicon != std::string::npos,
+                   "WS1 pin (v0.10.7): smart_bypass.cpp carries the English evidence lexicon");
         TEST_CHECK(fallback != std::string::npos,
-                   "WS1 pin: the fallback logs its decision (shape-only DIAG_F line)");
-        TEST_CHECK(helper < fallback && fallback < auto_return,
-                   "WS1 pin: the fallback sits after the helper and BEFORE the AUTO return");
+                   "WS1 pin (v0.10.7): the fallback logs its decision (lexical-evidence DIAG_F line)");
+        TEST_CHECK(lexicon < fallback && fallback < auto_return &&
+                       auto_return != std::string::npos && (auto_return - fallback) < 200,
+                   "WS1 pin (v0.10.7): the fallback sits after the lexicon and immediately BEFORE its own AUTO return");
         // The pre-existing decision order is intact: diacritic, then English
         // core/stopword, then the non-English stopword vote, then the fallback.
         const size_t diacritic = src.find("distinctive diacritic)");
@@ -362,7 +409,7 @@ void TestWs1SingleWordSourcePins() {
         TEST_CHECK(diacritic != std::string::npos && english != std::string::npos &&
                        vote != std::string::npos && diacritic < english && english < vote &&
                        vote < fallback,
-                   "WS1 pin: detection order is diacritic -> English core -> stopword vote -> shape fallback");
+                   "WS1 pin: detection order is diacritic -> English core -> stopword vote -> lexical fallback");
     }
 
     if (g_failed_count == failures_before) {

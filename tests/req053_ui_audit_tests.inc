@@ -590,8 +590,8 @@ void TestReq053OpenAiButtonDisablePins() {
     // strings; the v0.10.5 theme batch added 4; the 261108_0002 WS3
     // back-translation batch added 4; A6 itself added none).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 166,
-               "REQ-053 pin: StringId::EnumCount is 166 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids; A6 added no strings, FIX-WS3B added one)");
+    TEST_CHECK(enum_count == 169,
+               "REQ-053 pin: StringId::EnumCount is 169 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 3 261111_0001 U6 user-model ids; A6 added no strings, FIX-WS3B added one)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 
@@ -628,10 +628,13 @@ void TestReq053GgufButtonSyncPins() {
     TEST_CHECK(Req053Count(gguf, "::EnableWindow(b, enabled ? TRUE : FALSE);") == 2,
                "REQ-053 pin: both IDC_MGR_RENAME and IDC_MGR_DELETE are driven by the helper");
 
-    // Three call sites: post-rebuild, WM_INITDIALOG, LBN_SELCHANGE.
+    // Four call sites: post-rebuild, WM_INITDIALOG, LBN_SELCHANGE, and the
+    // 261111_0001 U6 LBN_DBLCLK activate handler (activation rebuilds the list
+    // and re-selects; LB_SETCURSEL posts no SELCHANGE, so the explicit sync is
+    // the only re-enable there — same discipline as the post-rebuild site).
     const size_t calls = Req053Count(gguf, "SyncManagerActionButtons(dlg, st);");
-    TEST_CHECK(calls == 3,
-               "REQ-053 pin: exactly three sync call sites (rebuild + init + selchange)");
+    TEST_CHECK(calls == 4,
+               "REQ-053 pin: exactly four sync call sites (rebuild + init + selchange + activate)");
 
     // The LBN_SELCHANGE branch exists and ends in a sync (Ctrl+click
     // deselection -> SelectedUserIndex -1 -> both buttons gray out).

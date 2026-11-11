@@ -323,7 +323,7 @@ void TestReq045GgufWriterRoundTrip() {
         "\"resource\":{\"vram_mb\":4096,\"ctx\":2048,\"max_sessions\":2,"
         "\"residency\":\"ondemand\",\"eviction\":\"evict\",\"priority\":5},"
         "\"profiles\":{\"default\":{\"temperature\":0.0,\"top_p\":0.6,"
-        "\"top_k\":20,\"rep_pen\":1.05,\"prompt_template_ref\":\"hymt2-official\"}},"
+        "\"top_k\":20,\"rep_pen\":1.0,\"prompt_template_ref\":\"hymt2-official\"}},"
         "\"lang_pairs\":[\"ko-en\",\"en-ko\"]},{"
         "\"id\":\"user-llama3\",\"family\":\"ggml-translate\","
         "\"files\":[\"llama3.gguf\"],\"origin\":\"user\"}]}");

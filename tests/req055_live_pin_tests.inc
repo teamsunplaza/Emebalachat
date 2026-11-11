@@ -223,9 +223,9 @@ void TestReq055LiveUserModelPin() {
         std::ifstream in(setup_iss, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#define ENGINE_REVISION \".r14\"") != std::string::npos,
-                   "REQ-059: ENGINE_REVISION pinned to .r14 (v0.10.6 engine binaries: "
-                   "engine-core decode gates + host; session 261108_0002 WS4) — the pin "
+        TEST_CHECK(src.find("#define ENGINE_REVISION \".r15\"") != std::string::npos,
+                   "REQ-059: ENGINE_REVISION pinned to .r15 (v0.10.7 engine binaries: "
+                   "engine split + decode/sampler/chunking gates; session 261111_0001) — the pin "
                    "must track the CURRENT revision or a same-version rebuild keeps a "
                    "stale store copy");
     }

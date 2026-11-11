@@ -160,6 +160,25 @@ void TestM7WorkerManifestNaming() {
 
         std::string cmake_src;
         TEST_CHECK(read_src(L"CMakeLists.txt", cmake_src), "pin: CMakeLists.txt readable");
+        // 261111_0001 U7 (v0.10.7): the worker-manifest generation moved to the
+        // engine repo's CMakeLists (the chat CMakeLists no longer carries it).
+        // Append the engine-side CMake source when the engine repo dir is
+        // compiled in, and run the pins over the combined text.
+        std::string engine_cmake_src;
+#ifdef EMEBALA_ENGINE_REPO_DIR
+        {
+            std::ifstream in(std::filesystem::path(EMEBALA_ENGINE_REPO_DIR) / L"CMakeLists.txt",
+                             std::ios::binary);
+            if (in) {
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                engine_cmake_src = ss.str();
+            }
+        }
+        TEST_CHECK(!engine_cmake_src.empty(),
+                   "pin: the engine repo CMakeLists.txt is readable (EMEBALA_ENGINE_REPO_DIR)");
+#endif
+        cmake_src += engine_cmake_src;
         TEST_CHECK(cmake_src.find("worker.ggml-translate.manifest") != std::string::npos,
                    "pin: CMake generates/deploys the per-family manifest name");
         TEST_CHECK(cmake_src.find("${CMAKE_CURRENT_BINARY_DIR}/worker.manifest") ==

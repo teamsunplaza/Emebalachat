@@ -223,8 +223,8 @@ void TestWorkerProtocol() {
                        !jp.sampling_present,
                    "job: parse roundtrip (no sampling -> shipped defaults)");
         TEST_CHECK(jp.sampling.temperature == 0.0f && jp.sampling.top_p == 0.6f &&
-                       jp.sampling.top_k == 20 && jp.sampling.rep_pen == 1.05f,
-                   "job: default sampling matches the Hy-MT2 shipped profile");
+                       jp.sampling.top_k == 20 && jp.sampling.rep_pen == 1.0f,
+                   "job: default sampling matches the Hy-MT2 shipped profile (rep_pen 1.0 since v0.10.7 U4)");
 
         wp::JobMsg j2;
         j2.job = 1;

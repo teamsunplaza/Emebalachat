@@ -213,6 +213,13 @@ struct LocalizedStrings {
     // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label
     // ("↳ 원문: " in Korean). Trailing default like its four siblings.
     const wchar_t* back_translate_reference = L"↳ Original: ";
+    // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness —
+    // trailing defaults like the back-translation block above (NOT part of
+    // EMEBALA_LSTR_FIELDS; the 37 tables carry their own designators).
+    const wchar_t* gguf_invalid_model_body =
+        L"Not a valid GGUF model file; it was not registered.";
+    const wchar_t* gguf_manager_active_suffix = L"(in use)";
+    const wchar_t* gguf_manager_activated = L"This model is now in use.";
 };
 
 // Compile-time field count — generated from the SAME X-macro list above,
@@ -475,8 +482,12 @@ const LocalizedStrings kStringsKorean = {
     .back_translate_match_exact = L"✓ 원문 일치",
     .back_translate_match_check = L"⚡ 표현 확인",
     .back_translate_reference = L"↳ 원문: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"올바른 GGUF 모델 파일이 아니어서 등록하지 않았습니다.",
+    .gguf_manager_active_suffix = L"(사용 중)",
+    .gguf_manager_activated = L"사용 중인 모델로 설정했습니다.",
 };
-
 // 2. Japanese (ja)
 const LocalizedStrings kStringsJapanese = {
     .menu_status_active = L"状態: 有効 (F9: 一時停止)",
@@ -692,8 +703,12 @@ const LocalizedStrings kStringsJapanese = {
     .back_translate_match_exact = L"✓ 原文一致",
     .back_translate_match_check = L"⚡ 表現チェック",
     .back_translate_reference = L"↳ 原文: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"有効なGGUFモデルファイルではないため、登録しませんでした。",
+    .gguf_manager_active_suffix = L"(使用中)",
+    .gguf_manager_activated = L"使用中のモデルに設定しました。",
 };
-
 // 3. Chinese Simplified (zh-CN)
 const LocalizedStrings kStringsChineseSimp = {
     .menu_status_active = L"状态: 运行中 (F9: 暂停)",
@@ -909,8 +924,12 @@ const LocalizedStrings kStringsChineseSimp = {
     .back_translate_match_exact = L"✓ 与原文一致",
     .back_translate_match_check = L"⚡ 检查表达",
     .back_translate_reference = L"↳ 原文: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"不是有效的 GGUF 模型文件，未注册。",
+    .gguf_manager_active_suffix = L"(使用中)",
+    .gguf_manager_activated = L"已设为当前使用的模型。",
 };
-
 // 4. Chinese Traditional (zh-TW)
 const LocalizedStrings kStringsChineseTrad = {
     .menu_status_active = L"狀態: 運行中 (F9: 暫停)",
@@ -1126,8 +1145,12 @@ const LocalizedStrings kStringsChineseTrad = {
     .back_translate_match_exact = L"✓ 與原文一致",
     .back_translate_match_check = L"⚡ 檢查表達",
     .back_translate_reference = L"↳ 原文: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"不是有效的 GGUF 模型檔案，未註冊。",
+    .gguf_manager_active_suffix = L"(使用中)",
+    .gguf_manager_activated = L"已設為目前使用的模型。",
 };
-
 // 5. Vietnamese (vi)
 const LocalizedStrings kStringsVietnamese = {
     .menu_status_active = L"Trạng thái: Đang bật (F9: Tạm dừng)",
@@ -1343,8 +1366,12 @@ const LocalizedStrings kStringsVietnamese = {
     .back_translate_match_exact = L"✓ Khớp nghĩa gốc",
     .back_translate_match_check = L"⚡ Kiểm tra sắc thái",
     .back_translate_reference = L"↳ Bản gốc: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Không phải tệp mô hình GGUF hợp lệ nên chưa được đăng ký.",
+    .gguf_manager_active_suffix = L"(đang dùng)",
+    .gguf_manager_activated = L"Đã đặt làm mô hình đang dùng.",
 };
-
 // 6. Spanish (es)
 const LocalizedStrings kStringsSpanish = {
     .menu_status_active = L"Estado: Activo (F9: Pausar)",
@@ -1557,8 +1584,12 @@ const LocalizedStrings kStringsSpanish = {
     .back_translate_match_exact = L"✓ Significado coincidente",
     .back_translate_match_check = L"⚡ Revisar matiz",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"No es un archivo de modelo GGUF válido; no se ha registrado.",
+    .gguf_manager_active_suffix = L"(en uso)",
+    .gguf_manager_activated = L"Este modelo ahora está en uso.",
 };
-
 // 7. English (en) - Default Fallback
 const LocalizedStrings kStringsEnglish = {
     L"Status: Active (F9: Pause)",
@@ -1772,7 +1803,9 @@ const LocalizedStrings kStringsEnglish = {
     //   [162..165] menu_back_translation / back_translate_header /
     //              back_translate_match_exact / back_translate_match_check
     //   [166]      back_translate_reference  (261108_0002 FIX-WS3B)
-    // = 166 initializers for 166 members. Before the FIX-R1 fix the four theme
+    //   [167..169] gguf_invalid_model_body / gguf_manager_active_suffix /
+    //              gguf_manager_activated  (261111_0001 U6, v0.10.7)
+    // = 169 initializers for 169 members. Before the FIX-R1 fix the four theme
     // slots were skipped, so the WS3 strings took 158..161 and the EN tray theme
     // submenu rendered "🔄 Back-Translation" while the WS3 fields silently kept
     // their struct defaults. The four theme values below are the struct defaults
@@ -1792,8 +1825,13 @@ const LocalizedStrings kStringsEnglish = {
     L"⚡ Check Nuance",
     // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label, slot 166.
     L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): slots 167..169 — the registration-gate
+    // rejection body, the active-binding list marker, and the activation
+    // notice (designated-initializer spellings forbidden here: MSVC C7556).
+    L"Not a valid GGUF model file; it was not registered.",
+    L"(in use)",
+    L"This model is now in use.",
 };
-
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
 // Authored per §2-Q4 verdict A (aggregate-struct pattern). Field order and
 // grouping mirror kStringsEnglish EXACTLY (49 since Batch-1 of session
@@ -2021,8 +2059,12 @@ const LocalizedStrings kStringsFrench = {
     .back_translate_match_exact = L"✓ Sens concordant",
     .back_translate_match_check = L"⚡ Vérifier la nuance",
     .back_translate_reference = L"↳ Original : ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Ce fichier n'est pas un modèle GGUF valide ; il n'a pas été enregistré.",
+    .gguf_manager_active_suffix = L"(en cours d'utilisation)",
+    .gguf_manager_activated = L"Ce modèle est maintenant utilisé.",
 };
-
 // 9. German (de)
 const LocalizedStrings kStringsGerman = {
     .menu_status_active = L"Status: Aktiv (F9: Pause)",
@@ -2238,8 +2280,12 @@ const LocalizedStrings kStringsGerman = {
     .back_translate_match_exact = L"✓ Bedeutung stimmt überein",
     .back_translate_match_check = L"⚡ Nuance prüfen",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Keine gültige GGUF-Modelldatei; sie wurde nicht registriert.",
+    .gguf_manager_active_suffix = L"(in Verwendung)",
+    .gguf_manager_activated = L"Dieses Modell wird jetzt verwendet.",
 };
-
 // 10. Russian (ru)
 const LocalizedStrings kStringsRussian = {
     .menu_status_active = L"Состояние: активно (F9: пауза)",
@@ -2455,8 +2501,12 @@ const LocalizedStrings kStringsRussian = {
     .back_translate_match_exact = L"✓ Смысл совпадает",
     .back_translate_match_check = L"⚡ Проверить оттенок",
     .back_translate_reference = L"↳ Оригинал: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Это не действительный файл модели GGUF; он не зарегистрирован.",
+    .gguf_manager_active_suffix = L"(используется)",
+    .gguf_manager_activated = L"Эта модель теперь используется.",
 };
-
 // 11. Portuguese (pt)
 const LocalizedStrings kStringsPortuguese = {
     .menu_status_active = L"Estado: ativo (F9: pausar)",
@@ -2672,8 +2722,12 @@ const LocalizedStrings kStringsPortuguese = {
     .back_translate_match_exact = L"✓ Significado correspondente",
     .back_translate_match_check = L"⚡ Verificar nuance",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Não é um ficheiro de modelo GGUF válido; não foi registado.",
+    .gguf_manager_active_suffix = L"(em utilização)",
+    .gguf_manager_activated = L"Este modelo está agora em utilização.",
 };
-
 // 12. Italian (it)
 const LocalizedStrings kStringsItalian = {
     .menu_status_active = L"Stato: attivo (F9: pausa)",
@@ -2889,8 +2943,12 @@ const LocalizedStrings kStringsItalian = {
     .back_translate_match_exact = L"✓ Significato corrispondente",
     .back_translate_match_check = L"⚡ Controlla la sfumatura",
     .back_translate_reference = L"↳ Originale: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Non è un file di modello GGUF valido; non è stato registrato.",
+    .gguf_manager_active_suffix = L"(in uso)",
+    .gguf_manager_activated = L"Questo modello è ora in uso.",
 };
-
 // 13. Dutch (nl)
 const LocalizedStrings kStringsDutch = {
     .menu_status_active = L"Status: actief (F9: pauze)",
@@ -3106,8 +3164,12 @@ const LocalizedStrings kStringsDutch = {
     .back_translate_match_exact = L"✓ Betekenis komt overeen",
     .back_translate_match_check = L"⚡ Nuance controleren",
     .back_translate_reference = L"↳ Origineel: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Dit is geen geldig GGUF-modelbestand; het is niet geregistreerd.",
+    .gguf_manager_active_suffix = L"(in gebruik)",
+    .gguf_manager_activated = L"Dit model is nu in gebruik.",
 };
-
 // 14. Polish (pl)
 const LocalizedStrings kStringsPolish = {
     .menu_status_active = L"Status: aktywny (F9: pauza)",
@@ -3323,8 +3385,12 @@ const LocalizedStrings kStringsPolish = {
     .back_translate_match_exact = L"✓ Znaczenie zgodne",
     .back_translate_match_check = L"⚡ Sprawdź niuans",
     .back_translate_reference = L"↳ Oryginał: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"To nie jest prawidłowy plik modelu GGUF; nie został zarejestrowany.",
+    .gguf_manager_active_suffix = L"(w użyciu)",
+    .gguf_manager_activated = L"Ten model jest teraz używany.",
 };
-
 // 15. Czech (cs)
 const LocalizedStrings kStringsCzech = {
     .menu_status_active = L"Stav: aktivní (F9: pauza)",
@@ -3540,8 +3606,12 @@ const LocalizedStrings kStringsCzech = {
     .back_translate_match_exact = L"✓ Význam odpovídá",
     .back_translate_match_check = L"⚡ Zkontrolovat odstín",
     .back_translate_reference = L"↳ Originál: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Toto není platný soubor modelu GGUF; nebyl zaregistrován.",
+    .gguf_manager_active_suffix = L"(používá se)",
+    .gguf_manager_activated = L"Tento model se nyní používá.",
 };
-
 // 16. Hungarian (hu)
 const LocalizedStrings kStringsHungarian = {
     .menu_status_active = L"Állapot: aktív (F9: szünet)",
@@ -3757,8 +3827,12 @@ const LocalizedStrings kStringsHungarian = {
     .back_translate_match_exact = L"✓ Jelentés egyezik",
     .back_translate_match_check = L"⚡ Árnyalat ellenőrzése",
     .back_translate_reference = L"↳ Eredeti: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Ez nem érvényes GGUF modellfájl; nem lett regisztrálva.",
+    .gguf_manager_active_suffix = L"(használatban)",
+    .gguf_manager_activated = L"Ez a modell most használatban van.",
 };
-
 // 17. Romanian (ro)
 const LocalizedStrings kStringsRomanian = {
     .menu_status_active = L"Stare: activ (F9: pauză)",
@@ -3974,8 +4048,12 @@ const LocalizedStrings kStringsRomanian = {
     .back_translate_match_exact = L"✓ Sens identic",
     .back_translate_match_check = L"⚡ Verifică nuanța",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Acesta nu este un fișier GGUF valid; nu a fost înregistrat.",
+    .gguf_manager_active_suffix = L"(în uz)",
+    .gguf_manager_activated = L"Acest model este acum în uz.",
 };
-
 // 18. Swedish (sv)
 const LocalizedStrings kStringsSwedish = {
     .menu_status_active = L"Status: aktiv (F9: paus)",
@@ -4191,8 +4269,12 @@ const LocalizedStrings kStringsSwedish = {
     .back_translate_match_exact = L"✓ Betydelsen stämmer",
     .back_translate_match_check = L"⚡ Kontrollera nyans",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Det är ingen giltig GGUF-modellfil; den har inte registrerats.",
+    .gguf_manager_active_suffix = L"(används)",
+    .gguf_manager_activated = L"Den här modellen används nu.",
 };
-
 // 19. Danish (da)
 const LocalizedStrings kStringsDanish = {
     .menu_status_active = L"Status: aktiv (F9: pause)",
@@ -4408,8 +4490,12 @@ const LocalizedStrings kStringsDanish = {
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Kontroller nuance",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Det er ikke en gyldig GGUF-modelfil; den er ikke registreret.",
+    .gguf_manager_active_suffix = L"(i brug)",
+    .gguf_manager_activated = L"Denne model er nu i brug.",
 };
-
 // 20. Finnish (fi)
 const LocalizedStrings kStringsFinnish = {
     .menu_status_active = L"Tila: aktiivinen (F9: tauko)",
@@ -4625,8 +4711,12 @@ const LocalizedStrings kStringsFinnish = {
     .back_translate_match_exact = L"✓ Merkitys täsmää",
     .back_translate_match_check = L"⚡ Tarkista sävy",
     .back_translate_reference = L"↳ Alkuperäinen: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Tämä ei ole kelvollinen GGUF-mallitiedosto; sitä ei rekisteröity.",
+    .gguf_manager_active_suffix = L"(käytössä)",
+    .gguf_manager_activated = L"Tämä malli on nyt käytössä.",
 };
-
 // 21. Norwegian (no / nb)
 const LocalizedStrings kStringsNorwegian = {
     .menu_status_active = L"Status: aktiv (F9: pause)",
@@ -4842,8 +4932,12 @@ const LocalizedStrings kStringsNorwegian = {
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Sjekk nyanse",
     .back_translate_reference = L"↳ Original: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Dette er ikke en gyldig GGUF-modellfil; den ble ikke registrert.",
+    .gguf_manager_active_suffix = L"(i bruk)",
+    .gguf_manager_activated = L"Denne modellen er nå i bruk.",
 };
-
 // 22. Greek (el)
 const LocalizedStrings kStringsGreek = {
     .menu_status_active = L"Κατάσταση: ενεργό (F9: παύση)",
@@ -5059,8 +5153,12 @@ const LocalizedStrings kStringsGreek = {
     .back_translate_match_exact = L"✓ Το νόημα ταιριάζει",
     .back_translate_match_check = L"⚡ Έλεγχος απόχρωσης",
     .back_translate_reference = L"↳ Πρωτότυπο: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Δεν είναι έγκυρο αρχείο μοντέλου GGUF· δεν καταχωρήθηκε.",
+    .gguf_manager_active_suffix = L"(σε χρήση)",
+    .gguf_manager_activated = L"Αυτό το μοντέλο είναι πλέον σε χρήση.",
 };
-
 // 23. Turkish (tr)
 const LocalizedStrings kStringsTurkish = {
     .menu_status_active = L"Durum: etkin (F9: duraklat)",
@@ -5276,8 +5374,12 @@ const LocalizedStrings kStringsTurkish = {
     .back_translate_match_exact = L"✓ Anlam eşleşti",
     .back_translate_match_check = L"⚡ Nüansı kontrol et",
     .back_translate_reference = L"↳ Orijinal: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Geçerli bir GGUF model dosyası değil; kaydedilmedi.",
+    .gguf_manager_active_suffix = L"(kullanımda)",
+    .gguf_manager_activated = L"Bu model artık kullanımda.",
 };
-
 // 24. Ukrainian (uk)
 const LocalizedStrings kStringsUkrainian = {
     .menu_status_active = L"Стан: активний (F9: пауза)",
@@ -5493,8 +5595,12 @@ const LocalizedStrings kStringsUkrainian = {
     .back_translate_match_exact = L"✓ Зміст збігається",
     .back_translate_match_check = L"⚡ Перевірити відтінок",
     .back_translate_reference = L"↳ Оригінал: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Це недійсний файл моделі GGUF; він не зареєстрований.",
+    .gguf_manager_active_suffix = L"(використовується)",
+    .gguf_manager_activated = L"Цю модель зараз використовується.",
 };
-
 // 25. Thai (th)
 const LocalizedStrings kStringsThai = {
     .menu_status_active = L"สถานะ: ใช้งานอยู่ (F9: หยุดชั่วคราว)",
@@ -5710,8 +5816,12 @@ const LocalizedStrings kStringsThai = {
     .back_translate_match_exact = L"✓ ความหมายตรงกัน",
     .back_translate_match_check = L"⚡ ตรวจสอบน้ำเสียง",
     .back_translate_reference = L"↳ ต้นฉบับ: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"ไม่ใช่ไฟล์โมเดล GGUF ที่ถูกต้อง จึงไม่ได้ลงทะเบียน",
+    .gguf_manager_active_suffix = L"(กำลังใช้งาน)",
+    .gguf_manager_activated = L"ตั้งโมเดลนี้เป็นโมเดลที่ใช้งานอยู่แล้ว",
 };
-
 // 26. Indonesian (id)
 const LocalizedStrings kStringsIndonesian = {
     .menu_status_active = L"Status: aktif (F9: jeda)",
@@ -5927,8 +6037,12 @@ const LocalizedStrings kStringsIndonesian = {
     .back_translate_match_exact = L"✓ Makna sesuai",
     .back_translate_match_check = L"⚡ Periksa nuansa",
     .back_translate_reference = L"↳ Asli: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Bukan berkas model GGUF yang valid; tidak didaftarkan.",
+    .gguf_manager_active_suffix = L"(sedang digunakan)",
+    .gguf_manager_activated = L"Model ini sekarang sedang digunakan.",
 };
-
 // 27. Malay (ms)
 const LocalizedStrings kStringsMalay = {
     .menu_status_active = L"Status: aktif (F9: jeda)",
@@ -6144,8 +6258,12 @@ const LocalizedStrings kStringsMalay = {
     .back_translate_match_exact = L"✓ Makna sepadan",
     .back_translate_match_check = L"⚡ Semak nuansa",
     .back_translate_reference = L"↳ Asal: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Bukan fail model GGUF yang sah; ia tidak didaftarkan.",
+    .gguf_manager_active_suffix = L"(sedang digunakan)",
+    .gguf_manager_activated = L"Model ini kini sedang digunakan.",
 };
-
 // 28. Filipino (fil)
 // Note: "Website", "Google Translate" and "Reddit" are used in Philippine
 // English-dominant UI practice; the surrounding copy is genuine Filipino.
@@ -6363,8 +6481,12 @@ const LocalizedStrings kStringsFilipino = {
     .back_translate_match_exact = L"✓ Tumutugma ang kahulugan",
     .back_translate_match_check = L"⚡ Suriin ang nuance",
     .back_translate_reference = L"↳ Orihinal: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"Hindi ito wastong GGUF model file; hindi ito narehistro.",
+    .gguf_manager_active_suffix = L"(ginagamit)",
+    .gguf_manager_activated = L"Ang modelong ito ay ginagamit na ngayon.",
 };
-
 // 29. Hindi (hi)
 const LocalizedStrings kStringsHindi = {
     .menu_status_active = L"स्थिति: सक्रिय (F9: रोकें)",
@@ -6580,8 +6702,12 @@ const LocalizedStrings kStringsHindi = {
     .back_translate_match_exact = L"✓ अर्थ मेल खाता है",
     .back_translate_match_check = L"⚡ भाव जाँचें",
     .back_translate_reference = L"↳ मूल: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"यह मान्य GGUF मॉडल फ़ाइल नहीं है; इसे पंजीकृत नहीं किया गया।",
+    .gguf_manager_active_suffix = L"(उपयोग में)",
+    .gguf_manager_activated = L"अब यह मॉडल उपयोग में है।",
 };
-
 // 30. Bengali (bn)
 const LocalizedStrings kStringsBengali = {
     .menu_status_active = L"স্ট্যাটাস: সক্রিয় (F9: বিরতি)",
@@ -6797,8 +6923,12 @@ const LocalizedStrings kStringsBengali = {
     .back_translate_match_exact = L"✓ অর্থ মিলে গেছে",
     .back_translate_match_check = L"⚡ সূক্ষ্মতা যাচাই করুন",
     .back_translate_reference = L"↳ মূল: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"এটি বৈধ GGUF মডেল ফাইল নয়; তাই নিবন্ধন করা হয়নি।",
+    .gguf_manager_active_suffix = L"(ব্যবহৃত হচ্ছে)",
+    .gguf_manager_activated = L"এই মডেলটি এখন ব্যবহৃত হচ্ছে।",
 };
-
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
 // UI chrome direction is decided by the render layer (bidi_utils).
 const LocalizedStrings kStringsArabic = {
@@ -7015,8 +7145,12 @@ const LocalizedStrings kStringsArabic = {
     .back_translate_match_exact = L"✓ المعنى مطابق",
     .back_translate_match_check = L"⚡ تحقق من الفارق الدقيق",
     .back_translate_reference = L"↳ الأصل: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"الملف ليس نموذج GGUF صالحًا؛ لم يتم تسجيله.",
+    .gguf_manager_active_suffix = L"(قيد الاستخدام)",
+    .gguf_manager_activated = L"هذا النموذج قيد الاستخدام الآن.",
 };
-
 // 32. Persian (fa) — RTL
 const LocalizedStrings kStringsPersian = {
     .menu_status_active = L"وضعیت: فعال (F9: توقف موقت)",
@@ -7232,8 +7366,12 @@ const LocalizedStrings kStringsPersian = {
     .back_translate_match_exact = L"✓ معنا مطابقت دارد",
     .back_translate_match_check = L"⚡ بررسی ظرافت معنا",
     .back_translate_reference = L"↳ اصلی: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"فایل مدل GGUF معتبری نیست؛ ثبت نشد.",
+    .gguf_manager_active_suffix = L"(در حال استفاده)",
+    .gguf_manager_activated = L"این مدل اکنون در حال استفاده است.",
 };
-
 // 33. Urdu (ur) — RTL
 const LocalizedStrings kStringsUrdu = {
     .menu_status_active = L"حالت: فعال (F9: وقفہ)",
@@ -7449,8 +7587,12 @@ const LocalizedStrings kStringsUrdu = {
     .back_translate_match_exact = L"✓ معنی مطابق ہے",
     .back_translate_match_check = L"⚡ باریکی کی جانچ کریں",
     .back_translate_reference = L"↳ اصل: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"یہ درست GGUF ماڈل فائل نہیں ہے؛ اسے رجسٹر نہیں کیا گیا۔",
+    .gguf_manager_active_suffix = L"(استعمال میں)",
+    .gguf_manager_activated = L"اب یہ ماڈل استعمال میں ہے۔",
 };
-
 // 34. Hebrew (he) — RTL
 const LocalizedStrings kStringsHebrew = {
     .menu_status_active = L"סטטוס: פעיל (F9: השהיה)",
@@ -7666,8 +7808,12 @@ const LocalizedStrings kStringsHebrew = {
     .back_translate_match_exact = L"✓ המשמעות תואמת",
     .back_translate_match_check = L"⚡ בדיקת ניואנס",
     .back_translate_reference = L"↳ מקור: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"זהו לא קובץ מודל GGUF תקין; הוא לא נרשם.",
+    .gguf_manager_active_suffix = L"(בשימוש)",
+    .gguf_manager_activated = L"מודל זה עכשיו בשימוש.",
 };
-
 // 35. Khmer (km)
 const LocalizedStrings kStringsKhmer = {
     .menu_status_active = L"ស្ថានភាព៖ សកម្ម (F9៖ ផ្អាក)",
@@ -7883,8 +8029,12 @@ const LocalizedStrings kStringsKhmer = {
     .back_translate_match_exact = L"✓ អត្ថន័យត្រូវគ្នា",
     .back_translate_match_check = L"⚡ ពិនិត្យអត្ថរស",
     .back_translate_reference = L"↳ ដើម: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"ឯកសារម៉ូដែល GGUF មិនត្រឹមត្រូវ ទើបមិនបានចុះឈ្មោះ។",
+    .gguf_manager_active_suffix = L"(កំពុងប្រើ)",
+    .gguf_manager_activated = L"ម៉ូដែលនេះត្រូវបានកំណត់ឱ្យកំពុងប្រើ។",
 };
-
 // 36. Lao (lo)
 const LocalizedStrings kStringsLao = {
     .menu_status_active = L"ສະຖານະ: ເປີດໃຊ້ (F9: ຢຸດຊົ່ວຄາວ)",
@@ -8100,8 +8250,12 @@ const LocalizedStrings kStringsLao = {
     .back_translate_match_exact = L"✓ ຄວາມໝາຍກົງກັນ",
     .back_translate_match_check = L"⚡ ກວດສອບນ້ຳສຽງ",
     .back_translate_reference = L"↳ ຕົ້ນສະບັບ: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"ບໍ່ແມ່ນໄຟລ໌ໂມເດວ GGUF ທີ່ຖືກຕ້ອງ ຈຶ່ງບໍ່ໄດ້ລົງທະບຽນ.",
+    .gguf_manager_active_suffix = L"(ກຳລັງໃຊ້)",
+    .gguf_manager_activated = L"ໂມເດວນີ້ແມ່ນໂມເດວທີ່ກຳລັງໃຊ້ແລ້ວ.",
 };
-
 // 37. Burmese (my)
 const LocalizedStrings kStringsBurmese = {
     .menu_status_active = L"အခြေအနေ: လုပ်ဆောင်နေ (F9: ခေတ္တရပ်)",
@@ -8317,8 +8471,12 @@ const LocalizedStrings kStringsBurmese = {
     .back_translate_match_exact = L"✓ အဓိပ္ပာယ် ကိုက်ညီသည်",
     .back_translate_match_check = L"⚡ အဓိပ္ပာယ်ကွဲပြားမှု စစ်ဆေးရန်",
     .back_translate_reference = L"↳ မူရင်း: ",
+    // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
+    // the active-binding list marker, and the activation notice.
+    .gguf_invalid_model_body = L"မှန်ကန်တဲ့ GGUF မော်ဒယ်ဖိုင် မဟုတ်ဘူးဆိုတော့ မှတ်ပုံတင် မထားပါဘူး။",
+    .gguf_manager_active_suffix = L"(အသုံးပြုနေတယ်)",
+    .gguf_manager_activated = L"ဒီ မော်ဒယ်ကို အသုံးပြုနေတဲ့ မော်ဒယ်အဖြစ် သတ်မှတ်ပြီးပါပြီ။",
 };
-
 const LocalizedStrings& GetStrings(UiLocale loc) {
     // REQ-037/B-3: 38-case switch (design §2.1.2). The default branch keeps the
     // Auto/unknown -> English explicit-fallback contract (design §2-Q4.3): a
@@ -8698,6 +8856,12 @@ std::wstring I18n::Get(StringId id) {
         case StringId::BackTranslateMatchCheck:   return s.back_translate_match_check;
         // 261108_0002 (FIX-WS3B): the card's reference-line label.
         case StringId::BackTranslateReference:    return s.back_translate_reference;
+
+        // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness
+        // (same trailing-field wiring as the blocks above).
+        case StringId::GgufInvalidModelBody:      return s.gguf_invalid_model_body;
+        case StringId::GgufManagerActiveSuffix:   return s.gguf_manager_active_suffix;
+        case StringId::GgufManagerActivated:      return s.gguf_manager_activated;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

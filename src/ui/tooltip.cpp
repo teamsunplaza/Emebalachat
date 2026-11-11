@@ -1049,7 +1049,12 @@ void TooltipWindow::ShowTranslation(
     }
 
     ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    visible_ = true;
+    // 261111_0001 U1 (v0.10.7, D1a) + fix-list round 2 G-06: publishing this
+    // fresh card is ONE locked transition (visible, no teardown owed, NEW card
+    // generation), so a dismissal still queued for a previous card - or one
+    // beginning concurrently on another thread - can never clear this card's
+    // visibility or tear it down when its message is finally drained.
+    card_visibility_.PublishShow();
 
     Render();
     UpdateLayered();
@@ -1160,7 +1165,12 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     }
 
     ::SetWindowPos(hwnd_, HWND_TOPMOST, x, y, PhysW(), PhysH(), SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    visible_ = true;
+    // 261111_0001 U1 (v0.10.7, D1a) + fix-list round 2 G-06: publishing this
+    // fresh card is ONE locked transition (visible, no teardown owed, NEW card
+    // generation), so a dismissal still queued for a previous card - or one
+    // beginning concurrently on another thread - can never clear this card's
+    // visibility or tear it down when its message is finally drained.
+    card_visibility_.PublishShow();
 
     Render();
     UpdateLayered();
@@ -1246,11 +1256,14 @@ uint64_t TooltipWindow::BeginTranslationRequest() {
 
 void TooltipWindow::DismissThreadSafe() {
     if (!hwnd_) return;
-    if (::GetCurrentThreadId() == gui_thread_id_) {
-        Dismiss();
-        return;
-    }
-    ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b) + G-06 round 2: delegate to
+    // Dismiss() for BOTH thread flavors. The old body posted kDismissMessage
+    // directly on the off-thread path (visibility stayed set until the GUI
+    // thread drained it); Dismiss() now performs the whole show/dismiss
+    // transition through TooltipCardVisibility before returning on any thread
+    // (visibility cleared, teardown owed, card generation captured) and the
+    // message carries that generation for the exactly-once GUI teardown.
+    Dismiss();
 }
 
 // ===========================================================================
@@ -1612,7 +1625,12 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
     const POINT origin = ResolveBackTranslationAnchor(target_hwnd, badge_hwnd, PhysW(), PhysH());
     ::SetWindowPos(hwnd_, HWND_TOPMOST, origin.x, origin.y, PhysW(), PhysH(),
                    SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    visible_ = true;
+    // 261111_0001 U1 (v0.10.7, D1a) + fix-list round 2 G-06: publishing this
+    // fresh card is ONE locked transition (visible, no teardown owed, NEW card
+    // generation), so a dismissal still queued for a previous card - or one
+    // beginning concurrently on another thread - can never clear this card's
+    // visibility or tear it down when its message is finally drained.
+    card_visibility_.PublishShow();
 
     Render();
     UpdateLayered();
@@ -1691,7 +1709,7 @@ void TooltipWindow::RefreshTargetLanguageFromConfig(std::string_view new_target)
         }
         return;
     }
-    if (!visible_.load(std::memory_order_relaxed) || is_message_mode_) {
+    if (!card_visibility_.IsVisible() || is_message_mode_) {
         return;
     }
     if (target_lang_ == new_target) {
@@ -1707,7 +1725,7 @@ void TooltipWindow::RefreshTheme() {
     if (::GetCurrentThreadId() != gui_thread_id_) {
         return;
     }
-    if (visible_.load(std::memory_order_relaxed)) {
+    if (card_visibility_.IsVisible()) {
         Render();
         UpdateLayered();
     }
@@ -1730,18 +1748,78 @@ void TooltipWindow::Dismiss() {
     // another thread's window can block until that pump is free (e.g. mid
     // translation), which would stall LowLevelHooksTimeout. Marshal instead.
     // WndProc re-enters on the GUI thread, so this guard never recurses.
+    //
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b) + fix-list round 2 G-06:
+    // visibility is cleared BEFORE this call returns on the hook/worker
+    // thread, so a fast re-drag can never observe a stale IsVisible() gate
+    // (the 40-100 ms dead-gesture drop that suppressed drag-to-translate
+    // while a card was parked). The posted message still performs the
+    // GUI-side teardown; the dismissal is stamped with the generation of the
+    // card it began on, so the kDismissMessage handler runs TeardownCard()
+    // exactly once for THAT card - a fresh card published meanwhile has a
+    // newer generation and the stale message is dropped instead of tearing
+    // it down. Clearing visibility, stamping the owed teardown and capturing
+    // the generation all happen inside ONE TooltipCardVisibility section, so
+    // a concurrent Show* can never observe (or produce) a half-applied
+    // dismissal.
     if (::GetCurrentThreadId() != gui_thread_id_) {
         DIAG_LOG("UI", "tooltip_dismiss requested off-thread (marshaled)");
-        ::PostMessageW(hwnd_, kDismissMessage, 0, 0);
+        uint64_t dismiss_generation = TooltipCardVisibility::kNoGeneration;
+        if (!card_visibility_.TryBeginDismiss(dismiss_generation)) {
+            return; // nothing visible: same early-return as the on-thread path
+        }
+        // R1-G (v0.10.7, 261111_0001 fix-list round 1): the post used to be
+        // UNCHECKED. A failed PostMessageW (target queue full / pump stalled)
+        // stranded a SHOWN window with visibility already false and no
+        // teardown owed - a ghost card no later dismissal path would retry.
+        // Retry a bounded number of times; on persistent failure restore the
+        // coherent pre-post state (shown, nothing owed) so the next ESC /
+        // outside-click / autohide path re-enters Dismiss and retries the
+        // post. Never leave shown-window + hidden-model + no pending teardown.
+        bool posted = false;
+        for (int attempt = 0; attempt < 3 && !posted; ++attempt) {
+            if (::PostMessageW(hwnd_, kDismissMessage,
+                               static_cast<WPARAM>(dismiss_generation), 0) == TRUE) {
+                posted = true;
+                break;
+            }
+            DIAG_LOG("UI", "tooltip_dismiss post failed (attempt %d, GLE %lu); retrying",
+                     attempt, static_cast<unsigned long>(::GetLastError()));
+            // G-12 (round 2): YIELD, never sleep. This runs on the keyboard/
+            // mouse hook thread (ESC / outside click), where any Sleep eats the
+            // LowLevelHooksTimeout budget (mouse_hook.cpp:213) and can get the
+            // hook silently dropped by the OS. SwitchToThread hands the CPU to
+            // another ready thread and returns at once when none is ready.
+            ::SwitchToThread();
+        }
+        if (!posted) {
+            // Restore ONLY while this dismissal still owns the state; a fresh
+            // card published during the retries keeps its own visibility.
+            const bool restored = card_visibility_.RestoreShown(dismiss_generation);
+            DIAG_LOG("UI", "tooltip_dismiss post failed after retries; %s",
+                     restored ? "state restored (shown, no teardown owed) - a later path will retry"
+                              : "a newer card owns the state; nothing restored");
+        }
         return;
     }
-    if (!visible_.load(std::memory_order_relaxed)) return;
+    if (!card_visibility_.IsVisible()) return;
+    TeardownCard();
+}
+
+void TooltipWindow::TeardownCard() {
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b): GUI-side teardown half of
+    // Dismiss(), shared by the on-thread Dismiss() path and the kDismissMessage
+    // handler. Idempotent by construction - every step below is a no-op when
+    // run a second time (KillTimer on dead timers, clearing empty buffers,
+    // SW_HIDE on a hidden window) - and drops the owed stamp first so a
+    // second invocation can never double-teardown.
+    card_visibility_.ClearDismissalOwed();
     DIAG_LOG("UI", "tooltip_dismiss executed gen=%llu",
              static_cast<unsigned long long>(latest_request_gen_.load(std::memory_order_relaxed)));
     StopTTS();
     ::KillTimer(hwnd_, kTimerMessageAutohide);
     ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
-    visible_ = false;
+    card_visibility_.MarkHidden();
     hovered_btn_ = 0;
     copied_feedback_ = false;
     is_message_mode_ = false;
@@ -2454,7 +2532,27 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case kDismissMessage: {
-            pThis->Dismiss();
+            // 261111_0001 U1 (v0.10.7, audit D1a/D1b) + fix-list round 2 G-06:
+            // idempotent. An off-thread Dismiss()/DismissThreadSafe() clears
+            // visibility, owes the teardown and captures the card generation
+            // of the card it began on before posting, so the GUI-side teardown
+            // MUST run even though the model already reads hidden (the window
+            // is still on screen until TeardownCard's SW_HIDE). The message
+            // carries that generation in WPARAM: a message whose card was
+            // replaced by a fresher Show* (newer generation) is STALE and a
+            // pure no-op - it must never tear down a card the user did not
+            // dismiss. A duplicate message for the same card finds the owed
+            // stamp already consumed and is a no-op too (no double teardown,
+            // no crash).
+            const uint64_t dismiss_generation = static_cast<uint64_t>(wParam);
+            if (pThis->card_visibility_.TryCompleteDismiss(dismiss_generation)) {
+                pThis->TeardownCard();
+            } else {
+                DIAG_LOG("UI", "tooltip_dismiss_dropped_stale card_gen=%llu current=%llu",
+                         static_cast<unsigned long long>(dismiss_generation),
+                         static_cast<unsigned long long>(
+                             pThis->card_visibility_.Generation()));
+            }
             return 0;
         }
 

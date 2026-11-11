@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "diag_logger.hpp"
 #include "engine.hpp"
+#include "gguf_validator.hpp" // 261111_0001 U6: registration-time GGUF header gate
 #include "openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible config block
 #include "engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): startup repair bootstrapper
 #include "vulkan_guard.hpp" // P5-F1: driverless-machine Vulkan pre-probe + stub guard
@@ -182,6 +183,18 @@ void RegisterUserGgufModel(AppConfig& config, TranslationManager& engine) {
         return;
     }
     const std::filesystem::path src_path(file_buf);
+
+    // (2b) 261111_0001 U6 (v0.10.7): registration-time GGUF header gate — the
+    // same structural validation as the manager's add paths (RejectInvalidGguf),
+    // so all three registration routes reject a truncated/corrupt/re-named file
+    // identically before any copy or registry write.
+    if (ggufvalidator::ValidateGgufFile(src_path, nullptr) !=
+            ggufvalidator::GgufValidationResult::Ok) {
+        ::MessageBoxW(nullptr, I18n::Get(StringId::GgufInvalidModelBody).c_str(),
+                      I18n::Get(StringId::UserGgufRegisteredTitle).c_str(),
+                      MB_OK | MB_ICONERROR);
+        return;
+    }
 
     // (3) Resolve the destination: %LOCALAPPDATA%\Emebala\Common\models\.
     const std::filesystem::path models_dir =
@@ -2385,6 +2398,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tray.RefreshTheme();
         tooltip.RefreshTheme();
         about_window.RefreshTheme();
+        // R1-I (v0.10.7, 261111_0001 fix-list round 1): a same-thread GUI
+        // REPAINT of the already-shown icon at its CURRENT position after a
+        // theme/locale change, deliberately NOT routed through the RequestShowAt
+        // generation seam. The seam orders cross-thread show/HIDE requests (a
+        // newer drag supersedes an older one; a Hide invalidates a pending
+        // show); a repaint is neither - it refreshes the applied show and must
+        // not stamp a new generation that could drop a newer in-flight drag.
+        // Single-threaded GUI ordering makes the inline call safe: every inline
+        // ShowAt runs on the GUI thread, serialized with the WndProc that drains
+        // kShowAtMessage/kHideMessage, so a pending newer-drag show still applies
+        // AFTER this repaint (its stamp is untouched) and wins. The IsVisible()
+        // guard is only a cheap pre-filter, NOT a synchronisation with a hide:
+        // an off-thread Hide() posts kHideMessage and the GUI-side teardown
+        // clears the visible flag when that message is drained (drag_icon.cpp
+        // HideWindow), so a concurrent hide can still read as visible here.
+        // That is benign - this repaint re-applies the CURRENT position of an
+        // icon the GUI thread still shows, and the queued hide then hides it;
+        // a newer show stamped meanwhile is unaffected. (G-16 round 2: the
+        // earlier "Hide() clears visible_ synchronously" wording was true only
+        // for the inline GUI-thread hide, never for the hook-thread one.)
         if (drag_icon.IsVisible() && drag_icon.GetHwnd()) {
             RECT rcDrag = {};
             if (::GetWindowRect(drag_icon.GetHwnd(), &rcDrag)) {
@@ -2830,6 +2863,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         tooltip.RefreshTheme();
         about_window.RefreshTheme();
+        // R1-I (v0.10.7, 261111_0001 fix-list round 1): a same-thread GUI
+        // REPAINT of the already-shown icon at its CURRENT position after a
+        // theme/locale change, deliberately NOT routed through the RequestShowAt
+        // generation seam. The seam orders cross-thread show/HIDE requests (a
+        // newer drag supersedes an older one; a Hide invalidates a pending
+        // show); a repaint is neither - it refreshes the applied show and must
+        // not stamp a new generation that could drop a newer in-flight drag.
+        // Single-threaded GUI ordering makes the inline call safe: every inline
+        // ShowAt runs on the GUI thread, serialized with the WndProc that drains
+        // kShowAtMessage/kHideMessage, so a pending newer-drag show still applies
+        // AFTER this repaint (its stamp is untouched) and wins. The IsVisible()
+        // guard is only a cheap pre-filter, NOT a synchronisation with a hide:
+        // an off-thread Hide() posts kHideMessage and the GUI-side teardown
+        // clears the visible flag when that message is drained (drag_icon.cpp
+        // HideWindow), so a concurrent hide can still read as visible here.
+        // That is benign - this repaint re-applies the CURRENT position of an
+        // icon the GUI thread still shows, and the queued hide then hides it;
+        // a newer show stamped meanwhile is unaffected. (G-16 round 2: the
+        // earlier "Hide() clears visible_ synchronously" wording was true only
+        // for the inline GUI-thread hide, never for the hook-thread one.)
         if (drag_icon.IsVisible() && drag_icon.GetHwnd()) {
             RECT rcDrag = {};
             if (::GetWindowRect(drag_icon.GetHwnd(), &rcDrag)) {
@@ -2984,8 +3037,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     ApplyLanguageChange(emebalachat::LanguageContext::Drag, std::string_view{},
                         std::string_view{}, false, false);
 
-    // Drag release threshold callback (> 15px). Runs on the mouse-hook thread
-    // (drag) or the delayed-click worker thread (multi-click settle) - never on
+    // 261111_0001 U1 (v0.10.7, audit D1a/D1b): WHERE the current gesture
+    // started, captured by the mouse-down callback below and read by the
+    // drag-release callback. Needed because SetDragReleaseCallback does NOT
+    // fire only for genuine system-drag-threshold drags: the multi-click settle
+    // path fires it too (mouse_hook.cpp ArmDelayedClick -> delayed worker
+    // drag_cb_), so a plain double-click must be classified by its START
+    // point, not by movement.
+    std::atomic<int> drag_start_x{0};
+    std::atomic<int> drag_start_y{0};
+    // 261111_0001 U1 (v0.10.7, R1-E): whether the CURRENT gesture's mouse-down
+    // landed on one of OUR OWN popup menus (Win32 class "#32768", same process -
+    // the tooltip language menu, the tray submenus, any in-process
+    // TrackPopupMenu). Captured at PRESS time by the mouse-down callback and
+    // consulted UNCONDITIONALLY by the drag-release callback, so a no-card
+    // multi-click over a menu (the release callback also fires on the
+    // multi-click settle path) never summons the drag icon. A multi-click press
+    // and its settled release run on DIFFERENT threads (mouse-hook vs delayed
+    // worker), so the flag is atomic; relaxed ordering suffices (standalone
+    // bool, no data depends on the ordering).
+    std::atomic<bool> drag_press_own_popup{false};
+
+    // Drag release callback. Fires on the mouse-hook thread (a completed drag
+    // past the DPI-aware system drag threshold, mouse_hook.cpp
+    // DragThresholdPixelsForPress - ISSUE-013 retired the hard-coded 15px) OR on
+    // the delayed-click worker thread (a double/triple-click settle). Never on
     // the GUI thread, so every D2D touch below MUST be marshaled.
     mouse_hook.SetDragReleaseCallback([&](int x, int y) {
         // REQ-R12 (I4 sweep): this lambda runs on the mouse-hook thread.
@@ -2995,8 +3071,64 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // the accessor discipline every other cross-thread callback uses.
         // Uncontended mutex_ (~µs) - acceptable on the hook thread (D3 audit).
         const auto snap = config.GetSnapshot();
-        if (!snap.drag_to_translate || !hook.IsActive() || tooltip.IsVisible()) {
+        if (!snap.drag_to_translate || !hook.IsActive()) {
             return;
+        }
+        // 261111_0001 U1 (v0.10.7, R1-E): consult the PRESS-time own-popup
+        // predicate UNCONDITIONALLY - a gesture whose mouse-down landed on one of
+        // our own popup menus is a menu interaction and must never summon the
+        // drag icon, EVEN WHEN NO CARD IS VISIBLE. The old exemption lived only
+        // inside the tooltip.IsVisible() block below, so a no-card tray-menu
+        // multi-click (which still reaches this callback through the delayed-
+        // click settle path) summoned the icon over the open menu.
+        if (drag_press_own_popup.load(std::memory_order_relaxed)) {
+            DIAG_LOG("UI", "drag_release exempted: press started over own popup menu (no card needed)");
+            return;
+        }
+        // 261111_0001 U1 (v0.10.7, audit D1a/D1b/D4, ISSUE-009): a visible
+        // translation card must NEVER suppress the gesture globally (the old
+        // `tooltip.IsVisible()` early return was the dead zone: every drag
+        // release anywhere was dropped while a card was parked, and translation
+        // cards never auto-hide). Tooltip visibility is now only a LOCAL
+        // qualifier:
+        //   - a gesture that STARTED inside the card's rect belongs to the card
+        //     (the window is hit-test opaque - no WS_EX_TRANSPARENT, tooltip.cpp
+        //     L298 - so its press was consumed by a button/thumb, never by the
+        //     underlying app): never summon a drag icon, never dismiss. This is
+        //     what keeps tooltip button double-clicks icon-free.
+        //   - any OTHER gesture dismisses the card and CONTINUES to the icon.
+        //     Dismiss() clears visible_ before returning on this thread (D1a)
+        //     and marshals its GUI teardown internally, so it is safe here.
+        if (tooltip.IsVisible()) {
+            // REQ-026 class, SECOND LAYER (the primary own-popup gate is the
+            // press-time flag checked unconditionally above): a gesture whose
+            // RELEASE lands on our own popup menu (e.g. pressed on the app, then
+            // dragged onto the open menu) is a menu interaction - never dismiss
+            // the menu's owner mid-tracking (the posted dismiss would be
+            // dispatched inside TrackPopupMenuEx and kill the pick).
+            const POINT release_pt = { x, y };
+            HWND under = ::WindowFromPoint(release_pt);
+            if (under) {
+                wchar_t menu_class[16] = {};
+                if (::GetClassNameW(under, menu_class, 16) > 0 &&
+                    ::lstrcmpW(menu_class, L"#32768") == 0) {
+                    DWORD pid = 0;
+                    ::GetWindowThreadProcessId(under, &pid);
+                    if (pid == ::GetCurrentProcessId()) {
+                        DIAG_LOG("UI", "drag_release exempted over own popup menu");
+                        return;
+                    }
+                }
+            }
+            RECT r = {};
+            ::GetWindowRect(tooltip.GetHwnd(), &r);
+            const POINT drag_start = { drag_start_x.load(std::memory_order_relaxed),
+                                       drag_start_y.load(std::memory_order_relaxed) };
+            if (::PtInRect(&r, drag_start)) {
+                DIAG_LOG("UI", "drag_release suppressed: gesture started inside tooltip rect");
+                return;
+            }
+            tooltip.Dismiss();
         }
         // REQ-R10 (audit §3.4): the single-threaded D2D render target belongs
         // to the main GUI thread. Call ShowAt directly here produced
@@ -3008,6 +3140,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     // Outside-click dismissal for DragIconWindow and TooltipWindow
     mouse_hook.SetMouseDownCallback([&](int x, int y) {
+        // 261111_0001 U1 (v0.10.7, audit D1a/D1b): record the gesture START
+        // point first, for the drag-release scoping above. Every physical
+        // press updates it (even menu clicks). R1-E: the press-time own-popup
+        // flag is reset here too (every press re-evaluates it); the release
+        // callback exempts an own-popup gesture via this flag UNCONDITIONALLY
+        // plus its own WindowFromPoint second layer.
+        drag_start_x.store(x, std::memory_order_relaxed);
+        drag_start_y.store(y, std::memory_order_relaxed);
+        drag_press_own_popup.store(false, std::memory_order_relaxed);
         POINT pt = { x, y };
         // REQ-026 (Phase A §3 B-3, attributed failure mode (a) callback-never-
         // fires): a physical click landing on OUR OWN transient popup menu
@@ -3034,6 +3175,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 DWORD pid = 0;
                 ::GetWindowThreadProcessId(under, &pid);
                 if (pid == ::GetCurrentProcessId()) {
+                    // R1-E: stamp the own-popup predicate so the drag-release
+                    // callback exempts this gesture unconditionally (even with no
+                    // card visible) instead of only inside its IsVisible() block.
+                    drag_press_own_popup.store(true, std::memory_order_relaxed);
                     DIAG_LOG("UI", "mouse_down exempted over own popup menu (no dismissal)");
                     return;
                 }
@@ -3243,7 +3388,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // drag_target_language and forced the detected value as the engine
         // source, silently ignoring a user-pinned drag_source_language.
         const auto snap = config.GetSnapshot();
-        std::string detected = emebalachat::DetectLanguage(selected);
+        // 261111_0001 U6 (v0.10.7, R2-02/R2-04): the drag prompt label comes
+        // from the GATED accessor (U2's dominant-script model inside
+        // DetectLanguage + the Unknown->AUTO prompt contract), never a raw
+        // DetectLanguage call — the resolved label feeds the engine prompt
+        // AND ResolveEffectiveTarget's pivot, so one seam governs both.
+        std::string detected = emebalachat::DetectLanguageForPrompt(selected);
         // ADR-A1-2: NON-AUTO persisted source wins over detection; "Auto
         // Detect" keeps the established drag contract of injecting the
         // DETECTED language into the engine as an explicit source.
@@ -3323,6 +3473,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             DIAG_LOG("STATE", "drag_bypass path=icon detected=%s tgt=%s",
                      detected.c_str(), tgt_lang.c_str());
             DIAG_F("MAIN/DragIconClick/006: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
+            // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): this drop
+            // used to be SILENT - the drag icon vanished with zero feedback and
+            // the user could not tell why nothing was translated. Surface the
+            // same REQ-R1 "the click cannot produce a translation" notice the
+            // console-gate above uses: StringId::TooltipNoSelection ("no text
+            // selected to translate" family - the closest existing notice; no
+            // dedicated "not translatable" StringId exists and src/i18n.* is
+            // owned by another unit this session, so no new literal is added).
+            tooltip.ShowMessageThreadSafe(click_x, click_y,
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
+                                          gen);
             return;
         }
 
@@ -3347,6 +3509,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // applies the streak-latch policy on the GUI thread).
         emebalachat::TranslationStatus drag_status = emebalachat::TranslationStatus::Ok;
         std::wstring translated = engine.Translate(selected, eff_src, tgt_lang, &drag_status);
+        // R2-I (v0.10.7, 261111_0001 fix-list round 1): read the provider error
+        // detail into a local IMMEDIATELY after the call, on this worker thread,
+        // before any release/queue op - LastChatErrorDetail is a process-global
+        // slot another thread's engine.Translate could clear or overwrite. The
+        // residual window (this read vs the call) is now just the badge set
+        // below; the per-request out_error_detail carrier is the long-term fix.
+        std::string drag_openai_detail;
+        if (engine.GetEngineType() == emebalachat::EngineType::OpenAi) {
+            drag_openai_detail = emebalachat::OpenAiCompatibleClient::LastChatErrorDetail();
+        }
         badge.SetStatus(emebalachat::BadgeStatus::Active);
         if (drag_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
             drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
@@ -3358,6 +3530,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 emebalachat::I18n::Get(drag_status == emebalachat::TranslationStatus::LocalModelMissing
                                            ? emebalachat::StringId::RepairFailedBody
                                            : emebalachat::StringId::RepairTransientBody));
+            // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): these
+            // statuses always carry an EMPTY translation, and falling through
+            // to ShowTranslationThreadSafe below used to render a permanent
+            // empty ghost card (ShowTranslation kills the message autohide
+            // timer, tooltip.cpp kTimerMessageAutohide, and arms no hide of
+            // its own). The modal above IS the user feedback; stop here.
+            return;
         } else if (!translated.empty()) {
             // Success sentinel: resets the streak latch so a later strict
             // failure re-arms the modal (same path as the Enter pipeline).
@@ -3369,10 +3548,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // read as "it shows the sentence I dragged before" (the reported
             // stale-result bug). Surface a failure notice stamped with THIS
             // request's generation so a newer drag still supersedes it.
+            // 261111_0001 U6 (v0.10.7, R1 P1-3): when the failed leg is the
+            // OpenAI-compatible engine, the notice carries the REAL cause —
+            // the HTTP status + the provider's own message, already bounded,
+            // sanitized and API-key-masked by the client
+            // (OpenAiCompatibleClient::LastChatErrorDetail) — so a 503
+            // "Credit accounting is temporarily unavailable" reads as the
+            // transient platform state it is, not a silent failure. Local /
+            // Google failures keep the established generic notice, and the
+            // translation itself stays empty (no invented text).
+            std::wstring fail_body =
+                emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed);
+            if (!drag_openai_detail.empty()) {
+                fail_body += L"\n";
+                fail_body += emebalachat::ToUtf16(drag_openai_detail);
+            }
             tooltip.ShowMessageThreadSafe(click_x, click_y,
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
-                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed),
+                                          fail_body,
                                           gen);
+            // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): return
+            // IMMEDIATELY after the failure notice. The old code fell through
+            // to ShowTranslationThreadSafe(..., L"") below, and ShowMessage's
+            // autohide timer (kTimerMessageAutohide) was killed by
+            // ShowTranslation's KillTimer - leaving a permanent empty ghost
+            // card that re-created the drag dead zone.
+            return;
         }
 
         // Worker thread, so marshal the D2D render to the GUI thread via the
@@ -3381,6 +3582,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // inside engine.Translate (local LLM takes seconds), the tooltip
         // drops this stale payload instead of showing the previous
         // translation (the reported intermittent bug).
+        // 261111_0001 U1 (v0.10.7): only the non-empty success result reaches
+        // this call - every empty-result path above returns first.
         tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, tooltip_src, tgt_lang, translated,
                                           gen);
     };
@@ -3448,7 +3651,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::string eff_src = emebalachat::ResolveEffectiveSource(
                                   snap.drag_source_language, job.src_code);
         if (eff_src.empty()) {
-            eff_src = emebalachat::DetectLanguage(job.src);
+            // R1-H / R2-17 governance (orchestrator pin-repair round): the
+            // re-detect safety net feeds the ENGINE PROMPT source, so it must
+            // resolve through the gated accessor (Unknown -> Auto Detect), not
+            // the bare DetectLanguage. Every drag-family prompt source now goes
+            // through that one accessor: this path, run_drag_translate, and the
+            // double-Ctrl+C path (G-03, fix-list round 2).
+            eff_src = emebalachat::DetectLanguageForPrompt(job.src);
         }
         std::string src_code = emebalachat::NormalizeLanguageCode(eff_src);
         // F1 (session 260908_0003): AUTO engine source -> localized "Auto
@@ -3597,7 +3806,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // as run_drag_translate above - this path ignored a pinned
         // drag_source_language exactly like the drag icon path did (V6).
         const auto snap = config.GetSnapshot();
-        std::string detected = emebalachat::DetectLanguage(copied);
+        // 261111_0001 U6 (v0.10.7, R2-02/R2-04) + G-03 (fix-list round 2): this
+        // value feeds ResolveEffectiveSource and then engine.Translate's SOURCE
+        // slot (the engine prompt), so it must come from the GATED accessor -
+        // Unknown -> "Auto Detect" (AUTO) - exactly like run_drag_translate and
+        // the retranslate safety net above. The bare DetectLanguage call is a
+        // governance breach even where today's labels happen to coincide:
+        // garbage/unclassifiable text reached the prompt as "Unknown" instead of
+        // the AUTO marker.
+        std::string detected = emebalachat::DetectLanguageForPrompt(copied);
         const bool src_pinned = emebalachat::NormalizeLanguageCode(
                                     snap.drag_source_language) != "AUTO";
         std::string eff_src = emebalachat::ResolveEffectiveSource(
@@ -3642,15 +3859,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // fired, so same-language text still auto-pivots to the user's
         // native language (established drag UX preserved). Bypassed gestures
         // exit before the transient badge flip below (no label flicker).
+        // R1-B (v0.10.7, 261111_0001 fix-list round 1): the drop is no longer
+        // SILENT - the drag-icon path's reused notice (StringId::
+        // TooltipNoSelection, the "click cannot produce a translation"
+        // family; no dedicated StringId exists and src/i18n.* is owned by
+        // another unit this session) is surfaced here too, stamped with THIS
+        // request's generation so a newer drag still supersedes it. The
+        // cursor anchor is captured BEFORE the gate so the notice carries the
+        // same placement the translation card would have had.
+        POINT cursor = {};
+        ::GetCursorPos(&cursor);
         if (!emebalachat::ShouldTranslate(copied, tgt_lang, "Auto Detect")) {
             DIAG_LOG("STATE", "drag_bypass path=dbl_ctrl_c detected=%s tgt=%s",
                      detected.c_str(), tgt_lang.c_str());
             DIAG_F("MAIN/DoubleCtrlC/002: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
+            tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipNoSelection),
+                                          gen);
             return;
         }
-
-        POINT cursor = {};
-        ::GetCursorPos(&cursor);
 
         // REQ-013: same transient badge flip as run_drag_translate - show the
         // DRAG pair while THIS translation runs, restore the TYPE pair on
@@ -3668,23 +3896,62 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // silent.
         emebalachat::TranslationStatus dbl_status = emebalachat::TranslationStatus::Ok;
         std::wstring translated = engine.Translate(copied, eff_src, tgt_lang, &dbl_status);
+        // R2-I (v0.10.7, 261111_0001 fix-list round 1): capture the provider
+        // error detail into a local IMMEDIATELY after the call, on this worker
+        // thread, before any release/queue op - LastChatErrorDetail is a
+        // process-global slot another thread's engine.Translate could overwrite.
+        // Residual window is now just the badge set below; the per-request
+        // out_error_detail carrier is the long-term fix (engine repo).
+        std::string dbl_openai_detail;
+        if (engine.GetEngineType() == emebalachat::EngineType::OpenAi) {
+            dbl_openai_detail = emebalachat::OpenAiCompatibleClient::LastChatErrorDetail();
+        }
         badge.SetStatus(emebalachat::BadgeStatus::Active);
         if (dbl_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
             dbl_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // R1-A (v0.10.7, 261111_0001 fix-list round 1): mirror the drag-icon
+            // path's terminal structure (run_drag_translate) - the modal IS the
+            // feedback, and these statuses always carry an empty translation, so
+            // STOP here. Falling through used to pass L"" to
+            // ShowTranslationThreadSafe and render a permanent empty ghost card
+            // (ShowTranslation kills the notice autohide timer and arms no hide).
             emebalachat::RequestEngineUnavailableModal(
                 emebalachat::g_hControllerWnd,
                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                emebalachat::I18n::Get(dbl_status == emebalachat::TranslationStatus::LocalModelMissing
+                                           ? emebalachat::StringId::RepairFailedBody
+                                           : emebalachat::StringId::RepairTransientBody));
+            return;
         } else if (!translated.empty()) {
             // Success sentinel: resets the streak latch (same seam as Enter).
             emebalachat::RequestEngineUnavailableModal(emebalachat::g_hControllerWnd,
                                                        std::wstring(), std::wstring());
+        } else {
+            // R1-A: the empty-translation EngineFailed/timeout case has no modal
+            // above; without this branch it fell through to
+            // ShowTranslationThreadSafe(..., L"") (permanent empty ghost card).
+            // Surface the same transient failure notice the drag-icon path uses
+            // (StringId::TooltipTranslateFailed), plus the provider detail when
+            // the failed leg is the OpenAI-compatible engine, then STOP.
+            std::wstring fail_body =
+                emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed);
+            if (!dbl_openai_detail.empty()) {
+                fail_body += L"\n";
+                fail_body += emebalachat::ToUtf16(dbl_openai_detail);
+            }
+            tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
+                                          emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                          fail_body,
+                                          gen);
+            return;
         }
 
         // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI
         // thread instead of calling ShowTranslation() directly (audit §3.4).
         // R6 B1-H1: generation-guarded (a drag request stamped meanwhile makes
         // this result the stale one, and the tooltip drops it instead).
+        // 261111_0001 U1: only the non-empty success result reaches this call -
+        // every empty-result path above returns first (no empty ghost card).
         tooltip.ShowTranslationThreadSafe(
             cursor.x + 12, cursor.y + 12, copied, tooltip_src, tgt_lang, translated, gen);
     });

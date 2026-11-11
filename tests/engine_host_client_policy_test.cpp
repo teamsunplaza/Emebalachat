@@ -321,8 +321,8 @@ void TestEngineHostClientPolicy() {
         TEST_CHECK(d.model_id.empty() && d.profile_name.empty(), "defaults: empty id slots");
         TEST_CHECK(!d.sampling_present, "defaults: sampling_present false");
         TEST_CHECK(d.sampling.temperature == 0.0f && d.sampling.top_p == 0.6f &&
-                       d.sampling.top_k == 20 && d.sampling.rep_pen == 1.05f,
-                   "defaults: shipped sampling 0.0/0.6/20/1.05");
+                       d.sampling.top_k == 20 && d.sampling.rep_pen == 1.0f,
+                   "defaults: shipped sampling 0.0/0.6/20/1.0 (v0.10.7 U4)");
         TEST_CHECK(d.prompt_template_ref == "hymt2-official", "defaults: hymt2-official");
     }
 }

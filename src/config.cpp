@@ -1613,7 +1613,7 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // the single JSON choke point. std::stof accepts quoted "nan"/"inf"
             // strings, so std::isfinite + range tests run here; a non-finite or
             // out-of-range value falls back to the field default (config.hpp
-            // sampler note: 0.0f/0.6f/20/1.05f, Batch 2 grid 260913_0002).
+            // sampler note: 0.0f/0.6f/20/1.0f since v0.10.7 U4, Batch 2 grid 260913_0002).
             // Upper-edge temperature saturates to 2.0 (report spec); 0 stays
             // meaningful (engine greedy branch, engine.cpp L1004).
             try { float t = std::stof(v);
@@ -1629,7 +1629,7 @@ bool AppConfig::FromJsonString(std::string_view json) {
                   top_k = (k_ >= 0 && k_ <= 1000) ? k_ : 20; } catch (...) {}
         } else if (k == "repetition_penalty") {
             try { float r = std::stof(v);
-                  repetition_penalty = (std::isfinite(r) && r >= 1.0f && r <= 2.0f) ? r : 1.05f; } catch (...) {}
+                  repetition_penalty = (std::isfinite(r) && r >= 1.0f && r <= 2.0f) ? r : 1.0f; } catch (...) {}
         }
     }
     // Phase 3 migration (plan §2.1): no new-schema keys => this is a pre-Phase-3

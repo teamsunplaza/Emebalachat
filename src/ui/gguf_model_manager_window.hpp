@@ -62,7 +62,7 @@
 
 #include "../config.hpp"            // AppConfig (REQ-048 R2-D: user_model_id tracking)
 #include "../engine.hpp"            // TranslationManager (delete -> EngineType::Auto re-point)
-#include "../engine_host_registry.hpp"
+#include "engine_host_registry.hpp" // 261111_0001 U7: engine repo header (bare form; see engine_host_client.hpp above)
 #include "../i18n.hpp"              // REQ-060: StringId (policy-suffix helper return)
 #include "openai_settings_window.hpp" // REQ-046 P4-3 / REQ-048 P2 TemplateBuilder (proven DLGTEMPLATE contract)
 

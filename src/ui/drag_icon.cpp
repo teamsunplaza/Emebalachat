@@ -8,6 +8,15 @@ namespace emebalachat {
 
 namespace {
 const wchar_t kDragIconClassName[] = L"Emebalachat_DragIconClass";
+
+// 261111_0001 U1 (v0.10.7, audit D4/ISSUE-009, R1-D): show/hide generation
+// seam state (the arbiter type lives in drag_icon.hpp). s_drag_show_arbiter is
+// the monotonic token source + the single pending slot (stamp + coords), so a
+// stale or forged kShowAtMessage can never pick the icon position. R1-D folded
+// the four former split atomics into this ONE arbiter, which serializes
+// {token, coords, slot} and the Hide invalidation under a single mutex.
+// One icon window per process, hook/GUI threads share the arbiter.
+DragShowArbiter s_drag_show_arbiter;
 }
 
 DragIconWindow::DragIconWindow() = default;
@@ -127,6 +136,28 @@ void DragIconWindow::Destroy() {
     renderer_.FreeBuffer();
 }
 
+// 261111_0001 U1 (v0.10.7, audit D4/ISSUE-009): thread-safe seam. Stamps the
+// monotonic generation (carried in WPARAM), fills the single-slot pending
+// coordinates, then posts the wake-up. The kShowAtMessage handler only
+// applies the show when the stamp still matches the pending slot - a
+// request superseded by a newer show or invalidated by a Hide() (which
+// empties the slot and bumps the generation) is dropped as stale.
+bool DragIconWindow::RequestShowAt(HWND hwnd, int x, int y) {
+    if (!hwnd) {
+        return false;
+    }
+    // R1-D: BeginShow assigns the token AND publishes {token, coords} into the
+    // slot as one locked unit, then we post OUTSIDE the lock. The slot is the
+    // arbiter, so even a post reordered against a concurrent producer still
+    // resolves latest-wins on the GUI thread.
+    const uint64_t gen = s_drag_show_arbiter.BeginShow(x, y);
+    // gen starts at 1 and is 64-bit (x64 target; WPARAM is pointer-sized),
+    // so the stamp round-trips losslessly and ShouldApplyShowAt never
+    // mistakes it for the "no pending show" zero sentinel.
+    return ::PostMessageW(hwnd, kShowAtMessage,
+                          static_cast<WPARAM>(gen), 0) == TRUE;
+}
+
 void DragIconWindow::ShowAt(int x, int y) {
     if (!hwnd_) return;
 
@@ -177,18 +208,66 @@ void DragIconWindow::ShowAt(int x, int y) {
 
 void DragIconWindow::Hide() {
     if (!hwnd_) return;
+    // 261111_0001 U1 (v0.10.7, audit D4/ISSUE-009) + fix-list round 2 G-10:
+    // bump the show/hide generation and empty the pending show slot BEFORE any
+    // marshal or teardown, so a kShowAtMessage posted before this Hide() but
+    // processed after it (an inline GUI-thread hide bypasses the posted queue)
+    // is dropped as stale instead of stranding a clickable icon at a dead
+    // selection site. The bump returns this hide's TOKEN: the marshaled
+    // kHideMessage carries it and the GUI-side handler re-invalidates ONLY
+    // while that token is still current (CompleteHide below), so a BeginShow
+    // issued after this request keeps its pending slot instead of having it
+    // emptied by this hide's own drain.
+    const uint64_t hide_token = s_drag_show_arbiter.Invalidate();
     // Same marshal rule as ShowAt: the ESC/outside-click dismiss paths call this
     // from the keyboard/mouse hook threads. SetWindowPos/ShowWindow/D2D must run
     // on the GUI thread. WndProc re-enters on the GUI thread (no recursion).
     if (::GetCurrentThreadId() != gui_thread_id_) {
-        ::PostMessageW(hwnd_, kHideMessage, 0, 0);
+        ::PostMessageW(hwnd_, kHideMessage, static_cast<WPARAM>(hide_token), 0);
         return;
     }
+    HideWindow();
+}
+
+// 261111_0001 (v0.10.7) fix-list round 2, G-10: the GUI-side window teardown,
+// factored out so Hide()'s inline path and CompleteHide()'s marshaled path
+// share exactly one body and differ only in whether the arbiter is
+// re-invalidated. Runs ON the GUI thread.
+void DragIconWindow::HideWindow() {
     if (!visible_.load(std::memory_order_acquire)) return;
     StopFadeoutTimer();
     visible_.store(false, std::memory_order_release);
     is_hovered_ = false;
     ::ShowWindow(hwnd_, SW_HIDE);
+}
+
+// 261111_0001 (v0.10.7) fix-list round 2, G-10: GUI-thread completion of a
+// marshaled hide. The old handler called Hide() again, which unconditionally
+// invalidated the arbiter, so a BeginShow that landed while the message sat in
+// the queue lost its pending slot (Hide -> pending=0 -> BeginShow -> pending=T
+// -> drain -> pending=0 -> TryApply(T) false: the newer show was silently
+// dropped). Re-invalidating only while THIS hide's token is still current
+// keeps the newer show alive.
+//
+// F-2 (261111_0001 round 3): a superseded hide must not run the WINDOW
+// teardown either. When a newer show already owns the slot (its
+// kShowAtMessage was applied - drained out of FIFO order by a filtered pump,
+// or applied inline on the GUI thread - so nothing is queued behind this
+// stale hide), the old unconditional HideWindow() hid the icon the newer show
+// had just placed, and no further show message was left to bring it back: a
+// clickable drag icon vanished and the drag-release affordance with it. The
+// old claim that "the newer show's own kShowAtMessage re-shows it" only holds
+// while that message is still PENDING; it is false for this ordering. So: log
+// the drop and leave the window exactly as the newer owner left it.
+void DragIconWindow::CompleteHide(uint64_t hide_token) {
+    if (!s_drag_show_arbiter.InvalidateIfCurrent(hide_token)) {
+        DIAG_LOG("UI", "drag_icon_hide_dropped_stale hide_gen=%llu (a newer show owns the slot)",
+                 static_cast<unsigned long long>(hide_token));
+        return; // F-2: never tear down what a newer show already applied
+    }
+    // Still current: this hide owns the state, so the teardown is ours. The
+    // already-hidden case stays a no-op through HideWindow()'s visible_ guard.
+    HideWindow();
 }
 
 void DragIconWindow::StartFadeoutTimer() {
@@ -336,16 +415,41 @@ LRESULT CALLBACK DragIconWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         // REQ-R10 (audit §3.4): ShowAt marshaled from the mouse-hook thread via
         // RequestShowAt()/PostMessageW. This case runs on the GUI thread that
         // owns the single-threaded D2D render target, curing D2DERR_WRONG_THREAD.
-        // Unpack with the lossless int round-trip documented in drag_icon.hpp.
+        // 261111_0001 U1 (v0.10.7): payload contract in drag_icon.hpp - WPARAM
+        // is the generation stamp, the coordinates come from the pending slot.
         case DragIconWindow::kShowAtMessage: {
-            const int x = DragIconWindow::ShowAtXFromWParam(wParam);
-            const int y = DragIconWindow::ShowAtYFromLParam(lParam);
-            pThis->ShowAt(x, y);
+            // 261111_0001 U1 (v0.10.7, audit D4/ISSUE-009, R1-D): WPARAM carries
+            // the RequestShowAt generation stamp; the coordinates come from the
+            // arbiter's single slot. TryApply decides staleness AND copies the
+            // coords out under ONE lock, so a stamp that no longer matches the
+            // slot (posted before a Hide(), superseded by a newer show, or
+            // forged) is dropped and can neither resurrect the icon nor tear (x2,y1).
+            const uint64_t stamped = static_cast<uint64_t>(wParam);
+            int show_x = 0;
+            int show_y = 0;
+            if (!s_drag_show_arbiter.TryApply(stamped, show_x, show_y)) {
+                return 0;
+            }
+            pThis->ShowAt(show_x, show_y);
             return 0;
         }
 
         case DragIconWindow::kHideMessage: {
-            pThis->Hide(); // already on the GUI thread here
+            // G-10 (fix-list round 2): the WPARAM stamp identifies the hide this
+            // message services. CompleteHide re-invalidates the arbiter only while
+            // that generation is still current, so a newer BeginShow that landed
+            // while this message sat in the queue keeps its pending slot (the old
+            // unconditional Hide() re-entry here emptied it and dropped the newer
+            // icon).
+            // WPARAM==0 is never a real hide token (tokens start at 1), so a
+            // token-less post is an unconditional legacy hide: only the
+            // production Hide() seam posts, and it always stamps the token.
+            const uint64_t hide_token = static_cast<uint64_t>(wParam);
+            if (hide_token == 0) {
+                pThis->HideWindow();
+            } else {
+                pThis->CompleteHide(hide_token);
+            }
             return 0;
         }
 

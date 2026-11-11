@@ -932,6 +932,19 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         bool win = ((::GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((::GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
 
+        // ---- v0.10.7 E1/E2 (session 261111_0001): line-break accounting ----
+        // (1) Re-sync the tracker's K with the shared atomic: the Ctrl+V fx
+        //     worker may have added the pasted block's newline count since
+        //     the last keystroke, and the tracker must not clobber it.
+        // (2) Account THIS keydown for the per-current-line input counter
+        //     (text keys only; the Enter arms reset it through the tracker's
+        //     own methods below). O(1), allocation-free, hook-thread-only.
+        s_instance->line_break_.k =
+            s_instance->shift_enter_k_.load(std::memory_order_relaxed);
+        if (IsTextProducingKey(kbd->vkCode, ctrl, alt, win)) {
+            s_instance->line_break_.OnTextInput();
+        }
+
         // ---- 260905 diagnostics; REQ-003 gating (session 260909) ----
         // EVERY real (non-synthetic) keydown is recorded: vk, scan, modifier
         // states, the IME-composing flag, and the target foreground window
@@ -1032,6 +1045,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // VK_RETURN matters; other Alt/Win combos keep K untouched.
             if (kbd->vkCode == VK_RETURN) {
                 s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+                s_instance->line_break_.Reset();
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
             }
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -1049,9 +1063,10 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // keystroke ever announced, so the K counter would under-count
         // separators and slice a pasted multi-line block down to its last
         // line (the typed-block contract cannot know paste geometry). The
-        // pre-fix answer saturated K to the guard ceiling (64) UNCONDITIONALLY,
-        // which backfired on a SINGLE-LINE paste: the next bare Enter's
-        // whole-capture slice then reached back up to 64 lines and re-wrote
+        // pre-fix answer saturated K to the guard ceiling
+        // (kMaxEnterTranslateNewlines) UNCONDITIONALLY, which backfired on a
+        // SINGLE-LINE paste: the next bare Enter's whole-capture slice then
+        // reached back up to the guard's newline ceiling and re-wrote
         // already-translated history (the audit P1-5 report). The fix counts
         // the REAL newline sequences in the clipboard text and ADDS that
         // (clamped to the guard ceiling) to K: a single-line paste adds 0 and
@@ -1064,6 +1079,13 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // the top of this proc - they never reach here.
         if (kbd->vkCode == 'V' && ctrl && !shift && !alt && !win) {
             s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
+            // v0.10.7 E2: the paste deposits (an unknown amount of) text on
+            // the CURRENT line, so the line is non-empty from here on and a
+            // following Backspace must decrement the LINE counter, never K.
+            // The pasted block's newline count arrives asynchronously via
+            // the fx worker below (the shift_enter_k_ atomic) and is picked
+            // up by the next keystroke's tracker re-sync.
+            s_instance->line_break_.OnTextInput();
             KeyboardHook* self = s_instance;
             // NOTE (F-10): nothing here can ever run inline - a not-live
             // worker drops this body (see DispatchHotkeyFx), which is exactly
@@ -1088,22 +1110,34 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
 
-        // Input P1-5 (v0.10.5): keep the F3 newline count honest across
-        // deletions and wholesale edits. Backspace may delete a Shift+Enter
-        // newline; decrementing K per press can only UNDER-slice (the
-        // documented safe direction - an over-counted K is what destroys
-        // already-translated lines). Ctrl+A / Ctrl+X / Ctrl+Z restructure the
-        // whole block, so the counted K is void: reset it (and re-anchor) the
-        // same way the Ctrl+Enter / Alt+Win+Enter exits do.
-        if (kbd->vkCode == VK_BACK) {
-            const int k = s_instance->shift_enter_k_.load(std::memory_order_relaxed);
-            if (k > 0) {
-                s_instance->shift_enter_k_.store(k - 1, std::memory_order_relaxed);
+        // v0.10.7 E2 (session 261111_0001): Backspace/Delete now go through
+        // the LineBreakTracker instead of decrementing K unconditionally.
+        // The old code dropped one separator per press, so fixing a typo on
+        // line 3 of a 3-line message erased a Shift+Enter count and the F3
+        // block slice translated only part of the message. New semantics:
+        // a NON-EMPTY line only consumes the line's own input counter (K
+        // untouched); K moves ONLY when the current line is already empty,
+        // i.e. the user is merging that empty line with the previous one.
+        // Ctrl+A / Ctrl+X / Ctrl+Z restructure the whole block, so the
+        // counted K is void: reset it (and re-anchor) the same way the
+        // Ctrl+Enter / Alt+Win+Enter exits do.
+        if (kbd->vkCode == VK_BACK || kbd->vkCode == VK_DELETE) {
+            const int k_before = s_instance->line_break_.k;
+            s_instance->line_break_.OnBackspace();
+            if (s_instance->line_break_.k != k_before) {
+                s_instance->shift_enter_k_.store(s_instance->line_break_.k,
+                                                 std::memory_order_relaxed);
+                DIAG_LOG("ENTER_GATE",
+                         "outcome=line_break_merge reason=backspace_on_empty_line "
+                         "K=%d->%d line_input=%d",
+                         k_before, s_instance->line_break_.k,
+                         s_instance->line_break_.line_input);
             }
         }
         if (ctrl && !alt && !win &&
             (kbd->vkCode == 'A' || kbd->vkCode == 'X' || kbd->vkCode == 'Z')) {
             s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+            s_instance->line_break_.Reset();
             s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
         }
 
@@ -1169,6 +1203,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // (conservative direction: an uncounted separator can only
                 // UNDER-slice the block - safe - never over-slice it).
                 s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+                s_instance->line_break_.Reset();
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
@@ -1191,11 +1226,15 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // for a VK_RETURN (ImeMirrorNext), and we are returning without
             // touching the pipeline, so no mirror clear is needed here either.
             if (shift) {
-                // F3 (session 260908_0003): K tracking for the block-slice
-                // engine. Shift+Enter passes through UNTOUCHED (the app
-                // inserts the newline); the hook only COUNTS it, per the
-                // ShiftEnterKNext contract: frozen mid-composition (IME-
-                // safe, verify 220750 §6-(iii)), clamped at the capture
+                // F3 (session 260908_0003) + v0.10.7 E1 (session 261111_0001):
+                // K tracking for the block-slice engine. Shift+Enter passes
+                // through UNTOUCHED (the app inserts the newline); the hook
+                // only COUNTS it. E1 removed the ime_composing freeze: a
+                // Shift+Enter delivers a real newline whatever the IME is
+                // doing, and the Korean IME keeps the mirror true across the
+                // whole sentence (jamo/space/period = VK_PROCESSKEY), so the
+                // frozen count starved the F3 block slice (K=0 -> only the
+                // last logical line translated). Clamped at the capture
                 // guard's newline ceiling, lazily re-anchored to 0 when the
                 // foreground window changes (ledger-coherent: the worker
                 // ledger's own context ends with the hwnd, V5/F6).
@@ -1203,19 +1242,17 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     const HWND k_fg = ::GetForegroundWindow();
                     if (k_fg != s_instance->k_anchor_hwnd_) {
                         s_instance->k_anchor_hwnd_ = k_fg;
-                        s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+                        s_instance->line_break_.Reset();
                     }
-                    s_instance->shift_enter_k_.store(
-                        ShiftEnterKNext(
-                            s_instance->shift_enter_k_.load(std::memory_order_relaxed),
-                            dbg_composing),
-                        std::memory_order_relaxed);
+                    s_instance->line_break_.OnShiftEnter();
+                    s_instance->shift_enter_k_.store(s_instance->line_break_.k,
+                                                     std::memory_order_relaxed);
                     DIAG_LOG("ENTER_GATE",
                              "outcome=pass_through reason=shift_enter_newline active=%d busy=%d "
                              "ime_composing=%d shift=1 K=%d",
                              s_instance->IsActive() ? 1 : 0, s_instance->worker_.IsBusy() ? 1 : 0,
                              dbg_composing ? 1 : 0,
-                             s_instance->shift_enter_k_.load(std::memory_order_relaxed));
+                             s_instance->line_break_.k);
                 }
                 return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
             }
@@ -1269,14 +1306,15 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                            reinterpret_cast<void*>(composing_hwnd));
                 } else if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
                     // F3: this composing Enter CONSUMES the block - capture
-                    // the K observed so far for it (frozen through the
-                    // composition by ShiftEnterKNext, so jamo keystrokes
-                    // never polluted it) and reset the counter: the next
-                    // block starts a fresh K, aligned with the capture
-                    // completion the ledger anchors on. The count is valid
-                    // only for its anchor window: a foreground switch since
-                    // the last Shift+Enter means the current block belongs
-                    // to a different context -> K=0 (whole capture).
+                    // the K observed so far for it (v0.10.7 E1: Shift+Enters
+                    // now count THROUGH the composition, so a Korean multi-
+                    // line sentence carries its real separator count) and
+                    // reset the counter: the next block starts a fresh K,
+                    // aligned with the capture completion the ledger anchors
+                    // on. The count is valid only for its anchor window: a
+                    // foreground switch since the last Shift+Enter means the
+                    // current block belongs to a different context -> K=0
+                    // (whole capture).
                     const int k_composing =
                         (s_instance->k_anchor_hwnd_ == composing_hwnd)
                             ? s_instance->shift_enter_k_.load(std::memory_order_relaxed)
@@ -1284,6 +1322,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
                                                      composing_hwnd, k_composing)) {
                         s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+                        s_instance->line_break_.Reset();
                         s_instance->k_anchor_hwnd_ = composing_hwnd;
                         DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
                                "posted (commit-then-translate, hwnd=%p K=%d)\n",
@@ -1306,6 +1345,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // and terminates the block, so the counted K is consumed
                 // WITHOUT being carried to a capture (nothing was posted).
                 s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+                s_instance->line_break_.Reset();
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
                          "ime_composing=1 shift=0 (mirror cleared, K consumed by passthrough)",
@@ -1342,6 +1382,7 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     ? s_instance->shift_enter_k_.load(std::memory_order_relaxed)
                     : 0;
             s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
+            s_instance->line_break_.Reset();
             s_instance->k_anchor_hwnd_ = target_hwnd;
             // Full decision record EVERY time (file sink; the stderr sites
             // below keep their historical spam discipline unchanged):
