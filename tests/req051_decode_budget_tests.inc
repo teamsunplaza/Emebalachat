@@ -33,7 +33,7 @@
 //       never-set atomic.
 // ---------------------------------------------------------------------------
 
-#include "../src/engine_core/translation_common.hpp" // REQ-051 U-1: LocalInferenceEngine + ScaledMaxGenTokens (mid-TU include, pragma-once safe)
+#include "engine_core/translation_common.hpp" // REQ-051 U-1: LocalInferenceEngine + ScaledMaxGenTokens (mid-TU include, pragma-once safe; engine repo since 261111_0001 U7 — resolved via the engine libs' PUBLIC include dirs)
 
 // Compile-time pins (the header constants are inline constexpr — a drifted
 // value fails the BUILD here instead of silently shipping).

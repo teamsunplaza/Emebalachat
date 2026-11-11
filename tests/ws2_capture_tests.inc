@@ -42,7 +42,7 @@
 // req051_decode_budget_tests.inc precedent).
 // ---------------------------------------------------------------------------
 
-#include "../src/engine_core/translation_common.hpp" // 261108_0002: TextScriptClasses / TargetScriptClasses drift pins (mid-TU include, pragma-once safe)
+#include "engine_core/translation_common.hpp" // 261108_0002: TextScriptClasses / TargetScriptClasses drift pins (mid-TU include, pragma-once safe; engine repo since 261111_0001 U7)
 
 namespace {
 

@@ -35,8 +35,10 @@ static int g_failed_count = 0;
         }                                                                      \
     } while (0)
 
-#include "../src/host_v2_translate_pool.hpp"
-#include "../src/host_v2_worker_manager.hpp"
+// 261111_0001 U7: engine repo headers (EMEBALA_ENGINE_DIR), resolved via the
+// engine libraries' PUBLIC include dirs this runner links.
+#include "host_v2_translate_pool.hpp"
+#include "host_v2_worker_manager.hpp"
 #include "translate_pool_test.inc"
 
 int main() {

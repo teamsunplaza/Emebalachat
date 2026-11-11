@@ -9,6 +9,7 @@ Guidance for AI coding agents working in this repository. Read this first; it su
 Key product facts:
 
 - **Dual translation engines**: a local engine served by the shared per-user host (`Emebala.Engine.exe` orchestrator + `Emebala.Engine.ggml-translate.exe` worker — one unified family name everywhere since session 260930_0003, llama.cpp tag `b6099` loading Tencent Hy-MT2-1.8B, Q8_0 GGUF, ~1.9 GB, CUDA GPU offload with CPU fallback) and a cloud engine (direct async WinHTTP client to Google Translate, no API key). The Chat app itself carries **no embedded inference**: its exe is llama-free, and local serving fails over through one-click repair → consent-gated cloud → explicit unavailability notice. Engine selection is `auto` / `local` / `google` via `config.json`. RT-C (260926_0003): the translate worker auto-gates its GPU offload on the free local VRAM at worker start (DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`, threshold 1.5 GiB; below → CPU leg directly, protecting a co-resident Listener ASR worker's VRAM on 8 GB-class cards). `EMEBALA_MT_GPU=0/1` overrides (inherited environment).
+- **The shared engine lives in its own repository** (v0.10.7, 261111_0001 U7): the orchestrator host, the ggml-translate worker, the llama-coupled `Emebalachat_engine_core` library, and the `engine_host_*` client/parsers moved to `D:\OneDrive\Projects\Emebala_engine` and are consumed via `add_subdirectory` (`EMEBALA_ENGINE_DIR`). Emebala Listener/Reader consume the same engine repo. See "The shared engine repository" below.
 - **Privacy-first design**: the app operates no servers; cloud translation is consent-gated; clipboard use is RAII snapshot/restore with Windows Clipboard History exclusion formats; diagnostic logging is OFF by default and shape-only unless `diag_log_content` is explicitly enabled.
 - **38 language entries** (37 targets + Auto Detect) for translation; UI localized in 37 languages; installer UI in 32 languages.
 - The produced binary is `Emebala_chat.exe` (CMake target name is `Emebalachat`; rename is via `OUTPUT_NAME`).
@@ -16,14 +17,12 @@ Key product facts:
 ## Technology Stack & Runtime Architecture
 
 - **Build system**: CMake ≥ 3.24 + Ninja (MSBuild also possible), MSVC v143 (VS 2022), C++20, static CRT (`/MT`), `/W4 /utf-8 /permissive-`, `/Zc:char8_t-`.
-- **Dependencies**: llama.cpp is fetched at configure time via `FetchContent` (pinned tag `b6099`, static libs). CUDA backend (sm_75/86/89/120) enabled when the toolkit is present; Vulkan backend auto-enabled when the Vulkan SDK with `glslc` is found (`EMEBALA_VULKAN` option, default ON); otherwise CUDA-only with a warning — never a hard fail. No other third-party libraries.
-- **Targets** (all in root `CMakeLists.txt`):
-  - `Emebalachat_engine_core` — static library with the llama-coupled inference code (`translation_common.cpp` + engine pure helpers); the only target that links llama.
-  - `Emebalachat_core` — static library with all `src/` modules except `main.cpp` and the engine_core files.
+- **Dependencies**: llama.cpp is fetched at configure time via `FetchContent` (pinned tag `b6099`, static libs) — the fetch, the CUDA backend selection (sm_75/86/89/120), the Vulkan auto-enable (`EMEBALA_VULKAN` option, default ON; auto when the Vulkan SDK with `glslc` is found, else CUDA-only with a warning — never a hard fail), and the R18 third-party warning isolation are owned by the engine repo's CMakeLists since the v0.10.7 split. No other third-party libraries.
+- **Targets**: the chat app owns three targets in the root `CMakeLists.txt`:
+  - `Emebalachat_core` — static library with all chat-side `src/` modules except `main.cpp`. Links `Emebala_engine_host` PUBLIC (the engine repo's host-client/parsers lib), so every core consumer resolves the engine headers; carries no llama symbol.
   - `Emebalachat` — `WIN32` executable → `Emebala_chat.exe` (links core only; no llama symbol).
-  - `EmebalaEngine` — `WIN32` executable → `Emebala.Engine.exe` (orchestrator: dual pipes, sessions, scheduler, worker manager, health).
-  - `EmebalaEngineGgmlTranslate` — `WIN32` executable → `Emebala.Engine.ggml-translate.exe` (translation worker; unified family name since session 260930_0003 — the Chat installer stages the same name Listener uses, and an install-time legacy absorb renames/deletes any old `Emebalachat.Engine.ggml-translate.exe` store copy; also emits its per-family manifest `worker.ggml-translate.manifest` next to it — M7 A-1 scheme `worker.<family>.manifest`; skipped entirely in no-llama builds).
   - `run_tests` — unit-test console runner, registered as CTest `CoreTests`.
+  The engine repo (added via `add_subdirectory(${EMEBALA_ENGINE_DIR} emebala_engine_build)`) owns four more with identical target/output names: `Emebalachat_engine_core` (llama-coupled inference lib; the only llama-linking target), `Emebalachat_host_v2` (orchestrator modules), `Emebala_engine_host` (engine_host_* client-side sources, PUBLIC include dir = the engine `src/`), `EmebalaEngine` → `Emebala.Engine.exe`, and `EmebalaEngineGgmlTranslate` → `Emebala.Engine.ggml-translate.exe` (also emits its per-family manifest `worker.ggml-translate.manifest`; M7 A-1 scheme `worker.<family>.manifest`; skipped entirely in no-llama builds). The engine exes land in this build's root (`build\`), where the installer bundles them.
 - **DLL loading**: CUDA (`cublas64_13`, `cublasLt64_13`, `cudart64_13`) and Vulkan (`vulkan-1.dll`, only when ggml-vulkan was built) are **delay-loaded** so machines without GPU drivers fall back to CPU instead of failing at startup. `main.cpp` calls `SetDllDirectoryW(L"")` at startup to close the CWD DLL-hijack vector (do NOT pass NULL — that restores the CWD in the search order; do NOT use `SetDefaultDllDirectories` — it drops PATH and breaks CUDA resolution). `src/vulkan_guard.cpp` adds a delay-load failure hook plus a loader probe that keeps the ggml Vulkan backend out of the registry on driverless machines.
 - **Runtime data flow**: keyboard hook (dedicated message-pump thread) → synthetic-event filter (randomized per-process `EXTRA_INFO_MARKER` in `dwExtraInfo`) → pipeline worker thread → IME flush → select line / Ctrl+C → smart-bypass filter (URLs, numbers, emojis, script mismatch, same-language) → engine router → (local) `engine_host_client` over `\\.\pipe\emebala-engine` (canonical) or `\\.\pipe\emebala-engine-v1` (frozen v1 alias), orchestrator spawns the `ggml-translate` worker on demand → or (cloud) WinHTTP Google client → set clipboard + Ctrl+V with RAII clipboard restore → Direct2D badge/tray/tooltip update.
 - **Config**: canonical file `%LOCALAPPDATA%\Emebalachat\config.json` (one-shot migration from a legacy config next to the exe). Template in `config.example.json`; full reference in `README.md` §"Configuration Reference".
@@ -31,33 +30,70 @@ Key product facts:
 ## Code Organization
 
 ```
-CMakeLists.txt          # entire build definition (single file, heavily commented)
-src/                    # production C++20 sources; one module per .hpp/.cpp pair
+CMakeLists.txt          # chat-side build definition (single file, heavily commented);
+                        # add_subdirectory()s the engine repo (EMEBALA_ENGINE_DIR)
+src/                    # chat-side production C++20 sources; one module per .hpp/.cpp pair
   main.cpp              # entry point: single-instance mutex, privacy notice, message loop
   version.hpp           # version string source of truth (stringizes EMEBALACHAT_VERSION_STR)
   hook.cpp / hook.hpp   # low-level keyboard hook, Enter pipeline gating
   worker.cpp / worker.hpp  # background pipeline worker thread + task queue
   engine.cpp            # dual-engine router (shared engine host / Google; no embedded llama)
+  engine.hpp            # TranslationManager contract; re-exports the engine-repo
+                        # helper/protocol headers (kPinnedModelFilename, host client)
   google_translate.cpp  # async WinHTTP Google Translate client
   smart_bypass.cpp      # non-translatable content filter
   win32_input.cpp       # key injection + RAII clipboard manager
   unicode_utils.cpp / bidi_utils.cpp  # UTF conversion, script classification, RTL
   i18n.cpp / config.cpp # UI strings (~37 langs) + config serialization / language DB
   diag_logger.cpp       # opt-in per-run diagnostic log (shape-only by default)
-  engine_core/          # llama-coupled inference library (translation_common, engine helpers) — links llama
-  engine_host_*         # host client, registry/manifest/components parsers, bootstrap client
-  host_main.cpp         # Emebala.Engine entry: dual pipes, sessions, scheduler, worker manager, health
-  host_v2_*.cpp/.hpp    # session/scheduler/worker-manager/health modules for the orchestrator
-  worker_protocol.hpp   # orchestrator↔worker (inner) pipe contract + worker manifest schema (M7 A-1: deployed as worker.<family>.manifest)
-  ggml_translate_worker.cpp  # translation worker process entry
-  sound.cpp / mouse_hook.cpp / vulkan_guard.cpp / hook_thread.hpp / single_slot_worker.hpp
+  model_verify_sample.hpp  # shared R1-19 content sample (consumed by the engine repo too)
+  gguf_validator.*      # registration-time GGUF header gate (llama-free)
+  sound.cpp / mouse_hook.cpp / vulkan_guard.cpp / hook_thread.hpp / tray_toggle_debounce.hpp
   ui/                   # Direct2D presentation layer
     badge.cpp  tray.cpp  tooltip.cpp  drag_icon.cpp  about_window.cpp
     layered_renderer.cpp  asset_loader.cpp  dpi.cpp  (Per-Monitor V2 DPI)
-tests/run_tests.cpp     # single-file unit test suite (~4,531 checks), links Emebalachat_core (+ m6_engine_host_*.inc, m7_*, req0xx_*.inc suites)
+tests/run_tests.cpp     # single-file unit test suite (~8,693 checks), links
+                        # Emebalachat_core + the engine-repo libs (+ m6_engine_host_*.inc,
+                        # m7_*, req0xx_*.inc suites); ResolveRepoFile() falls back to the
+                        # engine repo (EMEBALA_ENGINE_REPO_DIR) for engine-source pins
 installer/              # Inno Setup 6 packaging (setup.iss, README.md, languages/, assets/)
 tools/                  # Python/PowerShell verification & gate scripts (see below)
 tools/e2e/              # interactive-desktop E2E harness (Notepad + real app)
+```
+
+### The shared engine repository (v0.10.7 split, 261111_0001 U7)
+
+The engine half of the product lives in a sibling checkout, default
+`D:\OneDrive\Projects\Emebala_engine` (`EMEBALA_ENGINE_DIR`, overridable with
+`-DEMEBALA_ENGINE_DIR=<path>`; the configure fails with a clear error when the
+path has no CMakeLists.txt). What lives there: `src/engine_core/` (llama-coupled
+inference), `host_main.cpp` + `host_v2_*` (the orchestrator),
+`ggml_translate_worker.cpp`, `worker_protocol.hpp`, all `engine_host_*` modules,
+`engine_host_protocol.hpp`, `single_slot_worker.hpp`, `overlapped_io_util.hpp`,
+and `engine_icon.rc`. What stays here: the app, its pipeline/UI, the dual-engine
+router (`engine.cpp`), and the support library the engine compiles against
+(`Emebalachat_core`: diag_logger, unicode_utils, config, engine.hpp,
+smart_bypass, model_verify_sample.hpp, vulkan_guard).
+
+- Emebalachat's CMakeLists defines `Emebalachat_core` FIRST, then
+  `add_subdirectory(${EMEBALA_ENGINE_DIR} emebala_engine_build)`, then links
+  `Emebala_engine_host` PUBLIC — engine headers resolve for every core consumer
+  without putting `llama.h` on the Chat exe's include path (linking
+  `Emebalachat_engine_core` into core would flip translation_common.hpp's
+  `__has_include("llama.h")` contract and break the llama-free exe).
+- The engine repo's CMakeLists owns the llama FetchContent (+ CUDA/Vulkan/R18)
+  and skips it when the parent already provides the `llama` target — exactly
+  one llama build per build tree. It is standalone-CONFIGURABLE on its own; a
+  full standalone build needs a consumer's support library, so build it through
+  this repo (or Listener/Reader).
+- Engine-source pins in `tests/` resolve through `ResolveRepoFile`, which tries
+  the chat repo first and then the engine repo (compiled-in
+  `EMEBALA_ENGINE_REPO_DIR` from the same cache var).
+- Engine binaries still land at `build\Emebala.Engine.exe`,
+  `build\Emebala.Engine.ggml-translate.exe` and
+  `build\worker.ggml-translate.manifest` (engine-repo
+  `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = the consumer build root) — the installer
+  bundles them by those paths.
 docs/                   # session reports, ADRs, release checklist (LOCAL ONLY — gitignored)
 assets/                 # logos/icons (PNG/ICO) used by the app and installer
 ```
@@ -67,24 +103,29 @@ assets/                 # logos/icons (PNG/ICO) used by the app and installer
 Run from an **x64 Native Tools Command Prompt for VS 2022** on Windows 10/11 x64:
 
 ```powershell
-# Configure (fetches llama.cpp; requires Git + network on first run)
+# Configure (fetches llama.cpp through the engine repo; requires Git + network
+# on first run, and the engine checkout at EMEBALA_ENGINE_DIR)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_LLAMA_FETCH=ON
 
 # Build
 cmake --build build --config Release
-# Outputs: build\Emebala_chat.exe, build\run_tests.exe
+# Outputs: build\Emebala_chat.exe, build\run_tests.exe, plus the engine-repo
+# targets at build\Emebala.Engine.exe, build\Emebala.Engine.ggml-translate.exe
+# and build\worker.ggml-translate.manifest
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 510x / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 8693 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 # (the count varies by a few with environment-conditional checks, e.g. console
 # attachment; failures must always be 0)
 ```
 
 Useful variants:
 
-- `-DENABLE_LLAMA_FETCH=OFF` — CPU-only build without fetching llama.cpp (defines no `HAVE_LLAMA_CPP`; the app then effectively runs cloud-only).
+- `-DENABLE_LLAMA_FETCH=OFF` — CPU-only build without fetching llama.cpp (defines no `HAVE_LLAMA_CPP`; the app then effectively runs cloud-only; the worker target is skipped).
 - `-DEMEBALA_VULKAN=OFF` — force CUDA-only even when the Vulkan SDK is installed.
+- `-DEMEBALA_ENGINE_DIR=<path>` — point at a different checkout of the shared engine repo (default `D:/OneDrive/Projects/Emebala_engine`).
+- Standalone engine-repo configure (dry checks): `cmake -S D:/OneDrive/Projects/Emebala_engine -B <probe> -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_LLAMA_FETCH=ON` (see the engine repo README/AGENTS).
 - Separate build trees exist for special configs (`build_gpuoff`, `build_gputest`, …); `build*/` is gitignored.
 - **E2E harness** (requires an interactive desktop session — SendInput + real foreground windows; cannot run headless/CI): `python tools\e2e\req027_e2e.py --all` (12 scenarios; individual: `python tools\e2e\req027_e2e.py <scenario>`). Built app must exist at `build\Emebala_chat.exe`. Python 3.8+, stdlib only.
 - **Installer gates (mandatory before any installer build/release):**
@@ -99,7 +140,7 @@ Useful variants:
 - **Language & style**: C++20, RAII throughout, `snake_case` files with paired `.hpp/.cpp`, includes grouped with explanatory trailing comments (`// R6 B1: ...`). No external coding-style file exists — match the surrounding code.
 - **Comment annotations**: changes are tagged with requirement/session IDs in comments, e.g. `REQ-006`, `P4-B1`, `R18`, `P5-F1`, and session slugs like `260909_0004`. Keep these tags when editing the code they annotate; add a tag referencing the design doc/decision when making a non-trivial change. Session reports live under `docs/<YYMMDD>_NNNN_session_<slug>/` as `HHMMSS_<type>-<topic>.md` files; each session folder typically has a `decisions.md`.
 - **Version bump procedure**: version appears in exactly three places that must stay in sync — `CMakeLists.txt` `project(... VERSION x.y.z)` (single source of truth; `version.hpp` stringizes `EMEBALACHAT_VERSION_STR` and must receive it UNQUOTED), `installer/setup.iss` `AppVersion`/`OutputBaseFilename`, and `README.md` badges/download text.
-- **Third-party warning isolation (R18)**: never loosen warning flags on project code to silence llama.cpp/ggml noise. The isolated set (`llama ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan common`) carries `/W0 /wd4244 /wd4267` (MSVC) and `--diag-suppress=177` (nvcc) plus SYSTEM-include remapping, applied in `CMakeLists.txt`. Project TUs keep `/W4`.
+- **Third-party warning isolation (R18)**: never loosen warning flags on project code to silence llama.cpp/ggml noise. The isolated set (`llama ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan common`) carries `/W0 /wd4244 /wd4267` (MSVC) and `--diag-suppress=177` (nvcc) plus SYSTEM-include remapping, applied in the engine repo's `CMakeLists.txt` since the v0.10.7 split. Project TUs keep `/W4`.
 - **Installer memo pages**: any text passed to `CreateOutputMsgMemoPage` (About/Guide wizard pages) MUST go through the RTF-safe `MessageLines()`/`ToRtf()` in `setup.iss` `[Code]` — never assign plain non-ASCII text to a memo page (TRichEditViewer mojibake under ANSI code pages). The display-text gate extracts and verifies these functions.
 - **Model integrity**: `EXPECTED_MODEL_SHA256` in `installer/setup.iss` pins the Hy-MT2-1.8B-Q8_0.gguf SHA-256 (recompute with `certutil -hashfile <file> SHA256` if the hosted file ever changes); the app re-verifies at load time with a `.sha256ok` size+mtime marker cache.
 - **Git**: conventional commits (`feat(ledger):`, `fix(prompt):`, `refactor(capture):`, `test(capture):`). Remote: `github.com/teamsunplaza/Emebalachat`. Releases are GitHub Releases built from the Inno Setup output.

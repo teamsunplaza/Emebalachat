@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.24)
 # promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see CHANGELOG
 # "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002, see
 # CHANGELOG "v0.10.6").
-project(Emebalachat VERSION 0.10.6 LANGUAGES C CXX RC)
+project(Emebalachat VERSION 0.10.7 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,179 +19,27 @@ if (MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->")
 endif()
 
-# Option to fetch llama.cpp
-option(ENABLE_LLAMA_FETCH "Fetch and configure llama.cpp native library" ON)
+# 261111_0001 U7 (v0.10.7): the shared engine (the Emebala.Engine orchestrator,
+# the ggml-translate worker, the llama-coupled engine_core library, and the
+# engine_host_* client/parsers) lives in its own repository and is consumed via
+# add_subdirectory below. The llama.cpp FetchContent (pinned tag b6099), the
+# CUDA/Vulkan backend selection, and the R18 third-party warning isolation all
+# moved into the engine repo's CMakeLists so there is exactly one llama build,
+# owned by the engine. These two options stay declared here as cache globals
+# and are honored by the engine subdirectory.
+option(ENABLE_LLAMA_FETCH "Fetch and configure llama.cpp native library (owned by the engine repo)" ON)
+option(EMEBALA_VULKAN "Enable Vulkan GPU backend when Vulkan SDK is present (owned by the engine repo)" ON)
 
-if (ENABLE_LLAMA_FETCH)
-    include(FetchContent)
-
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-    set(GGML_STATIC ON CACHE BOOL "Build static ggml library" FORCE)
-    set(LLAMA_STATIC ON CACHE BOOL "Build static llama library" FORCE)
-    set(GGML_CUDA ON CACHE BOOL "Enable CUDA for llama.cpp" FORCE)
-    # P4-B1 (universal GPU, REQ-102/107): multi-arch SASS — sm_75 retained (RTX 20),
-    # 86 (RTX 30), 89 (RTX 40), 120 (RTX 50/Blackwell) added per decisions.md.
-    set(CMAKE_CUDA_ARCHITECTURES "75;86;89;120" CACHE STRING "Target CUDA architectures" FORCE)
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING -Xcompiler=/Zc:preprocessor" CACHE STRING "CUDA flags" FORCE)
-    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
-    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
-    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Build server" FORCE)
-
-    # P4-B1 (universal GPU, REQ-101/103): Vulkan SDK auto-detect. llama.cpp b6099
-    # ggml-vulkan/CMakeLists.txt L4 hard-REQUIRES glslc (build-time shader codegen),
-    # so the probe requests that component explicitly. SDK+glslc present -> enable
-    # GGML_VULKAN on the FetchContent'd tree; absent -> CUDA-only build with a
-    # WARNING, never a hard-fail (user decision 2026-09-09 14:03, decisions.md).
-    option(EMEBALA_VULKAN "Enable Vulkan GPU backend when Vulkan SDK is present" ON)
-
-    set(_eme_vulkan_ready OFF)
-    if (EMEBALA_VULKAN)
-        find_package(Vulkan COMPONENTS glslc QUIET)
-        if (Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
-            set(_eme_vulkan_ready ON)
-            message(STATUS "Emebalachat: Vulkan SDK ${Vulkan_VERSION} found (glslc=${Vulkan_GLSLC_EXECUTABLE}) - building ggml-vulkan backend")
-        else()
-            message(WARNING "Emebalachat: Vulkan SDK with glslc NOT found - building CUDA-only. Install LunarG Vulkan SDK to enable AMD/Intel/old-NVIDIA GPU support.")
-        endif()
-    endif()
-
-    # Set the ggml option as a FORCED cache var BEFORE FetchContent_MakeAvailable so
-    # ggml/src/CMakeLists.txt's ggml_add_backend(Vulkan) gate picks it up (its
-    # option() call will not override an existing cache entry).
-    if (_eme_vulkan_ready)
-        set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan for llama.cpp" FORCE)
-    else()
-        # Deterministic CUDA-only: an earlier configure with the SDK present may have
-        # FORCE'd GGML_VULKAN=ON into this build dir's cache; forcing OFF here keeps
-        # the EMEBALA_VULKAN toggle authoritative on reconfigures (fresh caches are
-        # unaffected — ggml's own option() default is already OFF).
-        set(GGML_VULKAN OFF CACHE BOOL "Enable Vulkan for llama.cpp" FORCE)
-    endif()
-
-    message(STATUS "Fetching llama.cpp (tag b6099)...")
-    FetchContent_Declare(
-        llama_cpp
-        GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
-        GIT_TAG b6099
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(llama_cpp)
-
-    # R18 (Zero-Tolerance) — third-party warning isolation for llama.cpp.
-    # On full recompiles the fetched llama.cpp (b6099) surfaces third-party
-    # advisories only: nvcc cudafe "#177-D" (variable declared but never
-    # referenced) from ggml-cuda sources/headers (e.g. fattn-mma-f16.cuh), and
-    # MSVC narrowing advisories C4244/C4267 (observed via llama-graph.cpp
-    # llama-graph.h template instantiation into <memory>/<type_traits>, and
-    # llama-quant.cpp into <thread>/<vector>). None originate in project code,
-    # so the standard isolation is applied, all PRIVATE (project TUs in src/
-    # and tests/ keep /W4 untouched):
-    #   (1) nvcc: --diag-suppress=177 scoped to the CUDA language only.
-    #   (2) MSVC host compilation of the third-party targets: /W0 blanket
-    #       suppression plus explicit /wd4244 /wd4267. The /wd form is
-    #       required in addition to /W0 because these two narrowings are
-    #       re-enabled by in-source #pragma warnings in the toolchain/STL
-    #       headers, and per MSVC semantics a command-line /wd override beats
-    #       in-source pragmas while /W0 does not (verified empirically with
-    #       cl.exe 14.44 against the exact ninja command line). /wd4244 and
-    #       /wd4267 also mirror upstream's own intent: llama.cpp disables
-    #       exactly these two codes in src/llama.cpp for the same narrowing
-    #       pattern.
-    #   (3) their INTERFACE includes are re-marked SYSTEM so llama.cpp/ggml
-    #       header warnings cannot surface through consumer compilation
-    #       either.
-    # No third-party sources are modified; no versions are bumped; project
-    # warning flags are unchanged.
-    # P4-B1: ggml-vulkan added to the isolated set (C++-only TU, MSVC /W0 applies;
-    # the if(TARGET) guard keeps the loop safe on CUDA-only builds).
-    foreach(_r18_tp_target IN ITEMS llama ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan common)
-        if (TARGET ${_r18_tp_target})
-            get_target_property(_r18_tp_inc ${_r18_tp_target} INTERFACE_INCLUDE_DIRECTORIES)
-            if (_r18_tp_inc)
-                set_target_properties(${_r18_tp_target} PROPERTIES
-                    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_r18_tp_inc}")
-            endif()
-            target_compile_options(${_r18_tp_target} PRIVATE
-                $<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=177>
-                $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/W0 /wd4244 /wd4267>
-                $<$<AND:$<COMPILE_LANGUAGE:C>,$<CXX_COMPILER_ID:MSVC>>:/W0 /wd4244 /wd4267>)
-        endif()
-    endforeach()
+# The shared Emebala engine repository. Emebala Chat, Listener and Reader
+# consume the same engine repo; override with -DEMEBALA_ENGINE_DIR=<path>.
+set(EMEBALA_ENGINE_DIR "D:/OneDrive/Projects/Emebala_engine" CACHE PATH
+    "Path to the shared Emebala engine repository (the v0.10.7 engine split, 261111_0001 U7)")
+if (NOT EXISTS "${EMEBALA_ENGINE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "The shared Emebala engine repository was not found at '${EMEBALA_ENGINE_DIR}'. "
+        "Clone it there, or reconfigure with -DEMEBALA_ENGINE_DIR=<path> "
+        "(261111_0001 U7, v0.10.7: the engine sources moved out of this repo).")
 endif()
-
-# REQ-043 (M6 T1, design §4.2/D-1): Emebalachat_engine_core — the llama-coupled
-# inference library, physically separated from Emebalachat_core so the Chat exe
-# can drop llama entirely (T5 removes the embedded path; llama then links ONLY
-# through this target). Contents are physical moves with ZERO logic changes:
-#   * translation_common.cpp/.hpp (moved from src/) — LocalInferenceEngine
-#     (plan §5.1-1 verbatim extraction, now one library for app/host/worker).
-#   * engine_core_helpers.cpp/.hpp (moved verbatim from engine.cpp/.hpp) —
-#     IsValidModelPath (M3), ComputeFileSha256/VerifyModelSha256 + F3 marker
-#     cache, kExpectedModelSha256/kPinnedModelFilename pins, kLlama* budget
-#     constants (REQ-R01), Scrub/CollectControlTokenTexts (SEC-B2),
-#     SetGpuOffloadParams (P7-F2).
-# Conservative boundary (design §4.2 + P2 §3 (2) keep-list): TruncateHeadTail
-# Window, BuildPrompt and LocalPairReliable STAY in Emebalachat_core (engine.cpp
-# / config.cpp) — google_translate.cpp (a permanent core member, the Chat exe
-# cloud path) and translation_common.hpp's own header contract pin them there.
-add_library(Emebalachat_engine_core STATIC
-    src/engine_core/translation_common.cpp
-    src/engine_core/engine_core_helpers.cpp
-)
-
-target_include_directories(Emebalachat_engine_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/engine_core
-)
-
-if (MSVC)
-    target_compile_options(Emebalachat_engine_core PRIVATE /W4 /utf-8 /permissive-)
-endif()
-
-# REQ-043 (M6 T1): same PUBLIC version definition contract as the core lib
-# (src/version.hpp stringizes it; UNQUOTED, per the core comment below).
-target_compile_definitions(Emebalachat_engine_core PUBLIC EMEBALACHAT_VERSION_STR=${PROJECT_VERSION})
-
-# REQ-043 (M6 T1; M6 T5): llama links PUBLIC here so every engine_core
-# consumer (host, worker, tests) resolves HAVE_LLAMA_CPP and the llama
-# symbols identically to the pre-T1 build. The Chat exe is NOT a consumer
-# anymore (T5 removed the embedded engine and its transitional link).
-# Baseline-no-regression rule: no TU loses or gains a compile definition.
-if (TARGET llama)
-    target_link_libraries(Emebalachat_engine_core PUBLIC llama)
-    target_compile_definitions(Emebalachat_engine_core PUBLIC HAVE_LLAMA_CPP=1)
-endif()
-
-# REQ-043 (M6 T3, design §1.3/§4.2): the orchestrator-side worker lifecycle
-# manager (spawn/handshake/reaper/M-2 graceful stop) — a member of the
-# EmebalaEngine target, NOT the Chat exe (design §1.3 table: host_v2_* files
-# live in EmebalaEngine). It depends only on worker_protocol.hpp (header-only,
-# pure) + diag_logger + Win32, so it compiles identically in no-llama builds.
-add_library(Emebalachat_host_v2 STATIC
-    src/host_v2_worker_manager.cpp
-    # REQ-043 (M6 T4): the orchestrator low layers — session table (§V2-4.3),
-    # scheduler queue (§V2-4.6), health counters (REQ-008). All depend only on
-    # worker_protocol/engine_host_protocol pure helpers + Win32-free STL, so
-    # they compile identically in no-llama builds.
-    src/host_v2_session.cpp
-    src/host_v2_scheduler.cpp
-    src/host_v2_health.cpp
-    # Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate — PURE decision
-    # core (no DXGI / no env / no engine_core include). Kept in host_v2 so
-    # run_tests links it via the existing host_v2 link and the EmebalaEngine
-    # host target gets it via its existing host_v2 link; avoids touching core.
-    src/engine_host_vram_gate.cpp
-)
-
-target_include_directories(Emebalachat_host_v2 PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-if (MSVC)
-    target_compile_options(Emebalachat_host_v2 PRIVATE /W4 /utf-8 /permissive-)
-endif()
-
-target_compile_definitions(Emebalachat_host_v2 PUBLIC EMEBALACHAT_VERSION_STR=${PROJECT_VERSION})
 
 # Core static library for Emebalachat modules
 add_library(Emebalachat_core STATIC
@@ -213,38 +61,22 @@ add_library(Emebalachat_core STATIC
     # + CNG SHA-256 integrity digest + display masking. Chat exe links this
     # (core), so bcrypt/crypt32 are added to the core link set below.
     src/openai_compatible_client.cpp
+    # 261111_0001 U6 (v0.10.7): registration-time GGUF header gate (llama-free).
+    src/gguf_validator.cpp
     # REQ-MD (260930_0004, decisions.md D9): on-demand bundled-model download —
     # consent/progress dialog + the fetch/verify/place pipeline (reuses the
     # update checker's DownloadUpdate via the DownloadOptions seam).
     src/model_downloader.cpp
     src/ui/model_download_dialog.cpp
-    # REQ-043 (M6 T1, design §4.2/D-1): translation_common.cpp moved out to
-    # Emebalachat_engine_core (physical move). The llama-adjacent pure helpers
-    # moved to src/engine_core/engine_core_helpers.cpp; TruncateHeadTailWindow
-    # and the TranslationManager routing stay here (conservative boundary).
-    # REQ-043 (plan §5.1-3): self-contained shared-inference-host reference
-    # client (Win32 + STL only — never include other project headers here;
-    # the other Emebala workspaces copy this pair verbatim).
-    src/engine_host_client.cpp
-    # REQ-043 (M6 T2, design §1.3): deployment-data parsers — registry.json
-    # (§3.1), manifest.json + IManifestVerifier (§3.2), components.json (§3.3)
-    # — live in Emebalachat_core. They reuse the FROZEN protocol header's JSON
-    # primitives (engine_host_protocol.hpp, unmodified) and NEVER reference
-    # Emebalachat_engine_core (T1 boundary: no core->engine_core reverse link;
-    # the manifest hash check is caller-injected via HashProvider instead).
-    src/engine_host_registry.cpp
-    src/engine_host_manifest.cpp
-    src/engine_host_components.cpp
-    src/engine_host_bootstrap_client.cpp
-    # REQ-046 P4-2 (Rev2 §B-4, Tech Gate 조건-1): the host's boot-time
-    # config.json reader (C1 engine_type=="user_gguf" gate). Lives in core
-    # (not host_main.cpp) so run_tests.exe can link + test it.
-    src/engine_host_config_reader.cpp
-    # REQ-CP (session 260928_0001 T1, design §4/§5): the per-client engine
-    # policy resolver (pure decision core, no I/O — the T2 live reader injects
-    # the document text). Lives in core so run_tests.exe can link + test it,
-    # same seam as the config reader above.
-    src/engine_host_client_policy.cpp
+    # REQ-043 (M6 T1, design §4.2/D-1): translation_common.cpp and the
+    # llama-adjacent helpers moved to the engine repo's Emebalachat_engine_core
+    # (261111_0001 U7); TruncateHeadTailWindow and the TranslationManager
+    # routing stay here (conservative boundary).
+    # 261111_0001 U7 (v0.10.7): the engine_host_* client + deployment-data
+    # parsers (client, registry, manifest, components, bootstrap client,
+    # config reader, client policy) moved to the engine repo's
+    # Emebala_engine_host static lib; Emebalachat_core links it PUBLIC below,
+    # so every core consumer resolves the moved headers/symbols unchanged.
     src/i18n.cpp
     # REQ-UC (session 260930_0004): update checker — the module is header-only
     # (every function `inline` in update_checker.hpp); this TU compiles the
@@ -336,12 +168,34 @@ target_link_libraries(Emebalachat_core PUBLIC
     windowscodecs
 )
 
+# 261111_0001 U7 (v0.10.7): consume the shared engine repository. Added AFTER
+# Emebalachat_core is defined: the engine targets link it for the shared
+# support headers/symbols (diag_logger, unicode_utils, config, engine.hpp,
+# smart_bypass, model_verify_sample, vulkan_guard) that deliberately stay in
+# this repo. The engine CMakeLists skips its own llama FetchContent when the
+# parent already provides the `llama` target; here the engine owns the fetch,
+# so exactly one llama build exists per build tree.
+add_subdirectory(${EMEBALA_ENGINE_DIR} emebala_engine_build)
+
+# The engine_host_* client/parsers moved to the engine repo (Emebala_engine_host
+# static lib; PUBLIC include dir = the engine src/, so `#include
+# "engine_host_client.hpp"` and the engine_core/ headers keep resolving for
+# every core consumer). PUBLIC (not PRIVATE) so the include dir reaches the
+# Emebalachat exe and run_tests through Emebalachat_core. Deliberately NOT
+# Emebalachat_engine_core: that lib links llama PUBLIC — linking it here would
+# put llama.h on the Chat exe's include path and flip translation_common.hpp's
+# __has_include("llama.h") contract, breaking the llama-free Chat exe (REQ-043
+# M6 T5). The engine src/ dir carries the headers WITHOUT llama.h; the llama
+# symbols reach only run_tests / the engine exes through the engine targets.
+target_link_libraries(Emebalachat_core PUBLIC Emebala_engine_host)
+
 # REQ-043 (M6 T5, plan §V2-8.6, design §4.2): the T1 transitional llama link
 # on Emebalachat_core is REMOVED — the embedded inference path (the
 # TranslationManager::LlamaEngine shim, the embedded call block, the preload
 # seams) is deleted, so the core library (and therefore the Chat exe) carries
 # NO llama symbol and HAVE_LLAMA_CPP is undefined in its TUs. llama links ONLY
-# through Emebalachat_engine_core (host / worker / test-runner targets).
+# through the engine repo's Emebalachat_engine_core (host / worker /
+# test-runner targets).
 
 # 260930_0004 (0.10.2 blind-QA catch): the .rc VERSIONINFO blocks used to
 # hardcode 0,10,1 / "0.10.1", so Explorer's Properties showed 0.10.1 while the
@@ -357,7 +211,9 @@ set(EMEBALA_RC_VER_OPTIONS
     "/dEMEBALACHAT_RC_VER_PATCH=${PROJECT_VERSION_PATCH}"
     "/dEMEBALACHAT_RC_VER_STR=\"${PROJECT_VERSION}\""
 )
-set_source_files_properties(src/app_icon.rc src/engine_icon.rc
+# 261111_0001 U7: engine_icon.rc moved to the engine repo (the engine CMake
+# drives its VERSIONINFO from the engine repo's own PROJECT_VERSION).
+set_source_files_properties(src/app_icon.rc
     PROPERTIES COMPILE_OPTIONS "${EMEBALA_RC_VER_OPTIONS}")
 
 # Target 1: Emebalachat (WIN32 executable)
@@ -453,6 +309,15 @@ if (MSVC)
     endif()
 endif()
 
+# 261111_0001 U7 (v0.10.7 engine split): the engine sources moved to the
+# EMEBALA_ENGINE_DIR repo, so ResolveRepoFile() gains the engine repo as an
+# additional lookup base (wide-string literal macro; backslashes normalized to
+# forward slashes for macro safety). Engine-source pins keep their historical
+# L"src\\..." paths; chat-side bases still win for the files that stayed.
+string(REPLACE "\\" "/" _eme_engine_dir_norm "${EMEBALA_ENGINE_DIR}")
+target_compile_definitions(run_tests PRIVATE
+    "EMEBALA_ENGINE_REPO_DIR=L\"${_eme_engine_dir_norm}\"")
+
 # Plan-B (REQ-B009) P6 closure C-2: the §12.2 crash-isolation pin runs in its
 # OWN process (the run_tests process cannot create the SECOND concurrent
 # named-pipe client — see the PLACEMENT NOTE at the top of
@@ -472,128 +337,13 @@ if (MSVC)
     target_compile_options(crash_iso_test PRIVATE /W4 /utf-8 /permissive-)
 endif()
 
-# Target 3: EmebalaEngine — REQ-043 shared inference host (plan §5.1).
-# WIN32 GUI subsystem (no console), produced binary Emebala.Engine.exe, the
-# fixed install location is %LOCALAPPDATA%\Emebala\Common\engine\ (plan §7.1 —
-# the installer worker owns the packaging). Links Emebalachat_core so the
-# translation core, SHA pin, diag logger and Vulkan guard are shared, not
-# duplicated; CUDA (+Vulkan when built) are delay-loaded exactly like the app.
-# src/engine_icon.rc embeds the branded multi-size engine icon + VERSIONINFO
-# (session 260922_0002; mirrors src/app_icon.rc on the Chat exe).
-add_executable(EmebalaEngine WIN32
-    src/host_main.cpp
-    src/engine_icon.rc
-)
 
-set_target_properties(EmebalaEngine PROPERTIES OUTPUT_NAME "Emebala.Engine")
-
-target_link_libraries(EmebalaEngine PRIVATE
-    Emebalachat_core
-    # REQ-043 (M6 T1): the host owns LocalInferenceEngine (translation_common,
-    # now in engine_core) and the moved SHA-pin/marker-cache helpers, so it
-    # links Emebalachat_engine_core (design §4.2: host = core + engine_core).
-    Emebalachat_engine_core
-    # REQ-043 (M6 T3, design §1.3): the worker lifecycle manager joins the
-    # orchestrator (T4 wires EnsureSpawned into the scheduler; T3 ships the
-    # module compiled + unit-tested standalone).
-    Emebalachat_host_v2
-)
-
-if (MSVC)
-    target_compile_options(EmebalaEngine PRIVATE /W4 /utf-8 /permissive-)
-    if (TARGET llama)
-        # REQ-043: same delay-load wiring as the Emebalachat target (CUDA via
-        # PATH on toolkit/driver machines, vulkan-1.dll only when built).
-        set(_eme_delayload_host
-            "/DELAYLOAD:cublas64_13.dll"
-            "/DELAYLOAD:cublasLt64_13.dll"
-            "/DELAYLOAD:cudart64_13.dll")
-        if (TARGET ggml-vulkan)
-            list(APPEND _eme_delayload_host "/DELAYLOAD:vulkan-1.dll")
-        endif()
-        target_link_options(EmebalaEngine PRIVATE ${_eme_delayload_host})
-    endif()
-endif()
-
-# Target 4: Emebala.Engine.ggml-translate — REQ-043 (M6 T3, design §1.2/
-# §4.2, plan §V2-3): the ggml-translate WORKER process (the second frozen
-# contract). WIN32 GUI subsystem (no console), owned by the orchestrator via
-# host_v2_worker_manager (spawn --pipe/--token, announce handshake, shutdown).
-#
-# no-llama decision (design §4.2 no-llama rule, recorded for the T3 report):
-# the worker's ONLY body is LocalInferenceEngine (llama), so with
-# ENABLE_LLAMA_FETCH=OFF there is nothing to serve — the target is SKIPPED
-# entirely (same rule that skips the llama link on Emebalachat_core). The
-# installer (T7) MUST then also omit the worker exe + worker manifest [Files]
-# entries; the orchestrator's missing-exe path (wmgr/003) answers
-# unavailable, which is the correct degraded behavior for a cloud-only build.
-if (TARGET llama)
-    add_executable(EmebalaEngineGgmlTranslate WIN32
-        src/ggml_translate_worker.cpp
-    )
-
-    set_target_properties(EmebalaEngineGgmlTranslate PROPERTIES
-        # 260930_0003 (decisions.md D2): ONE worker name everywhere — the
-        # Listener family convention Emebala.Engine.ggml-translate.exe (the
-        # REQ-043 "Emebalachat.Engine.*" deployed-name freeze is lifted).
-        OUTPUT_NAME "Emebala.Engine.ggml-translate")
-
-    target_link_libraries(EmebalaEngineGgmlTranslate PRIVATE
-        # The worker's low body: LocalInferenceEngine + SHA pin + marker cache
-        # (llama PUBLIC transitively — design §4.2 "llama PUBLIC 전이").
-        Emebalachat_engine_core
-        # Prompt parity (BuildPrompt/NormalizeLanguageCode) + unicode + diag +
-        # vulkan guard come from Emebalachat_core (design §4.2: "프롬프트
-        # 패리티용 config/unicode 헬퍼" — engine_core deliberately does NOT
-        # own them; the T1 boundary comment in engine_core_helpers.hpp).
-        Emebalachat_core
-    )
-
-    if (MSVC)
-        target_compile_options(EmebalaEngineGgmlTranslate PRIVATE /W4 /utf-8 /permissive-)
-        # REQ-043: identical delay-load wiring as the host/app targets (CUDA
-        # via PATH on toolkit machines, vulkan-1.dll only when built — the
-        # driverless machine CPU-falls back via vulkan_guard + the EnsureLoaded
-        # retry, never a startup failure).
-        set(_eme_delayload_worker
-            "/DELAYLOAD:cublas64_13.dll"
-            "/DELAYLOAD:cublasLt64_13.dll"
-            "/DELAYLOAD:cudart64_13.dll")
-        if (TARGET ggml-vulkan)
-            list(APPEND _eme_delayload_worker "/DELAYLOAD:vulkan-1.dll")
-        endif()
-        target_link_options(EmebalaEngineGgmlTranslate PRIVATE ${_eme_delayload_worker})
-    endif()
-
-    # REQ-043 (M6 T3, design §3.4 + T3 scope item 3): the worker manifest is
-    # GENERATED next to the worker exe at build time (the exe-adjacent
-    # deployment lookup). The INSTALLED copy is written by the installer (T7);
-    # this file is the build-tree artifact the orchestrator finds when both
-    # exes run from build/ (dev/smoke posture) and the byte-exact template the
-    # installer deploys. Content = the §3.4 schema the worker_protocol parser
-    # accepts (kept in sync with EmbeddedWorkerManifest()).
-    # M7 A-1 (session 260922_0001): per-family filename scheme
-    # worker.<family>.manifest so a second family (ggml-asr) deploying into
-    # the same store can never overwrite this one (DEC-007: the hyphenated
-    # family string is used verbatim). Schema bytes are UNCHANGED.
-    set(_eme_worker_manifest "${CMAKE_CURRENT_BINARY_DIR}/worker.ggml-translate.manifest")
-    file(WRITE "${_eme_worker_manifest}"
-"{\n"
-"  \"schema_version\": 1,\n"
-"  \"family\": \"ggml-translate\",\n"
-"  \"engine\": \"llama.cpp\",\n"
-"  \"engine_version\": \"b6099\",\n"
-"  \"ops\": [\"translate\"],\n"
-"  \"abi_version\": 1,\n"
-"  \"protocol_min\": 1,\n"
-"  \"protocol_max\": 2\n"
-"}\n")
-    add_custom_command(TARGET EmebalaEngineGgmlTranslate POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_eme_worker_manifest}"
-                "$<TARGET_FILE_DIR:EmebalaEngineGgmlTranslate>/worker.ggml-translate.manifest"
-        COMMENT "Deploying worker.ggml-translate.manifest next to Emebala.Engine.ggml-translate.exe")
-endif()
+# 261111_0001 U7 (v0.10.7): Targets 3/4 (EmebalaEngine -> Emebala.Engine.exe and
+# EmebalaEngineGgmlTranslate -> Emebala.Engine.ggml-translate.exe + the
+# worker.ggml-translate.manifest generation) moved to the shared engine repo
+# (added above) with identical target/output names. CMAKE_RUNTIME_OUTPUT_DIRECTORY
+# in the engine repo keeps both exes and the manifest landing in THIS build's
+# root (build\Emebala.Engine.exe etc.), where the installer bundles them.
 
 enable_testing()
 add_test(NAME CoreTests COMMAND run_tests)

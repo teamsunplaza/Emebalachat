@@ -22,18 +22,22 @@
 #include "../src/hook.hpp"
 #include "../src/worker.hpp"
 #include "../src/vulkan_guard.hpp" // P5-F1: delay-load SEH guard probe/stub seam
-#include "../src/single_slot_worker.hpp" // D2 (session 260910_0007): shared worker template
-#include "../src/engine_host_protocol.hpp" // REQ-043: frozen shared-host wire protocol helpers
-#include "../src/worker_protocol.hpp"      // REQ-043 (M6 T3): second frozen contract (orchestrator<->worker)
-#include "../src/host_v2_worker_manager.hpp" // REQ-043 (M6 T3): worker lifecycle manager (seam-injectable)
-#include "../src/engine_host_client.hpp"   // REQ-043: self-contained reference client (+ test seam)
-#include "../src/engine_host_registry.hpp"   // REQ-043 (M6 T2): registry.json parser
-#include "../src/engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
-#include "../src/engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
-#include "../src/engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
-#include "../src/engine_host_paths.hpp" // M7 A-1: per-family worker-manifest naming scheme helpers
-#include "../src/engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
-#include "../src/engine_host_client_policy.hpp" // REQ-CP (T1): per-client engine policy resolver (pure core)
+#include "single_slot_worker.hpp" // D2 (session 260910_0007): shared worker template (engine repo since U7)
+// 261111_0001 U7 (v0.10.7 engine split): the engine headers below live in the
+// shared engine repo (EMEBALA_ENGINE_DIR); they resolve through the engine
+// libraries' PUBLIC include dirs (Emebala_engine_host / Emebalachat_engine_core
+// / Emebalachat_host_v2 linked by this runner) — hence the bare-name form.
+#include "engine_host_protocol.hpp" // REQ-043: frozen shared-host wire protocol helpers
+#include "worker_protocol.hpp"      // REQ-043 (M6 T3): second frozen contract (orchestrator<->worker)
+#include "host_v2_worker_manager.hpp" // REQ-043 (M6 T3): worker lifecycle manager (seam-injectable)
+#include "engine_host_client.hpp"   // REQ-043: self-contained reference client (+ test seam)
+#include "engine_host_registry.hpp"   // REQ-043 (M6 T2): registry.json parser
+#include "engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
+#include "engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
+#include "engine_host_bootstrap_client.hpp" // REQ-005 (M6 T6): repair bootstrapper
+#include "engine_host_paths.hpp" // M7 A-1: per-family worker-manifest naming scheme helpers
+#include "engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
+#include "engine_host_client_policy.hpp" // REQ-CP (T1): per-client engine policy resolver (pure core)
 #include "../src/ui/openai_settings_window.hpp" // REQ-046 P4-3: TemplateBuilder (Tech Gate 필수-5)
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
@@ -71,6 +75,11 @@ static int g_failed_count = 0;
         } \
     } while (0)
 
+// L1 portability helper forward declaration: the definition lives below (after
+// the suite .inc include cluster); suites included earlier (m6 orchestrator,
+// 261111_0001 U7) call it, so it must be declared before that cluster.
+static std::filesystem::path ResolveRepoFile(const std::wstring& rel);
+
 
 // REQ-043 (M6 T2): parser test bodies (m6_engine_host_*.inc files, included
 // directly — they define TestEngineHostRegistry/Manifest/Components and use
@@ -96,13 +105,13 @@ static int g_failed_count = 0;
 // registered-family announce gate, the §7.3 W-PCM-1 pcm clause port, the
 // close/abort relay mapping, and the manifest-name family extraction.
 // P2-1 stabilization adds the pure claim state these suites drive:
-#include "../src/host_v2_asr_relay.hpp" // P2-1 stabilization: pure asr relay claim
+#include "host_v2_asr_relay.hpp" // P2-1 stabilization: pure asr relay claim
 #include "p2_1_asr_relay_tests.inc"
 
 // Plan-B (REQ-B003) B-T1: per-model translate pool machinery pins
 // (PoolFamilyForModel derivation, TranslatePoolEnsure/NeedsRelay/MarkRelayed,
 // deque pointer stability A-1, boot translate exe path A-3).
-#include "../src/host_v2_translate_pool.hpp"
+#include "host_v2_translate_pool.hpp"
 #include "translate_pool_test.inc"
 
 // Plan-B (REQ-B004) B-T2: host-side per-spawn VRAM gate pins (the 7 v2 §A2
@@ -110,8 +119,8 @@ static int g_failed_count = 0;
 // member of Emebalachat_host_v2; the engine_core_helpers include is only to
 // pin threshold byte-equality (run_tests links engine_core), which the pure
 // gate TU itself must not do.
-#include "../src/engine_core/engine_core_helpers.hpp"
-#include "../src/engine_host_vram_gate.hpp"
+#include "engine_core/engine_core_helpers.hpp"
+#include "engine_host_vram_gate.hpp"
 #include "vram_gate_test.inc"
 
 // REQ-005 (M6 T6): repair-bootstrapper test bodies (staged session .inc;
@@ -141,6 +150,16 @@ static std::filesystem::path ResolveRepoFile(const std::wstring& rel) {
         bases.push_back(cwd / L"..");
         bases.push_back(cwd / L".." / L"..");
     }
+
+    // 261111_0001 U7 (v0.10.7 engine split): the engine sources moved to the
+    // shared engine repo. EMEBALA_ENGINE_REPO_DIR (compiled from the CMake
+    // EMEBALA_ENGINE_DIR cache var, normalized to forward slashes) is the
+    // fallback base, so the engine-source pins keep their historical
+    // L"src\\..." paths; chat-side bases above still win for files that
+    // stayed. Tried LAST so the chat repo remains primary for shared names.
+#ifdef EMEBALA_ENGINE_REPO_DIR
+    bases.emplace_back(std::filesystem::path(EMEBALA_ENGINE_REPO_DIR));
+#endif
 
     for (const auto& base : bases) {
         std::error_code fec;
@@ -172,7 +191,8 @@ void TestConfigModule() {
     TEST_CHECK(std::abs(cfg.temperature - 0.0f) < 0.001f, "Default temperature is 0.0f (Batch 2 grid winner: greedy)");
     TEST_CHECK(std::abs(cfg.top_p - 0.6f) < 0.001f, "Default top_p is 0.6f");
     TEST_CHECK(cfg.top_k == 20, "Default top_k is 20");
-    TEST_CHECK(std::abs(cfg.repetition_penalty - 1.05f) < 0.001f, "Default repetition_penalty is 1.05f");
+    TEST_CHECK(std::abs(cfg.repetition_penalty - 1.0f) < 0.001f,
+               "Default repetition_penalty is 1.0f (v0.10.7 U4: penalty-free first pass)");
 
     // 2. Language table coverage
     const auto& all_langs = GetSupportedLanguages();
@@ -357,7 +377,8 @@ void TestConfigModule() {
     //     sampler params clamp at the FromJsonString choke point. strtof
     //     semantics accept quoted "nan"/"inf" strings, so non-finite and
     //     out-of-range values must fall back to the field defaults
-    //     (temperature 0.0f, top_p 0.6f, top_k 20, repetition_penalty 1.05f);
+    //     (temperature 0.0f, top_p 0.6f, top_k 20, repetition_penalty 1.0f
+    //     since v0.10.7 U4);
     //     temperature above the rail saturates to 2.0, 0 stays meaningful
     //     (engine greedy branch, engine.cpp L1004).
     {
@@ -370,8 +391,8 @@ void TestConfigModule() {
                    "SEC-B: temperature NaN falls back to 0.0 default");
         TEST_CHECK(std::abs(nan_cfg.top_p - 0.6f) < 0.001f,
                    "SEC-B: top_p +Inf falls back to 0.6 default");
-        TEST_CHECK(std::abs(nan_cfg.repetition_penalty - 1.05f) < 0.001f,
-                   "SEC-B: repetition_penalty -Inf falls back to 1.05 default");
+        TEST_CHECK(std::abs(nan_cfg.repetition_penalty - 1.0f) < 0.001f,
+                   "SEC-B: repetition_penalty -Inf falls back to 1.0 default (v0.10.7 U4)");
 
         // Out-of-range finite values (unquoted, the shape ToJsonString emits).
         AppConfig edge_cfg;
@@ -383,8 +404,8 @@ void TestConfigModule() {
         TEST_CHECK(std::abs(edge_cfg.top_p - 0.6f) < 0.001f,
                    "SEC-B: top_p 0.0 rejected by open lower bound, falls back");
         TEST_CHECK(edge_cfg.top_k == 20, "SEC-B: negative top_k falls back to default");
-        TEST_CHECK(std::abs(edge_cfg.repetition_penalty - 1.05f) < 0.001f,
-                   "SEC-B: repetition_penalty below 1.0 falls back to default");
+        TEST_CHECK(std::abs(edge_cfg.repetition_penalty - 1.0f) < 0.001f,
+                   "SEC-B: repetition_penalty below 1.0 falls back to 1.0 default (v0.10.7 U4)");
 
         // Above-range: temperature saturates to 2.0, top_k falls back.
         AppConfig hi_cfg;
@@ -2996,14 +3017,16 @@ void TestEngineModule() {
     TEST_CHECK(mgr.GetTopK() == 30, "SetSamplingParams top_k");
     TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.1f) < 0.001f, "SetSamplingParams repetition_penalty");
 
-    // Reset to explicit values (0.7, 0.6, 20, 1.05): Tencent-documented rails with
-    // the historical 0.7 temperature. This checks SetSamplingParams mechanics with
-    // explicit arguments, not app defaults (AppConfig default temperature is 0.0f).
+    // Reset to explicit values (0.7, 0.6, 20, 1.05): historical Tencent-
+    // documented rails. This checks SetSamplingParams mechanics with explicit
+    // arguments, not app defaults (AppConfig default temperature is 0.0f and
+    // the v0.10.7 shipped repetition_penalty default is 1.0f per U4).
     mgr.SetSamplingParams(0.7f, 0.6f, 20, 1.05f);
     TEST_CHECK(std::abs(mgr.GetTemperature() - 0.7f) < 0.001f, "SetSamplingParams explicit temperature 0.7");
     TEST_CHECK(std::abs(mgr.GetTopP() - 0.6f) < 0.001f, "Tencent tuned top_p 0.6");
     TEST_CHECK(mgr.GetTopK() == 20, "Tencent tuned top_k 20");
-    TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.05f) < 0.001f, "Tencent tuned repetition_penalty 1.05");
+    TEST_CHECK(std::abs(mgr.GetRepetitionPenalty() - 1.05f) < 0.001f,
+               "SetSamplingParams explicit repetition_penalty 1.05 (legacy rail, not the shipped default)");
 
     // Portable large-fixture resolution (L1): optional EMEBALA_MODEL_PATH env
     // override for models kept outside the repo, else the repo-relative default
@@ -6150,8 +6173,8 @@ void TestBatch2VersionScrollAbout() {
     // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
     // v0.10.6 release (261108_0002): pins track the CMake project() bump
     // 0.10.5 -> 0.10.6 (the single source of truth per REQ-006).
-    TEST_CHECK(kAppVersionW == L"0.10.6", "REQ-006: kAppVersionW is 0.10.6 (CMake definition or fallback)");
-    TEST_CHECK(kAppVersionA == "0.10.6", "REQ-006: ASCII version is 0.10.6");
+    TEST_CHECK(kAppVersionW == L"0.10.7", "REQ-006: kAppVersionW is 0.10.7 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.7", "REQ-006: ASCII version is 0.10.7");
     TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
 
     // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----
@@ -9436,23 +9459,27 @@ void TestPhase5AppClassifier() {
     // 4096 chars / 16 -> 64 newlines so the non-EM whole-capture accumulation
     // of 6+ translated sentences (예시1) stays translatable; document-sized
     // captures above the new limits are still rejected.
+    // E9 RAISE (261111_0001 U3, v0.10.7): limits moved again 4096 -> 16384
+    // chars / 64 -> 256 newlines (one definition in win32_input.hpp; every
+    // enforcement site is symbolic); the F3 block-slice keeps multi-block
+    // captures safe under the raise.
     TEST_CHECK(EnterCaptureWithinGuard(0, 0), "Guard allows empty capture (0 chars, 0 newlines)");
     TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines),
-               "Guard allows exactly the limit capture (4096 chars / 64 newlines)");
+               "Guard allows exactly the limit capture (16384 chars / 256 newlines)");
     TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars + 1, kMaxEnterTranslateNewlines),
                "Guard rejects one char over the limit");
     TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines + 1),
                "Guard rejects one newline over the limit");
     TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars - 1, kMaxEnterTranslateNewlines - 1),
                "Guard allows under-limit capture");
-    static_assert(kMaxEnterTranslateChars == 4096, "F3: guard char limit raised to 4096");
-    static_assert(kMaxEnterTranslateNewlines == 64, "F3: guard newline limit raised to 64");
+    static_assert(kMaxEnterTranslateChars == 16384, "F3/E9: guard char limit raised to 16384");
+    static_assert(kMaxEnterTranslateNewlines == 256, "F3/E9: guard newline limit raised to 256");
     // The raise must be the documented values (예시1 justification in
     // win32_input.hpp: ~40 sentences of 100 chars, hook K-clamp coherence).
     TEST_CHECK(EnterCaptureWithinGuard(6 * 100 + 5, 5),
                "F3 guard: 예시1 accumulation (6 sentences x ~100 chars) inside limits");
-    TEST_CHECK(!EnterCaptureWithinGuard(5000, 3), "F3 guard: pasted document still rejected by chars");
-    TEST_CHECK(!EnterCaptureWithinGuard(100, 65), "F3 guard: 65-newline abuse still rejected");
+    TEST_CHECK(!EnterCaptureWithinGuard(20000, 3), "F3/E9 guard: pasted document still rejected by chars");
+    TEST_CHECK(!EnterCaptureWithinGuard(100, 257), "F3/E9 guard: 257-newline abuse still rejected");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Phase 5 app classifier tests completed." << std::endl;
@@ -10911,15 +10938,18 @@ void TestReqF3BlockSliceCurrentBlockOnly() {
     // ---- (b) ShiftEnterKNext: the hook's K counter contract (IME-safe) ----
     static_assert(ShiftEnterKNext(0, false) == 1, "F3 K: Shift+Enter while not composing -> +1");
     static_assert(ShiftEnterKNext(3, false) == 4, "F3 K: counting accumulates");
-    static_assert(ShiftEnterKNext(2, true) == 2, "F3 K: FROZEN during IME composition (V2/F2 gate)");
+    // E1 (261111_0001 U3, v0.10.7): the ime_composing freeze is removed -
+    // Shift+Enter advances K ALWAYS (the VK_PROCESSKEY mirror stays true across
+    // spaces/periods, so the freeze starved Korean multi-line messages).
+    static_assert(ShiftEnterKNext(2, true) == 3, "F3 K: ADVANCES during IME composition (E1 freeze removed)");
     static_assert(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines), false) ==
                       static_cast<int>(kMaxEnterTranslateNewlines),
                   "F3 K: clamped at the guard's newline ceiling (abuse protection)");
-    static_assert(kMaxEnterTranslateNewlines == 64,
-                  "F3 K clamp coherence: K+1 (65) > max runs of any guard-passing capture (32), so a clamped/saturated K never over-slices");
-    TEST_CHECK(ShiftEnterKNext(63, false) == 64, "F3 K: last increment lands exactly on the clamp");
-    TEST_CHECK(ShiftEnterKNext(64, false) == 64, "F3 K: further Shift+Enters stay clamped");
-    TEST_CHECK(ShiftEnterKNext(0, true) == 0, "F3 K: composition at zero stays zero (never fires mid-IME)");
+    static_assert(kMaxEnterTranslateNewlines == 256,
+                  "F3/E9 K clamp coherence: K+1 (257) > max terminators of any guard-passing capture (256), so a clamped/saturated K never over-slices");
+    TEST_CHECK(ShiftEnterKNext(255, false) == 256, "F3 K: last increment lands exactly on the clamp");
+    TEST_CHECK(ShiftEnterKNext(256, false) == 256, "F3 K: further Shift+Enters stay clamped");
+    TEST_CHECK(ShiftEnterKNext(0, true) == 1, "F3 K: E1 - composition still advances K from zero");
 
     // ---- (c) 예시1: 6 sentences, each ended by a bare Enter -> 6 one-time
     // translations. Model of the non-EM whole-capture chain (auto_send=0: the
@@ -11092,7 +11122,7 @@ void TestReqF3BlockSliceCurrentBlockOnly() {
 // definition, no test-side duplication of the algorithm. The 9-case matrix
 // from the plan: sub-limit passthrough byte-identical; over-limit K=0 last-
 // line slice; over-limit K=2 3-line block; single-line over-guard still
-// aborts (V3 defense); K=64 clamp coherence; idempotence against the worker
+// aborts (V3 defense); over-counted K clamp coherence; idempotence against the worker
 // F3 re-slice; empty tail; CRLF/LF/CR matrix; ledger interplay (block-scoped
 // capture -> NoMatch -> tail-only translate).
 // BUG-002 (session 260913_0002): SelectAll rescue gate for the structured-
@@ -11955,7 +11985,8 @@ void TestBug005S0GoldenDecisionTables() {
     // empty}). k_eff is the production composition: the worker feeds
     // EffectiveBlockSliceK(K, select_all_rescued) into the capture seam. ----
     {
-        const std::wstring g2_pre(4100, L'a'); // alone over the 4096-char guard
+        // E9 (261111_0001 U3, v0.10.7): the guard is 16384 now; stay over it.
+        const std::wstring g2_pre(kMaxEnterTranslateChars + 100, L'a'); // alone over the char guard
         const std::wstring g2_doc = g2_pre + L"\r\n" + L"last line"; // nonempty tail
         const std::wstring g2_tailcap = g2_pre + L"\r\n";            // empty tail
         static_assert(EffectiveBlockSliceK(kSat, true) == 0,
@@ -12360,8 +12391,9 @@ void TestCaptureSliceBeforeGuard() {
         TEST_CHECK(s.block == std::wstring_view(cap),
                    "slice: sub-limit passthrough is byte-identical (whole capture)");
     }
-    // Guard-edge coherence: exactly 4096 chars is IN (passes); one over is
-    // out. Uses the same constants CopySelectedText vets against.
+    // Guard-edge coherence: exactly-at-limit chars is IN (passes); one over is
+    // out. Uses the same constants CopySelectedText vets against (E9 raised
+    // them to 16384/256 - the constant names keep this pin self-adapting).
     {
         const std::wstring at_limit = std::wstring(kMaxEnterTranslateChars, L'a');
         TEST_CHECK(SliceWholeCaptureToBlock(at_limit, 0).result == EnterCaptureResult::Ok,
@@ -12373,7 +12405,8 @@ void TestCaptureSliceBeforeGuard() {
 
     // ---- (2) over-guard whole capture, K=0 -> LAST logical line only ----
     {
-        const std::wstring cap = make_over_guard(4100, L"마지막 블록");
+        // E9 (261111_0001 U3): the guard is 16384 chars now - stay over it.
+        const std::wstring cap = make_over_guard(kMaxEnterTranslateChars + 100, L"마지막 블록");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
         TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
                    "slice: over-guard accumulation K=0 slices instead of aborting (symptom-2 fix)");
@@ -12383,8 +12416,10 @@ void TestCaptureSliceBeforeGuard() {
 
     // ---- (3) over-guard whole capture, K=2 -> 3-line block intact ----
     {
+        // E9: filler derives from the raised guard so the whole accumulation
+        // stays over it (was 2500 under the old 4096 guard).
         const std::wstring b1(900, L'b'), b2(900, L'c'), b3(900, L'd');
-        std::wstring cap = std::wstring(2500, L'a') + L"\r\n" + b1 + L"\r\n" + b2 + L"\r\n" + b3;
+        std::wstring cap = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n" + b1 + L"\r\n" + b2 + L"\r\n" + b3;
         TEST_CHECK(!EnterCaptureWithinGuard(cap.size(), 0),
                    "slice fixture: the whole accumulation is over the char guard");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 2);
@@ -12395,30 +12430,33 @@ void TestCaptureSliceBeforeGuard() {
                    "slice: K=2 block == last three logical lines INCLUDING internal terminators");
     }
 
-    // ---- (4) single-line 5000-char capture (no terminators) still aborts:
+    // ---- (4) single-line over-guard capture (no terminators) still aborts:
     // the V3/CategoryA abuse defense survives the slice (covered above at
-    // the +1 edge; here at the report's 5000 shape). ----
+    // the +1 edge; here at the report's document-sized shape, re-scaled for
+    // the E9 raise). ----
     {
-        const std::wstring cap(5000, L'x');
+        const std::wstring cap(kMaxEnterTranslateChars + 100, L'x');
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
         TEST_CHECK(s.result == EnterCaptureResult::GuardAbort && s.block.empty(),
                    "slice: document-sized single-line capture aborts even after slicing (abuse defense)");
     }
 
-    // ---- (5) K=64 clamp coherence: fewer terminators than K+1 -> whole
-    // capture from index 0 (FindCurrentBlockStart clamp), so an over-guard
-    // 3-line document slices to ITSELF and keeps the /006 abort. Never out
-    // of bounds, never reaches before the document start. ----
+    // ---- (5) over-counted K clamp coherence: fewer terminators than K+1 ->
+    // whole capture from index 0 (FindCurrentBlockStart clamp), so an
+    // over-guard 2-line document slices to ITSELF and keeps the /006 abort.
+    // Never out of bounds, never reaches before the document start. K is the
+    // saturation constant from the E9 raise (256). ----
     {
-        const std::wstring cap = make_over_guard(4100, L"tail");
-        TEST_CHECK(FindCurrentBlockStart(cap, 64) == 0,
-                   "slice: K=64 over-count clamps to 0 on a 2-line capture");
-        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 64);
+        const std::wstring cap = make_over_guard(kMaxEnterTranslateChars + 100, L"tail");
+        TEST_CHECK(FindCurrentBlockStart(cap, static_cast<int>(kMaxEnterTranslateNewlines)) == 0,
+                   "slice: over-counted K clamps to 0 on a 2-line capture");
+        const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, static_cast<int>(kMaxEnterTranslateNewlines));
         TEST_CHECK(s.result == EnterCaptureResult::GuardAbort && s.block.empty(),
                    "slice: clamped whole capture is still over guard -> abort (no clamp crash)");
         // A block that IS within the guard under the same clamp passes:
         const std::wstring small_cap = L"AAA\r\nBBB";
-        TEST_CHECK(SliceWholeCaptureToBlock(small_cap, 64).block == std::wstring_view(small_cap),
+        TEST_CHECK(SliceWholeCaptureToBlock(small_cap, static_cast<int>(kMaxEnterTranslateNewlines)).block ==
+                       std::wstring_view(small_cap),
                    "slice: sub-limit capture unaffected by a clamped K");
     }
 
@@ -12427,12 +12465,13 @@ void TestCaptureSliceBeforeGuard() {
     // returns 0 (the block holds exactly K terminators, the slice asks K+1),
     // so ExecuteTask's F3 never double-slices a block-scoped capture. ----
     {
-        const std::wstring cap0 = make_over_guard(4100, L"last line");
+        const std::wstring cap0 = make_over_guard(kMaxEnterTranslateChars + 100, L"last line");
         const WholeCaptureSlice s0 = SliceWholeCaptureToBlock(cap0, 0);
         TEST_CHECK(FindCurrentBlockStart(s0.block, 0) == 0,
                    "slice idempotence: K=0 block re-slice is a provable no-op (worker F3 safe)");
-        const std::wstring cap2 = std::wstring(2500, L'a') + L"\r\n" + std::wstring(900, L'b') +
-                                  L"\r\n" + std::wstring(900, L'c') + L"\r\n" + std::wstring(900, L'd');
+        const std::wstring cap2 = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n" +
+                                  std::wstring(900, L'b') + L"\r\n" + std::wstring(900, L'c') +
+                                  L"\r\n" + std::wstring(900, L'd');
         const WholeCaptureSlice s2 = SliceWholeCaptureToBlock(cap2, 2);
         TEST_CHECK(s2.result == EnterCaptureResult::BlockSliced,
                    "slice idempotence fixture: K=2 slices");
@@ -12444,10 +12483,10 @@ void TestCaptureSliceBeforeGuard() {
     // distinct EmptyTail verdict (the worker's send-through/R5 machinery
     // owns the shape; triage separates it from a guard abort). ----
     {
-        const std::wstring cap_single = std::wstring(4100, L'a') + L"\r\n";
+        const std::wstring cap_single = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n";
         TEST_CHECK(SliceWholeCaptureToBlock(cap_single, 0).result == EnterCaptureResult::EmptyTail,
                    "slice: capture ending on one separator, K=0 -> empty_tail");
-        const std::wstring cap_multi = std::wstring(4100, L'a') + L"\r\n\r\n";
+        const std::wstring cap_multi = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n\r\n";
         const WholeCaptureSlice m = SliceWholeCaptureToBlock(cap_multi, 1);
         TEST_CHECK(m.result == EnterCaptureResult::EmptyTail && m.block.empty(),
                    "slice: capture ending on a separator run, K=1 -> empty_tail (strip rule = worker F3)");
@@ -12462,7 +12501,7 @@ void TestCaptureSliceBeforeGuard() {
     // slice identically to CRLF (FindCurrentBlockStart's logical-terminator
     // rule, exercised through the production slice path). ----
     {
-        const std::wstring pre(4100, L'a');
+        const std::wstring pre(kMaxEnterTranslateChars + 100, L'a');
         TEST_CHECK(SliceWholeCaptureToBlock(pre + L"\n" + L"tail", 0).block ==
                        std::wstring_view(L"tail"),
                    "slice: lone LF terminator slices the last line");
@@ -12497,7 +12536,7 @@ void TestCaptureSliceBeforeGuard() {
     // string check on the existing predicate - semantics unchanged, pinned
     // for the new capture shape. ----
     {
-        const std::wstring cap = make_over_guard(4100, L"second block original");
+        const std::wstring cap = make_over_guard(kMaxEnterTranslateChars + 100, L"second block original");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
         const std::wstring ledger = std::wstring(4000, L'T') + L"\r\n" + L"first block translated";
         TEST_CHECK(AnalyzeCaptureVsLastPaste(s.block, ledger) == PasteLedgerVerdict::NoMatch,
@@ -12517,7 +12556,7 @@ void TestCaptureSliceBeforeGuard() {
     // paste-back can never replace the whole selection with block-only
     // text (the prefix-destruction failure mode this review caught). ----
     {
-        const std::wstring cap = make_over_guard(4100, L"마지막 블록");
+        const std::wstring cap = make_over_guard(kMaxEnterTranslateChars + 100, L"마지막 블록");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, 0);
         TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
                    "seam contract fixture: over-guard K=0 slices (guard re-vet)");
@@ -12533,7 +12572,7 @@ void TestCaptureSliceBeforeGuard() {
         const std::wstring tail(cap, f3_start, cap.size() - f3_start);
         TEST_CHECK(tail == std::wstring(s.block),
                    "seam contract: worker F3 on the whole capture re-derives the exact block the seam vetted");
-        TEST_CHECK(prefix.size() == 4100 + 2 && tail == std::wstring(L"마지막 블록"),
+        TEST_CHECK(prefix.size() == kMaxEnterTranslateChars + 100 + 2 && tail == std::wstring(L"마지막 블록"),
                    "seam contract: prefix preserved verbatim (filler + separator run), engine input = block only");
         // Recomposition invariant (worker.cpp L599-L611 shape): prefix +
         // tail covers the whole captured span so the Ctrl+V replacement
@@ -12573,8 +12612,9 @@ void TestCaptureSliceBeforeGuard() {
 // is sound for the [0..caret) accumulation geometry it was written for).
 // Applied to the rescue's whole-document span, a saturated K claims the
 // ENTIRE document (previously translated blocks included) as the translation
-// block - FindCurrentBlockStart can never cross K+1 = 65 terminators in a
-// guard-passing capture (<= 32 CRLF boundaries), so the worker's F3 slice
+// block - FindCurrentBlockStart can never cross K+1 = 257 terminators in a
+// guard-passing capture (<= 256 CRLF boundaries) even after the E9 raise to
+// 16384/256, so the worker's F3 slice
 // never engages and the paste-back replaces the whole document with its
 // re-translation (the user's report). The production rule
 // (EffectiveBlockSliceK, win32_input.hpp - ONE definition used by the capture
@@ -12588,7 +12628,7 @@ void TestCaptureSliceBeforeGuard() {
 // REQ-041 (session 260917, Reddit 재번역 사용자 보고): dead-ledger NoMatch에서
 // F3 슬라이스가 사용하는 K를 0으로 강제(EffectiveSliceKForVerdict). 비-EM
 // 캡처([0..caret) 전체)에서 이미 번역된 윗줄 - 사용자의 수동 수정 포함 - 이
-// K의 과다 주장(Shift+Enter K>=1, Ctrl+V 포화 K=64)에 의해 다시 번역되고
+// K의 과다 주장(Shift+Enter K>=1, Ctrl+V 포화 K=256)에 의해 다시 번역되고
 // 붙여넣기로 덮어씌워지던 결함(BUG-003 비-rescue 잔존 분기)을 차단한다.
 // 그리드는 판정 -> k_eff -> F3BlockSliceRefine의 실제 프로덕션 구성을 공유
 // 순수 판정/공유 refine 헬퍼로 직접 재생한다(S2 F1/Q4b 관용: 시뮬레이션
@@ -12603,7 +12643,7 @@ void TestReq041DeadLedgerKCap() {
                   "REQ-041: dead ledger + NoMatch -> K capped to 0 (last logical line only)");
     static_assert(EffectiveSliceKForVerdict(static_cast<int>(kMaxEnterTranslateNewlines), true,
                                             PasteLedgerVerdict::NoMatch) == 0,
-                  "REQ-041: paste-saturated K=64 + dead ledger -> capped (BUG-003 non-rescue arm closed)");
+                  "REQ-041: paste-saturated K=256 + dead ledger -> capped (BUG-003 non-rescue arm closed)");
     static_assert(EffectiveSliceKForVerdict(2, false, PasteLedgerVerdict::NoMatch) == 2,
                   "REQ-041: NO ledger (fresh composition) -> K trusted unchanged");
     static_assert(EffectiveSliceKForVerdict(1, true, PasteLedgerVerdict::PrefixWithTail) == 1,
@@ -12646,8 +12686,9 @@ void TestReq041DeadLedgerKCap() {
          L"edited one\r\ntranslated two\r\n", L"새 한국어 줄",
          false,
          "REQ-041 cell A: dead ledger + K=1 -> last line only; the user's line-1 edit stays in the verbatim prefix"},
-        // Reddit Ctrl+V arm: a paste saturated K to 64 and an edit above
-        // broke the ledger. Pre-fix FindCurrentBlockStart(64) clamped to 0 =
+        // Reddit Ctrl+V arm: a paste saturated K to 256 (the E9 ceiling) and an
+        // edit above broke the ledger. Pre-fix FindCurrentBlockStart(256) clamped
+        // to 0 =
         // the WHOLE capture entered the engine (BUG-003 non-rescue twin,
         // left open by the BUG-003 scope note); post-fix the cap forces the
         // last line.
@@ -12657,7 +12698,7 @@ void TestReq041DeadLedgerKCap() {
          L"edited one\r\ntranslated two\r\npasted block line one\r\n",
          L"pasted block line two",
          false,
-         "REQ-041 cell B: dead ledger + K=64 -> last line only (BUG-003 non-rescue arm closed)"},
+         "REQ-041 cell B: dead ledger + K=256 -> last line only (BUG-003 non-rescue arm closed)"},
         // Fresh composition, NO ledger: the verify 220750 예시1 contract must
         // hold - Shift+Enter x2 then Enter translates the WHOLE fresh block
         // (K=2 -> last 3 lines). The cap must NOT engage here.
@@ -13021,9 +13062,9 @@ void TestRescueSaturatedKReanchor() {
 
     // Runtime twins keep the matrix visible in the pass log.
     TEST_CHECK(EffectiveBlockSliceK(kSat, true) == 0,
-               "re-anchor: rescue + K=64 -> document-end block (runtime twin)");
+               "re-anchor: rescue + saturated K -> document-end block (runtime twin)");
     TEST_CHECK(EffectiveBlockSliceK(kSat, false) == kSat,
-               "re-anchor: geometry-path K=64 untouched (runtime twin)");
+               "re-anchor: geometry-path saturated K untouched (runtime twin)");
     TEST_CHECK(EffectiveBlockSliceK(1, true) == 1,
                "re-anchor: a one-line-deep typed block keeps its K on the rescue path");
 
@@ -13053,7 +13094,7 @@ void TestRescueSaturatedKReanchor() {
     // ---- (3) the seam twin: an over-guard rescued document slices to its
     // last line instead of aborting on "whole document = one block" ----
     {
-        const std::wstring cap = std::wstring(4100, L'a') + L"\r\n\r\n" + L"마지막 줄";
+        const std::wstring cap = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n\r\n" + L"마지막 줄";
         TEST_CHECK(SliceWholeCaptureToBlock(cap, kSat).result == EnterCaptureResult::GuardAbort,
                    "BUG-003 pre-fix witness: over-guard whole doc + saturated K aborts the whole capture");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(cap, EffectiveBlockSliceK(kSat, true));
@@ -16350,6 +16391,14 @@ void TestR107PeerIdentityGate() {
 // TestReq059UserModelPrompt() (same translation-core cluster).
 #include "s260930_0003_chunk_stitch_tests.inc"
 
+// v0.10.7 (session 261111_0001, unit U4): the Hy-MT2 decoding-defect fixes -
+// two-stage deterministic sampler (bounded 1.10 retry), ~300-token
+// micro-chunking with previous-chunk context, length-ratio guardrail, and the
+// shipped rep_pen 1.0 defaults. Staged as an .inc next to this runner;
+// registered right after TestS260930ChunkStitch() (same translation-core
+// cluster).
+#include "v107_engine_decode_tests.inc"
+
 // REQ-057 (wrong-model serving diagnosability): the worker echoes the
 // ACTUALLY-SERVED model id on every terminal event (EventMsg.model, OPTIONAL
 // per the wire-freeze discipline), the orchestrator relays it as the
@@ -16473,6 +16522,32 @@ void TestR107PeerIdentityGate() {
 // above).
 #include "ws3_tooltip_tests.inc"
 
+// 261111_0001 (v0.10.7) U1 - drag-to-translate dead-zone bug family (audit
+// IDs D1a / D1b / D4 / D3-feedback / ISSUE-009): the off-thread Dismiss
+// semantics, the drag-icon show/hide generation seam, and the main.cpp
+// structural pins. Staged as an .inc next to this runner; needs
+// PumpThreadMessagesOnce (defined above) for the live fixtures.
+#include "v107_drag_tooltip_tests.inc"
+
+// 261111_0001 (v0.10.7) U2 - language-fairness detection fix: the dominant-
+// script ratio model, the near-tie/plurality priority fallback, and the
+// positive-evidence English lexicon. Staged as an .inc; the source-pin leg
+// needs ResolveRepoFile (defined above).
+#include "v107_lang_detect_tests.inc"
+
+// 261111_0001 (v0.10.7) U6 - user-model surface: the registration-time GGUF
+// header gate (src/gguf_validator.*), the manager activate action, the
+// provider failure-detail visibility (masked OpenAI error body), and the
+// prompt-label accessor seam. Staged as an .inc next to this runner.
+#include "v107_user_model_tests.inc"
+
+// 261111_0001 (v0.10.7) U3 - E1/E2/E9 + ISSUE-013: the Shift+Enter line-
+// break accounting fix, the raised 16384/256 capture ceilings, and the
+// system-metric (SM_CXDRAG/SM_CYDRAG, DPI-scaled) drag threshold. Staged as
+// an .inc next to this runner; relies on the hook.hpp / mouse_hook.hpp /
+// win32_input.hpp includes above, same discipline as req052_ui_fixes_tests.inc.
+#include "v107_linebreak_tests.inc"
+
 // 261108_0002 (v0.10.6) WS4 — Chat installer upgrade-safety pins (G1/G2/G3/
 // G4/G6/G9) against installer/setup.iss, plus the frozen contracts the other
 // installer gates own (G5 non-owned slot). Staged as an .inc next to this
@@ -16500,7 +16575,8 @@ namespace {
 // 261108_0002 (FIX-R1): the 161 both mirrors carried was the PRE-WS3 value, so
 // this one and the req048_r2_tests.inc copy contradicted the EnumCount pin
 // three lines below (two mirrors drifting against each other = no defense).
-// Both are now 166 (FIX-WS3B added BackTranslateReference). The authoritative
+// Both are now 169 (FIX-WS3B added BackTranslateReference; 261111_0001 U6 added
+// the 3 user-model surface ids: 166 -> 169). The authoritative
 // invariant no longer lives in a mirror: it
 // is the sizeof(LocalizedStrings)/sizeof(const wchar_t*) == StringId::EnumCount
 // static_assert in src/i18n.cpp, which sees the REAL struct (it is in that TU's
@@ -16525,8 +16601,11 @@ struct Req044LstrMirror {
     // ThemeEditorial/ThemeMonolith); 261108_0002 WS3 (v0.10.6): 4 floating
     // back-translation strings appended (161 -> 165: MenuBackTranslation +
     // BackTranslateHeader/MatchExact/MatchCheck), then FIX-WS3B added the
-    // card's reference-line label (165 -> 166: BackTranslateReference).
-    const wchar_t* f[166];
+    // card's reference-line label (165 -> 166: BackTranslateReference);
+    // 261111_0001 U6 (v0.10.7): 3 user-model surface strings appended
+    // (166 -> 169: GgufInvalidModelBody + GgufManagerActiveSuffix/
+    // GgufManagerActivated).
+    const wchar_t* f[169];
 };
 
 } // namespace
@@ -16539,8 +16618,8 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 166
-    static_assert(kExpectedFieldCount == 166,
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 169
+    static_assert(kExpectedFieldCount == 169,
                    "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
@@ -16549,11 +16628,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 166,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/FIX-WS3B: LocalizedStrings field count is 166 "
+    TEST_CHECK(observed_field_count == 169,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: LocalizedStrings field count is 169 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 166,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/FIX-WS3B: StringId::EnumCount is 166 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids)");
+    TEST_CHECK(observed_enum_count == 169,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: StringId::EnumCount is 169 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -18596,12 +18675,14 @@ void TestS261029UaOutputGate() {
             return count;
         };
 
-        // R1-2: the greedy leg is the pure decision + a penalties->greedy chain.
-        TEST_CHECK(src.find("switch (DecideSamplerShape(temperature, rep_pen))") != std::string::npos,
-                   "R1-2: the sampler branch is driven by DecideSamplerShape");
-        TEST_CHECK(src.find("llama_sampler_chain_add(smpl, llama_sampler_init_penalties(kPenaltyLastN, rep_pen, 0.0f, 0.0f));\n"
-                            "            llama_sampler_chain_add(smpl, llama_sampler_init_greedy());") != std::string::npos,
-                   "R1-2: the penalized greedy chain adds penalties FIRST and greedy LAST");
+        // R1-2 + v0.10.7 U4: the greedy leg is the pure decision + a
+        // penalties->greedy chain, driven by the two-stage effective rep_pen
+        // (pass 0 = configured, the single bounded retry = 1.10).
+        TEST_CHECK(src.find("switch (DecideSamplerShape(temperature, effective_rep_pen))") != std::string::npos,
+                   "R1-2/U4: the sampler branch is driven by DecideSamplerShape on the effective rep_pen");
+        TEST_CHECK(src.find("llama_sampler_chain_add(smpl.smpl, llama_sampler_init_penalties(kPenaltyLastN, effective_rep_pen, 0.0f, 0.0f));\n"
+                            "            llama_sampler_chain_add(smpl.smpl, llama_sampler_init_greedy());") != std::string::npos,
+                   "R1-2/U4: the penalized greedy chain adds penalties FIRST and greedy LAST (effective rep_pen)");
         TEST_CHECK(src.find("smpl = llama_sampler_init_greedy();") != std::string::npos,
                    "R1-2: the bare greedy allocation survives for rep_pen <= 1.0 (byte-identical)");
         {
@@ -18795,7 +18876,7 @@ void TestS261029UaOutputGate() {
                        src.find("{L\"emebala_source\", false, false, false}") != std::string::npos &&
                        src.find("{L\"이메발라\", false, false, false}") != std::string::npos,
                    "WS1: the brand needles are present");
-        TEST_CHECK(src.find("folded_source.find(pattern) != std::wstring::npos") != std::string::npos,
+        TEST_CHECK(src.find("folded_source.find(folded_pattern) != std::wstring::npos") != std::string::npos,
                    "WS1: the meta-leakage source guard is untouched (a needle the source carries "
                    "never fires)");
 
@@ -21384,6 +21465,14 @@ int main() {
     TestReq053OpenAiButtonDisablePins();
     TestReq053GgufButtonSyncPins();
     TestReq053SoundQueuePolicy();
+    // 261111_0001 (v0.10.7) U3: E1/E2/E9 + ISSUE-013 - the Shift+Enter
+    // LineBreakTracker contract, the 16384/256 ceiling matrix, and the
+    // system-metric drag threshold. Registered with the REQ-052/053 cluster
+    // (same win32_input/mouse_hook surface). The entry feeds the shared
+    // TEST_CHECK counters itself; the local only receives the suite delta
+    // (adding it to g_failed_count would double-count).
+    int v107_linebreak_failures = 0;
+    RunV107LineBreakTests(v107_linebreak_failures);
     // REQ-054: the tray user-model stem preservation contract (optional stem
     // argument; hook hotkey paths omit it, refresh_tray passes it engaged).
     // Registered after the REQ-053 cluster, per the end-of-file pattern.
@@ -21401,6 +21490,15 @@ int main() {
     // wiring). Registered right after the REQ-059 suite (same
     // translation-core cluster).
     TestS260930ChunkStitch();
+    // v0.10.7 (261111_0001 U4): the engine decode-fix suite (sampler shape,
+    // micro-chunk threshold, length-ratio decision, shipped defaults).
+    // Registered right after the chunk/stitch suite (same translation-core
+    // cluster). Distinct local name: the linebreak suite below owns
+    // v107_linebreak_failures.
+    {
+        int v107_engine_decode_failures = 0;
+        RunV107EngineDecodeTests(v107_engine_decode_failures);
+    }
     // R1-1 + R1-2 (session 261029_0001, v0.10.4 sweep): the output-quality gate
     // (repetition / wrong-script / meta-leakage, both rungs) and the greedy-
     // branch sampler shape. Registered right after the chunk/stitch suite (same
@@ -21554,6 +21652,20 @@ int main() {
     // marshal seam/structural pins). Registered after the WS2 cluster.
     TestWs3ConfigI18n();
     TestWs3Tooltip();
+    // 261111_0001 (v0.10.7) U1: the drag/tooltip dead-zone suite (live
+    // Dismiss semantics + generation seam + main.cpp structural pins).
+    // Registered after the WS3 cluster it complements; passing the harness
+    // global directly is the documented no-double-count wiring.
+    RunV107DragTooltipTests(g_failed_count);
+    // 261111_0001 (v0.10.7) U2: dominant-script language detection (see the
+    // include comment above). Registered after the WS cluster it complements.
+    int v107_lang_detect_failures = 0;
+    RunV107LangDetectTests(v107_lang_detect_failures);
+    // 261111_0001 (v0.10.7) U6: user-model surface — the GGUF registration
+    // gate, the manager activate action, the provider failure detail, and
+    // the prompt-label accessor (see the include comment below).
+    int v107_user_model_failures = 0;
+    RunV107UserModelTests(v107_user_model_failures);
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;
