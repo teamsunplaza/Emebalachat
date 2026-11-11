@@ -49,12 +49,12 @@ AppName=Emebala Chat
 ; "v0.10.4"); promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see
 ; CHANGELOG "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002,
 ; see CHANGELOG "v0.10.6").
-AppVersion=0.10.6
+AppVersion=0.10.7
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.6
+OutputBaseFilename=Emebalachat_Setup_0.10.7
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
@@ -789,7 +789,7 @@ const
   // since 261108_0002 (WS4), mirrored into the ORIGINAL-user store as well:
   // the running app resolves the store from ITS OWN token
   // (SHGetKnownFolderPath(FOLDERID_LocalAppData) at
-  // src/engine_host_bootstrap_client.cpp), so an over-the-shoulder UAC install
+  // Emebala_engine/src/engine_host_bootstrap_client.cpp), so an over-the-shoulder UAC install
   // (standard user + different admin credentials) must populate the user's
   // store or the app keeps running the old engine (audit gap G3).
   // NEVER the program-data store ("{" + "commonappdata" + "}"): C:\ProgramData,
@@ -822,7 +822,7 @@ const
 // replaced, and a same-version rebuild or a corrupt "newer" record can no
 // longer strand a stale store binary (audit gaps G1/G2). The bump is still
 // required so the record advances for users upgrading from r13.
-#define ENGINE_REVISION ".r14"
+#define ENGINE_REVISION ".r15"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
@@ -900,7 +900,7 @@ const
   // merge contract. This installer owns EXACTLY ONE models[] item - the
   // bundled translate model - identified by REGISTRY_BUNDLED_ID. The item is
   // serialized as a single compact line so the strict walker (JsonGetField*)
-  // can round-trip it; the C++ parser (src/engine_host_registry.cpp) reads it
+  // can round-trip it; the C++ parser (Emebala_engine/src/engine_host_registry.cpp) reads it
   // as-is (same values the pre-A-2 15-line document produced, incl. the
   // already-clamped priority 9). The model filename is interpolated at write
   // time from MODEL_FILENAME so the pin and the registry can never drift.
@@ -963,7 +963,7 @@ const
   PATH_EXCHANGE_FILE = 'user_localappdata.txt';
 
   REGISTRY_BUNDLED_ITEM_PREFIX = '{"id": "hy-mt2-1.8b-q8", "family": "ggml-translate", "files": ["';
-  REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "ondemand", "eviction": "evict", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
+  REGISTRY_BUNDLED_ITEM_SUFFIX = '"], "capabilities": ["translate"], "origin": "bundled", "resource": {"vram_mb": 2400, "ctx": 4096, "max_sessions": 1, "residency": "ondemand", "eviction": "evict", "priority": 9}, "profiles": {"default": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.0, "prompt_template_ref": "hymt2-official"}}, "lang_pairs": ["*"]}';
 
 var
   DownloadPage: TDownloadWizardPage;
@@ -2449,7 +2449,7 @@ end;
 // uninstall cleanup need. STRICT-BY-DESIGN: every helper returns failure on
 // any deviation from the writer's own serialization shape; callers then take
 // the fail-closed path (leave the file untouched), mirroring the components.json
-// "safe-failure" precedent. The C++ parser (src/engine_host_registry.cpp)
+// "safe-failure" precedent. The C++ parser (Emebala_engine/src/engine_host_registry.cpp)
 // additionally tolerates unknown fields and a UTF-8 BOM; a document that
 // carries either is preserved verbatim here instead of being rewritten -
 // preservation, never destruction, is the merge contract.
@@ -2694,7 +2694,7 @@ begin
 end;
 
 // WriteTextFileAtomic - the installer-side twin of the app's
-// WriteRegistryAtomically (src/engine_host_registry.cpp, config.cpp
+// WriteRegistryAtomically (Emebala_engine/src/engine_host_registry.cpp, config.cpp
 // SaveToFileLocked precedent): complete bytes to <Path>.tmp on the SAME
 // volume first, then rename over the target. A reader ever sees either the
 // complete old document or the complete new one; a crash mid-write leaves
@@ -2735,7 +2735,7 @@ end;
 // Minimal string-search parser (M-3: the installer reads the FIXED key order
 // schema_version -> components -> orchestrator -> version -> abi_version, so
 // the parser presumes that same serialization order - matching the T2 C++
-// parser contract in src/engine_host_components.cpp).
+// parser contract in Emebala_engine/src/engine_host_components.cpp).
 //
 // Replace = True when ANY of:
 //   * the named entry is absent from components{}
@@ -4294,7 +4294,7 @@ end;
 // [Files] entries above land in the ELEVATED token's {localappdata} - the
 // administrator's profile on an over-the-shoulder UAC install. The running app
 // resolves the engine store from ITS OWN token
-// (SHGetKnownFolderPath(FOLDERID_LocalAppData), src/engine_host_bootstrap_client.cpp),
+// (SHGetKnownFolderPath(FOLDERID_LocalAppData), Emebala_engine/src/engine_host_bootstrap_client.cpp),
 // so on that (very common) upgrade path the new engine was never visible: the
 // app kept loading the OLD store binaries while the installer reported success
 // - the exact "installed the new version, engine did not change" report. The

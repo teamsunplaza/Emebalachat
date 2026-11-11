@@ -4,7 +4,7 @@
     "emebala-chat": {
       "model_id": "",
       "profile_name": "",
-      "sampling": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.05},
+      "sampling": {"temperature": 0.0, "top_p": 0.6, "top_k": 20, "rep_pen": 1.0},
       "prompt_template_ref": "hymt2-official",
       "comment": "chat inherits legacy behavior: empty model_id -> C1-gated user_gguf pin; non-empty -> pinned id"
     },

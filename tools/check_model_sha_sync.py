@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -42,8 +43,20 @@ from pathlib import Path
 
 WS = Path(__file__).resolve().parent.parent
 
-SRC_ENGINE_CORE = WS / "src" / "engine_core" / "engine_core_helpers.hpp"
-SRC_CLIENT = WS / "src" / "engine_host_client.hpp"
+# 261111_0001: the engine sources moved to the shared engine repository
+# (github.com/teamsunplaza/Emebala_engine). Resolve them there first; the
+# in-repo path stays as a fallback for pre-split checkouts. The engine dir is
+# overridable with EMEBALA_ENGINE_DIR (same variable the CMake build uses).
+ENGINE_DIR = Path(os.environ.get("EMEBALA_ENGINE_DIR", WS.parent / "Emebala_engine"))
+
+
+def _engine_source(rel: str) -> Path:
+    external = ENGINE_DIR / rel
+    return external if external.exists() else WS / rel
+
+
+SRC_ENGINE_CORE = _engine_source("src/engine_core/engine_core_helpers.hpp")
+SRC_CLIENT = _engine_source("src/engine_host_client.hpp")
 SRC_INSTALLER = WS / "installer" / "setup.iss"
 
 HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")

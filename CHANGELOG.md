@@ -5,6 +5,121 @@ All notable changes to Emebala Chat are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.7] - 2026-11-12
+
+Completeness and fairness release. Drag-to-translate no longer dies where a
+translation card is parked, multi-line (Shift+Enter) translation works for
+IME users, language detection no longer lets a single foreign character
+decide the language, the local engine translates long documents in small
+context-carrying chunks with consistent terminology, user-registered models
+get early validation and one-click activation, external providers report the
+real cause of a failure with the API key masked, and the shared engine moved
+to its own repository (`teamsunplaza/Emebala_engine`) so Chat, Listener, and
+Reader build from one source.
+
+### Added
+
+- **Registered-model activation**: double-click a model in the model manager
+  to make it active (the active row is marked). Switching takes effect on the
+  next request through the existing per-request model pin; no restart, no new
+  IPC.
+- **GGUF registration validation**: a header-only, llama-free check (GGUF
+  magic, version, bounded metadata walk, first tensor-info record) rejects
+  truncated or corrupt files at registration with a localized message instead
+  of failing later at engine load. Bounded memory (one 64 KiB window); large
+  tokenizer metadata is streamed, not buffered.
+- **External-provider failure detail**: OpenAI-compatible failures now
+  surface the HTTP status and the provider's own message in the failure
+  notice, with the API key masked at the single write site and diagnostics
+  kept shape-only. A 503 "credit accounting unavailable" is visible instead
+  of a silent empty result.
+
+### Fixed
+
+Drag-to-translate:
+
+- **The translation-card dead zone is gone.** A visible card no longer
+  suppresses a later drag: a completed drag gesture dismisses the card and
+  still shows the icon. Tooltip-internal button clicks never summon an icon,
+  and the app's own popup menus stay exempt.
+- Off-thread tooltip dismissal now clears visibility before returning and
+  marshals its teardown exactly once, so a fast re-drag is never dropped and
+  a failed post can never strand a shown card.
+- An empty translation result shows the transient failure notice and returns
+  on every drag-family path (drag icon and double-Ctrl+C); no permanent empty
+  ghost card.
+- The smart-bypass drop shows a notice instead of vanishing silently.
+- Drag-icon show/hide ordering is serialized under one arbiter with a
+  monotonic generation, so a stale icon cannot appear at a dead selection
+  site, and a stale hide cannot erase a newer show.
+- The drag threshold follows the Windows system drag metric
+  (SM_CXDRAG/SM_CYDRAG, DPI-aware) instead of a hard-coded 15 pixels.
+
+Multi-line and editing:
+
+- **Shift+Enter during IME composition counts.** Korean (and other IME)
+  users' multi-line messages translate as a whole; a line break typed while
+  the input method is composing is no longer dropped from the count.
+- Fixing a typo with Backspace no longer erases earlier lines: the count is
+  decremented only when the current line is empty.
+- Long inputs (up to 16,384 characters and 256 lines) are translated instead
+  of being refused with a misleading "no text selected" notice.
+
+Language fairness (all 37 interface languages / 38 translation targets):
+
+- **Detection follows the dominant script.** A single foreign character no
+  longer relabels a selection: one Korean letter at the end of an English
+  sentence is no longer a Korean-to-Korean no-op, and one Vietnamese,
+  Ukrainian, Urdu, or Persian marker no longer relabels dominant text.
+- Short Latin-script words (for example "bonjour" or "hola" dragged while
+  translating into English) are translated instead of being silently skipped
+  as "already English"; English claims now require positive evidence.
+- Every label that reaches an engine prompt resolves through the gated
+  detector (typing path, drag re-detect, back-translation source).
+
+Local engine (Hy-MT2-1.8B):
+
+- **Terminology stays consistent.** The first decode pass no longer penalizes
+  a word for repeating, so a recurring domain term translates the same way
+  twice; a single penalty-guided retry (1.10) still protects against
+  repetition loops. Shipped `repetition_penalty` default is now 1.0.
+- **Long documents translate in ~300-token chunks** with the previous chunk
+  as read-only context, instead of one diluted pass that dropped or
+  summarized middle sentences. Requests whose projected chunk work exceeds
+  the request budget are refused up front with the honest failure notice.
+- Output far shorter or far longer than the source (band [30%, 250%],
+  short sources exempt) is rejected instead of shipping truncated or
+  invented text.
+
+Security and robustness:
+
+- The OpenAI-compatible client's sanitizer strips bidi and zero-width format
+  characters BEFORE masking, so a provider cannot split an echoed API key
+  with invisible characters and have it reassemble in cleartext; error
+  details are bounded on UTF-8 boundaries.
+- The `/v1/models` parser cannot be spun into an infinite loop by a hostile
+  provider body (non-progress guard), and the model-id list is capped.
+- The redirect-policy option on the key-carrying request now fails closed.
+- A stale drag-icon hide can no longer erase a newer show.
+
+### Changed
+
+- **The shared engine now lives in its own repository**,
+  `github.com/teamsunplaza/Emebala_engine` (orchestrator, worker, engine
+  core, host protocol). The Chat build consumes it through
+  `EMEBALA_ENGINE_DIR` (default `D:/OneDrive/Projects/Emebala_engine`,
+  overridable). Listener and Reader will consume the same engine. The Chat
+  app itself still ships with no inference code (verified: no llama/ggml
+  symbols in `Emebala_chat.exe`).
+- Unit test suite: 9,070 checks (was 8,153), 0 failures.
+
+### Upgrade notes
+
+Upgrading from any 0.10.x build is fully supported. The installer verifies
+the engine binaries it copies, repairs stale engine slots on upgrade
+(`ENGINE_REVISION` `.r15`; the engine binaries changed in this release), and
+no longer reports success over a broken engine.
+
 ## [0.10.6] - 2026-11-08
 
 Feature and fix release. Single-word hallucinations from the local engine are
