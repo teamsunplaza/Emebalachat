@@ -36,13 +36,12 @@
 //       not the trimmed one).
 //
 // Self-contained: no main(), no new includes beyond what tests/run_tests.cpp
-// already provides (it includes ../src/win32_input.hpp, ../src/worker.hpp and
-// ../src/engine_core/engine_core_helpers.hpp; this inc adds only the
-// translation_common.hpp mid-TU include it needs for the drift pins, the
-// req051_decode_budget_tests.inc precedent).
+// already provides (it includes ../src/win32_input.hpp, ../src/worker.hpp,
+// ../src/engine_core/engine_core_helpers.hpp and — since 261116_0003 P3 fix
+// round 3 — engine_core/translation_common.hpp in the runner's TOP include
+// block, needed first by the B1 RTL pin; the former mid-TU include here was
+// redundant under pragma-once and was removed).
 // ---------------------------------------------------------------------------
-
-#include "engine_core/translation_common.hpp" // 261108_0002: TextScriptClasses / TargetScriptClasses drift pins (mid-TU include, pragma-once safe; engine repo since 261111_0001 U7)
 
 namespace {
 
@@ -279,7 +278,24 @@ void TestWs2ScriptMaskParity() {
                    kScriptMaskLao == ToMask(ScriptClass::Lao) &&
                    kScriptMaskHebrew == ToMask(ScriptClass::Hebrew) &&
                    kScriptMaskGreek == ToMask(ScriptClass::Greek) &&
-                   kScriptMaskMyanmar == ToMask(ScriptClass::Myanmar),
+                   kScriptMaskMyanmar == ToMask(ScriptClass::Myanmar) &&
+                   // 261116_0003 P1: the 4 new Hy-MT2 script classes
+                   // (Tamil/Telugu/Gujarati/Tibetan) join the parity chain.
+                   kScriptMaskTamil == ToMask(ScriptClass::Tamil) &&
+                   kScriptMaskTelugu == ToMask(ScriptClass::Telugu) &&
+                   kScriptMaskGujarati == ToMask(ScriptClass::Gujarati) &&
+                   kScriptMaskTibetan == ToMask(ScriptClass::Tibetan) &&
+                   // 261116_0003 P3: the 8 tranche-B script classes
+                   // (Armenian/Georgian/Sinhala/Malayalam/Kannada/Gurmukhi/
+                   // Odia/Ethiopic) join the parity chain.
+                   kScriptMaskArmenian == ToMask(ScriptClass::Armenian) &&
+                   kScriptMaskGeorgian == ToMask(ScriptClass::Georgian) &&
+                   kScriptMaskSinhala == ToMask(ScriptClass::Sinhala) &&
+                   kScriptMaskMalayalam == ToMask(ScriptClass::Malayalam) &&
+                   kScriptMaskKannada == ToMask(ScriptClass::Kannada) &&
+                   kScriptMaskGurmukhi == ToMask(ScriptClass::Gurmukhi) &&
+                   kScriptMaskOdia == ToMask(ScriptClass::Odia) &&
+                   kScriptMaskEthiopic == ToMask(ScriptClass::Ethiopic),
                "WS2 (b): every kScriptMask* bit equals its engine_core ScriptClass ordinal");
 
     // EVERY registered language code must resolve to the SAME mask through both
@@ -304,16 +320,257 @@ void TestWs2ScriptMaskParity() {
                        lang.code + "\"");
     }
 
+    // -----------------------------------------------------------------------
+    // (b2) the THIRD parity copy: smart_bypass's MatchesTargetScriptCodePoint
+    // 261116_0003 P3 fix round 3 (PR3-05a, step5preview F-06)
+    // -----------------------------------------------------------------------
+    // The engine table <-> win32 mask pair above has a registry-wide drift
+    // guard; the smart_bypass predicate did not. It is file-local (anonymous
+    // namespace, no header declaration), so the public seam is ShouldTranslate's
+    // step-7 already-target gate: with the SOURCE PINNED EQUAL TO THE TARGET,
+    // ShouldTranslate returns false iff the text is >=70% target-script letters,
+    // i.e. iff MatchesTargetScriptCodePoint agrees with the engine mask over
+    // that text. A row whose branch is missing falls through to the Latin
+    // catch-all, loses the dominance ratio, and fails here.
+    //
+    // Form (both directions, per registry row):
+    //   positive - the row's own name_native (pure target-script for all 89
+    //              rows) must be BYPASSED under its own code;
+    //   negative - the first registry row whose engine mask is EXACTLY one bit
+    //              and shares no bit with this row's mask supplies the
+    //              "different script" sample, which must NOT be bypassed.
+    // A row with no such disjoint sample is a hard failure (never a silent
+    // skip), so the negative half cannot go vacuous as the registry grows.
+    {
+        const std::vector<LanguageInfo>& targets = GetTargetLanguages();
+        int positive_failures = 0;
+        std::string positive_offenders;
+        for (const LanguageInfo& lang : targets) {
+            if (ShouldTranslate(ToUtf16(lang.name_native), lang.code, lang.code)) {
+                ++positive_failures;
+                positive_offenders += lang.code + " ";
+            }
+        }
+        TEST_CHECK(positive_failures == 0,
+                   "WS2 (b): every row's name_native is target-script dominant under its own code (third copy)");
+        if (positive_failures != 0) {
+            std::cout << "     third-copy offenders: " << positive_offenders << std::endl;
+        }
+
+        int negative_failures = 0;
+        int no_sample = 0;
+        std::string negative_offenders;
+        for (const LanguageInfo& lang : targets) {
+            const std::uint32_t mask = TargetScriptClasses(lang.code);
+            // 261116_0003 P3 fix round 3b (glm53 F-R2-01): probe EVERY disjoint
+            // single-bit sample row, not just the first — a branch that
+            // over-claims a third script (e.g. SI OR-ing in Arabic) must not be
+            // able to hide behind an unlucky first pick.
+            bool saw_sample = false;
+            for (const LanguageInfo& candidate : targets) {
+                const std::uint32_t candidate_mask = TargetScriptClasses(candidate.code);
+                const bool single_bit = candidate_mask != 0 &&
+                                        (candidate_mask & (candidate_mask - 1)) == 0;
+                if (!single_bit || (candidate_mask & mask) != 0) {
+                    continue;
+                }
+                saw_sample = true;
+                if (!ShouldTranslate(ToUtf16(candidate.name_native), lang.code, lang.code)) {
+                    ++negative_failures;
+                    negative_offenders += lang.code + "<-" + candidate.code + " ";
+                }
+            }
+            if (!saw_sample) {
+                ++no_sample;
+            }
+        }
+        TEST_CHECK(no_sample == 0,
+                   "WS2 (b): every registry row has a disjoint single-script sample row (third copy)");
+        TEST_CHECK(negative_failures == 0,
+                   "WS2 (b): a different-script sample is never target-script dominant (third copy)");
+        if (negative_failures != 0) {
+            std::cout << "     third-copy over-claim offenders: " << negative_offenders << std::endl;
+        }
+    }
+
+    // 261116_0003 P1 CR-01: REGISTRY-INDEPENDENT row pins for the 9 Hy-MT2
+    // official targets P1 staged (4 new classes + 5 rows reusing an existing
+    // class). P2 has since registered these codes, so the registry loop above
+    // covers them too; these pins stay as the explicit DIRECT-row assertions
+    // (261116_0003 P2 fix round 2: the "until P2 registers them" wording was
+    // falsified by that registration). They name the rows directly and never
+    // consult the registry.
+    //
+    // Each row is asserted through BOTH lookup paths and in BOTH code cases.
+    // The helpers' contract is case-insensitive (either side may hand them a
+    // non-canonical spelling), so an uppercase-only pin would leave half of
+    // each lookup untested.
+    struct P1RowPin { const char* code; std::uint32_t expected; const char* script; };
+    const P1RowPin p1_rows[] = {
+        {"GU", kScriptMaskGujarati, "Gujarati"},
+        {"TE", kScriptMaskTelugu, "Telugu"},
+        {"MR", kScriptMaskDevanagari, "Devanagari"},
+        {"TA", kScriptMaskTamil, "Tamil"},
+        {"BO", kScriptMaskTibetan, "Tibetan"},
+        {"KK", kScriptMaskCyrillic, "Cyrillic"},
+        {"MN", kScriptMaskCyrillic, "Cyrillic"},
+        {"UG", kScriptMaskArabic, "Arabic"},
+        {"YUE", kScriptMaskHan, "Han"},
+    };
+    for (const P1RowPin& row : p1_rows) {
+        std::string lower = row.code;
+        for (char& ch : lower) {
+            if (ch >= 'A' && ch <= 'Z') {
+                ch = static_cast<char>(ch - 'A' + 'a');
+            }
+        }
+        const std::string pin = std::string("261116_0003 P1 CR-01: \"") + row.code +
+                                "\" maps to " + row.script + " via ";
+        TEST_CHECK(TargetScriptClasses(row.code) == row.expected,
+                   pin + "engine_core TargetScriptClasses (uppercase code)");
+        TEST_CHECK(ScriptMaskForLanguageCode(row.code) == row.expected,
+                   pin + "win32_input ScriptMaskForLanguageCode (uppercase code)");
+        TEST_CHECK(TargetScriptClasses(lower) == row.expected,
+                   pin + "engine_core TargetScriptClasses (lowercase code)");
+        TEST_CHECK(ScriptMaskForLanguageCode(lower) == row.expected,
+                   pin + "win32_input ScriptMaskForLanguageCode (lowercase code)");
+    }
+
+    // 261116_0003 P3 CR-01: REGISTRY-INDEPENDENT row pins for the 43 tranche
+    // A+B cloud rows (the same direct-row assertion pattern as the P1 block
+    // above; the registry loop covers them too, these name the rows directly).
+    // SR and UZ expect the dual-script Cyrillic|Latin mask (the JA Han|Kana
+    // precedent); AM/TI share Ethiopic; PS/SD Arabic; NE/SA/MAI/GOM Devanagari;
+    // AS Bengali; DZ Tibetan; the tranche-A Cyrillic rows Cyrillic; the
+    // tranche-A Latin rows Latin.
+    struct P3RowPin { const char* code; std::uint32_t expected; const char* script; };
+    const P3RowPin p3_rows[] = {
+        {"BS", kScriptMaskLatin, "Latin"},
+        {"SR", kScriptMaskCyrillic | kScriptMaskLatin, "Cyrillic|Latin"},
+        {"HR", kScriptMaskLatin, "Latin"},
+        {"SL", kScriptMaskLatin, "Latin"},
+        {"SK", kScriptMaskLatin, "Latin"},
+        {"BG", kScriptMaskCyrillic, "Cyrillic"},
+        {"LT", kScriptMaskLatin, "Latin"},
+        {"LV", kScriptMaskLatin, "Latin"},
+        {"ET", kScriptMaskLatin, "Latin"},
+        {"AF", kScriptMaskLatin, "Latin"},
+        {"CA", kScriptMaskLatin, "Latin"},
+        {"IS", kScriptMaskLatin, "Latin"},
+        {"SQ", kScriptMaskLatin, "Latin"},
+        {"MK", kScriptMaskCyrillic, "Cyrillic"},
+        {"CY", kScriptMaskLatin, "Latin"},
+        {"GA", kScriptMaskLatin, "Latin"},
+        {"EU", kScriptMaskLatin, "Latin"},
+        {"GL", kScriptMaskLatin, "Latin"},
+        {"SW", kScriptMaskLatin, "Latin"},
+        {"HT", kScriptMaskLatin, "Latin"},
+        {"UZ", kScriptMaskCyrillic | kScriptMaskLatin, "Cyrillic|Latin"},
+        {"AZ", kScriptMaskLatin, "Latin"},
+        {"BE", kScriptMaskCyrillic, "Cyrillic"},
+        {"KY", kScriptMaskCyrillic, "Cyrillic"},
+        {"TG", kScriptMaskCyrillic, "Cyrillic"},
+        {"EO", kScriptMaskLatin, "Latin"},
+        {"HY", kScriptMaskArmenian, "Armenian"},
+        {"KA", kScriptMaskGeorgian, "Georgian"},
+        {"SI", kScriptMaskSinhala, "Sinhala"},
+        {"ML", kScriptMaskMalayalam, "Malayalam"},
+        {"KN", kScriptMaskKannada, "Kannada"},
+        {"PA", kScriptMaskGurmukhi, "Gurmukhi"},
+        {"OR", kScriptMaskOdia, "Odia"},
+        {"AM", kScriptMaskEthiopic, "Ethiopic"},
+        {"TI", kScriptMaskEthiopic, "Ethiopic"},
+        {"PS", kScriptMaskArabic, "Arabic"},
+        {"SD", kScriptMaskArabic, "Arabic"},
+        {"NE", kScriptMaskDevanagari, "Devanagari"},
+        {"AS", kScriptMaskBengali, "Bengali"},
+        {"DZ", kScriptMaskTibetan, "Tibetan"},
+        {"SA", kScriptMaskDevanagari, "Devanagari"},
+        {"MAI", kScriptMaskDevanagari, "Devanagari"},
+        {"GOM", kScriptMaskDevanagari, "Devanagari"},
+    };
+    for (const P3RowPin& row : p3_rows) {
+        std::string lower = row.code;
+        for (char& ch : lower) {
+            if (ch >= 'A' && ch <= 'Z') {
+                ch = static_cast<char>(ch - 'A' + 'a');
+            }
+        }
+        const std::string pin = std::string("261116_0003 P3 CR-01: \"") + row.code +
+                                "\" maps to " + row.script + " via ";
+        TEST_CHECK(TargetScriptClasses(row.code) == row.expected,
+                   pin + "engine_core TargetScriptClasses (uppercase code)");
+        TEST_CHECK(ScriptMaskForLanguageCode(row.code) == row.expected,
+                   pin + "win32_input ScriptMaskForLanguageCode (uppercase code)");
+        TEST_CHECK(TargetScriptClasses(lower) == row.expected,
+                   pin + "engine_core TargetScriptClasses (lowercase code)");
+        TEST_CHECK(ScriptMaskForLanguageCode(lower) == row.expected,
+                   pin + "win32_input ScriptMaskForLanguageCode (lowercase code)");
+    }
+
     // TextScriptClasses parity over a representative multi-script grid.
+    // 261116_0003 P1 CR-01: the 4 native scripts P1 added join the grid.
     const wchar_t* const text_cells[] = {
         L"hello", L"안녕하세요", L"日本語です", L"简体中文", L"안녕 hello",
         L"12345 !!!", L"", L"Türkçe", L"Русский", L"ไทย", L"العربية", L"עברית",
         L"हिन्दी", L"বাংলা", L"ភាសាខ្មែរ", L"ພາສາລາວ", L"မြန်မာစာ", L"Ελληνικά",
+        // 261116_0003 P1 CR-01: Tamil, Telugu, Gujarati, Tibetan cells.
+        L"\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD",
+        L"\u0C24\u0C46\u0C32\u0C41\u0C17\u0C41",
+        L"\u0A97\u0AC1\u0A9C\u0AB0\u0ABE\u0AA4\u0AC0",
+        L"\u0F56\u0F7C\u0F51\u0F0B\u0F61\u0F72\u0F42",
+        // 261116_0003 P3 CR-01: Armenian, Georgian, Sinhala, Malayalam,
+        // Kannada, Gurmukhi, Odia, Ethiopic cells (the registry name_native
+        // strings).
+        L"Հայերեն", L"ქართული", L"සිංහල", L"മലയാളം",
+        L"ಕನ್ನಡ", L"ਪੰਜਾਬੀ", L"ଓଡ଼ିଆ", L"አማርኛ",
         L"😀 :laughing:", L"번역된 문장입니다. New English tail",
     };
     for (const wchar_t* cell : text_cells) {
         TEST_CHECK(ScriptMaskOfText(cell) == TextScriptClasses(cell),
                    "WS2 (b): ScriptMaskOfText equals engine_core TextScriptClasses");
+    }
+
+    // 261116_0003 P1 CR-01: the native-script grid cells, with the mask each
+    // one MUST compute. Every cell is pure target-script text (no Latin, no
+    // ASCII space), so the mask equals that script's bit EXACTLY: a widened
+    // range, a dropped predicate or a cross-class overlap fails here, and the
+    // parity assertion above cannot hide it (two equally wrong tables would
+    // still agree).
+    struct NativeScriptCell { const wchar_t* text; std::uint32_t expected; const char* script; };
+    const NativeScriptCell native_script_cells[] = {
+        {L"\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD", kScriptMaskTamil, "Tamil (U+0B80-U+0BFF)"},
+        {L"\u0C24\u0C46\u0C32\u0C41\u0C17\u0C41", kScriptMaskTelugu, "Telugu (U+0C00-U+0C7F)"},
+        {L"\u0A97\u0AC1\u0A9C\u0AB0\u0ABE\u0AA4\u0AC0", kScriptMaskGujarati, "Gujarati (U+0A80-U+0AFF)"},
+        // 261116_0003 P3: the Gujarati cell's second codepoint was corrected
+        // U+0A41 -> U+0AC1 (the P1 cell carried U+0A41, a GURMUKHI vowel
+        // sign, which lay unclaimed until the P3 Gurmukhi predicate gave it
+        // its own bit and tripped this exact-bit pin on both parity copies —
+        // the pin working as designed). U+0AC1 is the Gujarati vowel sign U
+        // of the intended word ગુજરાતી; the cell is now pure U+0A80-U+0AFF
+        // as the pin's own label documents.
+        {L"\u0F56\u0F7C\u0F51\u0F0B\u0F61\u0F72\u0F42", kScriptMaskTibetan, "Tibetan (U+0F00-U+0FFF)"},
+        // 261116_0003 P3 CR-01: the 8 tranche-B native scripts, exact-bit pins
+        // (each cell is pure target-script text from the registry name_native
+        // column, so the mask equals that script's bit EXACTLY).
+        {L"Հայերեն", kScriptMaskArmenian, "Armenian (U+0530-U+058F)"},
+        {L"ქართული", kScriptMaskGeorgian, "Georgian (U+10A0-U+10FF)"},
+        {L"සිංහල", kScriptMaskSinhala, "Sinhala (U+0D80-U+0DFF)"},
+        {L"മലയാളം", kScriptMaskMalayalam, "Malayalam (U+0D00-U+0D7F)"},
+        {L"ಕನ್ನಡ", kScriptMaskKannada, "Kannada (U+0C80-U+0CFF)"},
+        {L"ਪੰਜਾਬੀ", kScriptMaskGurmukhi, "Gurmukhi (U+0A00-U+0A7F)"},
+        {L"ଓଡ଼ିଆ", kScriptMaskOdia, "Odia (U+0B00-U+0B7F)"},
+        {L"አማርኛ", kScriptMaskEthiopic, "Ethiopic (U+1200-U+137F)"},
+    };
+    for (const NativeScriptCell& cell : native_script_cells) {
+        // 261116_0003 P3 fix round 3 (PR3-02, mimov26pro F-05): the prefix is
+        // "P1/P3" - the loop carried the 8 P3 tranche-B cells under the P1
+        // label, so a P3-cell regression triaged as a P1 defect.
+        const std::string pin = std::string("261116_0003 P1/P3 CR-01: grid cell ") + cell.script + " ";
+        TEST_CHECK(ScriptMaskOfText(cell.text) == cell.expected,
+                   pin + "computes exactly its own bit (win32_input ScriptMaskOfText)");
+        TEST_CHECK(TextScriptClasses(cell.text) == cell.expected,
+                   pin + "computes exactly its own bit (engine_core TextScriptClasses)");
     }
 
     // Unknown / AUTO / empty codes resolve to 0 (the splitter's fail-open

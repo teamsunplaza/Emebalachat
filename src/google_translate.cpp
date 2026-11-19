@@ -282,11 +282,17 @@ std::wstring GoogleTranslate::ChromeAdditionalHeaders() {
 // the four mappings that are NOT the plain ASCII lowercase of the canonical
 // code, plus the lowercase pass-through. Equivalence rests on two facts
 // pinned by TestRef34MapLanguageCodePins (tests/run_tests.cpp):
-//   1. NormalizeLanguageCode returns ONLY one of the 38 uppercase registry
+//   1. NormalizeLanguageCode returns ONLY one of the 90 uppercase registry
 //      codes (kAllLanguages, config.cpp) or "AUTO" - never mixed case; and
-//   2. for all 38 codes, Google's target equals ASCII-lowercase(code) except
+//   2. for all 90 codes, Google's target equals ASCII-lowercase(code) except
 //      ZH-CN->zh-CN, ZH-TW->zh-TW, FIL->tl, HE->iw ("AUTO"->"auto" is covered
 //      by the lowercase rule itself).
+// 261116_0003 P2 (fix round 2, step5preview F-01): the counts above were
+// written for the 38-row registry and were falsified by the 38->47 growth;
+// the exception list itself is unchanged (all 9 new codes are lowercase-equal,
+// TestRef34MapLanguageCodePins carries the +9 rows).
+// 261116_0003 P3: 47 -> 90 (tranche A+B); the exception list is STILL
+// unchanged — all 43 new codes are lowercase-equal (the pin carries +43).
 // The old chain matched `norm`, so the raw-input tolower fallback at the tail
 // was unreachable (any norm value hit a branch first); lowering `norm` keeps
 // it reachable-by-construction identical: norm is never empty because an

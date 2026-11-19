@@ -70,6 +70,35 @@ bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg);
 enum class OpenAiSettingsOutcome { kCancelled, kSaved, kDeleted };
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg);
 
+// 261116_0003 P9c-1c: the declaration checklist's fold, carried OUT of the
+// dialog so the OWNING AppConfig instance applies it. The dialog owns only the
+// openai block, and its caller (main.cpp ControllerWndProc) cannot name the
+// app's AppConfig, so the folded set travels back through this struct instead
+// of being persisted by the dialog through a second AppConfig instance (the
+// P9c-1b handoff gap: that instance's save was reverted by the owning
+// instance's own save one line later).
+//   * edited             - IDOK folded the checklist. false on Cancel and on
+//                          the [삭제] button, where no selection was read, so
+//                          the caller must NOT adopt (an untouched empty set
+//                          would otherwise clear a live declaration).
+//   * declared_languages - the folded set in canonical registry order (the
+//                          fold is the canonicalizer); empty = the user
+//                          declared nothing, i.e. ADOPT AS "CLEAR".
+struct OpenAiDeclaredLanguagesFold {
+    bool edited = false;
+    std::vector<std::string> declared_languages;
+};
+
+// 261116_0003 P9c-1c: the full entry - the same dialog, plus the declaration
+// fold written into `declaration`. The dialog performs NO config file I/O for
+// the declaration any more; the caller applies the set on the LIVE AppConfig
+// through AppConfig::SetOpenAiDeclaredLanguages BEFORE its own save (that save
+// is what emits the array, and an empty set emits no key at all). The
+// two-argument overload above stays for callers that only need the outcome
+// (they fold the checklist but cannot persist it).
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(
+    HWND parent, OpenAiConfig& cfg, OpenAiDeclaredLanguagesFold& declaration);
+
 // REQ-051 (Symptom C): the pick-or-insert plan for the model combo refill.
 // `items` are the freshly fetched model ids with the combo indices they were
 // added at (index = the CB_ADDSTRING return); `target` is the combo's current

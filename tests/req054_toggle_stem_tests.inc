@@ -89,7 +89,40 @@ void TestReq054ToggleStemPreserve() {
         TEST_CHECK(src.find("\"\",  // REQ-047 U1") == std::string::npos,
                    "REQ-054 (c): the explicit empty-stem argument (the F9 wipe) "
                    "is gone from the hook paths");
-        TEST_CHECK(src.find("TrayPreferredEngineIndex(") == std::string::npos,
+        // 261116_0003 P8b refinement: the original blanket ban on ANY
+        // TrayPreferredEngineIndex( occurrence in hook.cpp predates the
+        // engine-filtered Ctrl+F9 cycle. The cycle derivation in the unwired
+        // fallback (TrayLanguageEngineFor(TrayPreferredEngineIndex(
+        // snap_pre.engine_type)), hook.cpp KeyboardHook::CycleTargetLanguage)
+        // is NOT a push into the tray: REQ-056's derive-at-open contract
+        // governs the engine-menu STATE the hook paths pass to UpdateStatus,
+        // and this path still passes std::string_view{} there. The pin is
+        // therefore scoped to the UpdateStatus argument spans themselves
+        // (paren-balanced extraction below); the cycle-side wiring is pinned
+        // separately by TestP8bCtrlF9CycleWiring.
+        bool engine_idx_in_update_status = false;
+        size_t us_pos = 0;
+        while ((us_pos = src.find("UpdateStatus(", us_pos)) != std::string::npos) {
+            int depth = 0;
+            size_t i = us_pos;
+            for (; i < src.size(); ++i) {
+                if (src[i] == '(') {
+                    ++depth;
+                } else if (src[i] == ')') {
+                    if (--depth == 0) {
+                        ++i;
+                        break;
+                    }
+                }
+            }
+            const size_t idx_in_span =
+                src.find("TrayPreferredEngineIndex(", us_pos);
+            engine_idx_in_update_status =
+                engine_idx_in_update_status ||
+                (idx_in_span != std::string::npos && idx_in_span < i);
+            us_pos = i;
+        }
+        TEST_CHECK(!engine_idx_in_update_status,
                    "REQ-056 (c): the hook paths no longer pass a preferred-engine "
                    "expression to UpdateStatus (derive-at-open)");
         TEST_CHECK(src.find("REQ-056") != std::string::npos,

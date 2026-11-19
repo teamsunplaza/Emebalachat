@@ -15,17 +15,21 @@
 #include "tray_toggle_debounce.hpp" // 260922_0001 A1: pure tray single-click debounce
 #include "sound.hpp"
 #include "unicode_utils.hpp"
+#include "user_language_probe.hpp" // 261116_0003 P9b-3 U3: first-use capability-probe runner
 #include "win32_input.hpp"
 #include "ui/about_window.hpp"
 #include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
 #include "ui/gguf_model_manager_window.hpp" // REQ-048 R2-D: user .gguf model manager
 #include "ui/engine_host_settings_window.hpp" // REQ-060: translation-model load-mode settings dialog
 #include "ui/model_download_dialog.hpp" // REQ-MD (260930_0004 D9): on-demand model download
+#include "ui/user_language_dialog.hpp" // 261116_0003 P9b-3 U4a: the "내 언어 추가…" deferred dialog (U2)
+#include "ui/user_language_manager_dialog.hpp" // 261116_0003 P9b-3 U4a: the "내 언어…" deferred dialog (U4b; the tray row is UserLangsGroup + "…")
 #include "model_downloader.hpp"         // REQ-MD: missing-only predicate + plan
 #include "ui/badge.hpp"
 #include "ui/badge_transient.hpp" // REQ-013: transient drag-pair badge label flip
 #include "ui/drag_icon.hpp"
 #include "ui/dpi.hpp"
+#include "ui/language_search_palette.hpp" // 261116_0003 P6c: kMsgOpenLanguagePalette consumer + picker open
 #include "ui/theme.hpp"
 #include "ui/tooltip.hpp"
 #include "ui/tray.hpp"
@@ -433,6 +437,12 @@ struct LanguageSyncRequest {
 // on the GUI thread from ControllerWndProc. Cleared after hook/mouse stop at
 // shutdown so a late posted message can never call into destroyed state.
 std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bool)> g_apply_language_change;
+// 261116_0003 P9b-3 U3: the probe-completion drain, published by wWinMain to the
+// ControllerWndProc kMsgUserLanguageProbeDone handler (the same pattern as
+// g_apply_language_change: the WndProc cannot name wWinMain's locals). Cleared
+// at shutdown with the other coordinators so a late wake-up can never call into
+// destroyed state.
+std::function<void()> g_drain_user_language_probes;
 
 // REQ-047 D3 (design §C.2 안 C-1): the deferred OpenAI settings dialog resolves
 // on the GUI thread in ControllerWndProc, which cannot name wWinMain's locals
@@ -441,9 +451,17 @@ std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bo
 // on_select_engine(2); invoked on the GUI thread with the edited config when
 // the dialog saved. Called with saved=true and the edited config on Save
 // (returns true), or saved=false on Cancel (returns false, engine untouched).
+// 261116_0003 P9c-1c: the third argument is the dialog's declaration fold —
+// non-null ONLY on the Save path, where the body applies it on the LIVE config
+// (through AppConfig::SetOpenAiDeclaredLanguages) BEFORE its save, so the file
+// this run writes carries the declaration the dialog just folded. nullptr on
+// Cancel (nothing was folded; a live declaration must survive a cancel), and
+// never on kDeleted (that seam is g_apply_openai_deleted).
 // Cleared at shutdown with g_apply_language_change so a late posted
 // kMsgOpenOpenAiSettings can never call into destroyed state.
-std::function<bool(const OpenAiConfig&, bool saved)> g_apply_openai_settings;
+std::function<bool(const OpenAiConfig&, bool saved,
+                   const std::vector<std::string>* declared)>
+    g_apply_openai_settings;
 // REQ-051 (Symptom D): the [삭제] kDeleted seam — invoked on the GUI thread
 // with the dialog-cleared openai block when the user deleted the settings
 // (ShowOpenAiSettingsDialogEx -> OpenAiSettingsOutcome::kDeleted). The body
@@ -476,6 +494,18 @@ std::function<void()> g_open_gguf_model_manager;
 // g_open_gguf_model_manager so a late posted kMsgOpenEngineLoadSettings can
 // never call into destroyed state.
 std::function<void()> g_open_engine_host_settings;
+// 261116_0003 P9b-3 U4a: the deferred user-language dialogs resolve on the GUI
+// thread in ControllerWndProc, which cannot name wWinMain's locals (config /
+// probe_service / refresh_tray). Set once at startup to wWinMain lambdas: the
+// add dialog (U2) writes IN MEMORY only, so the lambda persists on kAdded and
+// refreshes the tray; the manager dialog (U4b) returns kChanged when an
+// override verb applied, so the lambda persists on kChanged (a retest verdict
+// is NOT a change — U3's recorded callback owns that persist) and refreshes.
+// Cleared at shutdown with g_open_engine_host_settings so a late posted
+// kMsgOpenUserLangAdd / kMsgOpenUserLangManager can never call into destroyed
+// state.
+std::function<void()> g_open_user_lang_add;
+std::function<void()> g_open_user_lang_manager;
 // REQ-047 D3 (design §C.2 안 C-1 권장 저장소 (a), Tech Gate §D3 #2): the
 // deferred OpenAI dialog's GUI-thread state. Lives in namespace emebalachat
 // (NOT the anon namespace) so both ControllerWndProc and the wWinMain tray
@@ -658,6 +688,21 @@ constexpr UINT kMsgOpenGgufManager = WM_APP + 0x501;
 // gguf manager, 0x400 engine_modal, 0x300 language_sync, 0x3xx about, 0x2xx
 // tooltip, 0x1xx drag_icon).
 constexpr UINT kMsgOpenEngineLoadSettings = WM_APP + 0x502;
+
+// ---- 261116_0003 P9b-3 U4a: deferred user-language dialogs ------------------
+// The tray main menu's "내 언어 추가…" / "내 언어…" rows (UserLangAddTitle /
+// UserLangsGroup + "…", tray.cpp,
+// ID_TRAY_USER_LANG_ADD / _MANAGE = 2865/2866) post these pure (0,0) wake-ups
+// after their TrackPopupMenuEx dispatch — the IDENTICAL modality-avoidance
+// contract as kMsgOpenGgufManager above (REQ-047 D3): the modal dialogs open
+// only after the menu modality has fully torn down. No coalescing latch is
+// needed for the same reason as the manager handler: the only producer is the
+// tray dispatch on this GUI thread, and a modal dialog blocks that thread's
+// message handling. Distinct WM_APP band: 0x504/0x505 verified unused (0x500
+// OpenAI settings, 0x501 gguf manager, 0x502 load settings, 0x503 language
+// palette — language_search_palette.hpp, 0x600 probe done — user_language_probe.hpp).
+constexpr UINT kMsgOpenUserLangAdd = WM_APP + 0x504;
+constexpr UINT kMsgOpenUserLangManager = WM_APP + 0x505;
 
 struct EngineUnavailableModalRequest {
     std::wstring title;
@@ -853,6 +898,18 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
     }
 
+    if (msg == emebalachat::kMsgUserLanguageProbeDone) {
+        // 261116_0003 P9b-3 U3: a probe worker finished; drain the by-value
+        // completion queue on the GUI thread (pure fold + the locked record
+        // verb). SEC-B5 shape: wParam/LPARAM are IGNORED entirely (the payloads
+        // travel through the service's own mutex-guarded deque); with the drain
+        // retired (late message after shutdown), the handler is a no-op.
+        if (emebalachat::g_drain_user_language_probes) {
+            emebalachat::g_drain_user_language_probes();
+        }
+        return 0;
+    }
+
     if (msg == kMsgEngineUnavailableModal) {
         // REQ-045 P4-8 (item 1, design §B + Tech Gate Item 6): the detached
         // bootstrap repair thread (and any other non-GUI producer) marshals the
@@ -937,20 +994,33 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // the pre-REQ-051 wrapper's byte-identical behavior (the bool wrapper
         // still maps kDeleted -> false for any remaining caller); kDeleted is
         // dispatched to its own reconcile seam below.
+        // 261116_0003 P9c-1c: the declaration-aware entry also hands the
+        // checklist fold out (declaration); it is adopted on the owning config
+        // by g_apply_openai_settings, never persisted here — this handler
+        // cannot name the app's AppConfig.
+        emebalachat::OpenAiDeclaredLanguagesFold declaration;
         const emebalachat::OpenAiSettingsOutcome openai_outcome =
             emebalachat::ShowOpenAiSettingsDialogEx(
-                /*parent=*/emebalachat::g_hControllerWnd, edited);
+                /*parent=*/emebalachat::g_hControllerWnd, edited, declaration);
         if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kCancelled) {
             // Cancel: engine untouched, refresh the tray check mark back.
+            // No declaration is adopted (declaration.edited is false): the
+            // user's live declaration must survive a cancelled dialog.
             DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
             if (g_apply_openai_settings) {
-                g_apply_openai_settings(edited, /*saved=*/false);
+                g_apply_openai_settings(edited, /*saved=*/false, nullptr);
             }
             return 0;
         }
         if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kSaved) {
             if (g_apply_openai_settings) {
-                g_apply_openai_settings(edited, /*saved=*/true);
+                // P9c-1c: pass the folded declaration (possibly EMPTY = the
+                // user cleared the declaration, which must remove the key
+                // from the file) so the owning config applies it before it
+                // saves. `edited` guards the "nothing was folded" contract.
+                g_apply_openai_settings(
+                    edited, /*saved=*/true,
+                    declaration.edited ? &declaration.declared_languages : nullptr);
             }
             return 0;
         }
@@ -998,6 +1068,183 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // falling through to DefWindowProc would break the modal-open flow.
         if (g_open_engine_host_settings) {
             g_open_engine_host_settings();
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenUserLangAdd) {
+        // 261116_0003 P9b-3 U4a: open the add-language dialog (U2) AFTER the
+        // TrackPopupMenuEx modality has fully torn down. wParam/LPARAM are
+        // IGNORED entirely (pure (0,0) wake-up, same SEC-ADJ contract as
+        // kMsgOpenGgufManager — any value an external process posts is
+        // untrusted by design). No coalescing latch is needed (the identical
+        // reasoning as the manager handler): the only producer is the tray
+        // dispatch on this GUI thread, and the modal dialog blocks that
+        // thread's message handling, so a second open cannot be posted while
+        // one is up. The dialog open + the persist-on-kAdded + the tray
+        // refresh travel through g_open_user_lang_add (the wWinMain lambda),
+        // so this handler never names config/probe_service/refresh_tray.
+        // return 0 is MANDATORY by the same contract as the manager handler —
+        // falling through to DefWindowProc would break the modal-open flow.
+        if (g_open_user_lang_add) {
+            g_open_user_lang_add();
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenUserLangManager) {
+        // 261116_0003 P9b-3 U4a: open the user-language manager dialog (U4b)
+        // AFTER the TrackPopupMenuEx modality has fully torn down — the
+        // identical contract as the add handler above (pure (0,0) wake-up, no
+        // latch, the wWinMain lambda owns the open + the persist-on-kChanged +
+        // the tray refresh). return 0 is MANDATORY on every path.
+        if (g_open_user_lang_manager) {
+            g_open_user_lang_manager();
+        }
+        return 0;
+    }
+
+    if (msg == kMsgOpenLanguagePalette) {
+        // 261116_0003 P6c: the CONSUMER for the tray's two picker surfaces
+        // (PR6-32). The tray's four "검색…" rows post this deferred open after
+        // the TrackPopupMenuEx dispatch (tray.cpp ID_TRAY_SEARCH_* arms); until
+        // this arm landed, the wake-up had no handler, the latch stranded on
+        // the first click of a process, and every later click coalesced — the
+        // picker never opened on ANY surface. wParam/LPARAM are IGNORED
+        // entirely (pure (0,0) wake-up, same SEC-ADJ contract as the three
+        // dialog arms above — any value an external process posts is untrusted
+        // by design); the pending request travels in the picker module's
+        // per-surface GUI-thread latch. return 0 is MANDATORY on every path.
+        //
+        // PR5-04(a): the arm is fail-closed on the GUI-thread guard — it
+        // compares the controller window's owning thread id against the
+        // current thread and drops with one diagnostic line on a mismatch.
+        // The guard is defence-in-depth: dispatch into this WndProc is
+        // expected to run on the controller's own thread (the producers post,
+        // never send), so the compare is expected to HOLD — the P6c-3 pin
+        // kills the guard's REMOVAL, not an attainable foreign-thread
+        // delivery. No re-post on this path either: bouncing the message back
+        // to ourselves could loop on a poisoned queue.
+        const DWORD gui_tid = ::GetWindowThreadProcessId(hwnd, nullptr);
+        if (gui_tid != ::GetCurrentThreadId()) {
+            DIAG_LOG("UI", "lang_palette_controller_wake result=foreign_thread tid=%lu",
+                     static_cast<unsigned long>(::GetCurrentThreadId()));
+            return 0;
+        }
+        // 261116_0003 P6c fix round (PR6-42, adjudicated fix (a)): a wake-up
+        // delivered while a picker is ALREADY open arrives NESTED — the open
+        // picker's own hand-rolled modal loop pumps every message on this
+        // thread (GetMessageW(nullptr)), so a second "검색…" post that lands
+        // during the loop is dispatched HERE. Taking the latch before showing
+        // would consume a request the picker module's single-instance guard
+        // then refuses to show (lang_palette_open result=already_open): the
+        // PR6-42 silent drop. The nested delivery therefore LEAVES ITS
+        // REQUEST LATCHED (nothing taken, nothing lost) and exits; the arm
+        // whose show() owns the running loop drains the latch after its popup
+        // closes and serves the deferred request then (the loop below).
+        // The ACTUAL guarantee, stated without overstatement: a request
+        // posted while a picker is open is served by the draining arm right
+        // after that picker closes — not while the first picker is still up
+        // (a modal picker is never nested), and not by waiting for a future
+        // unrelated delivery (a same-surface post while one is latched
+        // coalesces WITHOUT a new wake-up, so only the drain makes the
+        // deferred request deterministic). The latched request survives a
+        // cancel of the first picker: it was never shown, so it is still
+        // owed. Residual (accepted): if the OPEN picker belongs to the other
+        // consumer (the tooltip's pill arm), this arm's drain still runs but
+        // the other arm owns the loop — the request stays latched until the
+        // next controller delivery; reaching that state requires posting a
+        // tray request while the tooltip's picker is up, which the
+        // click-outside dismissal ordering makes unreachable in practice.
+        if (LanguagePickerShowing()) {
+            DIAG_LOG("UI", "lang_palette_controller_wake result=deferred_while_open");
+            return 0;
+        }
+        // PR6-32: the latch is per-surface and the wake-up carries no payload,
+        // so both tray-owned slots are polled (TrayTyping first, TrayTooltip
+        // second; a take on an empty slot consumes nothing). The loop IS the
+        // PR6-42 drain: pass 1 serves this delivery's own request, and each
+        // later pass re-takes whatever a nested delivery left latched while
+        // the previous pass's picker was open.
+        bool first_pass = true;
+        for (;;) {
+            std::optional<language_palette::PickerInit> init =
+                TakeDeferredLanguagePaletteOpen(language_palette::PickerSurface::TrayTyping);
+            if (!init.has_value()) {
+                init = TakeDeferredLanguagePaletteOpen(
+                    language_palette::PickerSurface::TrayTooltip);
+            }
+            if (!init.has_value()) {
+                if (first_pass) {
+                    // Empty latch on a real delivery: an orphan wake-up (a
+                    // previous consumer already took the request, or a
+                    // foreign process posted the id). Exactly one diagnostic
+                    // line; no picker, no dispatch. A LATER pass exits
+                    // silently — an empty latch after a served request is the
+                    // normal drain end, not an orphan.
+                    DIAG_LOG("UI", "lang_palette_controller_wake result=orphan_wakeup");
+                }
+                break;
+            }
+            first_pass = false;
+            // PR6-32 defence-in-depth: the per-surface slots already make a
+            // foreign request impossible by construction (a TooltipPill post
+            // lands in the pill slot, which this handler never takes — the
+            // tooltip's own arm consumes it). The ownership check below stays
+            // anyway as the belt-and-braces twin of the tooltip arm's PR6-29
+            // check: if either consumer's take is ever regressed to a
+            // cross-surface take, the wrong-pair dispatch is still refused
+            // here. One diagnostic line, drop.
+            if (init->surface != language_palette::PickerSurface::TrayTyping &&
+                init->surface != language_palette::PickerSurface::TrayTooltip) {
+                DIAG_LOG("UI", "lang_palette_controller_wake result=surface_mismatch surface=%d",
+                         static_cast<int>(init->surface));
+                return 0;
+            }
+            // PR5-03: the focus choreography the tooltip's picker arm runs —
+            // back up the foreground owner BEFORE the modal picker, restore
+            // it after, guarded by the same liveness check (the hidden
+            // controller window is never a foreground candidate, so nothing
+            // is set foreground here). Re-captured per drain pass: each
+            // served request opens its own modal picker.
+            HWND hwndPrev = ::GetForegroundWindow();
+            // No anchor is latched on the tray path: the tray's TrackPopupMenuEx
+            // lives at the cursor and leaves no persistent rect behind, so the
+            // picker anchors at the current cursor position — the nullptr-anchor
+            // contract, the same screen geometry the just-dismissed menu used.
+            const LanguagePickerResult picked =
+                ShowLanguageSearchPalette(emebalachat::g_hControllerWnd, *init, nullptr);
+            if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {
+                ::SetForegroundWindow(hwndPrev);
+            }
+            if (picked.committed) {
+                // (surface, role) -> the existing tray callback routing, verbatim:
+                //   TrayTyping  -> LanguageContext::Type  (the typing pair)
+                //   TrayTooltip -> LanguageContext::Drag   (the drag pair)
+                //   Source role -> ApplyLanguageChange(ctx, name_en, {})
+                //   Target role -> ApplyLanguageChange(ctx, {}, name_en)
+                // The surface/role are the picker's COMMIT-TIME echoes (a Tab flip
+                // before committing moves the pick to the flipped role), and the
+                // payload is the registry row's name_en — byte-identical to the
+                // same pick made in the flat menu (PickerState::PayloadOf's
+                // contract), so no second dispatch path exists. A cancel /
+                // click-outside dismissal (committed == false) dispatches NOTHING.
+                const bool typing =
+                    (picked.surface == language_palette::PickerSurface::TrayTyping);
+                const LanguageContext ctx =
+                    typing ? LanguageContext::Type : LanguageContext::Drag;
+                if (picked.role == language_palette::PickerRole::Source) {
+                    if (g_apply_language_change) {
+                        g_apply_language_change(ctx, picked.name_en, std::string_view{},
+                                                false, false);
+                    }
+                } else {
+                    if (g_apply_language_change) {
+                        g_apply_language_change(ctx, std::string_view{}, picked.name_en,
+                                                false, false);
+                    }
+                }
+            }
         }
         return 0;
     }
@@ -1348,27 +1595,51 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
              config.diag_log_content ? "ENABLED - keystroke chars, window titles, captured and translated text WILL be recorded"
                                      : "disabled - shape-only logging");
 
-    // 260905 diagnostics: config snapshot summary. Full config values are
-    // logged per the VP/user authorization for this diagnostic build
-    // ("possible config dump"); model_path, language pair, engine, toggles.
+    // 260905 diagnostics: config snapshot summary. The values are logged in
+    // full ONLY behind the user-content gate (diag_log_content, R15-21); with
+    // the gate OFF the model path and the language pairs log as lengths.
     {
         const emebalachat::AppConfig::Snapshot snap = config.GetSnapshot();
         // Phase 3 Batch 2: the legacy single pair is gone from the runtime;
         // log the two context pairs actually driving the pipelines (user
         // authorized config dumps for this diagnostic build, 260905).
-        DIAG_LOG("SESSION", "config loaded=%d ui_language=%s engine=%s model_path=%s "
-                            "drag=%s/%s type=%s/%s auto_send=%d sound=%d drag_to_translate=%d "
-                            "cloud_fallback=%d hotkey_toggle=%s hotkey_lang=%s hotkey_mode=%s "
-                            "temp=%.2f top_p=%.2f top_k=%d rep_pen=%.2f",
-                 config_ok ? 1 : 0, config.ui_language.c_str(), snap.engine_type.c_str(),
-                 config.model_path.c_str(),
-                 snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
-                 snap.type_source_language.c_str(), snap.type_target_language.c_str(),
-                 snap.auto_send ? 1 : 0,
-                 snap.sound_enabled ? 1 : 0, config.drag_to_translate ? 1 : 0,
-                 config.cloud_fallback_enabled ? 1 : 0, config.hotkey_toggle.c_str(),
-                 config.hotkey_lang.c_str(), config.hotkey_mode.c_str(),
-                 config.temperature, config.top_p, config.top_k, config.repetition_penalty);
+        // fix-list-round15 R15-21 (F-3b): the model path and the two context
+        // pairs can carry user-typed stored names (a user-language pick
+        // persists its name as the planner token; a user .gguf path can embed
+        // the profile name) — the R14-06 class — so they log only behind
+        // diag::ContentLoggingEnabled(); the else keeps the shape-only
+        // lengths. ui_language (fixed code), engine id, toggles, hotkeys and
+        // sampling params are fixed-domain / non-content and ride both.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("SESSION", "config loaded=%d ui_language=%s engine=%s model_path=%s "
+                                "drag=%s/%s type=%s/%s auto_send=%d sound=%d drag_to_translate=%d "
+                                "cloud_fallback=%d hotkey_toggle=%s hotkey_lang=%s hotkey_mode=%s "
+                                "temp=%.2f top_p=%.2f top_k=%d rep_pen=%.2f",
+                     config_ok ? 1 : 0, config.ui_language.c_str(), snap.engine_type.c_str(),
+                     config.model_path.c_str(),
+                     snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
+                     snap.type_source_language.c_str(), snap.type_target_language.c_str(),
+                     snap.auto_send ? 1 : 0,
+                     snap.sound_enabled ? 1 : 0, config.drag_to_translate ? 1 : 0,
+                     config.cloud_fallback_enabled ? 1 : 0, config.hotkey_toggle.c_str(),
+                     config.hotkey_lang.c_str(), config.hotkey_mode.c_str(),
+                     config.temperature, config.top_p, config.top_k, config.repetition_penalty);
+        } else {
+            DIAG_LOG("SESSION", "config loaded=%d ui_language=%s engine=%s model_path_len=%zu "
+                                "drag_len=%zu/%zu type_len=%zu/%zu auto_send=%d sound=%d "
+                                "drag_to_translate=%d cloud_fallback=%d hotkey_toggle=%s "
+                                "hotkey_lang=%s hotkey_mode=%s temp=%.2f top_p=%.2f top_k=%d "
+                                "rep_pen=%.2f",
+                     config_ok ? 1 : 0, config.ui_language.c_str(), snap.engine_type.c_str(),
+                     config.model_path.size(),
+                     snap.drag_source_language.size(), snap.drag_target_language.size(),
+                     snap.type_source_language.size(), snap.type_target_language.size(),
+                     snap.auto_send ? 1 : 0,
+                     snap.sound_enabled ? 1 : 0, config.drag_to_translate ? 1 : 0,
+                     config.cloud_fallback_enabled ? 1 : 0, config.hotkey_toggle.c_str(),
+                     config.hotkey_lang.c_str(), config.hotkey_mode.c_str(),
+                     config.temperature, config.top_p, config.top_k, config.repetition_penalty);
+        }
     }
 
     // 4. Initialize Universal i18n
@@ -1901,9 +2172,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         const std::wstring back_text =
             engine.Translate(job.forward_text, job.forward_target, job.back_target, &bt_status);
         if (bt_status != emebalachat::TranslationStatus::Ok || back_text.empty()) {
-            DIAG_LOG("UI", "back_translate_skip status=%d fwd_len=%zu back_tgt=%s",
-                     static_cast<int>(bt_status), job.forward_text.size(),
-                     job.back_target.c_str());
+            // fix-list-round15 R15-21 (F-3b): back_tgt is a language token
+            // (can be a user-typed stored name) — the R14-06 class — so it
+            // logs only behind diag::ContentLoggingEnabled(); status/fwd_len
+            // ride both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("UI", "back_translate_skip status=%d fwd_len=%zu back_tgt=%s",
+                         static_cast<int>(bt_status), job.forward_text.size(),
+                         job.back_target.c_str());
+            } else {
+                DIAG_LOG("UI", "back_translate_skip status=%d fwd_len=%zu back_tgt_len=%zu",
+                         static_cast<int>(bt_status), job.forward_text.size(),
+                         job.back_target.size());
+            }
             return;
         }
         // Meaning check: the SAME canonical form the paste ledger uses
@@ -1923,10 +2204,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                      job.forward_text.size());
             return;
         }
-        DIAG_LOG("UI",
-                 "back_translate_done fwd_len=%zu back_len=%zu orig_len=%zu matched=%d back_tgt=%s",
-                 job.forward_text.size(), back_text.size(), job.original_text.size(),
-                 meaning_matched ? 1 : 0, job.back_target.c_str());
+        // fix-list-round15 R15-21 (F-3b): back_tgt is a language token (can
+        // be a user-typed stored name) — the R14-06 class — so it logs only
+        // behind diag::ContentLoggingEnabled(); the shape-only lengths and
+        // matched= ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("UI",
+                     "back_translate_done fwd_len=%zu back_len=%zu orig_len=%zu matched=%d back_tgt=%s",
+                     job.forward_text.size(), back_text.size(), job.original_text.size(),
+                     meaning_matched ? 1 : 0, job.back_target.c_str());
+        } else {
+            DIAG_LOG("UI",
+                     "back_translate_done fwd_len=%zu back_len=%zu orig_len=%zu matched=%d back_tgt_len=%zu",
+                     job.forward_text.size(), back_text.size(), job.original_text.size(),
+                     meaning_matched ? 1 : 0, job.back_target.size());
+        }
         tooltip.ShowBackTranslationThreadSafe(job.original_text, back_text, job.source_label,
                                               job.target_label, meaning_matched,
                                               job.target_hwnd, job.badge_hwnd);
@@ -1965,10 +2257,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             job.target_label = short_lang_label(req.forward_target);
             job.target_hwnd = req.target_hwnd;
             job.badge_hwnd = back_translate_badge_hwnd;
-            DIAG_LOG("UI",
-                     "back_translate_enqueue fwd_len=%zu orig_len=%zu back_tgt=%s fwd_tgt=%s",
-                     job.forward_text.size(), job.original_text.size(),
-                     job.back_target.c_str(), job.forward_target.c_str());
+            // fix-list-round15 R15-21 (F-3b): back_tgt/fwd_tgt are language
+            // tokens (can be user-typed stored names) — the R14-06 class —
+            // so they log only behind diag::ContentLoggingEnabled(); the
+            // shape-only fwd_len/orig_len ride both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("UI",
+                         "back_translate_enqueue fwd_len=%zu orig_len=%zu back_tgt=%s fwd_tgt=%s",
+                         job.forward_text.size(), job.original_text.size(),
+                         job.back_target.c_str(), job.forward_target.c_str());
+            } else {
+                DIAG_LOG("UI",
+                         "back_translate_enqueue fwd_len=%zu orig_len=%zu back_tgt_len=%zu fwd_tgt_len=%zu",
+                         job.forward_text.size(), job.original_text.size(),
+                         job.back_target.size(), job.forward_target.size());
+            }
             back_translate_worker.Submit(std::move(job));
         });
 
@@ -2064,6 +2367,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         tray.SetBackTranslationEnabled(snap.back_translation_enabled);
     };
 
+    // 261116_0003 P9b-3 U3 (plan §5 P9, D6 first-use capability probe): the
+    // probe runner. Lives beside the coordinator it triggers from: the engine
+    // call runs OFF the GUI thread (Translate blocks, engine.hpp:401-408) and
+    // the verdict records back through the locked config verb on the GUI
+    // thread. Declared after engine/config so it destructs before them; retired
+    // at the shutdown sweep with the other coordinators. The recorded callback
+    // persists each verdict (INV-3 discipline; the runner itself does no file
+    // I/O); U4's surface refresh will ride the same callback.
+    emebalachat::UserLanguageProbeService probe_service(
+        config, engine, emebalachat::g_hControllerWnd);
+    probe_service.SetRecordedCallback([&config] { config.SaveToFile(); });
+    // Publish the GUI-thread completion drain for ControllerWndProc (the
+    // g_apply_language_change pattern).
+    emebalachat::g_drain_user_language_probes = [&probe_service] {
+        probe_service.DrainOutcomes();
+    };
+
     // R6 Phase 1 (B3, architect plan §2.3/§2.4 Option A): the single-source-of-
     // truth language coordinator. AppConfig is the ONE authority; every language
     // mutation - from ANY surface (tooltip language menu, tray source/target
@@ -2110,26 +2430,78 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (cycle_target) {
             // Ctrl+F9 cycle (Type context): next target from the CURRENT
             // persisted target of the mutated context.
-            req_tgt = emebalachat::CycleTargetLanguage(cur_tgt);
+            // 261116_0003 P8b (plan §4 "Routing" acceptance, closes the P6
+            // deferral on the 2-arg overload): the cycle set is the ACTIVE
+            // engine's registry view, derived exactly like the tray menus
+            // (tray.hpp) so the hotkey and the menu can never disagree about
+            // the offered set; under "auto" that is the Google view (the
+            // index-0 row). Pinned headlessly by TestP8bCtrlF9CycleWiring.
+            const emebalachat::LanguageEngine cycle_engine =
+                emebalachat::TrayLanguageEngineFor(
+                    emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+            req_tgt = emebalachat::CycleTargetLanguage(cur_tgt, cycle_engine);
+            // Shape-only: the engine enum value, never the target string.
+            DIAG_LOG("STATE", "lang_cycle ctx=%s engine=%u",
+                     drag ? "drag" : "type",
+                     static_cast<unsigned>(cycle_engine));
         }
         const emebalachat::LanguageSyncPlan plan = emebalachat::PlanLanguageSync(
-            ctx, cur_src, cur_tgt, req_src, req_tgt);
+            ctx, cur_src, cur_tgt, req_src, req_tgt, config.user_languages);
+        // 261116_0003 P9b-2 (plan §3 D5 + §5 P9): the sixth argument is the
+        // user-language registry. The menu's "내 언어" rows send the entry's
+        // STORED name (UserLanguageStoredName) - the same payload shape every
+        // other surface sends - and P9a's planner validates it against this
+        // vector, canonicalizing to the stored form so a re-pick is a no-op
+        // (changed == false, no disk churn). Scope is exactly this call: an
+        // unregistered token ("Elvish", "Klingon") and the AUTO-target refusal
+        // keep their pre-P9b-2 behavior, and the 4/5-argument overloads stay
+        // registry-only, so no other caller gains the allowance. The member is
+        // read directly (config.hpp: GUI-thread-only, no Snapshot entry) because
+        // this coordinator runs on the GUI thread, the only writer of the
+        // registry.
         if (!plan.valid) {
-            DIAG_F("MAIN/LangSync/001: refused unresolvable language request (ctx=%s, src='%s', tgt='%s')\n",
-                    drag ? "drag" : "type",
-                    std::string(new_source).c_str(), std::string(new_target).c_str());
+            // fix-list-round15 R15-21 (F-3b): the refused request's src/tgt
+            // are the RAW user-typed planner tokens (a user-language pick
+            // stores its name as the planner token) — the R14-06 class — so
+            // they log only behind diag::ContentLoggingEnabled(); the else
+            // keeps the shape-only lengths. ctx rides both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_F("MAIN/LangSync/001: refused unresolvable language request (ctx=%s, src='%s', tgt='%s')\n",
+                        drag ? "drag" : "type",
+                        std::string(new_source).c_str(), std::string(new_target).c_str());
+            } else {
+                DIAG_F("MAIN/LangSync/001: refused unresolvable language request (ctx=%s, src_len=%zu, tgt_len=%zu)\n",
+                        drag ? "drag" : "type", new_source.size(), new_target.size());
+            }
             return false;
         }
         // 260905 diagnostics: the language-change record (old -> new) at the
         // single authority every surface now routes through. The ctx field is
         // the Phase 3 addition: which pair the record mutated.
-        DIAG_LOG("STATE", "lang_sync ctx=%s valid=%d changed=%d pair %s/%s -> %s/%s (req %s/%s)",
-                 drag ? "drag" : "type",
-                 plan.valid ? 1 : 0, plan.changed ? 1 : 0,
-                 cur_src.c_str(), cur_tgt.c_str(),
-                 plan.source_language.c_str(), plan.target_language.c_str(),
-                 req_src.empty() ? "-" : req_src.c_str(),
-                 req_tgt.empty() ? "-" : req_tgt.c_str());
+        // fix-list-round15 R15-12: the four planner fields can BE user-typed
+        // stored names (the master sink ON while the content gate is OFF), so
+        // the names log only behind diag::ContentLoggingEnabled() - the R14-06
+        // pattern of the tooltip menu_select_user arms; the else branch keeps
+        // the shape-only lengths. ctx/valid/changed ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE",
+                     "lang_sync ctx=%s valid=%d changed=%d pair %s/%s -> %s/%s (req %s/%s)",
+                     drag ? "drag" : "type",
+                     plan.valid ? 1 : 0, plan.changed ? 1 : 0,
+                     cur_src.c_str(), cur_tgt.c_str(),
+                     plan.source_language.c_str(), plan.target_language.c_str(),
+                     req_src.empty() ? "-" : req_src.c_str(),
+                     req_tgt.empty() ? "-" : req_tgt.c_str());
+        } else {
+            DIAG_LOG("STATE",
+                     "lang_sync ctx=%s valid=%d changed=%d pair_len=%zu/%zu -> %zu/%zu "
+                     "(req_len %zu/%zu)",
+                     drag ? "drag" : "type",
+                     plan.valid ? 1 : 0, plan.changed ? 1 : 0,
+                     cur_src.size(), cur_tgt.size(),
+                     plan.source_language.size(), plan.target_language.size(),
+                     req_src.size(), req_tgt.size());
+        }
         // INV-3: persistence is synchronous inside this call. A no-op re-pick
         // of the already-active language skips the locked write and the disk
         // churn, but the view refreshes below still run (self-heal against
@@ -2144,6 +2516,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
             config.SaveToFile();
             snap = config.GetSnapshot(); // read the authoritative post-write state
+        }
+        // 261116_0003 P9b-3 U3 (D6 first-use capability probe): the accepted
+        // plan's TARGET resolved to a user-defined language on an
+        // evidence-judging engine (OpenAI-compatible / user-.gguf; Google is
+        // publisher-declared, the local built-in and Auto have no custom row).
+        // Fire ONE probe while the effective status is still Unknown and no
+        // override exists (the contract at config.hpp:342-345, :351-355); the
+        // engine call runs off the GUI thread and the verdict records through
+        // the locked verb when the completion drains back here. No-op for
+        // registry targets, answered entries, and in-flight keys. The engine
+        // resolves exactly like the Ctrl+F9 cycle idiom above.
+        {
+            const emebalachat::LanguageEngine probe_engine =
+                emebalachat::TrayLanguageEngineFor(
+                    emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+            probe_service.MaybeTriggerForPick(probe_engine, plan.target_language);
         }
         // F2 (session 260908_0003): any VALID explicit Drag-TARGET request
         // pins the provenance flag - even a no-change re-pick of the
@@ -2166,8 +2554,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                      // an already-pinned no-op re-pick keeps
                                      // INV-3's no-churn rule for the disk.
             }
-            DIAG_LOG("STATE", "drag_target_pinned tgt=%s (F2 user-explicit pick)",
-                     plan.target_language.c_str());
+            // fix-list-round15 R15-21 (F-3b): tgt is a language token (can be
+            // a user-typed stored name) — the R14-06 class — so it logs only
+            // behind diag::ContentLoggingEnabled(); the else keeps the
+            // shape-only length.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("STATE", "drag_target_pinned tgt=%s (F2 user-explicit pick)",
+                         plan.target_language.c_str());
+            } else {
+                DIAG_LOG("STATE", "drag_target_pinned tgt_len=%zu (F2 user-explicit pick)",
+                         plan.target_language.size());
+            }
         }
         // plan.surface_updates order (planner): Badge -> Tray -> Tooltip.
         // Phase 3 surface filtering (plan §2.4): the planner stays pair-
@@ -2206,8 +2603,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             emebalachat::PlayLangChange();
         }
         // W3 (R1-22): Ctrl+F9 used to be a blind cycle - a chime and nothing
-        // else, so stepping through 37 targets gave no feedback about which one
-        // landed. Confirm the NEW target at the cursor, through the same
+        // else, so stepping through that era's 37 targets (89 today) gave no
+        // feedback about which one landed. Confirm the NEW target at the cursor, through the same
         // thread-safe tooltip seam the F9 toggle bubble uses (it marshals to
         // the GUI thread, and this coordinator only ever runs there).
         // Exactly ONE notice per cycle: the hook Ctrl+F9 callback is the only
@@ -2219,8 +2616,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 cursor.x + 12, cursor.y + 12,
                 emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
                 emebalachat::I18n::GetLanguageDisplayName(plan.target_language));
-            DIAG_LOG("UI", "cycle_confirm tgt=%s ctx=%s",
-                     plan.target_language.c_str(), drag ? "drag" : "type");
+            // fix-list-round15 R15-21 (F-3b): tgt is a language token (can be
+            // a user-typed stored name) — the R14-06 class — so it logs only
+            // behind diag::ContentLoggingEnabled(); ctx rides both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("UI", "cycle_confirm tgt=%s ctx=%s",
+                         plan.target_language.c_str(), drag ? "drag" : "type");
+            } else {
+                DIAG_LOG("UI", "cycle_confirm tgt_len=%zu ctx=%s",
+                         plan.target_language.size(), drag ? "drag" : "type");
+            }
         }
         return true;
     };
@@ -2233,8 +2638,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // save it persists the config, re-points the runtime engine, and refreshes
     // the tray (gated on the switch actually applying); on cancel it only
     // refreshes the tray, leaving the previous engine untouched.
+    // 261116_0003 P9c-1c: `declared` is the dialog's declaration fold, non-null
+    // only on the save path. It is applied HERE, on this owning AppConfig,
+    // through the locked verb and BEFORE the save below, so the config.json
+    // this run writes carries exactly the set the dialog folded (an empty set
+    // clears the declaration and the serializer then emits no key at all).
+    // The dialog itself performs no config file I/O for the declaration any
+    // more, so this is the single apply path and the in-memory instance can
+    // never be reverted by a stale re-emission.
     emebalachat::g_apply_openai_settings = [&](const emebalachat::OpenAiConfig& edited,
-                                               bool saved) -> bool {
+                                               bool saved,
+                                               const std::vector<std::string>* declared) -> bool {
         if (!saved) {
             refresh_tray();
             return false;
@@ -2245,6 +2659,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-051 U-2: leaving the user-model route clears its display stem.
         engine.SetUserModelDisplayStem({});
         config.SetEngineTypeName("openai");
+        if (declared) {
+            // One verb, one publication: the locked write canonicalizes the
+            // fold and publishes the new set, so the tray menus, the tooltip
+            // dropdowns, the search picker and the Ctrl+F9 cycle already
+            // filter by it before refresh_tray() runs below.
+            config.SetOpenAiDeclaredLanguages(*declared);
+        }
         config.SaveToFile();
         refresh_tray();
         DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
@@ -2309,6 +2730,50 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             refresh_tray();
             DIAG_F("MAIN/EngineLoadSettings/001: load-mode settings saved; warmup=%d\n",
                    config.engine_host.warmup ? 1 : 0);
+        }
+    };
+
+    // 261116_0003 P9b-3 U4a: publish the user-language ADD open for the
+    // deferred kMsgOpenUserLangAdd handler (the g_open_gguf_model_manager
+    // sibling pattern). The lambda owns the ONLY call site: U2's modal
+    // ShowUserLanguageDialogEx on g_hControllerWnd. The dialog writes IN
+    // MEMORY through U1's locked verbs and performs NO file I/O (U2's
+    // boundary), so the caller persists on kAdded through the existing
+    // SaveToFile path and refreshes the tray (the menus rebuild per open, so
+    // the refresh is the house consistency contract, not a data push). On
+    // kCancelled nothing happened: no persist, no refresh.
+    emebalachat::g_open_user_lang_add = [&config, &refresh_tray]() {
+        if (emebalachat::user_language_dialog::ShowUserLanguageDialogEx(
+                emebalachat::g_hControllerWnd, config) ==
+            emebalachat::UserLanguageDialogOutcome::kAdded) {
+            config.SaveToFile();
+            refresh_tray();
+        }
+    };
+
+    // 261116_0003 P9b-3 U4a: publish the user-language MANAGER open for the
+    // deferred kMsgOpenUserLangManager handler (the same sibling pattern). The
+    // engine + model resolution is the SAME one the badge rows read
+    // (U4b's handoff: TrayLanguageEngineFor(TrayPreferredEngineIndex(
+    // snap.engine_type)) + UserLanguageProbeModelFor), so the dialog and every
+    // menu row show ONE verdict per (engine, model). The dialog returns
+    // kChanged only when an override verb APPLIED in memory (a retest launch
+    // is NOT a change — U3's recorded callback already persists the verdict),
+    // so the caller persists on kChanged and refreshes the tray; kClosed does
+    // neither.
+    emebalachat::g_open_user_lang_manager = [&config, &probe_service, &refresh_tray]() {
+        const auto snap = config.GetSnapshot();
+        const emebalachat::LanguageEngine probe_engine =
+            emebalachat::TrayLanguageEngineFor(
+                emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+        const std::wstring model =
+            emebalachat::ToUtf16(emebalachat::UserLanguageProbeModelFor(probe_engine, config));
+        if (emebalachat::user_language_manager_dialog::ShowUserLanguageManagerDialogEx(
+                emebalachat::g_hControllerWnd, config, probe_engine, model,
+                &probe_service) ==
+            emebalachat::UserLanguageManagerOutcome::kChanged) {
+            config.SaveToFile();
+            refresh_tray();
         }
     };
 
@@ -2386,9 +2851,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         emebalachat::ui::SetActiveTheme(config.ui_theme);
         config.SaveToFile();                                             // (1) atomic swap
         const auto snap = config.GetSnapshot();
-        DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s ui=auto (REQ-020/B-6 G-1)",
-                 snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
-                 snap.type_source_language.c_str(), snap.type_target_language.c_str());
+        // fix-list-round15 R15-21 (F-3b): the reset pair echo can carry
+        // user-typed stored names (a user-language pick persists its name as
+        // the planner token) — the R14-06 class — so the names log only
+        // behind diag::ContentLoggingEnabled(); the else keeps the shape-only
+        // lengths. ctx=both / ui=auto ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE", "lang_reset ctx=both pair %s/%s %s/%s ui=auto (REQ-020/B-6 G-1)",
+                     snap.drag_source_language.c_str(), snap.drag_target_language.c_str(),
+                     snap.type_source_language.c_str(), snap.type_target_language.c_str());
+        } else {
+            DIAG_LOG("STATE", "lang_reset ctx=both pair_len=%zu/%zu %zu/%zu ui=auto (REQ-020/B-6 G-1)",
+                     snap.drag_source_language.size(), snap.drag_target_language.size(),
+                     snap.type_source_language.size(), snap.type_target_language.size());
+        }
         // (2) ALL surfaces (locale + both language pairs) re-render through
         // the existing locale-change coordinator — single refresh authority,
         // no duplicate surface nudges. The About window's own reset-feedback
@@ -2777,10 +3253,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         const emebalachat::LanguageSwapPlan swap = emebalachat::PlanLanguageSwap(
             snap_in.drag_source_language, snap_in.drag_target_language,
             emebalachat::I18n::GetSystemLanguageCode());
-        DIAG_LOG("STATE", "drag_swap_apply %s/%s -> %s/%s",
-                 snap_in.drag_source_language.c_str(),
-                 snap_in.drag_target_language.c_str(),
-                 swap.source.c_str(), swap.target.c_str());
+        // fix-list-round15 R15-21 (F-3b): the swap echo names both the
+        // persisted pair and the planned swap — language tokens that can be
+        // user-typed stored names (the R14-06 class) — so they log only
+        // behind diag::ContentLoggingEnabled(); the else keeps the
+        // shape-only lengths.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE", "drag_swap_apply %s/%s -> %s/%s",
+                     snap_in.drag_source_language.c_str(),
+                     snap_in.drag_target_language.c_str(),
+                     swap.source.c_str(), swap.target.c_str());
+        } else {
+            DIAG_LOG("STATE", "drag_swap_apply len=%zu/%zu -> %zu/%zu",
+                     snap_in.drag_source_language.size(),
+                     snap_in.drag_target_language.size(),
+                     swap.source.size(), swap.target.size());
+        }
         ApplyLanguageChange(emebalachat::LanguageContext::Drag, swap.source,
                             swap.target, false, true);
     };
@@ -2975,22 +3463,47 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // into its check row at startup (same contract as SetUiLanguage above);
     // every later refresh_tray() keeps it in sync from then on.
     tray.SetBackTranslationEnabled(config.GetSnapshot().back_translation_enabled);
-    // REQ-056 (derive-at-open): the engine submenu's two config-derived
-    // values — the 4-way check index (REQ-054's TrayPreferredEngineIndex) and
-    // the registered user-model stem — are resolved HERE, on demand, when the
-    // tray menu is built. main.cpp is the single authority (config + registry
-    // resolution); the tray keeps no cached copies, so no push path can go
-    // stale. Runs ON THE GUI THREAD: ShowContextMenu is reached only from
-    // the tray icon's own message and the badge right-click, both marshaled
-    // to the GUI thread. The stem block below is the exact logic refresh_tray
-    // used to push on every refresh (REQ-047 U1 + REQ-050 3-1/3-2, with the
-    // REQ-050 Q2 first-origin=="user" fallback).
+    // REQ-056 (derive-at-open): the engine submenu's config-derived values —
+    // the 4-way check index (REQ-054's TrayPreferredEngineIndex), the raw
+    // auto token (261116_0003 P6a r2, PR6-07) and the registered user-model
+    // stem — are resolved HERE, on demand, when the tray menu is built.
+    // main.cpp is the single authority (config + registry resolution); the
+    // tray keeps no cached copies, so no push path can go stale. Runs ON THE
+    // GUI THREAD: ShowContextMenu is reached only from the tray icon's own
+    // message and the badge right-click, both marshaled to the GUI thread.
+    // The stem block below is the exact logic refresh_tray used to push on
+    // every refresh (REQ-047 U1 + REQ-050 3-1/3-2, with the REQ-050 Q2
+    // first-origin=="user" fallback).
     tray.SetEngineMenuResolver([&]() {
         emebalachat::SystemTray::EngineMenuView view;
         const auto snap = config.GetSnapshot();
         // REQ-054: the mapping (local->1, openai->2, user_gguf->3,
         // "google"/"auto"/unknown->0; the index never affects routing).
         view.preferred_engine = emebalachat::TrayPreferredEngineIndex(snap.engine_type);
+        // 261116_0003 P6a fix round r2 (PR6-07): the collapsed index maps BOTH
+        // "google" and "auto" onto 0, so it cannot tell the tray whether the
+        // auto router may serve a HyMt2-only pin. Carry the RAW token: only an
+        // exactly-"auto" engine_type lets PlanTranslationRouting reach the
+        // local leg (Translate() consults the plan only under active ==
+        // LocalLlama, engine.cpp:685-691; a persisted "google" latches Google
+        // at engine.cpp:313-315), so explicit google keeps the
+        // truthful single-view ghost.
+        view.is_auto = (snap.engine_type == "auto");
+        // 261116_0003 P6a fix round r4 (PR6-19): the ghost gate's host-
+        // availability conjunct. HostCouldServeFor (engine.cpp:288-290) =
+        // engine_host.enabled && engine_host::IsHostBinaryPresent() is the
+        // availability half of the router's local-serve predicate, whose
+        // binary half is evaluated here as a LIVE probe while the router's
+        // local leg is the LATCHED active_type_ (tray.hpp's rationale scopes
+        // that one divergence direction). Under auto with the host leg dead
+        // (Zero-Install) the router is never consulted, so the tray must not
+        // suppress the ghost either. The block is a direct AppConfig member
+        // (config.hpp:527) with NO Snapshot entry; it is read here on the GUI
+        // thread — the same thread that writes it (the settings dialog's
+        // SetEngineHostConfig push above, at line ~2308; the startup push at
+        // ~1475 is the same pattern), so no lock is needed.
+        view.local_host_available =
+            config.engine_host.enabled && emebalachat::engine_host::IsHostBinaryPresent();
         // Bound id wins; an EMPTY binding falls back to the FIRST
         // origin=="user" registry entry so a registered model never
         // disappears from the menu; a registry miss shows the raw config id
@@ -3021,7 +3534,85 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
         }
         view.user_model_stem = std::move(user_model_stem);
+        // 261116_0003 P9b-2: the "내 언어" group's data, copied at menu-open
+        // time (derive-at-open, the same contract as every field above). The
+        // member is GUI-thread-only per config.hpp and this resolver runs on the
+        // GUI thread, which is also its only writer. Empty = no registered user
+        // languages, and the four menus render exactly the registry rows.
+        view.user_languages = config.user_languages;
+        // 261116_0003 P9b-3 U4a: the badge key + the in-flight seam, derived at
+        // menu-open time from the SAME snapshot (derive-at-open). The engine
+        // half is UserLanguageEngineId(resolved engine) — "" names the no-probe
+        // context and renders NO badge; the model half is the OpenAiConfig
+        // model / the user-.gguf registry id (UserLanguageProbeModelFor — the
+        // U3 runner writes its verdict slots under the SAME key, so a menu row
+        // and its verdict can never disagree about the address). The in-flight
+        // seam answers per stored name from U3's GUI-thread-only in-flight
+        // set (the runner outlives every menu build; Retire only gates new
+        // triggers, and the menu can open only while the GUI thread pumps).
+        const emebalachat::LanguageEngine badge_engine =
+            emebalachat::TrayLanguageEngineFor(view.preferred_engine);
+        view.user_lang_probe_engine = emebalachat::UserLanguageEngineId(badge_engine);
+        view.user_lang_probe_model =
+            emebalachat::UserLanguageProbeModelFor(badge_engine, config);
+        view.user_lang_probe_in_flight =
+            [&probe_service, engine_id = view.user_lang_probe_engine,
+             model = view.user_lang_probe_model](const emebalachat::UserLanguage& language) {
+                return probe_service.IsInFlight(emebalachat::UserLanguageStoredName(language),
+                                                engine_id, model);
+            };
         return view;
+    });
+    // 261116_0003 P6c (PR6-35): wire the tooltip's widened engine resolver —
+    // the seam SetEngineResolver has carried since P6b with zero call sites.
+    // Same derive-at-open contract as the tray's resolver above: the dropdown
+    // builders call this on demand when a menu opens, and BOTH resolvers
+    // resolve the SAME three values from the SAME sources, so the two surfaces
+    // feed ONE shared decision (SuppressPinnedAbsentGhost) from identically
+    // derived inputs — the P6b-fix shared-decision/unshared-inputs split, with
+    // both resolver halves wired since P6c (this site is the tooltip half).
+    //   engine                = TrayLanguageEngineFor(TrayPreferredEngineIndex(
+    //                           snap.engine_type)) — the tray's OWN mapper,
+    //                           reused, never duplicated in the tooltip layer
+    //                           (P6b-3's no-duplication pin);
+    //   is_auto               = the RAW persisted "auto" token (PR6-07);
+    //   local_host_available  = config.engine_host.enabled &&
+    //                           engine_host::IsHostBinaryPresent() — the
+    //                           router's HostCouldServeFor components (PR6-19).
+    // Runs ON THE GUI THREAD, the same reasoning as the tray's resolver: the
+    // tooltip calls it from its own mouse-handler menu build on the GUI thread,
+    // which is also the thread that writes engine_host (the settings dialog's
+    // SetEngineHostConfig push) — so the direct member read needs no lock.
+    tooltip.SetEngineResolver([&]() {
+        emebalachat::TooltipWindow::MenuEngineResolution resolution;
+        const auto snap = config.GetSnapshot();
+        resolution.engine = emebalachat::TrayLanguageEngineFor(
+            emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+        resolution.is_auto = (snap.engine_type == "auto");
+        resolution.local_host_available =
+            config.engine_host.enabled && emebalachat::engine_host::IsHostBinaryPresent();
+        // 261116_0003 P9b-2: the two dropdowns' "내 언어" group data, copied at
+        // menu-open time from the same member the tray's resolver copies (the
+        // shared-DECISION / unshared-INPUTS contract stays intact: both surfaces
+        // still derive their own view, from the same persisted source).
+        resolution.user_languages = config.user_languages;
+        // 261116_0003 P9b-3 U4a: the badge key + the in-flight seam — the SAME
+        // derivation as the tray's resolver above (shared decision, unshared
+        // inputs), so the tooltip's two dropdowns and the tray's four submenus
+        // evaluate ONE badge per (engine, model, language). Both stay empty on
+        // a tooltip whose resolver does not populate them (no suffix; the
+        // conservative default).
+        resolution.user_lang_probe_engine =
+            emebalachat::UserLanguageEngineId(resolution.engine);
+        resolution.user_lang_probe_model =
+            emebalachat::UserLanguageProbeModelFor(resolution.engine, config);
+        resolution.user_lang_probe_in_flight =
+            [&probe_service, engine_id = resolution.user_lang_probe_engine,
+             model = resolution.user_lang_probe_model](const emebalachat::UserLanguage& language) {
+                return probe_service.IsInFlight(emebalachat::UserLanguageStoredName(language),
+                                                engine_id, model);
+            };
+        return resolution;
     });
     // R6 Phase 1 (B3, plan §2.4 "config reload at startup"): initial surface
     // alignment runs through the SAME coordinator as every runtime mutation
@@ -3401,8 +3992,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Option B): the injected value is the AUTO marker "Auto Detect" for
         // ALL Latin script (pure-ASCII included - the "English" label was
         // retired F5) and for true-VI-less diacritic Latin before that -
-        // NormalizeLanguageCode maps it to "AUTO", LocalPairReliable keeps the
-        // request on Hy-MT2 (model's built-in language ID), and BuildPrompt
+        // NormalizeLanguageCode maps it to "AUTO". LocalPairReliable is
+        // mask-driven since 261116_0003 P2 (PR2-04: the TARGET must carry
+        // kLangHyMt2, then an AUTO source is a SOURCE-side relaxation only),
+        // so an AUTO source keeps an OFFICIAL target on Hy-MT2 (model's
+        // built-in language ID) while a cloud-only target is routed by
+        // PlanTranslationRouting's consent rules.
+        // 261116_0003 P2 fix round 2b: the unqualified "keeps the request
+        // on Hy-MT2" was falsified for the 8 cloud-only targets by the
+        // PR2-04 reorder. BuildPrompt
         // emits no source token. The engine call below receives eff_src
         // verbatim - the label policy is in DetectLanguage, not a string
         // special-case here.
@@ -3441,8 +4039,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // only writers). Tray/badge keep the persisted pair while the
             // tooltip shows this effective value - the intended ADR-A1-1
             // surface split. persist=0 marks this pivot as non-persisting.
-            DIAG_LOG("STATE", "pivot_temporary ctx=drag path=icon persisted_tgt=%s pivot_tgt=%s persist=0",
-                     snap.drag_target_language.c_str(), tgt_lang.c_str());
+            // fix-list-round15 R15-21 (F-3b): persisted_tgt/pivot_tgt are
+            // language tokens (can be user-typed stored names) — the R14-06
+            // class — so they log only behind diag::ContentLoggingEnabled();
+            // ctx/path/persist ride both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("STATE", "pivot_temporary ctx=drag path=icon persisted_tgt=%s pivot_tgt=%s persist=0",
+                         snap.drag_target_language.c_str(), tgt_lang.c_str());
+            } else {
+                DIAG_LOG("STATE", "pivot_temporary ctx=drag path=icon persisted_tgt_len=%zu pivot_tgt_len=%zu persist=0",
+                         snap.drag_target_language.size(), tgt_lang.size());
+            }
         }
         // F3 DIAG (task §3-6): prove per request whether the engine source came
         // from the pinned config or from detection, and whether the ADR-A1-7
@@ -3452,11 +4059,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // immediately attributable.
         // F2: usr_explicit appended as a NEW trailing field - the existing
         // pivot=/tgt= grep axes (F3 QA, B6/C2 parametric) are unchanged.
-        DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
-                 src_pinned ? "pinned" : "detect",
-                 snap.drag_source_language.c_str(), detected.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
-                 tgt_user_explicit ? 1 : 0);
+        // fix-list-round15 R15-21 (F-3b): persisted/detected/eff/tgt are
+        // language tokens (can be user-typed stored names) — the R14-06
+        // class — so they log only behind diag::ContentLoggingEnabled();
+        // mode/pivot/usr_explicit ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.c_str(), detected.c_str(),
+                     eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                     tgt_user_explicit ? 1 : 0);
+        } else {
+            DIAG_LOG("STATE", "drag_src path=icon mode=%s persisted_len=%zu detected_len=%zu eff_len=%zu pivot=%d tgt_len=%zu usr_explicit=%d",
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.size(), detected.size(),
+                     eff_src.size(), pivot_fired ? 1 : 0, tgt_lang.size(),
+                     tgt_user_explicit ? 1 : 0);
+        }
 
         // PIPE-1 (session 261104_0001, handoff section 2.1): the drag path
         // used to send the selection to the engine unconditionally, so URLs,
@@ -3470,8 +4089,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // step 4 stays disarmed on this path). Bypassed gestures exit before
         // the transient badge flip below, so the label never flickers.
         if (!emebalachat::ShouldTranslate(selected, tgt_lang, "Auto Detect")) {
-            DIAG_LOG("STATE", "drag_bypass path=icon detected=%s tgt=%s",
-                     detected.c_str(), tgt_lang.c_str());
+            // fix-list-round15 R15-21 (F-3b): detected/tgt are language
+            // tokens (can be user-typed stored names) — the R14-06 class —
+            // so they log only behind diag::ContentLoggingEnabled(); the
+            // else keeps the shape-only lengths.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("STATE", "drag_bypass path=icon detected=%s tgt=%s",
+                         detected.c_str(), tgt_lang.c_str());
+            } else {
+                DIAG_LOG("STATE", "drag_bypass path=icon detected_len=%zu tgt_len=%zu",
+                         detected.size(), tgt_lang.size());
+            }
             DIAG_F("MAIN/DragIconClick/006: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
             // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): this drop
             // used to be SILENT - the drag icon vanished with zero feedback and
@@ -3630,9 +4258,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // failed translation keeps the existing tooltip content instead of
     // rendering an empty body.
     auto run_retranslate = [&](const RetranslateJob& job) {
-        DIAG_LOG("UI", "retranslate_worker_run gen=%llu src_len=%zu tgt=%s",
-                 static_cast<unsigned long long>(job.gen), job.src.size(),
-                 job.new_tgt.c_str());
+        // fix-list-round15 R15-21 (F-3b): tgt is a language token (can be a
+        // user-typed stored name) — the R14-06 class — so it logs only
+        // behind diag::ContentLoggingEnabled(); gen/src_len ride both
+        // branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("UI", "retranslate_worker_run gen=%llu src_len=%zu tgt=%s",
+                     static_cast<unsigned long long>(job.gen), job.src.size(),
+                     job.new_tgt.c_str());
+        } else {
+            DIAG_LOG("UI", "retranslate_worker_run gen=%llu src_len=%zu tgt_len=%zu",
+                     static_cast<unsigned long long>(job.gen), job.src.size(),
+                     job.new_tgt.size());
+        }
 
         // F3-3 (session 260908_0002, ADR-A1-3): V6 entry-point 3 was the true
         // origin of the KO->KO output corruption (log gen 8/10/12/21/24) - it
@@ -3684,12 +4322,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // source decision (config vs carried detection) + pivot fired/skipped.
         // F2: usr_explicit appended as a NEW trailing field; the existing
         // pivot=/tgt= grep axes are unchanged.
-        DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted=%s carried=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
-                 static_cast<unsigned long long>(job.gen),
-                 src_pinned ? "pinned" : "detect",
-                 snap.drag_source_language.c_str(), job.src_code.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
-                 tgt_user_explicit ? 1 : 0);
+        // fix-list-round15 R15-21 (F-3b): persisted/carried/eff/tgt are
+        // language tokens (can be user-typed stored names) — the R14-06
+        // class — so they log only behind diag::ContentLoggingEnabled();
+        // mode/pivot/usr_explicit ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted=%s carried=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
+                     static_cast<unsigned long long>(job.gen),
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.c_str(), job.src_code.c_str(),
+                     eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                     tgt_user_explicit ? 1 : 0);
+        } else {
+            DIAG_LOG("UI", "retranslate_src gen=%llu mode=%s persisted_len=%zu carried_len=%zu eff_len=%zu pivot=%d tgt_len=%zu usr_explicit=%d",
+                     static_cast<unsigned long long>(job.gen),
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.size(), job.src_code.size(),
+                     eff_src.size(), pivot_fired ? 1 : 0, tgt_lang.size(),
+                     tgt_user_explicit ? 1 : 0);
+        }
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
         // REQ-047 P5-F2 (technical review 175600 finding #2): same strict-
@@ -3841,16 +4492,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // entry point) persisted the ephemeral pivot from the hook's
             // REQ-R06 worker thread; removed so no automatic translation path
             // reaches SaveToFile(). persist=0 marks the pivot non-persisting.
-            DIAG_LOG("STATE", "pivot_temporary ctx=drag path=dbl_ctrl_c persisted_tgt=%s pivot_tgt=%s persist=0",
-                     snap.drag_target_language.c_str(), tgt_lang.c_str());
+            // fix-list-round15 R15-21 (F-3b): persisted_tgt/pivot_tgt are
+            // language tokens (can be user-typed stored names) — the R14-06
+            // class — so they log only behind diag::ContentLoggingEnabled();
+            // ctx/path/persist ride both branches.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("STATE", "pivot_temporary ctx=drag path=dbl_ctrl_c persisted_tgt=%s pivot_tgt=%s persist=0",
+                         snap.drag_target_language.c_str(), tgt_lang.c_str());
+            } else {
+                DIAG_LOG("STATE", "pivot_temporary ctx=drag path=dbl_ctrl_c persisted_tgt_len=%zu pivot_tgt_len=%zu persist=0",
+                         snap.drag_target_language.size(), tgt_lang.size());
+            }
         }
         // F3 DIAG (task §3-6): source decision + pivot evidence (see the
         // drag_src line above for the QA contract).
-        DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
-                 src_pinned ? "pinned" : "detect",
-                 snap.drag_source_language.c_str(), detected.c_str(),
-                 eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
-                 tgt_user_explicit ? 1 : 0);
+        // fix-list-round15 R15-21 (F-3b): persisted/detected/eff/tgt are
+        // language tokens (can be user-typed stored names) — the R14-06
+        // class — so they log only behind diag::ContentLoggingEnabled();
+        // mode/pivot/usr_explicit ride both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted=%s detected=%s eff=%s pivot=%d tgt=%s usr_explicit=%d",
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.c_str(), detected.c_str(),
+                     eff_src.c_str(), pivot_fired ? 1 : 0, tgt_lang.c_str(),
+                     tgt_user_explicit ? 1 : 0);
+        } else {
+            DIAG_LOG("STATE", "drag_src path=dbl_ctrl_c mode=%s persisted_len=%zu detected_len=%zu eff_len=%zu pivot=%d tgt_len=%zu usr_explicit=%d",
+                     src_pinned ? "pinned" : "detect",
+                     snap.drag_source_language.size(), detected.size(),
+                     eff_src.size(), pivot_fired ? 1 : 0, tgt_lang.size(),
+                     tgt_user_explicit ? 1 : 0);
+        }
 
         // PIPE-1 (session 261104_0001, handoff section 2.1): same smart-bypass
         // gate as the drag icon path above - the double-Ctrl+C entry point is
@@ -3870,8 +4542,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         POINT cursor = {};
         ::GetCursorPos(&cursor);
         if (!emebalachat::ShouldTranslate(copied, tgt_lang, "Auto Detect")) {
-            DIAG_LOG("STATE", "drag_bypass path=dbl_ctrl_c detected=%s tgt=%s",
-                     detected.c_str(), tgt_lang.c_str());
+            // fix-list-round15 R15-21 (F-3b): detected/tgt are language
+            // tokens (can be user-typed stored names) — the R14-06 class —
+            // so they log only behind diag::ContentLoggingEnabled(); the
+            // else keeps the shape-only lengths.
+            if (diag::ContentLoggingEnabled()) {
+                DIAG_LOG("STATE", "drag_bypass path=dbl_ctrl_c detected=%s tgt=%s",
+                         detected.c_str(), tgt_lang.c_str());
+            } else {
+                DIAG_LOG("STATE", "drag_bypass path=dbl_ctrl_c detected_len=%zu tgt_len=%zu",
+                         detected.size(), tgt_lang.size());
+            }
             DIAG_F("MAIN/DoubleCtrlC/002: drag content filtered by the smart-bypass gate (URL/number/symbol/emoji or already in the pivoted target); engine not called\n");
             tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
@@ -4014,8 +4695,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // slot coalesces only between consecutive LANGUAGE PICKS on this
         // queue - drag clicks live in the separate drag_translate_worker
         // queue and can never swallow a user-requested re-translation.
-        DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt=%s",
-                 static_cast<unsigned long long>(gen), new_tgt.c_str());
+        // fix-list-round15 R15-21 (F-3b): tgt is a language token (can be a
+        // user-typed stored name) — the R14-06 class — so it logs only
+        // behind diag::ContentLoggingEnabled(); gen rides both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt=%s",
+                     static_cast<unsigned long long>(gen), new_tgt.c_str());
+        } else {
+            DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt_len=%zu",
+                     static_cast<unsigned long long>(gen), new_tgt.size());
+        }
         retranslate_worker.Submit(RetranslateJob{ src, src_code, new_tgt,
                                                   r.left, r.top, gen });
     });
@@ -4055,13 +4744,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // F8 DIAG: menu pick + whether the coordinator accepted it (a
         // refused request leaves config untouched and re-renders current
         // state, exactly like the target-menu callback above).
-        DIAG_LOG("STATE", "tooltip_src lang=%s applied=%d gen=%llu",
-                 std::string(new_source_lang).c_str(), applied ? 1 : 0,
-                 static_cast<unsigned long long>(gen));
+        // fix-list-round15 R15-21 (F-3b): lang is a language token (can be a
+        // user-typed stored name) — the R14-06 class — so it logs only
+        // behind diag::ContentLoggingEnabled(); applied/gen ride both
+        // branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("STATE", "tooltip_src lang=%s applied=%d gen=%llu",
+                     std::string(new_source_lang).c_str(), applied ? 1 : 0,
+                     static_cast<unsigned long long>(gen));
+        } else {
+            DIAG_LOG("STATE", "tooltip_src lang_len=%zu applied=%d gen=%llu",
+                     new_source_lang.size(), applied ? 1 : 0,
+                     static_cast<unsigned long long>(gen));
+        }
 
-        DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick=%s tgt=%s",
-                 static_cast<unsigned long long>(gen),
-                 std::string(new_source_lang).c_str(), tgt_lang.c_str());
+        // fix-list-round15 R15-21 (F-3b): pick/tgt are language tokens (can
+        // be user-typed stored names) — the R14-06 class — so they log only
+        // behind diag::ContentLoggingEnabled(); gen rides both branches.
+        if (diag::ContentLoggingEnabled()) {
+            DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick=%s tgt=%s",
+                     static_cast<unsigned long long>(gen),
+                     std::string(new_source_lang).c_str(), tgt_lang.c_str());
+        } else {
+            DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick_len=%zu tgt_len=%zu",
+                     static_cast<unsigned long long>(gen),
+                     new_source_lang.size(), tgt_lang.size());
+        }
         retranslate_worker.Submit(RetranslateJob{ src, src_code, tgt_lang,
                                                   r.left, r.top, gen });
     });
@@ -4171,6 +4879,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //     Translate() is still in flight (the engine mutex is held across the
     //     whole cloud/host request) before the manager is destroyed.
     engine.RequestCancel();
+    // fix-list-round15 R18 (unit F-4): latch the probe service's shutdown
+    // intent HERE - at the start of the sequence, before the language-sync
+    // drain below, whose accepted-plan path calls
+    // probe_service.MaybeTriggerForPick (:2513). Without this latch a pick
+    // drained there STARTS a probe after the cancel latch above; its Translate
+    // short-circuits to Canceled+empty, the transport maps that to {}, the fold
+    // reads Unsupported(reason=empty) and the locked verb PERSISTS the false
+    // verdict - suppressing that language's first-use trigger until a manual
+    // retest. Both spawn seams decline while the intent is set, so the drain
+    // can produce no new work at all; the bounded join below still covers every
+    // probe started BEFORE this point, so its exhaustive claim holds a fortiori.
+    probe_service.BeginShutdown();
     mouse_hook.Stop();
     hook.Stop();
     worker.Stop();
@@ -4203,10 +4923,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // still persists instead of being silently dropped. SEC-B5: the payloads
     // now live in g_lang_sync_queue (the message is a parameter-less wake-up,
     // so no PeekMessageW sweep exists anymore); the same-thread GUI deque
-    // drain at the IDENTICAL old position (all producers joined above,
-    // coordinator retired below) preserves the shutdown ordering: producers
-    // joined -> drain -> retire. Any kMsgApplyLanguageSync notification still
-    // sitting in the message queue is harmless (carries no payload).
+    // drain at the IDENTICAL old position (every language-sync producer joined
+    // above, coordinator retired below) preserves the shutdown ordering:
+    // producers joined -> drain -> retire. The probe service produces nothing
+    // for THIS queue, but this loop is itself a probe PRODUCER: the
+    // coordinator it calls reaches probe_service.MaybeTriggerForPick (:2513),
+    // so the probe-worker join has to come AFTER this loop (R15-20, below).
+    // Any kMsgApplyLanguageSync notification still sitting in the message
+    // queue is harmless (carries no payload).
     for (const emebalachat::LanguageSyncRequest& req : emebalachat::DrainLanguageSyncQueue()) {
         if (emebalachat::g_apply_language_change) {
             emebalachat::g_apply_language_change(
@@ -4214,6 +4938,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 std::string_view{ req.target }, req.cycle, req.play_chime);
         }
     }
+    // fix-list-round15 R15-11 + R15-20: the probe workers own JOINABLE threads
+    // (never detached), so they join here - at the tail of the shutdown drain,
+    // which is what makes the join exhaustive. The language-sync drain just
+    // above re-runs the coordinator, whose accepted-plan path calls
+    // probe_service.MaybeTriggerForPick (:2513), and the service's own retired
+    // latch flips only after the completion drain below - so that loop can
+    // START a probe. The R15-20 finding: the join used to sit BEFORE the loop,
+    // leaving a drain-spawned worker unjoined while the comments claimed
+    // otherwise. After the move it covers that probe too, while still running
+    // after engine.RequestCancel() (latched above) unwinds any in-flight probe
+    // Translate and before the completion drain, the coordinator retires,
+    // WaitInferenceIdle and every engine-teardown step. Bounded like the
+    // WaitInferenceIdle confirmation below: a cancel-ignoring request that
+    // outlives the bound escalates to the safe terminal state inside
+    // ShutdownJoinWorkers (TerminateProcess - the engine is never destroyed
+    // under the live worker). No deadlock in the new position: the bounded wait
+    // blocks on the workers' own completion signal only, and the drain's spawn
+    // path returns right after StartProbe (it never waits on a probe). Past
+    // this point every started probe - including one the drain just spawned -
+    // has queued its outcome, so the in-flight set drains exact below.
+    probe_service.ShutdownJoinWorkers(
+        std::chrono::milliseconds(emebalachat::kUserLanguageProbeShutdownJoinBoundMs));
+    // 261116_0003 P9b-3 U3 + fix-list-round15 R15-11/R15-20: drain probe
+    // completions at the identical position. The worker join immediately above
+    // makes this drain EXHAUSTIVE (no probe thread can still be inside
+    // Translate): it runs AFTER the language-sync drain, so a probe that drain
+    // just spawned through MaybeTriggerForPick (:2513) is joined too. Each
+    // queued completion folds + records through the locked verb and frees its
+    // in-flight slot, so the in-flight bookkeeping ends exact. A completion
+    // that somehow still lands after this drain stays queued and is dropped by
+    // Retire(), never applied after teardown.
+    probe_service.DrainOutcomes();
+    // Retire the probe drain with the coordinators below so a late
+    // kMsgUserLanguageProbeDone can never call into destroyed state.
+    emebalachat::g_drain_user_language_probes = nullptr;
+    probe_service.Retire();
     // Retire the coordinator BEFORE the surfaces it writes to are destroyed.
     // The double-Ctrl+C worker (joined by hook.Stop() above) and the drag
     // worker (joined immediately before this block, R6 Phase 3) can no longer
@@ -4232,6 +4992,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-060: retire the load-settings coordinator with it, so a late posted
     // kMsgOpenEngineLoadSettings can never call into destroyed state.
     emebalachat::g_open_engine_host_settings = nullptr;
+    // 261116_0003 P9b-3 U4a: retire the user-language dialog coordinators with
+    // the same contract, so a late posted kMsgOpenUserLangAdd /
+    // kMsgOpenUserLangManager can never call into destroyed state.
+    emebalachat::g_open_user_lang_add = nullptr;
+    emebalachat::g_open_user_lang_manager = nullptr;
     // Post-retire verify-empty (SEC-B5, spec 234100 §7.4): with all producers
     // joined and the drain above already run, the deque is expected to be
     // empty; the swap-out releases any residue's std::string memory before

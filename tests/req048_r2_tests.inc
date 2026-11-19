@@ -123,7 +123,7 @@ void TestReq048R2ServingPath() {
 //   (e) structural pins — tray.cpp single merged manager row + WM_APP+0x501
 //       deferred post + the frozen 4-way radio IDs (2010~2014) intact;
 //       REQ-050 user items 3-1/3-2 — the checkable user-gguf entry exists
-//       ONLY while a model is registered and its " — <stem>" suffix shows
+//       ONLY while a model is registered and its " - <stem>" suffix shows
 //       regardless of the checked engine (main.cpp stem gate pins included);
 //       main.cpp kMsgOpenGgufManager + the open/refresh coordinator + the
 //       REQ-050 INV-B3 deferred-open; the manager window cpp reuses
@@ -144,7 +144,15 @@ namespace req048_r2d_detail {
 // 8 merged-manager/HF fields + the 2 OpenAI cue-banner hints + the REQ-051
 // OpenAI delete-button caption + the 25 REQ-UC update-zone strings).
 // TestReq044I18nFieldOrder pins the count with the identical sizeof technique;
-// its copy lives in run_tests.cpp. Both mirrors now record the SAME 169
+// its copy lives in run_tests.cpp. Both mirrors now record the SAME 199
+// (261116_0003 P5 appended the two language-picker strings: 169 -> 171;
+// 261116_0003 P6a appended the flat menus' "검색…" row label: 171 -> 172;
+// 261116_0003 P7 appended the picker header's count phrase: 172 -> 173;
+// 261116_0003 P9b-1 appended the 23 user-language surface strings: 173 -> 196;
+// 261116_0003 P9b-3 U5 appended the picker AUTO chip label: 196 -> 197;
+// 261116_0003 P9c-1b appended the 2 OpenAI declaration checklist strings,
+// struct slots ahead of the AUTO chip so the English table keeps it last:
+// 197 -> 199)
 // (157 X-macro + the 4 v0.10.5 theme strings: MenuUiTheme/ThemeFluent/
 // ThemeEditorial/ThemeMonolith + the 5 261108_0002 WS3 back-translation
 // strings, the fifth being FIX-WS3B's BackTranslateReference). 261108_0002
@@ -154,7 +162,7 @@ namespace req048_r2d_detail {
 // now the sizeof static_assert in src/i18n.cpp (struct layout vs EnumCount),
 // and these mirrors are the per-TU record that it held.
 struct Req048R2LstrMirror {
-    const wchar_t* f[169];
+    const wchar_t* f[199];
 };
 
 } // namespace req048_r2d_detail
@@ -167,21 +175,24 @@ void TestReq048R2GgufManager() {
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 169
-    static_assert(kR2dFieldCount == 169,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: LocalizedStrings field count is 169 "
-                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 3 user-model) - update the i18n.cpp X-macro, "
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 199
+    static_assert(kR2dFieldCount == 199,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: LocalizedStrings field count is 199 "
+                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string) - update the i18n.cpp X-macro, "
                   "all 37 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 169,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 169");
-    TEST_CHECK(observed_enum_count == 169,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 169 (struct fields == "
+    TEST_CHECK(observed_field_count == 199,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 199");
+    TEST_CHECK(observed_enum_count == 199,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 199 (struct fields == "
                "switch cases, through the REQ-060 load-mode/policy block, the v0.10.5 theme "
-               "strings, the 261108_0002 WS3 back-translation ids and the 261111_0001 U6 user-model ids)");
+               "strings, the 261108_0002 WS3 back-translation ids, the 261111_0001 U6 user-model ids, "
+               "the 261116_0003 P5/P6a/P7 language-menu ids, the 23 P9b-1 user-language ids, "
+               "the 2 P9c-1b OpenAI declaration checklist ids and "
+               "the 1 P9b-3 U5 picker AUTO chip id)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.
@@ -501,7 +512,7 @@ void TestReq048R2GgufManager() {
                    "REQ-048 R2-D (e): tray dispatches the deferred WM_APP+0x501 open");
         // REQ-050 user items 3-1/3-2: the checkable 사용자 선택(.gguf) entry
         // is appended ONLY while a user model is registered (menu with no
-        // model = manager row only), and the " — <stem>" suffix rides the
+        // model = manager row only), and the " - <stem>" suffix rides the
         // label regardless of the checked engine (the old pref==3 gate and
         // the "(미등록)" placeholder are gone). REQ-056: the guard reads the
         // menu-build-time local the resolver just derived (no cached member).
@@ -511,11 +522,13 @@ void TestReq048R2GgufManager() {
                    src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
                    "REQ-050 (e) 3-2: the stem suffix is no longer gated on pref==3 and the "
                    "'(미등록)' placeholder is gone with the always-append entry");
-        // Ordering: the registration guard opens before the em-dash join,
-        // which precedes the ID_TRAY_ENGINE_USER_GGUF append — the entry is
-        // built INSIDE the guard (frozen radio ID, conditional append).
+        // Ordering: the registration guard opens before the separator join,
+        // which precedes the ID_TRAY_ENGINE_USER_GGUF append: the entry is
+        // built INSIDE the guard (frozen radio ID, conditional append). Fix
+        // R14-10: the join separator is the hyphen form (em-dash banned in
+        // user-facing output); the pin tracks the code's literal.
         const size_t guard_pos = src.find("if (!user_model_stem.empty())");
-        const size_t join_pos = src.find("user_gguf_label += L\" — \"");
+        const size_t join_pos = src.find("user_gguf_label += L\" - \"");
         const size_t append_pos = src.find("ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str()");
         TEST_CHECK(guard_pos != std::string::npos && join_pos != std::string::npos &&
                        append_pos != std::string::npos && guard_pos < join_pos &&

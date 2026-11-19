@@ -1,0 +1,7 @@
+# 261116_0003 P4 fix round (PR4-06): the generated alias table regenerates
+# byte-identically and its SHA-256 is pinned (determinism proof + --check
+# drift gate). Pin LF so a checkout with core.autocrlf=true cannot rewrite
+# the line endings and break that guarantee. Path-scoped: nothing else in
+# the repo is affected.
+src/language_alias.cpp text eol=lf
+src/language_alias.hpp text eol=lf

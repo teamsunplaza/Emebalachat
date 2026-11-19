@@ -5,6 +5,7 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <deque>   // R1-9: by-value fetch-result queue (SEC-B5 house transport)
 #include <memory>
@@ -24,6 +25,65 @@
 
 namespace emebalachat {
 
+// ---- 261116_0003 P9c-1b: the declaration checklist's pure folds -----------
+// Defined BEFORE the dialog proc (which calls them). Namespace scope, like
+// PlanOpenAiComboSelection below, so the unit suite drives the exact helpers
+// the dialog proc calls. They stay out of the header on purpose (TU-scope
+// helpers; the suite forward-declares them, which openai_settings_window.hpp
+// does not).
+
+// The checklist row set: every registry row carrying kLangOpenAi, in REGISTRY
+// order, AUTO excluded (a source-only marker). THE UNFILTERED SET ON PURPOSE:
+// the OpenAI engine VIEW is declaration-filtered since P9c-1a, so a checklist
+// drawn from that filtered view could never show an unchecked language again
+// (the P9c-1a §6 handoff hazard names the exact function never to call here).
+std::vector<std::string> OpenAiDeclarationRowCodes() {
+    std::vector<std::string> rows;
+    for (const LanguageInfo& row : GetSupportedLanguages()) {
+        if (row.code == "AUTO") continue;
+        if ((row.engine_mask & kLangOpenAi) == 0) continue;
+        rows.push_back(row.code);
+    }
+    return rows;
+}
+
+// Declaration codes -> selected row indices (the pre-select half of the
+// fold). Unknown codes match no row and select nothing; duplicates in the
+// declaration collapse through the per-row scan; the indices follow the ROW
+// order. An empty declaration folds to an empty selection, which the OK path
+// applies as "not declared" = the documented fail-open.
+std::vector<int> OpenAiDeclarationSelection(const std::vector<std::string>& declared,
+                                            const std::vector<std::string>& rows) {
+    std::vector<int> selected;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        for (const std::string& code : declared) {
+            if (code == rows[i]) {
+                selected.push_back(static_cast<int>(i));
+                break;
+            }
+        }
+    }
+    return selected;
+}
+
+// Selected row indices -> declaration codes. Invalid and duplicate indices
+// drop; the result follows the ROW order, which IS the canonical registry
+// order, so the fold hands the locked verb an already-canonical set. An
+// empty selection folds to an empty declaration = not declared = the
+// documented fail-open (the OpenAI views return to the full set).
+std::vector<std::string> OpenAiDeclarationFromSelection(
+    const std::vector<int>& selected, const std::vector<std::string>& rows) {
+    std::vector<std::string> declared;
+    for (const int idx : selected) {
+        if (idx < 0 || static_cast<std::size_t>(idx) >= rows.size()) continue;
+        const std::string& code = rows[static_cast<std::size_t>(idx)];
+        if (std::find(declared.begin(), declared.end(), code) == declared.end()) {
+            declared.push_back(code);
+        }
+    }
+    return declared;
+}
+
 namespace {
 
 // Control IDs.
@@ -37,12 +97,23 @@ enum : WORD {
     IDC_FETCH_BTN,
     IDC_MASKED_LABEL,
     IDC_DELETE_BTN,   // REQ-051 D: [설정 삭제] push button (bottom-left row)
+    // 261116_0003 P9c-1b: the "이 모델이 지원하는 언어" declaration checklist —
+    // a section label, ONE multi-select LISTBOX, and the fail-open hint line.
+    IDC_DECLARE_TITLE,
+    IDC_DECLARE_LIST,
+    IDC_DECLARE_HINT,
 };
 
 struct OpenAiDialogState {
     OpenAiConfig* cfg;   // in/out; key DPAPI-protected on save
     bool saved = false;
     bool deleted = false; // REQ-051 D: [삭제] persisted the cleared block itself
+    // 261116_0003 P9c-1c: true once IDOK folded the declaration checklist.
+    // The fold result rides out through the declaration-aware entry
+    // (OpenAiDeclaredLanguagesFold) so the OWNING config applies it; false on
+    // Cancel and on the [삭제] button, where no selection was read and the
+    // caller must not adopt anything. GUI thread only.
+    bool declaration_edited = false;
     // REQ-052 (async fetch): single-flight generation — every spawn
     // increments it; a completion carrying an older generation is stale (a
     // newer fetch superseded it) and is dropped. GUI thread only.
@@ -66,6 +137,17 @@ struct OpenAiDialogState {
     // is never a heap object) instead of posting to a destroyed hwnd.
     std::shared_ptr<std::atomic<bool>> fetch_alive =
         std::make_shared<std::atomic<bool>>(true);
+    // 261116_0003 P9c-1b: the declaration checklist's in/out. `declared_in`
+    // captures the canonical set at WM_INITDIALOG (empty = not declared =
+    // nothing pre-selected, the documented fail-open); `declared_out`
+    // receives the folded selection at IDOK and rides out through the
+    // declaration-aware entry (261116_0003 P9c-1c), where the OWNING config
+    // applies it. `declare_rows` is the listbox order — the UNFILTERED
+    // OpenAI-capable registry codes — that the selection folds through. GUI
+    // thread only.
+    std::vector<std::string> declared_in;
+    std::vector<std::string> declared_out;
+    std::vector<std::string> declare_rows;
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -343,8 +425,9 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // guarantee).
         DrainOpenAiFetchQueue();
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
-        // template itself is proven-good (11 controls incl. OK/Cancel and the
-        // REQ-051 delete button), but
+        // template itself is proven-good (14 controls incl. OK/Cancel, the
+        // REQ-051 delete button, and the 261116_0003 P9c-1b declaration
+        // checklist section), but
         // if any edit/combo control failed to materialize the dialog would
         // look like the
         // reported "API input field missing" symptom. Surface a distinct log
@@ -399,6 +482,29 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         ::SetDlgItemTextW(dlg, IDC_MASKED_LABEL,
                           I18n::Get(StringId::OpenAiKeyMasked).c_str());
+        // 261116_0003 P9c-1b: populate the declaration checklist from the
+        // UNFILTERED OpenAI-capable registry rows — NEVER the declaration-
+        // filtered OpenAI engine view (P9c-1a), which would hide every
+        // unchecked language from the list (the P9c-1a §6 handoff hazard).
+        // The declared entries are
+        // pre-selected via the published-snapshot read seam (empty set =
+        // nothing selected = the documented fail-open; the hint line states
+        // it). The display name reuses I18n::GetLanguageDisplayName, so the
+        // checklist adds no language-name strings of its own.
+        if (HWND declare_list = ::GetDlgItem(dlg, IDC_DECLARE_LIST)) {
+            st->declare_rows = OpenAiDeclarationRowCodes();
+            for (const std::string& code : st->declare_rows) {
+                const int idx = static_cast<int>(::SendMessageW(
+                    declare_list, LB_ADDSTRING, 0,
+                    reinterpret_cast<LPARAM>(
+                        I18n::GetLanguageDisplayName(code).c_str())));
+                if (idx >= 0 && OpenAiLanguageDeclared(code)) {
+                    ::SendMessageW(declare_list, LB_SETSEL, TRUE,
+                                   static_cast<LPARAM>(idx));
+                    st->declared_in.push_back(code);
+                }
+            }
+        }
         // REQ-050 (auto-fetch): reopening a saved dialog repopulates the
         // model combo — both values already present (https base URL + a
         // usable key) arms the same debounce timer the EN_CHANGE handler
@@ -515,6 +621,35 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
             SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+
+            // 261116_0003 P9c-1b: fold the declaration checklist selection
+            // back through the SAME unfiltered row list (listbox index ==
+            // row index, which is why the template list must never sort).
+            // 261116_0003 P9c-1c: the dialog applies NOTHING here. The folded
+            // set rides out through the declaration-aware entry and the
+            // OWNING config applies it through the locked declaration verb
+            // before its own save, so exactly one writer and one save path
+            // exist (the P9c-1b second-instance read-modify-write was
+            // reverted by that owner's later save, which still carried the
+            // pre-dialog set). The fold stays canonical (registry order), so
+            // the verb's canonicalizer is an identity on it.
+            {
+                std::vector<int> selected;
+                if (HWND declare_list = ::GetDlgItem(dlg, IDC_DECLARE_LIST)) {
+                    const int sel_count = static_cast<int>(
+                        ::SendMessageW(declare_list, LB_GETSELCOUNT, 0, 0));
+                    if (sel_count > 0) {
+                        selected.resize(static_cast<std::size_t>(sel_count));
+                        ::SendMessageW(
+                            declare_list, LB_GETSELITEMS,
+                            static_cast<WPARAM>(sel_count),
+                            reinterpret_cast<LPARAM>(selected.data()));
+                    }
+                }
+                st->declared_out =
+                    OpenAiDeclarationFromSelection(selected, st->declare_rows);
+                st->declaration_edited = true;
+            }
 
             *st->cfg = std::move(out);
             st->saved = true;
@@ -773,16 +908,29 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // dialog hands to DialogBoxIndirectParamW. The control IDs (IDC_*) live in
 // the anonymous namespace above; a namespace-scope definition in this same
 // TU can reference them. itemCount must match the AddItem calls below:
-// 9 app controls + IDOK + IDCANCEL = 11 (REQ-051 added the delete button).
+// 9 app controls + 3 declaration-checklist controls (261116_0003 P9c-1b) +
+// IDOK + IDCANCEL = 14 (REQ-051 added the delete button).
 void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
     const DWORD COMBO = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | CBS_DROPDOWN;
     const DWORD BTN = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+    // 261116_0003 P9c-1b: the declaration checklist's multi-select LISTBOX.
+    // LBS_MULTIPLESEL is the standard Win32 multi-select idiom; LBS_NOTIFY +
+    // LBS_HASSTRINGS accompany it. The list NEVER sorts: the listbox index IS
+    // the row index of the unfiltered registry-order fold (a sorted list
+    // would desync the IDOK fold), and the declaration's canonical form is
+    // registry order. Styles:
+    // WS_CHILD|WS_VISIBLE|WS_BORDER|WS_VSCROLL|WS_TABSTOP = 0x50A10000,
+    // +LBS_HASSTRINGS(0x40) +LBS_MULTIPLESEL(0x08) +LBS_NOTIFY(0x01) =
+    // 0x50A10049.
+    const DWORD LIST = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL |
+                       WS_TABSTOP | LBS_HASSTRINGS | LBS_MULTIPLESEL | LBS_NOTIFY;
     const WORD STATIC_CLS = 0x0082;  // "STATIC"
     const WORD EDIT_CLS   = 0x0081;  // "EDIT"
     const WORD BTN_CLS    = 0x0080;  // "BUTTON"
     const WORD COMBO_CLS  = 0x0085;  // "COMBOBOX"
+    const WORD LISTBOX_CLS = 0x0083; // "LISTBOX" (261116_0003 P9c-1b)
 
     // REQ-050: dialog widened 210->262 DLU and the label/edit columns
     // realigned (labels 44->56, edits 148->186) so the fetch button label
@@ -805,29 +953,47 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     tb.AddItem(BTN, 190, 37, 64, 12, IDC_FETCH_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiFetchModels));
     tb.AddItem(LBL, 8, 54, 240, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
+    // 261116_0003 P9c-1b: the declaration checklist section — the title, ONE
+    // multi-select LISTBOX of every OpenAI-capable language (display name),
+    // and the fail-open hint line. Sits between the masked-label row and the
+    // action row; the action row moved 70 -> 154 DLU and the shell grew
+    // 130 -> 174 DLU to fit it.
+    tb.AddItem(LBL, 8, 66, 240, 9, IDC_DECLARE_TITLE, STATIC_CLS,
+               I18n::Get(StringId::OpenAiDeclaredTitle));
+    tb.AddItem(LIST, 8, 77, 240, 52, IDC_DECLARE_LIST, LISTBOX_CLS, L"");
+    tb.AddItem(LBL, 8, 132, 240, 18, IDC_DECLARE_HINT, STATIC_CLS,
+               I18n::Get(StringId::OpenAiDeclaredHint));
     // REQ-051 (Symptom D): the [설정 삭제] button owns the bottom-LEFT corner
     // of the action row, far from OK/Cancel — a destructive action gets its
     // own corner so it cannot be hit by muscle memory aiming at OK. The
-    // 262x130 DLU shell is unchanged. i18n caption (all 37 locales).
-    tb.AddItem(BTN, 8, 70, 64, 13, IDC_DELETE_BTN, BTN_CLS,
+    // 262x174 DLU shell (261116_0003 P9c-1b grew it from 262x130) is
+    // unchanged otherwise. i18n caption (all 37 locales).
+    tb.AddItem(BTN, 8, 154, 64, 13, IDC_DELETE_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiDeleteSettings));
     // REQ-050: OK/Cancel are real i18n strings now (StringId::DialogOk /
     // DialogCancel), not hardcoded English — the 37-locale tables carry the
     // conventional native button label for each locale.
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 70, 64, 13, IDOK, BTN_CLS,
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 154, 64, 13, IDOK, BTN_CLS,
                I18n::Get(StringId::DialogOk));
-    tb.AddItem(BTN, 182, 70, 64, 13, IDCANCEL, BTN_CLS,
+    tb.AddItem(BTN, 182, 154, 64, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::DialogCancel));
 }
 
-OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg) {
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
+                                                 OpenAiDeclaredLanguagesFold& declaration) {
+    // 261116_0003 P9c-1c: `declaration` starts cleared on every entry so a
+    // caller that never reaches IDOK (Cancel, [삭제], a failed dialog creation)
+    // reads edited=false and an empty set - the "nothing to adopt" contract.
+    declaration.edited = false;
+    declaration.declared_languages.clear();
     OpenAiDialogState st{&cfg, false, false};
 
     const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
     TemplateBuilder tb;
-    // REQ-051: 11 items — the IDC_DELETE_BTN button joined the 10-control
-    // REQ-048 P2 template (shell size unchanged at 262x130 DLU).
-    tb.Begin(title, 262, 130, /*itemCount=*/11);
+    // REQ-051: 14 items — the REQ-051 delete button joined the 10-control
+    // REQ-048 P2 template, and 261116_0003 P9c-1b added the 3-control
+    // declaration checklist section (shell 262x130 -> 262x174 DLU).
+    tb.Begin(title, 262, 174, /*itemCount=*/14);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(
@@ -840,6 +1006,11 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg)
     // that races THIS sweep is caught by the next instance's WM_INITDIALOG
     // drain (the accepted bounded trade-off of not joining a detached worker).
     DrainOpenAiFetchQueue();
+    // 261116_0003 P9c-1c: hand the fold out. `edited` is true only when IDOK
+    // read the checklist, so a Cancel/[삭제] outcome always reports "nothing
+    // to adopt" and the caller can leave a live declaration alone.
+    declaration.edited = st.declaration_edited;
+    declaration.declared_languages = st.declared_out;
     // REQ-051 (Symptom D): the [삭제] button persisted the cleared block
     // itself and ended with a NON-IDOK code; report it distinctly so the
     // caller never routes a deletion through the save/switch (engine-flip)
@@ -848,6 +1019,15 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg)
     if (st.deleted) return OpenAiSettingsOutcome::kDeleted;
     return (st.saved && rc == IDOK) ? OpenAiSettingsOutcome::kSaved
                                     : OpenAiSettingsOutcome::kCancelled;
+}
+
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg) {
+    // 261116_0003 P9c-1c: outcome-only callers keep their exact contract. The
+    // declaration is folded by IDOK but discarded here (there is no config to
+    // apply it to), so a caller that needs the declaration persisted must use
+    // the declaration-aware overload above.
+    OpenAiDeclaredLanguagesFold declaration;
+    return ShowOpenAiSettingsDialogEx(parent, cfg, declaration);
 }
 
 bool ShowOpenAiSettingsDialog(HWND parent, OpenAiConfig& cfg) {

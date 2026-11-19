@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint> // R6 Phase 2 (B1-H1): uint64_t generation ids
 #include <functional>
 #include <memory>
@@ -16,6 +17,7 @@
 #include "layered_renderer.hpp"
 #include "dpi.hpp" // 261108_0002 (WS3): constexpr ClampWindowOrigin for the pure card placement math
 #include "ui/theme.hpp"
+#include "config.hpp" // 261116_0003 P6b: LanguageEngine for the engine-view resolver seam
 
 namespace emebalachat {
 
@@ -138,6 +140,71 @@ private:
     bool teardown_owed_ = false;
     uint64_t generation_ = kNoGeneration;
 };
+
+// ---- 261116_0003 P9b-2: the dropdowns' "내 언어" user-row command band -----
+//
+// The tooltip's source/target dropdowns carry the same user-language group the
+// tray's four menus do (plan §3 D5; the data is BuildLanguageMenuView's merge),
+// in the TOOLTIP's OWN command space. The id spaces are NOT numerically
+// disjoint from the tray's user band (2609..2864): this module's P6b special
+// rows are 2701..2704, numerically inside that band (a raw tray-decode of
+// 2701..2704 would read them as user rows). What the code pins instead is
+// separation by construction: (1) the HMENU boundary: each dropdown is its
+// own popup, appended and dispatched by the tooltip window alone
+// (TrackPopupMenuEx + TPM_RETURNCMD), so an id is interpreted only by the
+// dispatcher of the menu that appended it; (2) exact-match arms first: the
+// tooltip dispatcher matches its 2701..2704 rows by exact comparison BEFORE
+// the user-band range check, and its own decoder rejects them from that band
+// (DecodeTooltipUserLangCommand accepts only [2900, 3028)), so the numeric
+// overlap is resolved inside the only dispatcher that can ever see it;
+// (3) cross-band rejection: DecodeTrayUserLangCommand accepts only
+// [2609, 2865), so no tooltip user id (2900..) can ever decode as a tray row.
+// The user rows start at 2900 with one 64-id slot per role (target directly
+// after source); tooltip.cpp pins that layout with static_asserts, and the
+// cross-surface non-collision is a runtime pin in the test suite. Both
+// headers are visible together there AND in tooltip.cpp, which includes
+// tray.hpp for the shared pin-to-row resolution (fix R14-02).
+enum class TooltipUserLangRole : unsigned char {
+    Source = 0, // the header source dropdown (include_auto = true)
+    Target = 1, // the language button dropdown (include_auto = false)
+};
+
+inline constexpr UINT kTooltipCmdUserSrcBase = 2900;
+inline constexpr UINT kTooltipCmdUserTgtBase =
+    kTooltipCmdUserSrcBase + static_cast<UINT>(kMaxUserLanguages);
+inline constexpr UINT kTooltipCmdUserBandEnd =
+    kTooltipCmdUserTgtBase + static_cast<UINT>(kMaxUserLanguages); // exclusive
+
+// Command id of one user row. Callers keep user_index < kMaxUserLanguages (the
+// P9a cap the merge stops at).
+inline constexpr UINT TooltipUserLangCommand(TooltipUserLangRole role, std::size_t user_index) {
+    return (role == TooltipUserLangRole::Target ? kTooltipCmdUserTgtBase
+                                                : kTooltipCmdUserSrcBase) +
+           static_cast<UINT>(user_index);
+}
+
+struct TooltipUserLangCommandRef {
+    TooltipUserLangRole role = TooltipUserLangRole::Source;
+    std::size_t user_index = 0;
+    bool decoded = false;
+};
+
+// Decodes a dispatch command back to (role, user index); decoded == false for
+// every id outside the two slots, so no registry row (i + 1) or P6b special row
+// can ever be read as a user row.
+inline TooltipUserLangCommandRef DecodeTooltipUserLangCommand(UINT cmd) {
+    TooltipUserLangCommandRef ref;
+    if (cmd >= kTooltipCmdUserSrcBase && cmd < kTooltipCmdUserTgtBase) {
+        ref.role = TooltipUserLangRole::Source;
+        ref.user_index = static_cast<std::size_t>(cmd - kTooltipCmdUserSrcBase);
+        ref.decoded = true;
+    } else if (cmd >= kTooltipCmdUserTgtBase && cmd < kTooltipCmdUserBandEnd) {
+        ref.role = TooltipUserLangRole::Target;
+        ref.user_index = static_cast<std::size_t>(cmd - kTooltipCmdUserTgtBase);
+        ref.decoded = true;
+    }
+    return ref;
+}
 
 class TooltipWindow {
 public:
@@ -308,6 +375,15 @@ public:
     // show, posted by ShowBackTranslationThreadSafe from the back-translation
     // worker thread. Same by-value queue + parameter-less wake-up contract.
     static constexpr UINT kShowBackTranslationMessage = WM_APP + 0x206;
+    // 261116_0003 P6b: the two language dropdowns' "검색…" row latches a
+    // language-picker request and wakes THIS window with the picker module's
+    // OWN id — language_palette's kMsgOpenLanguagePalette (WM_APP + 0x503,
+    // language_search_palette.hpp), posted by PostDeferredLanguagePaletteOpen
+    // to this window as its own controller (Option B; the tray's four surfaces
+    // keep posting the same id to main.cpp's controller). The id is owned by
+    // the picker module and is deliberately NOT re-declared in this band: a
+    // same-value alias here could drift from the posted id with nothing to
+    // catch it. The next FREE value in this band therefore remains +0x207.
 
     // ---- REQ-002 scrollable tooltip (architect plan §2.1) ----
     // GUI-thread entry for kScrollMessage (and direct WM_MOUSEWHEEL). Converts
@@ -712,6 +788,85 @@ public:
     // F8 (ADR-A1-4): register the source-language dropdown pick handler.
     void SetSourceLanguageChangeCallback(SourceLanguageChangeCallback cb) { src_lang_change_cb_ = std::move(cb); }
 
+    // ---- 261116_0003 P6b: engine-view resolver seam (the tray's REQ-056
+    // derive-at-open pattern, narrowed to what the two dropdowns need) ----
+    // The floating tooltip's source/target language menus build from the
+    // ACTIVE engine's registry view (config.hpp GetLanguagesForEngine) instead
+    // of the global lists, so a user on the local Hy-MT2 engine no longer sees
+    // cloud-only rows and a cloud user no longer sees Hy-MT2-only rows — the
+    // tooltip must agree with the tray's engine-filtered menus. main.cpp wires
+    // the resolver in P6c by mapping the persisted engine_type through the
+    // tray's engine mapper (tray.hpp) into a LanguageEngine, resolved AT
+    // MENU-BUILD TIME (derive-at-open: no cached engine state can go stale,
+    // mirroring tray.cpp ShowContextMenu's resolver invocation). The tooltip
+    // itself NEVER calls the tray's mapper — the resolver hands it the values
+    // DIRECTLY (no tray index crosses this seam), and the P6b pins grep-prove
+    // the absence of both tray mapper names in tooltip.*.
+    //
+    // 261116_0003 P6b fix round (PR6-28), re-anchored to the landed P6c
+    // state (PR6-43 sweep): the seam is WIDENED from a bare
+    // LanguageEngine to MenuEngineResolution — the engine PLUS the two
+    // router-aware inputs the tray's ghost gate composes (is_auto = the RAW
+    // persisted "auto" token, PR6-07; local_host_available = the router's own
+    // HostCouldServeFor components, PR6-19). Both dropdowns feed all three
+    // into the SHARED ghost predicate
+    // (language_palette::SuppressPinnedAbsentGhost, ONE definition consumed by
+    // BOTH surfaces). The DECISION is shared; the INPUTS are not — each
+    // surface resolves its own view at its own menu-open time, and since P6c
+    // (PR6-35) BOTH resolver halves are wired from main.cpp (the tray's and
+    // this SetEngineResolver), deriving all three values from the same
+    // persisted config snapshot. That shared derivation source is why the two
+    // surfaces agree in practice; the contract stays
+    // shared-DECISION / unshared-INPUTS, so each surface keeps feeding its own
+    // live view rather than a cached copy.
+    //
+    // NO-RESOLVER FALLBACK (the defensive default, not a runtime state since
+    // P6c): MenuEngineResolution{} — LanguageEngine::Google, is_auto = false,
+    // local_host_available = false, all three the CONSERVATIVE values. The
+    // fallback view is the GOOGLE list: a SUPERSET of the pre-P6b global list
+    // for the cloud rows, but it OMITS the Hy-MT2-only rows — BO (Tibetan)
+    // carries no kLangGoogle (config.cpp:133), so a no-resolver tooltip offers
+    // strictly FEWER languages for those rows than the pre-P6b global list did
+    // (P6b F-05's known narrowing, stated here rather than papered over,
+    // PR6-34). The shared predicate's default ("do not suppress") keeps the
+    // truthful single-view ghost. This mirrors tray.cpp's no-resolver
+    // documentation (a no-resolver tray renders the Google engine row checked
+    // and the single-view ghost). The comment is part of the contract: the
+    // fallback defaults are load-bearing (main.cpp wires the real resolver in
+    // P6c, and they are pinned by the P6b source-scan tests).
+    struct MenuEngineResolution {
+        LanguageEngine engine = LanguageEngine::Google;
+        bool is_auto = false;              // RAW persisted "auto" token (PR6-07)
+        bool local_host_available = false; // HostCouldServeFor components (PR6-19)
+        // 261116_0003 P9b-2: the config's registered user languages, COPIED by
+        // value at dropdown-build time (the same derive-at-open contract as the
+        // three fields above; config.hpp documents the member as GUI-thread
+        // only, and this resolver runs on the GUI thread). The dropdown builds
+        // hand this vector to BuildLanguageMenuView and keep it alive through
+        // the menu's dispatch, so the "내 언어" rows' `const UserLanguage*`
+        // pointers stay valid for the whole TrackPopupMenuEx call. Empty on a
+        // tooltip with no resolver wired: no group, no user ghost, and the
+        // dropdowns are exactly the pre-P9b-2 shape.
+        std::vector<UserLanguage> user_languages;
+        // 261116_0003 P9b-3 U4a: the badge key + the runtime in-flight seam —
+        // the SAME derivation the tray's EngineMenuView carries (shared
+        // decision, unshared inputs: this surface derives its own view from
+        // the same persisted sources). Engine half = UserLanguageEngineId
+        // ("" = no-probe context, no badge), model half = the OpenAiConfig
+        // model / the user-.gguf registry id the U3 runner writes under. Both
+        // stay empty on a tooltip whose resolver does not populate them (no
+        // suffix; the conservative default). The in-flight seam answers per
+        // entry (the stored-name keying lives inside the seam, main.cpp);
+        // EMPTY = no resolver -> no row is in flight.
+        std::string user_lang_probe_engine;
+        std::string user_lang_probe_model;
+        std::function<bool(const UserLanguage&)> user_lang_probe_in_flight;
+    };
+    using EngineResolver = std::function<MenuEngineResolution()>;
+    void SetEngineResolver(EngineResolver resolver) {
+        engine_resolver_ = std::move(resolver);
+    }
+
     // ---- R6 Phase 1 (B3): single-source-of-truth language sync (plan §2.4) ----
     // View-refresh seam called by the main.cpp ApplyLanguageChange coordinator
     // whenever ANY surface (tray menu, swap, cycle, config load) mutates the
@@ -851,6 +1006,16 @@ private:
     // re-shows the card with fresh content).
     void HideBackTranslationCard();
 
+    // 261116_0003 P6b: resolve the ACTIVE engine at menu-build time (called
+    // once at the top of each of the two language-dropdown builders). Returns
+    // MenuEngineResolution{} when no resolver is wired — the conservative
+    // {Google, is_auto=false, local_host_available=false} defaults, per the
+    // no-resolver fallback contract on the public seam above (main.cpp wires
+    // the real resolver since P6c, PR6-35).
+    MenuEngineResolution ResolveMenuEngine() const {
+        return engine_resolver_ ? engine_resolver_() : MenuEngineResolution{};
+    }
+
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
     DWORD gui_thread_id_ = 0; // thread that ran Create(); WndProc dispatch owner
@@ -989,6 +1154,11 @@ private:
     // F8 (ADR-A1-4): source-language dropdown handler (optional; hidden when
     // unset, exactly like the target callback).
     SourceLanguageChangeCallback src_lang_change_cb_;
+    // 261116_0003 P6b: the engine-view resolver (SetEngineResolver). Wired by
+    // main.cpp since P6c (PR6-35); ResolveMenuEngine() falls back to
+    // MenuEngineResolution{} when no resolver is set (the defensive
+    // conservative Google / false / false defaults).
+    EngineResolver engine_resolver_;
 
     static constexpr UINT_PTR kTimerCopiedFeedback = 4001;
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;

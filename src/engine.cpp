@@ -367,7 +367,10 @@ void TranslationManager::RefreshActiveEngine() {
     // through here, so no main.cpp wiring is needed. Non-blocking: the
     // manager snapshots the state and signals its own worker thread; the
     // teardown runs from ~TranslationManager via engine_host::WarmupShutdown.
-    engine_host::WarmupSetState(engine_host_config_, active_type_ == EngineType::LocalLlama);
+    // 261119 E1-B2a fix R19-01: identity included — the warmup hello carries
+    // Chat's wire identity explicitly (no compiled-in default anywhere).
+    engine_host::WarmupSetState(engine_host::kChatEngineHostIdentity, engine_host_config_,
+                                active_type_ == EngineType::LocalLlama);
 }
 
 // R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam - the header
@@ -666,10 +669,28 @@ std::wstring TranslationManager::Translate(
     // 040 line) so the observability log reports the engine that will ACTUALLY
     // serve the request. Meaningful only while the local source is active;
     // availability itself stays RefreshActiveEngine's job.
+    //
+    // 261116_0003 P2 fix round 2 (PR2-01, SEC-P2-01): the Hy-MT2 pair gate is a
+    // property of the BUILT-IN model only. engine_type="user_gguf" rides
+    // EngineType::LocalLlama (main.cpp maps it that way), so without this split
+    // the gate pre-routed the user's OWN .gguf model's requests to Google for
+    // every pair outside Hy-MT2's training set — even though cloud_fallback is
+    // documented as "fallback AFTER local failure" and the user's model may
+    // well serve that target. On the live user_gguf route the request is
+    // therefore attempted on-device FIRST and the post-failure chain below
+    // (Auto -> cloud; explicit-local + consent -> cloud) still decides about
+    // the cloud, so the documented semantics hold. The gate stays fully in
+    // force for the built-in Hy-MT2 engine (the `else` leg of the ternary).
+    // user_gguf_route is only meaningful under active==LocalLlama and feeds the
+    // /042 degradation diagnostic below.
     EngineType served_engine = active;
+    bool user_gguf_route = false;
     if (active == EngineType::LocalLlama) {
-        served_engine = PlanTranslationRouting(src_code_or_name, tgt_code_or_name,
-                                               preferred, cloud_consent);
+        user_gguf_route = LocalUserGgufRouteActiveLive();
+        served_engine = user_gguf_route
+                            ? EngineType::LocalLlama
+                            : PlanTranslationRouting(src_code_or_name, tgt_code_or_name,
+                                                     preferred, cloud_consent);
     }
 
     // R5 observability (R6-p4: now also names the resolved source and reflects
@@ -743,10 +764,13 @@ std::wstring TranslationManager::Translate(
             set_status(TranslationStatus::Canceled);
             return {};
         }
-        if (preferred == EngineType::LocalLlama &&
+        if (!user_gguf_route && preferred == EngineType::LocalLlama &&
             !LocalPairReliable(src_code_or_name, tgt_code_or_name)) {
             // Plan §4.1: explicit local pin + no cloud consent keeps the
             // request on-device; warn that the output language may degrade.
+            // 261116_0003 P2 fix round 2 (PR2-01): the user_gguf route is
+            // exempt; the Hy-MT2 reliable set says nothing about a
+            // user-supplied model.
             DIAG_F(
                     "ENGINE/Translate/042: pair (%s -> %s) outside the Hy-MT2 reliable set but strict-local pin without cloud consent; staying local (output may degrade)\n",
                     norm_src.c_str(), norm_tgt.c_str());
@@ -767,7 +791,12 @@ std::wstring TranslationManager::Translate(
         // R1-11: the seam reads the request SNAPSHOT's config copy, so the
         // whole pipe call runs with no state lock held and a concurrent
         // SetEngineHostConfig cannot mutate the block mid-request.
-        if (engine_host::TryTranslate(host_cfg,
+        // 261119 E1-B2a fix R19-01: Chat names itself EXPLICITLY on the
+        // one-shot seam (the engine client has no compiled-in identity any
+        // more). kChatEngineHostIdentity is the frozen wire pair
+        // "emebala-chat"/"0.10.1" — the bytes the host has answered since
+        // v0.10.1 (pinned by the hello-wire test in tests/run_tests.cpp).
+        if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
                                       host_out, host_err, served_model)) {
@@ -812,7 +841,7 @@ std::wstring TranslationManager::Translate(
                 set_status(TranslationStatus::Canceled);
                 return {};
             }
-            if (engine_host::TryTranslate(host_cfg,
+            if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
                                           host_out, host_err, served_model)) {

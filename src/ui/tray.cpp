@@ -5,6 +5,12 @@
 #include "../config.hpp"
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
+#include "language_search_palette.hpp" // 261116_0003 P6: the deferred picker open + ghost predicate
+// 261116_0003 P9b-3 U4a: the badge fold composes from the manager dialog's OWN
+// public landmarks (kBadgeSupportedPrefix / kBadgeUnsupportedPrefix /
+// kBadgeMarkerSeparator / kListBadgeSeparator) so the menu rows and the
+// manager list can never drift apart.
+#include "user_language_manager_dialog.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -65,8 +71,14 @@ enum TrayMenuId : UINT {
     ID_TRAY_CHEATSHEET = 2060,
     ID_TRAY_ABOUT = 2065,
     ID_TRAY_EXIT = 2070,
-    ID_TRAY_SRC_BASE = 2100, // 2100..2137  (REQ-025: TYPE pair - unchanged)
-    ID_TRAY_TGT_BASE = 2200, // 2200..2236  (REQ-025: TYPE pair - unchanged)
+    // 261116_0003 P3 fix round 3 (PR3-04 — the PR2-06 obligation from
+    // fix-list-round2.md, re-pinned here against the 90-row registry): the
+    // bands are sized by the LIVE registry, 90 source rows (AUTO + 89 targets,
+    // GetSupportedLanguages()) and 89 target rows (GetTargetLanguages()). The
+    // range comment names the last ID used; the static_asserts below check the
+    // exclusive bound BASE + count. (REQ-025: TYPE pair - unchanged IDs.)
+    ID_TRAY_SRC_BASE = 2100, // 2100..2189 (90 rows; exclusive end 2190)
+    ID_TRAY_TGT_BASE = 2200, // 2200..2288 (89 targets; exclusive end 2289)
     // R6 Phase 6 (plan §5.4), expanded by REQ-037 (P4 B-4, design §2-Q3):
     // UI-language selector submenu = Auto (2300) + the 37 GetSupportedUiLocales
     // entries (2301..2337, endonym-only labels, single column + OS auto-scroll
@@ -82,36 +94,333 @@ enum TrayMenuId : UINT {
     ID_TRAY_THEME_MONOLITH = SystemTray::kCmdThemeMonolith,
     // REQ-025 (Phase A §2.1.A3-25): DRAG ("번역툴팁") pair submenu IDs. The
     // existing 2100/2200 bands stay TYPE-only (regression guard); the drag
-    // pair gets fresh non-overlapping bands. 2400..2437 / 2500..2536.
+    // pair gets fresh non-overlapping bands with the same 90/89 split:
+    // 2400..2489 / 2500..2588 (exclusive ends 2490 / 2589).
     ID_TRAY_DRAG_SRC_BASE = 2400,
     ID_TRAY_DRAG_TGT_BASE = 2500,
     // W2 (R1-22, session 261029_0001): the 번역툴팁 group's Swap row — a plain
     // item BELOW the two drag pickers, in a fresh ≥2600 band (the 2500 band
-    // ends at 2536, so 2600 keeps a 63-ID gap for future target languages).
+    // ends at 2588, so 2600 kept an 11-ID gap — IDs 2589..2599 — for future
+    // target languages; it was 63 IDs before the P3 registry growth; the gap
+    // BELOW 2600 is still what the drag-target static_assert guards, since
+    // 89 future targets must fit before 2600).
     // Label reuses MenuSwapLangs (zero new i18n keys); the dispatch mirrors the
     // type-swap AUTO-pivot policy through PlanLanguageSwap and applies it to
     // the DRAG pair (ApplyLanguageChange(LanguageContext::Drag, ...)).
-    ID_TRAY_DRAG_SWAP = 2600
+    ID_TRAY_DRAG_SWAP = 2600,
+    // 261116_0003 P6 (language-menu redesign, plan §5 P6 + D3): the "검색…"
+    // search row and the pinned-absent ghost row, ONE PAIR PER LANGUAGE MENU
+    // (four menus: TYPE source/target, DRAG source/target), in the ≥2601 band
+    // directly above the Swap row. The search row opens the shared searchable
+    // language picker (src/ui/language_search_palette.hpp) through the REQ-047
+    // D3 deferred open posted in the dispatch below; the ghost row renders the
+    // pinned language the ACTIVE engine does not offer (greyed + checked —
+    // the "설정 유지됨" contract: the config value is preserved and still
+    // honored raw, it is just not offered here). The language rows above/
+    // below keep their UNCHANGED BASE+i IDs — these special rows are prepended
+    // in menu ORDER, they never shift the language bands.
+    ID_TRAY_SEARCH_SRC = 2601,
+    ID_TRAY_SEARCH_TGT = 2602,
+    ID_TRAY_SEARCH_DRAG_SRC = 2603,
+    ID_TRAY_SEARCH_DRAG_TGT = 2604,
+    ID_TRAY_GHOST_SRC = 2605,
+    ID_TRAY_GHOST_TGT = 2606,
+    ID_TRAY_GHOST_DRAG_SRC = 2607,
+    // 2609..2864 is the P9b-2 "내 언어" user-row band (kMaxUserLanguages per
+    // surface, four surfaces; the band asserts below pin the layout).
+    ID_TRAY_GHOST_DRAG_TGT = 2608,
+    // 261116_0003 P9b-3 U4a: the main menu's "내 언어 추가…" / "내 언어…"
+    // rows. The two ids DIRECTLY above the P9b-2 user band — 2865 is exactly
+    // kTrayUserLangBandEnd, so the rows stay contiguous with the band whose
+    // entries they manage, inside the 16-bit WM_COMMAND space and below the
+    // tooltip's own user band (2900, tooltip.hpp kTooltipCmdUserSrcBase; the
+    // assert blocks on BOTH surfaces pin the two directions, the same
+    // cross-surface discipline as the P9b-2 band). Both rows open modal
+    // dialogs, so their dispatch arms DEFER the open to the controller
+    // (WM_APP + 0x504 / + 0x505 — the kMsgOpenGgufManager house contract).
+    ID_TRAY_USER_LANG_ADD = kTrayUserLangBandEnd,        // 2865
+    ID_TRAY_USER_LANG_MANAGE = kTrayUserLangBandEnd + 1, // 2866
 };
 
 // REQ-037/B-4 compile-time guard for the band layout asserted above: the
 // 38-item UILANG submenu (Auto + 37 selector codes => 2300..2337) must stay
-// strictly below the DRAG band floor. If the selector ever grows past 99
+// strictly below the DRAG band floor. Its 37 is an I18N count
+// (GetSupportedUiLocales), NOT a language-registry count — the registry
+// literals live in the guards below. If the selector ever grows past 99
 // locales, widen the bands here FIRST - the AppendMenu loop would otherwise
 // hand submenu IDs straight into DRAG_SRC territory.
 static_assert(ID_TRAY_UILANG_BASE + 37 <= ID_TRAY_DRAG_SRC_BASE,
               "tray UI-language ID band must not collide with the drag band");
 
-// W2 (R1-22): the same guard for the two new neighbours — the drag TARGET
-// picker must stay strictly below the DRAG_SWAP row, and that row must sit in
-// the ≥2600 band the W2 research assigned it. Widen the band here FIRST if a
-// target language is ever added past the 63-ID headroom.
-static_assert(ID_TRAY_DRAG_TGT_BASE + 37 <= ID_TRAY_DRAG_SWAP,
-              "tray drag-target ID band must not collide with the drag-swap row");
+// 261116_0003 P3 fix round 3 (PR3-04, the PR2-06 obligation): the language-band
+// guards are pinned to the LIVE registry size — 90 source rows (AUTO + 89
+// targets) and 89 target rows (both pinned by run_tests.cpp's size checks).
+// They stay literals because kAllLanguages is a runtime vector, so EVERY
+// registry growth must re-pin them here in the same change:
+//   2100 + 90 = 2190 <= 2200   (TYPE source stays inside its 100-ID slot)
+//   2200 + 89 = 2289 <= 2300   (TYPE target stays below the UILANG row)
+//   2400 + 90 = 2490 <= 2500   (drag source stays inside its slot)
+//   2500 + 89 = 2589 <= 2600   (drag target keeps an 11-ID gap to the Swap row)
+// P6/P9 OBLIGATION — recorded, never left silent: P9's user-defined languages
+// join these SAME menus, so the per-row ID band must be re-designed (widened,
+// or replaced by a dynamic command map) BEFORE that growth; static literals
+// cannot absorb an unbounded user registry.
+static_assert(ID_TRAY_SRC_BASE + 90 <= ID_TRAY_TGT_BASE,
+              "tray TYPE source band (AUTO + 89 rows) must stay below the target band");
+static_assert(ID_TRAY_TGT_BASE + 89 <= ID_TRAY_UILANG_AUTO,
+              "tray TYPE target band (89 targets) must stay below the UI-language row");
+static_assert(ID_TRAY_DRAG_SRC_BASE + 90 <= ID_TRAY_DRAG_TGT_BASE,
+              "tray drag source band (AUTO + 89 rows) must stay below the drag-target band");
+static_assert(ID_TRAY_DRAG_TGT_BASE + 89 <= ID_TRAY_DRAG_SWAP,
+              "tray drag-target band (89 targets) must not collide with the drag-swap row");
 static_assert(ID_TRAY_DRAG_SWAP >= 2600,
               "the drag-pair Swap row belongs to the >=2600 band (W2/R1-22)");
 
+// 261116_0003 P6: the search/ghost band sits contiguous 2601..2608, directly
+// above the Swap row — a later renumber must never wander a special row into a
+// language band or the engine/control bands. (The P9 band-redesign obligation
+// recorded above still owns any growth BEYOND this block.)
+static_assert(ID_TRAY_SEARCH_SRC == ID_TRAY_DRAG_SWAP + 1 &&
+                  ID_TRAY_SEARCH_TGT == ID_TRAY_SEARCH_SRC + 1 &&
+                  ID_TRAY_SEARCH_DRAG_SRC == ID_TRAY_SEARCH_TGT + 1 &&
+                  ID_TRAY_SEARCH_DRAG_TGT == ID_TRAY_SEARCH_DRAG_SRC + 1 &&
+                  ID_TRAY_GHOST_SRC == ID_TRAY_SEARCH_DRAG_TGT + 1 &&
+                  ID_TRAY_GHOST_TGT == ID_TRAY_GHOST_SRC + 1 &&
+                  ID_TRAY_GHOST_DRAG_SRC == ID_TRAY_GHOST_TGT + 1 &&
+                  ID_TRAY_GHOST_DRAG_TGT == ID_TRAY_GHOST_DRAG_SRC + 1,
+              "the P6 search/ghost rows must stay the contiguous 2601..2608 band above the Swap row");
+
+// 261116_0003 P9b-2 (plan §3 D5 + §3d.5 shared-surface discipline): the
+// "내 언어" user-row band, the redesign the P6 block above recorded as an
+// obligation (ID_TRAY_GHOST_DRAG_TGT's "2609+ stays free until the P9
+// redesign"). The band is the flat computed layout from tray.hpp:
+//   base 2609 + surface * kMaxUserLanguages + user index, four surfaces.
+// The asserts below state the three properties the dispatcher relies on:
+//   1. CONTIGUITY: the base is exactly the first free id after the P6 block,
+//      so no gap can hide an id another band later claims.
+//   2. DISJOINTNESS from every other tray band, by literal facts rather than a
+//      range sweep: each assert names the highest id that band can reach, and
+//      every one of them is strictly below 2609.
+//   3. SLOT SEPARATION + headroom: each surface's last id stays below the next
+//      surface's first id, and the exclusive end stays inside the 16-bit
+//      WM_COMMAND space the menus are addressed in.
+// Growing kMaxUserLanguages is a re-pin duty HERE, exactly like the registry
+// band literals above (the merge caps the group at that constant, so 4 slots of
+// that size always suffice).
+static_assert(kTrayUserLangBase == ID_TRAY_GHOST_DRAG_TGT + 1,
+              "the P9b-2 user-row band must start directly above the P6 ghost block (2609)");
+static_assert(kTrayUserLangBase > ID_TRAY_SRC_BASE + 90 &&
+                  kTrayUserLangBase > ID_TRAY_TGT_BASE + 89 &&
+                  kTrayUserLangBase > ID_TRAY_UILANG_BASE + 37 &&
+                  kTrayUserLangBase > SystemTray::kCmdThemeMonolith &&
+                  kTrayUserLangBase > ID_TRAY_DRAG_SRC_BASE + 90 &&
+                  kTrayUserLangBase > ID_TRAY_DRAG_TGT_BASE + 89 &&
+                  kTrayUserLangBase > ID_TRAY_DRAG_SWAP &&
+                  kTrayUserLangBase > ID_TRAY_EXIT,
+              "the P9b-2 user-row band must stay above every existing tray band");
+static_assert(kTrayUserLangStride == static_cast<UINT>(kMaxUserLanguages),
+              "one user-row slot per surface must mirror the P9a registry cap");
+static_assert(TrayUserLangCommand(TrayUserLangSurface::TypingSource, kMaxUserLanguages - 1) <
+                      TrayUserLangCommand(TrayUserLangSurface::TypingTarget, 0) &&
+                  TrayUserLangCommand(TrayUserLangSurface::TypingTarget, kMaxUserLanguages - 1) <
+                      TrayUserLangCommand(TrayUserLangSurface::DragSource, 0) &&
+                  TrayUserLangCommand(TrayUserLangSurface::DragSource, kMaxUserLanguages - 1) <
+                      TrayUserLangCommand(TrayUserLangSurface::DragTarget, 0) &&
+                  TrayUserLangCommand(TrayUserLangSurface::DragTarget, kMaxUserLanguages - 1) + 1 ==
+                      kTrayUserLangBandEnd,
+              "the four P9b-2 user-row slots must be contiguous and pairwise disjoint");
+static_assert(kTrayUserLangBandEnd <= 0x10000,
+              "the P9b-2 user-row band must stay inside the 16-bit menu-command space");
+
+// 261116_0003 P9b-3 U4a: the two user-language dialog rows own the two ids
+// directly above the P9b-2 band. The asserts state the three properties the
+// layout relies on, in the band block's own idiom:
+//   1. CONTIGUITY: the add row is exactly the band's exclusive end and the
+//      manage row follows it — no gap another band can later claim.
+//   2. HEADROOM TO THE TOOLTIP BAND: the tooltip's own user band starts at
+//      2900 (tooltip.hpp kTooltipCmdUserSrcBase, pinned there by that header's
+//      constants and tooltip.cpp's assert block, which pins the opposite
+//      direction against kTrayUserLangBandEnd) — the rows must stay below it
+//      so the two surfaces can never address one another's commands.
+//   3. The 16-bit WM_COMMAND bound.
+static_assert(ID_TRAY_USER_LANG_ADD == kTrayUserLangBandEnd &&
+                  ID_TRAY_USER_LANG_MANAGE == ID_TRAY_USER_LANG_ADD + 1,
+              "the P9b-3 user-language dialog rows must sit directly above the P9b-2 user band");
+static_assert(ID_TRAY_USER_LANG_MANAGE < 2900,
+              "the P9b-3 user-language dialog rows must stay below the tooltip user band "
+              "(2900, tooltip.hpp kTooltipCmdUserSrcBase)");
+static_assert(ID_TRAY_USER_LANG_MANAGE <= 0xFFFF,
+              "the P9b-3 user-language dialog rows must stay inside the 16-bit menu-command space");
+
 } // namespace
+
+// 261116_0003 P9b-2: one "내 언어" row label. Native name first, the English
+// name in parentheses only when the entry carries one; no code prefix (that is
+// what distinguishes a user row from the registry rows' "CODE - display" form).
+std::string FormatUserLanguageMenuLabel(const UserLanguage& language) {
+    std::string label = language.native_name;
+    if (!language.english_name.empty()) {
+        label += " (";
+        label += language.english_name;
+        label += ")";
+    }
+    // 261116_0003 P9b-2 fix R14-05: every consumer passes this label to
+    // AppendMenuW, which consumes '&' as the mnemonic marker. A user-typed
+    // name containing '&' must render the literal character, else the row
+    // reads textually different from the sanitized stored name (a crafted
+    // name could even shadow a registry row's text while dispatching its
+    // own payload). Double the marker for the menu API; the stored name and
+    // the UserLanguageStoredName dispatch payload stay byte-identical.
+    std::string menu_label;
+    menu_label.reserve(label.size());
+    for (const char ch : label) {
+        menu_label.push_back(ch);
+        if (ch == '&') {
+            menu_label.push_back('&');
+        }
+    }
+    return menu_label;
+}
+
+// 261116_0003 P9b-3 U4a: the ONE shared "내 언어" row badge fold — the contract
+// lives on the declaration (tray.hpp). This is the ONLY body; all six menu
+// surfaces (the tray's four submenus through build_language_menu and the
+// tooltip's two dropdowns) compose label + suffix through it. The display
+// states mirror the manager dialog's row fold exactly, from that module's OWN
+// public landmarks, so the menu rows and the manager list can never drift.
+std::wstring UserLanguageMenuBadgeSuffix(const UserLanguage& language,
+                                         std::string_view probe_engine_id,
+                                         std::string_view probe_model,
+                                         bool in_flight) {
+    namespace uld = user_language_manager_dialog;
+    // No-probe engine context (D6: Google is publisher-declared; D7 + Auto:
+    // UserLanguageEngineId returns "") — the row carries no verdict suffix.
+    if (probe_engine_id.empty()) {
+        return {};
+    }
+    // Runtime-only Checking (U3's in-flight set; the persisted slot never
+    // holds Checking — ParseProbeStatusToken maps it to Unknown).
+    if (in_flight) {
+        return std::wstring(uld::kListBadgeSeparator) + I18n::Get(StringId::UserLangProbeChecking);
+    }
+    // The SAME key construction the U3 runner writes with: a different model
+    // half here would address a DIFFERENT cache slot on purpose (D6 caches
+    // per engine + model + language).
+    const UserLanguageProbe* probe =
+        FindUserLanguageProbe(language, probe_engine_id, probe_model);
+    if (probe == nullptr) {
+        return {}; // Unknown: nothing judged yet (D6 draws no badge)
+    }
+    switch (DisplayUserLanguageProbeStatus(*probe)) {
+        case UserLanguageProbeStatus::Supported:
+            return std::wstring(uld::kListBadgeSeparator) + uld::kBadgeSupportedPrefix +
+                   I18n::Get(StringId::UserLangProbeSupported);
+        case UserLanguageProbeStatus::Unsupported:
+            return std::wstring(uld::kListBadgeSeparator) + uld::kBadgeUnsupportedPrefix +
+                   I18n::Get(StringId::UserLangProbeUnsupported);
+        case UserLanguageProbeStatus::Checking:
+            // A persisted slot can still READ Checking (only the LOAD path maps
+            // it to Unknown, config.cpp ParseProbeStatusToken); render it like
+            // the runtime state, exactly as the manager fold does — never a
+            // sixth look.
+            return std::wstring(uld::kListBadgeSeparator) + I18n::Get(StringId::UserLangProbeChecking);
+        case UserLanguageProbeStatus::UserOverridden: {
+            // DisplayUserLanguageProbeStatus returns UserOverridden only when
+            // override_status is a real answer (config.cpp), so the direction
+            // is always one of the two verdicts; the marker rides the marker
+            // separator (D6: the user is the final authority).
+            const bool supported =
+                probe->override_status == UserLanguageProbeStatus::Supported;
+            return std::wstring(uld::kListBadgeSeparator) +
+                   (supported ? uld::kBadgeSupportedPrefix : uld::kBadgeUnsupportedPrefix) +
+                   I18n::Get(supported ? StringId::UserLangProbeSupported
+                                       : StringId::UserLangProbeUnsupported) +
+                   uld::kBadgeMarkerSeparator + I18n::Get(StringId::UserLangOverrideActive);
+        }
+        case UserLanguageProbeStatus::Unknown:
+        default:
+            return {};
+    }
+}
+
+// 261116_0003 P9b-2 fix R14-02: the shared pin-to-row resolution. The contract
+// lives on the declaration (tray.hpp); this is the ONE body every surface
+// calls, so no surface can re-derive the match.
+const UserLanguage* CurrentUserLanguageRow(const LanguageMenuView& merged,
+                                           std::string_view pinned_raw) {
+    if (pinned_raw.empty()) {
+        return nullptr;
+    }
+    // Arm 1 (spelling) across the whole rendered group first: a pin that
+    // literally carries one of an entry's own spellings names that entry, even
+    // when another entry's code happens to resolve from the same text. The
+    // single-entry vector keeps FindUserLanguage the only definition of the
+    // spelling set (the suite pins the equivalence on an all-entries view).
+    for (const LanguageMenuRow& row : merged.user_group) {
+        const UserLanguage* entry = row.user;
+        if (entry == nullptr || entry->native_name.empty()) {
+            continue;
+        }
+        if (FindUserLanguage(std::vector<UserLanguage>{*entry}, pinned_raw) != nullptr) {
+            return entry;
+        }
+    }
+    // Arm 2 (resolved code): the planner's registry-first canonicalization
+    // rewrites a pick to the registry spelling, so this is the arm that makes
+    // "Korean" light a native-only KO entry's row. An unresolvable pin
+    // normalizes to AUTO, which no stored entry may carry (config.cpp rejects
+    // it at parse), so the guard also keeps that sentinel out of the match.
+    const std::string resolved_code = NormalizeLanguageCode(pinned_raw);
+    if (resolved_code.empty() || resolved_code == "AUTO") {
+        return nullptr;
+    }
+    for (const LanguageMenuRow& row : merged.user_group) {
+        const UserLanguage* entry = row.user;
+        if (entry == nullptr || entry->code.empty()) {
+            continue;
+        }
+        if (entry->code == resolved_code) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+// 261116_0003 P9b-2: the user half of the pinned-absent ghost. The registry
+// half stays the shared palette predicate; the caller gates this half on the
+// registry half's PRE-SUPPRESSION null (fix R14-01, at the menu build), and
+// the helper itself answers one question from the authoritative merge: is the
+// pinned entry offered anywhere in this view at all.
+const UserLanguage* PinnedAbsentUserLanguage(const LanguageMenuView& merged,
+                                             const std::vector<UserLanguage>& user_languages,
+                                             std::string_view pinned_name) {
+    const UserLanguage* pinned = FindUserLanguage(user_languages, pinned_name);
+    if (pinned == nullptr) {
+        return nullptr; // the pin names no registered entry: not a user ghost
+    }
+    const bool has_code = !pinned->code.empty();
+    for (const LanguageMenuRow& row : merged.user_group) {
+        if (row.user == pinned) {
+            return nullptr; // offered as a "내 언어" row: not absent
+        }
+        // 261116_0003 P9b-2 fix R14-04: the merge dedupes the group by resolved
+        // code and keeps only the FIRST entry of a duplicate code, so the
+        // pinned entry can be the dropped twin while the language is still
+        // offered as the surviving entry's row. A group row with the same code
+        // is the same language: not absent.
+        if (has_code && row.user != nullptr && row.user->code == pinned->code) {
+            return nullptr; // offered as another entry's "내 언어" row
+        }
+    }
+    if (has_code) {
+        for (const LanguageInfo* row : merged.registry) {
+            if (row != nullptr && row->code == pinned->code) {
+                return nullptr; // offered through its resolved registry row
+            }
+        }
+    }
+    return pinned;
+}
 
 SystemTray::SystemTray() = default;
 
@@ -606,11 +915,25 @@ void SystemTray::UpdateStatus(
     // are visible through successive lines of this tag). REQ-025 adds the drag
     // pair so the DP-2 check (drag change must NOT alter src/tgt = type tip)
     // is directly readable from this log line.
-    DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s drag_src=%s drag_tgt=%s auto_send=%d icon_changed=%d",
-             active ? 1 : 0, active_engine_.c_str(),
-             std::string(src_code).c_str(), std::string(tgt_code).c_str(),
-             std::string(drag_src_code).c_str(), std::string(drag_tgt_code).c_str(),
-             auto_send ? 1 : 0, iconChanged ? 1 : 0);
+    // 261116_0003 P9b-3 F-1 (R15-12): the src/tgt/drag codes can BE
+    // user-typed stored names (a user-language pick stores its name as the
+    // planner token), so the pair fields are content: REQ-003 records them
+    // only behind diag::ContentLoggingEnabled() (default off) — the same
+    // gate R14-06 gave menu_select_user; the else branch keeps the
+    // shape-only len= fields.
+    if (diag::ContentLoggingEnabled()) {
+        DIAG_LOG("UI", "tray_update active=%d engine=%s src=%s tgt=%s drag_src=%s drag_tgt=%s auto_send=%d icon_changed=%d",
+                 active ? 1 : 0, active_engine_.c_str(),
+                 std::string(src_code).c_str(), std::string(tgt_code).c_str(),
+                 std::string(drag_src_code).c_str(), std::string(drag_tgt_code).c_str(),
+                 auto_send ? 1 : 0, iconChanged ? 1 : 0);
+    } else {
+        DIAG_LOG("UI", "tray_update active=%d engine=%s src_len=%zu tgt_len=%zu drag_src_len=%zu drag_tgt_len=%zu auto_send=%d icon_changed=%d",
+                 active ? 1 : 0, active_engine_.c_str(),
+                 src_code.size(), tgt_code.size(),
+                 drag_src_code.size(), drag_tgt_code.size(),
+                 auto_send ? 1 : 0, iconChanged ? 1 : 0);
+    }
 }
 
 void SystemTray::ShowContextMenu() {
@@ -632,14 +955,36 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
     // 2. Engine submenu
-    // REQ-056 (derive-at-open): the submenu's two config-derived values are
+    // REQ-056 (derive-at-open): the submenu's config-derived values are
     // resolved NOW, at menu build time, from main.cpp (the single authority)
     // — the tray keeps no cached copies, so no push path can go stale (the
     // 260922 session's F9 stem-clobber and check-mark bugs both lived in those
-    // caches). Without a resolver the defaults render Google checked and no
-    // user-model entry (engine submenu degenerates to built-ins + manager).
+    // caches). Without a resolver the defaults render Google checked, keep the
+    // single-view ghost (is_auto false) and show no user-model entry (engine
+    // submenu degenerates to built-ins + manager).
     const EngineMenuView view = resolver_ ? resolver_() : EngineMenuView{};
     const int pref = view.preferred_engine;
+    // 261116_0003 P6a fix round r2 (PR6-07): index 0 covers BOTH "google" and
+    // "auto", but only an explicitly persisted "auto" lets the router serve a
+    // HyMt2-only pin (a persisted "google" latches active_type_ = Google in
+    // RefreshActiveEngine, engine.cpp:313-315, and Translate() consults the
+    // plan only under active == LocalLlama, engine.cpp:685-691). The token
+    // therefore scopes the composed ghost gate below to auto.
+    const bool is_auto = view.is_auto;
+    // 261116_0003 P6a fix round r4 (PR6-19): the availability half, the
+    // router's OWN HostCouldServeFor (engine.cpp:288-290) = enabled + the host
+    // binary present. Its binary half is a LIVE probe while the router's local
+    // leg is the LATCHED active_type_ (refreshed only in RefreshActiveEngine,
+    // engine.cpp:304), so a binary that appears after the last refresh reads
+    // TRUE here while Auto still routes Google and the ghost stays suppressed
+    // in that window (the one divergence direction, scoped in tray.hpp's
+    // rationale). Under auto with the host absent at the last refresh the
+    // router picks Google (engine.cpp:357-359) and never consults the routing
+    // plan, so a HyMt2-only pin is honored by NO leg and the truthful ghost
+    // must SHOW.
+    // (Copied into a local because the language-menu lambda's own `view`
+    // parameter — the registry language view — shadows this EngineMenuView.)
+    const bool local_host_available = view.local_host_available;
     const std::string user_model_stem = view.user_model_stem;
     HMENU hEngineMenu = ::CreatePopupMenu();
     // REQ-045 P4-3 + REQ-046 P4-2 (Rev2 §B-3): flat 4-way check (0 = Google,
@@ -661,7 +1006,7 @@ void SystemTray::ShowContextMenu() {
     // is appended ONLY while a user model is registered — the stem the
     // resolver just derived (REQ-056; main.cpp resolves it from the registry
     // at this moment) non-empty. Nothing registered -> the submenu shows just
-    // the manager row below. While registered, the " — <stem>" suffix rides
+    // the manager row below. While registered, the " - <stem>" suffix rides
     // the label REGARDLESS of the checked engine: the old code appended the
     // suffix only at pref==3, so switching to another engine made the entry
     // read like nothing was registered. The frozen REQ-046 radio contract is
@@ -670,7 +1015,7 @@ void SystemTray::ShowContextMenu() {
     // entry.
     if (!user_model_stem.empty()) {
         std::wstring user_gguf_label = I18n::Get(StringId::MenuEngineUserGguf);
-        user_gguf_label += L" — " + ToUtf16(user_model_stem);
+        user_gguf_label += L" - " + ToUtf16(user_model_stem);
         ::AppendMenuW(hEngineMenu, MF_STRING | (pref == 3 ? MF_CHECKED : MF_UNCHECKED),
                       ID_TRAY_ENGINE_USER_GGUF, user_gguf_label.c_str());
     }
@@ -749,24 +1094,277 @@ void SystemTray::ShowContextMenu() {
     //   키보드타이핑 (type)  > 출발언어 / 도착언어  — IDs 2100/2200 (UNCHANGED)
     //   번역툴팁   (drag)   > 출발언어 / 도착언어  — IDs 2400/2500 (NEW)
     // Submenu entry texts reuse MenuSourceLang/MenuTargetLang per the plan.
-    const auto& allLangs = GetSupportedLanguages();
-    const auto& tgtLangs = GetTargetLanguages();
+    // 261116_0003 P6 (language-menu redesign, plan §5 P6 + D3): the four
+    // language menus build from the ACTIVE ENGINE's registry view instead of
+    // the global lists — GetLanguagesForEngine(TrayLanguageEngineFor(pref),
+    // include_auto), include_auto=true on the two SOURCE menus (AUTO stays a
+    // first-class source setting), false on the two TARGET menus (AUTO can
+    // never be a translation target). P9b-2 (below) layers the "내 언어" merge
+    // on the same views: BuildLanguageMenuView wraps that call, so the view
+    // locals are the build-time AND dispatch-time payload. Their row POINTERS
+    // reference config.cpp's immutable statics; the wrapping vectors are
+    // locals, and the dispatch range-checks and name lookups index the SAME
+    // locals the menu was built from (never re-fetch a different list between
+    // build and dispatch).
+    //
+    // Menu shape per designer §4.1 + plan §4: the "검색…" row (MenuSearchLangs,
+    // >=2601 band) first, a separator, then — only when the active engine does
+    // NOT offer the menu's current value — the pinned-absent GHOST row
+    // (greyed + checked: the "설정 유지됨" contract — the config value is
+    // preserved verbatim and still honored raw by the engine adapter, it is
+    // just not offered by this engine), then the engine-view rows with their
+    // UNCHANGED BASE+i IDs (the special rows are prepended in menu order and
+    // never shift the language bands). The ghost predicate is the picker's OWN
+    // tested capability check (PickerState::PinnedAbsentLanguage —
+    // phase-note-p5 §5: reuse it, never re-implement the capability check),
+    // driven by the SAME PickerInit the search row posts to the deferred open,
+    // so the menu and the picker can never disagree about (engine, role,
+    // current codes).
+    const LanguageEngine menu_engine = TrayLanguageEngineFor(pref);
+    // 261116_0003 P9b-2 (plan §3 D5 + §4 Phase 3): the D5/D7 merge is the only
+    // menu data source now. BuildLanguageMenuView returns the engine's registry
+    // rows PLUS the "내 언어" group (the local Hy-MT2 view never carries one,
+    // D7; Google carries only entries whose code is Google-servable; the
+    // free-form engines carry every entry), and removes every registry row a
+    // user entry claimed, so a language renders once per menu. The merge is
+    // authoritative: this surface adds no filtering of its own.
+    // The views are LOCALS alive across TrackPopupMenuEx because the group's
+    // rows point into `users` (the resolver's copy) and every dispatch lookup
+    // indexes these SAME vectors the menu was built from (the P6 build-time
+    // payload discipline: never re-fetch a different list between build and
+    // dispatch).
+    const std::vector<UserLanguage>& users = view.user_languages;
+    const LanguageMenuView srcMenu =
+        BuildLanguageMenuView(menu_engine, /*include_auto=*/true, users);
+    const LanguageMenuView tgtMenu =
+        BuildLanguageMenuView(menu_engine, /*include_auto=*/false, users);
+
+    std::string normSrc = NormalizeLanguageCode(src_code_);
+    std::string normTgt = NormalizeLanguageCode(tgt_code_);
+    std::string normDragSrc = NormalizeLanguageCode(drag_src_code_);
+    std::string normDragTgt = NormalizeLanguageCode(drag_tgt_code_);
+
+    // The four (surface, role) picker requests, latched at menu-build time.
+    // They drive BOTH the ghost probes below AND the REQ-047 D3 deferred open
+    // in the dispatch. The request INTENTIONALLY SNAPSHOTS the build-time
+    // pair: the menu is modal, so the dispatch path cannot re-derive the
+    // values (one request object per menu) — and while the hook thread's
+    // tray_.UpdateStatus CAN change src_code_/drag_src_code_ mid-menu, that
+    // only affects the NEXT build; it never rewrites this in-flight snapshot
+    // (261116_0003 P6a fix round, PR6-03d — the earlier "nothing can change
+    // the pair" claim was too absolute).
+    const auto make_picker_request = [&](language_palette::PickerSurface surface,
+                                         language_palette::PickerRole role,
+                                         const std::string& src,
+                                         const std::string& tgt) {
+        language_palette::PickerInit req;
+        req.surface = surface;
+        req.role = role;
+        req.engine = menu_engine;
+        req.source_code = src;
+        req.target_code = tgt;
+        return req;
+    };
+    const language_palette::PickerInit typing_src_req =
+        make_picker_request(language_palette::PickerSurface::TrayTyping,
+                            language_palette::PickerRole::Source, normSrc, normTgt);
+    const language_palette::PickerInit typing_tgt_req =
+        make_picker_request(language_palette::PickerSurface::TrayTyping,
+                            language_palette::PickerRole::Target, normSrc, normTgt);
+    const language_palette::PickerInit drag_src_req =
+        make_picker_request(language_palette::PickerSurface::TrayTooltip,
+                            language_palette::PickerRole::Source, normDragSrc, normDragTgt);
+    const language_palette::PickerInit drag_tgt_req =
+        make_picker_request(language_palette::PickerSurface::TrayTooltip,
+                            language_palette::PickerRole::Target, normDragSrc, normDragTgt);
+
+    // One builder for all four language submenus (261116_0003 P6): the
+    // "검색…" row, a separator, the optional pinned-absent ghost row, then the
+    // "내 언어" group (P9b-2, non-empty only where the merge offers user
+    // entries), then the engine-view rows with their UNCHANGED BASE+i IDs.
+    const auto build_language_menu = [&](HMENU menu,
+                                         UINT search_cmd,
+                                         UINT ghost_cmd,
+                                         UINT row_base,
+                                         TrayUserLangSurface surface,
+                                         const LanguageMenuView& merged,
+                                         const std::string& current,
+                                         const std::string& current_raw,
+                                         const language_palette::PickerInit& ghost_probe) {
+        const UINT user_base = TrayUserLangCommand(surface, 0);
+        ::AppendMenuW(menu, MF_STRING, search_cmd,
+                      I18n::Get(StringId::MenuSearchLangs).c_str());
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // 261116_0003 P6a fix round (PR6-01) + r2 (PR6-07) + r3 (PR6-10) +
+        // r4 (PR6-19), composed gate now the SHARED predicate (P6b fix round,
+        // PR6-28): ghost the pinned row only when no engine leg the ROUTER
+        // can pick would serve it. The Google view is what renders under BOTH
+        // "google" and "auto", but the legs differ: the auto router serves
+        // local-capable pairs from the local engine (PlanTranslationRouting /
+        // LocalPairReliable), while an explicit "google" pin latches
+        // active_type_ = Google (engine.cpp:313-315) and never reaches the
+        // plan (engine.cpp:685-691). The shared predicate composes the four
+        // conjuncts hardened across the P6a rounds, each with one job:
+        //   preferred_engine == 0  the Google view; concrete engines (1/2/3)
+        //                          keep the single-view ghost (R2 PR6-07)
+        //   is_auto                the RAW config token, which the collapsed
+        //                          index cannot convey — only a persisted
+        //                          "auto" may route a pair locally at all
+        //   local_host_available   the router's OWN HostCouldServeFor
+        //                          (engine.cpp:288-290), a LIVE binary check
+        //                          rather than the router's latched local leg:
+        //                          under auto with the host leg dead
+        //                          (Zero-Install) the router picks Google
+        //                          (engine.cpp:357-359) and never consults
+        //                          PlanTranslationRouting, so a HyMt2-only pin
+        //                          is honored by NO leg — Google cannot serve
+        //                          it — and the truthful ghost must SHOW
+        //                          (the tray's resolver view carries this
+        //                          token, unlike this lambda's `merged` param,
+        //                          which is the merged language view)
+        //   LocalPairReliable(...) the router's OWN pair predicate, PAIR-WISE
+        //                          (config.cpp:1280-1307 — the TARGET must
+        //                          carry kLangHyMt2 and the source must be
+        //                          AUTO or also carry kLangHyMt2), so it
+        //                          answers exactly what the router answers
+        //                          under auto
+        // The r2 round's pair-blind view-membership probe defect and the r4
+        // Zero-Install window are documented where the predicate lives
+        // (language_search_palette.hpp) — ONE DECISION shared by BOTH this
+        // lambda and the tooltip's two dropdowns, over per-surface INPUTS
+        // (PR6-38): main.cpp wires THIS surface's resolver
+        // (main.cpp:2989-3018) and the tooltip's SetEngineResolver
+        // (main.cpp:3171-3184) from the SAME sources, so is_auto /
+        // local_host_available are the live router view on both surfaces and
+        // the two surfaces now agree on the ghost row. The pre-P6c
+        // interim (tooltip unwired, conservative defaults, truthful ghost
+        // where the tray suppressed) is gone; the safe direction it relied on
+        // was over-information, never wrongful suppression — the P6a defect
+        // class was wrongful SUPPRESSION. ghost_probe carries
+        // the normalized codes (normSrc/normTgt above) and LocalPairReliable
+        // normalizes internally anyway. FALSE (explicit "google", auto with
+        // the host leg not live, or a tray with no resolver, the default) and
+        // concrete engines (1/2/3, pref != 0) keep the truthful single-view
+        // ghost.
+        const LanguageInfo* ghost =
+            language_palette::PickerState{ghost_probe}.PinnedAbsentLanguage();
+        // 261116_0003 P9b-2 fix R14-01: capture "the registry half found a
+        // ghost" BEFORE the shared gate below decides. The user half (the else
+        // branch) runs only on this PRE-SUPPRESSION null, so a pin whose ghost
+        // the shared gate suppresses (AUTO + live host + a locally reliable
+        // pair, e.g. a Hy-MT2-only code such as BO) renders NOTHING, exactly
+        // like an identical registry pin, instead of the user half
+        // re-rendering the greyed row the one shared suppression decision
+        // just rejected.
+        const bool registry_ghost_found = ghost != nullptr;
+        if (ghost != nullptr &&
+            language_palette::SuppressPinnedAbsentGhost(ghost_probe, pref, is_auto,
+                                                        local_host_available)) {
+            ghost = nullptr;
+        }
+        if (ghost != nullptr) {
+            const std::wstring ghost_text =
+                ToUtf16(ghost->code) + L" - " + I18n::GetLanguageDisplayName(ghost->code);
+            ::AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_CHECKED, ghost_cmd,
+                          ghost_text.c_str());
+        } else if (!registry_ghost_found) {
+            // 261116_0003 P9b-2: the USER half of the same ghost contract, in
+            // the SAME row slot and with the SAME command id (so the
+            // documented no-op dispatch arm covers it, and no new id is
+            // spent). Reached only when the registry half found nothing BEFORE
+            // the shared suppression gate decides (fix R14-01): either the pin
+            // is not a registry language at all, or its row is offered here;
+            // a code-carrying pin whose ghost the gate suppressed never
+            // reaches this branch. The helper answers from the merge, not
+            // from a capability rule: a pinned entry the authoritative view
+            // does not offer is exactly as "설정 유지됨" as a registry pin the
+            // engine cannot serve, and it must not disappear silently after
+            // an engine switch. Greyed + checked, exactly like the registry
+            // ghost row above; the label is the user row form (no code
+            // prefix), so it reads as the pinned entry, not as a registry row.
+            if (const UserLanguage* user_ghost =
+                    PinnedAbsentUserLanguage(merged, users, current_raw)) {
+                const std::wstring ghost_text = ToUtf16(FormatUserLanguageMenuLabel(*user_ghost));
+                ::AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_CHECKED, ghost_cmd,
+                              ghost_text.c_str());
+            }
+        }
+        // 261116_0003 P9b-2 (plan §3 D5 "내 언어 group atop cloud menus"): the
+        // group renders only where the merge offers user entries - never under
+        // the local Hy-MT2 engine (D7), and under Google only for entries whose
+        // code is publisher-declared. Position: BELOW the search row, the
+        // separator and the optional ghost row (all three keep their P6
+        // positions), ABOVE the registry rows. The header is a DISABLED item
+        // (non-selectable, id 0: a header is not a command) using the P9b-1
+        // string; the rows carry the computed user band, one slot per surface.
+        // The check mark comes from the ONE shared pin-to-row resolution
+        // (CurrentUserLanguageRow, fix R14-02), never a per-surface spelling
+        // lookup: it answers over the RENDERED group (so the marked row is
+        // always a row this menu draws) and it closes the planner's
+        // registry-first round trip (a native-only entry persists as the
+        // registry spelling and is found again through its resolved code).
+        // `user_row_checked` threads that answer into the registry rule below,
+        // so the AUTO row cannot double mark a setting the user row already
+        // owns: one setting, exactly one check mark. The count is capped at the
+        // same kMaxUserLanguages the merge caps at, which keeps row ids inside
+        // their surface's slot (the band static_asserts).
+        const UserLanguage* current_user = CurrentUserLanguageRow(merged, current_raw);
+        const bool user_row_checked = current_user != nullptr;
+        if (!merged.user_group.empty()) {
+            ::AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
+                          I18n::Get(StringId::UserLangsGroup).c_str());
+            const size_t user_count = (std::min)(merged.user_group.size(),
+                                                 static_cast<size_t>(kMaxUserLanguages));
+            for (size_t i = 0; i < user_count; ++i) {
+                const UserLanguage* entry = merged.user_group[i].user;
+                if (entry == nullptr) {
+                    continue;
+                }
+                // 261116_0003 P9b-3 U4a: the probe badge rides the row through
+                // the ONE shared fold (tray.hpp), keyed by this menu build's
+                // resolver view — the same derive-at-open (engine, model) key
+                // the tooltip's dropdowns read, so one verdict renders
+                // identically on all six surfaces. The in-flight seam is the
+                // resolver's per-entry predicate (the stored-name keying
+                // lives inside the seam, main.cpp); an EMPTY seam (no
+                // resolver) means simply not in flight. Display-only: the
+                // check mark above and the registry rule below are untouched.
+                const bool probe_in_flight =
+                    view.user_lang_probe_in_flight &&
+                    view.user_lang_probe_in_flight(*entry);
+                const std::wstring item_text =
+                    ToUtf16(FormatUserLanguageMenuLabel(*entry)) +
+                    UserLanguageMenuBadgeSuffix(*entry, view.user_lang_probe_engine,
+                                                view.user_lang_probe_model, probe_in_flight);
+                const bool is_current = (entry == current_user);
+                ::AppendMenuW(menu, MF_STRING | (is_current ? MF_CHECKED : MF_UNCHECKED),
+                              user_base + static_cast<UINT>(i), item_text.c_str());
+            }
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        }
+        for (size_t i = 0; i < merged.registry.size(); ++i) {
+            std::wstring item_text =
+                ToUtf16(merged.registry[i]->code) + L" - " + I18n::GetLanguageDisplayName(merged.registry[i]->code);
+            // 261116_0003 P9b-2 + fix R14-02: the shared check-mark rule, so a
+            // code-less user pin (which normalizes to AUTO) or an AUTO-spelled
+            // user entry cannot also light the AUTO row while its own "내 언어"
+            // row is checked.
+            const bool is_current = IsRegistryMenuRowCurrent(
+                merged.registry[i]->code, current, current_raw, user_row_checked);
+            ::AppendMenuW(menu, MF_STRING | (is_current ? MF_CHECKED : MF_UNCHECKED),
+                          row_base + static_cast<UINT>(i), item_text.c_str());
+        }
+    };
 
     HMENU hSrcMenu = ::CreatePopupMenu();
-    std::string normSrc = NormalizeLanguageCode(src_code_);
-    for (size_t i = 0; i < allLangs.size(); ++i) {
-        std::wstring itemText = ToUtf16(allLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(allLangs[i].code);
-        bool isCurrent = (normSrc == allLangs[i].code);
-        ::AppendMenuW(hSrcMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_SRC_BASE + static_cast<UINT>(i), itemText.c_str());
-    }
+    build_language_menu(hSrcMenu, ID_TRAY_SEARCH_SRC, ID_TRAY_GHOST_SRC,
+                        ID_TRAY_SRC_BASE, TrayUserLangSurface::TypingSource,
+                        srcMenu, normSrc, src_code_, typing_src_req);
 
     HMENU hTgtMenu = ::CreatePopupMenu();
-    std::string normTgt = NormalizeLanguageCode(tgt_code_);
-    for (size_t i = 0; i < tgtLangs.size(); ++i) {
-        std::wstring itemText = ToUtf16(tgtLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(tgtLangs[i].code);
-        bool isCurrent = (normTgt == tgtLangs[i].code);
-        ::AppendMenuW(hTgtMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_TGT_BASE + static_cast<UINT>(i), itemText.c_str());
-    }
+    build_language_menu(hTgtMenu, ID_TRAY_SEARCH_TGT, ID_TRAY_GHOST_TGT,
+                        ID_TRAY_TGT_BASE, TrayUserLangSurface::TypingTarget,
+                        tgtMenu, normTgt, tgt_code_, typing_tgt_req);
 
     HMENU hTypingGroup = ::CreatePopupMenu();
     ::AppendMenuW(hTypingGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
@@ -774,21 +1372,17 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTypingGroup), I18n::Get(StringId::MenuTypingGroup).c_str());
 
     // 4b. Drag ("번역툴팁") pair — check marks follow drag_src_code_/drag_tgt_code_.
+    // 261116_0003 P6: same engine-view + 검색…/ghost shape as the type pair
+    // above, surface TrayTooltip (the picker's phase-note §3 mapping).
     HMENU hDragSrcMenu = ::CreatePopupMenu();
-    std::string normDragSrc = NormalizeLanguageCode(drag_src_code_);
-    for (size_t i = 0; i < allLangs.size(); ++i) {
-        std::wstring itemText = ToUtf16(allLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(allLangs[i].code);
-        bool isCurrent = (normDragSrc == allLangs[i].code);
-        ::AppendMenuW(hDragSrcMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_DRAG_SRC_BASE + static_cast<UINT>(i), itemText.c_str());
-    }
+    build_language_menu(hDragSrcMenu, ID_TRAY_SEARCH_DRAG_SRC, ID_TRAY_GHOST_DRAG_SRC,
+                        ID_TRAY_DRAG_SRC_BASE, TrayUserLangSurface::DragSource,
+                        srcMenu, normDragSrc, drag_src_code_, drag_src_req);
 
     HMENU hDragTgtMenu = ::CreatePopupMenu();
-    std::string normDragTgt = NormalizeLanguageCode(drag_tgt_code_);
-    for (size_t i = 0; i < tgtLangs.size(); ++i) {
-        std::wstring itemText = ToUtf16(tgtLangs[i].code) + L" - " + I18n::GetLanguageDisplayName(tgtLangs[i].code);
-        bool isCurrent = (normDragTgt == tgtLangs[i].code);
-        ::AppendMenuW(hDragTgtMenu, MF_STRING | (isCurrent ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_DRAG_TGT_BASE + static_cast<UINT>(i), itemText.c_str());
-    }
+    build_language_menu(hDragTgtMenu, ID_TRAY_SEARCH_DRAG_TGT, ID_TRAY_GHOST_DRAG_TGT,
+                        ID_TRAY_DRAG_TGT_BASE, TrayUserLangSurface::DragTarget,
+                        tgtMenu, normDragTgt, drag_tgt_code_, drag_tgt_req);
 
     HMENU hTooltipGroup = ::CreatePopupMenu();
     ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
@@ -803,6 +1397,23 @@ void SystemTray::ShowContextMenu() {
     // single language authority (INV-2/INV-3).
     ::AppendMenuW(hTooltipGroup, MF_STRING, ID_TRAY_DRAG_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTooltipGroup), I18n::Get(StringId::MenuTooltipGroup).c_str());
+
+    // 4c. 261116_0003 P9b-3 U4a: the "내 언어" management rows, directly below
+    // the two language submenu groups they manage (pinned position: above the
+    // Swap row). BOTH open modal dialogs, so both are PLAIN items (no check
+    // geometry) and BOTH defer their open to the controller in the dispatch
+    // below (the kMsgOpenGgufManager REQ-047 D3 contract). The add row reuses
+    // the P9b-1 dialog title as its label (the copy the add dialog itself
+    // shows); the manage row reuses the group's own name — the manager dialog
+    // it opens carries that same title (U4b's recorded copy gap: no dedicated
+    // "관리…" id landed in P9b-1, and this unit adds no StringIds), so the
+    // affordance reads as "open my languages". The trailing ellipsis marks a
+    // dialog-opening row (the codebase's menu convention; the P9b-1 strings
+    // carry no ellipsis of their own, so it is appended here).
+    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_USER_LANG_ADD,
+                  (I18n::Get(StringId::UserLangAddTitle) + L"\u2026").c_str());
+    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_USER_LANG_MANAGE,
+                  (I18n::Get(StringId::UserLangsGroup) + L"\u2026").c_str());
 
     // 5. Swap languages
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
@@ -873,6 +1484,31 @@ void SystemTray::ShowContextMenu() {
         // synchronously here, while the TrackPopupMenuEx modality tear-down
         // may still be in flight, is the REQ-047 D3 root cause.
         callbacks_.on_open_engine_load_settings();
+    } else if (cmd == ID_TRAY_USER_LANG_ADD) {
+        // 261116_0003 P9b-3 U4a: "내 언어 추가…" — open the add-language dialog
+        // (U2's ShowUserLanguageDialogEx). The modal open is DEFERRED to the
+        // controller window's GUI thread (kMsgOpenUserLangAdd = WM_APP + 0x504,
+        // main.cpp) — the IDENTICAL REQ-047 D3 contract as the manager row
+        // above: entering a modal synchronously here, while the
+        // TrackPopupMenuEx modality tear-down may still be in flight, is the
+        // "minimized window, no input" root cause. Pure (0,0) wake-up, no
+        // payload crosses PostMessageW; main.cpp owns the dialog, the
+        // persist-on-kAdded and the tray refresh. No coalescing latch is
+        // needed: a second dispatch cannot run while the modal dialog blocks
+        // this GUI thread's message handling.
+        if (::PostMessageW(hOwner_, WM_APP + 0x504, 0, 0) == FALSE) {
+            DIAG_F("UI/Tray/003: PostMessage user-language add open failed (GLE %lu)\n",
+                   ::GetLastError());
+        }
+    } else if (cmd == ID_TRAY_USER_LANG_MANAGE) {
+        // 261116_0003 P9b-3 U4a: "내 언어…" — open the manager dialog
+        // (U4b's ShowUserLanguageManagerDialogEx with the current engine +
+        // model resolution). The same deferred-open contract as the add row
+        // (kMsgOpenUserLangManager = WM_APP + 0x505, main.cpp).
+        if (::PostMessageW(hOwner_, WM_APP + 0x505, 0, 0) == FALSE) {
+            DIAG_F("UI/Tray/004: PostMessage user-language manager open failed (GLE %lu)\n",
+                   ::GetLastError());
+        }
     } else if (cmd == ID_TRAY_SWAP && callbacks_.on_swap_languages) {
         callbacks_.on_swap_languages();
     } else if (cmd == ID_TRAY_AUTOSEND && callbacks_.on_toggle_auto_send) {
@@ -896,26 +1532,134 @@ void SystemTray::ShowContextMenu() {
         callbacks_.on_show_about();
     } else if (cmd == ID_TRAY_EXIT && callbacks_.on_exit) {
         callbacks_.on_exit();
-    } else if (cmd >= ID_TRAY_SRC_BASE && cmd < ID_TRAY_SRC_BASE + allLangs.size()) {
+    } else if (cmd >= ID_TRAY_SRC_BASE && cmd < ID_TRAY_SRC_BASE + srcMenu.registry.size()) {
+        // 261116_0003 P6: the range resolves through the SAME engine view the
+        // menu was built from (srcMenu, captured above — never a re-fetched
+        // list), so the name_en payload stays byte-identical to the row shown.
         size_t idx = cmd - ID_TRAY_SRC_BASE;
         if (callbacks_.on_select_source_lang) {
-            callbacks_.on_select_source_lang(allLangs[idx].name_en);
+            callbacks_.on_select_source_lang(srcMenu.registry[idx]->name_en);
         }
-    } else if (cmd >= ID_TRAY_TGT_BASE && cmd < ID_TRAY_TGT_BASE + tgtLangs.size()) {
+    } else if (cmd >= ID_TRAY_TGT_BASE && cmd < ID_TRAY_TGT_BASE + tgtMenu.registry.size()) {
         size_t idx = cmd - ID_TRAY_TGT_BASE;
         if (callbacks_.on_select_target_lang) {
-            callbacks_.on_select_target_lang(tgtLangs[idx].name_en);
+            callbacks_.on_select_target_lang(tgtMenu.registry[idx]->name_en);
         }
-    } else if (cmd >= ID_TRAY_DRAG_SRC_BASE && cmd < ID_TRAY_DRAG_SRC_BASE + allLangs.size()) {
+    } else if (cmd >= ID_TRAY_DRAG_SRC_BASE && cmd < ID_TRAY_DRAG_SRC_BASE + srcMenu.registry.size()) {
         // REQ-025: drag ("번역툴팁") pair picks route to the drag callbacks.
         size_t idx = cmd - ID_TRAY_DRAG_SRC_BASE;
         if (callbacks_.on_select_drag_source_lang) {
-            callbacks_.on_select_drag_source_lang(allLangs[idx].name_en);
+            callbacks_.on_select_drag_source_lang(srcMenu.registry[idx]->name_en);
         }
-    } else if (cmd >= ID_TRAY_DRAG_TGT_BASE && cmd < ID_TRAY_DRAG_TGT_BASE + tgtLangs.size()) {
+    } else if (cmd >= ID_TRAY_DRAG_TGT_BASE && cmd < ID_TRAY_DRAG_TGT_BASE + tgtMenu.registry.size()) {
         size_t idx = cmd - ID_TRAY_DRAG_TGT_BASE;
         if (callbacks_.on_select_drag_target_lang) {
-            callbacks_.on_select_drag_target_lang(tgtLangs[idx].name_en);
+            callbacks_.on_select_drag_target_lang(tgtMenu.registry[idx]->name_en);
+        }
+    } else if (cmd == ID_TRAY_SEARCH_SRC || cmd == ID_TRAY_SEARCH_TGT ||
+               cmd == ID_TRAY_SEARCH_DRAG_SRC || cmd == ID_TRAY_SEARCH_DRAG_TGT) {
+        // 261116_0003 P6 (D3 + REQ-047 D3): the "검색…" row latches a request
+        // for the shared searchable language picker and posts it through the
+        // DEFERRED open — the post lands on the controller window immediately
+        // AFTER TrackPopupMenuEx returned, the same modality contract as the
+        // manager row above (entering the picker's modal loop synchronously
+        // while the menu modality tear-down may still be in flight is the
+        // REQ-047 D3 "minimized window, no input" defect). The request latched
+        // at menu-build time is posted verbatim: (surface, role) name the
+        // callback pair main.cpp's ControllerWndProc handler routes to
+        // (main.cpp:1006-1101), engine is the active engine, and the codes are
+        // the persisted current values exactly as the ghost probe saw them.
+        // That consumer landed in P6c: ControllerWndProc's
+        // kMsgOpenLanguagePalette arm takes this surface's latch slot, shows
+        // the picker, and dispatches the committed pair through
+        // g_apply_language_change with LanguageContext::Type (TrayTyping) or
+        // ::Drag (TrayTooltip). The latch is per-surface (PR6-32), so no other
+        // surface can starve this one; a same-surface second post while one is
+        // pending still coalesces, and a request that arrives while a picker
+        // is already open stays latched for the next delivery instead of
+        // being dropped (PR6-42). main.cpp owns the picker + the existing
+        // language-change callbacks (the picker writes no config itself).
+        const language_palette::PickerInit& req =
+            (cmd == ID_TRAY_SEARCH_SRC) ? typing_src_req
+            : (cmd == ID_TRAY_SEARCH_TGT) ? typing_tgt_req
+            : (cmd == ID_TRAY_SEARCH_DRAG_SRC) ? drag_src_req
+            : drag_tgt_req;
+        // 261116_0003 P6a fix round (PR6-03e) + r2 (PR6-08) + r3 (PR6-13): a
+        // COALESCED request never calls PostMessageW inside the picker module,
+        // so a bare GetLastError() here would log a stale error left by an
+        // unrelated earlier call. Clear it first so the read below sees only
+        // what happened since (the picker separately logs result=coalesced /
+        // result=post_failed gle=... with the fresh value, so a stale GLE is
+        // never duplicated here).
+        // A false return does NOT by itself name the cause: the picker returns
+        // false for THREE cases, (1) controller == nullptr (defensive, GLE
+        // untouched, language_search_palette.cpp:507-510), (2) an open is
+        // already latched (coalesced), (3) a genuinely failed post (GLE set).
+        // Only (3) is decidable from the GLE, hence the cause-neutral label in
+        // the else arm below.
+        ::SetLastError(ERROR_SUCCESS);
+        if (!PostDeferredLanguagePaletteOpen(hOwner_, req)) {
+            const DWORD post_gle = ::GetLastError();
+            if (post_gle != ERROR_SUCCESS) {
+                DIAG_F("UI/Tray/002: deferred language-picker open post failed (GLE %lu)\n",
+                       post_gle);
+            } else {
+                DIAG_F("UI/Tray/002: deferred language-picker open not posted "
+                       "(coalesced or rejected; the picker module logs the specific reason)\n");
+            }
+        }
+    } else if (cmd == ID_TRAY_GHOST_SRC || cmd == ID_TRAY_GHOST_TGT ||
+               cmd == ID_TRAY_GHOST_DRAG_SRC || cmd == ID_TRAY_GHOST_DRAG_TGT) {
+        // 261116_0003 P6: documented NO-OP arm. The ghost rows are appended
+        // MF_GRAYED, so the OS never dispatches them — this arm exists so the
+        // four ghost IDs are not silently unhandled if a future change ever
+        // makes them selectable (designer §4.6 floats "choosing the ghost row
+        // = explicit keep-as-is confirmation"; that decision is NOT made
+        // here). No config write, no callback, no picker open.
+    } else if (cmd >= kTrayUserLangBase && cmd < kTrayUserLangBandEnd) {
+        // 261116_0003 P9b-2: ONE dispatch mapping for all four "내 언어" slots.
+        // The command decodes back to (surface, user index), the index selects
+        // the row from the SAME merged view the menu was built from, and the
+        // payload is the entry's STORED name (UserLanguageStoredName: the
+        // English name when present, else the native name) - the exact form
+        // PlanLanguageSync canonicalizes to and every other surface already
+        // sends. By role, not by row content: a source pick never carries a
+        // target and vice versa, so main.cpp's coordinator sees the identical
+        // request shape it sees from a registry row. The bounds check is
+        // defensive (the ids are only appended for existing rows); a stale or
+        // out-of-range id writes nothing.
+        const TrayUserLangCommandRef user_cmd = DecodeTrayUserLangCommand(cmd);
+        const LanguageMenuView& user_view =
+            (user_cmd.surface == TrayUserLangSurface::TypingSource ||
+             user_cmd.surface == TrayUserLangSurface::DragSource)
+                ? srcMenu
+                : tgtMenu;
+        if (user_cmd.decoded && user_cmd.user_index < user_view.user_group.size() &&
+            user_view.user_group[user_cmd.user_index].user != nullptr) {
+            const std::string name = UserLanguageStoredName(
+                *user_view.user_group[user_cmd.user_index].user);
+            switch (user_cmd.surface) {
+                case TrayUserLangSurface::TypingSource:
+                    if (callbacks_.on_select_source_lang) {
+                        callbacks_.on_select_source_lang(name);
+                    }
+                    break;
+                case TrayUserLangSurface::TypingTarget:
+                    if (callbacks_.on_select_target_lang) {
+                        callbacks_.on_select_target_lang(name);
+                    }
+                    break;
+                case TrayUserLangSurface::DragSource:
+                    if (callbacks_.on_select_drag_source_lang) {
+                        callbacks_.on_select_drag_source_lang(name);
+                    }
+                    break;
+                case TrayUserLangSurface::DragTarget:
+                    if (callbacks_.on_select_drag_target_lang) {
+                        callbacks_.on_select_drag_target_lang(name);
+                    }
+                    break;
+            }
         }
     } else if (cmd == ID_TRAY_UILANG_AUTO && callbacks_.on_select_ui_language) {
         callbacks_.on_select_ui_language("auto");

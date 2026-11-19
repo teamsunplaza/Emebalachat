@@ -1301,23 +1301,26 @@ void TestReq047U1TrayGgufLabels() {
     // model (designer decision #1, Layer 3).
     TEST_CHECK(tray_src.find("MF_SEPARATOR, 0, nullptr") != std::string::npos,
                "REQ-047 U1 (b): tray.cpp inserts an MF_SEPARATOR into the engine submenu");
-    // Dynamic label (REQ-050 3-1/3-2 revision): the " — <stem>" suffix is
+    // Dynamic label (REQ-050 3-1/3-2 revision): the " - <stem>" suffix is
     // appended whenever a model is registered, REGARDLESS of the checked
     // engine (the old pref==3 gate is gone); with nothing registered the
     // checkable entry is not appended at all, so the "(미등록)" placeholder
-    // left the tray menu with the always-append entry. The em-dash join is
-    // the spec's. REQ-056: the stem is a menu-build-time local derived from
+    // left the tray menu with the always-append entry. The separator is the
+    // hyphen form (fix R14-10: the project bans em-dashes in user-facing
+    // output). REQ-056: the stem is a menu-build-time local derived from
     // the resolver's EngineMenuView (no cached member).
     TEST_CHECK(tray_src.find("view.user_model_stem") != std::string::npos &&
                    tray_src.find("StringId::MenuEngineUserGgufEmpty") == std::string::npos,
-               "REQ-047 U1 (b): tray.cpp joins the registered stem via the em-dash; the "
+               "REQ-047 U1 (b): tray.cpp joins the registered stem via the ' - ' separator; the "
                "'(미등록)' placeholder is gone (REQ-050 3-1)");
     TEST_CHECK(tray_src.find("if (!user_model_stem.empty())") != std::string::npos &&
                    tray_src.find("if (pref == 3)") == std::string::npos,
                "REQ-047 U1 (b): the checkable entry exists only while a model is registered "
                "and its stem shows under any checked engine (REQ-050 3-1/3-2)");
-    TEST_CHECK(tray_src.find("L\" — \"") != std::string::npos,
-               "REQ-047 U1 (b): tray.cpp joins the dynamic label with the em-dash separator");
+    TEST_CHECK(tray_src.find("user_gguf_label += L\" - \" + ToUtf16(user_model_stem)") !=
+                   std::string::npos,
+               "REQ-047 U1 (b): tray.cpp joins the dynamic label with the ' - ' separator "
+               "(fix R14-10: em-dash banned in user-facing output)");
     // REQ-056 (derive-at-open): the tray declares the resolver seam; the old
     // UpdateStatus user_model_stem parameter is gone.
     TEST_CHECK(tray_hdr.find("struct EngineMenuView") != std::string::npos &&

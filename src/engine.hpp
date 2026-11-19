@@ -34,6 +34,13 @@
 // keep resolving the P7-F2 seam; the Chat exe (post-T5: no engine_core
 // link, CMake T5) compiles llama-free.
 
+// 261116_0003 P2 (language-menu redesign, plan §4): LanguageEngine,
+// LanguageInfo::engine_mask and the per-engine registry views live in the
+// config layer (the registry is the lower layer); this include only makes
+// the pure mapper below possible. Acyclic: config.hpp never includes
+// engine.hpp.
+#include "config.hpp"
+
 namespace emebalachat {
 
 // REQ-R01: pure, model-independent head+tail sliding-window truncation of source
@@ -102,6 +109,25 @@ enum class EngineType {
     OpenAi
 };
 
+// 261116_0003 P2 (language-menu redesign, plan §4): the pure EngineType ->
+// LanguageEngine mapper for the per-engine registry views (config.hpp
+// GetLanguagesForEngine). EngineType::Auto resolves to LanguageEngine::Auto,
+// which views the Hy-MT2 set — auto prefers local. The user-.gguf route has
+// no EngineType enum value of its own ("user_gguf" is a live config-string
+// read inside engine.cpp); its view is LanguageEngine::UserGguf, the full
+// registry — user-GGUF prompts inject language names free-form
+// (research-report §4a), so every registry row is offerable and the P9
+// capability probe judges actual support per model.
+inline LanguageEngine LanguageEngineFor(EngineType type) {
+    switch (type) {
+        case EngineType::Auto: return LanguageEngine::Auto;
+        case EngineType::GoogleTranslate: return LanguageEngine::Google;
+        case EngineType::LocalLlama: return LanguageEngine::HyMt2;
+        case EngineType::OpenAi: return LanguageEngine::OpenAi;
+    }
+    return LanguageEngine::Auto; // unreachable: the enum is closed
+}
+
 // R6 Phase 4 (B2, architect plan §4.1 item 3): pure routing seam for
 // TranslationManager::Translate, unit-testable headlessly
 // (TestR6P4LanguageRouting). PRECONDITION: the local Hy-MT2 engine is ACTIVE
@@ -123,6 +149,10 @@ enum class EngineType {
 //                                                the pin is respected and the
 //                                                request stays local (caller
 //                                                logs a routing warning).
+//   261116_0003 P2 fix round 2b (PR2-01): on the LIVE user_gguf route
+//   (engine_type == "user_gguf") Translate does NOT consult this seam
+//   (engine.cpp:683-691) - the user's own model is served first and cloud
+//   stays a post-failure decision, so the return value is NOT what serves.
 EngineType PlanTranslationRouting(std::string_view src_code,
                                   std::string_view tgt_code,
                                   EngineType engine_type,
@@ -248,12 +278,22 @@ inline std::string ResolveLocalRequestModelId(bool user_gguf_route,
 
 // ---- REQ-060 (engine-idle-eviction-warmup): model-pinned requests + warmup --
 //
-// Declared HERE (not in the frozen self-contained engine_host_client.hpp, so
-// the sibling Emebala workspaces keep copying that header verbatim): the
-// model_id-pinned translate overload and the warmup persistent-connection
-// manager entry points. Defined in src/engine_host_client.cpp.
+// Declared HERE (not in the engine's published client header, which stays a
+// pure protocol surface): the model_id-pinned translate overload and the
+// warmup persistent-connection manager entry points. Defined in the shared
+// engine repo's src/engine_host_client.cpp.
 
 namespace engine_host {
+
+// 261119 E1-B2a fix R19-01: CHAT'S HELLO IDENTITY, declared once for every
+// Chat call site (engine.cpp one-shot x2, the warmup push, and the tests).
+// The client no longer carries a compiled-in identity: each consumer names
+// itself, which is what stops a consumer from silently inheriting Chat's
+// client-policy routing. The values are the FROZEN wire bytes this app has
+// always sent — `client_version` is the client-protocol-era version, NOT the
+// app release version, and changing it would change the hello bytes the host
+// has answered since v0.10.1 (tests/run_tests.cpp pins the emitted hello).
+inline const EngineHostClientIdentity kChatEngineHostIdentity{"emebala-chat", "0.10.1"};
 
 // REQ-060: model_id-pinned translation. Identical contract to the REQ-057
 // overload plus `model_id` (placed right after `text`): the OPTIONAL served-
@@ -261,7 +301,10 @@ namespace engine_host {
 // non-empty — an empty pin keeps the exact pre-REQ-060 byte shape and a
 // pre-REQ-060 host never sees the member; the translate path reuses the
 // frozen connection machinery unchanged.
-bool TryTranslate(const EngineHostConfig& cfg,
+// 261119 E1-B2a fix R19-01: `identity` is the required leading parameter (pass
+// kChatEngineHostIdentity); there is no identity-free overload.
+bool TryTranslate(const EngineHostClientIdentity& identity,
+                  const EngineHostConfig& cfg,
                   const std::string& src,
                   const std::string& tgt,
                   const std::string& text,
@@ -276,12 +319,16 @@ bool TryTranslate(const EngineHostConfig& cfg,
 // host (LocalLlama) && the host binary is deployed; torn down otherwise.
 // Cheap and non-blocking (snapshot + event signal) — callable from any
 // thread, including engine-switch menu handlers.
+// 261119 E1-B2a fix R19-01: the identity is pushed too — the warmup hello is a
+// hello, and a compiled-in default there would keep a second silent-rebrand
+// path alive. Pass kChatEngineHostIdentity.
 // WIRING (all inside engine.cpp — main.cpp needs NO changes):
 //   * TranslationManager::RefreshActiveEngine pushes on EVERY active-engine
 //     refresh, covering the startup config push (SetEngineHostConfig), tray
 //     engine switches (SetEngineType), and the OpenAI/user-model setters.
 //   * TranslationManager::~TranslationManager calls WarmupShutdown().
-void WarmupSetState(const EngineHostConfig& cfg, bool local_route_active);
+void WarmupSetState(const EngineHostClientIdentity& identity,
+                    const EngineHostConfig& cfg, bool local_route_active);
 
 // REQ-060: process-exit teardown of the warmup connection and its worker
 // thread (pipe cancel + bounded join). Idempotent. Called from

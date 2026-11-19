@@ -220,6 +220,115 @@ struct LocalizedStrings {
         L"Not a valid GGUF model file; it was not registered.";
     const wchar_t* gguf_manager_active_suffix = L"(in use)";
     const wchar_t* gguf_manager_activated = L"This model is now in use.";
+    // 261116_0003 P5 (language-menu redesign, plan §4 "Search"): the searchable
+    // picker's two internal strings. Trailing defaults, same discipline as the
+    // blocks above (NOT part of EMEBALA_LSTR_FIELDS; every one of the 37 tables
+    // below carries its own designator — the English POSITIONAL table carries
+    // them as its last two initializers).
+    const wchar_t* language_search_cue = L"Search languages…";
+    const wchar_t* language_search_no_match = L"No matching language";
+    // 261116_0003 P6 (language-menu redesign, plan §5 P6 + D3): the "검색…"
+    // row label prepended to the six flat language menus (tray in P6a, tooltip
+    // in P6b). Trailing default like the P5 block above (NOT part of
+    // EMEBALA_LSTR_FIELDS; every one of the 37 tables carries its own
+    // designator — the English POSITIONAL table carries it as its last
+    // initializer).
+    const wchar_t* menu_search_langs = L"Search…";
+    // 261116_0003 P7 (language-menu redesign, plan §5 P7): the picker header's
+    // count phrase. "{n}" is the runtime-substituted number token (the same
+    // convention as model_dl_disk_space's "{s}" and the gguf manager's "{n}"),
+    // because this TU has no printf/format layer. Trailing default like the
+    // blocks above (NOT part of EMEBALA_LSTR_FIELDS; all 37 tables carry their
+    // own designator, and the English POSITIONAL table carries it as its last
+    // initializer).
+    const wchar_t* language_search_count = L"{n} languages";
+    // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6): the
+    // user-language surface's UI copy. Trailing defaults like the blocks above
+    // (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays
+    // 157): all 36 designated tables carry their own designator and the English
+    // POSITIONAL table carries them as its last 23 initializers.
+    //
+    // STRUCT-vs-ENUM ORDER: these members are the STRUCT tail, while the enum
+    // ids sit BEFORE MenuSearchLangs (see src/i18n.hpp: the P5 sentinel pin
+    // "EnumCount - 1 == LanguageSearchNoMatch" owns the enum tail). The Get()
+    // switch is the mapping between the two orders, and
+    // TestP9b1UserLanguageStrings pins the contract.
+    const wchar_t* user_langs_group = L"My languages";
+    const wchar_t* user_lang_add_title = L"Add my language";
+    const wchar_t* user_lang_native_name_label = L"Native name";
+    const wchar_t* user_lang_english_name_label = L"English name (optional)";
+    const wchar_t* user_lang_code_label = L"Language code";
+    const wchar_t* user_lang_script_label = L"Script";
+    const wchar_t* user_lang_add = L"Add";
+    // This dialog's OWN cancel label. DialogCancel already exists for the other
+    // dialogs; the add dialog keeps its own id so P9b-3's surface copy stays
+    // independently localizable (same reasoning as the per-dialog
+    // title/button ids the gguf manager carries).
+    const wchar_t* user_lang_cancel = L"Cancel";
+    // D5 "no code = OpenAI/user-.gguf only". The entry stays registered and
+    // usable; only the cloud engines that take language NAMES can serve it.
+    const wchar_t* user_lang_no_code_notice =
+        L"No language code was found. This language is available only with the "
+        L"OpenAI-compatible and user .gguf engines.";
+    // D6 probe badge states (the three non-empty reaches of
+    // DisplayUserLanguageProbeStatus; Unknown draws no badge).
+    const wchar_t* user_lang_probe_checking = L"Checking";
+    const wchar_t* user_lang_probe_supported = L"Supported";
+    // Deliberately hedged: the probe judges ONE sentence, so an unproven
+    // verdict is a suspicion, not a fact (D6 evidence + user override exist for
+    // exactly this reason).
+    const wchar_t* user_lang_probe_unsupported = L"Possibly unsupported";
+    const wchar_t* user_lang_probe_evidence_label = L"Evidence";
+    const wchar_t* user_lang_probe_retest = L"Test again";
+    // D6 "the user is the final authority": the two override answers and the
+    // marker that tells the user the displayed verdict is their own.
+    const wchar_t* user_lang_override_supported = L"Mark as supported";
+    const wchar_t* user_lang_override_unsupported = L"Mark as unsupported";
+    const wchar_t* user_lang_override_active = L"Set by you";
+    // D6 "support != quality", mandated in UI copy.
+    const wchar_t* user_lang_support_not_quality =
+        L"Support does not mean translation quality.";
+    // Add-dialog refusal. "{n}" is the typed name (the same runtime token
+    // convention as language_search_count's "{n}" and gguf_duplicate_warning's
+    // name stem); substitution stays at the call site, this TU has no format
+    // layer.
+    const wchar_t* user_lang_name_reserved =
+        L"\"{n}\" is already a language name. Enter a different name.";
+    // Probe evidence detail: one label per ProbeEvaluation check bit. The
+    // evidence STRING stays the P9a ASCII shape ("nonempty=1 differs=1 ...")
+    // because it is cached per (engine, model) and compared across runs; only
+    // these labels around it are localized.
+    const wchar_t* user_lang_check_non_empty = L"Reply received";
+    const wchar_t* user_lang_check_differs = L"Differs from input";
+    const wchar_t* user_lang_check_script = L"Script matches";
+    // Fail-open script row value: InferUserLanguageScript() returned 0, so the
+    // probe's script check is skipped rather than guessed.
+    const wchar_t* user_lang_script_none = L"Not detected";
+    // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): the
+    // OpenAI settings dialog's declaration checklist copy. These members sit
+    // BEFORE language_search_auto_chip on purpose: the English POSITIONAL
+    // table must keep the AUTO chip label as its last initializer (the P9b-3
+    // U5 tail pin), so the P9c-1b literals take the two slots ahead of it.
+    // Trailing defaults like the blocks above (NOT part of
+    // EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays 157): the 36
+    // designated tables carry their own designators and the English
+    // POSITIONAL table carries them before the AUTO chip line. The hint
+    // states the documented fail-open (P9c-1a): an empty selection clears the
+    // declaration and every OpenAI-capable language is offered again.
+    const wchar_t* openai_declared_title = L"Languages this model supports";
+    const wchar_t* openai_declared_hint =
+        L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.";
+    // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
+    // decisions.md:540): the picker AUTO-view chip's dedicated label. The Auto
+    // view's old chip reused MenuEngineLocal ("내장 로컬 엔진"), hiding that
+    // AUTO serves the cloud for languages the local model does not cover; this
+    // label names both legs in one line and carries no count. Trailing default
+    // like the blocks above (NOT part of EMEBALA_LSTR_FIELDS, so
+    // kLocalizedStringsFieldCount stays 157): the 36 designated tables carry
+    // their own designator and the English POSITIONAL table carries it as its
+    // last initializer. Separator is the hyphen form per R14-10.
+    const wchar_t* language_search_auto_chip =
+        L"Auto - local for supported languages, cloud for the rest";
 };
 
 // Compile-time field count — generated from the SAME X-macro list above,
@@ -250,13 +359,17 @@ static_assert(kLocalizedStringsFieldCount == 157,
 
 // 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
 // above is generated from the same X-macro that generates the struct, so it can
-// never notice the 8 trailing NON-X-macro members (4 theme + 4 back-translation)
+// never notice the 42 trailing NON-X-macro members (4 theme + 5 back-translation
+// + 3 user-model + 2 language-picker + 1 search row + 1 count phrase +
+// 23 user-language + 2 OpenAI declaration checklist + 1 picker AUTO chip;
+// 261116_0003 P9c-1b fix: was 40 = the previous blocks + the P9b-3 U5 chip,
+// before that 39 at P9b-1, each later session appended its own trailing block)
 // - and the test-side mirror in tests/run_tests.cpp is a hand-kept copy that
 // catches drift only after someone remembers to update it. This one compares the
 // actual struct layout against StringId::EnumCount (the Get() switch's case
 // count, i18n.hpp): one member per pointer-sized slot means
 // sizeof / sizeof(const wchar_t*) IS the member count. Every LocalizedStrings
-// member is a const wchar_t* (X-macro fields + the 8 trailing), so the divisor
+// member is a const wchar_t* (X-macro fields + the 42 trailing), so the divisor
 // is exact; adding a member of another type would change the quotient and trip
 // this assert, which is the intended signal to revisit both sides.
 // Fires when: a member is added/removed without a StringId, or a StringId is
@@ -487,6 +600,43 @@ const LocalizedStrings kStringsKorean = {
     .gguf_invalid_model_body = L"올바른 GGUF 모델 파일이 아니어서 등록하지 않았습니다.",
     .gguf_manager_active_suffix = L"(사용 중)",
     .gguf_manager_activated = L"사용 중인 모델로 설정했습니다.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"언어 검색…",
+    .language_search_no_match = L"일치하는 언어가 없습니다",
+    // 261116_0003 P6: the flat menus' "검색…" row label (36 designated tables
+    // carry it as their last designator; the English table is positional).
+    .menu_search_langs = L"검색…",
+    .language_search_count = L"{n}개 언어",
+    // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 +
+    // D5/D6): the user-language surface's UI copy. Designated in the
+    // STRUCT tail order (the enum ids sit before MenuSearchLangs).
+    .user_langs_group = L"내 언어",
+    .user_lang_add_title = L"내 언어 추가",
+    .user_lang_native_name_label = L"원어 이름",
+    .user_lang_english_name_label = L"영어 이름 (선택)",
+    .user_lang_code_label = L"언어 코드",
+    .user_lang_script_label = L"문자",
+    .user_lang_add = L"추가",
+    .user_lang_cancel = L"취소",
+    .user_lang_no_code_notice = L"언어 코드를 찾지 못했습니다. 이 언어는 OpenAI 호환 및 사용자 .gguf 엔진에서만 사용할 수 있습니다.",
+    .user_lang_probe_checking = L"확인 중",
+    .user_lang_probe_supported = L"지원",
+    .user_lang_probe_unsupported = L"미지원 의심",
+    .user_lang_probe_evidence_label = L"판정 근거",
+    .user_lang_probe_retest = L"다시 시험",
+    .user_lang_override_supported = L"지원함으로 표시",
+    .user_lang_override_unsupported = L"미지원으로 표시",
+    .user_lang_override_active = L"직접 설정함",
+    .user_lang_support_not_quality = L"지원 여부는 번역 품질을 뜻하지 않습니다.",
+    .user_lang_name_reserved = L"\"{n}\" 이름은 이미 사용 중입니다. 다른 이름을 입력하세요.",
+    .user_lang_check_non_empty = L"응답 있음",
+    .user_lang_check_differs = L"원문과 다름",
+    .user_lang_check_script = L"문자 일치",
+    .user_lang_script_none = L"확인 안 됨",
+    .openai_declared_title = L"이 모델이 지원하는 언어",
+    .openai_declared_hint = L"선택한 언어만 언어 목록에 표시됩니다. 아무것도 선택하지 않으면 모든 언어가 표시됩니다.",
+    .language_search_auto_chip = L"자동 - 지원 언어는 로컬, 나머지는 클라우드",
 };
 // 2. Japanese (ja)
 const LocalizedStrings kStringsJapanese = {
@@ -708,6 +858,38 @@ const LocalizedStrings kStringsJapanese = {
     .gguf_invalid_model_body = L"有効なGGUFモデルファイルではないため、登録しませんでした。",
     .gguf_manager_active_suffix = L"(使用中)",
     .gguf_manager_activated = L"使用中のモデルに設定しました。",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"言語を検索…",
+    .language_search_no_match = L"一致する言語がありません",
+    .menu_search_langs = L"検索…",
+    .language_search_count = L"{n}言語",
+    .user_langs_group = L"マイ言語",
+    .user_lang_add_title = L"マイ言語を追加",
+    .user_lang_native_name_label = L"原語名",
+    .user_lang_english_name_label = L"英語名 (任意)",
+    .user_lang_code_label = L"言語コード",
+    .user_lang_script_label = L"文字体系",
+    .user_lang_add = L"追加",
+    .user_lang_cancel = L"キャンセル",
+    .user_lang_no_code_notice = L"言語コードが見つかりませんでした。この言語は OpenAI 互換およびユーザー .gguf エンジンでのみ使用できます。",
+    .user_lang_probe_checking = L"確認中",
+    .user_lang_probe_supported = L"対応",
+    .user_lang_probe_unsupported = L"未対応の疑い",
+    .user_lang_probe_evidence_label = L"判定の根拠",
+    .user_lang_probe_retest = L"再テスト",
+    .user_lang_override_supported = L"対応に設定",
+    .user_lang_override_unsupported = L"未対応に設定",
+    .user_lang_override_active = L"ユーザー設定",
+    .user_lang_support_not_quality = L"対応は翻訳品質を意味しません。",
+    .user_lang_name_reserved = L"「{n}」は既に言語名として使われています。別の名前を入力してください。",
+    .user_lang_check_non_empty = L"応答あり",
+    .user_lang_check_differs = L"原文と異なる",
+    .user_lang_check_script = L"文字が一致",
+    .user_lang_script_none = L"未検出",
+    .openai_declared_title = L"このモデルが対応する言語",
+    .openai_declared_hint = L"選択した言語のみ言語メニューに表示されます。何も選択しない場合はすべての言語が表示されます。",
+    .language_search_auto_chip = L"自動 - 対応言語はローカル、それ以外はクラウド",
 };
 // 3. Chinese Simplified (zh-CN)
 const LocalizedStrings kStringsChineseSimp = {
@@ -929,6 +1111,38 @@ const LocalizedStrings kStringsChineseSimp = {
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型文件，未注册。",
     .gguf_manager_active_suffix = L"(使用中)",
     .gguf_manager_activated = L"已设为当前使用的模型。",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"搜索语言…",
+    .language_search_no_match = L"没有匹配的语言",
+    .menu_search_langs = L"搜索…",
+    .language_search_count = L"{n} 种语言",
+    .user_langs_group = L"我的语言",
+    .user_lang_add_title = L"添加我的语言",
+    .user_lang_native_name_label = L"母语名称",
+    .user_lang_english_name_label = L"英文名称（可选）",
+    .user_lang_code_label = L"语言代码",
+    .user_lang_script_label = L"文字系统",
+    .user_lang_add = L"添加",
+    .user_lang_cancel = L"取消",
+    .user_lang_no_code_notice = L"未找到语言代码。该语言仅适用于 OpenAI 兼容和用户 .gguf 引擎。",
+    .user_lang_probe_checking = L"检查中",
+    .user_lang_probe_supported = L"支持",
+    .user_lang_probe_unsupported = L"可能不支持",
+    .user_lang_probe_evidence_label = L"判定依据",
+    .user_lang_probe_retest = L"重新测试",
+    .user_lang_override_supported = L"标记为支持",
+    .user_lang_override_unsupported = L"标记为不支持",
+    .user_lang_override_active = L"用户设定",
+    .user_lang_support_not_quality = L"支持并不代表翻译质量。",
+    .user_lang_name_reserved = L"“{n}”已经是语言名称。请输入其他名称。",
+    .user_lang_check_non_empty = L"有响应",
+    .user_lang_check_differs = L"与原文不同",
+    .user_lang_check_script = L"文字一致",
+    .user_lang_script_none = L"未检测到",
+    .openai_declared_title = L"此模型支持的语言",
+    .openai_declared_hint = L"只有选中的语言会显示在语言菜单中。不选任何语言时，将显示全部语言。",
+    .language_search_auto_chip = L"自动 - 支持的语言使用本地引擎，其余使用云端",
 };
 // 4. Chinese Traditional (zh-TW)
 const LocalizedStrings kStringsChineseTrad = {
@@ -1150,6 +1364,38 @@ const LocalizedStrings kStringsChineseTrad = {
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型檔案，未註冊。",
     .gguf_manager_active_suffix = L"(使用中)",
     .gguf_manager_activated = L"已設為目前使用的模型。",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"搜尋語言…",
+    .language_search_no_match = L"沒有符合的語言",
+    .menu_search_langs = L"搜尋…",
+    .language_search_count = L"{n} 種語言",
+    .user_langs_group = L"我的語言",
+    .user_lang_add_title = L"新增我的語言",
+    .user_lang_native_name_label = L"母語名稱",
+    .user_lang_english_name_label = L"英文名稱（選填）",
+    .user_lang_code_label = L"語言代碼",
+    .user_lang_script_label = L"文字系統",
+    .user_lang_add = L"新增",
+    .user_lang_cancel = L"取消",
+    .user_lang_no_code_notice = L"找不到語言代碼。此語言僅適用於 OpenAI 相容與使用者 .gguf 引擎。",
+    .user_lang_probe_checking = L"檢查中",
+    .user_lang_probe_supported = L"支援",
+    .user_lang_probe_unsupported = L"可能不支援",
+    .user_lang_probe_evidence_label = L"判定依據",
+    .user_lang_probe_retest = L"重新測試",
+    .user_lang_override_supported = L"標記為支援",
+    .user_lang_override_unsupported = L"標記為不支援",
+    .user_lang_override_active = L"使用者設定",
+    .user_lang_support_not_quality = L"支援不代表翻譯品質。",
+    .user_lang_name_reserved = L"「{n}」已是語言名稱。請輸入其他名稱。",
+    .user_lang_check_non_empty = L"有回應",
+    .user_lang_check_differs = L"與原文不同",
+    .user_lang_check_script = L"文字一致",
+    .user_lang_script_none = L"未偵測到",
+    .openai_declared_title = L"此模型支援的語言",
+    .openai_declared_hint = L"只有選取的語言會顯示在語言功能表中。不選任何語言時，將顯示全部語言。",
+    .language_search_auto_chip = L"自動 - 支援的語言使用本機引擎，其餘使用雲端",
 };
 // 5. Vietnamese (vi)
 const LocalizedStrings kStringsVietnamese = {
@@ -1234,7 +1480,7 @@ const LocalizedStrings kStringsVietnamese = {
     .repair_in_progress = L"Đang sửa chữa các thành phần cục bộ…",
     .repair_failed_title = L"Không thể dùng bản dịch cục bộ",
     .repair_failed_body = L"Không tìm thấy tệp của cục bộ nên bản dịch tạm dừng. Cài đặt lại Emebala Chat để khôi phục cục bộ, hoặc để chuyển sang bản dịch đám mây (Google), hãy chọn “Google Dịch” trong menu khay “Chọn công cụ dịch”.",
-    .menu_engine_openai = L"Tương thích OpenAI (máy chủ do ngườ dùng chỉ định)…",
+    .menu_engine_openai = L"Tương thích OpenAI (máy chủ do người dùng chỉ định)…",
     .openai_settings_title = L"Cài đặt công cụ tương thích OpenAI",
     .openai_settings_action = L"Cài đặt công cụ tương thích OpenAI…",
     .openai_base_url_label = L"Base URL",
@@ -1248,7 +1494,7 @@ const LocalizedStrings kStringsVietnamese = {
     .openai_key_masked = L"Khóa đã lưu: ",
     .openai_invalid_base_url = L"Base URL không hợp lệ. Ví dụ: https://api.openai.com",
     // REQ-045 P4-5 (item 3a-2): third-party .gguf user-model registration.
-    .menu_engine_user_gguf = L"Mô hình do ngườ dùng chỉ định (.gguf)",
+    .menu_engine_user_gguf = L"Mô hình do người dùng chỉ định (.gguf)",
     .menu_browse_gguf_file = L"Đăng ký mô hình .gguf khác…",
     .user_gguf_quality_title = L"Thông báo chất lượng dịch",
     .user_gguf_quality_body = L"Mô hình đã chọn không phải Hy-MT2. Phiên bản hiện tại chỉ dùng prompt dành riêng cho Hy-MT2, vì vậy chất lượng dịch của mô hình này không được đảm bảo. Tiếp tục?",
@@ -1371,6 +1617,38 @@ const LocalizedStrings kStringsVietnamese = {
     .gguf_invalid_model_body = L"Không phải tệp mô hình GGUF hợp lệ nên chưa được đăng ký.",
     .gguf_manager_active_suffix = L"(đang dùng)",
     .gguf_manager_activated = L"Đã đặt làm mô hình đang dùng.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Tìm ngôn ngữ…",
+    .language_search_no_match = L"Không có ngôn ngữ phù hợp",
+    .menu_search_langs = L"Tìm kiếm…",
+    .language_search_count = L"{n} ngôn ngữ",
+    .user_langs_group = L"Ngôn ngữ của tôi",
+    .user_lang_add_title = L"Thêm ngôn ngữ của tôi",
+    .user_lang_native_name_label = L"Tên bản ngữ",
+    .user_lang_english_name_label = L"Tên tiếng Anh (tùy chọn)",
+    .user_lang_code_label = L"Mã ngôn ngữ",
+    .user_lang_script_label = L"Hệ chữ viết",
+    .user_lang_add = L"Thêm",
+    .user_lang_cancel = L"Hủy",
+    .user_lang_no_code_notice = L"Không tìm thấy mã ngôn ngữ. Ngôn ngữ này chỉ dùng được với công cụ tương thích OpenAI và .gguf của người dùng.",
+    .user_lang_probe_checking = L"Đang kiểm tra",
+    .user_lang_probe_supported = L"Được hỗ trợ",
+    .user_lang_probe_unsupported = L"Có thể không hỗ trợ",
+    .user_lang_probe_evidence_label = L"Căn cứ đánh giá",
+    .user_lang_probe_retest = L"Thử lại",
+    .user_lang_override_supported = L"Đánh dấu là được hỗ trợ",
+    .user_lang_override_unsupported = L"Đánh dấu là không hỗ trợ",
+    .user_lang_override_active = L"Do bạn đặt",
+    .user_lang_support_not_quality = L"Khả năng hỗ trợ không đồng nghĩa với chất lượng dịch.",
+    .user_lang_name_reserved = L"\"{n}\" đã là tên ngôn ngữ. Hãy nhập tên khác.",
+    .user_lang_check_non_empty = L"Có phản hồi",
+    .user_lang_check_differs = L"Khác với câu gốc",
+    .user_lang_check_script = L"Đúng hệ chữ",
+    .user_lang_script_none = L"Chưa phát hiện",
+    .openai_declared_title = L"Ngôn ngữ mô hình này hỗ trợ",
+    .openai_declared_hint = L"Chỉ các ngôn ngữ bạn chọn mới hiển thị trong danh sách ngôn ngữ. Khi không chọn ngôn ngữ nào, tất cả các ngôn ngữ sẽ được hiển thị.",
+    .language_search_auto_chip = L"Tự động - ngôn ngữ được hỗ trợ dùng cục bộ, còn lại dùng đám mây",
 };
 // 6. Spanish (es)
 const LocalizedStrings kStringsSpanish = {
@@ -1589,6 +1867,38 @@ const LocalizedStrings kStringsSpanish = {
     .gguf_invalid_model_body = L"No es un archivo de modelo GGUF válido; no se ha registrado.",
     .gguf_manager_active_suffix = L"(en uso)",
     .gguf_manager_activated = L"Este modelo ahora está en uso.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Buscar idiomas…",
+    .language_search_no_match = L"Ningún idioma coincide",
+    .menu_search_langs = L"Buscar…",
+    .language_search_count = L"{n} idiomas",
+    .user_langs_group = L"Mis idiomas",
+    .user_lang_add_title = L"Añadir mi idioma",
+    .user_lang_native_name_label = L"Nombre nativo",
+    .user_lang_english_name_label = L"Nombre en inglés (opcional)",
+    .user_lang_code_label = L"Código de idioma",
+    .user_lang_script_label = L"Escritura",
+    .user_lang_add = L"Añadir",
+    .user_lang_cancel = L"Cancelar",
+    .user_lang_no_code_notice = L"No se encontró un código de idioma. Este idioma solo está disponible con los motores compatibles con OpenAI y .gguf del usuario.",
+    .user_lang_probe_checking = L"Comprobando",
+    .user_lang_probe_supported = L"Compatible",
+    .user_lang_probe_unsupported = L"Posiblemente no compatible",
+    .user_lang_probe_evidence_label = L"Evidencia",
+    .user_lang_probe_retest = L"Probar de nuevo",
+    .user_lang_override_supported = L"Marcar como compatible",
+    .user_lang_override_unsupported = L"Marcar como no compatible",
+    .user_lang_override_active = L"Definido por ti",
+    .user_lang_support_not_quality = L"Ser compatible no significa buena calidad de traducción.",
+    .user_lang_name_reserved = L"«{n}» ya es un nombre de idioma. Escribe otro nombre.",
+    .user_lang_check_non_empty = L"Hay respuesta",
+    .user_lang_check_differs = L"Difiere del original",
+    .user_lang_check_script = L"Escritura coincidente",
+    .user_lang_script_none = L"No detectada",
+    .openai_declared_title = L"Idiomas que admite este modelo",
+    .openai_declared_hint = L"Solo los idiomas que selecciones se muestran en los menús de idioma. Si no seleccionas ninguno, se muestran todos los idiomas.",
+    .language_search_auto_chip = L"Auto - local para los idiomas compatibles, la nube para el resto",
 };
 // 7. English (en) - Default Fallback
 const LocalizedStrings kStringsEnglish = {
@@ -1805,7 +2115,35 @@ const LocalizedStrings kStringsEnglish = {
     //   [166]      back_translate_reference  (261108_0002 FIX-WS3B)
     //   [167..169] gguf_invalid_model_body / gguf_manager_active_suffix /
     //              gguf_manager_activated  (261111_0001 U6, v0.10.7)
-    // = 169 initializers for 169 members. Before the FIX-R1 fix the four theme
+    //   [170..171] language_search_cue / language_search_no_match
+    //              (261116_0003 P5, language-menu redesign)
+    //   [172]      menu_search_langs  (261116_0003 P6, the flat menus'
+    //              "검색…" row label, placed BEFORE the P5 ids in the enum to
+    //              keep the P5 suite's sentinel-1 tail-order pin green)
+    //   [173]      language_search_count  (261116_0003 P7, the picker header's
+    //              "{n} languages" count phrase; also enum-inserted before the
+    //              P5 pair, so the STRUCT tail order and the ENUM order differ
+    //              on purpose and the Get() switch is the mapping)
+    //   [174..196] the 23 user-language surface strings (261116_0003 P9b-1,
+    //              language-menu redesign plan §4 Phase 3 + D5/D6), in the order
+    //              user_langs_group, the 7 add-dialog strings, the no-code
+    //              notice, the 3 probe badge states, the evidence label, the
+    //              retest action, the 3 override strings, the support-not-quality
+    //              disclaimer, the reserved-name refusal, and the 4 evidence /
+    //              script labels. Their ENUM ids sit BEFORE MenuSearchLangs (the
+    //              P5 sentinel pin owns the enum tail), so struct and enum
+    //              orders differ for this block too; the Get() switch maps them
+    //              and TestP9b1UserLanguageStrings pins the contract.
+    //   [197..198] openai_declared_title / openai_declared_hint
+    //              (261116_0003 P9c-1b, the OpenAI settings declaration
+    //              checklist's section title + fail-open hint); their ENUM ids
+    //              also sit before MenuSearchLangs, same mapping rule. They
+    //              take the slots AHEAD of the AUTO chip because the struct
+    //              member language_search_auto_chip closes the tail (below).
+    //   [199]      language_search_auto_chip (261116_0003 P9b-3 U5, the picker
+    //              AUTO chip's dedicated label per CEO decision 1.b); its ENUM
+    //              id also sits before MenuSearchLangs, same mapping rule.
+    // = 199 initializers for 199 members. Before the FIX-R1 fix the four theme
     // slots were skipped, so the WS3 strings took 158..161 and the EN tray theme
     // submenu rendered "🔄 Back-Translation" while the WS3 fields silently kept
     // their struct defaults. The four theme values below are the struct defaults
@@ -1831,6 +2169,56 @@ const LocalizedStrings kStringsEnglish = {
     L"Not a valid GGUF model file; it was not registered.",
     L"(in use)",
     L"This model is now in use.",
+    // 261116_0003 P5 (language-menu redesign): slots 170..171 — the searchable
+    // picker's cue banner + no-match line (positional: MSVC C7556 forbids mixing
+    // designs in this aggregate).
+    L"Search languages…",
+    L"No matching language",
+    // 261116_0003 P6 (language-menu redesign): slot 172 — the flat menus'
+    // "검색…" row label (positional, same C7556 rule).
+    L"Search…",
+    // 261116_0003 P7 (language-menu redesign): slot 173 is the picker header's
+    // count phrase. "{n}" is the runtime number token (positional, same C7556
+    // rule).
+    L"{n} languages",
+    // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6):
+    // slots 174..196 - the user-language surface's 23 strings (positional,
+    // same MSVC C7556 rule as every other tail block in this table).
+    L"My languages",
+    L"Add my language",
+    L"Native name",
+    L"English name (optional)",
+    L"Language code",
+    L"Script",
+    L"Add",
+    L"Cancel",
+    L"No language code was found. This language is available only with the OpenAI-compatible and user .gguf engines.",
+    L"Checking",
+    L"Supported",
+    L"Possibly unsupported",
+    L"Evidence",
+    L"Test again",
+    L"Mark as supported",
+    L"Mark as unsupported",
+    L"Set by you",
+    L"Support does not mean translation quality.",
+    L"\"{n}\" is already a language name. Enter a different name.",
+    L"Reply received",
+    L"Differs from input",
+    L"Script matches",
+    L"Not detected",
+    // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
+    // decisions.md:540): slot 199 is the picker AUTO-view chip's dedicated
+    // label (positional, same MSVC C7556 rule as every other tail block).
+    // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): slots
+    // 197..198 - the OpenAI settings declaration checklist's title + fail-open
+    // hint (positional, same MSVC C7556 rule as every other tail block). They
+    // sit BEFORE the AUTO chip slot on purpose: language_search_auto_chip is
+    // the struct member that closes the tail, so the AUTO chip label stays
+    // this table's LAST initializer (the P9b-3 U5 tail pin).
+    L"Languages this model supports",
+    L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    L"Auto - local for supported languages, cloud for the rest",
 };
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
 // Authored per §2-Q4 verdict A (aggregate-struct pattern). Field order and
@@ -2064,6 +2452,38 @@ const LocalizedStrings kStringsFrench = {
     .gguf_invalid_model_body = L"Ce fichier n'est pas un modèle GGUF valide ; il n'a pas été enregistré.",
     .gguf_manager_active_suffix = L"(en cours d'utilisation)",
     .gguf_manager_activated = L"Ce modèle est maintenant utilisé.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Rechercher une langue…",
+    .language_search_no_match = L"Aucune langue correspondante",
+    .menu_search_langs = L"Rechercher…",
+    .language_search_count = L"{n} langues",
+    .user_langs_group = L"Mes langues",
+    .user_lang_add_title = L"Ajouter ma langue",
+    .user_lang_native_name_label = L"Nom natif",
+    .user_lang_english_name_label = L"Nom en anglais (facultatif)",
+    .user_lang_code_label = L"Code de langue",
+    .user_lang_script_label = L"Écriture",
+    .user_lang_add = L"Ajouter",
+    .user_lang_cancel = L"Annuler",
+    .user_lang_no_code_notice = L"Aucun code de langue trouvé. Cette langue n'est disponible qu'avec les moteurs compatibles OpenAI et .gguf de l'utilisateur.",
+    .user_lang_probe_checking = L"Vérification",
+    .user_lang_probe_supported = L"Pris en charge",
+    .user_lang_probe_unsupported = L"Prise en charge douteuse",
+    .user_lang_probe_evidence_label = L"Éléments de preuve",
+    .user_lang_probe_retest = L"Retester",
+    .user_lang_override_supported = L"Marquer comme pris en charge",
+    .user_lang_override_unsupported = L"Marquer comme non pris en charge",
+    .user_lang_override_active = L"Défini par vous",
+    .user_lang_support_not_quality = L"La prise en charge ne garantit pas la qualité de traduction.",
+    .user_lang_name_reserved = L"« {n} » est déjà un nom de langue. Saisissez un autre nom.",
+    .user_lang_check_non_empty = L"Réponse reçue",
+    .user_lang_check_differs = L"Différent de l'original",
+    .user_lang_check_script = L"Écriture conforme",
+    .user_lang_script_none = L"Non détectée",
+    .openai_declared_title = L"Langues prises en charge par ce modèle",
+    .openai_declared_hint = L"Seules les langues que vous sélectionnez s'affichent dans les menus de langue. Lorsque aucune langue n'est sélectionnée, toutes les langues s'affichent.",
+    .language_search_auto_chip = L"Auto - local pour les langues prises en charge, le cloud pour les autres",
 };
 // 9. German (de)
 const LocalizedStrings kStringsGerman = {
@@ -2285,6 +2705,38 @@ const LocalizedStrings kStringsGerman = {
     .gguf_invalid_model_body = L"Keine gültige GGUF-Modelldatei; sie wurde nicht registriert.",
     .gguf_manager_active_suffix = L"(in Verwendung)",
     .gguf_manager_activated = L"Dieses Modell wird jetzt verwendet.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Sprachen suchen…",
+    .language_search_no_match = L"Keine passende Sprache",
+    .menu_search_langs = L"Suchen…",
+    .language_search_count = L"{n} Sprachen",
+    .user_langs_group = L"Meine Sprachen",
+    .user_lang_add_title = L"Meine Sprache hinzufügen",
+    .user_lang_native_name_label = L"Eigenbezeichnung",
+    .user_lang_english_name_label = L"Englischer Name (optional)",
+    .user_lang_code_label = L"Sprachcode",
+    .user_lang_script_label = L"Schrift",
+    .user_lang_add = L"Hinzufügen",
+    .user_lang_cancel = L"Abbrechen",
+    .user_lang_no_code_notice = L"Kein Sprachcode gefunden. Diese Sprache ist nur mit dem OpenAI-kompatiblen Motor und mit Benutzer-.gguf-Modellen verfügbar.",
+    .user_lang_probe_checking = L"Wird geprüft",
+    .user_lang_probe_supported = L"Unterstützt",
+    .user_lang_probe_unsupported = L"Vermutlich nicht unterstützt",
+    .user_lang_probe_evidence_label = L"Belege",
+    .user_lang_probe_retest = L"Erneut testen",
+    .user_lang_override_supported = L"Als unterstützt markieren",
+    .user_lang_override_unsupported = L"Als nicht unterstützt markieren",
+    .user_lang_override_active = L"Von Ihnen festgelegt",
+    .user_lang_support_not_quality = L"Unterstützung bedeutet nicht Übersetzungsqualität.",
+    .user_lang_name_reserved = L"„{n}“ ist bereits ein Sprachname. Geben Sie einen anderen Namen ein.",
+    .user_lang_check_non_empty = L"Antwort erhalten",
+    .user_lang_check_differs = L"Weicht vom Original ab",
+    .user_lang_check_script = L"Schrift stimmt",
+    .user_lang_script_none = L"Nicht erkannt",
+    .openai_declared_title = L"Sprachen, die dieses Modell unterstützt",
+    .openai_declared_hint = L"Nur die von Ihnen ausgewählten Sprachen werden in den Sprachmenüs angezeigt. Wenn keine Sprache ausgewählt ist, werden alle Sprachen angezeigt.",
+    .language_search_auto_chip = L"Auto - lokal für unterstützte Sprachen, die Cloud für den Rest",
 };
 // 10. Russian (ru)
 const LocalizedStrings kStringsRussian = {
@@ -2506,6 +2958,38 @@ const LocalizedStrings kStringsRussian = {
     .gguf_invalid_model_body = L"Это не действительный файл модели GGUF; он не зарегистрирован.",
     .gguf_manager_active_suffix = L"(используется)",
     .gguf_manager_activated = L"Эта модель теперь используется.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Поиск языков…",
+    .language_search_no_match = L"Подходящих языков нет",
+    .menu_search_langs = L"Поиск…",
+    .language_search_count = L"{n} языков",
+    .user_langs_group = L"Мои языки",
+    .user_lang_add_title = L"Добавить мой язык",
+    .user_lang_native_name_label = L"Самоназвание",
+    .user_lang_english_name_label = L"Название на английском (необязательно)",
+    .user_lang_code_label = L"Код языка",
+    .user_lang_script_label = L"Письменность",
+    .user_lang_add = L"Добавить",
+    .user_lang_cancel = L"Отмена",
+    .user_lang_no_code_notice = L"Код языка не найден. Этот язык доступен только в движках, совместимых с OpenAI, и в пользовательском .gguf.",
+    .user_lang_probe_checking = L"Проверка",
+    .user_lang_probe_supported = L"Поддерживается",
+    .user_lang_probe_unsupported = L"Возможно, не поддерживается",
+    .user_lang_probe_evidence_label = L"Основание",
+    .user_lang_probe_retest = L"Проверить снова",
+    .user_lang_override_supported = L"Отметить как поддерживаемый",
+    .user_lang_override_unsupported = L"Отметить как неподдерживаемый",
+    .user_lang_override_active = L"Задано вами",
+    .user_lang_support_not_quality = L"Поддержка не означает качество перевода.",
+    .user_lang_name_reserved = L"«{n}» уже является названием языка. Введите другое название.",
+    .user_lang_check_non_empty = L"Ответ получен",
+    .user_lang_check_differs = L"Отличается от исходного",
+    .user_lang_check_script = L"Письменность совпадает",
+    .user_lang_script_none = L"Не обнаружено",
+    .openai_declared_title = L"Языки, которые поддерживает эта модель",
+    .openai_declared_hint = L"В меню языков отображаются только выбранные вами языки. Если ничего не выбрано, отображаются все языки.",
+    .language_search_auto_chip = L"Авто - локально для поддерживаемых языков, облако для остальных",
 };
 // 11. Portuguese (pt)
 const LocalizedStrings kStringsPortuguese = {
@@ -2727,6 +3211,38 @@ const LocalizedStrings kStringsPortuguese = {
     .gguf_invalid_model_body = L"Não é um ficheiro de modelo GGUF válido; não foi registado.",
     .gguf_manager_active_suffix = L"(em utilização)",
     .gguf_manager_activated = L"Este modelo está agora em utilização.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Pesquisar idiomas…",
+    .language_search_no_match = L"Nenhum idioma corresponde",
+    .menu_search_langs = L"Pesquisar…",
+    .language_search_count = L"{n} idiomas",
+    .user_langs_group = L"Meus idiomas",
+    .user_lang_add_title = L"Adicionar meu idioma",
+    .user_lang_native_name_label = L"Nome nativo",
+    .user_lang_english_name_label = L"Nome em inglês (opcional)",
+    .user_lang_code_label = L"Código do idioma",
+    .user_lang_script_label = L"Escrita",
+    .user_lang_add = L"Adicionar",
+    .user_lang_cancel = L"Cancelar",
+    .user_lang_no_code_notice = L"Nenhum código de idioma foi encontrado. Este idioma só está disponível nos motores compatíveis com OpenAI e .gguf do usuário.",
+    .user_lang_probe_checking = L"Verificando",
+    .user_lang_probe_supported = L"Compatível",
+    .user_lang_probe_unsupported = L"Possivelmente não compatível",
+    .user_lang_probe_evidence_label = L"Evidências",
+    .user_lang_probe_retest = L"Testar de novo",
+    .user_lang_override_supported = L"Marcar como compatível",
+    .user_lang_override_unsupported = L"Marcar como não compatível",
+    .user_lang_override_active = L"Definido por você",
+    .user_lang_support_not_quality = L"Ser compatível não significa qualidade de tradução.",
+    .user_lang_name_reserved = L"\"{n}\" já é um nome de idioma. Digite outro nome.",
+    .user_lang_check_non_empty = L"Resposta recebida",
+    .user_lang_check_differs = L"Diferente do original",
+    .user_lang_check_script = L"Escrita correspondente",
+    .user_lang_script_none = L"Não detectada",
+    .openai_declared_title = L"Idiomas suportados por este modelo",
+    .openai_declared_hint = L"Somente os idiomas selecionados são exibidos nos menus de idioma. Quando nenhum idioma é selecionado, todos os idiomas são exibidos.",
+    .language_search_auto_chip = L"Auto - local para os idiomas compatíveis, a nuvem para os restantes",
 };
 // 12. Italian (it)
 const LocalizedStrings kStringsItalian = {
@@ -2948,6 +3464,38 @@ const LocalizedStrings kStringsItalian = {
     .gguf_invalid_model_body = L"Non è un file di modello GGUF valido; non è stato registrato.",
     .gguf_manager_active_suffix = L"(in uso)",
     .gguf_manager_activated = L"Questo modello è ora in uso.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Cerca lingue…",
+    .language_search_no_match = L"Nessuna lingua corrispondente",
+    .menu_search_langs = L"Cerca…",
+    .language_search_count = L"{n} lingue",
+    .user_langs_group = L"Le mie lingue",
+    .user_lang_add_title = L"Aggiungi la mia lingua",
+    .user_lang_native_name_label = L"Nome nativo",
+    .user_lang_english_name_label = L"Nome in inglese (facoltativo)",
+    .user_lang_code_label = L"Codice lingua",
+    .user_lang_script_label = L"Scrittura",
+    .user_lang_add = L"Aggiungi",
+    .user_lang_cancel = L"Annulla",
+    .user_lang_no_code_notice = L"Nessun codice lingua trovato. Questa lingua è disponibile solo con i motori compatibili con OpenAI e .gguf dell'utente.",
+    .user_lang_probe_checking = L"Verifica in corso",
+    .user_lang_probe_supported = L"Supportata",
+    .user_lang_probe_unsupported = L"Forse non supportata",
+    .user_lang_probe_evidence_label = L"Prove",
+    .user_lang_probe_retest = L"Riprova",
+    .user_lang_override_supported = L"Segna come supportata",
+    .user_lang_override_unsupported = L"Segna come non supportata",
+    .user_lang_override_active = L"Impostato da te",
+    .user_lang_support_not_quality = L"Il supporto non indica la qualità della traduzione.",
+    .user_lang_name_reserved = L"«{n}» è già un nome di lingua. Inserisci un altro nome.",
+    .user_lang_check_non_empty = L"Risposta ricevuta",
+    .user_lang_check_differs = L"Diverso dall'originale",
+    .user_lang_check_script = L"Scrittura corrispondente",
+    .user_lang_script_none = L"Non rilevata",
+    .openai_declared_title = L"Lingue supportate da questo modello",
+    .openai_declared_hint = L"Solo le lingue selezionate vengono mostrate nei menu delle lingue. Se non selezioni alcuna lingua, vengono mostrate tutte le lingue.",
+    .language_search_auto_chip = L"Auto - locale per le lingue supportate, il cloud per le altre",
 };
 // 13. Dutch (nl)
 const LocalizedStrings kStringsDutch = {
@@ -3169,6 +3717,38 @@ const LocalizedStrings kStringsDutch = {
     .gguf_invalid_model_body = L"Dit is geen geldig GGUF-modelbestand; het is niet geregistreerd.",
     .gguf_manager_active_suffix = L"(in gebruik)",
     .gguf_manager_activated = L"Dit model is nu in gebruik.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Talen zoeken…",
+    .language_search_no_match = L"Geen overeenkomende taal",
+    .menu_search_langs = L"Zoeken…",
+    .language_search_count = L"{n} talen",
+    .user_langs_group = L"Mijn talen",
+    .user_lang_add_title = L"Mijn taal toevoegen",
+    .user_lang_native_name_label = L"Naam in eigen taal",
+    .user_lang_english_name_label = L"Engelse naam (optioneel)",
+    .user_lang_code_label = L"Taalcode",
+    .user_lang_script_label = L"Schrift",
+    .user_lang_add = L"Toevoegen",
+    .user_lang_cancel = L"Annuleren",
+    .user_lang_no_code_notice = L"Geen taalcode gevonden. Deze taal is alleen beschikbaar met de engines OpenAI-compatibel en gebruikers-.gguf.",
+    .user_lang_probe_checking = L"Controleren",
+    .user_lang_probe_supported = L"Ondersteund",
+    .user_lang_probe_unsupported = L"Mogelijk niet ondersteund",
+    .user_lang_probe_evidence_label = L"Bewijs",
+    .user_lang_probe_retest = L"Opnieuw testen",
+    .user_lang_override_supported = L"Als ondersteund markeren",
+    .user_lang_override_unsupported = L"Als niet ondersteund markeren",
+    .user_lang_override_active = L"Door jou ingesteld",
+    .user_lang_support_not_quality = L"Ondersteuning zegt niets over de vertaalkwaliteit.",
+    .user_lang_name_reserved = L"\"{n}\" is al een taalnaam. Voer een andere naam in.",
+    .user_lang_check_non_empty = L"Antwoord ontvangen",
+    .user_lang_check_differs = L"Wijkt af van het origineel",
+    .user_lang_check_script = L"Schrift komt overeen",
+    .user_lang_script_none = L"Niet gedetecteerd",
+    .openai_declared_title = L"Talen die dit model ondersteunt",
+    .openai_declared_hint = L"Alleen de talen die je selecteert, worden in de talenmenu's weergegeven. Als je niets selecteert, worden alle talen weergegeven.",
+    .language_search_auto_chip = L"Auto - lokaal voor ondersteunde talen, de cloud voor de rest",
 };
 // 14. Polish (pl)
 const LocalizedStrings kStringsPolish = {
@@ -3390,6 +3970,38 @@ const LocalizedStrings kStringsPolish = {
     .gguf_invalid_model_body = L"To nie jest prawidłowy plik modelu GGUF; nie został zarejestrowany.",
     .gguf_manager_active_suffix = L"(w użyciu)",
     .gguf_manager_activated = L"Ten model jest teraz używany.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Szukaj języka…",
+    .language_search_no_match = L"Brak pasującego języka",
+    .menu_search_langs = L"Szukaj…",
+    .language_search_count = L"{n} języków",
+    .user_langs_group = L"Moje języki",
+    .user_lang_add_title = L"Dodaj mój język",
+    .user_lang_native_name_label = L"Nazwa rodzima",
+    .user_lang_english_name_label = L"Nazwa angielska (opcjonalnie)",
+    .user_lang_code_label = L"Kod języka",
+    .user_lang_script_label = L"Pismo",
+    .user_lang_add = L"Dodaj",
+    .user_lang_cancel = L"Anuluj",
+    .user_lang_no_code_notice = L"Nie znaleziono kodu języka. Ten język jest dostępny tylko w silnikach zgodnych z OpenAI i w silniku użytkownika .gguf.",
+    .user_lang_probe_checking = L"Sprawdzanie",
+    .user_lang_probe_supported = L"Obsługiwany",
+    .user_lang_probe_unsupported = L"Możliwy brak obsługi",
+    .user_lang_probe_evidence_label = L"Dowody",
+    .user_lang_probe_retest = L"Sprawdź ponownie",
+    .user_lang_override_supported = L"Oznacz jako obsługiwany",
+    .user_lang_override_unsupported = L"Oznacz jako nieobsługiwany",
+    .user_lang_override_active = L"Ustawione przez Ciebie",
+    .user_lang_support_not_quality = L"Obsługa nie oznacza jakości tłumaczenia.",
+    .user_lang_name_reserved = L"„{n}” jest już nazwą języka. Wpisz inną nazwę.",
+    .user_lang_check_non_empty = L"Otrzymano odpowiedź",
+    .user_lang_check_differs = L"Różni się od oryginału",
+    .user_lang_check_script = L"Pismo się zgadza",
+    .user_lang_script_none = L"Nie wykryto",
+    .openai_declared_title = L"Języki obsługiwane przez ten model",
+    .openai_declared_hint = L"Tylko wybrane języki są wyświetlane w menu języków. Gdy żaden język nie jest wybrany, wyświetlane są wszystkie języki.",
+    .language_search_auto_chip = L"Auto - lokalnie dla obsługiwanych języków, chmura dla pozostałych",
 };
 // 15. Czech (cs)
 const LocalizedStrings kStringsCzech = {
@@ -3611,6 +4223,38 @@ const LocalizedStrings kStringsCzech = {
     .gguf_invalid_model_body = L"Toto není platný soubor modelu GGUF; nebyl zaregistrován.",
     .gguf_manager_active_suffix = L"(používá se)",
     .gguf_manager_activated = L"Tento model se nyní používá.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Hledat jazyk…",
+    .language_search_no_match = L"Žádný odpovídající jazyk",
+    .menu_search_langs = L"Hledat…",
+    .language_search_count = L"{n} jazyků",
+    .user_langs_group = L"Moje jazyky",
+    .user_lang_add_title = L"Přidat můj jazyk",
+    .user_lang_native_name_label = L"Vlastní název jazyka",
+    .user_lang_english_name_label = L"Anglický název (volitelně)",
+    .user_lang_code_label = L"Kód jazyka",
+    .user_lang_script_label = L"Písmo",
+    .user_lang_add = L"Přidat",
+    .user_lang_cancel = L"Zrušit",
+    .user_lang_no_code_notice = L"Kód jazyka nebyl nalezen. Tento jazyk funguje jen s OpenAI-kompatibilním a uživatelským .gguf modulem.",
+    .user_lang_probe_checking = L"Kontrola",
+    .user_lang_probe_supported = L"Podporováno",
+    .user_lang_probe_unsupported = L"Možná nepodporováno",
+    .user_lang_probe_evidence_label = L"Podklady",
+    .user_lang_probe_retest = L"Otestovat znovu",
+    .user_lang_override_supported = L"Označit jako podporované",
+    .user_lang_override_unsupported = L"Označit jako nepodporované",
+    .user_lang_override_active = L"Nastaveno vámi",
+    .user_lang_support_not_quality = L"Podpora neznamená kvalitu překladu.",
+    .user_lang_name_reserved = L"„{n}“ je už název jazyka. Zadejte jiný název.",
+    .user_lang_check_non_empty = L"Odpověď přijata",
+    .user_lang_check_differs = L"Liší se od originálu",
+    .user_lang_check_script = L"Písmo odpovídá",
+    .user_lang_script_none = L"Nezjištěno",
+    .openai_declared_title = L"Jazyky podporované tímto modelem",
+    .openai_declared_hint = L"V nabídkách jazyků se zobrazují pouze vybrané jazyky. Pokud není vybrán žádný jazyk, zobrazí se všechny jazyky.",
+    .language_search_auto_chip = L"Auto - lokálně pro podporované jazyky, cloud pro ostatní",
 };
 // 16. Hungarian (hu)
 const LocalizedStrings kStringsHungarian = {
@@ -3832,6 +4476,38 @@ const LocalizedStrings kStringsHungarian = {
     .gguf_invalid_model_body = L"Ez nem érvényes GGUF modellfájl; nem lett regisztrálva.",
     .gguf_manager_active_suffix = L"(használatban)",
     .gguf_manager_activated = L"Ez a modell most használatban van.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Nyelv keresése…",
+    .language_search_no_match = L"Nincs megfelelő nyelv",
+    .menu_search_langs = L"Keresés…",
+    .language_search_count = L"{n} nyelv",
+    .user_langs_group = L"Saját nyelvek",
+    .user_lang_add_title = L"Saját nyelv hozzáadása",
+    .user_lang_native_name_label = L"Saját nyelvű név",
+    .user_lang_english_name_label = L"Angol név (opcionális)",
+    .user_lang_code_label = L"Nyelvkód",
+    .user_lang_script_label = L"Írásrendszer",
+    .user_lang_add = L"Hozzáadás",
+    .user_lang_cancel = L"Mégse",
+    .user_lang_no_code_notice = L"Nem található nyelvkód. Ez a nyelv csak az OpenAI-kompatibilis és a felhasználói .gguf motorokkal használható.",
+    .user_lang_probe_checking = L"Ellenőrzés",
+    .user_lang_probe_supported = L"Támogatott",
+    .user_lang_probe_unsupported = L"Feltehetően nem támogatott",
+    .user_lang_probe_evidence_label = L"Bizonyítékok",
+    .user_lang_probe_retest = L"Újratesztelés",
+    .user_lang_override_supported = L"Megjelölés támogatottként",
+    .user_lang_override_unsupported = L"Megjelölés nem támogatottként",
+    .user_lang_override_active = L"Ön állította be",
+    .user_lang_support_not_quality = L"A támogatás nem jelent fordítási minőséget.",
+    .user_lang_name_reserved = L"A(z) „{n}” már nyelvenév. Adjon meg másik nevet.",
+    .user_lang_check_non_empty = L"Válasz érkezett",
+    .user_lang_check_differs = L"Eltér az eredetitől",
+    .user_lang_check_script = L"Az írás egyezik",
+    .user_lang_script_none = L"Nem észlelhető",
+    .openai_declared_title = L"A modell által támogatott nyelvek",
+    .openai_declared_hint = L"Csak a kiválasztott nyelvek jelennek meg a nyelvi menükben. Ha egy nyelvet sem választ, az összes nyelv megjelenik.",
+    .language_search_auto_chip = L"Auto - helyi a támogatott nyelvekhez, felhő a többihez",
 };
 // 17. Romanian (ro)
 const LocalizedStrings kStringsRomanian = {
@@ -4053,6 +4729,38 @@ const LocalizedStrings kStringsRomanian = {
     .gguf_invalid_model_body = L"Acesta nu este un fișier GGUF valid; nu a fost înregistrat.",
     .gguf_manager_active_suffix = L"(în uz)",
     .gguf_manager_activated = L"Acest model este acum în uz.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Caută o limbă…",
+    .language_search_no_match = L"Nicio limbă potrivită",
+    .menu_search_langs = L"Caută…",
+    .language_search_count = L"{n} de limbi",
+    .user_langs_group = L"Limbile mele",
+    .user_lang_add_title = L"Adaugă limba mea",
+    .user_lang_native_name_label = L"Nume nativ",
+    .user_lang_english_name_label = L"Nume în engleză (opțional)",
+    .user_lang_code_label = L"Cod de limbă",
+    .user_lang_script_label = L"Scriere",
+    .user_lang_add = L"Adaugă",
+    .user_lang_cancel = L"Anulează",
+    .user_lang_no_code_notice = L"Nu s-a găsit niciun cod de limbă. Această limbă este disponibilă doar cu motoarele compatibile OpenAI și .gguf al utilizatorului.",
+    .user_lang_probe_checking = L"Se verifică",
+    .user_lang_probe_supported = L"Acceptată",
+    .user_lang_probe_unsupported = L"Posibil neacceptată",
+    .user_lang_probe_evidence_label = L"Dovezi",
+    .user_lang_probe_retest = L"Testează din nou",
+    .user_lang_override_supported = L"Marchează ca acceptată",
+    .user_lang_override_unsupported = L"Marchează ca neacceptată",
+    .user_lang_override_active = L"Stabilit de tine",
+    .user_lang_support_not_quality = L"Acceptarea nu înseamnă calitatea traducerii.",
+    .user_lang_name_reserved = L"„{n}” este deja un nume de limbă. Introdu alt nume.",
+    .user_lang_check_non_empty = L"Răspuns primit",
+    .user_lang_check_differs = L"Diferă de original",
+    .user_lang_check_script = L"Scrierea corespunde",
+    .user_lang_script_none = L"Nedetectată",
+    .openai_declared_title = L"Limbi acceptate de acest model",
+    .openai_declared_hint = L"Doar limbile selectate de tine apar în meniurile de limbă. Când nu selectezi nicio limbă, apar toate limbile.",
+    .language_search_auto_chip = L"Auto - local pentru limbile acceptate, cloud pentru restul",
 };
 // 18. Swedish (sv)
 const LocalizedStrings kStringsSwedish = {
@@ -4274,6 +4982,38 @@ const LocalizedStrings kStringsSwedish = {
     .gguf_invalid_model_body = L"Det är ingen giltig GGUF-modellfil; den har inte registrerats.",
     .gguf_manager_active_suffix = L"(används)",
     .gguf_manager_activated = L"Den här modellen används nu.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Sök språk…",
+    .language_search_no_match = L"Inget matchande språk",
+    .menu_search_langs = L"Sök…",
+    .language_search_count = L"{n} språk",
+    .user_langs_group = L"Mina språk",
+    .user_lang_add_title = L"Lägg till mitt språk",
+    .user_lang_native_name_label = L"Namn på eget språk",
+    .user_lang_english_name_label = L"Engelskt namn (valfritt)",
+    .user_lang_code_label = L"Språkkod",
+    .user_lang_script_label = L"Skrift",
+    .user_lang_add = L"Lägg till",
+    .user_lang_cancel = L"Avbryt",
+    .user_lang_no_code_notice = L"Ingen språkkod hittades. Språket finns bara med motorerna OpenAI-kompatibel och användarens .gguf.",
+    .user_lang_probe_checking = L"Kontrollerar",
+    .user_lang_probe_supported = L"Stöds",
+    .user_lang_probe_unsupported = L"Stöds troligen inte",
+    .user_lang_probe_evidence_label = L"Underlag",
+    .user_lang_probe_retest = L"Testa igen",
+    .user_lang_override_supported = L"Markera som stöds",
+    .user_lang_override_unsupported = L"Markera som inte stöds",
+    .user_lang_override_active = L"Angett av dig",
+    .user_lang_support_not_quality = L"Att ett språk stöds säger inget om översättningskvaliteten.",
+    .user_lang_name_reserved = L"”{n}” är redan ett språknamn. Ange ett annat namn.",
+    .user_lang_check_non_empty = L"Svar mottaget",
+    .user_lang_check_differs = L"Skiljer sig från originalet",
+    .user_lang_check_script = L"Skriften stämmer",
+    .user_lang_script_none = L"Inte identifierad",
+    .openai_declared_title = L"Språk som den här modellen stöder",
+    .openai_declared_hint = L"Endast de språk du väljer visas i språkmenyerna. Om inget språk väljs visas alla språk.",
+    .language_search_auto_chip = L"Auto - lokalt för språk som stöds, molnet för resten",
 };
 // 19. Danish (da)
 const LocalizedStrings kStringsDanish = {
@@ -4495,6 +5235,38 @@ const LocalizedStrings kStringsDanish = {
     .gguf_invalid_model_body = L"Det er ikke en gyldig GGUF-modelfil; den er ikke registreret.",
     .gguf_manager_active_suffix = L"(i brug)",
     .gguf_manager_activated = L"Denne model er nu i brug.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Søg sprog…",
+    .language_search_no_match = L"Intet matchende sprog",
+    .menu_search_langs = L"Søg…",
+    .language_search_count = L"{n} sprog",
+    .user_langs_group = L"Mine sprog",
+    .user_lang_add_title = L"Tilføj mit sprog",
+    .user_lang_native_name_label = L"Navn på eget sprog",
+    .user_lang_english_name_label = L"Engelsk navn (valgfrit)",
+    .user_lang_code_label = L"Sprogkode",
+    .user_lang_script_label = L"Skriftsystem",
+    .user_lang_add = L"Tilføj",
+    .user_lang_cancel = L"Annuller",
+    .user_lang_no_code_notice = L"Der blev ikke fundet en sprogkode. Sproget findes kun med motorerne OpenAI-kompatibel og brugerens .gguf.",
+    .user_lang_probe_checking = L"Kontrollerer",
+    .user_lang_probe_supported = L"Understøttet",
+    .user_lang_probe_unsupported = L"Understøttes muligvis ikke",
+    .user_lang_probe_evidence_label = L"Bevis",
+    .user_lang_probe_retest = L"Test igen",
+    .user_lang_override_supported = L"Markér som understøttet",
+    .user_lang_override_unsupported = L"Markér som ikke understøttet",
+    .user_lang_override_active = L"Angivet af dig",
+    .user_lang_support_not_quality = L"Understøttelse siger intet om oversættelseskvaliteten.",
+    .user_lang_name_reserved = L"\"{n}\" er allerede et sprognavn. Indtast et andet navn.",
+    .user_lang_check_non_empty = L"Svar modtaget",
+    .user_lang_check_differs = L"Adskiller sig fra originalen",
+    .user_lang_check_script = L"Skriften passer",
+    .user_lang_script_none = L"Ikke registreret",
+    .openai_declared_title = L"Sprog, som denne model understøtter",
+    .openai_declared_hint = L"Kun de sprog, du vælger, vises i sprogmenuerne. Hvis du ikke vælger noget, vises alle sprog.",
+    .language_search_auto_chip = L"Auto - lokalt for understøttede sprog, skyen for resten",
 };
 // 20. Finnish (fi)
 const LocalizedStrings kStringsFinnish = {
@@ -4716,6 +5488,38 @@ const LocalizedStrings kStringsFinnish = {
     .gguf_invalid_model_body = L"Tämä ei ole kelvollinen GGUF-mallitiedosto; sitä ei rekisteröity.",
     .gguf_manager_active_suffix = L"(käytössä)",
     .gguf_manager_activated = L"Tämä malli on nyt käytössä.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Hae kieltä…",
+    .language_search_no_match = L"Ei vastaavaa kieltä",
+    .menu_search_langs = L"Hae…",
+    .language_search_count = L"{n} kieltä",
+    .user_langs_group = L"Omat kielet",
+    .user_lang_add_title = L"Lisää oma kieli",
+    .user_lang_native_name_label = L"Oman kielen nimi",
+    .user_lang_english_name_label = L"Englanninkielinen nimi (valinnainen)",
+    .user_lang_code_label = L"Kielikoodi",
+    .user_lang_script_label = L"Kirjoitusjärjestelmä",
+    .user_lang_add = L"Lisää",
+    .user_lang_cancel = L"Peruuta",
+    .user_lang_no_code_notice = L"Kielikoodia ei löytynyt. Kieli on käytettävissä vain OpenAI-yhteensopivassa ja käyttäjän .gguf-moottorissa.",
+    .user_lang_probe_checking = L"Tarkistetaan",
+    .user_lang_probe_supported = L"Tuettu",
+    .user_lang_probe_unsupported = L"Ei ehkä tuettu",
+    .user_lang_probe_evidence_label = L"Perusteet",
+    .user_lang_probe_retest = L"Testaa uudelleen",
+    .user_lang_override_supported = L"Merkitse tuetuksi",
+    .user_lang_override_unsupported = L"Merkitse ei-tuetuksi",
+    .user_lang_override_active = L"Itse asetettu",
+    .user_lang_support_not_quality = L"Tuki ei tarkoita käännöksen laatua.",
+    .user_lang_name_reserved = L"\"{n}\" on jo kielen nimi. Anna toinen nimi.",
+    .user_lang_check_non_empty = L"Vastaus saatu",
+    .user_lang_check_differs = L"Poikkeaa alkuperäisestä",
+    .user_lang_check_script = L"Kirjoitusjärjestelmä täsmää",
+    .user_lang_script_none = L"Ei havaittu",
+    .openai_declared_title = L"Kielet, joita tämä malli tukee",
+    .openai_declared_hint = L"Vain valitsemasi kielet näytetään kielivalikoissa. Jos et valitse mitään, näytetään kaikki kielet.",
+    .language_search_auto_chip = L"Auto - paikallinen tuetuille kielille, pilvi muille",
 };
 // 21. Norwegian (no / nb)
 const LocalizedStrings kStringsNorwegian = {
@@ -4937,6 +5741,38 @@ const LocalizedStrings kStringsNorwegian = {
     .gguf_invalid_model_body = L"Dette er ikke en gyldig GGUF-modellfil; den ble ikke registrert.",
     .gguf_manager_active_suffix = L"(i bruk)",
     .gguf_manager_activated = L"Denne modellen er nå i bruk.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Søk etter språk…",
+    .language_search_no_match = L"Ingen samsvarende språk",
+    .menu_search_langs = L"Søk…",
+    .language_search_count = L"{n} språk",
+    .user_langs_group = L"Mine språk",
+    .user_lang_add_title = L"Legg til mitt språk",
+    .user_lang_native_name_label = L"Navn på eget språk",
+    .user_lang_english_name_label = L"Engelsk navn (valgfritt)",
+    .user_lang_code_label = L"Språkkode",
+    .user_lang_script_label = L"Skriftsystem",
+    .user_lang_add = L"Legg til",
+    .user_lang_cancel = L"Avbryt",
+    .user_lang_no_code_notice = L"Fant ingen språkkode. Dette språket finnes bare med motorene OpenAI-kompatibel og brukerens .gguf.",
+    .user_lang_probe_checking = L"Sjekker",
+    .user_lang_probe_supported = L"Støttet",
+    .user_lang_probe_unsupported = L"Støttes kanskje ikke",
+    .user_lang_probe_evidence_label = L"Bevis",
+    .user_lang_probe_retest = L"Test på nytt",
+    .user_lang_override_supported = L"Merk som støttet",
+    .user_lang_override_unsupported = L"Merk som ikke støttet",
+    .user_lang_override_active = L"Angitt av deg",
+    .user_lang_support_not_quality = L"Støtte sier ikke noe om oversettelseskvaliteten.",
+    .user_lang_name_reserved = L"\"{n}\" er allerede et språknavn. Skriv inn et annet navn.",
+    .user_lang_check_non_empty = L"Svar mottatt",
+    .user_lang_check_differs = L"Avviker fra originalen",
+    .user_lang_check_script = L"Skriften stemmer",
+    .user_lang_script_none = L"Ikke registrert",
+    .openai_declared_title = L"Språk denne modellen støtter",
+    .openai_declared_hint = L"Bare språkene du velger, vises i språkmenyene. Hvis du ikke velger noe, vises alle språk.",
+    .language_search_auto_chip = L"Auto - lokal for støttede språk, skyen for resten",
 };
 // 22. Greek (el)
 const LocalizedStrings kStringsGreek = {
@@ -5158,6 +5994,38 @@ const LocalizedStrings kStringsGreek = {
     .gguf_invalid_model_body = L"Δεν είναι έγκυρο αρχείο μοντέλου GGUF· δεν καταχωρήθηκε.",
     .gguf_manager_active_suffix = L"(σε χρήση)",
     .gguf_manager_activated = L"Αυτό το μοντέλο είναι πλέον σε χρήση.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Αναζήτηση γλώσσας…",
+    .language_search_no_match = L"Καμία αντίστοιχη γλώσσα",
+    .menu_search_langs = L"Αναζήτηση…",
+    .language_search_count = L"{n} γλώσσες",
+    .user_langs_group = L"Οι γλώσσες μου",
+    .user_lang_add_title = L"Προσθήκη γλώσσας μου",
+    .user_lang_native_name_label = L"Εγγενές όνομα",
+    .user_lang_english_name_label = L"Αγγλικό όνομα (προαιρετικό)",
+    .user_lang_code_label = L"Κωδικός γλώσσας",
+    .user_lang_script_label = L"Σύστημα γραφής",
+    .user_lang_add = L"Προσθήκη",
+    .user_lang_cancel = L"Άκυρο",
+    .user_lang_no_code_notice = L"Δεν βρέθηκε κωδικός γλώσσας. Η γλώσσα είναι διαθέσιμη μόνο στις μηχανές συμβατές με OpenAI και στο .gguf χρήστη.",
+    .user_lang_probe_checking = L"Έλεγχος",
+    .user_lang_probe_supported = L"Υποστηρίζεται",
+    .user_lang_probe_unsupported = L"Πιθανώς δεν υποστηρίζεται",
+    .user_lang_probe_evidence_label = L"Στοιχεία",
+    .user_lang_probe_retest = L"Δοκιμή ξανά",
+    .user_lang_override_supported = L"Σήμανση ως υποστηριζόμενη",
+    .user_lang_override_unsupported = L"Σήμανση ως μη υποστηριζόμενη",
+    .user_lang_override_active = L"Ορίστηκε από εσάς",
+    .user_lang_support_not_quality = L"Η υποστήριξη δεν σημαίνει ποιότητα μετάφρασης.",
+    .user_lang_name_reserved = L"«{n}» είναι ήδη όνομα γλώσσας. Εισαγάγετε άλλο όνομα.",
+    .user_lang_check_non_empty = L"Λήφθηκε απάντηση",
+    .user_lang_check_differs = L"Διαφέρει από το πρωτότυπο",
+    .user_lang_check_script = L"Το σύστημα γραφής ταιριάζει",
+    .user_lang_script_none = L"Δεν εντοπίστηκε",
+    .openai_declared_title = L"Γλώσσες που υποστηρίζει αυτό το μοντέλο",
+    .openai_declared_hint = L"Μόνο οι γλώσσες που επιλέγετε εμφανίζονται στα μενού γλωσσών. Όταν δεν επιλέγετε καμία, εμφανίζονται όλες οι γλώσσες.",
+    .language_search_auto_chip = L"Αυτόματο - τοπικά για τις υποστηριζόμενες γλώσσες, σύννεφο για τις υπόλοιπες",
 };
 // 23. Turkish (tr)
 const LocalizedStrings kStringsTurkish = {
@@ -5379,6 +6247,38 @@ const LocalizedStrings kStringsTurkish = {
     .gguf_invalid_model_body = L"Geçerli bir GGUF model dosyası değil; kaydedilmedi.",
     .gguf_manager_active_suffix = L"(kullanımda)",
     .gguf_manager_activated = L"Bu model artık kullanımda.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Dil ara…",
+    .language_search_no_match = L"Eşleşen dil yok",
+    .menu_search_langs = L"Ara…",
+    .language_search_count = L"{n} dil",
+    .user_langs_group = L"Dillerim",
+    .user_lang_add_title = L"Dilimi ekle",
+    .user_lang_native_name_label = L"Özgün ad",
+    .user_lang_english_name_label = L"İngilizce ad (isteğe bağlı)",
+    .user_lang_code_label = L"Dil kodu",
+    .user_lang_script_label = L"Yazı sistemi",
+    .user_lang_add = L"Ekle",
+    .user_lang_cancel = L"İptal",
+    .user_lang_no_code_notice = L"Dil kodu bulunamadı. Bu dil yalnızca OpenAI uyumlu ve kullanıcı .gguf motorlarında kullanılabilir.",
+    .user_lang_probe_checking = L"Denetleniyor",
+    .user_lang_probe_supported = L"Destekleniyor",
+    .user_lang_probe_unsupported = L"Desteklenmiyor olabilir",
+    .user_lang_probe_evidence_label = L"Kanıtlar",
+    .user_lang_probe_retest = L"Yeniden dene",
+    .user_lang_override_supported = L"Destekleniyor olarak işaretle",
+    .user_lang_override_unsupported = L"Desteklenmiyor olarak işaretle",
+    .user_lang_override_active = L"Sizin belirlediğiniz",
+    .user_lang_support_not_quality = L"Destek, çeviri kalitesi anlamına gelmez.",
+    .user_lang_name_reserved = L"\"{n}\" zaten bir dil adı. Başka bir ad girin.",
+    .user_lang_check_non_empty = L"Yanıt alındı",
+    .user_lang_check_differs = L"Orijinalden farklı",
+    .user_lang_check_script = L"Yazı sistemi uyuşuyor",
+    .user_lang_script_none = L"Algılanmadı",
+    .openai_declared_title = L"Bu modelin desteklediği diller",
+    .openai_declared_hint = L"Yalnızca seçtiğiniz diller dil menülerinde gösterilir. Hiçbir dil seçilmediğinde tüm diller gösterilir.",
+    .language_search_auto_chip = L"Otomatik - desteklenen diller yerel, geri kalanı bulut",
 };
 // 24. Ukrainian (uk)
 const LocalizedStrings kStringsUkrainian = {
@@ -5600,6 +6500,38 @@ const LocalizedStrings kStringsUkrainian = {
     .gguf_invalid_model_body = L"Це недійсний файл моделі GGUF; він не зареєстрований.",
     .gguf_manager_active_suffix = L"(використовується)",
     .gguf_manager_activated = L"Цю модель зараз використовується.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Пошук мов…",
+    .language_search_no_match = L"Немає відповідної мови",
+    .menu_search_langs = L"Пошук…",
+    .language_search_count = L"{n} мов",
+    .user_langs_group = L"Мої мови",
+    .user_lang_add_title = L"Додати мою мову",
+    .user_lang_native_name_label = L"Власна назва",
+    .user_lang_english_name_label = L"Назва англійською (необов'язково)",
+    .user_lang_code_label = L"Код мови",
+    .user_lang_script_label = L"Письмо",
+    .user_lang_add = L"Додати",
+    .user_lang_cancel = L"Скасувати",
+    .user_lang_no_code_notice = L"Код мови не знайдено. Ця мова доступна лише в сумісному з OpenAI та користувацькому .gguf рушіях.",
+    .user_lang_probe_checking = L"Перевірка",
+    .user_lang_probe_supported = L"Підтримується",
+    .user_lang_probe_unsupported = L"Можливо, не підтримується",
+    .user_lang_probe_evidence_label = L"Підстави",
+    .user_lang_probe_retest = L"Перевірити знову",
+    .user_lang_override_supported = L"Позначити як підтримувану",
+    .user_lang_override_unsupported = L"Позначити як непідтримувану",
+    .user_lang_override_active = L"Задано вами",
+    .user_lang_support_not_quality = L"Підтримка не означає якість перекладу.",
+    .user_lang_name_reserved = L"«{n}» уже є назвою мови. Введіть іншу назву.",
+    .user_lang_check_non_empty = L"Відповідь отримано",
+    .user_lang_check_differs = L"Відрізняється від оригіналу",
+    .user_lang_check_script = L"Письмо збігається",
+    .user_lang_script_none = L"Не виявлено",
+    .openai_declared_title = L"Мови, які підтримує ця модель",
+    .openai_declared_hint = L"У меню мов відображаються лише вибрані вами мови. Якщо не вибрано жодної, відображаються всі мови.",
+    .language_search_auto_chip = L"Авто - локально для підтримуваних мов, хмара для решти",
 };
 // 25. Thai (th)
 const LocalizedStrings kStringsThai = {
@@ -5821,6 +6753,38 @@ const LocalizedStrings kStringsThai = {
     .gguf_invalid_model_body = L"ไม่ใช่ไฟล์โมเดล GGUF ที่ถูกต้อง จึงไม่ได้ลงทะเบียน",
     .gguf_manager_active_suffix = L"(กำลังใช้งาน)",
     .gguf_manager_activated = L"ตั้งโมเดลนี้เป็นโมเดลที่ใช้งานอยู่แล้ว",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"ค้นหาภาษา…",
+    .language_search_no_match = L"ไม่พบภาษาที่ตรงกัน",
+    .menu_search_langs = L"ค้นหา…",
+    .language_search_count = L"{n} ภาษา",
+    .user_langs_group = L"ภาษาของฉัน",
+    .user_lang_add_title = L"เพิ่มภาษาของฉัน",
+    .user_lang_native_name_label = L"ชื่อภาษาท้องถิ่น",
+    .user_lang_english_name_label = L"ชื่อภาษาอังกฤษ (ไม่บังคับ)",
+    .user_lang_code_label = L"รหัสภาษา",
+    .user_lang_script_label = L"ระบบตัวอักษร",
+    .user_lang_add = L"เพิ่ม",
+    .user_lang_cancel = L"ยกเลิก",
+    .user_lang_no_code_notice = L"ไม่พบรหัสภาษา ภาษานี้ใช้ได้เฉพาะกับเอนจินที่รองรับ OpenAI และ .gguf ของผู้ใช้",
+    .user_lang_probe_checking = L"กำลังตรวจสอบ",
+    .user_lang_probe_supported = L"รองรับ",
+    .user_lang_probe_unsupported = L"อาจไม่รองรับ",
+    .user_lang_probe_evidence_label = L"หลักฐาน",
+    .user_lang_probe_retest = L"ทดสอบอีกครั้ง",
+    .user_lang_override_supported = L"ทำเครื่องหมายว่ารองรับ",
+    .user_lang_override_unsupported = L"ทำเครื่องหมายว่าไม่รองรับ",
+    .user_lang_override_active = L"คุณกำหนดเอง",
+    .user_lang_support_not_quality = L"การรองรับไม่ได้หมายถึงคุณภาพการแปล",
+    .user_lang_name_reserved = L"\"{n}\" เป็นชื่อภาษาที่มีอยู่แล้ว กรุณาใส่ชื่ออื่น",
+    .user_lang_check_non_empty = L"ได้รับคำตอบ",
+    .user_lang_check_differs = L"แตกต่างจากต้นฉบับ",
+    .user_lang_check_script = L"ระบบตัวอักษรตรงกัน",
+    .user_lang_script_none = L"ตรวจไม่พบ",
+    .openai_declared_title = L"ภาษาที่โมเดลนี้รองรับ",
+    .openai_declared_hint = L"เฉพาะภาษาที่คุณเลือกเท่านั้นที่จะแสดงในเมนูภาษา หากไม่ได้เลือกภาษาใดเลย จะแสดงภาษาทั้งหมด",
+    .language_search_auto_chip = L"อัตโนมัติ - ภาษาที่รองรับใช้โลคัล ที่เหลือใช้คลาวด์",
 };
 // 26. Indonesian (id)
 const LocalizedStrings kStringsIndonesian = {
@@ -6042,6 +7006,38 @@ const LocalizedStrings kStringsIndonesian = {
     .gguf_invalid_model_body = L"Bukan berkas model GGUF yang valid; tidak didaftarkan.",
     .gguf_manager_active_suffix = L"(sedang digunakan)",
     .gguf_manager_activated = L"Model ini sekarang sedang digunakan.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Cari bahasa…",
+    .language_search_no_match = L"Tidak ada bahasa yang cocok",
+    .menu_search_langs = L"Cari…",
+    .language_search_count = L"{n} bahasa",
+    .user_langs_group = L"Bahasa saya",
+    .user_lang_add_title = L"Tambah bahasa saya",
+    .user_lang_native_name_label = L"Nama asli",
+    .user_lang_english_name_label = L"Nama bahasa Inggris (opsional)",
+    .user_lang_code_label = L"Kode bahasa",
+    .user_lang_script_label = L"Aksara",
+    .user_lang_add = L"Tambah",
+    .user_lang_cancel = L"Batal",
+    .user_lang_no_code_notice = L"Kode bahasa tidak ditemukan. Bahasa ini hanya tersedia di mesin kompatibel OpenAI dan .gguf pengguna.",
+    .user_lang_probe_checking = L"Memeriksa",
+    .user_lang_probe_supported = L"Didukung",
+    .user_lang_probe_unsupported = L"Mungkin tidak didukung",
+    .user_lang_probe_evidence_label = L"Bukti",
+    .user_lang_probe_retest = L"Uji lagi",
+    .user_lang_override_supported = L"Tandai didukung",
+    .user_lang_override_unsupported = L"Tandai tidak didukung",
+    .user_lang_override_active = L"Diatur oleh Anda",
+    .user_lang_support_not_quality = L"Dukungan tidak berarti kualitas terjemahan.",
+    .user_lang_name_reserved = L"\"{n}\" sudah menjadi nama bahasa. Masukkan nama lain.",
+    .user_lang_check_non_empty = L"Balasan diterima",
+    .user_lang_check_differs = L"Berbeda dari aslinya",
+    .user_lang_check_script = L"Aksara cocok",
+    .user_lang_script_none = L"Tidak terdeteksi",
+    .openai_declared_title = L"Bahasa yang didukung model ini",
+    .openai_declared_hint = L"Hanya bahasa yang Anda pilih yang ditampilkan di menu bahasa. Jika tidak ada yang dipilih, semua bahasa akan ditampilkan.",
+    .language_search_auto_chip = L"Auto - lokal untuk bahasa yang didukung, cloud untuk sisanya",
 };
 // 27. Malay (ms)
 const LocalizedStrings kStringsMalay = {
@@ -6263,6 +7259,38 @@ const LocalizedStrings kStringsMalay = {
     .gguf_invalid_model_body = L"Bukan fail model GGUF yang sah; ia tidak didaftarkan.",
     .gguf_manager_active_suffix = L"(sedang digunakan)",
     .gguf_manager_activated = L"Model ini kini sedang digunakan.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Cari bahasa…",
+    .language_search_no_match = L"Tiada bahasa yang sepadan",
+    .menu_search_langs = L"Cari…",
+    .language_search_count = L"{n} bahasa",
+    .user_langs_group = L"Bahasa saya",
+    .user_lang_add_title = L"Tambah bahasa saya",
+    .user_lang_native_name_label = L"Nama asli",
+    .user_lang_english_name_label = L"Nama Inggeris (pilihan)",
+    .user_lang_code_label = L"Kod bahasa",
+    .user_lang_script_label = L"Aksara",
+    .user_lang_add = L"Tambah",
+    .user_lang_cancel = L"Batal",
+    .user_lang_no_code_notice = L"Kod bahasa tidak ditemui. Bahasa ini hanya tersedia dalam enjin serasi OpenAI dan .gguf pengguna.",
+    .user_lang_probe_checking = L"Menyemak",
+    .user_lang_probe_supported = L"Disokong",
+    .user_lang_probe_unsupported = L"Mungkin tidak disokong",
+    .user_lang_probe_evidence_label = L"Bukti",
+    .user_lang_probe_retest = L"Uji semula",
+    .user_lang_override_supported = L"Tandakan disokong",
+    .user_lang_override_unsupported = L"Tandakan tidak disokong",
+    .user_lang_override_active = L"Ditetapkan oleh anda",
+    .user_lang_support_not_quality = L"Sokongan bukan bermakna kualiti terjemahan.",
+    .user_lang_name_reserved = L"\"{n}\" sudah menjadi nama bahasa. Masukkan nama lain.",
+    .user_lang_check_non_empty = L"Balasan diterima",
+    .user_lang_check_differs = L"Berbeza daripada asal",
+    .user_lang_check_script = L"Aksara sepadan",
+    .user_lang_script_none = L"Tidak dikesan",
+    .openai_declared_title = L"Bahasa yang disokong oleh model ini",
+    .openai_declared_hint = L"Hanya bahasa yang anda pilih akan dipaparkan dalam menu bahasa. Jika tiada bahasa dipilih, semua bahasa akan dipaparkan.",
+    .language_search_auto_chip = L"Auto - setempat untuk bahasa yang disokong, cloud untuk selebihnya",
 };
 // 28. Filipino (fil)
 // Note: "Website", "Google Translate" and "Reddit" are used in Philippine
@@ -6486,6 +7514,38 @@ const LocalizedStrings kStringsFilipino = {
     .gguf_invalid_model_body = L"Hindi ito wastong GGUF model file; hindi ito narehistro.",
     .gguf_manager_active_suffix = L"(ginagamit)",
     .gguf_manager_activated = L"Ang modelong ito ay ginagamit na ngayon.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"Maghanap ng wika…",
+    .language_search_no_match = L"Walang tugmang wika",
+    .menu_search_langs = L"Maghanap…",
+    .language_search_count = L"{n} wika",
+    .user_langs_group = L"Aking mga wika",
+    .user_lang_add_title = L"Magdagdag ng aking wika",
+    .user_lang_native_name_label = L"Katutubong pangalan",
+    .user_lang_english_name_label = L"Pangalang Ingles (opsyonal)",
+    .user_lang_code_label = L"Kodigo ng wika",
+    .user_lang_script_label = L"Sistema ng pagsulat",
+    .user_lang_add = L"Idagdag",
+    .user_lang_cancel = L"Kanselahin",
+    .user_lang_no_code_notice = L"Walang natagpuang kodigo ng wika. Magagamit lamang ang wikang ito sa engine na katugma ng OpenAI at sa .gguf ng gumagamit.",
+    .user_lang_probe_checking = L"Sinusuri",
+    .user_lang_probe_supported = L"Sinusuportahan",
+    .user_lang_probe_unsupported = L"Maaaring hindi sinusuportahan",
+    .user_lang_probe_evidence_label = L"Ebidensya",
+    .user_lang_probe_retest = L"Subukan muli",
+    .user_lang_override_supported = L"Markahan bilang sinusuportahan",
+    .user_lang_override_unsupported = L"Markahan bilang hindi sinusuportahan",
+    .user_lang_override_active = L"Itinakda mo",
+    .user_lang_support_not_quality = L"Ang suporta ay hindi nangangahulugan ng kalidad ng salin.",
+    .user_lang_name_reserved = L"\"{n}\" ay pangalan na ng wika. Maglagay ng ibang pangalan.",
+    .user_lang_check_non_empty = L"May tugon",
+    .user_lang_check_differs = L"Naiiba sa orihinal",
+    .user_lang_check_script = L"Tumutugma ang sistema ng pagsulat",
+    .user_lang_script_none = L"Hindi natukoy",
+    .openai_declared_title = L"Mga wikang sinusuportahan ng modelong ito",
+    .openai_declared_hint = L"Ang mga wikang pinili mo lang ang ipinapakita sa mga menu ng wika. Kapag walang pinili, ipinapakita lahat ng wika.",
+    .language_search_auto_chip = L"Awtomatik - lokal para sa mga sinusuportahang wika, cloud para sa iba",
 };
 // 29. Hindi (hi)
 const LocalizedStrings kStringsHindi = {
@@ -6707,6 +7767,38 @@ const LocalizedStrings kStringsHindi = {
     .gguf_invalid_model_body = L"यह मान्य GGUF मॉडल फ़ाइल नहीं है; इसे पंजीकृत नहीं किया गया।",
     .gguf_manager_active_suffix = L"(उपयोग में)",
     .gguf_manager_activated = L"अब यह मॉडल उपयोग में है।",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"भाषा खोजें…",
+    .language_search_no_match = L"कोई मेल खाती भाषा नहीं",
+    .menu_search_langs = L"खोजें…",
+    .language_search_count = L"{n} भाषाएँ",
+    .user_langs_group = L"मेरी भाषाएँ",
+    .user_lang_add_title = L"अपनी भाषा जोड़ें",
+    .user_lang_native_name_label = L"मूल नाम",
+    .user_lang_english_name_label = L"अंग्रेज़ी नाम (वैकल्पिक)",
+    .user_lang_code_label = L"भाषा कोड",
+    .user_lang_script_label = L"लिपि",
+    .user_lang_add = L"जोड़ें",
+    .user_lang_cancel = L"रद्द करें",
+    .user_lang_no_code_notice = L"भाषा कोड नहीं मिला। यह भाषा केवल OpenAI-संगत और उपयोगकर्ता .gguf इंजन में उपलब्ध है।",
+    .user_lang_probe_checking = L"जाँच चल रही है",
+    .user_lang_probe_supported = L"समर्थित",
+    .user_lang_probe_unsupported = L"संभवतः असमर्थित",
+    .user_lang_probe_evidence_label = L"प्रमाण",
+    .user_lang_probe_retest = L"फिर से परखें",
+    .user_lang_override_supported = L"समर्थित के रूप में चिह्नित करें",
+    .user_lang_override_unsupported = L"असमर्थित के रूप में चिह्नित करें",
+    .user_lang_override_active = L"आपने तय किया",
+    .user_lang_support_not_quality = L"समर्थन का अर्थ अनुवाद गुणवत्ता नहीं है।",
+    .user_lang_name_reserved = L"\"{n}\" पहले से भाषा नाम है। दूसरा नाम दर्ज करें।",
+    .user_lang_check_non_empty = L"उत्तर मिला",
+    .user_lang_check_differs = L"मूल से भिन्न",
+    .user_lang_check_script = L"लिपि मेल खाती है",
+    .user_lang_script_none = L"नहीं पहचाना गया",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 30. Bengali (bn)
 const LocalizedStrings kStringsBengali = {
@@ -6928,6 +8020,38 @@ const LocalizedStrings kStringsBengali = {
     .gguf_invalid_model_body = L"এটি বৈধ GGUF মডেল ফাইল নয়; তাই নিবন্ধন করা হয়নি।",
     .gguf_manager_active_suffix = L"(ব্যবহৃত হচ্ছে)",
     .gguf_manager_activated = L"এই মডেলটি এখন ব্যবহৃত হচ্ছে।",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"ভাষা খুঁজুন…",
+    .language_search_no_match = L"মিলে যাওয়া ভাষা নেই",
+    .menu_search_langs = L"খুঁজুন…",
+    .language_search_count = L"{n}টি ভাষা",
+    .user_langs_group = L"আমার ভাষাগুলো",
+    .user_lang_add_title = L"আমার ভাষা যোগ করুন",
+    .user_lang_native_name_label = L"স্থানীয় নাম",
+    .user_lang_english_name_label = L"ইংরেজি নাম (ঐচ্ছিক)",
+    .user_lang_code_label = L"ভাষা কোড",
+    .user_lang_script_label = L"লিপি",
+    .user_lang_add = L"যোগ করুন",
+    .user_lang_cancel = L"বাতিল",
+    .user_lang_no_code_notice = L"ভাষা কোড পাওয়া যায়নি। এই ভাষা শুধু OpenAI-সামঞ্জস্যপূর্ণ এবং ব্যবহারকারীর .gguf ইঞ্জিনে পাওয়া যায়।",
+    .user_lang_probe_checking = L"যাচাই চলছে",
+    .user_lang_probe_supported = L"সমর্থিত",
+    .user_lang_probe_unsupported = L"সম্ভবত অসমর্থিত",
+    .user_lang_probe_evidence_label = L"প্রমাণ",
+    .user_lang_probe_retest = L"আবার পরীক্ষা করুন",
+    .user_lang_override_supported = L"সমর্থিত হিসেবে চিহ্নিত করুন",
+    .user_lang_override_unsupported = L"অসমর্থিত হিসেবে চিহ্নিত করুন",
+    .user_lang_override_active = L"আপনি নির্ধারণ করেছেন",
+    .user_lang_support_not_quality = L"সমর্থন মানে অনুবাদের গুণ নয়।",
+    .user_lang_name_reserved = L"\"{n}\" ইতিমধ্যে একটি ভাষার নাম। অন্য নাম লিখুন।",
+    .user_lang_check_non_empty = L"উত্তর পাওয়া গেছে",
+    .user_lang_check_differs = L"মূল থেকে আলাদা",
+    .user_lang_check_script = L"লিপি মিলেছে",
+    .user_lang_script_none = L"শনাক্ত হয়নি",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
 // UI chrome direction is decided by the render layer (bidi_utils).
@@ -7150,6 +8274,38 @@ const LocalizedStrings kStringsArabic = {
     .gguf_invalid_model_body = L"الملف ليس نموذج GGUF صالحًا؛ لم يتم تسجيله.",
     .gguf_manager_active_suffix = L"(قيد الاستخدام)",
     .gguf_manager_activated = L"هذا النموذج قيد الاستخدام الآن.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"بحث عن لغة…",
+    .language_search_no_match = L"لا توجد لغة مطابقة",
+    .menu_search_langs = L"بحث…",
+    .language_search_count = L"{n} لغة",
+    .user_langs_group = L"لغاتي",
+    .user_lang_add_title = L"إضافة لغتي",
+    .user_lang_native_name_label = L"الاسم الأصلي",
+    .user_lang_english_name_label = L"الاسم بالإنجليزية (اختياري)",
+    .user_lang_code_label = L"رمز اللغة",
+    .user_lang_script_label = L"الكتابة",
+    .user_lang_add = L"إضافة",
+    .user_lang_cancel = L"إلغاء",
+    .user_lang_no_code_notice = L"لم يتم العثور على رمز للغة. هذه اللغة متاحة فقط في المحركات المتوافقة مع OpenAI ومحرك .gguf الخاص بالمستخدم.",
+    .user_lang_probe_checking = L"جارٍ الفحص",
+    .user_lang_probe_supported = L"مدعومة",
+    .user_lang_probe_unsupported = L"قد تكون غير مدعومة",
+    .user_lang_probe_evidence_label = L"الأدلة",
+    .user_lang_probe_retest = L"إعادة الاختبار",
+    .user_lang_override_supported = L"تعليمها كمدعومة",
+    .user_lang_override_unsupported = L"تعليمها كغير مدعومة",
+    .user_lang_override_active = L"عيّنته أنت",
+    .user_lang_support_not_quality = L"الدعم لا يعني جودة الترجمة.",
+    .user_lang_name_reserved = L"«{n}» اسم لغة موجود بالفعل. أدخل اسمًا آخر.",
+    .user_lang_check_non_empty = L"تم استلام رد",
+    .user_lang_check_differs = L"يختلف عن الأصل",
+    .user_lang_check_script = L"الكتابة مطابقة",
+    .user_lang_script_none = L"لم يتم اكتشافها",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 32. Persian (fa) — RTL
 const LocalizedStrings kStringsPersian = {
@@ -7371,6 +8527,38 @@ const LocalizedStrings kStringsPersian = {
     .gguf_invalid_model_body = L"فایل مدل GGUF معتبری نیست؛ ثبت نشد.",
     .gguf_manager_active_suffix = L"(در حال استفاده)",
     .gguf_manager_activated = L"این مدل اکنون در حال استفاده است.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"جستجوی زبان…",
+    .language_search_no_match = L"زبانی مطابقت ندارد",
+    .menu_search_langs = L"جستجو…",
+    .language_search_count = L"{n} زبان",
+    .user_langs_group = L"زبان‌های من",
+    .user_lang_add_title = L"افزودن زبان من",
+    .user_lang_native_name_label = L"نام بومی",
+    .user_lang_english_name_label = L"نام انگلیسی (اختیاری)",
+    .user_lang_code_label = L"کد زبان",
+    .user_lang_script_label = L"خط",
+    .user_lang_add = L"افزودن",
+    .user_lang_cancel = L"انصراف",
+    .user_lang_no_code_notice = L"کد زبان پیدا نشد. این زبان فقط در موتورهای سازگار با OpenAI و .gguf کاربر در دسترس است.",
+    .user_lang_probe_checking = L"در حال بررسی",
+    .user_lang_probe_supported = L"پشتیبانی می‌شود",
+    .user_lang_probe_unsupported = L"احتمالاً پشتیبانی نمی‌شود",
+    .user_lang_probe_evidence_label = L"شواهد",
+    .user_lang_probe_retest = L"آزمایش دوباره",
+    .user_lang_override_supported = L"علامت‌گذاری به‌عنوان پشتیبانی‌شده",
+    .user_lang_override_unsupported = L"علامت‌گذاری به‌عنوان پشتیبانی‌نشده",
+    .user_lang_override_active = L"تعیین‌شده توسط شما",
+    .user_lang_support_not_quality = L"پشتیبانی به معنای کیفیت ترجمه نیست.",
+    .user_lang_name_reserved = L"«{n}» از قبل نام یک زبان است. نام دیگری وارد کنید.",
+    .user_lang_check_non_empty = L"پاسخ دریافت شد",
+    .user_lang_check_differs = L"با متن اصلی متفاوت است",
+    .user_lang_check_script = L"خط مطابقت دارد",
+    .user_lang_script_none = L"تشخیص داده نشد",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 33. Urdu (ur) — RTL
 const LocalizedStrings kStringsUrdu = {
@@ -7592,6 +8780,38 @@ const LocalizedStrings kStringsUrdu = {
     .gguf_invalid_model_body = L"یہ درست GGUF ماڈل فائل نہیں ہے؛ اسے رجسٹر نہیں کیا گیا۔",
     .gguf_manager_active_suffix = L"(استعمال میں)",
     .gguf_manager_activated = L"اب یہ ماڈل استعمال میں ہے۔",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"زبان تلاش کریں…",
+    .language_search_no_match = L"کوئی مماثل زبان نہیں",
+    .menu_search_langs = L"تلاش…",
+    .language_search_count = L"{n} زبانیں",
+    .user_langs_group = L"میری زبانیں",
+    .user_lang_add_title = L"اپنی زبان شامل کریں",
+    .user_lang_native_name_label = L"مقامی نام",
+    .user_lang_english_name_label = L"انگریزی نام (اختیاری)",
+    .user_lang_code_label = L"زبان کا کوڈ",
+    .user_lang_script_label = L"رسم الخط",
+    .user_lang_add = L"شامل کریں",
+    .user_lang_cancel = L"منسوخ",
+    .user_lang_no_code_notice = L"زبان کا کوڈ نہیں ملا۔ یہ زبان صرف OpenAI کے موافق اور صارف کے .gguf انجن میں دستیاب ہے۔",
+    .user_lang_probe_checking = L"جانچ جاری ہے",
+    .user_lang_probe_supported = L"تعاون یافتہ",
+    .user_lang_probe_unsupported = L"ممکنہ طور پر غیر تعاون یافتہ",
+    .user_lang_probe_evidence_label = L"شواہد",
+    .user_lang_probe_retest = L"دوبارہ جانچیں",
+    .user_lang_override_supported = L"تعاون یافتہ کے طور پر نشان زد کریں",
+    .user_lang_override_unsupported = L"غیر تعاون یافتہ کے طور پر نشان زد کریں",
+    .user_lang_override_active = L"آپ نے مقرر کیا",
+    .user_lang_support_not_quality = L"تعاون کا مطلب ترجمے کا معیار نہیں ہے۔",
+    .user_lang_name_reserved = L"\"{n}\" پہلے ہی زبان کا نام ہے۔ دوسرا نام درج کریں۔",
+    .user_lang_check_non_empty = L"جواب موصول ہوا",
+    .user_lang_check_differs = L"اصل سے مختلف",
+    .user_lang_check_script = L"رسم الخط مطابقت رکھتا ہے",
+    .user_lang_script_none = L"شناخت نہیں ہوئی",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 34. Hebrew (he) — RTL
 const LocalizedStrings kStringsHebrew = {
@@ -7813,6 +9033,38 @@ const LocalizedStrings kStringsHebrew = {
     .gguf_invalid_model_body = L"זהו לא קובץ מודל GGUF תקין; הוא לא נרשם.",
     .gguf_manager_active_suffix = L"(בשימוש)",
     .gguf_manager_activated = L"מודל זה עכשיו בשימוש.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"חיפוש שפה…",
+    .language_search_no_match = L"אין שפה מתאימה",
+    .menu_search_langs = L"חיפוש…",
+    .language_search_count = L"{n} שפות",
+    .user_langs_group = L"השפות שלי",
+    .user_lang_add_title = L"הוספת השפה שלי",
+    .user_lang_native_name_label = L"שם מקורי",
+    .user_lang_english_name_label = L"שם באנגלית (אופציונלי)",
+    .user_lang_code_label = L"קוד שפה",
+    .user_lang_script_label = L"כתב",
+    .user_lang_add = L"הוספה",
+    .user_lang_cancel = L"ביטול",
+    .user_lang_no_code_notice = L"לא נמצא קוד שפה. השפה זמינה רק במנועים התואמים ל-OpenAI ובמנוע ה-.gguf של המשתמש.",
+    .user_lang_probe_checking = L"בודק",
+    .user_lang_probe_supported = L"נתמכת",
+    .user_lang_probe_unsupported = L"ייתכן שאינה נתמכת",
+    .user_lang_probe_evidence_label = L"ראיות",
+    .user_lang_probe_retest = L"בדיקה חוזרת",
+    .user_lang_override_supported = L"סימון כנתמכת",
+    .user_lang_override_unsupported = L"סימון כלא נתמכת",
+    .user_lang_override_active = L"הוגדר על ידך",
+    .user_lang_support_not_quality = L"תמיכה אינה מעידה על איכות התרגום.",
+    .user_lang_name_reserved = L"\"{n}\" הוא כבר שם של שפה. הזינו שם אחר.",
+    .user_lang_check_non_empty = L"התקבלה תשובה",
+    .user_lang_check_differs = L"שונה מהמקור",
+    .user_lang_check_script = L"הכתב תואם",
+    .user_lang_script_none = L"לא זוהה",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 35. Khmer (km)
 const LocalizedStrings kStringsKhmer = {
@@ -8034,6 +9286,38 @@ const LocalizedStrings kStringsKhmer = {
     .gguf_invalid_model_body = L"ឯកសារម៉ូដែល GGUF មិនត្រឹមត្រូវ ទើបមិនបានចុះឈ្មោះ។",
     .gguf_manager_active_suffix = L"(កំពុងប្រើ)",
     .gguf_manager_activated = L"ម៉ូដែលនេះត្រូវបានកំណត់ឱ្យកំពុងប្រើ។",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"ស្វែងរកភាសា…",
+    .language_search_no_match = L"គ្មានភាសាត្រូវគ្នា",
+    .menu_search_langs = L"ស្វែងរក…",
+    .language_search_count = L"{n} ភាសា",
+    .user_langs_group = L"ភាសារបស់ខ្ញុំ",
+    .user_lang_add_title = L"បន្ថែមភាសារបស់ខ្ញុំ",
+    .user_lang_native_name_label = L"ឈ្មោះដើម",
+    .user_lang_english_name_label = L"ឈ្មោះជាភាសាអង់គ្លេស (ជាជម្រើស)",
+    .user_lang_code_label = L"កូដភាសា",
+    .user_lang_script_label = L"អក្សរ",
+    .user_lang_add = L"បន្ថែម",
+    .user_lang_cancel = L"បោះបង់",
+    .user_lang_no_code_notice = L"រកមិនឃើញកូដភាសា។ ភាសានេះមានតែក្នុងម៉ាស៊ីនដែលត្រូវនឹង OpenAI និង .gguf របស់អ្នកប្រើប្រាស់។",
+    .user_lang_probe_checking = L"កំពុងពិនិត្យ",
+    .user_lang_probe_supported = L"គាំទ្រ",
+    .user_lang_probe_unsupported = L"ប្រហែលជាមិនគាំទ្រ",
+    .user_lang_probe_evidence_label = L"ភស្តុតាង",
+    .user_lang_probe_retest = L"សាកម្តងទៀត",
+    .user_lang_override_supported = L"សម្គាល់ថាគាំទ្រ",
+    .user_lang_override_unsupported = L"សម្គាល់ថាមិនគាំទ្រ",
+    .user_lang_override_active = L"អ្នកកំណត់",
+    .user_lang_support_not_quality = L"ការគាំទ្រមិនមានន័យថាគុណភាពបកប្រែទេ។",
+    .user_lang_name_reserved = L"\"{n}\" ជាឈ្មោះភាសារួចហើយ។ សូមបញ្ចូលឈ្មោះផ្សេង។",
+    .user_lang_check_non_empty = L"បានទទួលចម្លើយ",
+    .user_lang_check_differs = L"ខុសពីដើម",
+    .user_lang_check_script = L"អក្សរត្រូវគ្នា",
+    .user_lang_script_none = L"រកមិនឃើញ",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 36. Lao (lo)
 const LocalizedStrings kStringsLao = {
@@ -8255,6 +9539,38 @@ const LocalizedStrings kStringsLao = {
     .gguf_invalid_model_body = L"ບໍ່ແມ່ນໄຟລ໌ໂມເດວ GGUF ທີ່ຖືກຕ້ອງ ຈຶ່ງບໍ່ໄດ້ລົງທະບຽນ.",
     .gguf_manager_active_suffix = L"(ກຳລັງໃຊ້)",
     .gguf_manager_activated = L"ໂມເດວນີ້ແມ່ນໂມເດວທີ່ກຳລັງໃຊ້ແລ້ວ.",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"ຄົ້ນຫາພາສາ…",
+    .language_search_no_match = L"ບໍ່ພົບພາສາທີ່ກົງກັນ",
+    .menu_search_langs = L"ຄົ້ນຫາ…",
+    .language_search_count = L"{n} ພາສາ",
+    .user_langs_group = L"ພາສາຂອງຂ້ອຍ",
+    .user_lang_add_title = L"ເພີ່ມພາສາຂອງຂ້ອຍ",
+    .user_lang_native_name_label = L"ຊື່ດັ້ງເດີມ",
+    .user_lang_english_name_label = L"ຊື່ພາສາອັງກິດ (ທາງເລືອກ)",
+    .user_lang_code_label = L"ລະຫັດພາສາ",
+    .user_lang_script_label = L"ລະບົບຕົວອັກສອນ",
+    .user_lang_add = L"ເພີ່ມ",
+    .user_lang_cancel = L"ຍົກເລີກ",
+    .user_lang_no_code_notice = L"ບໍ່ພົບລະຫັດພາສາ. ພາສານີ້ໃຊ້ໄດ້ສະເພາະກັບເຄື່ອງຈັກທີ່ຮອງຮັບ OpenAI ແລະ .gguf ຂອງຜູ້ໃຊ້.",
+    .user_lang_probe_checking = L"ກຳລັງກວດສອບ",
+    .user_lang_probe_supported = L"ຮອງຮັບ",
+    .user_lang_probe_unsupported = L"ອາດຈະບໍ່ຮອງຮັບ",
+    .user_lang_probe_evidence_label = L"ຫຼັກຖານ",
+    .user_lang_probe_retest = L"ທົດສອບອີກຄັ້ງ",
+    .user_lang_override_supported = L"ໝາຍວ່າຮອງຮັບ",
+    .user_lang_override_unsupported = L"ໝາຍວ່າບໍ່ຮອງຮັບ",
+    .user_lang_override_active = L"ທ່ານກຳນົດເອງ",
+    .user_lang_support_not_quality = L"ການຮອງຮັບບໍ່ໄດ້ໝາຍເຖິງຄຸນນະພາບການແປ.",
+    .user_lang_name_reserved = L"\"{n}\" ເປັນຊື່ພາສາຢູ່ແລ້ວ. ກະລຸນາໃສ່ຊື່ອື່ນ.",
+    .user_lang_check_non_empty = L"ໄດ້ຮັບຄຳຕອບ",
+    .user_lang_check_differs = L"ແຕກຕ່າງຈາກຕົ້ນສະບັບ",
+    .user_lang_check_script = L"ຕົວອັກສອນກົງກັນ",
+    .user_lang_script_none = L"ບໍ່ພົບ",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 37. Burmese (my)
 const LocalizedStrings kStringsBurmese = {
@@ -8476,6 +9792,38 @@ const LocalizedStrings kStringsBurmese = {
     .gguf_invalid_model_body = L"မှန်ကန်တဲ့ GGUF မော်ဒယ်ဖိုင် မဟုတ်ဘူးဆိုတော့ မှတ်ပုံတင် မထားပါဘူး။",
     .gguf_manager_active_suffix = L"(အသုံးပြုနေတယ်)",
     .gguf_manager_activated = L"ဒီ မော်ဒယ်ကို အသုံးပြုနေတဲ့ မော်ဒယ်အဖြစ် သတ်မှတ်ပြီးပါပြီ။",
+    // 261116_0003 P5 (language-menu redesign): the searchable language
+    // picker's cue banner + no-match line.
+    .language_search_cue = L"ဘာသာစကား ရှာဖွေရန်…",
+    .language_search_no_match = L"ကိုက်ညီသော ဘာသာစကား မရှိပါ",
+    .menu_search_langs = L"ရှာဖွေ…",
+    .language_search_count = L"{n} ဘာသာစကား",
+    .user_langs_group = L"ကျွန်ုပ်၏ဘာသာစကားများ",
+    .user_lang_add_title = L"ကျွန်ုပ်၏ဘာသာစကား ထည့်ရန်",
+    .user_lang_native_name_label = L"မူရင်းအမည်",
+    .user_lang_english_name_label = L"အင်္ဂလိပ်အမည် (ရွေးချယ်ခွင့်)",
+    .user_lang_code_label = L"ဘာသာစကားကုဒ်",
+    .user_lang_script_label = L"အက္ခရာ",
+    .user_lang_add = L"ထည့်ရန်",
+    .user_lang_cancel = L"ပယ်ဖျက်ရန်",
+    .user_lang_no_code_notice = L"ဘာသာစကားကုဒ် မတွေ့ပါ။ ဤဘာသာစကားကို OpenAI နှင့် ကိုက်ညီသော အင်ဂျင်နှင့် အသုံးပြုသူ .gguf တွင်သာ အသုံးပြုနိုင်သည်။",
+    .user_lang_probe_checking = L"စစ်ဆေးနေသည်",
+    .user_lang_probe_supported = L"ပံ့ပိုးသည်",
+    .user_lang_probe_unsupported = L"ပံ့ပိုးမှု မရှိနိုင်ပါ",
+    .user_lang_probe_evidence_label = L"အထောက်အထား",
+    .user_lang_probe_retest = L"ထပ်မံစမ်းသပ်ရန်",
+    .user_lang_override_supported = L"ပံ့ပိုးသည်ဟု မှတ်သားရန်",
+    .user_lang_override_unsupported = L"ပံ့ပိုးမှုမရှိဟု မှတ်သားရန်",
+    .user_lang_override_active = L"သင်သတ်မှတ်ထားသည်",
+    .user_lang_support_not_quality = L"ပံ့ပိုးမှုသည် ဘာသာပြန်အရည်အသွေးကို မဆိုလိုပါ။",
+    .user_lang_name_reserved = L"\"{n}\" သည် ဘာသာစကားအမည်အဖြစ် ရှိပြီးဖြစ်သည်။ အခြားအမည် ထည့်ပါ။",
+    .user_lang_check_non_empty = L"အဖြေ ရရှိသည်",
+    .user_lang_check_differs = L"မူရင်းနှင့် ကွာခြားသည်",
+    .user_lang_check_script = L"အက္ခရာ ကိုက်ညီသည်",
+    .user_lang_script_none = L"မတွေ့ရှိပါ",
+    .openai_declared_title = L"Languages this model supports",
+    .openai_declared_hint = L"Only the languages you select are shown in the language menus. When none are selected, all languages are shown.",
+    .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 const LocalizedStrings& GetStrings(UiLocale loc) {
     // REQ-037/B-3: 38-case switch (design §2.1.2). The default branch keeps the
@@ -8863,6 +10211,64 @@ std::wstring I18n::Get(StringId id) {
         case StringId::GgufManagerActiveSuffix:   return s.gguf_manager_active_suffix;
         case StringId::GgufManagerActivated:      return s.gguf_manager_activated;
 
+        // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6):
+        // the user-language surface's UI copy. Enum order note: these ids sit
+        // BEFORE MenuSearchLangs (see src/i18n.hpp) so the P5 sentinel pin and
+        // the P6a/P7 adjacency both stay green; the switch order is
+        // irrelevant, only completeness matters.
+        case StringId::UserLangsGroup:            return s.user_langs_group;
+        case StringId::UserLangAddTitle:          return s.user_lang_add_title;
+        case StringId::UserLangNativeNameLabel:   return s.user_lang_native_name_label;
+        case StringId::UserLangEnglishNameLabel:  return s.user_lang_english_name_label;
+        case StringId::UserLangCodeLabel:         return s.user_lang_code_label;
+        case StringId::UserLangScriptLabel:       return s.user_lang_script_label;
+        case StringId::UserLangAdd:               return s.user_lang_add;
+        case StringId::UserLangCancel:            return s.user_lang_cancel;
+        case StringId::UserLangNoCodeNotice:      return s.user_lang_no_code_notice;
+        case StringId::UserLangProbeChecking:     return s.user_lang_probe_checking;
+        case StringId::UserLangProbeSupported:    return s.user_lang_probe_supported;
+        case StringId::UserLangProbeUnsupported:  return s.user_lang_probe_unsupported;
+        case StringId::UserLangProbeEvidenceLabel: return s.user_lang_probe_evidence_label;
+        case StringId::UserLangProbeRetest:       return s.user_lang_probe_retest;
+        case StringId::UserLangOverrideSupported: return s.user_lang_override_supported;
+        case StringId::UserLangOverrideUnsupported: return s.user_lang_override_unsupported;
+        case StringId::UserLangOverrideActive:    return s.user_lang_override_active;
+        case StringId::UserLangSupportNotQuality: return s.user_lang_support_not_quality;
+        case StringId::UserLangNameReserved:      return s.user_lang_name_reserved;
+        case StringId::UserLangCheckNonEmpty:     return s.user_lang_check_non_empty;
+        case StringId::UserLangCheckDiffers:      return s.user_lang_check_differs;
+        case StringId::UserLangCheckScript:       return s.user_lang_check_script;
+        case StringId::UserLangScriptNone:        return s.user_lang_script_none;
+        // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
+        // decisions.md:540): the picker AUTO-view chip's dedicated label; the
+        // Auto view's chip no longer renders MenuEngineLocal.
+        case StringId::LanguageSearchAutoChip:    return s.language_search_auto_chip;
+
+        // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): the
+        // OpenAI settings declaration checklist's section title + fail-open
+        // hint. The struct slots sit before language_search_auto_chip (the
+        // English positional table keeps the AUTO chip last); the switch is
+        // the mapping, only completeness matters.
+        case StringId::OpenAiDeclaredTitle:       return s.openai_declared_title;
+        case StringId::OpenAiDeclaredHint:        return s.openai_declared_hint;
+
+        // 261116_0003 P6 (language-menu redesign): the flat language menus'
+        // "검색…" row label. Enum order note: it sits BEFORE the P5 pair (see
+        // i18n.hpp) so the P5 suite's sentinel-1 tail-order pin stays green;
+        // the switch order is irrelevant, only completeness matters.
+        case StringId::MenuSearchLangs:           return s.menu_search_langs;
+
+        // 261116_0003 P7 (language-menu redesign): the picker header's count
+        // phrase ("{n}" is substituted at the palette call site). Enum order
+        // note: it also sits BEFORE the P5 pair; the switch order is
+        // irrelevant, only completeness matters.
+        case StringId::LanguageSearchCount:       return s.language_search_count;
+
+        // 261116_0003 P5 (language-menu redesign): the searchable picker's own
+        // two strings (same trailing-field wiring as the blocks above).
+        case StringId::LanguageSearchCue:         return s.language_search_cue;
+        case StringId::LanguageSearchNoMatch:     return s.language_search_no_match;
+
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it
     }
@@ -8884,7 +10290,8 @@ std::wstring I18n::GetLanguageDisplayName(std::string_view lang_code) {
         return Get(StringId::AutoDetect);
     }
 
-    // Look up in 38-language registry
+    // Look up in the 90-row language registry (261116_0003 P3 fix round 3,
+    // PR3-02: the 38-language count predated both the P2 and P3 growth)
     for (const auto& lang : GetSupportedLanguages()) {
         if (lang.code == lang_code || lang.name_en == lang_code) {
             // Form display name: Native Name (English Name)

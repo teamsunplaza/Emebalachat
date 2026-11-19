@@ -493,34 +493,52 @@ void TestReq053TooltipFocusRestorePins() {
         return;
     }
 
-    // Two menus (source + target) -> two backups, two liveness-guarded
-    // restores, two SetForegroundWindow(hwnd) takeovers.
-    TEST_CHECK(Req053Count(tip, "HWND hwndPrev = ::GetForegroundWindow();") == 2,
-               "REQ-053 pin: both language menus back up the foreground window");
-    TEST_CHECK(Req053Count(tip, "::SetForegroundWindow(hwndPrev);") == 2,
-               "REQ-053 pin: both menus restore the backed-up foreground window");
-    TEST_CHECK(Req053Count(tip, "if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {") == 2,
+    // Two menus (source + target) + the 261116_0003 P6b deferred language-
+    // picker path -> three backups, three liveness-guarded restores, three
+    // SetForegroundWindow(hwnd) takeovers. (Counts updated 2 -> 3 by P6b:
+    // the picker open applies the same A5 choreography to its third modal
+    // surface, PR5-03.)
+    TEST_CHECK(Req053Count(tip, "HWND hwndPrev = ::GetForegroundWindow();") == 3,
+               "REQ-053 pin: both language menus AND the language-picker path back up the foreground window");
+    TEST_CHECK(Req053Count(tip, "::SetForegroundWindow(hwndPrev);") == 3,
+               "REQ-053 pin: all three modal sites restore the backed-up foreground window");
+    TEST_CHECK(Req053Count(tip, "if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {") == 3,
                "REQ-053 pin: the restore is gated on a live, non-self previous window "
                "(a window destroyed inside the modal loop is skipped)");
-    TEST_CHECK(Req053Count(tip, "::SetForegroundWindow(hwnd);") == 2,
-               "REQ-053 pin: exactly the two pre-existing menu takeovers remain");
+    TEST_CHECK(Req053Count(tip, "::SetForegroundWindow(hwnd);") == 3,
+               "REQ-053 pin: the two menu takeovers + the picker takeover remain (no fourth)");
 
     // Order on each site: backup -> SetForegroundWindow(hwnd) -> modal
-    // TrackPopupMenuEx -> DestroyMenu -> guarded restore. (A restore before the
-    // menu would hand focus straight back to the old window mid-menu.)
-    const size_t b1 = tip.find("HWND hwndPrev = ::GetForegroundWindow();");
-    const size_t t1 = tip.find("::TrackPopupMenuEx(", b1);
-    const size_t r1 = tip.find("::SetForegroundWindow(hwndPrev);", b1);
-    TEST_CHECK(b1 != std::string::npos && t1 != std::string::npos && r1 != std::string::npos &&
-                   b1 < t1 && t1 < r1,
+    // surface -> (menu: DestroyMenu) -> guarded restore. (A restore before
+    // the modal surface would hand focus straight back to the old window
+    // mid-menu.) 261116_0003 P6b: the sites are anchored by their OWN modal
+    // call (TrackPopupMenuEx for the two menus, ShowLanguageSearchPalette for
+    // the picker) instead of by occurrence ordinality — the picker's WndProc
+    // arm precedes the two WM_LBUTTONUP menu blocks in file order, so
+    // "first/second/third hwndPrev" is no longer a stable site identity.
+    const size_t menu_t1 = tip.find("::TrackPopupMenuEx(");
+    const size_t menu_t2 = tip.find("::TrackPopupMenuEx(", menu_t1 + 1);
+    const size_t picker_p = tip.find("ShowLanguageSearchPalette(");
+    // Menu site 1: its capture is the last one at or before its modal call.
+    const size_t mb1 = tip.rfind("HWND hwndPrev = ::GetForegroundWindow();", menu_t1);
+    const size_t mr1 = tip.find("::SetForegroundWindow(hwndPrev);", menu_t1);
+    TEST_CHECK(menu_t1 != std::string::npos && mb1 != std::string::npos &&
+                   mr1 != std::string::npos && mb1 < menu_t1 && menu_t1 < mr1,
                "REQ-053 pin: menu site 1 backs up before the modal loop and restores after it");
-    const size_t b2 = tip.find("HWND hwndPrev = ::GetForegroundWindow();", b1 + 1);
-    const size_t t2 = tip.find("::TrackPopupMenuEx(", b2);
-    const size_t r2 = tip.find("::SetForegroundWindow(hwndPrev);", b2);
-    TEST_CHECK(b2 != std::string::npos && t2 != std::string::npos && r2 != std::string::npos &&
-                   b1 < b2 && b2 < t2 && t2 < r2,
+    // Menu site 2: its capture sits between the two modal calls.
+    const size_t mb2 = tip.rfind("HWND hwndPrev = ::GetForegroundWindow();", menu_t2);
+    const size_t mr2 = tip.find("::SetForegroundWindow(hwndPrev);", menu_t2);
+    TEST_CHECK(menu_t2 != std::string::npos && mb2 != std::string::npos &&
+                   mr2 != std::string::npos && menu_t1 < mb2 && mb2 < menu_t2 && menu_t2 < mr2,
                "REQ-053 pin: menu site 2 follows the same backup -> menu -> restore order");
-    TEST_CHECK(tip.find("::DestroyMenu(hMenu);", t1) < r1 && tip.find("::DestroyMenu(hMenu);", t2) < r2,
+    // Picker site: same choreography around ShowLanguageSearchPalette.
+    const size_t pb3 = tip.rfind("HWND hwndPrev = ::GetForegroundWindow();", picker_p);
+    const size_t pr3 = tip.find("::SetForegroundWindow(hwndPrev);", picker_p);
+    TEST_CHECK(picker_p != std::string::npos && pb3 != std::string::npos &&
+                   pr3 != std::string::npos && pb3 < picker_p && picker_p < pr3,
+               "REQ-053 pin: the picker site follows the same backup -> modal -> restore order");
+    TEST_CHECK(tip.find("::DestroyMenu(hMenu);", menu_t1) < mr1 &&
+                   tip.find("::DestroyMenu(hMenu);", menu_t2) < mr2,
                "REQ-053 pin: the menu handle is destroyed before the focus restore "
                "(no restore inside the menu's ownership window)");
 
@@ -586,12 +604,15 @@ void TestReq053OpenAiButtonDisablePins() {
 
     // No new i18n strings in A6: the fix is graying feedback only (CPO scope).
     // The running StringId total moves only with a tracked batch — currently
-    // 165 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
+    // 199 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
     // strings; the v0.10.5 theme batch added 4; the 261108_0002 WS3
-    // back-translation batch added 4; A6 itself added none).
+    // back-translation batch added 4; A6 itself added none; 261116_0003 added
+    // the P5/P6a/P7 language-menu ids, the 23 P9b-1 user-language ids, the
+    // 2 P9c-1b OpenAI declaration checklist ids and the 1 P9b-3 U5 picker
+    // AUTO chip id).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 169,
-               "REQ-053 pin: StringId::EnumCount is 169 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 3 261111_0001 U6 user-model ids; A6 added no strings, FIX-WS3B added one)");
+    TEST_CHECK(enum_count == 199,
+               "REQ-053 pin: StringId::EnumCount is 199 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language ids + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id; A6 added no strings, FIX-WS3B added one)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 

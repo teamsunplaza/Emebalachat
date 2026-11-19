@@ -20,12 +20,33 @@ namespace {
 // compared verbatim in both implementations.
 
 // The closed RTL language-code set (design §2-Q1 verdict A / P2 §A2): exactly
-// 4 of the 37 registry languages are right-to-left.
-constexpr std::array<std::string_view, 4> kRtlLanguageCodes = {
+// 7 of the 89 registry targets are right-to-left. 261116_0003 P2: UG joins
+// the set — Uyghur is written in the Arabic script (registry row native name
+// ئۇيغۇرچە; engine kLanguageScriptTable UG→Arabic), so rendering it LTR is
+// incorrect (architect-report.md: "Uyghur joins the RTL set ... rejected as
+// incorrect" to keep 4). 261116_0003 P3: PS (Pashto, پښتو) and SD (Sindhi,
+// سنڌي) join — both tranche-B rows are Arabic-script (engine table PS→Arabic,
+// SD→Arabic), the UG precedent.
+// 261116_0003 P3 fix round 3 (PR3-03): the drift guard for this set is
+// DATA-DRIVEN, not the literal-code pins — TestBidiUtils' B1 block loops the
+// registry and requires every row whose engine TargetScriptClasses mask
+// carries Arabic to be IN this set (and every code in this set to carry an RTL
+// script class, Arabic or Hebrew), so a future Arabic-script row that misses
+// the set fails there. The literal pins (B1 rtl_true/unexpected/missing and
+// the B2 tag order) catch the other literal drift: a registry-backed code
+// whose script class does not justify RTL, or a set order change. A set entry
+// with NO registry row behind it is inert (IsRtlLanguageCode resolves
+// registry-first), so no pin can fire on it — by design, not by omission.
+// 261116_0003 P3 fix round 3b: reworded per mimov26pro F-01 (the previous
+// wording claimed the literal pins catch a no-registry-row set entry).
+constexpr std::array<std::string_view, 7> kRtlLanguageCodes = {
     "AR",  // Arabic
     "FA",  // Persian
     "UR",  // Urdu
     "HE",  // Hebrew
+    "UG",  // Uyghur (261116_0003 P2: Arabic-script)
+    "PS",  // Pashto (261116_0003 P3: Arabic-script)
+    "SD",  // Sindhi (261116_0003 P3: Arabic-script)
 };
 
 bool MatchesRtlCodeSet(std::string_view code) {
@@ -104,7 +125,20 @@ constexpr CodeRange kDigitsAN[] = {
 
 // Class L (strong left-to-right) blocks - curated to design §2-Q1 ("Latin,
 // Hangul, Kana, Han, Thai, etc."): every alphabetic range outside the R/AL
-// tables above, for the scripts the 37 translation languages can produce.
+// tables above, for the scripts the 89 translation languages can produce
+// (261116_0003 P2 fix round 2: 37 -> 46 after the registry growth;
+// 261116_0003 P3 fix round 3: 47 -> 90, the 43 tranche A+B additions wired
+// into the ranges below or resolved through kStrongL/kStrongAL above. The 9
+// P2 rows resolve across the strong-type tables, not all inside kStrongL:
+// the 8 LTR-script rows are in the ranges below - Gujarati 0x0A80-0x0AE5
+// (GU), Tamil 0x0B80-0x0BE5 (TA), Telugu 0x0C00-0x0C65 (TE), Devanagari
+// 0x0900-0x0965 (MR), Tibetan 0x0F40-0x0F6C (BO), Cyrillic 0x0400-0x052F
+// (KK; MN's Монгол is Cyrillic too, and the traditional-Mongolian block
+// 0x1820-0x18AB is here as well), Han 0x4E00-0x9FFF (YUE) - while the
+// Arabic-script row (UG) is RTL and resolves via kStrongAL ABOVE
+// (0x0600-0x06FF et al.), never via kStrongL.
+// 261116_0003 P2 fix round 2b: corrected the earlier "all inside the
+// ranges below" wording, which misplaced Arabic).
 // Script digit blocks are deliberately EXCLUDED (Nd => treated neutral like
 // ASCII digits, per the design's blanket "digits ... skip" rule).
 constexpr CodeRange kStrongL[] = {
@@ -180,7 +214,7 @@ constexpr CodeRange kStrongLAstral[] = {
     {0x30000, 0x3134A},  // CJK ext G
 };
 
-// Astral class-R: modern RTL scripts only (out of the 37-language scope;
+// Astral class-R: modern RTL scripts only (out of the 89-language scope;
 // listed for first-strong completeness per design §2-Q1 strong-types rule).
 constexpr CodeRange kStrongRAstral[] = {
     {0x10D00, 0x10D3F},  // Hanifi Rohingya
@@ -198,11 +232,13 @@ constexpr CodeRange kStrongRAstral[] = {
 
 bool IsRtlLanguageCode(std::string_view code) {
     if (code.empty()) return false;
-    // Resolve through the 38-entry kAllLanguages registry so BOTH canonical
+    // Resolve through the 90-row kAllLanguages registry so BOTH canonical
     // ISO codes ("AR") and English/native names ("Arabic" / design §1.3.1)
     // work: the tooltip's target_lang_ carries name_en ([tooltip.cpp L643]),
     // which needs no payload format change. Registry lookup is exact-match
     // (case-insensitive), so partial tokens like "A" or "AR " never hit.
+    // 261116_0003 P2 fix round 2: 38 -> 47 entries after the registry growth.
+    // 261116_0003 P3 fix round 3: 47 -> 90 (tranche A+B).
     if (const LanguageInfo* by_code = FindLanguageByCode(code)) {
         return MatchesRtlCodeSet(by_code->code);
     }
@@ -216,11 +252,14 @@ bool IsRtlLanguageCode(std::string_view code) {
 bool IsRtlLocale(UiLocale locale) {
     // Resolves config-code -> RTL set instead of switching on the enum: the
     // RTL UiLocale enumerators (Arabic/Persian/Urdu/Hebrew) are introduced in
-    // B-3 (design §2.1.1) and this batch must not touch src/i18n.*. When B-3
-    // grows LocaleToString to the 38-value table, "ar"/"fa"/"ur"/"he" land
-    // here and this function becomes true for exactly those four locales BY
-    // CONSTRUCTION - no edit in bidi_utils, no enum-list drift.
-    // Today's 8-value enum (Auto/KO/EN/JA/zh-CN/zh-TW/VI/ES) is all-LTR.
+    // B-3 (design §2.1.1) and this batch must not touch src/i18n.*. B-3 has
+    // since grown LocaleToString to all 38 UiLocale values (Auto + the 37
+    // selector locales; that is an I18N count, NOT the 90-row language
+    // registry - 261116_0003 P2 fix round 2 wording clarification), so
+    // "ar"/"fa"/"ur"/"he" land here and this function becomes true for exactly
+    // those four locales BY CONSTRUCTION - no edit in bidi_utils, no
+    // enum-list drift. (The comment was written when the enum still carried
+    // only 8 values, all of them LTR.)
     const std::string code = I18n::LocaleToString(locale);
     if (code.empty() || EqualsIgnoreCaseAscii(std::string_view{code}, std::string_view{"auto"})) return false;
     return MatchesRtlCodeSet(code);

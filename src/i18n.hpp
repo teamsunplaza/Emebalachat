@@ -397,6 +397,129 @@ enum class StringId {
     GgufManagerActiveSuffix, // "(사용 중)" / "(in use)"
     GgufManagerActivated,  // "사용 중인 모델로 설정했습니다." / "This model is now in use."
 
+    // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6): the
+    // user-language surface's UI copy - the "내 언어" group header, the add
+    // dialog, the free-form (no code) notice, the probe badge states + evidence
+    // labels + retest action, the two final-authority overrides, the
+    // "support is not quality" disclaimer, and the reserved-name refusal. The
+    // P9a core (src/config.hpp: UserLanguage / UserLanguageProbe /
+    // UserLanguageProbeStatus / ProbeEvaluation / LanguageMenuGroup) owns every
+    // behavior; this block owns only the words P9b-2/P9b-3 will render.
+    //
+    // ENUM PLACEMENT (same workaround as P6a's MenuSearchLangs and P7's
+    // LanguageSearchCount, one step earlier): these ids sit BEFORE
+    // MenuSearchLangs, not after LanguageSearchNoMatch, because
+    // p5_language_picker_tests.inc pins "EnumCount - 1 ==
+    // LanguageSearchNoMatch" and that file is outside this unit's write
+    // boundary. The P6a/P7 adjacency (MenuSearchLangs + 1 ==
+    // LanguageSearchCount, + 2 == LanguageSearchCue, + 3 ==
+    // LanguageSearchNoMatch) is therefore left untouched as well. The STRUCT
+    // slots are the trailing ones in src/i18n.cpp, so enum order and struct
+    // order differ on purpose; the Get() switch is the mapping and a pin in
+    // tests/run_tests.cpp asserts this ordering contract (173 -> 196).
+    UserLangsGroup,            // "내 언어" / "My languages" (menu group header)
+    // Add dialog (P9b-3): title, the two name fields (the English one marked
+    // optional), the two DERIVED rows the dialog SHOWS so the user never needs
+    // a code (D5), and the two push buttons.
+    UserLangAddTitle,          // "내 언어 추가" / "Add my language"
+    UserLangNativeNameLabel,   // "원어 이름" / "Native name"
+    UserLangEnglishNameLabel,  // "영어 이름 (선택)" / "English name (optional)"
+    UserLangCodeLabel,         // "언어 코드" / "Language code" (resolved code row)
+    UserLangScriptLabel,       // "문자" / "Script" (inferred script row)
+    UserLangAdd,               // "추가" / "Add"
+    UserLangCancel,            // "취소" / "Cancel" (this dialog's own label)
+    // D5 "no code = OpenAI/user-.gguf only": shown when the ladder resolved
+    // nothing, so the entry stays usable on the free-form engines.
+    UserLangNoCodeNotice,      // notice body (see src/i18n.cpp for the full text)
+    // Probe badge (D6): the three non-empty display states. Unknown renders no
+    // badge (nothing has been judged yet), and UserOverridden renders
+    // UserLangOverrideActive instead of a verdict.
+    UserLangProbeChecking,     // "확인 중" / "Checking"
+    UserLangProbeSupported,    // "지원" / "Supported"
+    UserLangProbeUnsupported,  // "미지원 의심" / "Possibly unsupported"
+    UserLangProbeEvidenceLabel, // "판정 근거" / "Evidence" (shape-only, never text)
+    UserLangProbeRetest,       // "다시 시험" / "Test again"
+    // Override (D6 "the user is the final authority"): the two answers plus the
+    // marker that says the displayed verdict is the user's, not a probe's.
+    UserLangOverrideSupported, // "지원함으로 표시" / "Mark as supported"
+    UserLangOverrideUnsupported, // "미지원으로 표시" / "Mark as unsupported"
+    UserLangOverrideActive,    // "직접 설정함" / "Set by you"
+    // D6 "support != quality", mandated in UI copy.
+    UserLangSupportNotQuality, // "지원 여부는 번역 품질을 뜻하지 않습니다." / "Support does not mean translation quality."
+    // Add-dialog refusal (P9b-3 enforces it): the typed name collides with a
+    // registry entry or an "Auto Detect"/AUTO token. Carries the typed name as
+    // the "{n}" token (the same runtime-substitution convention as P7's
+    // LanguageSearchCount and the gguf manager's "{n}" stem).
+    UserLangNameReserved,      // "\"{n}\" ..." refusal (see src/i18n.cpp)
+    // Probe evidence detail (D6): one label per check bit ProbeEvaluation
+    // reports, plus the fail-open script-row value when inference returned 0.
+    // The evidence STRING itself stays the P9a ASCII shape ("nonempty=1
+    // differs=1 script=1 expected=latin detected=latin"), because it is cached
+    // per (engine, model) and compared across runs; only these labels around it
+    // are localized.
+    UserLangCheckNonEmpty,     // "응답 있음" / "Reply received"
+    UserLangCheckDiffers,      // "원문과 다름" / "Differs from input"
+    UserLangCheckScript,       // "문자 일치" / "Script matches"
+    UserLangScriptNone,        // "확인 안 됨" / "Not detected" (script mask 0)
+
+    // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
+    // decisions.md:540): the picker's AUTO-view header chip. The Auto view
+    // used to render the LOCAL engine name ("내장 로컬 엔진 · N개 언어"),
+    // a half-truth that hid AUTO's cloud leg; the Auto chip now carries this
+    // dedicated label and NO count (the count stays on the four concrete
+    // engine chips). Inserted inside the pre-MenuSearchLangs block for the
+    // same P5-sentinel reason as P9b-1/P7; the STRUCT slot is the trailing
+    // one and the Get() switch is the mapping.
+    LanguageSearchAutoChip, // "자동 - 지원 언어는 로컬, 나머지는 클라우드" / "Auto - local for supported languages, cloud for the rest"
+
+    // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): the
+    // OpenAI settings dialog's optional "이 모델이 지원하는 언어" declaration
+    // checklist (P9c-1a owns the config half) - the section title and the
+    // fail-open hint. Same enum placement rule as P9b-1/U5 (before
+    // MenuSearchLangs; the P5 sentinel pin owns the enum tail). The STRUCT
+    // slots sit immediately BEFORE language_search_auto_chip (not after it),
+    // because the English positional table must keep the AUTO chip label as
+    // its LAST initializer (the P9b-3 U5 tail pin) - the Get() switch is the
+    // mapping and the enum/struct orders differ on purpose, same as P9b-1.
+    OpenAiDeclaredTitle,   // "이 모델이 지원하는 언어" / "Languages this model supports"
+    OpenAiDeclaredHint,    // the empty-selection fail-open hint (see src/i18n.cpp)
+
+    // 261116_0003 P6 (language-menu redesign, plan §5 P6 + D3): the "검색…"
+    // row label prepended to the six flat language menus (the four tray menus
+    // land in P6a, the tooltip pair in P6b). ONE string — the picker's own
+    // cue/no-match pair below already exists. Inserted BEFORE the P5 pair on
+    // purpose: p5_language_picker_tests.inc pins
+    // "sentinel - 1 == LanguageSearchNoMatch" (enum-tail order), and that test
+    // file is outside the P6a write boundary, so the new id slots between
+    // ThemeMonolith and LanguageSearchCue and the P5 pin stays green
+    // untouched (171 -> 172).
+    MenuSearchLangs,        // "검색…" / "Search…"
+
+    // 261116_0003 P7 (language-menu redesign, plan §5 P7 "engine chip
+    // format"): the picker header's COUNT phrase. Exactly one new id is
+    // needed: the chip's engine name reuses MenuEngineGoogle/Local/OpenAi/
+    // UserGguf, and the language count itself is substituted at runtime, so
+    // the string carries the number as the "{n}" token (the same placeholder
+    // convention model_dl_disk_space's "{s}" and the gguf manager's "{n} {s} ×
+    // {c}" already use; i18n.cpp has no printf/format layer). Inserted BEFORE
+    // the P5 pair for the same reason MenuSearchLangs was: the P5 suite pins
+    // "sentinel - 1 == LanguageSearchNoMatch" (enum-tail order) and
+    // p5_language_picker_tests.inc is outside the P7 write boundary
+    // (172 -> 173).
+    LanguageSearchCount,    // "{n}개 언어" / "{n} languages"
+
+    // 261116_0003 P5 (language-menu redesign, plan §4 "Search" / §5 P5): the
+    // shared searchable language picker's OWN strings. Exactly two are needed —
+    // the cue banner on the search field and the no-match state — because the
+    // header line reuses MenuSourceLang/MenuTargetLang, every row reuses
+    // GetLanguageDisplayName, and the "검색…" menu ROW label was P6 scope (the
+    // engine chip's own count phrase landed in P7 as LanguageSearchCount
+    // above; the P5 unit pre-empted neither).
+    // Appended at the tail so the EnumCount completeness loop covers them
+    // automatically (169 -> 171).
+    LanguageSearchCue,      // "언어 검색…" / "Search languages…"
+    LanguageSearchNoMatch,  // "일치하는 언어가 없습니다" / "No matching language"
+
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).

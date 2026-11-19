@@ -4,8 +4,9 @@
 // helpers for REQ-038 (RTL rendering). Two pure seams, no Win32/ICU in the
 // logic so they are unit-testable headlessly (TestBidiUtils):
 //
-//   * Locale/language direction: a static closed set {AR, FA, UR, HE} —
-//     exactly 4 of the 37 registry languages are RTL (design [P2 §A2]).
+//   * Locale/language direction: a static closed set {AR, FA, UR, HE, UG, PS,
+//     SD} — 7 of the 89 registry targets are RTL at 261116_0003 P3 (design
+//     [P2 §A2] fixed 4 of 37; P2 added UG, P3 added PS/SD).
 //     Consumed by UI-chrome callers (tooltip body per target language, About
 //     body per UI locale). IsRtlLanguageCode accepts ISO codes AND English /
 //     native names by resolving through the kAllLanguages registry
@@ -40,11 +41,12 @@ enum class TextDirection { LTR, RTL };
 // LocaleToString mapping — no edit here required.
 bool IsRtlLocale(UiLocale locale);
 
-// True iff a translation-language token is RTL. Accepts the closed set
-// {AR, FA, UR, HE} case-insensitively AND canonical English names ("Arabic")
-// AND native names ("العربية"), resolved via the 38-entry kAllLanguages
-// registry (FindLanguageByCode / FindLanguageByName in src/config.cpp).
-// Unresolvable or empty tokens are false (they normalize to "AUTO"). Pure.
+// True iff a translation-language token is RTL. Accepts the closed 7-entry set
+// {AR, FA, UR, HE, UG, PS, SD} case-insensitively AND canonical English names
+// ("Arabic") AND native names ("العربية"), resolved via the 90-row
+// kAllLanguages registry (FindLanguageByCode / FindLanguageByName in
+// src/config.cpp). Unresolvable or empty tokens are false (they normalize to
+// "AUTO"). Pure.
 bool IsRtlLanguageCode(std::string_view code);
 
 // Convenience wrapper for chrome callers that need a TextDirection, not a bool.

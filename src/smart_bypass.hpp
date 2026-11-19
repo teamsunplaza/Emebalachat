@@ -48,6 +48,30 @@ bool ContainsLao(std::wstring_view text);
 bool ContainsMyanmar(std::wstring_view text);
 bool ContainsGreek(std::wstring_view text);
 
+// 261116_0003 P1 (language-menu redesign): the 4 new script predicates for the
+// 9 Hy-MT2 official targets (gu/te/mr/ta/bo/kk/mn/ug/yue). Engine_core's
+// TextScriptClasses (translation_common.cpp) calls these through the shared
+// support library, and win32_input.hpp's ScriptMaskOfText mirrors them; the
+// parity is pinned by tests/ws2_capture_tests.inc.
+bool ContainsTamil(std::wstring_view text);
+bool ContainsTelugu(std::wstring_view text);
+bool ContainsGujarati(std::wstring_view text);
+bool ContainsTibetan(std::wstring_view text);
+
+// 261116_0003 P3 (language-menu redesign, plan §5 P3 / D2): the 8 new script
+// predicates for the tranche-B cloud languages (hy/ka/si/ml/kn/pa/or/am/ti
+// plus the reuse-script rows). Same three-copy parity chain as the P1 set:
+// engine_core's TextScriptClasses -> these predicates -> win32_input.hpp's
+// ScriptMaskOfText (pinned by tests/ws2_capture_tests.inc).
+bool ContainsArmenian(std::wstring_view text);
+bool ContainsGeorgian(std::wstring_view text);
+bool ContainsSinhala(std::wstring_view text);
+bool ContainsMalayalam(std::wstring_view text);
+bool ContainsKannada(std::wstring_view text);
+bool ContainsGurmukhi(std::wstring_view text);
+bool ContainsOdia(std::wstring_view text);
+bool ContainsEthiopic(std::wstring_view text);
+
 // 261111_0001 U6 (v0.10.7, R2-02/R2-04 prompt-label governance): the ONE
 // accessor every engine-prompt source label must come from. DetectLanguage
 // itself carries the v0.10.7 dominant-script gate (U2's ratio model: a

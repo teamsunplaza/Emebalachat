@@ -202,6 +202,349 @@ void TestReq045OpenAiConfigRoundTrip() {
         TEST_CHECK(block.find("\"http_consent_given\": true") != std::string::npos,
                    "captured block round-trips http_consent_given");
     }
+
+    // =====================================================================
+    // 261116_0003 P9c-1a (language-menu redesign, plan Phase 3 / §9): the
+    // OpenAI "이 모델이 지원하는 언어" DECLARATION - config serialization plus
+    // the ONE view filter that honours it. The settings-window checklist that
+    // edits the set is the NEXT unit; nothing here creates a window
+    // (AGENTS.md §10 headless rule).
+    //
+    // Contract under test (config.hpp, block above GetLanguagesForEngine):
+    //   (a) declare a subset -> save -> reload -> the OpenAI view offers
+    //       EXACTLY that subset (and nothing else changes);
+    //   (b) absent declaration -> the view is the pre-P9c set, byte for byte,
+    //       and the key is not emitted at all;
+    //   (c) unknown / blank / AUTO / over-long codes are dropped without
+    //       failing the load, duplicates collapse, names resolve to codes, and
+    //       the stored form is REGISTRY order;
+    //   (d) single authority: the filter is applied in GetLanguagesForEngine
+    //       only, so the tray's four language menus, the tooltip's two
+    //       dropdowns, the search picker and the Ctrl+F9 cycle set cannot
+    //       drift.
+    // =====================================================================
+    {
+        // Runtime comparisons of size constants (MSVC C4127 discipline, the
+        // P9b-2/P9b-3 suite idiom).
+        const auto p9c_eq = [](std::size_t lhs, std::size_t rhs) { return lhs == rhs; };
+        const auto same_rows = [](const std::vector<const LanguageInfo*>& lhs,
+                                  const std::vector<const LanguageInfo*>& rhs) {
+            if (lhs.size() != rhs.size()) {
+                return false;
+            }
+            for (std::size_t i = 0; i < lhs.size(); ++i) {
+                if (lhs[i] != rhs[i]) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const auto codes_of = [](const std::vector<const LanguageInfo*>& rows) {
+            std::string codes;
+            for (const LanguageInfo* row : rows) {
+                if (row == nullptr) {
+                    codes += "<null>";
+                } else {
+                    codes += row->code;
+                }
+                codes += ',';
+            }
+            return codes;
+        };
+
+        // The filter input is process-wide, so this block starts and ends on
+        // the "not declared" baseline: no other suite can be affected and this
+        // suite cannot depend on what ran before it.
+        PublishOpenAiDeclaredLanguages({});
+        TEST_CHECK(!OpenAiLanguagesDeclared() && !OpenAiLanguageDeclared("KO"),
+                   "P9c-1a: the default published state is 'not declared'");
+
+        // ---- (b) absent declaration: the pre-P9c view, unchanged -----------
+        // The expectation is derived from the registry itself (every row that
+        // carries kLangOpenAi, in registry order), not from the function under
+        // test, so this cannot pass vacuously.
+        std::vector<const LanguageInfo*> expected_src;
+        std::vector<const LanguageInfo*> expected_tgt;
+        for (const LanguageInfo& row : GetSupportedLanguages()) {
+            if ((row.engine_mask & kLangOpenAi) == 0) {
+                continue;
+            }
+            expected_src.push_back(&row);
+            if (row.code != "AUTO") {
+                expected_tgt.push_back(&row);
+            }
+        }
+        const std::vector<const LanguageInfo*> baseline_src =
+            GetLanguagesForEngine(LanguageEngine::OpenAi, true);
+        const std::vector<const LanguageInfo*> baseline_tgt =
+            GetLanguagesForEngine(LanguageEngine::OpenAi, false);
+        const std::vector<const LanguageInfo*> baseline_google_tgt =
+            GetLanguagesForEngine(LanguageEngine::Google, false);
+        const std::vector<const LanguageInfo*> baseline_hymt2_tgt =
+            GetLanguagesForEngine(LanguageEngine::HyMt2, false);
+        const std::vector<const LanguageInfo*> baseline_gguf_tgt =
+            GetLanguagesForEngine(LanguageEngine::UserGguf, false);
+        const std::vector<const LanguageInfo*> baseline_auto_src =
+            GetLanguagesForEngine(LanguageEngine::Auto, true);
+        TEST_CHECK(same_rows(baseline_src, expected_src) && same_rows(baseline_tgt, expected_tgt) &&
+                       p9c_eq(expected_tgt.size(), GetSupportedLanguages().size() - 1),
+                   "P9c-1a: (b) an absent declaration yields every kLangOpenAi registry row in "
+                   "registry order (90 source rows incl. AUTO / 89 target rows)");
+        TEST_CHECK(p9c_eq(kMaxOpenAiDeclaredLanguages, baseline_tgt.size()),
+                   "P9c-1a: (c) kMaxOpenAiDeclaredLanguages is exactly the OpenAI target-view size "
+                   "(the defensive cap can never truncate a legal declaration)");
+        {
+            AppConfig undeclared;
+            const std::string undeclared_json = undeclared.ToJsonString();
+            TEST_CHECK(undeclared_json.find("openai_declared_languages") == std::string::npos,
+                       "P9c-1a: (b) an empty declaration emits NO key, so a pre-P9c config.json "
+                       "round-trips byte-identically");
+            AppConfig legacy;
+            const bool legacy_ok = legacy.FromJsonString(
+                "{\"ui_language\": \"ko\", \"engine_type\": \"openai\", \"openai\": {\"model\": \"m\"}}");
+            TEST_CHECK(legacy_ok && legacy.openai_declared_languages.empty() &&
+                           !OpenAiLanguagesDeclared() &&
+                           codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) ==
+                               codes_of(expected_tgt),
+                       "P9c-1a: (b) a config.json WITHOUT the key (every pre-P9c file) loads as "
+                       "'not declared' and the view stays the full set");
+        }
+
+        // ---- (a) declare -> the view offers exactly that subset -------------
+        AppConfig declared_cfg;
+        const std::vector<std::string> stored = declared_cfg.SetOpenAiDeclaredLanguages(
+            // mixed spellings + junk: name, code, lowercase, duplicate, unknown,
+            // blank, the AUTO marker, an over-long token, registry-order proof.
+            {"Korean", "ja", "ko", "EN", "Klingon", "", "  AUTO  ", std::string(128, 'X')});
+        TEST_CHECK(stored == std::vector<std::string>({"EN", "KO", "JA"}),
+                   "P9c-1a: (c) the canonical set is registry codes in REGISTRY order; names "
+                   "resolve, duplicates collapse, unknown/blank/AUTO/over-long tokens drop");
+        TEST_CHECK(declared_cfg.openai_declared_languages == stored,
+                   "P9c-1a: (a) the locked verb stores exactly what it published (member and views "
+                   "cannot hold different sets)");
+        TEST_CHECK(codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, true)) == "AUTO,EN,KO,JA," &&
+                       codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) == "EN,KO,JA,",
+                   "P9c-1a: (a) with a non-empty declaration the OpenAI view offers ONLY the declared "
+                   "codes (AUTO stays in the source view: it is a source-only marker)");
+        const LanguageMenuView declared_merge =
+            BuildLanguageMenuView(LanguageEngine::OpenAi, /*include_auto=*/false, {});
+        TEST_CHECK(codes_of(declared_merge.registry) == "EN,KO,JA," &&
+                       declared_merge.registry.size() == GetLanguagesForEngine(
+                                                              LanguageEngine::OpenAi, false)
+                                                              .size(),
+                   "P9c-1a: (a) the D5/D7 merge authority inherits the filter (it wraps the same "
+                   "GetLanguagesForEngine view, so tray + tooltip menus cannot disagree)");
+
+        // One authority, one declaration: no other engine's view moves, and the
+        // auto MENU view still resolves to Google (P9b-2 contract).
+        TEST_CHECK(same_rows(baseline_google_tgt, GetLanguagesForEngine(LanguageEngine::Google, false)) &&
+                       same_rows(baseline_hymt2_tgt, GetLanguagesForEngine(LanguageEngine::HyMt2, false)) &&
+                       same_rows(baseline_gguf_tgt, GetLanguagesForEngine(LanguageEngine::UserGguf, false)) &&
+                       same_rows(baseline_auto_src, GetLanguagesForEngine(LanguageEngine::Auto, true)),
+                   "P9c-1a: the declaration is OpenAI-scoped - Google / HyMt2 / UserGguf and the "
+                   "AUTO routing view are untouched");
+        TEST_CHECK(codes_of(BuildLanguageMenuView(LanguageEngine::Auto, false, {}).registry) ==
+                       codes_of(baseline_google_tgt),
+                   "P9c-1a: under 'auto' the MENU view still resolves to the Google list (P9b-2), "
+                   "so the declaration never narrows the auto menus");
+
+        // The picker is the seventh consumer and reads the SAME view.
+        {
+            language_palette::PickerInit picker_init;
+            picker_init.engine = LanguageEngine::OpenAi;
+            picker_init.role = language_palette::PickerRole::Target;
+            const language_palette::PickerState picker(picker_init);
+            TEST_CHECK(p9c_eq(picker.pool().size(), static_cast<std::size_t>(3)) &&
+                           codes_of(picker.pool()) == "EN,KO,JA," &&
+                           p9c_eq(picker.hits().size(), static_cast<std::size_t>(3)),
+                       "P9c-1a: (d) the search picker's pool inherits the filtered view (no "
+                       "picker-local filter)");
+            language_palette::PickerInit picker_src_init;
+            picker_src_init.engine = LanguageEngine::OpenAi;
+            picker_src_init.role = language_palette::PickerRole::Source;
+            const language_palette::PickerState picker_src(picker_src_init);
+            TEST_CHECK(codes_of(picker_src.pool()) == "AUTO,EN,KO,JA,",
+                       "P9c-1a: (d) ... and its SOURCE role keeps AUTO in front of the declared set");
+        }
+
+        // ---- (a) save -> reload -> the view is the same subset --------------
+        const std::string declared_json = declared_cfg.ToJsonString();
+        TEST_CHECK(declared_json.find("\"openai_declared_languages\": [\"EN\", \"KO\", \"JA\"]") !=
+                       std::string::npos,
+                   "P9c-1a: (a) the declaration is persisted as a canonical array next to the "
+                   "openai block");
+        TEST_CHECK(p9c_eq(static_cast<std::size_t>(kUserLanguagesSchemaVersion),
+                          static_cast<std::size_t>(1)) &&
+                       declared_json.find("openai_declared_languages_version") == std::string::npos,
+                   "P9c-1a: (c) the field is ADDITIVE - no schema version bump, no version key "
+                   "(the P9b-3 rule: absent/unknown-declaration configs keep parsing as today)");
+        AppConfig reloaded;
+        const bool reloaded_ok = reloaded.FromJsonString(declared_json);
+        TEST_CHECK(reloaded_ok && reloaded.openai_declared_languages == stored,
+                   "P9c-1a: (a) ToJsonString -> FromJsonString keeps the declaration");
+        TEST_CHECK(reloaded_ok &&
+                       codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) == "EN,KO,JA,",
+                   "P9c-1a: (a) ... and the reloaded config republishes the filter, so the views "
+                   "offer exactly that subset");
+        {
+            // Real disk cycle (the P9b-3 idiom): SaveToFile -> LoadFromFile.
+            const std::filesystem::path p9c_path =
+                std::filesystem::temp_directory_path() / L"emebalachat_p9c1a_declared.json";
+            std::error_code p9c_ec;
+            std::filesystem::remove(p9c_path, p9c_ec); // stale leftovers must not mask a failure
+            AppConfig to_disk;
+            to_disk.SetOpenAiDeclaredLanguages({"Chinese Simplified", "ar"});
+            const bool saved = to_disk.SaveToFile(p9c_path);
+            AppConfig from_disk;
+            const bool loaded = saved && from_disk.LoadFromFile(p9c_path);
+            TEST_CHECK(loaded &&
+                           from_disk.openai_declared_languages ==
+                               std::vector<std::string>({"ZH-CN", "AR"}),
+                       "P9c-1a: (a) a real SaveToFile/LoadFromFile cycle keeps the declaration "
+                       "('Chinese Simplified' is an 18-byte NAME and still resolves: the input "
+                       "token bound is not the code bound) in registry order");
+            TEST_CHECK(loaded &&
+                           codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) ==
+                               "ZH-CN,AR,",
+                       "P9c-1a: (a) ... and the views after the disk cycle offer exactly that subset");
+            std::filesystem::remove(p9c_path, p9c_ec); // our own artifact
+        }
+
+        // ---- (c) unknown codes / malformed values never fail the load ------
+        {
+            AppConfig bogus;
+            const std::vector<std::string> bogus_stored =
+                bogus.SetOpenAiDeclaredLanguages({"Klingon", "  ", "zz", "AUTO Detect"});
+            TEST_CHECK(bogus_stored.empty() && !OpenAiLanguagesDeclared() &&
+                           codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) ==
+                               codes_of(expected_tgt),
+                       "P9c-1a: (c) a declaration naming only unknown/blank/AUTO codes is dropped "
+                       "ENTIRELY: the view fails OPEN to the full set instead of emptying the menus");
+            AppConfig malformed;
+            TEST_CHECK(malformed.FromJsonString("{\"openai_declared_languages\": \"KO,JA\"}") &&
+                           malformed.openai_declared_languages.empty() && !OpenAiLanguagesDeclared(),
+                       "P9c-1a: (c) a non-array value reads as 'not declared' without failing the load");
+            AppConfig partial;
+            TEST_CHECK(partial.FromJsonString("{\"openai_declared_languages\": [\"KO\", 42, \"JA\"]}") &&
+                           partial.openai_declared_languages == std::vector<std::string>({"KO"}),
+                       "P9c-1a: (c) a malformed element stops the walk at the valid prefix (lenient: "
+                       "an unknown element is dropped, the load still succeeds)");
+            AppConfig trailing;
+            TEST_CHECK(trailing.FromJsonString("{\"openai_declared_languages\": [\"JA\", \"KO\",]}") &&
+                           trailing.openai_declared_languages ==
+                               std::vector<std::string>({"KO", "JA"}),
+                       "P9c-1a: (c) a trailing comma and a hand-reordered array both canonicalize to "
+                       "the registry order");
+            AppConfig cleared;
+            cleared.SetOpenAiDeclaredLanguages({"KO"});
+            const bool armed_before = OpenAiLanguagesDeclared();
+            cleared.SetOpenAiDeclaredLanguages({});
+            TEST_CHECK(armed_before && !OpenAiLanguagesDeclared() &&
+                           codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) ==
+                               codes_of(expected_tgt),
+                       "P9c-1a: clearing the declaration (the settings dialog's 'no declaration' "
+                       "state) returns the views to the full set");
+        }
+
+        // ---- (d) structural: ONE filter point, no surface re-filters -------
+        {
+            const auto read_src_file = [](const std::filesystem::path& path, std::string& out) {
+                std::ifstream in(path, std::ios::binary);
+                if (!in) {
+                    return false;
+                }
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                out = ss.str();
+                return true;
+            };
+            const auto count_of = [](const std::string& haystack, const std::string& needle) {
+                std::size_t count = 0;
+                for (std::size_t hit = haystack.find(needle); hit != std::string::npos;
+                     hit = haystack.find(needle, hit + needle.size())) {
+                    ++count;
+                }
+                return count;
+            };
+            const std::filesystem::path config_cpp_path = ResolveRepoFile(L"src\\config.cpp");
+            std::string config_src;
+            const bool config_read =
+                !config_cpp_path.empty() && read_src_file(config_cpp_path, config_src);
+            TEST_CHECK(config_read,
+                       "P9c-1a: (d) src/config.cpp resolves for the single-authority pin");
+            if (config_read) {
+                TEST_CHECK(count_of(config_src, "return FilterOpenAiViewForDeclaration(") == 1,
+                           "P9c-1a: (d) exactly ONE view-filter application exists (inside "
+                           "GetLanguagesForEngine)");
+                TEST_CHECK(count_of(config_src, "FilterOpenAiViewForDeclaration(") == 2,
+                           "P9c-1a: (d) ... and one definition (no second application anywhere in "
+                           "config.cpp)");
+                TEST_CHECK(count_of(config_src,
+                                    "const std::vector<const LanguageInfo*>& base = "
+                                    "GetLanguagesForEngine(") == 1,
+                           "P9c-1a: (d) BuildLanguageMenuView derives its base view from "
+                           "GetLanguagesForEngine, so the merge cannot bypass the filter");
+            }
+            // The declaration symbols must not appear in ANY menu/render
+            // surface: a surface that re-filtered would be the drift this pin
+            // exists to stop. The settings window (openai_settings_window.cpp)
+            // is deliberately NOT scanned: it is the future EDITOR of the set
+            // and legitimately reads AppConfig::openai_declared_languages; what
+            // no surface may do is decide which rows the engine offers.
+            const wchar_t* const surface_files[] = {
+                L"src\\ui\\tray.cpp",
+                L"src\\ui\\tooltip.cpp",
+                L"src\\ui\\language_search_palette.hpp",
+                L"src\\ui\\language_search_palette.cpp",
+            };
+            const char* const declaration_symbols[] = {
+                "openai_declared_languages",
+                "OpenAiDeclaredLanguage",
+                "OpenAiLanguagesDeclared",
+                "OpenAiLanguageDeclared",
+                "PublishOpenAiDeclaredLanguages",
+                "FilterOpenAiViewForDeclaration",
+                "kLangOpenAi",
+            };
+            for (const wchar_t* relative : surface_files) {
+                const std::filesystem::path path = ResolveRepoFile(relative);
+                std::string src;
+                const bool read = !path.empty() && read_src_file(path, src);
+                TEST_CHECK(read, "P9c-1a: (d) a menu surface resolves for the anti-drift scan");
+                if (!read) {
+                    continue;
+                }
+                std::size_t hits = 0;
+                for (const char* symbol : declaration_symbols) {
+                    hits += count_of(src, symbol);
+                }
+                TEST_CHECK(hits == 0,
+                           "P9c-1a: (d) no menu surface carries a declaration symbol: the filter "
+                           "lives only in GetLanguagesForEngine");
+            }
+            // ... while the two consuming surfaces still go through the shared
+            // builder (tray: 4 language menus, tooltip: 2 dropdowns).
+            const std::filesystem::path tray_path = ResolveRepoFile(L"src\\ui\\tray.cpp");
+            const std::filesystem::path tooltip_path = ResolveRepoFile(L"src\\ui\\tooltip.cpp");
+            std::string tray_src;
+            std::string tooltip_src;
+            const bool tray_read = !tray_path.empty() && read_src_file(tray_path, tray_src);
+            const bool tooltip_read = !tooltip_path.empty() && read_src_file(tooltip_path, tooltip_src);
+            TEST_CHECK(tray_read && tooltip_read &&
+                           count_of(tray_src, "BuildLanguageMenuView(") >= 2 &&
+                           count_of(tooltip_src, "BuildLanguageMenuView(") >= 2,
+                       "P9c-1a: (d) the six menu surfaces still consume the shared merge builder "
+                       "(tray x2 calls, tooltip x2 calls)");
+        }
+
+        // Leave the process snapshot on the 'not declared' baseline: the suites
+        // that run after this one must see the pre-P9c views.
+        PublishOpenAiDeclaredLanguages({});
+        TEST_CHECK(!OpenAiLanguagesDeclared() &&
+                       codes_of(GetLanguagesForEngine(LanguageEngine::OpenAi, false)) ==
+                           codes_of(expected_tgt),
+                   "P9c-1a: the suite restores the 'not declared' baseline (no cross-suite state)");
+    }
 }
 
 // ---- EnumCount completeness: the 11 new StringIds return non-empty in the
@@ -237,8 +580,8 @@ void TestReq045OpenAiI18nPresent() {
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 169,
-                "StringId::EnumCount is 169 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings");
+    TEST_CHECK(enum_count == 199,
+                "StringId::EnumCount is 199 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
@@ -356,9 +699,11 @@ void TestReq050OpenAiEndpointJoin() {
                        sha_pos < protect_pos,
                        "REQ-050: the shared fetch hashes the key BEFORE protect scrubs it");
         }
-        // REQ-050 (C/E): widened dialog + i18n'd OK/Cancel buttons.
-        TEST_CHECK(src.find("tb.Begin(title, 262, 130") != std::string::npos,
-                   "REQ-050 (C): the dialog template is 262 x 130 DLU");
+        // REQ-050 (C/E): widened dialog + i18n'd OK/Cancel buttons. The
+        // 261116_0003 P9c-1b declaration checklist grew the shell to 262x174.
+        TEST_CHECK(src.find("tb.Begin(title, 262, 174") != std::string::npos,
+                   "REQ-050 (C): the dialog template is 262 x 174 DLU (P9c-1b grew the "
+                   "262 x 130 shell for the declaration checklist)");
         TEST_CHECK(src.find("I18n::Get(StringId::DialogOk)") != std::string::npos &&
                    src.find("I18n::Get(StringId::DialogCancel)") != std::string::npos,
                    "REQ-050 (E): OK/Cancel buttons use the i18n dialog strings");

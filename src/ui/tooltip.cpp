@@ -9,12 +9,21 @@
 #include "../unicode_utils.hpp"
 #include "../win32_input.hpp"
 #include "../bidi_utils.hpp"  // P4 Batch B-2: IsRtlLanguageCode / DirectionForLocale
+#include "language_search_palette.hpp" // 261116_0003 P6b: the deferred picker open + ghost predicate
+// 261116_0003 P9b-2: the "내 언어" menu-row form and its ghost half are ONE
+// definition shared with the tray's four menus (tray.hpp). The include carries
+// only those two pure helpers plus the command-band constants; the tooltip's
+// own band lives in tooltip.hpp and the pin proving the two spaces never
+// collide runs in the test suite. Nothing here calls the tray's engine mapper
+// (the P6b no-duplication pins stay green).
+#include "tray.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <deque>   // SEC-ADJ: value-queue marshal transport
 #include <mutex>   // SEC-ADJ: guards the marshal deques
+#include <optional> // 261116_0003 P6b: the deferred picker latch consumer
 #include <shellapi.h> // P4 Batch-3 (REQ-C-002 / D7): ShellExecuteW ms-settings:speech deep link
 
 #include <cctype>
@@ -67,6 +76,69 @@ std::deque<TooltipWindow::BackTranslationPayload> g_tt_backtrans_queue;
 
 namespace {
 const wchar_t kTooltipClassName[] = L"Emebalachat_TooltipClass";
+
+// ---- 261116_0003 P6b: the two language dropdowns' dedicated row ids --------
+// The language rows keep their UNCHANGED i + 1 ids (1..N over the engine
+// view; N = 90 registry rows today) — the frozen dispatch scheme. The search
+// row and the pinned-absent ghost row get DEDICATED ids in this band, far
+// above any plausible registry size (the tray's band comments plan for ~200
+// future rows; 2701 leaves ~26 hundred rows of headroom), so they can never
+// collide with i + 1 for any list size. The band is the tooltip's OWN menu-id
+// space (each dropdown is its own HMENU; nothing is shared with the tray's
+// 2601..2608 band, which lives in tray.cpp's menus only). The static_assert
+// kills a renumber of the band down into the language rows' i + 1 space.
+constexpr UINT kTooltipCmdSearchSrc = 2701;
+constexpr UINT kTooltipCmdSearchTgt = 2702;
+constexpr UINT kTooltipCmdGhostSrc  = 2703;
+constexpr UINT kTooltipCmdGhostTgt  = 2704;
+// The static_assert proves the four ids are pairwise DISTINCT (the failure
+// mode the old >=2701-only form could not see: two names collapsed onto the
+// same value would both pass a band-floor check yet hand one cmd id to two
+// different dispatch arms) AND all above the language rows' i + 1 horizon —
+// the tray band asserts' idiom (tray.cpp's contiguous-band chain), applied
+// to the tooltip's own band.
+static_assert(kTooltipCmdSearchSrc >= 2701 && kTooltipCmdSearchTgt >= 2701 &&
+                  kTooltipCmdGhostSrc >= 2701 && kTooltipCmdGhostTgt >= 2701 &&
+                  kTooltipCmdSearchSrc != kTooltipCmdSearchTgt &&
+                  kTooltipCmdSearchSrc != kTooltipCmdGhostSrc &&
+                  kTooltipCmdSearchSrc != kTooltipCmdGhostTgt &&
+                  kTooltipCmdSearchTgt != kTooltipCmdGhostSrc &&
+                  kTooltipCmdSearchTgt != kTooltipCmdGhostTgt &&
+                  kTooltipCmdGhostSrc != kTooltipCmdGhostTgt,
+              "P6b: the four dedicated ids are pairwise distinct and stay in "
+              "their >=2701 band, never inside the language rows' i + 1 space");
+
+// 261116_0003 P9b-2: the "내 언어" user-row slots (tooltip.hpp). Two roles x
+// kMaxUserLanguages ids, starting above every id this module already owns and
+// above the tray's whole user band (2609..2864), so the two surfaces can never
+// address one another's rows even if a future change ever shared a dispatcher.
+// The layout is the same flat base + role * kMaxUserLanguages + index scheme
+// the tray uses; the slot separation assert kills an off-by-one between the two
+// roles, and the 16-bit bound keeps the ids inside the WM_COMMAND space.
+static_assert(kTooltipCmdUserSrcBase > kTooltipCmdGhostTgt,
+              "P9b-2: the user-row band must start above the P6b special rows");
+static_assert(kTooltipCmdUserTgtBase ==
+                  kTooltipCmdUserSrcBase + static_cast<UINT>(kMaxUserLanguages),
+              "P9b-2: the target slot must start right after the source slot");
+static_assert(kTooltipCmdUserBandEnd ==
+                  kTooltipCmdUserTgtBase + static_cast<UINT>(kMaxUserLanguages),
+              "P9b-2: two role slots of kMaxUserLanguages ids each");
+static_assert(TooltipUserLangCommand(TooltipUserLangRole::Source, kMaxUserLanguages - 1) <
+                  TooltipUserLangCommand(TooltipUserLangRole::Target, 0) &&
+                  TooltipUserLangCommand(TooltipUserLangRole::Target, kMaxUserLanguages - 1) + 1 ==
+                      kTooltipCmdUserBandEnd,
+              "P9b-2: the source and target user-row slots must be disjoint and contiguous");
+static_assert(kTooltipCmdUserBandEnd <= 0x10000,
+              "P9b-2: the user-row band must stay inside the 16-bit menu-command space");
+// 261116_0003 P9b-3 U4a: the tray claimed the two ids directly above its user
+// band for the "내 언어 추가…" / "내 언어…" dialog rows (tray.cpp
+// ID_TRAY_USER_LANG_ADD / _MANAGE = kTrayUserLangBandEnd / +1 = 2865/2866,
+// pinned there by tray.cpp's own assert block). The tooltip user band must
+// stay strictly above them so the two surfaces can never address one
+// another's commands, exactly like the P9b-2 cross-band discipline.
+static_assert(kTooltipCmdUserSrcBase > kTrayUserLangBandEnd + 1,
+              "P9b-3 U4a: the tooltip user band must start above the tray's user-language "
+              "dialog rows (2865/2866)");
 
 // Strip LEADING emoji/symbol pseudo-icons (📋 \xD83D\xDCCB, 🔊 \xD83D\xDD0A, ✓ \x2713, ✔ \x2714)
 // and any run of leading separators (checkmarks, VS16, spaces) so Copy/Copied/
@@ -2599,6 +2671,120 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         }
 
+        // ---- 261116_0003 P6b: the deferred language-picker open (Option B) --
+        // The two dropdowns' "검색…" rows latch a PickerInit through
+        // PostDeferredLanguagePaletteOpen(hwnd, init) — hwnd is THIS window:
+        // the tooltip is its own controller for its two picker surfaces (the
+        // tray's four surfaces keep posting to main.cpp's controller) — and
+        // the picker module posts its kMsgOpenLanguagePalette wake-up
+        // (WM_APP + 0x503, language_search_palette.hpp) here.
+        //
+        // SEC-ADJ discipline, identical to the four marshal seams above:
+        // wParam and lParam are IGNORED entirely (the wake-up carries no
+        // payload; any value an external process posts is untrusted by
+        // design) and the request travels through the picker module's
+        // PER-SURFACE latch (PR6-32: one slot per PickerSurface, so this
+        // window's bare take consumes exactly the pill slot and can never
+        // swallow a tray request). The optional is guarded with has_value()
+        // and is NEVER unwrapped through the throwing accessor: an EMPTY
+        // latch (an orphan wake-up — a previous consumer already took the
+        // request, or a foreign process posted the id) is logged once and
+        // dropped, never opened with default/empty codes. The arm returns 0
+        // on every path (P6a security-review obligations, carried over).
+        case kMsgOpenLanguagePalette: {
+            // 261116_0003 P6c fix round (PR6-42): same nested-delivery guard
+            // as main.cpp's controller arm. A wake-up delivered while a picker
+            // is already open arrives NESTED through that picker's own modal
+            // pump; taking the latch here would consume a request the
+            // single-instance guard then refuses to show. The nested delivery
+            // leaves its request LATCHED and exits; the arm whose show() owns
+            // the running loop drains the latch after its popup closes (the
+            // loop below) and serves the deferred request then. Stated
+            // without overstatement: the guarantee is the drain pass of the
+            // arm that owns the open picker's show() — for a pill request
+            // that is THIS arm, so the request is served right after that
+            // picker closes.
+            if (LanguagePickerShowing()) {
+                DIAG_LOG("UI", "tooltip_picker_wake result=deferred_while_open");
+                return 0;
+            }
+            bool first_pass = true;
+            for (;;) {
+                std::optional<language_palette::PickerInit> init =
+                    TakeDeferredLanguagePaletteOpen();
+                if (!init.has_value()) {
+                    if (first_pass) {
+                        // Empty latch on a real delivery: an orphan wake-up.
+                        // Later passes exit silently (the normal drain end).
+                        DIAG_LOG("UI", "tooltip_picker_wake result=orphan_latch_empty");
+                    }
+                    break;
+                }
+                first_pass = false;
+                // 261116_0003 P6b fix round (PR6-29, SEC-ADJ), re-anchored to
+                // the landed P6c state (PR6-43 sweep): the per-surface slots
+                // (PR6-32) already make a foreign request impossible by
+                // construction — this window's bare take reads ONLY the pill
+                // slot, and the tray's TrayTyping/TrayTooltip requests live in
+                // slots only main.cpp's controller arm consumes. The
+                // ownership check below stays as the belt-and-braces twin of
+                // the controller arm's PR6-32 check: if either consumer's
+                // take is ever regressed to a cross-surface take, the
+                // wrong-pair dispatch is still refused here — one diagnostic
+                // line, no picker, no dispatch, return 0.
+                if (init->surface != language_palette::PickerSurface::TooltipPill) {
+                    DIAG_LOG("UI", "tooltip_picker_wake result=surface_mismatch surface=%d",
+                             static_cast<int>(init->surface));
+                    return 0;
+                }
+                // The dropdown's screen anchor, re-derived at handler time from
+                // the REQUEST role's button rect (the same DIP -> px +
+                // ClientToScreen conversion the menu blocks use): the card may
+                // have moved between the post and this pump, so the fresh rect is
+                // the honest anchor. Re-derived per drain pass for the same
+                // reason.
+                POINT anchor =
+                    (init->role == language_palette::PickerRole::Source)
+                        ? POINT{emebalachat::ui::ScaleDipsToPixels(
+                                    static_cast<int>(pThis->src_btn_rect_.left), pThis->dpi_),
+                                emebalachat::ui::ScaleDipsToPixels(
+                                    static_cast<int>(pThis->src_btn_rect_.bottom), pThis->dpi_)}
+                        : POINT{emebalachat::ui::ScaleDipsToPixels(
+                                    static_cast<int>(pThis->lang_btn_rect_.left), pThis->dpi_),
+                                emebalachat::ui::ScaleDipsToPixels(
+                                    static_cast<int>(pThis->lang_btn_rect_.bottom), pThis->dpi_)};
+                ::ClientToScreen(hwnd, &anchor);
+                // 260922_0001 A5 / PR5-03: the same focus choreography the two
+                // TrackPopupMenuEx paths run — back up the foreground owner, take
+                // it for the modal surface, restore after it closes.
+                HWND hwndPrev = ::GetForegroundWindow();
+                ::SetForegroundWindow(hwnd);
+                const LanguagePickerResult picked =
+                    ShowLanguageSearchPalette(hwnd, *init, &anchor);
+                if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {
+                    ::SetForegroundWindow(hwndPrev);
+                }
+                if (picked.committed) {
+                    // The role is the picker's COMMIT-TIME echo (a Tab flip before
+                    // committing moves the pick to the flipped role), so the pick
+                    // always lands on the pair the user actually edited. The
+                    // payload is the registry row's own name_en — byte-identical
+                    // to what the same pick made in the flat menu would dispatch
+                    // (PickerState::PayloadOf's contract).
+                    if (picked.role == language_palette::PickerRole::Source) {
+                        if (pThis->src_lang_change_cb_) {
+                            pThis->src_lang_change_cb_(picked.name_en);
+                        }
+                    } else {
+                        if (pThis->lang_change_cb_) {
+                            pThis->lang_change_cb_(picked.name_en);
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
         // ---- REQ-002 scroll input ----
         // Primary path: kScrollMessage posted by the LL mouse hook callback
         // (WS_EX_NOACTIVATE popups never receive routed WM_MOUSEWHEEL because
@@ -2878,18 +3064,45 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
 
-            // F8 (ADR-A1-4): source-language dropdown. The source menu uses
-            // GetSupportedLanguages() (AUTO + 37 = 38 entries) - NOT the
-            // target list (AUTO is excluded there because it can never be a
-            // translation target, but it is a first-class source setting:
-            // "기본값은 자동감지"). Picking AUTO re-records the persisted
-            // drag_source_language as "Auto Detect" via the main.cpp callback
-            // (re-record contract, user decision ④ / ADR-A1-4).
+            // F8 (ADR-A1-4): source-language dropdown. Picking AUTO
+            // re-records the persisted drag_source_language as "Auto Detect"
+            // via the main.cpp callback (re-record contract, user decision ④ /
+            // ADR-A1-4).
+            //
+            // 261116_0003 P6b: the menu builds from the ACTIVE ENGINE's
+            // registry view — GetLanguagesForEngine(engine, include_auto=true)
+            // — instead of the global GetSupportedLanguages() list it shipped
+            // until P6b (the pre-P6b comment's "menu stays global until P6
+            // wires the engine views" is now honored; the P2/P3 registry-growth
+            // history lives in the tray's band comments and the test pins).
+            // The tray's four language menus already show the engine view
+            // (261116_0003 P6); the tooltip must agree with it. The engine is
+            // resolved ONCE, at menu-build time, through the resolver seam
+            // (derive-at-open, the REQ-056 pattern): the resolver is wired in
+            // main.cpp since P6c (PR6-35), and the defensive no-resolver
+            // fallback still returns LanguageEngine::Google — the conservative
+            // cloud set — mirroring tray.cpp's no-resolver default. AUTO stays
+            // a first-class source setting (include_auto = true; "기본값은
+            // 자동감지").
             if (IsPointInRect(pThis->src_btn_rect_, x, y)) {
-                DIAG_LOG("UI", "tooltip src_menu_open count=%zu",
-                         GetSupportedLanguages().size());
+                const MenuEngineResolution menu_engine = pThis->ResolveMenuEngine();
+                // 261116_0003 P9b-2: the D5/D7 merge is the dropdown's only
+                // data source now - registry rows PLUS the "내 언어" group (empty
+                // under the local Hy-MT2 engine, D7; under Google only entries
+                // whose code is publisher-declared), with every registry row a
+                // user entry claimed removed. The merge is authoritative: this
+                // surface adds no filtering of its own. The view local is the
+                // build-time AND dispatch-time payload, alive across
+                // TrackPopupMenuEx because the group's rows point into
+                // menu_engine.user_languages.
+                const LanguageMenuView src_menu =
+                    BuildLanguageMenuView(menu_engine.engine, /*include_auto=*/true,
+                                          menu_engine.user_languages);
+                const auto& src_langs = src_menu.registry;
+                DIAG_LOG("UI", "tooltip src_menu_open engine=%d count=%zu user=%zu",
+                         static_cast<int>(menu_engine.engine), src_langs.size(),
+                         src_menu.user_group.size());
                 HMENU hMenu = ::CreatePopupMenu();
-                const auto& src_langs = GetSupportedLanguages();
                 // Check mark follows the tag's EFFECTIVE source (the displayed
                 // value): the AUTO entry when the tag is showing the localized
                 // Auto-Detect fallback (empty code), otherwise the entry whose
@@ -2901,10 +3114,153 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     pThis->source_lang_code_.empty()
                         ? std::string("AUTO")
                         : NormalizeLanguageCode(pThis->source_lang_code_);
+                const std::string norm_tgt = NormalizeLanguageCode(pThis->target_lang_);
+                // 261116_0003 P6b: the (surface, role) picker request, latched
+                // at menu-build time. It drives BOTH the ghost probe below AND
+                // the search row's deferred open in the dispatch — the menu is
+                // modal, so the dispatch path cannot re-derive the values (the
+                // tray's PR6-03d build-time snapshot contract, mirrored).
+                language_palette::PickerInit picker_req;
+                picker_req.surface = language_palette::PickerSurface::TooltipPill;
+                picker_req.role = language_palette::PickerRole::Source;
+                picker_req.engine = menu_engine.engine;
+                picker_req.source_code = norm_src;
+                picker_req.target_code = norm_tgt;
+                // Menu shape per the tray's build_language_menu (261116_0003
+                // P6): the "검색…" row first, a separator, then — only when the
+                // resolved engine does NOT offer the menu's current source —
+                // the pinned-absent GHOST row, then the engine-view rows with
+                // their UNCHANGED i + 1 ids.
+                ::AppendMenuW(hMenu, MF_STRING, kTooltipCmdSearchSrc,
+                              I18n::Get(StringId::MenuSearchLangs).c_str());
+                ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                // 261116_0003 P6b fix round (PR6-28), re-anchored to the
+                // landed P6c state (PR6-43 sweep): the pinned-absent ghost
+                // row — greyed + checked, informational, non-selectable
+                // ("설정 유지됨": the config value is preserved verbatim and
+                // still honored raw by the engine adapter, it is just not
+                // offered by this engine). The capability probe is the
+                // picker's OWN tested check (PickerState::PinnedAbsentLanguage)
+                // — reused, never re-implemented — and the SUPPRESSION decision
+                // is the SHARED router-aware predicate
+                // language_palette::SuppressPinnedAbsentGhost: ONE definition
+                // in language_search_palette.hpp, consumed by BOTH this
+                // surface and the tray's four menus. What the two surfaces
+                // share is the DECISION, not the inputs: each side resolves
+                // its own is_auto / local_host_available at its own menu-open
+                // time, and since P6c (PR6-35) BOTH resolver halves are wired
+                // from main.cpp — the tray's and this tooltip's
+                // SetEngineResolver — deriving all three values from the same
+                // persisted config snapshot. That shared derivation source is
+                // why the two surfaces agree in practice; the inputs stay
+                // unshared by contract, so each surface keeps feeding its own
+                // live view rather than a cached copy.
+                // The predicate's preferred_engine is the tray's collapsed index,
+                // mapped here zero-vs-nonzero from the resolved
+                // LanguageEngine — only the Google view (index 0, covering
+                // both "google" and "auto") can ever suppress.
+                // The label keeps the tooltip's own row form (name_en
+                // (name_native)), matching the language rows below —
+                // deliberately NOT the tray's "CODE - display" form.
+                const LanguageInfo* ghost =
+                    language_palette::PickerState{picker_req}.PinnedAbsentLanguage();
+                // 261116_0003 P9b-2 fix R14-01: capture the registry half's
+                // PRE-SUPPRESSION answer; the user half below runs only on
+                // this null (the same contract as the tray's four menus).
+                const bool registry_ghost_found = ghost != nullptr;
+                const int pref_equiv = (menu_engine.engine == LanguageEngine::Google) ? 0 : 1;
+                if (ghost != nullptr &&
+                    language_palette::SuppressPinnedAbsentGhost(
+                        picker_req, pref_equiv, menu_engine.is_auto,
+                        menu_engine.local_host_available)) {
+                    // Same predicate as the tray's four menus (PR6-28); the
+                    // inputs here are this surface's own resolver view
+                    // (wired in P6c, PR6-35), resolved live at menu-open
+                    // time like the tray's: one decision, unshared inputs.
+                    ghost = nullptr;
+                }
+                if (ghost != nullptr) {
+                    const std::wstring ghost_text =
+                        ToUtf16(ghost->name_en) + L" (" + ToUtf16(ghost->name_native) + L")";
+                    ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_CHECKED, kTooltipCmdGhostSrc,
+                                  ghost_text.c_str());
+                } else if (!registry_ghost_found) {
+                    // 261116_0003 P9b-2: the USER half of the same ghost (see
+                    // tray.cpp): same row slot, same command id, same
+                    // greyed+checked contract, and the same R14-01 gate:
+                    // reached only when the registry half found no ghost
+                    // BEFORE the shared suppression gate decides. The helper
+                    // answers from the merge, and the label is the user row
+                    // form (no code prefix) so it reads as the pinned entry.
+                    if (const UserLanguage* user_ghost =
+                            PinnedAbsentUserLanguage(src_menu, menu_engine.user_languages,
+                                                     pThis->source_lang_code_)) {
+                        ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_CHECKED,
+                                      kTooltipCmdGhostSrc,
+                                      ToUtf16(FormatUserLanguageMenuLabel(*user_ghost)).c_str());
+                    }
+                }
+                // 261116_0003 P9b-2 (plan §3 D5): the "내 언어" group, below the
+                // search/ghost rows and above the registry rows, rendered only
+                // when the merge offers user entries. DISABLED id-0 header (the
+                // P9b-1 string, not a command); rows carry this dropdown's own
+                // user band. The check mark comes from the same ONE shared
+                // pin-to-row resolution the tray's four menus call (fix R14-02,
+                // tray.hpp CurrentUserLanguageRow), over this dropdown's own
+                // merged group, and the answer feeds the registry rule below as
+                // `user_row_checked`, so a setting never lights two rows.
+                const UserLanguage* current_user =
+                    CurrentUserLanguageRow(src_menu, pThis->source_lang_code_);
+                const bool user_row_checked = current_user != nullptr;
+                if (!src_menu.user_group.empty()) {
+                    ::AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0,
+                                  I18n::Get(StringId::UserLangsGroup).c_str());
+                    const size_t user_count = (std::min)(
+                        src_menu.user_group.size(), static_cast<size_t>(kMaxUserLanguages));
+                    for (size_t i = 0; i < user_count; ++i) {
+                        const UserLanguage* entry = src_menu.user_group[i].user;
+                        if (entry == nullptr) {
+                            continue;
+                        }
+                        UINT flags = MF_STRING;
+                        if (entry == current_user) {
+                            flags |= MF_CHECKED;
+                        }
+                        // 261116_0003 P9b-3 U4a: the probe badge rides the row
+                        // through the ONE shared fold (tray.hpp), keyed by
+                        // this dropdown's own resolver view — the same
+                        // derive-at-open (engine, model) key the tray's four
+                        // submenus read, so one verdict renders identically on
+                        // all six surfaces. The in-flight seam is the
+                        // resolver's per-entry predicate (EMPTY = no resolver
+                        // -> not in flight). Display-only: the check mark
+                        // above and the registry rule below are untouched.
+                        const bool probe_in_flight =
+                            menu_engine.user_lang_probe_in_flight &&
+                            menu_engine.user_lang_probe_in_flight(*entry);
+                        const std::wstring item_text =
+                            ToUtf16(FormatUserLanguageMenuLabel(*entry)) +
+                            UserLanguageMenuBadgeSuffix(*entry,
+                                                        menu_engine.user_lang_probe_engine,
+                                                        menu_engine.user_lang_probe_model,
+                                                        probe_in_flight);
+                        ::AppendMenuW(hMenu, flags,
+                                      TooltipUserLangCommand(TooltipUserLangRole::Source, i),
+                                      item_text.c_str());
+                    }
+                    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                }
                 for (size_t i = 0; i < src_langs.size(); ++i) {
-                    std::wstring item = ToUtf16(src_langs[i].name_en) + L" (" + ToUtf16(src_langs[i].name_native) + L")";
+                    std::wstring item = ToUtf16(src_langs[i]->name_en) + L" (" + ToUtf16(src_langs[i]->name_native) + L")";
                     UINT flags = MF_STRING;
-                    if (norm_src == src_langs[i].code) {
+                    // 261116_0003 P9b-2: the shared check-mark rule (an
+                    // unresolvable pin, e.g. a code-less user language,
+                    // normalizes to AUTO and must not light the AUTO row as
+                    // well as its own "내 언어" row; fix R14-02 passes the
+                    // user-row answer so an AUTO-spelled entry cannot either).
+                    if (IsRegistryMenuRowCurrent(src_langs[i]->code, norm_src,
+                                                 pThis->source_lang_code_,
+                                                 user_row_checked)) {
                         flags |= MF_CHECKED;
                     }
                     ::AppendMenuW(hMenu, flags, static_cast<UINT_PTR>(i + 1), item.c_str());
@@ -2935,10 +3291,83 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     ::SetForegroundWindow(hwndPrev);
                 }
 
-                if (cmd > 0 && static_cast<size_t>(cmd - 1) < src_langs.size()) {
+                // 261116_0003 P6b: the dedicated arms come FIRST, so the
+                // search/ghost ids can never reach the language range check
+                // below (their ids live in the >=2701 band, outside i + 1 by
+                // construction; the ordering makes that structural).
+                if (cmd == kTooltipCmdSearchSrc) {
+                    // 261116_0003 P6b (D3 + REQ-047 D3): the "검색…" row defers
+                    // the picker open — the latched request is posted to THIS
+                    // window (the tooltip is its own controller for its two
+                    // picker surfaces) and the WndProc's kMsgOpenLanguagePalette
+                    // arm opens the modal picker after the menu tear-down
+                    // settles. Same PR6-08 GLE discipline as the tray's search
+                    // arm: clear the stale error first; a false return is
+                    // cause-neutral (coalesced / rejected / genuinely failed —
+                    // only the GLE branch is decidable).
+                    // PR6-32, re-anchored to the landed P6c state (PR6-43
+                    // sweep): the latch is PER-SURFACE and this post targets
+                    // the pill slot, so a "coalesced" false can only mean THIS
+                    // surface's own earlier request is still pending (first
+                    // one wins — the popup is single-instance per surface by
+                    // design); it can no longer mean an unconsumed tray
+                    // request, because the tray's requests live in the two
+                    // slots only main.cpp's controller arm consumes (wired in
+                    // P6c). The picker module logs the specific reason either
+                    // way.
+                    ::SetLastError(ERROR_SUCCESS);
+                    if (!PostDeferredLanguagePaletteOpen(hwnd, picker_req)) {
+                        const DWORD post_gle = ::GetLastError();
+                        if (post_gle != ERROR_SUCCESS) {
+                            DIAG_F("TT/Picker/001: deferred language-picker open post failed (GLE %lu)\n",
+                                   post_gle);
+                        } else {
+                            DIAG_F("TT/Picker/001: deferred language-picker open not posted "
+                                   "(coalesced or rejected; the picker module logs the specific reason)\n");
+                        }
+                    }
+                } else if (cmd == kTooltipCmdGhostSrc) {
+                    // 261116_0003 P6b: documented NO-OP arm (the tray's
+                    // ID_TRAY_GHOST_* contract). The ghost row is appended
+                    // MF_GRAYED, so the OS never dispatches it; this arm exists
+                    // so the id is not silently unhandled if a future change
+                    // ever makes it selectable (designer §4.6 floats "choosing
+                    // the ghost row = explicit keep-as-is confirmation"; that
+                    // decision is NOT made here). No config write, no
+                    // callback, no picker open.
+                } else if (cmd >= kTooltipCmdUserSrcBase && cmd < kTooltipCmdUserTgtBase) {
+                    // 261116_0003 P9b-2: the "내 언어" row. The command decodes
+                    // to (role, user index); the index selects the row from the
+                    // SAME merged view the menu was built from, and the payload
+                    // is the entry's STORED name (the form PlanLanguageSync
+                    // canonicalizes to), i.e. the identical shape a registry
+                    // pick sends. A stale/out-of-range index dispatches nothing.
+                    const TooltipUserLangCommandRef user_cmd =
+                        DecodeTooltipUserLangCommand(cmd);
+                    if (user_cmd.role == TooltipUserLangRole::Source &&
+                        user_cmd.user_index < src_menu.user_group.size() &&
+                        src_menu.user_group[user_cmd.user_index].user != nullptr) {
+                        const std::string new_src = UserLanguageStoredName(
+                            *src_menu.user_group[user_cmd.user_index].user);
+                        // 261116_0003 P9b-2 fix R14-06: the user-typed stored
+                        // name is content, so REQ-003 records it only behind
+                        // diag::ContentLoggingEnabled() (default off); the
+                        // else branch keeps the shape-only len= field.
+                        if (diag::ContentLoggingEnabled()) {
+                            DIAG_LOG("UI", "tooltip src_menu_select_user lang=%s",
+                                     new_src.c_str());
+                        } else {
+                            DIAG_LOG("UI", "tooltip src_menu_select_user len=%zu",
+                                     new_src.size());
+                        }
+                        if (pThis->src_lang_change_cb_) {
+                            pThis->src_lang_change_cb_(new_src);
+                        }
+                    }
+                } else if (cmd > 0 && static_cast<size_t>(cmd - 1) < src_langs.size()) {
                     // name_en payload (the AUTO entry yields "Auto Detect") -
                     // unified with the target menu's payload form (ADR-A1-4).
-                    std::string new_src = src_langs[cmd - 1].name_en;
+                    std::string new_src = src_langs[cmd - 1]->name_en;
                     DIAG_LOG("UI", "tooltip src_menu_select lang=%s",
                              new_src.c_str());
                     if (pThis->src_lang_change_cb_) {
@@ -2949,13 +3378,149 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
 
             if (IsPointInRect(pThis->lang_btn_rect_, x, y)) {
-                // Language switcher dropdown menu
+                // Language switcher dropdown menu.
+                //
+                // 261116_0003 P6b: the same engine-view build as the source
+                // menu above — GetLanguagesForEngine(menu_engine.engine, include_auto=
+                // false) (AUTO can never be a translation target) instead of
+                // the global GetTargetLanguages() list. The engine is resolved
+                // ONCE, at menu-build time, through the resolver seam (wired
+                // in main.cpp since P6c, PR6-35; the MenuEngineResolution{}
+                // fallback below is the defensive no-resolver default).
+                // 261116_0003 P9b-2 fix R14-03: the check-mark rule is the
+                // SOURCE menu's rule, the shared IsRegistryMenuRowCurrent over
+                // the normalized code (the legacy raw `name_en == pin || code
+                // == pin` comparison is gone: it missed a native, alias or
+                // case-variant pin that the tray's drag-target menu lights).
                 HMENU hMenu = ::CreatePopupMenu();
-                const auto& target_langs = GetTargetLanguages();
+                const MenuEngineResolution menu_engine = pThis->ResolveMenuEngine();
+                // 261116_0003 P9b-2: the same D5/D7 merge as the source menu
+                // above (include_auto = false: AUTO can never be a target), and
+                // the same build-time AND dispatch-time payload discipline.
+                const LanguageMenuView tgt_menu =
+                    BuildLanguageMenuView(menu_engine.engine, /*include_auto=*/false,
+                                          menu_engine.user_languages);
+                const auto& target_langs = tgt_menu.registry;
+                DIAG_LOG("UI", "tooltip tgt_menu_open engine=%d count=%zu user=%zu",
+                         static_cast<int>(menu_engine.engine), target_langs.size(),
+                         tgt_menu.user_group.size());
+                const std::string norm_src =
+                    pThis->source_lang_code_.empty()
+                        ? std::string("AUTO")
+                        : NormalizeLanguageCode(pThis->source_lang_code_);
+                const std::string norm_tgt = NormalizeLanguageCode(pThis->target_lang_);
+                // 261116_0003 P6b: the (surface, role) picker request, latched
+                // at menu-build time — same snapshot contract as the source
+                // menu (PR6-03d). Role = Target: the probe checks the target
+                // code, and the dispatch routes a committed pick through the
+                // target callback.
+                language_palette::PickerInit picker_req;
+                picker_req.surface = language_palette::PickerSurface::TooltipPill;
+                picker_req.role = language_palette::PickerRole::Target;
+                picker_req.engine = menu_engine.engine;
+                picker_req.source_code = norm_src;
+                picker_req.target_code = norm_tgt;
+                // Menu shape per the tray's build_language_menu: the "검색…"
+                // row first, a separator, then the optional pinned-absent
+                // ghost row (same "설정 유지됨" contract, same reused
+                // PinnedAbsentLanguage capability probe, same SHARED
+                // SuppressPinnedAbsentGhost suppression gate and tooltip row
+                // form as the source menu's ghost — see the comment there:
+                // ONE predicate definition consumed by both surfaces, each
+                // feeding its own resolver view — wired in P6c, PR6-35),
+                // then the engine-view rows with their UNCHANGED i + 1 ids.
+                ::AppendMenuW(hMenu, MF_STRING, kTooltipCmdSearchTgt,
+                              I18n::Get(StringId::MenuSearchLangs).c_str());
+                ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                const LanguageInfo* ghost =
+                    language_palette::PickerState{picker_req}.PinnedAbsentLanguage();
+                // 261116_0003 P9b-2 fix R14-01: capture the registry half's
+                // PRE-SUPPRESSION answer; the user half below runs only on
+                // this null (the same contract as the source menu).
+                const bool registry_ghost_found = ghost != nullptr;
+                const int pref_equiv = (menu_engine.engine == LanguageEngine::Google) ? 0 : 1;
+                if (ghost != nullptr &&
+                    language_palette::SuppressPinnedAbsentGhost(
+                        picker_req, pref_equiv, menu_engine.is_auto,
+                        menu_engine.local_host_available)) {
+                    // Same shared gate as the source menu and the tray
+                    // (PR6-28); this surface's resolver view is wired in P6c
+                    // (PR6-35).
+                    ghost = nullptr;
+                }
+                if (ghost != nullptr) {
+                    const std::wstring ghost_text =
+                        ToUtf16(ghost->name_en) + L" (" + ToUtf16(ghost->name_native) + L")";
+                    ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_CHECKED, kTooltipCmdGhostTgt,
+                                  ghost_text.c_str());
+                } else if (!registry_ghost_found) {
+                    // 261116_0003 P9b-2: the USER half of the same ghost (see
+                    // the source menu above and tray.cpp), under the same
+                    // R14-01 gate: reached only when the registry half found
+                    // no ghost BEFORE the shared suppression gate decides.
+                    if (const UserLanguage* user_ghost =
+                            PinnedAbsentUserLanguage(tgt_menu, menu_engine.user_languages,
+                                                     pThis->target_lang_)) {
+                        ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_CHECKED,
+                                      kTooltipCmdGhostTgt,
+                                      ToUtf16(FormatUserLanguageMenuLabel(*user_ghost)).c_str());
+                    }
+                }
+                // 261116_0003 P9b-2: the "내 언어" group, same shape and
+                // position as the source menu's (header, rows, separator, then
+                // the registry rows). Fix R14-02: the check mark comes from the
+                // same shared pin-to-row resolution over THIS dropdown's merged
+                // group, and its answer feeds the registry rule below.
+                const UserLanguage* current_user =
+                    CurrentUserLanguageRow(tgt_menu, pThis->target_lang_);
+                const bool user_row_checked = current_user != nullptr;
+                if (!tgt_menu.user_group.empty()) {
+                    ::AppendMenuW(hMenu, MF_STRING | MF_DISABLED, 0,
+                                  I18n::Get(StringId::UserLangsGroup).c_str());
+                    const size_t user_count = (std::min)(
+                        tgt_menu.user_group.size(), static_cast<size_t>(kMaxUserLanguages));
+                    for (size_t i = 0; i < user_count; ++i) {
+                        const UserLanguage* entry = tgt_menu.user_group[i].user;
+                        if (entry == nullptr) {
+                            continue;
+                        }
+                        UINT flags = MF_STRING;
+                        if (entry == current_user) {
+                            flags |= MF_CHECKED;
+                        }
+                        // 261116_0003 P9b-3 U4a: the same ONE shared badge fold
+                        // as the source dropdown above and the tray's four
+                        // submenus — same resolver key, same display-only
+                        // contract (see the source menu's comment).
+                        const bool probe_in_flight =
+                            menu_engine.user_lang_probe_in_flight &&
+                            menu_engine.user_lang_probe_in_flight(*entry);
+                        const std::wstring item_text =
+                            ToUtf16(FormatUserLanguageMenuLabel(*entry)) +
+                            UserLanguageMenuBadgeSuffix(*entry,
+                                                        menu_engine.user_lang_probe_engine,
+                                                        menu_engine.user_lang_probe_model,
+                                                        probe_in_flight);
+                        ::AppendMenuW(hMenu, flags,
+                                      TooltipUserLangCommand(TooltipUserLangRole::Target, i),
+                                      item_text.c_str());
+                    }
+                    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                }
                 for (size_t i = 0; i < target_langs.size(); ++i) {
-                    std::wstring item = ToUtf16(target_langs[i].name_en) + L" (" + ToUtf16(target_langs[i].name_native) + L")";
+                    std::wstring item = ToUtf16(target_langs[i]->name_en) + L" (" + ToUtf16(target_langs[i]->name_native) + L")";
                     UINT flags = MF_STRING;
-                    if (target_langs[i].name_en == pThis->target_lang_ || target_langs[i].code == pThis->target_lang_) {
+                    // 261116_0003 P9b-2 fix R14-03: the SAME shared rule and
+                    // the same arguments as the source loop above and the
+                    // tray's drag-target menu (normalized code + raw token for
+                    // the AUTO arm + the user-row fact), so one pin spelling
+                    // shows one identical check state on both surfaces. The
+                    // legacy raw comparison this replaces missed every native,
+                    // alias or case-variant spelling the normalized lookup
+                    // resolves.
+                    if (IsRegistryMenuRowCurrent(target_langs[i]->code, norm_tgt,
+                                                 pThis->target_lang_,
+                                                 user_row_checked)) {
                         flags |= MF_CHECKED;
                     }
                     ::AppendMenuW(hMenu, flags, static_cast<UINT_PTR>(i + 1), item.c_str());
@@ -2985,8 +3550,60 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     ::SetForegroundWindow(hwndPrev);
                 }
 
-                if (cmd > 0 && static_cast<size_t>(cmd - 1) < target_langs.size()) {
-                    std::string new_lang = target_langs[cmd - 1].name_en;
+                // 261116_0003 P6b: the dedicated arms come FIRST, before the
+                // language range arm (same ordering contract as the source
+                // menu above).
+                if (cmd == kTooltipCmdSearchTgt) {
+                    // Same deferred open as the source menu (see that comment):
+                    // the request is posted to THIS window; the WndProc's
+                    // kMsgOpenLanguagePalette arm consumes it. Same PR6-08 GLE
+                    // discipline (clear first, cause-neutral false label).
+                    // PR6-32 honesty re-anchored (PR6-43 sweep): the latch is
+                    // per-surface, so a coalesced false can only mean THIS
+                    // surface's own pending request (first one wins); the
+                    // tray's slots are the controller arm's alone since P6c.
+                    ::SetLastError(ERROR_SUCCESS);
+                    if (!PostDeferredLanguagePaletteOpen(hwnd, picker_req)) {
+                        const DWORD post_gle = ::GetLastError();
+                        if (post_gle != ERROR_SUCCESS) {
+                            DIAG_F("TT/Picker/002: deferred language-picker open post failed (GLE %lu)\n",
+                                   post_gle);
+                        } else {
+                            DIAG_F("TT/Picker/002: deferred language-picker open not posted "
+                                   "(coalesced or rejected; the picker module logs the specific reason)\n");
+                        }
+                    }
+                } else if (cmd == kTooltipCmdGhostTgt) {
+                    // 261116_0003 P6b: documented NO-OP arm (the tray's
+                    // ID_TRAY_GHOST_* contract; see the source menu's arm).
+                } else if (cmd >= kTooltipCmdUserTgtBase && cmd < kTooltipCmdUserBandEnd) {
+                    // 261116_0003 P9b-2: the target "내 언어" row. Same decode
+                    // and stored-name payload as the source menu's arm; the
+                    // coordinator (ApplyLanguageChange) is the single apply
+                    // authority and now validates against the user registry.
+                    const TooltipUserLangCommandRef user_cmd =
+                        DecodeTooltipUserLangCommand(cmd);
+                    if (user_cmd.role == TooltipUserLangRole::Target &&
+                        user_cmd.user_index < tgt_menu.user_group.size() &&
+                        tgt_menu.user_group[user_cmd.user_index].user != nullptr) {
+                        const std::string new_lang = UserLanguageStoredName(
+                            *tgt_menu.user_group[user_cmd.user_index].user);
+                        // 261116_0003 P9b-2 fix R14-06: same REQ-003 content
+                        // gate as the source arm above (shape-only len= when
+                        // the gate is off).
+                        if (diag::ContentLoggingEnabled()) {
+                            DIAG_LOG("UI", "tooltip tgt_menu_select_user lang=%s",
+                                     new_lang.c_str());
+                        } else {
+                            DIAG_LOG("UI", "tooltip tgt_menu_select_user len=%zu",
+                                     new_lang.size());
+                        }
+                        if (pThis->lang_change_cb_) {
+                            pThis->lang_change_cb_(new_lang);
+                        }
+                    }
+                } else if (cmd > 0 && static_cast<size_t>(cmd - 1) < target_langs.size()) {
+                    std::string new_lang = target_langs[cmd - 1]->name_en;
                     if (pThis->lang_change_cb_) {
                         pThis->lang_change_cb_(new_lang);
                     }

@@ -77,6 +77,50 @@ inline bool IsGreekCodePoint(uint32_t cp) {
     return (cp >= 0x0370 && cp <= 0x03FF);
 }
 
+// 261116_0003 P1: the 4 new script ranges (one basic block each, same
+// single-block style as IsDevanagariCodePoint/IsBengaliCodePoint above).
+inline bool IsTamilCodePoint(uint32_t cp) {
+    return (cp >= 0x0B80 && cp <= 0x0BFF);
+}
+inline bool IsTeluguCodePoint(uint32_t cp) {
+    return (cp >= 0x0C00 && cp <= 0x0C7F);
+}
+inline bool IsGujaratiCodePoint(uint32_t cp) {
+    return (cp >= 0x0A80 && cp <= 0x0AFF);
+}
+inline bool IsTibetanCodePoint(uint32_t cp) {
+    return (cp >= 0x0F00 && cp <= 0x0FFF);
+}
+
+// 261116_0003 P3 (language-menu redesign, plan §5 P3 / D2): the 8 new script
+// ranges for tranche B (one basic block each, the same single-block style;
+// the ranges mirror engine_core's ScriptClass bits 18-25 one for one and
+// win32_input.hpp's kScriptMask* ordinals — ws2_capture_tests.inc pins both).
+inline bool IsArmenianCodePoint(uint32_t cp) {
+    return (cp >= 0x0530 && cp <= 0x058F);
+}
+inline bool IsGeorgianCodePoint(uint32_t cp) {
+    return (cp >= 0x10A0 && cp <= 0x10FF);
+}
+inline bool IsSinhalaCodePoint(uint32_t cp) {
+    return (cp >= 0x0D80 && cp <= 0x0DFF);
+}
+inline bool IsMalayalamCodePoint(uint32_t cp) {
+    return (cp >= 0x0D00 && cp <= 0x0D7F);
+}
+inline bool IsKannadaCodePoint(uint32_t cp) {
+    return (cp >= 0x0C80 && cp <= 0x0CFF);
+}
+inline bool IsGurmukhiCodePoint(uint32_t cp) {
+    return (cp >= 0x0A00 && cp <= 0x0A7F);
+}
+inline bool IsOdiaCodePoint(uint32_t cp) {
+    return (cp >= 0x0B00 && cp <= 0x0B7F);
+}
+inline bool IsEthiopicCodePoint(uint32_t cp) {
+    return (cp >= 0x1200 && cp <= 0x137F);
+}
+
 // F1 (session 260908_0003, verify 220010 root cause R1): VIETNAMESE-SPECIFIC
 // codepoints only. The previous implementation also accepted the shared
 // Latin-1 accented letters (0x00E0-0x00FD / 0x00C0-0x00DD: a-grave through
@@ -88,13 +132,16 @@ inline bool IsGreekCodePoint(uint32_t cp) {
 // Those ranges are REMOVED here; accented Latin without a VI-specific marker
 // is now script-certain but language-ambiguous and classifies as Latin-script
 // AUTO content (see DetectLanguage). The remaining sets below appear ONLY in
-// Vietnamese orthography among the 37 supported languages:
+// Vietnamese orthography among the 89 supported languages (261116_0003 P3:
+// 46 -> 89 after tranche A+B; the 43 additions include 21 Latin-script rows -
+// 19 Latin-only plus the dual-script SR/UZ - and none of them writes o-horn/
+// u-horn or the U+1EA0-U+1EF9 tone block, so the exclusivity claim holds):
 //   0x1EA0-0x1EF9  Latin Extended Additional precomposed VI tone marks (a-circumflex-breve, e-grave, o-horn-acute, ...)
 //   U+01A0/U+01A1  O-horn (O with horn), o-horn
 //   U+01AF/U+01B0  U-horn (U with horn), u-horn
 //   U+0102/U+0103  A-breve, a-breve        (Romanian also writes a-breve; kept
 //                                            per the F1 directive - among the
-//                                            37 languages it is listed as a VI
+//                                            89 languages it is listed as a VI
 //                                            marker, and a bare a-breve is far
 //                                            rarer in the field than the VI
 //                                            tone block. Residual Romanian-a-
@@ -307,6 +354,14 @@ inline bool IsLatinCodePoint(uint32_t cp) {
            (cp >= 0x1E00 && cp <= 0x1EFF);   // Latin Extended Additional (A-dota-below .. y-grave; VI tone marks are the 1EA0-1EF9 subset)
 }
 
+// 261116_0003 P3 fix round 3 (PR3-06): two registry name_native codepoints sit
+// ABOVE this predicate's U+024F ceiling and outside every Is*CodePoint range -
+// U+02BB (ʻ in Oʻzbekcha, UZ) and U+0259 (ə in Azərbaycanca, AZ) - so they tally
+// as ScriptFamily::Other and are simply UNCOUNTED. That is a deliberate
+// fail-safe under-count (never a mis-classification; the R1-1 completeness pin
+// passes on the Latin share of both names); widening this range to the IPA /
+// Spacing Modifier blocks later must keep that direction.
+
 inline bool IsLinguisticCodePoint(uint32_t cp) {
     if (IsKoreanCodePoint(cp) || IsKanaCodePoint(cp) || IsHanziCodePoint(cp) ||
         IsThaiCodePoint(cp) || IsArabicCodePoint(cp) || IsCyrillicCodePoint(cp) ||
@@ -318,7 +373,29 @@ inline bool IsLinguisticCodePoint(uint32_t cp) {
         // explicit linguistic content via the shared bidi_utils predicate,
         // mirroring the Arabic line above instead of relying on the
         // GetStringTypeW C1_ALPHA fallback below (locale-dependent).
-        IsHebrewScriptCodePoint(cp)) {
+        IsHebrewScriptCodePoint(cp) ||
+        // 261116_0003 P2 (CR-02, glm53 F-03 verbatim: "wire explicitly when
+        // P2 registers the languages"): the 4 P1 scripts join the explicit
+        // list every other target script uses (the G-4 Hebrew precedent),
+        // replacing the locale-dependent GetStringTypeW fallback they rode
+        // while unregistered. Fail-safe direction unchanged: the explicit list
+        // can only WIDEN what counts as linguistic content. The fallback it
+        // replaces is locale-dependent (C1_ALPHA answers per the thread's
+        // character-type locale), so the old path did NOT reliably count these
+        // letters; the claim here is containment, not equality (261116_0003 P2
+        // fix round 2, qwen4maxpreview F-05: "only ADD letters the tally
+        // already counted" overclaimed that mechanism).
+        IsTamilCodePoint(cp) || IsTeluguCodePoint(cp) ||
+        IsGujaratiCodePoint(cp) || IsTibetanCodePoint(cp) ||
+        // 261116_0003 P3 (CR-02 pattern, same G-4 Hebrew precedent as the P1
+        // block above): the 8 tranche-B scripts join the explicit list now
+        // that their languages are registry rows. Fail-safe direction
+        // unchanged: the explicit list can only WIDEN what counts as
+        // linguistic content.
+        IsArmenianCodePoint(cp) || IsGeorgianCodePoint(cp) ||
+        IsSinhalaCodePoint(cp) || IsMalayalamCodePoint(cp) ||
+        IsKannadaCodePoint(cp) || IsGurmukhiCodePoint(cp) ||
+        IsOdiaCodePoint(cp) || IsEthiopicCodePoint(cp)) {
         return true;
     }
 
@@ -341,8 +418,10 @@ inline bool IsLinguisticCodePoint(uint32_t cp) {
 // 'A'-'Z' there, and the +32 fold here covers exactly that set; high bytes
 // pass through both implementations verbatim.
 
-// REF-3.2 (session 260910_0006 T1): single scan driver for the 16 script
-// predicates below. Loop body is character-for-character the old hand-unrolled
+// REF-3.2 (session 260910_0006 T1): single scan driver for the 27 script
+// predicates below (261116_0003 P3: 19 -> 27 after the 8 tranche-B
+// predicates landed). Loop body is character-for-character the old
+// hand-unrolled
 // boilerplate (shared decoder, same idx advance, early-return on first hit).
 template <typename Predicate>
 bool ContainsCodePointMatching(std::wstring_view text, Predicate pred) {
@@ -476,6 +555,58 @@ bool ContainsMyanmar(std::wstring_view text) {
 
 bool ContainsGreek(std::wstring_view text) {
     return ContainsCodePointMatching(text, IsGreekCodePoint);
+}
+
+bool ContainsTamil(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsTamilCodePoint);
+}
+
+bool ContainsTelugu(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsTeluguCodePoint);
+}
+
+bool ContainsGujarati(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsGujaratiCodePoint);
+}
+
+bool ContainsTibetan(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsTibetanCodePoint);
+}
+
+// 261116_0003 P3: the 8 tranche-B script predicates (declared in
+// smart_bypass.hpp; engine_core's TextScriptClasses calls these through the
+// shared support library, win32_input.hpp's ScriptMaskOfText mirrors them —
+// the ws2 parity pin compares both sides).
+bool ContainsArmenian(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsArmenianCodePoint);
+}
+
+bool ContainsGeorgian(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsGeorgianCodePoint);
+}
+
+bool ContainsSinhala(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsSinhalaCodePoint);
+}
+
+bool ContainsMalayalam(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsMalayalamCodePoint);
+}
+
+bool ContainsKannada(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsKannadaCodePoint);
+}
+
+bool ContainsGurmukhi(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsGurmukhiCodePoint);
+}
+
+bool ContainsOdia(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsOdiaCodePoint);
+}
+
+bool ContainsEthiopic(std::wstring_view text) {
+    return ContainsCodePointMatching(text, IsEthiopicCodePoint);
 }
 
 bool HasLinguisticContent(std::wstring_view text) {
@@ -614,10 +745,23 @@ const wchar_t* const kEnglishCoreWords[] = {
     L"friend", L"family", L"happy"
 };
 
-// RC-1: non-English distinctive diacritics - letters that (among the 37
-// supported languages) appear in exactly one language's orthography, so a
-// 1-2 token word carrying one is immediately classifiable. Shared letters
-// (á, é, ü, ç, ...) are deliberately ABSENT: they stay the AUTO marker (F1).
+// RC-1: non-English distinctive diacritics - letters the heuristic treats as
+// DECISIVE markers for a 1-2 token Latin word: a word carrying one resolves
+// to the listed lang_name (the consumer's R1-C counter-evidence scan can
+// still refuse that claim), among the 89 supported languages; 261116_0003
+// P2 fix round 2: 37 -> 46; 261116_0003 P3: 46 -> 89 after tranche A+B (no
+// table change — the heuristic verdicts are unchanged and every pin passes).
+// The lang_name labels the heuristic's verdict, NOT an orthography-uniqueness
+// claim: ă (listed "Romanian") is also Vietnamese orthography and î is also
+// French (both languages are in the registry; the a-breve note above
+// documents the accepted VI/RO sharing). P3 widens the same documented
+// sharing class — ñ (ES also Galician), ğ/dotless ı (TR also Azerbaijani),
+// ť/ď (CS also Slovak) — accepted per this note; the R1-C counter-evidence
+// scan owns the refusal path. Shared letters with no listing (á, é, ü, ç,
+// ...) are deliberately ABSENT: they stay the AUTO marker (F1).
+// 261116_0003 P2 fix round 2b: reworded - the earlier "appear in exactly one
+// language's orthography" was contradicted by the table's own ă (VI also
+// writes it) and î (FR also writes it) entries.
 struct DistinctiveDiacriticEntry {
     uint32_t cp;
     const char* lang_name;
@@ -931,8 +1075,27 @@ enum class ScriptFamily {
     Lao,
     Myanmar,
     Greek,
+    // 261116_0003 P2 (CR-02): the 4 P1 script families, wired into the
+    // dominant-script tally now that their languages are registry rows.
+    Tamil,
+    Telugu,
+    Gujarati,
+    Tibetan,
+    // 261116_0003 P3 (CR-02 pattern): the 8 tranche-B script families. Ethiopic
+    // covers both of its languages (am/ti); the family label carries Amharic
+    // (see LabelForScriptFamily — the P2 UG-variant precedent: Tigrinya text
+    // self-labels Amharic, so the already-target bypass stays fail-safe under
+    // a TI target and the P9 fairness follow-up owns variant detection).
+    Armenian,
+    Georgian,
+    Sinhala,
+    Malayalam,
+    Kannada,
+    Gurmukhi,
+    Odia,
+    Ethiopic,
     Latin,
-    Other,      // other alphabetic code points (Armenian, Georgian, ...)
+    Other,      // other alphabetic code points outside the registered scripts
     Count
 };
 
@@ -957,6 +1120,20 @@ ScriptFamily ScriptFamilyOfCodePoint(uint32_t cp) {
     if (IsLaoCodePoint(cp)) return ScriptFamily::Lao;
     if (IsMyanmarCodePoint(cp)) return ScriptFamily::Myanmar;
     if (IsGreekCodePoint(cp)) return ScriptFamily::Greek;
+    // 261116_0003 P2 (CR-02): the 4 P1 scripts leave ScriptFamily::Other.
+    if (IsTamilCodePoint(cp)) return ScriptFamily::Tamil;
+    if (IsTeluguCodePoint(cp)) return ScriptFamily::Telugu;
+    if (IsGujaratiCodePoint(cp)) return ScriptFamily::Gujarati;
+    if (IsTibetanCodePoint(cp)) return ScriptFamily::Tibetan;
+    // 261116_0003 P3 (CR-02 pattern): the 8 tranche-B scripts leave Other.
+    if (IsArmenianCodePoint(cp)) return ScriptFamily::Armenian;
+    if (IsGeorgianCodePoint(cp)) return ScriptFamily::Georgian;
+    if (IsSinhalaCodePoint(cp)) return ScriptFamily::Sinhala;
+    if (IsMalayalamCodePoint(cp)) return ScriptFamily::Malayalam;
+    if (IsKannadaCodePoint(cp)) return ScriptFamily::Kannada;
+    if (IsGurmukhiCodePoint(cp)) return ScriptFamily::Gurmukhi;
+    if (IsOdiaCodePoint(cp)) return ScriptFamily::Odia;
+    if (IsEthiopicCodePoint(cp)) return ScriptFamily::Ethiopic;
     if (IsLatinCodePoint(cp)) return ScriptFamily::Latin;
     return ScriptFamily::Other;
 }
@@ -1005,8 +1182,10 @@ bool TryDominantScriptFamily(const ScriptTally& tally, ScriptFamily& out_family)
         return false;
     }
     if (best_family == ScriptFamily::Other) {
-        // Nothing this table can name (Armenian/Georgian/...): the priority
-        // chain below keeps its "Unknown" answer.
+        // Nothing this table can name (Thaana, Syriac, Cherokee, ...;
+        // Armenian/Georgian stopped being examples at 261116_0003 P3, which
+        // gave them their own families and labels): the priority chain below
+        // keeps its "Unknown" answer.
         return false;
     }
     if (best * 2 <= tally.letters) {
@@ -1087,6 +1266,27 @@ std::string LabelForScriptFamily(ScriptFamily family, std::wstring_view text) {
         case ScriptFamily::Lao: return "Lao";
         case ScriptFamily::Myanmar: return "Burmese";
         case ScriptFamily::Greek: return "Greek";
+        // 261116_0003 P2 (CR-02): one label per new script family. The names
+        // are registry name_en strings, so they resolve through
+        // NormalizeLanguageCode to the new TA/TE/GU/BO rows.
+        case ScriptFamily::Tamil: return "Tamil";
+        case ScriptFamily::Telugu: return "Telugu";
+        case ScriptFamily::Gujarati: return "Gujarati";
+        case ScriptFamily::Tibetan: return "Tibetan";
+        // 261116_0003 P3 (CR-02 pattern): one label per new script family. The
+        // names are registry name_en strings, so they resolve through
+        // NormalizeLanguageCode to the new HY/KA/SI/ML/KN/PA/OR/AM rows.
+        // Ethiopic returns "Amharic" (its larger language; TI text deliberately
+        // self-labels Amharic — the fail-safe direction, same as the P2 UG
+        // variant note).
+        case ScriptFamily::Armenian: return "Armenian";
+        case ScriptFamily::Georgian: return "Georgian";
+        case ScriptFamily::Sinhala: return "Sinhala";
+        case ScriptFamily::Malayalam: return "Malayalam";
+        case ScriptFamily::Kannada: return "Kannada";
+        case ScriptFamily::Gurmukhi: return "Punjabi";
+        case ScriptFamily::Odia: return "Odia";
+        case ScriptFamily::Ethiopic: return "Amharic";
         case ScriptFamily::Latin:
             // Vietnamese shares the Latin script and is confirmed by its
             // VI-exclusive code points (RC-6 rule, unchanged); every other
@@ -1129,6 +1329,33 @@ std::string DetectLanguageByScriptPriority(std::wstring_view trimmed) {
     if (ContainsLao(trimmed)) return "Lao";
     if (ContainsMyanmar(trimmed)) return "Burmese";
     if (ContainsGreek(trimmed)) return "Greek";
+
+    // 261116_0003 P2 (CR-02): the 4 P1 scripts join the explicit chain, after
+    // Greek and before the Latin family (the same position their ScriptFamily
+    // enums hold). Pure Tamil/Telugu/Gujarati/Tibetan sentences previously
+    // fell through to "Unknown" (the ranges only rode the GetStringTypeW
+    // fallback for the LETTER count, while ScriptFamilyOfCodePoint tallied
+    // them as Other) — they now carry their own labels like every other
+    // target script.
+    if (ContainsTamil(trimmed)) return "Tamil";
+    if (ContainsTelugu(trimmed)) return "Telugu";
+    if (ContainsGujarati(trimmed)) return "Gujarati";
+    if (ContainsTibetan(trimmed)) return "Tibetan";
+
+    // 261116_0003 P3 (CR-02 pattern): the 8 tranche-B scripts join the explicit
+    // chain, after Tibetan and before the Latin family (the same position
+    // their ScriptFamily enums hold). Pure Armenian/Georgian/Sinhala/
+    // Malayalam/Kannada/Gurmukhi/Odia/Ethiopic sentences previously fell
+    // through the GetStringTypeW fallback to "Unknown" — they now carry their
+    // own labels like every other target script.
+    if (ContainsArmenian(trimmed)) return "Armenian";
+    if (ContainsGeorgian(trimmed)) return "Georgian";
+    if (ContainsSinhala(trimmed)) return "Sinhala";
+    if (ContainsMalayalam(trimmed)) return "Malayalam";
+    if (ContainsKannada(trimmed)) return "Kannada";
+    if (ContainsGurmukhi(trimmed)) return "Punjabi";
+    if (ContainsOdia(trimmed)) return "Odia";
+    if (ContainsEthiopic(trimmed)) return "Amharic";
 
     // F1 (session 260908_0003, verify 220010 root cause R2): Latin is a SCRIPT
     // family, not a language. The old unconditional `return "English"` here
@@ -1274,6 +1501,49 @@ bool MatchesTargetScriptCodePoint(uint32_t cp, std::string_view target_code) {
     if (code == "LO") return IsLaoCodePoint(cp);
     if (code == "MY") return IsMyanmarCodePoint(cp);
     if (code == "EL") return IsGreekCodePoint(cp);
+    // 261116_0003 P2 (CR-02): the 4 P1 scripts, wired explicitly like every
+    // other target script instead of falling into the Latin catch-all.
+    if (code == "TA") return IsTamilCodePoint(cp);
+    if (code == "TE") return IsTeluguCodePoint(cp);
+    if (code == "GU") return IsGujaratiCodePoint(cp);
+    if (code == "BO") return IsTibetanCodePoint(cp);
+    // 261116_0003 P2: the reuse-script targets of the other new rows (the
+    // engine's kLanguageScriptTable maps the same codes to the same classes;
+    // P1 staged both sides). Without these branches the Latin catch-all
+    // below would count Latin letters as "target script" for MR/KK/MN/UG/YUE
+    // targets now that they are selectable rows.
+    if (code == "MR") return IsDevanagariCodePoint(cp);
+    if (code == "KK" || code == "MN") return IsCyrillicCodePoint(cp);
+    if (code == "UG") return IsArabicCodePoint(cp);
+    if (code == "YUE") return IsHanziCodePoint(cp);
+    // 261116_0003 P3 (CR-02 pattern): the 8 tranche-B script classes, wired
+    // explicitly like every other target script (the engine's
+    // kLanguageScriptTable maps the same codes to the same classes).
+    if (code == "HY") return IsArmenianCodePoint(cp);
+    if (code == "KA") return IsGeorgianCodePoint(cp);
+    if (code == "SI") return IsSinhalaCodePoint(cp);
+    if (code == "ML") return IsMalayalamCodePoint(cp);
+    if (code == "KN") return IsKannadaCodePoint(cp);
+    if (code == "PA") return IsGurmukhiCodePoint(cp);
+    if (code == "OR") return IsOdiaCodePoint(cp);
+    if (code == "AM" || code == "TI") return IsEthiopicCodePoint(cp);
+    // 261116_0003 P3: the reuse-script targets of the tranche-B rows (the
+    // same engine-table reuse rows; without these the Latin catch-all would
+    // count Latin letters as "target script" for them). NE/SA/MAI/GOM all
+    // ride Devanagari; PS/SD ride Arabic; AS rides Bengali; DZ rides Tibetan.
+    if (code == "PS" || code == "SD") return IsArabicCodePoint(cp);
+    if (code == "NE" || code == "SA" || code == "MAI" || code == "GOM")
+        return IsDevanagariCodePoint(cp);
+    if (code == "AS") return IsBengaliCodePoint(cp);
+    if (code == "DZ") return IsTibetanCodePoint(cp);
+    // 261116_0003 P3: the tranche-A Cyrillic-script targets (the engine table
+    // maps the same codes to Cyrillic; SR and UZ are dual-script rows — the
+    // JA Han|Kana precedent — so either script the language is written in
+    // satisfies the target-script gate). The Latin tranche-A rows (BS/HR/SL/
+    // SK/LT/LV/ET/AF/CA/IS/SQ/CY/GA/EU/GL/SW/HT/AZ/EO) ride the catch-all.
+    if (code == "BE" || code == "KY" || code == "TG" || code == "BG" || code == "MK")
+        return IsCyrillicCodePoint(cp);
+    if (code == "SR" || code == "UZ") return IsCyrillicCodePoint(cp) || IsLatinCodePoint(cp);
     return IsLatinCodePoint(cp); // the Latin-script family targets
 }
 

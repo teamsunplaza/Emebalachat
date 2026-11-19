@@ -45,6 +45,12 @@ endif()
 add_library(Emebalachat_core STATIC
     src/diag_logger.cpp
     src/config.cpp
+    # 261116_0003 P4 (language-menu redesign, plan §4 "Aliases"): the
+    # CLDR-derived alias matrix (37 UI locales x every target) + fold table.
+    # GENERATED FILE — regenerate with tools/generate_language_aliases.py
+    # (provenance header inside); the matcher itself is header-inline in
+    # language_alias.hpp so regeneration cannot clobber logic.
+    src/language_alias.cpp
     # P5-F1 (session 260909_0004): delay-load failure hook + loader probe that
     # keeps the ggml Vulkan backend out of the registry on driverless machines
     # (CPU fallback instead of SEH 0xC06D007E). Also defines __pfnDli*Hook2.
@@ -83,8 +89,40 @@ add_library(Emebalachat_core STATIC
     # header standalone as a syntax/ODR check and adds nothing else.
     src/update_checker.cpp
     src/ui/about_window.cpp
+    # 261116_0003 P5 (language-menu redesign, plan §4 "Search" / §5 P5): the
+    # shared searchable language picker. The PURE logic is header-inline
+    # (language_search_palette.hpp SECTION A — headless-testable, zero Win32);
+    # this TU holds the only window-creating code in the module (WS_POPUP +
+    # cue-banner EDIT + LISTBOX + its own modal loop), so the unit suite links
+    # it but never enters it.
+    src/ui/language_search_palette.cpp
     src/ui/gguf_model_manager_window.cpp # REQ-048 R2-D: registered-model rename/delete manager
     src/ui/openai_settings_window.cpp
+    # 261116_0003 P9b-3 U2 (language-menu redesign, plan §5 P9): the
+    # add-my-language dialog. SECTION A (the PR9-11 verdict / D5 derivation /
+    # outcome fold the suite drives) is in user_language_dialog.hpp+cpp; the
+    # only window-creating code is ShowUserLanguageDialogEx, which the unit
+    # suite links but never enters. Applies the add IN MEMORY through the
+    # locked AppConfig::AddUserLanguage; the caller persists.
+    src/ui/user_language_dialog.cpp
+    # 261116_0003 P9b-3 U3 (language-menu redesign, plan §5 P9): the first-use
+    # capability-probe runner. The pure folds + trigger predicate are
+    # header-inline in user_language_probe.hpp (the suite drives them with a
+    # fake transport, no network); this TU holds the production
+    # TranslationManager::Translate transport and the off-thread completion
+    # plumbing (SEC-B5 by-value queue + parameter-less wake-up). Records every
+    # verdict through the locked AppConfig::RecordUserLanguageProbeResultFor;
+    # the caller persists + refreshes surfaces through the recorded callback.
+    src/user_language_probe.cpp
+    # 261116_0003 P9b-3 U4b (language-menu redesign, plan §5 P9): the user-
+    # language MANAGER dialog — per-entry cached verdict + shape-only evidence,
+    # 다시 시험 through the U3 runner, and the two final-authority overrides
+    # through U1's locked verbs. SECTION A (the row/rows/verb/outcome folds the
+    # suite drives) lives in user_language_manager_dialog.hpp+cpp; the only
+    # window-creating code is ShowUserLanguageManagerDialogEx, which the unit
+    # suite links but never enters. Applies every change IN MEMORY; the caller
+    # persists.
+    src/ui/user_language_manager_dialog.cpp
     # REQ-060 (session 261009_0001): translation-model load-mode settings
     # dialog (engine_host.warmup) — the openai_settings_window pattern
     # (TemplateBuilder + CBS_DROPDOWNLIST combo + OK/Cancel).

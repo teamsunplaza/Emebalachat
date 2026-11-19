@@ -89,7 +89,7 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
 
 - **Local AI Engine**:
   - Direct C++ integration with `llama.cpp` (b6099).
-  - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 37 target languages listed below.
+  - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 38 target languages listed below (its official set; the cloud engines offer more).
   - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
   - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size, mtime and a content sample of three fixed 1 MiB windows, so a same-size model swap triggers a full re-hash) before the model is handed to llama.cpp.
   - **On-demand model download (0.10.2+)**: if the model was skipped at setup, choosing the built-in engine offers a consent + progress download from Hugging Face — SHA-256 verified against the pinned hash and atomically installed into the shared store, in all 37 interface languages.
@@ -140,36 +140,98 @@ Avoids wasting compute or generating corrupted translations on non-translatable 
 - **Script Compatibility**: Translation requests are skipped when the source text's script cannot produce the target language's script (e.g. Latin-only text typed while the target is Korean/Chinese/Japanese).
 - **Already-Target Equivalence**: When the source language is `Auto Detect` and the detected language equals the target language (e.g. typing English while target is set to English), translation is skipped. With an explicitly pinned source language the request is always honored.
 
-### 6. Supported Languages (38 Languages)
+### 6. Supported Languages (per engine)
 
-Emebala Chat supports full bidirectional translation across **38 language entries** with full native and localized name recognition:
+The language registry holds **89 translation targets plus Auto Detect**, and each engine offers its own view of it. A language appears in a menu only when the active engine can translate it:
+
+| Engine | Targets offered | Menus show | Why the difference |
+|:-------|:----------------|:-----------|:-------------------|
+| **Built-in local model** (Hy-MT2-1.8B) | **38** | 38 targets + Auto Detect | The model's official language set. |
+| **Google Translate** (built-in cloud) | **88** | 88 targets + Auto Detect | Google's published language table has no Tibetan (`BO`), the one registry target it does not offer. |
+| **OpenAI-compatible / your own `.gguf`** | **89** | 89 targets + Auto Detect | Free-form prompt engines: every registered target is offered, or the declared subset when the optional settings declaration is active (see [My languages](#my-languages-user-defined-0108)). |
+
+With the `auto` engine the menus show the **Google** list (88), because auto may serve a pair from either engine; the picker's engine chip always names the list you are looking at.
+
+Every language menu (typing and drag source/target in the tray and badge menu, plus both tooltip dropdowns) starts with a **Search…** (검색…) row and lists the active engine's languages:
+
+- **Search** — the picker matches the language code, the native name, the English name, the name in each of the 37 interface languages, and script aliases (`한글`, `漢字`, `kana`, `Cyrillic`, …). Matching folds case and diacritics, so `KO`, `korean`, `Koreanisch`, `한국어` and `한글` all rank Korean first, and `tieng viet` finds Vietnamese.
+- **Engine chip** — the picker header names the engine whose list is on screen and how many languages it holds (for example `Google · 88 languages` for a target list; a source list counts Auto Detect too, so it shows one more), and the number is the list size, not the number of search hits, so typing never makes the engine look poorer than it is. Under the `auto` engine the chip instead carries a dedicated label, `Auto - local for supported languages, cloud for the rest`, with no count: the list on screen is the cloud one, and the label names both legs instead of implying everything is local.
+- **Ghost row** — a language you pinned stays pinned when you switch engines: if the new engine does not offer it, the menu keeps the row at the top, greyed and checked, and your value is preserved and still sent to the engine as-is instead of being silently reset.
+- **`auto` routing** — under the `auto` engine, a pair outside the local model's set is sent to the cloud engine (choosing `auto` is the consent). Pinning `local` keeps that pair on-device and shows the degradation notice instead.
 
 <details>
-<summary><strong>Show all 38 languages</strong></summary>
+<summary><strong>Show the 38 built-in local model languages</strong></summary>
 
 | Code | English Name | Native Name | Code | English Name | Native Name |
 |:----:|:-------------|:------------|:----:|:-------------|:------------|
-| `AUTO` | Auto Detect | 자동 감지 | `ID` | Indonesian | Bahasa Indonesia |
-| `KO` | Korean | 한국어 | `MS` | Malay | Bahasa Melayu |
-| `EN` | English | English | `FIL`| Filipino | Filipino |
-| `VI` | Vietnamese | Tiếng Việt | `KM` | Khmer | ភាសាខ្មែរ |
-| `ZH-CN` | Chinese Simplified | 简体中文 | `LO` | Lao | ພາສາລາວ |
-| `ZH-TW` | Chinese Traditional | 繁體中文 | `HI` | Hindi | हिन्दी |
-| `JA` | Japanese | 日本語 | `BN` | Bengali | বাংলা |
-| `ES` | Spanish | Español | `TR` | Turkish | Türkçe |
-| `FR` | French | Français | `PL` | Polish | Polski |
-| `DE` | German | Deutsch | `NL` | Dutch | Nederlands |
-| `RU` | Russian | Русский | `UK` | Ukrainian | Українська |
-| `TH` | Thai | ไทย | `FA` | Persian | فارسی |
-| `AR` | Arabic | العربية | `UR` | Urdu | اردو |
-| `PT` | Portuguese | Português | `HE` | Hebrew | עברית |
-| `IT` | Italian | Italiano | `CS` | Czech | Čeština |
-| `HU` | Hungarian | Magyar | `SV` | Swedish | Svenska |
-| `EL` | Greek | Ελληνικά | `RO` | Romanian | Română |
-| `DA` | Danish | Dansk | `FI` | Finnish | Suomi |
-| `NO` | Norwegian | Norsk | `MY` | Burmese | မြန်မာစာ |
+| `EN` | English | English | `BN` | Bengali | বাংলা |
+| `KO` | Korean | 한국어 | `TR` | Turkish | Türkçe |
+| `VI` | Vietnamese | Tiếng Việt | `PL` | Polish | Polski |
+| `ZH-CN` | Chinese Simplified | 简体中文 | `NL` | Dutch | Nederlands |
+| `ZH-TW` | Chinese Traditional | 繁體中文 | `UK` | Ukrainian | Українська |
+| `JA` | Japanese | 日本語 | `FA` | Persian | فارسی |
+| `ES` | Spanish | Español | `UR` | Urdu | اردو |
+| `FR` | French | Français | `HE` | Hebrew | עברית |
+| `DE` | German | Deutsch | `CS` | Czech | Čeština |
+| `RU` | Russian | Русский | `MY` | Burmese | မြန်မာစာ |
+| `TH` | Thai | ไทย | `GU` | Gujarati | ગુજરાતી |
+| `AR` | Arabic | العربية | `TE` | Telugu | తెలుగు |
+| `PT` | Portuguese | Português | `MR` | Marathi | मराठी |
+| `IT` | Italian | Italiano | `TA` | Tamil | தமிழ் |
+| `ID` | Indonesian | Bahasa Indonesia | `BO` | Tibetan | བོད་ཡིག |
+| `MS` | Malay | Bahasa Melayu | `KK` | Kazakh | Қазақ тілі |
+| `FIL` | Filipino | Filipino | `MN` | Mongolian | Монгол |
+| `KM` | Khmer | ភាសាខ្មែរ | `UG` | Uyghur | ئۇيغۇرچە |
+| `HI` | Hindi | हिन्दी | `YUE` | Cantonese | 廣東話 |
 
 </details>
+
+<details>
+<summary><strong>Show the 51 cloud-only languages (88 on Google, 89 on OpenAI-compatible / your own model)</strong></summary>
+
+| Code | English Name | Native Name | Code | English Name | Native Name |
+|:----:|:-------------|:------------|:----:|:-------------|:------------|
+| `LO` | Lao | ພາສາລາວ | `SW` | Swahili | Kiswahili |
+| `HU` | Hungarian | Magyar | `HT` | Haitian Creole | Kreyòl Ayisyen |
+| `SV` | Swedish | Svenska | `UZ` | Uzbek | Oʻzbekcha |
+| `EL` | Greek | Ελληνικά | `AZ` | Azerbaijani | Azərbaycanca |
+| `RO` | Romanian | Română | `BE` | Belarusian | Беларуская |
+| `DA` | Danish | Dansk | `KY` | Kyrgyz | Кыргызча |
+| `FI` | Finnish | Suomi | `TG` | Tajik | Тоҷикӣ |
+| `NO` | Norwegian | Norsk | `EO` | Esperanto | Esperanto |
+| `BS` | Bosnian | Bosanski | `HY` | Armenian | Հայերեն |
+| `SR` | Serbian | Српски | `KA` | Georgian | ქართული |
+| `HR` | Croatian | Hrvatski | `SI` | Sinhala | සිංහල |
+| `SL` | Slovenian | Slovenščina | `ML` | Malayalam | മലയാളം |
+| `SK` | Slovak | Slovenčina | `KN` | Kannada | ಕನ್ನಡ |
+| `BG` | Bulgarian | Български | `PA` | Punjabi | ਪੰਜਾਬੀ |
+| `LT` | Lithuanian | Lietuvių | `OR` | Odia | ଓଡ଼ିଆ |
+| `LV` | Latvian | Latviešu | `AM` | Amharic | አማርኛ |
+| `ET` | Estonian | Eesti | `TI` | Tigrinya | ትግርኛ |
+| `AF` | Afrikaans | Afrikaans | `PS` | Pashto | پښتو |
+| `CA` | Catalan | Català | `SD` | Sindhi | سنڌي |
+| `IS` | Icelandic | Íslenska | `NE` | Nepali | नेपाली |
+| `SQ` | Albanian | Shqip | `AS` | Assamese | অসমীয়া |
+| `MK` | Macedonian | Македонски | `DZ` | Dzongkha | རྫོང་ཁ |
+| `CY` | Welsh | Cymraeg | `SA` | Sanskrit | संस्कृतम् |
+| `GA` | Irish | Gaeilge | `MAI` | Maithili | मैथिली |
+| `EU` | Basque | Euskara | `GOM` | Goan Konkani | कोंकणी |
+| `GL` | Galician | Galego | | | |
+
+</details>
+
+`Auto Detect` (`AUTO`) is a source-only entry offered by every engine; it is a valid source selection, never a target.
+
+### My languages (user-defined, 0.10.8+)
+
+The 89-target registry covers the mainstream set, but it cannot know what a free-form prompt engine (OpenAI-compatible, or a `.gguf` model you registered yourself) can actually serve. The app lets you register your own languages and judges them by evidence:
+
+- **Adding one.** The tray menu rows **Add my language…** and **My languages…** (directly below the typing and drag language groups) open the add dialog. You type the native name (required) and, optionally, the English name; the app then resolves a registry language code on its own (the built-in alias matrix first, then the language names of your installed Windows locales) and infers the script from the typed name, showing both next to the fields. A name that spells the app's own Auto Detect row, or one the registry already offers, is refused up front.
+- **Where it appears.** Your entries form a **My languages** group at the top of the cloud language menus (tray typing source/target, tray drag source/target, and both tooltip dropdowns). The built-in local engine offers no custom rows: its official 38-target set is fixed. An entry whose code resolved appears in the Google menu only when Google serves that code; the OpenAI-compatible and your-own-`.gguf` engines list every entry, and an entry with no code is served by those two alone. Under `auto` the menus show the cloud list, so the group appears there too.
+- **Capability probe.** The first time you translate into one of your languages on the OpenAI-compatible or your-own-`.gguf` engine, the app sends one fixed probe sentence (never anything you typed), checks the reply (a reply was received, it differs from the input, it carries the expected script), and caches the verdict for that engine and model. Google is publisher-declared and never probed. A cached verdict or your own override already answers the question, so the automatic test fires only once per engine, model, and language.
+- **Badges, evidence, retest, override.** Menu rows carry the cached verdict: Checking while the probe runs, then ✓ Supported or ✗ Possibly unsupported, plus a "Set by you" marker when the displayed verdict is your own. The manager dialog (**My languages…**) shows the shape-only evidence string behind the verdict (for example `nonempty=1 differs=1 script=1 expected=latin detected=latin`), re-runs the test on request, and lets you mark the language supported or unsupported yourself or clear your override. Support is a capability signal, not a quality score, and the dialog says so up front.
+- **Declaring what your OpenAI-compatible model supports (0.10.8+).** The OpenAI settings window carries an optional **Languages this model supports** checklist. Tick the languages your endpoint actually serves and the OpenAI-compatible menus (and the picker) then offer only that set; leave it empty and the menus keep offering the full set — the checklist never widens what the engine can serve, it only narrows. The declaration lives in `config.json` as `openai_declared_languages` and takes effect immediately; it changes nothing about what is sent to the endpoint.
+- **Persistence.** Entries live in `config.json` under `user_languages`, up to 64 languages with 8 cached verdicts each; the full schema, the versioning rule, and the byte caps are documented in `config.example.json`. Verdicts are keyed per engine and model, so switching to a different model re-judges a language on first use.
 
 ## Global Hotkeys & Mouse Gestures
 
@@ -178,7 +240,7 @@ Emebala Chat supports full bidirectional translation across **38 language entrie
 | Trigger | Action | Description |
 |:--------|:-------|:------------|
 | <kbd>F9</kbd> | **Toggle Active / Paused** | Enables or pauses real-time translation with audio chime + on-screen notice (default `hotkey_toggle` value; configurable, see below) |
-| <kbd>Ctrl</kbd> + <kbd>F9</kbd> | **Cycle Target Language** | Cycles forward through the 37 target languages of the **typing** pair |
+| <kbd>Ctrl</kbd> + <kbd>F9</kbd> | **Cycle Target Language** | Cycles forward through the target list of the **typing** pair for the **active engine**, the same view the language menu shows (38 targets on the local engine, 88 on Google, all 89 on the free-form engines, or the declared subset when a declaration is active); a current target outside that list restarts the cycle at its first entry, and a pinned language the active engine does not offer stays usable through the routing rules above |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Toggle Auto-Send Mode** | Toggles whether <kbd>Enter</kbd> is automatically sent (chat apps) / a newline injected (editors) after translation |
 | <kbd>Enter</kbd> | **Translate & Replace** | Intercepts the bare Enter, translates the current input block (only the block being typed after your last manual newline), replaces the text in place, and sends only when Auto-Send allows it |
 | <kbd>Shift</kbd> + <kbd>Enter</kbd> | **Newline Pass-through** | Inserted by the host app untouched (chat-app convention); counted internally so the next <kbd>Enter</kbd> translates only the newest block |
@@ -208,6 +270,8 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   "model_path": "models/Hy-MT2-1.8B-Q8_0.gguf",
   "source_language": "Auto Detect",
   "target_language": "English",
+  "user_languages_version": 1,
+  "user_languages": [],
   "auto_send": false,
   "sound_enabled": true,
   "drag_to_translate": true,
@@ -260,6 +324,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   Whenever the engine cannot be used (missing binaries, connection failure, version/token mismatch, busy, timeout), translation does not fail silently: the app offers a one-click repair, falls back to the cloud engine under the normal consent rules, or shows a clear notice that local translation is unavailable.
 - `openai` (0.10.1+): Settings for the OpenAI Compatible engine — `base_url`, `model`, and the API key, stored Windows-user-encrypted as `api_key_dpapi` plus an `api_key_sha256` integrity digest (never in cleartext). Normally written for you by the settings dialog; `http_consent_given` records your explicit consent before a plaintext `http://` endpoint is used.
 - `user_model_id` (0.10.1+): Registry id of the `.gguf` model you registered in the user model manager; this is what `engine_type: "user_gguf"` serves.
+- `user_languages_version` / `user_languages` (0.10.8+): Your own registered languages (the **My languages** group) and their cached capability-probe verdicts. App-managed through the tray add/manager dialogs; the block-local version is 1, an absent key reads as 1, and a block from a newer schema version is preserved verbatim and refused for editing. The entry/probe schema and every byte cap are documented in `config.example.json`.
 - `diag_log_enabled`: **Master switch** for the diagnostic log FILE. Default `false` — a shipped build writes no log file at all (the file is opened lazily, only on the first enabled write). Set `true` (and restart) to create per-run logs for troubleshooting. See [Privacy & Data Handling](#privacy--data-handling-technical) §6.
 - `diag_log_content`: Diagnostic-log privacy gate, **subordinate to `diag_log_enabled`**. When `false` (default, and while the master switch is off), logs record **shape only** — key codes, lengths, timings, window class. Set `true` to additionally record user content (typed characters, window titles, captured text, translation output). **Restart required.** `content: true` with `enabled: false` still writes nothing. Only enable while actively troubleshooting: your typed content will be written to disk.
 - `privacy_notice_shown`: One-shot record of the blocking first-run privacy notice. Default `false` — a fresh install shows the notice once; dismissing it sets the flag to `true` so it never re-appears. Do not set this by hand unless you understand what the notice says.
@@ -281,14 +346,15 @@ with no internet access.
 
 ### 1. Emebala operates NO servers
 
-- There is **no Emebala-run backend** of any kind. Nothing in the app sends data to
-  an Emebala endpoint, because there is no Emebala endpoint to send it to.
+- The app operates **no servers of its own**. There is no Emebala-run backend of any kind: nothing in the app sends data to an Emebala endpoint, because no Emebala endpoint exists to send it to.
 - **Zero telemetry, zero tracking, zero analytics, zero crash reporting, no accounts,
   no sign-in.** The app never learns who you are.
-- The executable contains exactly **one** outbound network client: the Google
-  Translate WinHTTP client described in §3. A source-level audit of `src/` finds no
-  other socket, HTTP, or download code path. (The About window's three links open
-  your *browser* — the app itself fetches nothing from them.)
+- **External communication happens only when you turn it on.** The complete list of every case in which the app talks to the outside world:
+  - **Cloud translation, behind the consent gate.** The Google Translate client (§3) sends exactly one thing: the single string you asked to translate, and only under the consent rules of §4. Pinning `engine_type: "local"` with `cloud_fallback_enabled: false` (the default) sends nothing at all.
+  - **A user-configured OpenAI-compatible engine.** Requests go only to the base URL you entered yourself, and only after you configured that engine; the app never falls back to it implicitly (its key is stored DPAPI-protected and shown back only masked, see [Key Features §2](#2-dual-translation-engines)).
+  - **Update and model downloads, on your explicit request.** The About window's **Check for updates** (0.10.2+) fetches the GitHub release metadata and, when you ask it to, downloads the installer; the in-app model download fetches the pinned Hy-MT2 GGUF from Hugging Face. Those two verify the SHA-256 of what they downloaded before anything is run or served. The `.gguf` manager's own **Add from Hugging Face** download (same window family as the model list) is a third, separate request to the URL you entered: it validates the downloaded file's GGUF structure before registering it rather than a pinned hash. Neither runs in the background.
+  - Nothing else. The About window's three links open your *browser*; the app itself fetches nothing from them.
+- **Diagnostic logging is OFF by default** (§6): a shipped, untouched install writes no log file at all, and logs are shape-only unless you explicitly opt in to content.
 
 ### 2. Two translation pipelines — know which one you are on
 
@@ -552,7 +618,7 @@ C:\path\to\Emebalachat\
 ├── src\                        # Production C++20 source code
 │   ├── app_icon.rc             # Embedded multi-size branded application icon
 │   ├── bidi_utils.hpp/.cpp     # RTL script classification & first-strong direction detection
-│   ├── config.hpp/.cpp         # Configuration serialization & 38-language database
+│   ├── config.hpp/.cpp         # Config serialization & 90-row registry (engine masks)
 │   ├── diag_logger.hpp/.cpp    # Per-run diagnostic log file (shape-only by default)
 │   ├── engine.hpp/.cpp         # Dual-engine translation manager (llama.cpp + WinHTTP)
 │   ├── google_translate.hpp/.cpp # Standalone WinHTTP Google Translate client

@@ -3,6 +3,10 @@
 #include "../src/unicode_utils.hpp"
 #include "../src/bidi_utils.hpp"
 #include "../src/smart_bypass.hpp"
+// 261116_0003 P4 (language-menu redesign): the CLDR-derived alias matrix
+// (generated language_alias.cpp) + the header-inline folding matcher that the
+// P5 search palette consumes.
+#include "../src/language_alias.hpp"
 #include "../src/sound.hpp"
 #include "../src/win32_input.hpp"
 #include "../src/google_translate.hpp"
@@ -15,6 +19,11 @@
 #include "../src/ui/dpi.hpp"
 #include "../src/ui/tooltip.hpp"
 #include "../src/ui/about_window.hpp"
+// 261116_0003 P5 (language-menu redesign): the shared searchable language
+// picker. SECTION A (the pure logic the P5 suite drives) is header-inline; the
+// window half of the module is never entered by this runner.
+#include "../src/ui/language_search_palette.hpp"
+#include "../src/ui/tray.hpp" // 261116_0003 P6a fix round (PR6-02a): TrayLanguageEngineFor four-arm pin
 #include "../src/ui/asset_loader.hpp"
 #include "../src/ui/layered_renderer.hpp" // REF-3.6: shared renderer ownership pins
 #include "../src/version.hpp"
@@ -195,11 +204,15 @@ void TestConfigModule() {
                "Default repetition_penalty is 1.0f (v0.10.7 U4: penalty-free first pass)");
 
     // 2. Language table coverage
+    // 261116_0003 P2: registry grown 38 -> 47 (AUTO + 46) — the 9 Hy-MT2
+    // official rows GU/TE/MR/TA/BO/KK/MN/UG/YUE appended after MY.
+    // 261116_0003 P3: registry grown 47 -> 90 (AUTO + 89) — the 43 tranche A+B
+    // cloud-only rows appended after YUE.
     const auto& all_langs = GetSupportedLanguages();
-    TEST_CHECK(all_langs.size() == 38, "Supported languages must contain 38 entries (AUTO + 37)");
+    TEST_CHECK(all_langs.size() == 90, "Supported languages must contain 90 entries (AUTO + 89)");
 
     const auto& target_langs = GetTargetLanguages();
-    TEST_CHECK(target_langs.size() == 37, "Target languages must contain 37 entries");
+    TEST_CHECK(target_langs.size() == 89, "Target languages must contain 89 entries");
 
     const LanguageInfo* ko = FindLanguageByCode("KO");
     TEST_CHECK(ko != nullptr, "Lookup KO by code");
@@ -2814,7 +2827,7 @@ void TestRef36LayeredRendererPins() {
 // from Google's supported-translate-languages list, not from the
 // implementation), so a broken refactor fails here rather than re-deriving
 // the bug. Reachability premise (verified in config.cpp):
-// NormalizeLanguageCode returns one of the 38 registry codes (all uppercase,
+// NormalizeLanguageCode returns one of the 90 registry codes (all uppercase,
 // e.g. "KO", "ZH-CN", "FIL") or "AUTO" for every unresolvable token, so the
 // old chain's raw-input lowercase fallback was dead code and MapLanguageCode
 // is fully determined by norm -> google mapping.
@@ -2825,6 +2838,13 @@ void TestRef34MapLanguageCodePins() {
     // Independent expected mapping: canonical registry code -> Google BCP-47.
     // All rows are plain ASCII-lowercase of the code EXCEPT the five marked
     // special (AUTO lowercase works; the 4 real specials must stay branches).
+    // 261116_0003 P2: the 9 new rows are all lowercase-equal (GU->gu, ...,
+    // YUE->yue) — the "4 real specials" note stays accurate, and MapLanguageCode
+    // gained ZERO new exceptions.
+    // 261116_0003 P3: the 43 tranche A+B rows are all lowercase-equal too
+    // (BS->bs, ..., GOM->gom) — still ZERO new exceptions; the fresh Google
+    // NMT-table fetch that backs every code's kLangGoogle bit is recorded in
+    // the P3 coder report.
     struct ExpectedMap { const char* code; const char* google; };
     static constexpr ExpectedMap kExpected[] = {
         {"AUTO",  "auto"},
@@ -2865,6 +2885,64 @@ void TestRef34MapLanguageCodePins() {
         {"FI",    "fi"},
         {"NO",    "no"},
         {"MY",    "my"},
+        // 261116_0003 P2: the 9 Hy-MT2-official rows (all ASCII-lowercase-
+        // equal; Google's NMT list carries gu/te/mr/ta/kk/mn/ug/yue — BO's
+        // absence from Google's table is pinned in the engine-mask view test,
+        // not here, since this pin is about the CODE MAPPING form only).
+        {"GU",    "gu"},
+        {"TE",    "te"},
+        {"MR",    "mr"},
+        {"TA",    "ta"},
+        {"BO",    "bo"},
+        {"KK",    "kk"},
+        {"MN",    "mn"},
+        {"UG",    "ug"},
+        {"YUE",   "yue"},
+        // 261116_0003 P3: tranche A (26, all ASCII-lowercase-equal).
+        {"BS",    "bs"},
+        {"SR",    "sr"},
+        {"HR",    "hr"},
+        {"SL",    "sl"},
+        {"SK",    "sk"},
+        {"BG",    "bg"},
+        {"LT",    "lt"},
+        {"LV",    "lv"},
+        {"ET",    "et"},
+        {"AF",    "af"},
+        {"CA",    "ca"},
+        {"IS",    "is"},
+        {"SQ",    "sq"},
+        {"MK",    "mk"},
+        {"CY",    "cy"},
+        {"GA",    "ga"},
+        {"EU",    "eu"},
+        {"GL",    "gl"},
+        {"SW",    "sw"},
+        {"HT",    "ht"},
+        {"UZ",    "uz"},
+        {"AZ",    "az"},
+        {"BE",    "be"},
+        {"KY",    "ky"},
+        {"TG",    "tg"},
+        {"EO",    "eo"},
+        // 261116_0003 P3: tranche B (17, all ASCII-lowercase-equal).
+        {"HY",    "hy"},
+        {"KA",    "ka"},
+        {"SI",    "si"},
+        {"ML",    "ml"},
+        {"KN",    "kn"},
+        {"PA",    "pa"},
+        {"OR",    "or"},
+        {"AM",    "am"},
+        {"TI",    "ti"},
+        {"PS",    "ps"},
+        {"SD",    "sd"},
+        {"NE",    "ne"},
+        {"AS",    "as"},
+        {"DZ",    "dz"},
+        {"SA",    "sa"},
+        {"MAI",   "mai"},
+        {"GOM",   "gom"},
     };
     auto expectedFor = [](std::string_view code) -> const char* {
         for (const auto& e : kExpected) {
@@ -6455,15 +6533,34 @@ void TestLanguageSwitchingMatrix() {
 
     // ---- 6) Cycling across the whole target list must yield a translatable
     //         (source, target) pair at every step for a fixed non-target source.
+    // 261116_0003 P2 fix round 2 (PR2-03, glm53 F-05): the bound is DERIVED
+    // from the live registry instead of the stale hardcoded 40. At 46 targets
+    // the old bound stopped after the 41st row and never reached KK/MN/UG/YUE,
+    // so a broken pair in the tail of the registry would have gone unnoticed.
     std::string cur = "Korean";
-    for (int i = 0; i < 40; ++i) {
+    const size_t target_count = GetTargetLanguages().size();
+    std::vector<std::string> cycled_codes; // distinct codes visited (coverage proof)
+    for (size_t i = 0; i < target_count; ++i) {
         cur = CycleTargetLanguage(cur);
         const std::string cur_norm = NormalizeLanguageCode(cur);
+        bool seen = false;
+        for (const std::string& visited : cycled_codes) {
+            if (visited == cur_norm) { seen = true; break; }
+        }
+        if (!seen) cycled_codes.push_back(cur_norm);
         if (cur_norm != "KO") {
             TEST_CHECK(ShouldTranslate(ko, cur),
                        (std::string("R5: cycled target '") + cur + "' must translate Korean source").c_str());
         }
     }
+    // One full derived cycle must VISIT every registered target exactly once
+    // (KO is the start row, so it is visited last; the loop above skips only its
+    // ShouldTranslate check). This is the pin the hardcoded bound lacked: at 40
+    // iterations the last four registry rows were never reached.
+    TEST_CHECK(cycled_codes.size() == target_count,
+               (std::string("R5/PR2-03: one derived cycle covers all ") +
+                std::to_string(target_count) + " targets (visited " +
+                std::to_string(cycled_codes.size()) + ")").c_str());
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] R5 target-language switching matrix tests completed." << std::endl;
@@ -6799,10 +6896,1113 @@ void TestR6P4LanguageRouting() {
     TEST_CHECK(PlanTranslationRouting("KO", "KO", EngineType::GoogleTranslate, false) == EngineType::GoogleTranslate,
                "F5: deliberate Google pin still wins for an identity pair (user choice sovereign)");
 
+    // ---- 8) 261116_0003 P2: the D7 capability revival (engine_mask-driven).
+    // LocalPairReliable is no longer blanket-true: a pair is reliable locally
+    // iff the TARGET is in Hy-MT2's official set (kLangHyMt2) and the source
+    // is AUTO (F1, a SOURCE-side relaxation) or also in the set. The 8
+    // cloud-only rows LO/HU/SV/EL/RO/DA/FI/NO and the 9 new official rows
+    // GU/TE/MR/TA/BO/KK/MN/UG/YUE carry the distinguishing engine_mask bits.
+    {
+        // Non-official targets: unreliable with a pinned source (either side).
+        TEST_CHECK(!LocalPairReliable("KO", "HU"),
+                   "P2/D7: KO->HU unreliable (HU is a cloud-only row: no kLangHyMt2 bit)");
+        TEST_CHECK(!LocalPairReliable("EN", "SV"),
+                   "P2/D7: EN->SV unreliable (SV is a cloud-only row)");
+        TEST_CHECK(!LocalPairReliable("HU", "KO"),
+                   "P2/D7: HU->KO unreliable (pinned cloud-only SOURCE is equally outside the official set)");
+        TEST_CHECK(!LocalPairReliable("HU", "HU"),
+                   "P2/D7: HU->HU identity is no longer blanket-reliable (F5 echo note: ShouldTranslate bypasses identity before routing)");
+        TEST_CHECK(!LocalPairReliable("KO", "LO") && !LocalPairReliable("FI", "EL"),
+                   "P2/D7: LO and the other European cloud-only rows behave the same");
+
+        // Plan §4 formula row (261116_0003 P2 fix round 2, PR2-04): the rule is
+        // exactly "target in the set AND (source AUTO OR source in the set)".
+        // The three verdicts below are the formula's truth table, one per
+        // clause, so a reordering of the guards inside LocalPairReliable (the
+        // pre-fix defect) trips one of them.
+        TEST_CHECK(LocalPairReliable("AUTO", "GU"),
+                   "P2/PR2-04: formula row 1 - AUTO source + OFFICIAL target is reliable");
+        TEST_CHECK(!LocalPairReliable("AUTO", "HU"),
+                   "P2/PR2-04: formula row 2 - AUTO source + CLOUD-ONLY target is NOT reliable "
+                   "(the F1 language-ID guard relaxes the SOURCE side only)");
+        TEST_CHECK(!LocalPairReliable("HU", "EN"),
+                   "P2/PR2-04: formula row 3 - pinned CLOUD-ONLY source + OFFICIAL target is NOT reliable");
+
+        // AUTO source + cloud-only target: the target check now decides FIRST,
+        // so D7 is live for the DEFAULT source too (pre-fix the F1 early
+        // return made every AUTO request local and the cloud-only row was
+        // served by an untrained model).
+        TEST_CHECK(!LocalPairReliable("AUTO", "HU") &&
+                       !LocalPairReliable("Auto Detect", "Swedish"),
+                   "P2/PR2-04: AUTO->HU and 'Auto Detect'->Swedish are unreliable "
+                   "(name/code-form insensitive; pre-fix these were true)");
+
+        // The 9 new official rows are Hy-MT2-capable as targets AND sources.
+        TEST_CHECK(LocalPairReliable("KO", "GU") && LocalPairReliable("EN", "TE") &&
+                       LocalPairReliable("JA", "MR") && LocalPairReliable("KO", "TA") &&
+                       LocalPairReliable("EN", "BO") && LocalPairReliable("KO", "KK") &&
+                       LocalPairReliable("EN", "MN") && LocalPairReliable("KO", "UG") &&
+                       LocalPairReliable("EN", "YUE"),
+                   "P2/D7: the 9 new Hy-MT2-official targets are reliable with pinned official sources");
+        TEST_CHECK(LocalPairReliable("GU", "KO") && LocalPairReliable("yue", "english"),
+                   "P2/D7: the 9 new rows are reliable as SOURCES too (case/name-insensitive)");
+
+        // PlanTranslationRouting: the auto->cloud branch is LIVE again.
+        TEST_CHECK(PlanTranslationRouting("KO", "HU", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P2/D7: KO->HU under Auto routes to Google (auto->cloud branch live; choosing auto IS the consent)");
+        TEST_CHECK(PlanTranslationRouting("AUTO", "HU", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P2/PR2-04: AUTO->HU under Auto routes to Google (D7 is live for the DEFAULT source; "
+                   "pre-fix this pin expected LocalLlama)");
+        TEST_CHECK(PlanTranslationRouting("AUTO", "KO", EngineType::Auto, false) == EngineType::LocalLlama,
+                   "P2/PR2-04: AUTO->KO under Auto still serves locally (F1 keeps official targets on-device)");
+        TEST_CHECK(PlanTranslationRouting("KO", "HU", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+                   "P2/D7: explicit local pin + unsupported pair + NO consent stays on-device (H2 strict-local)");
+        TEST_CHECK(PlanTranslationRouting("KO", "HU", EngineType::LocalLlama, true) == EngineType::GoogleTranslate,
+                   "P2/D7: explicit local pair-gate route still pre-routes to Google with consent "
+                   "(PR2-01 guard: the user_gguf exemption must NOT widen to the built-in engine)");
+        TEST_CHECK(PlanTranslationRouting("EN", "GU", EngineType::Auto, false) == EngineType::LocalLlama,
+                   "P2/D7: EN->GU under Auto serves locally (new official pair)");
+        TEST_CHECK(PlanTranslationRouting("KO", "SV", EngineType::GoogleTranslate, false) == EngineType::GoogleTranslate,
+                   "P2/D7: deliberate Google pin still wins over every pair verdict");
+
+        // 261116_0003 P3: the 43 tranche A+B rows are cloud-only by mask, so
+        // LocalPairReliable is false for every one of them with a pinned
+        // source — spot pins per tranche shape: one Latin (BS), one
+        // Cyrillic (BE), one dual-script (SR), one new-script (HY), and the
+        // Devanagari reuse addition (GOM). D7 needs no code change for them:
+        // the revived gate reads engine_mask.
+        TEST_CHECK(!LocalPairReliable("KO", "BS") && !LocalPairReliable("EN", "BS"),
+                   "P3/D7: BS is unreliable with pinned KO and EN sources (a cloud-only tranche row: no kLangHyMt2 bit)");
+        TEST_CHECK(!LocalPairReliable("KO", "BE"),
+                   "P3/D7: BE (Cyrillic tranche row) is unreliable locally");
+        TEST_CHECK(!LocalPairReliable("KO", "SR"),
+                   "P3/D7: SR (dual-script tranche row) is unreliable locally");
+        TEST_CHECK(!LocalPairReliable("KO", "HY"),
+                   "P3/D7: HY (new-script tranche row) is unreliable locally");
+        TEST_CHECK(!LocalPairReliable("KO", "GOM") && !LocalPairReliable("GOM", "KO"),
+                   "P3/D7: GOM (reuse-addition row) is unreliable on either side");
+        // AUTO source + cloud-only target: D7 is live for the default source
+        // (the PR2-04 reorder), now for the tranche rows too.
+        TEST_CHECK(PlanTranslationRouting("AUTO", "HY", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P3/D7: AUTO->HY under Auto routes to Google (auto->cloud branch live for tranche rows)");
+        TEST_CHECK(PlanTranslationRouting("KO", "BS", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P3/D7: KO->BS under Auto routes to Google (Latin tranche row)");
+        TEST_CHECK(PlanTranslationRouting("KO", "BE", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P3/D7: KO->BE under Auto routes to Google (Cyrillic tranche row)");
+        TEST_CHECK(PlanTranslationRouting("KO", "SR", EngineType::Auto, false) == EngineType::GoogleTranslate,
+                   "P3/D7: KO->SR under Auto routes to Google (dual-script tranche row)");
+        // Explicit local pin + unsupported pair keeps the strict on-device
+        // route without consent, and the consent-gated preemptive route with
+        // it (the PR2-05 contract, unchanged for tranche rows).
+        TEST_CHECK(PlanTranslationRouting("KO", "HY", EngineType::LocalLlama, false) == EngineType::LocalLlama,
+                   "P3/D7: explicit local pin + tranche target + NO consent stays on-device (H2 strict-local)");
+        TEST_CHECK(PlanTranslationRouting("KO", "HY", EngineType::LocalLlama, true) == EngineType::GoogleTranslate,
+                   "P3/D7: explicit local pair-gate route pre-routes a tranche target to Google with consent");
+        TEST_CHECK(PlanTranslationRouting("KO", "GOM", EngineType::GoogleTranslate, false) == EngineType::GoogleTranslate,
+                   "P3/D7: deliberate Google pin still wins over every pair verdict (tranche row)");
+    }
+
+    // ---- 9) 261116_0003 P2 fix round 2 (PR2-01, SEC-P2-01): the Hy-MT2 pair
+    // gate is a property of the BUILT-IN model only. engine_type="user_gguf"
+    // rides EngineType::LocalLlama, so Translate() must read the LIVE route
+    // discriminator and skip PlanTranslationRouting (and the /042 Hy-MT2
+    // degradation warning) on that route: the request is attempted on the
+    // user's own model first, and the existing post-failure chain (Auto ->
+    // cloud, explicit-local + consent -> cloud) keeps the documented
+    // "fallback AFTER local failure" semantics.
+    //
+    // The decision is NOT reachable from a pure seam: the discriminator reads
+    // %LOCALAPPDATA%\Emebalachat\config.json live (a file the headless suite
+    // must never write), and driving Translate() through the fake-host harness
+    // would require that real file. So the pin is STRUCTURAL over the call site
+    // (the established ResolveRepoFile idiom, e.g. the R1-11 pins) and the
+    // semantic half is the built-in-route pin above (KO->HU + LocalLlama +
+    // consent -> GoogleTranslate), which proves the exemption cannot silently
+    // widen: the gate still pre-routes for Hy-MT2.
+    {
+        const std::filesystem::path eng_path = ResolveRepoFile(L"src\\engine.cpp");
+        TEST_CHECK(!eng_path.empty(), "P2/PR2-01: src/engine.cpp located via ResolveRepoFile");
+        if (!eng_path.empty()) {
+            std::ifstream eng_in(eng_path, std::ios::binary);
+            const std::string eng_src((std::istreambuf_iterator<char>(eng_in)),
+                                      std::istreambuf_iterator<char>());
+            // Anchor on the routing seam's OWN declaration: the REQ-060 model-id
+            // resolver above it also calls LocalUserGgufRouteActiveLive(), so a
+            // bare call-site needle would match that one instead (mutation-sanity
+            // caught exactly that; the pin must name the seam it means).
+            const size_t decl = eng_src.find("bool user_gguf_route = false;");
+            const size_t route_probe =
+                decl == std::string::npos
+                    ? std::string::npos
+                    : eng_src.find("LocalUserGgufRouteActiveLive()", decl);
+            const size_t plan_call =
+                decl == std::string::npos
+                    ? std::string::npos
+                    : eng_src.find("PlanTranslationRouting(src_code_or_name, tgt_code_or_name", decl);
+            TEST_CHECK(decl != std::string::npos && route_probe != std::string::npos,
+                       "P2/PR2-01: the local routing seam reads the LIVE user_gguf route discriminator");
+            TEST_CHECK(plan_call != std::string::npos && route_probe < plan_call,
+                       "P2/PR2-01: the discriminator is read BEFORE the Hy-MT2 pair-gate call");
+            TEST_CHECK(eng_src.find("served_engine = user_gguf_route") != std::string::npos &&
+                           eng_src.find("? EngineType::LocalLlama") != std::string::npos,
+                       "P2/PR2-01: on the user_gguf route served_engine stays LocalLlama "
+                       "(the pair gate is the ternary's else leg)");
+            TEST_CHECK(eng_src.find("!user_gguf_route && preferred == EngineType::LocalLlama") !=
+                           std::string::npos,
+                       "P2/PR2-01: the /042 Hy-MT2 degradation warning is exempt on the user_gguf route");
+        }
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] R6 Phase 4 language routing tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] R6 Phase 4 language routing tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
+// 261116_0003 P2 (language-menu redesign, plan §4): the per-engine registry
+// views + engine_mask column + engine-filtered Ctrl+F9 cycle. Pure data pins
+// over the 90-row registry — the menus that consume these views land in P6.
+// ===========================================================================
+void TestP2EngineViews() {
+    std::cout << "[RUN] Testing 261116_0003 P2 engine views + capability masks..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- 1) View sizes: engine_mask is the single source of truth ----------
+    // HyMt2 = 38 (the official set), Google = 88 (89 minus BO — Tibetan is
+    // absent from Google's published table; all 43 tranche A+B rows carry the
+    // Google bit per the 261116_0003 P3 fresh fetch), OpenAi / UserGguf = 89
+    // (every target row is offerable on the free-form prompt engines;
+    // research §4a/4b).
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::HyMt2, false).size() == 38,
+               "P2: HyMt2 target view has exactly the 38 official targets");
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::HyMt2, true).size() == 39,
+               "P2: HyMt2 source view = 38 targets + AUTO");
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::Google, false).size() == 88,
+               "P2/P3: Google target view has 88 rows (89 minus BO: no kLangGoogle bit)");
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::Google, true).size() == 89,
+               "P2/P3: Google source view = 88 targets + AUTO");
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::OpenAi, false).size() == 89 &&
+                   GetLanguagesForEngine(LanguageEngine::UserGguf, false).size() == 89,
+               "P2/P3: OpenAi and UserGguf target views cover all 89 rows (free-form prompt engines)");
+
+    // Auto prefers local: the Auto view IS the HyMt2 view.
+    TEST_CHECK(GetLanguagesForEngine(LanguageEngine::Auto, false).size() == 38 &&
+                   GetLanguagesForEngine(LanguageEngine::Auto, true).size() == 39,
+               "P2: Auto resolves to the HyMt2 view (auto prefers local)");
+
+    // ---- 2) Membership: the D7 split in both directions --------------------
+    {
+        auto viewHas = [](LanguageEngine engine, const char* code) {
+            for (const LanguageInfo* l : GetLanguagesForEngine(engine, false)) {
+                if (l->code == code) return true;
+            }
+            return false;
+        };
+        TEST_CHECK(!viewHas(LanguageEngine::HyMt2, "HU") && !viewHas(LanguageEngine::HyMt2, "LO") &&
+                       !viewHas(LanguageEngine::HyMt2, "SV") && !viewHas(LanguageEngine::HyMt2, "EL") &&
+                       !viewHas(LanguageEngine::HyMt2, "RO") && !viewHas(LanguageEngine::HyMt2, "DA") &&
+                       !viewHas(LanguageEngine::HyMt2, "FI") && !viewHas(LanguageEngine::HyMt2, "NO"),
+                   "P2: the 8 non-official rows (LO/HU/SV/EL/RO/DA/FI/NO) are absent from the HyMt2 view");
+        TEST_CHECK(viewHas(LanguageEngine::Google, "HU") && viewHas(LanguageEngine::Google, "LO"),
+                   "P2: the 8 non-official rows stay in the Google view (cloud-only rows)");
+        TEST_CHECK(viewHas(LanguageEngine::HyMt2, "GU") && viewHas(LanguageEngine::HyMt2, "YUE"),
+                   "P2: the new official rows are in the HyMt2 view");
+        TEST_CHECK(viewHas(LanguageEngine::HyMt2, "BO"),
+                   "P2: BO (Tibetan) is a Hy-MT2-official local target");
+        TEST_CHECK(!viewHas(LanguageEngine::Google, "BO"),
+                   "P2: BO carries NO kLangGoogle bit (absent from Google's published table)");
+        TEST_CHECK(viewHas(LanguageEngine::OpenAi, "BO") && viewHas(LanguageEngine::UserGguf, "BO"),
+                   "P2: BO stays offerable on the free-form prompt engines");
+        // 261116_0003 P3: the 43 tranche A+B rows are cloud-only — present in
+        // every cloud view, absent from the HyMt2 view (D7). Spot pins per
+        // tranche shape: one Latin, the two dual-script rows, one new-script,
+        // and the three Devanagari reuse additions.
+        TEST_CHECK(!viewHas(LanguageEngine::HyMt2, "BS") && !viewHas(LanguageEngine::HyMt2, "HY") &&
+                       !viewHas(LanguageEngine::HyMt2, "SR") && !viewHas(LanguageEngine::HyMt2, "GOM"),
+                   "P3: tranche rows are absent from the HyMt2 view (none is Hy-MT2-official)");
+        TEST_CHECK(viewHas(LanguageEngine::Google, "BS") && viewHas(LanguageEngine::Google, "HY") &&
+                       viewHas(LanguageEngine::Google, "SR") && viewHas(LanguageEngine::Google, "PS") &&
+                       viewHas(LanguageEngine::Google, "GOM"),
+                   "P3: tranche rows stay in the Google view (every code verified on the published NMT table)");
+        TEST_CHECK(viewHas(LanguageEngine::OpenAi, "EO") && viewHas(LanguageEngine::UserGguf, "DZ"),
+                   "P3: tranche rows are offerable on the free-form prompt engines");
+    }
+
+    // ---- 3) Views point INTO the global registry (never copies) ------------
+    {
+        const auto& all = GetSupportedLanguages();
+        const auto& hy_auto = GetLanguagesForEngine(LanguageEngine::HyMt2, true);
+        TEST_CHECK(hy_auto.front() == &all.front() && hy_auto.front()->code == "AUTO",
+                   "P2: the with-AUTO views keep AUTO first, pointing at the registry row");
+        bool all_point_into_registry = true;
+        for (const LanguageInfo* l : GetLanguagesForEngine(LanguageEngine::Google, true)) {
+            bool found = false;
+            for (const auto& row : all) {
+                if (l == &row) { found = true; break; }
+            }
+            if (!found) all_point_into_registry = false;
+        }
+        TEST_CHECK(all_point_into_registry,
+                   "P2: every view element is a pointer at a kAllLanguages row");
+    }
+
+    // ---- 4) The mask column itself ------------------------------------------
+    {
+        const LanguageInfo* hu = FindLanguageByCode("HU");
+        const LanguageInfo* sv = FindLanguageByCode("SV");
+        const LanguageInfo* ko = FindLanguageByCode("KO");
+        const LanguageInfo* gu = FindLanguageByCode("GU");
+        const LanguageInfo* bo = FindLanguageByCode("BO");
+        const LanguageInfo* auto_row = FindLanguageByCode("AUTO");
+        TEST_CHECK(hu && (hu->engine_mask & kLangHyMt2) == 0 &&
+                       (hu->engine_mask & kLangGoogle) != 0 &&
+                       (hu->engine_mask & kLangOpenAi) != 0 &&
+                       (hu->engine_mask & kLangUserGguf) != 0,
+                   "P2: cloud-only row mask = Google|OpenAi|UserGguf (no kLangHyMt2)");
+        TEST_CHECK(sv && (sv->engine_mask == (kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P2: SV mask is exactly the cloud-only value");
+        TEST_CHECK(ko && (ko->engine_mask == (kLangHyMt2 | kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P2: official row mask carries all four bits");
+        TEST_CHECK(gu && (gu->engine_mask == (kLangHyMt2 | kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P2: a new official row (GU) carries all four bits");
+        TEST_CHECK(bo && (bo->engine_mask == (kLangHyMt2 | kLangOpenAi | kLangUserGguf)),
+                   "P2: BO mask = HyMt2|OpenAi|UserGguf (kLangGoogle dropped, evidence in the coder report)");
+        // 261116_0003 P3: a tranche row carries EXACTLY the cloud-only value —
+        // all 43 share it (Google bit per the published table, OpenAi/
+        // UserGguf always, kLangHyMt2 never).
+        const LanguageInfo* hy = FindLanguageByCode("HY");
+        const LanguageInfo* gom = FindLanguageByCode("GOM");
+        TEST_CHECK(hy && (hy->engine_mask == (kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P3: a tranche-B row (HY) mask is exactly Google|OpenAi|UserGguf (cloud-only)");
+        TEST_CHECK(gom && (gom->engine_mask == (kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P3: a reuse-addition row (GOM) mask is exactly the cloud-only value");
+        TEST_CHECK(auto_row && (auto_row->engine_mask ==
+                                    (kLangHyMt2 | kLangGoogle | kLangOpenAi | kLangUserGguf)),
+                   "P2: AUTO carries all four bits (source-only marker, design choice)");
+    }
+
+    // ---- 5) LanguageEngineFor: EngineType -> LanguageEngine -----------------
+    TEST_CHECK(LanguageEngineFor(EngineType::Auto) == LanguageEngine::Auto,
+               "P2: LanguageEngineFor(Auto) == Auto (resolves to the HyMt2 view)");
+    TEST_CHECK(LanguageEngineFor(EngineType::LocalLlama) == LanguageEngine::HyMt2 &&
+                   LanguageEngineFor(EngineType::GoogleTranslate) == LanguageEngine::Google &&
+                   LanguageEngineFor(EngineType::OpenAi) == LanguageEngine::OpenAi,
+               "P2: LanguageEngineFor maps LocalLlama/Google/OpenAi 1:1");
+
+    // ---- 5b) 261116_0003 P6a fix round (PR6-02a): TrayLanguageEngineFor ----
+    // The tray's 4-way preferred-engine index -> LanguageEngine mapper
+    // (header-inline in tray.hpp). The pins above cover LanguageEngineFor
+    // (EngineType -> LanguageEngine); this mapper decodes the REQ-054 tray
+    // index (0 = the Google/auto row) for the P6 engine-filtered menus and had
+    // NO pin — a flipped default arm would silently re-point every auto
+    // user's menu at the wrong registry view. All four arms pinned here.
+    TEST_CHECK(TrayLanguageEngineFor(0) == LanguageEngine::Google &&
+                   TrayLanguageEngineFor(1) == LanguageEngine::HyMt2 &&
+                   TrayLanguageEngineFor(2) == LanguageEngine::OpenAi &&
+                   TrayLanguageEngineFor(3) == LanguageEngine::UserGguf,
+               "P6a: TrayLanguageEngineFor maps 0/1/2/3 -> Google/HyMt2/OpenAi/UserGguf");
+
+    // ---- 6) Engine-filtered Ctrl+F9 cycle -----------------------------------
+    // The single-argument form keeps cycling the FULL registry (89 targets);
+    // the overload cycles the engine view. LO sits between KM and HI in the
+    // registry: the HyMt2 cycle must SKIP it.
+    TEST_CHECK(CycleTargetLanguage("Korean") == "Vietnamese",
+               "P2: single-argument cycle is unchanged (KO -> VI over the full list)");
+    TEST_CHECK(CycleTargetLanguage("MY") == "Gujarati",
+               "P2: single-argument cycle enters the appended rows (MY -> GU)");
+    TEST_CHECK(CycleTargetLanguage("KM", LanguageEngine::HyMt2) == "Hindi",
+               "P2: HyMt2 cycle skips the cloud-only LO row (KM -> HI)");
+    TEST_CHECK(CycleTargetLanguage("MY", LanguageEngine::Google) == "Gujarati",
+               "P2: Google cycle stays registry-ordered (MY -> GU)");
+    TEST_CHECK(CycleTargetLanguage("HU", LanguageEngine::HyMt2) == "English",
+               "P2: a current value absent from the view restarts at the view's first entry");
+    TEST_CHECK(CycleTargetLanguage("YUE", LanguageEngine::HyMt2) == "English",
+               "P2: the HyMt2 cycle wraps at YUE (the last official row) back to English");
+
+    // ---- 7) CR-02 (fix-list-round1): the 4 P1 scripts' script-family wiring.
+    // The native samples are the exact grid cells ws2_capture_tests.inc pins;
+    // before this wiring the labels fell through to "Unknown".
+    TEST_CHECK(DetectLanguage(L"\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD") == "Tamil",
+               "P2/CR-02: pure Tamil text detects as Tamil (was Unknown via the GetStringTypeW fallback)");
+    TEST_CHECK(DetectLanguage(L"\u0C24\u0C46\u0C32\u0C41\u0C17\u0C41") == "Telugu",
+               "P2/CR-02: pure Telugu text detects as Telugu");
+    TEST_CHECK(DetectLanguage(L"\u0A97\u0AC1\u0A9C\u0AB0\u0ABE\u0AA4\u0AC0") == "Gujarati",
+               "P2/CR-02: pure Gujarati text detects as Gujarati");
+    TEST_CHECK(DetectLanguage(L"\u0F56\u0F7C\u0F51\u0F0B\u0F61\u0F72\u0F42") == "Tibetan",
+               "P2/CR-02: pure Tibetan text detects as Tibetan");
+    // The whole chain: detected label == target + dominant target script ->
+    // the already-target bypass fires (MatchesTargetScriptCodePoint branches).
+    TEST_CHECK(!ShouldTranslate(L"\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD", "TA"),
+               "P2/CR-02: Tamil text under a Tamil target is bypassed (already-target)");
+    TEST_CHECK(ShouldTranslate(L"\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD", "GU"),
+               "P2/CR-02: Tamil text under a Gujarati target still translates");
+    TEST_CHECK(!ShouldTranslate(L"\u0F56\u0F7C\u0F51\u0F0B\u0F61\u0F72\u0F42", "BO"),
+               "P2/CR-02: Tibetan text under a Tibetan target is bypassed");
+    TEST_CHECK(DetectLanguageForPrompt(L"\u0C24\u0C46\u0C32\u0C41\u0C17\u0C41") == "Telugu",
+               "P2/CR-02: the prompt-label accessor passes the new labels through");
+    // Reuse-script targets of the other new rows: the family label ("Russian"
+    // for Cyrillic prose, "Chinese Simplified" for Han) deliberately differs
+    // from the target name, so the already-target bypass does NOT fire — the
+    // request is a genuine translation (ru->kk, zh->yue). The
+    // MatchesTargetScriptCodePoint branches still keep the Latin catch-all
+    // from claiming these targets' script-family letters.
+    TEST_CHECK(DetectLanguage(L"Русский текст проверки") == "Russian",
+               "P2/CR-02: Cyrillic prose keeps its family label under the new rows");
+    TEST_CHECK(ShouldTranslate(L"Русский текст проверки", "KK"),
+               "P2/CR-02: Russian text under a Kazakh target still translates (family label != target)");
+    TEST_CHECK(ShouldTranslate(L"廣東話句子", "YUE"),
+               "P2/CR-02: Han text under a Cantonese target still translates (family label != target)");
+    TEST_CHECK(ShouldTranslate(L"Русский текст проверки", "GU"),
+               "P2/CR-02: Cyrillic text under a Gujarati target still translates");
+
+    // ---- 8) 261116_0003 P3/CR-02: the 8 tranche-B scripts' script-family
+    // wiring. The native samples are the exact registry name_native strings
+    // (and the grid cells ws2_capture_tests.inc pins); before this wiring the
+    // labels fell through to "Unknown" (the GetStringTypeW fallback).
+    TEST_CHECK(DetectLanguage(L"Հայերեն") == "Armenian",
+               "P3/CR-02: pure Armenian text detects as Armenian (was Unknown via the fallback)");
+    TEST_CHECK(DetectLanguage(L"ქართული") == "Georgian",
+               "P3/CR-02: pure Georgian text detects as Georgian");
+    TEST_CHECK(DetectLanguage(L"සිංහල") == "Sinhala",
+               "P3/CR-02: pure Sinhala text detects as Sinhala");
+    TEST_CHECK(DetectLanguage(L"മലയാളം") == "Malayalam",
+               "P3/CR-02: pure Malayalam text detects as Malayalam");
+    TEST_CHECK(DetectLanguage(L"ಕನ್ನಡ") == "Kannada",
+               "P3/CR-02: pure Kannada text detects as Kannada");
+    TEST_CHECK(DetectLanguage(L"ਪੰਜਾਬੀ") == "Punjabi",
+               "P3/CR-02: pure Gurmukhi text detects as Punjabi");
+    TEST_CHECK(DetectLanguage(L"ଓଡ଼ିଆ") == "Odia",
+               "P3/CR-02: pure Odia text detects as Odia");
+    TEST_CHECK(DetectLanguage(L"አማርኛ") == "Amharic",
+               "P3/CR-02: pure Amharic text detects as Amharic (the Ethiopic family label)");
+    TEST_CHECK(DetectLanguage(L"ትግርኛ") == "Amharic",
+               "P3/CR-02: pure Tigrinya text carries the Ethiopic family label Amharic "
+               "(one label per family; the fail-safe direction — see the P3 phase note)");
+    // The whole chain: detected label == target + dominant target script ->
+    // the already-target bypass fires (MatchesTargetScriptCodePoint branches).
+    TEST_CHECK(!ShouldTranslate(L"Հայերեն", "HY"),
+               "P3/CR-02: Armenian text under an Armenian target is bypassed (already-target)");
+    TEST_CHECK(ShouldTranslate(L"Հայերեն", "KA"),
+               "P3/CR-02: Armenian text under a Georgian target still translates");
+    TEST_CHECK(!ShouldTranslate(L"ქართული", "KA"),
+               "P3/CR-02: Georgian text under a Georgian target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"සිංහල", "SI"),
+               "P3/CR-02: Sinhala text under a Sinhala target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"മലയാളം", "ML"),
+               "P3/CR-02: Malayalam text under a Malayalam target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"ಕನ್ನಡ", "KN"),
+               "P3/CR-02: Kannada text under a Kannada target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"ਪੰਜਾਬੀ", "PA"),
+               "P3/CR-02: Punjabi text under a Punjabi target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"ଓଡ଼ିଆ", "OR"),
+               "P3/CR-02: Odia text under an Odia target is bypassed");
+    TEST_CHECK(!ShouldTranslate(L"አማርኛ", "AM"),
+               "P3/CR-02: Amharic text under an Amharic target is bypassed");
+    TEST_CHECK(ShouldTranslate(L"ትግርኛ", "TI"),
+               "P3/CR-02: Tigrinya text under a Tigrinya target still translates "
+               "(the family label Amharic deliberately differs from the target name — "
+               "fail-safe, the P2 UG-variant precedent)");
+    TEST_CHECK(ShouldTranslate(L"አማርኛ", "TI"),
+               "P3/CR-02: Amharic text under a Tigrinya target still translates");
+    // Reuse-script tranche rows: the family label ("Hindi"/"Bengali"/"Tibetan"/
+    // the Arabic variant) deliberately differs from the target name, so the
+    // already-target bypass does NOT fire — while the
+    // MatchesTargetScriptCodePoint reuse branches keep the Latin catch-all
+    // from claiming these targets' script-family letters.
+    TEST_CHECK(ShouldTranslate(L"नेपाली", "NE"),
+               "P3/CR-02: Devanagari (Nepali) text under a Nepali target still translates "
+               "(family label Hindi != target name; the MR precedent)");
+    TEST_CHECK(ShouldTranslate(L"संस्कृतम्", "SA"),
+               "P3/CR-02: Sanskrit text under a Sanskrit target still translates (family label Hindi)");
+    TEST_CHECK(ShouldTranslate(L"অসমীয়া", "AS"),
+               "P3/CR-02: Assamese text under an Assamese target still translates (family label Bengali)");
+    TEST_CHECK(ShouldTranslate(L"རྫོང་ཁ", "DZ"),
+               "P3/CR-02: Dzongkha text under a Dzongkha target still translates (family label Tibetan)");
+    // Tranche-A Cyrillic/dual-script targets: the family label "Russian"
+    // differs from every one of them, so requests stay genuine translations,
+    // and the explicit Cyrillic branches keep the Latin catch-all honest.
+    TEST_CHECK(ShouldTranslate(L"Текст проверки", "BE"),
+               "P3/CR-02: Cyrillic prose under a Belarusian target still translates (family label != target)");
+    TEST_CHECK(ShouldTranslate(L"Текст проверки", "SR"),
+               "P3/CR-02: Cyrillic prose under a Serbian target still translates");
+    TEST_CHECK(ShouldTranslate(L"Bu matn o'zbek tilida yozilgan", "UZ"),
+               "P3/CR-02: Latin prose under an Uzbek target still translates "
+               "(dual-script row accepts Latin, the family label differs)");
+    // The prompt-label accessor passes the new labels through.
+    TEST_CHECK(DetectLanguageForPrompt(L"Հայերեն") == "Armenian",
+               "P3/CR-02: the prompt-label accessor passes the Armenian label through");
+    TEST_CHECK(DetectLanguageForPrompt(L"አማርኛ") == "Amharic",
+               "P3/CR-02: the prompt-label accessor passes the Ethiopic label through");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P2 engine views + capability masks completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P2 engine views: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
+// 261116_0003 P8b (language-menu redesign, plan §4 "Routing" acceptance):
+// the engine-filtered Ctrl+F9 cycle is WIRED at both call sites. The pure
+// helper itself was pinned in P2 (TestP2EngineViews §6); this suite pins the
+// WIRING: (a) the documented engine-derivation idiom per engine_type token,
+// (b) per-engine cycle behavior through that derived engine (inside-view
+// step, tail wrap, outside-view restart), (c) ResolveRepoFile source pins on
+// BOTH production call sites, so a revert to the 1-arg form fails the pin
+// set, (d) a behavioral pin over the REAL unwired hook fallback path (the
+// main.cpp coordinator lambda lives inside wWinMain and is not unit-
+// reachable, so its half is covered by the source pins in (c)).
+// ===========================================================================
+void TestP8bCtrlF9CycleWiring() {
+    std::cout << "[RUN] Testing 261116_0003 P8b engine-filtered Ctrl+F9 wiring..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (a) The derivation idiom, per engine_type token -------------------
+    // Exactly what the tray menus use (tray.hpp): persisted token -> 4-way
+    // index -> LanguageEngine. All three tokens the task names, derived, not
+    // hard-coded enum literals at the call site.
+    const LanguageEngine eng_local =
+        TrayLanguageEngineFor(TrayPreferredEngineIndex("local"));
+    const LanguageEngine eng_google =
+        TrayLanguageEngineFor(TrayPreferredEngineIndex("google"));
+    const LanguageEngine eng_openai =
+        TrayLanguageEngineFor(TrayPreferredEngineIndex("openai"));
+    TEST_CHECK(eng_local == LanguageEngine::HyMt2 &&
+                   eng_google == LanguageEngine::Google &&
+                   eng_openai == LanguageEngine::OpenAi,
+               "P8b: the tray idiom maps local/google/openai to HyMt2/Google/OpenAi");
+
+    // ---- (b) Per-engine cycle behavior through the DERIVED engine ----------
+    // local (HyMt2, 38 targets): LO sits between KM and HI in the registry,
+    // so the local cycle must SKIP it (the full 89-target list gives "Lao").
+    TEST_CHECK(CycleTargetLanguage("KM", eng_local) == "Hindi",
+               "P8b: local cycle stays inside its view (KM -> HI, skips the cloud-only LO row)");
+    TEST_CHECK(CycleTargetLanguage("YUE", eng_local) == "English",
+               "P8b: local cycle wraps at its view tail (YUE -> English)");
+    TEST_CHECK(CycleTargetLanguage("Hungarian", eng_local) == "English",
+               "P8b: a target outside the local view restarts at the view head (HU -> English)");
+    // google (88 targets, no BO): the registry row after TA is BO, which the
+    // Google view excludes, so the Google cycle steps TA -> KK (the full list
+    // gives "Tibetan").
+    TEST_CHECK(CycleTargetLanguage("TA", eng_google) == "Kazakh",
+               "P8b: google cycle stays inside its view (TA -> KK, skips the BO row)");
+    TEST_CHECK(CycleTargetLanguage("GOM", eng_google) == "English",
+               "P8b: google cycle wraps at its view tail (GOM -> English)");
+    TEST_CHECK(CycleTargetLanguage("Tibetan", eng_google) == "English",
+               "P8b: a target outside the google view restarts at the view head (BO -> English)");
+    // openai (89 targets, the superset view: BO and LO both included).
+    TEST_CHECK(CycleTargetLanguage("KM", eng_openai) == "Lao",
+               "P8b: openai cycle includes the cloud-only LO row (KM -> LO)");
+    TEST_CHECK(CycleTargetLanguage("TA", eng_openai) == "Tibetan",
+               "P8b: openai cycle includes the BO row (TA -> BO)");
+    TEST_CHECK(CycleTargetLanguage("GOM", eng_openai) == "English",
+               "P8b: openai cycle wraps at its view tail (GOM -> English)");
+
+    // ---- (c) Source pins on BOTH production call sites ---------------------
+    // main.cpp: the coordinator lambda is not unit-reachable, so the pin is
+    // structural (the established ResolveRepoFile idiom): the cycle call must
+    // pass a SECOND argument derived with the tray idiom from the config
+    // snapshot. A revert to the 1-arg form removes the call needle (and the
+    // derivation needles), failing the set without any rebuild of the exe.
+    {
+        const std::filesystem::path main_path = ResolveRepoFile(L"src\\main.cpp");
+        TEST_CHECK(!main_path.empty(), "P8b: src/main.cpp located via ResolveRepoFile");
+        if (!main_path.empty()) {
+            std::ifstream in(main_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            const size_t lambda_pos = src.find("auto ApplyLanguageChange");
+            const size_t call_pos =
+                lambda_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("CycleTargetLanguage(cur_tgt,", lambda_pos);
+            const size_t engine_pos =
+                lambda_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("TrayLanguageEngineFor(", lambda_pos);
+            const size_t idx_pos =
+                lambda_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("TrayPreferredEngineIndex(snap.engine_type)", lambda_pos);
+            TEST_CHECK(lambda_pos != std::string::npos,
+                       "P8b: the ApplyLanguageChange coordinator anchor exists in main.cpp");
+            TEST_CHECK(call_pos != std::string::npos,
+                       "P8b: main.cpp Ctrl+F9 calls the ENGINE-FILTERED overload (2-arg form)");
+            TEST_CHECK(call_pos != std::string::npos &&
+                           engine_pos != std::string::npos && engine_pos < call_pos,
+                       "P8b: main.cpp derives the cycle engine via TrayLanguageEngineFor before the call");
+            TEST_CHECK(call_pos != std::string::npos &&
+                           idx_pos != std::string::npos && idx_pos < call_pos,
+                       "P8b: main.cpp derives it from the config snapshot "
+                       "(TrayPreferredEngineIndex(snap.engine_type))");
+        }
+    }
+    // hook.cpp: the unwired fallback. Same structural contract over the
+    // snap_pre snapshot the fallback already reads.
+    {
+        const std::filesystem::path hook_path = ResolveRepoFile(L"src\\hook.cpp");
+        TEST_CHECK(!hook_path.empty(), "P8b: src/hook.cpp located via ResolveRepoFile");
+        if (!hook_path.empty()) {
+            std::ifstream in(hook_path, std::ios::binary);
+            const std::string src((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            const size_t fn_pos = src.find("KeyboardHook::CycleTargetLanguage()");
+            const size_t call_pos =
+                fn_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("CycleTargetLanguage(snap_pre.type_target_language,", fn_pos);
+            const size_t engine_pos =
+                fn_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("TrayLanguageEngineFor(", fn_pos);
+            const size_t idx_pos =
+                fn_pos == std::string::npos
+                    ? std::string::npos
+                    : src.find("TrayPreferredEngineIndex(snap_pre.engine_type)", fn_pos);
+            TEST_CHECK(fn_pos != std::string::npos,
+                       "P8b: the KeyboardHook::CycleTargetLanguage anchor exists in hook.cpp");
+            TEST_CHECK(call_pos != std::string::npos,
+                       "P8b: hook.cpp fallback calls the ENGINE-FILTERED overload (2-arg form)");
+            TEST_CHECK(call_pos != std::string::npos &&
+                           engine_pos != std::string::npos && engine_pos < call_pos,
+                       "P8b: hook.cpp derives the cycle engine via TrayLanguageEngineFor before the call");
+            TEST_CHECK(call_pos != std::string::npos &&
+                           idx_pos != std::string::npos && idx_pos < call_pos,
+                       "P8b: hook.cpp derives it from the config snapshot "
+                       "(TrayPreferredEngineIndex(snap_pre.engine_type))");
+        }
+    }
+
+    // ---- (d) Behavioral pin over the REAL unwired hook fallback ------------
+    // The cycle callback is NOT set, so KeyboardHook::CycleTargetLanguage runs
+    // its inline fallback: it must cycle the ACTIVE engine's view. A revert
+    // to the 1-arg form yields "Lao" (local leg) / "Kazakh" (google leg) and
+    // fails the pins. The fallback persists via SaveToFile, so snapshot and
+    // restore the default config file around the calls (the established
+    // TestB3LanguageSync pattern).
+    SetSoundEnabled(false); // PlayLangChange must stay quiet
+    std::error_code ec;
+    const auto default_cfg_path = AppConfig::GetDefaultConfigPath();
+    std::string backup_bytes;
+    const bool existed = std::filesystem::exists(default_cfg_path, ec) && !ec;
+    if (existed) {
+        std::ifstream in(default_cfg_path, std::ios::binary);
+        backup_bytes.assign((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    }
+    {
+        AppConfig cfg;
+        TranslationManager engine(EngineType::GoogleTranslate, "");
+        FloatingBadge badge;   // not Create()d: no-op headless
+        SystemTray tray;       // not Create()d: UpdateStatus is Shell-API-only
+        PipelineWorker worker(cfg, engine, badge);
+
+        // local: KM -> HI inside the HyMt2 view (the full list gives LO).
+        cfg.SetEngineTypeName("local");
+        cfg.SetTypeLanguages("Auto Detect", "Khmer");
+        {
+            KeyboardHook hook(cfg, worker, badge, tray); // unwired: no cycle callback
+            hook.CycleTargetLanguage();
+        }
+        AppConfig::Snapshot snap = cfg.GetSnapshot();
+        TEST_CHECK(snap.type_target_language == "Hindi",
+                   "P8b: the unwired fallback cycles the LOCAL view (Khmer -> Hindi, not Lao)");
+        TEST_CHECK(snap.engine_type == "local" && snap.target_language == "English",
+                   "P8b: the fallback touches only the type pair (engine + legacy pair untouched)");
+
+        // google: BO is outside the Google view, so the cycle restarts at the
+        // view head (the full list gives KK).
+        cfg.SetEngineTypeName("google");
+        cfg.SetTypeLanguages("Auto Detect", "Tibetan");
+        {
+            KeyboardHook hook(cfg, worker, badge, tray);
+            hook.CycleTargetLanguage();
+        }
+        snap = cfg.GetSnapshot();
+        TEST_CHECK(snap.type_target_language == "English",
+                   "P8b: the unwired fallback restarts at the GOOGLE view head (Tibetan -> English, not Kazakh)");
+    }
+    if (existed) {
+        std::ofstream out(default_cfg_path, std::ios::binary | std::ios::trunc);
+        out.write(backup_bytes.data(), static_cast<std::streamsize>(backup_bytes.size()));
+    } else {
+        std::filesystem::remove(default_cfg_path, ec); // only removes OUR artifact
+    }
+    SetSoundEnabled(true);
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P8b engine-filtered Ctrl+F9 wiring completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P8b Ctrl+F9 wiring: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
+// 261116_0003 P4 (language-menu redesign, plan §5 P4 / D4): the generated
+// CLDR-derived alias matrix + the folding matcher. The generated table is
+// pinned structurally (coverage, contiguity, traps) and the matcher is pinned
+// behaviorally (the CEO's five Korean query styles, folding, ranking, the
+// substring gate, engine-view containment, AUTO handling).
+// ===========================================================================
+void TestLanguageAliasCoverage() {
+    std::cout << "[RUN] Testing 261116_0003 P4 language alias matrix + search matcher..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    const auto& registry = GetSupportedLanguages();
+    const auto& targets = GetTargetLanguages();
+    const auto& atom_pool = GetLanguagesForEngine(LanguageEngine::OpenAi, false);
+    const auto& hy_source = GetLanguagesForEngine(LanguageEngine::HyMt2, true);
+    const auto& google_source = GetLanguagesForEngine(LanguageEngine::Google, true);
+
+    auto hitIndex = [](const std::vector<LanguageSearchHit>& hits, const char* code) {
+        for (std::size_t i = 0; i < hits.size(); ++i) {
+            if (hits[i].language->code == code) return static_cast<int>(i);
+        }
+        return -1;
+    };
+    auto hitCodes = [](const std::vector<LanguageSearchHit>& hits) {
+        std::string joined;
+        for (const LanguageSearchHit& hit : hits) {
+            if (!joined.empty()) joined += ",";
+            joined += hit.language->code;
+        }
+        return joined;
+    };
+
+    // ---- 1) Table shape (counts are the generated-data pins) ---------------
+    TEST_CHECK(kLanguageAlias.locale_count == GetLocaleMappings().size() &&
+                   kLanguageAlias.locale_count == 37,
+               "P4: the alias matrix indexes exactly the 37 UI locales");
+    TEST_CHECK(kLanguageAlias.group_count == registry.size() &&
+                   kLanguageAlias.group_count == 90,
+               "P4: one alias group per registry row (90 = AUTO + 89 targets)");
+    TEST_CHECK(kLanguageAlias.atom_count == 2908,
+               "P4: alias atom count is the generated value (2908)");
+    TEST_CHECK(kLanguageAlias.fold_count == 986,
+               "P4: fold table entry count is the generated value (986)");
+
+    // Locale ids: the two Chinese UI locales map to CLDR's SCRIPT trees and
+    // Norwegian to the macro locale (the three locale-level traps).
+    {
+        auto hasLocale = [](const char* id) {
+            for (std::size_t i = 0; i < kLanguageAlias.locale_count; ++i) {
+                if (std::string_view{kLanguageAlias.locales[i]} == id) return true;
+            }
+            return false;
+        };
+        TEST_CHECK(hasLocale("zh") && hasLocale("zh-Hant"),
+                   "P4: ZH-CN/ZH-TW index CLDR's script trees (zh / zh-Hant)");
+        TEST_CHECK(hasLocale("fil") && hasLocale("he") && hasLocale("my") && hasLocale("no"),
+                   "P4: fil/he/my/no are indexed verbatim (no CLDR key substitution)");
+        bool unique = true;
+        for (std::size_t i = 0; i < kLanguageAlias.locale_count; ++i) {
+            for (std::size_t j = i + 1; j < kLanguageAlias.locale_count; ++j) {
+                if (std::string_view{kLanguageAlias.locales[i]} ==
+                    std::string_view{kLanguageAlias.locales[j]}) {
+                    unique = false;
+                }
+            }
+        }
+        TEST_CHECK(unique, "P4: the locale id list has no duplicates");
+    }
+
+    // Group slices: contiguous, in registry order, in range, tier-tagged.
+    {
+        std::size_t expected_first = 0;
+        bool contiguous = true;
+        bool order_matches_registry = true;
+        bool in_range = true;
+        bool tiers_valid = true;
+        bool texts_present = true;
+        for (std::size_t i = 0; i < kLanguageAlias.group_count; ++i) {
+            const LanguageAliasGroup& group = kLanguageAlias.groups[i];
+            if (group.first != expected_first || group.count == 0) contiguous = false;
+            if (i >= registry.size() || registry[i].code != group.code) {
+                order_matches_registry = false;
+            }
+            if (static_cast<std::size_t>(group.first) + group.count > kLanguageAlias.atom_count) {
+                in_range = false;
+            }
+            for (std::uint32_t k = 0; k < group.count; ++k) {
+                const LanguageAliasAtom& atom = kLanguageAlias.atoms[group.first + k];
+                if (atom.text == nullptr || atom.text[0] == '\0') texts_present = false;
+                if (atom.tier != AliasTier::Code && atom.tier != AliasTier::Native &&
+                    atom.tier != AliasTier::English && atom.tier != AliasTier::Exonym &&
+                    atom.tier != AliasTier::Script) {
+                    tiers_valid = false;
+                }
+                if (atom.locale_index != kAliasNoLocale &&
+                    atom.locale_index >= kLanguageAlias.locale_count) {
+                    in_range = false;
+                }
+            }
+            expected_first += group.count;
+        }
+        TEST_CHECK(contiguous, "P4: group slices are contiguous and non-empty");
+        TEST_CHECK(expected_first == kLanguageAlias.atom_count,
+                   "P4: the group slices cover every atom exactly once");
+        TEST_CHECK(order_matches_registry,
+                   "P4: group order IS kAllLanguages order (cycle-pin order preserved)");
+        TEST_CHECK(in_range, "P4: every group slice and locale index is in range");
+        TEST_CHECK(texts_present, "P4: every atom carries a non-empty alias text");
+        TEST_CHECK(tiers_valid, "P4: every atom carries a real rank tier (never None)");
+    }
+
+    // ---- 2) Coverage: >= 1 alias per target, all 89 targets ---------------
+    {
+        int targets_with_group = 0;
+        int targets_with_code = 0;
+        int targets_with_native = 0;
+        int targets_with_exonym = 0;
+        for (const LanguageInfo& lang : targets) {
+            bool has_group = false, has_code = false, has_native = false, has_exonym = false;
+            for (std::size_t g = 0; g < kLanguageAlias.group_count; ++g) {
+                const LanguageAliasGroup& group = kLanguageAlias.groups[g];
+                if (lang.code != group.code) continue;
+                has_group = true;
+                for (std::uint32_t k = 0; k < group.count; ++k) {
+                    const LanguageAliasAtom& atom = kLanguageAlias.atoms[group.first + k];
+                    if (atom.tier == AliasTier::Code) has_code = true;
+                    if (atom.tier == AliasTier::Native || atom.tier == AliasTier::English) {
+                        has_native = true;
+                    }
+                    if (atom.tier == AliasTier::Exonym) has_exonym = true;
+                }
+            }
+            if (has_group) ++targets_with_group;
+            if (has_code) ++targets_with_code;
+            if (has_native) ++targets_with_native;
+            if (has_exonym) ++targets_with_exonym;
+        }
+        TEST_CHECK(targets_with_group == 89 && targets.size() == 89,
+                   "P4: all 89 targets have an alias group (>= 1 alias per target)");
+        TEST_CHECK(targets_with_code == 89, "P4: all 89 targets are reachable by code");
+        TEST_CHECK(targets_with_native == 89,
+                   "P4: all 89 targets are reachable by native or English name");
+        // The CLDR matrix column: GOM reaches this only through the documented
+        // "kok" fallback (CLDR has no "gom" key in any locale), so this pin
+        // also proves the fallback chain is wired.
+        TEST_CHECK(targets_with_exonym == 89,
+                   "P4: all 89 targets have a CLDR exonym (GOM via the kok fallback)");
+    }
+
+    // ---- 3) The code -> CLDR-key traps ------------------------------------
+    {
+        auto findAtom = [](const char* code, const char* text) {
+            for (std::size_t g = 0; g < kLanguageAlias.group_count; ++g) {
+                const LanguageAliasGroup& group = kLanguageAlias.groups[g];
+                if (std::string_view{group.code} != code) continue;
+                for (std::uint32_t k = 0; k < group.count; ++k) {
+                    const LanguageAliasAtom& atom = kLanguageAlias.atoms[group.first + k];
+                    if (std::string_view{atom.text} == text) return &atom;
+                }
+            }
+            return static_cast<const LanguageAliasAtom*>(nullptr);
+        };
+        auto localeIndex = [](const char* id) -> int {
+            for (std::size_t i = 0; i < kLanguageAlias.locale_count; ++i) {
+                if (std::string_view{kLanguageAlias.locales[i]} == id) return static_cast<int>(i);
+            }
+            return -1;
+        };
+        // YUE: bcp47 is the DWrite tag zh-HK, folded-distinct from the code, so
+        // it is indexed as a second Code atom (the 261116_0002 probe trap).
+        const LanguageAliasAtom* yue_bcp47 = findAtom("YUE", "zh-HK");
+        TEST_CHECK(yue_bcp47 != nullptr && yue_bcp47->tier == AliasTier::Code,
+                   "P4: YUE indexes its zh-HK bcp47 tag as a Code atom (probe trap)");
+        // ZH-CN / ZH-TW: CLDR splits Chinese by script. In the Korean column
+        // neither zh-Hans nor zh-Hant exists, so the alt-long keys supply the
+        // distinct simplified/traditional spellings; a single macro fallback
+        // would have collapsed both rows onto one name.
+        const int ko_index = localeIndex("ko");
+        std::vector<std::string> zh_ko_names;
+        for (const char* code : {"ZH-CN", "ZH-TW"}) {
+            bool found = false;
+            for (std::size_t g = 0; g < kLanguageAlias.group_count; ++g) {
+                const LanguageAliasGroup& group = kLanguageAlias.groups[g];
+                if (std::string_view{group.code} != code) continue;
+                for (std::uint32_t k = 0; k < group.count; ++k) {
+                    const LanguageAliasAtom& atom = kLanguageAlias.atoms[group.first + k];
+                    if (atom.tier == AliasTier::Exonym && atom.locale_index == ko_index) {
+                        zh_ko_names.push_back(atom.text);
+                        found = true;
+                    }
+                }
+            }
+            TEST_CHECK(found, "P4: the Korean column carries a ZH-CN/ZH-TW exonym (alt-long fallback)");
+        }
+        TEST_CHECK(zh_ko_names.size() == 2 && zh_ko_names[0] != zh_ko_names[1],
+                   "P4: the two Chinese rows keep DISTINCT Korean exonyms (script split preserved)");
+        // GOM: no CLDR "gom" key anywhere; the kok fallback provides exonyms.
+        const LanguageAliasAtom* gom_ko = nullptr;
+        for (std::size_t g = 0; g < kLanguageAlias.group_count; ++g) {
+            const LanguageAliasGroup& group = kLanguageAlias.groups[g];
+            if (std::string_view{group.code} != "GOM") continue;
+            for (std::uint32_t k = 0; k < group.count; ++k) {
+                const LanguageAliasAtom& atom = kLanguageAlias.atoms[group.first + k];
+                if (atom.tier == AliasTier::Exonym && atom.locale_index == ko_index) {
+                    gom_ko = &atom;
+                }
+            }
+        }
+        TEST_CHECK(gom_ko != nullptr,
+                   "P4: GOM reaches the alias matrix through the kok fallback (no CLDR gom key)");
+    }
+
+    // ---- 4) Fold table integrity + anchors --------------------------------
+    {
+        bool sorted = true;
+        bool ascii_replacements = true;
+        for (std::size_t i = 0; i < kLanguageAlias.fold_count; ++i) {
+            const LanguageAliasFoldEntry& entry = kLanguageAlias.fold[i];
+            if (i > 0 && kLanguageAlias.fold[i - 1].codepoint >= entry.codepoint) sorted = false;
+            if (entry.replacement == nullptr) continue;
+            for (const char* p = entry.replacement; *p != '\0'; ++p) {
+                if (static_cast<unsigned char>(*p) > 0x7F) ascii_replacements = false;
+            }
+        }
+        TEST_CHECK(sorted, "P4: the fold table is strictly ascending (binary-search invariant)");
+        TEST_CHECK(ascii_replacements, "P4: every fold replacement is ASCII");
+        auto foldOf = [](char32_t cp) -> std::string {
+            for (std::size_t i = 0; i < kLanguageAlias.fold_count; ++i) {
+                if (kLanguageAlias.fold[i].codepoint == cp && kLanguageAlias.fold[i].replacement) {
+                    return kLanguageAlias.fold[i].replacement;
+                }
+            }
+            return {};
+        };
+        TEST_CHECK(foldOf(0x00E9) == "e", "P4: fold: e-acute -> e (Latin-1)");
+        TEST_CHECK(foldOf(0x00F1) == "n", "P4: fold: n-tilde -> n (Latin-1)");
+        TEST_CHECK(foldOf(0x00DF) == "ss", "P4: fold: sharp s -> ss (non-decomposing letter)");
+        TEST_CHECK(foldOf(0x0111) == "d", "P4: fold: d-stroke -> d (Vietnamese/Croatian)");
+        TEST_CHECK(foldOf(0x0131) == "i", "P4: fold: dotless i -> i (Turkic)");
+        TEST_CHECK(foldOf(0x0430) == "a", "P4: fold: Cyrillic a -> a (transliteration)");
+        TEST_CHECK(foldOf(0x03B1) == "a", "P4: fold: Greek alpha -> a (transliteration)");
+        TEST_CHECK(foldOf(0x200C).empty(), "P4: fold: ZWNJ is dropped (invisible marks)");
+    }
+
+    // ---- 5) Folding behavior ---------------------------------------------
+    TEST_CHECK(FoldLanguageAliasText("Tiếng Việt") == "tieng viet",
+               "P4: fold: Vietnamese diacritics + case + space collapse");
+    TEST_CHECK(FoldLanguageAliasText("  FRANÇAIS  ") == "francais",
+               "P4: fold: leading/trailing/double spaces and cedilla");
+    TEST_CHECK(FoldLanguageAliasText("Русский") == "russkij",
+               "P4: fold: Cyrillic transliteration (Russian)");
+    TEST_CHECK(FoldLanguageAliasText("Ελληνικά") == "ellinika",
+               "P4: fold: Greek transliteration incl. tonos");
+    TEST_CHECK(FoldLanguageAliasText("Oʻzbekcha") == "o'zbekcha",
+               "P4: fold: modifier apostrophe -> ASCII apostrophe");
+    TEST_CHECK(FoldLanguageAliasText("한글") == "한글",
+               "P4: fold: Hangul passes through (matched literally)");
+    TEST_CHECK(FoldLanguageAliasText("简体中文") == "简体中文",
+               "P4: fold: Han passes through (matched literally)");
+    TEST_CHECK(FoldLanguageAliasText("a\tb\nc\rd") == "a b c d",
+               "P4: fold: ASCII tab/CR/LF become spaces (inline whitespace fold)");
+
+    // ---- 6) The CEO's five Korean query styles, all ranking KO first ------
+    {
+        const char* queries[] = {"한국어", "korean", "koreanisch", "한글", "KO"};
+        for (const char* query : queries) {
+            const auto hits = SearchLanguages(query, atom_pool);
+            TEST_CHECK(!hits.empty() && hits.front().language->code == "KO",
+                       (std::string("P4: query '") + query + "' ranks KO first").c_str());
+        }
+        const auto english_korean = SearchLanguages("korean", atom_pool);
+        TEST_CHECK(english_korean.front().tier == AliasTier::English &&
+                       english_korean.front().match == AliasMatchKind::Exact,
+                   "P4: 'korean' hits KO at the English tier with an exact match");
+        const auto hangul = SearchLanguages("한글", atom_pool);
+        TEST_CHECK(hangul.front().tier == AliasTier::Script,
+                   "P4: '한글' hits KO through the script table (lowest tier)");
+        const auto code = SearchLanguages("KO", atom_pool);
+        TEST_CHECK(code.front().tier == AliasTier::Code,
+                   "P4: 'KO' hits KO through the code tier (highest tier)");
+    }
+
+    // ---- 7) Diacritic / ASCII / transliteration folding in the search -----
+    {
+        const auto viet = SearchLanguages("tieng viet", atom_pool);
+        TEST_CHECK(!viet.empty() && viet.front().language->code == "VI",
+                   "P4: 'tieng viet' ranks VI first (diacritic fold)");
+        const auto fr = SearchLanguages("francais", atom_pool);
+        TEST_CHECK(!fr.empty() && fr.front().language->code == "FR",
+                   "P4: 'francais' ranks FR first (cedilla fold)");
+        const auto ru = SearchLanguages("russkij", atom_pool);
+        TEST_CHECK(!ru.empty() && ru.front().language->code == "RU",
+                   "P4: 'russkij' ranks RU first (Cyrillic transliteration fold)");
+        const auto sr = SearchLanguages("srpski", atom_pool);
+        TEST_CHECK(!sr.empty() && sr.front().language->code == "SR",
+                   "P4: 'srpski' ranks SR first (Serbian Cyrillic transliteration)");
+        const auto kk = SearchLanguages("qazaq tili", atom_pool);
+        TEST_CHECK(!kk.empty() && kk.front().language->code == "KK",
+                   "P4: 'qazaq tili' ranks KK first (Kazakh-specific letters folded)");
+        const auto vi_native = SearchLanguages("Tiếng Việt", atom_pool);
+        TEST_CHECK(!vi_native.empty() && vi_native.front().language->code == "VI",
+                   "P4: the accented native name itself still matches VI");
+    }
+
+    // ---- 8) Prefix before substring (same tier) --------------------------
+    {
+        // "gali" is an English-tier PREFIX of Galician and an English-tier
+        // SUBSTRING of Bengali: the prefix must come first.
+        const auto hits = SearchLanguages("gali", atom_pool);
+        const int gl = hitIndex(hits, "GL");
+        const int bn = hitIndex(hits, "BN");
+        TEST_CHECK(gl == 0, "P4: 'gali' ranks GL (English prefix) first");
+        TEST_CHECK(hits.size() > 1 && bn > gl,
+                   "P4: the English-substring match (Bengali) ranks after the prefix match");
+        TEST_CHECK(gl == 0 && hits.front().tier == AliasTier::English &&
+                       hits.front().match == AliasMatchKind::Prefix,
+                   "P4: the GL hit is tagged English tier / Prefix kind");
+    }
+
+    // ---- 9) Substring gating (only >= 3 code points) ----------------------
+    {
+        const auto two = SearchLanguages("rm", atom_pool);
+        TEST_CHECK(hitIndex(two, "DE") < 0,
+                   "P4: a 2-character query never substring-matches ('rm' misses German)");
+        const auto three = SearchLanguages("rma", atom_pool);
+        TEST_CHECK(!three.empty() && three.front().language->code == "DE",
+                   "P4: the same alias matches at 3 characters ('rma' finds German)");
+        const auto jamo_prefix = SearchLanguages("한", atom_pool);
+        TEST_CHECK(!jamo_prefix.empty() && jamo_prefix.front().language->code == "KO",
+                   "P4: a 1-character PREFIX match still works ('한' finds 한국어)");
+        const auto jamo_inner = SearchLanguages("국", atom_pool);
+        TEST_CHECK(hitIndex(jamo_inner, "KO") < 0,
+                   "P4: a 1-character inner (substring-only) match is gated ('국' misses KO)");
+    }
+
+    // ---- 10) Engine-view containment + AUTO handling ---------------------
+    {
+        const auto hu = SearchLanguages("hungarian", hy_source);
+        TEST_CHECK(hitIndex(hu, "HU") < 0 && hitIndex(hu, "BS") < 0 && hitIndex(hu, "HY") < 0,
+                   "P4: the HyMt2 view never returns a cloud-only row");
+        TEST_CHECK(hitIndex(SearchLanguages("magyar", hy_source), "HU") < 0,
+                   "P4: the native name of a cloud-only row is equally filtered out");
+        bool all_in_view = true;
+        for (const LanguageSearchHit& hit : SearchLanguages("an", hy_source)) {
+            if ((hit.language->engine_mask & kLangHyMt2) == 0) all_in_view = false;
+        }
+        TEST_CHECK(all_in_view, "P4: every HyMt2-view hit carries kLangHyMt2");
+
+        const auto auto_hit = SearchLanguages("auto", hy_source);
+        TEST_CHECK(!auto_hit.empty() && auto_hit.front().language->code == "AUTO" &&
+                       auto_hit.front().tier == AliasTier::Code,
+                   "P4: 'auto' ranks the AUTO row first when the pool contains it");
+        TEST_CHECK(hitIndex(SearchLanguages("auto", atom_pool), "AUTO") < 0,
+                   "P4: AUTO is absent from an AUTO-less pool (target menus)");
+        const auto jadong = SearchLanguages("자동", hy_source);
+        TEST_CHECK(!jadong.empty() && jadong.front().language->code == "AUTO",
+                   "P4: the Korean native label '자동' finds AUTO (native prefix)");
+        const auto detect = SearchLanguages("detect", hy_source);
+        TEST_CHECK(!detect.empty() && detect.front().language->code == "AUTO",
+                   "P4: 'detect' finds AUTO (English-tier extra spelling)");
+        TEST_CHECK(hy_source.size() == 39 && atom_pool.size() == 89,
+                   "P4: pool shapes are the P2/P3 engine views (39 / 89)");
+    }
+
+    // ---- 11) Empty query, determinism, one row per language --------------
+    {
+        const auto empty = SearchLanguages("", google_source);
+        TEST_CHECK(empty.size() == google_source.size(),
+                   "P4: the empty query returns the whole pool (unfiltered picker state)");
+        bool in_order = true;
+        for (std::size_t i = 0; i < empty.size() && i < google_source.size(); ++i) {
+            if (empty[i].language != google_source[i]) in_order = false;
+            if (empty[i].tier != AliasTier::None) in_order = false;
+        }
+        TEST_CHECK(in_order, "P4: the empty query keeps pool (registry) order, tier None");
+        TEST_CHECK(SearchLanguages("   ", google_source).size() == google_source.size(),
+                   "P4: a whitespace-only query is treated as empty");
+
+        const auto first = SearchLanguages("an", atom_pool);
+        const auto second = SearchLanguages("an", atom_pool);
+        TEST_CHECK(hitCodes(first) == hitCodes(second),
+                   "P4: repeated searches are deterministic (same order, same rows)");
+        bool unique = true;
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            for (std::size_t j = i + 1; j < first.size(); ++j) {
+                if (first[i].language->code == first[j].language->code) unique = false;
+            }
+        }
+        TEST_CHECK(unique, "P4: one row per language (dedupe by code)");
+        bool aliases_present = true;
+        for (const LanguageSearchHit& hit : first) {
+            if (hit.alias == nullptr) aliases_present = false;
+        }
+        TEST_CHECK(aliases_present, "P4: every non-empty-query hit reports its matching alias");
+    }
+
+    // ---- 12) The data-lag fallback (P9 user-defined rows) ----------------
+    {
+        // A row the generated table does not cover still matches through its
+        // own three forms, so the picker never silently drops a pool row.
+        LanguageInfo custom;
+        custom.code = "XYZ";
+        custom.name_en = "Klingon";
+        custom.name_native = "tlhIngan Hol";
+        custom.display_short = "XYZ";
+        custom.bcp47 = "tlh";
+        custom.engine_mask = kLangOpenAi | kLangUserGguf;
+        const std::vector<const LanguageInfo*> custom_pool{&custom};
+        const auto hits = SearchLanguages("klingon", custom_pool);
+        TEST_CHECK(hits.size() == 1 && hits.front().language == &custom &&
+                       hits.front().tier == AliasTier::English,
+                   "P4: an uncovered pool row still matches via its English name (P9 seam)");
+        TEST_CHECK(SearchLanguages("tlhingan", custom_pool).size() == 1,
+                   "P4: the fallback folds the native name too");
+        TEST_CHECK(SearchLanguages("zzz", custom_pool).empty(),
+                   "P4: the fallback still refuses a non-match");
+    }
+
+    // ---- 13) P4 fix round (261116_0003 PR4-01 / PR4-02 / PR4-03) ---------
+    {
+        // PR4-01: AUTO's bcp47 is the DWrite PIVOT tag "en" (config.hpp) -
+        // a font-selection concern, not a name users type for AUTO - so the
+        // generator no longer emits it as a Code-tier atom. With it present,
+        // query "en" tied AUTO (Code, Exact) against EN and AUTO won by pool
+        // order (registry row 0) in every AUTO-inclusive source view.
+        const auto en_hits = SearchLanguages("en", hy_source);
+        TEST_CHECK(!en_hits.empty() && en_hits.front().language->code == "EN",
+                   "P4: 'en' ranks EN first in an AUTO-inclusive source view (AUTO pivot atom dropped)");
+        TEST_CHECK(!en_hits.empty() && en_hits.front().tier == AliasTier::Code &&
+                       en_hits.front().match == AliasMatchKind::Exact,
+                   "P4: the 'en' hit on EN is the Code-tier exact match");
+
+        // PR4-02: the fullwidth fold emits LOWERCASE ASCII replacements, so a
+        // fullwidth-uppercase query (a CJK IME's full-width mode) case-folds
+        // like everything else instead of missing the lowercase aliases.
+        TEST_CHECK(FoldLanguageAliasText("ＫＯ") == "ko",
+                   "P4: fold: fullwidth uppercase KO folds to 'ko' (lowercase fullwidth fold)");
+        const auto fullwidth = SearchLanguages("ＫＯ", atom_pool);
+        TEST_CHECK(!fullwidth.empty() && fullwidth.front().language->code == "KO",
+                   "P4: the fullwidth-uppercase query 'ＫＯ' ranks KO first");
+
+        // PR4-03: cross-tier competition. "kan" prefix-matches KN's English
+        // name "Kannada", YUE's Indonesian exonym "Kanton" AND JA's script alias
+        // "kana" - all Prefix kind. Tier-primary ranking must place KN
+        // (English) above YUE (Exonym) and JA (Script); a kind-only sort
+        // would rank JA first (pool order), so this pin is what makes the
+        // tier sort key mutation-sensitive.
+        const auto kan = SearchLanguages("kan", atom_pool);
+        TEST_CHECK(!kan.empty() && kan.front().language->code == "KN" &&
+                       kan.front().tier == AliasTier::English &&
+                       kan.front().match == AliasMatchKind::Prefix,
+                   "P4: 'kan' ranks KN (English prefix) first across competing tiers");
+        TEST_CHECK(hitIndex(kan, "YUE") > 0 && hitIndex(kan, "JA") > hitIndex(kan, "KN"),
+                   "P4: 'kan' ranks YUE (Exonym) and JA (Script) after KN (tier-primary)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P4 alias matrix + search matcher completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P4 alias matrix: " << (g_failed_count - failures_before)
+                  << " check(s) failed." << std::endl;
     }
 }
 
@@ -13573,32 +14773,84 @@ void TestReq039ChatWindowEnterCapture() {
 
 // P4 Batch B-1 (session 260907_0002, design §2-Q1/§4.1): bidi_utils unit suite.
 // All checks are pure/headless (no window, no DWrite, no Win32 locale calls):
-// RTL set membership over the 37-language registry + name resolution, and the
+// RTL set membership over the 89-target registry + name resolution, and the
 // UAX #9 first-strong heuristic on UTF-16 samples (design §4.1 case list).
 void TestBidiUtils() {
     std::cout << "[RUN] Testing B-1 bidi_utils (RTL set + first-strong)..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- 1) RTL set membership: exactly AR/FA/UR/HE true, 33 false --------
-    // Iterates GetTargetLanguages() (the 37 registry entries minus AUTO) so
+    // ---- 1) RTL set membership: exactly AR/FA/UR/HE/UG/PS/SD true, 82 false -
+    // 261116_0003 P2: UG (Uyghur, Arabic-script) joins the RTL set. 261116_0003
+    // P3: PS (Pashto) and SD (Sindhi) join — the two Arabic-script tranche-B
+    // rows (the UG precedent; the set lives next to the registry growth in
+    // bidi_utils.cpp). The expectation lists every code literal below.
+    // Iterates GetTargetLanguages() (the 89 registry entries minus AUTO) so
     // the assertion scales with kAllLanguages instead of a hardcoded list.
     {
         const auto& targets = GetTargetLanguages();
-        TEST_CHECK(targets.size() == 37, "B1: registry has exactly 37 target languages");
+        TEST_CHECK(targets.size() == 89, "B1: registry has exactly 89 target languages");
         int rtl_true = 0;
         std::string unexpected_true;
         std::string missing_true;
         for (const auto& lang : targets) {
             const bool rtl = IsRtlLanguageCode(lang.code);
             const bool expected =
-                lang.code == "AR" || lang.code == "FA" || lang.code == "UR" || lang.code == "HE";
+                lang.code == "AR" || lang.code == "FA" || lang.code == "UR" ||
+                lang.code == "HE" || lang.code == "UG" ||
+                lang.code == "PS" || lang.code == "SD";
             if (rtl) ++rtl_true;
             if (rtl && !expected) unexpected_true += lang.code + " ";
             if (expected && !rtl) missing_true += lang.code + " ";
         }
-        TEST_CHECK(rtl_true == 4, "B1: exactly 4 of 37 language codes are RTL");
+        TEST_CHECK(rtl_true == 7, "B1: exactly 7 of 89 language codes are RTL");
         TEST_CHECK(unexpected_true.empty() && missing_true.empty(),
-                   "B1: RTL code set is exactly {AR,FA,UR,HE} (no extras, none missing)");
+                   "B1: RTL code set is exactly {AR,FA,UR,HE,UG,PS,SD} (no extras, none missing)");
+    }
+
+    // ---- 1b) PR3-03: the set is DERIVED from the engine script table --------
+    // The literal pins above compare against a hardcoded code list, so they only
+    // catch ONE direction (a code added to kRtlLanguageCodes without the pin's
+    // literal being updated). A future Arabic-script registry row that MISSES
+    // the set leaves every one of them green - which is exactly what the
+    // bidi_utils.cpp block comment used to claim the pins caught. This loop is
+    // the data-driven control that makes that claim true, so the claim now
+    // names it:
+    //   * every registry row whose engine TargetScriptClasses mask carries
+    //     Arabic MUST be in the RTL set;
+    //   * every code IN the set MUST carry an RTL script class - Arabic, or
+    //     Hebrew for HE, the one non-Arabic-script member (a pure "Arabic only"
+    //     converse would fail by construction on HE).
+    // 261116_0003 P3 fix round 3 (PR3-03, step5preview F-01 / condition C-1).
+    {
+        int arabic_rows = 0;
+        std::string arabic_not_rtl;
+        std::string rtl_without_rtl_script;
+        for (const auto& lang : GetTargetLanguages()) {
+            const std::uint32_t mask = TargetScriptClasses(lang.code);
+            const bool arabic = (mask & ToMask(ScriptClass::Arabic)) != 0;
+            const bool rtl_script = arabic || (mask & ToMask(ScriptClass::Hebrew)) != 0;
+            const bool rtl = IsRtlLanguageCode(lang.code);
+            if (arabic) {
+                ++arabic_rows;
+                if (!rtl) arabic_not_rtl += lang.code + " ";
+            }
+            if (rtl && !rtl_script) rtl_without_rtl_script += lang.code + " ";
+        }
+        // Non-vacuity: the loop must actually SEE the Arabic rows. A table that
+        // resolved every code to 0 (or a future removal of the Arabic bits)
+        // would otherwise satisfy both implications for free.
+        TEST_CHECK(arabic_rows == 6,
+                   "B1/PR3-03: exactly 6 registry targets carry the engine Arabic script class");
+        TEST_CHECK(arabic_not_rtl.empty(),
+                   "B1/PR3-03: every Arabic-script registry row is in the RTL set (data-driven)");
+        TEST_CHECK(rtl_without_rtl_script.empty(),
+                   "B1/PR3-03: every RTL code carries an RTL engine script class (Arabic or Hebrew)");
+        if (!arabic_not_rtl.empty()) {
+            std::cout << "     Arabic-script rows missing from the RTL set: " << arabic_not_rtl << std::endl;
+        }
+        if (!rtl_without_rtl_script.empty()) {
+            std::cout << "     RTL codes without an RTL script class: " << rtl_without_rtl_script << std::endl;
+        }
     }
 
     // ---- 2) Code forms: case-insensitive, names, natives, negatives --------
@@ -13606,23 +14858,29 @@ void TestBidiUtils() {
                    IsRtlLanguageCode("He") && IsRtlLanguageCode("uR"),
                "B1: RTL codes accepted case-insensitively");
     TEST_CHECK(IsRtlLanguageCode("Arabic") && IsRtlLanguageCode("Persian") &&
-                   IsRtlLanguageCode("Urdu") && IsRtlLanguageCode("Hebrew"),
+                   IsRtlLanguageCode("Urdu") && IsRtlLanguageCode("Hebrew") &&
+                   IsRtlLanguageCode("Uyghur") && IsRtlLanguageCode("Pashto") &&
+                   IsRtlLanguageCode("Sindhi"),
                "B1: English names resolve RTL via kAllLanguages (tooltip target_lang_ path)");
     // Native-name resolution is asserted DATA-DRIVEN from the registry itself
     // (no literals copied from config.cpp - a single-codepoint drift would
     // silently mismatch; the registry entry is the source of truth).
     TEST_CHECK(IsRtlLanguageCode("العربية") && IsRtlLanguageCode("فارسی") &&
-                   IsRtlLanguageCode("اردو") && IsRtlLanguageCode("עברית"),
+                   IsRtlLanguageCode("اردو") && IsRtlLanguageCode("עברית") &&
+                   IsRtlLanguageCode("ئۇيغۇرچە") && IsRtlLanguageCode("پښتو") &&
+                   IsRtlLanguageCode("سنڌي"),
                "B1: native names resolve RTL via kAllLanguages");
     {
         bool all_forms = true;
         for (const auto& lang : GetTargetLanguages()) {
             const bool expected = lang.code == "AR" || lang.code == "FA" ||
-                                  lang.code == "UR" || lang.code == "HE";
+                                  lang.code == "UR" || lang.code == "HE" ||
+                                  lang.code == "UG" || lang.code == "PS" ||
+                                  lang.code == "SD";
             if (IsRtlLanguageCode(lang.name_en) != expected) all_forms = false;
             if (IsRtlLanguageCode(lang.name_native) != expected) all_forms = false;
         }
-        TEST_CHECK(all_forms, "B1: every registry entry resolves RTL by name_en AND name_native iff its code is RTL (37x2)");
+        TEST_CHECK(all_forms, "B1: every registry entry resolves RTL by name_en AND name_native iff its code is RTL (89x2)");
     }
     TEST_CHECK(IsRtlLanguageCode("arabic") && !IsRtlLanguageCode("korean"),
                "B1: English-name lookup case-insensitive (RTL hit + LTR miss)");
@@ -13700,6 +14958,21 @@ void TestBidiUtils() {
                    GuessBaseDirection(L"   \t\r\n") == TextDirection::LTR,
                "B1: whitespace-only -> LTR");
 
+    // ---- 6) First-strong UAX #9 samples for the P3 RTL rows (PS/SD) ---------
+    // 261116_0003 P3 fix round 3 (PR3-05b, step5preview F-07): the two rows the
+    // P3 growth added to the RTL set had no first-strong sample. Samples are
+    // taken from the registry itself (name_native) so a native-name edit cannot
+    // silently desynchronize the fixture from the row it claims to test - the
+    // same data-driven form the B1 native-name pin uses.
+    {
+        const LanguageInfo* ps = FindLanguageByCode("PS");
+        const LanguageInfo* sd = FindLanguageByCode("SD");
+        TEST_CHECK(ps != nullptr && GuessBaseDirection(ToUtf16(ps->name_native)) == TextDirection::RTL,
+                   "B1: first-strong PS native name -> RTL (UAX #9 AL, the P3 RTL row)");
+        TEST_CHECK(sd != nullptr && GuessBaseDirection(ToUtf16(sd->name_native)) == TextDirection::RTL,
+                   "B1: first-strong SD native name -> RTL (UAX #9 AL, the P3 RTL row)");
+    }
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] B-1 bidi_utils tests completed." << std::endl;
     } else {
@@ -13717,12 +14990,12 @@ void TestReq038B2RegistryBcp47() {
     std::cout << "[RUN] Testing B-2 LanguageInfo.bcp47 registry..." << std::endl;
     const int failures_before = g_failed_count;
 
-    // ---- 1) Every registry row carries a non-empty BCP-47 tag (all 38) ------
-    // Iterates GetSupportedLanguages() (AUTO + 37 targets) so the assertion
+    // ---- 1) Every registry row carries a non-empty BCP-47 tag (all 90) ----
+    // Iterates GetSupportedLanguages() (AUTO + 89 targets) so the assertion
     // scales with the registry instead of a hardcoded list.
     {
         const auto& all = GetSupportedLanguages();
-        TEST_CHECK(all.size() == 38, "B2: registry has exactly 38 rows (AUTO + 37)");
+        TEST_CHECK(all.size() == 90, "B2: registry has exactly 90 rows (AUTO + 89)");
         bool all_nonempty = true;
         std::string offenders;
         for (const auto& lang : all) {
@@ -13748,12 +15021,24 @@ void TestReq038B2RegistryBcp47() {
         TEST_CHECK(fil && std::string_view(fil->bcp47) == "fil", "B2: FIL -> bcp47 \"fil\" (ISO 639-1/BCP-47 subtag)");
         const LanguageInfo* auto_lang = FindLanguageByCode("AUTO");
         TEST_CHECK(auto_lang && std::string_view(auto_lang->bcp47) == "en", "B2: AUTO -> \"en\" pivot tag");
+        // 261116_0003 P2: YUE carries the STATIC "zh-HK" tag (the alias probe
+        // recorded GetLocaleInfoEx(L"yue")'s placeholder-with-success trap:
+        // this column must never be fed by a runtime locale probe).
+        const LanguageInfo* yue = FindLanguageByCode("YUE");
+        TEST_CHECK(yue && std::string_view(yue->bcp47) == "zh-HK", "B2: YUE -> bcp47 \"zh-HK\" (static tag, probe trap)");
+        const LanguageInfo* bo = FindLanguageByCode("BO");
+        TEST_CHECK(bo && std::string_view(bo->bcp47) == "bo", "B2: BO -> bcp47 \"bo\"");
     }
 
-    // ---- 3) RTL rows carry exactly the four RTL tags -------------------------
+    // ---- 3) RTL rows carry exactly the seven RTL tags -----------------------
     // The tooltip body direction derives from the registry code, but B-3's
     // locale table and any chrome callers key off bcp47: pin the pairing so
-    // the two never drift silently.
+    // the two never drift silently. 261116_0003 P2: UG's "ug" appends after
+    // the four historical RTL rows (anchored by code, not row number - the
+    // round-2b re-anchoring convention). 261116_0003 P3: PS's "ps" and SD's
+    // "sd" append in tranche-B order, after UG (261116_0003 P3 fix round 3,
+    // PR3-02: this comment cited "rows 76/77", which are SI/ML - the citations
+    // are code-anchored now so the next growth cannot falsify them).
     {
         std::string rtl_tags;
         for (const auto& lang : GetTargetLanguages()) {
@@ -13761,8 +15046,8 @@ void TestReq038B2RegistryBcp47() {
                 rtl_tags += std::string(lang.bcp47) + ",";
             }
         }
-        TEST_CHECK(rtl_tags == "ar,fa,ur,he,",
-                   "B2: RTL rows' bcp47 tags are exactly ar,fa,ur,he in registry order");
+        TEST_CHECK(rtl_tags == "ar,fa,ur,he,ug,ps,sd,",
+                   "B2: RTL rows' bcp47 tags are exactly ar,fa,ur,he,ug,ps,sd in registry order");
     }
 
     // ---- 4) Tag hygiene: lowercase language subtag, hyphen region, ASCII ------
@@ -13796,7 +15081,7 @@ void TestReq038B2RegistryBcp47() {
         for (const auto& lang : GetTargetLanguages()) {
             if (!lang.bcp47 || !lang.bcp47[0]) targets_ok = false;
         }
-        TEST_CHECK(targets_ok, "B2: all 37 GetTargetLanguages() rows keep non-empty bcp47 after copy");
+        TEST_CHECK(targets_ok, "B2: all 89 GetTargetLanguages() rows keep non-empty bcp47 after copy");
     }
 
     if (g_failed_count == failures_before) {
@@ -16555,6 +17840,41 @@ void TestR107PeerIdentityGate() {
 // end-of-file pattern.
 #include "bt9_installer_upgrade_tests.inc"
 
+// 261116_0003 P5 (language-menu redesign, plan §5 P5): the shared searchable
+// language picker's PURE LOGIC (engine-view filter, best-match preselection,
+// ↑↓ wraparound, Enter/double-click resolution with the byte-identical name_en
+// payload, Esc, the Tab source↔target flip, the empty-query state, the AUTO
+// role asymmetry, the pinned-absent ghost predicate, the two new i18n strings
+// x 37 locales) plus the structural + runtime proof that the suite never
+// creates the popup window. Staged as an .inc next to this runner (the
+// end-of-file pattern: it uses ResolveRepoFile, defined above).
+#include "p5_language_picker_tests.inc"
+
+// 261116_0003 P9a (language-menu redesign, plan §3 D5/D6 + §5 P9): the
+// user-defined-language core - config schema round-trip / backward compat /
+// forward compat, the D5 code ladder (alias -> locale -> no code), script
+// inference (fail-open), the D6 probe evaluation with its cache transitions,
+// the PlanLanguageSync raw-token allowance, and the D5/D7 menu-view merge.
+// Staged as an .inc next to this runner (the end-of-file pattern).
+#include "p9a_user_languages_tests.inc"
+
+// 261116_0003 P9b-2 (language-menu redesign, plan §3 D5 + §4 Phase 3): the
+// "내 언어" group on the six menu surfaces - the command bands (runtime half of
+// the compile-time static_asserts), the merge's engine awareness, the
+// (surface, role, index) dispatch decode + stored-name payload, the user half
+// of the pinned-absent ghost, and the 6-argument PlanLanguageSync wiring in
+// main.cpp. The menus themselves are Win32/GUI-only, so the structural half
+// reads the sources (ResolveRepoFile, the end-of-file pattern).
+#include "p9b2_user_language_menu_tests.inc"
+
+// 261116_0003 P9b-3 U1 (language-menu redesign, plan §5 P9): the CONFIG WRITE
+// surface for user-defined languages - PR9-11 creation validation (reserved
+// AUTO spellings + registry/user duplicates), PR9-12 locked mutators (add /
+// update / remove + the probe record verbs), the forward-compat carrier
+// predicate, PR10-07 write-seam caps, the UTC stamp helper, and the
+// source-scan proof that no other mutation site of the registry survives.
+#include "p9b3_user_language_dialog_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -16604,8 +17924,26 @@ struct Req044LstrMirror {
     // card's reference-line label (165 -> 166: BackTranslateReference);
     // 261111_0001 U6 (v0.10.7): 3 user-model surface strings appended
     // (166 -> 169: GgufInvalidModelBody + GgufManagerActiveSuffix/
-    // GgufManagerActivated).
-    const wchar_t* f[169];
+    // GgufManagerActivated); 261116_0003 P5 (language-menu redesign): the
+    // searchable picker's 2 strings appended (169 -> 171: LanguageSearchCue +
+    // LanguageSearchNoMatch); 261116_0003 P6a (menu integration, this unit):
+    // the flat menus' "검색…" row label appended (171 -> 172: MenuSearchLangs);
+    // 261116_0003 P7 (language-menu redesign, this unit): the picker header's
+    // engine-chip count phrase appended (172 -> 173: LanguageSearchCount);
+    // 261116_0003 P9b-1 (language-menu redesign, this unit): the 23
+    // user-language surface strings appended at the struct tail (173 -> 196),
+    // while their ENUM ids sit before MenuSearchLangs (the P5 sentinel pin owns
+    // the enum tail) - the Get() switch is the mapping.
+    // 261116_0003 P9b-3 U5 (language-menu redesign, this unit): the picker
+    // AUTO chip's dedicated label appended at the struct tail (196 -> 197:
+    // language_search_auto_chip, CEO decision 1.b), while its ENUM id also sits
+    // before MenuSearchLangs - same Get() switch mapping rule.
+    // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): the
+    // OpenAI declaration checklist's title + hint (197 -> 199:
+    // openai_declared_title/openai_declared_hint, struct slots AHEAD of the
+    // AUTO chip so the English positional table keeps it last), while their
+    // ENUM ids also sit before MenuSearchLangs - same Get() switch rule.
+    const wchar_t* f[199];
 };
 
 } // namespace
@@ -16618,9 +17956,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 169
-    static_assert(kExpectedFieldCount == 169,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 199
+    static_assert(kExpectedFieldCount == 199,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -16628,11 +17966,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 169,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: LocalizedStrings field count is 169 "
+    TEST_CHECK(observed_field_count == 199,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: LocalizedStrings field count is 199 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 169,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6: StringId::EnumCount is 169 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids)");
+    TEST_CHECK(observed_enum_count == 199,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: StringId::EnumCount is 199 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -16731,7 +18069,9 @@ void TestReq044I18nFieldOrder() {
         const int element_count = static_cast<int>(elements);
         TEST_CHECK(element_count == static_cast<int>(StringId::EnumCount),
                    "REQ-044 (c1): kStringsEnglish has one initializer per LocalizedStrings "
-                   "member (positional tail aligned; 157 X-macro + 4 theme + 5 back-translation)");
+                   "member (positional tail aligned; 157 X-macro + 4 theme + 5 back-translation "
+                   "+ 3 user-model + 2 language-picker + 1 P6a search-row + 1 P7 count phrase "
+                   "+ 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string)");
 
         // (c2) The four theme slots and the four WS3 slots must hold their own
         // strings. Before the FIX-R1 alignment, MenuUiTheme returned
@@ -16760,6 +18100,28 @@ void TestReq044I18nFieldOrder() {
         // string too - the exact drift this suite exists to catch.
         TEST_CHECK(I18n::Get(StringId::BackTranslateReference) == L"↳ Original: ",
                    "REQ-044 (c2): en BackTranslateReference landed on its own struct slot");
+        // 261116_0003 P7: the picker header's count phrase is the LAST struct
+        // member (the English positional table's final initializer). The (c1)
+        // element-count check above is the real missing-tail-initializer guard:
+        // a dropped last initializer falls back to the IDENTICAL struct default,
+        // so this (c2) value check alone cannot catch it.
+        TEST_CHECK(I18n::Get(StringId::LanguageSearchCount) == L"{n} languages",
+                   "REQ-044 (c2): en LanguageSearchCount landed on its own struct slot");
+        // 261116_0003 P9b-1: the FIRST and LAST of the 23 appended user-language
+        // values, so a swapped tail inside their 23-slot span fails here too.
+        // The (c1) element-count check above remains the missing-initializer
+        // guard (a dropped tail initializer falls back to the struct default).
+        TEST_CHECK(I18n::Get(StringId::UserLangsGroup) == L"My languages",
+                   "REQ-044 (c2): en UserLangsGroup landed on its own struct slot");
+        TEST_CHECK(I18n::Get(StringId::UserLangScriptNone) == L"Not detected",
+                   "REQ-044 (c2): en UserLangScriptNone (the P9b-1 tail) landed on its own slot");
+        // 261116_0003 P9b-3 U5: the new LAST slot (197) must hold the picker
+        // AUTO chip label, so a tail swap inside the 24-slot post-P7 span fails
+        // here too. The (c1) element-count check remains the missing-initializer
+        // guard (a dropped last initializer falls back to the struct default).
+        TEST_CHECK(I18n::Get(StringId::LanguageSearchAutoChip) ==
+                       L"Auto - local for supported languages, cloud for the rest",
+                   "REQ-044 (c2): en LanguageSearchAutoChip (the P9b-3 U5 tail) landed on its own slot");
         I18n::SetLocale(english_initial); // suite-state hygiene
     }
 
@@ -17760,7 +19122,7 @@ void TestReq046TrayMenuStructure() {
 
     // 2b. REQ-050 user items 3-1/3-2: the checkable 사용자 선택(.gguf) entry
     //     is appended ONLY while a user model is registered (no model -> the
-    //     manager row is the sole user-model entry), and the " — <stem>"
+    //     manager row is the sole user-model entry), and the " - <stem>"
     //     suffix shows regardless of the checked engine (the old pref==3
     //     gate and the "(미등록)" placeholder are gone). The frozen radio ID
     //     and the 4-way check mark survive inside the conditional.
@@ -20496,6 +21858,620 @@ void TestR112R113DataPreservation() {
     }
 }
 
+// ---- 261116_0003 P6a fix round (PR6-02c): StringId::MenuSearchLangs --------
+// Per-locale no-English-fallback pin in the P5 section-11 style. The EnumCount
+// completeness loop enforces NON-EMPTY only; a single dropped locale entry
+// silently inherits the English struct default (a designated-initializer
+// omission keeps the struct's default member initializer) and would pass it —
+// exactly the gap the P5 pair is pinned against and this id lacked.
+void TestP6aMenuSearchLangsStrings() {
+    std::cout << "[TEST] 261116_0003 P6a fix round: MenuSearchLangs per-locale pins..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const auto& locales = GetSupportedUiLocales();
+    TEST_CHECK(locales.size() == 37,
+               "P6a: MenuSearchLangs is authored for all 37 UI locales");
+    I18n::SetLocale(UiLocale::English);
+    const std::wstring en_label = I18n::Get(StringId::MenuSearchLangs);
+    TEST_CHECK(en_label == L"Search…",
+               "P6a: the MenuSearchLangs English literal is the struct default");
+    int non_empty = 0;
+    int english_copy = 0;
+    for (const UiLocaleEntry& entry : locales) {
+        I18n::SetLocale(entry.locale);
+        const std::wstring label = I18n::Get(StringId::MenuSearchLangs);
+        if (!label.empty()) {
+            ++non_empty;
+        }
+        if (entry.locale != UiLocale::English && label == en_label) {
+            ++english_copy;
+        }
+    }
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::MenuSearchLangs) == L"검색…",
+               "P6a: the Korean MenuSearchLangs literal is authored (not the English default)");
+    I18n::SetLocale(UiLocale::Japanese);
+    TEST_CHECK(I18n::Get(StringId::MenuSearchLangs) == L"検索…",
+               "P6a: the Japanese MenuSearchLangs literal is authored (not the English default)");
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(non_empty == 37,
+               "P6a: MenuSearchLangs resolves non-empty in all 37 locales");
+    TEST_CHECK(english_copy == 0,
+               "P6a: no non-English locale falls back to the English MenuSearchLangs text");
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P6a MenuSearchLangs per-locale pins completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P6a MenuSearchLangs per-locale pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- 261116_0003 P7: StringId::LanguageSearchCount -------------------------
+// The picker header's engine-chip count phrase ("{n} languages"). Same
+// per-locale discipline as the P6a MenuSearchLangs pin above: the EnumCount
+// completeness loop enforces NON-EMPTY only, so a single dropped locale entry
+// silently inherits the English struct default (a designated-initializer
+// omission keeps the struct's default member initializer). This pin fails on a
+// dropped entry, on an empty entry, and on the P7-specific third mode: a locale
+// that lost the "{n}" number token. That loss would not blank the count:
+// CountPhrase appends the number when the token is missing (palette.cpp:238-239),
+// so the pin keeps the number inside the locale's own phrase shape.
+//
+// Enum placement note: the id is inserted BEFORE the P5 pair, not appended
+// after LanguageSearchNoMatch, because p5_language_picker_tests.inc pins
+// "sentinel - 1 == LanguageSearchNoMatch" and that file is outside the P7
+// write boundary. The STRUCT slot, in contrast, is the trailing one, so for
+// this single id the "last enum id == last struct field" identity does not
+// hold; the Get() switch is the mapping. A missing tail initializer is caught
+// by the REQ-044 (c1) element-count check, not the (c2) value check: a dropped
+// last initializer falls back to the identical struct default, so (c2) cannot
+// see it.
+void TestP7LanguageSearchCountStrings() {
+    std::cout << "[TEST] 261116_0003 P7: LanguageSearchCount per-locale pins..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const auto& locales = GetSupportedUiLocales();
+    TEST_CHECK(locales.size() == 37,
+               "P7: LanguageSearchCount is authored for all 37 UI locales");
+    I18n::SetLocale(UiLocale::English);
+    const std::wstring en_phrase = I18n::Get(StringId::LanguageSearchCount);
+    TEST_CHECK(en_phrase == L"{n} languages",
+               "P7: the LanguageSearchCount English literal is the struct default");
+    int non_empty = 0;
+    int english_copy = 0;
+    int without_token = 0;
+    for (const UiLocaleEntry& entry : locales) {
+        I18n::SetLocale(entry.locale);
+        const std::wstring phrase = I18n::Get(StringId::LanguageSearchCount);
+        if (!phrase.empty()) {
+            ++non_empty;
+        }
+        if (entry.locale != UiLocale::English && phrase == en_phrase) {
+            ++english_copy;
+        }
+        if (phrase.find(L"{n}") == std::wstring::npos) {
+            ++without_token;
+        }
+        // 261116_0003 P7 fix PR7-06: exactly one {n} token per locale
+        // (CountPhrase replaces the FIRST token only, so a second token would
+        // render literally).
+        const std::size_t first_token = phrase.find(L"{n}");
+        TEST_CHECK(first_token != std::wstring::npos &&
+                       phrase.find(L"{n}", first_token + 3) == std::wstring::npos,
+                   "P7: this locale's LanguageSearchCount keeps exactly one {n} token");
+    }
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::LanguageSearchCount) == L"{n}개 언어",
+               "P7: the Korean LanguageSearchCount literal is authored (not the English default)");
+    I18n::SetLocale(UiLocale::German);
+    TEST_CHECK(I18n::Get(StringId::LanguageSearchCount) == L"{n} Sprachen",
+               "P7: the German LanguageSearchCount literal is authored (not the English default)");
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(non_empty == 37,
+               "P7: LanguageSearchCount resolves non-empty in all 37 locales");
+    TEST_CHECK(english_copy == 0,
+               "P7: no non-English locale falls back to the English LanguageSearchCount text");
+    TEST_CHECK(without_token == 0,
+               "P7: every locale keeps the {n} token (no locale loses the number)");
+
+    // ---- the chip is actually WIRED (no dead string) -----------------------
+    // A localized string that no code reads is invisible to every i18n pin
+    // above. These source pins read the palette TU (the headless suite never
+    // opens a window, so this is the only reachable evidence that the header
+    // line composes the engine chip + count).
+    std::string palette_src;
+    if (!ReadRepoSrc(L"src\\ui\\language_search_palette.cpp", palette_src)) {
+        // 261116_0003 P7 fix PR7-03: an unresolvable source must FAIL the P7
+        // block, not silently SKIP it (the block still printed PASS on SKIP).
+        // PR7-13: the message names the resolver's actual bases (exe dir / CWD,
+        // each up to 2 levels up, or the engine-repo fallback), not "repo root".
+        TEST_CHECK(false, "P7: palette source pins need src\\ui\\language_search_palette.cpp "
+                          "resolvable (exe dir or CWD, each up to 2 levels up, or the "
+                          "engine-repo fallback base)");
+    } else {
+        const auto count_of = [&palette_src](const char* needle) {
+            std::size_t n = 0;
+            for (std::size_t at = palette_src.find(needle); at != std::string::npos;
+                 at = palette_src.find(needle, at + 1)) {
+                ++n;
+            }
+            return n;
+        };
+        TEST_CHECK(count_of("I18n::Get(StringId::LanguageSearchCount)") == 1,
+                   "P7: UpdateHeader reads the new count id through the {n} substitution helper");
+        // 261116_0003 P7 fix PR7-01: pin the CALL-SITE form (exactly the 3
+        // consumers: PaletteHeightPx, Layout, the pre-show initial height).
+        // The bare "kHeaderChipDips" form could never fail: the declaration and
+        // the comment mentions alone satisfied >= 3.
+        TEST_CHECK(count_of("ScaleDipsToPixels(kHeaderChipDips") == 3,
+                   "P7: the chip row is counted in the height budget AND both layout passes "
+                   "(PaletteHeightPx, Layout, the pre-show initial height)");
+        TEST_CHECK(count_of("CountPhrase(w.state.pool().size())") == 1 &&
+                       count_of("hits().size()") == 0,
+                   "P7: the header count is the ENGINE VIEW size, never the filtered hit count");
+        TEST_CHECK(count_of("StringId::MenuEngineGoogle") == 1 &&
+                       count_of("StringId::MenuEngineLocal") == 2 &&
+                       count_of("\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT") == 2,
+                   "P7: the chip reuses the existing engine-name ids and is a standard SS_LEFT "
+                   "STATIC like the role label (DPI-scaled by ApplyFont, clipped by the control)");
+    }
+
+    // Enum placement: between MenuSearchLangs and the P5 pair, which stays at
+    // the enum tail (the P5 suite's sentinel-1 pin depends on it).
+    volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
+    volatile int count_id = static_cast<int>(StringId::LanguageSearchCount);
+    volatile int cue = static_cast<int>(StringId::LanguageSearchCue);
+    volatile int no_match = static_cast<int>(StringId::LanguageSearchNoMatch);
+    volatile int sentinel = static_cast<int>(StringId::EnumCount);
+    TEST_CHECK(count_id == menu_search + 1 && count_id + 1 == cue &&
+                   count_id + 2 == no_match && sentinel - 1 == no_match,
+               "P7: the count id sits between MenuSearchLangs and the P5 pair, and "
+               "the P5 tail-order pin (EnumCount - 1 == LanguageSearchNoMatch) holds");
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P7 LanguageSearchCount per-locale pins completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P7 LanguageSearchCount per-locale pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- 261116_0003 P9b-1: the user-language surface's 23 strings -------------
+// P9b-1 is the STRINGS unit only (P9b-2/P9b-3 render them), so the evidence
+// here is per-locale authorship plus the enum/struct ordering contract.
+//
+// Why the per-locale scan is needed when the EnumCount completeness loop
+// already exists: that loop enforces NON-EMPTY only, so a single dropped
+// designator silently inherits the English struct default (a
+// designated-initializer omission keeps the default member initializer) and the
+// value still looks fine. The scan below therefore counts ENGLISH COPIES for
+// every non-English locale, and a source pin counts the designators in each of
+// the 36 designated tables. The English positional table's own hole (a dropped
+// tail initializer falls back to the IDENTICAL default, so no value check can
+// see it) is closed by the REQ-044 (c1) element-count check above it.
+void TestP9b1UserLanguageStrings() {
+    std::cout << "[TEST] 261116_0003 P9b-1: user-language surface strings (37 locales)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const auto& locales = GetSupportedUiLocales();
+    TEST_CHECK(locales.size() == 37,
+               "P9b-1: the user-language strings are authored for all 37 UI locales");
+
+    // The inventory in STRUCT-tail order (also the English positional table's
+    // order). The ENUM order differs on purpose: the ids sit before
+    // MenuSearchLangs so the P5 sentinel pin and the P6a/P7 adjacency stay
+    // green, and the Get() switch is the mapping.
+    const StringId kIds[] = {
+        StringId::UserLangsGroup,
+        StringId::UserLangAddTitle,
+        StringId::UserLangNativeNameLabel,
+        StringId::UserLangEnglishNameLabel,
+        StringId::UserLangCodeLabel,
+        StringId::UserLangScriptLabel,
+        StringId::UserLangAdd,
+        StringId::UserLangCancel,
+        StringId::UserLangNoCodeNotice,
+        StringId::UserLangProbeChecking,
+        StringId::UserLangProbeSupported,
+        StringId::UserLangProbeUnsupported,
+        StringId::UserLangProbeEvidenceLabel,
+        StringId::UserLangProbeRetest,
+        StringId::UserLangOverrideSupported,
+        StringId::UserLangOverrideUnsupported,
+        StringId::UserLangOverrideActive,
+        StringId::UserLangSupportNotQuality,
+        StringId::UserLangNameReserved,
+        StringId::UserLangCheckNonEmpty,
+        StringId::UserLangCheckDiffers,
+        StringId::UserLangCheckScript,
+        StringId::UserLangScriptNone,
+    };
+    const wchar_t* kEn[] = {
+        L"My languages",
+        L"Add my language",
+        L"Native name",
+        L"English name (optional)",
+        L"Language code",
+        L"Script",
+        L"Add",
+        L"Cancel",
+        L"No language code was found. This language is available only with the "
+        L"OpenAI-compatible and user .gguf engines.",
+        L"Checking",
+        L"Supported",
+        L"Possibly unsupported",
+        L"Evidence",
+        L"Test again",
+        L"Mark as supported",
+        L"Mark as unsupported",
+        L"Set by you",
+        L"Support does not mean translation quality.",
+        L"\"{n}\" is already a language name. Enter a different name.",
+        L"Reply received",
+        L"Differs from input",
+        L"Script matches",
+        L"Not detected",
+    };
+    const wchar_t* kKo[] = {
+        L"내 언어",
+        L"내 언어 추가",
+        L"원어 이름",
+        L"영어 이름 (선택)",
+        L"언어 코드",
+        L"문자",
+        L"추가",
+        L"취소",
+        L"언어 코드를 찾지 못했습니다. 이 언어는 OpenAI 호환 및 사용자 .gguf 엔진에서만 사용할 수 있습니다.",
+        L"확인 중",
+        L"지원",
+        L"미지원 의심",
+        L"판정 근거",
+        L"다시 시험",
+        L"지원함으로 표시",
+        L"미지원으로 표시",
+        L"직접 설정함",
+        L"지원 여부는 번역 품질을 뜻하지 않습니다.",
+        L"\"{n}\" 이름은 이미 사용 중입니다. 다른 이름을 입력하세요.",
+        L"응답 있음",
+        L"원문과 다름",
+        L"문자 일치",
+        L"확인 안 됨",
+    };
+    // volatile keeps these comparisons non-constant so /W4's C4127 does not
+    // fire (the same discipline the P7 count pin and the U-J block use).
+    volatile std::size_t kIdCount = sizeof(kIds) / sizeof(kIds[0]);
+    volatile std::size_t kEnCount = sizeof(kEn) / sizeof(kEn[0]);
+    volatile std::size_t kKoCount = sizeof(kKo) / sizeof(kKo[0]);
+    TEST_CHECK(kIdCount == 23 && kEnCount == kIdCount && kKoCount == kIdCount,
+               "P9b-1: the inventory is 23 ids with one English and one Korean expectation each");
+
+    // ---- English: the positional tail aligned (no value fell on a neighbor) --
+    I18n::SetLocale(UiLocale::English);
+    int en_mismatch = 0;
+    for (std::size_t i = 0; i < kIdCount; ++i) {
+        if (I18n::Get(kIds[i]) != kEn[i]) {
+            ++en_mismatch;
+        }
+    }
+    TEST_CHECK(en_mismatch == 0,
+               "P9b-1: all 23 English values are the authored struct defaults (positional "
+               "tail aligned; a swap inside the 23-slot span fails here)");
+
+    // ---- Korean: verbatim (the CEO-facing text is pinned, not paraphrased) ---
+    I18n::SetLocale(UiLocale::Korean);
+    int ko_mismatch = 0;
+    for (std::size_t i = 0; i < kIdCount; ++i) {
+        if (I18n::Get(kIds[i]) != kKo[i]) {
+            ++ko_mismatch;
+        }
+    }
+    TEST_CHECK(ko_mismatch == 0,
+               "P9b-1: all 23 Korean values match the authored literals verbatim");
+
+    // ---- every locale: non-empty, no English fallback, one {n} where carried -
+    int non_empty = 0;
+    int english_copy = 0;
+    int without_token = 0;
+    for (const UiLocaleEntry& entry : locales) {
+        I18n::SetLocale(entry.locale);
+        bool all_non_empty = true;
+        for (std::size_t i = 0; i < kIdCount; ++i) {
+            const std::wstring value = I18n::Get(kIds[i]);
+            if (value.empty()) {
+                all_non_empty = false;
+            }
+            if (entry.locale != UiLocale::English && value == kEn[i]) {
+                ++english_copy;
+            }
+        }
+        if (all_non_empty) {
+            ++non_empty;
+        }
+        // The reserved-name refusal is the ONE string that carries a runtime
+        // token: "{n}" is the typed name. Exactly one per locale, because the
+        // P9b-3 call site substitutes the FIRST occurrence only, so a second
+        // token would render literally (the P7 PR7-06 lesson).
+        const std::wstring reserved = I18n::Get(StringId::UserLangNameReserved);
+        const std::size_t first_token = reserved.find(L"{n}");
+        if (first_token == std::wstring::npos ||
+            reserved.find(L"{n}", first_token + 3) != std::wstring::npos) {
+            ++without_token;
+        }
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(non_empty == 37,
+               "P9b-1: all 23 strings resolve non-empty in all 37 locales (no dropped locale)");
+    TEST_CHECK(english_copy == 0,
+               "P9b-1: no non-English locale falls back to the English text (36 locales authored)");
+    TEST_CHECK(without_token == 0,
+               "P9b-1: every locale keeps exactly one {n} token in the reserved-name refusal");
+
+    // ---- designator presence: 36 designated tables x 23 designators ---------
+    // A dropped designator keeps the English struct default, which the
+    // per-locale scan above would also see for most strings. This pin makes the
+    // failure name the field and the count instead of only the locale.
+    std::string i18n_src;
+    if (!ReadRepoSrc(L"src\\i18n.cpp", i18n_src)) {
+        TEST_CHECK(false, "P9b-1: src/i18n.cpp must be readable for the designator-presence pin");
+    } else {
+        const char* kFields[] = {
+            "user_langs_group",
+            "user_lang_add_title",
+            "user_lang_native_name_label",
+            "user_lang_english_name_label",
+            "user_lang_code_label",
+            "user_lang_script_label",
+            "user_lang_add",
+            "user_lang_cancel",
+            "user_lang_no_code_notice",
+            "user_lang_probe_checking",
+            "user_lang_probe_supported",
+            "user_lang_probe_unsupported",
+            "user_lang_probe_evidence_label",
+            "user_lang_probe_retest",
+            "user_lang_override_supported",
+            "user_lang_override_unsupported",
+            "user_lang_override_active",
+            "user_lang_support_not_quality",
+            "user_lang_name_reserved",
+            "user_lang_check_non_empty",
+            "user_lang_check_differs",
+            "user_lang_check_script",
+            "user_lang_script_none",
+        };
+        int field_short = 0;
+        for (const char* field : kFields) {
+            const std::string designator = std::string("    .") + field + " = ";
+            std::size_t count = 0;
+            for (std::size_t at = i18n_src.find(designator); at != std::string::npos;
+                 at = i18n_src.find(designator, at + 1)) {
+                ++count;
+            }
+            if (count != 36) {
+                ++field_short;
+            }
+        }
+        TEST_CHECK(field_short == 0,
+                   "P9b-1: each of the 23 fields is designated in exactly 36 tables (the 37th "
+                   "is the positional English one) - no locale inherits the English default");
+    }
+
+    // ---- ordering contract: enum placement vs the P5/P7 tail pins -----------
+    // The block starts where the PRE-P6a enum tail ended (GgufManagerActivated,
+    // the last 261111_0001 U6 id) and ends right before MenuSearchLangs, so
+    // both the P6a/P7 adjacency and the P5 sentinel pin are untouched.
+    // 261116_0003 P9b-3 U5 extended the block by one (LanguageSearchAutoChip
+    // closes the block now, CEO decision 1.b), so the pin's "last_new" moved
+    // from UserLangScriptNone to LanguageSearchAutoChip and the span check
+    // grew 22 -> 23; the adjacency halves are unchanged.
+    // 261116_0003 P9c-1b extended the block by two more (OpenAiDeclaredTitle /
+    // OpenAiDeclaredHint close the block now, the OpenAI declaration
+    // checklist), so "last_new" moved to OpenAiDeclaredHint and the span
+    // check grew 23 -> 25; the adjacency halves are still unchanged.
+    volatile int prev_tail = static_cast<int>(StringId::GgufManagerActivated);
+    volatile int first_new = static_cast<int>(StringId::UserLangsGroup);
+    volatile int last_new = static_cast<int>(StringId::OpenAiDeclaredHint);
+    volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
+    volatile int count_id = static_cast<int>(StringId::LanguageSearchCount);
+    volatile int cue = static_cast<int>(StringId::LanguageSearchCue);
+    volatile int no_match = static_cast<int>(StringId::LanguageSearchNoMatch);
+    volatile int sentinel = static_cast<int>(StringId::EnumCount);
+    TEST_CHECK(first_new == prev_tail + 1 && last_new - first_new == 25 &&
+                   last_new + 1 == menu_search && count_id == menu_search + 1 &&
+                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 1 == no_match,
+               "P9b-1/P9b-3 U5/P9c-1b: the 26 ids are contiguous between the pre-P6a enum tail "
+               "(GgufManagerActivated) and MenuSearchLangs, keeping the P6a/P7 adjacency "
+               "and the P5 tail pin (EnumCount - 1 == LanguageSearchNoMatch)");
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P9b-1 user-language string pins completed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P9b-1 user-language string pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- 261116_0003 P9b-3 U5: the picker AUTO chip's dedicated label -----------
+// CEO decision 1.b (decisions.md:540): the Auto view's chip used to render
+// MenuEngineLocal + the local-view count ("내장 로컬 엔진 · N개 언어"), a
+// half-truth that hid AUTO's cloud leg. The Auto chip now carries ONE
+// dedicated label (StringId::LanguageSearchAutoChip) and NO count; the four
+// concrete engine chips keep engine name + " · " + count exactly as before.
+// This suite pins the string (37 locales, the ko/en copies verbatim, no
+// em-dash per R14-10), the i18n wiring (designator x36, the Get() switch, the
+// English positional tail), the enum placement at the end of the
+// pre-MenuSearchLangs block, and the palette source shape (EngineChipName's
+// Auto arm + UpdateHeader's count-free Auto path). The window itself is
+// Win32-only, so the palette half is a source scan, the same idiom the P7
+// suite established.
+void TestP9b3AutoChipStrings() {
+    std::cout << "[TEST] 261116_0003 P9b-3 U5: picker AUTO chip label (decision 1.b)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const auto& locales = GetSupportedUiLocales();
+    TEST_CHECK(locales.size() == 37,
+               "P9b-3 U5: the AUTO chip label is authored for all 37 UI locales");
+
+    // ---- the ko/en copies verbatim (CEO-facing text, not paraphrased) -------
+    I18n::SetLocale(UiLocale::English);
+    TEST_CHECK(I18n::Get(StringId::LanguageSearchAutoChip) ==
+                   L"Auto - local for supported languages, cloud for the rest",
+               "P9b-3 U5: the English AUTO chip literal matches the authored copy "
+               "(hyphen separator per R14-10)");
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::LanguageSearchAutoChip) ==
+                   L"자동 - 지원 언어는 로컬, 나머지는 클라우드",
+               "P9b-3 U5: the Korean AUTO chip literal matches the authored copy verbatim");
+
+    // ---- every locale: non-empty and em-dash-free (R14-10) ------------------
+    int non_empty = 0;
+    int with_emdash = 0;
+    for (const UiLocaleEntry& entry : locales) {
+        I18n::SetLocale(entry.locale);
+        const std::wstring value = I18n::Get(StringId::LanguageSearchAutoChip);
+        if (!value.empty()) {
+            ++non_empty;
+        }
+        if (value.find(L"\u2014") != std::wstring::npos) {
+            ++with_emdash;
+        }
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(non_empty == 37,
+               "P9b-3 U5: the AUTO chip label resolves non-empty in all 37 locales "
+               "(the English placeholder is allowed where no translation was authored)");
+    TEST_CHECK(with_emdash == 0,
+               "P9b-3 U5: no locale's AUTO chip label carries an em-dash (the R14-10 "
+               "separator form is the hyphen)");
+
+    // ---- i18n wiring: designator x36 + the Get() switch + the EN tail -------
+    std::string i18n_src;
+    if (!ReadRepoSrc(L"src\\i18n.cpp", i18n_src)) {
+        TEST_CHECK(false,
+                   "P9b-3 U5: src\\i18n.cpp must be readable for the wiring pins");
+    } else {
+        const std::string designator = "    .language_search_auto_chip = ";
+        std::size_t designators = 0;
+        for (std::size_t at = i18n_src.find(designator); at != std::string::npos;
+             at = i18n_src.find(designator, at + 1)) {
+            ++designators;
+        }
+        TEST_CHECK(designators == 36,
+                   "P9b-3 U5: the field is designated in exactly 36 tables (the 37th "
+                   "is the positional English one) - no locale inherits the default");
+        const std::string case_line = "case StringId::LanguageSearchAutoChip:";
+        const std::size_t case_at = i18n_src.find(case_line);
+        std::size_t case_checks = 0;
+        for (std::size_t at = case_at; at != std::string::npos;
+             at = i18n_src.find(case_line, at + 1)) {
+            ++case_checks;
+        }
+        const std::size_t line_end = i18n_src.find('\n', case_at);
+        const bool maps_member =
+            case_at != std::string::npos &&
+            i18n_src.find("return s.language_search_auto_chip;", case_at) < line_end;
+        TEST_CHECK(case_at != std::string::npos && case_checks == 1 && maps_member,
+                   "P9b-3 U5: the Get() switch carries exactly one case and it maps the "
+                   "id to the language_search_auto_chip member");
+        TEST_CHECK(i18n_src.find(
+                       "    L\"Auto - local for supported languages, cloud for the rest\",\n};") !=
+                       std::string::npos,
+                   "P9b-3 U5: the English positional table's LAST initializer is the "
+                   "AUTO chip label (a dropped tail would still compile via the default)");
+    }
+
+    // ---- enum placement: the pre-MenuSearchLangs block's end moved on -------
+    // 261116_0003 P9c-1b appended OpenAiDeclaredTitle/OpenAiDeclaredHint right
+    // AFTER the AUTO chip (they close the block now), the same move this pin
+    // recorded when U5's LanguageSearchAutoChip took the block-closer role
+    // from UserLangScriptNone. The chip itself still sits immediately after
+    // UserLangScriptNone, and the block still ends immediately before
+    // MenuSearchLangs, so the P5 tail pin is untouched.
+    volatile int script_none = static_cast<int>(StringId::UserLangScriptNone);
+    volatile int auto_chip = static_cast<int>(StringId::LanguageSearchAutoChip);
+    volatile int decl_title = static_cast<int>(StringId::OpenAiDeclaredTitle);
+    volatile int decl_hint = static_cast<int>(StringId::OpenAiDeclaredHint);
+    volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
+    volatile int no_match = static_cast<int>(StringId::LanguageSearchNoMatch);
+    volatile int sentinel = static_cast<int>(StringId::EnumCount);
+    TEST_CHECK(auto_chip == script_none + 1 && auto_chip + 1 == decl_title &&
+                   decl_title + 1 == decl_hint && decl_hint + 1 == menu_search &&
+                   sentinel - 1 == no_match,
+               "P9b-3 U5/P9c-1b: the AUTO chip still follows UserLangScriptNone and the "
+               "P9c-1b ids close the pre-MenuSearchLangs block; the P5 tail "
+               "pin (EnumCount - 1 == LanguageSearchNoMatch) still holds");
+
+    // ---- palette wiring (source scan; the window is Win32-only) -------------
+    std::string palette_src;
+    if (!ReadRepoSrc(L"src\\ui\\language_search_palette.cpp", palette_src)) {
+        TEST_CHECK(false, "P9b-3 U5: src\\ui\\language_search_palette.cpp must be "
+                          "readable for the chip pins");
+    } else {
+        // (a) EngineChipName's Auto arm feeds the new id, never MenuEngineLocal.
+        const std::size_t chip_fn = palette_src.find("std::wstring EngineChipName");
+        const std::size_t chip_end = palette_src.find("\n}\n", chip_fn);
+        const std::string chip_body =
+            palette_src.substr(chip_fn, chip_end == std::string::npos
+                                            ? std::string::npos
+                                            : chip_end - chip_fn);
+        const std::size_t auto_case = chip_body.find("case LanguageEngine::Auto:");
+        TEST_CHECK(chip_fn != std::string::npos && auto_case != std::string::npos,
+                   "P9b-3 U5: EngineChipName keeps an explicit Auto case");
+        if (auto_case != std::string::npos) {
+            const std::size_t auto_break = chip_body.find("break;", auto_case);
+            const std::string auto_arm =
+                chip_body.substr(auto_case, auto_break - auto_case);
+            TEST_CHECK(auto_arm.find("LanguageSearchAutoChip") != std::string::npos &&
+                           auto_arm.find("MenuEngineLocal") == std::string::npos,
+                       "P9b-3 U5: EngineChipName's Auto arm maps to LanguageSearchAutoChip, "
+                       "not MenuEngineLocal (decision 1.b; the HyMt2 arm keeps MenuEngineLocal)");
+        }
+        // (b) UpdateHeader: the Auto path renders the label WITHOUT CountPhrase;
+        // the concrete path keeps engine name + " · " + pool-size count.
+        const std::size_t hdr_fn = palette_src.find("void UpdateHeader(PaletteWindow& w)");
+        const std::size_t hdr_end = palette_src.find("\n}\n", hdr_fn);
+        const std::string hdr_body =
+            palette_src.substr(hdr_fn, hdr_end == std::string::npos
+                                           ? std::string::npos
+                                           : hdr_end - hdr_fn);
+        const std::size_t auto_cond = hdr_body.find("== LanguageEngine::Auto");
+        TEST_CHECK(hdr_fn != std::string::npos && auto_cond != std::string::npos,
+                   "P9b-3 U5: UpdateHeader branches on the Auto view");
+        const std::size_t q = hdr_body.find('?', auto_cond);
+        const std::size_t colon = hdr_body.find(" : ", q);
+        if (auto_cond != std::string::npos && q != std::string::npos &&
+            colon != std::string::npos) {
+            const std::string auto_path = hdr_body.substr(q, colon - q);
+            const std::string concrete_path = hdr_body.substr(colon);
+            TEST_CHECK(auto_path.find("CountPhrase") == std::string::npos,
+                       "P9b-3 U5: the Auto chip path renders NO count (decision 1.b "
+                       "removes the count from the Auto view)");
+            TEST_CHECK(concrete_path.find("CountPhrase(w.state.pool().size())") !=
+                           std::string::npos &&
+                       concrete_path.find("L\" · \"") != std::string::npos,
+                       "P9b-3 U5: the four concrete engine chips keep engine name + "
+                       "\" · \" + pool-size count");
+        } else {
+            TEST_CHECK(false,
+                       "P9b-3 U5: UpdateHeader keeps the Auto/concrete branch shape");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P9b-3 U5 AUTO chip label pins completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P9b-3 U5 AUTO chip label pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed."
+                  << std::endl;
+    }
+}
+
+
 // ---- U-J (R1-22, session 261029_0001, v0.10.4 sweep): Wave A quick wins ----
 // W1 tray tip / status-row composition (+ the szTip budget and its drop order),
 // W2 the pure swap planner both language pairs share, W3 the Ctrl+F9 cycle
@@ -20803,10 +22779,41 @@ void TestUJQuickWins() {
         read_src("src/ui/tray.cpp", tray_src);
         std::string main_src;
         read_src("src/main.cpp", main_src);
+        std::string tray_hdr;
+        read_src("src/ui/tray.hpp", tray_hdr); // 261116_0003 P6a r2 (PR6-07): auto-token pin
         std::string hook_src;
         read_src("src/hook.cpp", hook_src);
-        if (tray_src.empty() || main_src.empty() || hook_src.empty()) {
-            std::cout << "[SKIP] tray.cpp/main.cpp/hook.cpp not resolvable from the test CWD; "
+        std::string tooltip_src;
+        read_src("src/ui/tooltip.cpp", tooltip_src); // 261116_0003 P6b: the pill's engine-view dropdowns
+        std::string tooltip_hdr;
+        read_src("src/ui/tooltip.hpp", tooltip_hdr); // 261116_0003 P6b: the resolver seam declaration
+        std::string palette_hdr;
+        read_src("src/ui/language_search_palette.hpp", palette_hdr); // 261116_0003 P6b fix round (PR6-28): the shared ghost predicate
+        // 261116_0003 P6b fix round 2 (PR6-33): the call-site pins bind the
+        // FULL call, fourth argument included. Re-wrapping or re-indenting a
+        // call must not hide a substituted argument, so every multi-argument
+        // scan compares a whitespace-free projection of the source against a
+        // whitespace-free needle: argument ORDER and the pref_equiv ternary's
+        // direction stay part of the needle, only layout is normalized.
+        const auto squeeze = [](const std::string& text) {
+            std::string out;
+            out.reserve(text.size());
+            for (const char ch : text) {
+                if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+                    out.push_back(ch);
+                }
+            }
+            return out;
+        };
+        const std::string tray_src_flat = squeeze(tray_src);
+        const std::string tooltip_src_flat = squeeze(tooltip_src);
+        // 261116_0003 P6b fix round 3 (R15-01): the tray HEADER is a fourth
+        // ghost-comment site, compared squeezed like the other three.
+        const std::string tray_hdr_flat = squeeze(tray_hdr);
+        if (tray_src.empty() || main_src.empty() || tray_hdr.empty() || hook_src.empty() ||
+            tooltip_src.empty() || tooltip_hdr.empty() || palette_hdr.empty()) {
+            std::cout << "[SKIP] tray.cpp/tray.hpp/main.cpp/hook.cpp/tooltip.cpp/tooltip.hpp/"
+                         "language_search_palette.hpp not resolvable from the test CWD; "
                          "U-J structural pins skipped." << std::endl;
         } else {
             // W1: both the tip and the status row are built by the pure helpers
@@ -20843,6 +22850,478 @@ void TestUJQuickWins() {
                            main_src.find("NormalizeLanguageCode(snap_in.type_source_language)") ==
                                std::string::npos,
                        "W2: both swap rows share the pure planner (inline policy removed)");
+
+            // ---- 261116_0003 P6a fix round (PR6-02b): the new tray search /
+            // ghost rows are pinned by source — the menu build + dispatch is
+            // GUI-only, so a dropped/renamed ID or a lost call site must fail
+            // here. (The contiguous 2601..2608 band itself is compile-time
+            // asserted in tray.cpp; these pins guard the NAMES + the arms.)
+            TEST_CHECK(tray_src.find("ID_TRAY_SEARCH_SRC = 2601") != std::string::npos &&
+                           tray_src.find("ID_TRAY_SEARCH_TGT = 2602") != std::string::npos &&
+                           tray_src.find("ID_TRAY_SEARCH_DRAG_SRC = 2603") != std::string::npos &&
+                           tray_src.find("ID_TRAY_SEARCH_DRAG_TGT = 2604") != std::string::npos,
+                       "P6a: the four search-row IDs 2601..2604 are defined in tray.cpp");
+            TEST_CHECK(tray_src.find("cmd == ID_TRAY_SEARCH_SRC") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_SEARCH_TGT") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_SEARCH_DRAG_SRC") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_SEARCH_DRAG_TGT") != std::string::npos,
+                       "P6a: all four search IDs dispatch in the search arm");
+            TEST_CHECK(tray_src.find("I18n::Get(StringId::MenuSearchLangs)") != std::string::npos,
+                       "P6a: the search row label reads StringId::MenuSearchLangs");
+            TEST_CHECK(tray_src.find("PostDeferredLanguagePaletteOpen(hOwner_, req)") !=
+                           std::string::npos,
+                       "P6a: the search arm posts the deferred picker open");
+            TEST_CHECK(tray_src.find("ID_TRAY_GHOST_SRC = 2605") != std::string::npos &&
+                           tray_src.find("ID_TRAY_GHOST_TGT = 2606") != std::string::npos &&
+                           tray_src.find("ID_TRAY_GHOST_DRAG_SRC = 2607") != std::string::npos &&
+                           tray_src.find("ID_TRAY_GHOST_DRAG_TGT = 2608") != std::string::npos,
+                       "P6a: the four ghost-row IDs 2605..2608 are defined in tray.cpp");
+            TEST_CHECK(tray_src.find("cmd == ID_TRAY_GHOST_SRC") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_GHOST_TGT") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_GHOST_DRAG_SRC") != std::string::npos &&
+                           tray_src.find("cmd == ID_TRAY_GHOST_DRAG_TGT") != std::string::npos,
+                       "P6a: all four ghost IDs land in the documented no-op arm");
+
+            // ---- 261116_0003 P6a fix round r2 (PR6-07) + r3 (PR6-10): the
+            // pinned-absent ghost is scoped to a persisted engine_type of
+            // exactly "auto". Index 0 also covers explicit "google", where
+            // PlanTranslationRouting never reaches the local leg, so the
+            // truthful single-view ghost must survive. R3 composes the gate
+            // with the router's OWN pair predicate LocalPairReliable
+            // (config.cpp:1280-1307): pairwise, unlike the r2 second-view
+            // probe, which was pair-blind (source HU cloud-only + target BO
+            // HyMt2-only has BO inside the HyMt2 view, yet the router falls
+            // back to Google, which cannot serve BO). These pins are
+            // source-scan only: the gate is Win32-interactive (menu build),
+            // so dropping the token, reading it from anywhere but the
+            // resolver view, populating it from the collapsed index,
+            // reverting to the view-union probe, or dropping either
+            // LocalPairReliable argument must fail HERE.
+            TEST_CHECK(tray_hdr.find("struct EngineMenuView") != std::string::npos &&
+                           tray_hdr.find("bool is_auto = false;") != std::string::npos,
+                       "P6a r2: EngineMenuView declares the is_auto token (false default = "
+                       "unwired tray keeps the truthful single-view ghost)");
+            TEST_CHECK(tray_src.find("const bool is_auto = view.is_auto;") != std::string::npos,
+                       "P6a r2: the menu build reads the token from the resolver view");
+            // 261116_0003 P6b fix round (PR6-28): the four-conjunct gate is no
+            // longer inline in tray.cpp — it is the SHARED predicate
+            // language_palette::SuppressPinnedAbsentGhost (ONE definition in
+            // language_search_palette.hpp, consumed by BOTH the tray and the
+            // tooltip). These r3/r4 pins are RE-ANCHORED to the new shape:
+            // the tray must CALL the predicate with all three router-aware
+            // inputs, must NOT re-implement the conjuncts locally, and the
+            // conjuncts themselves (auto token, availability, both
+            // LocalPairReliable arguments) are pinned in the palette header
+            // where the single definition lives.
+            TEST_CHECK(tray_src_flat.find("language_palette::SuppressPinnedAbsentGhost(ghost_probe,"
+                                          "pref,is_auto,local_host_available)") != std::string::npos &&
+                           tray_src.find("pref == 0 && is_auto") == std::string::npos,
+                       "P6a r3 (PR6-10) + r4 (PR6-19), re-anchored (PR6-28, PR6-33): the tray's "
+                       "ghost gate passes ALL FOUR predicate arguments in order — the probe, the "
+                       "collapsed engine index, the RAW auto token and the LIVE host token "
+                       "(a constant true/false fourth argument fails here: M-F/M-G)");
+            TEST_CHECK(palette_hdr.find("LocalPairReliable(req.source_code, req.target_code)") !=
+                           std::string::npos,
+                       "P6a r3 (PR6-10), re-anchored (PR6-28): the shared predicate consults "
+                       "the router's own LocalPairReliable with BOTH probe codes (dropping "
+                       "either argument fails here)");
+            TEST_CHECK(tray_src.find("local_probe") == std::string::npos,
+                       "P6a r3 (PR6-10): the dead r2 second-view probe block is gone");
+            TEST_CHECK(main_src.find("view.is_auto = (snap.engine_type == \"auto\")") !=
+                           std::string::npos,
+                       "P6a r2: main.cpp's resolver populates the token from the RAW "
+                       "snap.engine_type");
+            // ---- 261116_0003 P6a fix round r4 (PR6-19): the ghost gate gains
+            // the router's OWN host-availability conjunct. HostCouldServeFor
+            // (engine.cpp:288-290) = engine_host.enabled &&
+            // IsHostBinaryPresent(); under auto with the host absent
+            // (Zero-Install) RefreshActiveEngine picks Google
+            // (engine.cpp:357-359) and Translate() never consults the routing
+            // plan (engine.cpp:685-691), so a HyMt2-only pin is honored by no
+            // leg and the truthful ghost must SHOW. Source-scan only (the
+            // gate is Win32-interactive): dropping the conjunct, populating
+            // it from a display string or the collapsed index, weakening the
+            // two-component predicate, or flipping the false default must
+            // fail HERE.
+            TEST_CHECK(tray_hdr.find("bool local_host_available = false;") != std::string::npos,
+                       "P6a r4 (PR6-19): EngineMenuView declares the host-availability "
+                       "token (false default = unwired tray keeps the truthful ghost)");
+            TEST_CHECK(tray_src.find("const bool local_host_available = view.local_host_available;") !=
+                           std::string::npos,
+                       "P6a r4 (PR6-19): the menu build copies the token out of the "
+                       "resolver view (the lambda's own view parameter shadows the "
+                       "EngineMenuView)");
+            TEST_CHECK(palette_hdr.find("preferred_engine != 0 || !is_auto || "
+                                        "!local_host_available") != std::string::npos,
+                       "P6a r4 (PR6-19), re-anchored (PR6-28): the shared predicate carries "
+                       "the availability conjunct (dropping it from the gate fails here)");
+            TEST_CHECK(main_src.find("config.engine_host.enabled && "
+                                     "emebalachat::engine_host::IsHostBinaryPresent()") !=
+                           std::string::npos,
+                       "P6a r4 (PR6-19): main.cpp's resolver populates the token from "
+                       "the SAME two components the router's HostCouldServeFor "
+                       "evaluates (a constant true or the enabled flag alone fails "
+                       "here)");
+            TEST_CHECK(tray_hdr.find("additionally requires the local host leg to be live") !=
+                           std::string::npos &&
+                           tray_hdr.find("Google Translate (Zero-Install)") != std::string::npos,
+                       "P6a r4 (PR6-19): the header rationale states the availability "
+                       "precondition and the explicit Zero-Install case");
+            // R3 rationale pins: the header's rationale must state the
+            // composed gate, the PR6-11 non-canonical-token corner, and the
+            // PR6-14 suppressed-ghost tail precisely (source-scan).
+            TEST_CHECK(tray_hdr.find("ROUTER'S OWN pair predicate") != std::string::npos &&
+                           tray_hdr.find("pair-blind") != std::string::npos,
+                       "P6a r3 (PR6-10): the rationale names the router's own pair "
+                       "predicate and the pair-blind view-probe defect");
+            TEST_CHECK(tray_hdr.find("hand-edited non-canonical token routes as Auto") !=
+                           std::string::npos &&
+                           tray_hdr.find("P9 config-normalization") != std::string::npos,
+                       "P6a r3 (PR6-11): the rationale states the non-canonical-token "
+                       "corner honestly and names the P9 deferral");
+            TEST_CHECK(tray_hdr.find("no row at all") != std::string::npos,
+                       "P6a r3 (PR6-14): the rationale tail states the suppressed-ghost "
+                       "case (the honored pick renders as no row at all)");
+            // PR6-08: the diagnostic may not claim one specific cause for the
+            // false return (the picker also returns false with the controller
+            // null, GLE untouched), while the GLE clear + GLE-log arms that
+            // make the remaining arm truthful stay in place. R3 PR6-13: the
+            // r1 absolute ("non-zero afterwards ONLY when the post itself
+            // really failed") is gone — the three-causes paragraph's case (1)
+            // contradicts it.
+            TEST_CHECK(tray_src.find("coalesced or rejected") != std::string::npos &&
+                           tray_src.find("UI/Tray/002: deferred language-picker open coalesced") ==
+                               std::string::npos,
+                       "P6a r2 (PR6-08): the false-return label is cause-neutral");
+            TEST_CHECK(tray_src.find("::SetLastError(ERROR_SUCCESS);") != std::string::npos &&
+                           tray_src.find("deferred language-picker open post failed (GLE %lu)") !=
+                               std::string::npos,
+                       "P6a r2 (PR6-08): the GLE clear and the GLE-logging arm are unchanged");
+            TEST_CHECK(tray_src.find("non-zero afterwards only when the") ==
+                           std::string::npos,
+                       "P6a r3 (PR6-13): the stale 'non-zero ONLY when the post really "
+                       "failed' absolute is gone from the GLE comment");
+
+            // ---- 261116_0003 P6b: the tooltip's two language dropdowns join
+            // the engine views (resolver seam + 검색…/ghost rows + the
+            // deferred picker open). The menu build + dispatch is
+            // Win32-interactive, so the surface is pinned by source; every
+            // pin names the mutation that kills it.
+            const auto count_of = [](const std::string& hay, const char* needle) {
+                size_t n = 0;
+                for (size_t at = hay.find(needle); at != std::string::npos;
+                     at = hay.find(needle, at + 1)) {
+                    ++n;
+                }
+                return n;
+            };
+            // P6b-1 (the seam's type), widened by the P6b fix round (PR6-28):
+            // a MenuEngineResolution-returning resolver (engine + is_auto +
+            // local_host_available). Kills: retyping the resolver to a tray
+            // index (the tray's collapsed 4-way int) or removing the seam —
+            // either breaks the P6c wiring contract.
+            TEST_CHECK(tooltip_hdr.find("struct MenuEngineResolution") != std::string::npos &&
+                           tooltip_hdr.find("using EngineResolver = "
+                                            "std::function<MenuEngineResolution()>;") !=
+                               std::string::npos &&
+                           tooltip_hdr.find("void SetEngineResolver(EngineResolver resolver)") !=
+                               std::string::npos,
+                       "P6b: the tooltip declares an EngineResolver seam returning "
+                       "MenuEngineResolution (engine + is_auto + local_host_available)");
+            // P6b-2 (the unwired defaults): {Google, false, false}. Kills:
+            // defaulting the unwired state to Auto/HyMt2 or true — the
+            // tooltip would render the local view (or suppress ghosts) with
+            // no resolver wired (the conservative values are the documented
+            // P6c-pre state).
+            TEST_CHECK(tooltip_hdr.find("engine_resolver_ ? engine_resolver_() : "
+                                        "MenuEngineResolution{}") != std::string::npos &&
+                           tooltip_hdr.find("LanguageEngine engine = LanguageEngine::Google;") !=
+                               std::string::npos &&
+                           tooltip_hdr.find("bool is_auto = false;") != std::string::npos &&
+                           tooltip_hdr.find("bool local_host_available = false;") !=
+                               std::string::npos,
+                       "P6b: the unwired resolver defaults to MenuEngineResolution{} "
+                       "(Google / is_auto=false / local_host_available=false — the "
+                       "conservative cloud view until P6c wires the seam)");
+            // P6b-3 (no duplication): the tooltip must never call the tray's
+            // engine mapper; main.cpp resolves the LanguageEngine in P6c.
+            // Kills: any tooltip-side TrayLanguageEngineFor /
+            // TrayPreferredEngineIndex reference (the mapper would then live
+            // in two layers).
+            TEST_CHECK(tooltip_src.find("TrayLanguageEngineFor") == std::string::npos &&
+                           tooltip_src.find("TrayPreferredEngineIndex") == std::string::npos &&
+                           tooltip_hdr.find("TrayLanguageEngineFor") == std::string::npos &&
+                           tooltip_hdr.find("TrayPreferredEngineIndex") == std::string::npos,
+                       "P6b: the tooltip references neither tray engine mapper (the "
+                       "LanguageEngine mapping stays in main.cpp / tray.hpp)");
+            // P6b-4 (the engine views): both builders build from the resolved
+            // engine's view with the role-correct include_auto. Kills: (a)
+            // reverting either builder to the global list, or flipping either
+            // include_auto (the target menu would offer AUTO).
+            // 261116_0003 P9b-2 re-anchor: the view is now the D5/D7 MERGE
+            // (BuildLanguageMenuView), which wraps GetLanguagesForEngine with
+            // the same engine + include_auto and removes the claimed registry
+            // rows. The pin keeps killing the same defects: a global list, or a
+            // flipped include_auto.
+            TEST_CHECK(tooltip_src.find("BuildLanguageMenuView(menu_engine.engine, "
+                                        "/*include_auto=*/true,") != std::string::npos &&
+                           tooltip_src.find("BuildLanguageMenuView(menu_engine.engine, "
+                                            "/*include_auto=*/false,") != std::string::npos,
+                       "P6b/P9b-2: both dropdown builders build from the engine's merged view "
+                       "(source keeps AUTO, target drops it)");
+            // P6b-5 (the global lists are gone): the assignment forms must not
+            // reappear. Kills: (a) — reverting a builder restores the exact
+            // `= GetSupportedLanguages();` / `= GetTargetLanguages();` text.
+            TEST_CHECK(tooltip_src.find("GetSupportedLanguages();") == std::string::npos &&
+                           tooltip_src.find("GetTargetLanguages();") == std::string::npos,
+                       "P6b: the global language lists are gone from tooltip.cpp's menu builders");
+            // P6b-6 (derive-at-open per builder): each builder resolves the
+            // engine ONCE at its top. Kills: hard-coding one builder's engine
+            // or dropping a resolution (the count drops to 1).
+            TEST_CHECK(count_of(tooltip_src, "pThis->ResolveMenuEngine()") == 2,
+                       "P6b: BOTH dropdown builders resolve the engine at menu-build time");
+            // P6b-7 (the search rows): the localized label on BOTH menus.
+            // Kills: dropping either search row (count drops) or hand-rolling
+            // the label (the i18n key read disappears).
+            TEST_CHECK(count_of(tooltip_src, "I18n::Get(StringId::MenuSearchLangs)") == 2,
+                       "P6b: both dropdowns carry the MenuSearchLangs search row");
+            // P6b-8 (the dedicated band): the four ids and their dispatch
+            // arms. Kills: renaming an id, dropping an arm, or renumbering
+            // the band down into the language rows' i + 1 space.
+            TEST_CHECK(tooltip_src.find("kTooltipCmdSearchSrc = 2701") != std::string::npos &&
+                           tooltip_src.find("kTooltipCmdSearchTgt = 2702") != std::string::npos &&
+                           tooltip_src.find("kTooltipCmdGhostSrc") != std::string::npos &&
+                           tooltip_src.find("= 2703") != std::string::npos &&
+                           tooltip_src.find("kTooltipCmdGhostTgt") != std::string::npos &&
+                           tooltip_src.find("= 2704") != std::string::npos,
+                       "P6b: the search/ghost ids live in the dedicated >=2701 band in tooltip.cpp");
+            TEST_CHECK(tooltip_src.find("cmd == kTooltipCmdSearchSrc") != std::string::npos &&
+                           tooltip_src.find("cmd == kTooltipCmdSearchTgt") != std::string::npos &&
+                           tooltip_src.find("cmd == kTooltipCmdGhostSrc") != std::string::npos &&
+                           tooltip_src.find("cmd == kTooltipCmdGhostTgt") != std::string::npos,
+                       "P6b: all four dedicated ids have their dispatch arms (search + no-op ghost)");
+            // P6b-9 (the ghost row): greyed + checked on BOTH menus, driven by
+            // the picker's OWN predicate. Kills: dropping a ghost row (count
+            // drops), weakening the flags, or re-implementing the capability
+            // check instead of reusing PinnedAbsentLanguage.
+            // 261116_0003 P9b-2: each dropdown now carries TWO greyed+checked
+            // rows per menu (the registry ghost and the user-entry ghost, same
+            // slot and same command id), so the flag count is 4 while the
+            // shared predicate is still consulted exactly twice (the user half
+            // deliberately does NOT re-derive capability - it asks the merge).
+            TEST_CHECK(count_of(tooltip_src, "MF_STRING | MF_GRAYED | MF_CHECKED") == 4 &&
+                           count_of(tooltip_src, "PickerState{picker_req}.PinnedAbsentLanguage()") == 2,
+                       "P6b/P9b-2: both ghost rows (registry + user half) are "
+                       "MF_GRAYED|MF_CHECKED, and the registry half reuses "
+                       "PickerState::PinnedAbsentLanguage");
+            // P6b-10 (the ghost label keeps the tooltip's row form). Kills:
+            // switching the ghost to the tray's "CODE - display" form (the
+            // name_en (name_native) expression disappears).
+            TEST_CHECK(count_of(tooltip_src,
+                                "ToUtf16(ghost->name_en) + L\" (\" + ToUtf16(ghost->name_native) + L\")\"") == 2,
+                       "P6b: the ghost row keeps the tooltip's own name_en (name_native) row form");
+            // P6b-11 (the frozen row-id scheme): the language rows stay
+            // i + 1. Kills: (b) rebasing the rows to a base band (the exact
+            // i + 1 expression disappears).
+            TEST_CHECK(count_of(tooltip_src, "static_cast<UINT_PTR>(i + 1)") == 2,
+                       "P6b: the language row ids stay i + 1 in both builders (the frozen scheme)");
+            // P6b-12 (the frozen range checks): the dispatch indexes the SAME
+            // build list with cmd - 1. Kills: (b)'s dispatch half — rebasing
+            // the rows or re-deriving the list at dispatch time changes these
+            // exact expressions.
+            TEST_CHECK(tooltip_src.find("cmd > 0 && static_cast<size_t>(cmd - 1) < src_langs.size()") !=
+                               std::string::npos &&
+                           tooltip_src.find("cmd > 0 && static_cast<size_t>(cmd - 1) < target_langs.size()") !=
+                               std::string::npos,
+                       "P6b: both language range checks keep the cmd - 1 form against the build lists");
+            // P6b-13 (the deferred open targets THIS window): both search
+            // arms post to the tooltip's own hwnd. Kills: posting to a
+            // controller/other window (the hwnd argument changes).
+            TEST_CHECK(count_of(tooltip_src, "PostDeferredLanguagePaletteOpen(hwnd, picker_req)") == 2,
+                       "P6b: both search arms post the deferred open to the tooltip's own window");
+            // P6b-14 (the handler's obligations), scoped to the arm window:
+            // takes the latch, guards the optional, never unwraps through the
+            // throwing accessor, shows the picker owned by this window, and
+            // returns 0 on BOTH paths (orphan + normal). Kills: (c) —
+            // dropping the guard or unwrapping with the accessor puts the
+            // forbidden call inside the arm; removing either return drops the
+            // count.
+            const size_t picker_arm_at = tooltip_src.find("case kMsgOpenLanguagePalette: {");
+            TEST_CHECK(picker_arm_at != std::string::npos,
+                       "P6b: the WndProc arm for the picker wake-up exists");
+            if (picker_arm_at != std::string::npos) {
+                const std::string arm_window = tooltip_src.substr(picker_arm_at, 8192);
+                const size_t next_case_at = arm_window.find("\n        case ");
+                const std::string arm_body = next_case_at == std::string::npos
+                                                 ? arm_window
+                                                 : arm_window.substr(0, next_case_at);
+                TEST_CHECK(arm_body.find("TakeDeferredLanguagePaletteOpen()") != std::string::npos &&
+                               arm_body.find("init.has_value()") != std::string::npos &&
+                               arm_body.find(".value()") == std::string::npos,
+                           "P6b: the picker arm guards the optional and never unwraps it with "
+                           "the throwing accessor");
+                TEST_CHECK(count_of(arm_body, "return 0;") == 3 &&
+                               arm_body.find("ShowLanguageSearchPalette(hwnd, ") != std::string::npos,
+                           "P6b: the picker arm returns 0 on all three paths "
+                           "(deferred-while-open [PR6-42], foreign-surface refusal, "
+                           "normal+drain-end; the orphan pass exits via break into the "
+                           "final return) and shows the picker owned by the tooltip's "
+                           "own window");
+                // P6b-15 (PR5-03 on the picker path): the focus choreography
+                // now runs on THREE modal surfaces (two menus + the picker).
+                // Kills: dropping the capture or the restore from the picker
+                // path (the counts drop back to 2).
+                TEST_CHECK(count_of(tooltip_src, "HWND hwndPrev = ::GetForegroundWindow();") == 3 &&
+                               count_of(tooltip_src,
+                                        "if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {") == 3,
+                           "P6b: the hwndPrev focus-restore pattern covers both menus AND the "
+                           "picker path (3 capture + 3 restore sites)");
+                // P6bfix-4 (surface ownership, M-D): the picker arm refuses a
+                // foreign-surface latched request BEFORE any picker open —
+                // one diagnostic line, return 0, never dispatched. Kills:
+                // removing the check (any foreign request reaches
+                // ShowLanguageSearchPalette) or moving it after the open.
+                TEST_CHECK(arm_body.find("init->surface != language_palette::PickerSurface::"
+                                         "TooltipPill") != std::string::npos &&
+                               arm_body.find("result=surface_mismatch") != std::string::npos &&
+                               arm_body.find("ShowLanguageSearchPalette") >
+                                   arm_body.find("result=surface_mismatch"),
+                           "P6bfix (PR6-29): the picker arm validates surface ownership "
+                           "(TooltipPill) and drops a foreign request with one diagnostic line "
+                           "before any picker open (M-D fails here)");
+            }
+            // P6b-16 (the surface tag): both picker requests name
+            // TooltipPill, and the PR6-29 ownership check compares the
+            // latched request against the same tag (3 occurrences). Kills:
+            // mislabeling a surface (the tray's TrayTyping/TrayTooltip tag
+            // would dispatch through the wrong controller contract) or
+            // dropping the ownership comparison.
+            TEST_CHECK(count_of(tooltip_src, "language_palette::PickerSurface::TooltipPill") == 3,
+                       "P6b: both picker requests carry the TooltipPill surface tag, and "
+                       "the picker arm's ownership check compares against it");
+
+            // ---- 261116_0003 P6b fix round (PR6-28/29/30): the shared ghost
+            // predicate, the widened seam, the surface-ownership check and
+            // the strengthened band assert. Source-scan, every pin names its
+            // killing mutation; fix round 2 re-verified the labels against
+            // tools_tmp_261117_p6bfix/tests_mut_*.log and corrected the two
+            // that did not match (PR6-36), adding M-K for the seam pin.
+            // P6bfix-1 (single definition, killed by round-1 M-A): the four
+            // conjuncts live EXACTLY ONCE, in the palette header; the two
+            // surfaces carry no local copy. M-A re-implements the chain in
+            // tray.cpp and fails THIS pin (tests_mut_a.log, line 22365 in the
+            // round-1 build). Round-1 M-C did NOT touch it — M-C's only
+            // victim is the P6a r4 predicate-text pin verified below.
+            TEST_CHECK(palette_hdr.find("inline bool SuppressPinnedAbsentGhost(") !=
+                           std::string::npos &&
+                           palette_hdr.find("return LocalPairReliable(req.source_code, "
+                                            "req.target_code);") != std::string::npos &&
+                           tray_src.find("pref == 0 && is_auto") == std::string::npos &&
+                           tooltip_src.find("pref_equiv == 0") == std::string::npos,
+                       "P6bfix: SuppressPinnedAbsentGhost is the SINGLE definition of the "
+                       "ghost-suppression decision (no surface re-implements the conjuncts); "
+                       "M-A fails here");
+            // P6bfix-2 (both surfaces call the shared predicate, M-A/M-B): the
+            // FULL call is bound on each side — all four arguments, in order,
+            // at the tray site and at BOTH tooltip sites (the source-menu
+            // site before the target request's role tag, the target-menu site
+            // after it). PR6-33 closed the round-1 hole: the old needle
+            // stopped at "..., is_auto," and a constant fourth argument
+            // stayed green. M-F/M-G (tray 4th arg -> true/false) and M-H
+            // (pref_equiv direction inverted) fail here.
+            const std::string tray_call_flat =
+                "language_palette::SuppressPinnedAbsentGhost(ghost_probe,pref,is_auto,"
+                "local_host_available)";
+            const std::string tooltip_call_flat =
+                "language_palette::SuppressPinnedAbsentGhost(picker_req,pref_equiv,"
+                "menu_engine.is_auto,menu_engine.local_host_available)";
+            const std::string pref_equiv_flat =
+                "constintpref_equiv=(menu_engine.engine==LanguageEngine::Google)?0:1;";
+            const std::size_t tooltip_tgt_role =
+                tooltip_src.find("picker_req.role = language_palette::PickerRole::Target;");
+            TEST_CHECK(tooltip_tgt_role != std::string::npos &&
+                           tooltip_src.find("picker_req.role = language_palette::PickerRole::Source;") <
+                               tooltip_tgt_role,
+                       "P6bfix: the two tooltip ghost sites are separable by their role tag "
+                       "(source menu first, target menu second) so the per-site call pins below "
+                       "are non-vacuous");
+            const std::string tooltip_src_head_flat = squeeze(tooltip_src.substr(0, tooltip_tgt_role));
+            const std::string tooltip_src_tail_flat = squeeze(tooltip_src.substr(tooltip_tgt_role));
+            TEST_CHECK(tray_src_flat.find(tray_call_flat) != std::string::npos &&
+                           count_of(tooltip_src_head_flat, tooltip_call_flat.c_str()) == 1 &&
+                           count_of(tooltip_src_tail_flat, tooltip_call_flat.c_str()) == 1 &&
+                           count_of(tooltip_src_flat, pref_equiv_flat.c_str()) == 2 &&
+                           tooltip_src_flat.find("?1:0;") == std::string::npos,
+                       "P6bfix: the tray and BOTH tooltip dropdowns pass the shared predicate's "
+                       "four arguments in order, and pref_equiv maps Google->0 / concrete->1 "
+                       "at both sites (M-A/M-B fail here; M-F/M-G/M-H fail on the argument "
+                       "binding)");
+            // P6bfix-3 (the widened seam feeds the gate, killed by M-K): the
+            // ghost builders resolve through MenuEngineResolution. Kills:
+            // reverting the resolver to a bare LanguageEngine or to the
+            // unwired default — the gate loses is_auto /
+            // local_host_available and the tooltip goes pair-blind again.
+            // (Round 1 attributed this to "M-B's seam half"; M-B stops at the
+            // shared call and leaves this pin green — tests_mut_b.log shows a
+            // single failure at the P6bfix-2 line. M-K, run in fix round 2,
+            // replaces the two resolutions with MenuEngineResolution{} and
+            // fails at TWO checks, not one (PR6-39): this seam pin AND the
+            // P6b-6 resolver pin above — tools_tmp_261117_p6bfix2/
+            // tests_mut_k.log carries both [FAIL] entries.)
+            TEST_CHECK(count_of(tooltip_src, "const MenuEngineResolution menu_engine = "
+                                             "pThis->ResolveMenuEngine();") == 2 &&
+                           tooltip_hdr.find("MenuEngineResolution ResolveMenuEngine() const") !=
+                               std::string::npos,
+                       "P6bfix: both ghost builders resolve the widened MenuEngineResolution "
+                       "seam (engine + is_auto + local_host_available); M-K fails here and "
+                       "at the P6b-6 resolver pin above (two failures, tests_mut_k.log)");
+            // P6bfix-5 (the strengthened band assert, M-E's source half):
+            // pairwise distinct AND above the language-row horizon, in the
+            // tray band-assert idiom. Kills: reverting to the >=2701-only
+            // form (an intra-band duplicate becomes invisible again). M-E
+            // itself is proven by the BUILD failing on the mutated duplicate.
+            TEST_CHECK(tooltip_src.find("kTooltipCmdSearchSrc != kTooltipCmdSearchTgt") !=
+                           std::string::npos &&
+                           tooltip_src.find("kTooltipCmdGhostSrc != kTooltipCmdGhostTgt") !=
+                               std::string::npos &&
+                           tooltip_src.find("kTooltipCmdSearchSrc >= 2701") != std::string::npos,
+                       "P6bfix (PR6-30): the tooltip band assert proves the four dedicated "
+                       "ids pairwise distinct AND >= 2701 (the tray idiom)");
+            // P6bfix-6 (the shared-decision/unshared-inputs contract,
+            // reworded by the close round for PR6-41): substance, not
+            // sentences — every ghost-comment site is compared SQUEEZED
+            // (whitespace removed, so re-wrapping or re-indenting a comment
+            // cannot false-fail the pin) and must (a) NOT carry the false
+            // "can never disagree about the ghost row" absolute and (b) name
+            // the P6c completion step. The scan covers ALL FOUR sites —
+            // tray.cpp, tooltip.cpp, the predicate's own doc block in
+            // language_search_palette.hpp, AND the tray header's
+            // TrayLanguageEngineFor contract block (src/ui/tray.hpp) —
+            // because fix round 2 watched only tooltip.cpp while the
+            // byte-frozen tray/header kept the absolute (the PR6-38 blind
+            // spot). Round-2 re-review (R15-01) found that blind spot still
+            // live at tray.hpp: this comment recounted the header site while
+            // the conjunction scanned only three files, exactly the
+            // recount-without-scanning shape R14-07 bans, so the fourth
+            // term was added and this list now matches the code below.
+            // Kills: restoring the absolute at ANY of the four sites, or
+            // dropping the P6c completion mention from a site.
+            TEST_CHECK(tray_src_flat.find("disagreeabouttheghostrow") ==
+                           std::string::npos &&
+                       tooltip_src_flat.find("disagreeabouttheghostrow") ==
+                           std::string::npos &&
+                       squeeze(palette_hdr).find("disagreeabouttheghostrow") ==
+                           std::string::npos &&
+                       tray_hdr_flat.find("disagreeabouttheghostrow") ==
+                           std::string::npos &&
+                       tray_src_flat.find("P6c") != std::string::npos &&
+                       tooltip_src_flat.find("P6c") != std::string::npos &&
+                       squeeze(palette_hdr).find("P6c") != std::string::npos &&
+                       tray_hdr_flat.find("P6c") != std::string::npos,
+                       "P6bfix (PR6-28/PR6-35/PR6-38/R15-01 docs): all four ghost-comment "
+                       "sites state the corrected shared-decision/unshared-inputs model and "
+                       "name P6c's SetEngineResolver wiring as the completing step (the false "
+                       "'never disagree' absolute is gone from every site)");
 
             // W3: the cycle confirmation rides the coordinator's success path,
             // names the authoritative post-plan target, and the hook callback
@@ -20952,6 +23431,653 @@ void TestUJQuickWins() {
         std::cout << "[PASS] U-J Wave A convenience quick wins passed." << std::endl;
     } else {
         std::cout << "[FAIL] U-J Wave A convenience quick wins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- 261116_0003 P6b fix round 2 (PR6-33 / PR6-37): BEHAVIOURAL truth -----
+// table of the shared ghost-suppression predicate.
+//
+// Fix round 1 pinned the two call sites by source scan only (the menu builds
+// are Win32-interactive and cannot run here), and code review F-01 (PR6-33)
+// showed that shape's blind spot: the tray needle stopped at "..., is_auto,"
+// and never bound the fourth argument, so substituting a constant stayed
+// green. The predicate itself is a PURE inline function in
+// language_search_palette.hpp's SECTION A, so this suite calls it DIRECTLY and
+// drives the whole input matrix — SECTION A's house pattern (behaviour over
+// text). The source-scan pins stay as the belt-and-braces guard on the call
+// sites, because no behavioural test can see which argument a production site
+// passes.
+//
+// Registry evidence (src/config.cpp): HU is kMaskCloudOnly (no kLangHyMt2, so
+// no local leg can serve it as a source), BO is kLangHyMt2 | kLangOpenAi |
+// kLangUserGguf (no kLangGoogle, so the Google leg cannot serve it at all).
+// Those two REAL rows are the PR6-10 proof-of-concept pair; the truth table
+// reads their masks from the registry before relying on them.
+void TestP6bGhostSuppressionTruthTable() {
+    std::cout << "[RUN] Testing 261116_0003 P6b shared ghost-suppression truth table..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    using language_palette::PickerInit;
+    using language_palette::PickerRole;
+    using language_palette::PickerSurface;
+    using language_palette::SuppressPinnedAbsentGhost;
+
+    // ---- registry evidence (not asserted from memory: read the rows) -------
+    const LanguageInfo* hu = FindLanguageByCode("HU");
+    const LanguageInfo* bo = FindLanguageByCode("BO");
+    const auto in_view = [](const std::vector<const LanguageInfo*>& view, const char* code) {
+        for (const LanguageInfo* row : view) {
+            if (row->code == code) {
+                return true;
+            }
+        }
+        return false;
+    };
+    TEST_CHECK(hu != nullptr && (hu->engine_mask & kLangHyMt2) == 0 &&
+                   (hu->engine_mask & kLangGoogle) != 0,
+               "P6b truth table: HU is cloud-only (config.cpp:108, kMaskCloudOnly) — no "
+               "kLangHyMt2 bit, so the local pair predicate must reject it as a source");
+    TEST_CHECK(bo != nullptr && (bo->engine_mask & kLangHyMt2) != 0 &&
+                   (bo->engine_mask & kLangGoogle) == 0,
+               "P6b truth table: BO is Hy-MT2-only (config.cpp:133) — no kLangGoogle bit, "
+               "which is why the ghost row exists for it");
+    TEST_CHECK(in_view(GetLanguagesForEngine(LanguageEngine::Google, false), "HU") &&
+                   !in_view(GetLanguagesForEngine(LanguageEngine::Google, false), "BO"),
+               "P6b truth table: the Google view offers HU but not BO (the unwired tooltip "
+               "default's narrowing, PR6-34)");
+    TEST_CHECK(in_view(GetLanguagesForEngine(LanguageEngine::HyMt2, false), "BO") &&
+                   !in_view(GetLanguagesForEngine(LanguageEngine::HyMt2, false), "HU"),
+               "P6b truth table: the Hy-MT2 view offers BO but not HU");
+
+    const auto request = [](const char* src, const char* tgt) {
+        PickerInit req;
+        req.surface = PickerSurface::TooltipPill;
+        req.role = PickerRole::Source;
+        req.source_code = src;
+        req.target_code = tgt;
+        return req;
+    };
+
+    struct Row {
+        const char* what;
+        const char* src;
+        const char* tgt;
+        int pref;
+        bool is_auto;
+        bool host;
+        bool expected;
+        const char* kills;
+    };
+    // {case, source, target, preferred_engine, is_auto, local_host_available,
+    //  expected suppression, the mutation this row kills}
+    const Row kRows[] = {
+        {"concrete local engine (pref=1) keeps the ghost even for a reliable pair",
+         "AUTO", "KO", 1, true, true, false,
+         "dropping preferred_engine != 0 (the ghost would vanish under Local)"},
+        {"concrete OpenAI engine (pref=2) keeps the ghost; same inputs as pref=1",
+         "AUTO", "KO", 2, true, true, false,
+         "dropping preferred_engine != 0"},
+        {"concrete user-gguf engine (pref=3) keeps the ghost; same inputs as pref=1",
+         "AUTO", "KO", 3, true, true, false,
+         "dropping preferred_engine != 0"},
+        {"explicit google (is_auto false) keeps the ghost though host + pair qualify",
+         "AUTO", "KO", 0, false, true, false,
+         "dropping !is_auto (the PR6-07 explicit-google defect)"},
+        {"Zero-Install (auto, no live host) keeps the ghost: no leg serves a HyMt2-only pin",
+         "AUTO", "KO", 0, true, false, false,
+         "dropping !local_host_available (round-1 M-C, the PR6-19 window)"},
+        {"auto + live host + reliable pair suppresses the ghost (AUTO->KO)",
+         "AUTO", "KO", 0, true, true, true,
+         "an unconditional return false, or inverting the pair verdict"},
+        {"auto + live host + reliable pair suppresses the ghost (AUTO->BO, HyMt2 target)",
+         "AUTO", "BO", 0, true, true, true,
+         "a target test narrower than LocalPairReliable (BO is the ghost row itself)"},
+        {"auto + live host + HU->BO stays SHOWN: HU is cloud-only (the PR6-10 PoC)",
+         "HU", "BO", 0, true, true, false,
+         "the r2 pair-blind view probe (BO IS inside the HyMt2 view)"},
+        {"auto + live host + BO->HU stays SHOWN: the TARGET is cloud-only",
+         "BO", "HU", 0, true, true, false,
+         "a source-only pair check (the target side dropped)"},
+        {"orientation: KO->AUTO is never reliable (AUTO is never a translation target)",
+         "KO", "AUTO", 0, true, true, false,
+         "an argument swap inside the predicate (it would call the pair AUTO->KO)"},
+        {"orientation: BO->AUTO is never reliable either (the twin of AUTO->BO)",
+         "BO", "AUTO", 0, true, true, false,
+         "an argument swap inside the predicate (it would call the pair AUTO->BO)"},
+        {"empty source normalizes to AUTO and stays reliable",
+         "", "KO", 0, true, true, true,
+         "an emptiness check stricter than NormalizeLanguageCode"},
+        {"unknown source token normalizes to AUTO and stays reliable",
+         "XX", "KO", 0, true, true, true,
+         "an unknown-token branch that does not fall through to AUTO"},
+        {"unknown target token normalizes to AUTO, which is never a reliable target",
+         "KO", "XX", 0, true, true, false,
+         "an unknown-token target accepted as servable"},
+        {"empty target is never a reliable target",
+         "AUTO", "", 0, true, true, false,
+         "dropping the empty/AUTO target guard"},
+        {"name forms resolve too (the tray passes name_en): Korean->Korean is reliable",
+         "Korean", "Korean", 0, true, true, true,
+         "a code-only normalization (dropping FindLanguageByName)"},
+        {"HU->HU identity is not reliable: a cloud-only row has no local leg (D7)",
+         "HU", "HU", 0, true, true, false,
+         "an identity-pair shortcut bypassing the kLangHyMt2 bit test"},
+    };
+
+    // Row identity as well as row content: without this the PR6-10 row could
+    // be DELETED and the gate would stay green (M-I in fix round 2 — the first
+    // run of the mutation proved exactly that). The count is the guard; the
+    // per-row assertions below are the content. volatile keeps the comparison
+    // non-constant so /W4's C4127 does not fire (the W1a idiom above).
+    volatile size_t row_count = sizeof(kRows) / sizeof(kRows[0]);
+    TEST_CHECK(row_count == 17,
+               "P6b truth table: 17 rows are wired (deleting the PR6-10 PoC row, M-I, "
+               "fails HERE)");
+    for (const Row& row : kRows) {
+        const bool suppressed = SuppressPinnedAbsentGhost(
+            request(row.src, row.tgt), row.pref, row.is_auto, row.host);
+        TEST_CHECK(suppressed == row.expected,
+                   std::string("P6b truth table: ") + row.what + " | expected=" +
+                       (row.expected ? "SUPPRESS" : "SHOW") + " | kills: " + row.kills);
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P6b shared ghost-suppression truth table passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P6b shared ghost-suppression truth table: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---- 261116_0003 P6c (PR6-32 + PR6-35 + PR5-04(a) + PR5-03): the picker ----
+// deferred-open consumer, the per-surface latch, and the tooltip's engine
+// resolver. Two legs, per the house convention:
+//   (1) BEHAVIOURAL: the latch functions are linked into this runner through
+//       Emebalachat_core (language_search_palette.cpp is a core source), so
+//       the per-surface semantics are driven directly — cross-surface
+//       no-starve, same-surface coalescing, slot-local rollback, the
+//       TooltipPill-default bare take, and the out-of-range slot guard. An
+//       invisible message-only HWND carries the posts; its queue is never
+//       pumped (the latch, not the message, is the state under test).
+//   (2) SOURCE-SCAN: ControllerWndProc's kMsgOpenLanguagePalette arm and the
+//       tooltip.SetEngineResolver wiring live in main.cpp, the GUI entrypoint
+//       TU deliberately NOT linked here — pinned by source, every pin naming
+//       its killing mutation (the M-A..M-F proof set in the P6c report).
+void TestP6cLanguagePaletteWiring() {
+    std::cout << "[RUN] Testing 261116_0003 P6c picker wiring + per-surface latch..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    using emebalachat::language_palette::PickerInit;
+    using emebalachat::language_palette::PickerRole;
+    using emebalachat::language_palette::PickerSurface;
+
+    // ---- (1) behavioural: the per-surface latch --------------------------
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"p6c_latch_sink";
+    ::RegisterClassExW(&wc); // class-already-exists from a prior run is fine
+    HWND sink = ::CreateWindowExW(0, wc.lpszClassName, L"p6c", 0, 0, 0, 0, 0,
+                                  HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+    TEST_CHECK(sink != nullptr, "P6c latch: the invisible message-only sink window was created");
+
+    PickerInit typing_req;
+    typing_req.surface = PickerSurface::TrayTyping;
+    typing_req.role = PickerRole::Source;
+    typing_req.source_code = "KO";
+    PickerInit drag_req = typing_req;
+    drag_req.surface = PickerSurface::TrayTooltip;
+    drag_req.source_code = "JA";
+    PickerInit pill_req = typing_req;
+    pill_req.surface = PickerSurface::TooltipPill;
+    pill_req.source_code = "BO";
+    PickerInit typing_req2 = typing_req;
+    typing_req2.source_code = "FR"; // the coalesced-over second TrayTyping pick
+
+    // Drain any residue from earlier suites (the latch is process-global) so
+    // the assertions below observe only this suite's posts.
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping);
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTooltip);
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TooltipPill);
+
+    TEST_CHECK(emebalachat::PostDeferredLanguagePaletteOpen(sink, typing_req),
+               "P6c latch: the first TrayTyping post latches");
+    // PR6-32's core proof: the drag slot is INDEPENDENT. Under the old shared
+    // single slot this second post coalesced and the tooltip starved — this
+    // check is M-E's behavioural twin (the source twin is pinned below).
+    TEST_CHECK(emebalachat::PostDeferredLanguagePaletteOpen(sink, drag_req),
+               "P6c latch (PR6-32): a TrayTooltip post is NOT coalesced by a pending TrayTyping");
+    // Same-surface coalescing survives the split (single-instance per surface).
+    TEST_CHECK(!emebalachat::PostDeferredLanguagePaletteOpen(sink, typing_req2),
+               "P6c latch: a second SAME-surface post still coalesces");
+    // Taking one surface must not disturb a pending sibling...
+    const auto drag_taken =
+        emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTooltip);
+    TEST_CHECK(drag_taken.has_value() &&
+                   drag_taken->surface == PickerSurface::TrayTooltip &&
+                   drag_taken->source_code == "JA",
+               "P6c latch (PR6-32): taking the drag slot returns the drag request untouched");
+    const auto typing_taken =
+        emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping);
+    TEST_CHECK(typing_taken.has_value() &&
+                   typing_taken->surface == PickerSurface::TrayTyping &&
+                   typing_taken->source_code == "KO",
+               "P6c latch: the coalesced-over typing slot still holds the FIRST request");
+    // ...and both slots read empty afterwards.
+    TEST_CHECK(!emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping)
+                    .has_value() &&
+                   !emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTooltip)
+                        .has_value(),
+               "P6c latch: both tray slots read empty after the takes");
+    // The tooltip's historical no-arg take consumes the PILL slot (default arg
+    // contract in the header): the tooltip arm needs no edit to stay honest.
+    TEST_CHECK(emebalachat::PostDeferredLanguagePaletteOpen(sink, pill_req),
+               "P6c latch: a TooltipPill post latches");
+    const auto pill_default = emebalachat::TakeDeferredLanguagePaletteOpen();
+    TEST_CHECK(pill_default.has_value() &&
+                   pill_default->surface == PickerSurface::TooltipPill &&
+                   pill_default->source_code == "BO",
+               "P6c latch: the bare Take() (tooltip path) consumes the TooltipPill slot");
+    // Null-controller refusal (the pre-existing first gate) is unchanged.
+    TEST_CHECK(!emebalachat::PostDeferredLanguagePaletteOpen(nullptr, typing_req),
+               "P6c latch: a null controller is refused");
+    // Out-of-range surface: neither the take nor the post may alias a real
+    // slot or leak a request into one (the PickerSlotFor guard).
+    const auto bogus = static_cast<PickerSurface>(200);
+    TEST_CHECK(!emebalachat::TakeDeferredLanguagePaletteOpen(bogus).has_value(),
+               "P6c latch: an out-of-range surface take returns nullopt (no aliasing)");
+    PickerInit bogus_req = typing_req;
+    bogus_req.surface = bogus;
+    TEST_CHECK(!emebalachat::PostDeferredLanguagePaletteOpen(sink, bogus_req),
+               "P6c latch: an out-of-range surface post is refused");
+    TEST_CHECK(!emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping)
+                    .has_value(),
+               "P6c latch: the refused bogus post left the real slots empty");
+    // Slot-local rollback: a failed post clears ONLY its own slot. Posting to a
+    // DESTROYED window fails in PostMessageW (ERROR_INVALID_WINDOW_HANDLE), so
+    // the drag slot rolls back while a live sibling slot survives untouched.
+    TEST_CHECK(emebalachat::PostDeferredLanguagePaletteOpen(sink, typing_req),
+               "P6c latch: TrayTyping re-latches for the rollback proof");
+    const HWND dead_sink = sink;
+    ::DestroyWindow(sink);
+    sink = nullptr;
+    TEST_CHECK(!emebalachat::PostDeferredLanguagePaletteOpen(dead_sink, drag_req),
+               "P6c latch: a post to a destroyed window fails");
+    TEST_CHECK(!emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTooltip)
+                    .has_value(),
+               "P6c latch: the failed post rolled its own slot back");
+    const auto typing_survived =
+        emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping);
+    TEST_CHECK(typing_survived.has_value() && typing_survived->source_code == "KO",
+               "P6c latch: a sibling slot survives another slot's failed-post rollback");
+    // Cleanup: leave the process-global latch empty for later suites.
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTyping);
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TrayTooltip);
+    (void)emebalachat::TakeDeferredLanguagePaletteOpen(PickerSurface::TooltipPill);
+
+    // ---- (2) source pins: the controller arm + the resolver wiring --------
+    const auto squeeze = [](const std::string& text) {
+        std::string out;
+        out.reserve(text.size());
+        for (const char ch : text) {
+            if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+                out.push_back(ch);
+            }
+        }
+        return out;
+    };
+    const auto count_of = [](const std::string& hay, const char* needle) {
+        size_t n = 0;
+        for (size_t at = hay.find(needle); at != std::string::npos;
+             at = hay.find(needle, at + 1)) {
+            ++n;
+        }
+        return n;
+    };
+    std::string main_src, palette_src, palette_hdr, tooltip_src, tooltip_hdr;
+    if (!ReadRepoSrc(L"src\\main.cpp", main_src) ||
+        !ReadRepoSrc(L"src\\ui\\language_search_palette.cpp", palette_src) ||
+        !ReadRepoSrc(L"src\\ui\\language_search_palette.hpp", palette_hdr) ||
+        !ReadRepoSrc(L"src\\ui\\tooltip.cpp", tooltip_src) ||
+        !ReadRepoSrc(L"src\\ui\\tooltip.hpp", tooltip_hdr)) {
+        std::cout << "[SKIP] P6c source pins skipped (repo files not resolvable from the "
+                     "test CWD — run the gate from the repo root)." << std::endl;
+        TEST_CHECK(g_failed_count == failures_before, "P6c: suite had no failures");
+        return;
+    }
+
+    // --- the controller arm -------------------------------------------------
+    // P6c-1 (the arm exists, inside ControllerWndProc). Kills: deleting the
+    // arm — the picker returns to the stranded-latch dead state.
+    const size_t proc_at = main_src.find("LRESULT CALLBACK ControllerWndProc");
+    const size_t arm_at = main_src.find("if (msg == kMsgOpenLanguagePalette) {");
+    TEST_CHECK(proc_at != std::string::npos && arm_at != std::string::npos &&
+                   arm_at > proc_at,
+               "P6c: ControllerWndProc carries the kMsgOpenLanguagePalette consumer arm");
+    if (arm_at == std::string::npos) {
+        TEST_CHECK(false, "P6c: arm body pins cannot run without the arm");
+    } else {
+        // Window the arm body to the next top-level controller arm.
+        const std::string arm_window = main_src.substr(arm_at, 16384);
+        const size_t next_arm = arm_window.find("\n    if (msg == ", 8);
+        const std::string arm_body =
+            next_arm == std::string::npos ? arm_window : arm_window.substr(0, next_arm);
+        const std::string arm_flat = squeeze(arm_body);
+        // Code-only projection: line comments legitimately NAME the contract
+        // ("wParam/LPARAM are IGNORED entirely"), so strip //...\n runs before
+        // scanning for payload reads — the pin targets code, not prose.
+        std::string arm_code;
+        {
+            size_t pos = 0;
+            while (pos < arm_body.size()) {
+                const size_t eol = arm_body.find('\n', pos);
+                const std::string line = arm_body.substr(
+                    pos, eol == std::string::npos ? std::string::npos : eol - pos);
+                const size_t comment_at = line.find("//");
+                arm_code.append(line, 0, comment_at);
+                arm_code.push_back('\n');
+                if (eol == std::string::npos) {
+                    break;
+                }
+                pos = eol + 1;
+            }
+        }
+        // P6c-2 (SEC-ADJ): the wake-up carries no payload — wParam/lParam must
+        // be unread inside the arm's CODE. Kills: any payload read from the
+        // message (the CWE-822 shatter pattern the (0,0) contract removed
+        // everywhere else returns).
+        TEST_CHECK(arm_code.find("wParam") == std::string::npos &&
+                       arm_code.find("lParam") == std::string::npos,
+                   "P6c: the arm ignores wParam/lParam entirely (pure (0,0) wake-up)");
+        // P6c-3 (PR5-04(a), M-A): the GUI-thread guard is present and
+        // fail-closed. What the pin claims is exactly what the code proves:
+        // the guard EXISTS, compares the controller window's owning thread id
+        // (GetWindowThreadProcessId) against the current thread, and fails
+        // closed (one diagnostic line, drop). It is defence-in-depth —
+        // dispatch into this WndProc is expected to run on the controller's
+        // own thread, so the compare is expected to HOLD and a
+        // foreign-thread delivery to this WndProc is NOT an attainable
+        // mutation (PR6-44). The kill is therefore the guard's REMOVAL (or
+        // its early return): deleting the check is the regression this pin
+        // exists to catch, nothing stronger is claimed.
+        // Kills: removing the guard or its early return.
+        TEST_CHECK(arm_flat.find("::GetWindowThreadProcessId(hwnd,nullptr)") !=
+                       std::string::npos &&
+                       arm_flat.find("gui_tid!=::GetCurrentThreadId()") !=
+                           std::string::npos &&
+                       arm_flat.find("result=foreign_thread") != std::string::npos,
+                   "P6c (PR5-04(a)): the GUI-thread guard exists, compares the "
+                   "controller's owning thread against the current thread, and "
+                   "fails closed (defence-in-depth; M-A kills its removal, not "
+                   "an attainable foreign-thread delivery)");
+        // P6c-4 (M-B): the optional is guarded and never unwrapped through the
+        // throwing accessor. Kills: calling .value() on an empty latch.
+        TEST_CHECK(arm_body.find("init.has_value()") != std::string::npos &&
+                       arm_body.find(".value()") == std::string::npos,
+                   "P6c: the arm guards the optional and never calls .value() (M-B fails here)");
+        // P6c-5 (M-C): the empty-latch diagnostic names result=orphan_wakeup.
+        // Kills: deleting the orphan line — an empty latch turns silent.
+        TEST_CHECK(arm_flat.find("result=orphan_wakeup") != std::string::npos,
+                   "P6c: the orphan wake-up logs exactly the result=orphan_wakeup line "
+                   "(M-C fails here)");
+        // P6c-6 (PR6-32 defence-in-depth): the arm takes BOTH tray slots and
+        // refuses any other surface with one diagnostic before any open.
+        // Kills: reverting to a single no-arg take (a cross-surface take
+        // regression) or dropping the ownership check.
+        TEST_CHECK(arm_body.find("TakeDeferredLanguagePaletteOpen(language_palette::"
+                                 "PickerSurface::TrayTyping)") != std::string::npos &&
+                       arm_flat.find("TakeDeferredLanguagePaletteOpen(language_palette::"
+                                     "PickerSurface::TrayTooltip)") != std::string::npos &&
+                       arm_flat.find("result=surface_mismatch") != std::string::npos,
+                   "P6c (PR6-32): the arm polls both tray slots and refuses a foreign "
+                   "surface before any picker open");
+        // P6c-7 (PR5-03): the focus choreography — capture before the modal
+        // picker, the liveness-guarded restore after. Kills: dropping either
+        // half (focus stays stolen from the editor the user typed in).
+        TEST_CHECK(arm_body.find("HWND hwndPrev = ::GetForegroundWindow();") !=
+                       std::string::npos &&
+                       arm_flat.find("hwndPrev&&hwndPrev!=hwnd&&::IsWindow(hwndPrev)") !=
+                           std::string::npos,
+                   "P6c (PR5-03): the arm captures the foreground owner and restores it "
+                   "behind the liveness check");
+        // P6c-8 (the open): the picker shows owned by the controller with the
+        // nullptr-anchor contract (cursor geometry — the tray menu leaves no
+        // persistent rect). Kills: an unowned show or a forged/latched anchor.
+        TEST_CHECK(arm_flat.find("ShowLanguageSearchPalette(emebalachat::g_hControllerWnd,"
+                                 "*init,nullptr)") != std::string::npos,
+                   "P6c: the picker opens owned by g_hControllerWnd on the nullptr anchor");
+        // P6c-9 (the (surface, role) -> LanguageContext mapping, M-D):
+        // TrayTyping -> Type, TrayTooltip -> Drag, decided by the picker's
+        // commit-time surface echo. Kills: swapping the contexts — every drag
+        // pick would write the typing pair or vice versa.
+        TEST_CHECK(arm_flat.find("picked.surface==language_palette::PickerSurface::TrayTyping") !=
+                       std::string::npos &&
+                       arm_flat.find("typing?LanguageContext::Type:LanguageContext::Drag") !=
+                           std::string::npos,
+                   "P6c: TrayTyping routes to LanguageContext::Type and TrayTooltip to "
+                   "::Drag via the commit-time surface echo (M-D fails here)");
+        // P6c-10 (the role dispatch): source commits the picked name_en as the
+        // source, target as the target — the same pair as the tray's four flat
+        // menu callbacks. Kills: swapping the role halves (a source pick would
+        // write the target pair).
+        TEST_CHECK(arm_flat.find("g_apply_language_change(ctx,picked.name_en,"
+                                 "std::string_view{},false,false)") != std::string::npos &&
+                       arm_flat.find("g_apply_language_change(ctx,std::string_view{},"
+                                     "picked.name_en,false,false)") != std::string::npos,
+                   "P6c: source role dispatches (ctx, name_en, {}) and target role "
+                   "(ctx, {}, name_en) through g_apply_language_change");
+        // P6c-11 (return 0 on EVERY path): foreign-thread, deferred-while-open
+        // (PR6-42), surface mismatch, and the normal/drain-end exit — four
+        // returns, no fall-through (the orphan pass exits through the final
+        // return via break; a nested delivery returns before the loop).
+        // Kills: any path reaching DefWindowProc.
+        TEST_CHECK(count_of(arm_body, "return 0;") == 4,
+                   "P6c: the arm returns 0 on all four paths (foreign/"
+                   "deferred_while_open/mismatch/normal+drain-end; the orphan "
+                   "pass exits via break into the final return)");
+
+        // --- the tooltip resolver wiring (PR6-35) ----------------------------
+        // P6c-12 (the seam is wired): SetEngineResolver has its first call
+        // site. Kills: unwiring — the tooltip returns to the conservative
+        // {Google,false,false} defaults (the P6b pre-state).
+        TEST_CHECK(main_src.find("tooltip.SetEngineResolver(") != std::string::npos,
+                   "P6c (PR6-35): main.cpp wires the tooltip's SetEngineResolver seam");
+        // P6c-13 (same sources, M-F): the engine resolves through the tray's
+        // OWN mapper — never duplicated, never hardcoded. Kills: a hardcoded
+        // LanguageEngine::Google (or any literal) in place of the mapper call.
+        const std::string main_flat = squeeze(main_src);
+        TEST_CHECK(main_flat.find("resolution.engine=emebalachat::TrayLanguageEngineFor("
+                                  "emebalachat::TrayPreferredEngineIndex(snap.engine_type))") !=
+                       std::string::npos,
+                   "P6c: the tooltip resolver derives engine from TrayLanguageEngineFor("
+                   "TrayPreferredEngineIndex(snap.engine_type)) — the tray's mapper, "
+                   "reused (M-F fails here)");
+        // P6c-14: is_auto is the RAW persisted token (PR6-07's contract), not
+        // the collapsed index. Kills: deriving it from the 0-vs-nonzero axis.
+        TEST_CHECK(main_flat.find("resolution.is_auto=(snap.engine_type==\"auto\");") !=
+                       std::string::npos,
+                   "P6c: the tooltip resolver's is_auto comes from the raw snap.engine_type");
+        // P6c-15: local_host_available is the router's HostCouldServeFor
+        // components (PR6-19's contract). Kills: a constant or the enabled
+        // flag alone.
+        TEST_CHECK(main_flat.find("resolution.local_host_available=config.engine_host."
+                                  "enabled&&emebalachat::engine_host::IsHostBinaryPresent();") !=
+                       std::string::npos,
+                   "P6c: the tooltip resolver's local_host_available = enabled && "
+                   "IsHostBinaryPresent (the same two components the router evaluates)");
+
+        // --- the per-surface latch, at source (M-E) --------------------------
+        // P6c-16: the latch state is a fixed per-surface array, not the old
+        // module-global single slot. Kills: M-E — reverting to the scalar
+        // `bool s_open_pending = false;` restores the cross-surface starvation
+        // (behavioural twin in leg 1 above).
+        TEST_CHECK(palette_src.find("s_open_pending[") != std::string::npos &&
+                       palette_src.find("s_pending_init[") != std::string::npos &&
+                       palette_src.find("bool s_open_pending = false;") == std::string::npos &&
+                       palette_src.find("language_palette::PickerInit s_pending_init;") ==
+                           std::string::npos,
+                   "P6c (PR6-32): the latch is a per-surface slot array (the scalar single "
+                   "slot is gone; M-E fails here and at the behavioural twin)");
+        // P6c-17: the slot mapping is bounds-checked. Kills: indexing the
+        // array by an unchecked enum cast (an out-of-range tag would alias a
+        // real slot or leak into one).
+        TEST_CHECK(palette_src.find("kPickerSlotCount") != std::string::npos &&
+                       palette_src.find("idx >= kPickerSlotCount") != std::string::npos,
+                   "P6c: the surface->slot mapping is bounds-checked (no aliasing past "
+                   "the array)");
+        // P6c-18: the take names its surface, and the bare no-arg form the
+        // tooltip compiles against defaults to the pill slot. Kills: reverting
+        // the signature — the tooltip arm would consume whatever slot a
+        // regressed take returned. (Squeezed: the signature wraps a line.)
+        const std::string palette_hdr_flat = squeeze(palette_hdr);
+        TEST_CHECK(palette_hdr_flat.find("TakeDeferredLanguagePaletteOpen(language_palette::"
+                                         "PickerSurfacesurface=language_palette::"
+                                         "PickerSurface::TooltipPill);") != std::string::npos,
+                   "P6c: the take carries the surface with the TooltipPill default for the "
+                   "tooltip's historical no-arg call");
+
+        // --- 261116_0003 P6c fix round (PR6-42 + PR6-43) ---------------------
+        // P6c-19 (PR6-42, adjudicated fix (a)): the nested-delivery guard +
+        // the drain. A wake-up delivered while a picker is already open
+        // arrives NESTED through the open picker's own modal pump
+        // (GetMessageW(nullptr)); the OLD ordering (take the latch, then
+        // show) consumed that request and the picker module's single-instance
+        // guard silently dropped it (lang_palette_open result=already_open).
+        // The fix: the arm consults LanguagePickerShowing() BEFORE any take
+        // and exits with one diagnostic line, leaving the request latched;
+        // the arm whose show() owns the loop re-takes in a drain loop after
+        // its popup closes and serves the deferred request then.
+        // Kills (the named mutation): restoring the old take-before-show
+        // ordering — deleting the guard (the arm takes before showing again)
+        // or deleting the drain loop (a deferred request would sit latched
+        // with no wake-up, since a same-surface post coalesces WITHOUT a new
+        // one). Also pins the header export the guard compiles against.
+        {
+            const size_t p6c_guard_at = arm_code.find("LanguagePickerShowing()");
+            const size_t p6c_take_at =
+                arm_code.find("TakeDeferredLanguagePaletteOpen(");
+            TEST_CHECK(p6c_guard_at != std::string::npos &&
+                           p6c_take_at != std::string::npos &&
+                           p6c_guard_at < p6c_take_at &&
+                           arm_flat.find("result=deferred_while_open") !=
+                               std::string::npos &&
+                           arm_flat.find("for(;;)") != std::string::npos &&
+                           palette_hdr_flat.find("boolLanguagePickerShowing();") !=
+                               std::string::npos,
+                       "P6c fix (PR6-42): the nested-delivery guard runs BEFORE any "
+                       "latch take, the deferred diagnostic exists, and the arm "
+                       "drains the latch in a loop after its show returns (the "
+                       "mutation that restores the old take-before-show ordering "
+                       "deletes the guard or the drain and fails here)");
+        }
+        // P6c-20 (PR6-42 twin): the tooltip's pill arm carries the SAME
+        // guard + drain — the pill picker's modal pump nests identically, and
+        // a bare take-before-show there would drop the second pill request
+        // the same way. Kills: reverting the tooltip arm to bare
+        // take-before-show.
+        {
+            const size_t tt_arm_at = tooltip_src.find("case kMsgOpenLanguagePalette: {");
+            TEST_CHECK(tt_arm_at != std::string::npos,
+                       "P6c fix (PR6-42): the tooltip picker arm exists");
+            if (tt_arm_at != std::string::npos) {
+                const std::string tt_window = tooltip_src.substr(tt_arm_at, 8192);
+                const size_t tt_next = tt_window.find("\n        case ");
+                const std::string tt_body =
+                    tt_next == std::string::npos ? tt_window : tt_window.substr(0, tt_next);
+                std::string tt_code;
+                {
+                    size_t pos = 0;
+                    while (pos < tt_body.size()) {
+                        const size_t eol = tt_body.find('\n', pos);
+                        const std::string line = tt_body.substr(
+                            pos, eol == std::string::npos ? std::string::npos : eol - pos);
+                        const size_t comment_at = line.find("//");
+                        tt_code.append(line, 0, comment_at);
+                        tt_code.push_back('\n');
+                        if (eol == std::string::npos) {
+                            break;
+                        }
+                        pos = eol + 1;
+                    }
+                }
+                const size_t tt_guard_at = tt_code.find("LanguagePickerShowing()");
+                const size_t tt_take_at = tt_code.find("TakeDeferredLanguagePaletteOpen(");
+                TEST_CHECK(tt_guard_at != std::string::npos &&
+                               tt_take_at != std::string::npos &&
+                               tt_guard_at < tt_take_at &&
+                               squeeze(tt_body).find("result=deferred_while_open") !=
+                                   std::string::npos &&
+                               squeeze(tt_body).find("for(;;)") != std::string::npos,
+                           "P6c fix (PR6-42): the tooltip pill arm carries the same "
+                           "nested-delivery guard before its take and the same drain "
+                           "loop (reverting it to bare take-before-show fails here)");
+            }
+        }
+        // P6c-21 (PR6-43): the transitional-comment sweep is pinned by
+        // ABSENCE — the pre-P6c "no consumer / shared single-slot latch /
+        // unwired resolver defaults" claims are false since P6c landed, so
+        // restoring any of them (the named mutation) fails here. Scanned
+        // SQUEEZED + lowercased across the three swept surfaces this round
+        // owns (the palette header's ghost-gate doc block, tooltip.cpp,
+        // tooltip.hpp); tray.cpp/tray.hpp carry the same stale wording but
+        // are OUTSIDE this fix round's file boundary (PR6-43 named them; the
+        // sweep there belongs to whichever round owns tray.*). The banned
+        // needles are the exact phrases the sweep removed: "until P6c" (the
+        // future-state-as-present marker), "zero call sites until P6c",
+        // "has no consumer until P6c" / "NO consumer yet", the "single-slot"
+        // latch wording, the "unwired" resolver defaults, and the PR6-41
+        // absolute "cannot disagree about the ghost row" (its three original
+        // sites are already banned by the P6bfix pin above; the header site
+        // joins here).
+        {
+            const auto lower_squeeze = [](const std::string& text) {
+                std::string out;
+                out.reserve(text.size());
+                for (const char ch : text) {
+                    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+                        continue;
+                    }
+                    out.push_back(static_cast<char>(
+                        (ch >= 'A' && ch <= 'Z') ? (ch - 'A' + 'a') : ch));
+                }
+                return out;
+            };
+            const std::string ph = lower_squeeze(palette_hdr);
+            const std::string ts = lower_squeeze(tooltip_src);
+            const std::string th = lower_squeeze(tooltip_hdr);
+            const bool p6c43_clean =
+                ph.find("untilp6c") == std::string::npos &&
+                ph.find("zerocallsitesuntil") == std::string::npos &&
+                ph.find("single-slot") == std::string::npos &&
+                ph.find("unwired") == std::string::npos &&
+                ph.find("disagreeabouttheghostrow") == std::string::npos &&
+                ts.find("untilp6c") == std::string::npos &&
+                ts.find("noconsumeryet") == std::string::npos &&
+                ts.find("hasnoconsumeruntil") == std::string::npos &&
+                ts.find("single-slot") == std::string::npos &&
+                ts.find("unwired") == std::string::npos &&
+                th.find("untilp6c") == std::string::npos &&
+                th.find("single-slot") == std::string::npos &&
+                th.find("unwired") == std::string::npos &&
+                th.find("disagreeabouttheghostrow") == std::string::npos;
+            TEST_CHECK(p6c43_clean,
+                       "P6c fix (PR6-43): no swept surface carries the pre-P6c "
+                       "transitional claims (no consumer / shared single-slot latch / "
+                       "unwired resolver defaults / until-P6c future-state wording); "
+                       "restoring any of them fails here");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261116_0003 P6c picker wiring + per-surface latch passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261116_0003 P6c picker wiring + per-surface latch: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
@@ -21148,6 +24274,23 @@ int main() {
     TestB1TooltipStaleness();
     TestR6P3MemoryLifecycle();
     TestR6P4LanguageRouting();
+    TestP2EngineViews(); // 261116_0003 P2: per-engine registry views + revived D7 routing pins
+    TestP8bCtrlF9CycleWiring(); // 261116_0003 P8b: engine-filtered Ctrl+F9 wired at both call sites
+    TestLanguageAliasCoverage(); // 261116_0003 P4: CLDR alias matrix + folding search matcher
+    TestP5LanguagePicker();      // 261116_0003 P5: searchable picker pure logic (+ no-window proof)
+    TestP9aUserLanguages();      // 261116_0003 P9a: user languages + capability probe (core)
+    TestP6aMenuSearchLangsStrings(); // 261116_0003 P6a fix round (PR6-02c): MenuSearchLangs per-locale pins
+    TestP7LanguageSearchCountStrings(); // 261116_0003 P7: the picker engine-chip count phrase, 37 locales
+    TestP9b1UserLanguageStrings(); // 261116_0003 P9b-1: user-language surface strings, 37 locales + ordering pin
+    TestP9b3AutoChipStrings(); // 261116_0003 P9b-3 U5: picker AUTO chip label, 37 locales + palette source pins
+    TestP9b2UserLanguageMenu(); // 261116_0003 P9b-2: the "내 언어" group on the six menu surfaces
+    TestP9b3UserLanguageWriteSurface(); // 261116_0003 P9b-3 U1: user-language config write surface
+    TestP9b3UserLanguageDialog(); // 261116_0003 P9b-3 U2: add-language dialog (template/refusal/derivation/bidi/fold)
+    TestP9b3UserLanguageProbeRunner(); // 261116_0003 P9b-3 U3: capability-probe runner + first-use trigger (fake seam, no network)
+    TestP9b3UserLanguageManagerDialog(); // 261116_0003 P9b-3 U4b: manager dialog (row/rows/verb/outcome folds + template byte-walk, no window)
+    TestP9b3UserLanguageBadgeRows(); // 261116_0003 P9b-3 U4a: probe badge on the six menu surfaces + the two tray dialog rows (fold + structural pins)
+    TestP6bGhostSuppressionTruthTable(); // 261116_0003 P6b fix round 2 (PR6-33/PR6-37): behavioural ghost truth table
+    TestP6cLanguagePaletteWiring(); // 261116_0003 P6c (PR6-32/PR6-35): picker consumer + per-surface latch + tooltip resolver
     // REQ-043 (M6 T5): TestReqF4aPreloadGate / TestReq004EngineSwitchPreloadGate
     // are DELETED with the preload seams (no resident model to warm up).
 #ifdef HAVE_LLAMA_CPP

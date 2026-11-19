@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -32,17 +33,558 @@ struct LanguageInfo {
     // the user default locale instead). Deliberately distinct from B-3's
     // LocaleMapping.bcp47_full: that table is UiLocale-keyed (UI chrome),
     // this field is translation-language-keyed (content). Two owners, two
-    // purposes — cross-reference prevents drift. Non-empty for all 38 rows
+    // purposes — cross-reference prevents drift. Non-empty for all 90 rows
     // (pinned by TestReq038B2RegistryBcp47). const char* per the design's
     // B-2 row: static-literal storage, no allocation, copy-safe.
     const char* bcp47;          // e.g. "en", "ko", "zh-CN", "ar", "fil", "my"
+
+    // 261116_0003 P2 (language-menu redesign, plan §4 / decision D7): the
+    // per-engine capability bits this row is offerable under. Static data
+    // column following the bcp47 precedent (constexpr bit constants, no
+    // allocation). kLangHyMt2 marks the Hy-MT2 OFFICIAL 38-target set (the
+    // model card fetched 2026-11-16, plan §2): the local built-in engine
+    // offers exactly those rows (D7 — no custom row, no probe; OOD quality is
+    // the reason). kLangGoogle marks rows Google's published table serves
+    // (cloud.google.com/translate/docs/languages, fetched 2026-11-16): BO
+    // (Tibetan) is absent from that table and therefore carries NO Google
+    // bit. kLangOpenAi / kLangUserGguf mark rows the free-form prompt engines
+    // can be OFFERED (research-report §4a/4b: both inject language names
+    // free-form, so every registry row is offerable; actual support per model
+    // is judged by the P9 capability probe, NOT by this mask). AUTO carries
+    // all four bits by design: it is a source-only marker, never an
+    // engine-filterable translation target.
+    std::uint32_t engine_mask;
 };
 
-// Returns the full list of 38 language entries (AUTO + 37 supported languages).
+// 261116_0003 P2: the per-engine capability bits for LanguageInfo::engine_mask
+// (values frozen; new engines append new bits).
+inline constexpr std::uint32_t kLangHyMt2    = 1u << 0; // built-in local Hy-MT2 official set
+inline constexpr std::uint32_t kLangGoogle   = 1u << 1; // Google Translate cloud
+inline constexpr std::uint32_t kLangOpenAi   = 1u << 2; // OpenAI-compatible cloud
+inline constexpr std::uint32_t kLangUserGguf = 1u << 3; // user-registered .gguf model
+
+// 261116_0003 P2: which engine's offerable set a registry view filters by.
+// Deliberately config-local (NOT src/engine.hpp's EngineType): the registry
+// is the lower layer, and engine.hpp's EngineType gains a mapper below the
+// TranslationManager instead (LanguageEngineFor). Auto is listed so callers
+// can pass their engine selection through verbatim; it resolves to the HyMt2
+// view because auto prefers local (plan §4 "Routing").
+enum class LanguageEngine : unsigned char {
+    HyMt2,     // the built-in local Hy-MT2 model (official 38 target names)
+    Google,    // Google Translate cloud
+    OpenAi,    // OpenAI-compatible cloud
+    UserGguf,  // user-registered .gguf model
+    Auto,      // resolves to the HyMt2 view (auto prefers local)
+};
+
+// ---- 261116_0003 P9a (plan §3 D5/D6, §5 P9): user-defined languages ----
+//
+// The config.json block is ADDITIVE and OPTIONAL. A config written before P9a
+// has no "user_languages" key at all and reads as "no user languages" (empty
+// vector, no migration, no crash). Exact writer emission, one entry shown:
+//
+//   "user_languages_version": 1,
+//   "user_languages": [
+//     {
+//       "native_name": "Twi",
+//       "english_name": "",
+//       "code": "",
+//       "script": "latin",
+//       "probes": [
+//         {"engine": "openai", "model": "gpt-4o-mini", "status": "supported",
+//          "override": "unknown", "checked_at": "2026-11-17T22:45:00Z",
+//          "evidence": "nonempty=1 differs=1 script=1 expected=latin detected=latin"}
+//       ]
+//     }
+//   ]
+//
+// SCHEMA-VERSION DECISION (rationale recorded in the P9a phase note): the block
+// carries its OWN version key instead of a global config version.
+//   * The flat key/value reader has no version concept, and every other block
+//     (engine_host, openai) evolves additively without one; a global version
+//     would add "unknown version" handling to keys that need none.
+//   * A block-local integer is the smallest unit that can be bumped by a future
+//     breaking change (e.g. probes keyed differently) without touching anything
+//     else, and it needs no migration code today.
+//   * Absent key == version 1.
+//   * A version NEWER than kUserLanguagesSchemaVersion is never guessed at: the
+//     raw array text is preserved verbatim and re-emitted by the next save, so
+//     running an older build after a newer one cannot silently drop the user's
+//     languages. Version <= 1 parses normally.
+//   * 261116_0003 P9a fix PR9-04 (carrier-vs-edit rule): the carrier preserves
+//     ONLY a single array-group span: a '['-opened group scanned string- and
+//     comment-aware (261116_0003 P9a fix3 PR11-02: every closer must match its
+//     own opener) to its matching ']', with nothing but whitespace or comments
+//     after it. Any other value or trailing shape fails closed (the block
+//     drops to empty, the next save writes a clean current-version block), so
+//     a string value can never be re-emitted unquoted and fabricate
+//     sibling config keys. While the carrier is active, in-memory edits to
+//     user_languages are DISCARDED on save (the verbatim block wins): P9b must
+//     detect the carrier and warn/refuse edits.
+//   * 261116_0003 P9a fix PR9-09: the version key parses STRICTLY (digit-only).
+//     An unparseable ("abc", "2junk") or newer ("999") version is never guessed
+//     at as the current version: the block is preserved verbatim and the
+//     original version text round-trips unchanged.
+//   * 261116_0003 P9a fix2 PR10-01/PR10-02: that preserved version TEXT is
+//     emitted as a quoted, escaped JSON string (an empty or whitespace-only
+//     version emits the quoted empty string), so it can never expand into
+//     sibling keys and the next load keeps preserving the block instead of
+//     reading a 0 sentinel as the current version.
+//   * 261116_0003 P9a fix2 PR10-04: carrier eligibility is bracket-balance
+//     based (the matching ']' plus trivia only), so a trailing note after the
+//     array is trivia rather than a disqualifier and a multi-group span
+//     ("[1] [2]") is rejected.
+inline constexpr int kUserLanguagesSchemaVersion = 1;
+
+// Bounds for user-writable text: the reader caps the block instead of trusting
+// it, which keeps load and menu-merge work bounded. Extras beyond the cap are
+// dropped (never stored, never rendered).
+inline constexpr std::size_t kMaxUserLanguages = 64;
+inline constexpr std::size_t kMaxUserLanguageProbes = 8;
+
+// 261116_0003 P9a fix PR9-03/PR9-05: per-field byte caps. A stored name is a
+// menu row and a raw prompt token, a probe's engine/model/evidence strings are
+// cache metadata: every string field of the schema is capped so a hand-edited
+// file cannot grow any of them without bound. Extras are truncated at a UTF-8
+// code-point boundary, never stored in full.
+inline constexpr std::size_t kMaxUserLanguageNameBytes = 256;
+inline constexpr std::size_t kMaxUserLanguageProbeEngineBytes = 32;
+inline constexpr std::size_t kMaxUserLanguageProbeModelBytes = 256;
+inline constexpr std::size_t kMaxUserLanguageProbeCheckedAtBytes = 32;
+inline constexpr std::size_t kMaxUserLanguageProbeEvidenceBytes = 256;
+
+// D6 probe-cache state. The five states P9b renders are folded from two
+// stored fields (see UserLanguageProbe):
+//   Unknown        - never probed (this is the automatic first-use trigger)
+//   Checking       - a probe call is in flight; RUNTIME ONLY, a persisted
+//                    "checking" reads back as Unknown so a crashed run cannot
+//                    leave a language stuck in "checking" forever
+//   Supported      - the cached probe verdict
+//   Unsupported    - the cached probe verdict
+//   UserOverridden - DISPLAY ONLY (DisplayUserLanguageProbeStatus): the user
+//                    set an override, whose direction lives in
+//                    UserLanguageProbe::override_status
+enum class UserLanguageProbeStatus : std::uint8_t {
+    Unknown = 0,
+    Checking = 1,
+    Supported = 2,
+    Unsupported = 3,
+    UserOverridden = 4,
+};
+
+// One cached probe verdict for one (engine, model) pair (D6: "cached per
+// (engine + model + language)"; the language is the owning UserLanguage).
+struct UserLanguageProbe {
+    // Stable engine id (UserLanguageEngineId): "google", "openai" or
+    // "user_gguf". Empty entries are never stored (the engine is the key).
+    std::string engine;
+    // Model identity: the OpenAI model string, or the .gguf registry id. ""
+    // is legal for engines whose model is implied (Google), and is a distinct
+    // cache key from any named model.
+    std::string model;
+    // The probe's own verdict (Unknown / Supported / Unsupported after a load).
+    UserLanguageProbeStatus status = UserLanguageProbeStatus::Unknown;
+    // The user's final-authority answer (D6 "user is the final authority"):
+    // Unknown = no override, else Supported or Unsupported. Effective status =
+    // override when set, probe verdict otherwise.
+    UserLanguageProbeStatus override_status = UserLanguageProbeStatus::Unknown;
+    // Shape-only ASCII evidence ("nonempty=1 differs=1 script=1 ..."), never
+    // any user or model content. Empty until a probe has run.
+    std::string checked_at;  // ISO-8601 UTC "YYYY-MM-DDTHH:MM:SSZ", "" = never
+    std::string evidence;
+};
+
+// One user-defined language (D5). `native_name` is the only required field;
+// everything else is derived:
+//   * english_name - optional user input. MakeUserLanguage() fills it from the
+//     registry when the code resolves and the user left it empty, because the
+//     stored form is what the prompt injects and the English template must not
+//     receive a native-script name (Task 1 code-switching finding).
+//   * code         - resolved registry code, "" = free-form engines only
+//     (D5: "no code = OpenAI/user-.gguf only"). Never "AUTO".
+//   * script_mask  - inferred from the native name (D5), using the
+//     win32_input.hpp kScriptMask* vocabulary so the probe's script check and
+//     the rest of the app speak one script language. 0 = inference failed
+//     (fail-open: the probe's script check is skipped, never guessed).
+//   * probes       - the D6 verdict cache, one entry per (engine, model).
+struct UserLanguage {
+    std::string native_name;
+    std::string english_name;
+    std::string code;
+    std::uint32_t script_mask = 0;
+    std::vector<UserLanguageProbe> probes;
+};
+
+// The stored form of one user language: english_name when present, else
+// native_name. This is what a language pin holds, what PlanLanguageSync
+// canonicalizes to, and what the prompt injects when the code is empty.
+std::string UserLanguageStoredName(const UserLanguage& language);
+
+// Case-insensitive (ASCII) lookup of a registered user language by stored
+// name, native name, english name, or resolved code. nullptr when absent.
+const UserLanguage* FindUserLanguage(const std::vector<UserLanguage>& languages,
+                                     std::string_view token);
+
+// Stable per-engine id used as the probe-cache key ("google" / "openai" /
+// "user_gguf"). HyMt2 and Auto return "" (D7: the local built-in engine has no
+// custom row and no probe).
+std::string UserLanguageEngineId(LanguageEngine engine);
+
+// Script token <-> mask conversion (config.json stores the token, not the
+// number: the file is user-editable, and the ws2 pin ties mask bit values to
+// engine_core ordinals, so a stored number could silently re-point at another
+// script if that ordering ever changed). Tokens are the lowercase mask names in
+// ascending bit order, joined with '+' for a composite mask: "hangul",
+// "han+kana", "latin". "" for mask 0 and for an unrecognized token.
+std::string UserLanguageScriptToken(std::uint32_t script_mask);
+std::uint32_t UserLanguageScriptMaskFromToken(std::string_view token);
+
+// D5 script inference: the script classes present in the user-typed native
+// name (pure; UTF-8 in, mask out). Fail-open by construction: an empty,
+// digit-only, or unclassifiable name yields 0 (callers keep the language and
+// skip the probe's script check). Mixed names OR their classes ("한국어
+// Korean" -> hangul+latin) instead of guessing one.
+std::uint32_t InferUserLanguageScript(std::string_view native_name);
+
+// One entry of the fallback name->code data source (D5 stage 2): an installed
+// system locale with the language names Windows reports for it.
+struct LocaleLanguageName {
+    std::string locale;   // BCP-47 locale name from EnumSystemLocalesEx, e.g. "ko-KR"
+    std::string english;  // LOCALE_SENGLISHLANGUAGENAME, e.g. "Korean"
+    std::string native;   // LOCALE_SNATIVELANGUAGENAME, e.g. "한국어"
+};
+
+// The D5 stage-2 data source: every installed system locale. Live Win32
+// read-only query (EnumSystemLocalesEx + GetLocaleInfoEx), no caching, no
+// network. Returns an empty vector if the enumeration fails (callers then get
+// the "no code" outcome, which is a legal D5 result).
+std::vector<LocaleLanguageName> EnumerateSystemLocaleLanguages();
+
+// D5 stage 2 behind an injectable seam so the name->code rule is headless-
+// testable without depending on which locales this machine has installed.
+// `entries` is the enumeration result; the seam-less overload above uses
+// EnumerateSystemLocaleLanguages().
+using LocaleLanguageSource = std::vector<LocaleLanguageName> (*)();
+std::string ResolveCodeFromLocaleLanguages(std::string_view native_name,
+                                           std::string_view english_name,
+                                           const std::vector<LocaleLanguageName>& entries);
+
+// D5 resolution result. `code` empty means "free-form engines only"; the
+// source flags let the UI/P9b explain how the code was found.
+struct UserLanguageResolution {
+    std::string code;          // registry code, "" when unresolved
+    std::string english_name;  // registry name_en of the resolved row, else ""
+    bool from_alias = false;   // resolved by the alias matrix (stage 1)
+    bool from_locale = false;  // resolved by the system locale names (stage 2)
+};
+
+// D5 ladder: alias matrix (exact match only - prefix/substring stay search-only
+// so a typo never silently resolves to the wrong language) -> installed locale
+// names -> "" (free-form only). `native_name` is tried first, then
+// `english_name`; ASCII-case-insensitive throughout. Pure apart from the
+// injectable data source.
+UserLanguageResolution ResolveUserLanguageCode(std::string_view native_name,
+                                              std::string_view english_name,
+                                              LocaleLanguageSource locale_source);
+UserLanguageResolution ResolveUserLanguageCode(std::string_view native_name,
+                                              std::string_view english_name);
+
+// Builds one registered entry from the two user-typed fields: code resolved,
+// script inferred (falling back to the resolved code's script when the name
+// yields nothing), english_name filled from the registry when the code
+// resolved (alias matrix OR locale fallback, 261116_0003 P9a fix PR9-07) and
+// the user left it empty. An empty native_name yields an entry with empty
+// native_name (callers must reject it).
+UserLanguage MakeUserLanguage(std::string_view native_name, std::string_view english_name);
+// 261116_0003 P9a fix2 PR10-05: the same build with the D5 stage-2 data source
+// injected, so the PR9-07 back-fill rule (the locale-fallback stage included)
+// is testable without depending on the host's installed locales. The overload
+// above uses EnumerateSystemLocaleLanguages().
+UserLanguage MakeUserLanguage(std::string_view native_name,
+                              std::string_view english_name,
+                              LocaleLanguageSource locale_source);
+
+// ---- 261116_0003 P9b-3 (PR9-11): creation-time name validation ----
+//
+// A user entry is created only through AppConfig's locked write mutators, and
+// those refuse two classes of name BEFORE the entry reaches the registry:
+//
+//   * RESERVED spellings. The app's own AUTO row is "Auto Detect" (name_en),
+//     "자동 감지" (name_native) and "AUTO" (code). A user entry named after
+//     auto-detect was offered by the OpenAI/user-.gguf menus but refused by the
+//     planner (PR9-11, fix-list-round9: offers=1 / valid=0 - a dead menu row),
+//     so the spelling is refused at creation instead of being rendered and
+//     then rejected on pick.
+//   * DUPLICATES. A name that collides with an existing registry row's
+//     stored/native/English/code spelling set, or with an entry already in the
+//     registry (the same four-spelling lookup FindUserLanguage performs). The
+//     registry already offers that language, and a second row would shadow or
+//     rename it (PR9-01's code-level dedupe drops the later row - another dead
+//     row).
+//
+// The comparison folds exactly like the storage path: ASCII whitespace
+// trimmed, the PR9-03/PR10-08 invisible-character strip applied, then ASCII
+// case-insensitive. An empty native name is NOT a verdict here (the write
+// verbs refuse it themselves with RejectedEmptyName). Pure: reads the static
+// registry plus the caller's vector.
+enum class UserLanguageNameVerdict : std::uint8_t {
+    Accepted = 0,
+    Reserved = 1,   // an AUTO spelling ("Auto Detect" / "AUTO" / "자동 감지")
+    Duplicate = 2,  // a registry row or an existing user entry owns the name
+};
+
+// `existing` is the registry the entry would join; `ignore_index` lets an
+// update re-validate an entry without matching its own current name
+// (kUserLanguageNoIndex for a creation check).
+inline constexpr std::size_t kUserLanguageNoIndex = static_cast<std::size_t>(-1);
+UserLanguageNameVerdict ValidateUserLanguageName(
+    std::string_view native_name,
+    std::string_view english_name,
+    const std::vector<UserLanguage>& existing,
+    std::size_t ignore_index = kUserLanguageNoIndex);
+
+// Result of one locked write on AppConfig::user_languages (PR9-12). Every
+// refusal reason is distinct because the add dialog renders different copy per
+// reason; the reserved/duplicate values mirror UserLanguageNameVerdict.
+enum class UserLanguageWriteResult : std::uint8_t {
+    Applied = 0,
+    RefusedForwardCompatCarrier = 1,  // newer-schema block preserved: edits are discarded
+    RejectedEmptyName = 2,            // native_name is the one required field
+    RejectedReservedName = 3,         // PR9-11 reserved AUTO spelling
+    RejectedDuplicateName = 4,        // PR9-11 registry or user duplicate
+    RejectedCapacity = 5,             // kMaxUserLanguages / kMaxUserLanguageProbes
+    RejectedNotFound = 6,             // no entry at that index / stored name
+    RejectedMissingProbeKey = 7,      // empty engine id: the cache key is incomplete
+    RejectedInvalidStatus = 8,        // an override is an answer, not a state
+};
+
+// ---- D6 capability probe (pure evaluation + cache transitions) ----
+//
+// The fixed, non-personal probe sentence. A constant on purpose: the probe
+// never sends user content (privacy posture, AGENTS.md), and a stable sentence
+// keeps cached verdicts comparable across runs. Pinned by the P9a suite.
+inline constexpr const char* kUserLanguageProbeSentence =
+    "Please send me the report by tomorrow morning.";
+
+// The three D6 checks over one engine call. Returns the verdict plus the
+// per-check bits and a shape-only evidence string (scripts are named, the text
+// itself never appears), so P9b can show the evidence and re-run.
+//   1. non_empty  - the output has a non-whitespace character
+//   2. differs    - the trimmed output differs from the trimmed input
+//   3. script_ok  - the output carries the expected script class, or
+//                   expected_script_mask == 0 (fail-open, "script=na")
+// status is Supported only when all applicable checks pass, Unsupported
+// otherwise (the evaluator never returns Unknown/Checking).
+struct ProbeEvaluation {
+    UserLanguageProbeStatus status = UserLanguageProbeStatus::Unknown;
+    bool non_empty = false;
+    bool differs = false;
+    bool script_ok = false;
+    std::uint32_t detected_mask = 0;
+    std::string evidence;
+};
+ProbeEvaluation EvaluateProbeResult(std::string_view input_sentence,
+                                   std::string_view output_text,
+                                   std::uint32_t expected_script_mask);
+
+// Probe-cache accessors/transitions (no transport here: the single engine call
+// stays behind the caller's injectable seam, so P9a ships zero network code).
+const UserLanguageProbe* FindUserLanguageProbe(const UserLanguage& language,
+                                               std::string_view engine,
+                                               std::string_view model);
+
+// Override wins (D6: the user is the final authority). Returns Unknown when
+// neither an override nor a probe verdict exists, Checking while a probe is in
+// flight.
+UserLanguageProbeStatus EffectiveUserLanguageProbeStatus(const UserLanguageProbe& probe);
+
+// The five-state display fold: UserOverridden while an override is set, else
+// the effective status.
+UserLanguageProbeStatus DisplayUserLanguageProbeStatus(const UserLanguageProbe& probe);
+
+// 261116_0003 P9b-3 (PR10-07): the CANONICAL probe-cache key. The runtime
+// record verbs used to store whatever the caller passed (the per-field byte
+// caps were load-path only), so an over-long model could enter the file and -
+// worse - split one logical key into two slots (the comparison used the raw
+// argument against a capped stored value). Capping here, before the comparison,
+// keeps the key canonical for every writer: the free record verbs and the
+// AppConfig write verbs both address slots through this.
+struct UserLanguageProbeKey {
+    std::string engine;  // trimmed + kMaxUserLanguageProbeEngineBytes
+    std::string model;   // kMaxUserLanguageProbeModelBytes
+};
+UserLanguageProbeKey MakeUserLanguageProbeKey(std::string_view engine,
+                                              std::string_view model);
+
+// Stores a completed probe run: overwrites the cached verdict. An existing
+// override is NEVER retired here (261116_0003 P9a fix PR9-06: the user is the
+// final authority, so a probe run must not wipe the user's answer); the
+// automatic first-use pass fires only when no verdict AND no override exists.
+// No-op at kMaxUserLanguageProbes when the key is new.
+void RecordUserLanguageProbeResult(UserLanguage& language,
+                                   std::string_view engine,
+                                   std::string_view model,
+                                   const ProbeEvaluation& evaluation,
+                                   std::string_view checked_at);
+
+// Stores the user's final-authority answer. Only Supported/Unsupported are
+// accepted (any other value is a no-op) - an override is an answer, not a
+// state.
+void RecordUserLanguageProbeOverride(UserLanguage& language,
+                                     std::string_view engine,
+                                     std::string_view model,
+                                     UserLanguageProbeStatus status,
+                                     std::string_view checked_at);
+
+// Drops the override (back to the cached probe verdict, or to Unknown when
+// nothing was probed yet).
+void ClearUserLanguageProbeOverride(UserLanguage& language,
+                                    std::string_view engine,
+                                    std::string_view model);
+
+// 261116_0003 P9b-3: the record verbs need a checked-at stamp, and the config
+// layer had no UTC formatter (diag_logger.cpp's TimestampNow is LOCAL time and
+// private to that module). Minimal on purpose: the documented wire form is
+// "YYYY-MM-DDTHH:MM:SSZ" - 20 bytes, inside kMaxUserLanguageProbeCheckedAtBytes.
+// GetSystemTime is UTC by definition (no DST, no locale).
+std::string UserLanguageProbeTimestampNowUtc();
+
+// ---- D5/D7 menu data merge (data only; P9b renders it) ----
+//
+// Which section a merged row belongs to. The registry rows keep the existing
+// registry order; the user rows keep config order and form the "내 언어" group
+// that P9b draws at the top of the cloud menus.
+enum class LanguageMenuGroup : unsigned char {
+    Registry = 0,     // GetLanguagesForEngine view row
+    UserLanguage = 1, // user-registered row ("내 언어")
+};
+
+// One "내 언어" row. `registry` is set when the user entry resolved to a
+// registry code (the row then carries that row's code/bcp47 for display and
+// routing), and nullptr for a free-form-only entry (code "" - only the
+// free-form engines offer it). `user` is always the owning config entry, so
+// the native name, script and probe cache stay reachable.
+struct LanguageMenuRow {
+    const LanguageInfo* registry = nullptr;
+    const UserLanguage* user = nullptr;
+    LanguageMenuGroup group = LanguageMenuGroup::UserLanguage;
+};
+
+struct LanguageMenuView {
+    // The engine's registry rows MINUS the rows a user entry claimed (a
+    // language must appear once per menu).
+    std::vector<const LanguageInfo*> registry;
+    // The "내 언어" group, config order, first occurrence of a code wins.
+    std::vector<LanguageMenuRow> user_group;
+};
+
+// D5 "내 언어 group atop cloud menus" + D7 "local built-in offers only the
+// official set, no custom row, no probe":
+//   * HyMt2 -> user_group is ALWAYS empty and `registry` is the
+//     GetLanguagesForEngine view verbatim (pointer-identical contents).
+//   * Google -> a user entry is offered only when its code resolved AND that
+//     registry row carries kLangGoogle (publisher-declared capability, D6);
+//     free-form entries are excluded because Google cannot serve them (D5).
+//   * OpenAi / UserGguf -> every registered entry is offered (both engines
+//     take language NAMES free-form), resolved or not.
+//   * Auto -> resolves to the GOOGLE (menu) view, NOT to
+//     GetLanguagesForEngine's HyMt2 routing view: under engine_type=auto the
+//     language menus render the cloud list (the P8b tray idiom maps auto to
+//     Google), so auto must show the same "내 언어" group the Google menu
+//     shows. Routing keeps LocalPairReliable's own mask rule; menus and
+//     routing are two views with two purposes.
+// Pure: reads the static registry and the caller's vector, allocates only the
+// returned view.
+LanguageMenuView BuildLanguageMenuView(LanguageEngine engine,
+                                      bool include_auto,
+                                      const std::vector<UserLanguage>& user_languages);
+
+// Returns the full list of 90 language entries (AUTO + 89 supported languages).
 const std::vector<LanguageInfo>& GetSupportedLanguages();
 
-// Returns the list of 37 target languages (excluding AUTO).
+// Returns the list of 89 target languages (excluding AUTO).
 const std::vector<LanguageInfo>& GetTargetLanguages();
+
+// 261116_0003 P2 (plan §4): an engine-filtered VIEW into the global registry
+// (never a copy). The returned vector holds pointers at the static
+// kAllLanguages rows, stable for the process lifetime (the registry is const
+// after init). include_auto=false drops the AUTO row (target menus); true
+// keeps it (source menus). LanguageEngine::Auto resolves to the HyMt2 view
+// (auto prefers local). Validation stays registry-global on purpose
+// (NormalizeLanguageCode / PlanLanguageSync / BuildPrompt do NOT filter), so
+// a cloud-picked pin survives an engine switch — the menus filter, the
+// validator does not (research-report §8 items 3/5).
+const std::vector<const LanguageInfo*>& GetLanguagesForEngine(LanguageEngine engine,
+                                                              bool include_auto);
+
+// ---- 261116_0003 P9c-1a: the OpenAI-compatible declared-language filter ----
+//
+// The optional user declaration "이 모델이 지원하는 언어": the set of languages the
+// user says their OpenAI-compatible ENDPOINT's model actually serves. It is a
+// VIEW filter only - the router keeps using engine_mask (LocalPairReliable), so
+// translation routing, the AUTO->Google menu contract and every other engine's
+// view are untouched.
+//
+// Wire form (config.json, OPTIONAL + ADDITIVE - the P9a "user_languages"
+// precedent): a top-level array of canonical registry codes next to the
+// "openai" block,
+//   "openai_declared_languages": ["KO", "JA", "EN"],
+// emitted ONLY while the set is non-empty. A config.json without the key reads
+// as "not declared" = the pre-P9c behavior (the OpenAI view offers every row
+// carrying kLangOpenAi), and it round-trips byte-identically. NO schema version
+// is bumped: the field is additive, an unknown code inside a present array is
+// DROPPED rather than failing the load, and a malformed value reads as "not
+// declared" (the lenient ParseOpenAiBlock posture).
+//
+// The set itself (SanitizeOpenAiDeclaredLanguages is the single canonicalizer):
+//   * registry CODE form - "Korean"/"한국어"/"ko" all resolve to "KO"; anything
+//     else is dropped;
+//   * REGISTRY order, never declaration order, so a hand-reorder of the array
+//     produces identical bytes and identical menus;
+//   * AUTO is never a declaration member (it is a source-only marker and the
+//     source view always offers it);
+//   * duplicates collapse first-wins, and the size is bounded by the registry
+//     (kMaxOpenAiDeclaredLanguages == the OpenAI target-view size; the constant
+//     is the defensive cap, not a user-facing limit).
+//
+// WHY THE FILTER INPUT IS PROCESS-WIDE: the menu surfaces hold no AppConfig
+// reference (tray.cpp / tooltip.cpp / language_search_palette.hpp call
+// GetLanguagesForEngine and BuildLanguageMenuView with an engine + user vector
+// only), so the declaration is published into a snapshot that those two
+// functions read. PublishOpenAiDeclaredLanguages is called from exactly two
+// places in src/config.cpp - the load path (FromJsonString) and the locked verb
+// AppConfig::SetOpenAiDeclaredLanguages - and from nowhere else; the single
+// AppConfig instance main.cpp owns is therefore the only writer. There is ONE
+// filter point (GetLanguagesForEngine), so the tray's four language menus
+// (through BuildLanguageMenuView), the tooltip's two dropdowns, the search
+// picker's pool and the Ctrl+F9 cycle set can never disagree about what the
+// endpoint declares.
+inline constexpr std::size_t kMaxOpenAiDeclaredLanguages = 89;
+inline constexpr std::size_t kMaxOpenAiDeclaredLanguageCodeBytes = 16;
+
+// Canonicalizes ONE declared token (ASCII-trimmed; registry code / English /
+// native spelling -> its registry code). Returns "" for AUTO, for an over-long
+// token and for anything the registry does not know. Pure.
+std::string CanonicalOpenAiDeclaredLanguage(std::string_view token);
+
+// The canonical persisted form (semantics above). Pure and idempotent.
+std::vector<std::string> SanitizeOpenAiDeclaredLanguages(
+    const std::vector<std::string>& declared);
+
+// Publishes the set the OpenAI views filter by and returns the canonical set the
+// caller must persist, so the stored value and the rendered menus can never
+// drift. A publish of the SAME canonical set is a no-op (no view rebuild).
+// Called ONLY by src/config.cpp (load path + AppConfig::SetOpenAiDeclaredLanguages);
+// public because the Config tests drive the same authority.
+std::vector<std::string> PublishOpenAiDeclaredLanguages(
+    const std::vector<std::string>& declared);
+
+// Read side of the published snapshot: is a non-empty declaration armed (the
+// OpenAI views are filtered), and is this registry code declared. Both take the
+// snapshot lock; used by tests, tools and diagnostics, never by a menu surface
+// (the filter itself lives in GetLanguagesForEngine).
+bool OpenAiLanguagesDeclared();
+bool OpenAiLanguageDeclared(std::string_view code);
 
 // Looks up a language by its code (case-insensitive, e.g. "ko", "KO", "ZH-CN").
 const LanguageInfo* FindLanguageByCode(std::string_view code);
@@ -68,8 +610,11 @@ std::string NormalizeLanguageCode(std::string_view code_or_name);
 //   1. OS UI language, when it is a supported language AND differs from the
 //      colliding src (the sys != src guard is what makes an OS==src pivot
 //      impossible instead of looping back to the same language);
-//   2. English, when src is not English (EN forms a reliable local pair with
-//      every non-EN source - LocalPairReliable);
+//   2. English, when src is not English (the ADR-A1-7 neutral pivot value;
+//      the ROUTING behind it is mask-driven since 261116_0003 P2: EN carries
+//      kLangHyMt2, so an official source pivots to a locally servable pair,
+//      while a cloud-only source is routed by LocalPairReliable's D7
+//      engine_mask rather than by this rank);
 //   3. otherwise NO pivot: nullopt, so the caller keeps its original target.
 //      Reached only when src == tgt == EN and the OS language is EN/unknown -
 //      the user can already read that language, so showing the source text is
@@ -156,7 +701,25 @@ struct SystemDefaultLanguages {
 SystemDefaultLanguages ComputeSystemDefaultLanguages();
 
 // Cycles to the next target language given current code or name, wrapping around.
+// Cycles the FULL registry target list (all 89 targets); the engine-filtered
+// overload below is the Ctrl+F9-under-an-active-engine variant.
 std::string CycleTargetLanguage(std::string_view current_code_or_name);
+
+// 261116_0003 P2 (plan §4 "Routing": Ctrl+F9 cycles the active engine's list):
+// same matching/wrapping semantics as the single-argument form, but the cycle
+// set is the given engine's registry view (GetLanguagesForEngine(engine,
+// false)). A current value absent from the view restarts at the view's first
+// entry, exactly like the unfiltered form.
+// 261116_0003 P2 fix round 2 (PR2-02 item 12, k3d1agent P3-1): DEFERRED to P6.
+// 261116_0003 P8b: the deferral is CLOSED. Both Ctrl+F9 call sites now derive
+// the active engine with the tray-menu idiom
+// TrayLanguageEngineFor(TrayPreferredEngineIndex(snap.engine_type)) and pass
+// it here: src/main.cpp's ApplyLanguageChange cycle_target branch and
+// src/hook.cpp's KeyboardHook::CycleTargetLanguage unwired fallback. The
+// hotkey therefore cycles exactly the view the language menus render (under
+// "auto" the Google view). Pinned headlessly by TestP8bCtrlF9CycleWiring.
+std::string CycleTargetLanguage(std::string_view current_code_or_name,
+                                LanguageEngine engine);
 
 // ---- R6 Phase 1 (B3): pure language-sync planner (architect plan §2.4/§2.5) ----
 // The ApplyLanguageChange coordinator in src/main.cpp is the single authority
@@ -219,6 +782,27 @@ inline LanguageSyncPlan PlanLanguageSync(std::string_view cur_source,
     return PlanLanguageSync(LanguageContext::Type, cur_source, cur_target,
                             new_source, new_target);
 }
+
+// 261116_0003 P9a (plan §5 P9 "PlanLanguageSync raw-token allowance"): the same
+// planner, extended with the config's REGISTERED user languages (D5). A token
+// that does not resolve through the registry is accepted when it names a
+// registered user language (stored form / native name / english name / resolved
+// code) and canonicalizes to UserLanguageStoredName(entry). Guarantees kept:
+//   * the allowance is SCOPED to the passed vector - the 4/5-argument overloads
+//     stay registry-only, so every pre-P9a caller and pin is unchanged;
+//   * an unregistered free-form token ("Elvish") is still refused
+//     (valid=false, persist nothing, refresh nothing) - BuildPrompt's raw-token
+//     injection is a PROMPT fallback, not a config-write allowance;
+//   * AUTO stays source-only: the registry lookup runs first, so a user entry
+//     that happens to be spelled "Auto Detect" cannot make an AUTO target valid;
+//   * a persisted user-language pin canonicalizes through the same lookup, so a
+//     no-op mutation reports changed=false and no disk churn.
+LanguageSyncPlan PlanLanguageSync(LanguageContext ctx,
+                                  std::string_view cur_source,
+                                  std::string_view cur_target,
+                                  std::string_view new_source,
+                                  std::string_view new_target,
+                                  const std::vector<UserLanguage>& user_languages);
 
 // R6 Phase 4 (B2, architect plan §4.1 item 1+2) + Task 1 (session 260910_0004) + Condition C (Tencent 100% Official Full SFT template):
 // Formats translation prompt for the Hy-MT2 model.
@@ -291,18 +875,30 @@ std::string BuildCompletionPrompt(std::string_view source_text,
                                   std::string_view source_lang = {});
 
 // R6 Phase 4 (B2, architect plan §4.1 item 3): supported-pair policy for the
-// LOCAL Hy-MT2 engine. F5 Phase 2 (session 260908_0003, ask audit 181530
-// Inquiry 3 adjudicated) SUPERSEDES the original conservative EN-only set:
-// a PINNED source is ground truth, so every distinct (src, tgt) pair of real
-// registry languages is reliable locally - the user's scope directive demands
-// 100% of all Hy-MT2 pairs, and the EN-side gate pushed explicitly pinned
-// non-EN pairs (VI→KO, JA→ZH-CN, ...) onto the 041 cloud-leak / 042 degraded
-// route. The AUTO source stays reliable to every real target (F1: the model's
-// built-in language ID decides). Excluded verdicts: AUTO is never a reliable
-// TARGET, and the degenerate identity pair src == tgt is not "reliable" (there
-// is nothing to translate; ShouldTranslate/pivot own the sane handling).
-// src/tgt accept any form (code or name). Pure function: the whole pair matrix
-// is unit-tested (TestR6P4LanguageRouting).
+// LOCAL Hy-MT2 engine, revived as a REAL capability gate by 261116_0003 P2
+// (plan §4 "Routing", decision D7). The rule reads the SAME
+// LanguageInfo::engine_mask data the menus filter by (single source of
+// truth — no second hardcoded list):
+//   target in the Hy-MT2 official set AND (source AUTO OR source in the set).
+// This REVIVES the auto->cloud branch of PlanTranslationRouting
+// (src/engine.cpp): a pair the local model was never trained for (the 51
+// cloud-only rows — the 8 pre-existing LO/HU/SV/EL/RO/DA/FI/NO plus the 43
+// P3 tranche A+B rows) now routes to Google under
+// engine_type=auto, and under an explicit local pin it stays on-device
+// unless the user granted cloud consent. The F1 AUTO-source guard is kept
+// as a SOURCE-side relaxation only (261116_0003 P2 fix round 2, PR2-04):
+// Hy-MT2's built-in language ID decides for auto-detected text, so AUTO -> an
+// OFFICIAL target stays local, while AUTO -> a cloud-only target is still
+// unreliable (the target side is not the language ID's decision to make), and
+// the target check runs FIRST to match plan §4's formula.
+// History: F5 Phase 2 (session
+// 260908_0003) had generalized EVERY pinned real pair to reliable after the
+// EN-side conservative gate pushed pinned non-EN pairs onto the cloud-leak
+// path; with the registry grown beyond the model's official set that
+// blanket-true made the routing branch dead code (research-report §8 item
+// 13), so the capability distinction returned. src/tgt accept any form
+// (code or name). Pure function: the whole pair matrix is unit-tested
+// (TestR6P4LanguageRouting).
 bool LocalPairReliable(std::string_view src_code, std::string_view tgt_code);
 
 // REQ-R11 (audit §4 M3): Directory containing the running executable
@@ -453,6 +1049,54 @@ struct AppConfig {
     // threads exist, so it needs no mutex or Snapshot entry.
     OpenAiConfig openai;
 
+    // 261116_0003 P9c-1a: the optional "이 모델이 지원하는 언어" declaration for
+    // the OpenAI-compatible endpoint - the CANONICAL set (registry codes,
+    // registry order) the OpenAI language view filters by. Empty = NOT
+    // DECLARED = the pre-P9c behavior (full generous set). Persisted as the
+    // top-level "openai_declared_languages" array, emitted only while
+    // non-empty (contract: the block above GetLanguagesForEngine). It is a key
+    // adjacent to the "openai" block rather than a member of OpenAiConfig
+    // because the OpenAiConfig wire struct is owned by
+    // src/openai_compatible_client.hpp and this unit's file boundary is
+    // config.*; semantically it still belongs to that engine only.
+    //
+    // WRITE RULE (same I4 discipline as the other locked fields): every runtime
+    // write goes through SetOpenAiDeclaredLanguages(), which takes mutex_ and
+    // republishes the engine-view snapshot under it. Direct assignment stays
+    // legal only before any thread exists (startup seeding, unit tests) - and a
+    // direct assignment does NOT publish, so a test that wants the views
+    // filtered must call the locked verb (or PublishOpenAiDeclaredLanguages).
+    // Reads on the GUI thread are direct (the settings dialog and the menus live
+    // there), exactly like the openai block it sits next to.
+    std::vector<std::string> openai_declared_languages;
+
+    // 261116_0003 P9a (plan §3 D5/D6): the user-defined language registry and
+    // its probe-verdict cache, serialized as "user_languages" +
+    // "user_languages_version" (schema block above). Key absent on every
+    // pre-P9a config.json => empty vector = "no user languages" (no migration,
+    // no crash).
+    //
+    // 261116_0003 P9b-3 (PR9-12) WRITE RULE: every mutation of this vector goes
+    // through the locked mutators declared below (Add/Update/RemoveUserLanguage
+    // + the three probe-record verbs), which take mutex_ - the same lock
+    // SaveToFile()/ToJsonString() hold while they serialise this vector. The
+    // race PR9-12 records: the hook thread's Ctrl+F9 fallback and the fx worker
+    // both call SaveToFile() off the GUI thread, so a GUI-side push_back while a
+    // save iterated the vector was undefined behaviour. Direct assignment stays
+    // legal only before any thread exists (startup seeding, unit tests), exactly
+    // like the other locked fields.
+    //
+    // READS stay direct on the GUI thread (menu build / palette /
+    // ApplyLanguageChange) and are unchanged: a returned LanguageMenuView points
+    // INTO this vector, so a locked copy could not extend its lifetime, and the
+    // GUI thread never reads concurrently with its own write. Off-thread readers
+    // must go through a locked verb.
+    //
+    // While the forward-compat carrier is armed (HasUserLanguagesForwardCompatCarrier)
+    // every write verb refuses: in-memory edits are DISCARDED on save because the
+    // verbatim newer-schema block wins (contract at the top of this header).
+    std::vector<UserLanguage> user_languages;
+
     // REQ-201/202 (session 260911_0002): MASTER switch for the diagnostic
     // log FILE itself. Default FALSE — release posture is NO log file at all:
     // Init() defers the file open and main.cpp applies this field through
@@ -567,6 +1211,64 @@ struct AppConfig {
     // worker threads), so no Snapshot entry is needed.
     void SetUserModelId(std::string value);
 
+    // 261116_0003 P9c-1a: locked write of the OpenAI declared-language set
+    // (same discipline as SetUserModelId - takes mutex_, so a save that is
+    // serialising the config cannot observe a half-applied set). The input may
+    // be any spelling (code / English / native); SanitizeOpenAiDeclaredLanguages
+    // canonicalizes it, stores the canonical form and publishes it to the
+    // engine-view filter, so the NEXT menu build already honours the edit. An
+    // empty vector clears the declaration (the OpenAI views return to the full
+    // generous set). Returns the stored canonical set.
+    std::vector<std::string> SetOpenAiDeclaredLanguages(std::vector<std::string> declared);
+
+    // 261116_0003 P9b-3 (PR9-12): locked write surface for user_languages (the
+    // member contract above). Every verb takes mutex_, so a GUI edit can never
+    // interleave with the hook-thread / fx-worker SaveToFile() that serialises
+    // the same vector under the same lock. Validation happens INSIDE the lock
+    // (PR9-11): a name that is reserved or already owned is refused here, so no
+    // write path - dialog, future surface or unit test - can create a dead
+    // menu row.
+    //   AddUserLanguage    - validates, cleans, appends (RejectedCapacity at
+    //                        kMaxUserLanguages).
+    //   UpdateUserLanguage - validates the replacement's names against the
+    //                        OTHER entries, then replaces at `index`. The
+    //                        caller passes the complete replacement entry
+    //                        (usually a copy of the stored one whose typed
+    //                        fields changed), so the probe cache rides along.
+    //   RemoveUserLanguage - erases at `index`.
+    // The probe-record verbs address the entry by its STORED name
+    // (UserLanguageStoredName, the menu dispatch payload) so a worker thread
+    // that finished a probe can record the verdict without holding a pointer
+    // into the vector. The probe's engine call itself must run OFF the GUI
+    // thread (TranslationManager::Translate blocks, engine.hpp:401-408); only
+    // this record step takes the lock.
+    UserLanguageWriteResult AddUserLanguage(UserLanguage language);
+    UserLanguageWriteResult UpdateUserLanguage(std::size_t index, UserLanguage language);
+    UserLanguageWriteResult RemoveUserLanguage(std::size_t index);
+    UserLanguageWriteResult RecordUserLanguageProbeResultFor(
+        std::string_view stored_name,
+        std::string_view engine,
+        std::string_view model,
+        const ProbeEvaluation& evaluation,
+        std::string_view checked_at);
+    UserLanguageWriteResult RecordUserLanguageProbeOverrideFor(
+        std::string_view stored_name,
+        std::string_view engine,
+        std::string_view model,
+        UserLanguageProbeStatus status,
+        std::string_view checked_at);
+    UserLanguageWriteResult ClearUserLanguageProbeOverrideFor(
+        std::string_view stored_name,
+        std::string_view engine,
+        std::string_view model);
+    // 261116_0003 P9b-3 (PR9-12 carrier rule): true while a newer-schema
+    // "user_languages" block is preserved verbatim, i.e. while in-memory edits
+    // would be DISCARDED on save (contract at the top of this header). A GUI
+    // writer consults this to warn/refuse BEFORE offering an edit affordance;
+    // the write verbs above enforce the same rule. Takes mutex_ (the carrier is
+    // written by FromJsonString under it).
+    bool HasUserLanguagesForwardCompatCarrier() const;
+
     // Returns standard default config path: %LOCALAPPDATA%\Emebalachat\config.json
     // (REQ-029-B single-source-of-truth), falling back to the executable dir /
     // working dir only when the Known-Folder query fails.
@@ -602,6 +1304,39 @@ private:
     mutable std::mutex mutex_;
     std::string ToJsonStringLocked() const;
     bool SaveToFileLocked(const std::filesystem::path& target_path) const;
+
+    // 261116_0003 P9b-3: the forward-compat carrier state for callers that
+    // ALREADY hold mutex_ (the public accessor takes it; the write verbs do).
+    bool HasUserLanguagesForwardCompatCarrierLocked() const;
+
+    // 261116_0003 P9a: forward-compat carrier for a "user_languages" block
+    // written by a NEWER schema version (declared version > current). The raw
+    // array text AND its declared version are re-emitted verbatim by the next
+    // save instead of being parsed by rules that do not know it, so a downgrade
+    // cannot silently drop (or half-reinterpret) the user's languages. Both are
+    // empty/0 in the normal case (see kUserLanguagesSchemaVersion). Private
+    // because they are serialization implementation details, not config state
+    // any caller may read.
+    std::string user_languages_forward_compat_json_;
+    int user_languages_forward_compat_version_ = 0;
+    // 261116_0003 P9a fix PR9-09: the ORIGINAL version key text when it could
+    // not be parsed as a strict integer ("2junk", "abc", ...). Re-emitted as a
+    // quoted, escaped JSON string so an unguessable version round-trips
+    // byte-identically through the reader's ParseString instead of being
+    // rewritten as a number this build never saw (the quoting is PR10-01; the
+    // unquoted emission fabricated sibling keys). Empty when the carrier holds
+    // a parsed integer version (or no carrier at all), except for the
+    // empty-text case below.
+    std::string user_languages_forward_compat_version_raw_;
+    // 261116_0003 P9a fix2 PR10-02: true when the carrier's version came from
+    // TEXT that is not a usable integer (unparseable, empty or
+    // whitespace-only). The save then emits that text QUOTED (an empty text
+    // stays as the quoted empty string), so the load/save cycle keeps
+    // preserving the block instead of rewriting the version as the 0 sentinel
+    // that the next load would read as "current version" and half-parse the
+    // newer block as v1. False when the carrier holds a parsed integer version
+    // (or no carrier at all).
+    bool user_languages_forward_compat_version_text_ = false;
 };
 
 using Config = AppConfig;

@@ -791,9 +791,21 @@ void KeyboardHook::CycleTargetLanguage() {
     const AppConfig::Snapshot snap_pre = config_.GetSnapshot(); // I4: hook-thread read
     // Namespace-qualified: inside this member, unqualified lookup would find
     // KeyboardHook::CycleTargetLanguage() (this very method) and hide the pure
-    // free function emebalachat::CycleTargetLanguage(std::string_view).
+    // free function emebalachat::CycleTargetLanguage.
+    // 261116_0003 P8b: same ACTIVE-engine cycle as the GUI coordinator
+    // (main.cpp ApplyLanguageChange), derived with the tray-menu idiom
+    // (tray.hpp, visible through hook.hpp): under "auto" that is the Google
+    // view. The standalone fallback must cycle the same view the menus render,
+    // not the full 89-target registry. Pinned by TestP8bCtrlF9CycleWiring.
+    const emebalachat::LanguageEngine cycle_engine =
+        emebalachat::TrayLanguageEngineFor(
+            emebalachat::TrayPreferredEngineIndex(snap_pre.engine_type));
     const std::string next_tgt =
-        emebalachat::CycleTargetLanguage(snap_pre.type_target_language);
+        emebalachat::CycleTargetLanguage(snap_pre.type_target_language,
+                                         cycle_engine);
+    // Shape-only: the engine enum value, never the target string.
+    DIAG_LOG("HOTKEY", "Ctrl+F9 cycle engine=%u (unwired fallback)",
+             static_cast<unsigned>(cycle_engine));
     config_.SetTypeLanguages(snap_pre.type_source_language, next_tgt); // I4: single locked write
     config_.SaveToFile(); // save takes the lock itself; never held across (non-recursive)
     const AppConfig::Snapshot snap = config_.GetSnapshot(); // authoritative post-write state

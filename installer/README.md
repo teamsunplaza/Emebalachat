@@ -296,6 +296,6 @@ languages; the rest fall back to English by design to avoid mojibake, while the
 standard wizard chrome (Next/Cancel/etc.) is fully translated by the 32 official
 ISL files.
 
-> Note: installer UI languages are separate from the 37/38 in-app languages
-> (translation targets and UI locales) supported by the app itself (see the root
-> README).
+> Note: installer UI languages are separate from the 89 in-app translation
+> targets (38 on the built-in local model) and the 37 UI locales supported by
+> the app itself (see the root README).

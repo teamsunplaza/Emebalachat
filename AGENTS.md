@@ -11,7 +11,7 @@ Key product facts:
 - **Dual translation engines**: a local engine served by the shared per-user host (`Emebala.Engine.exe` orchestrator + `Emebala.Engine.ggml-translate.exe` worker — one unified family name everywhere since session 260930_0003, llama.cpp tag `b6099` loading Tencent Hy-MT2-1.8B, Q8_0 GGUF, ~1.9 GB, CUDA GPU offload with CPU fallback) and a cloud engine (direct async WinHTTP client to Google Translate, no API key). The Chat app itself carries **no embedded inference**: its exe is llama-free, and local serving fails over through one-click repair → consent-gated cloud → explicit unavailability notice. Engine selection is `auto` / `local` / `google` via `config.json`. RT-C (260926_0003): the translate worker auto-gates its GPU offload on the free local VRAM at worker start (DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`, threshold 1.5 GiB; below → CPU leg directly, protecting a co-resident Listener ASR worker's VRAM on 8 GB-class cards). `EMEBALA_MT_GPU=0/1` overrides (inherited environment).
 - **The shared engine lives in its own repository** (v0.10.7, 261111_0001 U7): the orchestrator host, the ggml-translate worker, the llama-coupled `Emebalachat_engine_core` library, and the `engine_host_*` client/parsers moved to `D:\OneDrive\Projects\Emebala_engine` and are consumed via `add_subdirectory` (`EMEBALA_ENGINE_DIR`). Emebala Listener/Reader consume the same engine repo. See "The shared engine repository" below.
 - **Privacy-first design**: the app operates no servers; cloud translation is consent-gated; clipboard use is RAII snapshot/restore with Windows Clipboard History exclusion formats; diagnostic logging is OFF by default and shape-only unless `diag_log_content` is explicitly enabled.
-- **38 language entries** (37 targets + Auto Detect) for translation; UI localized in 37 languages; installer UI in 32 languages.
+- **89 translation targets plus Auto Detect** in one 90-row language registry (`kAllLanguages`), each row carrying an `engine_mask` capability column: the built-in local model offers its official 38 targets, Google offers 88 (Tibetan has no Google bit), and the OpenAI-compatible / user-`.gguf` engines offer all 89. Menus list `GetLanguagesForEngine(...)` views, the searchable picker matches codes / native / English / 37-locale exonyms / script aliases, and `LocalPairReliable` reads the same masks so menu and router cannot drift. UI localized in 37 languages; installer UI in 32 languages.
 - The produced binary is `Emebala_chat.exe` (CMake target name is `Emebalachat`; rename is via `OUTPUT_NAME`).
 
 ## Technology Stack & Runtime Architecture
@@ -44,13 +44,21 @@ src/                    # chat-side production C++20 sources; one module per .hp
   smart_bypass.cpp      # non-translatable content filter
   win32_input.cpp       # key injection + RAII clipboard manager
   unicode_utils.cpp / bidi_utils.cpp  # UTF conversion, script classification, RTL
-  i18n.cpp / config.cpp # UI strings (~37 langs) + config serialization / language DB
+  i18n.cpp / config.cpp # UI strings (~37 langs) + config serialization / 90-row
+                        # language registry with per-engine capability masks
+  language_alias.cpp / language_alias.hpp  # generated alias matrix + SearchLanguages
+                        # matcher (code / native / English / exonym / script)
   diag_logger.cpp       # opt-in per-run diagnostic log (shape-only by default)
   model_verify_sample.hpp  # shared R1-19 content sample (consumed by the engine repo too)
   gguf_validator.*      # registration-time GGUF header gate (llama-free)
+  user_language_probe.*  # first-use capability-probe runner (one fixed sentence,
+                        # verdict cached per engine+model on the user entry)
   sound.cpp / mouse_hook.cpp / vulkan_guard.cpp / hook_thread.hpp / tray_toggle_debounce.hpp
   ui/                   # Direct2D presentation layer
     badge.cpp  tray.cpp  tooltip.cpp  drag_icon.cpp  about_window.cpp
+    language_search_palette.cpp  # searchable language picker (WS_POPUP + EDIT + LISTBOX)
+    user_language_dialog.cpp  # "add my language" dialog (typed names -> resolved code + inferred script)
+    user_language_manager_dialog.cpp  # "My languages" manager (probe badge, evidence, retest, override)
     layered_renderer.cpp  asset_loader.cpp  dpi.cpp  (Per-Monitor V2 DPI)
 tests/run_tests.cpp     # single-file unit test suite (~8,693 checks), links
                         # Emebalachat_core + the engine-repo libs (+ m6_engine_host_*.inc,

@@ -720,6 +720,26 @@ inline constexpr std::uint32_t kScriptMaskLao = 1u << 10;
 inline constexpr std::uint32_t kScriptMaskHebrew = 1u << 11;
 inline constexpr std::uint32_t kScriptMaskGreek = 1u << 12;
 inline constexpr std::uint32_t kScriptMaskMyanmar = 1u << 13;
+// 261116_0003 P1: the 4 new classes for the 9 Hy-MT2 official targets. Bit
+// numbers continue after kScriptMaskMyanmar (13) and MUST equal engine_core's
+// ScriptClass ordinals (translation_common.hpp); tests/ws2_capture_tests.inc
+// pins the equality.
+inline constexpr std::uint32_t kScriptMaskTamil = 1u << 14;
+inline constexpr std::uint32_t kScriptMaskTelugu = 1u << 15;
+inline constexpr std::uint32_t kScriptMaskGujarati = 1u << 16;
+inline constexpr std::uint32_t kScriptMaskTibetan = 1u << 17;
+// 261116_0003 P3: the 8 new classes for the tranche-B cloud languages. Bit
+// numbers continue after kScriptMaskTibetan (17) and MUST equal engine_core's
+// ScriptClass ordinals (translation_common.hpp); tests/ws2_capture_tests.inc
+// pins the equality.
+inline constexpr std::uint32_t kScriptMaskArmenian = 1u << 18;
+inline constexpr std::uint32_t kScriptMaskGeorgian = 1u << 19;
+inline constexpr std::uint32_t kScriptMaskSinhala = 1u << 20;
+inline constexpr std::uint32_t kScriptMaskMalayalam = 1u << 21;
+inline constexpr std::uint32_t kScriptMaskKannada = 1u << 22;
+inline constexpr std::uint32_t kScriptMaskGurmukhi = 1u << 23;
+inline constexpr std::uint32_t kScriptMaskOdia = 1u << 24;
+inline constexpr std::uint32_t kScriptMaskEthiopic = 1u << 25;
 
 // Script mask of every class present in `text` (bitwise OR). Same predicates
 // and same OR order as engine_core's TextScriptClasses, so the two agree by
@@ -740,6 +760,20 @@ inline std::uint32_t ScriptMaskOfText(std::wstring_view text) {
     if (ContainsHebrew(text)) mask |= kScriptMaskHebrew;
     if (ContainsGreek(text)) mask |= kScriptMaskGreek;
     if (ContainsMyanmar(text)) mask |= kScriptMaskMyanmar;
+    // 261116_0003 P1: same predicate order as engine_core's TextScriptClasses.
+    if (ContainsTamil(text)) mask |= kScriptMaskTamil;
+    if (ContainsTelugu(text)) mask |= kScriptMaskTelugu;
+    if (ContainsGujarati(text)) mask |= kScriptMaskGujarati;
+    if (ContainsTibetan(text)) mask |= kScriptMaskTibetan;
+    // 261116_0003 P3: the 8 tranche-B predicates, same order as engine_core.
+    if (ContainsArmenian(text)) mask |= kScriptMaskArmenian;
+    if (ContainsGeorgian(text)) mask |= kScriptMaskGeorgian;
+    if (ContainsSinhala(text)) mask |= kScriptMaskSinhala;
+    if (ContainsMalayalam(text)) mask |= kScriptMaskMalayalam;
+    if (ContainsKannada(text)) mask |= kScriptMaskKannada;
+    if (ContainsGurmukhi(text)) mask |= kScriptMaskGurmukhi;
+    if (ContainsOdia(text)) mask |= kScriptMaskOdia;
+    if (ContainsEthiopic(text)) mask |= kScriptMaskEthiopic;
     return mask;
 }
 
@@ -767,10 +801,45 @@ inline std::uint32_t ScriptMaskForLanguageCode(std::string_view code) {
     if (eq("HE")) return kScriptMaskHebrew;
     if (eq("EL")) return kScriptMaskGreek;
     if (eq("MY")) return kScriptMaskMyanmar;
+    // 261116_0003 P1: the 9 Hy-MT2 official targets (mirrors engine_core's
+    // kLanguageScriptTable one for one; the ws2 parity pin compares both for
+    // every registry code, so a row missing on EITHER side fails the suite).
+    if (eq("GU")) return kScriptMaskGujarati;
+    if (eq("TE")) return kScriptMaskTelugu;
+    if (eq("MR")) return kScriptMaskDevanagari;
+    if (eq("TA")) return kScriptMaskTamil;
+    if (eq("BO")) return kScriptMaskTibetan;
+    if (eq("KK")) return kScriptMaskCyrillic;
+    if (eq("MN")) return kScriptMaskCyrillic;
+    if (eq("UG")) return kScriptMaskArabic;
+    if (eq("YUE")) return kScriptMaskHan;
+    // 261116_0003 P3: the 43 tranche A+B cloud rows (mirrors engine_core's
+    // kLanguageScriptTable one for one; the ws2 parity pin compares both for
+    // every registry code, so a row missing on EITHER side fails the suite).
+    // SR and UZ are dual-script rows (Cyrillic|Latin, the JA Han|Kana
+    // precedent); AM and TI share the Ethiopic bit; PS/SD ride Arabic;
+    // NE/SA/MAI/GOM ride Devanagari; AS rides Bengali; DZ rides Tibetan.
+    if (eq("HY")) return kScriptMaskArmenian;
+    if (eq("KA")) return kScriptMaskGeorgian;
+    if (eq("SI")) return kScriptMaskSinhala;
+    if (eq("ML")) return kScriptMaskMalayalam;
+    if (eq("KN")) return kScriptMaskKannada;
+    if (eq("PA")) return kScriptMaskGurmukhi;
+    if (eq("OR")) return kScriptMaskOdia;
+    if (eq("AM") || eq("TI")) return kScriptMaskEthiopic;
+    if (eq("PS") || eq("SD")) return kScriptMaskArabic;
+    if (eq("NE") || eq("SA") || eq("MAI") || eq("GOM")) return kScriptMaskDevanagari;
+    if (eq("AS")) return kScriptMaskBengali;
+    if (eq("DZ")) return kScriptMaskTibetan;
+    if (eq("BG") || eq("MK") || eq("BE") || eq("KY") || eq("TG")) return kScriptMaskCyrillic;
+    if (eq("SR") || eq("UZ")) return kScriptMaskCyrillic | kScriptMaskLatin;
     if (eq("EN") || eq("VI") || eq("ES") || eq("FR") || eq("DE") || eq("PT") ||
         eq("IT") || eq("ID") || eq("MS") || eq("FIL") || eq("TR") || eq("PL") ||
         eq("NL") || eq("CS") || eq("HU") || eq("SV") || eq("RO") || eq("DA") ||
-        eq("FI") || eq("NO")) {
+        eq("FI") || eq("NO") || eq("BS") || eq("HR") || eq("SL") || eq("SK") ||
+        eq("LT") || eq("LV") || eq("ET") || eq("AF") || eq("CA") || eq("IS") ||
+        eq("SQ") || eq("CY") || eq("GA") || eq("EU") || eq("GL") || eq("SW") ||
+        eq("HT") || eq("AZ") || eq("EO")) {
         return kScriptMaskLatin;
     }
     return 0; // AUTO / unknown: the splitter refuses (fail-open to legacy)
@@ -925,7 +994,8 @@ inline SameLinePrefixSplit SplitSameLineTargetPrefix(std::wstring_view line,
     //
     // The three mask tests below used to rebuild SameLineLinguisticMask over a
     // growing prefix (and, worse, over the suffix) at EVERY candidate boundary:
-    // each call allocates a filtered copy and runs 14 full Contains* scans, so a
+    // each call allocates a filtered copy and runs 26 full Contains* scans
+    // (261116_0003 P3: 18 -> 26 after the 8 tranche-B predicates landed), so a
     // 100 KB single-line capture with ~2000 boundaries cost seconds on the
     // pipeline worker thread.
     //
