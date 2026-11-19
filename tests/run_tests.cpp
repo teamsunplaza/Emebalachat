@@ -39,7 +39,10 @@
 #include "engine_host_protocol.hpp" // REQ-043: frozen shared-host wire protocol helpers
 #include "worker_protocol.hpp"      // REQ-043 (M6 T3): second frozen contract (orchestrator<->worker)
 #include "host_v2_worker_manager.hpp" // REQ-043 (M6 T3): worker lifecycle manager (seam-injectable)
-#include "engine_host_client.hpp"   // REQ-043: self-contained reference client (+ test seam)
+#include "engine_host_client.hpp"   // REQ-043: reference client (+ test seam)
+// 261119 E1-B2a fix R19-01: Chat's explicit hello identity (kChatEngineHostIdentity)
+// lives next to the REQ-060 seam declarations in the app's engine.hpp.
+#include "../src/engine.hpp"
 #include "engine_host_registry.hpp"   // REQ-043 (M6 T2): registry.json parser
 #include "engine_host_manifest.hpp"   // REQ-043 (M6 T2): manifest.json parser + verifiers
 #include "engine_host_components.hpp" // REQ-043 (M6 T2): components.json parser + rule A
@@ -47,6 +50,16 @@
 #include "engine_host_paths.hpp" // M7 A-1: per-family worker-manifest naming scheme helpers
 #include "engine_host_config_reader.hpp" // REQ-046 P4-2: host boot config reader (C1 gate, linkable)
 #include "engine_host_client_policy.hpp" // REQ-CP (T1): per-client engine policy resolver (pure core)
+// 261119 E1-B2b fix R19-15c: the hello-id canonicalizer's home header. The
+// lockstep-parity suite below is the standing control the two canonicalizer
+// comments cite, so this include is load-bearing (not a transitive accident).
+#include "engine_host_client_identity.hpp"
+// 261116_0003 P3 fix round 3 (PR3-03): the engine script table moved to this
+// top include block so the B1 RTL suite (which runs BEFORE the WS2 .inc is
+// included) can read TargetScriptClasses for its data-driven Arabic-script
+// pin. It was a mid-TU include inside ws2_capture_tests.inc; pragma-once, so
+// nothing about the WS2 drift pins changes.
+#include "engine_core/translation_common.hpp"
 #include "../src/ui/openai_settings_window.hpp" // REQ-046 P4-3: TemplateBuilder (Tech Gate 필수-5)
 
 #include <algorithm> // R6 B1: uniqueness check on concurrent generations
@@ -16551,9 +16564,14 @@ void TestLocalRequestModelIdPolicy() {
         TEST_CHECK(engine_cpp.find("ResolveLocalRequestModelId") != std::string::npos &&
                        engine_cpp.find("LocalSeamRequestModelId") != std::string::npos,
                    "REQ-060 pin: engine.cpp resolves the request pin through the shared resolver");
-        TEST_CHECK(engine_cpp.find("WarmupSetState(engine_host_config_") != std::string::npos &&
+        // 261119 E1-B2a fix R19-01: the warmup push carries Chat's explicit
+        // identity (the pin moved with the call; an identity-free push would
+        // revive the compiled-in-default path the finding closed).
+        TEST_CHECK(engine_cpp.find("WarmupSetState(engine_host::kChatEngineHostIdentity, "
+                                  "engine_host_config_") != std::string::npos &&
                        engine_cpp.find("WarmupShutdown()") != std::string::npos,
-                   "REQ-060 pin: engine.cpp drives the warmup manager (refresh + teardown)");
+                   "REQ-060/R19-01 pin: engine.cpp drives the warmup manager with Chat's "
+                   "identity (refresh + teardown)");
         TEST_CHECK(client_cpp.find(",\\\"model_id\\\":\\\"") != std::string::npos,
                    "REQ-060 pin: the client emits the optional model_id member");
         TEST_CHECK(client_cpp.find("\\\"warmup\\\":true") != std::string::npos,
@@ -16634,6 +16652,8 @@ public:
     // parsed ("" when the client omitted the member) — the wire-level
     // observation point for the optional request pin.
     std::string last_translate_model_id() const { return last_translate_model_id_; }
+    // 261119 E1-B2a fix R19-01: the hello frame this fake host received.
+    std::string last_hello() const { return last_hello_; }
 
 private:
     bool ReadFrame(std::string& json) {
@@ -16690,6 +16710,9 @@ private:
 
         std::string frame;
         if (!ReadFrame(frame)) return;
+        // 261119 E1-B2a fix R19-01: the hello bytes are the observation point
+        // for the app's explicit identity (no compiled-in default remains).
+        last_hello_ = frame;
         if (hello_mode_ == 1) {
             WriteFrame(emebalachat::enginehost::BuildError(hello_error_code_));
             return; // close the "connection" with the handle
@@ -16749,6 +16772,7 @@ private:
     HANDLE accept_event_ = nullptr;
     bool served_ = false;
     bool hello_seen_ = false;
+    std::string last_hello_; // 261119 E1-B2a: verbatim hello frame (wire pin)
     int results_sent_ = 0;
     std::atomic<bool> translate_seen_{false}; // R1-11: a translate frame arrived
     std::string last_translate_model_id_; // REQ-060: last parsed translate model_id
@@ -16816,10 +16840,18 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "안녕하세요", out, err);
+        const bool ok = ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "안녕하세요", out, err);
         TEST_CHECK(ok, "client: ok result returns true (err='" + err + "')");
         TEST_CHECK(out == "translated-ok", "client: translation text delivered");
         TEST_CHECK(err.empty(), "client: no error code on success");
+        // 261119 E1-B2a fix R19-01 (wire proof): Chat names itself explicitly
+        // and the emitted hello bytes are the frozen pre-fix pair — the
+        // parameterization changed the API, NOT the wire.
+        const std::string chat_hello = host.last_hello();
+        TEST_CHECK(chat_hello.find("\"client\":\"emebala-chat\"") != std::string::npos,
+                   "R19-01 wire: Chat hello client id stays emebala-chat");
+        TEST_CHECK(chat_hello.find("\"client_version\":\"0.10.1\"") != std::string::npos,
+                   "R19-01 wire: Chat hello client_version stays 0.10.1");
         ov.reset();
         finish(host, t);
         TEST_CHECK(host.served(), "client: fake host pipe created (served)");
@@ -16839,7 +16871,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err, served;
-        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "text",
+        const bool ok = ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text",
                                           std::string("user-llama3"),
                                           out, err, served);
         TEST_CHECK(ok, "client REQ-060: pinned translate succeeds (err='" + err + "')");
@@ -16858,7 +16890,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "text", out, err);
+        const bool ok = ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err);
         TEST_CHECK(ok, "client REQ-060: legacy unpinned translate succeeds");
         TEST_CHECK(host.last_translate_model_id().empty(),
                    "client REQ-060: legacy form omits model_id (frozen pre-REQ-060 shape)");
@@ -16876,7 +16908,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: pin mismatch falls back (false)");
         TEST_CHECK(err == "pin_mismatch",
                    "client: pin_mismatch error code (got '" + err + "')");
@@ -16895,7 +16927,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: version_mismatch falls back (false)");
         TEST_CHECK(err == "version_mismatch", "client: version_mismatch error code");
         ov.reset();
@@ -16912,7 +16944,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: unauthorized falls back (false)");
         TEST_CHECK(err == "unauthorized", "client: unauthorized error code");
         ov.reset();
@@ -16930,7 +16962,7 @@ void TestEngineHostClient() {
         cfg.spawn = false;
         std::string out, err;
         const auto start = std::chrono::steady_clock::now();
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: busy falls back (false)");
         const auto elapsed = std::chrono::steady_clock::now() - start;
         TEST_CHECK(err == "busy", "client: busy error code");
@@ -16952,7 +16984,7 @@ void TestEngineHostClient() {
             EngineHostConfig cfg;
             cfg.spawn = false;
             std::string out, err;
-            TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+            TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                        "client: non-ok status falls back (false)");
             TEST_CHECK(err == statuses[i], "client: error code matches the result status");
             ov.reset();
@@ -16972,7 +17004,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: host down mid-request falls back (false)");
         TEST_CHECK(err == "io" || err == "timeout",
                    "client: host down surfaces as io/timeout");
@@ -16989,7 +17021,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.enabled = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: disabled config declines");
         TEST_CHECK(err == "disabled", "client: disabled error code");
         ov.reset();
@@ -17002,7 +17034,7 @@ void TestEngineHostClient() {
         OverrideGuard ov(12, L"definitely-not-existing-eme-host.exe");
         EngineHostConfig cfg;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: missing host binary falls back (false)");
         TEST_CHECK(err == "no_host_binary", "client: no_host_binary error code");
     }
@@ -17017,7 +17049,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: refused connection falls back (false)");
         TEST_CHECK(err.rfind("connect", 0) == 0,
                    "client: connect error code after retries (got '" + err + "')");
@@ -17035,7 +17067,7 @@ void TestEngineHostClient() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        TEST_CHECK(!ehc::TryTranslate(cfg, "ko", "en", "text", out, err),
+        TEST_CHECK(!ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "text", out, err),
                    "client: missing token file falls back (false)");
         TEST_CHECK(err == "no_token", "client: no_token error code");
         ov.reset();
@@ -17399,7 +17431,7 @@ void TestR107PeerIdentityGate() {
         EngineHostConfig cfg;
         cfg.spawn = false;
         std::string out, err;
-        const bool ok = ehc::TryTranslate(cfg, "ko", "en", "user secret text", out, err);
+        const bool ok = ehc::TryTranslate(emebalachat::engine_host::kChatEngineHostIdentity, cfg, "ko", "en", "user secret text", out, err);
 
         squatter.Stop();
         if (squatter_thread.joinable()) squatter_thread.join();
@@ -17502,6 +17534,17 @@ void TestR107PeerIdentityGate() {
 // PLACEMENT: after m6_engine_host_verbatim_sync_tests.inc — the suite needs
 // ResolveRepoFile from this TU (same source-pin dependency as REQ-044).
 #include "m6_engine_host_settle_tests.inc"
+
+// 261119 E1-A (CEO decision 5.a): wire-regression corpus for the engine
+// repo's comment-aware JSON scanning helpers (engine_host_protocol.hpp
+// ScanBalanced/SkipWs + JsonParseStringArray trivia) — the valid corpus
+// (comments inside objects/arrays and around values are accepted), the
+// invalid corpus (rejections unchanged), and the spelling differential
+// (no-comment vs '//' vs '/* */' parse identically), plus the end-to-end
+// legs through the real engine boot config readers (LoadUserModelIdFromConfig
+// / LoadHostBootConfig over a temp %LOCALAPPDATA% root). Staged as an .inc
+// next to this runner; registered in main() after TestReq044VerbatimSync().
+#include "m6_engine_host_wire_comment_tests.inc"
 
 // REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible engine — pure
 // security/policy helper tests (URL classification, SHA-256 digest, masking,
@@ -24182,6 +24225,114 @@ void TestV0105WorkerAbortSessionPins() {
     }
 }
 
+// ---- 261119 E1-B2b fix R19-15c: hello-id canonicalizer lockstep parity ------
+// Byte-hex dump so a high-byte mismatch is diagnosable straight from the
+// runner's stderr (locale/encoding bugs are invisible in a "%s" compare).
+static std::string HexBytesForParity(std::string_view s) {
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    for (const char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (!out.empty()) out += ' ';
+        out += kHex[c >> 4];
+        out += kHex[c & 0x0F];
+    }
+    return out;
+}
+
+// WHY THIS SUITE EXISTS: two canonicalizers resolve the SAME frozen client-id
+// surface out of two different TUs:
+//   * identity::CanonicalizeHelloClientId (engine_host_client_identity.hpp) —
+//     the hello gate both transports apply BEFORE any pipe I/O;
+//   * clientpolicy::CanonicalizeClientId (engine_host_client_policy.cpp) — the
+//     per-client policy resolver's routing key (CONTRACT-C13).
+// No implementation is shared between them, so only a test can hold them in
+// lockstep. If they disagree, the host routes the policy of a different client
+// than the one that identified itself (wrong model pin / prompt template /
+// sampling).
+//
+// This is the COMMITTED control cited by both canonicalizer comments (F-01 of
+// the 261119 E1-B2b verification: the only prior parity check was a gitignored
+// one-shot probe under Listner/tools_tmp_261119_e1b2b/, so a fresh clone had no
+// regression control at all). Every case asserts (a) byte-equality of the two
+// outputs and (b) each side's expected canonical form — (b) is what also catches
+// a LOCKSTEP drift where both sides change identically.
+void TestEngineHelloIdentityParity() {
+    std::cout << "[RUN] Testing 261119 E1-B2b R19-15c hello-id canonicalizer parity..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    namespace idn = emebalachat::engine_host::identity;
+    namespace cp = emebalachat::enginehost::clientpolicy;
+
+    struct ParityCase {
+        const char* name;
+        std::string_view in;
+        std::string_view expect;
+    };
+    // The 16-case edge corpus: empty, all-space (every ASCII space char
+    // 0x09-0x0D + 0x20), padded, mixed-case, internal-space (trim must NOT
+    // reach it), both alias spellings, alias+pad+case, UTF-8 high-byte prefix,
+    // raw high bytes, the third frozen id, garbage, NBSP pad (C2 A0 must NOT be
+    // trimmed), NBSP-only (not "empty" — it is not ASCII space), trailing LF,
+    // and the typo alias with CRLF padding.
+    const ParityCase kCases[] = {
+        {"empty", "", ""},
+        {"all-ascii-space", "\t\n\v\f\r ", ""},
+        {"padded", "  emebala-chat  ", "emebala-chat"},
+        {"mixed-case", "EmEbAlA-ChAt", "emebala-chat"},
+        {"internal-space", "emebala chat", "emebala chat"},
+        {"alias-corrected", "emebala-listener", "emebala-listner"},
+        {"alias-typo", "emebala-listner", "emebala-listner"},
+        {"alias-pad-case", "  EMEBALA-Listener\t", "emebala-listner"},
+        {"utf8-high-prefix", "\xC3\xA9mebala-chat", "\xC3\xA9mebala-chat"},
+        {"raw-high-bytes", "\x80\xFF EmEbala-Chat ", "\x80\xFF emebala-chat"},
+        {"frozen-third-id", "emebala-reader", "emebala-reader"},
+        {"garbage", "!!!not an id!!!", "!!!not an id!!!"},
+        // C2 A0 is NBSP: NOT an ASCII space, so it is neither trimmed nor
+        // lowercased away — the id keeps its bytes and stays unknown.
+        {"nbsp-pad", "\xC2\xA0" "emebala-chat" "\xC2\xA0",
+         "\xC2\xA0" "emebala-chat" "\xC2\xA0"},
+        {"nbsp-only", "\xC2\xA0", "\xC2\xA0"},
+        {"trailing-lf", "emebala-chat\n", "emebala-chat"},
+        {"alias-typo-crlf", "EMEBALA-LISTNER\r\n", "emebala-listner"},
+    };
+
+    for (const ParityCase& c : kCases) {
+        const std::string hello = idn::CanonicalizeHelloClientId(c.in);
+        const std::string policy = cp::CanonicalizeClientId(c.in);
+        const std::string detail = std::string(c.name) + " in=[" + HexBytesForParity(c.in) +
+                                   "] hello=[" + HexBytesForParity(hello) + "] policy=[" +
+                                   HexBytesForParity(policy) + "] expect=[" +
+                                   HexBytesForParity(c.expect) + "]";
+        // (a) The load-bearing assertion: one-sided divergence fails here.
+        TEST_CHECK(hello == policy,
+                   "R19-15c parity: canonicalizers agree byte-for-byte; " + detail);
+        // (b) Per-side expected value: catches a lockstep co-drift.
+        TEST_CHECK(hello == c.expect, "R19-15c hello-id canonical form; " + detail);
+        TEST_CHECK(policy == c.expect, "R19-15c policy canonical form; " + detail);
+    }
+
+    // Both canonicalizers must also agree on the alias TABLE they read: the
+    // frozen typo-id is what goes on the wire, so the corrected spelling can
+    // never survive either path (a divergent alias row would show up here even
+    // if a future corpus stopped covering it).
+    for (const auto& row : cp::kLegacyClientIdAliases) {
+        const std::string raw(row.alias);
+        TEST_CHECK(idn::CanonicalizeHelloClientId(raw) == std::string(row.canonical),
+                   "R19-15c parity: hello path maps every alias row to its canonical id");
+        TEST_CHECK(cp::CanonicalizeClientId(raw) == std::string(row.canonical),
+                   "R19-15c parity: policy path maps every alias row to its canonical id");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261119 E1-B2b R19-15c hello-id canonicalizer parity passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261119 E1-B2b R19-15c hello-id canonicalizer parity: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -24444,6 +24595,12 @@ int main() {
     // JSON helper copy (L57-318) still matches engine_host_protocol.hpp after
     // any header edit; approach ii (runtime source-text differential).
     TestReq044VerbatimSync();
+    // 261119 E1-A (CEO decision 5.a): wire-regression corpus for the
+    // comment-aware JSON scanning helpers — registered right after the
+    // REQ-044 verbatim suite that pins the two engine files in lockstep.
+    TestEngineHostWireCommentValidCorpus();
+    TestEngineHostWireCommentInvalidCorpus();
+    TestEngineHostWireCommentDifferential();
     // REQ-CP T5: worker-protocol OPTIONAL prompt_template field (both copies +
     // the worker/host connection points + the cross-repo parity pin).
     TestReq058T5PromptTemplateField();
@@ -24675,6 +24832,13 @@ int main() {
     // per-key tolerance / partial sampling / merge precedence pins.
     // Registered after the M7 suites, per the end-of-file pattern.
     TestEngineHostClientPolicy();
+    // 261119 E1-B2b fix R19-15c (F-01 of the E1-B2b verification): the
+    // hello-id canonicalizer lockstep-parity control. identity::
+    // CanonicalizeHelloClientId and clientpolicy::CanonicalizeClientId live in
+    // separate TUs and share no implementation, so this suite IS the standing
+    // guarantee both production comments cite. Registered right after the
+    // policy suite it pins (same canonicalization surface).
+    TestEngineHelloIdentityParity();
     // REQ-CP T2 (session 260928_0001, design §11 T2): the live client-policy
     // reader — mtime/size cache hit/miss, delete->defaults, torn-write
     // fail-closed, absent-store no-crash, per-dir cache isolation. Registered

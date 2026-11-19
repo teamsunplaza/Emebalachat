@@ -107,8 +107,8 @@ Security and robustness:
 - **The shared engine now lives in its own repository**,
   `github.com/teamsunplaza/Emebala_engine` (orchestrator, worker, engine
   core, host protocol). The Chat build consumes it through
-  `EMEBALA_ENGINE_DIR` (default `D:/OneDrive/Projects/Emebala_engine`,
-  overridable). Listener and Reader will consume the same engine. The Chat
+  `EMEBALA_ENGINE_DIR` (default `../Emebala_engine` relative to this repo
+  root, overridable). Listener and Reader will consume the same engine. The Chat
   app itself still ships with no inference code (verified: no llama/ggml
   symbols in `Emebala_chat.exe`).
 - Unit test suite: 9,070 checks (was 8,153), 0 failures.

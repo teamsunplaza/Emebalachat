@@ -26,6 +26,12 @@
 //   * JSON infrastructure (8 helpers, true VERBATIM copies): JsonEscape,
 //     JsonValue struct, class JsonReader, AppendUnicodeEscape, ScanBalanced,
 //     FindField, ParseUInt64, ParseInt.
+//     (261119 E1-A, R17-01) The reader's TRIVIA SKIPPER is covered too: the
+//     copy inlines it as a ParseObject-local `skip_ws` lambda while the header
+//     factors it as JsonReader::SkipWs, so the class-level token compare cannot
+//     see it; a name-normalized (`is_ws` -> `IsWs`) token compare of the two
+//     bodies closes that gap (a one-sided comment-awareness edit used to stay
+//     green).
 //   * Wire parsers the client receives (3, REDUCED copies): ParseWelcomeWire /
 //     ParseResultWire / ParseErrorWire. The client only ever receives
 //     welcome/result/error (it SENDS hello/translate/cancel by inline JSON
@@ -42,7 +48,9 @@
 //      Every other token — identifier, literal, operator, keyword, punctuation
 //      — survives verbatim and in order.
 //   3. For the JSON infrastructure (true copies) require BYTE-IDENTICAL
-//      reduced streams. For the 3 wire parsers (reduced copies) require the
+//      reduced streams; for the reader's trivia skipper (same algorithm, one
+//      renamed identifier: `is_ws` -> `IsWs`) require the same after that
+//      single normalization. For the 3 wire parsers (reduced copies) require the
 //      reduced copy body to be derivable from the header parser: we check the
 //      copy's shared extraction statements appear, and that the copy does not
 //      reference any field the reduced contract does not parse.
@@ -203,6 +211,27 @@ bool VerbatimExtractBlock(const std::string& src, const std::string& prefix,
     return false;
 }
 
+// 261119 E1-A (R17-01): rename ONE identifier in a reduced token stream. The
+// reducer keeps every identifier verbatim, so a pure NAMING difference between
+// the two copies (`is_ws` in the client lambda vs `IsWs` in the header method)
+// would read as drift. Normalizing the names BEFORE comparing keeps the check
+// exact for structure while tolerating only the known naming convention.
+void VerbatimNormalizeIdentifier(std::string& reduced, const std::string& from,
+                                 const std::string& to) {
+    std::string out;
+    out.reserve(reduced.size());
+    std::size_t i = 0;
+    while (i < reduced.size()) {
+        const std::size_t sep = reduced.find('\x01', i);
+        const std::size_t end = sep == std::string::npos ? reduced.size() : sep;
+        const std::string token = reduced.substr(i, end - i);
+        out += (token == from) ? to : token;
+        if (sep != std::string::npos) out.push_back('\x01');
+        i = end + 1;
+    }
+    reduced.swap(out);
+}
+
 } // namespace
 
 void TestReq044VerbatimSync() {
@@ -322,10 +351,12 @@ void TestReq044VerbatimSync() {
     // private methods; the copy inlines is_ws/skip_ws as ParseObject-local
     // lambdas and folds the string-token loop into ParseObject. The two are
     // SEMANTICALLY equivalent re-implementations, not a byte-for-byte copy, so
-    // a token-identity check would be a false failure. What must hold is that
-    // the copy's reader is built from the SAME primitives: it scans balanced
-    // groups with ScanBalanced and decodes \uXXXX with AppendUnicodeEscape,
-    // and it exposes the same ParseObject(JsonPairs&) entry point.
+    // a whole-class token-identity check would be a false failure. What must
+    // hold is that the copy's reader is built from the SAME primitives: it
+    // scans balanced groups with ScanBalanced and decodes \uXXXX with
+    // AppendUnicodeEscape, and it exposes the same ParseObject(JsonPairs&)
+    // entry point. The ONE method the class check cannot see — the trivia
+    // skipper — gets its own name-normalized token compare right below.
     {
         std::string cj;
         TEST_CHECK(VerbatimExtractBlock(client_src, "class JsonReader {", cj),
@@ -342,6 +373,58 @@ void TestReq044VerbatimSync() {
                    "req044: client JsonReader scans nested groups via ScanBalanced");
         TEST_CHECK(cr.find("is_string") != std::string::npos,
                    "req044: client JsonReader tags string values (is_string)");
+    }
+
+    // ---- 261119 E1-A (R17-01): trivia-skip DRIFT guard ---------------------
+    // The token pin above covers the 8 true VERBATIM helpers; the reader is
+    // exempt from the class-level compare because the copy folds the header's
+    // private methods into ParseObject-local lambdas. That left `skip_ws` — the
+    // trivia skipper both sides now drive with a comment-aware body — with NO
+    // drift detection at all: a one-sided edit (header made comment-aware,
+    // copy left comment-blind, or the reverse) stayed green under the whole
+    // suite. The copy's skip_ws and the header's SkipWs are the SAME algorithm
+    // under one rename (`is_ws` -> `IsWs`), so a NAME-NORMALIZED token compare
+    // is exact: any statement / constant / branch drift fails it, and only the
+    // naming convention is tolerated.
+    //
+    // Design choice (R17-01 offered two): the alternative was one
+    // comment-bearing frame driven through the client Parse*Wire path. That
+    // path is unreachable from this TU — ParseWelcomeWire / ParseResultWire /
+    // ParseErrorWire live inside the anonymous namespace of
+    // engine_host_client.cpp (opens L44, closes L801; the parsers are L354-405),
+    // so they have internal linkage and no header declaration. Reaching them
+    // would require a live pipe/host round trip through the public client —
+    // neither hermetic nor inside this suite's source-pin boundary. The token
+    // compare runs on the same two frozen sources the rest of this suite reads
+    // and points at the exact line that drifts, so it is the chosen leg.
+    {
+        std::string header_skip, copy_skip;
+        TEST_CHECK(VerbatimExtractBlock(proto_src, "void SkipWs() {", header_skip),
+                   "req044: header defines JsonReader::SkipWs");
+        TEST_CHECK(VerbatimExtractBlock(client_src, "auto skip_ws = [&]() {", copy_skip),
+                   "req044: client copy defines skip_ws");
+        std::string hr, cr;
+        const bool hok = VerbatimReduceFragment(header_skip, hr);
+        const bool cok = VerbatimReduceFragment(copy_skip, cr);
+        TEST_CHECK(hok && cok, "req044: both trivia-skip bodies reduce cleanly");
+        if (hok && cok) {
+            VerbatimNormalizeIdentifier(cr, "is_ws", "IsWs");
+            TEST_CHECK(hr == cr,
+                       "req044 VERBATIM: trivia skip (header SkipWs == client skip_ws, "
+                       "comment handling included) token stream matches");
+            // Teeth: the SAME comparison must reject the pre-E1-A one-line
+            // skipper, otherwise "identical" proves nothing about the comment
+            // states that E1-A added.
+            std::string legacy;
+            TEST_CHECK(VerbatimReduceFragment(
+                           "{ while (pos_ < src_.size() && IsWs(src_[pos_])) ++pos_; }",
+                           legacy),
+                       "req044 self-check: the pre-E1-A trivia skipper reduces");
+            VerbatimNormalizeIdentifier(legacy, "is_ws", "IsWs");
+            TEST_CHECK(hr != legacy,
+                       "req044 self-check: the trivia-skip compare REJECTS the comment-blind "
+                       "skipper (a one-sided comment-awareness revert cannot stay green)");
+        }
     }
 
     // ---- wire parsers: 3 REDUCED copies ------------------------------------

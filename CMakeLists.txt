@@ -31,8 +31,10 @@ option(ENABLE_LLAMA_FETCH "Fetch and configure llama.cpp native library (owned b
 option(EMEBALA_VULKAN "Enable Vulkan GPU backend when Vulkan SDK is present (owned by the engine repo)" ON)
 
 # The shared Emebala engine repository. Emebala Chat, Listener and Reader
-# consume the same engine repo; override with -DEMEBALA_ENGINE_DIR=<path>.
-set(EMEBALA_ENGINE_DIR "D:/OneDrive/Projects/Emebala_engine" CACHE PATH
+# consume the same engine repo; default is a sibling checkout relative to this
+# repo's root (standard sibling-folder layout); override with
+# -DEMEBALA_ENGINE_DIR=<path>.
+set(EMEBALA_ENGINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Emebala_engine" CACHE PATH
     "Path to the shared Emebala engine repository (the v0.10.7 engine split, 261111_0001 U7)")
 if (NOT EXISTS "${EMEBALA_ENGINE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
@@ -213,7 +215,7 @@ target_link_libraries(Emebalachat_core PUBLIC
 # this repo. The engine CMakeLists skips its own llama FetchContent when the
 # parent already provides the `llama` target; here the engine owns the fetch,
 # so exactly one llama build exists per build tree.
-add_subdirectory(${EMEBALA_ENGINE_DIR} emebala_engine_build)
+add_subdirectory("${EMEBALA_ENGINE_DIR}" emebala_engine_build)
 
 # The engine_host_* client/parsers moved to the engine repo (Emebala_engine_host
 # static lib; PUBLIC include dir = the engine src/, so `#include
@@ -316,6 +318,15 @@ endif()
 # Target 2: Native Unit Test Runner
 add_executable(run_tests
     tests/run_tests.cpp
+    # 261119 E1-B2b fix R19-15b: the engine repo fences the base client's
+    # SetPathsForTesting test seam behind EMEBALA_HOST_CLIENT_TEST_SEAM, so
+    # production binaries carry no override entry. The FakeHost suites below
+    # drive that seam, so run_tests compiles the one-shot client TU ITSELF
+    # with the macro defined: its object satisfies every symbol the link would
+    # otherwise pull from the engine lib's seam-free copy (static-lib members
+    # are extracted only for still-undefined symbols), so the engine lib's
+    # object is never pulled and Emebala_chat.exe keeps the seam-free link.
+    "${EMEBALA_ENGINE_DIR}/src/engine_host_client.cpp"
 )
 
 target_link_libraries(run_tests PRIVATE
@@ -355,6 +366,11 @@ endif()
 string(REPLACE "\\" "/" _eme_engine_dir_norm "${EMEBALA_ENGINE_DIR}")
 target_compile_definitions(run_tests PRIVATE
     "EMEBALA_ENGINE_REPO_DIR=L\"${_eme_engine_dir_norm}\"")
+# 261119 E1-B2b fix R19-15b: see the target_sources note above — defines the
+# fenced test-seam macro for EVERY TU of run_tests (the runner drives
+# SetPathsForTesting, and the client TU compiled in above exposes it). The
+# Emebalachat exe and Emebalachat_core never see this define.
+target_compile_definitions(run_tests PRIVATE EMEBALA_HOST_CLIENT_TEST_SEAM)
 
 # Plan-B (REQ-B009) P6 closure C-2: the §12.2 crash-isolation pin runs in its
 # OWN process (the run_tests process cannot create the SECOND concurrent
