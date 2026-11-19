@@ -5,6 +5,66 @@ All notable changes to Emebala Chat are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.8] - 2026-11-19
+
+Language-menu redesign. Each engine now offers its own language list instead of
+one shared 38-entry table: the built-in local model offers its official 38
+targets, Google offers 88, and OpenAI-compatible or your own `.gguf` model
+offers all 89 registered targets. Every language menu starts with a search row
+that opens a searchable picker, the picker names the engine whose list it shows
+together with the list size, and a language you pinned stays pinned when you
+switch to an engine that does not offer it. With the `auto` engine, a pair
+outside the local model's official set is routed to the cloud engine instead of
+being served locally in degraded quality.
+
+### Added
+
+- **Per-engine language lists**: the registry holds 90 rows (Auto Detect + 89
+  targets) and each row declares which engines can translate it. The built-in
+  local model exposes exactly the 38 targets in Tencent's Hy-MT2 official set;
+  Google exposes 88 (Tibetan is absent from Google's published table); the
+  free-form OpenAI-compatible and user-`.gguf` engines expose all 89. Menus
+  list the active engine's view instead of the whole registry.
+- **Searchable language picker**: a **Search…** row tops all six language
+  menus (typing and drag source/target in the tray and badge menu, plus both
+  tooltip dropdowns) and opens a picker with live filtering, arrow-key and
+  Enter selection, Esc to dismiss, and Tab to flip source and target. Matching
+  covers the code, the native name, the English name, the language's name in
+  each of the 37 interface languages, and script aliases (`한글`, `漢字`,
+  `kana`, `Cyrillic`, …), folded for case and diacritics, so `KO`, `korean`,
+  `Koreanisch`, `한국어` and `한글` all rank Korean first and `tieng viet`
+  finds Vietnamese.
+- **52 new translation targets** (37 → 89) and 12 new script classes, so
+  scripts the app previously could not label or script-gate (Tamil, Telugu,
+  Gujarati, Tibetan, Armenian, Georgian, Sinhala, Malayalam, Kannada,
+  Gurmukhi, Odia, Ethiopic) now translate end to end.
+
+### Changed
+
+- **Engine chip**: the picker header names the engine whose list is on screen
+  and how many languages it holds (for example `Google · 88 languages`), so
+  the size of the list is never a guess.
+- **Ghost row**: a pinned language the active engine does not offer stays
+  visible at the top of the menu, greyed and checked, and its value is still
+  sent to the engine as-is instead of being silently reset.
+- **`auto` routing is live again**: a target outside the local model's
+  official set (or a pinned pair with an unofficial source) is routed to the
+  cloud engine under `auto`. A strict `local` pin still keeps the pair
+  on-device and shows the degradation notice instead.
+- **Ctrl+F9** cycles the target list of the ACTIVE engine (the same view the
+  language menu shows): 38 targets on the local engine, 88 on Google, all 89
+  on the free-form engines. A current target outside the active list restarts
+  the cycle at the top of that list.
+- **Repo-relative engine checkout default**: the build now looks for the
+  shared engine at `../Emebala_engine` next to this repo root instead of a
+  machine-specific absolute path. `EMEBALA_ENGINE_DIR` still overrides it.
+
+### Known limitations (documented)
+
+- Support on the free-form engines means the language is offered to the model,
+  not that the model translates it well; a model that does not handle a
+  language will show it in the answer.
+
 ## [0.10.7] - 2026-11-12
 
 Completeness and fairness release. Drag-to-translate no longer dies where a
@@ -111,7 +171,7 @@ Security and robustness:
   root, overridable). Listener and Reader will consume the same engine. The Chat
   app itself still ships with no inference code (verified: no llama/ggml
   symbols in `Emebala_chat.exe`).
-- Unit test suite: 9,070 checks (was 8,153), 0 failures.
+- Unit test suite: 10,952 checks (was 9,070), 0 failures.
 
 ### Upgrade notes
 

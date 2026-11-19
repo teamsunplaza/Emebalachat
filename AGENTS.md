@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository. Read this first; it su
 
 ## Project Overview
 
-**Emebala Chat** is a native Windows 10/11 x64 real-time translation application (v0.10.4, MIT license). The user types in their own language, presses Enter, and the typed text is erased and replaced with its translation in place — no clipboard pollution, no copy-paste workflow. It is written in **pure C++20 against raw Win32 APIs** (no frameworks, no Electron, no Qt): Direct2D/DirectWrite for UI, WinHTTP for networking, WinMM for audio, `WH_KEYBOARD_LL`/`WH_MOUSE_LL` low-level hooks for input interception.
+**Emebala Chat** is a native Windows 10/11 x64 real-time translation application (v0.10.8, MIT license). The user types in their own language, presses Enter, and the typed text is erased and replaced with its translation in place — no clipboard pollution, no copy-paste workflow. It is written in **pure C++20 against raw Win32 APIs** (no frameworks, no Electron, no Qt): Direct2D/DirectWrite for UI, WinHTTP for networking, WinMM for audio, `WH_KEYBOARD_LL`/`WH_MOUSE_LL` low-level hooks for input interception.
 
 Key product facts:
 
@@ -60,7 +60,7 @@ src/                    # chat-side production C++20 sources; one module per .hp
     user_language_dialog.cpp  # "add my language" dialog (typed names -> resolved code + inferred script)
     user_language_manager_dialog.cpp  # "My languages" manager (probe badge, evidence, retest, override)
     layered_renderer.cpp  asset_loader.cpp  dpi.cpp  (Per-Monitor V2 DPI)
-tests/run_tests.cpp     # single-file unit test suite (~8,693 checks), links
+tests/run_tests.cpp     # single-file unit test suite (10,952 checks), links
                         # Emebalachat_core + the engine-repo libs (+ m6_engine_host_*.inc,
                         # m7_*, req0xx_*.inc suites); ResolveRepoFile() falls back to the
                         # engine repo (EMEBALA_ENGINE_REPO_DIR) for engine-source pins
@@ -126,7 +126,7 @@ cmake --build build --config Release
 
 # Unit tests (or: ctest --test-dir build)
 .\build\run_tests.exe
-# Expect "Total Checks: 8693 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
+# Expect "Total Checks: 10854 / Failures: 0 / >>> ALL CORE TESTS PASSED SUCCESSFULLY! <<<"
 # (the count varies by a few with environment-conditional checks, e.g. console
 # attachment; failures must always be 0)
 ```
@@ -144,7 +144,7 @@ Useful variants:
   - `python tools/check_installer_display_text.py` — display-layer mojibake gate (compiles a probe wizard per language and reads memo text back). Non-zero exit = do not ship.
   - `python tools/check_uninstall_contract.py` — static re-derivation of the shared-engine uninstall contract, including the M7 A-3 registry-aware bundled-only cleanup invariants (the pre-A-3 blanket `DelTree` trips the gate). Non-zero exit = do not ship.
   - **GitHub release-notes gate (fail-closed in the app; session 261104_0001 lesson)**: before publishing a release, run `python tools/check_release_notes.py --tag vX.Y.Z --file installer\output\Emebalachat_Setup_X.Y.Z.exe --notes <notes-file>`; after publishing, re-run without `--notes` (live mode). The release NOTES body must carry a line whose first non-blank content is `SHA256:` + exactly 64 hex chars equal to the setup exe's real hash (`certutil -hashfile <exe> SHA256`), or the in-app updater refuses the download with "다운로드한 파일이 손상되었습니다". Generating the notes straight from CHANGELOG.md drops this line — do not skip the gate. Full procedure: `docs/RELEASE-CHECKLIST.md` §3.
-  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.4.exe`. (ISCC lives wherever Inno Setup 6 was installed — `check_installer_encoding.py` prints the detected Inno dir, e.g. a per-user `AppData\Local\Programs\Inno Setup 6` — use that `ISCC.exe`.) The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebala.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; a missing worker exe fails the compile even in no-llama builds; the worker carries the unified family name since session 260930_0003). REQ-L32 P2-2 (session 260925): the installer ALSO stages the Listener-owned ggml-asr pair + CUDA 13.3 runtime DLLs from `installer\bundled\engine\` (git-ignored, populated at release time per `installer\README.md` §2b; `skipifsourcedoesntexist` + the `SharedSlotReplaceDecision` staged gate) — the Chat installer is a NON-owner of that slot: first-install coverage only, never replaces an existing store file (G3). Inno Setup 6.4+ is a hard requirement (enforced by a compile-time `#error`).
+  - Then: `& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss` → `installer\output\Emebalachat_Setup_0.10.8.exe`. (ISCC lives wherever Inno Setup 6 was installed — `check_installer_encoding.py` prints the detected Inno dir, e.g. a per-user `AppData\Local\Programs\Inno Setup 6` — use that `ISCC.exe`.) The installer bundles `build\Emebala.Engine.exe` **and** `build\Emebala.Engine.ggml-translate.exe` + `build\worker.ggml-translate.manifest` (the mandatory engine bundle, per-family manifest scheme — M7 A-1; a missing worker exe fails the compile even in no-llama builds; the worker carries the unified family name since session 260930_0003). REQ-L32 P2-2 (session 260925): the installer ALSO stages the Listener-owned ggml-asr pair + CUDA 13.3 runtime DLLs from `installer\bundled\engine\` (git-ignored, populated at release time per `installer\README.md` §2b; `skipifsourcedoesntexist` + the `SharedSlotReplaceDecision` staged gate) — the Chat installer is a NON-owner of that slot: first-install coverage only, never replaces an existing store file (G3). Inno Setup 6.4+ is a hard requirement (enforced by a compile-time `#error`).
 
 ## Development Conventions
 
@@ -158,7 +158,7 @@ Useful variants:
 
 ## Testing Strategy
 
-1. **Unit tests** — `tests/run_tests.cpp`, one self-contained file linking `Emebalachat_core` (+ `Emebalachat_engine_core` for llama-guarded suites), ~4,531 checks covering every core module (config/languages, unicode/normalization, bidi, smart bypass, engine routing, engine-host protocol/scheduler/worker/registry/manifest/components/bootstrap, UI-audit fixes, clipboard, hooks, worker, UI helpers, vulkan guard). Run after every build; CTest name is `CoreTests`. Add checks there for logic changes.
+1. **Unit tests** — `tests/run_tests.cpp`, one self-contained file linking `Emebalachat_core` (+ `Emebalachat_engine_core` for llama-guarded suites), 10,952 checks covering every core module (config/languages, unicode/normalization, bidi, smart bypass, engine routing, engine-host protocol/scheduler/worker/registry/manifest/components/bootstrap, UI-audit fixes, clipboard, hooks, worker, UI helpers, vulkan guard). Run after every build; CTest name is `CoreTests`. Add checks there for logic changes.
 2. **E2E harness** — `tools/e2e/req027_e2e.py` drives the real app against a real Notepad window (12 scenarios: capture correctness, multi-language blocks, paste-window suppression, caret-mid-line, backspace clamp, per-hwnd offset isolation, tray UI-language enumeration). Verdicts are judged from the diagnostic log; INCONCLUSIVE is auto-retried once. Interactive desktop only.
 3. **Gates** — the three installer gates above (encoding, display text, uninstall contract) plus benchmark/verification scripts under `tools/` (e.g. `run_fidelity_experiment.py`, `fidelity_probe`) used during translation-quality tuning sessions.
 4. **Manual QA gate** — `docs/RELEASE-CHECKLIST.md` lists user-verified release items (IME composition behavior, hotkeys, privacy-notice flow) that cannot be automated. Note this file and the whole `docs/` tree are gitignored (local-only).

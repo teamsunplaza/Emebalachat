@@ -49,12 +49,12 @@ AppName=Emebala Chat
 ; "v0.10.4"); promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see
 ; CHANGELOG "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002,
 ; see CHANGELOG "v0.10.6").
-AppVersion=0.10.7
+AppVersion=0.10.8
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.7
+OutputBaseFilename=Emebalachat_Setup_0.10.8
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
