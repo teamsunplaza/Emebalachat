@@ -1,8 +1,6 @@
 #include "google_translate.hpp"
 #include "config.hpp"
 #include "diag_logger.hpp"
-#include "engine.hpp" // SEC-M1: TruncateHeadTailWindow (shared head/tail window helper)
-#include "i18n.hpp"   // SEC-M1: TranslateTruncatedNotice (user-facing truncation notice)
 #include "unicode_utils.hpp"
 
 #include <atomic>
@@ -263,6 +261,45 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     return !response_body.empty();
 }
 
+// U-G (session 261121_0001, report §3.2 Google row): one translation chunk
+// through the EXISTING dual-endpoint request path — clients5 dict-chrome-ex
+// primary, translate.googleapis.com gtx fallback, REQ-R05 request profiles
+// and the F5 response-body cap untouched. `utf8_chunk` is the chunker's text
+// only (delimiters ride along untranslated, re-appended by the caller), so
+// it is guaranteed <= kCloudChunkUnits UTF-16 units and the GET request line
+// stays under the measured ~16 KB endpoint limit. Returns the translated
+// chunk, or EMPTY when both endpoints fail / parse empty (REQ-048 P3: the
+// caller converts that into a whole-request failure so a partial translation
+// never masquerades as complete).
+std::wstring TranslateChunkUtf8(const std::string& utf8_chunk,
+                                const std::string& sl,
+                                const std::string& tl) {
+    const std::string encoded_q = GoogleTranslate::UrlEncode(utf8_chunk);
+    std::string response;
+
+    // Primary: clients5.google.com with dict-chrome-ex
+    std::string path_a = "/translate_a/t?client=dict-chrome-ex&sl=" + sl + "&tl=" + tl + "&q=" + encoded_q;
+    if (HttpGet(L"clients5.google.com", ToUtf16(path_a), response)) {
+        std::wstring result = GoogleTranslate::ParseResponseJson(response);
+        if (!result.empty()) {
+            return result;
+        }
+    }
+
+    // Fallback: translate.googleapis.com with gtx endpoint
+    std::string path_b = "/translate_a/single?client=gtx&sl=" + sl + "&tl=" + tl + "&dt=t&q=" + encoded_q;
+    if (HttpGet(L"translate.googleapis.com", ToUtf16(path_b), response)) {
+        std::wstring result = GoogleTranslate::ParseResponseJson(response);
+        if (!result.empty()) {
+            return result;
+        }
+    }
+
+    // REQ-048 P3: both endpoints failed for this chunk — empty is the
+    // failure signal; Translate() fails the whole request closed on it.
+    return {};
+}
+
 } // namespace
 
 // REQ-R05: Chrome-typical headers for the dict-chrome-ex profile. Format
@@ -387,6 +424,16 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
             while (pos < json.size()) {
                 SkipWhitespace(json, pos);
                 if (pos >= json.size() || json[pos] == ']') break;
+                // G-3 (261121_0001 fix round 2, SEC-F03): a non-'[' / ']' / ','
+                // element at segment-array level (a bare string or number)
+                // advances NO cursor below, which wedged this loop at 100% CPU
+                // forever on a malformed/hostile body (CWE-835) — the WinHTTP
+                // timeouts never cover the parse loop, so the pipeline worker
+                // stalled permanently. The F-1 lesson, exactly as the repo's
+                // other JSON walkers apply it (AppendContentParts et al.):
+                // capture the iterator before the element parse and force one
+                // byte of progress when nothing consumed any.
+                const size_t iter_start = pos;
                 if (json[pos] == '[') {
                     pos++; // skip segment '['
                     SkipWhitespace(json, pos);
@@ -402,6 +449,7 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
                 }
                 SkipWhitespace(json, pos);
                 if (pos < json.size() && json[pos] == ',') pos++;
+                if (pos == iter_start) ++pos; // non-progress guard (never stall)
             }
         } else if (pos < json.size() && json[pos] == '\"') {
             // Format 1: [ ["seg1", "ko"], ["seg2", "ko"] ]
@@ -441,23 +489,13 @@ std::wstring GoogleTranslate::ParseResponseJson(std::string_view json) {
     return ToUtf16(accumulated_utf8);
 }
 
-std::pair<std::wstring, bool> GoogleTranslate::ClampCloudQuery(std::wstring_view text) {
-    if (text.size() <= kMaxCloudQueryUnits) {
-        return { std::wstring(text), false };
-    }
-    // Head/tail window keeps BOTH ends of a long message (same semantics as the
-    // llama path, REQ-R01). keep_per_side is sized so head + marker + tail is
-    // STRICTLY within the cap: the "\n…\n" marker costs 3 UTF-16 units, so
-    // 2*748 + 3 = 1,499 <= 1,500. TruncateHeadTailWindow cuts on wchar_t
-    // boundaries and never splits a surrogate pair (its contract,
-    // src/engine.hpp:110-116) - the clamp therefore runs BEFORE any UTF-8
-    // conversion, exactly as the verification report mandates (§4).
-    constexpr size_t kEllipsisMarkerUnits = 3;
-    const size_t keep_per_side = (kMaxCloudQueryUnits - kEllipsisMarkerUnits) / 2;
-    std::wstring clamped = TruncateHeadTailWindow(text, keep_per_side);
-    DIAG_F("GOOGLE_T/Translate/003: input %zu UTF-16 units exceeded %zu cap; head/tail window applied\n",
-           text.size(), kMaxCloudQueryUnits);
-    return { std::move(clamped), true };
+std::vector<TranslationChunk> GoogleTranslate::BuildCloudChunks(std::wstring_view text) {
+    // The chunker works on UTF-8 and counts UTF-16 code units; its contract
+    // (C1) guarantees every chunk text fits kCloudChunkUnits and that joining
+    // text + trailing_delimiter over all chunks, in order, reproduces
+    // ToUtf8(text) byte-for-byte. max_units == 0 would mean unlimited and is
+    // never passed here.
+    return SplitTextIntoTranslationChunks(ToUtf8(text), kCloudChunkUnits);
 }
 
 void GoogleTranslate::SetCloudBlockedForTesting(bool blocked) {
@@ -486,65 +524,92 @@ std::wstring GoogleTranslate::Translate(
         return {};
     }
 
-    // SEC-M1 (session 260911_0002, verify 235100): single choke-point clamp.
-    // Every cloud feeder (drag-icon, double-Ctrl+C, tooltip re-translate, the
-    // 4096-unit-bounded Enter-translate worker, and the local->cloud fallback)
-    // funnels through here, so this is the only place the URL-query budget must
-    // be enforced. Clamping BEFORE ToUtf8/UrlEncode keeps the GET request line
-    // under the measured ~16 KB endpoint limit even for worst-case Korean
-    // (9x percent-expansion): 1,499 units * 9 = 13,491 B encoded.
-    auto [query, clamped] = ClampCloudQuery(text);
-
-    std::string sl = MapLanguageCode(src_code);
-    std::string tl = MapLanguageCode(tgt_code);
-    std::string utf8_text = ToUtf8(query);
-    std::string encoded_q = UrlEncode(utf8_text);
-
-    // SEC-M1: when the input was clamped, the returned result must say so -
-    // silent truncation is forbidden (verify 235100 §5). Appended to the
-    // translated text on every SUCCESS path. REQ-048 P3: every FAILURE path
-    // now returns empty (see below), so no truncation notice exists there
-    // either — nothing is returned to the caller at all on failure.
-    const std::wstring truncation_notice = clamped
-        ? L"\n" + I18n::Get(StringId::TranslateTruncatedNotice)
-        : std::wstring{};
-
-    // Primary: clients5.google.com with dict-chrome-ex
-    std::string path_a = "/translate_a/t?client=dict-chrome-ex&sl=" + sl + "&tl=" + tl + "&q=" + encoded_q;
-    std::wstring wpath_a = ToUtf16(path_a);
-
-    std::string response;
-    if (HttpGet(L"clients5.google.com", wpath_a, response)) {
-        std::wstring result = ParseResponseJson(response);
-        if (!result.empty()) {
-            result += truncation_notice;
-            return result;
-        }
+    // U-G (session 261121_0001, report §3.2 Google row, contract C1): the
+    // cloud query is no longer head/tail-truncated at 1,500 units (the old
+    // SEC-M1 ClampCloudQuery, which silently deleted the middle of long
+    // messages). The FULL text is split into C1 chunks and each chunk rides
+    // the existing sequential dual-endpoint request path (REQ-R05 profiles
+    // and timeouts unchanged) with its own primary -> gtx fallback. Every
+    // cloud feeder (drag-icon, double-Ctrl+C, tooltip re-translate, the
+    // Enter-translate worker, the local->cloud fallback) funnels through
+    // this single choke point, and each chunk's text is <= kCloudChunkUnits
+    // UTF-16 units, so every GET request line stays under the measured
+    // ~16 KB endpoint limit (worst-case Korean: 10,800 encoded bytes).
+    const std::vector<TranslationChunk> chunks = BuildCloudChunks(text);
+    if (chunks.empty()) {
+        // Whitespace-only input (chunker contract): nothing to translate, so
+        // identity IS the correct result. This short-circuit runs BEFORE any
+        // network I/O — it is NOT the REQ-048 P3 failure arm (that arm is
+        // TranslateChunkUtf8's dual-endpoint `return {};`, still below).
+        return std::wstring(text);
     }
+    DIAG_F("GOOGLE_T/Translate/004: input of %zu UTF-16 units split into %zu cloud chunks\n",
+           text.size(), chunks.size());
 
-    // Fallback: translate.googleapis.com with gtx endpoint
-    std::string path_b = "/translate_a/single?client=gtx&sl=" + sl + "&tl=" + tl + "&dt=t&q=" + encoded_q;
-    std::wstring wpath_b = ToUtf16(path_b);
-    if (HttpGet(L"translate.googleapis.com", wpath_b, response)) {
-        std::wstring result = ParseResponseJson(response);
-        if (!result.empty()) {
-            result += truncation_notice;
-            return result;
+    const std::string sl = MapLanguageCode(src_code);
+    const std::string tl = MapLanguageCode(tgt_code);
+
+    std::wstring result;
+    result.reserve(text.size());
+    // F-2 (261121_0001 fix round 1): the sequential loop's whole-request
+    // deadline starts before the first chunk; GetTickCount64 is monotonic.
+    const unsigned long long loop_started_ms = ::GetTickCount64();
+    // G-1 (261121_0001 fix round 2, SEC-F01 bytes half): the aggregate
+    // response-byte counter starts at zero; every chunk response adds its
+    // parsed piece size below and the whole request fails closed at
+    // kCloudMaxTotalResponseBytes (see the header for the headroom math).
+    size_t total_response_bytes = 0;
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        const TranslationChunk& chunk = chunks[i];
+        if (!ChunkNeedsRequest(chunk.text)) {
+            // Pure-delimiter chunk (and, since fix round 1 F-1, the
+            // whitespace-only shape the chunker emits at a packing boundary):
+            // re-append its bytes verbatim; no GET. Nothing is translated and
+            // nothing is lost — the byte-exact reassembly is unchanged.
+            result += ToUtf16(chunk.text);
+            result += ToUtf16(chunk.trailing_delimiter);
+            continue;
         }
+        if (ChunkLoopBudgetExhausted(::GetTickCount64() - loop_started_ms)) {
+            // F-2: whole request fails closed through the existing arm below; the
+            // localized notice carries the message (no new i18n string).
+            DIAG_F("GOOGLE_T/Translate/006: chunk-loop budget exhausted (chunk %zu/%zu, "
+                   "budget_ms=%llu); whole request fails closed\n",
+                   i + 1, chunks.size(),
+                   static_cast<unsigned long long>(GoogleTranslate::kChunkLoopTotalBudgetMs));
+            return {};
+        }
+        const std::wstring piece = TranslateChunkUtf8(chunk.text, sl, tl);
+        if (piece.empty()) {
+            // U-G: ANY chunk failure fails the WHOLE request — a partial
+            // translation must not masquerade as complete (REQ-048 P3: empty
+            // maps to EngineFailed in engine.cpp's cloud_call, surfacing the
+            // failure sound/modal). No chunk is ever silently dropped.
+            DIAG_F("GOOGLE_T/Translate/005: cloud chunk %zu/%zu failed; whole request fails closed\n",
+                   i + 1, chunks.size());
+            return {};
+        }
+        // G-1 (SEC-F01 bytes half): count this chunk response's parsed bytes
+        // toward the AGGREGATE cap before appending — a hostile endpoint
+        // streaming ~10 MiB per chunk must fail at 4 MiB total, not at
+        // ~2.2 GB in the reassembled result.
+        total_response_bytes += piece.size() * sizeof(wchar_t);
+        if (total_response_bytes > kCloudMaxTotalResponseBytes) {
+            // The existing whole-request failure arm: {} -> EngineFailed ->
+            // the localized notice carries the message (no new i18n string).
+            DIAG_F("GOOGLE_T/Translate/007: aggregate response bytes exceeded (chunk %zu/%zu, "
+                   "total_bytes=%zu, cap_bytes=%zu); whole request fails closed\n",
+                   i + 1, chunks.size(), total_response_bytes,
+                   static_cast<size_t>(GoogleTranslate::kCloudMaxTotalResponseBytes));
+            return {};
+        }
+        result += piece;
+        // Byte-exact reassembly by the chunker contract: the delimiter rides
+        // along untranslated, so the original structure (paragraph breaks,
+        // sentence stops) always survives.
+        result += ToUtf16(chunk.trailing_delimiter);
     }
-
-    // REQ-048 P3: both endpoints failed — return EMPTY as the failure signal.
-    // engine.cpp's cloud_call treats any non-empty result as
-    // TranslationStatus::Ok, so returning the original text here made the
-    // worker see "translation == source" and silently skip the paste (no
-    // failure sound, no modal) while also clearing the success sentinel that
-    // latches the modal — the user-device P3 무번역 root cause. A network
-    // failure MUST instead be recorded as EngineFailed (worker surfaces the
-    // failure sound; the strict-local paths also re-arm the engine-unavailable
-    // modal); silent identity passthrough is forbidden. The SUCCESS contract
-    // above is unchanged: any non-empty parse still returns the translated
-    // text (plus the SEC-M1 truncation notice).
-    return {};
+    return result;
 }
 
 } // namespace emebalachat

@@ -2,7 +2,12 @@
 
 #include <string>
 #include <string_view>
-#include <utility>
+#include <vector>
+
+// U-G (session 261121_0001, vp-plan contract C1): the shared translation
+// chunker lives in the engine repo and is header-only/pure; it reaches this
+// header through the existing PUBLIC include of Emebala_engine_host.
+#include "translation_chunker.hpp"
 
 namespace emebalachat {
 
@@ -44,8 +49,14 @@ inline constexpr std::wstring_view kProductUserAgent =
 class GoogleTranslate {
 public:
     // Translates text using Google Translate free endpoint via native WinHTTP.
+    // U-G (session 261121_0001, report §3.2 Google row, contract C1): inputs
+    // longer than kCloudChunkUnits are translated IN FULL — split into chunks,
+    // one GET per chunk on the existing request path, reassembled byte-exactly
+    // — never head/tail-truncated.
     // Returns translated std::wstring, or EMPTY on network failure (REQ-048 P3:
-    // an identity passthrough used to masquerade failures as successes).
+    // an identity passthrough used to masquerade failures as successes). Fix
+    // round 2 G-1: the sequential loop also fails closed when the aggregate of
+    // all chunk response bytes exceeds kCloudMaxTotalResponseBytes (4 MiB).
     static std::wstring Translate(
         std::wstring_view text,
         std::string_view src_code = "AUTO",
@@ -93,29 +104,92 @@ public:
     // Maps internal language code to Google's ISO/BCP47 code (e.g. "FIL" -> "tl", "ZH-CN" -> "zh-CN").
     static std::string MapLanguageCode(std::string_view code);
 
-    // SEC-M1 (session 260911_0002, verify 235100): hard cap on the UTF-16 code
-    // units fed into the GET query. The endpoint is URL-BYTE bounded (live
-    // probes: 16,200 B OK / 18,000 B -> 400 on both dict-chrome-ex and gtx).
-    // Worst case is Korean: 1 UTF-16 unit -> 3 UTF-8 bytes -> 9 percent-
-    // encoding chars. 1,500 units * 9 = 13,500 B stays under the measured OK
-    // boundary with headroom for the fixed path prefix; 1,500 is also inside
-    // the range the primary endpoint demonstrably translates (1,800 OK).
-    // A plain char-count cap (the audit's 4,000) is wrong-shaped: 4,000
-    // Korean chars = ~36 KB URL would still fail while ASCII is over-clamped.
-    static inline constexpr size_t kMaxCloudQueryUnits = 1500;
-    static_assert(kMaxCloudQueryUnits * 9 < 16200,
-                  "SEC-M1: worst-case Korean encoding must stay under the measured 16,200-byte OK boundary");
+    // U-G (session 261121_0001, report §3.2 Google row, vp-plan contract C1):
+    // per-chunk cloud query size in UTF-16 code units. Long inputs are
+    // translated IN FULL via SplitTextIntoTranslationChunks (see
+    // BuildCloudChunks) with one GET per chunk — the v0.10.8-and-earlier
+    // SEC-M1 head/tail truncation (kMaxCloudQueryUnits + ClampCloudQuery,
+    // deleted in this session) silently dropped the middle of any message
+    // over 1,500 units, the CEO-reported defect. The bound is now
+    // transport-only: the endpoint is URL-byte bounded (live probes:
+    // 16,200 B OK / 18,000 B -> 400 on both endpoints), worst case is Korean
+    // 1 UTF-16 unit -> 3 UTF-8 bytes -> 9 percent-encoding chars, so 1,200
+    // units encode to <= 10,800 B per request, under the OK boundary with
+    // headroom for the fixed path prefix.
+    static inline constexpr size_t kCloudChunkUnits = 1200;
+    static_assert(kCloudChunkUnits * 9 < 16200,
+                  "U-G: worst-case Korean encoding must stay under the measured 16,200-byte OK boundary");
 
-    // Pure clamp seam (unit-testable, no network): returns the query text
-    // GoogleTranslate::Translate will send, plus a truncated flag. Text at or
-    // under kMaxCloudQueryUnits passes through UNCHANGED. Over-limit text is
-    // reduced with TruncateHeadTailWindow (keep_per_side = half the cap) so
-    // BOTH ends of the message survive; cuts are surrogate-pair safe by the
-    // helper's contract, and truncation operates on wchar_t units BEFORE any
-    // UTF-8 conversion (verify 235100 §4). The "\n…\n" marker (3 units) can
-    // make the result marginally longer than the cap in exchange for both
-    // halves, which the budget above still absorbs.
-    static std::pair<std::wstring, bool> ClampCloudQuery(std::wstring_view text);
+    // U-G + fix round 1 (F-1): whether a chunk needs its own GET. FALSE when the
+    // chunk's text carries no translatable content — empty (the delimiter-only
+    // shape) or ASCII-whitespace-only — because there is nothing to translate
+    // and a blank query either wastes a GET or produces an empty parse that the
+    // caller turns into a WHOLE-request failure. Translate() re-appends such a
+    // chunk's text and trailing_delimiter verbatim, so the byte-exact
+    // reassembly is unaffected. Whitespace is the chunker's own definition: no
+    // byte greater than 0x20. The OpenAI client applies the same rule
+    // (OpenAiChunkNeedsRequest); both exist because the pure predicate belongs
+    // in the shared chunker header, which this fix round does not own.
+    static constexpr bool ChunkNeedsRequest(std::string_view text) {
+        for (const char c : text) {
+            if (static_cast<unsigned char>(c) > 0x20) return true;
+        }
+        return false;
+    }
+
+    // U-G + fix round 1 (F-2): whole-request wall-clock budget for the
+    // sequential per-chunk GET loop. Each chunk can cost up to two endpoint
+    // attempts (~8 s + ~16 s worst case on the REQ-R05 profiles), so a maximal
+    // Enter capture (~219 chunks) could hold the pipeline worker for roughly an
+    // hour with no progress surface. 300,000 ms (5 min) is far above any
+    // realistic full-text translation at those profiles and short enough that a
+    // pathological input gives up honestly; the loop checks it before every
+    // chunk request and fails the whole request closed (the localized failure
+    // notice is the message, no new i18n string).
+    static inline constexpr unsigned long long kChunkLoopTotalBudgetMs = 300000;
+    static_assert(kChunkLoopTotalBudgetMs == 300000,
+                  "F-2: the Google chunk-loop budget is exactly 300,000 ms (5 min)");
+
+    // Pure form of that deadline test, so the suite pins the edge without a
+    // clock: 299,999 -> keep going, 300,000 -> abort.
+    static constexpr bool ChunkLoopBudgetExhausted(unsigned long long elapsed_ms) {
+        return elapsed_ms >= kChunkLoopTotalBudgetMs;
+    }
+
+    // U-G + fix round 2 (G-1, SEC-F01 bytes half): the AGGREGATE response-byte
+    // ceiling for ONE whole Translate call. Each chunk GET's body is already
+    // capped at 10 MiB (kMaxResponseBodyBytes in the .cpp), but a maximal
+    // Enter capture makes ~219 chunk requests, so a hostile endpoint answering
+    // ~10 MiB per chunk accumulated ~2.2 GB in the reassembled `result` before
+    // anything failed. The loop therefore sums the parsed bytes every chunk
+    // response contributed and returns {} (the existing REQ-048 P3 failure arm)
+    // the moment the sum exceeds this cap. Headroom math: one bounded chunk is
+    // <= 1,200 UTF-16 units of source, so even a pathological-but-legitimate
+    // translation (4x expansion of CJK into UTF-16) is ~9.6 KB per chunk;
+    // 4 MiB is >400x that per-chunk figure, and a full 219-chunk worst-case
+    // run is ~2.1 MB, i.e. the cap leaves ~2x over the entire maximal input.
+    // The loop only sees the parsed piece (the GET body is consumed inside
+    // TranslateChunkUtf8), so it accumulates piece bytes — the memory the
+    // attack actually exhausts — counting wchar_t as the 2 bytes of this
+    // UTF-16 build; the re-appended source delimiters are source-bounded and
+    // not attacker-controlled.
+    static inline constexpr size_t kCloudMaxTotalResponseBytes = 4u * 1024u * 1024u;
+    static_assert(kCloudMaxTotalResponseBytes == 4194304,
+                  "G-1: the aggregate cloud response-byte cap is exactly 4 MiB");
+
+    // U-G: pure chunk seam (unit-testable, no network) — the exact chunk list
+    // Translate() sends: SplitTextIntoTranslationChunks(ToUtf8(text),
+    // kCloudChunkUnits). Translate() issues one GET per chunk and reassembles
+    // translated text + trailing_delimiter over all chunks, reproducing the
+    // source structure byte-exactly (delimiters are never sent to the
+    // endpoint, so they survive verbatim). The chunker never splits inside a
+    // UTF-8 sequence or surrogate pair, and a run that still exceeds
+    // max_units is hard-split by the chunker itself (max_units guarantees the
+    // transport bound) — no separate truncation path exists. Empty or
+    // whitespace-only input yields an empty vector (chunker contract);
+    // Translate() short-circuits that case to the input itself BEFORE any
+    // network I/O.
+    static std::vector<TranslationChunk> BuildCloudChunks(std::wstring_view text);
 
     // Encodes UTF-8 string into RFC 3986 percent-encoded format.
     static std::string UrlEncode(std::string_view str);
