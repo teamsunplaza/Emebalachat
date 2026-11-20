@@ -486,23 +486,184 @@ public:
     // static_asserts prove the contract at compile time); only the anchor
     // TIER resolution stays Win32-bound in tooltip.cpp.
     static constexpr int kBackTransCardWidthDip = 360;
+    // Legacy floor. The TWO-PANEL furniture added in v0.10.9 (labels + panel
+    // padding, kBackTransContentTopDip and the constants below) is already
+    // tall enough that this floor never binds on a real payload; it stays as
+    // the documented degenerate-case clamp (and the empty-payload pin).
     static constexpr int kBackTransCardMinHeightDip = 96;
-    static constexpr int kBackTransCardMaxHeightDip = 340;
+    // v0.10.9 (U-B, report §4 defect 3-2): 340 -> 480. The old cap left
+    // 228..258 DIP of body space (~10-12 lines) for header + reference line +
+    // padding; a slightly long back-translation was clipped with no way to
+    // reach the rest. 480 matches the translation card's REQ-002 ceiling.
+    static constexpr int kBackTransCardMaxHeightDip = 480;
     // 13pt SemiBold body in the 332 DIP text column (360 - 2*14 padding).
     // Deliberately a character-count estimate, not a DirectWrite measurement:
     // the GUI-thread show path refines the height with a real layout when a
     // DWrite factory exists, and this estimate is the headless floor.
     static constexpr int kBackTransCharsPerLine = 44;
-    static constexpr int kBackTransLineHeightDip = 20;
-    // Header row (38) + top/bottom padding (22).
-    static constexpr int kBackTransChromeDip = 60;
-    static constexpr int kBackTransRefGapDip = 6;
-    static constexpr int kBackTransRefLineDip = 16;
+    static constexpr int kBackTransLineHeightDip = 20;   // 13pt SemiBold body
+    static constexpr int kBackTransRefLineDip = 16;      // 11.5pt [원문] body
+
+    // ---- v0.10.9 (U-B, report §4 Option 2): two-panel vertical geometry ----
+    // [ header row ][ divider ][ [역번역] label + body viewport ]
+    //                          [ [원문] sub-panel: label + body viewport ]
+    // EVERY value below is a whole DIP count held in an int, so the constexpr
+    // planner is exact: the header's static_asserts (and the unit tests) can
+    // compare whole numbers, and no float rounding can put a panel one DIP
+    // over the card's bottom edge.
+    //
+    // kBackTransContentTopDip is where the [역번역] label band starts: the
+    // header row (kBackTransRowTopDip 9 + kBackTransRowHeightDip 24 = 33), the
+    // header divider at row_bottom + 4 = 37, and the 7 DIP gap the pre-v0.10.9
+    // renderer already used before the body.
+    static constexpr int kBackTransContentTopDip = 44;
+    static constexpr int kBackTransSectionLabelDip = 18;  // label band
+    static constexpr int kBackTransSectionGapDip = 2;     // label -> its body
+    static constexpr int kBackTransPanelTopGapDip = 8;    // back body -> [원문] panel
+    static constexpr int kBackTransPanelPadDip = 6;       // [원문] panel inner pad
+    static constexpr int kBackTransPanelBottomPadDip = 6;
+    static constexpr int kBackTransCardBottomPadDip = 12;
+    // Degenerate-clamp basis, NOT a per-panel allocation any more (v0.10.9 fix
+    // round 3): the overflow split reserves the ORIGINAL's measured height
+    // first (see kBackTransRefSharePct below), so no floor is imposed on
+    // either panel. What survives is the guard for a body area smaller than
+    // two of these (only reachable through a pathologically tall wrapped pill
+    // row); a real payload always leaves the natural height in charge.
+    static constexpr int kBackTransMinPanelBodyDip = 24;
+    // v0.10.9 fix round 3 (H-1, QA finding F3): the [원문] panel's share cap.
+    // The original reserves its MEASURED height, so a short original is always
+    // visible whole without scrolling; 45% of the card body is the most it may
+    // reserve while the back-translation still needs room (the remainder is
+    // >= 55%, so the long side always keeps the larger viewport). On a
+    // full-height card that is 364 * 45 / 100 = 163 DIP of original text,
+    // ~10 back-translation lines' worth, next to a 201 DIP body viewport.
+    static constexpr int kBackTransRefSharePct = 45;
+    // Shared scrollbar: one thumb for the ONE shared scroll offset, drawn on
+    // the card's right edge across both panel viewports.
+    static constexpr int kBackTransScrollbarWDip = 6;
+    static constexpr int kBackTransScrollbarGutterDip = 10; // track + gap (text column)
+
+    // The card's fixed vertical furniture: everything in the column that never
+    // carries body text (both label bands, the [원문] panel's padding, the
+    // card's bottom padding).
+    static constexpr int kBackTransFurnitureDip =
+        kBackTransSectionLabelDip + kBackTransSectionGapDip +  // [역번역] band
+        kBackTransPanelTopGapDip +
+        kBackTransPanelPadDip +
+        kBackTransSectionLabelDip + kBackTransSectionGapDip +  // [원문] band
+        kBackTransPanelBottomPadDip +
+        kBackTransCardBottomPadDip;
 
     struct BackTransCardSize {
         int width;
         int height;
     };
+
+    // The two-panel layout, computed ONCE in ShowBackTranslation from the
+    // DirectWrite-measured content heights and consumed verbatim by Render
+    // (measure/render lockstep by construction - the same single-source-of-
+    // truth discipline as BackTransHeaderPlan). The two viewports are the
+    // clipped regions; the shared scroll offset is applied to BOTH, and each
+    // panel additionally clamps to its own extent, so the shorter panel pins
+    // at its end instead of scrolling into blank space.
+    struct BackTransPanelPlan {
+        int card_height_dip = kBackTransCardMinHeightDip;
+        int content_top_dip = kBackTransContentTopDip;
+        int back_label_top = kBackTransContentTopDip;
+        int back_view_top = kBackTransContentTopDip + kBackTransSectionLabelDip +
+                            kBackTransSectionGapDip;
+        int back_view_h = 0;
+        int ref_panel_top = 0;
+        int ref_label_top = 0;
+        int ref_view_top = 0;
+        int ref_view_h = 0;
+        int back_content_h = 0;    // measured body extent (may exceed the viewport)
+        int ref_content_h = 0;
+        int body_area_dip = 0;     // vertical body budget the split divided
+        int shared_viewport_h = 0; // max(view_h) - the shared scroll clamp basis
+        int max_scroll_offset = 0; // max(content - view) over both panels
+        bool scrollable = false;
+    };
+
+    // ---- v0.10.9 (U-B): the pure two-panel planner ----
+    // Inputs are the MEASURED content heights (rounded up to whole DIP by the
+    // caller) and the wrapped-pill row height of the header plan. Output: the
+    // clamped card height plus both viewports, which by construction satisfy
+    //   ref_view_top + ref_view_h + kBackTransPanelBottomPadDip
+    //       + kBackTransCardBottomPadDip == card_height_dip
+    // (the panels ALWAYS fit the card; overflow becomes scroll, never clip).
+    //
+    // Overflow split (v0.10.9 fix round 3, H-1 / QA F3): the [원문] panel
+    // reserves min(its measured height, kBackTransRefSharePct% of the body
+    // area) FIRST and the back-translation takes the remainder, so a 3-line
+    // original beside a 20-line back-translation is visible whole at offset 0
+    // instead of being reachable only by scrolling. When the back-translation
+    // needs less than that remainder, the surplus flows back to the original
+    // (so a very long original still wins the space when IT is the long side),
+    // and neither panel is ever given more than its measured height. Integer
+    // arithmetic throughout: the two viewports add up to exactly
+    // body_area_dip, so the panels close the card by construction.
+    static constexpr BackTransPanelPlan PlanBackTransPanels(int back_content_h_dip,
+                                                            int ref_content_h_dip,
+                                                            int header_extra_h_dip = 0) {
+        BackTransPanelPlan p;
+        const int back_c = back_content_h_dip > 0 ? back_content_h_dip : 0;
+        const int ref_c = ref_content_h_dip > 0 ? ref_content_h_dip : 0;
+        const int extra = header_extra_h_dip > 0 ? header_extra_h_dip : 0;
+        p.content_top_dip = kBackTransContentTopDip + extra;
+        p.back_content_h = back_c;
+        p.ref_content_h = ref_c;
+
+        const int natural = p.content_top_dip + kBackTransFurnitureDip + back_c + ref_c;
+        int height = natural < kBackTransCardMinHeightDip ? kBackTransCardMinHeightDip : natural;
+        if (height > kBackTransCardMaxHeightDip) height = kBackTransCardMaxHeightDip;
+        p.card_height_dip = height;
+
+        int body_area = height - p.content_top_dip - kBackTransFurnitureDip;
+        if (body_area < 2 * kBackTransMinPanelBodyDip) {
+            body_area = 2 * kBackTransMinPanelBodyDip;
+        }
+        p.body_area_dip = body_area;
+
+        int back_view = 0;
+        int ref_view = 0;
+        if (back_c + ref_c <= body_area) {
+            // Everything fits at this card height: no scrolling, natural sizes.
+            back_view = back_c;
+            ref_view = ref_c;
+        } else {
+            // H-1: the original reserves its measured height up to the cap; the
+            // back-translation takes the remainder (never more than it needs).
+            // `body_area` can only be clamped up in the FITS branch above (a
+            // real overflow always grows the card past funding both bodies),
+            // so the two viewports below always sum to the real body area and
+            // the panels close the card exactly.
+            p.scrollable = true;
+            const int ref_cap = body_area * kBackTransRefSharePct / 100;
+            ref_view = ref_c < ref_cap ? ref_c : ref_cap;
+            back_view = body_area - ref_view;
+            if (back_view > back_c) {
+                // The back-translation is satisfied by less than its remainder:
+                // the surplus returns to the original, which is now the only
+                // panel that can still overflow.
+                back_view = back_c;
+                ref_view = body_area - back_view;
+            }
+        }
+        p.back_view_h = back_view;
+        p.ref_view_h = ref_view;
+        p.back_label_top = p.content_top_dip; // the wrapped-pill row pushes it down
+        p.back_view_top = p.back_label_top + kBackTransSectionLabelDip + kBackTransSectionGapDip;
+        p.ref_panel_top = p.back_view_top + back_view + kBackTransPanelTopGapDip;
+        p.ref_label_top = p.ref_panel_top + kBackTransPanelPadDip;
+        p.ref_view_top = p.ref_label_top + kBackTransSectionLabelDip + kBackTransSectionGapDip;
+        p.shared_viewport_h = back_view > ref_view ? back_view : ref_view;
+        const int over_back = back_c - back_view;
+        const int over_ref = ref_c - ref_view;
+        const int over = over_back > over_ref ? over_back : over_ref;
+        p.max_scroll_offset = over > 0 ? over : 0;
+        return p;
+    }
 
     // ---- 261108_0002 (FIX-WS3B, v0.10.6): header-row layout planner ----
     // The card row is [header text] [verdict pill] [✕] inside a FIXED 360 DIP
@@ -600,32 +761,58 @@ public:
     // [min, max] so a pathological body cannot grow the card off-screen.
     // `header_extra_h_dip` is the wrapped-pill row height from
     // PlanBackTransHeaderRow (0 keeps the single-row card byte-identical).
+    //
+    // v0.10.9 (U-B): this estimate now funnels through the SAME two-panel
+    // planner the measured show path uses, so the headless floor and the live
+    // card can never disagree about the layout rule - only about the input
+    // heights (character-count lines here, DirectWrite metrics there).
     static constexpr BackTransCardSize ComputeBackTransCardSize(int back_text_len,
                                                                 int ref_text_len,
                                                                 int header_extra_h_dip = 0) {
         const int back_len = back_text_len > 0 ? back_text_len : 0;
         const int ref_len = ref_text_len > 0 ? ref_text_len : 0;
-        int lines = (back_len + kBackTransCharsPerLine - 1) / kBackTransCharsPerLine;
-        if (lines < 1) lines = 1;
-        int h = kBackTransChromeDip + lines * kBackTransLineHeightDip;
-        if (ref_len > 0) {
-            int ref_lines = (ref_len + kBackTransCharsPerLine - 1) / kBackTransCharsPerLine;
-            if (ref_lines < 1) ref_lines = 1;
-            h += kBackTransRefGapDip + ref_lines * kBackTransRefLineDip;
-        }
-        if (header_extra_h_dip > 0) h += header_extra_h_dip;
-        if (h < kBackTransCardMinHeightDip) h = kBackTransCardMinHeightDip;
-        if (h > kBackTransCardMaxHeightDip) h = kBackTransCardMaxHeightDip;
-        return {kBackTransCardWidthDip, h};
+        int back_lines = (back_len + kBackTransCharsPerLine - 1) / kBackTransCharsPerLine;
+        if (back_lines < 1) back_lines = 1;
+        int ref_lines = (ref_len + kBackTransCharsPerLine - 1) / kBackTransCharsPerLine;
+        if (ref_lines < 1) ref_lines = 1;
+        const BackTransPanelPlan plan =
+            PlanBackTransPanels(back_lines * kBackTransLineHeightDip,
+                                ref_lines * kBackTransRefLineDip, header_extra_h_dip);
+        return {kBackTransCardWidthDip, plan.card_height_dip};
     }
 
     // ---- hover pause / auto-dismiss state machine ----
-    // Spec: 4500 ms auto-dismiss, PAUSED while the pointer is over the card,
-    // resumed with a 1500 ms grace timer when it leaves. Expressed as a pure
+    // Spec (261108_0002): auto-dismiss, PAUSED while the pointer is over the
+    // card, resumed with a grace timer when it leaves. Expressed as a pure
     // planner so the WndProc branch is a single dispatch and the whole
     // contract is unit-testable without a window.
+    //
+    // v0.10.9 (U-B, report §4 defect 3-5c): the fixed 4500 ms was shorter than
+    // the time a long comparison card takes to read, so the card closed while
+    // the user was still reading it. The delay is now ADAPTIVE - 4500 ms for a
+    // short card, +10 ms per displayed character beyond kBackTransAutohideFreeChars,
+    // saturating at 12000 ms (750 extra characters / 870 displayed) - and any
+    // wheel or drag scroll re-arms it (RearmBackTransAutohideForScroll).
+    // kBackTransAutohideMs stays the FLOOR and the planner's default, so every
+    // pre-existing call site keeps its exact short-card timing.
     static constexpr DWORD kBackTransAutohideMs = 4500;
+    static constexpr DWORD kBackTransAutohideMaxMs = 12000;
+    static constexpr std::size_t kBackTransAutohideFreeChars = 120;
+    static constexpr DWORD kBackTransAutohideMsPerChar = 10;
     static constexpr DWORD kBackTransHoverGraceMs = 1500;
+
+    // Pure, constexpr, overflow-free: the per-character ramp saturates BEFORE
+    // the multiply, so no displayed-character count can wrap the delay.
+    static constexpr DWORD BackTransAutohideMsForContent(std::size_t displayed_chars) {
+        const std::size_t extra = displayed_chars > kBackTransAutohideFreeChars
+                                      ? displayed_chars - kBackTransAutohideFreeChars
+                                      : 0;
+        const std::size_t ramp_chars =
+            (kBackTransAutohideMaxMs - kBackTransAutohideMs) / kBackTransAutohideMsPerChar;
+        if (extra >= ramp_chars) return kBackTransAutohideMaxMs;
+        return static_cast<DWORD>(kBackTransAutohideMs +
+                                  static_cast<DWORD>(extra) * kBackTransAutohideMsPerChar);
+    }
 
     enum class BackTransTimerEvent {
         Shown,        // the card just appeared
@@ -646,10 +833,13 @@ public:
     };
 
     static constexpr BackTransTimerPlan PlanBackTransTimer(BackTransTimerEvent ev,
-                                                           bool hover_paused) {
+                                                           bool hover_paused,
+                                                           DWORD autohide_ms = kBackTransAutohideMs) {
         switch (ev) {
             case BackTransTimerEvent::Shown:
-                return {BackTransTimerAction::ArmAutohide, kBackTransAutohideMs};
+                // The caller passes BackTransAutohideMsForContent(displayed
+                // chars); the default keeps the short-card floor.
+                return {BackTransTimerAction::ArmAutohide, autohide_ms};
             case BackTransTimerEvent::PointerMoved:
                 // The first move over the card pauses the countdown; further
                 // moves are no-ops (no timer churn per mouse pixel).
@@ -694,15 +884,24 @@ public:
     static std::wstring FormatBackTransHeader(const std::wstring& title,
                                               const std::wstring& source_label,
                                               const std::wstring& target_label);
-    // Muted reference line, e.g. "↳ 원문: AAAAA". No i18n key exists for it
-    // (the 261108_0002 i18n unit added only the header + two pills), so the
-    // label is a plain formatted literal per the spec.
-    static std::wstring FormatBackTransReference(const std::wstring& original_text);
-    // The reference line is shown only when the round trip actually changed
-    // the text (AAAAA' != AAAAA); an exact round trip would just repeat the
-    // body and read as noise.
+    // Policy seam: does the card need an [원문] (original) panel body at all?
+    // (The pre-v0.10.9 "↳ 원문: AAAAA" reference LINE - and its
+    // FormatBackTransReference formatter - is gone: the original now lives in
+    // its own labelled [원문] sub-panel fed by StringId::BackTransSectionOriginal,
+    // so prefixing the text with a second localized label would say the same
+    // thing twice. This predicate is what gates that panel's body.)
+    //
+    // ---- v0.10.9 (U-B, report §4 defect 3-5a): the original is ALWAYS shown ----
+    // The pre-v0.10.9 rule hid the reference line whenever the round trip was
+    // exact (AAAAA' == AAAAA) to avoid repeating the body. That reasoning is
+    // void: the input box already REPLACED the user's text with the
+    // translation, so the card is the only place the original still exists -
+    // hiding it exactly when the round trip was perfect removed the
+    // comparison the card is FOR. The policy is now "show it whenever there is
+    // an original to show"; `back_text` is kept in the signature (and
+    // deliberately ignored) so callers and the pinned seam keep one shape.
     static bool BackTransNeedsReferenceLine(const std::wstring& original_text,
-                                            const std::wstring& back_text);
+                                           const std::wstring& back_text);
 
     // Test/inspection seams for the REQ-002 scroll state (values are written
     // only on the GUI thread; tests pump messages on the owning thread).
@@ -713,10 +912,21 @@ public:
     bool IsBackTranslationMode() const { return is_backtrans_mode_; }
     const std::wstring& GetBackTransText() const { return backtrans_text_; }
     const std::wstring& GetBackTransHeader() const { return backtrans_header_; }
+    // v0.10.9 (U-B): the [원문] panel BODY - the raw original text the card
+    // shows (empty only when the caller passed an empty original). The
+    // pre-v0.10.9 "↳ 원문: " inline prefix is gone: the panel carries its own
+    // localized [원문] section header.
     const std::wstring& GetBackTransReferenceLine() const { return backtrans_ref_line_; }
     bool IsBackTransHoverPaused() const { return backtrans_hover_paused_; }
     bool IsBackTransMatched() const { return backtrans_matched_; }
     float ContentHeightForTest() const { return content_height_dip_; }
+    // v0.10.9 (U-B): the two-panel layout actually measured for the CURRENT
+    // card (render consumes this verbatim) and the adaptive autohide delay
+    // armed for it.
+    const BackTransPanelPlan& GetBackTransPanelPlanForTest() const {
+        return backtrans_panel_plan_;
+    }
+    DWORD GetBackTransAutohideMsForTest() const { return backtrans_autohide_ms_; }
 
     // SEC-ADJ (Blocker-5 class fix): these payloads NO LONGER travel as heap
     // pointers in LPARAM. They are value types enqueued by the posting seams
@@ -1006,6 +1216,35 @@ private:
     // re-shows the card with fresh content).
     void HideBackTranslationCard();
 
+    // ---- v0.10.9 (U-B, report §4 Option 2): two-panel scroll plumbing ----
+    // Measured height (DIP) of `text` laid out at `column_w` with `format`.
+    // Returns 0 when DWrite or the format is unavailable; the caller then uses
+    // the character-count estimate (`fallback_line_h` per wrapped line) so the
+    // card still lays out on a factory-less target.
+    float MeasureBackTransTextHeight(const std::wstring& text, IDWriteTextFormat* format,
+                                     float column_w, float fallback_line_h,
+                                     float* out_line_height_dip = nullptr) const;
+    // The viewport the SINGLE shared scroll offset clamps against: backtrans
+    // mode clamps against the taller of its two panel viewports (one offset,
+    // two clips); every other mode keeps the REQ-002 body formula.
+    float ActiveScrollViewportDip() const {
+        return is_backtrans_mode_
+                   ? static_cast<float>(backtrans_panel_plan_.shared_viewport_h)
+                   : BodyViewportHeightDip(current_height_);
+    }
+    // Shared scrollbar thumb drag (REQ-002 behaviour, now also reachable in
+    // backtrans mode). Returns true when a drag actually started.
+    bool BeginScrollThumbDrag(float x_dip, float y_dip);
+    // Pointer-driven thumb update; returns true when the offset moved.
+    bool UpdateScrollThumbDrag(float y_dip);
+    void EndScrollThumbDrag();
+    // v0.10.9 (U-B, defect 3-5c): re-arm the adaptive autohide countdown after
+    // a wheel/drag scroll. No-op unless the back-translation card is up AND the
+    // countdown is actually running - while the pointer hovers the card the
+    // timer is deliberately paused (hover pause), so there is nothing to
+    // re-arm and the card cannot close under the reader.
+    void RearmBackTransAutohideForScroll();
+
     // 261116_0003 P6b: resolve the ACTIVE engine at menu-build time (called
     // once at the top of each of the two language-dropdown builders). Returns
     // MenuEngineResolution{} when no resolver is wired — the conservative
@@ -1066,12 +1305,15 @@ private:
     IDWriteTextFormat* body_format_ = nullptr;
     IDWriteTextFormat* button_format_ = nullptr;
     IDWriteTextFormat* small_format_ = nullptr;
-    // 261108_0002 (WS3, v0.10.6): floating back-translation card formats
-    // (13pt SemiBold body + 11pt muted reference line). Created in Create(),
-    // released in Destroy; never created per render.
-    IDWriteTextFormat* backtrans_body_format_ = nullptr;
-    IDWriteTextFormat* backtrans_ref_format_ = nullptr;
-    IDWriteTextFormat* backtrans_header_format_ = nullptr;
+    // 261108_0002 (WS3, v0.10.6): floating back-translation card formats.
+    // v0.10.9 (U-B): + backtrans_section_format_ (the two [역번역]/[원문]
+    // section headers) and backtrans_ref_format_ retuned to 11.5pt for the
+    // [원문] sub-panel body. Created in Create(), released in Destroy; never
+    // created per render (C1 discipline).
+    IDWriteTextFormat* backtrans_body_format_ = nullptr;      // 13pt SemiBold body
+    IDWriteTextFormat* backtrans_ref_format_ = nullptr;       // 11.5pt [원문] body
+    IDWriteTextFormat* backtrans_header_format_ = nullptr;    // 12pt SemiBold title
+    IDWriteTextFormat* backtrans_section_format_ = nullptr;   // 13pt SemiBold labels
 
     // Interactive Button Rectangles (local window coordinates)
     D2D1_RECT_F copy_btn_rect_ = {};
@@ -1125,10 +1367,10 @@ private:
     // written, GUI-thread read (Render / WndProc); the worker thread only ever
     // touches the marshal queue.
     bool is_backtrans_mode_ = false;
-    std::wstring backtrans_original_;   // AAAAA  (reference line source)
+    std::wstring backtrans_original_;   // AAAAA  (verbatim original, [원문] panel)
     std::wstring backtrans_text_;       // AAAAA' (card body, 13pt SemiBold)
     std::wstring backtrans_header_;     // pre-formatted "🔄 ... (EN → KO)"
-    std::wstring backtrans_ref_line_;   // pre-formatted "↳ 원문: AAAAA" (empty = hidden)
+    std::wstring backtrans_ref_line_;   // [원문] panel body (raw AAAAA; empty = no original)
     bool backtrans_matched_ = false;    // caller's pill verdict
     // 261108_0002 (FIX-WS3B): the resolved header-row plan for the CURRENT
     // card (computed once in ShowBackTranslation, consumed by Render). Storing
@@ -1136,6 +1378,14 @@ private:
     // single-source-of-truth discipline the C2 measured-layout cache uses.
     BackTransHeaderPlan backtrans_header_plan_ =
         {BackTransHeaderLayout::SingleRow, 0.0f, 0.0f, 0.0f, 0.0f, false};
+    // v0.10.9 (U-B): the measured TWO-PANEL layout for the CURRENT card -
+    // both clipped viewports, both content extents, the shared offset clamp,
+    // and the card height. Computed once in ShowBackTranslation (DWrite), read
+    // verbatim by Render and by the WndProc hit tests.
+    BackTransPanelPlan backtrans_panel_plan_ = {};
+    // v0.10.9 (U-B, defect 3-5c): the adaptive autohide delay armed for the
+    // CURRENT card (BackTransAutohideMsForContent over the displayed text).
+    DWORD backtrans_autohide_ms_ = kBackTransAutohideMs;
     // Hover pause state: true between WM_MOUSEMOVE-over-card and
     // WM_MOUSELEAVE (the autohide countdown is paused while it is true).
     bool backtrans_hover_paused_ = false;
@@ -1213,10 +1463,11 @@ static_assert(TooltipWindow::PlanHeaderTargetButton(44.0f, 60.0f, 360.0f, 20.0f)
 // width), and the height is monotonic non-decreasing in both text lengths.
 static_assert(TooltipWindow::kBackTransCardWidthDip == 360,
               "WS3: the back-translation card is 360 DIP wide");
+// v0.10.9 (U-B): the empty payload is the two-panel furniture plus one body
+// line (20) and one [원문] line (16): 44 + 72 + 20 + 16 = 152 DIP.
 static_assert(TooltipWindow::ComputeBackTransCardSize(0, 0).width == 360 &&
-                  TooltipWindow::ComputeBackTransCardSize(0, 0).height ==
-                      TooltipWindow::kBackTransCardMinHeightDip,
-              "WS3: an empty payload floors at the minimum card height");
+                  TooltipWindow::ComputeBackTransCardSize(0, 0).height == 152,
+              "WS3: an empty payload lays out the two-panel furniture + one line each");
 static_assert(TooltipWindow::ComputeBackTransCardSize(1, 0).height <=
                   TooltipWindow::ComputeBackTransCardSize(45, 0).height,
               "WS3: one wrapped line more is never shorter (monotonic in body length)");
@@ -1228,6 +1479,103 @@ static_assert(TooltipWindow::ComputeBackTransCardSize(100000, 100000).height ==
               "WS3: a pathological body clamps at the maximum card height");
 static_assert(TooltipWindow::ComputeBackTransCardSize(100000, 100000).width == 360,
               "WS3: the clamp never widens the card");
+
+// ---- v0.10.9 (U-B, report §4 Option 2): two-panel layout proofs ----
+// The overflow case the bug report describes: a 20-line back-translation next
+// to a 3-line original (20*20 = 400 DIP and 3*16 = 48 DIP of content). Both
+// panels must stay inside the 480 DIP card, and the original must not be
+// starved by the long body.
+//
+// v0.10.9 fix round 3 (H-1 / QA finding F3): the original is no longer starved
+// either - it reserves min(measured, 45% of the body) FIRST, so this exact
+// case shows all 3 original lines at offset 0 without scrolling.
+namespace ws3_panel_probe {
+inline constexpr TooltipWindow::BackTransPanelPlan kOverflow =
+    TooltipWindow::PlanBackTransPanels(400, 48);
+inline constexpr TooltipWindow::BackTransPanelPlan kFits =
+    TooltipWindow::PlanBackTransPanels(40, 16);
+// A pathological original (30 * 16 = 480 DIP) beside the same 20-line body:
+// both sides overflow, so the original gets exactly the 45% cap.
+inline constexpr TooltipWindow::BackTransPanelPlan kTallOriginal =
+    TooltipWindow::PlanBackTransPanels(400, 30 * TooltipWindow::kBackTransRefLineDip);
+} // namespace ws3_panel_probe
+static_assert(ws3_panel_probe::kOverflow.scrollable,
+              "WS3 (v0.10.9): a 20-line body + 3-line original scrolls");
+static_assert(ws3_panel_probe::kOverflow.card_height_dip ==
+                  TooltipWindow::kBackTransCardMaxHeightDip,
+              "WS3 (v0.10.9): the overflow card uses the full 480 DIP height");
+// The invariant Render depends on: both panels + furniture close the card
+// exactly, so no viewport can reach past the card's bottom edge.
+static_assert(ws3_panel_probe::kOverflow.ref_view_top +
+                      ws3_panel_probe::kOverflow.ref_view_h +
+                      TooltipWindow::kBackTransPanelBottomPadDip +
+                      TooltipWindow::kBackTransCardBottomPadDip ==
+                  ws3_panel_probe::kOverflow.card_height_dip,
+              "WS3 (v0.10.9): the two panels always fit the card exactly");
+static_assert(ws3_panel_probe::kOverflow.back_view_top +
+                      ws3_panel_probe::kOverflow.back_view_h <=
+                  ws3_panel_probe::kOverflow.ref_panel_top,
+              "WS3 (v0.10.9): the back viewport never overlaps the [원문] panel");
+static_assert(ws3_panel_probe::kOverflow.back_view_h >= TooltipWindow::kBackTransMinPanelBodyDip &&
+                  ws3_panel_probe::kOverflow.ref_view_h >= TooltipWindow::kBackTransMinPanelBodyDip,
+              "WS3 (v0.10.9): each panel keeps its minimum body height");
+static_assert(ws3_panel_probe::kOverflow.back_view_h >
+                  ws3_panel_probe::kOverflow.ref_view_h,
+              "WS3 (v0.10.9): the long panel gets the larger share");
+static_assert(ws3_panel_probe::kOverflow.back_view_h +
+                      ws3_panel_probe::kOverflow.ref_view_h == 480 -
+                      TooltipWindow::kBackTransContentTopDip -
+                      TooltipWindow::kBackTransFurnitureDip,
+              "WS3 (v0.10.9): the two viewports use the whole body area");
+// H-1 (fix round 3): the 3-line original reserves its WHOLE measured height,
+// so the comparison is visible at once even beside the 20-line body.
+static_assert(ws3_panel_probe::kOverflow.ref_view_h ==
+                  ws3_panel_probe::kOverflow.ref_content_h,
+              "WS3 (H-1): a short original is fully visible without scrolling");
+static_assert(ws3_panel_probe::kOverflow.ref_view_h ==
+                  3 * TooltipWindow::kBackTransRefLineDip,
+              "WS3 (H-1): the reservation is exactly the measured 3 original lines");
+static_assert(ws3_panel_probe::kOverflow.ref_view_h <=
+                  ws3_panel_probe::kOverflow.body_area_dip *
+                      TooltipWindow::kBackTransRefSharePct / 100,
+              "WS3 (H-1): the original never reserves more than the 45% cap");
+// ... and a pathological original is capped at that 45% share instead of
+// eating the body, so the long side still keeps the larger viewport.
+static_assert(ws3_panel_probe::kTallOriginal.ref_view_h ==
+                  ws3_panel_probe::kTallOriginal.body_area_dip *
+                      TooltipWindow::kBackTransRefSharePct / 100,
+              "WS3 (H-1): an overflowing original is capped at the 45% share");
+static_assert(ws3_panel_probe::kTallOriginal.ref_view_h <
+                  ws3_panel_probe::kTallOriginal.ref_content_h,
+              "WS3 (H-1): an original taller than the cap still scrolls");
+static_assert(ws3_panel_probe::kTallOriginal.back_view_h ==
+                  ws3_panel_probe::kTallOriginal.body_area_dip -
+                      ws3_panel_probe::kTallOriginal.ref_view_h,
+              "WS3 (H-1): the back-translation takes the remainder of the body");
+// The shared offset now clamps to the back-translation's own overflow (the
+// original's is zero): 400 - 316 = 84 DIP.
+static_assert(ws3_panel_probe::kOverflow.max_scroll_offset == 84,
+              "WS3 (v0.10.9): the shared offset clamps to the largest panel overflow");
+static_assert(!ws3_panel_probe::kFits.scrollable &&
+                  ws3_panel_probe::kFits.card_height_dip == 172,
+              "WS3 (v0.10.9): a fitting payload shrinks the card and never scrolls");
+// H-1 must not disturb content that already fits: this is the pre-fix
+// (v0.10.9 U-B) geometry, value for value.
+static_assert(ws3_panel_probe::kFits.back_view_top == 64 &&
+                  ws3_panel_probe::kFits.ref_panel_top == 112 &&
+                  ws3_panel_probe::kFits.ref_label_top == 118 &&
+                  ws3_panel_probe::kFits.ref_view_top == 138 &&
+                  ws3_panel_probe::kFits.ref_view_h == 16 &&
+                  ws3_panel_probe::kFits.back_view_h == 40,
+              "WS3 (H-1): a payload that fits keeps the unchanged layout");
+static_assert(TooltipWindow::PlanBackTransPanels(0, 0).card_height_dip > 0 &&
+                  TooltipWindow::PlanBackTransPanels(0, 0).back_view_h == 0 &&
+                  TooltipWindow::PlanBackTransPanels(0, 0).ref_view_h == 0 &&
+                  !TooltipWindow::PlanBackTransPanels(0, 0).scrollable,
+              "WS3 (v0.10.9): an empty payload is a non-scrolling, viewport-less card");
+static_assert(TooltipWindow::PlanBackTransPanels(-40, -16).card_height_dip ==
+                  TooltipWindow::PlanBackTransPanels(0, 0).card_height_dip,
+              "WS3 (v0.10.9): negative measurements clamp to zero (defensive)");
 
 // 261108_0002 (FIX-WS3B, v0.10.6): compile-time proof of the header-row
 // planner. On the 360 DIP card the ✕'s left edge sits at 328 DIP, so:
@@ -1273,16 +1621,35 @@ static_assert(TooltipWindow::ComputeBackTransCardSize(80, 20, 0).height ==
                   TooltipWindow::ComputeBackTransCardSize(80, 20).height,
               "FIX-WS3B: the default argument keeps the single-row card byte-identical");
 
-// Hover pause / auto-dismiss state machine (spec: 4500 ms autohide, pause on
-// hover, 1500 ms grace on leave).
+// Hover pause / auto-dismiss state machine (4500 ms autohide FLOOR since
+// v0.10.9 - the live delay is content-scaled up to 12000 ms - pause on hover,
+// 1500 ms grace on leave).
 static_assert(TooltipWindow::kBackTransAutohideMs == 4500,
-              "WS3: the back-translation card auto-dismisses after 4500 ms");
+              "WS3: the back-translation card's autohide floor is 4500 ms");
 static_assert(TooltipWindow::kBackTransHoverGraceMs == 1500,
               "WS3: leaving the card resumes with a 1500 ms grace window");
+// v0.10.9 (U-B, defect 3-5c): the adaptive autohide ramp. Short cards keep the
+// 4500 ms floor, the delay grows 10 ms per displayed character beyond the free
+// 120, and it saturates at 12000 ms (750 extra chars / 870 displayed).
+static_assert(TooltipWindow::BackTransAutohideMsForContent(0) == 4500 &&
+                  TooltipWindow::BackTransAutohideMsForContent(120) == 4500,
+              "WS3 (v0.10.9): a short card keeps the 4500 ms floor");
+static_assert(TooltipWindow::BackTransAutohideMsForContent(121) == 4510,
+              "WS3 (v0.10.9): the ramp adds 10 ms per character beyond the free 120");
+static_assert(TooltipWindow::BackTransAutohideMsForContent(400) == 4500 + 280 * 10,
+              "WS3 (v0.10.9): a mid-length card scales linearly");
+static_assert(TooltipWindow::BackTransAutohideMsForContent(870) ==
+                  TooltipWindow::kBackTransAutohideMaxMs &&
+                  TooltipWindow::BackTransAutohideMsForContent(1000000) ==
+                      TooltipWindow::kBackTransAutohideMaxMs,
+              "WS3 (v0.10.9): the delay saturates at 12000 ms and never overflows");
+static_assert(TooltipWindow::PlanBackTransTimer(TooltipWindow::BackTransTimerEvent::Shown, false, 9000)
+                      .delay_ms == 9000,
+              "WS3 (v0.10.9): the adaptive delay flows through the timer planner");
 static_assert(TooltipWindow::PlanBackTransTimer(TooltipWindow::BackTransTimerEvent::Shown, false).action ==
                       TooltipWindow::BackTransTimerAction::ArmAutohide &&
                   TooltipWindow::PlanBackTransTimer(TooltipWindow::BackTransTimerEvent::Shown, false).delay_ms == 4500,
-              "WS3: showing the card arms the 4500 ms autohide");
+              "WS3: showing the card arms the autohide at its 4500 ms floor by default");
 static_assert(TooltipWindow::PlanBackTransTimer(TooltipWindow::BackTransTimerEvent::PointerMoved, false).action ==
                       TooltipWindow::BackTransTimerAction::PauseAutohide,
               "WS3: the first pointer move over the card pauses the countdown");

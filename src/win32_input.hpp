@@ -364,20 +364,28 @@ bool IsEditorExeNameForEnterExclusion(std::wstring_view basename);
 // makes reachable.
 // E9 RAISE (v0.10.7, session 261111_0001): 4096/64 still aborted 1-2 pages
 // of Shift+Enter text (a long chat message or a pasted-in code snippet never
-// translated, with a misleading "no selection" notice). The ceilings move to
-// 16384 UTF-16 units / 256 newlines (≈160 sentences of 100 chars, 256
-// logical lines). Multi-block safety is NOT weakened: the non-EM capture is
-// the whole [0..caret) accumulation and the F3 block-slice
-// (SliceWholeCaptureToBlock here, FindCurrentBlockStart in the worker) still
-// re-bounds the guard to the CURRENT block (the last K+1 logical lines) -
-// the raise only lets a legitimately long CURRENT block through, while a
-// document-sized single block keeps the GuardAbort semantics. The hook's K
-// cap follows automatically (ShiftEnterKNext / ShiftEnterKAdvance clamp to
-// the same constant), and the BUG-003 saturated-K invariant still holds: a
-// guard-passing capture carries at most 256 newline chars, so
-// FindCurrentBlockStart can never cross a saturated K+1 = 257 terminators.
-inline constexpr size_t kMaxEnterTranslateChars = 16384;
-inline constexpr size_t kMaxEnterTranslateNewlines = 256;
+// translated, with a misleading "no selection" notice). The ceilings moved
+// to 16384 UTF-16 units / 256 newlines (≈160 sentences of 100 chars, 256
+// logical lines).
+// U-E RAISE (v0.10.9, session 261121_0001, report §3.2 Enter-guard row): the
+// guard counts \r and \n SEPARATELY, so 256 newline chars aborted a CRLF
+// text at just 128 logical lines - a long multi-line message was silently
+// dropped and the app showed a false "no selection" tooltip. The ceilings
+// move to 262144 UTF-16 units / 16384 newline chars (≈2600 sentences of 100
+// chars, ≈8192 CRLF logical lines): an entire realistic multi-line paste
+// passes, document-sized captures are still rejected. Multi-block safety is
+// NOT weakened: the non-EM capture is the whole [0..caret) accumulation and
+// the F3 block-slice (SliceWholeCaptureToBlock here, FindCurrentBlockStart
+// in the worker) still re-bounds the guard to the CURRENT block (the last
+// K+1 logical lines) - the raise only lets a legitimately long CURRENT block
+// through, while a document-sized single block keeps the GuardAbort
+// semantics. The hook's K cap follows automatically (ShiftEnterKNext /
+// ShiftEnterKAdvance clamp to the same constant), and the BUG-003
+// saturated-K invariant still holds: a guard-passing capture carries at most
+// 16384 newline chars, so FindCurrentBlockStart can never cross a saturated
+// K+1 = 16385 terminators.
+inline constexpr size_t kMaxEnterTranslateChars = 262144;
+inline constexpr size_t kMaxEnterTranslateNewlines = 16384;
 
 // Pure guard predicate (single shared definition for CopySelectedText and the
 // unit tests - same discipline as CopyChordRetryWarranted). True when the
@@ -1324,9 +1332,10 @@ constexpr bool SelectAllRescueWarranted(bool em_path, AppCategory category) {
 // WHOLE capture once - sound for the [0..caret) accumulation geometry the
 // saturation was written for). A SelectAll-rescued capture is a
 // WHOLE-DOCUMENT span by construction, so "whole capture = the pasted block"
-// is provably false there: on a guard-passing capture (<= 128 CRLF boundaries
-// after CRLF normalization) FindCurrentBlockStart can never cross a
-// saturated K+1 = 257 terminators, so block_start stays 0, the worker's F3
+// is provably false there: on a guard-passing capture (<= 8192 CRLF
+// boundaries after CRLF normalization, 16384 newline chars / 2 per CRLF)
+// FindCurrentBlockStart can never cross a saturated K+1 = 16385 terminators,
+// so block_start stays 0, the worker's F3
 // slice never engages, the engine re-translates every previously translated
 // block, and the paste-back replaces the whole document with it (the user's
 // "위 문단까지 재번역" BUG-003 report; reachable only after the BUG-002

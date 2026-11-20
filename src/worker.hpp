@@ -38,6 +38,11 @@ struct BackTranslateRequest {
     std::string detected_source;
     std::string configured_source;
     HWND target_hwnd = nullptr;
+    // 261121_0001 (v0.10.9, defect 3-5b follow-up): the text the meaning
+    // verdict compares against - the segment the forward translation came
+    // from (engine_input). EMPTY means "use original_text" (whole-line
+    // captures, where the segment IS the line).
+    std::wstring compare_text;
 };
 using BackTranslateCallback = std::function<void(const BackTranslateRequest&)>;
 

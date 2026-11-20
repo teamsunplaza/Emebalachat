@@ -486,8 +486,9 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
     // 261108_0002 (WS3, v0.10.6): the floating back-translation card's two
     // formats. backtrans_body_format_ is the 13pt SEMI-BOLD card body the spec
     // calls for (body_format_ is 13.5pt regular - reusing it would silently
-    // drop the weight); backtrans_ref_format_ is the muted 11pt reference
-    // line. Both are created here, never per render (C1 discipline) and
+    // drop the weight); backtrans_ref_format_ is the muted 11.5pt [원문]
+    // sub-panel body (v0.10.9 U-B: 11 -> 11.5, the report's comparison-card
+    // size). Both are created here, never per render (C1 discipline) and
     // released in Destroy.
     dwrite_factory_->CreateTextFormat(
         fontName,
@@ -510,13 +511,34 @@ bool TooltipWindow::Create(HINSTANCE hInstance) {
         DWRITE_FONT_WEIGHT_NORMAL,
         DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
-        11.0f,
+        11.5f,
         L"",
         &backtrans_ref_format_
     );
     if (backtrans_ref_format_) {
         backtrans_ref_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         backtrans_ref_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
+
+    // v0.10.9 (U-B, report §4 Option 2): the two [역번역] / [원문] SECTION
+    // labels. A dedicated format (not backtrans_body_format_) so the section
+    // headers keep NO_WRAP and their own vertical centring inside the label
+    // band: a wrapped or body-aligned label would drift out of its 18 DIP band
+    // and over the body text the clip rect protects.
+    dwrite_factory_->CreateTextFormat(
+        fontName,
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"",
+        &backtrans_section_format_
+    );
+    if (backtrans_section_format_) {
+        backtrans_section_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        backtrans_section_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        backtrans_section_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
     // Header row: LEFT-aligned (the shared header_format_ is CENTER-aligned
@@ -565,6 +587,7 @@ void TooltipWindow::Destroy() {
     }
 
     if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
+    if (backtrans_section_format_) { backtrans_section_format_->Release(); backtrans_section_format_ = nullptr; }
     if (backtrans_header_format_) { backtrans_header_format_->Release(); backtrans_header_format_ = nullptr; }
     if (backtrans_ref_format_) { backtrans_ref_format_->Release(); backtrans_ref_format_ = nullptr; }
     if (backtrans_body_format_) { backtrans_body_format_->Release(); backtrans_body_format_ = nullptr; }
@@ -1381,31 +1404,34 @@ std::wstring TooltipWindow::FormatBackTransHeader(const std::wstring& title,
 // "↳ Original: AAAAA" in English.
 // 261108_0002 (FIX-WS3B, v0.10.6): the label used to be a hardcoded Korean
 // literal here, so "원문:" leaked into all 37 UI languages while the header and
-// the two pills were localized. It now comes from StringId::BackTranslateReference
-// (the arrow is part of the localized string, so RTL locales own their own
-// placement of it). The empty-string fallback keeps the line readable if a
-// future table forgets the field - the 37-locale completeness test would catch
-// that first, but a card with no label beats a card with a crash.
-std::wstring TooltipWindow::FormatBackTransReference(const std::wstring& original_text) {
-    std::wstring label = I18n::Get(StringId::BackTranslateReference);
-    if (label.empty()) {
-        label = L"↳ ";
-    }
-    return label + original_text;
-}
+// the two pills were localized.
+// v0.10.9 (U-B): FormatBackTransReference is GONE. The original now lives in
+// its own [원문] sub-panel whose localized section header comes from
+// StringId::BackTransSectionOriginal, so a second inline "↳ 원문: " label would
+// duplicate the panel's own heading. The pre-v0.10.9 inline form is therefore
+// dead code, not a fallback.
 
-// AAAAA' == AAAAA means the round trip was textually exact: repeating the body
-// as a "reference" would be noise, so the line is suppressed.
+// v0.10.9 (U-B, report §4 defect 3-5a): the original is ALWAYS shown.
+// The pre-v0.10.9 rule dropped the reference line whenever the round trip was
+// textually exact (AAAAA' == AAAAA). That premise is void: the input box
+// already REPLACED the user's text with the translation, so the comparison
+// card is the only place the original still exists - and the exact-round-trip
+// case is precisely the one the user wants to verify. The policy is now
+// "whenever there is an original", and `back_text` is kept (and ignored) so
+// the seam's shape and its pins stay stable.
 bool TooltipWindow::BackTransNeedsReferenceLine(const std::wstring& original_text,
                                                 const std::wstring& back_text) {
-    if (original_text.empty()) return false;
-    return original_text != back_text;
+    (void)back_text;
+    return !original_text.empty();
 }
 
 // ---- timer plan application ----------------------------------------------
 void TooltipWindow::ApplyBackTransTimerPlan(BackTransTimerEvent ev) {
     if (!hwnd_) return;
-    const BackTransTimerPlan plan = PlanBackTransTimer(ev, backtrans_hover_paused_);
+    // v0.10.9 (U-B, defect 3-5c): the arming delay is the ADAPTIVE one measured
+    // for THIS card (BackTransAutohideMsForContent), not the fixed floor.
+    const BackTransTimerPlan plan =
+        PlanBackTransTimer(ev, backtrans_hover_paused_, backtrans_autohide_ms_);
     switch (plan.action) {
         case BackTransTimerAction::ArmAutohide:
             ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
@@ -1434,6 +1460,18 @@ void TooltipWindow::ApplyBackTransTimerPlan(BackTransTimerEvent ev) {
     }
 }
 
+// v0.10.9 (U-B, defect 3-5c): a wheel notch or a thumb drag is a user signal
+// that the card is still being read, so it re-arms the adaptive countdown.
+// While the pointer hovers the card the countdown is ALREADY paused (hover
+// pause) - arming there would close the card under the reader's pointer, which
+// is exactly the defect this fix removes. So: re-arm only when the countdown
+// is actually running.
+void TooltipWindow::RearmBackTransAutohideForScroll() {
+    if (!is_backtrans_mode_ || !hwnd_) return;
+    if (backtrans_hover_paused_) return; // hover pause already holds the card open
+    ApplyBackTransTimerPlan(BackTransTimerEvent::Shown);
+}
+
 // Hide the card WITHOUT touching the translation model. Used by the
 // dismiss-on-new-translation rule (which re-shows the card immediately with
 // fresh content) and by the mode-switch paths in ShowTranslation/ShowMessage.
@@ -1442,6 +1480,14 @@ void TooltipWindow::HideBackTranslationCard() {
     backtrans_hover_paused_ = false;
     backtrans_close_hover_ = false;
     backtrans_close_rect_ = {};
+    // v0.10.9 (U-B): a drag in flight when the card is replaced must not leave
+    // the mouse captured by a window that is no longer showing this card. No
+    // repaint here: the caller is about to show a fresh card over this one.
+    if (dragging_thumb_) {
+        dragging_thumb_ = false;
+        thumb_hover_ = false;
+        ::ReleaseCapture();
+    }
     if (!is_backtrans_mode_) {
         return; // nothing displayed in this mode: leave the other modes alone
     }
@@ -1451,6 +1497,14 @@ void TooltipWindow::HideBackTranslationCard() {
     backtrans_header_.clear();
     backtrans_ref_line_.clear();
     backtrans_matched_ = false;
+    backtrans_panel_plan_ = BackTransPanelPlan{};
+    backtrans_autohide_ms_ = kBackTransAutohideMs;
+    scrollable_ = false;
+    scroll_offset_dip_ = 0.0f;
+    content_height_dip_ = 0.0f;
+    thumb_hover_ = false;
+    scrollbar_track_rect_ = {};
+    scrollbar_thumb_rect_ = {};
 }
 
 // ---- 3-tier anchor resolution --------------------------------------------
@@ -1559,6 +1613,49 @@ POINT TooltipWindow::ResolveBackTranslationAnchor(HWND target_hwnd, HWND badge_h
                               card_w_phys, card_h_phys, work_area_for(cursor));
 }
 
+// ---- v0.10.9 (U-B, defect 3-4): real multi-line measurement ---------------
+// The pre-v0.10.9 card never measured the original at all (it reserved a fixed
+// 16 DIP single line), so any original longer than ~40 characters was drawn
+// below the card and lost. Both panels now measure through DirectWrite at the
+// exact painted column width; DWRITE_TEXT_METRICS.height is DPI-independent
+// DIP, the same unit the layout code below uses.
+//
+// Degenerate paths keep a usable card instead of a zero-height panel:
+//   * no DWrite factory / no format -> character-count estimate at
+//     `fallback_line_h` per wrapped line;
+//   * empty text -> zero height (the planner then gives that panel no body).
+// `out_line_height_dip` (optional) receives the measured per-line height so
+// the wheel step moves REAL lines of this card (one notch = three lines).
+float TooltipWindow::MeasureBackTransTextHeight(const std::wstring& text,
+                                               IDWriteTextFormat* format,
+                                               float column_w,
+                                               float fallback_line_h,
+                                               float* out_line_height_dip) const {
+    if (out_line_height_dip) *out_line_height_dip = fallback_line_h;
+    if (text.empty()) return 0.0f;
+    if (column_w <= 0.0f) column_w = static_cast<float>(kBackTransCardWidthDip - 28);
+    if (dwrite_factory_ && format) {
+        IDWriteTextLayout* layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                text.c_str(), static_cast<UINT32>(text.size()), format,
+                column_w, 100000.0f, &layout)) && layout) {
+            DWRITE_TEXT_METRICS m = {};
+            const HRESULT hr = layout->GetMetrics(&m);
+            layout->Release();
+            if (SUCCEEDED(hr) && m.height > 0.0f) {
+                if (out_line_height_dip && m.lineCount > 0) {
+                    *out_line_height_dip = m.height / static_cast<float>(m.lineCount);
+                }
+                return m.height;
+            }
+        }
+    }
+    int lines = (static_cast<int>(text.size()) + kBackTransCharsPerLine - 1) /
+                kBackTransCharsPerLine;
+    if (lines < 1) lines = 1;
+    return static_cast<float>(lines) * fallback_line_h;
+}
+
 // ---- GUI-thread show ------------------------------------------------------
 void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
                                         const std::wstring& back_text,
@@ -1600,21 +1697,36 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
     backtrans_matched_ = meaning_matched;
     backtrans_header_ = FormatBackTransHeader(I18n::Get(StringId::BackTranslateHeader),
                                               source_lang_label, target_lang_label);
+    // v0.10.9 (U-B, defect 3-5a): the [원문] panel body is the RAW original;
+    // the panel carries its own localized section header, so the pre-v0.10.9
+    // inline "↳ 원문: " prefix is not built any more. The never-hide policy
+    // lives in BackTransNeedsReferenceLine (always true for a non-empty
+    // original, including the exact-round-trip case).
     backtrans_ref_line_ = BackTransNeedsReferenceLine(original_text, back_text)
-                              ? FormatBackTransReference(original_text)
+                              ? original_text
                               : std::wstring();
 
-    // The card never scrolls and never carries the translation model's footer.
+    // A fresh card always starts unscrolled (same rule the translation card
+    // follows). scrollable_ is NOT reset here: it is assigned unconditionally
+    // from the measured panel plan below, which is the whole point of defect
+    // 3-1 (the pre-v0.10.9 code pinned it to false at this point and killed
+    // every wheel/drag path on this card).
+    // A drag still in flight from the PREVIOUS card must not keep the mouse
+    // captured by a card that has already been replaced.
+    if (dragging_thumb_) {
+        ::ReleaseCapture();
+    }
     scroll_offset_dip_ = 0.0f;
-    scrollable_ = false;
     content_height_dip_ = 0.0f;
     dragging_thumb_ = false;
     thumb_hover_ = false;
+    scrollbar_track_rect_ = {};
+    scrollbar_thumb_rect_ = {};
     backtrans_hover_paused_ = false;
     backtrans_close_hover_ = false;
 
     // Size: the pure character-count plan is the floor; a real DirectWrite
-    // measurement refines both the body height and the header row when the
+    // measurement refines both panels' heights and the header row when the
     // factory is alive (same measure-then-lay-out discipline as
     // ShowTranslation, but the card width is FIXED at 360 DIP so the estimate
     // stays honest).
@@ -1659,31 +1771,54 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
         PlanBackTransHeaderRowDip(header_w, pill_w, static_cast<float>(kBackTransCardWidthDip));
     const int header_extra_h = static_cast<int>(backtrans_header_plan_.pill_row_h);
 
-    BackTransCardSize size = ComputeBackTransCardSize(
-        static_cast<int>(backtrans_text_.size()),
-        static_cast<int>(backtrans_ref_line_.size()),
-        header_extra_h);
-    if (dwrite_factory_ && backtrans_body_format_) {
-        IDWriteTextLayout* layout = nullptr;
-        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
-                backtrans_text_.c_str(), static_cast<UINT32>(backtrans_text_.size()),
-                backtrans_body_format_, static_cast<float>(text_column), 100000.0f,
-                &layout)) && layout) {
-            DWRITE_TEXT_METRICS m = {};
-            if (SUCCEEDED(layout->GetMetrics(&m))) {
-                int h = kBackTransChromeDip + static_cast<int>(std::ceil(m.height)) + header_extra_h;
-                if (!backtrans_ref_line_.empty()) {
-                    h += kBackTransRefGapDip + kBackTransRefLineDip;
-                }
-                if (h < kBackTransCardMinHeightDip) h = kBackTransCardMinHeightDip;
-                if (h > kBackTransCardMaxHeightDip) h = kBackTransCardMaxHeightDip;
-                size.height = h;
-            }
-            layout->Release();
-        }
+    // ---- v0.10.9 (U-B, defects 3-3/3-4): MEASURE BOTH panels ----
+    // The original used to be a fixed 6+16 DIP one-line box appended to the
+    // body height; anything past ~40 characters was drawn below the card and
+    // lost. Both texts now go through a real multi-line DirectWrite
+    // measurement at the exact painted column width, and the two-panel planner
+    // turns those heights into clipped viewports.
+    float measured_line_height_dip = static_cast<float>(kBackTransLineHeightDip);
+    auto measure_panels = [&](int column_w) -> BackTransPanelPlan {
+        float back_line_h = static_cast<float>(kBackTransLineHeightDip);
+        const int back_h = static_cast<int>(
+            std::ceil(MeasureBackTransTextHeight(
+                backtrans_text_, backtrans_body_format_, static_cast<float>(column_w),
+                static_cast<float>(kBackTransLineHeightDip), &back_line_h)));
+        measured_line_height_dip = back_line_h;
+        const int ref_h = static_cast<int>(
+            std::ceil(MeasureBackTransTextHeight(
+                backtrans_ref_line_, backtrans_ref_format_, static_cast<float>(column_w),
+                static_cast<float>(kBackTransRefLineDip))));
+        return PlanBackTransPanels(back_h, ref_h, header_extra_h);
+    };
+    BackTransPanelPlan panel_plan = measure_panels(text_column);
+    if (panel_plan.scrollable) {
+        // The shared scrollbar takes kBackTransScrollbarGutterDip off the text
+        // column; a narrower wrap can only grow both content extents, so
+        // re-measure once and adopt the result (same gutter-remeasure rule the
+        // REQ-002 body path uses).
+        panel_plan = measure_panels(text_column - kBackTransScrollbarGutterDip);
     }
-    current_width_ = size.width;
-    current_height_ = size.height;
+    backtrans_panel_plan_ = panel_plan;
+    current_width_ = kBackTransCardWidthDip;
+    current_height_ = panel_plan.card_height_dip;
+
+    // ---- v0.10.9 (U-B, defects 3-1/3-3): the SHARED scroll state ----
+    // One offset drives both clipped panels. content_height_dip_ is expressed
+    // against the taller viewport so the EXISTING ClampScrollOffset /
+    // ScrollbarThumb* math (wheel, thumb drag, thumb geometry) needs no
+    // special case: content - viewport == panel_plan.max_scroll_offset.
+    scrollable_ = panel_plan.scrollable;
+    content_height_dip_ = static_cast<float>(panel_plan.max_scroll_offset +
+                                             panel_plan.shared_viewport_h);
+    // Wheel step unit: the measured 13pt body line height, so one notch moves
+    // three real lines of THIS card (fallback: the documented 20 DIP).
+    line_height_dip_ = measured_line_height_dip > 0.0f
+                           ? measured_line_height_dip
+                           : static_cast<float>(kBackTransLineHeightDip);
+    // v0.10.9 (U-B, defect 3-5c): the adaptive auto-hide window for THIS card.
+    backtrans_autohide_ms_ = BackTransAutohideMsForContent(
+        backtrans_text_.size() + backtrans_original_.size());
 
     // DPI + physical buffer, then the anchor (which needs the physical card
     // extents to clamp correctly).
@@ -1707,8 +1842,9 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
     Render();
     UpdateLayered();
 
-    // Auto-dismiss: 4500 ms, paused on hover (PlanBackTransTimer owns the
-    // decision; the WndProc only dispatches events into it).
+    // Auto-dismiss: the ADAPTIVE window measured for this card (4500..12000 ms,
+    // defect 3-5c), paused on hover - PlanBackTransTimer owns the decision and
+    // the WndProc only dispatches events into it.
     ApplyBackTransTimerPlan(BackTransTimerEvent::Shown);
 }
 
@@ -1919,11 +2055,21 @@ void TooltipWindow::TeardownCard() {
     translated_text_.clear();
     message_header_.clear();
     // REQ-002 (plan §2.1): scroll state resets on every dismissal.
+    // v0.10.9 (U-B): + the two-panel plan, the adaptive delay and the shared
+    // thumb rect (a stale thumb must not answer the next card's hit test), and
+    // any capture held by an in-flight thumb drag.
+    if (dragging_thumb_) {
+        ::ReleaseCapture();
+    }
     scroll_offset_dip_ = 0.0f;
     scrollable_ = false;
     content_height_dip_ = 0.0f;
     dragging_thumb_ = false;
     thumb_hover_ = false;
+    scrollbar_track_rect_ = {};
+    scrollbar_thumb_rect_ = {};
+    backtrans_panel_plan_ = BackTransPanelPlan{};
+    backtrans_autohide_ms_ = kBackTransAutohideMs;
     ::ShowWindow(hwnd_, SW_HIDE);
 }
 
@@ -1931,6 +2077,10 @@ void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
     if (!hwnd_) return;
     // Message mode (REQ-R08 compact notice) never scrolls; neither does a body
     // that fits its viewport (short text keeps today's exact look, REQ-003).
+    // v0.10.9 (U-B, defect 3-1): the back-translation card no longer hardcodes
+    // scrollable_ = false - ShowBackTranslation computes it from the measured
+    // content heights exactly like the normal mode, so this gate now lets its
+    // wheel through.
     if (is_message_mode_ || !scrollable_) return;
     // REQ-R10: the LL mouse hook callback runs on the hook thread. Marshal the
     // wheel event instead of touching the GUI-thread D2D target directly.
@@ -1941,10 +2091,57 @@ void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
     }
     const float step = WheelDeltaToOffsetStepDip(wheel_delta, line_height_dip_);
     if (step == 0.0f) return;
-    const float viewport_h = BodyViewportHeightDip(current_height_);
+    // v0.10.9 (U-B): the clamp basis is the ACTIVE mode's viewport - the
+    // back-translation card clamps against its taller panel viewport (one
+    // shared offset, two clips), every other mode against the REQ-002 body.
+    const float viewport_h = ActiveScrollViewportDip();
     const float next = ClampScrollOffset(scroll_offset_dip_ + step, content_height_dip_, viewport_h);
     if (next == scroll_offset_dip_) return; // clamped at an edge: no repaint jitter
     scroll_offset_dip_ = next;
+    // v0.10.9 (U-B, defect 3-5c): a scroll is a "still reading" signal.
+    RearmBackTransAutohideForScroll();
+    Render();
+    UpdateLayered();
+}
+
+// ---- v0.10.9 (U-B): shared scrollbar thumb drag ----
+// The REQ-002 drag math, factored out so the back-translation card reaches the
+// SAME tested code path instead of a second copy (its WM_LBUTTONDOWN branch
+// used to swallow every press, which is why drag-scroll never worked there).
+bool TooltipWindow::BeginScrollThumbDrag(float x_dip, float y_dip) {
+    if (!scrollable_ || !IsPointInRect(scrollbar_thumb_rect_, x_dip, y_dip)) {
+        return false;
+    }
+    dragging_thumb_ = true;
+    thumb_hover_ = true;
+    drag_start_offset_dip_ = scroll_offset_dip_;
+    drag_start_y_dip_ = y_dip;
+    ::SetCapture(hwnd_);
+    Render();
+    UpdateLayered();
+    return true;
+}
+
+bool TooltipWindow::UpdateScrollThumbDrag(float y_dip) {
+    if (!dragging_thumb_) return false;
+    const float track_h = scrollbar_track_rect_.bottom - scrollbar_track_rect_.top;
+    const float thumb_h = scrollbar_thumb_rect_.bottom - scrollbar_thumb_rect_.top;
+    const float viewport_h = ActiveScrollViewportDip();
+    const float range = track_h - thumb_h;
+    const float scroll_range = content_height_dip_ - viewport_h;
+    if (range <= 0.0f || scroll_range <= 0.0f) return false;
+    const float dy = y_dip - drag_start_y_dip_;
+    const float next = ClampScrollOffset(drag_start_offset_dip_ + dy * scroll_range / range,
+                                         content_height_dip_, viewport_h);
+    if (next == scroll_offset_dip_) return false;
+    scroll_offset_dip_ = next;
+    RearmBackTransAutohideForScroll();
+    return true;
+}
+
+void TooltipWindow::EndScrollThumbDrag() {
+    dragging_thumb_ = false;
+    ::ReleaseCapture();
     Render();
     UpdateLayered();
 }
@@ -2016,10 +2213,15 @@ void TooltipWindow::CopyToClipboard() {
 
 // 261108_0002 (WS3, v0.10.6): the floating back-translation card body.
 // Called from Render() after the shared elevated-card chrome, with the D2D
-// target already begun. Layout (all DIP, card width 360):
+// target already begun. Layout (all DIP, card width 360), v0.10.9 (U-B) the
+// report's §4 Option 2 two-panel comparison card:
 //   row 1  y  9..33   header title (12pt SemiBold) + match pill + ✕
-//   body   y 40..    AAAAA' (13pt SemiBold, text_primary)
-//   ref    bottom    "<localized label>AAAAA" (11pt, text_muted)
+//   [역번역]  label band (StringId::BackTransSectionBack, 13pt SemiBold)
+//            body viewport  AAAAA' (13pt SemiBold, text_primary)  <- CLIPPED
+//   [원문]    sub-panel (subtle contrast fill + border): label band
+//            (StringId::BackTransSectionOriginal) + body viewport
+//            AAAAA (11.5pt, text_secondary)                      <- CLIPPED
+//   right edge: ONE scrollbar thumb for the ONE shared scroll offset
 // The pill is the caller's verdict: state_ready green for "✓ 원문 일치",
 // accent_primary for "⚡ 표현 확인" (the theme has no `status_active` token -
 // state_ready is its equivalent semantic slot).
@@ -2029,11 +2231,20 @@ void TooltipWindow::CopyToClipboard() {
 // measurements). In long-string locales the pill drops to its OWN row below
 // the header instead of overlapping it; the ✕ stays top-right on the header
 // row, and the body starts below whichever rows are in use.
+//
+// v0.10.9 (U-B, defects 3-3/3-4/3-1): the report's "역번역 글씨가 하단 원문
+// 위를 덮어씀" defect is gone by construction - every panel draws inside a
+// PushAxisAlignedClip window taken from the SAME plan the show path measured,
+// so a long back-translation can only scroll inside its own viewport (it can
+// neither reach the [원문] panel nor run past the card edge). The original is
+// no longer a fixed 16 DIP line: it has its own measured, scrollable viewport.
 void TooltipWindow::RenderBackTranslation() {
     if (!dc_render_target_ || !scratch_brush_) return;
     const auto& theme = ui::GetActiveTheme();
     const float w = static_cast<float>(current_width_);
     const BackTransHeaderPlan& plan = backtrans_header_plan_;
+    const BackTransPanelPlan& panels = backtrans_panel_plan_;
+    const float h = static_cast<float>(current_height_);
 
     // ---- header row: title + (maybe) pill + close ----
     const float row_top = kBackTransRowTopDip;
@@ -2098,30 +2309,141 @@ void TooltipWindow::RenderBackTranslation() {
                                 D2D1::Point2F(w - kBackTransPadDip, divider_y),
                                 scratch_brush_, 1.0f);
 
-    // ---- body: AAAAA' (13pt SemiBold) ----
-    const float body_top = divider_y + 7.0f;
-    const float ref_block = backtrans_ref_line_.empty()
-                                ? 0.0f
-                                : static_cast<float>(kBackTransRefGapDip + kBackTransRefLineDip);
-    float body_bottom = static_cast<float>(current_height_) - 12.0f - ref_block;
-    if (body_bottom < body_top) body_bottom = body_top;
-    if (backtrans_body_format_ && !backtrans_text_.empty()) {
-        const D2D1_RECT_F body_rect = D2D1::RectF(kBackTransPadDip, body_top,
-                                                  w - kBackTransPadDip, body_bottom);
+    // ---- [역번역] section: label band + clipped body viewport ----
+    // The label comes from the i18n table (contract C5). NOTE (fix round 1,
+    // F-5): BackTransSectionBack carries NO brackets — the strings are
+    // "역번역" / "Back-translation"; the bracketed forms elsewhere in this
+    // file's comments are shorthand for "the back-translation section", not
+    // text the C5 table contains. The body is drawn into a rect as tall as the
+    // MEASURED content and then cut by the clip, so DirectWrite always lays
+    // out every line (no bottom truncation) while the viewport decides what is
+    // visible. Scroll offset: the ONE shared value, clamped per panel.
+    const std::wstring back_label = I18n::Get(StringId::BackTransSectionBack);
+    const std::wstring ref_label = I18n::Get(StringId::BackTransSectionOriginal);
+    const float scrollbar_gutter =
+        scrollable_ ? static_cast<float>(kBackTransScrollbarGutterDip) : 0.0f;
+    const float col_left = kBackTransPadDip;
+    const float col_right = w - kBackTransPadDip - scrollbar_gutter;
+    const float label_h = static_cast<float>(kBackTransSectionLabelDip);
+
+    if (backtrans_section_format_ && !back_label.empty()) {
+        const D2D1_RECT_F label_rect = D2D1::RectF(
+            col_left, static_cast<float>(panels.back_label_top),
+            col_right, static_cast<float>(panels.back_label_top) + label_h);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 0.95f));
+        dc_render_target_->DrawText(back_label.c_str(), static_cast<UINT32>(back_label.size()),
+                                    backtrans_section_format_, label_rect, scratch_brush_);
+    }
+
+    if (backtrans_body_format_ && !backtrans_text_.empty() && panels.back_view_h > 0) {
+        const float view_top = static_cast<float>(panels.back_view_top);
+        const float view_bottom = view_top + static_cast<float>(panels.back_view_h);
+        const float draw_off = ClampScrollOffset(scroll_offset_dip_,
+                                                 static_cast<float>(panels.back_content_h),
+                                                 static_cast<float>(panels.back_view_h));
+        const D2D1_RECT_F clip_rect =
+            D2D1::RectF(col_left, view_top, col_right, view_bottom);
+        dc_render_target_->PushAxisAlignedClip(clip_rect, D2D1_ANTIALIAS_MODE_ALIASED);
         scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
+        // Full-content height + one line of slack: the clip, not the layout
+        // rect, is what limits the visible rows.
+        const D2D1_RECT_F body_rect = D2D1::RectF(
+            col_left, view_top - draw_off, col_right,
+            view_top - draw_off + static_cast<float>(panels.back_content_h) + label_h);
         dc_render_target_->DrawText(backtrans_text_.c_str(),
                                     static_cast<UINT32>(backtrans_text_.size()),
                                     backtrans_body_format_, body_rect, scratch_brush_);
+        dc_render_target_->PopAxisAlignedClip();
     }
 
-    // ---- muted reference line: "↳ 원문: AAAAA" ----
-    if (backtrans_ref_format_ && !backtrans_ref_line_.empty()) {
-        const D2D1_RECT_F ref_rect = D2D1::RectF(14.0f, static_cast<float>(current_height_) - 26.0f,
-                                                 w - 14.0f, static_cast<float>(current_height_) - 10.0f);
+    // ---- [원문] sub-panel: subtle contrast + its own clipped viewport ----
+    // The panel's background is what visually separates the comparison from
+    // the back-translation above it (report §4 Option 2: "미세한 배경 대비"),
+    // and it ends exactly where the planner ended the card's body, so the
+    // original can never overdraw the card edge.
+    const D2D1_RECT_F panel_rect = D2D1::RectF(
+        kBackTransPadDip - kBackTransPanelPadDip, static_cast<float>(panels.ref_panel_top),
+        w - kBackTransPadDip + kBackTransPanelPadDip,
+        h - kBackTransCardBottomPadDip);
+    if (panel_rect.bottom > panel_rect.top) {
+        const D2D1_ROUNDED_RECT panel_rr =
+            D2D1::RoundedRect(panel_rect, theme.control_radius, theme.control_radius);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.55f));
+        dc_render_target_->FillRoundedRectangle(panel_rr, scratch_brush_);
+        scratch_brush_->SetColor(
+            ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha * 0.6f));
+        dc_render_target_->DrawRoundedRectangle(panel_rr, scratch_brush_, 1.0f);
+    }
+
+    if (backtrans_section_format_ && !ref_label.empty()) {
+        const D2D1_RECT_F label_rect = D2D1::RectF(
+            col_left, static_cast<float>(panels.ref_label_top),
+            col_right, static_cast<float>(panels.ref_label_top) + label_h);
         scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
+        dc_render_target_->DrawText(ref_label.c_str(), static_cast<UINT32>(ref_label.size()),
+                                    backtrans_section_format_, label_rect, scratch_brush_);
+    }
+
+    if (backtrans_ref_format_ && !backtrans_ref_line_.empty() && panels.ref_view_h > 0) {
+        const float view_top = static_cast<float>(panels.ref_view_top);
+        const float view_bottom = view_top + static_cast<float>(panels.ref_view_h);
+        const float draw_off = ClampScrollOffset(scroll_offset_dip_,
+                                                 static_cast<float>(panels.ref_content_h),
+                                                 static_cast<float>(panels.ref_view_h));
+        const D2D1_RECT_F clip_rect =
+            D2D1::RectF(col_left, view_top, col_right, view_bottom);
+        dc_render_target_->PushAxisAlignedClip(clip_rect, D2D1_ANTIALIAS_MODE_ALIASED);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_secondary, 1.0f));
+        const D2D1_RECT_F ref_rect = D2D1::RectF(
+            col_left, view_top - draw_off, col_right,
+            view_top - draw_off + static_cast<float>(panels.ref_content_h) + label_h);
         dc_render_target_->DrawText(backtrans_ref_line_.c_str(),
                                     static_cast<UINT32>(backtrans_ref_line_.size()),
                                     backtrans_ref_format_, ref_rect, scratch_brush_);
+        dc_render_target_->PopAxisAlignedClip();
+    }
+
+    // ---- shared scrollbar: ONE thumb for the ONE shared offset ----
+    // Drawn across both viewports (the offset moves them together), inside the
+    // gutter the text column already reserved. The rects are stashed for the
+    // WM_SETCURSOR / WM_LBUTTONDOWN / WM_MOUSEMOVE hit tests, so the hand
+    // cursor + thumb drag work exactly like the translation card's.
+    if (scrollable_) {
+        const float track_left = w - kBackTransPadDip - static_cast<float>(kBackTransScrollbarWDip);
+        const float track_top = static_cast<float>(panels.back_label_top);
+        const float track_bottom = static_cast<float>(panels.ref_view_top + panels.ref_view_h);
+        const float track_h = track_bottom - track_top;
+        const float viewport_h = static_cast<float>(panels.shared_viewport_h);
+        if (track_h > 0.0f) {
+            scrollbar_track_rect_ =
+                D2D1::RectF(track_left, track_top,
+                            track_left + static_cast<float>(kBackTransScrollbarWDip), track_bottom);
+            const float thumb_h = ScrollbarThumbHeightDip(track_h, viewport_h, content_height_dip_);
+            const float thumb_top = ScrollbarThumbTopDip(track_top, track_h, thumb_h,
+                                                         scroll_offset_dip_, content_height_dip_,
+                                                         viewport_h);
+            scrollbar_thumb_rect_ =
+                D2D1::RectF(track_left, thumb_top,
+                            track_left + static_cast<float>(kBackTransScrollbarWDip),
+                            thumb_top + thumb_h);
+            const bool thumb_active = thumb_hover_ || dragging_thumb_;
+            scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.75f));
+            dc_render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollbar_track_rect_, 3.0f, 3.0f), scratch_brush_);
+            scratch_brush_->SetColor(thumb_active ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                                  : ui::ColorFromHex(theme.text_muted, 1.0f));
+            dc_render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollbar_thumb_rect_, 3.0f, 3.0f), scratch_brush_);
+        } else {
+            scrollbar_track_rect_ = {};
+            scrollbar_thumb_rect_ = {};
+        }
+    } else {
+        // Never leave a stale thumb rect behind: a non-scrolling card must not
+        // answer the drag hit test (the normal-mode renderer keeps the same
+        // invariant).
+        scrollbar_track_rect_ = {};
+        scrollbar_thumb_rect_ = {};
     }
 }
 
@@ -2819,10 +3141,14 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return TRUE;
             }
 
-            // 261108_0002 (WS3): the back-translation card has exactly one
-            // interactive control (✕) - hand cursor over it, arrow elsewhere.
+            // 261108_0002 (WS3): the back-translation card's interactive
+            // surfaces are the ✕ and (v0.10.9 U-B) the shared scrollbar thumb:
+            // hand cursor over both, arrow elsewhere. The thumb is only
+            // interactive while the card actually overflows.
             if (pThis->is_backtrans_mode_) {
-                if (IsPointInRect(pThis->backtrans_close_rect_, x, y)) {
+                if (IsPointInRect(pThis->backtrans_close_rect_, x, y) ||
+                    (pThis->scrollable_ &&
+                     IsPointInRect(pThis->scrollbar_thumb_rect_, x, y))) {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
                 } else {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
@@ -2855,14 +3181,33 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             bool repaint = false;
 
             // 261108_0002 (WS3, v0.10.6): hovering the back-translation card
-            // PAUSES the 4500 ms auto-dismiss (spec). The planner makes the
-            // first move the only timer action; the close-button hover is the
-            // only repaint trigger (the card is otherwise static).
+            // PAUSES the auto-dismiss (spec). The planner makes the first move
+            // the only timer action; the close-button/thumb hovers are the only
+            // repaint triggers (the card is otherwise static).
+            //
+            // v0.10.9 (U-B, defect 3-1): the branch ALSO drives the shared
+            // scrollbar thumb drag. It previously returned before the REQ-002
+            // drag code, so a backtrans card could never be dragged even if a
+            // drag had started; the drag update now runs first, through the
+            // same helper the translation card uses.
             if (pThis->is_backtrans_mode_) {
+                if (pThis->UpdateScrollThumbDrag(y)) {
+                    repaint = true;
+                }
                 pThis->ApplyBackTransTimerPlan(TooltipWindow::BackTransTimerEvent::PointerMoved);
                 const bool close_hover = IsPointInRect(pThis->backtrans_close_rect_, x, y);
                 if (close_hover != pThis->backtrans_close_hover_) {
                     pThis->backtrans_close_hover_ = close_hover;
+                    repaint = true;
+                }
+                const bool new_thumb_hover =
+                    pThis->scrollable_ && !pThis->dragging_thumb_ &&
+                    IsPointInRect(pThis->scrollbar_thumb_rect_, x, y);
+                if (new_thumb_hover != pThis->thumb_hover_) {
+                    pThis->thumb_hover_ = new_thumb_hover;
+                    repaint = true;
+                }
+                if (repaint) {
                     pThis->Render();
                     pThis->UpdateLayered();
                 }
@@ -2877,25 +3222,13 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
 
             // REQ-002: thumb drag (SetCapture held since WM_LBUTTONDOWN).
-            // Relative mapping keeps the grab point under the cursor:
-            // pointer travel across the track scales to the scroll range
-            // (plan §2.1; overshoot clamps, no jitter, edge cases 2/3).
-            if (pThis->dragging_thumb_) {
-                const float track_h = pThis->scrollbar_track_rect_.bottom - pThis->scrollbar_track_rect_.top;
-                const float thumb_h = pThis->scrollbar_thumb_rect_.bottom - pThis->scrollbar_thumb_rect_.top;
-                const float viewport_h = TooltipWindow::BodyViewportHeightDip(pThis->current_height_);
-                const float range = track_h - thumb_h;
-                const float scroll_range = pThis->content_height_dip_ - viewport_h;
-                if (range > 0.0f && scroll_range > 0.0f) {
-                    const float dy = y - pThis->drag_start_y_dip_;
-                    const float next = TooltipWindow::ClampScrollOffset(
-                        pThis->drag_start_offset_dip_ + dy * scroll_range / range,
-                        pThis->content_height_dip_, viewport_h);
-                    if (next != pThis->scroll_offset_dip_) {
-                        pThis->scroll_offset_dip_ = next;
-                        repaint = true;
-                    }
-                }
+            // Relative mapping keeps the grab point under the cursor: pointer
+            // travel across the track scales to the scroll range (plan §2.1;
+            // overshoot clamps, no jitter, edge cases 2/3). v0.10.9 (U-B):
+            // factored into UpdateScrollThumbDrag so the back-translation card
+            // runs the identical math against its own shared viewport.
+            if (pThis->UpdateScrollThumbDrag(y)) {
+                repaint = true;
             }
 
             int new_hover = 0;
@@ -2938,20 +3271,24 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_MOUSELEAVE: {
+            // During a thumb drag the capture keeps mouse events coming even
+            // when the pointer leaves; ignore leave until the drag ends.
+            // v0.10.9 (U-B): checked BEFORE the back-translation branch too, so
+            // dragging that card's shared thumb cannot arm the grace countdown
+            // and close the card under the pointer mid-drag.
+            if (pThis->dragging_thumb_) {
+                return 0;
+            }
             // 261108_0002 (WS3, v0.10.6): leaving the back-translation card
             // resumes the countdown with the 1500 ms grace window.
             if (pThis->is_backtrans_mode_) {
-                if (pThis->backtrans_close_hover_) {
+                if (pThis->backtrans_close_hover_ || pThis->thumb_hover_) {
                     pThis->backtrans_close_hover_ = false;
+                    pThis->thumb_hover_ = false;
                     pThis->Render();
                     pThis->UpdateLayered();
                 }
                 pThis->ApplyBackTransTimerPlan(TooltipWindow::BackTransTimerEvent::PointerLeft);
-                return 0;
-            }
-            // During a thumb drag the capture keeps mouse events coming even
-            // when the pointer leaves; ignore leave until the drag ends.
-            if (pThis->dragging_thumb_) {
                 return 0;
             }
             if (pThis->hovered_btn_ != 0 || pThis->thumb_hover_) {
@@ -2965,9 +3302,19 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
         case WM_LBUTTONDOWN: {
             // 261108_0002 (WS3, v0.10.6): the back-translation card's only
-            // control is ✕; a press anywhere else is inert (no drag, no
-            // scroll). Dismiss on UP so the press/release pair stays honest.
+            // BUTTON is ✕; a press anywhere else is inert. Dismiss on UP so the
+            // press/release pair stays honest.
+            //
+            // v0.10.9 (U-B, defect 3-1): a press ON THE SHARED SCROLLBAR THUMB
+            // is not inert - it starts the same drag the translation card runs,
+            // which is what makes "휠/드래그 스크롤" work on this card. Every
+            // other press is still swallowed.
             if (pThis->is_backtrans_mode_) {
+                const float bx = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                    static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
+                const float by = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                    static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
+                pThis->BeginScrollThumbDrag(bx, by);
                 return 0;
             }
             // P4 Batch-3 (REQ-C-002 / D7): while the no-voice notice is up, a
@@ -2993,20 +3340,16 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
             // REQ-002: begin a scrollbar thumb drag (plan §2.1). SetCapture so
             // moves outside the layered popup keep feeding the drag math.
-            if (!pThis->is_message_mode_ && pThis->scrollable_ &&
-                IsPointInRect(pThis->scrollbar_thumb_rect_,
-                              static_cast<float>(emebalachat::ui::ScalePixelsToDips(
-                                  static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_)),
-                              static_cast<float>(emebalachat::ui::ScalePixelsToDips(
-                                  static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_)))) {
-                pThis->dragging_thumb_ = true;
-                pThis->thumb_hover_ = true;
-                pThis->drag_start_offset_dip_ = pThis->scroll_offset_dip_;
-                pThis->drag_start_y_dip_ = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
-                    static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
-                ::SetCapture(hwnd);
-                pThis->Render();
-                pThis->UpdateLayered();
+            // v0.10.9 (U-B): the drag state lives in the shared
+            // BeginScrollThumbDrag helper, which the back-translation card's
+            // WM_LBUTTONDOWN branch above uses too (one implementation, one
+            // pair of tests).
+            if (!pThis->is_message_mode_ &&
+                pThis->BeginScrollThumbDrag(
+                    static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                        static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_)),
+                    static_cast<float>(emebalachat::ui::ScalePixelsToDips(
+                        static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_)))) {
                 return 0;
             }
             break;
@@ -3017,6 +3360,14 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // card immediately (spec). Checked before every other control so a
             // stale footer rect from the previous mode can never fire.
             if (pThis->is_backtrans_mode_) {
+                // v0.10.9 (U-B): a shared-thumb drag ends here and swallows the
+                // release, exactly like the translation card's path - otherwise
+                // releasing over the ✕ would dismiss a card the user was only
+                // scrolling.
+                if (pThis->dragging_thumb_) {
+                    pThis->EndScrollThumbDrag();
+                    return 0;
+                }
                 float bx = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
                     static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
                 float by = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
@@ -3030,10 +3381,7 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // REQ-002: end a thumb drag first; swallow the release so a drag
             // that ends over a footer button does not also fire its action.
             if (pThis->dragging_thumb_) {
-                pThis->dragging_thumb_ = false;
-                ::ReleaseCapture();
-                pThis->Render();
-                pThis->UpdateLayered();
+                pThis->EndScrollThumbDrag();
                 return 0;
             }
 
@@ -3663,11 +4011,13 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 pThis->Dismiss();
                 return 0;
             }
-            // 261108_0002 (WS3, v0.10.6): auto-dismiss (4500 ms) or the hover
-            // grace expiry (1500 ms) - both land here; the card is hidden
-            // either way. A timer that fires after the card was replaced is
-            // harmless: the mode flag is already false and Dismiss is a no-op
-            // for an invisible window.
+            // 261108_0002 (WS3, v0.10.6): auto-dismiss or the hover grace
+            // expiry - both land here; the card is hidden either way. A timer
+            // that fires after the card was replaced is harmless: the mode flag
+            // is already false and Dismiss is a no-op for an invisible window.
+            // v0.10.9 (U-B, defect 3-5c): the armed delay is the ADAPTIVE one
+            // (4500..12000 ms by content length) and every wheel/drag scroll
+            // re-arms it, so this handler's job is unchanged.
             if (wParam == kTimerBackTranslateAutohide) {
                 ::KillTimer(hwnd, kTimerBackTranslateAutohide);
                 if (pThis->is_backtrans_mode_) {

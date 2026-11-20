@@ -26,9 +26,10 @@
 //       correction on line 3 of a 3-line message leaves K=2.
 //   (c) The LineBreakTracker contract: per-line counter saturation, K clamp
 //       at the guard ceiling, Reset, and the IsTextProducingKey matrix.
-//   (d) E9 - the capture ceilings are 16384 chars / 256 newlines everywhere
-//       they are enforced (EnterCaptureWithinGuard, the K clamp), a 1-2 page
-//       Shift+Enter message now passes, and the F3 block-slice
+//   (d) E9/U-E - the capture ceilings are 262144 chars / 16384 newlines
+//       everywhere they are enforced (EnterCaptureWithinGuard, the K clamp),
+//       a long multi-line CRLF message now passes, boundary pins cover both
+//       sides of each limit, and the F3 block-slice
 //       (FindCurrentBlockStart / SliceWholeCaptureToBlock) is what keeps
 //       multi-block captures safe under the raise.
 //   (e) ISSUE-013 - the drag threshold derives from SM_CXDRAG/SM_CYDRAG for
@@ -162,11 +163,14 @@ int RunV107LineBreakTests(int& failures) {
         }
         TEST_CHECK(t.line_input == LineBreakTracker::kLineInputCap && t.k == 0,
                    "tracker: the per-line counter saturates at kLineInputCap (K untouched)");
-        for (int i = 0; i < 1000; ++i) {
+        // W3 (261121_0001, U-E fallout): with the ceiling raised to 16384 the
+        // fixture must press PAST the cap to prove the clamp - the retired
+        // 256 ceiling was saturated by 1000 presses, the new one is not.
+        for (int i = 0; i < static_cast<int>(kMaxEnterTranslateNewlines) + 1; ++i) {
             t.OnShiftEnter();
         }
         TEST_CHECK(t.k == static_cast<int>(kMaxEnterTranslateNewlines),
-                   "tracker: K clamps at the guard's newline ceiling (256 after E9)");
+                   "tracker: K clamps at the guard's newline ceiling (16384 after U-E)");
         TEST_CHECK(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines), false) ==
                        static_cast<int>(kMaxEnterTranslateNewlines),
                    "K clamp: a saturated K stays clamped");
@@ -210,21 +214,31 @@ int RunV107LineBreakTests(int& failures) {
                    "E2: Backspace/Delete can never advance the line counter");
     }
 
-    // ---- (d) E9: the raised capture ceilings ------------------------------
-    static_assert(kMaxEnterTranslateChars == 16384,
-                  "E9: guard char limit raised 4096 -> 16384");
-    static_assert(kMaxEnterTranslateNewlines == 256,
-                  "E9: guard newline limit raised 64 -> 256");
+    // ---- (d) E9 + U-E: the raised capture ceilings ------------------------
+    static_assert(kMaxEnterTranslateChars == 262144,
+                  "U-E: guard char limit raised 16384 -> 262144");
+    static_assert(kMaxEnterTranslateNewlines == 16384,
+                  "U-E: guard newline limit raised 256 -> 16384");
+    // Boundary pins, both sides of each axis: exactly at the limit passes,
+    // one over fails (explicit literals, not only the symbolic forms).
+    TEST_CHECK(EnterCaptureWithinGuard(262143, 16383),
+               "U-E: 262143 chars / 16383 newlines passes (one under each limit)");
     TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines),
-               "E9: the guard allows exactly the new limit (16384 chars / 256 newlines)");
+               "U-E: the guard allows exactly the new limit (262144 chars / 16384 newlines)");
+    TEST_CHECK(!EnterCaptureWithinGuard(262145, 16383),
+               "U-E: one char over the new limit is still rejected");
+    TEST_CHECK(!EnterCaptureWithinGuard(262143, 16385),
+               "U-E: one newline over the new limit is still rejected");
     TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars + 1, kMaxEnterTranslateNewlines),
-               "E9: one char over the new limit is still rejected");
+               "U-E: one char over (symbolic) is still rejected");
     TEST_CHECK(!EnterCaptureWithinGuard(kMaxEnterTranslateChars, kMaxEnterTranslateNewlines + 1),
-               "E9: one newline over the new limit is still rejected");
+               "U-E: one newline over (symbolic) is still rejected");
     TEST_CHECK(EnterCaptureWithinGuard(5000, 3),
-               "E9: a 5000-char single-line capture now passes (aborted under the old 4096)");
-    TEST_CHECK(!EnterCaptureWithinGuard(20000, 3),
-               "E9: a document-sized single block is still rejected (V3 abuse defense)");
+               "U-E: a 5000-char single-line capture passes (aborted under the pre-U-E limits)");
+    TEST_CHECK(!EnterCaptureWithinGuard(262145, 3),
+               "U-E: a document-sized single block is still rejected (V3 abuse defense)");
+    TEST_CHECK(!EnterCaptureWithinGuard(100, 16385),
+               "U-E: a 16385-newline abuse capture is still rejected");
     {
         // 1-2 pages of Shift+Enter text: 120 logical lines of ~100 chars.
         std::wstring page;
@@ -241,20 +255,22 @@ int RunV107LineBreakTests(int& failures) {
             }
         }
         TEST_CHECK(page.size() == 12000 + 119 * 2 && nl == 119 * 2,
-                   "E9 fixture: a 120-line page is built (12238 chars / 238 newline chars)");
+                   "U-E fixture: a 120-line page is built (12238 chars / 238 newline chars)");
         TEST_CHECK(EnterCaptureWithinGuard(page.size(), nl),
-                   "E9: a 120-line (~1.5 page) Shift+Enter message passes the guard");
+                   "U-E: a 120-line (~1.5 page) Shift+Enter message passes the guard");
         // The F3 block-slice still addresses the current block inside it:
         // K=2 -> the last 3 logical lines.
         const size_t expect_start = page.size() - (3 * 100 + 2 * 2);
         TEST_CHECK(FindCurrentBlockStart(page, 2) == expect_start,
-                   "E9: FindCurrentBlockStart slices the current block out of the long capture");
+                   "U-E: FindCurrentBlockStart slices the current block out of the long capture");
     }
     {
         // What makes the raise safe: an OVER-guard whole accumulation is
         // re-bounded to the CURRENT block (the last K+1 logical lines)
-        // instead of aborting - the F3 slice-before-guard contract.
-        const std::wstring doc = std::wstring(17000, L'a') + L"\r\n" +
+        // instead of aborting - the F3 slice-before-guard contract. The
+        // prefix stays symbolically over the char guard so the pin survives
+        // future raises.
+        const std::wstring doc = std::wstring(kMaxEnterTranslateChars + 100, L'a') + L"\r\n" +
                                  L"fresh line one\r\nfresh line two\r\nfresh line three";
         size_t nl = 0;
         for (wchar_t c : doc) {
@@ -263,16 +279,16 @@ int RunV107LineBreakTests(int& failures) {
             }
         }
         TEST_CHECK(!EnterCaptureWithinGuard(doc.size(), nl),
-                   "E9 fixture: the accumulation is over the new guard");
+                   "U-E fixture: the accumulation is over the new guard");
         const WholeCaptureSlice s = SliceWholeCaptureToBlock(doc, 2);
         TEST_CHECK(s.result == EnterCaptureResult::BlockSliced,
-                   "E9: over-guard accumulation slices to the current block (no abort, no document overwrite)");
+                   "U-E: over-guard accumulation slices to the current block (no abort, no document overwrite)");
         TEST_CHECK(s.block == std::wstring_view(L"fresh line one\r\nfresh line two\r\nfresh line three"),
-                   "E9: the sliced block is the last K+1 logical lines (FindCurrentBlockStart)");
+                   "U-E: the sliced block is the last K+1 logical lines (FindCurrentBlockStart)");
         // A single block that is itself over-guard keeps the abort.
-        const std::wstring one_block(17000, L'x');
+        const std::wstring one_block(kMaxEnterTranslateChars + 100, L'x');
         TEST_CHECK(SliceWholeCaptureToBlock(one_block, 0).result == EnterCaptureResult::GuardAbort,
-                   "E9: a document-sized single block still aborts (abuse defense intact)");
+                   "U-E: a document-sized single block still aborts (abuse defense intact)");
     }
 
     // ---- (e) ISSUE-013: system-metric drag threshold ----------------------

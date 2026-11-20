@@ -1267,9 +1267,27 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);
             if (snap.back_translation_enabled && back_translate_cb_) {
                 // 261108_0002 (WS3): this pipeline-thread callback must stay non-blocking; main.cpp marshals the job.
-                const BackTranslateRequest request{engine_input, back_translate_forward_text,
+                //
+                // v0.10.9 (U-B, report §4 defect 3-5b): original_text is the
+                // FULL captured line, not engine_input. On a PrefixWithTail /
+                // F3 block-slice capture engine_input is only the tail (or
+                // block) slice, and the card then showed a fragment as "원문" -
+                // the same-line continuation case the CEO reported as "원본
+                // 문장 미표시". `line` is the CRLF-normalized capture the user
+                // actually had in the input box before the paste replaced it,
+                // which is exactly main.cpp's documented contract for this
+                // field ("AAAAA - what the user actually typed"). forward_text
+                // stays the translated SEGMENT by design (261108_0002 WS3:
+                // the verbatim prefix is never re-translated), so only the
+                // reference side widens here. compare_text carries
+                // engine_input (the segment the forward translation actually
+                // came from) so main.cpp's meaning verdict compares like with
+                // like; empty would mean "the whole line" - U-B observation O1
+                // (261121_0001, defect 3-5b follow-up).
+                const BackTranslateRequest request{line, back_translate_forward_text,
                                                    snap.type_target_language, resolved_engine_src,
-                                                   snap.type_source_language, task.target_hwnd};
+                                                   snap.type_source_language, task.target_hwnd,
+                                                   engine_input};
                 try {
                     back_translate_cb_(request);
                 } catch (const std::exception& e) {

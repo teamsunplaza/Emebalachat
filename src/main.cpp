@@ -2181,6 +2181,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         std::wstring target_label;   // header: BBBBB's short code ("EN")
         HWND target_hwnd = nullptr;  // the window that received BBBBB
         HWND badge_hwnd = nullptr;   // Tier-2 card anchor (null when no badge)
+        // Verdict reference (261121_0001, defect 3-5b follow-up): the segment
+        // the forward translation came from. == original_text for whole-line
+        // captures; the tail/block slice for PrefixWithTail / F3 captures.
+        std::wstring compare_text;
     };
 
     // Runs ON back_translate_worker. Pure in-memory verification: engine round
@@ -2230,10 +2234,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
         // Meaning check: the SAME canonical form the paste ledger uses
         // (ADR-001 - byte-exact after CRLF/NBSP/NFC normalization, never fuzzy),
-        // so an editor re-serialization cannot flip the verdict.
+        // so an editor re-serialization cannot flip the verdict. The reference
+        // is compare_text (261121_0001, defect 3-5b follow-up): the segment the
+        // forward translation actually came from - original_text is the whole
+        // captured line since U-B, which a tail fragment can never byte-equal
+        // (U-B observation O1).
         const bool meaning_matched =
             emebalachat::CanonicalFormForLedger(back_text) ==
-            emebalachat::CanonicalFormForLedger(job.original_text);
+            emebalachat::CanonicalFormForLedger(job.compare_text);
         // Defense in depth (261108_0002 FIX-R1): the pre-call gate above covers
         // a job picked up after the toggle; this one covers a toggle that lands
         // WHILE this round trip is in flight (the toggle already dismissed the
@@ -2291,6 +2299,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 emebalachat::I18n::GetSystemLanguageCode());
             BackTranslateJob job;
             job.original_text = req.original_text;
+            // 261121_0001 (defect 3-5b follow-up): the verdict reference is the
+            // segment the forward translation came from; an empty compare_text
+            // means "use original_text" (whole-line captures).
+            job.compare_text =
+                req.compare_text.empty() ? req.original_text : req.compare_text;
             job.forward_text = req.forward_text;
             job.forward_target = req.forward_target;
             job.back_target = back_target;
