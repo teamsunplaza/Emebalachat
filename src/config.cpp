@@ -670,6 +670,29 @@ void ParseOpenAiBlock(const std::string& raw, OpenAiConfig& out) {
             out.api_key_sha256 = v;
         } else if (k == "http_consent_given") {
             out.http_consent_given = (v == "true");
+        } else if (k == "reasoning_effort") {
+            // 261121_0001 U-H (contract C2): the reasoning effort sent to the
+            // OpenAI-compatible endpoint. "" (absent key, empty value) means
+            // "send no reasoning_effort at all" - the mandatory default,
+            // because a non-reasoning model answers HTTP 400 to that key. Any
+            // other value is kept, bounded by the clamp below: which efforts a
+            // gateway accepts is only known from its own /v1/models metadata,
+            // so a whitelist here could reject a value the server itself
+            // advertised. The value is JSON-escaped on the write side, so it
+            // can never break the file.
+            //
+            // G-2 (261121_0001 fix round 2, SEC-F02): clamp the READ to
+            // kMaxOpenAiReasoningEffortConfigChars. Legitimate tokens are
+            // <= 8 chars (none|minimal|low|medium|high|xhigh); the settings
+            // combo caps its items at 32. A hand-edited (hostile) config.json
+            // could otherwise carry a multi-MB value that rides verbatim into
+            // EVERY per-chunk request body and every config rewrite. 64 is
+            // far above any real token yet bounded, and the truncation (not
+            // drop) keeps a long-but-real token usable in diagnosis.
+            constexpr std::size_t kMaxOpenAiReasoningEffortConfigChars = 64;
+            out.reasoning_effort = (v.size() <= kMaxOpenAiReasoningEffortConfigChars)
+                                       ? v
+                                       : v.substr(0, kMaxOpenAiReasoningEffortConfigChars);
         }
     }
 }
@@ -3670,6 +3693,14 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"openai\": {\n";
     ss << "    \"base_url\": \"" << EscapeJsonString(openai.base_url) << "\",\n";
     ss << "    \"model\": \"" << EscapeJsonString(openai.model) << "\",\n";
+    // 261121_0001 U-H (contract C2): ALWAYS serialized like every other key of
+    // this block (the sticky-key policy above), so a round trip cannot lose
+    // the user's pick and a config.json written by this build always shows the
+    // setting. The encoded value "" means UNSET: the request body then omits
+    // the reasoning_effort key entirely (a non-reasoning model rejects it with
+    // HTTP 400), which is why "" is the default and can never be confused with
+    // the standard "none" effort value.
+    ss << "    \"reasoning_effort\": \"" << EscapeJsonString(openai.reasoning_effort) << "\",\n";
     ss << "    \"api_key_dpapi\": \"" << EscapeJsonString(openai.api_key_dpapi) << "\",\n";
     ss << "    \"api_key_sha256\": \"" << EscapeJsonString(openai.api_key_sha256) << "\",\n";
     ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << "\n";

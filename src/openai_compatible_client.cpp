@@ -2,14 +2,17 @@
 
 #include "config.hpp"        // BuildPrompt-free language names via FindLanguageByCode
 #include "diag_logger.hpp"   // shape-only DIAG (never key/body)
-#include "engine.hpp"        // TruncateHeadTailWindow (shared head/tail clamp)
-#include "i18n.hpp"          // TranslateTruncatedNotice (user-facing clamp notice)
+#include "translation_chunker.hpp" // §3.2: the shared 4-tier source splitter
 #include "unicode_utils.hpp" // ToUtf8 / ToUtf16
 
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <memory>
+#include <mutex>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <vector>
 #include <windows.h>
 #include <bcrypt.h>   // REQ-045: CNG SHA-256 (core does not link engine_core)
@@ -26,7 +29,12 @@ namespace {
 
 // REQ-045 (design §3b): mirrors google_translate.cpp's F5 cap so a hostile or
 // misbehaving server cannot exhaust memory on an unbounded body read.
-constexpr size_t kMaxResponseBodyBytes = 10 * 1024 * 1024;
+// 2A-3 ERRATUM (261121_0001 U-F; vp-plan adjudication 1): the investigation
+// report's "64 KiB response buffer" claim is WRONG — this cap has been 10 MiB
+// since REQ-045, and 64 KiB is kMaxErrorBodyBytes below (NON-2xx error bodies
+// only). The value lives in the header as kMaxOpenAiResponseBodyBytes so the
+// unit suite pins it; do NOT "restore" it to 64 KiB.
+constexpr size_t kMaxResponseBodyBytes = kMaxOpenAiResponseBodyBytes;
 static_assert(kMaxResponseBodyBytes == 10485760, "REQ-045: response body cap is exactly 10 MiB");
 
 // 261111_0001 U6 (v0.10.7, R1 P1-3): the non-2xx error-body capture cap. An
@@ -34,19 +42,18 @@ static_assert(kMaxResponseBodyBytes == 10485760, "REQ-045: response body cap is 
 // verbose proxies while keeping the capture trivially bounded.
 constexpr size_t kMaxErrorBodyBytes = 64 * 1024;
 
-// REQ-045 (design §3b): input clamp parity with Google (kMaxCloudQueryUnits =
-// 1500 UTF-16 units). The head/tail window keeps first+last 748 units + 3-unit
-// marker strictly under the cap, identical to google_translate.cpp.
-constexpr size_t kMaxInputUnits = 1500;
-constexpr size_t kEllipsisMarkerUnits = 3;
-constexpr size_t kKeepPerSide = (kMaxInputUnits - kEllipsisMarkerUnits) / 2;
-static_assert(2 * kKeepPerSide + kEllipsisMarkerUnits <= kMaxInputUnits,
-              "REQ-045: head/tail window fits the 1500-unit cap");
-
 // REQ-045 (design §3b): request profile. The Google gtx fallback uses
 // resolve/connect 3000, send/receive 5000; the settings-dialog "fetch models"
 // call needs to be snappier on the GUI thread, so ListModels uses a tighter
-// 10 s total budget while ChatCompletion mirrors the proven Google split.
+// 10 s total budget.
+//
+// 2A-1 (261121_0001 U-F; report §3.1-A item 1): the chat profile is NOT the
+// Google profile any more. ChatCompletion is non-streaming, so the server must
+// finish its internal thinking AND the translation before the first response
+// byte: Gemini 2.5 / StepFun / DeepSeek-R1 / Qwen3 take 5.1-15 s even on a
+// short ambiguous sentence, and the old {3000,3000,5000,5000} profile (copied
+// from the fast NMT Google path) tore the connection down at 5 s with a bare
+// transport failure. 60 s receive / 15 s send matches the report's option 2.
 struct OpenAiHttpProfile {
     int resolve_ms;
     int connect_ms;
@@ -54,7 +61,7 @@ struct OpenAiHttpProfile {
     int receive_ms;
 };
 constexpr OpenAiHttpProfile kListModelsProfile{3000, 3000, 2000, 2000}; // 10 s total
-constexpr OpenAiHttpProfile kChatProfile{3000, 3000, 5000, 5000};       // 16 s, Google parity
+constexpr OpenAiHttpProfile kChatProfile{5000, 5000, 15000, 60000};     // 85 s total
 
 struct WinHttpHandleDeleter {
     void operator()(HINTERNET h) const {
@@ -295,47 +302,196 @@ std::vector<std::string> ParseModelsJson(std::string_view json) {
     return ids;
 }
 
-// Parses the /v1/chat/completions response and returns choices[0].message.content.
-std::string ParseChatJson(std::string_view json) {
+// 2A-4 (261121_0001 U-F; report §3.1-A item 4): the chat-response walk. Three
+// response shapes that used to collapse into a bare "" (-> "번역에
+// 실패했습니다" with no cause) are handled here:
+//   (a) "content": [{"type":"text","text":"..."}, ...] — the array-of-parts
+//       form some compatible endpoints emit; the text parts are concatenated
+//       (the old `json[pos] == '"'` test skipped the whole value).
+//   (b) "content": null — the provider blocked or truncated the answer. The
+//       sibling "finish_reason" is harvested from the SAME choice object (it
+//       usually FOLLOWS "message", which is why the old early return could
+//       never see it) and becomes a diagnosis token.
+//   (c) reasoning scratchpad blocks (the `think` and `/think` tags some
+//       reasoning models wrap them in, angle brackets included) are stripped
+//       from the text; an UNCLOSED leading one (the token budget was hit
+//       mid-thinking) drops the reasoning tail instead of leaking it as the
+//       translation.
+
+bool IsAsciiWhitespaceByte(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+std::string TrimAsciiWhitespace(std::string s) {
+    size_t begin = 0;
+    size_t end = s.size();
+    while (begin < end && IsAsciiWhitespaceByte(s[begin])) ++begin;
+    while (end > begin && IsAsciiWhitespaceByte(s[end - 1])) --end;
+    if (begin == 0 && end == s.size()) return s;
+    return s.substr(begin, end - begin);
+}
+
+std::string StripThinkBlocks(std::string_view s) {
+    // The two tags as OCTAL escapes: a reasoning model emits the literal
+    // angle-bracket form, and escapes keep this source immune to any editor /
+    // transport that mangles angle brackets in text.
+    static constexpr std::string_view kOpenTag = "\074think\076";
+    static constexpr std::string_view kCloseTag = "\074/think\076";
+    std::string out;
+    out.reserve(s.size());
+    size_t pos = 0;
+    while (pos < s.size()) {
+        const size_t open = s.find(kOpenTag, pos);
+        if (open == std::string_view::npos) {
+            out.append(s.substr(pos));
+            break;
+        }
+        out.append(s.substr(pos, open - pos));
+        const size_t close = s.find(kCloseTag, open + kOpenTag.size());
+        if (close == std::string_view::npos) {
+            // Unclosed tag: everything from here on is reasoning, not text.
+            break;
+        }
+        pos = close + kCloseTag.size();
+    }
+    // Dropping a leading block leaves the separator whitespace behind; the
+    // caller trims the result, so a think-only answer becomes "" (and is then
+    // diagnosed) instead of a whitespace-only "translation".
+    return out;
+}
+
+// 2A-4(a): concatenates the "text" fields of a content array at `pos`
+// ("[{...},{...}]"), leaving `pos` past the closing ']'. Non-object elements
+// (plain strings are tolerated — some gateways emit them) and parts without a
+// "text" string are skipped. Progress-guarded: the F-1 lesson (a malformed
+// body must never spin the pipeline worker) applies to every walker here.
+void AppendContentParts(std::string_view json, size_t& pos, std::string& out) {
+    if (pos >= json.size() || json[pos] != '[') return;
+    ++pos;
+    while (pos < json.size()) {
+        SkipWs(json, pos);
+        if (pos >= json.size()) break;
+        if (json[pos] == ']') {
+            ++pos;
+            break;
+        }
+        const size_t iter_start = pos;
+        if (json[pos] == '{') {
+            ++pos; // into the part object
+            std::string pkey;
+            while (NextKey(json, pos, pkey)) {
+                if (pkey == "text" && pos < json.size() && json[pos] == '"') {
+                    std::string part;
+                    if (ParseJsonString(json, pos, part)) out += part;
+                } else {
+                    SkipValue(json, pos);
+                }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
+            }
+            if (pos < json.size() && json[pos] == '}') ++pos;
+        } else if (json[pos] == '"') {
+            std::string part;
+            if (ParseJsonString(json, pos, part)) out += part;
+        } else {
+            SkipValue(json, pos);
+        }
+        SkipWs(json, pos);
+        if (pos < json.size() && json[pos] == ',') ++pos;
+        if (pos == iter_start) ++pos; // non-progress guard (never stall)
+    }
+}
+
+// G-4 (261121_0001 fix round 2, SEC-F04): the provider's finish_reason is a
+// TOKEN ("stop", "length", "content_filter"), never prose — yet a hostile
+// endpoint can answer a multi-MB one and the parser copied it whole into
+// failure_detail, bounded only later at the fail() sink. Bound it AT PARSE so
+// the diagnosis path never carries the bloat: 32 chars, and the cut retreats
+// to a UTF-8 boundary so the bounded token can never surface a split-sequence
+// replacement glyph (the G-11 discipline applied mid-string).
+void BoundFinishReasonToken(std::string& token) {
+    constexpr std::size_t kMaxFinishReasonChars = 32;
+    if (token.size() <= kMaxFinishReasonChars) return;
+    token.resize(kMaxFinishReasonChars);
+    while (!token.empty() &&
+           (static_cast<unsigned char>(token.back()) & 0xC0) == 0x80) {
+        token.pop_back(); // continuation bytes opened by the cut
+    }
+    if (!token.empty()) {
+        const unsigned char lead = static_cast<unsigned char>(token.back());
+        const bool multi = (lead & 0xE0) == 0xC0 || (lead & 0xF0) == 0xE0 ||
+                           (lead & 0xF8) == 0xF0;
+        if (multi) token.pop_back(); // a lead whose sequence the cut truncated
+    }
+}
+
+// Parses the /v1/chat/completions response: choices[0] -> (content, diagnosis).
+OpenAiChatResult ParseChatJson(std::string_view json) {
+    OpenAiChatResult result;
     size_t pos = 0;
     SkipWs(json, pos);
-    if (pos >= json.size() || json[pos] != '{') return {};
+    if (pos >= json.size() || json[pos] != '{') return result;
     ++pos;
     std::string key;
     while (NextKey(json, pos, key)) {
         if (key == "choices" && pos < json.size() && json[pos] == '[') {
             ++pos; // into choices array
             SkipWs(json, pos);
-            if (pos < json.size() && json[pos] == '{') {
-                ++pos; // into choice object
-                std::string ckey;
-                while (NextKey(json, pos, ckey)) {
-                    if (ckey == "message" && pos < json.size() && json[pos] == '{') {
-                        ++pos; // into message object
-                        std::string fkey, content;
-                        while (NextKey(json, pos, fkey)) {
-                            if (fkey == "content" && pos < json.size() && json[pos] == '"') {
-                                ParseJsonString(json, pos, content);
+            if (pos >= json.size() || json[pos] != '{') break;
+            ++pos; // into the FIRST choice object (later choices are ignored)
+            std::string ckey;
+            std::string raw_content;
+            std::string finish_reason;
+            while (NextKey(json, pos, ckey)) {
+                if (ckey == "message" && pos < json.size() && json[pos] == '{') {
+                    ++pos; // into message object
+                    std::string fkey;
+                    while (NextKey(json, pos, fkey)) {
+                        if (fkey == "content") {
+                            if (pos < json.size() && json[pos] == '"') {
+                                ParseJsonString(json, pos, raw_content);
+                            } else if (pos < json.size() && json[pos] == '[') {
+                                AppendContentParts(json, pos, raw_content); // 2A-4(a)
                             } else {
+                                // 2A-4(b): "content": null (a safety filter or a
+                                // token-budget stop). Nothing to extract; the
+                                // diagnosis comes from finish_reason below.
                                 SkipValue(json, pos);
                             }
-                            SkipWs(json, pos);
-                            if (pos < json.size() && json[pos] == ',') ++pos;
+                        } else {
+                            SkipValue(json, pos);
                         }
-                        return content;
+                        SkipWs(json, pos);
+                        if (pos < json.size() && json[pos] == ',') ++pos;
                     }
+                    // REQ-050/F-1 idiom: NextKey stops AT the closing '}'
+                    // without consuming it; the choice-level walk below must
+                    // continue past the message object to reach finish_reason.
+                    if (pos < json.size() && json[pos] == '}') ++pos;
+                } else if (ckey == "finish_reason" && pos < json.size() && json[pos] == '"') {
+                    ParseJsonString(json, pos, finish_reason);
+                    BoundFinishReasonToken(finish_reason); // G-4: bound at parse
+                } else {
                     SkipValue(json, pos);
-                    SkipWs(json, pos);
-                    if (pos < json.size() && json[pos] == ',') ++pos;
                 }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
             }
-            break;
+            // 2A-4(c): think blocks out, then the surrounding whitespace.
+            result.content = TrimAsciiWhitespace(StripThinkBlocks(raw_content));
+            // 2A-4(b): a provider-sourced diagnosis instead of a bare empty
+            // string. "stop" (and an absent reason) is a normal empty answer
+            // and stays undiagnosed — R2-E keeps the localized notice whole.
+            if (result.content.empty() && !finish_reason.empty() && finish_reason != "stop") {
+                result.failure_detail = "finish_reason: " + finish_reason;
+            }
+            return result;
         }
         SkipValue(json, pos);
         SkipWs(json, pos);
         if (pos < json.size() && json[pos] == ',') ++pos;
     }
-    return {};
+    return result;
 }
 
 // Resolves a base URL into (host, port, is_https, path-prefix) for WinHTTP.
@@ -423,20 +579,6 @@ std::string JsonEscape(std::string_view s) {
         }
     }
     return out;
-}
-
-// Builds the {"model","messages":[...],"temperature":0} chat body.
-// BUG-9 (v0.10.5 handoff section 2.10): a bounded "max_tokens" rides on every
-// chat body. The input is clamped to kMaxInputUnits before the call, so a
-// legitimate translation never approaches this ceiling; the cap only stops a
-// chatty/misbehaving endpoint from rambling past the translation.
-std::string BuildChatBody(std::string_view model, std::string_view system, std::string_view user) {
-    std::ostringstream b;
-    b << "{\"model\":\"" << JsonEscape(model)
-      << "\",\"messages\":[{\"role\":\"system\",\"content\":\"" << JsonEscape(system)
-      << "\"},{\"role\":\"user\",\"content\":\"" << JsonEscape(user)
-      << "\"}],\"temperature\":0,\"max_tokens\":8192}";
-    return b.str();
 }
 
 // Core synchronous request helper shared by ListModels and ChatCompletion.
@@ -623,6 +765,265 @@ OpenAiUrlSecurity ClassifyOpenAiBaseUrl(std::string_view base_url) {
 // rather than a copy.
 std::vector<std::string> ParseOpenAiModelsJson(std::string_view json) {
     return ParseModelsJson(json);
+}
+
+// ---- 261121_0001 U-F (v0.10.9): the request-shaping / response-reading
+// seams. Pure delegation to the file-local machinery above, so the suite pins
+// the production code path rather than a copy. ----
+
+std::string BuildChatBody(std::string_view model, std::string_view system,
+                          std::string_view user, std::string_view reasoning_effort,
+                          bool include_optional_params) {
+    // 2A-2 (report §3.1-A item 2): the legacy "temperature":0 + "max_tokens":
+    // 8192 pair is now an OPT-IN (tests / a future knob). Production omits
+    // both: the fixed token cap rejects 4K-output and small-context servers,
+    // and o1/o3/o4-mini/gpt-5 reject "max_tokens" and a 0 temperature outright
+    // (HTTP 400) — while a translation never needed either one. The escaping
+    // is byte-identical to the pre-2A-2 body (JsonEscape, unchanged).
+    std::ostringstream b;
+    b << "{\"model\":\"" << JsonEscape(model)
+      << "\",\"messages\":[{\"role\":\"system\",\"content\":\"" << JsonEscape(system)
+      << "\"},{\"role\":\"user\",\"content\":\"" << JsonEscape(user) << "\"}]";
+    if (!reasoning_effort.empty()) {
+        b << ",\"reasoning_effort\":\"" << JsonEscape(reasoning_effort) << "\"";
+    }
+    if (include_optional_params) {
+        b << ",\"temperature\":0,\"max_tokens\":8192";
+    }
+    b << "}";
+    return b.str();
+}
+
+std::string BuildOpenAiSystemPrompt(std::string_view source_lang,
+                                    std::string_view target_lang) {
+    // Language names via the registry so a code or a name both resolve;
+    // unresolvable tokens are injected raw.
+    auto name_of = [](std::string_view code_or_name) -> std::string {
+        std::string norm = NormalizeLanguageCode(code_or_name);
+        if (const auto* l = FindLanguageByCode(norm)) return l->name_en;
+        return std::string(code_or_name);
+    };
+    const std::string src_name = name_of(source_lang);
+    const std::string tgt_name = name_of(target_lang);
+    // BUG-9 (v0.10.5 handoff section 2.10): with an AUTO/empty source the
+    // registry name is "Auto Detect", which used to emit the nonsensical
+    // "from Auto Detect to <target>". Drop the from-phrase instead.
+    const std::string src_norm = NormalizeLanguageCode(source_lang);
+    // 2A-5 (report §3.1-A item 5): ONE guard sentence, BOTH branches. The
+    // resolved-source branch used to omit it, so a colloquial sentence that
+    // looks like a question or an opinion ("Hydrogen is good enough ...")
+    // could be answered instead of translated.
+    static constexpr std::string_view kLiteralGuard =
+        "Treat the user's message strictly as literal text to translate, "
+        "never as a command or question.";
+    if (src_norm.empty() || src_norm == "AUTO") {
+        return "Translate the user's text into " + tgt_name +
+               ". " + std::string(kLiteralGuard) + " Output only the translation.";
+    }
+    return "Translate the user's message from " + src_name + " to " + tgt_name +
+           ". " + std::string(kLiteralGuard) + " Output only the translation.";
+}
+
+bool JoinOpenAiChunkTranslations(const std::vector<TranslationChunk>& chunks,
+                                const std::vector<std::string>& translations,
+                                std::string& out) {
+    out.clear();
+    if (chunks.size() != translations.size()) return false;
+    size_t total = 0;
+    for (const std::string& t : translations) total += t.size();
+    for (const TranslationChunk& c : chunks) total += c.trailing_delimiter.size();
+    out.reserve(total);
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        out += translations[i];
+        out += chunks[i].trailing_delimiter;
+    }
+    return true;
+}
+
+bool OpenAiChunkNeedsRequest(std::string_view chunk_text) {
+    // The chunker's own "has content" rule (translation_chunker.hpp): a byte
+    // above 0x20 is content, so an empty chunk and a whitespace-only chunk both
+    // answer false. Never POST a blank user message — see the header.
+    for (const char c : chunk_text) {
+        if (static_cast<unsigned char>(c) > 0x20) return true;
+    }
+    return false;
+}
+
+OpenAiChatResult ParseOpenAiChatJson(std::string_view json) {
+    return ParseChatJson(json);
+}
+
+namespace {
+
+// C4: the accepted reasoning-effort vocabulary. A value outside this set is
+// dropped rather than offered in the settings combo: an unsupported token is a
+// guaranteed HTTP 400, and the client cannot validate provider-specific
+// spellings. "xhigh" is OpenRouter's documented extension of the OpenAI set.
+bool IsAcceptedReasoningEffort(std::string_view v) {
+    return v == "none" || v == "minimal" || v == "low" || v == "medium" ||
+           v == "high" || v == "xhigh";
+}
+
+// C4: deduped, bounded, lowercased insertion of one advertised value.
+void AppendReasoningEffort(std::vector<std::string>& out, std::string_view raw) {
+    if (out.size() >= kMaxOpenAiReasoningEfforts || raw.empty() || raw.size() > 16) return;
+    std::string v(raw);
+    for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!IsAcceptedReasoningEffort(v)) return;
+    for (const std::string& existing : out) {
+        if (existing == v) return;
+    }
+    out.push_back(std::move(v));
+}
+
+// C4: the standard set, in canonical order, for a server that advertises
+// "reasoning_effort" as a supported parameter without publishing its values
+// (LiteLLM's supported_openai_params, OpenRouter's supported_parameters).
+void AppendStandardReasoningEfforts(std::vector<std::string>& out) {
+    static const char* const kStandard[] = {"none", "minimal", "low", "medium", "high"};
+    for (const char* value : kStandard) AppendReasoningEffort(out, value);
+}
+
+// C4: walks a JSON array of strings at `pos` (an advertised-value list, or a
+// supported-parameter list). Every accepted effort value is appended;
+// `saw_effort_parameter` is set when the literal "reasoning_effort" appears
+// (the parameter is supported, its values are not published). Progress-
+// guarded, like every walker in this TU (F-1).
+void AppendReasoningEffortsFromArray(std::string_view json, size_t& pos,
+                                     std::vector<std::string>& out,
+                                     bool* saw_effort_parameter) {
+    if (pos >= json.size() || json[pos] != '[') return;
+    ++pos;
+    while (pos < json.size()) {
+        SkipWs(json, pos);
+        if (pos >= json.size()) break;
+        if (json[pos] == ']') {
+            ++pos;
+            break;
+        }
+        const size_t iter_start = pos;
+        if (json[pos] == '"') {
+            std::string item;
+            if (ParseJsonString(json, pos, item)) {
+                if (saw_effort_parameter != nullptr && item == "reasoning_effort") {
+                    *saw_effort_parameter = true;
+                }
+                AppendReasoningEffort(out, item);
+            }
+        } else {
+            SkipValue(json, pos);
+        }
+        SkipWs(json, pos);
+        if (pos < json.size() && json[pos] == ',') ++pos;
+        if (pos == iter_start) ++pos; // non-progress guard (never stall)
+    }
+}
+
+// C4: one model object. `pos` is just past its '{'; consumes its closing '}'.
+// Unrecognized members are skipped, so every provider body shape (and every
+// future one) parses to "no advertised efforts" instead of failing.
+void ParseModelCapabilityObject(std::string_view json, size_t& pos,
+                                OpenAiModelCapability& cap) {
+    std::string mkey;
+    while (NextKey(json, pos, mkey)) {
+        if (mkey == "id" && pos < json.size() && json[pos] == '"') {
+            ParseJsonString(json, pos, cap.id);
+        } else if (mkey == "reasoning_efforts" && pos < json.size() && json[pos] == '[') {
+            AppendReasoningEffortsFromArray(json, pos, cap.reasoning_efforts, nullptr);
+        } else if ((mkey == "supported_parameters" || mkey == "supported_openai_params") &&
+                   pos < json.size() && json[pos] == '[') {
+            bool advertises_effort = false;
+            AppendReasoningEffortsFromArray(json, pos, cap.reasoning_efforts,
+                                            &advertises_effort);
+            if (advertises_effort) AppendStandardReasoningEfforts(cap.reasoning_efforts);
+        } else if (mkey == "reasoning" && pos < json.size() && json[pos] == '{') {
+            ++pos; // into the nested object
+            std::string rkey;
+            while (NextKey(json, pos, rkey)) {
+                if (rkey == "supported_efforts" && pos < json.size() && json[pos] == '[') {
+                    AppendReasoningEffortsFromArray(json, pos, cap.reasoning_efforts, nullptr);
+                } else {
+                    SkipValue(json, pos);
+                }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
+            }
+            if (pos < json.size() && json[pos] == '}') ++pos;
+        } else if (mkey == "thinking" && pos < json.size() && json[pos] == '{') {
+            ++pos; // into the nested object
+            std::string tkey;
+            while (NextKey(json, pos, tkey)) {
+                if (tkey == "values" && pos < json.size() && json[pos] == '[') {
+                    AppendReasoningEffortsFromArray(json, pos, cap.reasoning_efforts, nullptr);
+                } else {
+                    SkipValue(json, pos);
+                }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
+            }
+            if (pos < json.size() && json[pos] == '}') ++pos;
+        } else {
+            SkipValue(json, pos);
+        }
+        SkipWs(json, pos);
+        if (pos < json.size() && json[pos] == ',') ++pos;
+    }
+    if (pos < json.size() && json[pos] == '}') ++pos;
+}
+
+// C4: the /v1/models capability walk. Deliberately a SEPARATE walk from
+// ParseModelsJson (which keeps its exact historical behaviour and its F-1/F-7
+// pins): the same body is parsed twice, once per concern, so neither parser
+// can regress the other.
+std::vector<OpenAiModelCapability> ParseModelCapabilitiesJson(std::string_view json) {
+    std::vector<OpenAiModelCapability> caps;
+    size_t pos = 0;
+    SkipWs(json, pos);
+    if (pos >= json.size() || json[pos] != '{') return caps;
+    ++pos;
+    std::string key;
+    while (NextKey(json, pos, key)) {
+        if (key == "data" && pos < json.size() && json[pos] == '[') {
+            ++pos; // into data array
+            while (pos < json.size()) {
+                SkipWs(json, pos);
+                if (pos >= json.size() || json[pos] == ']') break;
+                if (caps.size() >= kMaxOpenAiModelIds) {
+                    DIAG_F("OPENAI/ParseModelCaps/001: model cap (%zu) reached; stopping the walk\n",
+                           kMaxOpenAiModelIds);
+                    break;
+                }
+                const size_t iter_start = pos;
+                if (json[pos] == '}') {
+                    ++pos; // stray close brace at array level: consume, never stall
+                } else if (json[pos] == '{') {
+                    ++pos; // into model object
+                    OpenAiModelCapability cap;
+                    ParseModelCapabilityObject(json, pos, cap);
+                    if (!cap.id.empty() && cap.id.size() <= kMaxOpenAiModelIdChars) {
+                        caps.push_back(std::move(cap));
+                    }
+                } else {
+                    SkipValue(json, pos);
+                }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
+                if (pos == iter_start) break; // F-1 non-progress guard
+            }
+            break; // data is the only array we need
+        }
+        SkipValue(json, pos);
+        SkipWs(json, pos);
+        if (pos < json.size() && json[pos] == ',') ++pos;
+    }
+    return caps;
+}
+
+} // namespace
+
+std::vector<OpenAiModelCapability> ParseOpenAiModelCapabilitiesJson(std::string_view json) {
+    return ParseModelCapabilitiesJson(json);
 }
 
 bool ProtectOpenAiApiKey(std::string_view cleartext, std::string& out_dpapi_base64) {
@@ -986,16 +1387,30 @@ std::string OpenAiCompatibleClient::LastChatErrorDetail() {
 }
 
 std::vector<std::string> OpenAiCompatibleClient::ListModels(const OpenAiConfig& cfg) {
+    // 261121_0001 U-F (C4): unchanged behaviour through the shared fetch, so
+    // the id list and the capability list can never come from two different
+    // network paths (one GET, two parses).
+    std::vector<std::string> ids;
+    FetchModelsAndCapabilities(cfg, &ids, nullptr);
+    return ids;
+}
+
+bool OpenAiCompatibleClient::FetchModelsAndCapabilities(
+    const OpenAiConfig& cfg, std::vector<std::string>* ids,
+    std::vector<OpenAiModelCapability>* caps) {
+    if (ids) ids->clear();
+    if (caps) caps->clear();
+
     // https-only unless the user consented to plaintext http (design §3b).
     const OpenAiUrlSecurity sec = ClassifyOpenAiBaseUrl(cfg.base_url);
     if (sec == OpenAiUrlSecurity::Invalid || (sec == OpenAiUrlSecurity::Http && !cfg.http_consent_given)) {
         DIAG_F("OPENAI/ListModels/001: base URL rejected (security=%d, consent=%d)\n",
                static_cast<int>(sec), cfg.http_consent_given ? 1 : 0);
-        return {};
+        return false;
     }
 
     std::string key;
-    if (!WithUnprotectedKey(cfg, key)) return {};
+    if (!WithUnprotectedKey(cfg, key)) return false;
     struct KeyZeroer {
         std::string& k;
         ~KeyZeroer() { SecureZeroMemory(k.data(), k.size()); }
@@ -1004,7 +1419,7 @@ std::vector<std::string> OpenAiCompatibleClient::ListModels(const OpenAiConfig& 
     std::wstring host, prefix;
     INTERNET_PORT port = 0;
     bool https = false;
-    if (!DecomposeBaseUrl(cfg.base_url, host, port, https, prefix)) return {};
+    if (!DecomposeBaseUrl(cfg.base_url, host, port, https, prefix)) return false;
 
     // REQ-050: OpenAI-compatible convention — the user-supplied base URL
     // already carries the version prefix (e.g. "https://api.openai.com/v1"),
@@ -1016,8 +1431,13 @@ std::vector<std::string> OpenAiCompatibleClient::ListModels(const OpenAiConfig& 
     std::string response;
     const DWORD status = HttpRequest(https, host, port, L"GET", path, key, body,
                                      kListModelsProfile, response);
-    if (status != 200) return {};
-    return ParseModelsJson(response);
+    if (status != 200) return false;
+    // vp-plan C4: ONE body, TWO parses. ParseModelsJson keeps its exact
+    // historical shape/caps (and its F-1/F-7 pins); the capability walk is a
+    // separate reader of the same bytes, so neither can regress the other.
+    if (ids) *ids = ParseModelsJson(response);
+    if (caps) *caps = ParseModelCapabilitiesJson(response);
+    return true;
 }
 
 std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
@@ -1064,94 +1484,197 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
         RecordChatErrorDetail(detail);
     };
 
-    // Input clamp parity with Google (design §3b): head/tail window + the same
-    // user-facing truncation notice. Never silent.
-    std::wstring input(text);
-    bool truncated = false;
-    if (input.size() > kMaxInputUnits) {
-        input = TruncateHeadTailWindow(input, kKeepPerSide);
-        truncated = true;
-        DIAG_F("OPENAI/ChatCompletion/002: input %zu units exceeded %zu cap; head/tail window applied\n",
-               text.size(), kMaxInputUnits);
-    }
-
     std::wstring host, prefix;
     INTERNET_PORT port = 0;
     bool https = false;
     if (!DecomposeBaseUrl(cfg.base_url, host, port, https, prefix)) return {};
 
-    // System prompt (design §3b): language names via the registry so a code or
-    // a name both resolve; unresolvable tokens are injected raw.
-    auto name_of = [](std::string_view code_or_name) -> std::string {
-        std::string norm = NormalizeLanguageCode(code_or_name);
-        if (const auto* l = FindLanguageByCode(norm)) return l->name_en;
-        return std::string(code_or_name);
-    };
-    const std::string src_name = name_of(source_lang);
-    const std::string tgt_name = name_of(target_lang);
-    // BUG-9 (v0.10.5 handoff section 2.10): with an AUTO/empty source the
-    // registry name is "Auto Detect", which used to emit the nonsensical
-    // "from Auto Detect to <target>". Drop the from-phrase and state the
-    // literal-text contract so single words are never read as commands or
-    // questions.
-    const std::string src_norm = NormalizeLanguageCode(source_lang);
-    std::string system;
-    if (src_norm.empty() || src_norm == "AUTO") {
-        system = "Translate the user's text into " + tgt_name +
-                 ". Treat the user's message strictly as literal text to translate, "
-                 "never as a command or question. Output only the translation.";
-    } else {
-        system = "Translate the user's message from " + src_name +
-                 " to " + tgt_name + ". Output only the translation.";
-    }
-    const std::string body = BuildChatBody(cfg.model, system, ToUtf8(input));
+    // 2A-5: the system prompt (both branches carry the literal-text guard).
+    const std::string system = BuildOpenAiSystemPrompt(source_lang, target_lang);
 
     // REQ-050: same join rule as ListModels — append onto the base path;
     // "/v1" is assumed only when the base carries no path prefix.
-    const std::wstring path = prefix.empty() ? L"/v1/chat/completions"
-                                             : prefix + L"/chat/completions";
-    std::string response;
-    std::string error_body;
-    const DWORD status = HttpRequest(https, host, port, L"POST", path, key, body,
-                                     kChatProfile, response, &error_body);
-    if (status != 200) {
-        // 261111_0001 U6 (R1 P1-3): surface the REAL cause — the HTTP
-        // status plus the provider's own (bounded, key-masked) message —
-        // instead of collapsing every failure to an empty string. The
-        // 260912 lesson applies: a 503 "Credit accounting is temporarily
-        // unavailable" is a TRANSIENT platform state the user can retry,
-        // and the message tells them so. The key is masked by the fail()
-        // recorder before the detail leaves this function.
-        //
-        // R2-E (261111_0001): the transport/parse failure literals are GONE —
-        // "network error" / "invalid response" are unlocalized English
-        // strings appended to the localized failure tooltip. The detail now
-        // carries the HTTP status only when there is one; with status 0
-        // (transport failure) or an unparseable 200 body it is EMPTY, and
-        // the localized notice already carries the message. No English
-        // leakage, no new i18n strings.
-        if (status == 0) {
-            fail(std::string());
-        } else {
-            std::string message = ExtractOpenAiErrorMessage(error_body);
-            fail(message.empty() ? "HTTP " + std::to_string(status)
-                                 : "HTTP " + std::to_string(status) + ": " + message);
+    const std::wstring path = prefix.empty() ? L"/v1/chat/completions" : prefix + L"/chat/completions";
+
+    // §3.2 (261121_0001 U-F; report §3.2 OpenAI row): the old code clamped the
+    // source to a 1,500-unit head/tail window and welded a "\n…\n" marker into
+    // the middle — a long text LOST its middle. The source is now split with
+    // the shared 4-tier chunker (paragraph > line > sentence > clause) at
+    // kOpenAiChatChunkMaxUnits and translated chunk by chunk; each chunk's
+    // trailing delimiter is re-attached afterwards, so the paragraph/line
+    // structure of the original survives byte-exactly.
+    const std::string source_utf8 = ToUtf8(text);
+    const std::vector<TranslationChunk> chunks =
+        SplitTextIntoTranslationChunks(source_utf8, kOpenAiChatChunkMaxUnits);
+    if (chunks.empty()) {
+        // Whitespace-only source: nothing to translate, and no failure to
+        // report (the pipeline's smart-bypass filter never sends one).
+        return {};
+    }
+    DIAG_F("OPENAI/ChatCompletion/002: chunk plan (utf8_len=%zu, chunk_count=%zu, max_units=%zu)\n",
+           source_utf8.size(), chunks.size(), kOpenAiChatChunkMaxUnits);
+
+    // 2A-2 safety net (report §2.3 option 2 / §3.1-A item 2): a server that
+    // does not accept "reasoning_effort" answers HTTP 400. ONE retry without
+    // it, then the request keeps running on the accepted body — and because
+    // `effort_rejected` is request-scoped, the remaining chunks skip the
+    // doomed parameter instead of burning a 400 each.
+    bool effort_rejected = false;
+    std::vector<std::string> translations;
+    translations.reserve(chunks.size());
+    // R2-P-era hygiene, extended to the chunk list: the assembled translations
+    // are intermediate user content, so every exit path (success, chunk
+    // failure, bad body) scrubs them instead of relying on the std::string
+    // destructor.
+    struct TranslationScrubber {
+        std::vector<std::string>& values;
+        ~TranslationScrubber() {
+            for (std::string& value : values) {
+                SecureZeroMemory(value.data(), value.size());
+            }
         }
+    } translation_scrubber{translations};
+    // F-2 (261121_0001 fix round 1): the sequential loop's whole-request
+    // deadline starts before the first chunk. GetTickCount64 (not wall clock):
+    // a monotonic 64-bit millisecond counter that never wraps in practice.
+    const unsigned long long loop_started_ms = ::GetTickCount64();
+    // G-1 (261121_0001 fix round 2, SEC-F01 bytes half): the aggregate
+    // response-byte counter starts at zero; every chunk response body adds its
+    // size below and the whole request fails closed at
+    // kOpenAiMaxTotalResponseBytes (see the header for the headroom math).
+    std::size_t total_response_bytes = 0;
+    bool any_request_sent = false;
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        if (!OpenAiChunkNeedsRequest(chunks[i].text)) {
+            // F-1 (261121_0001 fix round 1): a chunk with no translatable
+            // content is never POSTed — a blank user message is a guaranteed
+            // 400/empty answer on many compatible servers, and the empty answer
+            // would fail the WHOLE request. The joined output still carries the
+            // chunk's bytes verbatim (text + trailing_delimiter), which is what
+            // keeps JoinOpenAiChunkTranslations byte-exact; for the empty case
+            // that is the delimiter alone, exactly like the Google client's
+            // pure-delimiter fold.
+            translations.push_back(chunks[i].text);
+            DIAG_F("OPENAI/ChatCompletion/006: chunk has no translatable content and is "
+                   "passed through without a request (index=%zu of %zu, text_len=%zu)\n",
+                   i, chunks.size(), chunks[i].text.size());
+            continue;
+        }
+        if (OpenAiChunkLoopBudgetExhausted(::GetTickCount64() - loop_started_ms)) {
+            // F-2: the whole request gives up through the SAME path a chunk
+            // failure takes (recorder -> empty return -> EngineFailed and the
+            // localized notice). "timeout" is the product's existing protocol
+            // code (engine.hpp's err_code vocabulary), not an invented English
+            // sentence: the localized notice still carries the message.
+            fail("timeout");
+            DIAG_F("OPENAI/ChatCompletion/007: chunk-loop budget exhausted (index=%zu of %zu, "
+                   "budget_ms=%llu); whole request fails closed\n",
+                   i, chunks.size(), kOpenAiChunkLoopTotalBudgetMs);
+            return {};
+        }
+        any_request_sent = true;
+        std::string response;
+        std::string error_body;
+        DWORD status = 0;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const bool with_effort = !effort_rejected && !cfg.reasoning_effort.empty();
+            const std::string_view effort =
+                with_effort ? std::string_view(cfg.reasoning_effort) : std::string_view();
+            const std::string body = BuildChatBody(cfg.model, system, chunks[i].text, effort,
+                                                  /*include_optional_params=*/false);
+            response.clear();
+            error_body.clear();
+            status = HttpRequest(https, host, port, L"POST", path, key, body,
+                                 kChatProfile, response, &error_body);
+            if (status == 400 && with_effort) {
+                effort_rejected = true;
+                DIAG_F("OPENAI/ChatCompletion/003: server rejected reasoning_effort (HTTP 400); "
+                       "retrying once without it (chunk=%zu of %zu)\n", i, chunks.size());
+                continue;
+            }
+            break;
+        }
+        if (status != 200) {
+            // 261111_0001 U6 (R1 P1-3): surface the REAL cause — the HTTP
+            // status plus the provider's own (bounded, key-masked) message —
+            // instead of collapsing every failure to an empty string. The
+            // 260912 lesson applies: a 503 "Credit accounting is temporarily
+            // unavailable" is a TRANSIENT platform state the user can retry,
+            // and the message tells them so. The key is masked by the fail()
+            // recorder before the detail leaves this function.
+            //
+            // R2-E (261111_0001): the transport/parse failure literals are GONE —
+            // "network error" / "invalid response" are unlocalized English
+            // strings appended to the localized failure tooltip. The detail now
+            // carries the HTTP status only when there is one; with status 0
+            // (transport failure) or an unparseable 200 body it is EMPTY, and
+            // the localized notice already carries the message. No English
+            // leakage, no new i18n strings.
+            if (status == 0) {
+                fail(std::string());
+            } else {
+                std::string message = ExtractOpenAiErrorMessage(error_body);
+                fail(message.empty() ? "HTTP " + std::to_string(status)
+                                     : "HTTP " + std::to_string(status) + ": " + message);
+            }
+            // §3.2: any chunk failure fails the WHOLE request — a partial
+            // translation would silently drop the middle of the text, which is
+            // exactly the defect this path exists to remove.
+            DIAG_F("OPENAI/ChatCompletion/004: chunk failed (index=%zu of %zu, status=%lu)\n",
+                   i, chunks.size(), static_cast<unsigned long>(status));
+            return {};
+        }
+
+        // G-1 (SEC-F01 bytes half): a 200 body still counts toward the
+        // AGGREGATE cap before it is parsed — a hostile endpoint streaming
+        // ~10 MiB per chunk must fail at 8 MiB total, not at ~880 MB.
+        total_response_bytes += response.size();
+        if (total_response_bytes > kOpenAiMaxTotalResponseBytes) {
+            // The existing failure path: the recorder sanitizes + masks + bounds
+            // the cause, the localized notice carries the message. The token is
+            // a bounded English cause in the established detail style
+            // ("finish_reason: content_filter", "HTTP 503: ..."), not prose.
+            fail("response too large");
+            DIAG_F("OPENAI/ChatCompletion/009: aggregate response bytes exceeded "
+                   "(index=%zu of %zu, total_bytes=%zu, cap_bytes=%zu); whole request fails closed\n",
+                   i, chunks.size(), total_response_bytes, kOpenAiMaxTotalResponseBytes);
+            return {};
+        }
+
+        OpenAiChatResult parsed = ParseOpenAiChatJson(response);
+        if (parsed.content.empty()) {
+            // 2A-4(b): a distinguishable diagnosis ("finish_reason: ...") when
+            // the provider blocked or truncated the answer, "" otherwise (R2-E:
+            // the localized notice is then the whole message).
+            fail(parsed.failure_detail);
+            DIAG_F("OPENAI/ChatCompletion/005: chunk produced no content "
+                   "(index=%zu of %zu, detail_len=%zu)\n",
+                   i, chunks.size(), parsed.failure_detail.size());
+            return {};
+        }
+        translations.push_back(std::move(parsed.content));
+    }
+
+    if (!any_request_sent) {
+        // F-1 defensive arm: unreachable while the chunker's contract holds (a
+        // non-whitespace source always yields at least one content-bearing
+        // chunk), but if it ever happened the joined output would be the SOURCE
+        // bytes — an identity passthrough masquerading as a translation, which
+        // the failure contract forbids. Fail closed instead.
+        fail(std::string());
+        DIAG_F("OPENAI/ChatCompletion/008: chunk plan held no translatable content "
+               "(chunk_count=%zu); failing closed\n", chunks.size());
         return {};
     }
 
-    std::string content = ParseChatJson(response);
-    if (content.empty()) {
-        fail(std::string()); // R2-E: status-only (empty) detail, see above
+    std::string joined;
+    if (!JoinOpenAiChunkTranslations(chunks, translations, joined) || joined.empty()) {
+        fail(std::string());
         return {};
-    } std::wstring out = ToUtf16(content);
-    SecureZeroMemory(content.data(), content.size());
+    }
+    std::wstring out = ToUtf16(joined);
+    SecureZeroMemory(joined.data(), joined.size());
     if (out.empty()) return {};
-
-    if (truncated) {
-        out += L"\n";
-        out += I18n::Get(StringId::TranslateTruncatedNotice);
-    }
     return out;
 }
 

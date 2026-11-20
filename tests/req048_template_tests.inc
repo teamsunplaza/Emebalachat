@@ -45,11 +45,14 @@ constexpr WORD kComboCls  = 0x0085;
 constexpr WORD kListboxCls = 0x0083;
 
 // REQ-050: geometry matches BuildOpenAiTemplate exactly (262x130 dialog pre-
-// P9c-1b; 262x174 after); labels w=56; edits x=68 w=186; combo x=68 w=118;
-// fetch x=190 w=64; masked label w=240; REQ-051 delete x=8 y=70->154 (P9c-1b
-// moved the action row) w=64 h=13; OK x=110 w=64; Cancel x=182 w=64 — all
-// h/y per spec. P9c-1b appends the declaration checklist: title y=66 h=9,
-// list y=77 h=52, hint y=132 h=18 (all x=8 w=240).
+// P9c-1b; 262x174 after it; 262x190 after 261121_0001 U-H); labels w=56;
+// edits x=68 w=186; combo x=68 w=118; fetch x=190 w=64; masked label w=240;
+// REQ-051 delete x=8 y=70->154 (P9c-1b moved the action row) w=64 h=13;
+// OK x=110 w=64; Cancel x=182 w=64 — all h/y per spec. P9c-1b appends the
+// declaration checklist: title y=66 h=9, list y=77 h=52, hint y=132 h=18 (all
+// x=8 w=240). 261121_0001 U-H appends the reasoning row BELOW the action row
+// (label y=172 h=9, closed combo y=171 w=186 h=64) and moves nothing else, so
+// every expectation above keeps its pre-U-H geometry.
 const ItemExpectation kExpected[] = {
     {100, kStaticCls, false, L"",   8,   6, 56,  9},  // IDC_STATIC_BASE
     {101, kEditCls,   true,  L"",   68,  5, 186, 12}, // IDC_BASE_URL
@@ -65,6 +68,8 @@ const ItemExpectation kExpected[] = {
     {108, kBtnCls,    false, L"",   8,   154, 64, 13},// REQ-051 IDC_DELETE_BTN (i18n title)
     {IDOK,     kBtnCls, true, L"OK",     110, 154, 64, 13},
     {IDCANCEL, kBtnCls, true, L"Cancel", 182, 154, 64, 13},
+    {112, kStaticCls, false, L"",   8,   172, 56,  9},// U-H IDC_REASONING_LABEL (i18n title)
+    {113, kComboCls,  true,  L"",   68,  171, 186, 64},// U-H IDC_REASONING_COMBO (empty title)
 };
 
 // Little-endian WORD/DWORD readers over the raw template buffer.
@@ -100,6 +105,12 @@ std::vector<int> OpenAiDeclarationSelection(const std::vector<std::string>& decl
                                             const std::vector<std::string>& rows);
 std::vector<std::string> OpenAiDeclarationFromSelection(
     const std::vector<int>& selected, const std::vector<std::string>& rows);
+// 261121_0001 U-H (contracts C2/C4): the reasoning-effort combo plan, defined at
+// namespace scope in src/ui/openai_settings_window.cpp for the same reason as
+// the declaration folds above (TU-scope helper; the suite drives the exact
+// algorithm the dialog applies).
+std::vector<std::string> PlanReasoningEffortItems(
+    const std::vector<std::string>& advertised_efforts);
 } // namespace emebalachat
 
 void TestReq048OpenAiTemplateSerialization() {
@@ -109,8 +120,9 @@ void TestReq048OpenAiTemplateSerialization() {
     // ---- (a) Header offset pin -------------------------------------------
     {
         TemplateBuilder tb;
-        // P9c-1b: probe carries the production geometry (262 x 174).
-        tb.Begin(L"probe", 262, 174, /*itemCount=*/7);
+        // P9c-1b: probe carries the production geometry (262 x 174);
+        // 261121_0001 U-H grew the shell to 262 x 190 for the reasoning row.
+        tb.Begin(L"probe", 262, 190, /*itemCount=*/7);
         const auto* base = reinterpret_cast<const BYTE*>(tb.Get());
         TEST_CHECK(base != nullptr, "REQ-048 P2 (a): Begin() returns a template");
         if (base) {
@@ -128,8 +140,8 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (a): byte offset 12 == y (0)");
             TEST_CHECK(req048_detail::ReadWord(base, 14) == 262,
                        "REQ-048 P2 (a): byte offset 14 == cx (262)");
-            TEST_CHECK(req048_detail::ReadWord(base, 16) == 174,
-                       "REQ-048 P2 (a): byte offset 16 == cy (174)");
+            TEST_CHECK(req048_detail::ReadWord(base, 16) == 190,
+                       "REQ-048 P2 (a): byte offset 16 == cy (190, U-H shell height)");
         }
     }
 
@@ -154,11 +166,13 @@ void TestReq048OpenAiTemplateSerialization() {
     {
         using namespace req048_detail;
         TemplateBuilder tb;
-        // REQ-050: production dialog is 262 wide; REQ-051: 14 items — the
-        // REQ-051 IDC_DELETE_BTN button joined the 10-control REQ-048 P2
-        // template, and 261116_0003 P9c-1b added the 3-control declaration
-        // checklist section (title + list + hint), shell 262x130 -> 262x174.
-        tb.Begin(L"production", 262, 174, /*itemCount=*/14);
+        // REQ-050: production dialog is 262 wide. Item history: the 10-control
+        // REQ-048 P2 template -> REQ-051 added IDC_DELETE_BTN -> 261116_0003
+        // P9c-1b added the 3-control declaration checklist (title + list +
+        // hint), shell 262x130 -> 262x174 -> 261121_0001 U-H added the
+        // reasoning-effort row (label + closed combo) BELOW the action row,
+        // 14 -> 16 items and shell 262x174 -> 262x190.
+        tb.Begin(L"production", 262, 190, /*itemCount=*/16);
         BuildOpenAiTemplate(tb);
         const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
         const size_t tpl_base = 0; // buffer origin == template origin for a fresh builder
@@ -168,9 +182,9 @@ void TestReq048OpenAiTemplateSerialization() {
         // Header: style, exstyle, cdit, x, y, cx, cy (18 bytes).
         size_t off = 18;
         const WORD cdit = ReadWord(base, 8);
-        TEST_CHECK(cdit == 14,
-                   "REQ-048 P2 (b): header cdit == 14 (9 controls + 3 declaration "
-                   "checklist controls + OK + Cancel)");
+        TEST_CHECK(cdit == 16,
+                   "REQ-048 P2 (b): header cdit == 16 (9 controls + 3 declaration "
+                   "checklist controls + 2 reasoning controls + OK + Cancel)");
         // menu (WORD 0), windowClass (WORD 0), title string, pointsize, font.
         TEST_CHECK(ReadWord(base, off) == 0, "REQ-048 P2 (b): menu == 0 (none)");
         off += 2;
@@ -199,8 +213,8 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (b): item start is 4-byte aligned");
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18.
             const WORD id = ReadWord(base, off + 16);
-            TEST_CHECK(i < 14, "REQ-048 P2 (b): item index within expectation table");
-            if (i >= 14) break;
+            TEST_CHECK(i < 16, "REQ-048 P2 (b): item index within expectation table");
+            if (i >= 16) break;
             const ItemExpectation& exp = kExpected[i];
             TEST_CHECK(id == exp.id, "REQ-048 P2 (b): item id matches production constant");
             // REQ-050: geometry pin — x/y/cx/cy must match the production
@@ -236,6 +250,17 @@ void TestReq048OpenAiTemplateSerialization() {
                 TEST_CHECK(ReadDword(base, off) == 0x50A10049u,
                            "P9c-1b: the declaration listbox carries LBS_MULTIPLESEL "
                            "and no LBS_SORT (the index==row fold)");
+            }
+            // 261121_0001 U-H: the reasoning picker is a CLOSED list, never an
+            // editable combo — every item comes from PlanReasoningEffortItems,
+            // so a free-text leg could only produce a value the model rejects
+            // (HTTP 400). Styles:
+            // WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000,
+            // +CBS_DROPDOWNLIST (0x0003) = 0x50810003 (CBS_DROPDOWN absent).
+            if (exp.id == 113) {
+                TEST_CHECK(ReadDword(base, off) == 0x50810003u,
+                           "U-H: the reasoning combo carries CBS_DROPDOWNLIST "
+                           "(closed pick list, no free-text leg)");
             }
             off += 18;
             // Class array: 0xFFFF prefix WORD + ordinal WORD.
@@ -876,6 +901,236 @@ void TestReq048OpenAiTemplateSerialization() {
         }
 
         I18n::SetLocale(p9c1b_initial_locale); // suite-state hygiene
+    }
+
+    // ---- 261121_0001 U-H (contracts C2/C4): the reasoning effort -----------
+    // Four layers, all headless (no window is created — AGENTS.md §10; the
+    // modal loop stays a manual-QA badge item, the same split P9b-3 U2 and
+    // P9c-1b recorded):
+    //   (i)   PlanReasoningEffortItems — the combo plan: the server-advertised
+    //         list, the standard fallback, dedup/sanitization, and the
+    //         server-default item at index 0 with the empty-string encoding
+    //         (C2: "" means the request body omits the reasoning_effort key);
+    //   (ii)  the template wiring (ids + label StringId + the closed pick
+    //         list pinned above);
+    //   (iii) the dialog wiring (one GET yields ids + capabilities; a model
+    //         change repopulates the list; IDOK persists the selection);
+    //   (iv)  the config round trip of "reasoning_effort" (C2 persistence) and
+    //         the [삭제] clear.
+    {
+        using emebalachat::PlanReasoningEffortItems;
+        const std::vector<std::string> standard = {"none", "minimal", "low",
+                                                   "medium", "high"};
+        const auto with_default = [](const std::vector<std::string>& tail) {
+            std::vector<std::string> items{std::string{}};
+            items.insert(items.end(), tail.begin(), tail.end());
+            return items;
+        };
+
+        // (i-a) NO capability at all — the common case, because OpenAI and
+        // Gemini return no effort metadata and vLLM/llama-server/LiteLLM
+        // rarely do. The standard list is the whole point of the fallback: it
+        // is what makes the setting usable on those endpoints. The same call
+        // covers the "no model selected / a model the fetch never described"
+        // case, where the dialog passes an empty vector (its
+        // FindAdvertisedReasoningEfforts lookup returns nullptr and
+        // RefreshReasoningCombo substitutes it).
+        // NOTE: the vector literals are bound to named locals before every
+        // TEST_CHECK — a brace-initializer comma is NOT parenthesis-protected,
+        // so it would split TEST_CHECK's two macro arguments.
+        const std::vector<std::string> no_capability = PlanReasoningEffortItems({});
+        const std::vector<std::string> standard_expect = with_default(standard);
+        TEST_CHECK(no_capability == standard_expect,
+                   "U-H (i): no advertised efforts -> the server-default item plus the "
+                   "standard none/minimal/low/medium/high fallback, in that order");
+
+        // (i-b) A server that DOES advertise keeps its OWN order — the server's
+        // ranking is the only information available and the standard list must
+        // not be appended behind it (the user asked for what THIS model takes).
+        {
+            const std::vector<std::string> advertised = {"high", "low", "xhigh"};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            const std::vector<std::string> expect = with_default(advertised);
+            TEST_CHECK(items == expect,
+                       "U-H (i): an advertised list replaces the fallback and keeps the "
+                       "server's order (OpenRouter's xhigh survives)");
+        }
+
+        // (i-c) Server-default is always index 0 and carries "" (the C2
+        // encoding). An advertised empty string must not create a second one.
+        {
+            const std::vector<std::string> advertised = {"", "low", "high"};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            const std::vector<std::string> tail = {"low", "high"};
+            TEST_CHECK(!items.empty() && items.front().empty() &&
+                           items == with_default(tail),
+                       "U-H (i): index 0 is the server-default item (\"\" = omit the "
+                       "request key) and an advertised empty string cannot duplicate it");
+        }
+
+        // (i-d) Dedup preserves the FIRST occurrence (server order), so a
+        // repeated duplicate cannot add a second selectable row that maps to
+        // the same request value.
+        {
+            const std::vector<std::string> advertised = {"low", "high", "low", "low"};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            const std::vector<std::string> tail = {"low", "high"};
+            TEST_CHECK(items == with_default(tail),
+                       "U-H (i): duplicate advertised efforts collapse to their first "
+                       "occurrence, keeping the server order");
+        }
+
+        // (i-e) Advertised tokens are server-supplied text that reaches both a
+        // combo item and the request body, so they are trimmed, capped at 32
+        // bytes and held to printable ASCII without spaces. Anything else drops.
+        {
+            const std::string at_cap(32, 'a');
+            const std::string over_cap(33, 'a');
+            const std::vector<std::string> advertised = {"  low  ", "\t", "",
+                                                         over_cap, "high\n",
+                                                         "mi d", at_cap};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            const std::vector<std::string> tail = {"low", at_cap};
+            TEST_CHECK(items == with_default(tail),
+                       "U-H (i): advertised tokens are trimmed and validated (empty/"
+                       "whitespace/over-32-byte/control/space-bearing tokens drop, the "
+                       "32-byte boundary itself is kept)");
+        }
+
+        // (i-f) All-garbage metadata counts as "advertised nothing": the user
+        // must never be left with a one-item combo because a server sent junk.
+        {
+            const std::vector<std::string> advertised = {"   ", "\x01\x02", ""};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            TEST_CHECK(items == standard_expect,
+                       "U-H (i): a capability list that sanitizes to nothing takes the "
+                       "standard fallback (never a one-item combo)");
+        }
+
+        // (i-g) A single advertised value is enough to replace the fallback.
+        {
+            const std::vector<std::string> advertised = {"minimal"};
+            const std::vector<std::string> items = PlanReasoningEffortItems(advertised);
+            TEST_CHECK(items == with_default(advertised),
+                       "U-H (i): one advertised effort yields exactly the default item "
+                       "plus that effort");
+        }
+
+        // -- (ii)/(iii) the template + dialog wiring -------------------------
+        std::string osw_src;
+        {
+            const std::filesystem::path osw_path =
+                ResolveRepoFile(L"src\\ui\\openai_settings_window.cpp");
+            std::ifstream in(osw_path, std::ios::binary);
+            if (in) {
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                osw_src = ss.str();
+            }
+        }
+        TEST_CHECK(!osw_src.empty(),
+                   "U-H (ii): the settings source resolves for the wiring pins");
+        const auto count_of = [](const std::string& haystack, const std::string& needle) {
+            std::size_t count = 0;
+            for (std::size_t pos = haystack.find(needle); pos != std::string::npos;
+                 pos = haystack.find(needle, pos + needle.size())) {
+                ++count;
+            }
+            return count;
+        };
+        if (!osw_src.empty()) {
+            TEST_CHECK(osw_src.find("IDC_REASONING_LABEL") != std::string::npos &&
+                           osw_src.find("IDC_REASONING_COMBO") != std::string::npos,
+                       "U-H (ii): the template carries both reasoning controls");
+            TEST_CHECK(osw_src.find("I18n::Get(StringId::OpenAiReasoningLabel)") !=
+                               std::string::npos &&
+                           osw_src.find(
+                               "I18n::Get(StringId::OpenAiReasoningServerDefault)") !=
+                               std::string::npos,
+                       "U-H (ii): the row label and the combo's default item render the "
+                       "two landed StringIds (no hardcoded copy)");
+            // (iii) ONE GET feeds both lists: the id-only call is gone, and the
+            // capabilities ride back inside the by-value fetch result.
+            TEST_CHECK(osw_src.find("OpenAiCompatibleClient::FetchModelsAndCapabilities(") !=
+                               std::string::npos &&
+                           osw_src.find("OpenAiCompatibleClient::ListModels") ==
+                               std::string::npos,
+                       "U-H (iii): the fetch uses FetchModelsAndCapabilities only — the "
+                       "capabilities come from the same GET as the model ids");
+            TEST_CHECK(osw_src.find("st->catalog = std::move(result.catalog);") !=
+                               std::string::npos,
+                       "U-H (iii): the completion handler adopts the capabilities on the "
+                       "GUI thread alongside the model list");
+            // A model change repopulates the list for the newly selected model;
+            // the init/repopulate sites and the IDOK read share one helper, so
+            // the combo and the saved value cannot drift.
+            TEST_CHECK(osw_src.find("if (st && LOWORD(wp) == IDC_MODEL_COMBO &&") !=
+                               std::string::npos &&
+                           osw_src.find("HIWORD(wp) == CBN_SELCHANGE") !=
+                               std::string::npos,
+                       "U-H (iii): IDC_MODEL_COMBO CBN_SELCHANGE repopulates the reasoning "
+                       "combo");
+            TEST_CHECK(count_of(osw_src, "RefreshReasoningCombo(dlg, st);") >= 2 &&
+                           osw_src.find("out.reasoning_effort = ReasoningEffortSelection(dlg, st);") !=
+                               std::string::npos,
+                       "U-H (iii): the init/change/completion paths and the IDOK save all go "
+                       "through the shared reasoning helpers (what the combo shows is what "
+                       "is saved)");
+            const std::size_t ok_at = osw_src.find("case IDOK");
+            const std::size_t cancel_at = osw_src.find("case IDCANCEL");
+            TEST_CHECK(ok_at != std::string::npos && cancel_at != std::string::npos &&
+                           ok_at < cancel_at &&
+                           osw_src.substr(ok_at, cancel_at - ok_at)
+                                   .find("ReasoningEffortSelection(dlg, st)") !=
+                               std::string::npos,
+                       "U-H (iii): the reasoning value is read inside the IDOK branch (the "
+                       "dialog's existing save path persists it)");
+        }
+
+        // -- (iv) the config round trip (contract C2) ------------------------
+        {
+            AppConfig cfg_effort;
+            cfg_effort.openai.reasoning_effort = "high";
+            const std::string effort_json = cfg_effort.ToJsonString();
+            TEST_CHECK(effort_json.find("\"reasoning_effort\": \"high\"") !=
+                           std::string::npos,
+                       "U-H (iv): a set reasoning effort is serialized in the openai block");
+            AppConfig reloaded;
+            TEST_CHECK(reloaded.FromJsonString(effort_json) &&
+                           reloaded.openai.reasoning_effort == "high",
+                       "U-H (iv): \"reasoning_effort\" round-trips through config.json");
+            // The UNSET state is the default and must survive the same path: ""
+            // in the file, and "" again after the reload (the request body then
+            // omits the key entirely — the C2 contract and the only safe default
+            // for a non-reasoning model, which answers HTTP 400 to that key).
+            AppConfig cfg_unset;
+            const std::string unset_json = cfg_unset.ToJsonString();
+            TEST_CHECK(unset_json.find("\"reasoning_effort\": \"\"") !=
+                           std::string::npos,
+                       "U-H (iv): an unset effort is written as \"\" (never omitted from "
+                       "the block — the sticky-key policy of the openai block)");
+            AppConfig unset_reloaded;
+            TEST_CHECK(unset_reloaded.FromJsonString(unset_json) &&
+                           unset_reloaded.openai.reasoning_effort.empty(),
+                       "U-H (iv): the unset effort round-trips as the empty string");
+            // A pre-U-H config.json has no such key at all: it must read as
+            // unset, never fail the load and never invent an effort.
+            AppConfig legacy;
+            TEST_CHECK(legacy.FromJsonString(
+                           "{\"openai\": {\"base_url\": \"https://example.com\", "
+                           "\"model\": \"gpt-4o-mini\"}}") &&
+                           legacy.openai.reasoning_effort.empty() &&
+                           legacy.openai.model == "gpt-4o-mini",
+                       "U-H (iv): an absent \"reasoning_effort\" (every pre-U-H config) "
+                       "loads as unset");
+            // [삭제] clears it with the rest of the block.
+            OpenAiConfig cleared;
+            cleared.reasoning_effort = "medium";
+            ClearOpenAiSettings(cleared);
+            TEST_CHECK(cleared.reasoning_effort.empty(),
+                       "U-H (iv): ClearOpenAiSettings clears the reasoning effort with the "
+                       "rest of the block");
+        }
     }
     I18n::SetLocale(req050_initial_locale); // REQ-050: restore pre-test locale
 

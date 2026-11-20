@@ -62,6 +62,20 @@ void Req051ReadSrc(const char* name, std::string& out) {
 
 } // namespace
 
+// 261121_0001 fix round 1 (F-4): the reasoning-combo population planner, defined
+// at namespace scope in src/ui/openai_settings_window.cpp (the same split as the
+// other dialog helpers the suites drive, e.g. PlanReasoningEffortItems).
+// Declared here because openai_settings_window.hpp is outside the unit's write
+// boundary and the suite must drive the EXACT reconciliation the dialog runs.
+namespace emebalachat {
+void PlanOpenAiReasoningComboPopulate(const std::vector<std::string>& items,
+                                      const std::string& value,
+                                      bool pending,
+                                      int& out_select,
+                                      std::string& out_effective,
+                                      bool& out_pending);
+} // namespace emebalachat
+
 void TestReq051ComboSelection() {
     std::cout << "[RUN] Testing REQ-051 Symptom C combo pick-or-insert plan..." << std::endl;
     const int failures_before = g_failed_count;
@@ -154,6 +168,7 @@ void TestReq051ClearOpenAiSettings() {
         OpenAiConfig cfg;
         cfg.base_url = "https://api.example.com/v1";
         cfg.model = "qwen-3.8-27b-flex";
+        cfg.reasoning_effort = "low";               // 261121_0001 U-F (C2) field
         cfg.api_key_dpapi = "UEJPSVCEN0JMT0I=";   // DPAPI-blob stand-in (ciphertext)
         cfg.api_key_sha256 = std::string(64, 'a'); // digest stand-in
         cfg.http_consent_given = true;
@@ -162,6 +177,8 @@ void TestReq051ClearOpenAiSettings() {
                    "REQ-051 D: base_url cleared");
         TEST_CHECK(cfg.model.empty(),
                    "REQ-051 D: model cleared");
+        TEST_CHECK(cfg.reasoning_effort.empty(),
+                   "C2 (261121_0001 U-F): the reasoning_effort choice is cleared with the block");
         TEST_CHECK(cfg.api_key_dpapi.empty(),
                    "REQ-051 D: api_key_dpapi cleared (pair atomicity, half 1)");
         TEST_CHECK(cfg.api_key_sha256.empty(),
@@ -213,10 +230,12 @@ void TestReq051ClearOpenAiSettings() {
                 def_pos, def_end == std::string::npos ? std::string::npos : def_end - def_pos);
             TEST_CHECK(body.find("base_url") != std::string::npos &&
                            body.find("model") != std::string::npos &&
+                           body.find("reasoning_effort") != std::string::npos &&
                            body.find("api_key_dpapi") != std::string::npos &&
                            body.find("api_key_sha256") != std::string::npos &&
                            body.find("http_consent_given") != std::string::npos,
-                       "REQ-051 D structural pin: the predicate clears all five fields");
+                       "REQ-051 D structural pin: the predicate clears every persisted openai "
+                       "field (incl. the 261121_0001 U-F reasoning_effort)");
             TEST_CHECK(body.find("engine") == std::string::npos &&
                            body.find("Engine") == std::string::npos,
                        "REQ-051 D structural pin: the predicate never touches engine state");
@@ -240,11 +259,13 @@ void TestReq051I18nCountAndCoverage() {
     // append); REQ-UC 260930_0004 then advanced 110 -> 135 (the 25-string
     // update-zone block); REQ-MD advanced 135 -> 144 (the 9-string model
     // download dialog); REQ-060 advanced 144 -> 157 (the 13 load-mode/policy
-    // strings). Read through a volatile to keep the runtime
+    // strings); 261121_0001 U-C advanced 199 -> 203 (the 4 v0.10.9
+    // reasoning/back-trans section strings). Read through a volatile to keep
+    // the runtime
     // comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 199,
-               "REQ-051: StringId::EnumCount is 199 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids");
+    TEST_CHECK(enum_count == 203,
+               "REQ-051: StringId::EnumCount is 203 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 4 261121_0001 v0.10.9 U-C ids (2 OpenAI reasoning-effort ids + 2 back-translation section ids)");
 
     // The new caption resolves non-empty in all 37 authored tables, and no
     // non-English locale falls back to the English text (real translations
@@ -385,6 +406,92 @@ void TestReq051OpenAiDialogStructuralPins() {
                    "REQ-051 pin: the Korean designated initializer carries the caption");
     }
 
+    // ---- (d) fix round 1 (F-4): the saved reasoning effort survives --------
+    // The dialog's first population always runs against the FALLBACK list (no
+    // fetch has completed), which cannot carry a server-extension value such as
+    // OpenRouter's "xhigh". Before this fix the fallback's server-default item
+    // overwrote the state, so the saved value was lost even when a catalog
+    // advertising it arrived a moment later. The pins drive the production
+    // planner through the exact round trip the dialog performs.
+    {
+        using emebalachat::PlanOpenAiReasoningComboPopulate;
+        using emebalachat::PlanReasoningEffortItems;
+        const std::vector<std::string> fallback = PlanReasoningEffortItems({});
+        const auto index_of = [](const std::vector<std::string>& items,
+                                 const std::string& value) {
+            for (std::size_t i = 0; i < items.size(); ++i) {
+                if (items[i] == value) return static_cast<int>(i);
+            }
+            return -1;
+        };
+
+        // 1. WM_INITDIALOG: the fallback list cannot show "xhigh" -> the combo
+        //    selects the server-default item, but the VALUE is kept pending.
+        int select = -1;
+        std::string effective;
+        bool pending = false;
+        PlanOpenAiReasoningComboPopulate(fallback, "xhigh", /*pending=*/true, select,
+                                         effective, pending);
+        TEST_CHECK(select == 0 && effective == "xhigh" && pending,
+                   "F-4: the pre-fetch fallback population keeps the saved \"xhigh\" "
+                   "(combo on the server-default item, value still carried)");
+
+        // 2. A catalog that does NOT advertise it: still kept, still pending, so
+        //    IDOK persists the user's actual choice unchanged.
+        PlanOpenAiReasoningComboPopulate(fallback, effective, pending, select, effective,
+                                         pending);
+        TEST_CHECK(select == 0 && effective == "xhigh" && pending,
+                   "F-4: a catalog without \"xhigh\" leaves the combo at server-default but "
+                   "still saves the user's choice");
+
+        // 3. A catalog that DOES advertise it: selected, pending cleared.
+        const std::vector<std::string> advertised =
+            PlanReasoningEffortItems({"low", "medium", "xhigh"});
+        const int xhigh_index = index_of(advertised, "xhigh");
+        PlanOpenAiReasoningComboPopulate(advertised, effective, pending, select, effective,
+                                         pending);
+        TEST_CHECK(xhigh_index > 0 && select == xhigh_index && effective == "xhigh" &&
+                       !pending,
+                   "F-4: a catalog that advertises \"xhigh\" selects it and ends the pending "
+                   "restoration (the silent preference loss is closed)");
+
+        // 4. The documented convergence rule survives for a value that WAS
+        //    showable but the model does not offer (decision 7): "" = server
+        //    default, and no stale value is carried.
+        const std::vector<std::string> limited = PlanReasoningEffortItems({"low"});
+        PlanOpenAiReasoningComboPopulate(limited, "high", /*pending=*/false, select,
+                                         effective, pending);
+        TEST_CHECK(select == 0 && effective.empty() && !pending,
+                   "F-4: a shown-then-unavailable standard value still converges on the "
+                   "server default (decision 7 preserved)");
+
+        // 5. An explicit pick of the server-default item (a real "" value with no
+        //    pending restoration) persists "" — never a stale effort.
+        PlanOpenAiReasoningComboPopulate(fallback, "", /*pending=*/false, select, effective,
+                                         pending);
+        TEST_CHECK(select == 0 && effective.empty() && !pending,
+                   "F-4: selecting the server-default item persists the empty value");
+    }
+    // The wiring: the population reconciles through the planner against the
+    // STATE value (not the rebuilt combo), IDOK keeps the pending value, and an
+    // explicit reasoning pick ends the restoration.
+    TEST_CHECK(osw_src.find("PlanOpenAiReasoningComboPopulate(items, previous, "
+                            "st->reasoning_effort_pending,") != std::string::npos,
+               "F-4 pin: RefreshReasoningCombo reconciles through the pure planner");
+    TEST_CHECK(osw_src.find("const std::string previous = st->reasoning_effort;") !=
+                   std::string::npos,
+               "F-4 pin: the population reads the effective state, not the combo that is "
+               "about to be reset");
+    TEST_CHECK(osw_src.find("out.reasoning_effort = st->reasoning_effort;") !=
+                   std::string::npos,
+               "F-4 pin: IDOK overrides the combo value with the pending saved value");
+    TEST_CHECK(osw_src.find("st->reasoning_effort_pending = !st->reasoning_effort.empty();") !=
+                   std::string::npos,
+               "F-4 pin: WM_INITDIALOG arms the pending restoration from the saved value");
+    TEST_CHECK(osw_src.find("LOWORD(wp) == IDC_REASONING_COMBO && HIWORD(wp) == CBN_SELCHANGE") !=
+                   std::string::npos,
+               "F-4 pin: an explicit reasoning pick ends the pending restoration");
+
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-051 OpenAI dialog structural pins passed." << std::endl;
     } else {
@@ -432,26 +539,36 @@ void TestReq052OpenAiAsyncFetchPins() {
     }
 
     // (b) The network boundary lives only off the GUI thread: exactly one
-    // ListModels call site — inside the 1-arg probe helper — which the
+    // model-fetch call site — inside the 1-arg probe helper — which the
     // detached worker invokes; the GUI spawn (2-arg overload) starts the
     // thread but performs no I/O itself.
+    // 261121_0001 U-F (v0.10.9, C4): the client grew a combined entry point
+    // (FetchModelsAndCapabilities — ids + per-model reasoning-effort hints
+    // from the SAME /v1/models GET). The dialog may keep ListModels (ids only)
+    // or move to the combined call; what must not change is the contract this
+    // pin defends: ONE fetch site, inside the worker-side helper. Accepting
+    // either entry point keeps that meaning without forcing the dialog unit's
+    // hand.
     const size_t lm_pos = osw_src.find("OpenAiCompatibleClient::ListModels");
-    TEST_CHECK(lm_pos != std::string::npos &&
-                   osw_src.find("OpenAiCompatibleClient::ListModels", lm_pos + 1) ==
-                       std::string::npos,
-               "REQ-052 pin: exactly one ListModels call site remains");
+    const size_t caps_pos =
+        osw_src.find("OpenAiCompatibleClient::FetchModelsAndCapabilities(");
+    const size_t fetch_pos = lm_pos != std::string::npos ? lm_pos : caps_pos;
+    TEST_CHECK(fetch_pos != std::string::npos &&
+                   (lm_pos == std::string::npos) != (caps_pos == std::string::npos),
+               "REQ-052 pin: exactly one model-fetch call site remains "
+               "(ListModels or the C4 FetchModelsAndCapabilities)");
     const size_t probe_fn_pos = osw_src.find(
-        "std::vector<std::string> DoFetchModels(const OpenAiConfig& probe)");
+        "OpenAiModelCatalog FetchOpenAiModelCatalog(const OpenAiConfig& probe)");
     const size_t worker_pos = osw_src.find("void OpenAiFetchWorker(");
     TEST_CHECK(probe_fn_pos != std::string::npos && worker_pos != std::string::npos &&
-                   probe_fn_pos < lm_pos && lm_pos < worker_pos,
-               "REQ-052 pin: the ListModels call is the worker-side fetch helper");
+                   probe_fn_pos < fetch_pos && fetch_pos < worker_pos,
+               "REQ-052 pin: the model-fetch call is the worker-side fetch helper");
     if (worker_pos != std::string::npos) {
         const size_t worker_end = osw_src.find("\n}\n", worker_pos);
         const std::string worker_body = osw_src.substr(
             worker_pos,
             worker_end == std::string::npos ? std::string::npos : worker_end - worker_pos);
-        TEST_CHECK(worker_body.find("DoFetchModels(probe)") != std::string::npos,
+        TEST_CHECK(worker_body.find("FetchOpenAiModelCatalog(probe)") != std::string::npos,
                    "REQ-052 pin: the worker invokes the fetch helper");
     }
     const size_t spawn_pos =
@@ -529,7 +646,7 @@ void TestReq052OpenAiAsyncFetchPins() {
                        done_branch.find("(lp)") == std::string::npos,
                    "R1-9 pin: the completion handler never casts or dereferences the LPARAM");
         TEST_CHECK(done_branch.find("g_openai_fetch_queue.pop_front();") != std::string::npos &&
-                       done_branch.find("RefillOpenAiModelCombo(dlg, models);") !=
+                       done_branch.find("RefillOpenAiModelCombo(dlg, result.catalog.models);") !=
                            std::string::npos,
                    "R1-9 pin: the completion handler drains the by-value queue and refills via "
                    "the extracted helper");
@@ -567,8 +684,46 @@ void TestReq052OpenAiAsyncFetchPins() {
                "REQ-052 pin: the 800 ms debounce timer is unchanged");
     TEST_CHECK(osw_src.find("PlanOpenAiComboSelection(items, target)") != std::string::npos,
                "REQ-052 pin: the refill still plans the selection from the current text");
-    TEST_CHECK(osw_src.find("if (manual && models.empty()) {") != std::string::npos,
+    TEST_CHECK(osw_src.find("if (manual && fetch_empty) {") != std::string::npos,
                "REQ-052 pin: the failure notice stays manual-only (auto path silent)");
+
+    // (h) 261121_0001 U-F (v0.10.9, vp-plan C4): the dialog's model fetch stays
+    // ONE GET. The client's combined entry point returns the id list and the
+    // per-model reasoning-effort hints from the SAME /v1/models body, so the
+    // settings dialog can learn a model's supported efforts without a second
+    // request (and without the dialog unit owning any parsing).
+    {
+        std::string client_hpp;
+        Req051ReadSrc("src/openai_compatible_client.hpp", client_hpp);
+        std::string client_cpp;
+        Req051ReadSrc("src/openai_compatible_client.cpp", client_cpp);
+        TEST_CHECK(!client_hpp.empty() && !client_cpp.empty(),
+                   "C4 pin: the OpenAI client TU resolves for the single-fetch pins");
+        if (!client_hpp.empty() && !client_cpp.empty()) {
+            TEST_CHECK(client_hpp.find("static bool FetchModelsAndCapabilities(") !=
+                               std::string::npos &&
+                           client_hpp.find("ParseOpenAiModelCapabilitiesJson(") !=
+                               std::string::npos,
+                       "C4 pin: the client declares the combined fetch and the capability parser");
+            // Exactly ONE /v1/models request literal: the shared fetch helper.
+            size_t models_path_sites = 0;
+            for (size_t p = client_cpp.find("L\"/v1/models\""); p != std::string::npos;
+                 p = client_cpp.find("L\"/v1/models\"", p + 1)) {
+                ++models_path_sites;
+            }
+            TEST_CHECK(models_path_sites == 1,
+                       "C4 pin: exactly one /v1/models request path exists (no second network call)");
+            TEST_CHECK(client_cpp.find("if (ids) *ids = ParseModelsJson(response);") !=
+                               std::string::npos &&
+                           client_cpp.find("if (caps) *caps = ParseModelCapabilitiesJson(response);") !=
+                               std::string::npos,
+                       "C4 pin: one response body is parsed twice (ids + capabilities)");
+            TEST_CHECK(client_cpp.find("FetchModelsAndCapabilities(cfg, &ids, nullptr)") !=
+                           std::string::npos,
+                       "C4 pin: ListModels delegates to the shared fetch (its signature and "
+                       "behaviour are unchanged)");
+        }
+    }
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-052 OpenAI async model-fetch pins passed." << std::endl;

@@ -492,10 +492,91 @@ void TestWs3BackTranslationTray() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// (e) fix round 2 (G-2, SEC-F02): the reasoning_effort READ clamp
+// ---------------------------------------------------------------------------
+// ParseOpenAiBlock has no header declaration (config.cpp-local), so this pin
+// drives the REAL parser through the public AppConfig::FromJsonString seam —
+// the same seam LoadFromFile reaches — and reads config.cpp as text for the
+// clamp itself. Legitimate tokens are <= 8 chars; a hand-edited (hostile)
+// config.json must not be able to park a multi-MB value in every request body.
+void TestWs3OpenAiReasoningEffortReadClamp() {
+    std::cout << "[RUN] Testing WS3 G-2 reasoning_effort read clamp..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    // Exactly 64 chars: kept verbatim (the cap is a ceiling, not a perturbing
+    // filter — 64 must pass).
+    {
+        const std::string token(64, 'r');
+        AppConfig cfg;
+        TEST_CHECK(cfg.FromJsonString("{\"openai\": {\"reasoning_effort\": \"" + token + "\"}}"),
+                   "G-2: a 64-char reasoning_effort config parses");
+        TEST_CHECK(cfg.openai.reasoning_effort == token,
+                   "G-2: exactly 64 chars passes through verbatim");
+    }
+
+    // 65 chars: truncated to 64, preserving the leading 64 (truncation, not
+    // drop, so a long-but-real token stays usable in diagnosis).
+    {
+        const std::string token(65, 'q');
+        AppConfig cfg;
+        TEST_CHECK(cfg.FromJsonString("{\"openai\": {\"reasoning_effort\": \"" + token + "\"}}"),
+                   "G-2: a 65-char reasoning_effort config parses");
+        TEST_CHECK(cfg.openai.reasoning_effort.size() == 64 &&
+                       cfg.openai.reasoning_effort == std::string(64, 'q'),
+                   "G-2: 65 chars truncates to exactly 64 on read");
+    }
+
+    // The hostile-config case the finding is about: a ~1 MB value rides into
+    // no request body.
+    {
+        const std::string blob(1024 * 1024, 'x');
+        AppConfig cfg;
+        TEST_CHECK(cfg.FromJsonString("{\"openai\": {\"reasoning_effort\": \"" + blob + "\"}}"),
+                   "G-2: a 1 MiB hostile reasoning_effort config still parses (failsafe load)");
+        TEST_CHECK(cfg.openai.reasoning_effort.size() == 64,
+                   "G-2: the 1 MiB hostile value is clamped to 64 chars at parse");
+    }
+
+    // Neighbours untouched: the clamp lives on the reasoning_effort key only.
+    {
+        AppConfig cfg;
+        TEST_CHECK(cfg.FromJsonString(
+                       "{\"openai\": {\"reasoning_effort\": \"" + std::string(100, 'z') +
+                       "\", \"model\": \"gpt-4o-mini\"}}"),
+                   "G-2: a clamped value does not break the rest of the openai block");
+        TEST_CHECK(cfg.openai.reasoning_effort == std::string(64, 'z') &&
+                       cfg.openai.model == "gpt-4o-mini",
+                   "G-2: only reasoning_effort is clamped; model parses normally");
+    }
+
+    // Structural pin on the clamp site itself.
+    const std::string config_cpp = Ws3ReadSrc("src/config.cpp");
+    if (config_cpp.empty()) {
+        std::cout << "[SKIP] src/config.cpp not resolvable; G-2 structural pin skipped."
+                  << std::endl;
+    } else {
+        TEST_CHECK(config_cpp.find("kMaxOpenAiReasoningEffortConfigChars = 64") !=
+                       std::string::npos,
+                   "G-2: the read-side clamp constant is exactly 64");
+        TEST_CHECK(config_cpp.find("v.substr(0, kMaxOpenAiReasoningEffortConfigChars)") !=
+                       std::string::npos,
+                   "G-2: an over-long value is truncated (substr), not dropped");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] WS3 G-2 reasoning_effort read clamp passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] WS3 G-2 reasoning_effort read clamp: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 // Orchestrator entry point (wired from tests/run_tests.cpp).
 void TestWs3ConfigI18n() {
     TestWs3BackTranslationConfig();
     TestWs3BackTranslationTarget();
     TestWs3BackTranslationI18n();
     TestWs3BackTranslationTray();
+    TestWs3OpenAiReasoningEffortReadClamp();
 }

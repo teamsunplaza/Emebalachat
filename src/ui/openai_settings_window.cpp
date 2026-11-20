@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility> // 261121_0001 U-H: std::move of the reasoning item list
 #include <vector>
 
 // REQ-050 (cue banners): EM_SETCUEBANNER (0x1501, ECM_FIRST + 1) ships in the
@@ -84,6 +85,129 @@ std::vector<std::string> OpenAiDeclarationFromSelection(
     return declared;
 }
 
+// ---- 261121_0001 U-H (contracts C2/C4): the reasoning-effort combo plan -----
+// Defined BEFORE the dialog proc (which calls it) and at NAMESPACE scope (not
+// the anonymous block) so the unit suite drives the exact algorithm the dialog
+// applies - the same split as the declaration folds above and
+// PlanOpenAiComboSelection below. openai_settings_window.hpp is outside this
+// unit's write boundary, so the suite forward-declares it.
+
+// An advertised effort token is server-supplied text that ends up (a) in a
+// combo item and (b) in the request body. Cap it and keep it to printable
+// ASCII without spaces: a hostile or sloppy /v1/models body can then inject
+// neither control characters nor a multi-megabyte item, and the body stays
+// unambiguous. Real tokens ("none", "minimal", "low", "medium", "high",
+// "xhigh") are far inside this bound.
+inline constexpr std::size_t kMaxReasoningEffortTokenChars = 32;
+
+// The reasoning combo's item list (contract C2/C4). Item i IS the persisted
+// `reasoning_effort` value; the EMPTY string is the SERVER-DEFAULT item, which
+// is why it always occupies index 0 (the default selection) and needs no
+// separate flag: C2 defines "" as "omit the key from the request body".
+//   * the selected model advertised efforts -> [""] + those efforts,
+//     deduplicated in SERVER order (the server's own order is the only ranking
+//     information available);
+//   * nothing usable advertised -> [""] + the standard fallback list. That
+//     fallback is the whole point of the contract: OpenAI and Gemini return no
+//     capability metadata at all, and vLLM / llama-server / LiteLLM rarely do,
+//     so without it the setting would be unusable on most endpoints.
+// A list that sanitizes to nothing (all-garbage metadata) counts as "advertised
+// nothing" and takes the fallback, so junk can never leave the user with a
+// one-item combo. Never returns an empty vector.
+std::vector<std::string> PlanReasoningEffortItems(
+    const std::vector<std::string>& advertised_efforts) {
+    const auto sanitize = [](std::string_view token) -> std::string {
+        std::size_t begin = 0;
+        std::size_t end = token.size();
+        while (begin < end && (token[begin] == ' ' || token[begin] == '\t')) ++begin;
+        while (end > begin && (token[end - 1] == ' ' || token[end - 1] == '\t')) --end;
+        const std::string_view trimmed = token.substr(begin, end - begin);
+        if (trimmed.empty() || trimmed.size() > kMaxReasoningEffortTokenChars) return {};
+        for (const char c : trimmed) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (u < 0x21 || u > 0x7E) return {}; // control/space/non-ASCII
+        }
+        return std::string(trimmed);
+    };
+    std::vector<std::string> items{std::string{}}; // index 0 = server default (unset)
+    for (const std::string& raw : advertised_efforts) {
+        std::string token = sanitize(raw);
+        if (token.empty()) continue;
+        if (std::find(items.begin(), items.end(), token) != items.end()) continue;
+        items.push_back(std::move(token));
+    }
+    if (items.size() == 1) {
+        // Nothing usable was advertised: the standard list in the
+        // OpenAI-documented order (none < minimal < low < medium < high).
+        for (const char* value : {"none", "minimal", "low", "medium", "high"}) {
+            items.emplace_back(value);
+        }
+    }
+    return items;
+}
+
+// 261121_0001 fix round 1 (F-4): ONE (re)population step of the reasoning combo,
+// as a pure function so the suite drives the exact reconciliation the dialog
+// runs. The bug it fixes: the dialog's FIRST population happens before any fetch
+// has completed, so it can only offer the STANDARD fallback list; a saved
+// server-extension value (OpenRouter's "xhigh") is not in that list, and the old
+// code overwrote the state with the fallback's server-default item — silently
+// losing the user's preference before the catalog that advertises it arrived.
+//   * `items`     — a PlanReasoningEffortItems() result (never empty; index 0 is
+//                   the server-default item whose value is "").
+//   * `value`     — the value the dialog currently carries ("" = server default).
+//   * `pending`   — true while `value` came from config and no list has shown it
+//                   yet (only possible for a non-empty value outside the
+//                   fallback list).
+// Writes the index the combo must select, the value the dialog carries after the
+// population, and the new pending state. Rules:
+//   * a list that carries `value`            -> select it, value unchanged,
+//                                              pending cleared (it is shown now);
+//   * a list that does not, while pending    -> server-default item selected,
+//                                              value KEPT (the user's saved
+//                                              choice survives; OK persists it,
+//                                              and the request-side 400 retry
+//                                              covers a model that rejects it);
+//   * a list that does not, otherwise        -> server-default item selected and
+//                                              the value becomes "" (the
+//                                              documented converge-on-default
+//                                              rule for a value the current model
+//                                              does not offer).
+void PlanOpenAiReasoningComboPopulate(const std::vector<std::string>& items,
+                                      const std::string& value,
+                                      bool pending,
+                                      int& out_select,
+                                      std::string& out_effective,
+                                      bool& out_pending) {
+    if (items.empty()) {
+        // Defensive only: PlanReasoningEffortItems never returns an empty list.
+        out_select = 0;
+        out_effective = (pending && !value.empty()) ? value : std::string();
+        out_pending = pending && !value.empty();
+        return;
+    }
+    std::size_t match = 0;
+    bool shown = false;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (items[i] == value) {
+            match = i;
+            shown = true;
+            break;
+        }
+    }
+    // Index 0 is the server-default item: matching it is not "the list offers
+    // the saved value", it is the absence of one.
+    const bool offers_value = shown && match != 0;
+    out_select = static_cast<int>(match);
+    if (!offers_value && pending && !value.empty()) {
+        out_effective = value;
+        out_pending = true;
+        return;
+    }
+    out_effective = items[match];
+    out_pending = false;
+}
+
 namespace {
 
 // Control IDs.
@@ -102,6 +226,23 @@ enum : WORD {
     IDC_DECLARE_TITLE,
     IDC_DECLARE_LIST,
     IDC_DECLARE_HINT,
+    // 261121_0001 U-H (contracts C2/C4): the reasoning-effort row — a label
+    // and ONE closed pick list of the efforts the selected model supports
+    // (server-advertised when available, the standard list otherwise).
+    IDC_REASONING_LABEL,
+    IDC_REASONING_COMBO,
+};
+
+// 261121_0001 U-H (contract C4): the by-value payload of the model fetch — the
+// ids the endpoint lists PLUS, per model, the reasoning efforts it advertises.
+// ONE GET produces both (OpenAiCompatibleClient::FetchModelsAndCapabilities),
+// so filling the reasoning combo costs no extra round trip. Declared before
+// OpenAiDialogState/OpenAiFetchResult, which both carry it; every member is a
+// plain value so the R1-9 "no pointer crosses PostMessageW" transport rule
+// still holds unchanged.
+struct OpenAiModelCatalog {
+    std::vector<std::string> models;                  // empty == fetch failed / none
+    std::vector<OpenAiModelCapability> capabilities;   // subset the server described
 };
 
 struct OpenAiDialogState {
@@ -148,6 +289,32 @@ struct OpenAiDialogState {
     std::vector<std::string> declared_in;
     std::vector<std::string> declared_out;
     std::vector<std::string> declare_rows;
+    // 261121_0001 U-H (contract C4): what the LAST completed fetch learned
+    // about the models — the ids plus, per model, the reasoning efforts the
+    // server advertised. Stays empty until a fetch succeeds (and stays empty
+    // forever on the endpoints that advertise nothing, the common case), which
+    // is exactly when PlanReasoningEffortItems falls back to the standard list.
+    // GUI thread only: the worker hands it over by value in OpenAiFetchResult.
+    OpenAiModelCatalog catalog;
+    // 261121_0001 U-H (contract C2): the combo's item VALUES as last rendered
+    // (index 0 = the server-default item = ""). The combo shows localized
+    // labels, not values, so this is the only lossless index -> value map when
+    // IDOK reads the selection back. GUI thread only.
+    std::vector<std::string> reasoning_items;
+    // The reasoning value the dialog opened with (cfg->reasoning_effort).
+    // Only a fallback for the very first population: once the combo holds
+    // items, the combo itself is the single source of truth, so a repopulation
+    // can neither lose nor invent a selection.
+    std::string reasoning_effort;
+    // 261121_0001 fix round 1 (F-4): true while `reasoning_effort` came from the
+    // saved config and NO list has been able to show it yet. The first
+    // population always runs against the fallback list (no fetch has completed),
+    // which cannot carry a server-extension value such as OpenRouter's "xhigh";
+    // this flag keeps that value alive until a catalog that advertises it
+    // arrives, and keeps it for the OK path even if none ever does. Cleared when
+    // a list shows the value and whenever the user makes an explicit pick. GUI
+    // thread only.
+    bool reasoning_effort_pending = false;
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -172,7 +339,7 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
 
 // REQ-050 (auto-fetch): debounce timer for the model-list auto-fetch. The
 // timer id lives in the Win32 timer namespace (no clash with the control IDs
-// 100..108 above). Re-arming an existing id via SetTimer is a silent
+// 100..113 above). Re-arming an existing id via SetTimer is a silent
 // kill+restart, which is exactly the debounce semantics the EN_CHANGE
 // handler wants.
 constexpr UINT_PTR kFetchTimerId = 101;
@@ -202,7 +369,10 @@ constexpr UINT kOpenAiMsgFetchDone = WM_APP + 0x20;
 struct OpenAiFetchResult {
     unsigned long long generation;
     bool manual; // button-originated spawn (may show the failure notice)
-    std::vector<std::string> models; // empty == fetch failed / server gave none
+    // 261121_0001 U-H (contract C4): the ids AND the per-model reasoning
+    // capabilities the same GET returned, so the completion handler can fill
+    // the reasoning combo without touching the network.
+    OpenAiModelCatalog catalog;
 };
 
 // R1-9: the lifetime-safe holder for the in-flight results. The queue is
@@ -238,8 +408,17 @@ size_t DrainOpenAiFetchQueue() {
 // the synchronous WinHTTP call again: that was the audit P0 freeze (the
 // whole dialog went '응답 없음' mid-typing while the bounded 10 s budget ran
 // inline).
-std::vector<std::string> DoFetchModels(const OpenAiConfig& probe) {
-    return OpenAiCompatibleClient::ListModels(probe);
+// 261121_0001 U-H (contract C4): the call is now
+// FetchModelsAndCapabilities, so the SAME GET that lists the models also
+// reports the reasoning efforts each one advertises. That is the only source
+// of truth for "what may I send", and it replaces the id-only ListModels call
+// outright: a second request would double the latency and could disagree with
+// the first. The capabilities travel back with the ids (OpenAiModelCatalog).
+OpenAiModelCatalog FetchOpenAiModelCatalog(const OpenAiConfig& probe) {
+    OpenAiModelCatalog catalog;
+    OpenAiCompatibleClient::FetchModelsAndCapabilities(
+        probe, &catalog.models, &catalog.capabilities);
+    return catalog;
 }
 
 // REQ-052 (async fetch): the detached worker body. It owns ONLY the probe
@@ -260,7 +439,7 @@ void OpenAiFetchWorker(std::shared_ptr<std::atomic<bool>> alive, HWND dlg,
     // queue. The dialog-gone check runs AFTER the fetch (the answer is only
     // interesting if someone is still listening) and the value simply dies
     // here when nobody is.
-    OpenAiFetchResult result{generation, manual, DoFetchModels(probe)};
+    OpenAiFetchResult result{generation, manual, FetchOpenAiModelCatalog(probe)};
     if (!alive->load(std::memory_order_acquire)) {
         return; // dialog gone: nothing to deliver, nothing leaked
     }
@@ -335,6 +514,85 @@ void RefillOpenAiModelCombo(HWND dlg, const std::vector<std::string>& models) {
     } else if (plan.select_index >= 0) {
         ::SendMessageW(combo, CB_SETCURSEL, plan.select_index, 0);
     }
+}
+
+// 261121_0001 U-H: the efforts `model` advertised in the last completed fetch,
+// or nullptr when the fetch did not describe it (no fetch yet, a typed/unlisted
+// id, or an endpoint that publishes no capability metadata at all — OpenAI and
+// Gemini both). nullptr is not an error: the caller then takes the standard
+// fallback list.
+const std::vector<std::string>* FindAdvertisedReasoningEfforts(
+    const OpenAiModelCatalog& catalog, const std::string& model) {
+    if (model.empty()) return nullptr;
+    for (const OpenAiModelCapability& cap : catalog.capabilities) {
+        if (cap.id == model) return &cap.reasoning_efforts;
+    }
+    return nullptr;
+}
+
+// The reasoning combo's current VALUE (contract C2: "" = the server default,
+// whose request omits the key). The combo SHOWS localized labels, so the
+// selection is mapped back through the item values captured at the last
+// population; a missing control — or a selection no population produced — falls
+// back to the value the dialog opened with.
+std::string ReasoningEffortSelection(HWND dlg, const OpenAiDialogState* st) {
+    HWND combo = ::GetDlgItem(dlg, IDC_REASONING_COMBO);
+    if (!combo) return st->reasoning_effort;
+    const LRESULT sel = ::SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || static_cast<std::size_t>(sel) >= st->reasoning_items.size()) {
+        return st->reasoning_effort;
+    }
+    return st->reasoning_items[static_cast<std::size_t>(sel)];
+}
+
+// 261121_0001 U-H: (re)build the reasoning combo for the model currently in
+// the model combo, keeping the current pick whenever the new list still offers
+// it. Called at WM_INITDIALOG and on every model change / fetch completion, so
+// the list always belongs to the model the user is looking at.
+void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st) {
+    HWND combo = ::GetDlgItem(dlg, IDC_REASONING_COMBO);
+    if (!combo) return;
+    // Capture what the dialog carries BEFORE the reset. The state value, not a
+    // control read: during the pending restoration (F-4) the combo legitimately
+    // shows the server-default item while the effective value is still the saved
+    // one, and losing that distinction here is exactly the silent preference
+    // loss this fix removes.
+    const std::string previous = st->reasoning_effort;
+    const std::string model = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+    const std::vector<std::string>* advertised =
+        FindAdvertisedReasoningEfforts(st->catalog, model);
+    const std::vector<std::string> no_efforts;
+    std::vector<std::string> items =
+        PlanReasoningEffortItems(advertised ? *advertised : no_efforts);
+    // F-4: the selection/value/pending reconciliation is the pure planner, so
+    // the suite pins the exact rules the dialog applies.
+    int select = 0;
+    std::string effective = previous;
+    bool pending = st->reasoning_effort_pending;
+    PlanOpenAiReasoningComboPopulate(items, previous, st->reasoning_effort_pending,
+                                     select, effective, pending);
+    ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    for (const std::string& value : items) {
+        const std::wstring label = value.empty()
+            ? I18n::Get(StringId::OpenAiReasoningServerDefault)
+            : ToUtf16(value);
+        ::SendMessageW(combo, CB_ADDSTRING, 0,
+                       reinterpret_cast<LPARAM>(label.c_str()));
+    }
+    ::SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(select), 0);
+    // A value the selected model does not offer leaves the combo on the
+    // server-default item: sending an effort the endpoint rejects is a hard
+    // HTTP 400, so the combo converges on what it can actually show. The value
+    // itself survives while pending (F-4). Shape-only log (no content, no model
+    // id).
+    if (select == 0 && !previous.empty()) {
+        DIAG_F("UI/OpenAiSettings/011: the combo cannot show the current reasoning "
+               "effort; it fell back to the server default%s\n",
+               pending ? " (the saved value is kept for the save path)" : "");
+    }
+    st->reasoning_items = std::move(items);
+    st->reasoning_effort = std::move(effective);
+    st->reasoning_effort_pending = pending;
 }
 
 // REQ-050 (auto-fetch) / REQ-052 (async): the model-list fetch shared by the
@@ -425,9 +683,10 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // guarantee).
         DrainOpenAiFetchQueue();
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
-        // template itself is proven-good (14 controls incl. OK/Cancel, the
-        // REQ-051 delete button, and the 261116_0003 P9c-1b declaration
-        // checklist section), but
+        // template itself is proven-good (16 controls incl. OK/Cancel, the
+        // REQ-051 delete button, the 261116_0003 P9c-1b declaration
+        // checklist section, and the 261121_0001 U-H reasoning-effort row),
+        // but
         // if any edit/combo control failed to materialize the dialog would
         // look like the
         // reported "API input field missing" symptom. Surface a distinct log
@@ -441,6 +700,10 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (!::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
             DIAG_F("UI/OpenAiSettings/003: IDC_MODEL_COMBO control missing after dialog init\n");
+        }
+        if (!::GetDlgItem(dlg, IDC_REASONING_COMBO)) {
+            DIAG_F("UI/OpenAiSettings/010: IDC_REASONING_COMBO control missing after "
+                   "dialog init\n");
         }
         // REQ-050 (cue banners): gray placeholder hints on both single-line
         // edits while they are empty (EM_SETCUEBANNER — see the define above;
@@ -457,6 +720,18 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         SetCtrlText(dlg, IDC_BASE_URL, ToUtf16(st->cfg->base_url));
         SetCtrlText(dlg, IDC_MODEL_COMBO, ToUtf16(st->cfg->model));
+        // 261121_0001 U-H (contract C2): seed the reasoning combo from the
+        // saved value. No fetch has completed yet, so no model advertises any
+        // effort and the standard fallback list applies; a completed fetch
+        // repopulates this combo from the selected model's own list (see the
+        // kOpenAiMsgFetchDone handler).
+        // Fix round 1 (F-4): a saved value OUTSIDE that fallback list (e.g.
+        // OpenRouter's "xhigh") is only pending at this point — it is restored
+        // the moment a catalog advertises it, and it survives to the save path
+        // even if none does.
+        st->reasoning_effort = st->cfg->reasoning_effort;
+        st->reasoning_effort_pending = !st->reasoning_effort.empty();
+        RefreshReasoningCombo(dlg, st);
         // REQ-050 (corrupt-pair recovery): upgraders from the pre-REQ-050
         // build carry api_key_sha256 = SHA-256 of a ZEROED buffer (the old
         // dialog hashed after ProtectOpenAiApiKey scrubbed the cleartext), so
@@ -535,6 +810,25 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return FALSE;
     case WM_COMMAND:
+        // 261121_0001 U-H (contract C4): the reasoning list belongs to the
+        // selected model, so a model change repopulates it. CBN_SELCHANGE is
+        // the pick from the fetched list; CBN_EDITCHANGE covers the combo's
+        // free-text leg (CBS_DROPDOWN), where a hand-typed id is by definition
+        // absent from every fetched list and therefore gets the fallback list.
+        if (st && LOWORD(wp) == IDC_MODEL_COMBO &&
+            (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == CBN_EDITCHANGE)) {
+            RefreshReasoningCombo(dlg, st);
+            return TRUE;
+        }
+        // Fix round 1 (F-4): a pick in the reasoning combo is the user's explicit
+        // choice, so it ends the pending restoration — including a deliberate
+        // pick of the server-default item, which the old code could not
+        // distinguish from a fallback.
+        if (st && LOWORD(wp) == IDC_REASONING_COMBO && HIWORD(wp) == CBN_SELCHANGE) {
+            st->reasoning_effort = ReasoningEffortSelection(dlg, st);
+            st->reasoning_effort_pending = false;
+            return TRUE;
+        }
         // REQ-050 (auto-fetch): debounce model-list fetches while the user
         // types. https-only — an http:// base must NEVER auto-fetch (the
         // consent question may appear only on explicit button/OK actions,
@@ -576,6 +870,23 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             OpenAiConfig out;
             out.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
             out.model = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+            // 261121_0001 U-H (contract C2): the reasoning combo's selected item
+            // IS the persisted value; the server-default item is "", which the
+            // request body renders by omitting the key entirely. Read from the
+            // control here rather than from a remembered flag, so what the user
+            // sees on screen is exactly what gets saved.
+            out.reasoning_effort = ReasoningEffortSelection(dlg, st);
+            if (st->reasoning_effort_pending) {
+                // Fix round 1 (F-4): the combo shows the server-default item
+                // because the current list cannot carry the saved value (e.g.
+                // OpenRouter's "xhigh" against the pre-fetch fallback list). The
+                // saved value is still the user's choice, so it is what this
+                // dialog persists (the client's HTTP-400 retry covers a model
+                // that rejects it). An explicit pick clears the flag in the
+                // CBN_SELCHANGE handler above, so this arm only fires for a
+                // value the user never touched.
+                out.reasoning_effort = st->reasoning_effort;
+            }
             std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
 
             const OpenAiUrlSecurity sec = ClassifyOpenAiBaseUrl(out.base_url);
@@ -662,7 +973,8 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_DELETE_BTN: {
             // REQ-051 (Symptom D, decisions.md 260921 17:08 — user-frozen
             // scope): clear EXACTLY the saved OpenAI settings (base_url,
-            // model, the api_key_dpapi+api_key_sha256 pair TOGETHER so a
+            // model, 261121_0001 U-H reasoning_effort, the
+            // api_key_dpapi+api_key_sha256 pair TOGETHER so a
             // half-cleared pair can never reach the refuse-forever
             // WithUnprotectedKey state, http_consent_given) and persist,
             // leaving the engine selection untouched. The persist is a
@@ -693,7 +1005,8 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 return TRUE;
             }
             DIAG_F("UI/OpenAiSettings/007: saved OpenAI settings deleted "
-                   "(base_url/model/key pair/consent cleared; engine selection untouched)\n");
+                   "(base_url/model/reasoning effort/key pair/consent cleared; engine "
+                   "selection untouched)\n");
             *st->cfg = OpenAiConfig{};
             st->deleted = true;
             ::EndDialog(dlg, IDC_DELETE_BTN);
@@ -735,7 +1048,7 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 continue; // stale (a newer fetch superseded it) or orphaned
             }
             const bool manual = result.manual;
-            std::vector<std::string> models = std::move(result.models);
+            const bool fetch_empty = result.catalog.models.empty();
             // 260922_0001 A6: the in-flight fetch is done — restore the button
             // BEFORE the refill/notice below so the failure box never sits over
             // a still-gray button.
@@ -746,8 +1059,17 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // untouched so the typed/current model stays visible; the manual
             // button keeps its failure notice, the silent auto path stays
             // silent.
-            RefillOpenAiModelCombo(dlg, models);
-            if (manual && models.empty()) {
+            RefillOpenAiModelCombo(dlg, result.catalog.models);
+            // 261121_0001 U-H (contract C4): adopt the capabilities the SAME GET
+            // returned and re-derive the reasoning list for whatever model the
+            // refill left selected. An empty result changes nothing (no
+            // capabilities to learn from) — the "fetch failed, keep what the
+            // dialog showed" rule above, applied to the reasoning row too.
+            if (!fetch_empty) {
+                st->catalog = std::move(result.catalog);
+                RefreshReasoningCombo(dlg, st);
+            }
+            if (manual && fetch_empty) {
                 ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
                               I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                               MB_OK | MB_ICONINFORMATION);
@@ -794,14 +1116,18 @@ OpenAiComboSelection PlanOpenAiComboSelection(
     return {items.empty() ? 0 : items.back().first + 1, true};
 }
 
-// REQ-051 (Symptom D): clears exactly the five persisted OpenAI settings
-// fields. The key pair (DPAPI blob + SHA-256 digest) is wiped TOGETHER: a
-// half-cleared pair is what made WithUnprotectedKey refuse a valid key
-// forever (REQ-050 b6f98da contract). engine selection is untouched —
-// OpenAiConfig carries no engine field.
+// REQ-051 (Symptom D): clears exactly the persisted OpenAI settings fields.
+// The key pair (DPAPI blob + SHA-256 digest) is wiped TOGETHER: a half-cleared
+// pair is what made WithUnprotectedKey refuse a valid key forever (REQ-050
+// b6f98da contract). engine selection is untouched — OpenAiConfig carries no
+// engine field. 261121_0001 U-H (contract C2): the reasoning effort is one of
+// those settings, so a delete must clear it too — otherwise the next save would
+// resurrect an effort the user just wiped along with the endpoint that
+// advertised it.
 void ClearOpenAiSettings(OpenAiConfig& cfg) {
     cfg.base_url.clear();
     cfg.model.clear();
+    cfg.reasoning_effort.clear();
     cfg.api_key_dpapi.clear();
     cfg.api_key_sha256.clear();
     cfg.http_consent_given = false;
@@ -909,11 +1235,20 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // the anonymous namespace above; a namespace-scope definition in this same
 // TU can reference them. itemCount must match the AddItem calls below:
 // 9 app controls + 3 declaration-checklist controls (261116_0003 P9c-1b) +
-// IDOK + IDCANCEL = 14 (REQ-051 added the delete button).
+// 2 reasoning-effort controls (261121_0001 U-H) + IDOK + IDCANCEL = 16
+// (REQ-051 added the delete button).
 void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
     const DWORD COMBO = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | CBS_DROPDOWN;
+    // 261121_0001 U-H: the reasoning picker is a CLOSED list (CBS_DROPDOWNLIST):
+    // every item comes from PlanReasoningEffortItems, so a free-text leg could
+    // only produce a value the model does not accept (a hard HTTP 400).
+    // Styles: WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000,
+    // +CBS_DROPDOWNLIST (0x0003) = 0x50810003 (same idiom as the REQ-060 mode
+    // combo).
+    const DWORD COMBO_LIST = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP |
+                             CBS_DROPDOWNLIST;
     const DWORD BTN = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
     // 261116_0003 P9c-1b: the declaration checklist's multi-select LISTBOX.
     // LBS_MULTIPLESEL is the standard Win32 multi-select idiom; LBS_NOTIFY +
@@ -967,7 +1302,8 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // of the action row, far from OK/Cancel — a destructive action gets its
     // own corner so it cannot be hit by muscle memory aiming at OK. The
     // 262x174 DLU shell (261116_0003 P9c-1b grew it from 262x130) is
-    // unchanged otherwise. i18n caption (all 37 locales).
+    // unchanged by that change; 261121_0001 U-H later appended the reasoning
+    // row below this action row (shell 262x190). i18n caption (all 37 locales).
     tb.AddItem(BTN, 8, 154, 64, 13, IDC_DELETE_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiDeleteSettings));
     // REQ-050: OK/Cancel are real i18n strings now (StringId::DialogOk /
@@ -977,6 +1313,19 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
                I18n::Get(StringId::DialogOk));
     tb.AddItem(BTN, 182, 154, 64, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::DialogCancel));
+    // 261121_0001 U-H (contracts C2/C4): the reasoning-effort row. It is
+    // APPENDED into the 16 DLU the shell grew (174 -> 190) instead of being
+    // inserted next to the model combo, so EVERY control above keeps its exact
+    // pre-U-H position and size — the req048 byte-walk pins prove that, and no
+    // existing row had to be re-validated for one new setting. Geometry
+    // mirrors the other rows: label x=8 w=56, field x=68 w=186 (the full edit
+    // width, which fits the longest localized server-default label).
+    tb.AddItem(LBL, 8, 172, 56, 9, IDC_REASONING_LABEL, STATIC_CLS,
+               I18n::Get(StringId::OpenAiReasoningLabel));
+    // h=64 is the dropdown extent (the closed box is ~12 DLU), the same
+    // convention as IDC_MODEL_COMBO; the popup list is its own window, so it
+    // opens upward when the dialog edge leaves no room below.
+    tb.AddItem(COMBO_LIST, 68, 171, 186, 64, IDC_REASONING_COMBO, COMBO_CLS, L"");
 }
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
@@ -990,10 +1339,11 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
 
     const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
     TemplateBuilder tb;
-    // REQ-051: 14 items — the REQ-051 delete button joined the 10-control
-    // REQ-048 P2 template, and 261116_0003 P9c-1b added the 3-control
-    // declaration checklist section (shell 262x130 -> 262x174 DLU).
-    tb.Begin(title, 262, 174, /*itemCount=*/14);
+    // REQ-051: 16 items — the REQ-051 delete button joined the 10-control
+    // REQ-048 P2 template, 261116_0003 P9c-1b added the 3-control declaration
+    // checklist section (shell 262x130 -> 262x174 DLU), and 261121_0001 U-H
+    // added the 2-control reasoning-effort row (shell 262x174 -> 262x190 DLU).
+    tb.Begin(title, 262, 190, /*itemCount=*/16);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(
