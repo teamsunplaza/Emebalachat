@@ -11,12 +11,17 @@
 // next request repaid it (never-converging spiral).
 //
 // Coverage:
-//   (a) ScaledMaxGenTokens: the pure cap min(kLlamaGenReserve, max(256,
-//       4n+128)) over a size matrix (0/1/small/large inputs, the 256 floor,
-//       the 2048 ceiling at the 480-token crossover, overflow-proof huge
+//   (a) ScaledMaxGenTokens: the pure cap min(kLlamaGenReserve, max(512,
+//       6n+256)) over a size matrix (0/1/small/large inputs, the 512 floor,
+//       the 2048 ceiling at the 299-token crossover, overflow-proof huge
 //       inputs) plus a full-sweep equivalence proof against the reference
 //       formula. kLlamaGenReserve stays the named 2048 ceiling constant.
-//   (b) Constants: the 12000 ms wall-clock budget pin.
+//       v0.10.9 (261121_0001 U-D, report 2B-4): the ramp widened from
+//       4n+128/floor 256 - the old curve under-budgeted a legitimate
+//       translation on a slow 4B user model.
+//   (b) Constants: the 20000 ms wall-clock budget pin (v0.10.9 U-D: was
+//       12000; a 12 s floor discarded legitimate long translations on a 4B
+//       user GGUF).
 //   (c) Runtime engine semantics: decode_wall_clock_exhausted() default-false
 //       on a fresh engine; the load_cancel_flag split — NULL aliases
 //       cancel_flag (legacy byte-identical), a wired flag overrides it, and
@@ -37,14 +42,16 @@
 
 // Compile-time pins (the header constants are inline constexpr — a drifted
 // value fails the BUILD here instead of silently shipping).
-static_assert(emebalachat::kDecodeWallClockBudgetMs == 12000,
-              "REQ-051 U-1 FIX 1: the decode wall-clock budget is 12 s");
+static_assert(emebalachat::kDecodeWallClockBudgetMs == 20000,
+              "REQ-051 U-1 FIX 1 / v0.10.9 U-D: the decode wall-clock budget is 20 s");
 static_assert(emebalachat::ScaledMaxGenTokens(0) == emebalachat::kScaledGenFloorTokens,
-              "REQ-051 U-1 FIX 1: a zero-token input gets the 256-token floor");
-static_assert(emebalachat::ScaledMaxGenTokens(32) == emebalachat::kScaledGenFloorTokens,
-              "REQ-051 U-1 FIX 1: 4*32+128 == 256 (the exact floor boundary)");
-static_assert(emebalachat::ScaledMaxGenTokens(480) == emebalachat::kLlamaGenReserve,
-              "REQ-051 U-1 FIX 1: the ceiling crossover lands on kLlamaGenReserve");
+              "REQ-051 U-1 FIX 1: a zero-token input gets the 512-token floor");
+static_assert(emebalachat::ScaledMaxGenTokens(42) == emebalachat::kScaledGenFloorTokens,
+              "REQ-051 U-1 FIX 1 / v0.10.9: 6*42+256 == 508 still floors at 512");
+static_assert(emebalachat::ScaledMaxGenTokens(43) > emebalachat::kScaledGenFloorTokens,
+              "REQ-051 U-1 FIX 1 / v0.10.9: 43 tokens is the first ramp value above the floor");
+static_assert(emebalachat::ScaledMaxGenTokens(299) == emebalachat::kLlamaGenReserve,
+              "REQ-051 U-1 FIX 1 / v0.10.9: the ceiling crossover (6n+256 > 2048 at n=299) lands on kLlamaGenReserve");
 
 void TestReq051ScaledGenCap() {
     std::cout << "[RUN] Testing REQ-051 U-1 input-scaled generation cap..." << std::endl;
@@ -54,25 +61,26 @@ void TestReq051ScaledGenCap() {
     using emebalachat::ScaledMaxGenTokens;
 
     // ---- the size matrix ---------------------------------------------------
-    TEST_CHECK(ScaledMaxGenTokens(0) == 256,
-               "REQ-051 U-1: 0 input tokens -> the 256 floor");
-    TEST_CHECK(ScaledMaxGenTokens(1) == 256,
-               "REQ-051 U-1: 1 input token (4+128=132) -> the 256 floor");
-    TEST_CHECK(ScaledMaxGenTokens(-7) == 256,
-               "REQ-051 U-1: a negative count is degenerate -> the 256 floor");
-    TEST_CHECK(ScaledMaxGenTokens(31) == 256,
-               "REQ-051 U-1: 31 tokens (4n+128=252) still floors at 256");
-    TEST_CHECK(ScaledMaxGenTokens(32) == 256,
-               "REQ-051 U-1: 32 tokens (4n+128=256) is the exact floor");
-    TEST_CHECK(ScaledMaxGenTokens(33) == 260,
-               "REQ-051 U-1: 33 tokens scales to 260");
-    TEST_CHECK(ScaledMaxGenTokens(100) == 528,
-               "REQ-051 U-1: 100 tokens scales to 528");
-    TEST_CHECK(ScaledMaxGenTokens(479) == 2044,
-               "REQ-051 U-1: 479 tokens scales to 2044 (just under the ceiling)");
-    TEST_CHECK(ScaledMaxGenTokens(480) == kLlamaGenReserve,
-               "REQ-051 U-1: the 480-token crossover clamps at kLlamaGenReserve (2048)");
-    TEST_CHECK(ScaledMaxGenTokens(481) == kLlamaGenReserve,
+    // v0.10.9 (261121_0001 U-D, report 2B-4): max(512, 6n+256), ceiling 2048.
+    TEST_CHECK(ScaledMaxGenTokens(0) == 512,
+               "REQ-051 U-1: 0 input tokens -> the 512 floor");
+    TEST_CHECK(ScaledMaxGenTokens(1) == 512,
+               "REQ-051 U-1: 1 input token (6+256=262) -> the 512 floor");
+    TEST_CHECK(ScaledMaxGenTokens(-7) == 512,
+               "REQ-051 U-1: a negative count is degenerate -> the 512 floor");
+    TEST_CHECK(ScaledMaxGenTokens(41) == 512,
+               "REQ-051 U-1: 41 tokens (6n+256=502) still floors at 512");
+    TEST_CHECK(ScaledMaxGenTokens(42) == 512,
+               "REQ-051 U-1: 42 tokens (6n+256=508) is the last floored value");
+    TEST_CHECK(ScaledMaxGenTokens(43) == 514,
+               "REQ-051 U-1: 43 tokens (6n+256=514) is the first ramp value");
+    TEST_CHECK(ScaledMaxGenTokens(100) == 856,
+               "REQ-051 U-1: 100 tokens scales to 856");
+    TEST_CHECK(ScaledMaxGenTokens(298) == 2044,
+               "REQ-051 U-1: 298 tokens scales to 2044 (just under the ceiling)");
+    TEST_CHECK(ScaledMaxGenTokens(299) == kLlamaGenReserve,
+               "REQ-051 U-1: the 299-token crossover clamps at kLlamaGenReserve (2048)");
+    TEST_CHECK(ScaledMaxGenTokens(300) == kLlamaGenReserve,
                "REQ-051 U-1: past the crossover the cap stays 2048");
     TEST_CHECK(ScaledMaxGenTokens(100000) == kLlamaGenReserve,
                "REQ-051 U-1: a huge input clamps at 2048 (no overflow)");
@@ -83,19 +91,21 @@ void TestReq051ScaledGenCap() {
                "REQ-051 U-1: kLlamaGenReserve stays the named 2048 ceiling constant");
 
     // ---- full-sweep equivalence with the reference formula -----------------
-    // min(2048, max(256, 4n+128)) computed in 64-bit; the sweep covers the
-    // floor ramp, the crossover, and past it.
+    // min(2048, max(512, 6n+256)) computed in 64-bit; the sweep covers the
+    // floor ramp, the crossover, and past it. v0.10.9 (U-D): the reference is
+    // the widened curve, so a drift in any of the three constants, or a
+    // floored-instead-of-ceiled crossover, fails here.
     int mismatches = 0;
     for (long long n = -64; n <= 600; ++n) {
-        const long long scaled = 4 * n + 128;
-        const long long floored = scaled < 256 ? 256 : scaled;
+        const long long scaled = 6 * n + 256;
+        const long long floored = scaled < 512 ? 512 : scaled;
         const int ref = static_cast<int>(floored > 2048 ? 2048 : floored);
         if (ScaledMaxGenTokens(static_cast<int>(n)) != ref) {
             ++mismatches;
         }
     }
     TEST_CHECK(mismatches == 0,
-               "REQ-051 U-1: ScaledMaxGenTokens matches min(2048, max(256, 4n+128)) across the whole sweep");
+               "REQ-051 U-1: ScaledMaxGenTokens matches min(2048, max(512, 6n+256)) across the whole sweep");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] REQ-051 U-1 scaled generation cap passed." << std::endl;
@@ -112,9 +122,10 @@ void TestReq051DecodeWallClockSemantics() {
     using emebalachat::LocalInferenceEngine;
 
     // ---- (b) the wall-clock constant ---------------------------------------
+    // v0.10.9 (261121_0001 U-D, report §3.1-B item 6): 20000 ms (was 12000).
     volatile int budget = kDecodeWallClockBudgetMs;
-    TEST_CHECK(budget == 12000,
-               "REQ-051 U-1 FIX 1: the decode wall-clock budget is 12000 ms");
+    TEST_CHECK(budget == 20000,
+               "REQ-051 U-1 FIX 1 / v0.10.9 U-D: the decode wall-clock budget is 20000 ms");
 
     // ---- (c) runtime engine semantics --------------------------------------
     // A fresh engine: the exhaustion latch starts clear (default-false).
@@ -192,7 +203,7 @@ void TestReq051DecodeWallClockSemantics() {
                            "        std::chrono::milliseconds(ScaledDecodeWallClockBudgetMs(max_gen_tokens));") !=
                            std::string::npos,
                        "REQ-051 U-1 pin: the decode deadline derives from "
-                       "ScaledDecodeWallClockBudgetMs (12 s kDecodeWallClockBudgetMs floor)");
+                       "ScaledDecodeWallClockBudgetMs (v0.10.9 U-D: 20 s kDecodeWallClockBudgetMs floor)");
             // ... the cap is wired at the token loop ...
             TEST_CHECK(tc_src.find("const int max_gen_tokens = ScaledMaxGenTokens(n_prompt_tokens);") !=
                            std::string::npos,

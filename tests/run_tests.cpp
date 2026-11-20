@@ -54,6 +54,8 @@
 // lockstep-parity suite below is the standing control the two canonicalizer
 // comments cite, so this include is load-bearing (not a transitive accident).
 #include "engine_host_client_identity.hpp"
+#include "translation_chunker.hpp"  // v0.10.9 (261121_0001 U-A, C1): shared 4-tier translation chunker (engine repo)
+#include "engine_host_budget.hpp"   // v0.10.9 (261121_0001 U-A, C3): chunked-request IPC budget formulas (engine repo)
 // 261116_0003 P3 fix round 3 (PR3-03): the engine script table moved to this
 // top include block so the B1 RTL suite (which runs BEFORE the WS2 .inc is
 // included) can read TargetScriptClasses for its data-driven Arabic-script
@@ -2265,136 +2267,6 @@ void TestClipboardSequencePolling() {
         std::cout << "[PASS] REQ-R04 Clipboard Sequence Polling tests completed." << std::endl;
     } else {
         std::cout << "[FAIL] REQ-R04 Clipboard Sequence Polling tests: " << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
-    }
-}
-
-// SEC-M1 (session 260911_0002, verify 235100): pure clamp-seam pins for the
-// cloud GET-query URL budget. No network: ClampCloudQuery is the exact
-// function Translate() calls at entry, so these assert the shipped behavior
-// (under-limit passthrough unchanged, over-limit head/tail window with the
-// U+2026 marker, surrogate-pair safety, and the worst-case Korean URL staying
-// under the measured 16,200-byte OK boundary).
-void TestSecM1CloudQueryClamp() {
-    std::cout << "[RUN] Testing SEC-M1 cloud query clamp..." << std::endl;
-    const int failures_before = g_failed_count;
-    const int tests_before = g_test_count;
-
-    auto has_lone_surrogate = [](const std::wstring& s) {
-        for (size_t i = 0; i < s.size(); ++i) {
-            wchar_t c = s[i];
-            if (c >= 0xD800 && c <= 0xDBFF) { // high surrogate must pair with next
-                if (i + 1 >= s.size() || s[i + 1] < 0xDC00 || s[i + 1] > 0xDFFF) {
-                    return true;
-                }
-                ++i;
-            } else if (c >= 0xDC00 && c <= 0xDFFF) { // low surrogate without preceding high
-                return true;
-            }
-        }
-        return false;
-    };
-
-    // 0. Cap constants pinned to the accepted remediation spec. Compile-time
-    // (static_assert) to avoid the C4127 constant-condition warning, same
-    // pattern as the REQ-R01 budget-constant pins: 1,500 exactly, and the
-    // worst-case Korean encoding (9x) under the measured 16,200-B OK boundary.
-    static_assert(GoogleTranslate::kMaxCloudQueryUnits == 1500,
-                  "M1: cap is exactly 1500 UTF-16 units (verify 235100 §3)");
-    static_assert(GoogleTranslate::kMaxCloudQueryUnits * 9 < 16200,
-                  "M1: worst-case Korean stays under the 16,200-B OK boundary");
-
-    // 1. Empty input passes through unclamped.
-    {
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(L"");
-        TEST_CHECK(q.empty() && !clamped, "M1: empty passthrough, not clamped");
-    }
-
-    // 2. Under-limit input is returned byte-identical, clamped == false.
-    {
-        const std::wstring under = std::wstring(1499, L'A');
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(under);
-        TEST_CHECK(!clamped, "M1: 1499 units not clamped");
-        TEST_CHECK(q == under, "M1: under-limit passthrough unchanged");
-    }
-
-    // 3. Exactly-1500 boundary: still passthrough (cap is inclusive).
-    {
-        const std::wstring exact = std::wstring(1500, L'B');
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(exact);
-        TEST_CHECK(!clamped, "M1: exactly 1500 units not clamped (inclusive cap)");
-        TEST_CHECK(q == exact, "M1: exactly-1500 passthrough unchanged");
-    }
-
-    // 4. One over the limit: head+tail window with the U+2026 marker, both
-    //    halves preserved, result within budget, flagged clamped.
-    {
-        std::wstring src;
-        src.reserve(1501);
-        for (size_t i = 0; i < 1501; ++i) {
-            src.push_back(static_cast<wchar_t>(L'a' + (i % 26)));
-        }
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
-        TEST_CHECK(clamped, "M1: 1501 units clamped");
-        TEST_CHECK(q.find(L"\n\u2026\n") != std::wstring::npos,
-                   "M1: ellipsis marker inserted");
-        TEST_CHECK(q.size() <= GoogleTranslate::kMaxCloudQueryUnits,
-                   "M1: clamped query stays within the cap");
-        // keep_per_side = (1500 - 3) / 2 = 748: head and tail are exact.
-        TEST_CHECK(q.compare(0, 748, src, 0, 748) == 0,
-                   "M1: head preserved (first 748 units verbatim)");
-        TEST_CHECK(q.compare(q.size() - 748, 748, src, src.size() - 748, 748) == 0,
-                   "M1: tail preserved (last 748 units verbatim)");
-        TEST_CHECK(!has_lone_surrogate(q), "M1: plain clamp output is valid UTF-16");
-    }
-
-    // 5. Surrogate-pair boundary safety at the HEAD cut (high unit lands
-    //    exactly at the cut edge - it must be dropped, never emitted alone).
-    {
-        std::wstring src;
-        src.reserve(1600);
-        for (size_t i = 0; i < 747; ++i) src.push_back(L'A');
-        src.push_back(wchar_t(0xD83D)); // index 747: high surrogate
-        src.push_back(wchar_t(0xDE80)); // index 748: its low partner (cut away)
-        while (src.size() < 1600) src.push_back(L'B');
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
-        TEST_CHECK(clamped, "M1: surrogate head-cut input clamped");
-        TEST_CHECK(!has_lone_surrogate(q),
-                   "M1: head cut never emits a lone HIGH surrogate");
-    }
-
-    // 6. Surrogate-pair boundary safety at the TAIL cut (low unit sits exactly
-    //    at tail_start - the tail must shift inward past the orphaned low).
-    {
-        std::wstring src;
-        src.reserve(1600);
-        while (src.size() < 748) src.push_back(L'A'); // head region
-        src.push_back(wchar_t(0xD83D));               // high partner (cut away)
-        src.push_back(wchar_t(0xDE80));               // low at tail_start
-        while (src.size() < 1600) src.push_back(L'B');
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(src);
-        TEST_CHECK(clamped, "M1: surrogate tail-cut input clamped");
-        TEST_CHECK(!has_lone_surrogate(q),
-                   "M1: tail cut never emits a lone LOW surrogate");
-    }
-
-    // 7. URL-budget regression: worst-case Korean through the REAL encoding
-    //    chain must stay under the measured 16,200-byte OK boundary (probe
-    //    evidence: 16,200 B -> 200, 18,000 B -> 400).
-    {
-        const std::wstring korean(12000, L'각'); // far over any realistic clipboard
-        auto [q, clamped] = GoogleTranslate::ClampCloudQuery(korean);
-        TEST_CHECK(clamped, "M1: 12,000 Korean units clamped");
-        const std::string encoded = GoogleTranslate::UrlEncode(ToUtf8(q));
-        TEST_CHECK(encoded.size() < 16200,
-                   "M1: worst-case Korean clamped query percent-encodes under the 16,200-B OK boundary");
-    }
-
-    if (g_failed_count == failures_before) {
-        std::cout << "[PASS] SEC-M1 cloud query clamp tests completed ("
-                  << (g_test_count - tests_before) << " checks)." << std::endl;
-    } else {
-        std::cout << "[FAIL] SEC-M1 cloud query clamp tests: "
-                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
 
@@ -10985,14 +10857,18 @@ void TestPhase5AppClassifier() {
                "Guard rejects one newline over the limit");
     TEST_CHECK(EnterCaptureWithinGuard(kMaxEnterTranslateChars - 1, kMaxEnterTranslateNewlines - 1),
                "Guard allows under-limit capture");
-    static_assert(kMaxEnterTranslateChars == 16384, "F3/E9: guard char limit raised to 16384");
-    static_assert(kMaxEnterTranslateNewlines == 256, "F3/E9: guard newline limit raised to 256");
+    static_assert(kMaxEnterTranslateChars == 262144,
+                  "261121_0001 U-E (v0.10.9): guard char limit raised to 262144");
+    static_assert(kMaxEnterTranslateNewlines == 16384,
+                  "261121_0001 U-E (v0.10.9): guard newline limit raised to 16384");
     // The raise must be the documented values (예시1 justification in
     // win32_input.hpp: ~40 sentences of 100 chars, hook K-clamp coherence).
     TEST_CHECK(EnterCaptureWithinGuard(6 * 100 + 5, 5),
                "F3 guard: 예시1 accumulation (6 sentences x ~100 chars) inside limits");
-    TEST_CHECK(!EnterCaptureWithinGuard(20000, 3), "F3/E9 guard: pasted document still rejected by chars");
-    TEST_CHECK(!EnterCaptureWithinGuard(100, 257), "F3/E9 guard: 257-newline abuse still rejected");
+    TEST_CHECK(!EnterCaptureWithinGuard(262145, 3),
+               "261121_0001 U-E guard: pasted document still rejected by chars (262144 cap)");
+    TEST_CHECK(!EnterCaptureWithinGuard(100, 16385),
+               "261121_0001 U-E guard: 16385-newline abuse still rejected");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] Phase 5 app classifier tests completed." << std::endl;
@@ -12458,10 +12334,14 @@ void TestReqF3BlockSliceCurrentBlockOnly() {
     static_assert(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines), false) ==
                       static_cast<int>(kMaxEnterTranslateNewlines),
                   "F3 K: clamped at the guard's newline ceiling (abuse protection)");
-    static_assert(kMaxEnterTranslateNewlines == 256,
-                  "F3/E9 K clamp coherence: K+1 (257) > max terminators of any guard-passing capture (256), so a clamped/saturated K never over-slices");
-    TEST_CHECK(ShiftEnterKNext(255, false) == 256, "F3 K: last increment lands exactly on the clamp");
-    TEST_CHECK(ShiftEnterKNext(256, false) == 256, "F3 K: further Shift+Enters stay clamped");
+    static_assert(kMaxEnterTranslateNewlines == 16384,
+                  "261121_0001 U-E K clamp coherence: K+1 (16385) > max terminators of any guard-passing capture (16384), so a clamped/saturated K never over-slices");
+    TEST_CHECK(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines) - 1, false) ==
+                   static_cast<int>(kMaxEnterTranslateNewlines),
+               "F3 K: last increment lands exactly on the clamp");
+    TEST_CHECK(ShiftEnterKNext(static_cast<int>(kMaxEnterTranslateNewlines), false) ==
+                   static_cast<int>(kMaxEnterTranslateNewlines),
+               "F3 K: further Shift+Enters stay clamped");
     TEST_CHECK(ShiftEnterKNext(0, true) == 1, "F3 K: E1 - composition still advances K from zero");
 
     // ---- (c) 예시1: 6 sentences, each ended by a bare Enter -> 6 one-time
@@ -14125,9 +14005,9 @@ void TestCaptureSliceBeforeGuard() {
 // is sound for the [0..caret) accumulation geometry it was written for).
 // Applied to the rescue's whole-document span, a saturated K claims the
 // ENTIRE document (previously translated blocks included) as the translation
-// block - FindCurrentBlockStart can never cross K+1 = 257 terminators in a
-// guard-passing capture (<= 256 CRLF boundaries) even after the E9 raise to
-// 16384/256, so the worker's F3 slice
+// block - FindCurrentBlockStart can never cross K+1 = 16385 terminators in a
+// guard-passing capture (<= 8192 CRLF boundaries) even after the 261121_0001
+// U-E raise to 262144/16384, so the worker's F3 slice
 // never engages and the paste-back replaces the whole document with its
 // re-translation (the user's report). The production rule
 // (EffectiveBlockSliceK, win32_input.hpp - ONE definition used by the capture
@@ -18174,11 +18054,18 @@ void TestR107PeerIdentityGate() {
 #include "v107_user_model_tests.inc"
 
 // 261111_0001 (v0.10.7) U3 - E1/E2/E9 + ISSUE-013: the Shift+Enter line-
-// break accounting fix, the raised 16384/256 capture ceilings, and the
+// break accounting fix, the raised capture ceilings (262144/16384 after the
+// 261121_0001 U-E raise), and the
 // system-metric (SM_CXDRAG/SM_CYDRAG, DPI-scaled) drag threshold. Staged as
 // an .inc next to this runner; relies on the hook.hpp / mouse_hook.hpp /
 // win32_input.hpp includes above, same discipline as req052_ui_fixes_tests.inc.
 #include "v107_linebreak_tests.inc"
+
+// v0.10.9 (261121_0001, U-A): the shared 4-tier translation chunker and the
+// chunked-request IPC budget formulas (contracts C1/C3; the two engine-repo
+// headers are in the top include block). Registered at the end of main(),
+// per the end-of-file pattern.
+#include "translation_chunker_tests.inc" // v0.10.9 U-A (C1/C3): chunker + budget suite
 
 // 261108_0002 (v0.10.6) WS4 — Chat installer upgrade-safety pins (G1/G2/G3/
 // G4/G6/G9) against installer/setup.iss, plus the frozen contracts the other
@@ -18301,7 +18188,9 @@ struct Req044LstrMirror {
     // openai_declared_title/openai_declared_hint, struct slots AHEAD of the
     // AUTO chip so the English positional table keeps it last), while their
     // ENUM ids also sit before MenuSearchLangs - same Get() switch rule.
-    const wchar_t* f[199];
+    // 261121_0001 U-C (v0.10.9): the 4 reasoning/back-trans section strings appended
+    // after back_translate_reference (199 -> 203), same Get() switch mapping rule.
+    const wchar_t* f[203];
 };
 
 } // namespace
@@ -18314,9 +18203,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 199
-    static_assert(kExpectedFieldCount == 199,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 203
+    static_assert(kExpectedFieldCount == 203,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18324,11 +18213,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 199,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: LocalizedStrings field count is 199 "
+    TEST_CHECK(observed_field_count == 203,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C: LocalizedStrings field count is 203 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 199,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: StringId::EnumCount is 199 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id)");
+    TEST_CHECK(observed_enum_count == 203,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C: StringId::EnumCount is 203 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -20531,10 +20420,13 @@ void TestS261029UaOutputGate() {
         TEST_CHECK(src.find("LLAMA_TOKEN_ATTR_CONTROL") != std::string::npos &&
                        src.find("llama_vocab_get_attr") != std::string::npos,
                    "WS1: the probe reads the token ATTRIBUTE (not the deprecated getter)");
-        // (4) a single-line source stops at the first newline on BOTH rungs.
+        // (4) single-line handling is shared across both rungs: the generated
+        //     answer is flattened post-decode (261121_0001 U-D deleted the
+        //     first-newline decode break; the flag + flatten remain).
         TEST_CHECK(src.find("if (single_line_source) {") != std::string::npos &&
                        src.find("if (completion_form && single_line_source)") == std::string::npos,
-                   "WS1: the single-line newline stop covers both rungs");
+                   "WS1: single-line handling covers both rungs via the post-decode "
+                   "flatten (261121_0001 U-D: no first-newline break)");
         // (5) a chat-template model never degrades to the untemplated rung 2, and
         //     an aborted (PARTIAL) source echo is never shipped either - the
         //     adjudicated 261108_0002 follow-up. FULL echo keeps the RC-5 accept.
@@ -24707,7 +24599,6 @@ int main() {
     TestClipboardSequencePolling();
     TestGoogleTranslateModule();
     TestGoogleHttpProfile();
-    TestSecM1CloudQueryClamp(); // SEC-M1: cloud GET-query URL clamp seam
     TestRef34MapLanguageCodePins(); // REF-3.4: differential pins written before the if-chain collapse
     TestRef35JsonEscapePins(); // REF-3.5: shared \u-escape decoder differential pins (group 3 RED before the google_translate fix)
     TestRef36LayeredRendererPins(); // REF-3.6: shared renderer ownership + null-degradation + GDI-leak pins
@@ -25017,6 +24908,7 @@ int main() {
     // REQ-048 P3: cloud failure must record EngineFailed, never a silent
     // identity success — registered after the P2 suite.
     TestReq048CloudFailureSignaling();
+    TestV109GoogleChunkedCloudQuery(); // U-G v0.10.9: chunked cloud query (supersedes SEC-M1 clamp)
     // REQ-048 R2 (user feedback round 2): worker pinned-path absolutization,
     // tray pick grace, registry BOM tolerance — registered after the P3 suite.
     TestReq048R2ServingPath();
@@ -25101,7 +24993,8 @@ int main() {
     TestReq053GgufButtonSyncPins();
     TestReq053SoundQueuePolicy();
     // 261111_0001 (v0.10.7) U3: E1/E2/E9 + ISSUE-013 - the Shift+Enter
-    // LineBreakTracker contract, the 16384/256 ceiling matrix, and the
+    // LineBreakTracker contract, the 262144/16384 ceiling matrix
+    // (261121_0001 U-E raise), and the
     // system-metric drag threshold. Registered with the REQ-052/053 cluster
     // (same win32_input/mouse_hook surface). The entry feeds the shared
     // TEST_CHECK counters itself; the local only receives the suite delta
@@ -25308,6 +25201,12 @@ int main() {
     // the prompt-label accessor (see the include comment below).
     int v107_user_model_failures = 0;
     RunV107UserModelTests(v107_user_model_failures);
+    // v0.10.9 (261121_0001, U-A): the shared 4-tier translation chunker and
+    // the chunked-request IPC budget formulas (contracts C1/C3; see the
+    // includes above). Registered at the end of main(), per the end-of-file
+    // pattern.
+    int translation_chunker_failures = 0;
+    RunTranslationChunkerTests(translation_chunker_failures);
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

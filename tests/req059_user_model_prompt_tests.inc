@@ -159,7 +159,11 @@ void TestReq059UserModelPrompt() {
     }
 
     // REQ-059 perf constants in the helper header: 20 ms/token worst-case
-    // assumption, 27 s ceiling under the frozen 30 s client budget.
+    // assumption, 45 s ceiling. v0.10.9 (261121_0001 U-D, report §3.1-B item
+    // 6): the ceiling moved 27 s -> 45 s with the 20 s floor, because the
+    // generation floor doubled (ScaledMaxGenTokens) and a 2048-token decode
+    // legitimately needs ~41 s at the assumed rate. The C3 client deadline
+    // (V107ClientTimeoutMs = worker deadline + 30 s) stays above it.
     const std::filesystem::path tc_hpp = ResolveRepoFile(L"src\\engine_core\\translation_common.hpp");
     if (tc_hpp.empty()) {
         std::cout << "[SKIP] src/engine_core/translation_common.hpp not resolvable; "
@@ -170,10 +174,13 @@ void TestReq059UserModelPrompt() {
                               std::istreambuf_iterator<char>());
         TEST_CHECK(src.find("kDecodeMsPerAssumedToken = 20") != std::string::npos,
                    "REQ-059 (b): kDecodeMsPerAssumedToken is 20 (50 tok/s worst case)");
-        TEST_CHECK(src.find("kDecodeWallClockBudgetMaxMs = 27000") != std::string::npos,
-                   "REQ-059 (b): kDecodeWallClockBudgetMaxMs is 27000 (under the 30 s wire budget)");
+        TEST_CHECK(src.find("kDecodeWallClockBudgetMaxMs = 45000") != std::string::npos,
+                   "REQ-059 (b) / v0.10.9 U-D: kDecodeWallClockBudgetMaxMs is 45000 (the generation "
+                   "floor doubled, so the old 27 s ceiling would bind before the budget)");
+        TEST_CHECK(src.find("kDecodeWallClockBudgetMs = 20000") != std::string::npos,
+                   "REQ-059 (b) / v0.10.9 U-D: kDecodeWallClockBudgetMs is 20000 (was 12000)");
         TEST_CHECK(src.find("ScaledDecodeWallClockBudgetMs") != std::string::npos,
-                   "REQ-059 (b): the clamp helper exists (floor 12 s, ceiling 27 s)");
+                   "REQ-059 (b): the clamp helper exists (v0.10.9 U-D: floor 20 s, ceiling 45 s)");
     }
 
     // config.hpp declares the helper.

@@ -1,22 +1,37 @@
-// 260930_0003 (가+다, CEO decision session 260930_0003): paragraph-boundary
-// chunking + stitching pins for the over-budget translation path
-// (src/engine_core/translation_common.cpp). Headless: the split/join helpers
-// and the greedy packer (PackParagraphChunks, injectable measure) are
-// model-independent, so no GGUF is needed. Covers the three decision
-// points plus the review-260930 remediation:
-//   1. multi-paragraph over-budget input splits at paragraph boundaries and
-//      stitches back with the ORIGINAL separators verbatim (round-trip);
-//   2. a single huge paragraph yields exactly ONE chunk, i.e. the plan keeps
-//      the historical head+tail shrink for that chunk (TruncateHeadTailWindow
-//      fallback, source-pinned);
-//   3. the new budget boundary: 6128 fits unchunked, 6129 chunks
+// 260930_0003 (가+다, CEO decision session 260930_0003) + v0.10.9
+// (261121_0001 U-D): chunking + stitching pins for the over-budget translation
+// path (src/engine_core/translation_common.cpp). Headless: the split/join
+// helpers, the greedy packer (PackParagraphChunks, injectable measure) and the
+// v0.10.9 chunk-plan converter (V109BuildChunkSlices) are model-independent, so
+// no GGUF is needed.
+//
+// v0.10.9 (261121_0001 U-D, report §3.2) moved the PRODUCTION chunk source from
+// SplitParagraphBlocks (blank lines only - a long single paragraph was ONE
+// block, so it never chunked) to the shared 4-tier splitter
+// (translation_chunker.hpp) at kV109LocalChunkMaxUtf16Units. The paragraph
+// helpers below stay exported and pinned as the "blank-line paragraphs only"
+// text API; the local decode path no longer calls them.
+//
+// Covers:
+//   1. the blank-line splitter + join contract (paragraph blocks/separators
+//      verbatim) - the pure API, unchanged and still pinned;
+//   2. the v0.10.9 chunk plan: kV109LocalChunkMaxUtf16Units == 1200, the
+//      shared splitter's chunks converted by V109BuildChunkSlices, and the
+//      DELIMITER-PRESERVATION invariant (chunk texts + their trailing
+//      delimiters reproduce the input byte-exactly);
+//   3. the budget boundary: 6128 fits unchunked, 6129 chunks
 //      (PromptNeedsChunking + the REQ-R01 arithmetic static asserts);
 //   P1. leading blank lines + first paragraph at/over budget never dispatch
-//      a zero-length chunk (force-extend), reconstruction byte-faithful;
+//      a zero-length chunk (force-extend for the packer, delimiter FOLDING for
+//      the v0.10.9 converter), reconstruction byte-faithful;
 //   P2. packer pins behind a fake measure: chunk order, maximal packing,
 //      measure-failure honesty, single-huge-paragraph single chunk.
 // Defines TestS260930ChunkStitch; included by run_tests.cpp after
 // ResolveRepoFile (source pins read src/engine_core/translation_common.cpp).
+//
+// v0.10.9 U-D: includes the chunker + budget headers so the pins below can call
+// the SHARED contract (header-only, pure; resolved through the engine libs'
+// PUBLIC include dirs).
 
 void TestS260930ChunkStitch() {
     std::cout << "[RUN] Testing 260930_0003 Paragraph Chunking + Stitching..." << std::endl;
@@ -41,9 +56,13 @@ void TestS260930ChunkStitch() {
     TEST_CHECK(PromptNeedsChunking(100000),
                "260930_0003 (3): far-over-budget input chunks");
 
-    // ---- (1) split + stitch round-trips: separators preserved verbatim ----
-    // Helper: full reconstruction is Join(0, last) + separators.back() - the
-    // same shape Translate() uses when stitching fully-translated chunks.
+    // ---- (1) the blank-line splitter + join contract (pure API) ----
+    // Unchanged v0.10.9: SplitParagraphBlocks/JoinParagraphBlocks stay exported
+    // and are pinned as the "blank lines only" text API. The local decode path
+    // no longer calls them (section 2b), but a regression in the API - or a
+    // silent widening of what counts as a paragraph separator - still fails
+    // here.
+    // Helper: full reconstruction is Join(0, last) + separators.back().
     auto roundtrip = [](const std::wstring& src) {
         const emebalachat::ParagraphSplit split = emebalachat::SplitParagraphBlocks(src);
         if (split.blocks.empty()) {
@@ -109,15 +128,19 @@ void TestS260930ChunkStitch() {
                    "260930_0003 (1): two-chunk stitch (join[0,1] + boundary sep + join[2,2]) reproduces the input");
     }
 
-    // ---- (2) single-huge-paragraph fallback structure ----
+    // ---- (2) single long paragraph: why the production splitter changed ----
     {
-        // One paragraph, no blank line anywhere: 50k code units must NOT be
-        // split - the plan is exactly one chunk, and that chunk alone over the
-        // budget falls back to the REQ-R01 head+tail shrink inside
-        // translate_once (TruncateHeadTailWindow, still defined in engine.cpp).
+        // The blank-line splitter is BY DESIGN unable to split one paragraph: a
+        // 50k-unit run with no blank line is ONE block, and a chunk that alone
+        // exceeds the prompt budget falls back to the REQ-R01 head+tail shrink
+        // inside translate_once (TruncateHeadTailWindow). That is exactly the
+        // reported long-paste failure, and exactly why v0.10.9 (U-D) moved the
+        // production chunk source to the shared 4-tier splitter - pinned in
+        // section (2b) below, where the same input DOES split.
         std::wstring huge(50000, L'x');
         const emebalachat::ParagraphSplit split = emebalachat::SplitParagraphBlocks(huge);
-        TEST_CHECK(split.blocks.size() == 1, "260930_0003 (2): single huge paragraph stays ONE block");
+        TEST_CHECK(split.blocks.size() == 1,
+                   "260930_0003 (2): the blank-line API cannot split one paragraph (1 block)");
         if (split.blocks.size() == 1) {
             TEST_CHECK(split.blocks[0].size() == 50000,
                        "260930_0003 (2): the single block is the whole input (nothing discarded at split time)");
@@ -136,14 +159,147 @@ void TestS260930ChunkStitch() {
                        "260930_0003 (2): per-chunk head+tail fallback call present in the shrink loop");
             TEST_CHECK(src.find("input chunked into %zu parts") != std::string::npos,
                        "260930_0003 (2): the 010 diag line reports chunking");
-            TEST_CHECK(src.find("SplitParagraphBlocks(src_w)") != std::string::npos,
-                       "260930_0003 (2): the over-budget path splits the scrubbed source");
+            TEST_CHECK(src.find("SplitParagraphBlocks(src_w)") == std::string::npos,
+                       "v0.10.9 U-D: the over-budget path no longer splits with the blank-line API");
+            TEST_CHECK(src.find("SplitTextIntoTranslationChunks(ToUtf8(src_w), kV109LocalChunkMaxUtf16Units)") !=
+                           std::string::npos,
+                       "v0.10.9 U-D: the over-budget path splits the scrubbed source with the shared "
+                       "4-tier splitter at the pinned unit cap");
             TEST_CHECK(src.find("stitched += chunk_trailing_separators[k]") != std::string::npos,
-                       "260930_0003 (2): chunk outputs are stitched with the ORIGINAL separators");
+                       "260930_0003 (2): chunk outputs are stitched with the ORIGINAL delimiters");
+        }
+    }
+
+    // ---- (2b) v0.10.9 (261121_0001 U-D): the chunk plan + delimiter invariant ----
+    // THE pin the report's §3.2 row needs: the splitter's chunks are converted
+    // to (text, trailing delimiter) pairs whose concatenation reproduces the
+    // input BYTE-EXACTLY, and the local chunk cap is the pinned 1200 UTF-16
+    // units. A regression in either half (a dropped delimiter, a lost
+    // separator, a chunker that silently truncates) fails here.
+    {
+        static_assert(emebalachat::kV109LocalChunkMaxUtf16Units == 1200,
+                      "v0.10.9 U-D: the local chunk cap is 1200 UTF-16 units");
+
+        auto join_plan = [](const std::vector<std::wstring>& texts,
+                            const std::vector<std::wstring>& delimiters,
+                            const std::wstring& leading) {
+            // Mirrors the production loop (stitched += text; stitched += delim).
+            std::wstring out = leading;
+            for (size_t i = 0; i < texts.size(); ++i) {
+                out += texts[i];
+                if (i < delimiters.size()) {
+                    out += delimiters[i];
+                }
+            }
+            for (size_t i = texts.size(); i < delimiters.size(); ++i) {
+                out += delimiters[i]; // no text: never lost
+            }
+            return out;
+        };
+        auto convert = [](const std::string& utf8, std::vector<std::wstring>& texts,
+                          std::vector<std::wstring>& delimiters, std::wstring& leading) {
+            const std::vector<emebalachat::TranslationChunk> chunks =
+                emebalachat::SplitTextIntoTranslationChunks(
+                    utf8, emebalachat::kV109LocalChunkMaxUtf16Units);
+            return emebalachat::V109BuildChunkSlices(chunks, texts, delimiters, leading);
+        };
+
+        // 1. A multi-tier document: blank line (tier 1), single newline (tier 2),
+        //    sentence boundaries (tier 3) and a long run (tier 4).
+        {
+            std::string doc =
+                "First paragraph sentence one. Sentence two!\r\n\r\n"
+                "Second paragraph, a single line.\n"
+                "Third line with a question? Yes.\n\n"
+                "Last paragraph with a very long run of words that keeps going and going so that the "
+                "splitter must fall through to its clause tier instead of cutting a UTF-8 sequence.";
+            std::vector<std::wstring> texts;
+            std::vector<std::wstring> delimiters;
+            std::wstring leading;
+            TEST_CHECK(convert(doc, texts, delimiters, leading),
+                       "v0.10.9 U-D: the 4-tier splitter yields a non-empty chunk plan");
+            TEST_CHECK(texts.size() == delimiters.size(),
+                       "v0.10.9 U-D: every chunk carries exactly one trailing delimiter slot");
+            const std::wstring reconstructed = join_plan(texts, delimiters, leading);
+            TEST_CHECK(reconstructed == ToUtf16(doc),
+                       "v0.10.9 U-D: chunk texts + their ORIGINAL delimiters reproduce the input "
+                       "byte-exactly (delimiter-preservation invariant)");
+        }
+        // 2. A single long paragraph DOES split now (the reported failure).
+        {
+            std::string one_paragraph;
+            for (int i = 0; i < 400; ++i) {
+                one_paragraph += "This is sentence number " + std::to_string(i) + ". ";
+            }
+            std::vector<std::wstring> texts;
+            std::vector<std::wstring> delimiters;
+            std::wstring leading;
+            TEST_CHECK(convert(one_paragraph, texts, delimiters, leading),
+                       "v0.10.9 U-D: one long paragraph produces a chunk plan");
+            TEST_CHECK(texts.size() > 1,
+                       "v0.10.9 U-D: one long paragraph splits into MORE than one chunk "
+                       "(the blank-line API produced exactly one)");
+            for (const std::wstring& t : texts) {
+                TEST_CHECK(t.size() <= emebalachat::kV109LocalChunkMaxUtf16Units,
+                           "v0.10.9 U-D: no chunk exceeds the 1200 UTF-16 unit cap");
+            }
+            TEST_CHECK(join_plan(texts, delimiters, leading) == ToUtf16(one_paragraph),
+                       "v0.10.9 U-D: the long-paragraph plan still reproduces the input exactly");
+        }
+        // 3. Surrogate pairs never split, and the UTF-8 round trip is lossless.
+        {
+            std::string emoji;
+            for (int i = 0; i < 200; ++i) {
+                emoji += "ok \xF0\x9F\x98\x80 word. "; // U+1F600 between words
+            }
+            std::vector<std::wstring> texts;
+            std::vector<std::wstring> delimiters;
+            std::wstring leading;
+            TEST_CHECK(convert(emoji, texts, delimiters, leading),
+                       "v0.10.9 U-D: a surrogate-pair payload produces a chunk plan");
+            TEST_CHECK(join_plan(texts, delimiters, leading) == ToUtf16(emoji),
+                       "v0.10.9 U-D: surrogate-pair content round-trips unbroken");
+        }
+        // 4. Empty / whitespace-only input: no plan (never a zero-length decode).
+        {
+            std::vector<std::wstring> texts;
+            std::vector<std::wstring> delimiters;
+            std::wstring leading;
+            TEST_CHECK(!convert("", texts, delimiters, leading),
+                       "v0.10.9 U-D: empty input yields no chunk plan");
+            TEST_CHECK(!convert("   \r\n\t ", texts, delimiters, leading),
+                       "v0.10.9 U-D: whitespace-only input yields no chunk plan");
+        }
+        // 5. P1 defence: a chunk with no text NEVER reaches the decode ladder, and
+        //    its delimiter is folded into the neighbour instead of being dropped.
+        {
+            std::vector<emebalachat::TranslationChunk> hand_built = {
+                {"", "\n\n"},
+                {"aaa", "\n"},
+                {"", "  "},
+                {"bbb", ""},
+            };
+            std::vector<std::wstring> texts;
+            std::vector<std::wstring> delimiters;
+            std::wstring leading;
+            TEST_CHECK(emebalachat::V109BuildChunkSlices(hand_built, texts, delimiters, leading),
+                       "v0.10.9 U-D: a hand-built plan with empty-text chunks still converts");
+            TEST_CHECK(texts.size() == 2 && texts[0] == L"aaa" && texts[1] == L"bbb",
+                       "v0.10.9 U-D: empty-text chunks are dropped (never a zero-length decode)");
+            TEST_CHECK(leading == L"\n\n",
+                       "v0.10.9 U-D: a leading empty chunk folds its delimiter into the leading stub");
+            TEST_CHECK(delimiters.size() == 2 && delimiters[0] == L"\n  " && delimiters[1].empty(),
+                       "v0.10.9 U-D: a middle empty chunk folds its delimiter into the previous slot");
+            TEST_CHECK(join_plan(texts, delimiters, leading) == L"\n\naaa\n  bbb",
+                       "v0.10.9 U-D: the folded plan still reproduces the input exactly");
         }
     }
 
     // ---- P2 (review 260930): greedy packer pins behind an injectable measure ----
+    // v0.10.9 (U-D): the packer is no longer the local chunk source (the shared
+    // 4-tier splitter is), but it stays EXPORTED as the "paragraph blocks ->
+    // token-budget ranges" utility and its contract is still pinned here, so a
+    // sibling consumer cannot get a silently broken packer.
     // Fake measure: token cost = fixed prompt overhead + per-block weights +
     // per-internal-separator cost. Deterministic, so packing outcomes are
     // exact. The packer is llama-independent; these pins are the headless
@@ -193,10 +349,12 @@ void TestS260930ChunkStitch() {
                    "260930_0003 P2: a tokenizer failure inside the measure aborts packing honestly (nullopt)");
     }
 
-    // ---- P1 (review 260930): leading blank lines + first paragraph at/over
-    // budget must NOT dispatch an empty chunk (the exact long-paste
-    // regression). The leading empty block is force-extended with the next
-    // block; separator reconstruction stays byte-faithful. ----
+    // ---- P1 (review 260930 + v0.10.9 U-D): leading blank lines must NOT
+    // dispatch an empty chunk (the exact long-paste regression). The packer
+    // force-extends the leading empty block with the next one; the v0.10.9
+    // chunk-plan converter (section 2b case 5) folds a leading delimiter into
+    // the leading stub. Separator reconstruction stays byte-faithful either way.
+    // ----
     {
         const std::wstring big(3000, L'y'); // first REAL paragraph
         const std::wstring src = L"\n\n" + big + L"\r\n\r\n" + L"tail";

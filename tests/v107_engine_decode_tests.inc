@@ -11,20 +11,27 @@
 //      the bounded 1.10 retry, and V107MaxSamplerRetries() == 1.
 //   2. Micro-chunk threshold: kV107ChunkTokenThreshold == 300 and
 //      V107NeedsMicroChunking boundary (300 fits single-shot, 301 chunks).
+//   2b. v0.10.9 (U-D): the chunk deadline contract - kV109LocalChunkMaxUtf16Units
+//      == 1200 and the C3 envelope (worker deadline >= 30 s, client timeout
+//      strictly above it and <= the 600 s protocol cap).
 //   3. Previous-chunk context prefix: BuildV107PrevChunkContextPrefix is
 //      empty for an empty previous chunk and clearly marked otherwise.
 //   4. Length-ratio guardrail: V107LengthRatioViolated decision matrix
-//      (exempt <= 40 source code points; [30%, 250%] band above it),
-//      plus the OutputRejectReason::LengthRatio wiring (name + classify).
+//      (exempt <= 120 source code points; [15%, 600%] band above it - the
+//      v0.10.9 U-D recalibration), plus the OutputRejectReason::LengthRatio
+//      wiring (name + classify).
 //   5. Shipped defaults: worker_protocol.hpp SamplingParams.rep_pen == 1.0
 //      and AppConfig.repetition_penalty == 1.0 (source pins + live struct).
 //   6. Source pins: the retry wiring exists in translation_common.cpp
 //      (V107EffectiveRepPen at the sampler switch, the bounded retry arms,
-//      the micro-chunk threshold at the split decision, the prev-chunk
-//      prefix in the chunk loop, the length-ratio gate in the classifier).
+//      the micro-chunk threshold at the split decision, the 4-tier chunker +
+//      V109BuildChunkSlices at the chunk source, the derived
+//      V107ChunkedDeadlineMs deadline, the prev-chunk prefix in the chunk
+//      loop, the length-ratio gate in the classifier).
 // ---------------------------------------------------------------------------
 
 #include "engine_core/translation_common.hpp" // mid-TU include, pragma-once safe (engine repo since 261111_0001 U7; resolved via the engine libs' PUBLIC include dirs)
+#include "engine_host_budget.hpp" // v0.10.9 (261121_0001 U-D, contract C3): the chunk-deadline / client-timeout curve the chunked path derives from
 
 int RunV107EngineDecodeTests(int& failures) {
     std::cout << "[RUN] Testing v0.10.7 engine decode fixes (261111_0001 U4)..." << std::endl;
@@ -125,55 +132,45 @@ int RunV107EngineDecodeTests(int& failures) {
                    "v0.10.7 G-08: PromptNeedsChunking does not select the split (6129 chunks via the same helper)");
     }
 
-    // ---- 2b. G-07: the chunk-budget projection + up-front refusal (pure) ----
+    // ---- 2b. v0.10.9 (261121_0001, U-D): the chunk deadline contract ----
+    // The fixed 28 s whole-request budget AND its up-front projection refusal
+    // (V107ChunkBudgetExceeded) are gone. WHY (report §3.2 "로컬 GGUF 청크 예산
+    // 사전 거부"): the refusal rejected any input whose projected chunk work
+    // exceeded 28 s BEFORE chunk 1 decoded, so a long single paragraph never
+    // translated at all. The deadline is now derived from the request's own
+    // UTF-16 size through the shared C3 budget header, and the client derives
+    // its timeout from the SAME helper.
     {
-        static_assert(em::kChunkedRequestBudgetMs == 28000,
-                      "v0.10.7 G-07: the whole-request chunk budget stays 28 s");
-        static_assert(em::V107ProjectedPerChunkBudgetMs() == em::kV107MeasuredWorstChunkMs,
-                      "v0.10.7 G-07: per-chunk projection is the measured worst chunk (the bounded sampler retry stays a mid-loop degenerate-tail clamp, not part of the projection)");
-        // Zero / degenerate inputs project zero work and never refuse.
-        TEST_CHECK(em::V107ProjectedChunkBudgetMs(0, 0) == 0,
-                   "v0.10.7 G-07: zero prompt / zero chunks projects zero ms");
-        TEST_CHECK(!em::V107ChunkBudgetExceeded(301, 1),
-                   "v0.10.7 G-07: a single 301-token chunk is never refused");
-        // The packer measures the FULL prompt (template overhead included)
-        // against 300, so N ~= (n-O)/(300-O), NOT ceil(n/300): the projection
-        // takes the conservative max(packed, ceil(n/300)).
-        // 6128-token prompt: the helper's conservative ceil(6128/300) FLOOR
-        // is 21 chunks (the corrected (n-O)/(300-O) estimate is ~26, and the
-        // projection takes the larger of packed/floor) -> 21 * 2000 ms
-        // = 42000 ms projected > 28000 -> refused up front. F-3 (round 3)
-        // aligned the production comment's worked examples with the
-        // (n-O)/(300-O) formula; this row pins the ceil floor the helper
-        // still applies.
-        TEST_CHECK(em::V107ProjectedChunkBudgetMs(6128, 21) == 21LL * em::V107ProjectedPerChunkBudgetMs(),
-                   "v0.10.7 G-07: 6128-token prompt projects 21 chunks x per-chunk worst");
-        TEST_CHECK(em::V107ChunkBudgetExceeded(6128, 21),
-                   "v0.10.7 G-07: a 6128-token / 21-chunk request is refused UP FRONT (projection 42 s > 28 s)");
-        // A 2500-token (1-2 page) input: the ceil floor is 9 chunks (the
-        // corrected (n-O)/(300-O) estimate is ~11 -> 22000 ms, still under the
-        // budget) -> 9 * 2000 = 18000 ms <= 28000 -> NOT refused; it runs
-        // under the whole-request deadline.
-        TEST_CHECK(em::V107ProjectedChunkBudgetMs(2500, 9) == 18000LL,
-                   "v0.10.7 G-07: a 2500-token / 9-chunk request projects 18 s");
-        TEST_CHECK(!em::V107ChunkBudgetExceeded(2500, 9),
-                   "v0.10.7 G-07: a 2500-token / 9-chunk request is NOT refused (18 s <= 28 s)");
-        // Boundary: the largest chunk count that still fits the budget.
-        // 28000 / 2000 = 14 chunks exactly -> 28000 ms is NOT > 28000, so 14
-        // chunks pass, 15 refuse.
-        TEST_CHECK(!em::V107ChunkBudgetExceeded(4200, 14),
-                   "v0.10.7 G-07: 14 chunks project exactly 28000 ms — at the deadline, not over it");
-        TEST_CHECK(em::V107ChunkBudgetExceeded(4201, 15),
-                   "v0.10.7 G-07: 15 chunks project 30000 ms > 28000 — refused");
-        // The projection never under-counts: a packed count BELOW the
-        // ceil(n/300) bound is raised to the bound (conservative).
-        TEST_CHECK(em::V107ProjectedChunkBudgetMs(6128, 1) ==
-                       em::V107ProjectedChunkBudgetMs(6128, 21),
-                   "v0.10.7 G-07: the projection floors the chunk count at ceil(n/300)");
-        // The frozen client deadline still bounds the whole request: the
-        // budget constant stays under the 30 s v1 client timeout.
-        static_assert(em::kChunkedRequestBudgetMs < 30000,
-                      "v0.10.7 G-07: the whole-request budget stays under the frozen 30 s client timeout");
+        static_assert(em::kV109LocalChunkMaxUtf16Units == 1200,
+                      "v0.10.9 U-D: the local 4-tier chunker caps a chunk at 1200 UTF-16 units");
+        // Contract C3 value envelope (the exact curve belongs to the budget
+        // header's own suite; these pin the ENDS the engine relies on).
+        // Read through volatile: every value below is constexpr, so a plain
+        // local would make the /W4 build flag these conditions as constant
+        // (C4127) - the same idiom the wall-clock budget pin uses.
+        volatile int deadline_floor_v = em::V107ChunkedDeadlineMs(0);
+        volatile int deadline_small_v = em::V107ChunkedDeadlineMs(1200);
+        volatile int deadline_huge_v = em::V107ChunkedDeadlineMs(1000000);
+        volatile int client_floor_v = em::V107ClientTimeoutMs(0);
+        volatile int client_small_v = em::V107ClientTimeoutMs(1200);
+        volatile int client_huge_v = em::V107ClientTimeoutMs(1000000);
+        const int deadline_floor = deadline_floor_v;
+        const int deadline_small = deadline_small_v;
+        const int deadline_huge = deadline_huge_v;
+        TEST_CHECK(deadline_floor >= 30000,
+                   "v0.10.9 U-D: the chunked worker deadline never drops below 30 s");
+        TEST_CHECK(deadline_huge <= 570000,
+                   "v0.10.9 U-D: the chunked worker deadline stays under the protocol maximum");
+        TEST_CHECK(deadline_small >= deadline_floor && deadline_huge >= deadline_small,
+                   "v0.10.9 U-D: the deadline is non-decreasing in the request size");
+        TEST_CHECK(client_floor_v > deadline_floor && client_small_v > deadline_small,
+                   "v0.10.9 U-D: the client timeout is strictly above the worker deadline "
+                   "(C3 ordering: worker + 30 s margin)");
+        TEST_CHECK(client_huge_v <= 600000,
+                   "v0.10.9 U-D: the client timeout never exceeds the frozen 600 s protocol cap");
+        TEST_CHECK(em::kDecodeWallClockBudgetMaxMs < client_floor_v,
+                   "v0.10.9 U-D: the 45 s engine decode ceiling stays under the client deadline, "
+                   "so the engine budget is always the tighter of the two");
     }
 
     // ---- 3. previous-chunk context prefix (pure builder) ----
@@ -194,62 +191,58 @@ int RunV107EngineDecodeTests(int& failures) {
 
     // ---- 4. length-ratio guardrail decision ----
     {
-        static_assert(em::kV107LengthGuardMinSourceCodePoints == 40,
-                      "v0.10.7: the guardrail scope floor is 40 source code points");
-        static_assert(em::kV107LengthRatioMinPercent == 30 && em::kV107LengthRatioMaxPercent == 250,
-                      "v0.10.7: the guardrail band is [30%, 250%]");
-        // Exempt: sources at or below 40 code points never trip the guard,
+        static_assert(em::kV107LengthGuardMinSourceCodePoints == 120,
+                      "v0.10.9 U-D: the guardrail scope floor is 120 source code points");
+        static_assert(em::kV107LengthRatioMinPercent == 15 && em::kV107LengthRatioMaxPercent == 600,
+                      "v0.10.9 U-D: the guardrail band is [15%, 600%]");
+        // Exempt: sources at or below 120 code points never trip the guard,
         // whatever the output length (single words / short messages /
-        // pure-numeric / punctuation-only sources unchanged).
+        // pure-numeric / punctuation-only sources unchanged). The report's
+        // 71-code-point sentence is exactly this case.
         TEST_CHECK(!em::V107LengthRatioViolated(1, 1000),
                    "v0.10.7: a 1-code-point source is exempt (huge output allowed)");
-        TEST_CHECK(!em::V107LengthRatioViolated(40, 0),
-                   "v0.10.7: a 40-code-point source is exempt (empty output allowed)");
+        TEST_CHECK(!em::V107LengthRatioViolated(120, 0),
+                   "v0.10.9 U-D: a 120-code-point source is exempt (the floor itself)");
         TEST_CHECK(!em::V107LengthRatioViolated(20, 5000),
                    "v0.10.7: pure-numeric/short sources are exempt regardless of ratio");
-        // Band boundaries for a 100-code-point source: [30, 250].
-        TEST_CHECK(!em::V107LengthRatioViolated(100, 30),
-                   "v0.10.7: output at exactly 30% of a 100-cp source passes");
-        TEST_CHECK(!em::V107LengthRatioViolated(100, 250),
-                   "v0.10.7: output at exactly 250% of a 100-cp source passes");
-        TEST_CHECK(em::V107LengthRatioViolated(100, 29),
-                   "v0.10.7: output below 30% of the source is rejected (dropped content)");
-        TEST_CHECK(em::V107LengthRatioViolated(100, 251),
-                   "v0.10.7: output above 250% of the source is rejected (invented content)");
-        TEST_CHECK(!em::V107LengthRatioViolated(100, 100),
+        TEST_CHECK(!em::V107LengthRatioViolated(71, 20),
+                   "v0.10.9 U-D: the reported 71-code-point sentence -> a 20-cp Korean answer "
+                   "(28%) is EXEMPT (the old 30% floor rejected it)");
+        TEST_CHECK(!em::V107LengthRatioViolated(45, 155),
+                   "v0.10.9 U-D: a 45-cp Korean sentence -> 155 English code points (344%) is "
+                   "EXEMPT (the old 250% ceiling rejected it)");
+        // Band boundaries for a 1000-code-point source: [150, 6000].
+        TEST_CHECK(!em::V107LengthRatioViolated(1000, 150),
+                   "v0.10.9 U-D: output at exactly 15% of a 1000-cp source passes");
+        TEST_CHECK(!em::V107LengthRatioViolated(1000, 6000),
+                   "v0.10.9 U-D: output at exactly 600% of a 1000-cp source passes");
+        TEST_CHECK(em::V107LengthRatioViolated(1000, 149),
+                   "v0.10.9 U-D: output below 15% of the source is rejected (dropped content)");
+        TEST_CHECK(em::V107LengthRatioViolated(1000, 6001),
+                   "v0.10.9 U-D: output above 600% of the source is rejected (invented content)");
+        TEST_CHECK(!em::V107LengthRatioViolated(1000, 1000),
                    "v0.10.7: a 1:1 translation passes");
-        TEST_CHECK(!em::V107LengthRatioViolated(41, 41),
+        TEST_CHECK(!em::V107LengthRatioViolated(121, 121),
                    "v0.10.7: just above the floor, a 1:1 output passes");
-        TEST_CHECK(em::V107LengthRatioViolated(41, 10),
-                   "v0.10.7: just above the floor, a 10-cp output (<30% of 41) is rejected");
         // R2-F: non-multiple-of-100 source lengths — the band edge is EXACT
-        // (cross-multiplication), not floored. 41 cp source: 30% = 12.3, so a
-        // 12-cp output (29.27%) must VIOLATE and a 13-cp output (31.7%) must
-        // pass; the old floored bound (41*30/100 = 12) admitted the 12.
-        TEST_CHECK(em::V107LengthRatioViolated(41, 12),
-                   "v0.10.7 R2-F: 41-cp source + 12-cp output (29.27%) is rejected (exact bound)");
-        TEST_CHECK(!em::V107LengthRatioViolated(41, 13),
-                   "v0.10.7 R2-F: 41-cp source + 13-cp output (31.7%) passes (exact bound)");
-        // Upper edge, same source: 250% of 41 = 102.5, so 102 passes, 103 violates.
-        TEST_CHECK(!em::V107LengthRatioViolated(41, 102),
-                   "v0.10.7 R2-F: 41-cp source + 102-cp output (248.8%) passes (exact bound)");
-        TEST_CHECK(em::V107LengthRatioViolated(41, 103),
-                   "v0.10.7 R2-F: 41-cp source + 103-cp output (251.2%) is rejected (exact bound)");
-        // Another non-multiple: 7-cp source is under the 40-cp floor (exempt),
-        // 99-cp source: 30% = 29.7 -> 29 violates, 30 passes.
-        TEST_CHECK(em::V107LengthRatioViolated(99, 29),
-                   "v0.10.7 R2-F: 99-cp source + 29-cp output (29.29%) is rejected");
-        TEST_CHECK(!em::V107LengthRatioViolated(99, 30),
-                   "v0.10.7 R2-F: 99-cp source + 30-cp output (30.3%) passes");
-        // Large source: 1000 cp -> [300, 2500].
-        TEST_CHECK(em::V107LengthRatioViolated(1000, 299),
-                   "v0.10.7: 29.9% of a 1000-cp source is rejected");
-        TEST_CHECK(!em::V107LengthRatioViolated(1000, 300),
-                   "v0.10.7: exactly 30% of a 1000-cp source passes");
-        TEST_CHECK(!em::V107LengthRatioViolated(1000, 2500),
-                   "v0.10.7: exactly 250% of a 1000-cp source passes");
-        TEST_CHECK(em::V107LengthRatioViolated(1000, 2501),
-                   "v0.10.7: 250.1% of a 1000-cp source is rejected");
+        // (cross-multiplication), not floored. 121 cp source: 15% = 18.15, so an
+        // 18-cp output must VIOLATE and a 19-cp output (15.7%) must pass; a
+        // floored bound (121*15/100 = 18) would admit the 18.
+        TEST_CHECK(em::V107LengthRatioViolated(121, 18),
+                   "v0.10.9 U-D R2-F: 121-cp source (just above the floor) + 18-cp output "
+                   "(14.88%) is rejected (exact bound)");
+        TEST_CHECK(!em::V107LengthRatioViolated(121, 19),
+                   "v0.10.9 U-D R2-F: 121-cp source + 19-cp output (15.7%) passes (exact bound)");
+        // Upper edge, same source: 600% of 121 = 726, so 726 passes, 727 violates.
+        TEST_CHECK(!em::V107LengthRatioViolated(121, 726),
+                   "v0.10.9 U-D R2-F: 121-cp source + 726-cp output (600%) passes (exact bound)");
+        TEST_CHECK(em::V107LengthRatioViolated(121, 727),
+                   "v0.10.9 U-D R2-F: 121-cp source + 727-cp output (600.8%) is rejected (exact bound)");
+        // Another non-multiple: a 500-cp source: 15% = 75 -> 74 violates, 75 passes.
+        TEST_CHECK(em::V107LengthRatioViolated(500, 74),
+                   "v0.10.9 U-D R2-F: 500-cp source + 74-cp output (14.8%) is rejected");
+        TEST_CHECK(!em::V107LengthRatioViolated(500, 75),
+                   "v0.10.9 U-D R2-F: 500-cp source + 75-cp output (15%) passes");
 
         // Wiring: the reason name + the classifier actually use the guard.
         TEST_CHECK(std::string(em::OutputRejectReasonName(em::OutputRejectReason::LengthRatio)) ==
@@ -276,13 +269,13 @@ int RunV107EngineDecodeTests(int& failures) {
         // it). 30x "번역 " is exactly such a run.
         std::wstring ok_out;
         for (int i = 0; i < 30; ++i) {
-            ok_out += L"\uBC88\uC5ED "; // 30x the same Hangul word, 150 cp, in [30%,250%]
+            ok_out += L"\uBC88\uC5ED "; // 30x the same Hangul word, 150 cp, in [15%,600%]
         }
         TEST_CHECK(em::ClassifyTranslationOutput(ok_out, long_src, "KO") ==
                        em::OutputRejectReason::Repetition,
                    "v0.10.7: a repetitive in-band answer is claimed by the Repetition gate first");
         // A faithful-length long answer of DISTINCT words is NOT rejected by
-        // any gate (no token run -> repetition silent; 92/205 = 45% in the
+        // any gate (no token run -> repetition silent; ~114/205 = 56% in the
         // length band; Hangul answer to a KO target passes the script gates).
         static const wchar_t* const kDistinctWords[] = {
             L"\uC0AC\uACFC", L"\uBC14\uB098\uB098", L"\uD559\uAD50", L"\uCE5C\uAD6C",
@@ -301,8 +294,8 @@ int RunV107EngineDecodeTests(int& failures) {
         }
         const std::size_t distinct_cp = em::CountCodePoints(distinct_out);
         const std::size_t long_src_cp = em::CountCodePoints(long_src);
-        TEST_CHECK(distinct_cp * 100 >= long_src_cp * 30 && distinct_cp * 100 <= long_src_cp * 250,
-                   "v0.10.7: distinct-word fixture stays inside the [30%, 250%] length band");
+        TEST_CHECK(distinct_cp * 100 >= long_src_cp * 15 && distinct_cp * 100 <= long_src_cp * 600,
+                   "v0.10.9 U-D: distinct-word fixture stays inside the [15%, 600%] length band");
         TEST_CHECK(em::ClassifyTranslationOutput(distinct_out, long_src, "KO") ==
                        em::OutputRejectReason::None,
                    "v0.10.7: a distinct-word in-band long answer passes the whole gate");
@@ -313,7 +306,7 @@ int RunV107EngineDecodeTests(int& failures) {
         const std::wstring big_out(60, L'\uC815');
         TEST_CHECK(em::ClassifyTranslationOutput(big_out, short_src, "KO") !=
                        em::OutputRejectReason::LengthRatio,
-                   "v0.10.7: a <=40-cp source never yields LengthRatio (exempt scope)");
+                   "v0.10.9 U-D: a <=120-cp source never yields LengthRatio (exempt scope)");
     }
 
     // ---- 5. shipped defaults (live structs + source pins) ----
@@ -373,9 +366,24 @@ int RunV107EngineDecodeTests(int& failures) {
                        "v0.10.7: the sampler switch consumes the two-stage effective rep_pen");
             TEST_CHECK(src.find("sampler_retries < V107MaxSamplerRetries()") != std::string::npos,
                        "v0.10.7: every retry arm is bounded by V107MaxSamplerRetries()");
-            TEST_CHECK(src.find("PackParagraphChunks(split, kV107ChunkTokenThreshold, measure_chunk)") !=
+            // v0.10.9 (261121_0001, U-D; report §3.2 / contract C1): the chunked
+            // path splits with the SHARED 4-tier chunker at
+            // kV109LocalChunkMaxUtf16Units, and the blank-line-only paragraph
+            // splitter is gone from it (that splitter needed a BLANK line, so a
+            // long single paragraph never chunked - the reported failure).
+            TEST_CHECK(src.find(
+                           "SplitTextIntoTranslationChunks(ToUtf8(src_w), kV109LocalChunkMaxUtf16Units)") !=
                            std::string::npos,
-                       "v0.10.7: the packer budget is the ~300-token micro-chunk threshold");
+                       "v0.10.9 U-D: the chunked path splits with the shared 4-tier chunker at the "
+                       "pinned unit cap");
+            TEST_CHECK(src.find("SplitParagraphBlocks(src_w)") == std::string::npos,
+                       "v0.10.9 U-D: the blank-line-only splitter no longer selects the local chunks");
+            TEST_CHECK(src.find("V109BuildChunkSlices(translation_chunks, chunks, chunk_trailing_separators") !=
+                           std::string::npos,
+                       "v0.10.9 U-D: the chunk plan is converted (and its delimiters preserved) by "
+                       "V109BuildChunkSlices");
+            TEST_CHECK(src.find("stitched += chunk_trailing_separators[k]") != std::string::npos,
+                       "v0.10.9 U-D: chunk outputs are stitched with the ORIGINAL delimiters verbatim");
             // R2-B + G-08 (round-2): pin the DECISION text, not just the
             // predicate name — the single-shot arm must be gated on the
             // SHARED helper V107ShouldMicroChunk ALONE, and the old
@@ -389,9 +397,35 @@ int RunV107EngineDecodeTests(int& failures) {
             TEST_CHECK(src.find("!V107NeedsMicroChunking(n_full_prompt) || !PromptNeedsChunking") ==
                            std::string::npos,
                        "v0.10.7 R2-B: the broken `|| !PromptNeedsChunking(...)` split condition is gone");
-            // G-07: the up-front refusal is wired into the chunked path.
-            TEST_CHECK(src.find("V107ChunkBudgetExceeded(n_full_prompt, chunks.size())") != std::string::npos,
-                       "v0.10.7 G-07: the chunked path refuses up front via V107ChunkBudgetExceeded");
+            // v0.10.9 U-D: the up-front refusal is GONE (it answered
+            // engine_failed before chunk 1 for any long paste) and the
+            // whole-request deadline is derived from the request size instead.
+            // The CALL-site needles are used on purpose: the comments above may
+            // still NAME the removed policy (history), but nothing may call it.
+            TEST_CHECK(src.find("V107ChunkBudgetExceeded(") == std::string::npos,
+                       "v0.10.9 U-D: the 28 s up-front chunk-budget refusal is removed from the "
+                       "chunked path");
+            TEST_CHECK(src.find("kChunkedRequestBudgetMs") == std::string::npos,
+                       "v0.10.9 U-D: no production line still uses the removed fixed 28 s budget");
+            TEST_CHECK(src.find("const int chunked_deadline_ms = V107ChunkedDeadlineMs(src_w.size());") !=
+                           std::string::npos,
+                       "v0.10.9 U-D: the whole-request deadline derives from V107ChunkedDeadlineMs "
+                       "(UTF-16 size of the scrubbed source)");
+            TEST_CHECK(src.find("ENGINE/Translate/049") != std::string::npos,
+                       "v0.10.9 U-D: the mid-loop deadline refusal still answers the honest failure");
+            // Fix round 1 (F-3): the single-line flatten runs AFTER every output
+            // gate (it used to hand the caller " 사이버 " and the ws1 pin claimed
+            // a caller trimmed it; none does). Positional pin: the ONLY flatten
+            // call sits after the LAST classify call, so no gate can judge the
+            // flattened text instead of the model's own output.
+            const std::size_t flatten_pos =
+                src.find("trimmed_u8 = V109NormalizeSingleLineOutput(trimmed_u8);");
+            const std::size_t last_gate_pos =
+                src.rfind("ClassifyTranslationOutput(ToUtf16(trimmed_u8), cur, tgt_code)");
+            TEST_CHECK(flatten_pos != std::string::npos && last_gate_pos != std::string::npos &&
+                           last_gate_pos < flatten_pos,
+                       "261121_0001 fix round 1 F-3: the single-line flatten runs after the last "
+                       "output gate (evidence is judged pre-flatten)");
             // G-16 (round-2): the retry DIAGs print the EFFECTIVE penalty
             // max(1.10, configured), not the literal 1.10.
             TEST_CHECK(src.find("V107EffectiveRepPen(rep_pen, sampler_retries))\n") != std::string::npos ||
@@ -472,22 +506,31 @@ int RunV107EngineDecodeTests(int& failures) {
                 TEST_CHECK(src.find("repetition detected on the configured first pass") !=
                                std::string::npos,
                            "v0.10.7 F-3(a): DIAG 055 names the configured first pass");
-                // (b) the projection EXCLUDES the bounded sampler retry
-                // (V107ProjectedChunkBudgetMs is chunks x 2000 ms only).
+                // (b) v0.10.9 U-D: the projection refusal is gone, so the
+                // comment that described it must be gone too - and the
+                // replacement must name the DERIVED deadline (a comment that
+                // still promised a fixed 28 s would be a lie about the code).
                 TEST_CHECK(src.find("incl. the one bounded sampler retry") == std::string::npos,
                            "v0.10.7 F-3(b): the refusal comment no longer claims the projection includes the retry");
-                TEST_CHECK(src.find("does NOT add") != std::string::npos &&
-                               src.find("V107ProjectedChunkBudgetMs does NOT add") != std::string::npos,
-                           "v0.10.7 F-3(b): the refusal comment states the retry is excluded from the projection");
-                // (c) the packer measures the FULL prompt (build_final_prompt
-                // through measure_chunk), not source text alone.
+                TEST_CHECK(src.find("V107ProjectedChunkBudgetMs") == std::string::npos &&
+                               src.find("V107ChunkBudgetExceeded(") == std::string::npos,
+                           "v0.10.9 U-D: the removed chunk-work projection is gone from the source");
+                TEST_CHECK(src.find("V107ChunkedDeadlineMs") != std::string::npos,
+                           "v0.10.9 U-D: the chunked path documents the derived deadline helper");
+                // (c) v0.10.9 U-D: the chunk source is the shared 4-tier
+                // splitter, not a token-measured paragraph packer - the comment
+                // must say so, and the freed capacity must be spent on the
+                // UNIT cap (the splitter's own bound), not on a token re-measure.
                 TEST_CHECK(src.find("of source text per chunk") == std::string::npos,
                            "v0.10.7 F-3(c): the packing budget is no longer described as source-only");
-                TEST_CHECK(src.find("source text PLUS the instruction/template") != std::string::npos,
-                           "v0.10.7 F-3(c): the packing comment names the full prompt (source + overhead)");
+                TEST_CHECK(src.find("kV109LocalChunkMaxUtf16Units") != std::string::npos,
+                           "v0.10.9 U-D: the chunking comment names the splitter's unit cap");
+                TEST_CHECK(src.find("4-tier splitter") != std::string::npos,
+                           "v0.10.9 U-D: the chunking comment names the shared 4-tier splitter");
 
-                // (d) the header's worked examples follow (n-O)/(300-O), not
-                // ceil(n/300).
+                // (d) v0.10.9 U-D: the header no longer documents an
+                // (n-O)/(300-O) projection at all (the projection is gone), and
+                // the deadline it documents is the C3 curve.
                 const std::filesystem::path tch_path =
                     ResolveRepoFile(L"src\\engine_core\\translation_common.hpp");
                 TEST_CHECK(!tch_path.empty(), "v0.10.7 F-3 pin: translation_common.hpp resolves");
@@ -501,12 +544,12 @@ int RunV107EngineDecodeTests(int& failures) {
                     TEST_CHECK(hpp.find("~9-chunk (2500-token)") == std::string::npos &&
                                    hpp.find("~21-chunk (6128-token)") == std::string::npos,
                                "v0.10.7 F-3(d): the old ceil(n/300) chunk/seconds example is gone");
-                    TEST_CHECK(hpp.find("ceil((2500 - 64) / (300 - 64)) = 11") != std::string::npos &&
-                                   hpp.find("ceil((6128 - 64) / (300 - 64)) = 26") != std::string::npos,
-                               "v0.10.7 F-3(d): the worked examples follow the documented (n-O)/(300-O) formula");
-                    TEST_CHECK(hpp.find("~11-chunk (2500-token)") != std::string::npos &&
-                                   hpp.find("~26-chunk (6128-token)") != std::string::npos,
-                               "v0.10.7 F-3(d): the projection example uses the corrected chunk counts");
+                    TEST_CHECK(hpp.find("kChunkedRequestBudgetMs") == std::string::npos &&
+                                   hpp.find("V107ProjectedChunkBudgetMs") == std::string::npos,
+                               "v0.10.9 U-D: the fixed 28 s budget and its projection are gone from "
+                               "the header too (one removed policy, no split-brain comments)");
+                    TEST_CHECK(hpp.find("V107ChunkedDeadlineMs(total_units)") != std::string::npos,
+                               "v0.10.9 U-D: the header documents the derived chunk deadline");
                 }
             }
         }
