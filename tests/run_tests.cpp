@@ -6147,10 +6147,10 @@ void TestBatch2VersionScrollAbout() {
     const int failures_before = g_failed_count;
 
     // ---- 1. REQ-006: version plumbing exposes exactly PROJECT_VERSION ----
-    // v0.10.8 release (261119): pins track the CMake project() bump
-    // 0.10.7 -> 0.10.8 (the single source of truth per REQ-006).
-    TEST_CHECK(kAppVersionW == L"0.10.8", "REQ-006: kAppVersionW is 0.10.8 (CMake definition or fallback)");
-    TEST_CHECK(kAppVersionA == "0.10.8", "REQ-006: ASCII version is 0.10.8");
+    // v0.10.9 release (261121): pins track the CMake project() bump
+    // 0.10.8 -> 0.10.9 (the single source of truth per REQ-006).
+    TEST_CHECK(kAppVersionW == L"0.10.9", "REQ-006: kAppVersionW is 0.10.9 (CMake definition or fallback)");
+    TEST_CHECK(kAppVersionA == "0.10.9", "REQ-006: ASCII version is 0.10.9");
     TEST_CHECK(kAppNameW == L"Emebala Chat", "REQ-004: display-name constant is rebranded");
 
     // ---- 2. REQ-002: pure scroll math, all DIP (plan §2.1 edge cases) ----

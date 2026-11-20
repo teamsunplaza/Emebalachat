@@ -25,11 +25,11 @@
 #define EMBALA_VERSION_CATW(s) EMBALA_VERSION_CATW_IMPL(s)
 
 #ifdef EMEBALACHAT_VERSION_STR
-// CMake supplied: EMEBALACHAT_VERSION_STR=0.10.8 (tokens stringized here).
+// CMake supplied: EMEBALACHAT_VERSION_STR=0.10.9 (tokens stringized here).
 #define EMBALA_VERSION_ASCII EMBALA_VERSION_STR(EMEBALACHAT_VERSION_STR)
 #else
 // Fallback when the compile definition is absent (see header comment).
-#define EMBALA_VERSION_ASCII "0.10.8"
+#define EMBALA_VERSION_ASCII "0.10.9"
 #endif
 
 #define EMBALA_VERSION_WIDE EMBALA_VERSION_CATW(EMBALA_VERSION_ASCII)
