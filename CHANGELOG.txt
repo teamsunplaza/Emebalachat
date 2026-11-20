@@ -1,3 +1,68 @@
+v0.10.9 - 2026-11-21
+====================
+
+Reliability release for every engine. Short sentences that used to fail with
+"translation failed" now succeed on OpenAI-compatible endpoints (including
+Gemini and StepFun), the local engine stops throwing away correct
+translations, long text is translated in full instead of losing its middle,
+the reasoning-effort setting is configurable with the server's own supported
+values, and the back-translation verification card shows the original text
+and scrolls without clipping.
+
+What's new in this build
+------------------------
+* Reasoning effort setting: the OpenAI settings window gains a Reasoning
+  effort dropdown. The app reads the server's advertised values from the
+  same /v1/models response it already fetches (OpenRouter-style gateways),
+  falls back to the standard list (server default / none / minimal / low /
+  medium / high) when the server advertises none, omits the key entirely
+  when left at the server default (a non-reasoning model answers HTTP 400
+  to that key), and retries once without the key if a server rejects it.
+* Back-translation verification card: the card now shows the back-
+  translation and the original text as two separate panels, scrolls with
+  the mouse wheel without stealing focus from the chat window, never clips
+  or overlaps the original, and stays open longer for longer text.
+
+What's fixed
+------------
+Short-sentence failures (OpenAI-compatible / Gemini / other endpoints):
+* The non-streaming receive timeout is 60 seconds instead of 5, so models
+  that think before answering no longer time out mid-thought.
+* The request no longer sends hard-coded "temperature": 0 and
+  "max_tokens": 8192, which some endpoints (o1/o3-class models, 4K-context
+  servers) reject with HTTP 400.
+* Responses with array-form content, null content with a finish_reason
+  (safety block, token exhaustion), or embedded thinking blocks are parsed
+  correctly and report the real cause instead of an empty failure.
+* The system prompt now carries the literal-translation guard on every
+  branch.
+Local engine (Hy-MT2 / user GGUF):
+* The length-ratio gate no longer discards correct translations: it now
+  applies above 120 characters with a 15%-600% band (was 40 characters at
+  30%-250%, which threw away normal English-to-Korean compression and
+  Korean-to-English expansion).
+* The foreign-script leak gate applies above 20 characters at 75% (was 10
+  at 40%), so translations that legitimately keep proper nouns survive.
+* A single-line input no longer cuts the output at the model's first
+  newline; internal line breaks are normalized after translation.
+* No-space Korean/Chinese/Japanese/Thai sentences are no longer treated as
+  single words and rejected as hallucinations.
+* Larger short-input token budgets and a longer decode window.
+Long text (every engine):
+* Text longer than 1,500 characters is translated in full: a shared
+  four-tier splitter (blank lines, line breaks, sentence endings, clauses)
+  chunks the text while preserving every separator, and the chunks are
+  translated and reassembled in order. The local engine's 15-chunk
+  pre-refusal and the fixed 30-second IPC timeout are gone; the deadline
+  now scales with the request.
+* Enter-capture accepts up to 262,144 characters / 16,384 line breaks
+  (was 16,384 / 256, which dropped longer multi-line input with a false
+  "no selection").
+Cloud hardening:
+* Each translation request has a total time budget and a total response
+  size cap, and a malformed server response can no longer wedge the
+  worker.
+
 v0.10.7 - 2026-11-12
 ====================
 
