@@ -434,7 +434,8 @@ void TestUpdateCheckerAboutSeam() {
         if (I18n::Get(StringId::UpdateDlgSizeApprox).find(L"{s}") == std::wstring::npos) all = false;
         if (all) ++ok;
     }
-    TEST_CHECK(ok == 37, "UC: all 25 update strings non-empty (+tokens intact) in all 37 locales");
+    TEST_CHECK(ok == static_cast<int>(GetSupportedUiLocales().size()),
+               "UC: all 25 update strings non-empty (+tokens intact) in every locale the selector exposes (count derived from GetSupportedUiLocales)");
     I18n::SetLocale(initial);
 
     if (g_failed_count == failures_before) {

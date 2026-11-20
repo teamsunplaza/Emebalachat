@@ -92,7 +92,7 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
   - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 38 target languages listed below (its official set; the cloud engines offer more).
   - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
   - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size, mtime and a content sample of three fixed 1 MiB windows, so a same-size model swap triggers a full re-hash) before the model is handed to llama.cpp.
-  - **On-demand model download (0.10.2+)**: if the model was skipped at setup, choosing the built-in engine offers a consent + progress download from Hugging Face — SHA-256 verified against the pinned hash and atomically installed into the shared store, in all 37 interface languages.
+  - **On-demand model download (0.10.2+)**: if the model was skipped at setup, choosing the built-in engine offers a consent + progress download from Hugging Face — SHA-256 verified against the pinned hash and atomically installed into the shared store, in all 89 interface languages.
   - **Shared Inference Host (0.10.1+)**: local translations are routed through `Emebala.Engine.exe`, an orchestrator process every Emebala app shares. It loads the model **once** into GPU memory, serves all installed Emebala apps over a local named pipe (current-user ACL + per-boot security token), and hands each job to a dedicated `Emebala.Engine.ggml-translate.exe` worker process (unified family name since session 260930_0003 — one worker name across all Emebala products), so two or three Emebala apps no longer duplicate the model in VRAM and a misbehaving app cannot take the model down. If the engine cannot be used — missing binaries, connection failure, version/token mismatch, busy, timeout — the app does not fail silently: it offers a one-click repair, falls back to the cloud engine under the same consent rules as always (see below), or shows a clear notice that local translation is unavailable. The engine never appears in the Start menu, runs only while needed, and exits by itself after 10 minutes idle (the engine's own default; `engine_host.idle_exit_ms` in config.json is persisted for observability and does not control it).
   - Pairs outside the model's reliable set are routed to the cloud engine under `auto`, or kept on-device (with a degradation warning) under a strict `local` pin without cloud consent.
 - **Cloud Engines**:
@@ -154,7 +154,7 @@ With the `auto` engine the menus show the **Google** list (88), because auto may
 
 Every language menu (typing and drag source/target in the tray and badge menu, plus both tooltip dropdowns) starts with a **Search…** (검색…) row and lists the active engine's languages:
 
-- **Search** — the picker matches the language code, the native name, the English name, the name in each of the 37 interface languages, and script aliases (`한글`, `漢字`, `kana`, `Cyrillic`, …). Matching folds case and diacritics, so `KO`, `korean`, `Koreanisch`, `한국어` and `한글` all rank Korean first, and `tieng viet` finds Vietnamese.
+- **Search** — the picker matches the language code, the native name, the English name, the name in each of the 89 interface languages, and script aliases (`한글`, `漢字`, `kana`, `Cyrillic`, …). Matching folds case and diacritics, so `KO`, `korean`, `Koreanisch`, `한국어` and `한글` all rank Korean first, and `tieng viet` finds Vietnamese.
 - **Engine chip** — the picker header names the engine whose list is on screen and how many languages it holds (for example `Google · 88 languages` for a target list; a source list counts Auto Detect too, so it shows one more), and the number is the list size, not the number of search hits, so typing never makes the engine look poorer than it is. Under the `auto` engine the chip instead carries a dedicated label, `Auto - local for supported languages, cloud for the rest`, with no count: the list on screen is the cloud one, and the label names both legs instead of implying everything is local.
 - **Ghost row** — a language you pinned stays pinned when you switch engines: if the new engine does not offer it, the menu keeps the row at the top, greyed and checked, and your value is preserved and still sent to the engine as-is instead of being silently reset.
 - **`auto` routing** — under the `auto` engine, a pair outside the local model's set is sent to the cloud engine (choosing `auto` is the consent). Pinning `local` keeps that pair on-device and shows the degradation notice instead.
@@ -298,7 +298,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 <details>
 <summary><strong>Parameter details (all keys)</strong></summary>
 
-- `ui_language`: Interface language (`"auto"` = follow Windows display language, or a locale code such as `"ko"`, `"en"`, `"ja"`, `"zh-CN"`, `"zh-TW"`). Changeable live from the tray menu.
+- `ui_language`: Interface language (`"auto"` = follow Windows display language, or a locale code such as `"ko"`, `"en"`, `"ja"`, `"zh-CN"`, `"zh-TW"`). All 89 translation targets are available as interface languages. Changeable live from the tray menu: **UI 언어** > **Auto** or **검색…** opens a searchable picker (type a code, an endonym, an English name, or the name in any interface language).
 - `ui_theme` (0.10.5+): UI design theme: `"fluent"` (default, Fluent Craft), `"editorial"` (Warm Editorial), or `"monolith"` (Refined Monolith). Changeable live from the tray **UI Theme** submenu or the 3-pill switcher at the top of the About window; the picked value persists in this key. Unknown values fall back to `"fluent"`.
 - `engine_type`:
   - `"auto"` (default): Prefers local LLM if the model exists; falls back to Google Translate when the model is absent or a local attempt fails.
@@ -553,7 +553,7 @@ The output binaries will be placed in `build\`:
 
 ### Running Unit Tests
 
-Emebala Chat includes a self-contained unit test suite (10,952 checks as of v0.10.8) verifying every core module:
+Emebala Chat includes a self-contained unit test suite (11,318 checks as of v0.10.8) verifying every core module:
 
 ```powershell
 .\build\run_tests.exe

@@ -7,19 +7,25 @@
 
 namespace emebalachat {
 
-// REQ-037 (P4 Batch B-3, design §2.1.1): the UI locale set expands to the full
-// 37 Hy-MT2 language registry (design §2.1.1 ordering rule). Values are
-// declared in kAllLanguages registry order (src/config.cpp) - Auto first -
-// so the enum, the LocaleMapping table, the selector join and the registry
-// share one canonical ordering.
+// REQ-037 (P4 Batch B-3, design §2.1.1) + UI-language-89 phase 1A (2026-11-19,
+// docs/context/context-handoff-20261119-ui-language-89.md): the enum carries
+// ALL 89 selectable translation-target locales in kAllLanguages registry
+// order (src/config.cpp) - Auto first - so the enum, the LocaleMapping table,
+// the selector join and the registry share one canonical ordering. The 52
+// values appended after Burmese (the GU..GOM P2/P3 registry rows) landed in
+// phase 1A with their mapping rows gated authored=false; phase 3
+// (261119_0001 batches 1-4) authored all 52 string tables, so the gating
+// described below is HISTORY now - all 89 rows are selectable.
 //
 // History note: the R6-era removal of FR/DE/RU (half-wired locales with no
 // translation tables, plan §5.5) is SUPERSEDED by REQ-037's "all 37" mandate -
 // the user explicitly forbade silent-English duplicates ("no checklist
 // gaming"). The removal MECHANISM survives as the authenticity gate: a locale
 // whose table is not authored is withheld from GetSupportedUiLocales() and
-// refused by PlanUiLocaleChange (design §2-Q4.2). All 37 tables are authored
-// in B-3, so the gate is fully open; it stays in place for future locales.
+// refused by PlanUiLocaleChange (design §2-Q4.2). The first 37 tables are
+// authored since B-3; the 52 phase-1A rows were gated until phase 3 authored
+// their tables (261119_0001 batches 1-4) - all 89 rows are authored now, and
+// the gate stays in place for any future locale.
 enum class UiLocale {
     Auto,
     Korean,
@@ -58,7 +64,64 @@ enum class UiLocale {
     Danish,
     Finnish,
     Norwegian,
-    Burmese
+    Burmese,
+    // ---- UI-language-89 phase 1A (2026-11-19): the remaining 52 registry
+    // targets (GU..GOM), appended in kAllLanguages order after MY. The
+    // mapping rows landed gated authored=false (authenticity gate) and phase
+    // 3 (261119_0001 batches 1-4) authored every string table - all 52 are
+    // selectable now; the gate stays in place for any future locale.
+    Gujarati,
+    Telugu,
+    Marathi,
+    Tamil,
+    Tibetan,
+    Kazakh,
+    Mongolian,
+    Uyghur,
+    Cantonese,
+    Bosnian,
+    Serbian,
+    Croatian,
+    Slovenian,
+    Slovak,
+    Bulgarian,
+    Lithuanian,
+    Latvian,
+    Estonian,
+    Afrikaans,
+    Catalan,
+    Icelandic,
+    Albanian,
+    Macedonian,
+    Welsh,
+    Irish,
+    Basque,
+    Galician,
+    Swahili,
+    HaitianCreole,
+    Uzbek,
+    Azerbaijani,
+    Belarusian,
+    Kyrgyz,
+    Tajik,
+    Esperanto,
+    Armenian,
+    Georgian,
+    Sinhala,
+    Malayalam,
+    Kannada,
+    Punjabi,
+    Odia,
+    Amharic,
+    Tigrinya,
+    Pashto,
+    Sindhi,
+    Nepali,
+    Assamese,
+    Dzongkha,
+    Sanskrit,
+    Maithili,
+    KonkaniGoan
 };
 
 enum class StringId {
@@ -522,16 +585,19 @@ enum class StringId {
 
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
-    // exposed by GetSupportedUiLocales() - 37 since REQ-037/B-3).
+    // exposed by GetSupportedUiLocales() - 89 since UI-language-89 phase 3,
+    // 261119_0001 batches 1-4).
     EnumCount
 };
 
 // ---- REQ-037 (P4 Batch B-3, design §2.1.3): code-mapping table ----------
 //
-// One row per selectable UI locale (37 rows, NO Auto). StringToLocale,
+// One row per selectable UI locale (89 rows: the 37 REQ-037 locales + the 52
+// GU..GOM phase-1A rows, all authored since phase 3 - NO Auto row).
+// StringToLocale,
 // LocaleToString, GetLocaleCode and the two phases of DetectSystemLocale are
-// all data-driven from this table, so adding a 38th language later is a
-// one-row change plus a string table (design §2.1.3). The table is exposed
+// all data-driven from this table, so adding a future locale is a one-row
+// change plus a string table (design §2.1.3). The table is exposed
 // (not file-static) so TestReq037LocaleMapping can pin row integrity,
 // round-trips and prefix hygiene headlessly (design §2.1.6).
 struct LocaleMapping {
@@ -557,14 +623,17 @@ struct LocaleMapping {
     const wchar_t* bcp47_full;   // L"ko-KR"
     // PRIMARYLANGID for DetectSystemLocale's fallback phase (design §2.1.3).
     WORD langid_primary;
-    // Authenticity gate (design §2-Q4.2): false = table exists but is not
-    // human-reviewed; the locale is withheld from GetSupportedUiLocales()
-    // and therefore refused by PlanUiLocaleChange. REQ-037 B-3 authors all
-    // 37 tables, so every row is true; the flag remains as the gate knob.
+    // Authenticity gate (design §2-Q4.2): false = no authored string table;
+    // the locale is withheld from GetSupportedUiLocales() and therefore
+    // refused by PlanUiLocaleChange. All 89 tables are authored since
+    // UI-language-89 phase 3 (261119_0001 batches 1-4; MT-draft tables count
+    // as authored per the standing 261119_0001 decision - the pending
+    // human/native review pass is tracked as a release gate, not by this
+    // flag). The flag remains as the gate knob for any future locale.
     bool authored;
 };
 
-// The 37 mapping rows, in UiLocale enum order (kAllLanguages registry order).
+// The 89 mapping rows, in UiLocale enum order (kAllLanguages registry order).
 const std::vector<LocaleMapping>& GetLocaleMappings();
 
 // Pure BCP-47 tag -> UiLocale resolution used by DetectSystemLocale phase 1
@@ -577,6 +646,12 @@ UiLocale LocaleFromBcp47Tag(std::wstring_view tag);
 
 // ---- R6 Phase 6 (plan §5.4): UI-language selector data + pure change plan ----
 
+// 261119_0001 U1 (UI-language-89 phase 2, architect-pick.md "Pool build"):
+// forward declaration ONLY, so this header can name the pool's element type
+// without including config.hpp (the registry's owner) - no include cycle,
+// and config.hpp's LanguageInfo remains the single definition.
+struct LanguageInfo;
+
 // One selectable UI locale: enum value + ENDONYM (the language's own name,
 // the standard for language pickers: "한국어", "日本語", "简体中文" ... - these
 // are deliberately NOT translated per entry).
@@ -585,12 +660,28 @@ struct UiLocaleEntry {
     const wchar_t* native_name;
 };
 
-// The 37 selector locales (REQ-037/B-3), built once by joining the
+// The selector locales the authenticity gate currently exposes (all 89
+// authored rows: the 37 REQ-037/B-3 locales + the 52 UI-language-89 phase-1A
+// locales), built once by joining the
 // LocaleMapping table against the kAllLanguages registry (endonym source of
 // truth, design §2.1.4) through the authenticity gate. Display order per
 // design §2-Q3: the legacy front block (KO, JA, zh-CN, zh-TW, VI, ES) keeps
 // its muscle memory, the remaining 30 follow registry order, English last.
 const std::vector<UiLocaleEntry>& GetSupportedUiLocales();
+
+// 261119_0001 U1 (UI-language-89 phase 2, architect-pick.md "Pool build"):
+// the searchable picker's UI-locale pool. Authored-only - the SAME
+// authenticity gate as the selector (89 authored rows since phase 3,
+// 261119_0001 batches 1-4) - and engine-mask independent (a UI chrome locale
+// is
+// offerable regardless of any translation engine's capability). Row 0 is the
+// registry AUTO row; every following row is the registry row of one selector
+// entry, in the selector's exact display order, so an empty query reproduces
+// the retired flat menu's order. Pointers reference the immutable registry
+// statics (valid for the process lifetime); read-only from the GUI thread
+// and from tests. The pool is emitted by the SAME single join walk as
+// GetSupportedUiLocales(), so selector and picker can never drift.
+const std::vector<const LanguageInfo*>& GetSupportedUiLocalePickerPool();
 
 // Surfaces RefreshAllUiForLocaleChange (src/main.cpp) must re-render after a
 // locale switch, in the plan §5.4 propagation order.
@@ -646,7 +737,7 @@ public:
     static UiLocale GetCurrentLocale();
 
     // Returns locale identifier (e.g. "ko", "ja", "zh-CN", "zh-TW", "vi", "es",
-    // "ar", "my", ... - all 37 canonical codes; design §2.1.3 table-driven).
+    // "ar", "my", ... - all 89 canonical codes; design §2.1.3 table-driven).
     static std::string_view GetLocaleCode();
     static std::string GetSystemLanguageCode() { return std::string(GetLocaleCode()); }
 

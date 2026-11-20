@@ -79,15 +79,22 @@ enum TrayMenuId : UINT {
     // exclusive bound BASE + count. (REQ-025: TYPE pair - unchanged IDs.)
     ID_TRAY_SRC_BASE = 2100, // 2100..2189 (90 rows; exclusive end 2190)
     ID_TRAY_TGT_BASE = 2200, // 2200..2288 (89 targets; exclusive end 2289)
-    // R6 Phase 6 (plan §5.4), expanded by REQ-037 (P4 B-4, design §2-Q3):
-    // UI-language selector submenu = Auto (2300) + the 37 GetSupportedUiLocales
-    // entries (2301..2337, endonym-only labels, single column + OS auto-scroll
-    // per the §2-Q3 verdict A). Both the build loop and the dispatch below are
-    // size-dynamic, so only the band capacity is a code property: the next
-    // band (DRAG_SRC) starts at 2400 -> highest current ID 2337, 62 IDs of
-    // headroom, no collision (design §2-Q3 verified).
+    // R6 Phase 6 (plan §5.4), expanded by REQ-037 (P4 B-4, design §2-Q3),
+    // RESHAPED by 261119_0001 U4 (UI-language-89 phase 2, architect-pick.md
+    // "Search-row command ID"): the UI-language submenu is a TWO-ROW launcher
+    // now, not a flat endonym band -
+    //   Auto   (2300)  inline muscle-memory row; its check mark tracks the
+    //                  PERSISTED config value, not the resolved locale;
+    //   검색…  (2301)  opens the shared searchable picker, which carries the
+    //                  UI-locale pool (89 rows wide at phase 3, so a flat
+    //                  band of endonyms can never represent it).
+    // Both rows are static: no loop and no size-dynamic ID arithmetic here.
+    // The retired flat band would have been 2301..2389 for 89 locales, and
+    // 2381..2383 are the UI-theme commands (SystemTray::kCmdTheme* below) -
+    // that collision is RECORDED here and pinned by the assert block below,
+    // which binds this row to the theme band as its real neighbour.
     ID_TRAY_UILANG_AUTO = 2300,
-    ID_TRAY_UILANG_BASE = 2301, // 2301..2337 (Auto + 37 locales = 38 items)
+    ID_TRAY_UILANG_SEARCH = 2301, // the retired band's historical first slot
     // UI Theme selector submenu (Fluent / Editorial / Monolith = 2381..2383).
     ID_TRAY_THEME_FLUENT = SystemTray::kCmdThemeFluent,
     ID_TRAY_THEME_EDITORIAL = SystemTray::kCmdThemeEditorial,
@@ -142,15 +149,20 @@ enum TrayMenuId : UINT {
     ID_TRAY_USER_LANG_MANAGE = kTrayUserLangBandEnd + 1, // 2866
 };
 
-// REQ-037/B-4 compile-time guard for the band layout asserted above: the
-// 38-item UILANG submenu (Auto + 37 selector codes => 2300..2337) must stay
-// strictly below the DRAG band floor. Its 37 is an I18N count
-// (GetSupportedUiLocales), NOT a language-registry count — the registry
-// literals live in the guards below. If the selector ever grows past 99
-// locales, widen the bands here FIRST - the AppendMenu loop would otherwise
-// hand submenu IDs straight into DRAG_SRC territory.
-static_assert(ID_TRAY_UILANG_BASE + 37 <= ID_TRAY_DRAG_SRC_BASE,
-              "tray UI-language ID band must not collide with the drag band");
+// REQ-037/B-4 compile-time guard for the band layout asserted above.
+// 261119_0001 U4 retired the flat UILANG band (Auto + 37 selector codes =>
+// 2300..2337), so the 37 - an I18N count, never a registry count - is gone
+// from this file. Two facts still need a guard:
+//   1. ADJACENCY: the 검색… row sits directly above Auto, so the group reads
+//      as one unit in the menu and in the dispatch ladder.
+//   2. THE THEME BAND: 2381..2383 are SystemTray::kCmdThemeFluent /
+//      Editorial / Monolith - the band a re-growth of this row group hits
+//      FIRST. The retired 89-locale layout (2301..2389) would have swallowed
+//      them whole; the old assert compared against the DRAG band (2400), which
+//      guarded nothing this side of 2381. This binds the real neighbour.
+static_assert(ID_TRAY_UILANG_SEARCH == ID_TRAY_UILANG_AUTO + 1 &&
+                  ID_TRAY_UILANG_SEARCH + 1 <= SystemTray::kCmdThemeFluent,
+              "tray UI-language rows must be contiguous and stay below the theme band");
 
 // 261116_0003 P3 fix round 3 (PR3-04, the PR2-06 obligation): the language-band
 // guards are pinned to the LIVE registry size — 90 source rows (AUTO + 89
@@ -211,7 +223,7 @@ static_assert(kTrayUserLangBase == ID_TRAY_GHOST_DRAG_TGT + 1,
               "the P9b-2 user-row band must start directly above the P6 ghost block (2609)");
 static_assert(kTrayUserLangBase > ID_TRAY_SRC_BASE + 90 &&
                   kTrayUserLangBase > ID_TRAY_TGT_BASE + 89 &&
-                  kTrayUserLangBase > ID_TRAY_UILANG_BASE + 37 &&
+                  kTrayUserLangBase > ID_TRAY_UILANG_SEARCH &&
                   kTrayUserLangBase > SystemTray::kCmdThemeMonolith &&
                   kTrayUserLangBase > ID_TRAY_DRAG_SRC_BASE + 90 &&
                   kTrayUserLangBase > ID_TRAY_DRAG_TGT_BASE + 89 &&
@@ -1039,37 +1051,47 @@ void SystemTray::ShowContextMenu() {
                   I18n::Get(StringId::EngineLoadSettingsMenuRow).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
 
-    // 2b. R6 Phase 6 (plan §5.4): UI-language selector submenu, next to the
-    // Engine submenu. Entries show ENDONYMS (each language in its own script)
-    // plus a localized Auto entry. Check mark tracks the PERSISTED config
-    // value (ui_language_), not the resolved locale, so "auto" stays visibly
-    // selected while it follows the OS language.
-    //
-    // REQ-037/B-4 (design §2-Q3 verdict A): Auto + all 37 GetSupportedUiLocales
-    // entries (38 items) as a SINGLE column - Windows auto-adds scroll
-    // chevrons past screen height, the identical pattern the three 38-item
-    // SRC/TGT pickers below already ship (no MF_MENUBARBREAK columns, no
-    // owner-draw). Entry label = UiLocaleEntry.native_name (endonym only);
-    // display order and Auto-first placement are owned by
-    // GetSupportedUiLocales() (§2-Q3: KO, JA, zh-CN, zh-TW, VI, ES front
-    // block, remaining locales in registry order, EN last). The loop is
-    // size-dynamic (selector 37 => IDs 2301..2337, band guarded by the
-    // static_assert above); the check mark is per-entry dynamic too.
+    // 2b. R6 Phase 6 (plan §5.4) + 261119_0001 U4 (UI-language-89 phase 2,
+    // architect-pick.md "Search-row command ID" + "Current-locale signal in
+    // closed menu"): the UI-language submenu is a TWO-ROW launcher now — the
+    // flat endonym band is retired (89 locales can never fit it, and its
+    // would-be 2301..2389 range collided with the theme band 2381..2383):
+    //   [✓] Auto        ID_TRAY_UILANG_AUTO, logic UNCHANGED: the check mark
+    //                   tracks the PERSISTED config value (ui_language_), not
+    //                   the resolved locale, so "auto" stays visibly selected
+    //                   while it follows the OS language;
+    //   ─── separator ───
+    //   검색…           ID_TRAY_UILANG_SEARCH, the SAME label idiom as the four
+    //                   translation "검색…" rows (StringId::MenuSearchLangs, so
+    //                   zero new i18n keys): it opens the shared searchable
+    //                   picker through the REQ-047 D3 deferred open dispatched
+    //                   below. The UI-locale pool, its search, its AUTO row and
+    //                   its ordering all live in the picker.
+    // The submenu TITLE carries the active locale's endonym — "UI 언어 (한국어)"
+    // while a concrete selector locale is active, and the plain title for
+    // auto/empty and for any unknown persisted value (never a row the selector
+    // does not offer). The endonym is DATA (UiLocaleEntry::native_name), so no
+    // new StringId is involved, and the lookup reuses the selector list plus
+    // the exact equality test the retired per-row check marks used.
     HMENU hUiLangMenu = ::CreatePopupMenu();
+    const bool autoChecked = (ui_language_ == "auto" || ui_language_.empty());
+    std::wstring uiLangTitle = I18n::Get(StringId::MenuUiLanguage);
+    for (const UiLocaleEntry& entry : GetSupportedUiLocales()) {
+        if (!autoChecked && ui_language_ == I18n::LocaleToString(entry.locale)) {
+            uiLangTitle += L" (";
+            uiLangTitle += entry.native_name;
+            uiLangTitle += L")";
+            break;
+        }
+    }
     {
-        const bool autoChecked = (ui_language_ == "auto" || ui_language_.empty());
         ::AppendMenuW(hUiLangMenu, MF_STRING | (autoChecked ? MF_CHECKED : MF_UNCHECKED),
                       ID_TRAY_UILANG_AUTO, I18n::Get(StringId::MenuUiLanguageAuto).c_str());
         ::AppendMenuW(hUiLangMenu, MF_SEPARATOR, 0, nullptr);
-        const auto& uiLocales = GetSupportedUiLocales();
-        for (size_t i = 0; i < uiLocales.size(); ++i) {
-            const std::string code = I18n::LocaleToString(uiLocales[i].locale);
-            const bool checked = (!autoChecked && ui_language_ == code);
-            ::AppendMenuW(hUiLangMenu, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED),
-                          ID_TRAY_UILANG_BASE + static_cast<UINT>(i), uiLocales[i].native_name);
-        }
+        ::AppendMenuW(hUiLangMenu, MF_STRING, ID_TRAY_UILANG_SEARCH,
+                      I18n::Get(StringId::MenuSearchLangs).c_str());
     }
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), I18n::Get(StringId::MenuUiLanguage).c_str());
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), uiLangTitle.c_str());
 
     // 2c. UI Theme selector submenu (Fluent Craft / Warm Editorial / Refined Monolith)
     const I18nStrings i18n_ = I18n::GetThemeStrings();
@@ -1177,6 +1199,36 @@ void SystemTray::ShowContextMenu() {
     const language_palette::PickerInit drag_tgt_req =
         make_picker_request(language_palette::PickerSurface::TrayTooltip,
                             language_palette::PickerRole::Target, normDragSrc, normDragTgt);
+
+    // 261119_0001 U4 (UI-language-89 phase 2): the UI-language submenu's ONE
+    // picker request, latched here beside the four translation requests and by
+    // the same build-time snapshot discipline (the menu is modal, so the
+    // dispatch path cannot re-derive the value). Its shape is deliberately NOT
+    // make_picker_request's:
+    //   surface  TrayUiLanguage — the picker's mode discriminator: flat
+    //            authored-only UI pool, Tab flip refused, engine chip hidden;
+    //   role     Source — this surface ignores the role (a UI-chrome locale
+    //            has no translation direction); the enum has no "none" value;
+    //   engine   Auto — INERT on this surface (the UI pool is engine-mask
+    //            independent), named explicitly so it can never be mistaken for
+    //            the active translation engine the other four requests carry;
+    //   source   the canonical config-code spelling of the persisted locale:
+    //            LocaleToString(StringToLocale(x)) canonicalizes case and the
+    //            legacy aliases ("zh_cn", "zh_tw", "zh") to "ko"/"zh-CN"/...;
+    //            "auto" lands on StringToLocale's own auto branch. The feed is
+    //            the submenu's autoChecked PREDICATE, not the raw string, so an
+    //            empty persisted value preselects the pool's AUTO row exactly
+    //            like the Auto check mark reads it - StringToLocale("") would
+    //            otherwise fall through to its English fallback and preselect
+    //            EN under a checked Auto row. One predicate, one meaning.
+    //   target   empty — there is no second slot to preselect.
+    language_palette::PickerInit ui_lang_req;
+    ui_lang_req.surface = language_palette::PickerSurface::TrayUiLanguage;
+    ui_lang_req.role = language_palette::PickerRole::Source;
+    ui_lang_req.engine = LanguageEngine::Auto;
+    ui_lang_req.source_code =
+        I18n::LocaleToString(I18n::StringToLocale(autoChecked ? "auto" : ui_language_));
+    ui_lang_req.target_code.clear();
 
     // One builder for all four language submenus (261116_0003 P6): the
     // "검색…" row, a separator, the optional pinned-absent ghost row, then the
@@ -1663,17 +1715,39 @@ void SystemTray::ShowContextMenu() {
         }
     } else if (cmd == ID_TRAY_UILANG_AUTO && callbacks_.on_select_ui_language) {
         callbacks_.on_select_ui_language("auto");
+    } else if (cmd == ID_TRAY_UILANG_SEARCH) {
+        // 261119_0001 U4 (UI-language-89 phase 2): the submenu's "검색…" row
+        // mirrors the P6 search-row arm above EXACTLY — the same REQ-047 D3
+        // deferred open (the post lands on the controller window immediately
+        // after TrackPopupMenuEx returned; entering the picker's modal loop
+        // while the menu modality tear-down is in flight is the REQ-047 D3
+        // "minimized window, no input" defect), the same PR6-03e SetLastError
+        // hygiene, the same cause-neutral diagnostic. The request latched at
+        // menu-build time (ui_lang_req) is posted verbatim: no pointer crosses
+        // PostMessageW, and its source code is already the canonical config
+        // spelling.
+        // The consumer is U5 (main.cpp's controller arm takes the
+        // TrayUiLanguage latch slot and commits the pick through the existing
+        // on_select_ui_language path). The arm is wired: its drain polls this
+        // slot third (kMsgOpenLanguagePalette), so a posted request stays
+        // latched only until that drain takes it.
+        ::SetLastError(ERROR_SUCCESS);
+        if (!PostDeferredLanguagePaletteOpen(hOwner_, ui_lang_req)) {
+            const DWORD post_gle = ::GetLastError();
+            if (post_gle != ERROR_SUCCESS) {
+                DIAG_F("UI/Tray/002: deferred language-picker open post failed (GLE %lu)\n",
+                       post_gle);
+            } else {
+                DIAG_F("UI/Tray/002: deferred language-picker open not posted "
+                       "(coalesced or rejected; the picker module logs the specific reason)\n");
+            }
+        }
     } else if (cmd == ID_TRAY_DRAG_SWAP && callbacks_.on_swap_drag_languages) {
         // W2 (R1-22): reverse the 번역툴팁 pair. The callback resolves the pair
         // through the shared PlanLanguageSwap planner and applies it via
         // ApplyLanguageChange(LanguageContext::Drag, ...), so a drag swap pins
         // the target exactly like an explicit drag-target pick (F2 contract).
         callbacks_.on_swap_drag_languages();
-    } else if (cmd >= ID_TRAY_UILANG_BASE &&
-               cmd < ID_TRAY_UILANG_BASE + static_cast<UINT>(GetSupportedUiLocales().size()) &&
-               callbacks_.on_select_ui_language) {
-        size_t idx = cmd - ID_TRAY_UILANG_BASE;
-        callbacks_.on_select_ui_language(I18n::LocaleToString(GetSupportedUiLocales()[idx].locale));
     } else if (cmd == kCmdThemeFluent || cmd == kCmdThemeEditorial || cmd == kCmdThemeMonolith) {
         const std::string selected_theme =
             (cmd == kCmdThemeEditorial) ? "editorial"

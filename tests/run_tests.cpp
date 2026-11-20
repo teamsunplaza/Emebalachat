@@ -102,6 +102,19 @@ static int g_failed_count = 0;
 // 261111_0001 U7) call it, so it must be declared before that cluster.
 static std::filesystem::path ResolveRepoFile(const std::wstring& rel);
 
+// 261119_0001 FIX-R1 R1-10: the authenticity gate's own count. The selector is
+// built from exactly the authored LocaleMapping rows, so this is the gate's
+// number for "how many UI locales are live". Pinning it here (instead of the
+// literal 37) keeps every gate-relative check true through phase 3, where
+// authored=true flips arrive one batch at a time.
+static int AuthoredUiLocaleCount() {
+    int authored = 0;
+    for (const LocaleMapping& mapping : GetLocaleMappings()) {
+        if (mapping.authored) ++authored;
+    }
+    return authored;
+}
+
 
 // REQ-043 (M6 T2): parser test bodies (m6_engine_host_*.inc files, included
 // directly — they define TestEngineHostRegistry/Manifest/Components and use
@@ -7588,14 +7601,18 @@ void TestLanguageAliasCoverage() {
     };
 
     // ---- 1) Table shape (counts are the generated-data pins) ---------------
+    // UI-language-89 1B: the matrix now indexes all 89 kLocaleMappings rows
+    // (the 1A obligation recorded here is closed), and the atom count is the
+    // rendered value for that wider CLDR exonym set (the fold table is
+    // locale-independent and keeps its 986 entries).
     TEST_CHECK(kLanguageAlias.locale_count == GetLocaleMappings().size() &&
-                   kLanguageAlias.locale_count == 37,
-               "P4: the alias matrix indexes exactly the 37 UI locales");
+                   kLanguageAlias.locale_count == 89,
+               "P4: the alias matrix indexes every UI locale (89 == kLocaleMappings rows)");
     TEST_CHECK(kLanguageAlias.group_count == registry.size() &&
                    kLanguageAlias.group_count == 90,
                "P4: one alias group per registry row (90 = AUTO + 89 targets)");
-    TEST_CHECK(kLanguageAlias.atom_count == 2908,
-               "P4: alias atom count is the generated value (2908)");
+    TEST_CHECK(kLanguageAlias.atom_count == 6066,
+               "P4: alias atom count is the generated value (6066)");
     TEST_CHECK(kLanguageAlias.fold_count == 986,
                "P4: fold table entry count is the generated value (986)");
 
@@ -7622,6 +7639,39 @@ void TestLanguageAliasCoverage() {
             }
         }
         TEST_CHECK(unique, "P4: the locale id list has no duplicates");
+    }
+
+    // 261119_0001 FIX-R1 (R1-06): kLanguageAliasLocales is INDEX-PARALLEL to
+    // kLocaleMappings - row i is row i's CLDR id, and the generated list's own
+    // order contract ("kLocaleMappings order") is what every atom's
+    // locale_index resolves through. Until now only the COUNT was pinned, so a
+    // reordering (or a stale generated file) would have silently re-pointed
+    // every exonym column at the wrong locale. 87 rows are identity mappings
+    // (the config code IS the CLDR id); the only divergences are the two
+    // documented Chinese script trees. R1-01 removed the Cantonese row's
+    // THIRD divergence ("zh-HK" -> "yue"), which is why the identity count is
+    // pinned to maps.size() - 2 rather than to a literal.
+    {
+        const auto& alias_maps = GetLocaleMappings();
+        bool parallel = alias_maps.size() == kLanguageAlias.locale_count;
+        std::size_t identity_rows = 0;
+        for (std::size_t i = 0; parallel && i < alias_maps.size(); ++i) {
+            const std::string_view id{kLanguageAlias.locales[i]};
+            const std::string_view code{alias_maps[i].config_code};
+            if (id == code) {
+                ++identity_rows;
+                continue;
+            }
+            // The two CLDR script trees (the generated header documents them).
+            const bool documented =
+                (code == "zh-CN" && id == "zh") || (code == "zh-TW" && id == "zh-Hant");
+            if (!documented) {
+                parallel = false;
+            }
+        }
+        TEST_CHECK(parallel && identity_rows + 2 == alias_maps.size(),
+                   "R1-06: kLanguageAliasLocales is index-parallel to kLocaleMappings "
+                   "(row i == row i's CLDR id; only the two Chinese script trees diverge)");
     }
 
     // Group slices: contiguous, in registry order, in range, tier-tagged.
@@ -9411,16 +9461,24 @@ void TestR6P5P6I18n() {
         for (const auto& e : GetSupportedUiLocales()) v.push_back(e.locale);
         return v;
     }();
+    // 261119_0001 FIX-R1 R1-10: every count below is the gate's own number,
+    // computed from GetLocaleMappings(), instead of the literal 37. Phase 3
+    // flips rows to authored=true batch by batch; a pinned literal would
+    // false-fail on batch 1 while the invariant being checked (selector ==
+    // authored rows, every selected locale fully authored) still held.
+    const int kAuthoredCount = AuthoredUiLocaleCount();
+    const int kSelectedCount = static_cast<int>(kCompleteLocales.size());
 
     // ---- 1) Table completeness (VP scope item 6): every StringId in [0,
-    //         EnumCount) must resolve NON-EMPTY in ALL 37 selectable locales
-    //         (47 × 37 = 1739 checks collapsed into one counter). Guards the
-    //         30 new tables + the legacy seven against aggregate-order drift
-    //         (a missing initializer would compile as nullptr and crash
-    //         Render - this pins it headlessly).
+    //         EnumCount) must resolve NON-EMPTY in EVERY selectable locale
+    //         (StringId::EnumCount × the authored-locale count, collapsed into
+    //         one counter). Guards the authored tables + the legacy seven
+    //         against aggregate-order drift (a missing initializer would
+    //         compile as nullptr and crash Render - this pins it headlessly).
     int empty_count = 0;
-    TEST_CHECK(kCompleteLocales.size() == 37,
-               "B3: 37 selectable locales (gate fully open) - completeness matrix is 157x37 (REQ-UC +25, REQ-MD +9, REQ-060 +13)");
+    TEST_CHECK(kSelectedCount == kAuthoredCount,
+               "B3: the selector holds exactly the authored mapping rows (derived count; the "
+               "completeness matrix scales with the gate)");
     for (const UiLocale loc : kCompleteLocales) {
         I18n::SetLocale(loc);
         for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
@@ -9429,7 +9487,7 @@ void TestR6P5P6I18n() {
             }
         }
     }
-    TEST_CHECK(empty_count == 0, "P5/P6/B3: every StringId non-empty in all 37 locales");
+    TEST_CHECK(empty_count == 0, "P5/P6/B3: every StringId non-empty in every selectable locale");
 
     // ---- 1b) REQ-206/208 (session 260911_0002 T2): explicit pins for the 3
     //         new privacy/config-path StringIds. The EnumCount loop above
@@ -9453,10 +9511,10 @@ void TestR6P5P6I18n() {
                     .find(L"%LOCALAPPDATA%\\Emebalachat\\config.json")
                     != std::wstring::npos) ++path_ok;
         }
-        TEST_CHECK(title_ok == 37, "T2: PrivacyNoticeTitle non-empty in all 37 locales");
-        TEST_CHECK(body_ok == 37, "T2: PrivacyNoticeBody non-empty in all 37 locales");
-        TEST_CHECK(readme_ok == 37, "T2: PrivacyNoticeBody keeps the README guidance token in all 37 locales");
-        TEST_CHECK(path_ok == 37, "T2: CheatSheetConfigPath shows the verbatim %LOCALAPPDATA% token (never expanded) in all 37 locales");
+        TEST_CHECK(title_ok == kSelectedCount, "T2: PrivacyNoticeTitle non-empty in every selectable locale");
+        TEST_CHECK(body_ok == kSelectedCount, "T2: PrivacyNoticeBody non-empty in every selectable locale");
+        TEST_CHECK(readme_ok == kSelectedCount, "T2: PrivacyNoticeBody keeps the README guidance token in every selectable locale");
+        TEST_CHECK(path_ok == kSelectedCount, "T2: CheatSheetConfigPath shows the verbatim %LOCALAPPDATA% token (never expanded) in every selectable locale");
         I18n::SetLocale(UiLocale::English);
     }
 
@@ -9501,12 +9559,12 @@ void TestR6P5P6I18n() {
                  nl_after == body.size() - 1))
                 ++readme_last_ok;  // README closer sits on the final line
         }
-        TEST_CHECK(optout_ok == 37,
-                   "T7: PrivacyNoticeBody names the built-in local engine (opt-out bullet) in all 37 locales");
-        TEST_CHECK(once_ok == 37,
+        TEST_CHECK(optout_ok == kSelectedCount,
+                   "T7: PrivacyNoticeBody names the built-in local engine (opt-out bullet) in every selectable locale");
+        TEST_CHECK(once_ok == kSelectedCount,
                    "T7: the built-in engine name appears exactly once per locale body (no duplication)");
-        TEST_CHECK(readme_last_ok == 37,
-                   "T7: the README guidance line remains the LAST line of the body in all 37 locales");
+        TEST_CHECK(readme_last_ok == kSelectedCount,
+                   "T7: the README guidance line remains the LAST line of the body in every selectable locale");
         I18n::SetLocale(UiLocale::English);
     }
 
@@ -9522,8 +9580,8 @@ void TestR6P5P6I18n() {
             I18n::SetLocale(loc);
             if (!I18n::Get(StringId::TranslateTruncatedNotice).empty()) ++notice_ok;
         }
-        TEST_CHECK(notice_ok == 37,
-                   "M1: TranslateTruncatedNotice non-empty in all 37 locales");
+        TEST_CHECK(notice_ok == kSelectedCount,
+                   "M1: TranslateTruncatedNotice non-empty in every selectable locale");
         I18n::SetLocale(UiLocale::English);
     }
 
@@ -9553,6 +9611,145 @@ void TestR6P5P6I18n() {
                    "T4: the config-path line terminates the cheat-sheet text");
     }
 
+    // ---- 1d) FIX-P3 cross-script integrity pin (261119_0001, seat-2 finding
+    //         F-02): every authored locale table's letters must live in the
+    //         script its registry endonym names. The phase-3 MT-draft batches
+    //         shipped cross-script leaks repeatedly (batch 1 fixed a
+    //         Tamil-in-Marathi and a Cyrillic-in-Croatian pre-build; the p3
+    //         seat-2 review then confirmed a Devanagari-in-Assamese leak in 4
+    //         fields) and the suite had no pin for the class. The EXPECTED
+    //         script is DERIVED per locale from the selector entry's
+    //         native_name - the registry endonym, so the R1-1 native-name-
+    //         script contract is the only input and no hand-kept per-locale
+    //         table can drift. Letters are bucketed per script; punctuation
+    //         (incl. the shared Indic danda U+0964), digits, combining marks
+    //         and emoji fall outside every bucket range and are ignored by
+    //         construction. CJK is ONE family: a Han endonym expects
+    //         {Han, Hiragana, Katakana} so the Japanese table is legal.
+    //         Latin brand/hotkey tokens are allowed in every table; the two
+    //         legs are: (i) own-share - letters in the expected family must be
+    //         >= 95% of the table's NON-LATIN letters; (ii) foreign tolerance -
+    //         no other non-Latin block may hold more than 4 letters.
+    //         Thresholds are evidence-based, not guessed: the Python mirror
+    //         (docs/261119_0001_session_ui-language-89/scratch/
+    //         fixp3_script_mirror.py) measured the live 89 tables at worst
+    //         own-share 99.96% (km) and worst foreign block 2 letters (Hebrew
+    //         in the LEGACY km table, a pre-existing residue reported for the
+    //         human-review pass), while the pre-fix Assamese leak measured 9
+    //         Devanagari letters - leg (ii) fails on exactly that class. The
+    //         mirror is behaviorally identical on the live data; its Latin
+    //         bucket tops out at U+02AF while the C++ bucket runs to U+024F,
+    //         so U+0259 schwa (the Azerbaijani table and endonym) buckets
+    //         Latin in C++ and unbucketed in the mirror - no threshold or
+    //         verdict impact (FIX-P3 verify seat). The bucket table below
+    //         MUST stay in sync with the mirror script.
+    {
+        struct ScriptRange { wchar_t lo; wchar_t hi; };
+        struct ScriptBucket { const char* name; std::initializer_list<ScriptRange> ranges; };
+        static const ScriptBucket kScriptBuckets[] = {
+            {"Latin",     {{0x0041,0x005A},{0x0061,0x007A},{0x00C0,0x00D6},{0x00D8,0x00F6},{0x00F8,0x024F},{0x1E00,0x1EFF}}},
+            {"Cyrillic",  {{0x0400,0x0481},{0x048A,0x052F}}},
+            {"Greek",     {{0x0370,0x0373},{0x0375,0x0377},{0x037A,0x037D},{0x0386,0x0386},{0x0388,0x038A},{0x038C,0x038C},{0x038E,0x03A1},{0x03A3,0x03E1},{0x03F0,0x03FF}}},
+            {"Armenian",  {{0x0531,0x0556},{0x0560,0x0588}}},
+            {"Georgian",  {{0x10A0,0x10FF},{0x1C90,0x1CBF},{0x2D00,0x2D2F}}},
+            {"Hangul",    {{0x1100,0x11FF},{0x3130,0x318F},{0xAC00,0xD7AF}}},
+            {"Han",       {{0x3400,0x4DBF},{0x4E00,0x9FFF},{0xF900,0xFAFF}}},
+            {"Hiragana",  {{0x3041,0x3096},{0x309D,0x309F}}},
+            {"Katakana",  {{0x30A1,0x30FA},{0x30FD,0x30FF},{0x31F0,0x31FF}}},
+            {"Hebrew",    {{0x05D0,0x05EA},{0x05EF,0x05F2},{0xFB1D,0xFB4F}}},
+            {"Arabic",    {{0x0621,0x063A},{0x0641,0x064A},{0x066E,0x06D3},{0x06D5,0x06D5},{0x06EE,0x06FC},{0x0750,0x077F},{0x08A0,0x08FF},{0xFB50,0xFBB1},{0xFBD3,0xFD3D},{0xFD50,0xFD8F},{0xFDF0,0xFDFB},{0xFE70,0xFE74},{0xFE76,0xFEFC}}},
+            {"Devanagari",{{0x0904,0x0939},{0x093D,0x093D},{0x0958,0x0961},{0x0972,0x0977}}},
+            {"Bengali",   {{0x0985,0x09B9},{0x09BD,0x09BD},{0x09CE,0x09CE},{0x09DC,0x09E1},{0x09F0,0x09F1}}},
+            {"Gurmukhi",  {{0x0A05,0x0A0A},{0x0A0F,0x0A10},{0x0A13,0x0A39},{0x0A59,0x0A5C},{0x0A5E,0x0A5E}}},
+            {"Gujarati",  {{0x0A85,0x0AB9},{0x0ABD,0x0ABD},{0x0AD0,0x0AD0},{0x0AE0,0x0AE3}}},
+            {"Odia",      {{0x0B05,0x0B0A},{0x0B0F,0x0B10},{0x0B13,0x0B28},{0x0B2A,0x0B39},{0x0B3D,0x0B3D},{0x0B5C,0x0B61},{0x0B71,0x0B71}}},
+            {"Tamil",     {{0x0B85,0x0B8A},{0x0B8E,0x0B90},{0x0B92,0x0B95},{0x0B99,0x0B9A},{0x0B9C,0x0B9C},{0x0B9E,0x0B9F},{0x0BA3,0x0BA4},{0x0BA8,0x0BAA},{0x0BAE,0x0BB9},{0x0BD0,0x0BD0}}},
+            {"Telugu",    {{0x0C05,0x0C0C},{0x0C0E,0x0C10},{0x0C12,0x0C28},{0x0C2A,0x0C39},{0x0C3D,0x0C3D},{0x0C58,0x0C61}}},
+            {"Kannada",   {{0x0C85,0x0C8C},{0x0C8E,0x0C90},{0x0C92,0x0CA8},{0x0CAA,0x0CB3},{0x0CB5,0x0CB9},{0x0CBD,0x0CBD},{0x0CDE,0x0CDE},{0x0CE0,0x0CE1},{0x0CF1,0x0CF2}}},
+            {"Malayalam", {{0x0D05,0x0D0C},{0x0D0E,0x0D10},{0x0D12,0x0D28},{0x0D2A,0x0D3D},{0x0D60,0x0D61},{0x0D7A,0x0D7F}}},
+            {"Sinhala",   {{0x0D9A,0x0DB1},{0x0DB3,0x0DBB},{0x0DBD,0x0DC6}}},
+            {"Thai",      {{0x0E01,0x0E2E},{0x0E30,0x0E3A},{0x0E40,0x0E46}}},
+            {"Lao",       {{0x0E81,0x0EAE},{0x0EB0,0x0EBD},{0x0EC0,0x0EC6},{0x0EC8,0x0ECD}}},
+            {"Tibetan",   {{0x0F40,0x0F6C},{0x0F88,0x0F8C},{0x0F90,0x0FBC}}},
+            {"Myanmar",   {{0x1000,0x102A},{0x103F,0x103F},{0x104C,0x104F},{0x1050,0x105D},{0x1061,0x1061},{0x1065,0x1066},{0x106E,0x1070},{0x1075,0x1081},{0x108E,0x108E}}},
+            {"Ethiopic",  {{0x1200,0x135A},{0x1380,0x1399},{0x2D80,0x2DA6},{0x2DA8,0x2DB6},{0x2DB8,0x2DBE},{0x2DC0,0x2DCE},{0x2DD0,0x2DDE}}},
+            {"Khmer",     {{0x1780,0x17B3},{0x17B6,0x17B6},{0x17BE,0x17C5},{0x17C7,0x17C8}}},
+        };
+        auto bucket_of = [](wchar_t ch) -> const char* {
+            for (const ScriptBucket& b : kScriptBuckets) {
+                for (const ScriptRange& r : b.ranges) {
+                    if (ch >= r.lo && ch <= r.hi) return b.name;
+                }
+            }
+            return nullptr;
+        };
+        // CJK is one family: Han endonyms (zh-CN/zh-TW/yue) and the Japanese
+        // table mix Han with Hiragana/Katakana by design.
+        auto family_of = [](const char* block) -> const char* {
+            if (block == nullptr) return nullptr;
+            if (std::string_view(block) == "Han" || std::string_view(block) == "Hiragana" ||
+                std::string_view(block) == "Katakana") return "CJK";
+            return block;
+        };
+        auto count_letters = [&](const std::wstring& s, std::map<std::string, int>& out) {
+            for (wchar_t ch : s) {
+                const char* b = bucket_of(ch);
+                if (b) out[b] += 1;
+            }
+        };
+
+        const double kOwnShareMinPct = 95.0;  // observed worst 99.96% (km)
+        const int kForeignMaxLetters = 4;     // observed worst 2 (km); pre-fix as leak 9
+        std::string own_failures;
+        std::string foreign_failures;
+        int checked = 0;
+        for (const UiLocaleEntry& entry : GetSupportedUiLocales()) {
+            // Expected script: dominant letter block of the registry endonym
+            // (R1-1 native-name-script contract), CJK-folded.
+            std::map<std::string, int> native_hist;
+            count_letters(entry.native_name, native_hist);
+            if (native_hist.empty()) continue;
+            std::string dominant;
+            int dominant_n = -1;
+            for (const auto& [name, n] : native_hist) {
+                if (n > dominant_n) { dominant = name; dominant_n = n; }
+            }
+            const std::string expected_family = family_of(dominant.c_str());
+
+            I18n::SetLocale(entry.locale);
+            std::map<std::string, int> hist;
+            for (int id = 0; id < static_cast<int>(StringId::EnumCount); ++id) {
+                count_letters(I18n::Get(static_cast<StringId>(id)), hist);
+            }
+            ++checked;
+            int non_latin = 0, own = 0;
+            for (const auto& [name, n] : hist) {
+                if (name != "Latin") non_latin += n;
+                if (family_of(name.c_str()) == expected_family) own += n;
+            }
+            const double own_pct = non_latin > 0 ? 100.0 * own / non_latin : 100.0;
+            if (own_pct < kOwnShareMinPct) {
+                own_failures += I18n::LocaleToString(entry.locale) + "=" +
+                                std::to_string(static_cast<int>(own_pct)) + "% ";
+            }
+            for (const auto& [name, n] : hist) {
+                if (name != "Latin" && family_of(name.c_str()) != expected_family && n > kForeignMaxLetters) {
+                    foreign_failures += I18n::LocaleToString(entry.locale) + ":" + name + "x" +
+                                        std::to_string(n) + " ";
+                }
+            }
+        }
+        I18n::SetLocale(UiLocale::English);
+        TEST_CHECK(checked == kSelectedCount,
+                   "FIX-P3: cross-script pin walked every authored locale table (derived count)");
+        TEST_CHECK(own_failures.empty(),
+                   std::string("FIX-P3: every authored table's non-Latin letters are >= 95% in the "
+                               "script its endonym names (derived, CJK-folded); offenders: ") + own_failures);
+        TEST_CHECK(foreign_failures.empty(),
+                   std::string("FIX-P3: no foreign non-Latin script block exceeds 4 letters in any "
+                               "authored table; offenders: ") + foreign_failures);
+    }
+
     // ---- 2) FR/DE/RU acceptance (REQ-037 INVERTS the R6 removal) ------------
     // Design §2.1.1 + §Issues: the half-wired removal is superseded by the
     // "all 37" mandate; the tables are now authored, so the codes must
@@ -9577,12 +9774,13 @@ void TestR6P5P6I18n() {
     }
 
     // ---- 2b) Authenticity gate mechanism (design §2-Q4.2) ------------------
-    // All 37 real rows are authored in B-3, so the refusal path cannot be
-    // pinned by real data anymore - it is pinned with a SYNTHETIC selector:
-    // PlanUiLocaleChangeWithSelector must refuse every code that is NOT in
-    // the vector it was given, while the production entry point (full
-    // selector) accepts the same code. A withheld locale is therefore
-    // unreachable through the planner BY CONSTRUCTION of the selector loop.
+    // The refusal path is pinned twice: with a SYNTHETIC selector (the
+    // mechanism: PlanUiLocaleChangeWithSelector refuses every code that is NOT
+    // in the vector it was given, while the production entry point accepts the
+    // same code) and, since 261119_0001 FIX-R1 R1-08, against the LIVE table
+    // (a real authored=false row, which phase 1A supplies 52 of). A withheld
+    // locale is therefore unreachable through the planner BY CONSTRUCTION of
+    // the selector loop, and that construction is exercised on real data.
     {
         const std::vector<UiLocaleEntry> syntheticReduced = {
             { UiLocale::Thai, L"ไทย" },
@@ -9597,12 +9795,63 @@ void TestR6P5P6I18n() {
                    "B3: production planner accepts 'my' (all 37 authored this batch)");
     }
 
+    // ---- 2b') Real-data gate refusal (261119_0001 FIX-R1 R1-08) ------------
+    // Phase 1A added 52 gate-withheld rows, so the production entry point can
+    // finally be pinned on REAL data: the code resolves (its mapping row
+    // exists) and the planner still refuses it, which is the proof that the
+    // selector gate - not StringToLocale - is the enforcement point. The code
+    // is derived from the table, so the pin survives every phase-3 flip.
+    {
+        std::string gated_code;
+        UiLocale gated_locale = UiLocale::Auto;
+        for (const auto& m : GetLocaleMappings()) {
+            if (!m.authored) {
+                gated_code = m.config_code;
+                gated_locale = m.locale;
+                break;
+            }
+        }
+        // 261119_0001 phase-3 completion: the 89/89 end state has no
+        // gate-withheld row left, so this block's real-data leg is vacuous by
+        // design (the mechanism stays pinned by the synthetic-selector
+        // overload above and by the 'gu' row's own conditional below). The
+        // existence assertion is therefore recorded, not failed, once the
+        // mandate is complete.
+        const bool gated_row_exists = !gated_code.empty();
+        if (gated_row_exists) {
+            TEST_CHECK(I18n::StringToLocale(gated_code) == gated_locale,
+                       "R1-08: the gated code RESOLVES through StringToLocale (the mapping row exists)");
+            TEST_CHECK(!PlanUiLocaleChange("en", gated_code).valid,
+                       "R1-08: PlanUiLocaleChange REFUSES the live gate-withheld code (real data)");
+            std::string gated_upper = gated_code;
+            for (char& c : gated_upper) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+            TEST_CHECK(!PlanUiLocaleChange("en", gated_upper).valid,
+                       "R1-08: the refusal is case-insensitive (the selector loop's own idiom)");
+        }
+        // The review named "gu" specifically: keep that exact code covered
+        // while it is gated, and stay green once phase 3 authors it.
+        const LocaleMapping* gu = nullptr;
+        for (const auto& m : GetLocaleMappings()) {
+            if (std::string_view(m.config_code) == "gu") gu = &m;
+        }
+        TEST_CHECK(gu != nullptr &&
+                       (gu->authored || !PlanUiLocaleChange("en", "gu").valid),
+                   "R1-08: the review-named 'gu' row is refused while it is gated "
+                   "(vacuous once phase 3 authors it)");
+    }
+
     // ---- 3) Selector data + planner ----------------------------------------
     {
         const auto& entries = GetSupportedUiLocales();
-        TEST_CHECK(entries.size() == 37, "B3: selector lists exactly the 37 authored locales");
-        TEST_CHECK(entries[0].locale == UiLocale::Korean && entries[36].locale == UiLocale::English,
-                   "B3: selector order KO-first, EN-last (design §2-Q3 legacy front block kept)");
+        TEST_CHECK(static_cast<int>(entries.size()) == kAuthoredCount,
+                   "B3: selector lists exactly the authored locales (derived from "
+                   "GetLocaleMappings, no literal count)");
+        TEST_CHECK(!entries.empty() && entries.front().locale == UiLocale::Korean &&
+                       entries.back().locale == UiLocale::English,
+                   "B3: selector order KO-first, EN-last (design §2-Q3 legacy front block kept; "
+                   "indices derived, so phase-3 growth does not break the pin)");
         bool all_named = true;
         for (const auto& e : entries) {
             if (e.native_name == nullptr || e.native_name[0] == L'\0') all_named = false;
@@ -9844,7 +10093,12 @@ void TestReq037LocaleMapping() {
     const auto& maps = GetLocaleMappings();
 
     // ---- 1) Row count + declaration order ----------------------------------
-    TEST_CHECK(maps.size() == 37, "B3: LocaleMapping has exactly 37 rows");
+    // 89 rows: the 37 REQ-037 locales + the 52 GU..GOM phase-1A rows; phase 3
+    // (261119_0001 batches 1-4) authored all 52 tables, so every row is
+    // authored=true now and the gate mechanism stays pinned (vacuous-safe)
+    // in TestR6P5P6I18n section 2b' above.
+    TEST_CHECK(maps.size() == 89,
+               "B3: LocaleMapping has exactly 89 rows (37 REQ-037 + 52 UI-language-89 phase-1A, all authored since phase 3 batches 1-4)");
     {
         bool order_ok = true;
         for (size_t i = 0; i < maps.size(); ++i) {
@@ -9861,7 +10115,7 @@ void TestReq037LocaleMapping() {
             if (I18n::LocaleToString(m.locale) != m.config_code) round_trip = false;
             if (I18n::StringToLocale(m.config_code) != m.locale) round_trip = false;
         }
-        TEST_CHECK(round_trip, "B3: every config_code round-trips StringToLocale/LocaleToString (identity x37)");
+        TEST_CHECK(round_trip, "B3: every config_code round-trips StringToLocale/LocaleToString (identity x89)");
     }
 
     // ---- 3) Non-empty prefix/full columns + uniqueness ----------------------
@@ -9890,7 +10144,11 @@ void TestReq037LocaleMapping() {
     {
         const auto& entries = GetSupportedUiLocales();
         const auto& registry = GetSupportedLanguages();
-        bool join_ok = entries.size() == 37;
+        // 261119_0001 FIX-R1 R1-10: the seed is the gate's own authored count
+        // (the selector is built from the authored rows), not the literal 37.
+        const std::size_t authored_rows =
+            static_cast<std::size_t>(AuthoredUiLocaleCount());
+        bool join_ok = entries.size() == authored_rows;
         for (const auto& e : entries) {
             const LocaleMapping* row = nullptr;
             for (const auto& m : maps) {
@@ -9910,7 +10168,41 @@ void TestReq037LocaleMapping() {
             if (!found) join_ok = false;
         }
         TEST_CHECK(join_ok,
-                   "B3: selector == LocaleMapping x kAllLanguages join; endonyms come from the registry; gate fully open (37 authored)");
+                   "B3: selector == LocaleMapping x kAllLanguages join; endonyms come from the registry; "
+                   "selector size derived from the authored rows");
+    }
+
+    // ---- 4b) EVERY mapping row joins the registry (261119_0001 FIX-R1 R1-01)
+    // The selector join above only walks AUTHORED rows, so a gated row whose
+    // config_code can never match a registry code stayed invisible until its
+    // phase-3 authored=true flip - which is exactly what the Cantonese row did
+    // ("zh-HK" vs registry "YUE"): the flip would have withheld the locale from
+    // both views and a YUE pick would have canonicalized to "en". This pin
+    // walks ALL rows, authored or not, so the defect class is caught for the
+    // remaining 52 gated rows at any future flip. Expected 89/89.
+    {
+        const auto& registry = GetSupportedLanguages();
+        std::size_t joined = 0;
+        std::string first_unjoined;
+        for (const auto& m : maps) {
+            bool found = false;
+            for (const auto& lang : registry) {
+                if (lang.code == "AUTO") continue;
+                if (EqualsIgnoreCaseAscii(std::string_view{m.config_code},
+                                          std::string_view{lang.code})) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                ++joined;
+            } else if (first_unjoined.empty()) {
+                first_unjoined = m.config_code;
+            }
+        }
+        TEST_CHECK(joined == maps.size() && first_unjoined.empty(),
+                   "R1-01: every kLocaleMappings row (authored or gated) has a registry join partner "
+                   "- config_code == LanguageInfo::code, ASCII case-insensitive (89/89)");
     }
 
     // ---- 5) BCP-47 resolution: delegation-mandated cases (design §4.1) ------
@@ -9932,8 +10224,16 @@ void TestReq037LocaleMapping() {
     TEST_CHECK(LocaleFromBcp47Tag(L"ur-PK") == UiLocale::Urdu, "B3: ur-PK -> Urdu");
     TEST_CHECK(LocaleFromBcp47Tag(L"my-MM") == UiLocale::Burmese, "B3: my-MM -> Burmese");
     TEST_CHECK(LocaleFromBcp47Tag(L"en-US") == UiLocale::English, "B3: en-US -> English");
-    TEST_CHECK(LocaleFromBcp47Tag(L"sw-KE") == UiLocale::Auto,
+    // UI-language-89 1A: 'sw' is now a MAPPED (gated) prefix, so the
+    // historical unsupported-tag example sw-KE resolves to Swahili; the pin
+    // moves to Xhosa (xh), which has no mapping row even after 1A.
+    TEST_CHECK(LocaleFromBcp47Tag(L"xh-ZA") == UiLocale::Auto,
                "B3: unsupported OS tag -> sentinel; DetectSystemLocale falls through to English explicitly (design §2.1.5)");
+    // 1A positive pin: a new gated row's prefix resolves like any mapped row
+    // (detection is data-model-wide; the authenticity gate only bounds the
+    // selector/planner, never the OS-detection prefix loop).
+    TEST_CHECK(LocaleFromBcp47Tag(L"gu-IN") == UiLocale::Gujarati,
+               "B3: gu-IN -> Gujarati (UI-language-89 1A row, prefix match)");
 
     // ---- 6) R6 hyphen-boundary discipline -----------------------------------
     TEST_CHECK(LocaleFromBcp47Tag(L"nob") == UiLocale::Auto,
@@ -9983,7 +10283,7 @@ void TestReq037LocaleMapping() {
         I18n::SetLocale(UiLocale::English);
     }
 
-    // ---- 9) GetLocaleCode is table-driven for all 38 enum values ------------
+    // ---- 9) GetLocaleCode is table-driven for all 90 enum values ------------
     {
         bool code_ok = true;
         for (const auto& m : maps) {
@@ -9992,7 +10292,7 @@ void TestReq037LocaleMapping() {
         }
         I18n::SetLocale(UiLocale::Auto);
         if (I18n::GetLocaleCode() != "en") code_ok = false; // explicit fallback contract
-        TEST_CHECK(code_ok, "B3: GetLocaleCode matches config_code for all 37 locales + Auto->en");
+        TEST_CHECK(code_ok, "B3: GetLocaleCode matches config_code for all 89 mapping rows + Auto->en");
     }
 
     I18n::Initialize("auto"); // restore OS-derived locale for later tests
@@ -15279,7 +15579,11 @@ void TestReq040SystemDefaults37() {
     // registry name_en; the EN row is the G-2 "Korean" pivot pin.
     {
         const auto& maps = GetLocaleMappings();
-        TEST_CHECK(maps.size() == 37, "B6/C2: parametric loop covers exactly 37 mapping rows");
+        // 89 rows since UI-language-89 phase 1A. The 52 gated rows participate
+        // like any other: GetLocaleCode resolves their config_code and the
+        // 1:1 registry oracle (name_en) matches through the same seam.
+        TEST_CHECK(maps.size() == 89,
+                   "B6/C2: parametric loop covers exactly 89 mapping rows (52 gated rows resolve through the same GetLocaleCode seam)");
         for (const auto& m : maps) {
             I18n::SetLocale(m.locale); // simulate "OS reports this language"
             const std::string sys_code = NormalizeLanguageCode(std::string(I18n::GetSystemLanguageCode()));
@@ -17893,6 +18197,17 @@ void TestR107PeerIdentityGate() {
 // end-of-file pattern: it uses ResolveRepoFile, defined above).
 #include "p5_language_picker_tests.inc"
 
+// 261119_0001 P6-U1..U5 (UI-language-89 phase 2, architect-pick.md "Pool build"
+// through the U5 controller dispatch): the UI-locale picker's data contract -
+// size derived from the selector, AUTO registry row first, pool[1..]
+// pointer-identical to the selector's registry rows in display order, registry
+// containment, the authenticity gate's no-gated-row rule, the SECTION A
+// keyboard contract, the SECTION B / tray / controller wiring pins, plus the
+// self-call + no-window headless proof (p5 section (10) idiom mirrored).
+// Staged as an .inc next to this runner (the end-of-file pattern: it uses
+// ResolveRepoFile, defined above).
+#include "p6_ui_language_picker_tests.inc"
+
 // 261116_0003 P9a (language-menu redesign, plan §3 D5/D6 + §5 P9): the
 // user-defined-language core - config schema round-trip / backward compat /
 // forward compat, the D5 code ladder (alias -> locale -> no code), script
@@ -18235,11 +18550,16 @@ void TestThemeI18nCoverage() {
         ".theme_editorial = ",
         ".theme_monolith = ",
     };
+    // 261119_0001 FIX-R1 R1-10 (adjacent class): the table count is the gate's
+    // authored count minus the positional English table, so phase-3 batches do
+    // not false-fail a pinned literal.
+    const int kDesignatedTableCount = AuthoredUiLocaleCount() - 1;
     for (const char* designator : kThemeDesignators) {
         const size_t hits = count_occ(src, designator);
-        TEST_CHECK(hits == 36,
+        TEST_CHECK(hits == static_cast<size_t>(kDesignatedTableCount),
                    std::string("v0.10.5 theme i18n: '") + designator +
-                       "' appears in exactly 36 locale tables (37 minus English defaults)");
+                       "' appears in exactly one table per designated locale "
+                       "(authored locales minus English defaults)");
     }
 
     // The English table is the ONE intentional default-fallback table: it must
@@ -18258,11 +18578,15 @@ void TestThemeI18nCoverage() {
     // ---- (b) Every locale table is a single initializer style ----
     // MSVC C7556 rejects mixing designated and positional initializers in one
     // aggregate, so the theme designators can only exist in a table that is
-    // fully designated. Pin the count of designated tables at 36 (Korean + 35)
-    // so a future positional table cannot "add" the designators and fail to
+    // fully designated. The count of designated tables is derived from the
+    // gate (one per authored locale, the positional English table excluded) so
+    // a future positional table cannot "add" the designators and fail to
     // compile in a confusing place.
-    TEST_CHECK(count_occ(src, "const LocalizedStrings kStrings") == 37,
-               "v0.10.5 theme i18n: 37 locale tables present");
+    // 261119_0001 FIX-R1 R1-10 (adjacent class): one table per authored locale
+    // (the positional English table included), derived from the gate.
+    TEST_CHECK(count_occ(src, "const LocalizedStrings kStrings") ==
+                   static_cast<size_t>(AuthoredUiLocaleCount()),
+               "v0.10.5 theme i18n: one locale table per authored locale");
 
     // ---- (c) RTL locales carry genuinely RTL theme strings ----
     // Arabic / Persian / Urdu / Hebrew menu_ui_theme must contain at least one
@@ -18315,19 +18639,17 @@ void TestThemeI18nCoverage() {
     // ---- (d) Runtime: the strings reach I18n for every locale ----
     // Catches the opposite regression: a table that lists the designators but
     // is not wired into the GetStrings switch would still fall back to English.
+    // 261119_0001 phase-3 batch 1 (R1-10 adjacent class FIX-R1 missed): the
+    // locale list is built from GetSupportedUiLocales() (the selector == the
+    // authored rows) instead of the pinned 37-locale array, so the derived
+    // count below (AuthoredUiLocaleCount - 1) stays true as phase-3 batches
+    // land; the ko-era literals in the list were its historical seed only.
     const UiLocale initial = I18n::GetCurrentLocale();
-    const UiLocale locales[] = {
-        UiLocale::Korean, UiLocale::English, UiLocale::Vietnamese, UiLocale::ChineseSimplified,
-        UiLocale::ChineseTraditional, UiLocale::Japanese, UiLocale::Spanish, UiLocale::French,
-        UiLocale::German, UiLocale::Russian, UiLocale::Thai, UiLocale::Arabic,
-        UiLocale::Portuguese, UiLocale::Italian, UiLocale::Indonesian, UiLocale::Malay,
-        UiLocale::Filipino, UiLocale::Khmer, UiLocale::Lao, UiLocale::Hindi,
-        UiLocale::Bengali, UiLocale::Turkish, UiLocale::Polish, UiLocale::Dutch,
-        UiLocale::Ukrainian, UiLocale::Persian, UiLocale::Urdu, UiLocale::Hebrew,
-        UiLocale::Czech, UiLocale::Hungarian, UiLocale::Swedish, UiLocale::Greek,
-        UiLocale::Romanian, UiLocale::Danish, UiLocale::Finnish, UiLocale::Norwegian,
-        UiLocale::Burmese,
-    };
+    const std::vector<UiLocale> locales = [] {
+        std::vector<UiLocale> v;
+        for (const auto& e : GetSupportedUiLocales()) v.push_back(e.locale);
+        return v;
+    }();
     int non_english_theme_bundles = 0;
     for (UiLocale loc : locales) {
         I18n::SetLocale(loc);
@@ -18344,9 +18666,10 @@ void TestThemeI18nCoverage() {
             ++non_english_theme_bundles;
         }
     }
-    // 36 locales (all but English) must differ from the struct default.
-    TEST_CHECK(non_english_theme_bundles == 36,
-               "v0.10.5 theme i18n: 36 non-English locales have a translated menu_ui_theme");
+    // Every locale but English must differ from the struct default (derived:
+    // 261119_0001 FIX-R1 R1-10).
+    TEST_CHECK(non_english_theme_bundles == static_cast<size_t>(AuthoredUiLocaleCount() - 1),
+               "v0.10.5 theme i18n: every non-English authored locale has a translated menu_ui_theme");
 
     // Spot-pin one RTL locale end to end: the runtime value must equal the
     // literal the source pin above validated, proving no reordering happened.
@@ -21913,8 +22236,8 @@ void TestP6aMenuSearchLangsStrings() {
     const int failures_before = g_failed_count;
     const UiLocale initial = I18n::GetCurrentLocale();
     const auto& locales = GetSupportedUiLocales();
-    TEST_CHECK(locales.size() == 37,
-               "P6a: MenuSearchLangs is authored for all 37 UI locales");
+    TEST_CHECK(static_cast<int>(locales.size()) == AuthoredUiLocaleCount(),
+               "P6a: MenuSearchLangs is authored for every authored UI locale (count derived)");
     I18n::SetLocale(UiLocale::English);
     const std::wstring en_label = I18n::Get(StringId::MenuSearchLangs);
     TEST_CHECK(en_label == L"Search…",
@@ -21938,8 +22261,8 @@ void TestP6aMenuSearchLangsStrings() {
     TEST_CHECK(I18n::Get(StringId::MenuSearchLangs) == L"検索…",
                "P6a: the Japanese MenuSearchLangs literal is authored (not the English default)");
     I18n::SetLocale(initial); // suite-state hygiene
-    TEST_CHECK(non_empty == 37,
-               "P6a: MenuSearchLangs resolves non-empty in all 37 locales");
+    TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+               "P6a: MenuSearchLangs resolves non-empty in every authored locale");
     TEST_CHECK(english_copy == 0,
                "P6a: no non-English locale falls back to the English MenuSearchLangs text");
     if (g_failed_count == failures_before) {
@@ -21977,8 +22300,8 @@ void TestP7LanguageSearchCountStrings() {
     const int failures_before = g_failed_count;
     const UiLocale initial = I18n::GetCurrentLocale();
     const auto& locales = GetSupportedUiLocales();
-    TEST_CHECK(locales.size() == 37,
-               "P7: LanguageSearchCount is authored for all 37 UI locales");
+    TEST_CHECK(static_cast<int>(locales.size()) == AuthoredUiLocaleCount(),
+               "P7: LanguageSearchCount is authored for every authored UI locale (count derived)");
     I18n::SetLocale(UiLocale::English);
     const std::wstring en_phrase = I18n::Get(StringId::LanguageSearchCount);
     TEST_CHECK(en_phrase == L"{n} languages",
@@ -22013,8 +22336,8 @@ void TestP7LanguageSearchCountStrings() {
     TEST_CHECK(I18n::Get(StringId::LanguageSearchCount) == L"{n} Sprachen",
                "P7: the German LanguageSearchCount literal is authored (not the English default)");
     I18n::SetLocale(initial); // suite-state hygiene
-    TEST_CHECK(non_empty == 37,
-               "P7: LanguageSearchCount resolves non-empty in all 37 locales");
+    TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+               "P7: LanguageSearchCount resolves non-empty in every authored locale");
     TEST_CHECK(english_copy == 0,
                "P7: no non-English locale falls back to the English LanguageSearchCount text");
     TEST_CHECK(without_token == 0,
@@ -22092,7 +22415,8 @@ void TestP7LanguageSearchCountStrings() {
 // designated-initializer omission keeps the default member initializer) and the
 // value still looks fine. The scan below therefore counts ENGLISH COPIES for
 // every non-English locale, and a source pin counts the designators in each of
-// the 36 designated tables. The English positional table's own hole (a dropped
+// the designated tables (one per authored locale, the positional English table excluded; the
+// count is derived from the gate). The English positional table's own hole (a dropped
 // tail initializer falls back to the IDENTICAL default, so no value check can
 // see it) is closed by the REQ-044 (c1) element-count check above it.
 void TestP9b1UserLanguageStrings() {
@@ -22101,8 +22425,8 @@ void TestP9b1UserLanguageStrings() {
     const int failures_before = g_failed_count;
     const UiLocale initial = I18n::GetCurrentLocale();
     const auto& locales = GetSupportedUiLocales();
-    TEST_CHECK(locales.size() == 37,
-               "P9b-1: the user-language strings are authored for all 37 UI locales");
+    TEST_CHECK(static_cast<int>(locales.size()) == AuthoredUiLocaleCount(),
+               "P9b-1: the user-language strings are authored for every authored UI locale (count derived)");
 
     // The inventory in STRUCT-tail order (also the English positional table's
     // order). The ENUM order differs on purpose: the ids sit before
@@ -22246,8 +22570,8 @@ void TestP9b1UserLanguageStrings() {
         }
     }
     I18n::SetLocale(initial); // suite-state hygiene
-    TEST_CHECK(non_empty == 37,
-               "P9b-1: all 23 strings resolve non-empty in all 37 locales (no dropped locale)");
+    TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+               "P9b-1: all 23 strings resolve non-empty in every authored locale (no dropped locale)");
     TEST_CHECK(english_copy == 0,
                "P9b-1: no non-English locale falls back to the English text (36 locales authored)");
     TEST_CHECK(without_token == 0,
@@ -22286,7 +22610,13 @@ void TestP9b1UserLanguageStrings() {
             "user_lang_check_script",
             "user_lang_script_none",
         };
+        // 261119_0001 phase-3 batch 1 (R1-10 adjacent class FIX-R1 missed):
+        // one designated table per authored locale minus the positional
+        // English one, derived from the gate (was the pinned literal 36, so
+        // every phase-3 batch would false-fail here).
         int field_short = 0;
+        const std::size_t kExpectedDesignators =
+            static_cast<std::size_t>(AuthoredUiLocaleCount() - 1);
         for (const char* field : kFields) {
             const std::string designator = std::string("    .") + field + " = ";
             std::size_t count = 0;
@@ -22294,13 +22624,14 @@ void TestP9b1UserLanguageStrings() {
                  at = i18n_src.find(designator, at + 1)) {
                 ++count;
             }
-            if (count != 36) {
+            if (count != kExpectedDesignators) {
                 ++field_short;
             }
         }
         TEST_CHECK(field_short == 0,
-                   "P9b-1: each of the 23 fields is designated in exactly 36 tables (the 37th "
-                   "is the positional English one) - no locale inherits the English default");
+                   "P9b-1: each of the 23 fields is designated in exactly one table per "
+                   "authored locale (the positional English one excepted) - no locale "
+                   "inherits the English default (count derived from the gate)");
     }
 
     // ---- ordering contract: enum placement vs the P5/P7 tail pins -----------
@@ -22356,8 +22687,8 @@ void TestP9b3AutoChipStrings() {
     const int failures_before = g_failed_count;
     const UiLocale initial = I18n::GetCurrentLocale();
     const auto& locales = GetSupportedUiLocales();
-    TEST_CHECK(locales.size() == 37,
-               "P9b-3 U5: the AUTO chip label is authored for all 37 UI locales");
+    TEST_CHECK(static_cast<int>(locales.size()) == AuthoredUiLocaleCount(),
+               "P9b-3 U5: the AUTO chip label is authored for every authored UI locale (count derived)");
 
     // ---- the ko/en copies verbatim (CEO-facing text, not paraphrased) -------
     I18n::SetLocale(UiLocale::English);
@@ -22384,14 +22715,14 @@ void TestP9b3AutoChipStrings() {
         }
     }
     I18n::SetLocale(initial); // suite-state hygiene
-    TEST_CHECK(non_empty == 37,
-               "P9b-3 U5: the AUTO chip label resolves non-empty in all 37 locales "
+    TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+               "P9b-3 U5: the AUTO chip label resolves non-empty in every authored locale "
                "(the English placeholder is allowed where no translation was authored)");
     TEST_CHECK(with_emdash == 0,
                "P9b-3 U5: no locale's AUTO chip label carries an em-dash (the R14-10 "
                "separator form is the hyphen)");
 
-    // ---- i18n wiring: designator x36 + the Get() switch + the EN tail -------
+    // ---- i18n wiring: designator count derived from the gate + the Get() switch + the EN tail ----
     std::string i18n_src;
     if (!ReadRepoSrc(L"src\\i18n.cpp", i18n_src)) {
         TEST_CHECK(false,
@@ -22403,9 +22734,12 @@ void TestP9b3AutoChipStrings() {
              at = i18n_src.find(designator, at + 1)) {
             ++designators;
         }
-        TEST_CHECK(designators == 36,
-                   "P9b-3 U5: the field is designated in exactly 36 tables (the 37th "
-                   "is the positional English one) - no locale inherits the default");
+        // 261119_0001 FIX-R1 R1-10 (adjacent class): one designator per
+        // designated table (authored locales minus the positional English one).
+        TEST_CHECK(designators ==
+                       static_cast<std::size_t>(AuthoredUiLocaleCount() - 1),
+                   "P9b-3 U5: the field is designated in every designated table (the "
+                   "positional English one excepted) - no locale inherits the default");
         const std::string case_line = "case StringId::LanguageSearchAutoChip:";
         const std::size_t case_at = i18n_src.find(case_line);
         std::size_t case_checks = 0;
@@ -24429,6 +24763,7 @@ int main() {
     TestP8bCtrlF9CycleWiring(); // 261116_0003 P8b: engine-filtered Ctrl+F9 wired at both call sites
     TestLanguageAliasCoverage(); // 261116_0003 P4: CLDR alias matrix + folding search matcher
     TestP5LanguagePicker();      // 261116_0003 P5: searchable picker pure logic (+ no-window proof)
+    TestP6UiLanguagePicker();   // 261119_0001 P6-U1..U5: UI-locale picker (pool + mode + window + tray + dispatch)
     TestP9aUserLanguages();      // 261116_0003 P9a: user languages + capability probe (core)
     TestP6aMenuSearchLangsStrings(); // 261116_0003 P6a fix round (PR6-02c): MenuSearchLangs per-locale pins
     TestP7LanguageSearchCountStrings(); // 261116_0003 P7: the picker engine-chip count phrase, 37 locales

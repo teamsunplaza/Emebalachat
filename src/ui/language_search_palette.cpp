@@ -64,7 +64,11 @@ namespace {
 // leak a request into one. The array is value-only (PickerInit holds std::string
 // members, so slots reset to PickerInit{} release any held bytes; nothing
 // pointer-shaped ever lives here).
-constexpr std::size_t kPickerSlotCount = 3; // PickerSurface: TrayTyping / TrayTooltip / TooltipPill
+// 261119_0001 U3 (UI-language-89 phase 2): FOUR surfaces now — the UI-language
+// mode's PickerSurface::TrayUiLanguage takes slot 3. The slot index IS the enum
+// value, so the new enum value needs the new slot; PickerSlotFor's bounds check
+// (idx >= kPickerSlotCount) is unchanged and still closes the array.
+constexpr std::size_t kPickerSlotCount = 4; // PickerSurface: TrayTyping / TrayTooltip / TooltipPill / TrayUiLanguage
 bool s_open_pending[kPickerSlotCount] = {};
 language_palette::PickerInit s_pending_init[kPickerSlotCount];
 
@@ -77,7 +81,7 @@ language_palette::PickerInit s_pending_init[kPickerSlotCount];
 // design (the tray and the tooltip share the module).
 bool s_palette_open = false;
 
-// Defensive surface->slot mapping. The enum is closed (three values, zero
+// Defensive surface->slot mapping. The enum is closed (four values, zero
 // holes) and every producer passes a literal, so the false branch is
 // unreachable in practice; it exists so a corrupted/unknown tag can never
 // index past the array (CWE-129-style guard on a by-value enum crossing a
@@ -183,7 +187,16 @@ HFONT CreatePaletteFont(UINT dpi) {
 // user already recognises in the menu is the same row here. Reuses
 // GetLanguageDisplayName — zero new i18n keys, and the native/English order
 // follows the existing per-locale convention inside it.
-std::wstring RowText(const LanguageInfo& language) {
+//
+// 261119_0001 U3 (UI-language mode): the UI pool's row 0 is the registry AUTO
+// row, whose registry display name is the TRANSLATION auto-detect label —
+// wrong chrome for a UI-locale list. That ONE row renders the selector's own
+// MenuUiLanguageAuto label instead; every other row, in every mode, keeps the
+// existing shape verbatim.
+std::wstring RowText(const LanguageInfo& language, bool ui_mode) {
+    if (ui_mode && language.code == "AUTO") {
+        return I18n::Get(StringId::MenuUiLanguageAuto);
+    }
     return ToUtf16(language.code) + L" - " + I18n::GetLanguageDisplayName(language.code);
 }
 
@@ -254,6 +267,18 @@ std::wstring CountPhrase(std::size_t count) {
 }
 
 void UpdateHeader(PaletteWindow& w) {
+    // 261119_0001 U3 (UI-language mode): the header names the SURFACE ("UI
+    // 언어"), not a translation direction, and the engine chip is meaningless
+    // here — no translation engine exists in this mode — so the chip is HIDDEN
+    // (SW_HIDE) rather than relabeled with a fabricated count. The translation
+    // surfaces fall through to the pinned role/engine arms below, byte-
+    // identical; this branch returns before any of them runs.
+    if (w.state.surface() == language_palette::PickerSurface::TrayUiLanguage) {
+        ::SetWindowTextW(w.header, I18n::Get(StringId::MenuUiLanguage).c_str());
+        ::ShowWindow(w.chip, SW_HIDE);
+        return;
+    }
+
     const StringId id = (w.state.role() == language_palette::PickerRole::Source)
                             ? StringId::MenuSourceLang
                             : StringId::MenuTargetLang;
@@ -284,8 +309,13 @@ void UpdateHeader(PaletteWindow& w) {
 void SyncList(PaletteWindow& w) {
     ::SendMessageW(w.list, LB_RESETCONTENT, 0, 0);
     const auto& hits = w.state.hits();
+    // 261119_0001 U3: the UI-language mode is the ONE surface whose AUTO pool
+    // row renders the selector's own label (see RowText); every other surface
+    // keeps the row shape it has always had.
+    const bool ui_mode =
+        w.state.surface() == language_palette::PickerSurface::TrayUiLanguage;
     for (const LanguageSearchHit& hit : hits) {
-        const std::wstring row = RowText(*hit.language);
+        const std::wstring row = RowText(*hit.language, ui_mode);
         ::SendMessageW(w.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
     }
     const int sel = w.state.selection();
@@ -523,12 +553,22 @@ bool HandleNavigationKey(PaletteWindow& w, const MSG& msg) {
             ClosePalette(w);
             return true;
         }
-        case VK_TAB:
+        case VK_TAB: {
             // Shift+Tab lands here too: two roles, so both directions flip.
-            w.state.Apply(PickerCommand::FlipRole);
-            UpdateHeader(w);
-            SyncList(w);
+            // 261119_0001 U3: consume the resolution and repaint only when the
+            // flip actually moved something. In the UI-language mode FlipRole
+            // is a pure no-op (one role, one pool — see PickerState::FlipRole),
+            // and re-seating/repainting there would churn the list for
+            // nothing; every translation surface reports changed == true and
+            // keeps the exact pre-U3 repaint behavior.
+            const language_palette::PickerResolution resolution =
+                w.state.Apply(PickerCommand::FlipRole);
+            if (resolution.changed) {
+                UpdateHeader(w);
+                SyncList(w);
+            }
             return true;
+        }
         default:
             return false;
     }

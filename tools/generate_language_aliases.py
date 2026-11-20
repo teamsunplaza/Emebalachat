@@ -2,18 +2,28 @@
 """261116_0003 P4 (language-menu redesign) - generate src/language_alias.cpp.
 
 WHAT THIS EMITS
-    The CLDR-derived multi-locale alias matrix (37 UI locales x 89 registry
+    The CLDR-derived multi-locale alias matrix (89 UI locales x 89 registry
     targets + the AUTO pseudo-language), the hand-curated script-name table
     (plan D4), and the folded-text lookup table used by the search matcher
     (src/language_alias.hpp). The emitted file is static `const` data only: no
     CLDR JSON, no network access and no Python is needed at build or run time.
+
+    Since 261119_0001 1B the matrix indexes ALL 89 UI locales of
+    src/i18n.cpp kLocaleMappings (1A widened the table from 37 to 89 rows).
+    Two of those languages have no `cldr-localenames-full` directory at the
+    pinned CLDR tag: ht (Haitian Creole) and gom (Goan Konkani - CLDR carries
+    Konkani under "kok", but there is no Goan-Konkani UI locale file). They are
+    declared in SNAPSHOT_UNAVAILABLE_LOCALES, keep their slot in
+    kLanguageAliasLocales (the locale list stays index-parallel to
+    kLocaleMappings), and contribute no exonym column: every other locale's
+    data is unaffected.
 
 ONE-TIME SNAPSHOT (the exact fetch command)
     The snapshot is the unicode-org/cldr-json repo at the pinned release tag,
     one `languages.json` per UI locale:
 
         python tools/generate_language_aliases.py --fetch \\
-            --snapshot-dir tools_tmp_261116_cldr
+            --snapshot-dir tools_tmp_261119_cldr
 
     which downloads, per CLDR locale id <loc>, exactly this URL with Python's
     urllib.request (standard library - no curl or other tool is involved):
@@ -23,7 +33,9 @@ cldr-json/cldr-localenames-full/main/<loc>/languages.json
 
     Fetched AND cached bytes are verified against the pinned
     EXPECTED_SNAPSHOT_SHA256 manifest below (fail-closed, PR4-05), so a
-    tampered snapshot can never reach the generated C++.
+    tampered snapshot can never reach the generated C++. A locale declared in
+    SNAPSHOT_UNAVAILABLE_LOCALES has no file to verify: --fetch does not even
+    request it, and a file appearing for it is a hard error (stale declaration).
 
     (`cldr-localenames-full` is the alias-resolved package: a language name
     CLDR does not translate falls back to root inside the JSON, so every value
@@ -70,6 +82,7 @@ import os
 import re
 import sys
 import unicodedata
+import urllib.error
 import urllib.request
 
 # ---------------------------------------------------------------------------
@@ -77,11 +90,20 @@ import urllib.request
 # ---------------------------------------------------------------------------
 CLDR_TAG = "49.0.0"
 CLDR_RELEASE_DATE = "2026-10-22"
-SNAPSHOT_FETCH_DATE = "2026-11-16"
+# 261119_0001 1B: the snapshot dir is new (tools_tmp_261119_cldr) and every
+# file in it was fetched on this date, so the constant is the real fetch date
+# of the bytes this file embeds - not "today" at render time.
+SNAPSHOT_FETCH_DATE = "2026-11-19"
 CLDR_RAW_URL = (
     "https://raw.githubusercontent.com/unicode-org/cldr-json/"
     "{tag}/cldr-json/cldr-localenames-full/main/{locale}/languages.json"
 )
+# 261119_0001 FIX-R1 R1-09: the fetched body is streamed and capped before the
+# digest pin runs (verification happens after transfer, so an un-capped read()
+# let a compromised pinned endpoint exhaust dev-machine memory). Real snapshots
+# are ~200-400 KiB; 8 MiB is ~20x the largest one.
+MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+SNAPSHOT_READ_CHUNK = 64 * 1024
 
 # ---------------------------------------------------------------------------
 # Pinned supply-chain expectations (261116_0003 P4 fix round, PR4-05).
@@ -130,6 +152,78 @@ EXPECTED_SNAPSHOT_SHA256 = {
     "fi": "eb017af857a5ece0040771e8c9e8b63df1c2b78daaf086402384b0280643b351",
     "no": "14a7e1bd43f0d84fc2201e40fe832f7a9ee17d723414c8a60ee49bb89ae0a52c",
     "my": "67b9cd8977c5bcf6b077faf2e1bc1012bcbf49671b2016499dc5a810d8abd53e",
+    # ---- 261119_0001 1B: the 50 additional UI locales whose CLDR file
+    # exists at 49.0.0 (real digests of the fetched bytes; the other two new
+    # UI locales, ht and gom, are declared in SNAPSHOT_UNAVAILABLE_LOCALES).
+    "gu": "64a8bd1001191eb54f98a67ed8220210937fb1af0cf8089e391fd0a9673061b5",
+    "te": "6ae0e94b6f541455c2f59afa8714a65faf95b067cd32799b8712893e8003c2dd",
+    "mr": "edb168f95906826a92ca5412b47573fdc197da79e7443283f31f6cc137717af6",
+    "ta": "2f1f54f0c18618e1ff9281b1bea1d4b6efd18cf1f2acf3184a2f538d184554f2",
+    "bo": "02b813d3196278c37817b57d5e7d2ceef585448bb82164ca6ffe33c1fb7a1b71",
+    "kk": "68dad17b403d1b220a0d44ef342abb439264b3d44fda2edd11a06d68917f9e6b",
+    "mn": "66d0e7c1a53e4171c1c032ef73f855a8f4bc7a06ca6a2d55fff687246fb63a7f",
+    "ug": "66012d554301e67490a972e5a33e49908586951d1f4afa8193de50e8d015e706",
+    "yue": "cbb3993e679ff084c48b2aa804e1e3006799aa152193207b3636d0bd22194737",
+    "bs": "ce68b4aaf6077b558a8ae85538e57c2619822df845902b8f8f908eeb5f985d23",
+    "sr": "e904cb592f8488a2932a4f55577829e7b4a34bb0587107ea220e4a2816b21ea2",
+    "hr": "a5cf5df15a4f4dbafbc019f847694770ccb7e0b12d7b5b1553d1189b7ca8660d",
+    "sl": "76ff6882cbea7a23ead331261ec56f3c4209da5b768f1c0a8f0b166a64d18176",
+    "sk": "d95394366dc6da039ae61eb4c651cb0c849672fc255bc0fdbd287137bbb915a5",
+    "bg": "79c5187eaf6c09be2cec9e86f3c1c8f200ceb177c573111620c07437d855b393",
+    "lt": "770bd1632cd56af8a02f908bb3ac825cc4d1d38e0db0804376c87335757c1176",
+    "lv": "c4dd050fc413b584949128301c3e1653ab0257fd8345fcd5df616267c4a11e66",
+    "et": "4dcf0c78eaa808a635ae90687e546c26222540dabc9048fb9c86567c93c2be6b",
+    "af": "b6990a0b3a5b6784fb4374ca88b766bd07d8f79ba11acf3710b360b990ed1e86",
+    "ca": "ccf535332483220cbb38f35d03d63cd93433b0b843ba5aaddfa6d021ec5ef4b8",
+    "is": "c731876ae51dcc3c67b5ea571cf5166d66eef7187116fa34cc136a40e88fa19f",
+    "sq": "a830abfd41f1606e8867255b8ed70804ba28a17da9b1d330f66c1f8ba856bef8",
+    "mk": "5f7646837aa12909eab55789a775aa0c2f69ebc7630294d05fa8f36f634aa6e3",
+    "cy": "d99197d532e6323a266decbeb6a6643098f9eb2076c6077ef8dcf6a9b7e0e6b8",
+    "ga": "3c5bb4b881f318f3ccc19a26de187a54af9b6878fce2b1e61e3eb37cc1fa61e5",
+    "eu": "d7dffd19b8fb14fece3549a3dd0a15168ee93cbfcd15f5509c946278a24653c7",
+    "gl": "8b970faac13033b3f2b7964b37fd9f231d4454c44ed5f54f1e31be6b61c5d0ce",
+    "sw": "70e586e2fa969f70e7dad9cb75a89c0cbd3bf9971d341ef20289213ccd19065d",
+    "uz": "6fce68f74765433d0e2d83fe40648bfe1d8aa0a1e4d5cdf9be3803f29faa61bc",
+    "az": "5c065dfe319e0d1dc4a648ecbf7ed2af4334603e7406c01fe0ce09a4159b59f6",
+    "be": "9be33eff6733d46925415ceaa61ee6a84a4e994224d60a67dfb1eefa1819384f",
+    "ky": "6d96217bfd984d25850ac0a884f75d5be41d776f795aec99ec1a9e1821fbcb76",
+    "tg": "520d6aa6a73358acabdce2e4cb6d911b8011c6584bf809bc47675de15620e627",
+    "eo": "f36bcdb9fa08f2182fe4abcc8660434962549d19f858729e5144b4c4016cdf64",
+    "hy": "3596a4f3306d76f1c2bc14708c0f6d2115c93eaf93a9a834a4e3f00488feedd8",
+    "ka": "7a9d54e2ece2f89f2b39a81424c9ad97f123fcc5fa335c4855706c7852e53edf",
+    "si": "d558991ce457254f3d4f9edb9b3e9a1bd947921d1af979e3fc1e7e9531a9218a",
+    "ml": "e28a482a6f76f89a7e528ab8a31f34a716ceb4b440cf29f11136153dfbd9b5d5",
+    "kn": "e2a206df9f4f6c9ad144f921a7035cad35c85e21c7fdd55ffc884658838ad294",
+    "pa": "ba4492cff38c39f5b0dd2afb8915ce3198eed95ba30ec825c531f0a71123b2b5",
+    "or": "e5910172959b8e4067a2545e70c8920341ddfd96325b5ddff0e00788ae846240",
+    "am": "1946c9bdcdf694c7209485231fc0f59b7f8b060fa9be7473f643d80b30544336",
+    "ti": "0b3c473a354e04c577463755e74c7f49c345888ae1c2c04a49d93ad742a42e7b",
+    "ps": "0da884f1c97a0690502862a681f8460207c7f8532c18ed60a42ee25cbec44146",
+    "sd": "4fa15df6187d80bda1d18287741d3e06d952ec8cbb1036866ef7294a4c403bb8",
+    "ne": "f79f21375575a7c774b9d3e107e709fc2667d245bb6d27769371c4ab9c979ee7",
+    "as": "553053b31828bda1224aded7c27f188dd757308bc879fb86a59ff51349da834f",
+    "dz": "fcee351df427b50191e503355f88a61f37c5ae4b4e0facfbeed66ece89a4da50",
+    "sa": "9acaeb1d4caf31fff70a78d66173f4ea2410ae6d8b60096bf37e461dbb2cb1ac",
+    "mai": "ddf4bcd3a0344013391e622e774e0085b0f703c9a5a916b4771a670306b5540a",
+}
+
+# UI locales whose `cldr-localenames-full/main/<id>/languages.json` does not
+# exist at the pinned tag (verified: HTTP 404 on CLDR 49.0.0 for both, probed
+# 2026-11-19). They are UI locales in every other respect - they keep their
+# slot in kLanguageAliasLocales, index-parallel to kLocaleMappings - but have
+# no CLDR name data, so they contribute no exonym column and no digest entry.
+# Declaring a locale here is the ONLY documented fallback for a missing
+# UI-locale file: no data is fabricated for it, and every other locale's column
+# is rendered exactly as if this locale did not exist. Remove an entry only
+# together with a real manifest digest once CLDR ships the file.
+SNAPSHOT_UNAVAILABLE_LOCALES = {
+    # Haitian Creole: no "ht" directory (CLDR carries no Haitian locale names).
+    "ht",
+    # Goan Konkani: no "gom" directory (Konkani names live under "kok", which
+    # would be a DIFFERENT language view - the registry's GOM target already
+    # reaches those names through CLDR_KEY_FALLBACKS, but a gom UI column
+    # cannot be sourced from kok without lying about the locale).
+    "gom",
 }
 
 # The Unicode version the NFD-derived fold entries were derived from. Pinned
@@ -141,7 +235,7 @@ EXPECTED_SNAPSHOT_SHA256 = {
 # fix-round report.
 EXPECTED_UNICODATA_VERSION = "14.0.0"
 
-DEFAULT_SNAPSHOT_DIR = "tools_tmp_261116_cldr"
+DEFAULT_SNAPSHOT_DIR = "tools_tmp_261119_cldr"
 DEFAULT_OUT = "src/language_alias.cpp"
 
 # ---------------------------------------------------------------------------
@@ -159,13 +253,20 @@ CONFIG_ROW_RE = re.compile(
 I18N_ROW_RE = re.compile(r'^\s*\{\s*UiLocale::([A-Za-z]+)\s*,\s*"([^"\\]+)"\s*,')
 
 EXPECTED_TARGET_COUNT = 89
-EXPECTED_UI_LOCALE_COUNT = 37
+EXPECTED_UI_LOCALE_COUNT = 89
 
 # config_code (i18n LocaleMapping.config_code) -> cldr-localenames directory id.
 # Traps: the two Chinese UI locales are CLDR's script trees ("zh" is the
 # Simplified/default tree, "zh-Hant" the Traditional one - there is no "zh-CN"
 # or "zh-TW" directory); Norwegian is CLDR's macro locale "no" (the "nb"
-# directory carries the same names; "no" is the canonical one).
+# directory carries the same names; "no" is the canonical one). Cantonese
+# (261119_0001 1B) sits in the same family but NOT as a trap any more: its
+# config code is "yue" - the registry/CLDR language key itself (identity
+# mapping since 261119_0001 FIX-R1 R1-01; the config code used to be the
+# DWrite tag "zh-HK", which never joined the registry's "YUE" row). Its BCP-47
+# tags stay zh / zh-HK in i18n.cpp, so the UI column is still the
+# Cantonese-language view - "zh-Hant-HK" would be a Chinese view, not this
+# locale. Every remaining code is its own CLDR id.
 CLDR_LOCALE_FOR_CONFIG_CODE = {
     "ko": "ko",
     "en": "en",
@@ -204,6 +305,63 @@ CLDR_LOCALE_FOR_CONFIG_CODE = {
     "fi": "fi",
     "no": "no",
     "my": "my",
+    # ---- 261119_0001 1B: the 52 UI languages added by phase 1A. Identity
+    # mapping except Cantonese (see the trap note above) and the two locales
+    # declared in SNAPSHOT_UNAVAILABLE_LOCALES (ht, gom) - the mapping is
+    # still required for them because it is what proves the locale id is
+    # deliberate, and their slot stays in the rendered locale list.
+    "gu": "gu",
+    "te": "te",
+    "mr": "mr",
+    "ta": "ta",
+    "bo": "bo",
+    "kk": "kk",
+    "mn": "mn",
+    "ug": "ug",
+    "yue": "yue",
+    "bs": "bs",
+    "sr": "sr",
+    "hr": "hr",
+    "sl": "sl",
+    "sk": "sk",
+    "bg": "bg",
+    "lt": "lt",
+    "lv": "lv",
+    "et": "et",
+    "af": "af",
+    "ca": "ca",
+    "is": "is",
+    "sq": "sq",
+    "mk": "mk",
+    "cy": "cy",
+    "ga": "ga",
+    "eu": "eu",
+    "gl": "gl",
+    "sw": "sw",
+    "ht": "ht",
+    "uz": "uz",
+    "az": "az",
+    "be": "be",
+    "ky": "ky",
+    "tg": "tg",
+    "eo": "eo",
+    "hy": "hy",
+    "ka": "ka",
+    "si": "si",
+    "ml": "ml",
+    "kn": "kn",
+    "pa": "pa",
+    "or": "or",
+    "am": "am",
+    "ti": "ti",
+    "ps": "ps",
+    "sd": "sd",
+    "ne": "ne",
+    "as": "as",
+    "dz": "dz",
+    "sa": "sa",
+    "mai": "mai",
+    "gom": "gom",
 }
 
 # registry code -> CLDR language key.  Derived from LanguageInfo::bcp47 (the
@@ -668,6 +826,11 @@ def snapshot_path(snapshot_dir, locale):
 
 def verify_snapshot_bytes(locale, raw):
     """Fail closed (PR4-05): hash raw snapshot bytes against the pinned pin."""
+    if locale in SNAPSHOT_UNAVAILABLE_LOCALES:
+        raise SystemExit(
+            "locale %r is declared in SNAPSHOT_UNAVAILABLE_LOCALES and has no "
+            "CLDR file; no bytes may be verified or rendered for it" % locale
+        )
     expected = EXPECTED_SNAPSHOT_SHA256.get(locale)
     if expected is None:
         raise SystemExit(
@@ -697,12 +860,47 @@ def fetch_snapshot(snapshot_dir, locales):
     os.makedirs(snapshot_dir, exist_ok=True)
     for locale in locales:
         path = snapshot_path(snapshot_dir, locale)
+        if locale in SNAPSHOT_UNAVAILABLE_LOCALES:
+            # Documented fallback: no file exists at the pinned tag, so there is
+            # nothing to fetch. A file showing up here would make the
+            # declaration stale, so refuse instead of silently using it.
+            if os.path.exists(path):
+                raise SystemExit(
+                    "%s exists but %r is declared in SNAPSHOT_UNAVAILABLE_LOCALES; "
+                    "pin its digest and remove the declaration" % (path, locale)
+                )
+            print("skipping %s (declared unavailable: no CLDR file at %s)"
+                  % (locale, CLDR_TAG))
+            continue
         if os.path.exists(path):
             continue
         url = CLDR_RAW_URL.format(tag=CLDR_TAG, locale=locale)
         print("fetching %s" % url)
-        with urllib.request.urlopen(url, timeout=60) as response:
-            payload = response.read()
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                chunks = []
+                received = 0
+                while True:
+                    chunk = response.read(SNAPSHOT_READ_CHUNK)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > MAX_SNAPSHOT_BYTES:
+                        raise SystemExit(
+                            "fetching %s exceeded the %d-byte cap; refusing an "
+                            "oversized body (the digest pin could only reject it "
+                            "after the whole transfer)"
+                            % (url, MAX_SNAPSHOT_BYTES)
+                        )
+                    chunks.append(chunk)
+                payload = b"".join(chunks)
+        except urllib.error.HTTPError as exc:
+            raise SystemExit(
+                "fetching %s failed with HTTP %s; do NOT invent data - either "
+                "pin the real digest once the file exists, or declare the "
+                "locale in SNAPSHOT_UNAVAILABLE_LOCALES (it then contributes "
+                "no exonym column)" % (locale, exc.code)
+            )
         # PR4-05: verify BEFORE caching - a mismatched fetch is never written
         # to the snapshot dir.
         verify_snapshot_bytes(locale, payload)
@@ -748,7 +946,10 @@ HEADER = '''\
 //   CLDR version ........ {cldr_tag} (released {cldr_release})
 //   Snapshot ............ unicode-org/cldr-json @ {cldr_tag},
 //                         cldr-localenames-full/main/<locale>/languages.json
-//   Snapshot fetched .... {fetch_date}  (37 files, SHA-256 listed at the end)
+//   Snapshot fetched .... {fetch_date}  ({file_count} files, SHA-256 listed at the end)
+//   Snapshot coverage ... {file_count} of {locale_count} UI locales; {unavailable_count} declared
+//                         unavailable (no CLDR file at this tag, no data
+//                         fabricated, no exonym column)
 //   Source ............. https://raw.githubusercontent.com/unicode-org/cldr-json/
 //                         {cldr_tag}/cldr-json/cldr-localenames-full/main/<locale>/languages.json
 //
@@ -761,7 +962,7 @@ HEADER = '''\
 //
 // Contents (all static `const` data - no logic, so regeneration can never
 // clobber reviewed code; the matcher lives in src/language_alias.hpp)
-//   1. kLanguageAliasLocales       - the app's 37 UI locales as CLDR ids
+//   1. kLanguageAliasLocales       - the app's {locale_count} UI locales as CLDR ids
 //   2. kLanguageAliasAtoms         - one alias string per row, grouped by
 //                                    language, tagged with its rank tier
 //                                    (Code < Native < English < Exonym <
@@ -782,10 +983,12 @@ namespace emebalachat {{
 namespace {{
 
 // ---------------------------------------------------------------------------
-// 1) The 37 UI locales as CLDR locale ids (src/i18n.cpp kLocaleMappings order,
-//    mapped through CLDR_LOCALE_FOR_CONFIG_CODE: zh-CN -> "zh" (the CLDR
-//    Simplified tree), zh-TW -> "zh-Hant", no -> "no").
-// ---------------------------------------------------------------------------
+// 1) The {locale_count} UI locales as CLDR locale ids (src/i18n.cpp
+//    kLocaleMappings order, mapped through CLDR_LOCALE_FOR_CONFIG_CODE:
+//    zh-CN -> "zh" (the CLDR Simplified tree), zh-TW -> "zh-Hant",
+//    yue -> "yue" (Cantonese: the config code IS its CLDR language key, not
+//    a Chinese script tree - identity since 261119_0001 FIX-R1), no -> "no").
+{unavailable_comment}// ---------------------------------------------------------------------------
 const char* const kLanguageAliasLocales[] = {{
 {locale_lines}}};
 
@@ -797,7 +1000,8 @@ constexpr std::size_t kLanguageAliasLocaleCount =
 //      Code    - the registry code and, when it folds differently, the bcp47 tag
 //      Native  - LanguageInfo::name_native (the language's own name)
 //      English - LanguageInfo::name_en + the CLDR English name
-//      Exonym  - the CLDR name in each of the other 36 UI locales
+//      Exonym  - the CLDR name in each of the other {exonym_locale_count}
+//                snapshot-carrying UI locales
 //      Script  - the hand-curated script-name table (plan D4)
 //    kAliasNoLocale marks an atom with no source locale; every other atom's
 //    locale index points at kLanguageAliasLocales (the "en" column is tagged
@@ -910,10 +1114,27 @@ def render(repo_root, snapshot_dir):
 
     snapshots = {}
     digests = []
+    unavailable_locales = [loc for loc in locales if loc in SNAPSHOT_UNAVAILABLE_LOCALES]
     for locale in locales:
+        if locale in SNAPSHOT_UNAVAILABLE_LOCALES:
+            # Documented fallback: no CLDR file exists at this tag, so this
+            # locale keeps its index slot but contributes no exonym column.
+            # A cached file would mean the declaration is stale.
+            if os.path.exists(snapshot_path(snapshot_dir, locale)):
+                raise SystemExit(
+                    "%s exists but %r is declared in SNAPSHOT_UNAVAILABLE_LOCALES; "
+                    "pin its digest and remove the declaration"
+                    % (snapshot_path(snapshot_dir, locale), locale)
+                )
+            snapshots[locale] = {}
+            continue
         names, digest = load_snapshot(snapshot_dir, locale)
         snapshots[locale] = names
         digests.append((locale, digest))
+    if "en" not in snapshots or not snapshots["en"]:
+        raise SystemExit("the en snapshot is mandatory (it validates CLDR keys)")
+    available_locale_count = len(locales) - len(unavailable_locales)
+    exonym_locale_count = available_locale_count - 1  # every available locale but "en"
 
     en_keys = set(snapshots["en"].keys())
     en_index = locales.index("en")
@@ -968,9 +1189,11 @@ def render(repo_root, snapshot_dir):
                 fallback_report.append(("en", code, used[0][2], candidates[0]))
             if english_cldr:
                 add(english_cldr, "english", en_index)
-            # Exonym columns: the remaining 36 UI locales, table order.
+            # Exonym columns: the remaining snapshot-carrying UI locales, in
+            # table order (en keeps the English tier above; a declared-
+            # unavailable locale has no names and is skipped).
             for index, locale in enumerate(locales):
-                if locale == "en":
+                if locale == "en" or locale in SNAPSHOT_UNAVAILABLE_LOCALES:
                     continue
                 used = []
                 name = cldr_name_for(code, candidates, snapshots[locale], used)
@@ -1020,6 +1243,16 @@ def render(repo_root, snapshot_dir):
     digest_lines = "\n// ".join(
         "%s %s" % (locale, digest) for locale, digest in digests
     )
+    if unavailable_locales:
+        unavailable_comment = (
+            "//    Locale(s) declared in SNAPSHOT_UNAVAILABLE_LOCALES (no CLDR\n"
+            "//    file at %s, HTTP 404): %s. Their slots above keep the locale\n"
+            "//    list index-parallel to kLocaleMappings, but they contribute NO\n"
+            "//    exonym column - no data is fabricated for them.\n"
+            % (CLDR_TAG, ", ".join(unavailable_locales))
+        )
+    else:
+        unavailable_comment = ""
 
     rendered = HEADER.format(
         snapshot_dir=snapshot_dir.replace("\\", "/"),
@@ -1028,6 +1261,11 @@ def render(repo_root, snapshot_dir):
         fetch_date=SNAPSHOT_FETCH_DATE,
         target_count=len(registry) - 1,
         atom_count=atoms_total,
+        locale_count=len(locales),
+        file_count=len(digests),
+        unavailable_count=len(unavailable_locales),
+        exonym_locale_count=exonym_locale_count,
+        unavailable_comment=unavailable_comment,
         locale_lines=locale_lines,
         atom_lines="\n".join(atom_lines) + "\n",
         group_lines="\n".join(group_lines) + "\n",
@@ -1054,7 +1292,9 @@ def render(repo_root, snapshot_dir):
     )
     fallback_langs = sorted({code for _loc, code, _used, _prim in fallback_report})
     print("registry rows ........ %d (AUTO + %d targets)" % (len(registry), len(registry) - 1))
-    print("UI locales ........... %d" % len(locales))
+    print("UI locales ........... %d (%d snapshot files, %d declared unavailable: %s)" % (
+        len(locales), len(digests), len(unavailable_locales),
+        ", ".join(unavailable_locales) if unavailable_locales else "none"))
     print("alias atoms .......... %d" % atoms_total)
     print("atoms by tier ........ %s" % ", ".join(
         "%s=%d" % (tier, tier_counts.get(tier, 0))
@@ -1065,7 +1305,7 @@ def render(repo_root, snapshot_dir):
     print("languages w/o script . %d" % len(no_script))
     print("fallback languages ... %d %s" % (len(fallback_langs), fallback_langs))
     print("fallback cells ....... %d (of %d target x locale cells)" % (
-        len(fallback_report), (len(registry) - 1) * len(locales)))
+        len(fallback_report), (len(registry) - 1) * available_locale_count))
     if fallback_report:
         by_key = {}
         for _locale, code, used_key, primary in fallback_report:
@@ -1108,7 +1348,11 @@ def main(argv=None):
     if args.fetch:
         fetch_snapshot(snapshot_dir, locales)
 
-    missing = [loc for loc in locales if not os.path.exists(snapshot_path(snapshot_dir, loc))]
+    missing = [
+        loc for loc in locales
+        if loc not in SNAPSHOT_UNAVAILABLE_LOCALES
+        and not os.path.exists(snapshot_path(snapshot_dir, loc))
+    ]
     if missing:
         raise SystemExit(
             "snapshot incomplete under %s (missing %s); re-run with --fetch"

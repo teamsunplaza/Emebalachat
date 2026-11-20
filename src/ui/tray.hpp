@@ -444,13 +444,17 @@ public:
         std::function<void()> on_show_cheat_sheet;
         std::function<void()> on_show_about; // Opens the About window (wired in main.cpp)
         std::function<void()> on_exit;
-        // R6 Phase 6 (plan §5.4), REQ-037/B-4 expansion (design §2-Q3):
-        // UI-language selector submenu (Auto + 37 locales). Argument is the
-        // canonical persisted code - "auto" or the config_code of any entry in
+        // R6 Phase 6 (plan §5.4), REQ-037/B-4 expansion (design §2-Q3),
+        // 261119_0001 U4 (UI-language-89 phase 2): the UI-language submenu is
+        // Auto + "검색…" now, so this callback fires from the Auto row and from
+        // the shared picker's commit (TrayUiLanguage surface) - never from a
+        // flat endonym band, which is retired. Argument is the canonical
+        // persisted code - "auto" or the config_code of any entry in
         // I18n::GetSupportedUiLocales() as emitted by I18n::LocaleToString
-        // ("ko", "ja", "zh-CN", "zh-TW", "vi", "es", ... ; the 37 canonical
-        // spellings live in i18n.cpp kLocaleMappings). main.cpp
-        // validates/persists via PlanUiLocaleChange.
+        // ("ko", "ja", "zh-CN", "zh-TW", "vi", "es", ... ; the canonical
+        // spellings live in i18n.cpp kLocaleMappings, 89 rows once phase 3
+        // authors them all). main.cpp validates/persists via
+        // PlanUiLocaleChange.
         std::function<void(std::string_view code)> on_select_ui_language;
         // REQ-050: REMOVED — the engine submenu's file-picker row is merged
         // into the single manager row (ID_TRAY_MANAGE_GGUF). The manager's
@@ -580,7 +584,9 @@ public:
     void SetEngineMenuResolver(std::function<EngineMenuView()> resolver);
 
     // R6 Phase 6: mirrors the persisted config.ui_language value ("auto" or a
-    // locale code) for the UI-language submenu check mark. Called by main.cpp
+    // locale code). 261119_0001 U4: it now drives the submenu's Auto check mark
+    // and the submenu title's endonym suffix (the current-locale signal that
+    // replaced the retired flat band's per-row check marks). Called by main.cpp
     // at startup and from RefreshAllUiForLocaleChange (menu itself rebuilds
     // lazily on every ShowContextMenu, so no explicit rebuild nudge is needed).
     void SetUiLanguage(std::string_view persisted_code);
@@ -626,7 +632,7 @@ private:
     bool sound_enabled_ = true;
     bool badge_visible_ = true;
     bool back_translation_enabled_ = false; // 261108_0002 (WS3): check state
-    std::string ui_language_ = "auto"; // R6 Phase 6: submenu check state
+    std::string ui_language_ = "auto"; // R6 Phase 6: Auto check state + title suffix (U4)
     std::string ui_theme_ = "fluent";
 };
 

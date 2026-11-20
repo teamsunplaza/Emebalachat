@@ -13,7 +13,11 @@
 //     filter (SearchLanguages over GetLanguagesForEngine), the best-match
 //     preselection, ↑↓ wraparound, Enter/double-click resolution, Esc, the Tab
 //     source↔target flip (including the view swap), the empty-query state and
-//     the AUTO row's role asymmetry.
+//     the AUTO row's role asymmetry. 261119_0001 U2 (UI-language-89 phase 2)
+//     adds the UI-language MODE to this same layer: ONE surface value
+//     (PickerSurface::TrayUiLanguage) swaps the engine view for the authored
+//     UI-locale pool and turns the Tab flip into a no-op; the keyboard
+//     contract is pinned headlessly by tests/p6_ui_language_picker_tests.inc.
 //
 //   SECTION B — the Win32 window: WS_POPUP + cue-banner EDIT + LISTBOX (standard
 //     controls, shell UI font scaled per monitor), its own modal loop, and the
@@ -39,6 +43,7 @@
 #include <windows.h>
 
 #include "config.hpp"         // LanguageEngine / LanguageInfo / GetLanguagesForEngine
+#include "i18n.hpp"           // GetSupportedUiLocalePickerPool (the UI-language mode's pool)
 #include "language_alias.hpp" // SearchLanguages / LanguageSearchHit
 
 namespace emebalachat {
@@ -58,16 +63,23 @@ enum class PickerRole : unsigned char {
 };
 
 // The menu surface that opened the popup. Plan §1 counts six language-selection
-// surfaces; they collapse to three surfaces x two roles, so P6 maps the
-// (surface, role) pair onto the existing callbacks:
+// surfaces; they collapse to four surfaces - the first three x two roles - so
+// P6 maps the (surface, role) pair onto the existing callbacks:
 //   TrayTyping  + Source/Target -> on_select_source_lang / on_select_target_lang
 //   TrayTooltip + Source/Target -> on_select_drag_source_lang / on_select_drag_target_lang
 //   TooltipPill + Source/Target -> the floating tooltip's src/lang callbacks
-// The picker itself never dispatches — it only reports the pair.
+//   TrayUiLanguage (261119_0001 U2) + role UNUSED -> the tray's UI-language
+//     submenu. A UI-chrome locale has no translation direction, so this surface
+//     has one flat pool and the role is dead weight; that is exactly why the
+//     surface value doubles as the MODE discriminator: this ONE value swaps the
+//     pool to GetSupportedUiLocalePickerPool() and refuses the Tab flip, so no
+//     second mode field can ever disagree with it.
+// The picker itself never dispatches - it only reports the pair.
 enum class PickerSurface : unsigned char {
     TrayTyping = 0,
     TrayTooltip = 1,
     TooltipPill = 2,
+    TrayUiLanguage = 3,
 };
 
 // One invocation's inputs, latched at open time (the REQ-047 D3 deferred open
@@ -245,8 +257,12 @@ public:
                 out.cancelled = true;
                 return out;
             case PickerCommand::FlipRole:
-                FlipRole();
-                out.changed = true;
+                // 261119_0001 U2: the resolution reports whether the flip
+                // actually moved anything. Every translation surface always
+                // flips (FlipRole() returns true, so this stays byte-identical
+                // for them); the UI-language mode refuses the flip outright, so
+                // the window layer can skip a dead re-seat/repaint.
+                out.changed = FlipRole();
                 return out;
             case PickerCommand::ActivateRow:
                 out.row = CommitRow(row_index);
@@ -274,7 +290,16 @@ public:
     // it) and re-seats the selection on the new role's current language
     // (designer §4.5). The QUERY IS KEPT on purpose: "type the name once, Tab,
     // pick the other role" is the flow the flip exists for.
+    //
+    // 261119_0001 U2: the tray's UI-language mode has ONE role - there is no
+    // translation direction to flip to - so Tab is a pure no-op there. It
+    // returns false and touches NOTHING (role, pool, query, hits, selection),
+    // which is what makes the refusal observable to the window layer through
+    // PickerResolution::changed. Every other surface keeps the flip verbatim.
     bool FlipRole() {
+        if (init_.surface == PickerSurface::TrayUiLanguage) {
+            return false;
+        }
         role_ = (role_ == PickerRole::Source) ? PickerRole::Target : PickerRole::Source;
         RefreshHits();
         ReselectRoleCurrent();
@@ -291,7 +316,14 @@ public:
     // row pinned above the list with its warning outline — is P6 menu scope:
     // a plain LISTBOX cannot express that visual without owner-draw, and the
     // P5 unit must not pre-empt P6's row model. See the phase note.
+    //
+    // 261119_0001 U2: the UI-language mode has no engine view and no engine
+    // capability gate, so "pinned but not offered" cannot exist there - the
+    // concept is a translation-engine one. nullptr, always, before any lookup.
     const LanguageInfo* PinnedAbsentLanguage() const {
+        if (init_.surface == PickerSurface::TrayUiLanguage) {
+            return nullptr;
+        }
         const std::string_view wanted = CurrentCode();
         if (wanted.empty()) {
             return nullptr;
@@ -317,10 +349,20 @@ public:
 private:
     // Re-derives the view + the ranked hit list from the current (role, query).
     void RefreshHits() {
-        // include_auto: the source role offers AUTO (first-class source
-        // setting), the target role never does — the same asymmetry the tray
-        // menus already ship (GetSupportedLanguages vs GetTargetLanguages).
-        pool_ = &GetLanguagesForEngine(init_.engine, role_ == PickerRole::Source);
+        // 261119_0001 U2 (UI-language-89 phase 2, architect-pick.md "Mode
+        // discriminator"): the tray's UI-language mode is the ONE surface that
+        // does not search an engine view. Its pool is the authored-gated
+        // UI-locale pool (AUTO first, then one registry row per authored
+        // selector entry), engine-mask independent and role independent - a UI
+        // chrome locale is offerable whatever the translation engine can do.
+        if (init_.surface == PickerSurface::TrayUiLanguage) {
+            pool_ = &GetSupportedUiLocalePickerPool();
+        } else {
+            // include_auto: the source role offers AUTO (first-class source
+            // setting), the target role never does — the same asymmetry the tray
+            // menus already ship (GetSupportedLanguages vs GetTargetLanguages).
+            pool_ = &GetLanguagesForEngine(init_.engine, role_ == PickerRole::Source);
+        }
         hits_ = SearchLanguages(query_, *pool_);
     }
 

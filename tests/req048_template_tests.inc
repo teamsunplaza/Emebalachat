@@ -434,17 +434,24 @@ void TestReq048OpenAiTemplateSerialization() {
                     ++with_emdash;
                 }
             }
-            TEST_CHECK(eq_s(non_empty, locales.size()) && eq_s(locales.size(), 37),
-                       "P9c-1b (ii): both strings resolve non-empty in all 37 locales "
-                       "(the English placeholder is allowed where no translation was authored)");
+            // Derived count (UI-language-89 1A): tie the expectation to the
+            // iterated container, not a hardcoded locale count, so phase-3
+            // batch landings do not churn this pin.
+            TEST_CHECK(eq_s(non_empty, locales.size()),
+                       "P9c-1b (ii): both strings resolve non-empty in every locale the selector exposes "
+                       "(count derived from GetSupportedUiLocales; the English placeholder is allowed "
+                       "where no translation was authored)");
             TEST_CHECK(with_emdash == 0,
                        "P9c-1b (ii): no locale carries an em-dash (R14-10 hyphen separator)");
         }
         if (!i18n_src.empty()) {
-            TEST_CHECK(count_of_str(i18n_src, "    .openai_declared_title = ") == 36 &&
-                           count_of_str(i18n_src, "    .openai_declared_hint = ") == 36,
-                       "P9c-1b (ii): both fields are designated in exactly 36 tables (the "
-                       "37th is the positional English one)");
+            TEST_CHECK(count_of_str(i18n_src, "    .openai_declared_title = ") ==
+                               static_cast<size_t>(AuthoredUiLocaleCount() - 1) &&
+                           count_of_str(i18n_src, "    .openai_declared_hint = ") ==
+                               static_cast<size_t>(AuthoredUiLocaleCount() - 1),
+                       "P9c-1b (ii): both fields are designated in exactly one table per "
+                       "authored locale (the positional English one excluded; count derived "
+                       "from the gate)");
             const std::string title_case = "case StringId::OpenAiDeclaredTitle:";
             const std::string hint_case = "case StringId::OpenAiDeclaredHint:";
             const std::size_t title_at = i18n_src.find(title_case);

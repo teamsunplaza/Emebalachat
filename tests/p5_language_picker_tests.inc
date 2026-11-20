@@ -719,12 +719,20 @@ void TestP5LanguagePicker() {
                    "P5 (10): no picker window exists during the headless suite");
     }
 
-    // ---- 11) the picker's own strings: 37 locales, real translations -------
+    // ---- 11) the picker's own strings: real translations in every locale
+    // the authenticity gate exposes (37 in phase 1A) ------------------------
     {
         const UiLocale initial = I18n::GetCurrentLocale();
         const auto& locales = GetSupportedUiLocales();
-        TEST_CHECK(locales.size() == 37,
-                   "P5 (11): the picker's two strings are authored for all 37 UI locales");
+        // Derived count (UI-language-89 1A): the selector must expose exactly
+        // the AUTHORED mapping rows, so phase-3 batch landings (authored=true
+        // flips) scale this pin instead of breaking it.
+        std::size_t authored = 0;
+        for (const LocaleMapping& m : GetLocaleMappings()) {
+            if (m.authored) ++authored;
+        }
+        TEST_CHECK(locales.size() == authored,
+                   "P5 (11): the picker's two strings are authored for every locale the gate exposes (selector size derived from the authored mapping rows)");
         I18n::SetLocale(UiLocale::English);
         const std::wstring en_cue = I18n::Get(StringId::LanguageSearchCue);
         const std::wstring en_no_match = I18n::Get(StringId::LanguageSearchNoMatch);
@@ -750,8 +758,8 @@ void TestP5LanguagePicker() {
                        I18n::Get(StringId::LanguageSearchNoMatch) == L"일치하는 언어가 없습니다",
                    "P5 (11): the Korean literals are authored (not the English defaults)");
         I18n::SetLocale(initial); // suite-state hygiene
-        TEST_CHECK(non_empty == 37,
-                   "P5 (11): both picker strings resolve non-empty in all 37 locales");
+        TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+                   "P5 (11): both picker strings resolve non-empty in every selector locale (count derived from GetSupportedUiLocales)");
         TEST_CHECK(english_copy == 0,
                    "P5 (11): no non-English locale falls back to the English text");
 

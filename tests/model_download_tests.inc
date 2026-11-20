@@ -247,7 +247,8 @@ void TestModelDownloadLogic() {
             if (I18n::Get(StringId::ModelDlDiskSpace).find(L"{s}") == std::wstring::npos) all = false;
             if (all) ++ok;
         }
-        TEST_CHECK(ok == 37, "MD: all 9 model-download strings non-empty (+tokens) in all 37 locales");
+        TEST_CHECK(ok == static_cast<int>(GetSupportedUiLocales().size()),
+                   "MD: all 9 model-download strings non-empty (+tokens) in every locale the selector exposes (count derived from GetSupportedUiLocales)");
         I18n::SetLocale(UiLocale::English);
         TEST_CHECK(I18n::Get(StringId::ModelDlConsentBody).find(L"{s}") != std::wstring::npos,
                    "MD: en consent body keeps the {s} size token");

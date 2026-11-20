@@ -437,6 +437,13 @@ struct LanguageSyncRequest {
 // on the GUI thread from ControllerWndProc. Cleared after hook/mouse stop at
 // shutdown so a late posted message can never call into destroyed state.
 std::function<bool(LanguageContext, std::string_view, std::string_view, bool, bool)> g_apply_language_change;
+// 261119_0001 P6-U5: the UI-language apply seam, published by wWinMain from the
+// SAME body as trayCallbacks.on_select_ui_language (one planner, one persist,
+// one refresh) and invoked on the GUI thread from ControllerWndProc when the
+// shared picker commits on language_palette::PickerSurface::TrayUiLanguage.
+// Cleared at shutdown with g_apply_language_change so a late picker commit can
+// never call into destroyed state.
+std::function<void(std::string_view)> g_apply_ui_language;
 // 261116_0003 P9b-3 U3: the probe-completion drain, published by wWinMain to the
 // ControllerWndProc kMsgUserLanguageProbeDone handler (the same pattern as
 // g_apply_language_change: the WndProc cannot name wWinMain's locals). Cleared
@@ -1161,8 +1168,9 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
         // PR6-32: the latch is per-surface and the wake-up carries no payload,
-        // so both tray-owned slots are polled (TrayTyping first, TrayTooltip
-        // second; a take on an empty slot consumes nothing). The loop IS the
+        // so all three tray-owned slots are polled (TrayTyping first,
+        // TrayTooltip second, TrayUiLanguage third; a take on an empty slot
+        // consumes nothing). The loop IS the
         // PR6-42 drain: pass 1 serves this delivery's own request, and each
         // later pass re-takes whatever a nested delivery left latched while
         // the previous pass's picker was open.
@@ -1173,6 +1181,12 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             if (!init.has_value()) {
                 init = TakeDeferredLanguagePaletteOpen(
                     language_palette::PickerSurface::TrayTooltip);
+            }
+            // 261119_0001 P6-U5: the third tray-owned slot — the UI-language
+            // picker's latched request (tray.cpp ID_TRAY_UILANG_SEARCH arm).
+            if (!init.has_value()) {
+                init = TakeDeferredLanguagePaletteOpen(
+                    language_palette::PickerSurface::TrayUiLanguage);
             }
             if (!init.has_value()) {
                 if (first_pass) {
@@ -1195,8 +1209,12 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             // check: if either consumer's take is ever regressed to a
             // cross-surface take, the wrong-pair dispatch is still refused
             // here. One diagnostic line, drop.
+            // 261119_0001 P6-U5: the ownership guard widens to the third
+            // tray-owned surface — a latched TrayUiLanguage request is owned by
+            // this arm exactly like the two translation surfaces.
             if (init->surface != language_palette::PickerSurface::TrayTyping &&
-                init->surface != language_palette::PickerSurface::TrayTooltip) {
+                init->surface != language_palette::PickerSurface::TrayTooltip &&
+                init->surface != language_palette::PickerSurface::TrayUiLanguage) {
                 DIAG_LOG("UI", "lang_palette_controller_wake result=surface_mismatch surface=%d",
                          static_cast<int>(init->surface));
                 return 0;
@@ -1217,7 +1235,30 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             if (hwndPrev && hwndPrev != hwnd && ::IsWindow(hwndPrev)) {
                 ::SetForegroundWindow(hwndPrev);
             }
-            if (picked.committed) {
+            // 261119_0001 P6-U5: the UI-language surface (PickerSurface::
+            // TrayUiLanguage) commits a REGISTRY code, not a name_en. The code
+            // is dispatched VERBATIM (261119_0001 FIX-R1 R1-07): the planner
+            // owns validation AND canonicalization, matching authored codes
+            // case-insensitively ("KO" -> "ko", "ZH-CN" -> "zh-CN") and
+            // "AUTO" through its own auto branch, while an unknown code is
+            // refused fail-closed. Coercing here through StringToLocale would
+            // re-introduce its English fallback and hand the planner "en" for
+            // any unknown code, bypassing that refusal.
+            // g_apply_ui_language is published from wWinMain's
+            // on_select_ui_language body (one planner, one persist, one
+            // refresh). A cancel / click-outside dismissal (committed == false)
+            // dispatches NOTHING here.
+            if (picked.committed &&
+                picked.surface == language_palette::PickerSurface::TrayUiLanguage) {
+                if (g_apply_ui_language) {
+                    g_apply_ui_language(picked.code);
+                }
+            }
+            // The translation dispatch below owns every OTHER committed
+            // surface; the UI-language surface is excluded above so a single
+            // commit can never double-dispatch through both paths.
+            if (picked.committed &&
+                picked.surface != language_palette::PickerSurface::TrayUiLanguage) {
                 // (surface, role) -> the existing tray callback routing, verbatim:
                 //   TrayTyping  -> LanguageContext::Type  (the typing pair)
                 //   TrayTooltip -> LanguageContext::Drag   (the drag pair)
@@ -3414,6 +3455,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         emebalachat::I18n::SetLocale(applied);
         RefreshAllUiForLocaleChange();
     };
+    // 261119_0001 P6-U5: publish the SAME UI-language apply body to the
+    // controller arm (the shared picker's TrayUiLanguage commit is dispatched
+    // through this seam on the GUI thread). The std::function copy shares the
+    // lambda above - one planner (PlanUiLocaleChange), one persist, one
+    // refresh - so the picker path and the inline Auto row can never drift.
+    // Cleared at shutdown with g_apply_language_change so a late picker
+    // commit can never call into destroyed state.
+    emebalachat::g_apply_ui_language = trayCallbacks.on_select_ui_language;
 
     // P4 Batch B-5 investigation (design §2.2.3): StringId::CheatSheetBody is
     // rendered by a system MessageBoxW dialog HERE and nowhere else (the only
@@ -4981,6 +5030,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // ControllerWndProc discards any still-queued requests (pop without
     // apply) without touching config/engine/badge/tray/tooltip.
     emebalachat::g_apply_language_change = nullptr;
+    // 261119_0001 P6-U5: retire the UI-language seam with it, so a late picker
+    // commit (kMsgOpenLanguagePalette) can never call into destroyed
+    // config/tray state.
+    emebalachat::g_apply_ui_language = nullptr;
     // REQ-047 D3: retire the OpenAI coordinator with it, so a late posted
     // kMsgOpenOpenAiSettings can never call into destroyed config/engine/tray.
     emebalachat::g_apply_openai_settings = nullptr;

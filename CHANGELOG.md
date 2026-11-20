@@ -30,7 +30,7 @@ being served locally in degraded quality.
   tooltip dropdowns) and opens a picker with live filtering, arrow-key and
   Enter selection, Esc to dismiss, and Tab to flip source and target. Matching
   covers the code, the native name, the English name, the language's name in
-  each of the 37 interface languages, and script aliases (`한글`, `漢字`,
+  each of the 89 interface languages, and script aliases (`한글`, `漢字`,
   `kana`, `Cyrillic`, …), folded for case and diacritics, so `KO`, `korean`,
   `Koreanisch`, `한국어` and `한글` all rank Korean first and `tieng viet`
   finds Vietnamese.
@@ -38,6 +38,17 @@ being served locally in degraded quality.
   scripts the app previously could not label or script-gate (Tamil, Telugu,
   Gujarati, Tibetan, Armenian, Georgian, Sinhala, Malayalam, Kannada,
   Gurmukhi, Odia, Ethiopic) now translate end to end.
+- **All 89 targets as interface languages** (was 37): the tray's **UI
+  언어** menu now offers every translation target as a UI language, each
+  fully translated (menus, badge, tooltips, cheat sheet, About, the
+  searchable pickers, the download and settings dialogs). Because a flat
+  89-row menu is unusable, the menu is **Auto** plus a single **검색…**
+  row that opens the same searchable picker: live filtering over the code,
+  the endonym, the English name, the language's name in any of the 89
+  interface languages, and script aliases, with the current language
+  preselected and arrow/Enter/Esc keyboard flow. A locale ships only when
+  its string table is complete, so the picker can never offer a
+  half-translated interface.
 
 ### Changed
 
@@ -125,7 +136,7 @@ Multi-line and editing:
 - Long inputs (up to 16,384 characters and 256 lines) are translated instead
   of being refused with a misleading "no text selected" notice.
 
-Language fairness (all 37 interface languages / 38 translation targets):
+Language fairness (all 89 interface languages / 89 translation targets):
 
 - **Detection follows the dominant script.** A single foreign character no
   longer relabels a selection: one Korean letter at the end of an English
@@ -171,7 +182,7 @@ Security and robustness:
   root, overridable). Listener and Reader will consume the same engine. The Chat
   app itself still ships with no inference code (verified: no llama/ggml
   symbols in `Emebala_chat.exe`).
-- Unit test suite: 10,952 checks (was 9,070), 0 failures.
+- Unit test suite: 11,318 checks (was 9,070), 0 failures.
 
 ### Upgrade notes
 
@@ -199,7 +210,7 @@ engine. Upgrading from any 0.10.x build is fully supported.
   translation; toggle it from the tray **Floating Back-Translation** row or
   the new `back_translation_enabled` config key (`false` by default; configs
   written before 0.10.6 lack the key and read it as off). The card, its tray
-  row, and its strings are translated in all 37 interface languages,
+  row, and its strings are translated in all 89 interface languages,
   including right-to-left languages.
 
 ### Fixed
@@ -240,7 +251,7 @@ Interface:
 
 - **The back-translation card's reference line is now localized.** Its
   "↳ 원문:" label was a hardcoded Korean literal, so it appeared in Korean
-  under every one of the 37 interface languages while the card's header and
+  under every one of the 89 interface languages while the card's header and
   verdict chips were translated. The label is now a translated string
   ("↳ Original: ", "↳ Originale: ", "↳ 原文: ", ...) with the arrow carried
   inside the localized text.
@@ -287,7 +298,7 @@ from any 0.10.x build is fully supported.
   tray "UI Theme" submenu or the 3-pill switcher at the top of the About
   window; the choice persists in the new `ui_theme` config key
   (`"fluent"` / `"editorial"` / `"monolith"`). The theme UI is translated
-  in all 37 interface languages, including right-to-left languages.
+  in all 89 interface languages, including right-to-left languages.
 - Direct2D vector icons (Copy, Check, Speak, Swap) rendered in the active
   theme, replacing the emoji-style stand-ins.
 

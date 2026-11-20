@@ -312,8 +312,15 @@ void TestWs3BackTranslationI18n() {
     // EnumCount loop in TestR6P5P6I18n covers this too; the per-key count here
     // names the failing key instead of collapsing to one counter.
     const auto& locales = GetSupportedUiLocales();
-    TEST_CHECK(locales.size() == 37,
-               "WS3 i18n: 37 selectable locales cover the four new keys");
+    // Derived count (UI-language-89 1A): the selector must expose exactly the
+    // AUTHORED mapping rows, so phase-3 batch landings (authored=true flips)
+    // scale this pin instead of breaking it.
+    std::size_t authored = 0;
+    for (const LocaleMapping& m : GetLocaleMappings()) {
+        if (m.authored) ++authored;
+    }
+    TEST_CHECK(locales.size() == authored,
+               "WS3 i18n: the selector covers the four new keys (selector size derived from the authored mapping rows)");
     for (StringId id : kNewIds) {
         int non_empty = 0;
         for (const auto& entry : locales) {
@@ -321,7 +328,7 @@ void TestWs3BackTranslationI18n() {
             if (!I18n::Get(id).empty()) ++non_empty;
         }
         TEST_CHECK(non_empty == static_cast<int>(locales.size()),
-                   "WS3 i18n: the new StringId is non-empty in all 37 locales");
+                   "WS3 i18n: the new StringId is non-empty in every selector locale (count derived from GetSupportedUiLocales)");
     }
 
     // Structural pins on src/i18n.cpp: the trailing-field pattern the theme
@@ -335,18 +342,24 @@ void TestWs3BackTranslationI18n() {
         TEST_CHECK(i18n_src.find("const wchar_t* menu_back_translation = L\"Floating Back-Translation\";") !=
                        std::string::npos,
                    "WS3 i18n: LocalizedStrings declares the trailing defaulted field");
-        TEST_CHECK(Ws3CountOcc(i18n_src, ".menu_back_translation = ") == 36,
-                   "WS3 i18n: 36 non-English tables name .menu_back_translation");
-        TEST_CHECK(Ws3CountOcc(i18n_src, ".back_translate_header = ") == 36 &&
-                       Ws3CountOcc(i18n_src, ".back_translate_match_exact = ") == 36 &&
-                       Ws3CountOcc(i18n_src, ".back_translate_match_check = ") == 36,
-                   "WS3 i18n: the other three designators appear in the same 36 tables");
+        TEST_CHECK(Ws3CountOcc(i18n_src, ".menu_back_translation = ") ==
+                       static_cast<size_t>(AuthoredUiLocaleCount() - 1),
+                   "WS3 i18n: one non-English table per authored locale names .menu_back_translation "
+                   "(count derived from the gate)");
+        TEST_CHECK(Ws3CountOcc(i18n_src, ".back_translate_header = ") ==
+                           static_cast<size_t>(AuthoredUiLocaleCount() - 1) &&
+                       Ws3CountOcc(i18n_src, ".back_translate_match_exact = ") ==
+                           static_cast<size_t>(AuthoredUiLocaleCount() - 1) &&
+                       Ws3CountOcc(i18n_src, ".back_translate_match_check = ") ==
+                           static_cast<size_t>(AuthoredUiLocaleCount() - 1),
+                   "WS3 i18n: the other three designators appear in the same per-authored-locale tables");
         // 261108_0002 (FIX-WS3B): the fifth field follows the same pattern.
         TEST_CHECK(i18n_src.find("const wchar_t* back_translate_reference = L\"↳ Original: \";") !=
                        std::string::npos,
                    "WS3 i18n: LocalizedStrings declares the back_translate_reference default");
-        TEST_CHECK(Ws3CountOcc(i18n_src, ".back_translate_reference = ") == 36,
-                   "WS3 i18n: 36 non-English tables name .back_translate_reference");
+        TEST_CHECK(Ws3CountOcc(i18n_src, ".back_translate_reference = ") ==
+                       static_cast<size_t>(AuthoredUiLocaleCount() - 1),
+                   "WS3 i18n: one non-English table per authored locale names .back_translate_reference");
         TEST_CHECK(i18n_src.find("case StringId::BackTranslateReference:") != std::string::npos,
                    "WS3 i18n: I18n::Get maps BackTranslateReference");
         TEST_CHECK(i18n_src.find("case StringId::MenuBackTranslation:") != std::string::npos &&

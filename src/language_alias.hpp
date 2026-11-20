@@ -12,7 +12,7 @@
 // search palette consumes.
 //
 // The DATA lives in the generated src/language_alias.cpp (CLDR-derived
-// 37-locale x 89-target matrix + the hand-curated script-name table + the
+// 89-locale x 89-target matrix + the hand-curated script-name table + the
 // fold table; generator: tools/generate_language_aliases.py with a provenance
 // header). The LOGIC below is hand-written and deliberately OUTSIDE the
 // generated file, so regeneration can never clobber reviewed code.
@@ -20,7 +20,7 @@
 // Design record (vp-proposal decision 2): the runtime GetLocaleInfoEx exonym
 // path is dropped - it serves exactly one language per process (the Windows
 // display language), which cannot satisfy "a German exonym query must hit
-// under a Korean UI". The static matrix indexes all 37 UI locales at once,
+// under a Korean UI". The static matrix indexes all 89 UI locales at once,
 // which is what makes cross-locale exonym search work.
 #include "config.hpp"        // LanguageInfo (the pool element type)
 #include "unicode_utils.hpp" // EqualsIgnoreCaseAscii (reused, not re-implemented)
@@ -33,7 +33,9 @@ enum class AliasTier : std::uint8_t {
     Code = 0,     // the registry code ("KO") or its bcp47 tag ("zh-HK")
     Native = 1,   // LanguageInfo::name_native (the language's own name)
     English = 2,  // LanguageInfo::name_en + the CLDR English name
-    Exonym = 3,   // the CLDR name in any of the other 36 UI locales
+    Exonym = 3,   // the CLDR name in each of the other 86 snapshot-carrying
+                  // UI locales (the generated table's own count: 89 rows minus
+                  // the "en" column minus ht/gom, which publish no CLDR file)
     Script = 4,   // the hand-curated script-name table (plan D4)
     // Not a match: the empty-query "unfiltered pool" row (see SearchLanguages).
     None = 0xFF,
@@ -73,7 +75,7 @@ struct LanguageAliasFoldEntry {
 
 // The whole generated table, one extern symbol.
 struct LanguageAliasTable {
-    const char* const* locales;             // the 37 UI locales as CLDR ids
+    const char* const* locales;             // the 89 UI locales as CLDR ids
     std::size_t locale_count;
     const LanguageAliasAtom* atoms;         // grouped by language, registry order
     std::size_t atom_count;
