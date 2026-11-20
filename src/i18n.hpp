@@ -446,6 +446,22 @@ enum class StringId {
     // (not inserted) so every pre-existing StringId keeps its numeric value.
     BackTranslateReference,  // "↳ 원문: " / "↳ Original: "
 
+    // 261121_0001 (v0.10.9, session 261121_0001 U-C — contract C5): the
+    // reasoning-effort setting's UI copy (OpenAI settings dialog) + the
+    // redesigned back-translation card's two section headers. Inserted
+    // right AFTER BackTranslateReference on purpose: every later enum tail
+    // run is locked by an adjacency pin owned elsewhere (ws3's 5-run
+    // contiguity ends at BackTranslateReference; the 261111_0001 U6 /
+    // 261116_0003 P9b-1 / P9b-3 U5 / P9c-1b / P6a / P7 / P5 runs and the
+    // "EnumCount - 1 == LanguageSearchNoMatch" sentinel are pinned in
+    // tests/run_tests.cpp and p5_language_picker_tests.inc), so this is the
+    // only free tail slot. The Get() switch is the mapping; EnumCount
+    // absorbs +4 (199 -> 203) and the completeness loop covers them.
+    OpenAiReasoningLabel,         // "추론 강도" / "Reasoning effort"
+    OpenAiReasoningServerDefault, // "서버 기본값 (미지정)" / "Server default (unset)"
+    BackTransSectionBack,         // "역번역" / "Back-translation"
+    BackTransSectionOriginal,     // "원문" / "Original text"
+
     // 261111_0001 (v0.10.7) U6 — user-model surface completeness (R1 P1):
     //   * GgufInvalidModelBody: the registration-time GGUF gate rejection
     //     (src/gguf_validator.* wired into the manager's HF/orphan add

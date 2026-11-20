@@ -152,7 +152,9 @@ namespace req048_r2d_detail {
 // 261116_0003 P9b-3 U5 appended the picker AUTO chip label: 196 -> 197;
 // 261116_0003 P9c-1b appended the 2 OpenAI declaration checklist strings,
 // struct slots ahead of the AUTO chip so the English table keeps it last:
-// 197 -> 199)
+// 197 -> 199;
+// 261121_0001 U-C (v0.10.9) appended the 4 reasoning/back-translation
+// section strings right after back_translate_reference: 199 -> 203)
 // (157 X-macro + the 4 v0.10.5 theme strings: MenuUiTheme/ThemeFluent/
 // ThemeEditorial/ThemeMonolith + the 5 261108_0002 WS3 back-translation
 // strings, the fifth being FIX-WS3B's BackTranslateReference). 261108_0002
@@ -162,7 +164,7 @@ namespace req048_r2d_detail {
 // now the sizeof static_assert in src/i18n.cpp (struct layout vs EnumCount),
 // and these mirrors are the per-TU record that it held.
 struct Req048R2LstrMirror {
-    const wchar_t* f[199];
+    const wchar_t* f[203];
 };
 
 } // namespace req048_r2d_detail
@@ -175,21 +177,22 @@ void TestReq048R2GgufManager() {
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 199
-    static_assert(kR2dFieldCount == 199,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b: LocalizedStrings field count is 199 "
-                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string) - update the i18n.cpp X-macro, "
-                  "all 37 locale tables, AND this mirror");
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 203
+    static_assert(kR2dFieldCount == 203,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C: LocalizedStrings field count is 203 "
+                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings) - update the i18n.cpp X-macro, "
+                  "all 89 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 199,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 199");
-    TEST_CHECK(observed_enum_count == 199,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 199 (struct fields == "
+    TEST_CHECK(observed_field_count == 203,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 203");
+    TEST_CHECK(observed_enum_count == 203,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 203 (struct fields == "
                "switch cases, through the REQ-060 load-mode/policy block, the v0.10.5 theme "
-               "strings, the 261108_0002 WS3 back-translation ids, the 261111_0001 U6 user-model ids, "
+               "strings, the 261108_0002 WS3 back-translation ids, the 4 261121_0001 v0.10.9 "
+               "U-C reasoning/back-trans section ids, the 261111_0001 U6 user-model ids, "
                "the 261116_0003 P5/P6a/P7 language-menu ids, the 23 P9b-1 user-language ids, "
                "the 2 P9c-1b OpenAI declaration checklist ids and "
                "the 1 P9b-3 U5 picker AUTO chip id)");

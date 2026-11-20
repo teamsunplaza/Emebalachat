@@ -594,25 +594,29 @@ void TestReq053OpenAiButtonDisablePins() {
 
     // Stale-drop restore precedes the normal-completion restore; the latter
     // sits before the refill/notice so no failure box sits over a gray button.
+    // W3 (261121_0001): the refill call now takes result.catalog.models
+    // (U-H's C4 catalog adoption); the ordering invariant is unchanged.
     const size_t stale_restore = osw.find("::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);");
     const size_t done_restore = osw.find("::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);",
                                          stale_restore + 1);
-    const size_t refill = osw.find("RefillOpenAiModelCombo(dlg, models);", done_restore);
+    const size_t refill =
+        osw.find("RefillOpenAiModelCombo(dlg, result.catalog.models);", done_restore);
     TEST_CHECK(stale_restore < done_restore && done_restore != std::string::npos &&
                    refill != std::string::npos && done_restore < refill,
                "REQ-053 pin: the completion restore precedes the combo refill");
 
     // No new i18n strings in A6: the fix is graying feedback only (CPO scope).
     // The running StringId total moves only with a tracked batch — currently
-    // 199 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
+    // 203 (REQ-MD brought it to 144; REQ-060 added the 13 load-mode/policy
     // strings; the v0.10.5 theme batch added 4; the 261108_0002 WS3
     // back-translation batch added 4; A6 itself added none; 261116_0003 added
     // the P5/P6a/P7 language-menu ids, the 23 P9b-1 user-language ids, the
     // 2 P9c-1b OpenAI declaration checklist ids and the 1 P9b-3 U5 picker
-    // AUTO chip id).
+    // AUTO chip id; 261121_0001 U-C added the 4 v0.10.9 reasoning/back-trans
+    // section ids).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 199,
-               "REQ-053 pin: StringId::EnumCount is 199 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language ids + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id; A6 added no strings, FIX-WS3B added one)");
+    TEST_CHECK(enum_count == 203,
+               "REQ-053 pin: StringId::EnumCount is 203 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 4 261121_0001 v0.10.9 U-C reasoning/back-trans section ids + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language ids + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id; A6 added no strings, FIX-WS3B added one)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 

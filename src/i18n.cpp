@@ -214,6 +214,20 @@ struct LocalizedStrings {
     // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label
     // ("↳ 원문: " in Korean). Trailing default like its four siblings.
     const wchar_t* back_translate_reference = L"↳ Original: ";
+    // 261121_0001 (v0.10.9, session 261121_0001 U-C — contract C5): the
+    // OpenAI settings dialog's reasoning-effort combo label + its
+    // "server default" entry, and the redesigned back-translation card's
+    // two section headers. Trailing defaults like the blocks above (NOT
+    // part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays
+    // 157): all 88 designated tables carry their own designator and the
+    // English POSITIONAL table carries the four literals in this order
+    // (slot order chosen so every pre-existing pinned tail run — the P9b-3
+    // U5 English AUTO-chip last-initializer pin, the P9c-1b declared-hint
+    // adjacency, the P6a/P7/P5 enum adjacencies — stays untouched).
+    const wchar_t* openai_reasoning_label = L"Reasoning effort";
+    const wchar_t* openai_reasoning_server_default = L"Server default (unset)";
+    const wchar_t* back_trans_section_back = L"Back-translation";
+    const wchar_t* back_trans_section_original = L"Original text";
     // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness —
     // trailing defaults like the back-translation block above (NOT part of
     // EMEBALA_LSTR_FIELDS; the 89 tables carry their own designators).
@@ -360,8 +374,9 @@ static_assert(kLocalizedStringsFieldCount == 157,
 
 // 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
 // above is generated from the same X-macro that generates the struct, so it can
-// never notice the 42 trailing NON-X-macro members (4 theme + 5 back-translation
-// + 3 user-model + 2 language-picker + 1 search row + 1 count phrase +
+// never notice the 46 trailing NON-X-macro members (4 theme + 5 back-translation
+// + 4 v0.10.9 reasoning/back-trans section strings (261121_0001 U-C) +
+// 3 user-model + 2 language-picker + 1 search row + 1 count phrase +
 // 23 user-language + 2 OpenAI declaration checklist + 1 picker AUTO chip;
 // 261116_0003 P9c-1b fix: was 40 = the previous blocks + the P9b-3 U5 chip,
 // before that 39 at P9b-1, each later session appended its own trailing block)
@@ -596,6 +611,10 @@ const LocalizedStrings kStringsKorean = {
     .back_translate_match_exact = L"✓ 원문 일치",
     .back_translate_match_check = L"⚡ 표현 확인",
     .back_translate_reference = L"↳ 원문: ",
+    .openai_reasoning_label = L"추론 강도",
+    .openai_reasoning_server_default = L"서버 기본값 (미지정)",
+    .back_trans_section_back = L"역번역",
+    .back_trans_section_original = L"원문",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"올바른 GGUF 모델 파일이 아니어서 등록하지 않았습니다.",
@@ -715,8 +734,10 @@ const LocalizedStrings kStringsJapanese = {
     L"詳細は README ファイルをご覧ください。いつでも再読できます。\n",
     .cheatsheet_config_path = L"設定ファイル: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"テキストが長すぎるため、冒頭と末尾のみを翻訳しました。",
     .tooltip_untranslated_above = L"上に翻訳されていない新しいテキストがあります。その行の末尾にカーソルを置いて Enter を押すと翻訳されます。",
     .repair_in_progress = L"ローカルエンジンコンポーネントを修復しています…",
@@ -854,6 +875,10 @@ const LocalizedStrings kStringsJapanese = {
     .back_translate_match_exact = L"✓ 原文一致",
     .back_translate_match_check = L"⚡ 表現チェック",
     .back_translate_reference = L"↳ 原文: ",
+    .openai_reasoning_label = L"推論の強度",
+    .openai_reasoning_server_default = L"サーバーのデフォルト（未設定）",
+    .back_trans_section_back = L"逆翻訳",
+    .back_trans_section_original = L"原文",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"有効なGGUFモデルファイルではないため、登録しませんでした。",
@@ -968,8 +993,10 @@ const LocalizedStrings kStringsChineseSimp = {
     L"完整说明请查看 README 文件，您可随时重新阅读。\n",
     .cheatsheet_config_path = L"配置文件: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"文本过长，仅翻译了开头和结尾部分。",
     .tooltip_untranslated_above = L"上方有未翻译的新文本。将光标置于该行末尾并按 Enter 即可翻译。",
     .repair_in_progress = L"正在修复本地引擎组件…",
@@ -1107,6 +1134,10 @@ const LocalizedStrings kStringsChineseSimp = {
     .back_translate_match_exact = L"✓ 与原文一致",
     .back_translate_match_check = L"⚡ 检查表达",
     .back_translate_reference = L"↳ 原文: ",
+    .openai_reasoning_label = L"推理强度",
+    .openai_reasoning_server_default = L"服务器默认（未设置）",
+    .back_trans_section_back = L"回译",
+    .back_trans_section_original = L"原文",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型文件，未注册。",
@@ -1221,8 +1252,10 @@ const LocalizedStrings kStringsChineseTrad = {
     L"完整說明請查閱 README 檔案，您可隨時重新閱讀。\n",
     .cheatsheet_config_path = L"設定檔: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"文字過長，僅翻譯了開頭和結尾部分。",
     .tooltip_untranslated_above = L"上方有未翻譯的新文字。將游標置於該行末尾並按 Enter 即可翻譯。",
     .repair_in_progress = L"正在修復本機引擎元件…",
@@ -1360,6 +1393,10 @@ const LocalizedStrings kStringsChineseTrad = {
     .back_translate_match_exact = L"✓ 與原文一致",
     .back_translate_match_check = L"⚡ 檢查表達",
     .back_translate_reference = L"↳ 原文: ",
+    .openai_reasoning_label = L"推理強度",
+    .openai_reasoning_server_default = L"伺服器預設值（未設定）",
+    .back_trans_section_back = L"回譯",
+    .back_trans_section_original = L"原文",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型檔案，未註冊。",
@@ -1474,8 +1511,10 @@ const LocalizedStrings kStringsVietnamese = {
     L"Xem toàn bộ nội dung trong tệp README. Bạn có thể đọc lại bất cứ lúc nào.\n",
     .cheatsheet_config_path = L"Tệp cấu hình: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Văn bản quá dài nên chỉ phần đầu và phần cuối được dịch.",
     .tooltip_untranslated_above = L"Có văn bản mới chưa dịch ở trên. Đặt con trỏ ở cuối dòng đó và nhấn Enter để dịch.",
     .repair_in_progress = L"Đang sửa chữa các thành phần cục bộ…",
@@ -1613,6 +1652,10 @@ const LocalizedStrings kStringsVietnamese = {
     .back_translate_match_exact = L"✓ Khớp nghĩa gốc",
     .back_translate_match_check = L"⚡ Kiểm tra sắc thái",
     .back_translate_reference = L"↳ Bản gốc: ",
+    .openai_reasoning_label = L"Mức độ suy luận",
+    .openai_reasoning_server_default = L"Mặc định của máy chủ (chưa đặt)",
+    .back_trans_section_back = L"Dịch ngược",
+    .back_trans_section_original = L"Văn bản gốc",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Không phải tệp mô hình GGUF hợp lệ nên chưa được đăng ký.",
@@ -1724,8 +1767,10 @@ const LocalizedStrings kStringsSpanish = {
     L"Puedes leer el detalle completo en el archivo README cuando quieras.\n",
     .cheatsheet_config_path = L"Archivo de configuración: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"El texto era demasiado largo: solo se tradujeron el principio y el final.",
     .tooltip_untranslated_above = L"Hay texto nuevo sin traducir arriba. Coloca el cursor al final de esa línea y pulsa Enter para traducirlo.",
     .repair_in_progress = L"Reparando los componentes del motor local…",
@@ -1863,6 +1908,10 @@ const LocalizedStrings kStringsSpanish = {
     .back_translate_match_exact = L"✓ Significado coincidente",
     .back_translate_match_check = L"⚡ Revisar matiz",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Esfuerzo de razonamiento",
+    .openai_reasoning_server_default = L"Predeterminado del servidor (sin definir)",
+    .back_trans_section_back = L"Retrotraducción",
+    .back_trans_section_original = L"Texto original",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"No es un archivo de modelo GGUF válido; no se ha registrado.",
@@ -1978,8 +2027,10 @@ const LocalizedStrings kStringsEnglish = {
     L"You can re-read this anytime in the README file.\n",
     L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     L"The text was too long, so only its beginning and end were translated.",
     L"There is new untranslated text above. Place the cursor at the end of that line and press Enter to translate it.",
     L"Repairing the local engine components…",
@@ -2164,6 +2215,15 @@ const LocalizedStrings kStringsEnglish = {
     L"⚡ Check Nuance",
     // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label, slot 166.
     L"↳ Original: ",
+    // 261121_0001 (v0.10.9, U-C contract C5): the four literals after the
+    // FIX-WS3B reference label — the OpenAI settings dialog's reasoning-
+    // effort label + server-default entry and the redesigned
+    // back-translation card's two section headers (positional, same MSVC
+    // C7556 rule as every other tail block).
+    L"Reasoning effort",
+    L"Server default (unset)",
+    L"Back-translation",
+    L"Original text",
     // 261111_0001 U6 (v0.10.7, R1 P1): slots 167..169 — the registration-gate
     // rejection body, the active-binding list marker, and the activation
     // notice (designated-initializer spellings forbidden here: MSVC C7556).
@@ -2309,8 +2369,10 @@ const LocalizedStrings kStringsFrench = {
     L"Le détail complet est dans le fichier README, relisible à tout moment.\n",
     .cheatsheet_config_path = L"Fichier de configuration : %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Texte trop long : seul le début et la fin ont été traduits.",
     .tooltip_untranslated_above = L"Il y a un nouveau texte non traduit au-dessus. Placez le curseur à la fin de cette ligne et appuyez sur Entrée pour le traduire.",
     .repair_in_progress = L"Restauration des composants du moteur local…",
@@ -2448,6 +2510,10 @@ const LocalizedStrings kStringsFrench = {
     .back_translate_match_exact = L"✓ Sens concordant",
     .back_translate_match_check = L"⚡ Vérifier la nuance",
     .back_translate_reference = L"↳ Original : ",
+    .openai_reasoning_label = L"Effort de raisonnement",
+    .openai_reasoning_server_default = L"Valeur par défaut du serveur (non définie)",
+    .back_trans_section_back = L"Rétrotraduction",
+    .back_trans_section_original = L"Texte original",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Ce fichier n'est pas un modèle GGUF valide ; il n'a pas été enregistré.",
@@ -2562,8 +2628,10 @@ const LocalizedStrings kStringsGerman = {
     L"Details stehen in der README-Datei – jederzeit erneut lesbar.\n",
     .cheatsheet_config_path = L"Konfigurationsdatei: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Der Text war zu lang: Es wurden nur Anfang und Ende übersetzt.",
     .tooltip_untranslated_above = L"Oben gibt es neuen unübersetzten Text. Setzen Sie den Cursor an das Ende dieser Zeile und drücken Sie die Eingabetaste, um ihn zu übersetzen.",
     .repair_in_progress = L"Lokale Engine-Komponenten werden repariert…",
@@ -2701,6 +2769,10 @@ const LocalizedStrings kStringsGerman = {
     .back_translate_match_exact = L"✓ Bedeutung stimmt überein",
     .back_translate_match_check = L"⚡ Nuance prüfen",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Reasoning-Aufwand",
+    .openai_reasoning_server_default = L"Server-Standard (nicht gesetzt)",
+    .back_trans_section_back = L"Rückübersetzung",
+    .back_trans_section_original = L"Originaltext",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Keine gültige GGUF-Modelldatei; sie wurde nicht registriert.",
@@ -2815,8 +2887,10 @@ const LocalizedStrings kStringsRussian = {
     L"Полные сведения — в файле README, доступном для чтения в любое время.\n",
     .cheatsheet_config_path = L"Файл конфигурации: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Текст слишком длинный: переведены только начало и конец.",
     .tooltip_untranslated_above = L"Выше есть новый непереведенный текст. Поместите курсор в конец этой строки и нажмите Enter, чтобы перевести.",
     .repair_in_progress = L"Восстановление компонентов локального движка…",
@@ -2954,6 +3028,10 @@ const LocalizedStrings kStringsRussian = {
     .back_translate_match_exact = L"✓ Смысл совпадает",
     .back_translate_match_check = L"⚡ Проверить оттенок",
     .back_translate_reference = L"↳ Оригинал: ",
+    .openai_reasoning_label = L"Интенсивность рассуждения",
+    .openai_reasoning_server_default = L"Значение сервера по умолчанию (не задано)",
+    .back_trans_section_back = L"Обратный перевод",
+    .back_trans_section_original = L"Оригинальный текст",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Это не действительный файл модели GGUF; он не зарегистрирован.",
@@ -3068,8 +3146,10 @@ const LocalizedStrings kStringsPortuguese = {
     L"O detalhamento completo está no arquivo README, para reler quando quiser.\n",
     .cheatsheet_config_path = L"Arquivo de configuração: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Texto longo demais: apenas o início e o fim foram traduzidos.",
     .tooltip_untranslated_above = L"Há texto novo não traduzido acima. Coloque o cursor no final dessa linha e prima Enter para traduzir.",
     .repair_in_progress = L"A reparar os componentes do motor local…",
@@ -3207,6 +3287,10 @@ const LocalizedStrings kStringsPortuguese = {
     .back_translate_match_exact = L"✓ Significado correspondente",
     .back_translate_match_check = L"⚡ Verificar nuance",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Esforço de raciocínio",
+    .openai_reasoning_server_default = L"Padrão do servidor (não definido)",
+    .back_trans_section_back = L"Retrotradução",
+    .back_trans_section_original = L"Texto original",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Não é um ficheiro de modelo GGUF válido; não foi registado.",
@@ -3321,8 +3405,10 @@ const LocalizedStrings kStringsItalian = {
     L"Il dettaglio completo è nel file README, rileggibile in qualsiasi momento.\n",
     .cheatsheet_config_path = L"File di configurazione: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Testo troppo lungo: sono stati tradotti solo l'inizio e la fine.",
     .tooltip_untranslated_above = L"C'è nuovo testo non tradotto sopra. Posiziona il cursore alla fine di quella riga e premi Invio per tradurlo.",
     .repair_in_progress = L"Riparazione dei componenti del motore locale…",
@@ -3460,6 +3546,10 @@ const LocalizedStrings kStringsItalian = {
     .back_translate_match_exact = L"✓ Significato corrispondente",
     .back_translate_match_check = L"⚡ Controlla la sfumatura",
     .back_translate_reference = L"↳ Originale: ",
+    .openai_reasoning_label = L"Sforzo di ragionamento",
+    .openai_reasoning_server_default = L"Predefinito del server (non impostato)",
+    .back_trans_section_back = L"Retrotraduzione",
+    .back_trans_section_original = L"Testo originale",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Non è un file di modello GGUF valido; non è stato registrato.",
@@ -3574,8 +3664,10 @@ const LocalizedStrings kStringsDutch = {
     L"Alle details staan in het README-bestand, dat u altijd opnieuw kunt lezen.\n",
     .cheatsheet_config_path = L"Configuratiebestand: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"De tekst was te lang: alleen het begin en het einde zijn vertaald.",
     .tooltip_untranslated_above = L"Er staat nieuwe onvertaalde tekst hierboven. Plaats de cursor aan het einde van die regel en druk op Enter om te vertalen.",
     .repair_in_progress = L"Lokale engine-onderdelen herstellen…",
@@ -3713,6 +3805,10 @@ const LocalizedStrings kStringsDutch = {
     .back_translate_match_exact = L"✓ Betekenis komt overeen",
     .back_translate_match_check = L"⚡ Nuance controleren",
     .back_translate_reference = L"↳ Origineel: ",
+    .openai_reasoning_label = L"Redeneerinspanning",
+    .openai_reasoning_server_default = L"Serverstandaard (niet ingesteld)",
+    .back_trans_section_back = L"Terugvertaling",
+    .back_trans_section_original = L"Originele tekst",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Dit is geen geldig GGUF-modelbestand; het is niet geregistreerd.",
@@ -3827,8 +3923,10 @@ const LocalizedStrings kStringsPolish = {
     L"Szczegóły znajdziesz w pliku README — możesz go przeczytać w dowolnej chwili.\n",
     .cheatsheet_config_path = L"Plik konfiguracji: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Tekst był zbyt długi: przetłumaczono tylko początek i koniec.",
     .tooltip_untranslated_above = L"Powyżej znajduje się nowy nieprzetłumaczony tekst. Umieść kursor na końcu tego wiersza i naciśnij Enter, aby przetłumaczyć.",
     .repair_in_progress = L"Naprawianie lokalnych składników silnika…",
@@ -3966,6 +4064,10 @@ const LocalizedStrings kStringsPolish = {
     .back_translate_match_exact = L"✓ Znaczenie zgodne",
     .back_translate_match_check = L"⚡ Sprawdź niuans",
     .back_translate_reference = L"↳ Oryginał: ",
+    .openai_reasoning_label = L"Wysiłek rozumowania",
+    .openai_reasoning_server_default = L"Domyślne serwera (nieustawione)",
+    .back_trans_section_back = L"Tłumaczenie zwrotne",
+    .back_trans_section_original = L"Tekst oryginalny",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"To nie jest prawidłowy plik modelu GGUF; nie został zarejestrowany.",
@@ -4080,8 +4182,10 @@ const LocalizedStrings kStringsCzech = {
     L"Podrobnosti najdete v souboru README, který lze kdykoli znovu přečíst.\n",
     .cheatsheet_config_path = L"Konfigurační soubor: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Text byl příliš dlouhý: přeloženy byly pouze začátek a konec.",
     .tooltip_untranslated_above = L"Nahoře je nový nepřeložený text. Umístěte kurzor na konec tohoto řádku a stisknutím Enteru jej přeložte.",
     .repair_in_progress = L"Oprava místních součástí enginu…",
@@ -4219,6 +4323,10 @@ const LocalizedStrings kStringsCzech = {
     .back_translate_match_exact = L"✓ Význam odpovídá",
     .back_translate_match_check = L"⚡ Zkontrolovat odstín",
     .back_translate_reference = L"↳ Originál: ",
+    .openai_reasoning_label = L"Intenzita uvažování",
+    .openai_reasoning_server_default = L"Výchozí hodnota serveru (nenastaveno)",
+    .back_trans_section_back = L"Zpětný překlad",
+    .back_trans_section_original = L"Originální text",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Toto není platný soubor modelu GGUF; nebyl zaregistrován.",
@@ -4333,8 +4441,10 @@ const LocalizedStrings kStringsHungarian = {
     L"A teljes részletezés a README fájlban olvasható, bármikor újra.\n",
     .cheatsheet_config_path = L"Konfigurációs fájl: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"A szöveg túl hosszú: csak az eleje és a vége lett lefordítva.",
     .tooltip_untranslated_above = L"Új, le nem fordított szöveg van fent. Helyezze a kurzort a sor végére, és az Enter megnyomásával fordítsa le.",
     .repair_in_progress = L"A helyi motor összetevőinek javítása…",
@@ -4472,6 +4582,10 @@ const LocalizedStrings kStringsHungarian = {
     .back_translate_match_exact = L"✓ Jelentés egyezik",
     .back_translate_match_check = L"⚡ Árnyalat ellenőrzése",
     .back_translate_reference = L"↳ Eredeti: ",
+    .openai_reasoning_label = L"Gondolkodási intenzitás",
+    .openai_reasoning_server_default = L"Kiszolgálóalapértelmezett (nincs beállítva)",
+    .back_trans_section_back = L"Visszafordítás",
+    .back_trans_section_original = L"Eredeti szöveg",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Ez nem érvényes GGUF modellfájl; nem lett regisztrálva.",
@@ -4586,8 +4700,10 @@ const LocalizedStrings kStringsRomanian = {
     L"Detaliile complete sunt în fișierul README, recitibil oricând.\n",
     .cheatsheet_config_path = L"Fișier de configurare: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Textul era prea lung: au fost traduse doar începutul și sfârșitul.",
     .tooltip_untranslated_above = L"Există text nou netradus mai sus. Plasați cursorul la sfârșitul acelui rând și apăsați Enter pentru a traduce.",
     .repair_in_progress = L"Se repară componentele motorului local…",
@@ -4725,6 +4841,10 @@ const LocalizedStrings kStringsRomanian = {
     .back_translate_match_exact = L"✓ Sens identic",
     .back_translate_match_check = L"⚡ Verifică nuanța",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Efort de raționament",
+    .openai_reasoning_server_default = L"Implicit server (nedefinit)",
+    .back_trans_section_back = L"Traducere inversă",
+    .back_trans_section_original = L"Text original",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Acesta nu este un fișier GGUF valid; nu a fost înregistrat.",
@@ -4839,8 +4959,10 @@ const LocalizedStrings kStringsSwedish = {
     L"Alla detaljer finns i README-filen, som du kan läsa om när som helst.\n",
     .cheatsheet_config_path = L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Texten var för lång: endast början och slutet översattes.",
     .tooltip_untranslated_above = L"Det finns ny oöversatt text ovanför. Placera markören i slutet av den raden och tryck på Enter för att översätta.",
     .repair_in_progress = L"Reparerar de lokala motorkomponenterna…",
@@ -4978,6 +5100,10 @@ const LocalizedStrings kStringsSwedish = {
     .back_translate_match_exact = L"✓ Betydelsen stämmer",
     .back_translate_match_check = L"⚡ Kontrollera nyans",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Resonemangsinsats",
+    .openai_reasoning_server_default = L"Serverstandard (ej angiven)",
+    .back_trans_section_back = L"Återöversättning",
+    .back_trans_section_original = L"Originaltext",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Det är ingen giltig GGUF-modellfil; den har inte registrerats.",
@@ -5092,8 +5218,10 @@ const LocalizedStrings kStringsDanish = {
     L"Detaljerne står i README-filen, som du kan læse når som helst.\n",
     .cheatsheet_config_path = L"Konfigurationsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Teksten var for lang: kun starten og slutningen blev oversat.",
     .tooltip_untranslated_above = L"Der er ny uoversat tekst ovenfor. Placer markøren i slutningen af den linje, og tryk på Enter for at oversætte.",
     .repair_in_progress = L"Reparerer de lokale motorkomponenter…",
@@ -5231,6 +5359,10 @@ const LocalizedStrings kStringsDanish = {
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Kontroller nuance",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Ræsoneringsindsats",
+    .openai_reasoning_server_default = L"Serverstandard (ikke angivet)",
+    .back_trans_section_back = L"Tilbagetranslation",
+    .back_trans_section_original = L"Originaltekst",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Det er ikke en gyldig GGUF-modelfil; den er ikke registreret.",
@@ -5345,8 +5477,10 @@ const LocalizedStrings kStringsFinnish = {
     L"Tarkat tiedot ovat README-tiedostossa, jonka voit lukea milloin tahansa.\n",
     .cheatsheet_config_path = L"Asetustiedosto: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Teksti oli liian pitkä: vain alku ja loppu käännettiin.",
     .tooltip_untranslated_above = L"Yläpuolella on uutta kääntämätöntä tekstiä. Aseta kohdistin rivin loppuun ja paina Enter kääntääksesi.",
     .repair_in_progress = L"Korjataan paikallisia moottorikomponentteja…",
@@ -5484,6 +5618,10 @@ const LocalizedStrings kStringsFinnish = {
     .back_translate_match_exact = L"✓ Merkitys täsmää",
     .back_translate_match_check = L"⚡ Tarkista sävy",
     .back_translate_reference = L"↳ Alkuperäinen: ",
+    .openai_reasoning_label = L"Päättelyn voimakkuus",
+    .openai_reasoning_server_default = L"Palvelimen oletus (ei asetettu)",
+    .back_trans_section_back = L"Takaisinkäännös",
+    .back_trans_section_original = L"Alkuperäinen teksti",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Tämä ei ole kelvollinen GGUF-mallitiedosto; sitä ei rekisteröity.",
@@ -5598,8 +5736,10 @@ const LocalizedStrings kStringsNorwegian = {
     L"Detaljene finnes i README-filen, som kan leses på nytt når som helst.\n",
     .cheatsheet_config_path = L"Konfigurasjonsfil: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Teksten var for lang: bare starten og slutten ble oversatt.",
     .tooltip_untranslated_above = L"Det er ny uoversatt tekst ovenfor. Plasser markøren på slutten av den linjen og trykk Enter for å oversette.",
     .repair_in_progress = L"Reparerer de lokale motorkomponentene…",
@@ -5737,6 +5877,10 @@ const LocalizedStrings kStringsNorwegian = {
     .back_translate_match_exact = L"✓ Betydningen stemmer",
     .back_translate_match_check = L"⚡ Sjekk nyanse",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Ressoneringsinnsats",
+    .openai_reasoning_server_default = L"Serverstandard (ikke angitt)",
+    .back_trans_section_back = L"Tilbakeoversettelse",
+    .back_trans_section_original = L"Originaltekst",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Dette er ikke en gyldig GGUF-modellfil; den ble ikke registrert.",
@@ -5851,8 +5995,10 @@ const LocalizedStrings kStringsGreek = {
     L"Οι πλήρεις λεπτομέρειες βρίσκονται στο αρχείο README, που διαβάζεται ξανά ανά πάσα στιγμή.\n",
     .cheatsheet_config_path = L"Αρχείο ρυθμίσεων: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Το κείμενο είναι πολύ μακρύ: μεταφράστηκαν μόνο η αρχή και το τέλος.",
     .tooltip_untranslated_above = L"Υπάρχει νέο μη μεταφρασμένο κείμενο παραπάνω. Τοποθετήστε τον δείκτη στο τέλος εκείνης της γραμμής και πατήστε Enter για μετάφραση.",
     .repair_in_progress = L"Επισκευή των τοπικών συστατικών μηχανής…",
@@ -5990,6 +6136,10 @@ const LocalizedStrings kStringsGreek = {
     .back_translate_match_exact = L"✓ Το νόημα ταιριάζει",
     .back_translate_match_check = L"⚡ Έλεγχος απόχρωσης",
     .back_translate_reference = L"↳ Πρωτότυπο: ",
+    .openai_reasoning_label = L"Προσπάθεια συλλογισμού",
+    .openai_reasoning_server_default = L"Προεπιλογή διακομιστή (μη ορισμένη)",
+    .back_trans_section_back = L"Αντίστροφη μετάφραση",
+    .back_trans_section_original = L"Πρωτότυπο κείμενο",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Δεν είναι έγκυρο αρχείο μοντέλου GGUF· δεν καταχωρήθηκε.",
@@ -6104,8 +6254,10 @@ const LocalizedStrings kStringsTurkish = {
     L"Tam ayrıntılar README dosyasındadır; istediğiniz zaman tekrar okuyabilirsiniz.\n",
     .cheatsheet_config_path = L"Yapılandırma dosyası: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Metin çok uzun olduğu için yalnızca başı ve sonu çevrildi.",
     .tooltip_untranslated_above = L"Yukarıda çevrilmemiş yeni metin var. Çevirmek için imleci o satırın sonuna getirin ve Enter'a basın.",
     .repair_in_progress = L"Yerel motor bileşenleri onarılıyor…",
@@ -6243,6 +6395,10 @@ const LocalizedStrings kStringsTurkish = {
     .back_translate_match_exact = L"✓ Anlam eşleşti",
     .back_translate_match_check = L"⚡ Nüansı kontrol et",
     .back_translate_reference = L"↳ Orijinal: ",
+    .openai_reasoning_label = L"Akıl yürütme çabası",
+    .openai_reasoning_server_default = L"Sunucu varsayılanı (ayarlanmadı)",
+    .back_trans_section_back = L"Geri çeviri",
+    .back_trans_section_original = L"Orijinal metin",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Geçerli bir GGUF model dosyası değil; kaydedilmedi.",
@@ -6357,8 +6513,10 @@ const LocalizedStrings kStringsUkrainian = {
     L"Повні відомості — у файлі README, який можна перечитати будь-коли.\n",
     .cheatsheet_config_path = L"Файл налаштувань: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Текст надто довгий: перекладено лише початок і кінець.",
     .tooltip_untranslated_above = L"Вище є новий неперекладений текст. Поставте курсор у кінець цього рядка та натисніть Enter, щоб перекласти.",
     .repair_in_progress = L"Відновлення компонентів локального рушія…",
@@ -6496,6 +6654,10 @@ const LocalizedStrings kStringsUkrainian = {
     .back_translate_match_exact = L"✓ Зміст збігається",
     .back_translate_match_check = L"⚡ Перевірити відтінок",
     .back_translate_reference = L"↳ Оригінал: ",
+    .openai_reasoning_label = L"Зусилля міркування",
+    .openai_reasoning_server_default = L"За замовчуванням сервера (не встановлено)",
+    .back_trans_section_back = L"Зворотний переклад",
+    .back_trans_section_original = L"Оригінальний текст",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Це недійсний файл моделі GGUF; він не зареєстрований.",
@@ -6610,8 +6772,10 @@ const LocalizedStrings kStringsThai = {
     L"ดูรายละเอียดฉบับเต็มในไฟล์ README ซึ่งอ่านซ้ำได้ทุกเมื่อ\n",
     .cheatsheet_config_path = L"ไฟล์ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"ข้อความยาวเกินไป จึงแปลเฉพาะส่วนต้นและส่วนท้าย",
     .tooltip_untranslated_above = L"มีข้อความใหม่ที่ยังไม่ได้แปลด้านบน วางเคอร์เซอร์ที่ท้ายบรรทัดนั้นแล้วกด Enter เพื่อแปล",
     .repair_in_progress = L"กำลังซ่อมแซมส่วนประกอบเอนจิ้นในเครื่อง…",
@@ -6749,6 +6913,10 @@ const LocalizedStrings kStringsThai = {
     .back_translate_match_exact = L"✓ ความหมายตรงกัน",
     .back_translate_match_check = L"⚡ ตรวจสอบน้ำเสียง",
     .back_translate_reference = L"↳ ต้นฉบับ: ",
+    .openai_reasoning_label = L"ความพยายามในการให้เหตุผล",
+    .openai_reasoning_server_default = L"ค่าเริ่มต้นของเซิร์ฟเวอร์ (ยังไม่ได้ตั้งค่า)",
+    .back_trans_section_back = L"การแปลย้อนกลับ",
+    .back_trans_section_original = L"ข้อความต้นฉบับ",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ไม่ใช่ไฟล์โมเดล GGUF ที่ถูกต้อง จึงไม่ได้ลงทะเบียน",
@@ -6863,8 +7031,10 @@ const LocalizedStrings kStringsIndonesian = {
     L"Detail lengkap ada di berkas README, yang dapat dibaca ulang kapan saja.\n",
     .cheatsheet_config_path = L"Berkas konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Teks terlalu panjang: hanya bagian awal dan akhir yang diterjemahkan.",
     .tooltip_untranslated_above = L"Ada teks baru yang belum diterjemahkan di atas. Letakkan kursor di akhir baris itu dan tekan Enter untuk menerjemahkan.",
     .repair_in_progress = L"Memperbaiki komponen mesin lokal…",
@@ -7002,6 +7172,10 @@ const LocalizedStrings kStringsIndonesian = {
     .back_translate_match_exact = L"✓ Makna sesuai",
     .back_translate_match_check = L"⚡ Periksa nuansa",
     .back_translate_reference = L"↳ Asli: ",
+    .openai_reasoning_label = L"Upaya penalaran",
+    .openai_reasoning_server_default = L"Bawaan server (belum diatur)",
+    .back_trans_section_back = L"Terjemahan balik",
+    .back_trans_section_original = L"Teks asli",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Bukan berkas model GGUF yang valid; tidak didaftarkan.",
@@ -7116,8 +7290,10 @@ const LocalizedStrings kStringsMalay = {
     L"Butiran penuh terdapat dalam fail README, yang boleh dibaca semula pada bila-bila masa.\n",
     .cheatsheet_config_path = L"Fail konfigurasi: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Teks terlalu panjang: hanya bahagian awal dan akhir diterjemahkan.",
     .tooltip_untranslated_above = L"Terdapat teks baru yang belum diterjemahkan di atas. Letakkan kursor di hujung baris itu dan tekan Enter untuk menterjemah.",
     .repair_in_progress = L"Membaiki komponen enjin tempatan…",
@@ -7255,6 +7431,10 @@ const LocalizedStrings kStringsMalay = {
     .back_translate_match_exact = L"✓ Makna sepadan",
     .back_translate_match_check = L"⚡ Semak nuansa",
     .back_translate_reference = L"↳ Asal: ",
+    .openai_reasoning_label = L"Usaha penaakulan",
+    .openai_reasoning_server_default = L"Lalai pelayan (belum ditetapkan)",
+    .back_trans_section_back = L"Terjemahan balik",
+    .back_trans_section_original = L"Teks asal",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Bukan fail model GGUF yang sah; ia tidak didaftarkan.",
@@ -7371,8 +7551,10 @@ const LocalizedStrings kStringsFilipino = {
     L"Makikita ang buong detalye sa README file na maaaring babasahin anumang oras.\n",
     .cheatsheet_config_path = L"Config file: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"Masyadong mahaba ang teksto: simula at katapusan lang ang isinalin.",
     .tooltip_untranslated_above = L"May bagong hindi pa isinaling teksto sa itaas. Ilagay ang cursor sa dulo ng linyang iyon at pindutin ang Enter upang isalin.",
     .repair_in_progress = L"Kinukumpuni ang mga bahagi ng lokal na makina…",
@@ -7510,6 +7692,10 @@ const LocalizedStrings kStringsFilipino = {
     .back_translate_match_exact = L"✓ Tumutugma ang kahulugan",
     .back_translate_match_check = L"⚡ Suriin ang nuance",
     .back_translate_reference = L"↳ Orihinal: ",
+    .openai_reasoning_label = L"Pagsisikap sa pangangatwiran",
+    .openai_reasoning_server_default = L"Pamantayan ng server (hindi itinakda)",
+    .back_trans_section_back = L"Pabalik na salin",
+    .back_trans_section_original = L"Orihinal na teksto",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Hindi ito wastong GGUF model file; hindi ito narehistro.",
@@ -7624,8 +7810,10 @@ const LocalizedStrings kStringsHindi = {
     L"पूरा विवरण README फ़ाइल में है, जिसे आप कभी भी दोबारा पढ़ सकते हैं।\n",
     .cheatsheet_config_path = L"कॉन्फ़िग फ़ाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"पाठ बहुत लंबा था: केवल शुरुआत और अंत का अनुवाद किया गया।",
     .tooltip_untranslated_above = L"ऊपर नया अनअनुवादित टेक्स्ट है। उसे अनुवाद करने के लिए कर्सर को उस पंक्ति के अंत में रखें और Enter दबाएं।",
     .repair_in_progress = L"लोकल इंजन घटकों की मरम्मत हो रही है…",
@@ -7763,6 +7951,10 @@ const LocalizedStrings kStringsHindi = {
     .back_translate_match_exact = L"✓ अर्थ मेल खाता है",
     .back_translate_match_check = L"⚡ भाव जाँचें",
     .back_translate_reference = L"↳ मूल: ",
+    .openai_reasoning_label = L"तर्क प्रयास",
+    .openai_reasoning_server_default = L"सर्वर डिफ़ॉल्ट (अनसेट)",
+    .back_trans_section_back = L"पश्च-अनुवाद",
+    .back_trans_section_original = L"मूल पाठ",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"यह मान्य GGUF मॉडल फ़ाइल नहीं है; इसे पंजीकृत नहीं किया गया।",
@@ -7877,8 +8069,10 @@ const LocalizedStrings kStringsBengali = {
     L"পূর্ণ বিবরণ README ফাইলে আছে, যেটি যেকোনো সময় আবার পড়া যাবে।\n",
     .cheatsheet_config_path = L"কনফিগ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"পাঠ্যটি খুব দীর্ঘ ছিল: শুধু শুরু এবং শেষ অংশ অনুবাদ করা হয়েছে।",
     .tooltip_untranslated_above = L"উপরে নতুন অনুবাদহীন টেক্সট আছে। এটি অনুবাদ করতে কার্সারটি সেই লাইনের শেষে রাখুন এবং Enter চাপুন।",
     .repair_in_progress = L"লোকাল ইঞ্জিন উপাদান মেরামত হচ্ছে…",
@@ -8016,6 +8210,10 @@ const LocalizedStrings kStringsBengali = {
     .back_translate_match_exact = L"✓ অর্থ মিলে গেছে",
     .back_translate_match_check = L"⚡ সূক্ষ্মতা যাচাই করুন",
     .back_translate_reference = L"↳ মূল: ",
+    .openai_reasoning_label = L"যুক্তির প্রচেষ্টা",
+    .openai_reasoning_server_default = L"সার্ভার ডিফল্ট (অসেট)",
+    .back_trans_section_back = L"ব্যাক-অনুবাদ",
+    .back_trans_section_original = L"মূল পাঠ",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"এটি বৈধ GGUF মডেল ফাইল নয়; তাই নিবন্ধন করা হয়নি।",
@@ -8131,8 +8329,10 @@ const LocalizedStrings kStringsArabic = {
     L"التفاصيل الكاملة في ملف README ويمكن قراءته في أي وقت.\n",
     .cheatsheet_config_path = L"ملف الإعداد: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"النص طويل جدًا: تمت ترجمة البداية والنهاية فقط.",
     .tooltip_untranslated_above = L"يوجد نص جديد غير مترجم في الأعلى. ضع المؤشر في نهاية ذلك السطر واضغط Enter للترجمة.",
     .repair_in_progress = L"جارٍ إصلاح مكونات المحرك المحلي…",
@@ -8270,6 +8470,10 @@ const LocalizedStrings kStringsArabic = {
     .back_translate_match_exact = L"✓ المعنى مطابق",
     .back_translate_match_check = L"⚡ تحقق من الفارق الدقيق",
     .back_translate_reference = L"↳ الأصل: ",
+    .openai_reasoning_label = L"جهد الاستدلال",
+    .openai_reasoning_server_default = L"الافتراضي من الخادم (غير محدد)",
+    .back_trans_section_back = L"الترجمة العكسية",
+    .back_trans_section_original = L"النص الأصلي",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"الملف ليس نموذج GGUF صالحًا؛ لم يتم تسجيله.",
@@ -8384,8 +8588,10 @@ const LocalizedStrings kStringsPersian = {
     L"جزئیات کامل در فایل README است و هر زمان قابل خواندن مجدد است.\n",
     .cheatsheet_config_path = L"فایل پیکربندی: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"متن بسیار بلند بود: فقط ابتدا و انتها ترجمه شد.",
     .tooltip_untranslated_above = L"در بالا متن جدیدی بدون ترجمه وجود دارد. برای ترجمه، مکان‌نما را در انتهای آن خط قرار دهید و Enter را بزنید.",
     .repair_in_progress = L"در حال تعمیر اجزای موتور محلی…",
@@ -8523,6 +8729,10 @@ const LocalizedStrings kStringsPersian = {
     .back_translate_match_exact = L"✓ معنا مطابقت دارد",
     .back_translate_match_check = L"⚡ بررسی ظرافت معنا",
     .back_translate_reference = L"↳ اصلی: ",
+    .openai_reasoning_label = L"میزان تلاش استدلال",
+    .openai_reasoning_server_default = L"پیش‌فرض سرور (تنظیم نشده)",
+    .back_trans_section_back = L"ترجمهٔ معکوس",
+    .back_trans_section_original = L"متن اصلی",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"فایل مدل GGUF معتبری نیست؛ ثبت نشد.",
@@ -8637,8 +8847,10 @@ const LocalizedStrings kStringsUrdu = {
     L"مکمل تفصیل README فائل میں ہے، جسے آپ کسی بھی وقت دوبارہ پڑھ سکتے ہیں۔\n",
     .cheatsheet_config_path = L"کنفیگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"متن بہت لمبا تھا: صرف آغاز اور انجام کا ترجمہ کیا گیا۔",
     .tooltip_untranslated_above = L"اوپر نیا غیر ترجمہ شدہ متن ہے۔ اس کا ترجمہ کرنے کے لیے کرسر کو اس لائن کے آخر میں رکھیں اور Enter دبائیں۔",
     .repair_in_progress = L"مقامی انجن اجزا کی مرمت جاری ہے…",
@@ -8776,6 +8988,10 @@ const LocalizedStrings kStringsUrdu = {
     .back_translate_match_exact = L"✓ معنی مطابق ہے",
     .back_translate_match_check = L"⚡ باریکی کی جانچ کریں",
     .back_translate_reference = L"↳ اصل: ",
+    .openai_reasoning_label = L"استدلال کی کوشش",
+    .openai_reasoning_server_default = L"سرور ڈیفالٹ (غیر مقرر)",
+    .back_trans_section_back = L"معکوس ترجمہ",
+    .back_trans_section_original = L"اصلی متن",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"یہ درست GGUF ماڈل فائل نہیں ہے؛ اسے رجسٹر نہیں کیا گیا۔",
@@ -8890,8 +9106,10 @@ const LocalizedStrings kStringsHebrew = {
     L"הפירוט המלא בקובץ README, הניתן לקריאה חוזרת בכל עת.\n",
     .cheatsheet_config_path = L"קובץ ההגדרות: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"הטקסט ארוך מדי: רק הפתיח והסיום תורגמו.",
     .tooltip_untranslated_above = L"יש טקסט חדש שלא תורגם למעלה. מקם את הסמן בסוף השורה ההיא ולחץ Enter כדי לתרגם.",
     .repair_in_progress = L"מתקן את רכיבי המנוע המקומי…",
@@ -9029,6 +9247,10 @@ const LocalizedStrings kStringsHebrew = {
     .back_translate_match_exact = L"✓ המשמעות תואמת",
     .back_translate_match_check = L"⚡ בדיקת ניואנס",
     .back_translate_reference = L"↳ מקור: ",
+    .openai_reasoning_label = L"מאמץ חשיבה",
+    .openai_reasoning_server_default = L"ברירת מחדל של השרת (לא נקבע)",
+    .back_trans_section_back = L"תרגום חוזר",
+    .back_trans_section_original = L"טקסט מקורי",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"זהו לא קובץ מודל GGUF תקין; הוא לא נרשם.",
@@ -9143,8 +9365,10 @@ const LocalizedStrings kStringsKhmer = {
     L"ព័ត៌មានលម្អិតស្ថិតក្នុងឯកសារ README ដែលអាចអានឡើងវិញពេលណាក៏បាន។\n",
     .cheatsheet_config_path = L"ឯកសារកំណត់រចនាសម្ព័ន្ធ: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"អត្ថបទវែងពេក៖ បានបកប្រែតែផ្នែកដើម និងបញ្ចប់ប៉ុណ្ណោះ។",
     .tooltip_untranslated_above = L"មានអត្ថបទថ្មីមិនទាន់បកប្រែខាងលើ។ ដើម្បីបកប្រែ សូមដាក់កូរ៉េស័រនៅចុងបន្ទាត់នោះ ហើយចុច Enter។",
     .repair_in_progress = L"កំពុងជួសជុលសមាសភាគម៉ាស៊ីនក្នុងម៉ាស៊ីន…",
@@ -9282,6 +9506,10 @@ const LocalizedStrings kStringsKhmer = {
     .back_translate_match_exact = L"✓ អត្ថន័យត្រូវគ្នា",
     .back_translate_match_check = L"⚡ ពិនិត្យអត្ថរស",
     .back_translate_reference = L"↳ ដើម: ",
+    .openai_reasoning_label = L"កម្រិតហេតុផល",
+    .openai_reasoning_server_default = L"លំនាំដើមម៉ាស៊ីនមេ (មិនបានកំណត់)",
+    .back_trans_section_back = L"ការបកប្រែត្រឡប់",
+    .back_trans_section_original = L"អត្ថបទដើម",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ឯកសារម៉ូដែល GGUF មិនត្រឹមត្រូវ ទើបមិនបានចុះឈ្មោះ។",
@@ -9396,8 +9624,10 @@ const LocalizedStrings kStringsLao = {
     L"ລາຍລະອຽດເຕັມຢູ່ໃນໄຟລ໌ README ທີ່ສາມາດອ່ານຄືນໄດ້ທຸກເວລາ.\n",
     .cheatsheet_config_path = L"ໄຟລ໌ config: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"ຂໍ້ຄວາມຍາວເກີນໄປ: ແປສະເພາະສ່ວນຕົ້ນແລະສ່ວນທ້າຍເທົ່ານັ້ນ.",
     .tooltip_untranslated_above = L"ມີຂໍ້ຄວາມໃໝ່ທີ່ຍັງບໍ່ໄດ້ແປຢູ່ຂ້າງເທິງ. ເພື່ອແປ, ກະລຸນາວາງເຄີເຊີທີ່ທ້າຍບັນທັດນັ້ນ ແລ້ວກົດ Enter.",
     .repair_in_progress = L"ກຳລັງສ້ອມແປງອົງປະກອບເຄື່ອງຈັກທ້ອງຖິ່ນ…",
@@ -9535,6 +9765,10 @@ const LocalizedStrings kStringsLao = {
     .back_translate_match_exact = L"✓ ຄວາມໝາຍກົງກັນ",
     .back_translate_match_check = L"⚡ ກວດສອບນ້ຳສຽງ",
     .back_translate_reference = L"↳ ຕົ້ນສະບັບ: ",
+    .openai_reasoning_label = L"ຄວາມພະຍາຍາມໃນການໃຫ້ເຫດຜົນ",
+    .openai_reasoning_server_default = L"ຄ່າເລີ່ມຕົ້ນຂອງເຊີບເວີ (ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ)",
+    .back_trans_section_back = L"ການແປຍ້ອນກັບ",
+    .back_trans_section_original = L"ຂໍ້ຄວາມຕົ້ນສະບັບ",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ບໍ່ແມ່ນໄຟລ໌ໂມເດວ GGUF ທີ່ຖືກຕ້ອງ ຈຶ່ງບໍ່ໄດ້ລົງທະບຽນ.",
@@ -9649,8 +9883,10 @@ const LocalizedStrings kStringsBurmese = {
     L"အသေးစိတ်ကို README ဖိုင်တွင် ဖတ်နိုင်ပြီး အချိန်မရွေး ပြန်ဖတ်နိုင်သည်။\n",
     .cheatsheet_config_path = L"config ဖိုင်: %LOCALAPPDATA%\\Emebalachat\\config.json",
     // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; head/tail window applied above the
-    // kMaxCloudQueryUnits cap - verify report 235100 §5.)
+    // (trailing-initializer append; the StringId stays pinned.
+    // v0.10.9 261121_0001 U-G chunks the full text through
+    // SplitTextIntoTranslationChunks instead of truncating - the
+    // kMaxCloudQueryUnits head/tail cap is gone.)
     .translate_truncated_notice = L"စာသား အလွန်ရှည်သဖြင့် အစနှင့် အဆုံးကိုသာ ဘာသာပြန်ဆိုပါသည်။",
     .tooltip_untranslated_above = L"အပေါ်တွင် ဘာသာပြန်မထားသော စာသားအသစ်ရှိသည်။ ဘာသာပြန်ရန် ကာဆာကို ထိုစာကြောင်းအဆုံးသို့ ထားပြီး Enter နှိပ်ပါ။",
     .repair_in_progress = L"ပရိုဂရမ်အင်ဂျင်အစိတ်အပိုင်းများကို ပြုပြင်နေသည်…",
@@ -9788,6 +10024,10 @@ const LocalizedStrings kStringsBurmese = {
     .back_translate_match_exact = L"✓ အဓိပ္ပာယ် ကိုက်ညီသည်",
     .back_translate_match_check = L"⚡ အဓိပ္ပာယ်ကွဲပြားမှု စစ်ဆေးရန်",
     .back_translate_reference = L"↳ မူရင်း: ",
+    .openai_reasoning_label = L"စဉ်းစားဆင်ခြင်မှု အားထုတ်မှု",
+    .openai_reasoning_server_default = L"ဆားဗားပုံသေ (မသတ်မှတ်ရသေးပါ)",
+    .back_trans_section_back = L"ပြန်လည်ဘာသာပြန်",
+    .back_trans_section_original = L"မူရင်းစာသား",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"မှန်ကန်တဲ့ GGUF မော်ဒယ်ဖိုင် မဟုတ်ဘူးဆိုတော့ မှတ်ပုံတင် မထားပါဘူး။",
@@ -10019,6 +10259,10 @@ const LocalizedStrings kStringsGujarati = {
     .back_translate_match_exact = L"✓ અર્થ બંધબેસે છે",
     .back_translate_match_check = L"⚡ સૂક્ષ્મતા તપાસો",
     .back_translate_reference = L"↳ મૂળ: ",
+    .openai_reasoning_label = L"તર્ક પ્રયાસ",
+    .openai_reasoning_server_default = L"સર્વર ડિફૉલ્ટ (સેટ નથી)",
+    .back_trans_section_back = L"બેક-ટ્રાન્સલેશન",
+    .back_trans_section_original = L"મૂળ ટેક્સ્ટ",
     .gguf_invalid_model_body = L"માન્ય GGUF મોડેલ ફાઇલ નથી; તે રજિસ્ટર થયું નથી.",
     .gguf_manager_active_suffix = L"(વાપરવામાં)",
     .gguf_manager_activated = L"આ મોડેલ હવે વાપરવામાં આવી રહ્યું છે.",
@@ -10246,6 +10490,10 @@ const LocalizedStrings kStringsTelugu = {
     .back_translate_match_exact = L"✓ అర్థం సరిపోయింది",
     .back_translate_match_check = L"⚡ సూక్ష్మత తనిఖీ చేయండి",
     .back_translate_reference = L"↳ అసలు: ",
+    .openai_reasoning_label = L"తర్క ప్రయత్నం",
+    .openai_reasoning_server_default = L"సర్వర్ డిఫాల్ట్ (సెట్ చేయలేదు)",
+    .back_trans_section_back = L"బ్యాక్-ట్రాన్స్‌లేషన్",
+    .back_trans_section_original = L"అసలు పాఠ్యం",
     .gguf_invalid_model_body = L"సరైన GGUF మోడల్ ఫైల్ కాదు; రిజిస్టర్ చేయలేదు.",
     .gguf_manager_active_suffix = L"(వాడుతున్నారు)",
     .gguf_manager_activated = L"ఈ మోడల్ ఇప్పుడు వాడుతున్నారు.",
@@ -10473,6 +10721,10 @@ const LocalizedStrings kStringsMarathi = {
     .back_translate_match_exact = L"✓ अर्थ जुळतो",
     .back_translate_match_check = L"⚡ बारकावा तपासा",
     .back_translate_reference = L"↳ मूळ: ",
+    .openai_reasoning_label = L"तर्क प्रयत्न",
+    .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट नाही)",
+    .back_trans_section_back = L"बॅक-ट्रान्सलेशन",
+    .back_trans_section_original = L"मूळ मजकूर",
     .gguf_invalid_model_body = L"वैध GGUF मॉडेल फाइल नाही; ते रजिस्टर झाले नाही.",
     .gguf_manager_active_suffix = L"(वापरात)",
     .gguf_manager_activated = L"हे मॉडेल आता वापरात आहे.",
@@ -10700,6 +10952,10 @@ const LocalizedStrings kStringsTamil = {
     .back_translate_match_exact = L"✓ பொருள் பொருந்துகிறது",
     .back_translate_match_check = L"⚡ நுணுக்கம் சரிபார்",
     .back_translate_reference = L"↳ அசல்: ",
+    .openai_reasoning_label = L"காரணம்காணல் முயற்சி",
+    .openai_reasoning_server_default = L"சர்வர் இயல்புநிலை (அமைக்கப்படவில்லை)",
+    .back_trans_section_back = L"பின்-மொழிபெயர்ப்பு",
+    .back_trans_section_original = L"அசல் உரை",
     .gguf_invalid_model_body = L"செல்லுபடியாகும் GGUF மாதிரி கோப்பு அல்ல; அது பதிவு செய்யப்படவில்லை.",
     .gguf_manager_active_suffix = L"(பயனில்)",
     .gguf_manager_activated = L"இம்மாதிரி இப்போது பயனில் உள்ளது.",
@@ -10927,6 +11183,10 @@ const LocalizedStrings kStringsTibetan = {
     .back_translate_match_exact = L"✓ དོན་གཅིག",
     .back_translate_match_check = L"⚡ ཞིབ་འཇུག",
     .back_translate_reference = L"↳ མ་ཡིག: ",
+    .openai_reasoning_label = L"བསམ་གཞིག་ཤུགས་རྐྱེན",
+    .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
+    .back_trans_section_back = L"ཕྱིར་སྒྱུར།",
+    .back_trans_section_original = L"མ་ཡིག",
     .gguf_invalid_model_body = L"GGUF དཔེ་མཚོན་ཡིག་ཆ་ཁས་ལེན་མི་བྱེད། ཐོ་འགོད་མ་བྱས།",
     .gguf_manager_active_suffix = L"(སྤྱོད་བཞིན།)",
     .gguf_manager_activated = L"དཔེ་མཚོན་འདི་ད་ལྟ་སྤྱོད་བཞིན་ཡོད།",
@@ -11153,6 +11413,10 @@ const LocalizedStrings kStringsKazakh = {
     .back_translate_match_exact = L"✓ Мағына сәйкес",
     .back_translate_match_check = L"⚡ Нюансты тексеру",
     .back_translate_reference = L"↳ Түпнұсқа: ",
+    .openai_reasoning_label = L"Ойлау күші",
+    .openai_reasoning_server_default = L"Сервер әдепкісі (орнатылмаған)",
+    .back_trans_section_back = L"Кері аударма",
+    .back_trans_section_original = L"Түпнұсқа мәтін",
     .gguf_invalid_model_body = L"Жарамды GGUF модель файлы емес; тіркелмеді.",
     .gguf_manager_active_suffix = L"(қолданылуда)",
     .gguf_manager_activated = L"Бұл модель енді қолданылуда.",
@@ -11380,6 +11644,10 @@ const LocalizedStrings kStringsMongolian = {
     .back_translate_match_exact = L"✓ Утга таарсан",
     .back_translate_match_check = L"⚡ Нарийвчлалыг шалгах",
     .back_translate_reference = L"↳ Эх: ",
+    .openai_reasoning_label = L"Сэтгэх чармайлт",
+    .openai_reasoning_server_default = L"Серверийн өгөгдмөл (тохируулаагүй)",
+    .back_trans_section_back = L"Буцах орчуулга",
+    .back_trans_section_original = L"Эх текст",
     .gguf_invalid_model_body = L"Зөвшөөрөгдөх GGUF загварын файл биш; бүртгэгдээгүй.",
     .gguf_manager_active_suffix = L"(ашиглагдаж байна)",
     .gguf_manager_activated = L"Энэ загвар одоо ашиглагдаж байна.",
@@ -11607,6 +11875,10 @@ const LocalizedStrings kStringsUyghur = {
     .back_translate_match_exact = L"✓ مەنىداش",
     .back_translate_match_check = L"⚡ نۇقتىنى تەكشۈرۈش",
     .back_translate_reference = L"↳ ئەسلى: ",
+    .openai_reasoning_label = L"پىكىر قىلىش كۈچى",
+    .openai_reasoning_server_default = L"مۇلازىمېتىر كۆڭۈلدىكى (تەڭشەلمىگەن)",
+    .back_trans_section_back = L"قايتا تەرجىمە",
+    .back_trans_section_original = L"ئەسلى تېكىست",
     .gguf_invalid_model_body = L"ئىناۋەتلىك GGUF مودېل ھۆججىتى ئەمەس؛ تىزىملانمىدى.",
     .gguf_manager_active_suffix = L"(ئىشلىتىلىۋاتىدۇ)",
     .gguf_manager_activated = L"بۇ مودېل ھازىر ئىشلىتىلىۋاتىدۇ.",
@@ -11834,6 +12106,10 @@ const LocalizedStrings kStringsCantonese = {
     .back_translate_match_exact = L"✓ 意思吻合",
     .back_translate_match_check = L"⚡ 檢查語感",
     .back_translate_reference = L"↳ 原文： ",
+    .openai_reasoning_label = L"推理強度",
+    .openai_reasoning_server_default = L"伺服器預設（未設定）",
+    .back_trans_section_back = L"回譯",
+    .back_trans_section_original = L"原文",
     .gguf_invalid_model_body = L"唔係有效嘅 GGUF 模型檔案，所以冇註冊。",
     .gguf_manager_active_suffix = L"(緊用緊)",
     .gguf_manager_activated = L"呢個模型而家緊用緊。",
@@ -12061,6 +12337,10 @@ const LocalizedStrings kStringsBosnian = {
     .back_translate_match_exact = L"✓ Značenje se podudara",
     .back_translate_match_check = L"⚡ Provjeri nijansu",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Napor zaključivanja",
+    .openai_reasoning_server_default = L"Zadano na serveru (nije postavljeno)",
+    .back_trans_section_back = L"Povratni prevod",
+    .back_trans_section_original = L"Originalni tekst",
     .gguf_invalid_model_body = L"Nije valjana GGUF datoteka modela; nije registrovana.",
     .gguf_manager_active_suffix = L"(u upotrebi)",
     .gguf_manager_activated = L"Ovaj model je sada u upotrebi.",
@@ -12288,6 +12568,10 @@ const LocalizedStrings kStringsSerbian = {
     .back_translate_match_exact = L"✓ Значење се подудара",
     .back_translate_match_check = L"⚡ Провери нијансу",
     .back_translate_reference = L"↳ Оригинал: ",
+    .openai_reasoning_label = L"Напор закључивања",
+    .openai_reasoning_server_default = L"Подразумевано на серверу (није подешено)",
+    .back_trans_section_back = L"Повратни превод",
+    .back_trans_section_original = L"Оригинални текст",
     .gguf_invalid_model_body = L"Није важећа GGUF датотека модела; није регистрована.",
     .gguf_manager_active_suffix = L"(у употреби)",
     .gguf_manager_activated = L"Овај модел је сада у употреби.",
@@ -12515,6 +12799,10 @@ const LocalizedStrings kStringsCroatian = {
     .back_translate_match_exact = L"✓ Značenje se podudara",
     .back_translate_match_check = L"⚡ Provjeri nijansu",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Napor zaključivanja",
+    .openai_reasoning_server_default = L"Zadano na poslužitelju (nije postavljeno)",
+    .back_trans_section_back = L"Povratni prijevod",
+    .back_trans_section_original = L"Originalni tekst",
     .gguf_invalid_model_body = L"Nije valjana GGUF datoteka modela; nije registrirana.",
     .gguf_manager_active_suffix = L"(u uporabi)",
     .gguf_manager_activated = L"Ovaj model je sada u uporabi.",
@@ -12742,6 +13030,10 @@ const LocalizedStrings kStringsSlovenian = {
     .back_translate_match_exact = L"✓ Pomen se ujema",
     .back_translate_match_check = L"⚡ Preveri nianso",
     .back_translate_reference = L"↳ Izvirnik: ",
+    .openai_reasoning_label = L"Napor razmišljanja",
+    .openai_reasoning_server_default = L"Privzeto na strežniku (ni nastavljeno)",
+    .back_trans_section_back = L"Povratni prevod",
+    .back_trans_section_original = L"Izvirno besedilo",
     .gguf_invalid_model_body = L"Ni veljavna datoteka modela GGUF; ni bila registrirana.",
     .gguf_manager_active_suffix = L"(v uporabi)",
     .gguf_manager_activated = L"Ta model je zdaj v uporabi.",
@@ -12969,6 +13261,10 @@ const LocalizedStrings kStringsSlovak = {
     .back_translate_match_exact = L"✓ Význam sa zhoduje",
     .back_translate_match_check = L"⚡ Skontrolovať nuansu",
     .back_translate_reference = L"↳ Originál: ",
+    .openai_reasoning_label = L"Úsilie uvažovania",
+    .openai_reasoning_server_default = L"Predvolené servera (nenastavené)",
+    .back_trans_section_back = L"Spätný preklad",
+    .back_trans_section_original = L"Originálny text",
     .gguf_invalid_model_body = L"Nie je to platný súbor modelu GGUF; nebol zaregistrovaný.",
     .gguf_manager_active_suffix = L"(používa sa)",
     .gguf_manager_activated = L"Tento model sa teraz používa.",
@@ -13196,6 +13492,10 @@ const LocalizedStrings kStringsBulgarian = {
     .back_translate_match_exact = L"✓ Значението съвпада",
     .back_translate_match_check = L"⚡ Проверете нюанса",
     .back_translate_reference = L"↳ Оригинал: ",
+    .openai_reasoning_label = L"Усилие на разсъждението",
+    .openai_reasoning_server_default = L"Сървърна стойност по подразбиране (не е зададена)",
+    .back_trans_section_back = L"Обратен превод",
+    .back_trans_section_original = L"Оригинален текст",
     .gguf_invalid_model_body = L"Не е валиден файл на модел GGUF; не беше регистриран.",
     .gguf_manager_active_suffix = L"(използва се)",
     .gguf_manager_activated = L"Този модел вече се използва.",
@@ -13423,6 +13723,10 @@ const LocalizedStrings kStringsLithuanian = {
     .back_translate_match_exact = L"✓ Reikšmė sutampa",
     .back_translate_match_check = L"⚡ Patikrinkite niuansą",
     .back_translate_reference = L"↳ Originalas: ",
+    .openai_reasoning_label = L"Samprotavimo pastanga",
+    .openai_reasoning_server_default = L"Serverio numatytasis (nenustatytas)",
+    .back_trans_section_back = L"Atgalinis vertimas",
+    .back_trans_section_original = L"Originalus tekstas",
     .gguf_invalid_model_body = L"Tai netinkamas GGUF modelio failas; jis nebuvo užregistruotas.",
     .gguf_manager_active_suffix = L"(naudojamas)",
     .gguf_manager_activated = L"Šis modelis dabar naudojamas.",
@@ -13650,6 +13954,10 @@ const LocalizedStrings kStringsLatvian = {
     .back_translate_match_exact = L"✓ Nozīme sakrīt",
     .back_translate_match_check = L"⚡ Pārbaudīt niansi",
     .back_translate_reference = L"↳ Oriģināls: ",
+    .openai_reasoning_label = L"Spriešanas piepūle",
+    .openai_reasoning_server_default = L"Servera noklusējums (nav iestatīts)",
+    .back_trans_section_back = L"Atpakaļtulkojums",
+    .back_trans_section_original = L"Oriģinālais teksts",
     .gguf_invalid_model_body = L"Nav derīgs GGUF modeļa fails; tas netika reģistrēts.",
     .gguf_manager_active_suffix = L"(tiek izmantots)",
     .gguf_manager_activated = L"Šis modelis tagad tiek izmantots.",
@@ -13877,6 +14185,10 @@ const LocalizedStrings kStringsEstonian = {
     .back_translate_match_exact = L"✓ Tähendus ühtib",
     .back_translate_match_check = L"⚡ Kontrolli nüanssi",
     .back_translate_reference = L"↳ Originaal: ",
+    .openai_reasoning_label = L"Mõtlemispingutus",
+    .openai_reasoning_server_default = L"Serveri vaikeväärtus (määramata)",
+    .back_trans_section_back = L"Tagasitõlge",
+    .back_trans_section_original = L"Originaaltekst",
     .gguf_invalid_model_body = L"See ei ole kehtiv GGUF-mudeli fail; seda ei registreeritud.",
     .gguf_manager_active_suffix = L"(kasutusel)",
     .gguf_manager_activated = L"See mudel on nüüd kasutusel.",
@@ -14104,6 +14416,10 @@ const LocalizedStrings kStringsAfrikaans = {
     .back_translate_match_exact = L"✓ Betekenis stem ooreen",
     .back_translate_match_check = L"⚡ Kontroleer nuans",
     .back_translate_reference = L"↳ Oorspronklike: ",
+    .openai_reasoning_label = L"Redeneringspoging",
+    .openai_reasoning_server_default = L"Bedienerstandaard (ongestel)",
+    .back_trans_section_back = L"Terugvertaling",
+    .back_trans_section_original = L"Oorspronklike teks",
     .gguf_invalid_model_body = L"Nie 'n geldige GGUF-model-lêer nie; dit is nie geregistreer nie.",
     .gguf_manager_active_suffix = L"(in gebruik)",
     .gguf_manager_activated = L"Hierdie model is nou in gebruik.",
@@ -14331,6 +14647,10 @@ const LocalizedStrings kStringsCatalan = {
     .back_translate_match_exact = L"✓ Significat coincident",
     .back_translate_match_check = L"⚡ Comprova el matís",
     .back_translate_reference = L"↳ Original: ",
+    .openai_reasoning_label = L"Esforç de raonament",
+    .openai_reasoning_server_default = L"Per defecte del servidor (no establert)",
+    .back_trans_section_back = L"Retrotraducció",
+    .back_trans_section_original = L"Text original",
     .gguf_invalid_model_body = L"No és un fitxer de model GGUF vàlid; no s'ha registrat.",
     .gguf_manager_active_suffix = L"(en ús)",
     .gguf_manager_activated = L"Aquest model ja s'està utilitzant.",
@@ -14558,6 +14878,10 @@ const LocalizedStrings kStringsIcelandic = {
     .back_translate_match_exact = L"✓ Merking samsvarar",
     .back_translate_match_check = L"⚡ Athugaðu blæbrigði",
     .back_translate_reference = L"↳ Upprunalegt: ",
+    .openai_reasoning_label = L"Rökhugsunaráreynsla",
+    .openai_reasoning_server_default = L"Sjálfgefið af þjóni (ekki stillt)",
+    .back_trans_section_back = L"Bakþýðing",
+    .back_trans_section_original = L"Upprunalegur texti",
     .gguf_invalid_model_body = L"Ekki gilt GGUF-líkanaskrá; hún var ekki skráð.",
     .gguf_manager_active_suffix = L"(í notkun)",
     .gguf_manager_activated = L"Þetta líkan er nú í notkun.",
@@ -14785,6 +15109,10 @@ const LocalizedStrings kStringsAlbanian = {
     .back_translate_match_exact = L"✓ Kuptimi përputhet",
     .back_translate_match_check = L"⚡ Kontrollo nuancën",
     .back_translate_reference = L"↳ Origjinali: ",
+    .openai_reasoning_label = L"Përpjekja e arsyetimit",
+    .openai_reasoning_server_default = L"Parazgjedhja e serverit (e pacaktuar)",
+    .back_trans_section_back = L"Përkthim i kthyer",
+    .back_trans_section_original = L"Teksti origjinal",
     .gguf_invalid_model_body = L"Nuk është skedar i vlefshëm modeli GGUF; nuk u regjistrua.",
     .gguf_manager_active_suffix = L"(në përdorim)",
     .gguf_manager_activated = L"Ky model është tani në përdorim.",
@@ -15012,6 +15340,10 @@ const LocalizedStrings kStringsMacedonian = {
     .back_translate_match_exact = L"✓ Значењето се совпаѓа",
     .back_translate_match_check = L"⚡ Проверете ја нијансата",
     .back_translate_reference = L"↳ Оригинал: ",
+    .openai_reasoning_label = L"Напор на расудување",
+    .openai_reasoning_server_default = L"Стандардно од сервер (не е поставено)",
+    .back_trans_section_back = L"Обратен превод",
+    .back_trans_section_original = L"Оригинален текст",
     .gguf_invalid_model_body = L"Не е валидна датотека на GGUF модел; не е регистрирана.",
     .gguf_manager_active_suffix = L"(се користи)",
     .gguf_manager_activated = L"Овој модел сега се користи.",
@@ -15239,6 +15571,10 @@ const LocalizedStrings kStringsWelsh = {
     .back_translate_match_exact = L"✓ Ystyr yn cyfateb",
     .back_translate_match_check = L"⚡ Gwiriwch arlliw",
     .back_translate_reference = L"↳ Gwreiddiol: ",
+    .openai_reasoning_label = L"Ymdrech rhesymegu",
+    .openai_reasoning_server_default = L"Rhagosodiad gweinydd (heb ei osod)",
+    .back_trans_section_back = L"Ôl-gyfieithu",
+    .back_trans_section_original = L"Testun gwreiddiol",
     .gguf_invalid_model_body = L"Nid yw'n ffeil model GGUF ddilys; ni chafodd ei chofrestru.",
     .gguf_manager_active_suffix = L"(yn cael ei ddefnyddio)",
     .gguf_manager_activated = L"Mae'r model hwn bellach yn cael ei ddefnyddio.",
@@ -15466,6 +15802,10 @@ const LocalizedStrings kStringsIrish = {
     .back_translate_match_exact = L"✓ Ciall ag teacht",
     .back_translate_match_check = L"⚡ Seiceáil an niamh",
     .back_translate_reference = L"↳ Bunleagan: ",
+    .openai_reasoning_label = L"Saothrú réasúnaigh",
+    .openai_reasoning_server_default = L"Réamhshocrú freastalaí (gan socrú)",
+    .back_trans_section_back = L"Ais-aistriúchán",
+    .back_trans_section_original = L"Téacs bunaidh",
     .gguf_invalid_model_body = L"Ní comhad samhla GGUF bailí é; níor cláraíodh é.",
     .gguf_manager_active_suffix = L"(in úsáid)",
     .gguf_manager_activated = L"Tá an tsamhail seo in úsáid anois.",
@@ -15693,6 +16033,10 @@ const LocalizedStrings kStringsBasque = {
     .back_translate_match_exact = L"✓ Esanahia bat dator",
     .back_translate_match_check = L"⚡ Egiaztatu ñabardura",
     .back_translate_reference = L"↳ Jatorrizkoa: ",
+    .openai_reasoning_label = L"Arrazoitzeko ahalegina",
+    .openai_reasoning_server_default = L"Zerbitzariaren lehenetsia (ez dago ezarrita)",
+    .back_trans_section_back = L"Atzera-itzulpena",
+    .back_trans_section_original = L"Jatorrizko testua",
     .gguf_invalid_model_body = L"Ez da baliozko GGUF modelo-fitxategia; ez da erregistratu.",
     .gguf_manager_active_suffix = L"(erabiltzen ari da)",
     .gguf_manager_activated = L"Modelo hau orain erabiltzen ari da.",
@@ -15920,6 +16264,10 @@ const LocalizedStrings kStringsGalician = {
     .back_translate_match_exact = L"✓ Significado coincidente",
     .back_translate_match_check = L"⚡ Comproba o matiz",
     .back_translate_reference = L"↳ Orixinal: ",
+    .openai_reasoning_label = L"Esforzo de razoamento",
+    .openai_reasoning_server_default = L"Predeterminado do servidor (non definido)",
+    .back_trans_section_back = L"Retrotradución",
+    .back_trans_section_original = L"Texto orixinal",
     .gguf_invalid_model_body = L"Non é un ficheiro de modelo GGUF válido; non se rexistrou.",
     .gguf_manager_active_suffix = L"(en uso)",
     .gguf_manager_activated = L"Este modelo está agora en uso.",
@@ -16147,6 +16495,10 @@ const LocalizedStrings kStringsSwahili = {
     .back_translate_match_exact = L"✓ Maana inalingana",
     .back_translate_match_check = L"⚡ Angalia utata",
     .back_translate_reference = L"↳ Asili: ",
+    .openai_reasoning_label = L"Jitihada za kufikiri",
+    .openai_reasoning_server_default = L"Chaguozo la seva (hajawekwa)",
+    .back_trans_section_back = L"Tafsiri ya kurudi",
+    .back_trans_section_original = L"Maandishi ya asili",
     .gguf_invalid_model_body = L"Si faili halali ya modeli ya GGUF; haijasajiliwa.",
     .gguf_manager_active_suffix = L"(inatumiwa)",
     .gguf_manager_activated = L"Modeli hii sasa inatumiwa.",
@@ -16374,6 +16726,10 @@ const LocalizedStrings kStringsHaitianCreole = {
     .back_translate_match_exact = L"✓ Sanblab sans",
     .back_translate_match_check = L"⚡ Verifye sans lan",
     .back_translate_reference = L"↳ Orijinal: ",
+    .openai_reasoning_label = L"Efò rezonman",
+    .openai_reasoning_server_default = L"Default sèvè (pa etabli)",
+    .back_trans_section_back = L"Retradiksyon",
+    .back_trans_section_original = L"Tèks orijinal",
     .gguf_invalid_model_body = L"Se pa yon fichye modèl GGUF ki valab; li pa anrejistre.",
     .gguf_manager_active_suffix = L"(nan itilizasyon)",
     .gguf_manager_activated = L"Modèl sa a kounye a nan itilizasyon.",
@@ -16601,6 +16957,10 @@ const LocalizedStrings kStringsUzbek = {
     .back_translate_match_exact = L"✓ Maʼno mos keldi",
     .back_translate_match_check = L"⚡ Noziklikni tekshiring",
     .back_translate_reference = L"↳ Asl: ",
+    .openai_reasoning_label = L"Fikrlash harakati",
+    .openai_reasoning_server_default = L"Server standarti (o'rnatilmagan)",
+    .back_trans_section_back = L"Teskari tarjima",
+    .back_trans_section_original = L"Asl matn",
     .gguf_invalid_model_body = L"Yaroqli GGUF model fayli emas; roʻyxatdan oʻtkazilmadi.",
     .gguf_manager_active_suffix = L"(ishlatilmoqda)",
     .gguf_manager_activated = L"Bu model endi ishlatilmoqda.",
@@ -16828,6 +17188,10 @@ const LocalizedStrings kStringsAzerbaijani = {
     .back_translate_match_exact = L"✓ Mənə uyğundur",
     .back_translate_match_check = L"⚡ Zərifliyi yoxla",
     .back_translate_reference = L"↳ Orijinal: ",
+    .openai_reasoning_label = L"Məntiq səyi",
+    .openai_reasoning_server_default = L"Server defoltu (quraşdırılmayıb)",
+    .back_trans_section_back = L"Əks tərcümə",
+    .back_trans_section_original = L"Orijinal mətn",
     .gguf_invalid_model_body = L"Düzgün GGUF model faylı deyil; qeydiyyatdan keçmədi.",
     .gguf_manager_active_suffix = L"(istifadədədir)",
     .gguf_manager_activated = L"Bu model indi istifadədədir.",
@@ -17055,6 +17419,10 @@ const LocalizedStrings kStringsBelarusian = {
     .back_translate_match_exact = L"✓ Сэнс супадае",
     .back_translate_match_check = L"⚡ Праверце адценне",
     .back_translate_reference = L"↳ Арыгінал: ",
+    .openai_reasoning_label = L"Напружанне разважвання",
+    .openai_reasoning_server_default = L"Прадвызначана серверам (не ўстаноўлена)",
+    .back_trans_section_back = L"Зваротны пераклад",
+    .back_trans_section_original = L"Арыгінальны тэкст",
     .gguf_invalid_model_body = L"Гэта не дапушчальны файл мадэлі GGUF; ён не зарэгістраваны.",
     .gguf_manager_active_suffix = L"(выкарыстоўваецца)",
     .gguf_manager_activated = L"Гэтая мадэль цяпер выкарыстоўваецца.",
@@ -17282,6 +17650,10 @@ const LocalizedStrings kStringsKyrgyz = {
     .back_translate_match_exact = L"✓ Маани дал келет",
     .back_translate_match_check = L"⚡ Айырманы текшериңиз",
     .back_translate_reference = L"↳ Түп нуска: ",
+    .openai_reasoning_label = L"Ой жүгүртүү аракети",
+    .openai_reasoning_server_default = L"Сервердин баштапкы абалы (коюлбаган)",
+    .back_trans_section_back = L"Кайра которуу",
+    .back_trans_section_original = L"Түп нусканын тексти",
     .gguf_invalid_model_body = L"Жарактуу GGUF модель файлы эмес; катталган жок.",
     .gguf_manager_active_suffix = L"(колдонулуп жатат)",
     .gguf_manager_activated = L"Бул модель азыр колдонулуп жатат.",
@@ -17509,6 +17881,10 @@ const LocalizedStrings kStringsTajik = {
     .back_translate_match_exact = L"✓ Маъно мувофиқат мекунад",
     .back_translate_match_check = L"⚡ Ҷузъиятро санҷед",
     .back_translate_reference = L"↳ Матни аслӣ: ",
+    .openai_reasoning_label = L"Кӯшиши хулосабарорӣ",
+    .openai_reasoning_server_default = L"Пешфарзи сервер (танзим нашудааст)",
+    .back_trans_section_back = L"Тарҷумаи пасипарда",
+    .back_trans_section_original = L"Матни аслӣ",
     .gguf_invalid_model_body = L"Файли модели GGUF дуруст нест; сабт нашуд.",
     .gguf_manager_active_suffix = L"(истифода мешавад)",
     .gguf_manager_activated = L"Ин модел ҳоло истифода мешавад.",
@@ -17736,6 +18112,10 @@ const LocalizedStrings kStringsEsperanto = {
     .back_translate_match_exact = L"✓ Senco kongruas",
     .back_translate_match_check = L"⚡ Kontrolu la nuancojn",
     .back_translate_reference = L"↳ Origina: ",
+    .openai_reasoning_label = L"Penado de rezonado",
+    .openai_reasoning_server_default = L"Servila defaŭlto (ne agordita)",
+    .back_trans_section_back = L"Re-traduko",
+    .back_trans_section_original = L"Originala teksto",
     .gguf_invalid_model_body = L"Ne estas valida GGUF-modeldosiero; ĝi ne estis registrita.",
     .gguf_manager_active_suffix = L"(uzata)",
     .gguf_manager_activated = L"Ĉi tiu modelo nun estas uzata.",
@@ -17963,6 +18343,10 @@ const LocalizedStrings kStringsArmenian = {
     .back_translate_match_exact = L"✓ Նշանակությունը համընկնում է",
     .back_translate_match_check = L"⚡ Ստուգել մանրամասնությունը",
     .back_translate_reference = L"↳ Բնօրինակ՝ ",
+    .openai_reasoning_label = L"Տրամաբանության ջանք",
+    .openai_reasoning_server_default = L"Սերվերի կանխադրված (չնշված)",
+    .back_trans_section_back = L"Հետթարգմանություն",
+    .back_trans_section_original = L"Բնօրինակ տեքստ",
     .gguf_invalid_model_body = L"Վավեր GGUF մոդելի ֆայլ չէ, այն չգրանցվեց.",
     .gguf_manager_active_suffix = L"(օգտագործվում է)",
     .gguf_manager_activated = L"Այս մոդելն այժմ օգտագործվում է.",
@@ -18190,6 +18574,10 @@ const LocalizedStrings kStringsGeorgian = {
     .back_translate_match_exact = L"✓ მნიშვნელობა ემთხვევა",
     .back_translate_match_check = L"⚡ გაასწორეთ ნიუანსი",
     .back_translate_reference = L"↳ ორიგინალი: ",
+    .openai_reasoning_label = L"აზროვნების ძალისხმევა",
+    .openai_reasoning_server_default = L"სერვერის ნაგულისხმები (დაუყენებელი)",
+    .back_trans_section_back = L"უკუთარგმანი",
+    .back_trans_section_original = L"ორიგინალი ტექსტი",
     .gguf_invalid_model_body = L"ეს არ არის მართებული GGUF მოდელის ფაილი; ის არ დარეგისტრირდა.",
     .gguf_manager_active_suffix = L"(იყენება)",
     .gguf_manager_activated = L"ეს მოდელი ახლა გამოიყენება.",
@@ -18417,6 +18805,10 @@ const LocalizedStrings kStringsSinhala = {
     .back_translate_match_exact = L"✓ අර්ථය ගැළපේ",
     .back_translate_match_check = L"⚡ සූක්ෂම බව පරීක්ෂා කරන්න",
     .back_translate_reference = L"↳ මූලාශ්‍රය: ",
+    .openai_reasoning_label = L"තර්ක කිරීමේ උත්සාහය",
+    .openai_reasoning_server_default = L"සේවාදායක පෙරනිමි (සකසා නැත)",
+    .back_trans_section_back = L"ආපසු පරිවර්තනය",
+    .back_trans_section_original = L"මුල් පෙළ",
     .gguf_invalid_model_body = L"වලංගු GGUF ආකෘති ගොනුවක් නොවේ; එය ලියාපදිංචි නොවුණි.",
     .gguf_manager_active_suffix = L"(භාවිතා වෙමින්)",
     .gguf_manager_activated = L"මෙම ආකෘතිය දැන් භාවිතා වේ.",
@@ -18644,6 +19036,10 @@ const LocalizedStrings kStringsMalayalam = {
     .back_translate_match_exact = L"✓ അർത്ഥം പൊരുത്തപ്പെടുന്നു",
     .back_translate_match_check = L"⚡ അർത്ഥവ്യത്യാസം പരിശോധിക്കുക",
     .back_translate_reference = L"↳ അസൽ: ",
+    .openai_reasoning_label = L"തർക്ക ശ്രമം",
+    .openai_reasoning_server_default = L"സെർവർ ഡിഫോൾട്ട് (സെറ്റ് ചെയ്തിട്ടില്ല)",
+    .back_trans_section_back = L"ബാക്ക്-ട്രാൻസലേഷൻ",
+    .back_trans_section_original = L"അസൽ എഴുത്ത്",
     .gguf_invalid_model_body = L"സാധുവായ GGUF മോഡൽ ഫയലല്ല; രജിസ്റ്റർ ചെയ്തിട്ടില്ല.",
     .gguf_manager_active_suffix = L"(ഉപയോഗത്തിലാണ്)",
     .gguf_manager_activated = L"ഈ മോഡൽ ഇപ്പോൾ ഉപയോഗത്തിലാണ്.",
@@ -18881,6 +19277,10 @@ const LocalizedStrings kStringsKannada = {
     .back_translate_match_exact = L"✓ ಅರ್ಥ ಹೊಂದಿಕೆಯಾಗಿದೆ",
     .back_translate_match_check = L"⚡ ಸೂಕ್ಷ್ಮಾರ್ಥ ಪರಿಶೀಲಿಸು",
     .back_translate_reference = L"↳ ಮೂಲ: ",
+    .openai_reasoning_label = L"ತರ್ಕದ ಪ್ರಯತ್ನ",
+    .openai_reasoning_server_default = L"ಸರ್ವರ್ ಡೀಫಾಲ್ಟ್ (ಹೊಂದಿಸಲಾಗಿಲ್ಲ)",
+    .back_trans_section_back = L"ಹಿಂಅನುವಾದ",
+    .back_trans_section_original = L"ಮೂಲ ಪಠ್ಯ",
     .gguf_invalid_model_body = L"ಮಾನ್ಯ GGUF ಮಾದರಿ ಫೈಲ್ ಅಲ್ಲ; ನೋಂದಣಿಯಾಗಿಲ್ಲ.",
     .gguf_manager_active_suffix = L"(ಬಳಕೆಯಲ್ಲಿದೆ)",
     .gguf_manager_activated = L"ಈ ಮಾದರಿ ಈಗ ಬಳಕೆಯಲ್ಲಿದೆ.",
@@ -19119,6 +19519,10 @@ const LocalizedStrings kStringsPunjabi = {
     .back_translate_match_exact = L"✓ ਅਰਥ ਮੇਲ ਖਾਂਦਾ ਹੈ",
     .back_translate_match_check = L"⚡ ਬਾਰੀਕੀ ਵੇਖੋ",
     .back_translate_reference = L"↳ ਮੂਲ: ",
+    .openai_reasoning_label = L"ਤਰਕ ਯਤਨ",
+    .openai_reasoning_server_default = L"ਸਰਵਰ ਡਿਫੌਲਟ (ਸੈੱਟ ਨਹੀਂ)",
+    .back_trans_section_back = L"ਬੈਕ-ਅਨੁਵਾਦ",
+    .back_trans_section_original = L"ਮੂਲ ਟੈਕਸਟ",
     .gguf_invalid_model_body = L"ਇਹ ਵੈਧ GGUF ਮਾਡਲ ਫ਼ਾਈਲ ਨਹੀਂ; ਰਜਿਸਟਰ ਨਹੀਂ ਕੀਤੀ ਗਈ।",
     .gguf_manager_active_suffix = L"(ਵਰਤੋਂ ਵਿੱਚ)",
     .gguf_manager_activated = L"ਇਹ ਮਾਡਲ ਹੁਣ ਵਰਤੋਂ ਵਿੱਚ ਹੈ।",
@@ -19357,6 +19761,10 @@ const LocalizedStrings kStringsOdia = {
     .back_translate_match_exact = L"✓ ଅର୍ଥ ମେଳ ଖାଉଛି",
     .back_translate_match_check = L"⚡ ସୂକ୍ଷ୍ମାର୍ଥ ଯାଞ୍ଚ କରନ୍ତୁ",
     .back_translate_reference = L"↳ ମୂଳ: ",
+    .openai_reasoning_label = L"ଯୁକ୍ତି ପ୍ରୟାସ",
+    .openai_reasoning_server_default = L"ସର୍ଭର ଡିଫଲ୍ଟ (ସେଟ୍ ହୋଇନାହିଁ)",
+    .back_trans_section_back = L"ପଛ-ଅନୁବାଦ",
+    .back_trans_section_original = L"ମୂଳ ପାଠ୍ୟ",
     .gguf_invalid_model_body = L"ଏହା ବୈଧ GGUF ମଡେଲ୍ ଫାଇଲ୍ ନୁହେଁ; ପଞ୍ଜୀକୃତ ହେଲା ନାହିଁ।",
     .gguf_manager_active_suffix = L"(ବ୍ୟବହାରରେ)",
     .gguf_manager_activated = L"ଏହି ମଡେଲ୍ ବର୍ତ୍ତମାନ ବ୍ୟବହାରରେ ଅଛି।",
@@ -19595,6 +20003,10 @@ const LocalizedStrings kStringsAmharic = {
     .back_translate_match_exact = L"✓ ትርጉሙ ተመሳስሏል",
     .back_translate_match_check = L"⚡ ልዩ ልዩነቱን ፈትሽ",
     .back_translate_reference = L"↳ ዋናው: ",
+    .openai_reasoning_label = L"የሐሳብ ጥረት",
+    .openai_reasoning_server_default = L"የአገልጋይ ነባሪ (ያልተወሰነ)",
+    .back_trans_section_back = L"የኋላ-ትርጉም",
+    .back_trans_section_original = L"ዋናው ጽሑፍ",
     .gguf_invalid_model_body = L"ትክክለኛ የGGUF ሞዴል ፋይል አይደለም፤ አልተመዘገበም።",
     .gguf_manager_active_suffix = L"(በአገልግሎት ላይ)",
     .gguf_manager_activated = L"ይህ ሞዴል አሁን በአገልግሎት ላይ ነው።",
@@ -19833,6 +20245,10 @@ const LocalizedStrings kStringsTigrinya = {
     .back_translate_match_exact = L"✓ ትርጉሙ ተመሳሲሉ",
     .back_translate_match_check = L"⚡ ረቂቕ ትርጉም ተመልከት",
     .back_translate_reference = L"↳ ኦሪጅናል: ",
+    .openai_reasoning_label = L"ናይ ምህሳብ ጻዕሪ",
+    .openai_reasoning_server_default = L"ናይ ሰርቨር ነባሪ (ዘይተዋህደ)",
+    .back_trans_section_back = L"ተመሊሱ ትርጉም",
+    .back_trans_section_original = L"ኦሪጅናል ጽሑፍ",
     .gguf_invalid_model_body = L"ቅኑዕ ፋይል ሞዴል GGUF ኣይኮነን፤ ኣይተመዝገበን።",
     .gguf_manager_active_suffix = L"(ኣብ ኣገልግሎት)",
     .gguf_manager_activated = L"እዚ ሞዴል ሕጂ ኣብ ኣገልግሎት ኣሎ።",
@@ -20071,6 +20487,10 @@ const LocalizedStrings kStringsPashto = {
     .back_translate_match_exact = L"✓ مانا سمون لري",
     .back_translate_match_check = L"⚡ نری تفاوت وګورئ",
     .back_translate_reference = L"↳ اصلي: ",
+    .openai_reasoning_label = L"د استدلال هڅه",
+    .openai_reasoning_server_default = L"د سیرور ډیفالټ (ټاکل شوی نه دی)",
+    .back_trans_section_back = L"بیرته ژباړه",
+    .back_trans_section_original = L"اصلي متن",
     .gguf_invalid_model_body = L"سم GGUF ماډل فایل نه دی؛ ثبت نشو.",
     .gguf_manager_active_suffix = L"(په کار کې)",
     .gguf_manager_activated = L"دا ماډل اوس په کار کې دی.",
@@ -20309,6 +20729,10 @@ const LocalizedStrings kStringsSindhi = {
     .back_translate_match_exact = L"✓ معنيٰ ملي ٿي",
     .back_translate_match_check = L"⚡ باريڪ فرق ڏسو",
     .back_translate_reference = L"↳ اصل: ",
+    .openai_reasoning_label = L"استدلال جي ڪوشش",
+    .openai_reasoning_server_default = L"سرور ڊفالٽ (سيٽ ناهي)",
+    .back_trans_section_back = L"واپسي ترجمو",
+    .back_trans_section_original = L"اصل متن",
     .gguf_invalid_model_body = L"صحيح GGUF ماڊل فائل ناهي؛ رجسٽر نه ٿي.",
     .gguf_manager_active_suffix = L"(استعمال ۾)",
     .gguf_manager_activated = L"هي ماڊل هاڻي استعمال ۾ آهي.",
@@ -20547,6 +20971,10 @@ const LocalizedStrings kStringsNepali = {
     .back_translate_match_exact = L"✓ अर्थ मिल्यो",
     .back_translate_match_check = L"⚡ सूक्ष्म अर्थ जाँच्नुहोस्",
     .back_translate_reference = L"↳ मूल: ",
+    .openai_reasoning_label = L"तर्क प्रयास",
+    .openai_reasoning_server_default = L"सर्वर पूर्वनिर्धारित (सेट छैन)",
+    .back_trans_section_back = L"पुनः-अनुवाद",
+    .back_trans_section_original = L"मूल पाठ",
     .gguf_invalid_model_body = L"मान्य GGUF मोडेल फाइल होइन; दर्ता भएन।",
     .gguf_manager_active_suffix = L"(प्रयोगमा)",
     .gguf_manager_activated = L"यो मोडेल अब प्रयोगमा छ।",
@@ -20785,6 +21213,10 @@ const LocalizedStrings kStringsAssamese = {
     .back_translate_match_exact = L"✓ অৰ্থ মিলে",
     .back_translate_match_check = L"⚡ সূক্ষ্ম অৰ্থ পৰীক্ষা কৰক",
     .back_translate_reference = L"↳ মূল: ",
+    .openai_reasoning_label = L"তৰ্ক প্ৰয়াস",
+    .openai_reasoning_server_default = L"চাৰ্ভাৰ ডিফ’ল্ট (ছেট কৰা হোৱা নাই)",
+    .back_trans_section_back = L"পুনৰ-অনুবাদ",
+    .back_trans_section_original = L"মূল পাঠ",
     .gguf_invalid_model_body = L"বৈধ GGUF মডেল ফাইল নহয়; পঞ্জীয়ন হোৱা নাই।",
     .gguf_manager_active_suffix = L"(ব্যৱহাৰত)",
     .gguf_manager_activated = L"এই মডেলটো এতিয়া ব্যৱহাৰত আছে।",
@@ -21023,6 +21455,10 @@ const LocalizedStrings kStringsDzongkha = {
     .back_translate_match_exact = L"✓ དོན་མཐུན",
     .back_translate_match_check = L"⚡ ཞིབ་ཕྲའི་དོན་བལྟས",
     .back_translate_reference = L"↳ མ་གཞི: ",
+    .openai_reasoning_label = L"བསམ་གཞིག་ཤུགས་རྐྱེན",
+    .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
+    .back_trans_section_back = L"རྒྱབ་བསྒྱུར",
+    .back_trans_section_original = L"མ་གཞིའི་ཡིག་ཚིག",
     .gguf_invalid_model_body = L"ཚུལ་མཐུན་གྱི་ GGUF དཔེ་དེབ་ཡིག་སྣོད་མིན། ཐོ་འགོད་མ་བྱས།",
     .gguf_manager_active_suffix = L"(བཀོལ་སྤྱོད་ནང་)",
     .gguf_manager_activated = L"དཔེ་དེབ་འདི་ད་ལྟ་བཀོལ་སྤྱོད་ནང་ཡོད།",
@@ -21261,6 +21697,10 @@ const LocalizedStrings kStringsSanskrit = {
     .back_translate_match_exact = L"✓ अर्थः मेलति",
     .back_translate_match_check = L"⚡ सूक्ष्मार्थं परीक्षस्व",
     .back_translate_reference = L"↳ मूलम्: ",
+    .openai_reasoning_label = L"तर्कप्रयासः",
+    .openai_reasoning_server_default = L"सर्वरमूल्यं (न विहितम्)",
+    .back_trans_section_back = L"पुनरनुवादः",
+    .back_trans_section_original = L"मूलपाठः",
     .gguf_invalid_model_body = L"मान्यं GGUF प्रतिरूपसञ्चिका न; न पञ्जीकृतम्।",
     .gguf_manager_active_suffix = L"(उपयोगे)",
     .gguf_manager_activated = L"इदं प्रतिरूपम् इदानीम् उपयोगे अस्ति।",
@@ -21499,6 +21939,10 @@ const LocalizedStrings kStringsMaithili = {
     .back_translate_match_exact = L"✓ अर्थ मेलल",
     .back_translate_match_check = L"⚡ सूक्ष्म अर्थ जाँचू",
     .back_translate_reference = L"↳ मूल: ",
+    .openai_reasoning_label = L"तर्क प्रयास",
+    .openai_reasoning_server_default = L"सर्वर डिफॉल्ट (सेट अछि नहि)",
+    .back_trans_section_back = L"पुनः-अनुवाद",
+    .back_trans_section_original = L"मूल पाठ",
     .gguf_invalid_model_body = L"मान्य GGUF मॉडल फाइल नहि; दर्ता नहि भेल।",
     .gguf_manager_active_suffix = L"(उपयोगमे)",
     .gguf_manager_activated = L"ई मॉडल एखन उपयोगमे अछि।",
@@ -21737,6 +22181,10 @@ const LocalizedStrings kStringsKonkaniGoan = {
     .back_translate_match_exact = L"✓ अर्थ जुळता",
     .back_translate_match_check = L"⚡ सूक्ष्म अर्थ तपास",
     .back_translate_reference = L"↳ मूळ: ",
+    .openai_reasoning_label = L"तर्क प्रयास",
+    .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट केल्लें ना)",
+    .back_trans_section_back = L"परतून-अणकार",
+    .back_trans_section_original = L"मूळ मजकूर",
     .gguf_invalid_model_body = L"वैध GGUF मॉडेल फायल न्हय; नोंद जाली ना.",
     .gguf_manager_active_suffix = L"(वापरांत)",
     .gguf_manager_activated = L"हें मॉडेल आतां वापरांत आसा.",
@@ -22309,6 +22757,14 @@ std::wstring I18n::Get(StringId id) {
         case StringId::BackTranslateMatchCheck:   return s.back_translate_match_check;
         // 261108_0002 (FIX-WS3B): the card's reference-line label.
         case StringId::BackTranslateReference:    return s.back_translate_reference;
+
+        // 261121_0001 (v0.10.9, U-C contract C5): the OpenAI settings
+        // dialog's reasoning-effort combo label + "server default" entry and
+        // the redesigned back-translation card's two section headers.
+        case StringId::OpenAiReasoningLabel:         return s.openai_reasoning_label;
+        case StringId::OpenAiReasoningServerDefault: return s.openai_reasoning_server_default;
+        case StringId::BackTransSectionBack:         return s.back_trans_section_back;
+        case StringId::BackTransSectionOriginal:     return s.back_trans_section_original;
 
         // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness
         // (same trailing-field wiring as the blocks above).
