@@ -18,6 +18,13 @@
 // (OpenAiConfig) referenced by SetOpenAiConfig / the openai_config_ member.
 #include "openai_compatible_client.hpp"
 
+// 261121_0002 (T3, design-pick.md "Plumbing — Manager"): the per-request
+// progress/cancel seam. Leaf STL-only header (see its own contract); the
+// TranslationManager::Translate status-aware form carries a defaulted
+// trailing TranslationTaskContext& so every existing caller compiles
+// unchanged with a default-constructed (byte-identical) context.
+#include "translation_progress.hpp"
+
 // REQ-043 (M6 T1, design §4.2/D-1): the llama-independent pure helpers and
 // pins (IsValidModelPath, ComputeFileSha256/VerifyModelSha256 + marker cache
 // contract, kExpectedModelSha256/kPinnedModelFilename, kLlama* budget
@@ -50,7 +57,8 @@ namespace emebalachat {
 // split (a lone surrogate would corrupt the UTF-8 conversion and the tokenizer).
 // Exposed for unit testing; the engine drives it via a token-count binary search.
 // REQ-043 (M6 T1): the DEFINITION stays in engine.cpp (Emebalachat_core) —
-// google_translate.cpp (a permanent core member, Chat exe cloud path) calls it,
+// the real caller is the shared engine repo's engine_core/translation_common.cpp
+// per-chunk head+tail shrink (resolved through the Emebalachat_core include dir),
 // so moving it into engine_core would pin the post-T5 Chat exe to engine_core.
 std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side);
 
@@ -433,11 +441,26 @@ public:
     // REQ-R02: status-aware form. When the returned string is empty, *out_status
     // (if non-null) tells the caller WHY (privacy gate vs. engine failure) so the
     // worker can surface audible/visible feedback. When non-empty, status is Ok.
+    // 261121_0002 (design-pick.md "Plumbing — Manager"): optional per-request
+    // progress/cancel context, DEFAULTED so every existing caller compiles
+    // unchanged and a default-constructed ctx reproduces the pre-feature
+    // behavior byte-for-byte. The cloud legs poll ctx.cancel between chunks
+    // and unwind with {} (indistinguishable from a failure at the client
+    // layer — the manager maps empty+cancel to TranslationStatus::Canceled
+    // BEFORE any failure attribution); the local leg polls the token around
+    // the pipe request (discarding a completed response), blocks the
+    // Auto->cloud fallback with it, and feeds it to the REQ-051 transient-
+    // retry warrant so a cancelled task never starts the retry pipe request.
+    // ctx.on_chunk receives the local plan-known (0, n) tick before the pipe
+    // request (the badge's chunk-count label); the cloud legs tick (i+1, n)
+    // themselves. The REQ-R16 RequestCancel() shutdown latch below is
+    // UNTOUCHED — the user token is per-request and separate.
     std::wstring Translate(
         std::wstring_view text,
         std::string_view src_code_or_name,
         std::string_view tgt_code_or_name,
-        TranslationStatus* out_status
+        TranslationStatus* out_status,
+        const TranslationTaskContext& ctx = {}
     );
 
     // REQ-043 (M6 T5): PreloadLocalModel/UnloadLocalModel are REMOVED with

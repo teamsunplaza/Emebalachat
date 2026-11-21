@@ -260,12 +260,14 @@ void TestReq051I18nCountAndCoverage() {
     // update-zone block); REQ-MD advanced 135 -> 144 (the 9-string model
     // download dialog); REQ-060 advanced 144 -> 157 (the 13 load-mode/policy
     // strings); 261121_0001 U-C advanced 199 -> 203 (the 4 v0.10.9
-    // reasoning/back-trans section strings). Read through a volatile to keep
+    // reasoning/back-trans section strings); 261121_0002 took it down by 1,
+    // 203 -> 202 (the dead SEC-M1 translate_truncated_notice removal). Read
+    // through a volatile to keep
     // the runtime
     // comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 203,
-               "REQ-051: StringId::EnumCount is 203 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 4 261121_0001 v0.10.9 U-C ids (2 OpenAI reasoning-effort ids + 2 back-translation section ids)");
+    TEST_CHECK(enum_count == 207,
+               "REQ-051: StringId::EnumCount is 207 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 4 261121_0001 v0.10.9 U-C ids (2 OpenAI reasoning-effort ids + 2 back-translation section ids) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids");
 
     // The new caption resolves non-empty in all 37 authored tables, and no
     // non-English locale falls back to the English text (real translations

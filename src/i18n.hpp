@@ -222,12 +222,6 @@ enum class StringId {
     PrivacyNoticeBody,
     CheatSheetConfigPath,
 
-    // SEC-M1 (session 260911_0002, verify 235100): notice appended to a cloud
-    // translation whose input exceeded the URL-safety cap (head/tail window
-    // applied). User-facing: truncation must never be silent. Appended last
-    // so the EnumCount completeness loop covers it automatically (53x37).
-    TranslateTruncatedNotice,
-
     // REQ-042 (session 260917_0002, 계획-2): notice shown when the Enter path
     // takes the tail-unchanged short-circuit while the verbatim prefix still
     // holds translatable text (the REQ-041 under-slice is policy, not
@@ -461,6 +455,25 @@ enum class StringId {
     OpenAiReasoningServerDefault, // "서버 기본값 (미지정)" / "Server default (unset)"
     BackTransSectionBack,         // "역번역" / "Back-translation"
     BackTransSectionOriginal,     // "원문" / "Original text"
+
+    // 261121_0002 (v0.10.9 leftover, session 261121_0002 progress+cancel
+    // design): the multi-chunk translation PROGRESS + CANCEL UI copy (badge
+    // progress label, chunk-count plan label, cancelling feedback, the
+    // post-cancel notice, and the one-shot cancel hint). Inserted right AFTER
+    // BackTransSectionOriginal per the binding design-pick.md: every later
+    // enum value shifts by +5 TOGETHER, so all relative adjacency pins (the
+    // P6a/P7 MenuSearchLangs..LanguageSearchNoMatch run, the P5
+    // "EnumCount - 1 == LanguageSearchNoMatch" sentinel, the P9c-1b
+    // declaration-checklist run) stay valid, and EnumCount absorbs +5
+    // (202 -> 207). The struct fields are trailing defaults in the same
+    // relative position (src/i18n.cpp, right after
+    // back_trans_section_original); the Get() switch is the mapping.
+    // "{c}"/"{t}"/"{n}" are runtime-substituted number tokens.
+    BadgeTranslatingProgress,    // "번역 중… {c}/{t}" / "Translating… {c}/{t}"
+    BadgeTranslatingChunks,      // "번역 중 ({n}개 청크)" / "Translating ({n} chunks)"
+    BadgeCancelling,             // "취소 중…" / "Cancelling…"
+    TooltipTranslationCancelled, // "번역이 취소되었습니다." / "Translation cancelled."
+    TooltipCancelHint,           // "긴 번역 중입니다. 배지를 클릭하면 취소할 수 있습니다." / "Long translation in progress. Click the badge to cancel."
 
     // 261111_0001 (v0.10.7) U6 — user-model surface completeness (R1 P1):
     //   * GgufInvalidModelBody: the registration-time GGUF gate rejection

@@ -39,6 +39,12 @@
 // engine path and the Google client use (report §3.2).
 #include "translation_chunker.hpp"
 
+// 261121_0002 T2 (design-pick §"New pure header"): the progress + cancel seam.
+// A leaf STL-only header owned by this repo (no Win32, no network, no llama),
+// so including it here adds no cycle and no link edge; a default-constructed
+// context reproduces the pre-feature behavior exactly.
+#include "translation_progress.hpp"
+
 namespace emebalachat {
 
 // REQ-045 (design §3b): the persisted "openai" block of config.json. The key
@@ -78,9 +84,18 @@ OpenAiUrlSecurity ClassifyOpenAiBaseUrl(std::string_view base_url);
 
 // REQ-045 (design §3b, User Decision 12:38): DPAPI-protect a UTF-8 API key and
 // return the base64 of the CryptProtectData blob. Returns false on any crypto
-// failure; on success `cleartext` is SecureZeroMemory'd. The cleartext is thus
-// never retained by the caller after a successful protect.
-bool ProtectOpenAiApiKey(std::string_view cleartext, std::string& out_dpapi_base64);
+// failure (out_dpapi_base64 is left empty).
+//
+// SCRUB CONTRACT (261121_0002, OF-01 deferred item from 261121_0001): this
+// function WRITES the caller's buffer — `cleartext` is SecureZeroMemory'd IN
+// PLACE after a successful protect AND after a CryptProtectData failure — so
+// the caller's cleartext copy is never retained either way. The parameter is
+// therefore `const std::string&`, NOT `std::string_view`: a string_view can
+// name READ-ONLY memory (a string literal), and scrubbing through such a view
+// is an access-violation footgun. The const reference exists only so a literal
+// (or any temporary) binds as a WRITABLE std::string; callers must still pass
+// a buffer they own and may write.
+bool ProtectOpenAiApiKey(const std::string& cleartext, std::string& out_dpapi_base64);
 
 // Inverse of ProtectOpenAiApiKey. On success `out_cleartext` holds the key and
 // the caller MUST SecureZeroMemory it after use. Returns false on unprotect
@@ -392,6 +407,21 @@ public:
     //     request through the same recorder with a bounded cause.
     //   * Per-chunk response cap 10 MiB (kMaxOpenAiResponseBodyBytes).
     //
+    // 261121_0002 T2 (design-pick §Plumbing, OpenAI row): `ctx` is the progress
+    // + cancel seam, trailing and defaulted so every existing call site keeps
+    // compiling unchanged. Identical contract to GoogleTranslate::Translate:
+    //   * ctx.cancel set -> the chunk loop unwinds at the next between-chunk
+    //     boundary, BEFORE the loop-budget check, returning {} WITHOUT writing
+    //     a failure detail (a user cancel is not an engine failure, so the
+    //     LastChatErrorDetail slot stays clean; the manager attributes
+    //     Canceled vs EngineFailed).
+    //   * ctx.on_chunk, when the plan holds 2+ chunks (ShowChunkProgress),
+    //     receives (index_1based, total) immediately BEFORE each chunk's POST.
+    //     A chunk whose text needs no request (OpenAiChunkNeedsRequest is
+    //     false) never advances the index, and the reasoning_effort 400-retry
+    //     is a re-attempt of the SAME chunk, so it adds no second tick.
+    // The default lives HERE only; the .cpp definition carries no default.
+    //
     // 261111_0001 U6 (v0.10.7, R1 P1-3) + R2-E/R2-P (261111_0001): MINIMAL
     // failure-detail extension — when the request fails (non-2xx HTTP
     // status, transport error, or an unparseable 200 body) and
@@ -410,7 +440,8 @@ public:
                                        std::string_view source_lang,
                                        std::string_view target_lang,
                                        std::wstring_view text,
-                                       std::string* out_error_detail = nullptr);
+                                       std::string* out_error_detail = nullptr,
+                                       const TranslationTaskContext& ctx = {});
 
     // 261111_0001 U6: the most recent ChatCompletion FAILURE cause (the
     // sanitized detail above), or "" when the last chat request succeeded

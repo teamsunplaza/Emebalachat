@@ -4,6 +4,7 @@
 #include "../i18n.hpp"
 #include "../unicode_utils.hpp"
 #include "dpi.hpp"
+#include "../translation_progress.hpp"  // 261121_0002 (T4): ShowChunkProgress gate
 #include "theme.hpp"
 
 #include <cmath>
@@ -18,6 +19,25 @@ namespace emebalachat {
 
 namespace {
 const wchar_t kWindowClassName[] = L"Emebalachat_FloatingBadgeClass";
+
+// 261121_0002 (T4 badge progress): find/replace-all primitive for the badge
+// label tokens, modeled on MdReplace in model_download_dialog.cpp; kept as a
+// private badge copy per the unit boundary — model_download_dialog.cpp is not
+// touched.
+void BadgeReplaceAll(std::wstring& text, std::wstring_view token, const std::wstring& value) {
+    std::size_t pos = 0;
+    while ((pos = text.find(token, pos)) != std::wstring::npos) {
+        text.replace(pos, token.size(), value);
+        pos += value.size();
+    }
+}
+
+// {c}/{t} fill for the localized cloud-tick label (BadgeTranslatingProgress).
+std::wstring BadgeFillProgressTokens(std::wstring text, std::size_t index, std::size_t total) {
+    BadgeReplaceAll(text, L"{c}", std::to_wstring(index));
+    BadgeReplaceAll(text, L"{t}", std::to_wstring(total));
+    return text;
+}
 }
 
 FloatingBadge::FloatingBadge() = default;
@@ -219,6 +239,59 @@ void FloatingBadge::SetStatus(BadgeStatus status) {
         ResetIdleTimer();
     } else {
         ::PostMessageW(hwnd_, WM_BADGE_SET_STATUS, static_cast<WPARAM>(status), 0);
+    }
+}
+
+// 261121_0002 (T4 badge progress): worker-thread progress ticks, marshaled
+// with the same PostMessage discipline as SetStatus above. Both numbers ride
+// in one wParam (MAKELONG(index, total)); a (0,0) payload clears the numbers
+// so the label falls back to plain "Translating". The 1200-unit chunk cap
+// makes 16-bit fields effectively unbounded, but they are clamped anyway so a
+// wrapped count can never display as a smaller plausible number.
+void FloatingBadge::SetProgress(std::size_t index, std::size_t total) {
+    if (!hwnd_) return;
+    const auto clamp16 = [](std::size_t v) -> WORD {
+        return static_cast<WORD>((std::min)(v, static_cast<std::size_t>(0xFFFF)));
+    };
+    const WPARAM payload = static_cast<WPARAM>(MAKELONG(clamp16(index), clamp16(total)));
+    DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
+    if (::GetCurrentThreadId() == winThreadId) {
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            progress_index_ = static_cast<std::size_t>(LOWORD(payload));
+            progress_total_ = static_cast<std::size_t>(HIWORD(payload));
+        }
+        Render();
+        ResetIdleTimer(); // progress must never fade
+    } else {
+        ::PostMessageW(hwnd_, WM_BADGE_SET_PROGRESS, payload, 0);
+    }
+}
+
+// 261121_0002 (T4 badge progress): cancel feedback flag ("Cancelling…"),
+// marshaled on its own message so it can never corrupt a (index,total)
+// payload.
+void FloatingBadge::SetCancellingThreadSafe(bool cancelling) {
+    if (!hwnd_) return;
+    DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
+    if (::GetCurrentThreadId() == winThreadId) {
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            // 261121_0002 (R3-4): the SAME guard as the posted handler below.
+            // This fast path is the GUI click path (RequestCancelTranslation -
+            // main.cpp), so its set-true can only be legitimate while the
+            // badge sits in the Translating arm; a set-true observed under any
+            // other status is a stale straggler (the task ended between
+            // IsBusy() and here) and is dropped. The clear always applies, so
+            // the flag can never stick.
+            if (!cancelling || status_ == BadgeStatus::Translating) {
+                cancelling_ = cancelling;
+            }
+        }
+        Render();
+        ResetIdleTimer(); // the cancelling label must never fade either
+    } else {
+        ::PostMessageW(hwnd_, WM_BADGE_SET_CANCELLING, cancelling ? 1 : 0, 0);
     }
 }
 
@@ -434,11 +507,19 @@ void FloatingBadge::Render(bool reentry_allowed) {
     BadgeStatus status;
     std::wstring src_code;
     std::wstring tgt_code;
+    // 261121_0002 (T4 badge progress): progress numbers + cancel flag ride
+    // the same data-mutex snapshot as status_/src_code_/tgt_code_.
+    std::size_t progress_index;
+    std::size_t progress_total;
+    bool cancelling;
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         status = status_;
         src_code = src_code_;
         tgt_code = tgt_code_;
+        progress_index = progress_index_;
+        progress_total = progress_total_;
+        cancelling = cancelling_;
     }
 
     const auto& theme = ui::GetActiveTheme();
@@ -454,7 +535,27 @@ void FloatingBadge::Render(bool reentry_allowed) {
         case BadgeStatus::Translating:
             statusColor = ui::ColorFromHex(theme.state_busy);
             statusTextColor = ui::ColorFromHex(theme.state_busy);
-            statusText = I18n::Get(StringId::BadgeTranslating);
+            // 261121_0002 (T4 badge progress): precedence — the cancel
+            // feedback label wins over everything; then the local plan-known
+            // tick (index 0 + total >= 2), then the cloud per-chunk counter
+            // ("{c}/{t}") for genuine multi-chunk runs (ShowChunkProgress).
+            // index 0 + total >= 2 is the LOCAL engine's plan-known signal:
+            // the frozen protocol carries no per-chunk events, so the client
+            // predicts the total at the same 1200-unit cap; "0/n" would be
+            // wrong, the chunk COUNT is the honest information. Every other
+            // case keeps the pre-feature label byte-identical.
+            if (cancelling) {
+                statusText = I18n::Get(StringId::BadgeCancelling);
+            } else if (progress_index == 0 && emebalachat::ShowChunkProgress(progress_total)) {
+                statusText = I18n::Get(StringId::BadgeTranslatingChunks);
+                BadgeReplaceAll(statusText, L"{n}", std::to_wstring(progress_total));
+            } else if (emebalachat::ShowChunkProgress(progress_total)) {
+                statusText = BadgeFillProgressTokens(
+                    I18n::Get(StringId::BadgeTranslatingProgress),
+                    progress_index, progress_total);
+            } else {
+                statusText = I18n::Get(StringId::BadgeTranslating);
+            }
             break;
         case BadgeStatus::Disabled:
         default:
@@ -1005,6 +1106,44 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
         case WM_BADGE_SET_LANGS: {
             self->Render();
+            return 0;
+        }
+
+        // 261121_0002 (T4 badge progress): progress tick / cancel flag. Both
+        // restore full opacity like WM_BADGE_SET_STATUS (a progress run must
+        // never sit at the faded 20% alpha), then re-render and restart the
+        // idle timer so the numbers never fade away mid-translation.
+        case WM_BADGE_SET_PROGRESS: {
+            {
+                std::lock_guard<std::mutex> lock(self->data_mutex_);
+                self->progress_index_ = static_cast<std::size_t>(LOWORD(wParam));
+                self->progress_total_ = static_cast<std::size_t>(HIWORD(wParam));
+                self->current_alpha_ = 217;
+            }
+            self->Render();
+            self->ResetIdleTimer();
+            return 0;
+        }
+
+        case WM_BADGE_SET_CANCELLING: {
+            {
+                std::lock_guard<std::mutex> lock(self->data_mutex_);
+                // 261121_0002 (F5): cross-thread PostMessage order is not
+                // FIFO, so a "set true" posted before the task-end "set false"
+                // clear can arrive AFTER it and leak "Cancelling..." into the
+                // next task's Translating arm. RequestCancelTranslation only
+                // ever fires while a task is in flight (status_ IS
+                // Translating at that moment), so a set-true that observes
+                // any other status here is a stale straggler — drop it
+                // entirely (no flag, no alpha bump). The set-false clear
+                // always applies.
+                if (wParam == 0 || self->status_ == BadgeStatus::Translating) {
+                    self->cancelling_ = (wParam != 0);
+                    self->current_alpha_ = 217;
+                }
+            }
+            self->Render();
+            self->ResetIdleTimer();
             return 0;
         }
 

@@ -86,7 +86,6 @@ const wchar_t kRunValueName[] = L"Emebalachat";
     X(privacy_notice_title) \
     X(privacy_notice_body) \
     X(cheatsheet_config_path) \
-    X(translate_truncated_notice) \
     X(tooltip_untranslated_above) \
     X(repair_in_progress) \
     X(repair_failed_title) \
@@ -203,8 +202,10 @@ struct LocalizedStrings {
     // 261108_0002 (WS3, v0.10.6): floating back-translation verification card
     // + tray toggle. TRAILING default-initialized fields, exactly like the
     // four theme strings above: they are NOT part of EMEBALA_LSTR_FIELDS, so
-    // kLocalizedStringsFieldCount (157) and the X-macro stay untouched, and
-    // the 89 locale tables carry their own explicit designators below.
+    // kLocalizedStringsFieldCount (156 after the 261121_0002 SEC-M1 removal)
+    // and the X-macro stay untouched, and
+    // the 88 designated locale tables carry their own explicit designators
+    // below (the English positional table has none).
     // FIX-WS3B added the fifth (back_translate_reference): the card's
     // reference-line label, which used to be a hardcoded Korean literal.
     const wchar_t* menu_back_translation = L"Floating Back-Translation";
@@ -219,7 +220,7 @@ struct LocalizedStrings {
     // "server default" entry, and the redesigned back-translation card's
     // two section headers. Trailing defaults like the blocks above (NOT
     // part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays
-    // 157): all 88 designated tables carry their own designator and the
+    // 156 after the 261121_0002 SEC-M1 removal): all 88 designated tables carry their own designator and the
     // English POSITIONAL table carries the four literals in this order
     // (slot order chosen so every pre-existing pinned tail run — the P9b-3
     // U5 English AUTO-chip last-initializer pin, the P9c-1b declared-hint
@@ -228,6 +229,22 @@ struct LocalizedStrings {
     const wchar_t* openai_reasoning_server_default = L"Server default (unset)";
     const wchar_t* back_trans_section_back = L"Back-translation";
     const wchar_t* back_trans_section_original = L"Original text";
+    // 261121_0002 (v0.10.9 leftover, progress+cancel design): the multi-chunk
+    // translation progress + cancel copy. Trailing defaults like the blocks
+    // above (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount
+    // stays 156 after the 261121_0002 SEC-M1 removal): every one of the 88
+    // designated locale tables carries its own designator right after
+    // back_trans_section_original, and the English POSITIONAL table carries
+    // the five literals in the same slot (right after "Original text"). The
+    // enum ids sit mid-enum after BackTransSectionOriginal; the Get() switch
+    // is the mapping. "{c}"/"{t}" are the completed/total chunk tokens and
+    // "{n}" is the predicted chunk count (badge label token convention).
+    const wchar_t* badge_translating_progress = L"Translating… {c}/{t}";
+    const wchar_t* badge_translating_chunks = L"Translating ({n} chunks)";
+    const wchar_t* badge_cancelling = L"Cancelling…";
+    const wchar_t* tooltip_translation_cancelled = L"Translation cancelled.";
+    const wchar_t* tooltip_cancel_hint =
+        L"Long translation in progress. Click the badge to cancel.";
     // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness —
     // trailing defaults like the back-translation block above (NOT part of
     // EMEBALA_LSTR_FIELDS; the 89 tables carry their own designators).
@@ -260,7 +277,7 @@ struct LocalizedStrings {
     // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6): the
     // user-language surface's UI copy. Trailing defaults like the blocks above
     // (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays
-    // 157): all 88 designated tables carry their own designator and the English
+    // 156 after the 261121_0002 SEC-M1 removal): all 88 designated tables carry their own designator and the English
     // POSITIONAL table carries them as its last 23 initializers.
     //
     // STRUCT-vs-ENUM ORDER: these members are the STRUCT tail, while the enum
@@ -325,7 +342,8 @@ struct LocalizedStrings {
     // table must keep the AUTO chip label as its last initializer (the P9b-3
     // U5 tail pin), so the P9c-1b literals take the two slots ahead of it.
     // Trailing defaults like the blocks above (NOT part of
-    // EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays 157): the 36
+    // EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays 156 after the
+    // 261121_0002 SEC-M1 removal): the 36
     // designated tables carry their own designators and the English
     // POSITIONAL table carries them before the AUTO chip line. The hint
     // states the documented fail-open (P9c-1a): an empty selection clears the
@@ -339,7 +357,8 @@ struct LocalizedStrings {
     // AUTO serves the cloud for languages the local model does not cover; this
     // label names both legs in one line and carries no count. Trailing default
     // like the blocks above (NOT part of EMEBALA_LSTR_FIELDS, so
-    // kLocalizedStringsFieldCount stays 157): the 88 designated tables carry
+    // kLocalizedStringsFieldCount stays 156 after the 261121_0002 SEC-M1
+    // removal): the 88 designated tables carry
     // their own designator and the English POSITIONAL table carries it as its
     // last initializer. Separator is the hyphen form per R14-10.
     const wchar_t* language_search_auto_chip =
@@ -367,25 +386,30 @@ inline constexpr std::size_t kLocalizedStringsFieldCount =
 // zone block (REQ-UC 260930_0004: 25 strings, 135) + the on-demand
 // model download dialog (REQ-MD: 9 strings, 144) + the REQ-060 load-mode
 // block (session 261009_0001: 6 engine-host load-mode strings + 7 manager
-// policy/duplicate strings, 157). The Get()
-// switch maps exactly these 157 named fields.
-static_assert(kLocalizedStringsFieldCount == 157,
+// policy/duplicate strings, 157) - 1 (261121_0002 removed the dead SEC-M1
+// translate_truncated_notice X-macro field, 156). The Get()
+// switch maps exactly these 156 named fields.
+static_assert(kLocalizedStringsFieldCount == 156,
     "LocalizedStrings field count changed - update all 89 locale tables");
 
 // 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
 // above is generated from the same X-macro that generates the struct, so it can
-// never notice the 46 trailing NON-X-macro members (4 theme + 5 back-translation
+// never notice the 51 trailing NON-X-macro members (4 theme + 5 back-translation
 // + 4 v0.10.9 reasoning/back-trans section strings (261121_0001 U-C) +
+// 5 261121_0002 progress/cancel strings (badge_translating_progress/
+// badge_translating_chunks/badge_cancelling/tooltip_translation_cancelled/
+// tooltip_cancel_hint) +
 // 3 user-model + 2 language-picker + 1 search row + 1 count phrase +
 // 23 user-language + 2 OpenAI declaration checklist + 1 picker AUTO chip;
-// 261116_0003 P9c-1b fix: was 40 = the previous blocks + the P9b-3 U5 chip,
-// before that 39 at P9b-1, each later session appended its own trailing block)
-// - and the test-side mirror in tests/run_tests.cpp is a hand-kept copy that
+// 261121_0002 progress+cancel: 51 now = the previous 46 + the five
+// progress/cancel strings listed above; before that 40 at P9c-1b and 39 at
+// P9b-1, each later session appended its own trailing block) - and the test-side mirror in
+// tests/run_tests.cpp is a hand-kept copy that
 // catches drift only after someone remembers to update it. This one compares the
 // actual struct layout against StringId::EnumCount (the Get() switch's case
 // count, i18n.hpp): one member per pointer-sized slot means
 // sizeof / sizeof(const wchar_t*) IS the member count. Every LocalizedStrings
-// member is a const wchar_t* (X-macro fields + the 42 trailing), so the divisor
+// member is a const wchar_t* (X-macro fields + the 51 trailing), so the divisor
 // is exact; adding a member of another type would change the quotient and trip
 // this assert, which is the intended signal to revisit both sides.
 // Fires when: a member is added/removed without a StringId, or a StringId is
@@ -472,7 +496,6 @@ const LocalizedStrings kStringsKorean = {
     L"\n"
     L"전체 내용은 README 파일을 참고하세요. 언제든 다시 읽으실 수 있습니다.\n",
     .cheatsheet_config_path = L"설정 파일: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"텍스트가 너무 길어 앞부분과 뒷부분만 번역했습니다.",
     .tooltip_untranslated_above = L"위쪽에 번역되지 않은 새 텍스트가 있습니다. 그 줄 끝에 커서를 두고 Enter를 누를면 번역됩니다.",
     .repair_in_progress = L"로컬 엔진 구성 요소를 복구하는 중…",
     .repair_failed_title = L"로컬 번역을 사용할 수 없습니다",
@@ -615,6 +638,12 @@ const LocalizedStrings kStringsKorean = {
     .openai_reasoning_server_default = L"서버 기본값 (미지정)",
     .back_trans_section_back = L"역번역",
     .back_trans_section_original = L"원문",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"번역 중… {c}/{t}",
+    .badge_translating_chunks = L"번역 중 ({n}개 청크)",
+    .badge_cancelling = L"취소 중…",
+    .tooltip_translation_cancelled = L"번역이 취소되었습니다.",
+    .tooltip_cancel_hint = L"긴 번역 중입니다. 배지를 클릭하면 취소할 수 있습니다.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"올바른 GGUF 모델 파일이 아니어서 등록하지 않았습니다.",
@@ -738,7 +767,6 @@ const LocalizedStrings kStringsJapanese = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"テキストが長すぎるため、冒頭と末尾のみを翻訳しました。",
     .tooltip_untranslated_above = L"上に翻訳されていない新しいテキストがあります。その行の末尾にカーソルを置いて Enter を押すと翻訳されます。",
     .repair_in_progress = L"ローカルエンジンコンポーネントを修復しています…",
     .repair_failed_title = L"ローカル翻訳を利用できません",
@@ -879,6 +907,12 @@ const LocalizedStrings kStringsJapanese = {
     .openai_reasoning_server_default = L"サーバーのデフォルト（未設定）",
     .back_trans_section_back = L"逆翻訳",
     .back_trans_section_original = L"原文",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"翻訳中... {c}/{t}",
+    .badge_translating_chunks = L"翻訳中... ({n} チャンク)",
+    .badge_cancelling = L"キャンセル中…",
+    .tooltip_translation_cancelled = L"翻訳はキャンセルされました",
+    .tooltip_cancel_hint = L"長い翻訳が進行中です。バッジをクリックするとキャンセルできます。",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"有効なGGUFモデルファイルではないため、登録しませんでした。",
@@ -997,7 +1031,6 @@ const LocalizedStrings kStringsChineseSimp = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"文本过长，仅翻译了开头和结尾部分。",
     .tooltip_untranslated_above = L"上方有未翻译的新文本。将光标置于该行末尾并按 Enter 即可翻译。",
     .repair_in_progress = L"正在修复本地引擎组件…",
     .repair_failed_title = L"本地翻译不可用",
@@ -1138,6 +1171,12 @@ const LocalizedStrings kStringsChineseSimp = {
     .openai_reasoning_server_default = L"服务器默认（未设置）",
     .back_trans_section_back = L"回译",
     .back_trans_section_original = L"原文",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"翻译中... {c}/{t}",
+    .badge_translating_chunks = L"翻译中... ({n} 个块)",
+    .badge_cancelling = L"取消中…",
+    .tooltip_translation_cancelled = L"翻译已取消。",
+    .tooltip_cancel_hint = L"正在进行的翻译较长。点击徽章即可取消。",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型文件，未注册。",
@@ -1256,7 +1295,6 @@ const LocalizedStrings kStringsChineseTrad = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"文字過長，僅翻譯了開頭和結尾部分。",
     .tooltip_untranslated_above = L"上方有未翻譯的新文字。將游標置於該行末尾並按 Enter 即可翻譯。",
     .repair_in_progress = L"正在修復本機引擎元件…",
     .repair_failed_title = L"本機翻譯無法使用",
@@ -1397,6 +1435,12 @@ const LocalizedStrings kStringsChineseTrad = {
     .openai_reasoning_server_default = L"伺服器預設值（未設定）",
     .back_trans_section_back = L"回譯",
     .back_trans_section_original = L"原文",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"翻譯中... {c}/{t}",
+    .badge_translating_chunks = L"翻譯中... ({n} 個區塊)",
+    .badge_cancelling = L"取消中…",
+    .tooltip_translation_cancelled = L"翻譯已取消。",
+    .tooltip_cancel_hint = L"正在進行的翻譯較長。按一下徽章即可取消。",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"不是有效的 GGUF 模型檔案，未註冊。",
@@ -1515,7 +1559,6 @@ const LocalizedStrings kStringsVietnamese = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Văn bản quá dài nên chỉ phần đầu và phần cuối được dịch.",
     .tooltip_untranslated_above = L"Có văn bản mới chưa dịch ở trên. Đặt con trỏ ở cuối dòng đó và nhấn Enter để dịch.",
     .repair_in_progress = L"Đang sửa chữa các thành phần cục bộ…",
     .repair_failed_title = L"Không thể dùng bản dịch cục bộ",
@@ -1656,6 +1699,12 @@ const LocalizedStrings kStringsVietnamese = {
     .openai_reasoning_server_default = L"Mặc định của máy chủ (chưa đặt)",
     .back_trans_section_back = L"Dịch ngược",
     .back_trans_section_original = L"Văn bản gốc",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Đang dịch... {c}/{t}",
+    .badge_translating_chunks = L"Đang dịch... ({n} phần)",
+    .badge_cancelling = L"Đang hủy…",
+    .tooltip_translation_cancelled = L"Đã hủy bản dịch.",
+    .tooltip_cancel_hint = L"Bản dịch dài đang được thực hiện. Nhấp vào huy hiệu để hủy.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Không phải tệp mô hình GGUF hợp lệ nên chưa được đăng ký.",
@@ -1771,7 +1820,6 @@ const LocalizedStrings kStringsSpanish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"El texto era demasiado largo: solo se tradujeron el principio y el final.",
     .tooltip_untranslated_above = L"Hay texto nuevo sin traducir arriba. Coloca el cursor al final de esa línea y pulsa Enter para traducirlo.",
     .repair_in_progress = L"Reparando los componentes del motor local…",
     .repair_failed_title = L"Traducción local no disponible",
@@ -1912,6 +1960,12 @@ const LocalizedStrings kStringsSpanish = {
     .openai_reasoning_server_default = L"Predeterminado del servidor (sin definir)",
     .back_trans_section_back = L"Retrotraducción",
     .back_trans_section_original = L"Texto original",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traduciendo... {c}/{t}",
+    .badge_translating_chunks = L"Traduciendo... ({n} fragmentos)",
+    .badge_cancelling = L"Cancelando…",
+    .tooltip_translation_cancelled = L"Traducción cancelada.",
+    .tooltip_cancel_hint = L"Traducción larga en curso. Haz clic en la insignia para cancelar.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"No es un archivo de modelo GGUF válido; no se ha registrado.",
@@ -2026,12 +2080,10 @@ const LocalizedStrings kStringsEnglish = {
     L"\n"
     L"You can re-read this anytime in the README file.\n",
     L"Settings file: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    // SEC-M1 (session 260911_0002): cloud translation truncation notice
-    // (trailing-initializer append; the StringId stays pinned.
-    // v0.10.9 261121_0001 U-G chunks the full text through
-    // SplitTextIntoTranslationChunks instead of truncating - the
-    // kMaxCloudQueryUnits head/tail cap is gone.)
-    L"The text was too long, so only its beginning and end were translated.",
+    // 261121_0002: the SEC-M1 truncation notice (v0.10.9 261121_0001 U-G
+    // chunks the full text through SplitTextIntoTranslationChunks - nothing
+    // is truncated any more) was removed as dead i18n: the StringId had no
+    // production consumer left, only the M1 completeness pin.
     L"There is new untranslated text above. Place the cursor at the end of that line and press Enter to translate it.",
     L"Repairing the local engine components…",
     L"Local translation unavailable",
@@ -2160,7 +2212,9 @@ const LocalizedStrings kStringsEnglish = {
     // assumed. This table is a positional aggregate (MSVC C7556 forbids mixing
     // styles in one aggregate), so every initializer lands on the struct member
     // at the SAME index. LocalizedStrings member order is:
-    //   [1..157]   EMEBALA_LSTR_FIELDS X-macro (kLocalizedStringsFieldCount)
+    //   [1..156]   EMEBALA_LSTR_FIELDS X-macro (kLocalizedStringsFieldCount;
+    //              was 157 until 261121_0002 removed the dead SEC-M1
+    //              translate_truncated_notice field)
     //   [158..161] menu_ui_theme / theme_fluent / theme_editorial / theme_monolith
     //   [162..165] menu_back_translation / back_translate_header /
     //              back_translate_match_exact / back_translate_match_check
@@ -2224,26 +2278,35 @@ const LocalizedStrings kStringsEnglish = {
     L"Server default (unset)",
     L"Back-translation",
     L"Original text",
-    // 261111_0001 U6 (v0.10.7, R1 P1): slots 167..169 — the registration-gate
+    // 261121_0002 (v0.10.9 leftover, progress+cancel design): the five
+    // progress/cancel literals right after the back-trans section headers
+    // (positional, same MSVC C7556 rule as every other tail block). Every
+    // downstream tail block's slot comment shifted by +5.
+    L"Translating… {c}/{t}",
+    L"Translating ({n} chunks)",
+    L"Cancelling…",
+    L"Translation cancelled.",
+    L"Long translation in progress. Click the badge to cancel.",
+    // 261111_0001 U6 (v0.10.7, R1 P1): slots 172..174 — the registration-gate
     // rejection body, the active-binding list marker, and the activation
     // notice (designated-initializer spellings forbidden here: MSVC C7556).
     L"Not a valid GGUF model file; it was not registered.",
     L"(in use)",
     L"This model is now in use.",
-    // 261116_0003 P5 (language-menu redesign): slots 170..171 — the searchable
+    // 261116_0003 P5 (language-menu redesign): slots 175..176 — the searchable
     // picker's cue banner + no-match line (positional: MSVC C7556 forbids mixing
     // designs in this aggregate).
     L"Search languages…",
     L"No matching language",
-    // 261116_0003 P6 (language-menu redesign): slot 172 — the flat menus'
+    // 261116_0003 P6 (language-menu redesign): slot 177 — the flat menus'
     // "검색…" row label (positional, same C7556 rule).
     L"Search…",
-    // 261116_0003 P7 (language-menu redesign): slot 173 is the picker header's
+    // 261116_0003 P7 (language-menu redesign): slot 178 is the picker header's
     // count phrase. "{n}" is the runtime number token (positional, same C7556
     // rule).
     L"{n} languages",
     // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6):
-    // slots 174..196 - the user-language surface's 23 strings (positional,
+    // slots 179..201 - the user-language surface's 23 strings (positional,
     // same MSVC C7556 rule as every other tail block in this table).
     L"My languages",
     L"Add my language",
@@ -2269,10 +2332,10 @@ const LocalizedStrings kStringsEnglish = {
     L"Script matches",
     L"Not detected",
     // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
-    // decisions.md:540): slot 199 is the picker AUTO-view chip's dedicated
+    // decisions.md:540): slot 204 is the picker AUTO-view chip's dedicated
     // label (positional, same MSVC C7556 rule as every other tail block).
     // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): slots
-    // 197..198 - the OpenAI settings declaration checklist's title + fail-open
+    // 202..203 - the OpenAI settings declaration checklist's title + fail-open
     // hint (positional, same MSVC C7556 rule as every other tail block). They
     // sit BEFORE the AUTO chip slot on purpose: language_search_auto_chip is
     // the struct member that closes the tail, so the AUTO chip label stays
@@ -2373,7 +2436,6 @@ const LocalizedStrings kStringsFrench = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Texte trop long : seul le début et la fin ont été traduits.",
     .tooltip_untranslated_above = L"Il y a un nouveau texte non traduit au-dessus. Placez le curseur à la fin de cette ligne et appuyez sur Entrée pour le traduire.",
     .repair_in_progress = L"Restauration des composants du moteur local…",
     .repair_failed_title = L"Traduction locale indisponible",
@@ -2514,6 +2576,12 @@ const LocalizedStrings kStringsFrench = {
     .openai_reasoning_server_default = L"Valeur par défaut du serveur (non définie)",
     .back_trans_section_back = L"Rétrotraduction",
     .back_trans_section_original = L"Texte original",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traduction... {c}/{t}",
+    .badge_translating_chunks = L"Traduction... ({n} segments)",
+    .badge_cancelling = L"Annulation…",
+    .tooltip_translation_cancelled = L"Traduction annulée.",
+    .tooltip_cancel_hint = L"Traduction longue en cours. Cliquez sur le badge pour annuler.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Ce fichier n'est pas un modèle GGUF valide ; il n'a pas été enregistré.",
@@ -2632,7 +2700,6 @@ const LocalizedStrings kStringsGerman = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Der Text war zu lang: Es wurden nur Anfang und Ende übersetzt.",
     .tooltip_untranslated_above = L"Oben gibt es neuen unübersetzten Text. Setzen Sie den Cursor an das Ende dieser Zeile und drücken Sie die Eingabetaste, um ihn zu übersetzen.",
     .repair_in_progress = L"Lokale Engine-Komponenten werden repariert…",
     .repair_failed_title = L"Lokale Übersetzung nicht verfügbar",
@@ -2773,6 +2840,12 @@ const LocalizedStrings kStringsGerman = {
     .openai_reasoning_server_default = L"Server-Standard (nicht gesetzt)",
     .back_trans_section_back = L"Rückübersetzung",
     .back_trans_section_original = L"Originaltext",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Übersetze... {c}/{t}",
+    .badge_translating_chunks = L"Übersetze... ({n} Abschnitte)",
+    .badge_cancelling = L"Wird abgebrochen…",
+    .tooltip_translation_cancelled = L"Übersetzung abgebrochen.",
+    .tooltip_cancel_hint = L"Längere Übersetzung läuft. Klicken Sie auf das Badge, um abzubrechen.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Keine gültige GGUF-Modelldatei; sie wurde nicht registriert.",
@@ -2891,7 +2964,6 @@ const LocalizedStrings kStringsRussian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Текст слишком длинный: переведены только начало и конец.",
     .tooltip_untranslated_above = L"Выше есть новый непереведенный текст. Поместите курсор в конец этой строки и нажмите Enter, чтобы перевести.",
     .repair_in_progress = L"Восстановление компонентов локального движка…",
     .repair_failed_title = L"Локальный перевод недоступен",
@@ -3032,6 +3104,12 @@ const LocalizedStrings kStringsRussian = {
     .openai_reasoning_server_default = L"Значение сервера по умолчанию (не задано)",
     .back_trans_section_back = L"Обратный перевод",
     .back_trans_section_original = L"Оригинальный текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Перевод... {c}/{t}",
+    .badge_translating_chunks = L"Перевод... ({n} частей)",
+    .badge_cancelling = L"Отмена…",
+    .tooltip_translation_cancelled = L"Перевод отменён.",
+    .tooltip_cancel_hint = L"Выполняется длинный перевод. Нажмите на значок, чтобы отменить.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Это не действительный файл модели GGUF; он не зарегистрирован.",
@@ -3150,7 +3228,6 @@ const LocalizedStrings kStringsPortuguese = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Texto longo demais: apenas o início e o fim foram traduzidos.",
     .tooltip_untranslated_above = L"Há texto novo não traduzido acima. Coloque o cursor no final dessa linha e prima Enter para traduzir.",
     .repair_in_progress = L"A reparar os componentes do motor local…",
     .repair_failed_title = L"Tradução local indisponível",
@@ -3291,6 +3368,12 @@ const LocalizedStrings kStringsPortuguese = {
     .openai_reasoning_server_default = L"Padrão do servidor (não definido)",
     .back_trans_section_back = L"Retrotradução",
     .back_trans_section_original = L"Texto original",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traduzindo... {c}/{t}",
+    .badge_translating_chunks = L"Traduzindo... ({n} segmentos)",
+    .badge_cancelling = L"A cancelar…",
+    .tooltip_translation_cancelled = L"Tradução cancelada.",
+    .tooltip_cancel_hint = L"Tradução longa em curso. Clique no distintivo para cancelar.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Não é um ficheiro de modelo GGUF válido; não foi registado.",
@@ -3409,7 +3492,6 @@ const LocalizedStrings kStringsItalian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Testo troppo lungo: sono stati tradotti solo l'inizio e la fine.",
     .tooltip_untranslated_above = L"C'è nuovo testo non tradotto sopra. Posiziona il cursore alla fine di quella riga e premi Invio per tradurlo.",
     .repair_in_progress = L"Riparazione dei componenti del motore locale…",
     .repair_failed_title = L"Traduzione locale non disponibile",
@@ -3550,6 +3632,12 @@ const LocalizedStrings kStringsItalian = {
     .openai_reasoning_server_default = L"Predefinito del server (non impostato)",
     .back_trans_section_back = L"Retrotraduzione",
     .back_trans_section_original = L"Testo originale",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traduzione... {c}/{t}",
+    .badge_translating_chunks = L"Traduzione... ({n} blocchi)",
+    .badge_cancelling = L"Annullamento…",
+    .tooltip_translation_cancelled = L"Traduzione annullata.",
+    .tooltip_cancel_hint = L"Traduzione lunga in corso. Fai clic sul badge per annullare.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Non è un file di modello GGUF valido; non è stato registrato.",
@@ -3668,7 +3756,6 @@ const LocalizedStrings kStringsDutch = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"De tekst was te lang: alleen het begin en het einde zijn vertaald.",
     .tooltip_untranslated_above = L"Er staat nieuwe onvertaalde tekst hierboven. Plaats de cursor aan het einde van die regel en druk op Enter om te vertalen.",
     .repair_in_progress = L"Lokale engine-onderdelen herstellen…",
     .repair_failed_title = L"Lokale vertaling niet beschikbaar",
@@ -3809,6 +3896,12 @@ const LocalizedStrings kStringsDutch = {
     .openai_reasoning_server_default = L"Serverstandaard (niet ingesteld)",
     .back_trans_section_back = L"Terugvertaling",
     .back_trans_section_original = L"Originele tekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Vertalen... {c}/{t}",
+    .badge_translating_chunks = L"Vertalen... ({n} delen)",
+    .badge_cancelling = L"Annuleren…",
+    .tooltip_translation_cancelled = L"Vertaling geannuleerd.",
+    .tooltip_cancel_hint = L"Lange vertaling bezig. Klik op de badge om te annuleren.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Dit is geen geldig GGUF-modelbestand; het is niet geregistreerd.",
@@ -3927,7 +4020,6 @@ const LocalizedStrings kStringsPolish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Tekst był zbyt długi: przetłumaczono tylko początek i koniec.",
     .tooltip_untranslated_above = L"Powyżej znajduje się nowy nieprzetłumaczony tekst. Umieść kursor na końcu tego wiersza i naciśnij Enter, aby przetłumaczyć.",
     .repair_in_progress = L"Naprawianie lokalnych składników silnika…",
     .repair_failed_title = L"Tłumaczenie lokalne niedostępne",
@@ -4068,6 +4160,12 @@ const LocalizedStrings kStringsPolish = {
     .openai_reasoning_server_default = L"Domyślne serwera (nieustawione)",
     .back_trans_section_back = L"Tłumaczenie zwrotne",
     .back_trans_section_original = L"Tekst oryginalny",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tłumaczenie... {c}/{t}",
+    .badge_translating_chunks = L"Tłumaczenie... ({n} części)",
+    .badge_cancelling = L"Anulowanie…",
+    .tooltip_translation_cancelled = L"Tłumaczenie anulowane.",
+    .tooltip_cancel_hint = L"Trwa długie tłumaczenie. Kliknij plakietkę, aby anulować.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"To nie jest prawidłowy plik modelu GGUF; nie został zarejestrowany.",
@@ -4186,7 +4284,6 @@ const LocalizedStrings kStringsCzech = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Text byl příliš dlouhý: přeloženy byly pouze začátek a konec.",
     .tooltip_untranslated_above = L"Nahoře je nový nepřeložený text. Umístěte kurzor na konec tohoto řádku a stisknutím Enteru jej přeložte.",
     .repair_in_progress = L"Oprava místních součástí enginu…",
     .repair_failed_title = L"Místní překlad není dostupný",
@@ -4327,6 +4424,12 @@ const LocalizedStrings kStringsCzech = {
     .openai_reasoning_server_default = L"Výchozí hodnota serveru (nenastaveno)",
     .back_trans_section_back = L"Zpětný překlad",
     .back_trans_section_original = L"Originální text",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Překládám... {c}/{t}",
+    .badge_translating_chunks = L"Překládám... ({n} částí)",
+    .badge_cancelling = L"Rušení…",
+    .tooltip_translation_cancelled = L"Překlad byl zrušen.",
+    .tooltip_cancel_hint = L"Probíhá dlouhý překlad. Klepnutím na odznak jej zrušíte.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Toto není platný soubor modelu GGUF; nebyl zaregistrován.",
@@ -4445,7 +4548,6 @@ const LocalizedStrings kStringsHungarian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"A szöveg túl hosszú: csak az eleje és a vége lett lefordítva.",
     .tooltip_untranslated_above = L"Új, le nem fordított szöveg van fent. Helyezze a kurzort a sor végére, és az Enter megnyomásával fordítsa le.",
     .repair_in_progress = L"A helyi motor összetevőinek javítása…",
     .repair_failed_title = L"A helyi fordítás nem érhető el",
@@ -4586,6 +4688,12 @@ const LocalizedStrings kStringsHungarian = {
     .openai_reasoning_server_default = L"Kiszolgálóalapértelmezett (nincs beállítva)",
     .back_trans_section_back = L"Visszafordítás",
     .back_trans_section_original = L"Eredeti szöveg",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Fordítás... {c}/{t}",
+    .badge_translating_chunks = L"Fordítás... ({n} rész)",
+    .badge_cancelling = L"Megszakítás…",
+    .tooltip_translation_cancelled = L"A fordítás megszakítva.",
+    .tooltip_cancel_hint = L"Hosszú fordítás folyamatban. Kattintson a jelvényre a megszakításhoz.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Ez nem érvényes GGUF modellfájl; nem lett regisztrálva.",
@@ -4704,7 +4812,6 @@ const LocalizedStrings kStringsRomanian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Textul era prea lung: au fost traduse doar începutul și sfârșitul.",
     .tooltip_untranslated_above = L"Există text nou netradus mai sus. Plasați cursorul la sfârșitul acelui rând și apăsați Enter pentru a traduce.",
     .repair_in_progress = L"Se repară componentele motorului local…",
     .repair_failed_title = L"Traducerea locală nu este disponibilă",
@@ -4845,6 +4952,12 @@ const LocalizedStrings kStringsRomanian = {
     .openai_reasoning_server_default = L"Implicit server (nedefinit)",
     .back_trans_section_back = L"Traducere inversă",
     .back_trans_section_original = L"Text original",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Se traduce... {c}/{t}",
+    .badge_translating_chunks = L"Se traduce... ({n} segmente)",
+    .badge_cancelling = L"Se anulează…",
+    .tooltip_translation_cancelled = L"Traducere anulată.",
+    .tooltip_cancel_hint = L"Traducere lungă în curs. Faceți clic pe insignă pentru a anula.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Acesta nu este un fișier GGUF valid; nu a fost înregistrat.",
@@ -4963,7 +5076,6 @@ const LocalizedStrings kStringsSwedish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Texten var för lång: endast början och slutet översattes.",
     .tooltip_untranslated_above = L"Det finns ny oöversatt text ovanför. Placera markören i slutet av den raden och tryck på Enter för att översätta.",
     .repair_in_progress = L"Reparerar de lokala motorkomponenterna…",
     .repair_failed_title = L"Lokal översättning är inte tillgänglig",
@@ -5104,6 +5216,12 @@ const LocalizedStrings kStringsSwedish = {
     .openai_reasoning_server_default = L"Serverstandard (ej angiven)",
     .back_trans_section_back = L"Återöversättning",
     .back_trans_section_original = L"Originaltext",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Översätter... {c}/{t}",
+    .badge_translating_chunks = L"Översätter... ({n} delar)",
+    .badge_cancelling = L"Avbryter…",
+    .tooltip_translation_cancelled = L"Översättningen avbröts.",
+    .tooltip_cancel_hint = L"En lång översättning pågår. Klicka på brickan för att avbryta.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Det är ingen giltig GGUF-modellfil; den har inte registrerats.",
@@ -5222,7 +5340,6 @@ const LocalizedStrings kStringsDanish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Teksten var for lang: kun starten og slutningen blev oversat.",
     .tooltip_untranslated_above = L"Der er ny uoversat tekst ovenfor. Placer markøren i slutningen af den linje, og tryk på Enter for at oversætte.",
     .repair_in_progress = L"Reparerer de lokale motorkomponenter…",
     .repair_failed_title = L"Lokal oversættelse er ikke tilgængelig",
@@ -5363,6 +5480,12 @@ const LocalizedStrings kStringsDanish = {
     .openai_reasoning_server_default = L"Serverstandard (ikke angivet)",
     .back_trans_section_back = L"Tilbagetranslation",
     .back_trans_section_original = L"Originaltekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Oversætter... {c}/{t}",
+    .badge_translating_chunks = L"Oversætter... ({n} dele)",
+    .badge_cancelling = L"Annullerer…",
+    .tooltip_translation_cancelled = L"Oversættelsen annulleret.",
+    .tooltip_cancel_hint = L"Lang oversættelse i gang. Klik på badge'et for at annullere.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Det er ikke en gyldig GGUF-modelfil; den er ikke registreret.",
@@ -5481,7 +5604,6 @@ const LocalizedStrings kStringsFinnish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Teksti oli liian pitkä: vain alku ja loppu käännettiin.",
     .tooltip_untranslated_above = L"Yläpuolella on uutta kääntämätöntä tekstiä. Aseta kohdistin rivin loppuun ja paina Enter kääntääksesi.",
     .repair_in_progress = L"Korjataan paikallisia moottorikomponentteja…",
     .repair_failed_title = L"Paikallinen käännös ei ole käytettävissä",
@@ -5622,6 +5744,12 @@ const LocalizedStrings kStringsFinnish = {
     .openai_reasoning_server_default = L"Palvelimen oletus (ei asetettu)",
     .back_trans_section_back = L"Takaisinkäännös",
     .back_trans_section_original = L"Alkuperäinen teksti",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Kääntää... {c}/{t}",
+    .badge_translating_chunks = L"Kääntää... ({n} osaa)",
+    .badge_cancelling = L"Peruutetaan…",
+    .tooltip_translation_cancelled = L"Käännös peruutettu.",
+    .tooltip_cancel_hint = L"Pitkä käännös käynnissä. Napsauta merkkiä peruuttaaksesi.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Tämä ei ole kelvollinen GGUF-mallitiedosto; sitä ei rekisteröity.",
@@ -5740,7 +5868,6 @@ const LocalizedStrings kStringsNorwegian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Teksten var for lang: bare starten og slutten ble oversatt.",
     .tooltip_untranslated_above = L"Det er ny uoversatt tekst ovenfor. Plasser markøren på slutten av den linjen og trykk Enter for å oversette.",
     .repair_in_progress = L"Reparerer de lokale motorkomponentene…",
     .repair_failed_title = L"Lokal oversettelse er ikke tilgjengelig",
@@ -5881,6 +6008,12 @@ const LocalizedStrings kStringsNorwegian = {
     .openai_reasoning_server_default = L"Serverstandard (ikke angitt)",
     .back_trans_section_back = L"Tilbakeoversettelse",
     .back_trans_section_original = L"Originaltekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Oversetter... {c}/{t}",
+    .badge_translating_chunks = L"Oversetter... ({n} deler)",
+    .badge_cancelling = L"Avbryter…",
+    .tooltip_translation_cancelled = L"Oversettelsen avbrutt.",
+    .tooltip_cancel_hint = L"En lang oversettelse pågår. Klikk på merket for å avbryte.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Dette er ikke en gyldig GGUF-modellfil; den ble ikke registrert.",
@@ -5999,7 +6132,6 @@ const LocalizedStrings kStringsGreek = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Το κείμενο είναι πολύ μακρύ: μεταφράστηκαν μόνο η αρχή και το τέλος.",
     .tooltip_untranslated_above = L"Υπάρχει νέο μη μεταφρασμένο κείμενο παραπάνω. Τοποθετήστε τον δείκτη στο τέλος εκείνης της γραμμής και πατήστε Enter για μετάφραση.",
     .repair_in_progress = L"Επισκευή των τοπικών συστατικών μηχανής…",
     .repair_failed_title = L"Η τοπική μετάφραση δεν είναι διαθέσιμη",
@@ -6140,6 +6272,12 @@ const LocalizedStrings kStringsGreek = {
     .openai_reasoning_server_default = L"Προεπιλογή διακομιστή (μη ορισμένη)",
     .back_trans_section_back = L"Αντίστροφη μετάφραση",
     .back_trans_section_original = L"Πρωτότυπο κείμενο",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Μετάφραση... {c}/{t}",
+    .badge_translating_chunks = L"Μετάφραση... ({n} τμήματα)",
+    .badge_cancelling = L"Ακύρωση…",
+    .tooltip_translation_cancelled = L"Η μετάφραση ακυρώθηκε.",
+    .tooltip_cancel_hint = L"Μεγάλη μετάφραση σε εξέλιξη. Κάντε κλικ στο σήμα για ακύρωση.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Δεν είναι έγκυρο αρχείο μοντέλου GGUF· δεν καταχωρήθηκε.",
@@ -6258,7 +6396,6 @@ const LocalizedStrings kStringsTurkish = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Metin çok uzun olduğu için yalnızca başı ve sonu çevrildi.",
     .tooltip_untranslated_above = L"Yukarıda çevrilmemiş yeni metin var. Çevirmek için imleci o satırın sonuna getirin ve Enter'a basın.",
     .repair_in_progress = L"Yerel motor bileşenleri onarılıyor…",
     .repair_failed_title = L"Yerel çeviri kullanılamıyor",
@@ -6399,6 +6536,12 @@ const LocalizedStrings kStringsTurkish = {
     .openai_reasoning_server_default = L"Sunucu varsayılanı (ayarlanmadı)",
     .back_trans_section_back = L"Geri çeviri",
     .back_trans_section_original = L"Orijinal metin",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Çevriliyor... {c}/{t}",
+    .badge_translating_chunks = L"Çevriliyor... ({n} parça)",
+    .badge_cancelling = L"İptal ediliyor…",
+    .tooltip_translation_cancelled = L"Çeviri iptal edildi.",
+    .tooltip_cancel_hint = L"Uzun çeviri sürüyor. İptal etmek için rozete tıklayın.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Geçerli bir GGUF model dosyası değil; kaydedilmedi.",
@@ -6517,7 +6660,6 @@ const LocalizedStrings kStringsUkrainian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Текст надто довгий: перекладено лише початок і кінець.",
     .tooltip_untranslated_above = L"Вище є новий неперекладений текст. Поставте курсор у кінець цього рядка та натисніть Enter, щоб перекласти.",
     .repair_in_progress = L"Відновлення компонентів локального рушія…",
     .repair_failed_title = L"Локальний переклад недоступний",
@@ -6658,6 +6800,12 @@ const LocalizedStrings kStringsUkrainian = {
     .openai_reasoning_server_default = L"За замовчуванням сервера (не встановлено)",
     .back_trans_section_back = L"Зворотний переклад",
     .back_trans_section_original = L"Оригінальний текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Переклад... {c}/{t}",
+    .badge_translating_chunks = L"Переклад... ({n} частин)",
+    .badge_cancelling = L"Скасування…",
+    .tooltip_translation_cancelled = L"Переклад скасовано.",
+    .tooltip_cancel_hint = L"Триває довгий переклад. Натисніть на значок, щоб скасувати.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Це недійсний файл моделі GGUF; він не зареєстрований.",
@@ -6776,7 +6924,6 @@ const LocalizedStrings kStringsThai = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"ข้อความยาวเกินไป จึงแปลเฉพาะส่วนต้นและส่วนท้าย",
     .tooltip_untranslated_above = L"มีข้อความใหม่ที่ยังไม่ได้แปลด้านบน วางเคอร์เซอร์ที่ท้ายบรรทัดนั้นแล้วกด Enter เพื่อแปล",
     .repair_in_progress = L"กำลังซ่อมแซมส่วนประกอบเอนจิ้นในเครื่อง…",
     .repair_failed_title = L"การแปลในเครื่องไม่พร้อมใช้งาน",
@@ -6917,6 +7064,12 @@ const LocalizedStrings kStringsThai = {
     .openai_reasoning_server_default = L"ค่าเริ่มต้นของเซิร์ฟเวอร์ (ยังไม่ได้ตั้งค่า)",
     .back_trans_section_back = L"การแปลย้อนกลับ",
     .back_trans_section_original = L"ข้อความต้นฉบับ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"กำลังแปล... {c}/{t}",
+    .badge_translating_chunks = L"กำลังแปล... ({n} ส่วน)",
+    .badge_cancelling = L"กำลังยกเลิก…",
+    .tooltip_translation_cancelled = L"ยกเลิกการแปลแล้ว",
+    .tooltip_cancel_hint = L"การแปลที่ยาวกำลังดำเนินการ คลิกที่ป้ายเพื่อยกเลิก",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ไม่ใช่ไฟล์โมเดล GGUF ที่ถูกต้อง จึงไม่ได้ลงทะเบียน",
@@ -7035,7 +7188,6 @@ const LocalizedStrings kStringsIndonesian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Teks terlalu panjang: hanya bagian awal dan akhir yang diterjemahkan.",
     .tooltip_untranslated_above = L"Ada teks baru yang belum diterjemahkan di atas. Letakkan kursor di akhir baris itu dan tekan Enter untuk menerjemahkan.",
     .repair_in_progress = L"Memperbaiki komponen mesin lokal…",
     .repair_failed_title = L"Terjemahan lokal tidak tersedia",
@@ -7176,6 +7328,12 @@ const LocalizedStrings kStringsIndonesian = {
     .openai_reasoning_server_default = L"Bawaan server (belum diatur)",
     .back_trans_section_back = L"Terjemahan balik",
     .back_trans_section_original = L"Teks asli",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Menerjemahkan... {c}/{t}",
+    .badge_translating_chunks = L"Menerjemahkan... ({n} bagian)",
+    .badge_cancelling = L"Membatalkan…",
+    .tooltip_translation_cancelled = L"Terjemahan dibatalkan.",
+    .tooltip_cancel_hint = L"Terjemahan panjang sedang berlangsung. Klik lencana untuk membatalkan.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Bukan berkas model GGUF yang valid; tidak didaftarkan.",
@@ -7294,7 +7452,6 @@ const LocalizedStrings kStringsMalay = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Teks terlalu panjang: hanya bahagian awal dan akhir diterjemahkan.",
     .tooltip_untranslated_above = L"Terdapat teks baru yang belum diterjemahkan di atas. Letakkan kursor di hujung baris itu dan tekan Enter untuk menterjemah.",
     .repair_in_progress = L"Membaiki komponen enjin tempatan…",
     .repair_failed_title = L"Terjemahan tempatan tidak tersedia",
@@ -7435,6 +7592,12 @@ const LocalizedStrings kStringsMalay = {
     .openai_reasoning_server_default = L"Lalai pelayan (belum ditetapkan)",
     .back_trans_section_back = L"Terjemahan balik",
     .back_trans_section_original = L"Teks asal",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Menterjemah... {c}/{t}",
+    .badge_translating_chunks = L"Menterjemah... ({n} bahagian)",
+    .badge_cancelling = L"Membatalkan…",
+    .tooltip_translation_cancelled = L"Terjemahan dibatalkan.",
+    .tooltip_cancel_hint = L"Terjemahan panjang sedang berjalan. Klik lencana untuk membatalkan.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Bukan fail model GGUF yang sah; ia tidak didaftarkan.",
@@ -7555,7 +7718,6 @@ const LocalizedStrings kStringsFilipino = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"Masyadong mahaba ang teksto: simula at katapusan lang ang isinalin.",
     .tooltip_untranslated_above = L"May bagong hindi pa isinaling teksto sa itaas. Ilagay ang cursor sa dulo ng linyang iyon at pindutin ang Enter upang isalin.",
     .repair_in_progress = L"Kinukumpuni ang mga bahagi ng lokal na makina…",
     .repair_failed_title = L"Hindi available ang lokal na pagsasalin",
@@ -7696,6 +7858,12 @@ const LocalizedStrings kStringsFilipino = {
     .openai_reasoning_server_default = L"Pamantayan ng server (hindi itinakda)",
     .back_trans_section_back = L"Pabalik na salin",
     .back_trans_section_original = L"Orihinal na teksto",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Nagsasalin... {c}/{t}",
+    .badge_translating_chunks = L"Nagsasalin... ({n} bahagi)",
+    .badge_cancelling = L"Kinakansela…",
+    .tooltip_translation_cancelled = L"Kinansela ang pagsasalin.",
+    .tooltip_cancel_hint = L"May nagpapatuloy na mahahabang pagsasalin. I-click ang badge para kanselahin.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"Hindi ito wastong GGUF model file; hindi ito narehistro.",
@@ -7814,7 +7982,6 @@ const LocalizedStrings kStringsHindi = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"पाठ बहुत लंबा था: केवल शुरुआत और अंत का अनुवाद किया गया।",
     .tooltip_untranslated_above = L"ऊपर नया अनअनुवादित टेक्स्ट है। उसे अनुवाद करने के लिए कर्सर को उस पंक्ति के अंत में रखें और Enter दबाएं।",
     .repair_in_progress = L"लोकल इंजन घटकों की मरम्मत हो रही है…",
     .repair_failed_title = L"लोकल अनुवाद उपलब्ध नहीं है",
@@ -7955,6 +8122,12 @@ const LocalizedStrings kStringsHindi = {
     .openai_reasoning_server_default = L"सर्वर डिफ़ॉल्ट (अनसेट)",
     .back_trans_section_back = L"पश्च-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"अनुवाद हो रहा... {c}/{t}",
+    .badge_translating_chunks = L"अनुवाद हो रहा... ({n} हिस्से)",
+    .badge_cancelling = L"रद्द हो रहा है…",
+    .tooltip_translation_cancelled = L"अनुवाद रद्द कर दिया गया।",
+    .tooltip_cancel_hint = L"लंबा अनुवाद चल रहा है। रद्द करने के लिए बैज पर क्लिक करें।",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"यह मान्य GGUF मॉडल फ़ाइल नहीं है; इसे पंजीकृत नहीं किया गया।",
@@ -8073,7 +8246,6 @@ const LocalizedStrings kStringsBengali = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"পাঠ্যটি খুব দীর্ঘ ছিল: শুধু শুরু এবং শেষ অংশ অনুবাদ করা হয়েছে।",
     .tooltip_untranslated_above = L"উপরে নতুন অনুবাদহীন টেক্সট আছে। এটি অনুবাদ করতে কার্সারটি সেই লাইনের শেষে রাখুন এবং Enter চাপুন।",
     .repair_in_progress = L"লোকাল ইঞ্জিন উপাদান মেরামত হচ্ছে…",
     .repair_failed_title = L"লোকাল অনুবাদ পাওয়া যাচ্ছে না",
@@ -8214,6 +8386,12 @@ const LocalizedStrings kStringsBengali = {
     .openai_reasoning_server_default = L"সার্ভার ডিফল্ট (অসেট)",
     .back_trans_section_back = L"ব্যাক-অনুবাদ",
     .back_trans_section_original = L"মূল পাঠ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"অনুবাদ হচ্ছে... {c}/{t}",
+    .badge_translating_chunks = L"অনুবাদ হচ্ছে... ({n}টি অংশ)",
+    .badge_cancelling = L"বাতিল হচ্ছে…",
+    .tooltip_translation_cancelled = L"অনুবাদ বাতিল করা হয়েছে।",
+    .tooltip_cancel_hint = L"দীর্ঘ অনুবাদ চলছে। বাতিল করতে ব্যাজে ক্লিক করুন।",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"এটি বৈধ GGUF মডেল ফাইল নয়; তাই নিবন্ধন করা হয়নি।",
@@ -8333,7 +8511,6 @@ const LocalizedStrings kStringsArabic = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"النص طويل جدًا: تمت ترجمة البداية والنهاية فقط.",
     .tooltip_untranslated_above = L"يوجد نص جديد غير مترجم في الأعلى. ضع المؤشر في نهاية ذلك السطر واضغط Enter للترجمة.",
     .repair_in_progress = L"جارٍ إصلاح مكونات المحرك المحلي…",
     .repair_failed_title = L"الترجمة المحلية غير متاحة",
@@ -8474,6 +8651,12 @@ const LocalizedStrings kStringsArabic = {
     .openai_reasoning_server_default = L"الافتراضي من الخادم (غير محدد)",
     .back_trans_section_back = L"الترجمة العكسية",
     .back_trans_section_original = L"النص الأصلي",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"جارٍ الترجمة... {c}/{t}",
+    .badge_translating_chunks = L"جارٍ الترجمة... ({n} أجزاء)",
+    .badge_cancelling = L"جارٍ الإلغاء…",
+    .tooltip_translation_cancelled = L"تم إلغاء الترجمة.",
+    .tooltip_cancel_hint = L"هناك ترجمة طويلة جارٍ تنفيذها. انقر على الشارة للإلغاء.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"الملف ليس نموذج GGUF صالحًا؛ لم يتم تسجيله.",
@@ -8592,7 +8775,6 @@ const LocalizedStrings kStringsPersian = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"متن بسیار بلند بود: فقط ابتدا و انتها ترجمه شد.",
     .tooltip_untranslated_above = L"در بالا متن جدیدی بدون ترجمه وجود دارد. برای ترجمه، مکان‌نما را در انتهای آن خط قرار دهید و Enter را بزنید.",
     .repair_in_progress = L"در حال تعمیر اجزای موتور محلی…",
     .repair_failed_title = L"ترجمه محلی در دسترس نیست",
@@ -8733,6 +8915,12 @@ const LocalizedStrings kStringsPersian = {
     .openai_reasoning_server_default = L"پیش‌فرض سرور (تنظیم نشده)",
     .back_trans_section_back = L"ترجمهٔ معکوس",
     .back_trans_section_original = L"متن اصلی",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"در حال ترجمه... {c}/{t}",
+    .badge_translating_chunks = L"در حال ترجمه... ({n} بخش)",
+    .badge_cancelling = L"در حال لغو…",
+    .tooltip_translation_cancelled = L"ترجمه لغو شد.",
+    .tooltip_cancel_hint = L"ترجمهٔ طولانی در حال انجام است. برای لغو روی نشان کلیک کنید.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"فایل مدل GGUF معتبری نیست؛ ثبت نشد.",
@@ -8851,7 +9039,6 @@ const LocalizedStrings kStringsUrdu = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"متن بہت لمبا تھا: صرف آغاز اور انجام کا ترجمہ کیا گیا۔",
     .tooltip_untranslated_above = L"اوپر نیا غیر ترجمہ شدہ متن ہے۔ اس کا ترجمہ کرنے کے لیے کرسر کو اس لائن کے آخر میں رکھیں اور Enter دبائیں۔",
     .repair_in_progress = L"مقامی انجن اجزا کی مرمت جاری ہے…",
     .repair_failed_title = L"مقامی ترجمہ دستیاب نہیں ہے",
@@ -8992,6 +9179,12 @@ const LocalizedStrings kStringsUrdu = {
     .openai_reasoning_server_default = L"سرور ڈیفالٹ (غیر مقرر)",
     .back_trans_section_back = L"معکوس ترجمہ",
     .back_trans_section_original = L"اصلی متن",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ترجمہ جاری... {c}/{t}",
+    .badge_translating_chunks = L"ترجمہ جاری... ({n} حصے)",
+    .badge_cancelling = L"منسوخ ہو رہا ہے…",
+    .tooltip_translation_cancelled = L"ترجمہ منسوخ کر دیا گیا۔",
+    .tooltip_cancel_hint = L"طویل ترجمہ جاری ہے۔ منسوخ کرنے کے لیے بیج پر کلک کریں۔",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"یہ درست GGUF ماڈل فائل نہیں ہے؛ اسے رجسٹر نہیں کیا گیا۔",
@@ -9110,7 +9303,6 @@ const LocalizedStrings kStringsHebrew = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"הטקסט ארוך מדי: רק הפתיח והסיום תורגמו.",
     .tooltip_untranslated_above = L"יש טקסט חדש שלא תורגם למעלה. מקם את הסמן בסוף השורה ההיא ולחץ Enter כדי לתרגם.",
     .repair_in_progress = L"מתקן את רכיבי המנוע המקומי…",
     .repair_failed_title = L"התרגום המקומי אינו זמין",
@@ -9251,6 +9443,12 @@ const LocalizedStrings kStringsHebrew = {
     .openai_reasoning_server_default = L"ברירת מחדל של השרת (לא נקבע)",
     .back_trans_section_back = L"תרגום חוזר",
     .back_trans_section_original = L"טקסט מקורי",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"מתרגם... {c}/{t}",
+    .badge_translating_chunks = L"מתרגם... ({n} קטעים)",
+    .badge_cancelling = L"מבטל…",
+    .tooltip_translation_cancelled = L"התרגום בוטל.",
+    .tooltip_cancel_hint = L"תרגום ארוך בתהליך. לחץ על התג כדי לבטל.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"זהו לא קובץ מודל GGUF תקין; הוא לא נרשם.",
@@ -9369,7 +9567,6 @@ const LocalizedStrings kStringsKhmer = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"អត្ថបទវែងពេក៖ បានបកប្រែតែផ្នែកដើម និងបញ្ចប់ប៉ុណ្ណោះ។",
     .tooltip_untranslated_above = L"មានអត្ថបទថ្មីមិនទាន់បកប្រែខាងលើ។ ដើម្បីបកប្រែ សូមដាក់កូរ៉េស័រនៅចុងបន្ទាត់នោះ ហើយចុច Enter។",
     .repair_in_progress = L"កំពុងជួសជុលសមាសភាគម៉ាស៊ីនក្នុងម៉ាស៊ីន…",
     .repair_failed_title = L"ការបកប្រែក្នុងម៉ាស៊ីនមិនអាចប្រើបានទេ",
@@ -9510,6 +9707,12 @@ const LocalizedStrings kStringsKhmer = {
     .openai_reasoning_server_default = L"លំនាំដើមម៉ាស៊ីនមេ (មិនបានកំណត់)",
     .back_trans_section_back = L"ការបកប្រែត្រឡប់",
     .back_trans_section_original = L"អត្ថបទដើម",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"កំពុងបកប្រែ... {c}/{t}",
+    .badge_translating_chunks = L"កំពុងបកប្រែ... ({n} ផ្នែក)",
+    .badge_cancelling = L"កំពុងបោះបង់…",
+    .tooltip_translation_cancelled = L"បានបោះបង់ការបកប្រែហើយ",
+    .tooltip_cancel_hint = L"ការបកប្រែយូរកំពុងដំណើរការ។ ចុចលើផ្លាកសញ្ញាដើម្បីបោះបង់។",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ឯកសារម៉ូដែល GGUF មិនត្រឹមត្រូវ ទើបមិនបានចុះឈ្មោះ។",
@@ -9628,7 +9831,6 @@ const LocalizedStrings kStringsLao = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"ຂໍ້ຄວາມຍາວເກີນໄປ: ແປສະເພາະສ່ວນຕົ້ນແລະສ່ວນທ້າຍເທົ່ານັ້ນ.",
     .tooltip_untranslated_above = L"ມີຂໍ້ຄວາມໃໝ່ທີ່ຍັງບໍ່ໄດ້ແປຢູ່ຂ້າງເທິງ. ເພື່ອແປ, ກະລຸນາວາງເຄີເຊີທີ່ທ້າຍບັນທັດນັ້ນ ແລ້ວກົດ Enter.",
     .repair_in_progress = L"ກຳລັງສ້ອມແປງອົງປະກອບເຄື່ອງຈັກທ້ອງຖິ່ນ…",
     .repair_failed_title = L"ການແປພາສາທ້ອງຖິ່ນບໍ່ສາມາດໃຊ້ໄດ້",
@@ -9769,6 +9971,12 @@ const LocalizedStrings kStringsLao = {
     .openai_reasoning_server_default = L"ຄ່າເລີ່ມຕົ້ນຂອງເຊີບເວີ (ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ)",
     .back_trans_section_back = L"ການແປຍ້ອນກັບ",
     .back_trans_section_original = L"ຂໍ້ຄວາມຕົ້ນສະບັບ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ກຳລັງແປ... {c}/{t}",
+    .badge_translating_chunks = L"ກຳລັງແປ... ({n} ສ່ວນ)",
+    .badge_cancelling = L"ກຳລັງຍົກເລີກ…",
+    .tooltip_translation_cancelled = L"ຍົກເລີກການແປແລ້ວ",
+    .tooltip_cancel_hint = L"ການແປທີ່ຍາວກຳລັງດຳເນີນຢູ່. ກົດທີ່ປ້າຍເພື່ອຍົກເລີກ.",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"ບໍ່ແມ່ນໄຟລ໌ໂມເດວ GGUF ທີ່ຖືກຕ້ອງ ຈຶ່ງບໍ່ໄດ້ລົງທະບຽນ.",
@@ -9887,7 +10095,6 @@ const LocalizedStrings kStringsBurmese = {
     // v0.10.9 261121_0001 U-G chunks the full text through
     // SplitTextIntoTranslationChunks instead of truncating - the
     // kMaxCloudQueryUnits head/tail cap is gone.)
-    .translate_truncated_notice = L"စာသား အလွန်ရှည်သဖြင့် အစနှင့် အဆုံးကိုသာ ဘာသာပြန်ဆိုပါသည်။",
     .tooltip_untranslated_above = L"အပေါ်တွင် ဘာသာပြန်မထားသော စာသားအသစ်ရှိသည်။ ဘာသာပြန်ရန် ကာဆာကို ထိုစာကြောင်းအဆုံးသို့ ထားပြီး Enter နှိပ်ပါ။",
     .repair_in_progress = L"ပရိုဂရမ်အင်ဂျင်အစိတ်အပိုင်းများကို ပြုပြင်နေသည်…",
     .repair_failed_title = L"ဒေသန္တရ ဘာသာပြန်ချက် မရနိုင်ပါ",
@@ -10028,6 +10235,12 @@ const LocalizedStrings kStringsBurmese = {
     .openai_reasoning_server_default = L"ဆားဗားပုံသေ (မသတ်မှတ်ရသေးပါ)",
     .back_trans_section_back = L"ပြန်လည်ဘာသာပြန်",
     .back_trans_section_original = L"မူရင်းစာသား",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ပြန်ဆိုနေ... {c}/{t}",
+    .badge_translating_chunks = L"ပြန်ဆိုနေ... ({n} အပိုင်း)",
+    .badge_cancelling = L"ပယ်ဖျက်နေပါသည်…",
+    .tooltip_translation_cancelled = L"ပြန်ဆိုမှုကို ပယ်ဖျက်ခဲ့ပါပြီ။",
+    .tooltip_cancel_hint = L"ရှည်လျားသော ပြန်ဆိုမှု လုပ်ဆောင်နေပါသည်။ ပယ်ဖျက်ရန် အမှတ်အသားကို နှိပ်ပါ။",
     // 261111_0001 U6 (v0.10.7, R1 P1): registration gate rejection,
     // the active-binding list marker, and the activation notice.
     .gguf_invalid_model_body = L"မှန်ကန်တဲ့ GGUF မော်ဒယ်ဖိုင် မဟုတ်ဘူးဆိုတော့ မှတ်ပုံတင် မထားပါဘူး။",
@@ -10141,7 +10354,6 @@ const LocalizedStrings kStringsGujarati = {
     L"\n"
     L"તમે આ નોટિસ README ફાઇલમાં કોઈપણ સમયે ફરી વાંચી શકો છો.\n",
     .cheatsheet_config_path = L"સેટિંગ્સ ફાઇલ: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ટેક્સ્ટ ખૂબ લાંબો હતો, તેથી માત્ર શરૂઆત અને અંતનો અનુવાદ થયો.",
     .tooltip_untranslated_above = L"ઉપર નવો અનુવાદિત ન થયેલો ટેક્સ્ટ છે. તે લાઇનના અંતે કર્સર મૂકી અનુવાદ માટે Enter દબાવો.",
     .repair_in_progress = L"સ્થાનિક એન્જિન ઘટકોની મરમ્મત ચાલુ છે…",
     .repair_failed_title = L"સ્થાનિક અનુવાદ અનુપલબ્ધ",
@@ -10263,6 +10475,12 @@ const LocalizedStrings kStringsGujarati = {
     .openai_reasoning_server_default = L"સર્વર ડિફૉલ્ટ (સેટ નથી)",
     .back_trans_section_back = L"બેક-ટ્રાન્સલેશન",
     .back_trans_section_original = L"મૂળ ટેક્સ્ટ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"અનુવાદ થઈ રહ્યો છે... {c}/{t}",
+    .badge_translating_chunks = L"અનુવાદ થઈ રહ્યો છે... ({n} ભાગો)",
+    .badge_cancelling = L"રદ થઈ રહ્યું છે…",
+    .tooltip_translation_cancelled = L"અનુવાદ રદ થયો.",
+    .tooltip_cancel_hint = L"લાંબો અનુવાદ ચાલી રહ્યો છે. રદ કરવા બેજ પર ક્લિક કરો.",
     .gguf_invalid_model_body = L"માન્ય GGUF મોડેલ ફાઇલ નથી; તે રજિસ્ટર થયું નથી.",
     .gguf_manager_active_suffix = L"(વાપરવામાં)",
     .gguf_manager_activated = L"આ મોડેલ હવે વાપરવામાં આવી રહ્યું છે.",
@@ -10372,7 +10590,6 @@ const LocalizedStrings kStringsTelugu = {
     L"\n"
     L"దీన్ని మీరు ఎప్పుడైనా README ఫైల్‌లో మళ్లీ చదవవచ్చు.\n",
     .cheatsheet_config_path = L"సెట్టింగ్స్ ఫైల్: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"టెక్స్ట్ చాలా పొడవుగా ఉంది, కాబట్టి ప్రారంభం మరియు ముగింపు మాత్రమే అనువదించబడ్డాయి.",
     .tooltip_untranslated_above = L"పైన కొత్త అనువదించని టెక్స్ట్ ఉంది. ఆ లైన్ చివర కర్సర్ ఉంచి అనువదించడానికి Enter నొక్కండి.",
     .repair_in_progress = L"లోకల్ ఇంజిన్ కాంపోనెంట్లను రిపేర్ చేస్తోంది…",
     .repair_failed_title = L"లోకల్ అనువాదం అందుబాటులో లేదు",
@@ -10494,6 +10711,12 @@ const LocalizedStrings kStringsTelugu = {
     .openai_reasoning_server_default = L"సర్వర్ డిఫాల్ట్ (సెట్ చేయలేదు)",
     .back_trans_section_back = L"బ్యాక్-ట్రాన్స్‌లేషన్",
     .back_trans_section_original = L"అసలు పాఠ్యం",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"అనువదిస్తోంది... {c}/{t}",
+    .badge_translating_chunks = L"అనువదిస్తోంది... ({n} భాగాలు)",
+    .badge_cancelling = L"రద్దు చేస్తోంది…",
+    .tooltip_translation_cancelled = L"అనువాదం రద్దయింది.",
+    .tooltip_cancel_hint = L"పొడవైన అనువాదం కొనసాగుతోంది. రద్దు చేయడానికి బ్యాజ్ మీద క్లిక్ చేయండి.",
     .gguf_invalid_model_body = L"సరైన GGUF మోడల్ ఫైల్ కాదు; రిజిస్టర్ చేయలేదు.",
     .gguf_manager_active_suffix = L"(వాడుతున్నారు)",
     .gguf_manager_activated = L"ఈ మోడల్ ఇప్పుడు వాడుతున్నారు.",
@@ -10603,7 +10826,6 @@ const LocalizedStrings kStringsMarathi = {
     L"\n"
     L"ही सूचना तुम्ही कधीही README फाइलमध्ये पुन्हा वाचू शकता.\n",
     .cheatsheet_config_path = L"सेटिंग्ज फाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"मजकूर खूप मोठा होता, म्हणून फक्त सुरुवात आणि शेवटचे भाषांतर झाले.",
     .tooltip_untranslated_above = L"वर नवा अभाषांतरित मजकूर आहे. त्या ओळीच्या शेवटी करसर ठेवून भाषांतरासाठी Enter दाबा.",
     .repair_in_progress = L"स्थानिक इंजिन घटकांची दुरुस्ती सुरू आहे…",
     .repair_failed_title = L"स्थानिक भाषांतर अनुपलब्ध",
@@ -10725,6 +10947,12 @@ const LocalizedStrings kStringsMarathi = {
     .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट नाही)",
     .back_trans_section_back = L"बॅक-ट्रान्सलेशन",
     .back_trans_section_original = L"मूळ मजकूर",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"भाषांतर होत आहे... {c}/{t}",
+    .badge_translating_chunks = L"भाषांतर होत आहे... ({n} भाग)",
+    .badge_cancelling = L"रद्द होत आहे…",
+    .tooltip_translation_cancelled = L"भाषांतर रद्द झाले.",
+    .tooltip_cancel_hint = L"लांब भाषांतर सुरू आहे. रद्द करण्यासाठी बॅजवर क्लिक करा.",
     .gguf_invalid_model_body = L"वैध GGUF मॉडेल फाइल नाही; ते रजिस्टर झाले नाही.",
     .gguf_manager_active_suffix = L"(वापरात)",
     .gguf_manager_activated = L"हे मॉडेल आता वापरात आहे.",
@@ -10834,7 +11062,6 @@ const LocalizedStrings kStringsTamil = {
     L"\n"
     L"இதை நீங்கள் எப்போது வேண்டுமானாலும் README கோப்பில் மீண்டும் படிக்கலாம்.\n",
     .cheatsheet_config_path = L"அமைப்புக் கோப்பு: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"உரை மிக நீளமாக இருந்ததால், தொடக்கம் மற்றும் முடிவு மட்டும் மொழிபெயர்க்கப்பட்டது.",
     .tooltip_untranslated_above = L"மேலே புதிய மொழிபெயர்க்கப்படாத உரை உள்ளது. அந்த வரியின் முடிவில் கர்சரை வைத்து மொழிபெயர்க்க Enter அழுத்தவும்.",
     .repair_in_progress = L"உள்ளூர் இயந்திர கூறுகளை சரிசெய்து கொண்டிருக்கிறது…",
     .repair_failed_title = L"உள்ளூர் மொழிபெயர்ப்பு கிடைக்கவில்லை",
@@ -10956,6 +11183,12 @@ const LocalizedStrings kStringsTamil = {
     .openai_reasoning_server_default = L"சர்வர் இயல்புநிலை (அமைக்கப்படவில்லை)",
     .back_trans_section_back = L"பின்-மொழிபெயர்ப்பு",
     .back_trans_section_original = L"அசல் உரை",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"மொழிபெயர்க்கிறது... {c}/{t}",
+    .badge_translating_chunks = L"மொழிபெயர்க்கிறது... ({n} பகுதிகள்)",
+    .badge_cancelling = L"ரத்து செய்கிறது…",
+    .tooltip_translation_cancelled = L"மொழிபெயர்ப்பு ரத்து செய்யப்பட்டது.",
+    .tooltip_cancel_hint = L"நீளமான மொழிபெயர்ப்பு நடைபெறுகிறது. ரத்து செய்ய பேட்ஜை கிளிக் செய்யவும்.",
     .gguf_invalid_model_body = L"செல்லுபடியாகும் GGUF மாதிரி கோப்பு அல்ல; அது பதிவு செய்யப்படவில்லை.",
     .gguf_manager_active_suffix = L"(பயனில்)",
     .gguf_manager_activated = L"இம்மாதிரி இப்போது பயனில் உள்ளது.",
@@ -11065,7 +11298,6 @@ const LocalizedStrings kStringsTibetan = {
     L"\n"
     L"ཁྱོད་ཀྱིས་ཐོག་འདི་དུས་རྒྱུན README ཡིག་ཆ་ནས་ཡང་བསྐྱར་ཀློག་ཐུབ།\n",
     .cheatsheet_config_path = L"སྒྲིག་འགོད་ཡིག་ཆ། %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ཡིག་རིགས་རིང་དྲགས་པས་ཐོག་མ་དང་མཇུག་ཁོང་སྐད་སྒྱུར་བྱས།",
     .tooltip_untranslated_above = L"སྟེང་དུ་སྐད་སྒྱུར་མ་ཟིན་པའི་ཡིག་རིགས་གསར་བ་ཡོད། ངགས་འགོད་དེའི་མཇུག་ལ་ཡིག་རྟགས་བཞག་སྟེ Enter བསྣུན་ནས་སྐད་སྒྱུར་བྱོས།",
     .repair_in_progress = L"ནང་ཐོག་གི་འཕྲུལ་ཆས་ཀྱི་ཆ་ཤས་རྩོམ་སྒྲིག་བྱེད་བཞིན།…",
     .repair_failed_title = L"ནང་ཐོག་གི་སྐད་སྒྱུར་མི་སྤྱོད།",
@@ -11187,6 +11419,12 @@ const LocalizedStrings kStringsTibetan = {
     .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
     .back_trans_section_back = L"ཕྱིར་སྒྱུར།",
     .back_trans_section_original = L"མ་ཡིག",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"སྐད་སྒྱུར་བྱེད་བཞིན།... {c}/{t}",
+    .badge_translating_chunks = L"སྐད་སྒྱུར་བྱེད་བཞིན།... ({n} ཆ་ཤས།)",
+    .badge_cancelling = L"འཇོག་བཞིན།…",
+    .tooltip_translation_cancelled = L"སྐད་སྒྱུར་འཇོག་ཟིན།",
+    .tooltip_cancel_hint = L"སྐད་སྒྱུར་རིང་པོ་བྱེད་བཞིན་ཡོད། འཇོག་པར་མཐེབ་གཞིར་རྡེབ་རོགས།",
     .gguf_invalid_model_body = L"GGUF དཔེ་མཚོན་ཡིག་ཆ་ཁས་ལེན་མི་བྱེད། ཐོ་འགོད་མ་བྱས།",
     .gguf_manager_active_suffix = L"(སྤྱོད་བཞིན།)",
     .gguf_manager_activated = L"དཔེ་མཚོན་འདི་ད་ལྟ་སྤྱོད་བཞིན་ཡོད།",
@@ -11296,7 +11534,6 @@ const LocalizedStrings kStringsKazakh = {
     L"\n"
     L"Бұл ескертуді кез келген уақытта README файлынан қайта оқи аласыз.\n",
     .cheatsheet_config_path = L"Параметрлер файлы: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Мәтін тым ұзын болды, сондықтан тек басында және соңы аударылды.",
     .tooltip_untranslated_above = L"Жоғарыда жаңа аударылмаған мәтін бар. Сол жолдың соңына курсорды қойып, аударма үшін Enter басыңыз.",
     .repair_in_progress = L"Жергілікті қозғалтқыш компоненттері жөнделуде…",
     .repair_failed_title = L"Жергілікті аударма қолжетімсіз",
@@ -11417,6 +11654,12 @@ const LocalizedStrings kStringsKazakh = {
     .openai_reasoning_server_default = L"Сервер әдепкісі (орнатылмаған)",
     .back_trans_section_back = L"Кері аударма",
     .back_trans_section_original = L"Түпнұсқа мәтін",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Аударылуда... {c}/{t}",
+    .badge_translating_chunks = L"Аударылуда... ({n} бөлік)",
+    .badge_cancelling = L"Болдырмалып жатыр…",
+    .tooltip_translation_cancelled = L"Аударма болдырмаланды.",
+    .tooltip_cancel_hint = L"Ұзақ аударма жүріп жатыр. Болдырмау үшін белгішені басыңыз.",
     .gguf_invalid_model_body = L"Жарамды GGUF модель файлы емес; тіркелмеді.",
     .gguf_manager_active_suffix = L"(қолданылуда)",
     .gguf_manager_activated = L"Бұл модель енді қолданылуда.",
@@ -11526,7 +11769,6 @@ const LocalizedStrings kStringsMongolian = {
     L"\n"
     L"Та энэ мэдэгдлийг README файлаас дахин уншиж болно.\n",
     .cheatsheet_config_path = L"Тохиргооны файл: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Текст хэт урт тул зөвхөн эхлэл болон төгсгөлийг орчууллаа.",
     .tooltip_untranslated_above = L"Дээр шинэ орчуулагдаагүй текст байна. Тэр мөрийн төгсгөлд хулганыг тавьж орчуулахын тулд Enter дарна уу.",
     .repair_in_progress = L"Локал моторын бүрэлдэхүүнүүдийг засаж байна…",
     .repair_failed_title = L"Локал орчуулга боломжгүй",
@@ -11648,6 +11890,12 @@ const LocalizedStrings kStringsMongolian = {
     .openai_reasoning_server_default = L"Серверийн өгөгдмөл (тохируулаагүй)",
     .back_trans_section_back = L"Буцах орчуулга",
     .back_trans_section_original = L"Эх текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Орчуулж байна... {c}/{t}",
+    .badge_translating_chunks = L"Орчуулж байна... ({n} хэсэг)",
+    .badge_cancelling = L"Цуцлаж байна…",
+    .tooltip_translation_cancelled = L"Орчуулга цуцлагдлаа.",
+    .tooltip_cancel_hint = L"Урт орчуулга хийгдэж байна. Цуцлахын тулд тэмдэг дээр дарна уу.",
     .gguf_invalid_model_body = L"Зөвшөөрөгдөх GGUF загварын файл биш; бүртгэгдээгүй.",
     .gguf_manager_active_suffix = L"(ашиглагдаж байна)",
     .gguf_manager_activated = L"Энэ загвар одоо ашиглагдаж байна.",
@@ -11757,7 +12005,6 @@ const LocalizedStrings kStringsUyghur = {
     L"\n"
     L"بۇ ئۇقتۇرۇشنى ھەر قانداق ۋاقىتتا README ھۆججىتىدىن قايتا ئوقۇيالايسىز.\n",
     .cheatsheet_config_path = L"تەڭشەك ھۆججىتى: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"تېكىست بەك ئۇزۇن بولغاچقا پەقەت باشى ۋە ئاخىرىلا تەرجىمە قىلىندى.",
     .tooltip_untranslated_above = L"ئۈستىدە تەرجىمە قىلىنمىغان يېڭى تېكىست بار. شۇ قۇرنىڭ ئاخىرىغا نۇربېلىك قويۇپ تەرجىمە قىلىش ئۈچۈن Enter بېسىڭ.",
     .repair_in_progress = L"يەرلىك ماتور ئىزاھلىرى تۈزىتىلمەكتە…",
     .repair_failed_title = L"يەرلىك تەرجىمە ئىشلەتكىلى بولمايدۇ",
@@ -11879,6 +12126,12 @@ const LocalizedStrings kStringsUyghur = {
     .openai_reasoning_server_default = L"مۇلازىمېتىر كۆڭۈلدىكى (تەڭشەلمىگەن)",
     .back_trans_section_back = L"قايتا تەرجىمە",
     .back_trans_section_original = L"ئەسلى تېكىست",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"تەرجىمە قىلىنىۋاتىدۇ... {c}/{t}",
+    .badge_translating_chunks = L"تەرجىمە قىلىنىۋاتىدۇ... ({n} بۆلەك)",
+    .badge_cancelling = L"بىكار قىلىنىۋاتىدۇ…",
+    .tooltip_translation_cancelled = L"تەرجىمە بىكار قىلىندى.",
+    .tooltip_cancel_hint = L"ئۇزۇن تەرجىمە ئىلىۋاتىدۇ. بىكار قىلىش ئۈچۈن بەلگىنى بېسىڭ.",
     .gguf_invalid_model_body = L"ئىناۋەتلىك GGUF مودېل ھۆججىتى ئەمەس؛ تىزىملانمىدى.",
     .gguf_manager_active_suffix = L"(ئىشلىتىلىۋاتىدۇ)",
     .gguf_manager_activated = L"بۇ مودېل ھازىر ئىشلىتىلىۋاتىدۇ.",
@@ -11988,7 +12241,6 @@ const LocalizedStrings kStringsCantonese = {
     L"\n"
     L"你可以隨時喺 README 檔案度重讀呢份告示。\n",
     .cheatsheet_config_path = L"設定檔案：%LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"文字太長，淨係翻譯咗開頭同結尾。",
     .tooltip_untranslated_above = L"上面有新嘅未翻譯文字。將游標放喺嗰行尾，撳 Enter 翻譯。",
     .repair_in_progress = L"正在修復本機引擎組件…",
     .repair_failed_title = L"本機翻譯無法使用",
@@ -12110,6 +12362,12 @@ const LocalizedStrings kStringsCantonese = {
     .openai_reasoning_server_default = L"伺服器預設（未設定）",
     .back_trans_section_back = L"回譯",
     .back_trans_section_original = L"原文",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"翻譯中... {c}/{t}",
+    .badge_translating_chunks = L"翻譯中... ({n} 個區塊)",
+    .badge_cancelling = L"取消中…",
+    .tooltip_translation_cancelled = L"翻譯已取消。",
+    .tooltip_cancel_hint = L"長篇翻譯進行緊。撳一下徽章就可以取消。",
     .gguf_invalid_model_body = L"唔係有效嘅 GGUF 模型檔案，所以冇註冊。",
     .gguf_manager_active_suffix = L"(緊用緊)",
     .gguf_manager_activated = L"呢個模型而家緊用緊。",
@@ -12219,7 +12477,6 @@ const LocalizedStrings kStringsBosnian = {
     L"\n"
     L"Ovo obavještenje možete ponovo pročitati u README datoteci.\n",
     .cheatsheet_config_path = L"Datoteka postavki: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Tekst je bio predug, pa su prevedeni samo početak i kraj.",
     .tooltip_untranslated_above = L"Iznad se nalazi novi neprevedeni tekst. Postavite kursor na kraj tog reda i pritisnite Enter da ga prevedete.",
     .repair_in_progress = L"Popravljanje komponenti lokalnog mašina…",
     .repair_failed_title = L"Lokalno prevođenje nedostupno",
@@ -12341,6 +12598,12 @@ const LocalizedStrings kStringsBosnian = {
     .openai_reasoning_server_default = L"Zadano na serveru (nije postavljeno)",
     .back_trans_section_back = L"Povratni prevod",
     .back_trans_section_original = L"Originalni tekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Prevođenje... {c}/{t}",
+    .badge_translating_chunks = L"Prevođenje... ({n} dijela)",
+    .badge_cancelling = L"Otkazivanje…",
+    .tooltip_translation_cancelled = L"Prevođenje otkazano.",
+    .tooltip_cancel_hint = L"Dugi prijevod u tijeku. Kliknite značku za otkazivanje.",
     .gguf_invalid_model_body = L"Nije valjana GGUF datoteka modela; nije registrovana.",
     .gguf_manager_active_suffix = L"(u upotrebi)",
     .gguf_manager_activated = L"Ovaj model je sada u upotrebi.",
@@ -12450,7 +12713,6 @@ const LocalizedStrings kStringsSerbian = {
     L"\n"
     L"Ово обавештење можете поново прочитати у README датотеци.\n",
     .cheatsheet_config_path = L"Датотека подешавања: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Текст је био предугачак, па су преведени само почетак и крај.",
     .tooltip_untranslated_above = L"Изнад се налази нови непреведени текст. Поставите курсор на крај тог реда и притисните Enter да га преведете.",
     .repair_in_progress = L"Поправљање компоненти локалног машина…",
     .repair_failed_title = L"Локално превођење недоступно",
@@ -12572,6 +12834,12 @@ const LocalizedStrings kStringsSerbian = {
     .openai_reasoning_server_default = L"Подразумевано на серверу (није подешено)",
     .back_trans_section_back = L"Повратни превод",
     .back_trans_section_original = L"Оригинални текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Превођење... {c}/{t}",
+    .badge_translating_chunks = L"Превођење... ({n} делова)",
+    .badge_cancelling = L"Отказивање…",
+    .tooltip_translation_cancelled = L"Превођење отказано.",
+    .tooltip_cancel_hint = L"Дуго превођење је у току. Кликните на значку да откажете.",
     .gguf_invalid_model_body = L"Није важећа GGUF датотека модела; није регистрована.",
     .gguf_manager_active_suffix = L"(у употреби)",
     .gguf_manager_activated = L"Овај модел је сада у употреби.",
@@ -12681,7 +12949,6 @@ const LocalizedStrings kStringsCroatian = {
     L"\n"
     L"Ovu obavijest možete ponovo pročitati u README datoteci.\n",
     .cheatsheet_config_path = L"Datoteka postavki: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Tekst je bio predugačak, pa su prevedeni samo početak i kraj.",
     .tooltip_untranslated_above = L"Iznad se nalazi novi neprevedeni tekst. Postavite pokazivač na kraj tog retka i pritisnite Enter da ga prevedete.",
     .repair_in_progress = L"Popravljanje komponenata lokalnog stroja…",
     .repair_failed_title = L"Lokalno prevođenje nedostupno",
@@ -12803,6 +13070,12 @@ const LocalizedStrings kStringsCroatian = {
     .openai_reasoning_server_default = L"Zadano na poslužitelju (nije postavljeno)",
     .back_trans_section_back = L"Povratni prijevod",
     .back_trans_section_original = L"Originalni tekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Prevođenje... {c}/{t}",
+    .badge_translating_chunks = L"Prevođenje... ({n} dijelova)",
+    .badge_cancelling = L"Otkazivanje…",
+    .tooltip_translation_cancelled = L"Prevođenje otkazano.",
+    .tooltip_cancel_hint = L"Dugotrajan prijevod u tijeku. Kliknite značku za otkazivanje.",
     .gguf_invalid_model_body = L"Nije valjana GGUF datoteka modela; nije registrirana.",
     .gguf_manager_active_suffix = L"(u uporabi)",
     .gguf_manager_activated = L"Ovaj model je sada u uporabi.",
@@ -12912,7 +13185,6 @@ const LocalizedStrings kStringsSlovenian = {
     L"\n"
     L"To obvestilo lahko kadar koli ponovno preberete v datoteki README.\n",
     .cheatsheet_config_path = L"Datoteka z nastavitvami: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Besedilo je bilo predolgo, zato sta bila prevedena le začetek in konec.",
     .tooltip_untranslated_above = L"Zgoraj je novo neprevedeno besedilo. Postavite kazalko na konec te vrstice in pritisnite Enter za prevod.",
     .repair_in_progress = L"Popravljanje komponent lokalnega stroja…",
     .repair_failed_title = L"Lokalno prevajanje ni na voljo",
@@ -13034,6 +13306,12 @@ const LocalizedStrings kStringsSlovenian = {
     .openai_reasoning_server_default = L"Privzeto na strežniku (ni nastavljeno)",
     .back_trans_section_back = L"Povratni prevod",
     .back_trans_section_original = L"Izvirno besedilo",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Prevajanje... {c}/{t}",
+    .badge_translating_chunks = L"Prevajanje... ({n} delov)",
+    .badge_cancelling = L"Preklic…",
+    .tooltip_translation_cancelled = L"Prevajanje preklicano.",
+    .tooltip_cancel_hint = L"Dolgotrajen prevod v teku. Kliknite značko za preklic.",
     .gguf_invalid_model_body = L"Ni veljavna datoteka modela GGUF; ni bila registrirana.",
     .gguf_manager_active_suffix = L"(v uporabi)",
     .gguf_manager_activated = L"Ta model je zdaj v uporabi.",
@@ -13143,7 +13421,6 @@ const LocalizedStrings kStringsSlovak = {
     L"\n"
     L"Toto oznámenie si kedykoľvek znova prečítate v súbore README.\n",
     .cheatsheet_config_path = L"Súbor nastavení: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Text bol príliš dlhý, preložený bol len jeho začiatok a koniec.",
     .tooltip_untranslated_above = L"Nad týmto riadkom je nový nepreložený text. Umiestnite kurzor na koniec tohto riadka a stlačte Enter, aby sa preložil.",
     .repair_in_progress = L"Opravujú sa komponenty lokálneho enginu…",
     .repair_failed_title = L"Lokálny preklad nie je dostupný",
@@ -13265,6 +13542,12 @@ const LocalizedStrings kStringsSlovak = {
     .openai_reasoning_server_default = L"Predvolené servera (nenastavené)",
     .back_trans_section_back = L"Spätný preklad",
     .back_trans_section_original = L"Originálny text",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Prekladá sa... {c}/{t}",
+    .badge_translating_chunks = L"Prekladá sa... ({n} častí)",
+    .badge_cancelling = L"Ruší sa…",
+    .tooltip_translation_cancelled = L"Preklad zrušený.",
+    .tooltip_cancel_hint = L"Prebieha dlhý preklad. Kliknutím na odznak ho zrušíte.",
     .gguf_invalid_model_body = L"Nie je to platný súbor modelu GGUF; nebol zaregistrovaný.",
     .gguf_manager_active_suffix = L"(používa sa)",
     .gguf_manager_activated = L"Tento model sa teraz používa.",
@@ -13374,7 +13657,6 @@ const LocalizedStrings kStringsBulgarian = {
     L"\n"
     L"Можете да прочетете това по всяко време във файла README.\n",
     .cheatsheet_config_path = L"Файл с настройки: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Текстът беше твърде дълъг, затова бяха преведени само началото и краят му.",
     .tooltip_untranslated_above = L"Над този ред има нов непреведен текст. Поставете курсора в края на реда и натиснете Enter, за да го преведете.",
     .repair_in_progress = L"Възстановяване на компонентите на локалния двигател…",
     .repair_failed_title = L"Локалният превод не е достъпен",
@@ -13496,6 +13778,12 @@ const LocalizedStrings kStringsBulgarian = {
     .openai_reasoning_server_default = L"Сървърна стойност по подразбиране (не е зададена)",
     .back_trans_section_back = L"Обратен превод",
     .back_trans_section_original = L"Оригинален текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Превежда се... {c}/{t}",
+    .badge_translating_chunks = L"Превежда се... ({n} части)",
+    .badge_cancelling = L"Отменя се…",
+    .tooltip_translation_cancelled = L"Преводът е отменен.",
+    .tooltip_cancel_hint = L"Дълъг превод е в ход. Щракнете върху значката, за да отмените.",
     .gguf_invalid_model_body = L"Не е валиден файл на модел GGUF; не беше регистриран.",
     .gguf_manager_active_suffix = L"(използва се)",
     .gguf_manager_activated = L"Този модел вече се използва.",
@@ -13605,7 +13893,6 @@ const LocalizedStrings kStringsLithuanian = {
     L"\n"
     L"Šį pranešimą bet kada galite perskaityti naujai faile README.\n",
     .cheatsheet_config_path = L"Nustatymų failas: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Tekstas buvo per ilgas, todėl išversta tik jo pradžia ir pabaiga.",
     .tooltip_untranslated_above = L"Aukščiau yra naujo neišversto teksto. Padėkite žymeklį tos eilutės pabaigoje ir paspauskite Enter, kad jis būtų išverstas.",
     .repair_in_progress = L"Taisomi vietinio variklio komponentai…",
     .repair_failed_title = L"Vietinis vertimas nepasiekiamas",
@@ -13727,6 +14014,12 @@ const LocalizedStrings kStringsLithuanian = {
     .openai_reasoning_server_default = L"Serverio numatytasis (nenustatytas)",
     .back_trans_section_back = L"Atgalinis vertimas",
     .back_trans_section_original = L"Originalus tekstas",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Verčiama... {c}/{t}",
+    .badge_translating_chunks = L"Verčiama... ({n} dalys)",
+    .badge_cancelling = L"Atšaukiama…",
+    .tooltip_translation_cancelled = L"Vertimas atšauktas.",
+    .tooltip_cancel_hint = L"Vyksta ilgas vertimas. Spustelėkite ženklelį, kad atšauktumėte.",
     .gguf_invalid_model_body = L"Tai netinkamas GGUF modelio failas; jis nebuvo užregistruotas.",
     .gguf_manager_active_suffix = L"(naudojamas)",
     .gguf_manager_activated = L"Šis modelis dabar naudojamas.",
@@ -13836,7 +14129,6 @@ const LocalizedStrings kStringsLatvian = {
     L"\n"
     L"Šo paziņojumu jebkurā laikā varat pārlasīt failā README.\n",
     .cheatsheet_config_path = L"Iestatījumu fails: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Teksts bija pārāk garš, tāpēc tika tulkots tikai tā sākums un beigas.",
     .tooltip_untranslated_above = L"Virs šīs rindas ir jauns netulkots teksts. Novietojiet kursoru šīs rindas beigās un nospiediet Enter, lai to tulkotu.",
     .repair_in_progress = L"Notiek vietējā dzinēja komponentu labošana…",
     .repair_failed_title = L"Vietējā tulkošana nav pieejama",
@@ -13958,6 +14250,12 @@ const LocalizedStrings kStringsLatvian = {
     .openai_reasoning_server_default = L"Servera noklusējums (nav iestatīts)",
     .back_trans_section_back = L"Atpakaļtulkojums",
     .back_trans_section_original = L"Oriģinālais teksts",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tulko... {c}/{t}",
+    .badge_translating_chunks = L"Tulko... ({n} daļas)",
+    .badge_cancelling = L"Atceļ…",
+    .tooltip_translation_cancelled = L"Tulkojums atcelts.",
+    .tooltip_cancel_hint = L"Notiek garš tulkojums. Noklikšķiniet uz nozīmītes, lai atceltu.",
     .gguf_invalid_model_body = L"Nav derīgs GGUF modeļa fails; tas netika reģistrēts.",
     .gguf_manager_active_suffix = L"(tiek izmantots)",
     .gguf_manager_activated = L"Šis modelis tagad tiek izmantots.",
@@ -14067,7 +14365,6 @@ const LocalizedStrings kStringsEstonian = {
     L"\n"
     L"Seda teatist saate igal ajal lugeda failist README.\n",
     .cheatsheet_config_path = L"Seadete fail: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Tekst oli liiga pikk, seetõttu tõlgiti ainult selle algus ja lõpp.",
     .tooltip_untranslated_above = L"Selle rea kohal on uut tõlkimata teksti. Asetage kursor selle rea lõppu ja vajutage tõlkimiseks Enter.",
     .repair_in_progress = L"Kohaliku mootori komponentide parandamine…",
     .repair_failed_title = L"Kohalik tõlkimine pole saadaval",
@@ -14189,6 +14486,12 @@ const LocalizedStrings kStringsEstonian = {
     .openai_reasoning_server_default = L"Serveri vaikeväärtus (määramata)",
     .back_trans_section_back = L"Tagasitõlge",
     .back_trans_section_original = L"Originaaltekst",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tõlgib... {c}/{t}",
+    .badge_translating_chunks = L"Tõlgib... ({n} osa)",
+    .badge_cancelling = L"Tühistamine…",
+    .tooltip_translation_cancelled = L"Tõlge tühistati.",
+    .tooltip_cancel_hint = L"Pikk tõlge käib. Tühistamiseks klõpsake märgile.",
     .gguf_invalid_model_body = L"See ei ole kehtiv GGUF-mudeli fail; seda ei registreeritud.",
     .gguf_manager_active_suffix = L"(kasutusel)",
     .gguf_manager_activated = L"See mudel on nüüd kasutusel.",
@@ -14298,7 +14601,6 @@ const LocalizedStrings kStringsAfrikaans = {
     L"\n"
     L"Jy kan dit enige tyd in die README-lêer herlees.\n",
     .cheatsheet_config_path = L"Instellingslêer: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Die teks was te lank, dus is net die begin en einde daarvan vertaal.",
     .tooltip_untranslated_above = L"Daar is nuwe onvertaalde teks hierbo. Plaas die wyser aan die einde van daardie reël en druk Enter om dit te vertaal.",
     .repair_in_progress = L"Besig om die plaaslike enjin se komponente te herstel…",
     .repair_failed_title = L"Plaaslike vertaling nie beskikbaar nie",
@@ -14420,6 +14722,12 @@ const LocalizedStrings kStringsAfrikaans = {
     .openai_reasoning_server_default = L"Bedienerstandaard (ongestel)",
     .back_trans_section_back = L"Terugvertaling",
     .back_trans_section_original = L"Oorspronklike teks",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Vertaal... {c}/{t}",
+    .badge_translating_chunks = L"Vertaal... ({n} dele)",
+    .badge_cancelling = L"Kanselleer tans…",
+    .tooltip_translation_cancelled = L"Vertaling gekanselleerd.",
+    .tooltip_cancel_hint = L"Lang vertaling besig. Klik op die kenteken om te kanselleer.",
     .gguf_invalid_model_body = L"Nie 'n geldige GGUF-model-lêer nie; dit is nie geregistreer nie.",
     .gguf_manager_active_suffix = L"(in gebruik)",
     .gguf_manager_activated = L"Hierdie model is nou in gebruik.",
@@ -14529,7 +14837,6 @@ const LocalizedStrings kStringsCatalan = {
     L"\n"
     L"Pots tornar a llegir aquest avís al fitxer README.\n",
     .cheatsheet_config_path = L"Fitxer de configuració: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"El text era massa llarg, així que només se n'han traduït el començament i el final.",
     .tooltip_untranslated_above = L"A sobre hi ha text nou sense traduir. Col·loca el cursor al final d'aquella línia i prem Retorn per traduir-lo.",
     .repair_in_progress = L"S'estan reparant els components del motor local…",
     .repair_failed_title = L"La traducció local no està disponible",
@@ -14651,6 +14958,12 @@ const LocalizedStrings kStringsCatalan = {
     .openai_reasoning_server_default = L"Per defecte del servidor (no establert)",
     .back_trans_section_back = L"Retrotraducció",
     .back_trans_section_original = L"Text original",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traduint... {c}/{t}",
+    .badge_translating_chunks = L"Traduint... ({n} fragments)",
+    .badge_cancelling = L"S'està cancel·lant…",
+    .tooltip_translation_cancelled = L"Traducció cancel·lada.",
+    .tooltip_cancel_hint = L"Traducció llarga en curs. Feu clic a la insígnia per cancel·lar.",
     .gguf_invalid_model_body = L"No és un fitxer de model GGUF vàlid; no s'ha registrat.",
     .gguf_manager_active_suffix = L"(en ús)",
     .gguf_manager_activated = L"Aquest model ja s'està utilitzant.",
@@ -14760,7 +15073,6 @@ const LocalizedStrings kStringsIcelandic = {
     L"\n"
     L"Þú getur lesið þetta hvenær sem er í README-skránni.\n",
     .cheatsheet_config_path = L"Stillingaskrá: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Textinn var of langur, þannig að aðeins byrjunin og endirinn voru þýdd.",
     .tooltip_untranslated_above = L"Nýr óþýddur texti er fyrir ofan. Settu bendilinn í lok þeirrar línu og ýttu á Enter til að þýða hann.",
     .repair_in_progress = L"Verið er að laga hluta staðbundnu vélarinnar…",
     .repair_failed_title = L"Staðbundin þýðing ekki í boði",
@@ -14882,6 +15194,12 @@ const LocalizedStrings kStringsIcelandic = {
     .openai_reasoning_server_default = L"Sjálfgefið af þjóni (ekki stillt)",
     .back_trans_section_back = L"Bakþýðing",
     .back_trans_section_original = L"Upprunalegur texti",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Þýðir... {c}/{t}",
+    .badge_translating_chunks = L"Þýðir... ({n} hluta)",
+    .badge_cancelling = L"Verið er að hætta við…",
+    .tooltip_translation_cancelled = L"Þýðingu hætt.",
+    .tooltip_cancel_hint = L"Lang þýðing í gangi. Smelltu á skjaldmerkið til að hætta við.",
     .gguf_invalid_model_body = L"Ekki gilt GGUF-líkanaskrá; hún var ekki skráð.",
     .gguf_manager_active_suffix = L"(í notkun)",
     .gguf_manager_activated = L"Þetta líkan er nú í notkun.",
@@ -14991,7 +15309,6 @@ const LocalizedStrings kStringsAlbanian = {
     L"\n"
     L"Mund ta lexosh këtë në çdo kohë në skedarin README.\n",
     .cheatsheet_config_path = L"Skedari i cilësimeve: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Teksti ishte shumë i gjatë, prandaj u përkthye vetëm fillimi dhe fundi i tij.",
     .tooltip_untranslated_above = L"Sipër ka tekst të ri të papërkthyer. Vendos kursorin në fund të asaj rreshti dhe shtyp Enter për ta përkthyer.",
     .repair_in_progress = L"Po riparohen komponentët e motorit lokal…",
     .repair_failed_title = L"Përkthimi lokal nuk është i disponueshëm",
@@ -15113,6 +15430,12 @@ const LocalizedStrings kStringsAlbanian = {
     .openai_reasoning_server_default = L"Parazgjedhja e serverit (e pacaktuar)",
     .back_trans_section_back = L"Përkthim i kthyer",
     .back_trans_section_original = L"Teksti origjinal",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Duke përkthyer... {c}/{t}",
+    .badge_translating_chunks = L"Duke përkthyer... ({n} pjesë)",
+    .badge_cancelling = L"Duke anuluar…",
+    .tooltip_translation_cancelled = L"Përkthimi u anulua.",
+    .tooltip_cancel_hint = L"Përkthim i gjatë në vazhdim. Klikoni mbi shenjën për ta anuluar.",
     .gguf_invalid_model_body = L"Nuk është skedar i vlefshëm modeli GGUF; nuk u regjistrua.",
     .gguf_manager_active_suffix = L"(në përdorim)",
     .gguf_manager_activated = L"Ky model është tani në përdorim.",
@@ -15222,7 +15545,6 @@ const LocalizedStrings kStringsMacedonian = {
     L"\n"
     L"Ова можете да го прочитате во секое време во датотеката README.\n",
     .cheatsheet_config_path = L"Датотека со поставки: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Текстот беше предолг, па беа преведени само почетокот и крајот.",
     .tooltip_untranslated_above = L"Над овој ред има нов непреведен текст. Поставете го курсорот на крајот од тој ред и притиснете Enter за да го преведете.",
     .repair_in_progress = L"Се поправаат компонентите на локалниот мотор…",
     .repair_failed_title = L"Локалниот превод не е достапен",
@@ -15344,6 +15666,12 @@ const LocalizedStrings kStringsMacedonian = {
     .openai_reasoning_server_default = L"Стандардно од сервер (не е поставено)",
     .back_trans_section_back = L"Обратен превод",
     .back_trans_section_original = L"Оригинален текст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Преведува... {c}/{t}",
+    .badge_translating_chunks = L"Преведува... ({n} делови)",
+    .badge_cancelling = L"Се откажува…",
+    .tooltip_translation_cancelled = L"Преводот е откажан.",
+    .tooltip_cancel_hint = L"Долг превод во тек. Кликнете на значката за да откажете.",
     .gguf_invalid_model_body = L"Не е валидна датотека на GGUF модел; не е регистрирана.",
     .gguf_manager_active_suffix = L"(се користи)",
     .gguf_manager_activated = L"Овој модел сега се користи.",
@@ -15453,7 +15781,6 @@ const LocalizedStrings kStringsWelsh = {
     L"\n"
     L"Gallwch ailddarllen hyn ar unrhyw adeg yn y ffeil README.\n",
     .cheatsheet_config_path = L"Ffeil osodiadau: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Roedd y testun yn rhy hir, felly dim ond y dechrau a'r diwedd a gyfieithwyd.",
     .tooltip_untranslated_above = L"Mae testun newydd heb ei gyfieithu uwchben. Rhowch y cyrchwr ar ddiwedd y llinell honno a phwyso Enter i'w gyfieithu.",
     .repair_in_progress = L"Yn atgyweirio cydrannau'r peiriant lleol…",
     .repair_failed_title = L"Nid yw cyfieithu lleol ar gael",
@@ -15575,6 +15902,12 @@ const LocalizedStrings kStringsWelsh = {
     .openai_reasoning_server_default = L"Rhagosodiad gweinydd (heb ei osod)",
     .back_trans_section_back = L"Ôl-gyfieithu",
     .back_trans_section_original = L"Testun gwreiddiol",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Yn cyfieithu... {c}/{t}",
+    .badge_translating_chunks = L"Yn cyfieithu... ({n} darn)",
+    .badge_cancelling = L"Yn canslo…",
+    .tooltip_translation_cancelled = L"Cyfieithu wedi'i ganslo.",
+    .tooltip_cancel_hint = L"Cyfieithiad hir ar y gweill. Cliciwch y bathodyn i ganslo.",
     .gguf_invalid_model_body = L"Nid yw'n ffeil model GGUF ddilys; ni chafodd ei chofrestru.",
     .gguf_manager_active_suffix = L"(yn cael ei ddefnyddio)",
     .gguf_manager_activated = L"Mae'r model hwn bellach yn cael ei ddefnyddio.",
@@ -15684,7 +16017,6 @@ const LocalizedStrings kStringsIrish = {
     L"\n"
     L"Is féidir leat é seo a athléamh am ar bith sa chomhad README.\n",
     .cheatsheet_config_path = L"Comhad socruithe: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Bhí an téacs ró-fhada, mar sin níor aistríodh ach an tús agus an deireadh.",
     .tooltip_untranslated_above = L"Tá téacs nua neamhaistrithe thuas. Cuir an cúrsóir ag deireadh na líne sin agus brúigh Enter chun é a aistriú.",
     .repair_in_progress = L"Ag deisiú chomhpháirteanna an innill áitiúil…",
     .repair_failed_title = L"Níl aistriúchán áitiúil ar fáil",
@@ -15806,6 +16138,12 @@ const LocalizedStrings kStringsIrish = {
     .openai_reasoning_server_default = L"Réamhshocrú freastalaí (gan socrú)",
     .back_trans_section_back = L"Ais-aistriúchán",
     .back_trans_section_original = L"Téacs bunaidh",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Ag aistriú... {c}/{t}",
+    .badge_translating_chunks = L"Ag aistriú... ({n} cuid)",
+    .badge_cancelling = L"Ag cealú…",
+    .tooltip_translation_cancelled = L"Aistriú cealaithe.",
+    .tooltip_cancel_hint = L"Aistriú fada ar siúl. Cliceáil ar an suaitheantas chun é a chealú.",
     .gguf_invalid_model_body = L"Ní comhad samhla GGUF bailí é; níor cláraíodh é.",
     .gguf_manager_active_suffix = L"(in úsáid)",
     .gguf_manager_activated = L"Tá an tsamhail seo in úsáid anois.",
@@ -15915,7 +16253,6 @@ const LocalizedStrings kStringsBasque = {
     L"\n"
     L"Hau edozein unetan berrirakur dezakezu README fitxategian.\n",
     .cheatsheet_config_path = L"Ezarpen-fitxategia: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Testua luzeegia zen, beraz, hasiera eta amaiera baino ez ziren itzuli.",
     .tooltip_untranslated_above = L"Goian itzuli gabeko testu berria dago. Jarri kurtsorea lerro horren amaieran eta sakatu Enter itzultzeko.",
     .repair_in_progress = L"Tokiko motorraren osagaiak konpontzen…",
     .repair_failed_title = L"Tokiko itzulpena ez dago erabilgarri",
@@ -16037,6 +16374,12 @@ const LocalizedStrings kStringsBasque = {
     .openai_reasoning_server_default = L"Zerbitzariaren lehenetsia (ez dago ezarrita)",
     .back_trans_section_back = L"Atzera-itzulpena",
     .back_trans_section_original = L"Jatorrizko testua",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Itzultzen... {c}/{t}",
+    .badge_translating_chunks = L"Itzultzen... ({n} zati)",
+    .badge_cancelling = L"Uzten…",
+    .tooltip_translation_cancelled = L"Itzulpena utzi da.",
+    .tooltip_cancel_hint = L"Itzulpen luzea martxan. Egin klik intsignian uzteko.",
     .gguf_invalid_model_body = L"Ez da baliozko GGUF modelo-fitxategia; ez da erregistratu.",
     .gguf_manager_active_suffix = L"(erabiltzen ari da)",
     .gguf_manager_activated = L"Modelo hau orain erabiltzen ari da.",
@@ -16144,7 +16487,6 @@ const LocalizedStrings kStringsGalician = {
     L"\n"
     L"Podes reler isto en calquera momento no ficheiro README.\n",
     .cheatsheet_config_path = L"Ficheiro de axustes: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"O texto era longo de máis, polo que só se traduciron o comezo e o final.",
     .tooltip_untranslated_above = L"Hai texto novo sen traducir arriba. Coloca o cursor ao final desa liña e preme Enter para traducilo.",
     .repair_in_progress = L"Reparando os compoñentes do motor local…",
     .repair_failed_title = L"Tradución local non dispoñible",
@@ -16268,6 +16610,12 @@ const LocalizedStrings kStringsGalician = {
     .openai_reasoning_server_default = L"Predeterminado do servidor (non definido)",
     .back_trans_section_back = L"Retrotradución",
     .back_trans_section_original = L"Texto orixinal",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Traducindo... {c}/{t}",
+    .badge_translating_chunks = L"Traducindo... ({n} fragmentos)",
+    .badge_cancelling = L"Cancelando…",
+    .tooltip_translation_cancelled = L"Tradución cancelada.",
+    .tooltip_cancel_hint = L"Tradución longa en curso. Fai clic na insignia para cancelar.",
     .gguf_invalid_model_body = L"Non é un ficheiro de modelo GGUF válido; non se rexistrou.",
     .gguf_manager_active_suffix = L"(en uso)",
     .gguf_manager_activated = L"Este modelo está agora en uso.",
@@ -16375,7 +16723,6 @@ const LocalizedStrings kStringsSwahili = {
     L"\n"
     L"Unaweza kusoma tena hii wakati wowote katika faili ya README.\n",
     .cheatsheet_config_path = L"Faili ya mipangilio: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Maandishi yalikuwa marefu mno, kwa hiyo mwanzo na mwisho tu ndiyo yaliyotafsiriwa.",
     .tooltip_untranslated_above = L"Kuna maandishi mapya yasiyotafsiriwa hapo juu. Weka kielezi mwishoni mwa mstari huo kisha bofya Enter kuyatafsiri.",
     .repair_in_progress = L"Inarekebisha vipengee vya injini ya ndani…",
     .repair_failed_title = L"Kutafsiri kwa ndani hakupatikani",
@@ -16499,6 +16846,12 @@ const LocalizedStrings kStringsSwahili = {
     .openai_reasoning_server_default = L"Chaguozo la seva (hajawekwa)",
     .back_trans_section_back = L"Tafsiri ya kurudi",
     .back_trans_section_original = L"Maandishi ya asili",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Inatafsiri... {c}/{t}",
+    .badge_translating_chunks = L"Inatafsiri... ({n} sehemu)",
+    .badge_cancelling = L"Inaghairi…",
+    .tooltip_translation_cancelled = L"Utafsiri umeghairiwa.",
+    .tooltip_cancel_hint = L"Utafsiri mrefu unaendelea. Bonyeza beji kughairi.",
     .gguf_invalid_model_body = L"Si faili halali ya modeli ya GGUF; haijasajiliwa.",
     .gguf_manager_active_suffix = L"(inatumiwa)",
     .gguf_manager_activated = L"Modeli hii sasa inatumiwa.",
@@ -16606,7 +16959,6 @@ const LocalizedStrings kStringsHaitianCreole = {
     L"\n"
     L"Ou ka li sa ankò nenpòt lè nan fichye README a.\n",
     .cheatsheet_config_path = L"Fichye anviwònman: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Tèks la twò long, se kòmansman ak fen li sèlman ki tradui.",
     .tooltip_untranslated_above = L"Gen tèks nouvo ki poko tradui anlè a. Mete kèrsè a nan fen liy sa a epi peze Enter pou tradui li.",
     .repair_in_progress = L"Ap repare konpozan motè lokal la…",
     .repair_failed_title = L"Tradiksyon lokal pa disponib",
@@ -16730,6 +17082,12 @@ const LocalizedStrings kStringsHaitianCreole = {
     .openai_reasoning_server_default = L"Default sèvè (pa etabli)",
     .back_trans_section_back = L"Retradiksyon",
     .back_trans_section_original = L"Tèks orijinal",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Ap tradui... {c}/{t}",
+    .badge_translating_chunks = L"Ap tradui... ({n} moso)",
+    .badge_cancelling = L"Ap anile…",
+    .tooltip_translation_cancelled = L"Tradiksyon anile.",
+    .tooltip_cancel_hint = L"Tradiksyon long an kou. Klike sou ensiy la pou anile.",
     .gguf_invalid_model_body = L"Se pa yon fichye modèl GGUF ki valab; li pa anrejistre.",
     .gguf_manager_active_suffix = L"(nan itilizasyon)",
     .gguf_manager_activated = L"Modèl sa a kounye a nan itilizasyon.",
@@ -16837,7 +17195,6 @@ const LocalizedStrings kStringsUzbek = {
     L"\n"
     L"Buni istalgan vaqtda README faylida qayta oʻqishingiz mumkin.\n",
     .cheatsheet_config_path = L"Sozlamalar fayli: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Matn juda uzun edi, shuning uchun faqat boshi va oxiri tarjima qilindi.",
     .tooltip_untranslated_above = L"Yuqorida tarjima qilinmagan yangi matn bor. Kursorni shu qator oxiriga qoʻyib, Enter bosing.",
     .repair_in_progress = L"Mahalliy dvigatel tarkibiy qismlarini tiklash…",
     .repair_failed_title = L"Mahalliy tarjima mavjud emas",
@@ -16961,6 +17318,12 @@ const LocalizedStrings kStringsUzbek = {
     .openai_reasoning_server_default = L"Server standarti (o'rnatilmagan)",
     .back_trans_section_back = L"Teskari tarjima",
     .back_trans_section_original = L"Asl matn",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tarjima qilinmoqda... {c}/{t}",
+    .badge_translating_chunks = L"Tarjima qilinmoqda... ({n} qism)",
+    .badge_cancelling = L"Bekor qilinmoqda…",
+    .tooltip_translation_cancelled = L"Tarjima bekor qilindi.",
+    .tooltip_cancel_hint = L"Uzoq tarjima davom etmoqda. Bekor qilish uchun belgini bosing.",
     .gguf_invalid_model_body = L"Yaroqli GGUF model fayli emas; roʻyxatdan oʻtkazilmadi.",
     .gguf_manager_active_suffix = L"(ishlatilmoqda)",
     .gguf_manager_activated = L"Bu model endi ishlatilmoqda.",
@@ -17068,7 +17431,6 @@ const LocalizedStrings kStringsAzerbaijani = {
     L"\n"
     L"Bunu istənilən vaxt README faylında yenidən oxuya bilərsiniz.\n",
     .cheatsheet_config_path = L"Parametrlər faylı: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Mətn çox uzun idi, ona görə yalnız əvvəli və sonu tərcümə olundu.",
     .tooltip_untranslated_above = L"Yuxarıda tərcümə olunmamış yeni mətn var. Kursoru həmin sətirin sonuna qoyun və tərcümə etmək üçün Enter basın.",
     .repair_in_progress = L"Yerli mühərrik komponentləri təmir olunur…",
     .repair_failed_title = L"Yerli tərcümə əlçatan deyil",
@@ -17192,6 +17554,12 @@ const LocalizedStrings kStringsAzerbaijani = {
     .openai_reasoning_server_default = L"Server defoltu (quraşdırılmayıb)",
     .back_trans_section_back = L"Əks tərcümə",
     .back_trans_section_original = L"Orijinal mətn",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tərcümə olunur... {c}/{t}",
+    .badge_translating_chunks = L"Tərcümə olunur... ({n} hissə)",
+    .badge_cancelling = L"Ləğv edilir…",
+    .tooltip_translation_cancelled = L"Tərcümə ləğv edildi.",
+    .tooltip_cancel_hint = L"Uzun tərcümə davam edir. Ləğv etmək üçün nişana klikləyin.",
     .gguf_invalid_model_body = L"Düzgün GGUF model faylı deyil; qeydiyyatdan keçmədi.",
     .gguf_manager_active_suffix = L"(istifadədədir)",
     .gguf_manager_activated = L"Bu model indi istifadədədir.",
@@ -17299,7 +17667,6 @@ const LocalizedStrings kStringsBelarusian = {
     L"\n"
     L"Вы можаце прачытаць гэта зноў у любы час у файле README.\n",
     .cheatsheet_config_path = L"Файл налад: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Тэкст быў занадта доўгі, таму перакладзены толькі пачатак і канец.",
     .tooltip_untranslated_above = L"Вышэй ёсць новы неперакладзены тэкст. Пастаўце курсор у канец таго радка і націсніце Enter для перакладу.",
     .repair_in_progress = L"Рамонт кампанентаў лакальнага рухавіка…",
     .repair_failed_title = L"Лакальны пераклад недаступны",
@@ -17423,6 +17790,12 @@ const LocalizedStrings kStringsBelarusian = {
     .openai_reasoning_server_default = L"Прадвызначана серверам (не ўстаноўлена)",
     .back_trans_section_back = L"Зваротны пераклад",
     .back_trans_section_original = L"Арыгінальны тэкст",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Перакладаецца... {c}/{t}",
+    .badge_translating_chunks = L"Перакладаецца... ({n} частак)",
+    .badge_cancelling = L"Скасаванне…",
+    .tooltip_translation_cancelled = L"Пераклад скасаваны.",
+    .tooltip_cancel_hint = L"Ідзе доўгі пераклад. Націсніце на значок, каб скасаваць.",
     .gguf_invalid_model_body = L"Гэта не дапушчальны файл мадэлі GGUF; ён не зарэгістраваны.",
     .gguf_manager_active_suffix = L"(выкарыстоўваецца)",
     .gguf_manager_activated = L"Гэтая мадэль цяпер выкарыстоўваецца.",
@@ -17530,7 +17903,6 @@ const LocalizedStrings kStringsKyrgyz = {
     L"\n"
     L"Буну каалаган убакта README файлынан кайра окуй аласыз.\n",
     .cheatsheet_config_path = L"Жөндөөлөр файлы: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Текст өтө узун болгондуктан, башы жана аягы гана которулду.",
     .tooltip_untranslated_above = L"Жогоруда которулбаган жаңы текст бар. Курсорду ошол саптын аягына коюп, которуу үчүн Enter баскыч.",
     .repair_in_progress = L"Жергиликтүү кыймылдеткичтин компоненттерин оңдоо…",
     .repair_failed_title = L"Жергиликтүү котормо жеткиликтүү эмес",
@@ -17654,6 +18026,12 @@ const LocalizedStrings kStringsKyrgyz = {
     .openai_reasoning_server_default = L"Сервердин баштапкы абалы (коюлбаган)",
     .back_trans_section_back = L"Кайра которуу",
     .back_trans_section_original = L"Түп нусканын тексти",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Которулуп жатат... {c}/{t}",
+    .badge_translating_chunks = L"Которулуп жатат... ({n} бөлүк)",
+    .badge_cancelling = L"Жокко чыгарылууда…",
+    .tooltip_translation_cancelled = L"Котормо жокко чыгарылды.",
+    .tooltip_cancel_hint = L"Узак котормо жүрүп жатат. Жокко чыгаруу үчүн белгини басыңыз.",
     .gguf_invalid_model_body = L"Жарактуу GGUF модель файлы эмес; катталган жок.",
     .gguf_manager_active_suffix = L"(колдонулуп жатат)",
     .gguf_manager_activated = L"Бул модель азыр колдонулуп жатат.",
@@ -17761,7 +18139,6 @@ const LocalizedStrings kStringsTajik = {
     L"\n"
     L"Шумо инро дар ҳар вақт дар файли README аз нав хонда метавонед.\n",
     .cheatsheet_config_path = L"Файли танзимот: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Матн хеле дароз буд, бинобар ин танҳо оғоз ва анҷоми он тарҷума шуд.",
     .tooltip_untranslated_above = L"Матни нави нотарҷумашуда болост. Курсорро ба охири он сатр гузоред ва барои тарҷума Enter занед.",
     .repair_in_progress = L"Таъмир компонентҳои мошини маҳаллӣ…",
     .repair_failed_title = L"Тарҷумаи маҳаллӣ дастрас нест",
@@ -17885,6 +18262,12 @@ const LocalizedStrings kStringsTajik = {
     .openai_reasoning_server_default = L"Пешфарзи сервер (танзим нашудааст)",
     .back_trans_section_back = L"Тарҷумаи пасипарда",
     .back_trans_section_original = L"Матни аслӣ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Дар ҳоли тарҷума... {c}/{t}",
+    .badge_translating_chunks = L"Дар ҳоли тарҷума... ({n} қисм)",
+    .badge_cancelling = L"Дар ҳоли бекор кардан…",
+    .tooltip_translation_cancelled = L"Тарҷума бекор шуд.",
+    .tooltip_cancel_hint = L"Тарҷумаи дароз идома дорад. Барои бекор кардан ба нишона клик кунед.",
     .gguf_invalid_model_body = L"Файли модели GGUF дуруст нест; сабт нашуд.",
     .gguf_manager_active_suffix = L"(истифода мешавад)",
     .gguf_manager_activated = L"Ин модел ҳоло истифода мешавад.",
@@ -17992,7 +18375,6 @@ const LocalizedStrings kStringsEsperanto = {
     L"\n"
     L"Vi povas re-legi ĉi tion iam ajn en la README-dosiero.\n",
     .cheatsheet_config_path = L"Agordodosiero: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"La teksto estis tro longa, do nur ĝia komenco kaj fino estis tradukitaj.",
     .tooltip_untranslated_above = L"Estas nova netradukita teksto supre. Metu la kursoron fine de tiu linio kaj premu Enter por traduki ĝin.",
     .repair_in_progress = L"Riparas la komponantojn de la loka motoro…",
     .repair_failed_title = L"Loka tradukado ne haveblas",
@@ -18116,6 +18498,12 @@ const LocalizedStrings kStringsEsperanto = {
     .openai_reasoning_server_default = L"Servila defaŭlto (ne agordita)",
     .back_trans_section_back = L"Re-traduko",
     .back_trans_section_original = L"Originala teksto",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Tradukas... {c}/{t}",
+    .badge_translating_chunks = L"Tradukas... ({n} partoj)",
+    .badge_cancelling = L"Nuligas…",
+    .tooltip_translation_cancelled = L"Traduko nuligita.",
+    .tooltip_cancel_hint = L"Longa traduko progresas. Klaku la insignon por nuligi.",
     .gguf_invalid_model_body = L"Ne estas valida GGUF-modeldosiero; ĝi ne estis registrita.",
     .gguf_manager_active_suffix = L"(uzata)",
     .gguf_manager_activated = L"Ĉi tiu modelo nun estas uzata.",
@@ -18223,7 +18611,6 @@ const LocalizedStrings kStringsArmenian = {
     L"\n"
     L"Դուք կարող եք կարդալ սա ցանկացած պահին README ֆայլում.\n",
     .cheatsheet_config_path = L"Կարգավորումների ֆայլ՝ %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"Տեքստը չափազանց երկար էր, այնպես որ թարգմանվեցին միայն սկիզբն ու վերջը.",
     .tooltip_untranslated_above = L"Վերևում կա նոր չթարգմանված տեքստ. Տեղադրեք կուրսորը այդ տողի վերջում և սեղմեք Enter թարգմանելու համար.",
     .repair_in_progress = L"Վերանորոգվում են տեղային շարժիչի բաղադրիչները…",
     .repair_failed_title = L"Տեղային թարգմանությունը հասանելի չէ",
@@ -18347,6 +18734,12 @@ const LocalizedStrings kStringsArmenian = {
     .openai_reasoning_server_default = L"Սերվերի կանխադրված (չնշված)",
     .back_trans_section_back = L"Հետթարգմանություն",
     .back_trans_section_original = L"Բնօրինակ տեքստ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"Թարգմանվում է... {c}/{t}",
+    .badge_translating_chunks = L"Թարգմանվում է... ({n} մաս)",
+    .badge_cancelling = L"Չեղարկվում է…",
+    .tooltip_translation_cancelled = L"Թարգմանությունը չեղարկվեց.",
+    .tooltip_cancel_hint = L"Երկար թարգմանությունը ընթանում է. Սեղմեք նշանը չեղարկելու համար.",
     .gguf_invalid_model_body = L"Վավեր GGUF մոդելի ֆայլ չէ, այն չգրանցվեց.",
     .gguf_manager_active_suffix = L"(օգտագործվում է)",
     .gguf_manager_activated = L"Այս մոդելն այժմ օգտագործվում է.",
@@ -18454,7 +18847,6 @@ const LocalizedStrings kStringsGeorgian = {
     L"\n"
     L"თქვენ შეგიძლიათ ეს ნებისმიერ დროს თავიდან წაიკითხოთ README ფაილში.\n",
     .cheatsheet_config_path = L"პარამეტრების ფაილი: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ტექსტი ძალიან გრძელი იყო, ამიტომ ნათარგმნია მხოლოდ დასაწყისი და დასასრული.",
     .tooltip_untranslated_above = L"ზემოთ არის ახალი უთარგმნელი ტექსტი. მოათავსეთ კურსორი იმ ხაზის ბოლოში და დააწკაპუნეთ Enter თარგმნისთვის.",
     .repair_in_progress = L"ლოკალური ძრავის კომპონენტების შეკეთება…",
     .repair_failed_title = L"ლოკალური თარგმნა მიუწვდომელია",
@@ -18578,6 +18970,12 @@ const LocalizedStrings kStringsGeorgian = {
     .openai_reasoning_server_default = L"სერვერის ნაგულისხმები (დაუყენებელი)",
     .back_trans_section_back = L"უკუთარგმანი",
     .back_trans_section_original = L"ორიგინალი ტექსტი",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ითარგმნება... {c}/{t}",
+    .badge_translating_chunks = L"ითარგმნება... ({n} ნაწილი)",
+    .badge_cancelling = L"გაუქმება მიმდინარეობს…",
+    .tooltip_translation_cancelled = L"თარგმანი გაუქმდა.",
+    .tooltip_cancel_hint = L"გრძელი თარგმანი მიმდინარეობს. გასაუქმებლად დააწკაპუნეთ ნიშანზე.",
     .gguf_invalid_model_body = L"ეს არ არის მართებული GGUF მოდელის ფაილი; ის არ დარეგისტრირდა.",
     .gguf_manager_active_suffix = L"(იყენება)",
     .gguf_manager_activated = L"ეს მოდელი ახლა გამოიყენება.",
@@ -18685,7 +19083,6 @@ const LocalizedStrings kStringsSinhala = {
     L"\n"
     L"ඔබට මෙය ඕනෑම වේලාවක README ගොනුවෙන් නැවත කියවිය හැක.\n",
     .cheatsheet_config_path = L"සැකසුම් ගොනුව: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"පාඨය දිගු වැඩි නිසා ආරම්භය සහ අග පමණක් පරිවර්තනය කළේය.",
     .tooltip_untranslated_above = L"ඉහළින් නව පරිවර්තනය නොකළ පාඨයක් ඇත. කර්සරය එම රේඛාවේ අගට තබා Enter ඔබා පරිවර්තනය කරන්න.",
     .repair_in_progress = L"දේශීය යන්ත්‍ර සංරචක සම්බන්ධ කිරීම…",
     .repair_failed_title = L"දේශීය පරිවර්තනය ලබා ගත නොහැක",
@@ -18809,6 +19206,12 @@ const LocalizedStrings kStringsSinhala = {
     .openai_reasoning_server_default = L"සේවාදායක පෙරනිමි (සකසා නැත)",
     .back_trans_section_back = L"ආපසු පරිවර්තනය",
     .back_trans_section_original = L"මුල් පෙළ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"පරිවර්තනය වෙමින්... {c}/{t}",
+    .badge_translating_chunks = L"පරිවර්තනය වෙමින්... ({n} කොටස්)",
+    .badge_cancelling = L"අවලංගු වෙමින්…",
+    .tooltip_translation_cancelled = L"පරිවර්තනය අවලංගු කළේය.",
+    .tooltip_cancel_hint = L"දිගු පරිවර්තනයක් සිදු වෙමින් ඇත. අවලංගු කිරීමට ලාංඡනය ක්ලික් කරන්න.",
     .gguf_invalid_model_body = L"වලංගු GGUF ආකෘති ගොනුවක් නොවේ; එය ලියාපදිංචි නොවුණි.",
     .gguf_manager_active_suffix = L"(භාවිතා වෙමින්)",
     .gguf_manager_activated = L"මෙම ආකෘතිය දැන් භාවිතා වේ.",
@@ -18916,7 +19319,6 @@ const LocalizedStrings kStringsMalayalam = {
     L"\n"
     L"നിങ്ങൾക്ക് ഇത് ഏതു സമയത്തും README ഫയലിൽ വീണ്ടും വായിക്കാം.\n",
     .cheatsheet_config_path = L"ക്രമീകരണ ഫയൽ: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ടെക്സ്റ്റ് വളരെ ദീർഘമായതിനാൽ ആദ്യവും അവസാനവും മാത്രമേ വിവർത്തനം ചെയ്തുള്ളൂ.",
     .tooltip_untranslated_above = L"മുകളിൽ വിവർത്തനം ചെയ്യാത്ത പുതിയ ടെക്സ്റ്റ് ഉണ്ട്. കഴ്സർ ആ വരിയുടെ അവസാനത്തിലേക്ക് വെച്ച് വിവർത്തനത്തിനായി Enter അമർത്തുക.",
     .repair_in_progress = L"ലോക്കൽ എഞ്ചിൻ ഘടകങ്ങൾ ശരിയാക്കുന്നു…",
     .repair_failed_title = L"ലോക്കൽ വിവർത്തനം ലഭ്യമല്ല",
@@ -19040,6 +19442,12 @@ const LocalizedStrings kStringsMalayalam = {
     .openai_reasoning_server_default = L"സെർവർ ഡിഫോൾട്ട് (സെറ്റ് ചെയ്തിട്ടില്ല)",
     .back_trans_section_back = L"ബാക്ക്-ട്രാൻസലേഷൻ",
     .back_trans_section_original = L"അസൽ എഴുത്ത്",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"വിവർത്തനം ചെയ്യുന്നു... {c}/{t}",
+    .badge_translating_chunks = L"വിവർത്തനം ചെയ്യുന്നു... ({n} ഭാഗങ്ങൾ)",
+    .badge_cancelling = L"റദ്ദാക്കുന്നു…",
+    .tooltip_translation_cancelled = L"വിവർത്തനം റദ്ദാക്കി.",
+    .tooltip_cancel_hint = L"ദീർഘമായ വിവർത്തനം നടന്നുകൊണ്ടിരിക്കുന്നു. റദ്ദാക്കാൻ ബാഡ്ജിൽ ക്ലിക്ക് ചെയ്യുക.",
     .gguf_invalid_model_body = L"സാധുവായ GGUF മോഡൽ ഫയലല്ല; രജിസ്റ്റർ ചെയ്തിട്ടില്ല.",
     .gguf_manager_active_suffix = L"(ഉപയോഗത്തിലാണ്)",
     .gguf_manager_activated = L"ഈ മോഡൽ ഇപ്പോൾ ഉപയോഗത്തിലാണ്.",
@@ -19155,7 +19563,6 @@ const LocalizedStrings kStringsKannada = {
     L"ಇದನ್ನು ಯಾವಾಗಲಾದರೂ README ಫೈಲ್ನಲ್ಲಿ ಮತ್ತೆ ಓದಬಹುದು.\n"
     L"",
     .cheatsheet_config_path = L"ಸೆಟ್ಟಿಂಗ್ಸ್ ಫೈಲ್: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ಪಠ್ಯ ತುಂಬಾ ಉದ್ದವಾಗಿದ್ದರಿಂದ ಅದರ ಆರಂಭ ಮತ್ತು ಕೊನೆಯನ್ನು ಮಾತ್ರ ಅನುವಾದಿಸಲಾಗಿದೆ.",
     .tooltip_untranslated_above = L"ಮೇಲೆ ಹೊಸ ಅನುವಾದಿಸದ ಪಠ್ಯ ಇದೆ. ಕರ್ಸರ್ ಅನ್ನು ಆ ಸಾಲಿನ ಕೊನೆಗೆ ಇರಿಸಿ Enter ಒತ್ತಿ ಅನುವಾದಿಸಿ.",
     .repair_in_progress = L"ಸ್ಥಳೀಯ ಎಂಜಿನ್ ಘಟಕಗಳನ್ನು ದುರಸ್ತಿ ಮಾಡಲಾಗುತ್ತಿದೆ…",
     .repair_failed_title = L"ಸ್ಥಳೀಯ ಅನುವಾದ ಲಭ್ಯವಿಲ್ಲ",
@@ -19281,6 +19688,12 @@ const LocalizedStrings kStringsKannada = {
     .openai_reasoning_server_default = L"ಸರ್ವರ್ ಡೀಫಾಲ್ಟ್ (ಹೊಂದಿಸಲಾಗಿಲ್ಲ)",
     .back_trans_section_back = L"ಹಿಂಅನುವಾದ",
     .back_trans_section_original = L"ಮೂಲ ಪಠ್ಯ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ಅನುವಾದಿಸುತ್ತಿದೆ... {c}/{t}",
+    .badge_translating_chunks = L"ಅನುವಾದಿಸುತ್ತಿದೆ... ({n} ಭಾಗಗಳು)",
+    .badge_cancelling = L"ರದ್ದುಮಾಡುತ್ತಿದೆ…",
+    .tooltip_translation_cancelled = L"ಅನುವಾದ ರದ್ದಾಗಿದೆ.",
+    .tooltip_cancel_hint = L"ಉದ್ದವಾದ ಅನುವಾದ ನಡೆಯುತ್ತಿದೆ. ರದ್ದುಮಾಡಲು ಬ್ಯಾಜ್ ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡಿ.",
     .gguf_invalid_model_body = L"ಮಾನ್ಯ GGUF ಮಾದರಿ ಫೈಲ್ ಅಲ್ಲ; ನೋಂದಣಿಯಾಗಿಲ್ಲ.",
     .gguf_manager_active_suffix = L"(ಬಳಕೆಯಲ್ಲಿದೆ)",
     .gguf_manager_activated = L"ಈ ಮಾದರಿ ಈಗ ಬಳಕೆಯಲ್ಲಿದೆ.",
@@ -19397,7 +19810,6 @@ const LocalizedStrings kStringsPunjabi = {
     L"ਤੁਸੀਂ ਇਹ ਕਦੇ ਵੀ README ਫ਼ਾਈਲ ਵਿੱਚ ਦੁਬਾਰਾ ਪੜ੍ਹ ਸਕਦੇ ਹੋ।\n"
     L"",
     .cheatsheet_config_path = L"ਸੈਟਿੰਗਾਂ ਫ਼ਾਈਲ: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ਟੈਕਸਟ ਬਹੁਤ ਲੰਬਾ ਸੀ, ਇਸ ਲਈ ਸਿਰਫ਼ ਸ਼ੁਰੂ ਅਤੇ ਅੰਤ ਦਾ ਅਨੁਵਾਦ ਕੀਤਾ ਗਿਆ।",
     .tooltip_untranslated_above = L"ਉੱਪਰ ਨਵਾਂ ਅਣ-ਅਨੁਵਾਦਿਤ ਟੈਕਸਟ ਹੈ। ਕਰਸਰ ਨੂੰ ਉਸ ਲਾਈਨ ਦੇ ਅੰਤ 'ਤੇ ਰੱਖੋ ਅਤੇ Enter ਦਬਾ ਕੇ ਅਨੁਵਾਦ ਕਰੋ।",
     .repair_in_progress = L"ਸਥਾਨਕ ਇੰਜਣ ਦੇ ਹਿੱਸੇ ਠੀਕ ਕੀਤੇ ਜਾ ਰਹੇ ਹਨ…",
     .repair_failed_title = L"ਸਥਾਨਕ ਅਨੁਵਾਦ ਉਪਲਬਧ ਨਹੀਂ",
@@ -19523,6 +19935,12 @@ const LocalizedStrings kStringsPunjabi = {
     .openai_reasoning_server_default = L"ਸਰਵਰ ਡਿਫੌਲਟ (ਸੈੱਟ ਨਹੀਂ)",
     .back_trans_section_back = L"ਬੈਕ-ਅਨੁਵਾਦ",
     .back_trans_section_original = L"ਮੂਲ ਟੈਕਸਟ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ... {c}/{t}",
+    .badge_translating_chunks = L"ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ... ({n} ਹਿੱਸੇ)",
+    .badge_cancelling = L"ਰੱਦ ਹੋ ਰਿਹਾ ਹੈ…",
+    .tooltip_translation_cancelled = L"ਅਨੁਵਾਦ ਰੱਦ ਹੋਇਆ।",
+    .tooltip_cancel_hint = L"ਲੰਬਾ ਅਨੁਵਾਦ ਚੱਲ ਰਿਹਾ ਹੈ। ਰੱਦ ਕਰਨ ਲਈ ਬੈਜ ਉੱਤੇ ਕਲਿੱਕ ਕਰੋ।",
     .gguf_invalid_model_body = L"ਇਹ ਵੈਧ GGUF ਮਾਡਲ ਫ਼ਾਈਲ ਨਹੀਂ; ਰਜਿਸਟਰ ਨਹੀਂ ਕੀਤੀ ਗਈ।",
     .gguf_manager_active_suffix = L"(ਵਰਤੋਂ ਵਿੱਚ)",
     .gguf_manager_activated = L"ਇਹ ਮਾਡਲ ਹੁਣ ਵਰਤੋਂ ਵਿੱਚ ਹੈ।",
@@ -19639,7 +20057,6 @@ const LocalizedStrings kStringsOdia = {
     L"ଆପଣ ଏହାକୁ ଯେକୌଣସି ସମୟରେ README ଫାଇଲରେ ପୁଣି ପଢ଼ିପାରିବେ।\n"
     L"",
     .cheatsheet_config_path = L"ସେଟିଂସ୍ ଫାଇଲ୍: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ଟେକ୍ସଟ୍ ଅତି ଲମ୍ବା ଥିଲା, ତେଣୁ କେବଳ ଏହାର ଆରମ୍ଭ ଏବଂ ଶେଷ ଅନୁବାଦ ହେଲା।",
     .tooltip_untranslated_above = L"ଉପରେ ନୂଆ ଅଣ-ଅନୁବାଦିତ ଟେକ୍ସଟ୍ ଅଛି। କର୍ସରକୁ ସେହି ଧାଡ଼ିର ଶେଷରେ ରଖନ୍ତୁ ଏବଂ Enter ଦବାଇ ଅନୁବାଦ କରନ୍ତୁ।",
     .repair_in_progress = L"ସ୍ଥାନୀୟ ଇଞ୍ଜିନ୍ ଉପାଦାନଗୁଡ଼ିକ ମରାମତି ହେଉଛି…",
     .repair_failed_title = L"ସ୍ଥାନୀୟ ଅନୁବାଦ ଉପଲବ୍ଧ ନାହିଁ",
@@ -19765,6 +20182,12 @@ const LocalizedStrings kStringsOdia = {
     .openai_reasoning_server_default = L"ସର୍ଭର ଡିଫଲ୍ଟ (ସେଟ୍ ହୋଇନାହିଁ)",
     .back_trans_section_back = L"ପଛ-ଅନୁବାଦ",
     .back_trans_section_original = L"ମୂଳ ପାଠ୍ୟ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ଅନୁବାଦ ହେଉଛି... {c}/{t}",
+    .badge_translating_chunks = L"ଅନୁବାଦ ହେଉଛି... ({n} ଅଂଶ)",
+    .badge_cancelling = L"ରଦ୍ଦ ହେଉଛି…",
+    .tooltip_translation_cancelled = L"ଅନୁବାଦ ରଦ୍ଦ ହେଲା।",
+    .tooltip_cancel_hint = L"ଲମ୍ବା ଅନୁବାଦ ଚାଲିଛି। ରଦ୍ଦ କରିବାକୁ ବ୍ୟାଜ୍ ଉପରେ କ୍ଲିକ୍ କରନ୍ତୁ।",
     .gguf_invalid_model_body = L"ଏହା ବୈଧ GGUF ମଡେଲ୍ ଫାଇଲ୍ ନୁହେଁ; ପଞ୍ଜୀକୃତ ହେଲା ନାହିଁ।",
     .gguf_manager_active_suffix = L"(ବ୍ୟବହାରରେ)",
     .gguf_manager_activated = L"ଏହି ମଡେଲ୍ ବର୍ତ୍ତମାନ ବ୍ୟବହାରରେ ଅଛି।",
@@ -19881,7 +20304,6 @@ const LocalizedStrings kStringsAmharic = {
     L"ይህንን በማንኛውም ጊዜ በREADME ፋይል ውስጥ እንደገና ማንበብ ትችላለህ።\n"
     L"",
     .cheatsheet_config_path = L"የቅንብር ፋይል: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ጽሑፉ በጣም ረጅም ስለነበር መጀመሪያውና መጨረሻው ብቻ ተተርጉሟል።",
     .tooltip_untranslated_above = L"ከላይ አዲስ ያልተተረጎመ ጽሑፍ አለ። ጠቋሚውን በዚያ መስመር መጨረሻ ላይ አስቀምጠህ Enter ተጭነህ ተርጉመው።",
     .repair_in_progress = L"የአካባቢ ሞተር ክፍሎች በመጠገን ላይ…",
     .repair_failed_title = L"የአካባቢ ትርጉም አይገኝም",
@@ -20007,6 +20429,12 @@ const LocalizedStrings kStringsAmharic = {
     .openai_reasoning_server_default = L"የአገልጋይ ነባሪ (ያልተወሰነ)",
     .back_trans_section_back = L"የኋላ-ትርጉም",
     .back_trans_section_original = L"ዋናው ጽሑፍ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"በመተርጎም ላይ... {c}/{t}",
+    .badge_translating_chunks = L"በመተርጎም ላይ... ({n} ክፍሎች)",
+    .badge_cancelling = L"በመሰረዝ ላይ…",
+    .tooltip_translation_cancelled = L"ትርጉሙ ተሰርዟል።",
+    .tooltip_cancel_hint = L"ረጅም ትርጉም በሂደት ላይ ነው። ለመሰረዝ ምልክቱን ይጫኑ።",
     .gguf_invalid_model_body = L"ትክክለኛ የGGUF ሞዴል ፋይል አይደለም፤ አልተመዘገበም።",
     .gguf_manager_active_suffix = L"(በአገልግሎት ላይ)",
     .gguf_manager_activated = L"ይህ ሞዴል አሁን በአገልግሎት ላይ ነው።",
@@ -20123,7 +20551,6 @@ const LocalizedStrings kStringsTigrinya = {
     L"ነዚ ብዝኾነ ግዜ ኣብ ፋይል README እንደገና ከተንብብ ትኽእል።\n"
     L"",
     .cheatsheet_config_path = L"ፋይል ቅጥዕታት: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"እቲ ጽሑፍ ኣዝዩ ነዊሕ ስለዝነበረ ጥራይ መጀመርታን መወዳእታን ተተርጊሙ።",
     .tooltip_untranslated_above = L"ኣብ ላዕሊ ሓድሽ ዘይተተርጎመ ጽሑፍ ኣሎ። ነቲ ጠቋሚ ኣብ መወዳእታ እቲ መስመር ኣንብሮ እሞ Enter ጠውቕ ተርጉሞ።",
     .repair_in_progress = L"ክፍልታት ከባቢ ሞተር ይጽገኑ ኣለዉ…",
     .repair_failed_title = L"ከባቢ ትርጉም ኣይርከብን",
@@ -20249,6 +20676,12 @@ const LocalizedStrings kStringsTigrinya = {
     .openai_reasoning_server_default = L"ናይ ሰርቨር ነባሪ (ዘይተዋህደ)",
     .back_trans_section_back = L"ተመሊሱ ትርጉም",
     .back_trans_section_original = L"ኦሪጅናል ጽሑፍ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ይትርጎም ኣሎ... {c}/{t}",
+    .badge_translating_chunks = L"ይትርጎም ኣሎ... ({n} ክፍልታት)",
+    .badge_cancelling = L"ይሰርዝ ኣሎ…",
+    .tooltip_translation_cancelled = L"ትርጉም ተሰሪዙ።",
+    .tooltip_cancel_hint = L"ነዊሕ ትርጎም ይካየድ ኣሎ። ንምስራዝ ናይቲ ምልክት ጠውቕ።",
     .gguf_invalid_model_body = L"ቅኑዕ ፋይል ሞዴል GGUF ኣይኮነን፤ ኣይተመዝገበን።",
     .gguf_manager_active_suffix = L"(ኣብ ኣገልግሎት)",
     .gguf_manager_activated = L"እዚ ሞዴል ሕጂ ኣብ ኣገልግሎት ኣሎ።",
@@ -20365,7 +20798,6 @@ const LocalizedStrings kStringsPashto = {
     L"تاسو کولی شئ دا هروخت په README فایل کې بیا ولولئ.\n"
     L"",
     .cheatsheet_config_path = L"د تنظیماتو فایل: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"متن ډېر اوږد و، نو یوازې پیل او پای یې ژباړل شو.",
     .tooltip_untranslated_above = L"په پورته نوی نه ژباړل شوی متن دی. کرسر د هغې کرښې په پای کې کېږدئ او د ژباړې لپاره Enter فشار کړئ.",
     .repair_in_progress = L"د ځایي انجن برخې جوړیږي…",
     .repair_failed_title = L"ځایي ژباړه نشته",
@@ -20491,6 +20923,12 @@ const LocalizedStrings kStringsPashto = {
     .openai_reasoning_server_default = L"د سیرور ډیفالټ (ټاکل شوی نه دی)",
     .back_trans_section_back = L"بیرته ژباړه",
     .back_trans_section_original = L"اصلي متن",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ژباړه روانه ده... {c}/{t}",
+    .badge_translating_chunks = L"ژباړه روانه ده... ({n} برخې)",
+    .badge_cancelling = L"لغوه روانه ده…",
+    .tooltip_translation_cancelled = L"ژباړه لغوه شوه.",
+    .tooltip_cancel_hint = L"اوږده ژباړه روانه ده. د لغوه کولو لپاره نښان کلیک وکړئ.",
     .gguf_invalid_model_body = L"سم GGUF ماډل فایل نه دی؛ ثبت نشو.",
     .gguf_manager_active_suffix = L"(په کار کې)",
     .gguf_manager_activated = L"دا ماډل اوس په کار کې دی.",
@@ -20607,7 +21045,6 @@ const LocalizedStrings kStringsSindhi = {
     L"توهان هي ڪنهن به وقت README فائل ۾ ٻيهر پڙهي سگهو ٿا.\n"
     L"",
     .cheatsheet_config_path = L"سيٽنگ فائل: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"متن تمام ڊگهو هو، ان ڪري رڳو ان جو شروعات ۽ آخر ترجمو ٿيو.",
     .tooltip_untranslated_above = L"مٿي نئون اڻ-ترجمو ٿيل متن آهي. ڪرسر ان سٽ جي آخر ۾ رکو ۽ ترجمي لاءِ Enter دٻايو.",
     .repair_in_progress = L"مقامي انجن جا حصا مرمت ٿي رهيا آهن…",
     .repair_failed_title = L"مقامي ترجمو دستياب ناهي",
@@ -20733,6 +21170,12 @@ const LocalizedStrings kStringsSindhi = {
     .openai_reasoning_server_default = L"سرور ڊفالٽ (سيٽ ناهي)",
     .back_trans_section_back = L"واپسي ترجمو",
     .back_trans_section_original = L"اصل متن",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"ترجمو ٿي رهيو آهي... {c}/{t}",
+    .badge_translating_chunks = L"ترجمو ٿي رهيو آهي... ({n} حصا)",
+    .badge_cancelling = L"رد ٿي رهيو آهي…",
+    .tooltip_translation_cancelled = L"ترجمو رد ٿي ويو.",
+    .tooltip_cancel_hint = L"ڊيگهه ترجمو جاري آهي. رد ڪرڻ لاءِ بيج تي ڪلڪ ڪريو.",
     .gguf_invalid_model_body = L"صحيح GGUF ماڊل فائل ناهي؛ رجسٽر نه ٿي.",
     .gguf_manager_active_suffix = L"(استعمال ۾)",
     .gguf_manager_activated = L"هي ماڊل هاڻي استعمال ۾ آهي.",
@@ -20849,7 +21292,6 @@ const LocalizedStrings kStringsNepali = {
     L"तपाईं यो जहिले पनि README फाइलमा फेरि पढ्न सक्नुहुन्छ।\n"
     L"",
     .cheatsheet_config_path = L"सेटिङ फाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"पाठ धेरै लामो थियो, त्यसैले यसको सुरु र अन्त्य मात्र अनुवाद गरियो।",
     .tooltip_untranslated_above = L"माथि नयाँ अनुवाद नगरिएको पाठ छ। कर्सर त्यो लाइनको अन्त्यमा राख्नुहोस् र अनुवाद गर्न Enter थिच्नुहोस्।",
     .repair_in_progress = L"स्थानीय इन्जिनका भागहरू मर्मत हुँदैछन्…",
     .repair_failed_title = L"स्थानीय अनुवाद उपलब्ध छैन",
@@ -20975,6 +21417,12 @@ const LocalizedStrings kStringsNepali = {
     .openai_reasoning_server_default = L"सर्वर पूर्वनिर्धारित (सेट छैन)",
     .back_trans_section_back = L"पुनः-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"अनुवाद हुँदैछ... {c}/{t}",
+    .badge_translating_chunks = L"अनुवाद हुँदैछ... ({n} खण्डहरू)",
+    .badge_cancelling = L"रद्द हुँदैछ…",
+    .tooltip_translation_cancelled = L"अनुवाद रद्द भयो।",
+    .tooltip_cancel_hint = L"लामो अनुवाद भइरहेको छ। रद्द गर्न ब्याजमा क्लिक गर्नुहोस्।",
     .gguf_invalid_model_body = L"मान्य GGUF मोडेल फाइल होइन; दर्ता भएन।",
     .gguf_manager_active_suffix = L"(प्रयोगमा)",
     .gguf_manager_activated = L"यो मोडेल अब प्रयोगमा छ।",
@@ -21091,7 +21539,6 @@ const LocalizedStrings kStringsAssamese = {
     L"আপুনি ইয়াক যিকোনো সময়ত README ফাইলত পুনৰ পঢ়িব পাৰে।\n"
     L"",
     .cheatsheet_config_path = L"ছেটিংছ ফাইল: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"পাঠটো বৰ দীঘল আছিল, সেয়ে কেৱল আৰম্ভণি আৰু শেষ অনুবাদ কৰা হ'ল।",
     .tooltip_untranslated_above = L"ওপৰত নতুন অনুবাদ নোহোৱা পাঠ আছে। কাৰ্ছৰটো সেই শাৰীৰ শেষত ৰাখি অনুবাদৰ বাবে Enter টিপক।",
     .repair_in_progress = L"স্থানীয় ইঞ্জিনৰ অংশসমূহ মেৰামতি চলি আছে…",
     .repair_failed_title = L"স্থানীয় অনুবাদ উপলব্ধ নহয়",
@@ -21217,6 +21664,12 @@ const LocalizedStrings kStringsAssamese = {
     .openai_reasoning_server_default = L"চাৰ্ভাৰ ডিফ’ল্ট (ছেট কৰা হোৱা নাই)",
     .back_trans_section_back = L"পুনৰ-অনুবাদ",
     .back_trans_section_original = L"মূল পাঠ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"অনুবাদ চলি আছে... {c}/{t}",
+    .badge_translating_chunks = L"অনুবাদ চলি আছে... ({n} খণ্ড)",
+    .badge_cancelling = L"বাতিল হৈ আছে…",
+    .tooltip_translation_cancelled = L"অনুবাদ বাতিল হ'ল।",
+    .tooltip_cancel_hint = L"দীঘল অনুবাদ চলি আছে। বাতিল কৰিবলৈ বেজত ক্লিক কৰক।",
     .gguf_invalid_model_body = L"বৈধ GGUF মডেল ফাইল নহয়; পঞ্জীয়ন হোৱা নাই।",
     .gguf_manager_active_suffix = L"(ব্যৱহাৰত)",
     .gguf_manager_activated = L"এই মডেলটো এতিয়া ব্যৱহাৰত আছে।",
@@ -21333,7 +21786,6 @@ const LocalizedStrings kStringsDzongkha = {
     L"ཁྱེད་ཀྱིས་འདི་ནམ་ཡང་ README ཡིག་སྣོད་ནང་བསྐྱར་ཀློག་ཐུབ།\n"
     L"",
     .cheatsheet_config_path = L"སྒྲིག་སྟངས་ཀྱི་ཡིག་སྣོད: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"ཡིག་ཆ་དེ་ཧ་ཅང་རིང་བས། དེའི་འགོ་དང་མཇུག་ཙམ་བསྒྱུར་བྱས།",
     .tooltip_untranslated_above = L"སྟེང་དུ་བསྒྱུར་མ་བྱས་པའི་ཡིག་ཆ་གསར་པ་ཡོད། ཁ་ཤོག་དེ་ཕྲེང་བའི་མཇུག་ཏུ་བཞག་ནས་བསྒྱུར་བར་ Enter མནན།",
     .repair_in_progress = L"ས་གནས་ཀྱི་འཕྲུལ་ཆས་ཀྱི་ཆ་ཤས་བཟོ་སྐྲུན་བཞིན་པ…",
     .repair_failed_title = L"ས་གནས་ཀྱི་བསྒྱུར་བ་མི་འདུག",
@@ -21459,6 +21911,12 @@ const LocalizedStrings kStringsDzongkha = {
     .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
     .back_trans_section_back = L"རྒྱབ་བསྒྱུར",
     .back_trans_section_original = L"མ་གཞིའི་ཡིག་ཚིག",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"བསྒྱུར་བཞིན་པ... {c}/{t}",
+    .badge_translating_chunks = L"བསྒྱུར་བཞིན་པ... ({n} ཆ་ཤས།)",
+    .badge_cancelling = L"བཤོལ་བཞིན་པ…",
+    .tooltip_translation_cancelled = L"བསྒྱུར་བཤོལ་བྱས།",
+    .tooltip_cancel_hint = L"སྐད་སྒྱུར་རིང་པོ་བསྒྱུར་བཞིན་པ། བཤོལ་བའི་ཆེད་མཐེབ་གཞིར་རྡེབ་རོགས།",
     .gguf_invalid_model_body = L"ཚུལ་མཐུན་གྱི་ GGUF དཔེ་དེབ་ཡིག་སྣོད་མིན། ཐོ་འགོད་མ་བྱས།",
     .gguf_manager_active_suffix = L"(བཀོལ་སྤྱོད་ནང་)",
     .gguf_manager_activated = L"དཔེ་དེབ་འདི་ད་ལྟ་བཀོལ་སྤྱོད་ནང་ཡོད།",
@@ -21575,7 +22033,6 @@ const LocalizedStrings kStringsSanskrit = {
     L"भवान् एतत् कदापि README सञ्चिकायां पुनः पठितुं शक्नोति।\n"
     L"",
     .cheatsheet_config_path = L"विन्याससञ्चिका: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"पाठः अतीव दीर्घः आसीत्, अतः केवलम् आरम्भः अन्तः च अनूदितः।",
     .tooltip_untranslated_above = L"उपरि नवीनः अननूदितः पाठः अस्ति। सूचकं तस्याः पङ्क्तेः अन्ते स्थापय Enter नुदतु।",
     .repair_in_progress = L"स्थानीययन्त्रस्य अंशाः संस्क्रियन्ते…",
     .repair_failed_title = L"स्थानीयः अनुवादः न लभ्यते",
@@ -21701,6 +22158,12 @@ const LocalizedStrings kStringsSanskrit = {
     .openai_reasoning_server_default = L"सर्वरमूल्यं (न विहितम्)",
     .back_trans_section_back = L"पुनरनुवादः",
     .back_trans_section_original = L"मूलपाठः",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"अनुवदति... {c}/{t}",
+    .badge_translating_chunks = L"अनुवदति... ({n} खण्डाः)",
+    .badge_cancelling = L"निरस्तीकरणम्…",
+    .tooltip_translation_cancelled = L"अनुवादः निरस्तः।",
+    .tooltip_cancel_hint = L"दीर्घः अनुवादः प्रचलति। निरस्तुं चिह्नं नुदतु।",
     .gguf_invalid_model_body = L"मान्यं GGUF प्रतिरूपसञ्चिका न; न पञ्जीकृतम्।",
     .gguf_manager_active_suffix = L"(उपयोगे)",
     .gguf_manager_activated = L"इदं प्रतिरूपम् इदानीम् उपयोगे अस्ति।",
@@ -21817,7 +22280,6 @@ const LocalizedStrings kStringsMaithili = {
     L"अहाँ ई कहियो README फाइलमे फेर सँ पढ़ि सकैत छी।\n"
     L"",
     .cheatsheet_config_path = L"सेटिंग फाइल: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"पाठ बहुत लाम छल, तें केवल एकर शुरू आ अन्त अनुवाद भेल।",
     .tooltip_untranslated_above = L"ऊपर नव अनुवाद नहि कएल पाठ अछि। कर्सर ओहि पंक्तिक अन्तमे राखि अनुवादक लेल Enter दबाबू।",
     .repair_in_progress = L"स्थानीय इन्जिनक भाग सभ मरम्मत भऽ रहल अछि…",
     .repair_failed_title = L"स्थानीय अनुवाद उपलब्ध नहि",
@@ -21943,6 +22405,12 @@ const LocalizedStrings kStringsMaithili = {
     .openai_reasoning_server_default = L"सर्वर डिफॉल्ट (सेट अछि नहि)",
     .back_trans_section_back = L"पुनः-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"अनुवाद भऽ रहल अछि... {c}/{t}",
+    .badge_translating_chunks = L"अनुवाद भऽ रहल अछि... ({n} हिस्सा)",
+    .badge_cancelling = L"रद्द भऽ रहल अछि…",
+    .tooltip_translation_cancelled = L"अनुवाद रद्द भेल।",
+    .tooltip_cancel_hint = L"लंब अनुवाद भऽ रहल अछि। रद्द करबाक लेल बैज पर क्लिक करू।",
     .gguf_invalid_model_body = L"मान्य GGUF मॉडल फाइल नहि; दर्ता नहि भेल।",
     .gguf_manager_active_suffix = L"(उपयोगमे)",
     .gguf_manager_activated = L"ई मॉडल एखन उपयोगमे अछि।",
@@ -22059,7 +22527,6 @@ const LocalizedStrings kStringsKonkaniGoan = {
     L"तुमी हें केन्नाय README फायलांत परतून वाचूंक शकतात.\n"
     L"",
     .cheatsheet_config_path = L"सेटिंग फायल: %LOCALAPPDATA%\\Emebalachat\\config.json",
-    .translate_truncated_notice = L"मजकूर खूब लांब आशिल्लो, देखून फकत ताचो सुरवात आनी शेवट अणकार जालो.",
     .tooltip_untranslated_above = L"वयर नवो अणकार नाशिल्लो मजकूर आसा. कर्सर त्या ओळीच्या शेवटाक दवर आनी अणकारा खातीर Enter दाब.",
     .repair_in_progress = L"थळाव्या इंजिनाचे भाग दुरुस्त जातात…",
     .repair_failed_title = L"थळावो अणकार उपलब्ध ना",
@@ -22185,6 +22652,12 @@ const LocalizedStrings kStringsKonkaniGoan = {
     .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट केल्लें ना)",
     .back_trans_section_back = L"परतून-अणकार",
     .back_trans_section_original = L"मूळ मजकूर",
+    // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
+    .badge_translating_progress = L"अणकार जाता... {c}/{t}",
+    .badge_translating_chunks = L"अणकार जाता... ({n} हिस्से)",
+    .badge_cancelling = L"रद्द जाता…",
+    .tooltip_translation_cancelled = L"अणकार रद्द जालो.",
+    .tooltip_cancel_hint = L"लांब अणकार जाता. रद्द करपाखातीर बॅजेर क्लिक कर.",
     .gguf_invalid_model_body = L"वैध GGUF मॉडेल फायल न्हय; नोंद जाली ना.",
     .gguf_manager_active_suffix = L"(वापरांत)",
     .gguf_manager_activated = L"हें मॉडेल आतां वापरांत आसा.",
@@ -22606,7 +23079,6 @@ std::wstring I18n::Get(StringId id) {
         case StringId::PrivacyNoticeTitle: return s.privacy_notice_title;
         case StringId::PrivacyNoticeBody: return s.privacy_notice_body;
         case StringId::CheatSheetConfigPath: return s.cheatsheet_config_path;
-        case StringId::TranslateTruncatedNotice: return s.translate_truncated_notice;
         case StringId::TooltipUntranslatedAbove: return s.tooltip_untranslated_above;
         // REQ-005 (M6 T6, design §6.4): engine-host repair guidance.
         case StringId::RepairInProgress:  return s.repair_in_progress;
@@ -22765,6 +23237,15 @@ std::wstring I18n::Get(StringId id) {
         case StringId::OpenAiReasoningServerDefault: return s.openai_reasoning_server_default;
         case StringId::BackTransSectionBack:         return s.back_trans_section_back;
         case StringId::BackTransSectionOriginal:     return s.back_trans_section_original;
+
+        // 261121_0002 (progress+cancel): the multi-chunk progress/cancel copy.
+        // The enum ids sit mid-enum right after BackTransSectionOriginal;
+        // same Get()-switch mapping rule as the blocks above.
+        case StringId::BadgeTranslatingProgress:    return s.badge_translating_progress;
+        case StringId::BadgeTranslatingChunks:      return s.badge_translating_chunks;
+        case StringId::BadgeCancelling:             return s.badge_cancelling;
+        case StringId::TooltipTranslationCancelled: return s.tooltip_translation_cancelled;
+        case StringId::TooltipCancelHint:           return s.tooltip_cancel_hint;
 
         // 261111_0001 U6 (v0.10.7, R1 P1): user-model surface completeness
         // (same trailing-field wiring as the blocks above).

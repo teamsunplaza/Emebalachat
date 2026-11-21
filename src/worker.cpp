@@ -2,6 +2,7 @@
 #include "diag_logger.hpp"
 #include "smart_bypass.hpp"
 #include "sound.hpp"
+#include "translation_progress.hpp" // 261121_0002 (T5): TranslationTaskContext seam
 #include "unicode_utils.hpp"
 #include "win32_input.hpp"
 
@@ -199,6 +200,61 @@ PipelineWorker::~PipelineWorker() {
 
 void PipelineWorker::SetBackTranslateCallback(BackTranslateCallback cb) {
     back_translate_cb_ = std::move(cb);
+}
+
+// 261121_0002 (multi-chunk PROGRESS + CANCEL UI, T5): GUI-thread cancel entry
+// point (see the contract in worker.hpp). main.cpp branches on IsBusy()
+// before calling this; the token check below is the second, per-task guard.
+void PipelineWorker::RequestCancelTranslation() {
+    // Hand-over under the mutex, then release it: holding our own shared_ptr
+    // copy keeps the flag object alive even if the worker thread finishes the
+    // task and resets the member while we run. Because the token is created
+    // per task, a late cancel can only ever reach the task it was meant for -
+    // a later task publishes a DIFFERENT token whose flag is still false.
+    std::shared_ptr<std::atomic_bool> token;
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        token = cancel_token_;
+    }
+    if (!token) {
+        return; // idle (or the engine leg already returned): no-op
+    }
+    // RELEASE: the chunk loops read the flag with ACQUIRE
+    // (ChunkLoopCancelRequested), so everything this task published before the
+    // cancel becomes visible to the unwinding engine code.
+    token->store(true, std::memory_order_release);
+    // Re-check under the lock BEFORE arming the feedback: if the task finished
+    // between the hand-over above and now, the worker's task-end clear is
+    // already posted, and a "Cancelling..." set posted after it would stick
+    // until the next task end (the badge renders it only while Translating, so
+    // a stale flag would surface on the NEXT long translation). Holding the
+    // lock makes the token comparison atomic w.r.t. the worker's clear; the
+    // remaining window (a preemption between this check and the PostMessage) is
+    // bounded by the worker's whole paste phase and cannot outlive the next
+    // task's own end clear.
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        if (cancel_token_.get() != token.get()) {
+            return;
+        }
+    }
+    // Immediate click feedback. The chunk loops can only honor the cancel at
+    // their next boundary (an in-flight request is not abortable), so the
+    // badge says "Cancelling..." until the task-end path clears it. The setter
+    // is thread-safe by construction (PostMessage-marshaled), so this call
+    // from the GUI thread is its same-thread fast path.
+    badge_.SetCancellingThreadSafe(true);
+}
+
+// 261121_0002 (T5): the one-shot multi-chunk hint (see worker.hpp). Runs on
+// the pipeline worker thread from the TranslationTaskContext on_chunk slot.
+void PipelineWorker::OnFirstMultiChunkTick(std::size_t total) {
+    if (!ShowChunkProgress(total)) return;
+    if (first_multichunk_hint_fired_) return;
+    first_multichunk_hint_fired_ = true;
+    if (first_multichunk_hint_cb_) {
+        first_multichunk_hint_cb_();
+    }
 }
 
 void PipelineWorker::Start() {
@@ -1074,8 +1130,47 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // silent - the status below distinguishes privacy-block from engine failure.
     TranslationStatus status = TranslationStatus::Ok;
     const ULONGLONG t_translate_start = ::GetTickCount64();
+    // 261121_0002 (T5, design-pick.md "Worker"): the per-task cancel token and
+    // the TranslationTaskContext that carries it into this one Translate()
+    // call. The token lives exactly as long as the engine leg:
+    //   * created immediately before the call and published to the GUI thread
+    //     through cancel_mutex_ (RequestCancelTranslation's only source),
+    //   * cleared right after the call returns AND at every ExecuteTask exit
+    //     through CancelTokenGuard (defensive: the explicit clear below runs
+    //     on the normal path, the guard covers an unwind out of the engine),
+    // so a stale token can never cancel a later task.
+    // on_chunk: the engine reports (completed-tick, total) on the local plan
+    // tick and on every request-bearing cloud chunk; the badge setter is
+    // thread-safe by construction (it PostMessages cross-thread), and the
+    // hint evaluator is worker-thread-local, so this lambda needs no further
+    // marshaling.
+    std::shared_ptr<std::atomic_bool> cancel_token =
+        std::make_shared<std::atomic_bool>(false);
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        cancel_token_ = cancel_token;
+    }
+    struct CancelTokenGuard {
+        std::mutex& mutex;
+        std::shared_ptr<std::atomic_bool>& slot;
+        void Clear() {
+            std::lock_guard<std::mutex> lock(mutex);
+            slot.reset();
+        }
+        ~CancelTokenGuard() { Clear(); }
+    } cancel_guard{cancel_mutex_, cancel_token_};
+    TranslationTaskContext ctx;
+    ctx.cancel = cancel_token.get();
+    ctx.on_chunk = [this](std::size_t index, std::size_t total) {
+        badge_.SetProgress(index, total);
+        OnFirstMultiChunkTick(total);
+    };
     std::wstring translated =
-        NormalizeNewlinesToCRLF(engine_.Translate(engine_input, resolved_engine_src, snap.type_target_language, &status));
+        NormalizeNewlinesToCRLF(engine_.Translate(engine_input, resolved_engine_src, snap.type_target_language, &status, ctx));
+    // 261121_0002 (T5): the engine leg is over - drop the token now so a badge
+    // click landing during the paste / Enter phase is a no-op instead of
+    // showing "Cancelling..." for a task that can no longer be cancelled.
+    cancel_guard.Clear();
     const bool back_translate_armed = snap.back_translation_enabled && back_translate_cb_;
     std::wstring back_translate_forward_text;
     if (untranslated_tail.empty() && back_translate_armed) {
@@ -1120,6 +1215,24 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                  ::GetTickCount64() - t_translate_start, translated.size());
     }
 
+    // 261121_0002 (T5, design-pick.md "Worker"): a USER-INITIATED cancel is not
+    // an engine failure. It must not feed the repair streak (the engine is
+    // healthy - the user changed their mind), must not surface the
+    // engine-unavailable modal, and must not play the failure tone (the tone
+    // arm below deliberately excludes Canceled). The dedicated notice replaces
+    // all three. The !translated.empty() streak-RESET arm is unaffected by
+    // construction: a cancel always arrives with an empty translation. The
+    // streak block immediately below cannot count a cancel either - Canceled
+    // is in none of its status sets - so the repair streak stays untouched
+    // without an extra condition here.
+    if (status == TranslationStatus::Canceled) {
+        // user cancel: no streak, no modal
+        DIAG_F("WORKER/ExecuteTask/057: translation cancelled by the user; "
+               "no failure streak, no modal, no error tone, Enter held\n");
+        if (translation_cancelled_cb_) {
+            translation_cancelled_cb_();
+        }
+    }
     // REQ-047 D1 (design §A-1, Tech Gate §D1): surface a strict local failure
     // (CloudConsentBlocked / LocalModelMissing) to the user through the modal
     // seam, and reset the modal streak latch on success. Both signals travel
@@ -1171,6 +1284,13 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
     }
 
+    // 261121_0002 (T5): clear the progress / cancelling display BEFORE the
+    // status reset, so no progress count or "Cancelling..." state survives
+    // into the next task (the badge's Translating arm would otherwise start
+    // the next run with a stale count). Both setters are the established
+    // thread-safe forms - this call comes from the worker thread.
+    badge_.SetProgress(0, 0);
+    badge_.SetCancellingThreadSafe(false);
     // Restore active state
     badge_.SetStatus(BadgeStatus::Active);
 
@@ -1430,6 +1550,10 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // a missing local model must not be a silent no-response (B-7a precondition:
     // the enum value exists; the engine now returns it instead of the cloud
     // CloudConsentBlocked masquerade).
+    // 261121_0002 (T5): TranslationStatus::Canceled is deliberately NOT in this
+    // set. A user cancel is not a failure - the dedicated cancelled notice
+    // (the branch above) is the whole surface, and an error tone would blame
+    // the engine for the user's own decision.
     if (!pasted && translated.empty() &&
         (status == TranslationStatus::EngineFailed ||
          status == TranslationStatus::CloudConsentBlocked ||
@@ -1481,6 +1605,16 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         // the target; the release above already restored the caret.
         inject_enter = true;
     }
+    // 261121_0002 (T5, design-pick.md "Worker" §Enter suppression): a
+    // user-initiated cancel HOLDS the intercepted Enter - the untranslated
+    // original stays in the target input for edit/re-send and is never
+    // submitted under auto_send (that would send text the user just aborted).
+    // Applied AFTER the identity arm so it wins unconditionally; the H1 and
+    // Category gates downstream are untouched. Cancel always arrives with an
+    // empty translation, so identity_outcome is false here by construction.
+    if (CancelOutcomeSuppressesEnter(status)) {
+        inject_enter = false;
+    }
     if (inject_enter && h1_ok) {
         // B-6a settle baseline: caret right BEFORE the newline injection (the
         // post-paste position). kEditCaretUnknown on any EM-gate failure - the
@@ -1515,9 +1649,13 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
             EditCaretTracker_NotifyReplacement(task.target_hwnd, pasted, translated.size());
             pending_notify = false;
         }
+        // 261121_0002 (T5): the cancel hold is logged as its own reason so a
+        // diag trace never blames the send gate for a user-initiated cancel.
+        const char* skip_reason = CancelOutcomeSuppressesEnter(status)
+                                      ? "user_cancel"
+                                      : (h1_ok ? "send_gate" : "h1_foreground_mismatch");
         DIAG_LOG("PIPELINE", "stage=send_enter action=SKIPPED reason=%s target=%p",
-                 h1_ok ? "send_gate" : "h1_foreground_mismatch",
-                 reinterpret_cast<const void*>(task.target_hwnd));
+                 skip_reason, reinterpret_cast<const void*>(task.target_hwnd));
     }
 
     // REQ-F2 ledger maintenance. The ledger is the block-start memory of the

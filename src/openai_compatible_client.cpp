@@ -1026,12 +1026,18 @@ std::vector<OpenAiModelCapability> ParseOpenAiModelCapabilitiesJson(std::string_
     return ParseModelCapabilitiesJson(json);
 }
 
-bool ProtectOpenAiApiKey(std::string_view cleartext, std::string& out_dpapi_base64) {
+bool ProtectOpenAiApiKey(const std::string& cleartext, std::string& out_dpapi_base64) {
     out_dpapi_base64.clear();
     if (cleartext.empty()) return false;
 
+    // OF-01 (261121_0002): the const& exists only so literal/temporary
+    // arguments bind as a writable std::string (a string_view could name
+    // read-only memory and the scrub below would fault). The referenced
+    // object is writable by contract, so drop the const to hand the DPAPI
+    // calls a mutable pointer into the caller's buffer.
+    char* const mutable_cleartext = const_cast<char*>(cleartext.data());
     DATA_BLOB in{};
-    in.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(cleartext.data()));
+    in.pbData = reinterpret_cast<BYTE*>(mutable_cleartext);
     in.cbData = static_cast<DWORD>(cleartext.size());
     DATA_BLOB out{};
     // REQ-045 (design §3b): CryptProtectData with per-user scope (no
@@ -1044,7 +1050,9 @@ bool ProtectOpenAiApiKey(std::string_view cleartext, std::string& out_dpapi_base
     }
     out_dpapi_base64 = Base64Encode(out.pbData, out.cbData);
     ::LocalFree(out.pbData);
-    // Scrub the caller's cleartext copy after a successful protect.
+    // Scrub the caller's cleartext copy after a successful protect (the
+    // CryptProtectData failure path above scrubs it too — see the header's
+    // SCRUB CONTRACT).
     SecureZeroMemory(in.pbData, in.cbData);
     return true;
 }
@@ -1444,7 +1452,8 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
                                                     std::string_view source_lang,
                                                     std::string_view target_lang,
                                                     std::wstring_view text,
-                                                    std::string* out_error_detail) {
+                                                    std::string* out_error_detail,
+                                                    const TranslationTaskContext& ctx) {
     if (out_error_detail) {
         out_error_detail->clear();
     }
@@ -1545,6 +1554,21 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
     std::size_t total_response_bytes = 0;
     bool any_request_sent = false;
     for (size_t i = 0; i < chunks.size(); ++i) {
+        // 261121_0002 T2 (design-pick §Plumbing, OpenAI row): a user cancel is
+        // honored at the TOP of the iteration — BEFORE the loop-budget check,
+        // before the no-content fold, before any further I/O — so a long run
+        // unwinds within one chunk's request time (an in-flight synchronous
+        // WinHTTP call cannot be aborted; see the design's honest limits). The
+        // return is deliberately BARE (no fail()): a cancel is not an engine
+        // failure, so no cause is recorded and LastChatErrorDetail stays clean.
+        // The manager attributes Canceled vs EngineFailed (T3). The scrubbing
+        // destructor still zeroes the partial translations on this exit.
+        if (ChunkLoopCancelRequested(ctx.cancel)) {
+            DIAG_F("OPENAI/ChatCompletion/010: cancel requested (index=%zu of %zu); "
+                   "whole request unwinds (shape-only)\n",
+                   i, chunks.size());
+            return {};
+        }
         if (!OpenAiChunkNeedsRequest(chunks[i].text)) {
             // F-1 (261121_0001 fix round 1): a chunk with no translatable
             // content is never POSTed — a blank user message is a guaranteed
@@ -1573,6 +1597,17 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
             return {};
         }
         any_request_sent = true;
+        // 261121_0002 T2 (design-pick §Plumbing): the progress tick fires
+        // immediately BEFORE this chunk's POST, once per chunk that actually
+        // issues one — the no-content fold above `continue`s before reaching
+        // this point, so the reported index never advances without a request.
+        // It sits OUTSIDE the attempt loop on purpose: the reasoning_effort
+        // HTTP-400 retry is a re-attempt of this SAME chunk, not a new one, so
+        // it adds no second tick. ShowChunkProgress gates on total > 1, which
+        // keeps a single-chunk run byte-identical to the pre-feature build.
+        if (ShowChunkProgress(chunks.size()) && ctx.on_chunk) {
+            ctx.on_chunk(i + 1, chunks.size());
+        }
         std::string response;
         std::string error_body;
         DWORD status = 0;

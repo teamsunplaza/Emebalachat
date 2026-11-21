@@ -154,6 +154,51 @@ void TestReq045OpenAiDpapi() {
     OpenAiConfig empty_pair;
     TEST_CHECK(!OpenAiKeyPairIntegrityOk(empty_pair),
                "REQ-050: an empty pair is not integrity-ok");
+
+    // 261121_0002 (OF-01, deferred item from 261121_0001): signature-hardening
+    // regression. The parameter is `const std::string&`, NOT string_view, so
+    // a string-literal argument materializes a WRITABLE temporary std::string
+    // and the in-function SecureZeroMemory scrub can never touch read-only
+    // memory. Under the old string_view signature this exact call bound the
+    // literal's read-only storage and the scrub access-violated; compiling
+    // and running it is the regression proof, and the round-trip proves the
+    // produced blob is still valid.
+    {
+        std::string literal_blob;
+        TEST_CHECK(ProtectOpenAiApiKey("sk-literal-footgun-check-0123456789",
+                                       literal_blob) &&
+                       !literal_blob.empty(),
+                   "OF-01: a literal argument binds a writable temporary (scrub cannot fault)");
+        std::string literal_recovered;
+        TEST_CHECK(UnprotectOpenAiApiKey(literal_blob, literal_recovered) &&
+                       literal_recovered == "sk-literal-footgun-check-0123456789",
+                   "OF-01: the literal-derived blob round-trips");
+        SecureZeroMemory(literal_recovered.data(), literal_recovered.size());
+    }
+
+    // Static pin on the declaration: the header must declare
+    // `const std::string&` (never string_view) — a string_view parameter
+    // would re-open the read-only-memory scrub footgun the runtime check
+    // above guards. Pin the exact declaration text; a .cpp definition that
+    // drifted from this declaration would fail to compile/link anyway.
+    const std::filesystem::path client_hpp =
+        ResolveRepoFile(L"src\\openai_compatible_client.hpp");
+    std::string hpp_src;
+    if (!client_hpp.empty()) {
+        std::ifstream in(client_hpp, std::ios::binary);
+        hpp_src.assign((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+    }
+    TEST_CHECK(!hpp_src.empty(),
+               "OF-01: src/openai_compatible_client.hpp resolves for the signature pin");
+    if (!hpp_src.empty()) {
+        TEST_CHECK(hpp_src.find(
+                       "bool ProtectOpenAiApiKey(const std::string& cleartext, "
+                       "std::string& out_dpapi_base64)") != std::string::npos,
+                   "OF-01: ProtectOpenAiApiKey takes const std::string& (not string_view)");
+        TEST_CHECK(hpp_src.find("ProtectOpenAiApiKey(std::string_view") == std::string::npos,
+                   "OF-01: no string_view ProtectOpenAiApiKey overload remains");
+    }
 }
 
 // ---- config round-trip for the openai{} block ----
@@ -578,13 +623,15 @@ void TestReq045OpenAiI18nPresent() {
     // (135 -> 144) for the REQ-MD model-download dialog, and by 13 more
     // (144 -> 157) for the REQ-060 load-mode/policy strings, and by 4 more
     // (199 -> 203) for the 261121_0001 v0.10.9 U-C strings (the 2 OpenAI
-    // reasoning-effort strings + the 2 back-translation section headers).
+    // reasoning-effort strings + the 2 back-translation section headers),
+    // and down by 1 (203 -> 202) in 261121_0002 (the dead SEC-M1
+    // TranslateTruncatedNotice was removed: no production consumer left).
     // Read
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 203,
-                "StringId::EnumCount is 203 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers)");
+    TEST_CHECK(enum_count == 207,
+                "StringId::EnumCount is 207 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + the 5 261121_0002 progress/cancel strings");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }

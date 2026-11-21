@@ -367,13 +367,16 @@ void TestWs3BackTranslationI18n() {
                        i18n_src.find("case StringId::BackTranslateMatchExact:") != std::string::npos &&
                        i18n_src.find("case StringId::BackTranslateMatchCheck:") != std::string::npos,
                    "WS3 i18n: I18n::Get maps all four new ids");
-        // The X-macro list and its generated count must stay untouched: the
-        // new fields are TRAILING defaults, not X-macro fields.
+        // The X-macro list and its generated count must stay untouched by the
+        // WS3 fields: they are TRAILING defaults, not X-macro fields. (The
+        // count itself moved 157 -> 156 in 261121_0002, when the dead SEC-M1
+        // translate_truncated_notice X-macro field was removed; the WS3
+        // designators remain non-X-macro.)
         TEST_CHECK(i18n_src.find("X(menu_back_translation)") == std::string::npos,
-                   "WS3 i18n: the new fields are NOT X-macro fields (count stays 157)");
-        TEST_CHECK(i18n_src.find("static_assert(kLocalizedStringsFieldCount == 157,") !=
+                   "WS3 i18n: the new fields are NOT X-macro fields (the WS3 appends did not move the count; 156 after the 261121_0002 SEC-M1 removal)");
+        TEST_CHECK(i18n_src.find("static_assert(kLocalizedStringsFieldCount == 156,") !=
                        std::string::npos,
-                   "WS3 i18n: kLocalizedStringsFieldCount is still pinned at 157");
+                   "WS3 i18n: kLocalizedStringsFieldCount is pinned at 156 (157 before the 261121_0002 SEC-M1 removal)");
     }
 
     I18n::SetLocale(initial); // suite-state hygiene

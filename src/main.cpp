@@ -2113,6 +2113,41 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                        emebalachat::I18n::Get(emebalachat::StringId::TooltipUntranslatedAbove));
     });
 
+    // 261121_0002 (T6, design-pick.md "main.cpp"): the user-cancel notice. The
+    // worker calls this (on the pipeline worker thread) exactly once per
+    // CANCELED task - the Canceled branch next to the failure-tone block (no
+    // tone, no streak, no modal). Same contract as SetEmptyCaptureCallback
+    // above: registered once BEFORE worker.Start() (read-only afterwards), and
+    // TooltipWindow::ShowMessageThreadSafe is the REQ-R10 thread-safe seam that
+    // marshals the notice onto the GUI thread. Header and body both carry the
+    // cancelled string - the notice is a single statement, there is no title
+    // variant.
+    worker.SetTranslationCancelledCallback([&tooltip]() {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                      emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslationCancelled),
+                                      emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslationCancelled));
+    });
+
+    // 261121_0002 (T6, design-pick.md "main.cpp"): the one-shot multi-chunk
+    // hint. The worker fires this (on the pipeline worker thread) at most ONCE
+    // per process - the first time a translation reports a genuine multi-chunk
+    // plan (ShowChunkProgress) - so the user learns the badge single-click
+    // cancels a long run. Same wrapper contract and marshal seam as the
+    // cancelled notice above.
+    worker.SetFirstMultiChunkHintCallback([&tooltip]() {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                      emebalachat::I18n::Get(emebalachat::StringId::TooltipCancelHint),
+                                      emebalachat::I18n::Get(emebalachat::StringId::TooltipCancelHint));
+    });
+
     // ---- 261108_0002 (WS3, v0.10.6): floating back-translation card --------
     // The user rule (verbatim): "config.back_translation_enabled 이 true 면
     // ExecuteTask 가 콜백을 발화하고, back_translate_worker 가 BBBBB 를 원문
@@ -4878,13 +4913,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     });
 
     // Badge Mouse Controls:
-    // Single Click: Toggle Active / Paused
+    // Single Click: Cancel an in-flight translation, otherwise Toggle Active / Paused
     badge.SetClickCallback([&]() {
-        // Badge callbacks run on the GUI thread (badge WndProc). ToggleActive()
-        // now syncs MouseHook through the REQ-R07 callback; the manual
-        // SetEnabled(hook.IsActive()) that used to sit here read the flag
-        // BEFORE the toggle completed and could re-disable an enabled hook.
-        hook.ToggleActive();
+        // 261121_0002 (T6, design-pick.md "main.cpp"): while a translation
+        // task is in flight the single click CANCELS it (worker.IsBusy() ->
+        // RequestCancelTranslation - GUI-thread safe, RELEASE store, immediate
+        // "Cancelling..." badge feedback; the task then ends Canceled, holding
+        // the Enter so the untranslated original is never submitted). While
+        // idle the click keeps the legacy pause toggle. The click still
+        // arrives through the kTimerSingleClick deferral, so the cancel lands
+        // after the OS double-click window - by design, a double-click (swap
+        // languages) must never be swallowed by a cancel.
+        worker.IsBusy() ? worker.RequestCancelTranslation() : hook.ToggleActive();
     });
 
     // Double Click: Swap Source ⇄ Target

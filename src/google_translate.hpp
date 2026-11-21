@@ -9,6 +9,14 @@
 // header through the existing PUBLIC include of Emebala_engine_host.
 #include "translation_chunker.hpp"
 
+// 261121_0002 T1 (design-pick §"New pure header"): the progress + cancel seam.
+// A leaf STL-only header owned by this repo (no Win32, no network, no llama),
+// so including it here adds no cycle and no link edge. A default-constructed
+// context reproduces the pre-feature behavior exactly — every existing caller
+// (drag, double-Ctrl+C, retranslate, back-translation, probes) compiles and
+// behaves unchanged.
+#include "translation_progress.hpp"
+
 namespace emebalachat {
 
 // ---- REQ-R05: per-endpoint WinHTTP request profiles ---------------------
@@ -57,10 +65,25 @@ public:
     // an identity passthrough used to masquerade failures as successes). Fix
     // round 2 G-1: the sequential loop also fails closed when the aggregate of
     // all chunk response bytes exceeds kCloudMaxTotalResponseBytes (4 MiB).
+    //
+    // 261121_0002 T1 (design-pick §Plumbing, Google row): `ctx` is the progress
+    // + cancel seam of a multi-chunk run. Both fields default to "absent", so
+    // the default argument keeps every existing call site source- and
+    // behavior-identical.
+    //   * ctx.cancel non-null and set -> the chunk loop unwinds at the next
+    //     between-chunk boundary, BEFORE the loop-budget check, and returns
+    //     {} (the existing fail-closed arm). This function does not classify
+    //     the outcome: the engine manager attributes Canceled vs EngineFailed.
+    //   * ctx.on_chunk, when the plan holds 2+ chunks (ShowChunkProgress),
+    //     receives (index_1based, total) immediately BEFORE each chunk's
+    //     request. A chunk that needs no request (ChunkNeedsRequest is false:
+    //     pure delimiters / whitespace-only) never advances the index.
+    // The default lives HERE only; the .cpp definition carries no default.
     static std::wstring Translate(
         std::wstring_view text,
         std::string_view src_code = "AUTO",
-        std::string_view tgt_code = "EN"
+        std::string_view tgt_code = "EN",
+        const TranslationTaskContext& ctx = {}
     );
 
     // REQ-043 (M6 T5 debug): test-only cloud-block hook. When engaged,

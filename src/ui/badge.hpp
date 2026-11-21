@@ -36,6 +36,14 @@ public:
     // Updates status and triggers immediate redraw (thread-safe)
     void SetStatus(BadgeStatus status);
 
+    // 261121_0002 (T4 badge progress): multi-chunk translation progress.
+    // Both marshal to the GUI thread exactly like SetStatus above. SetProgress
+    // stores (index, total); a (0,0) payload clears the numbers so the next
+    // render falls back to the plain "Translating" label. SetCancellingThreadSafe
+    // drives the "Cancelling…" overlay shown while a cancel is being honored.
+    void SetProgress(std::size_t index, std::size_t total);
+    void SetCancellingThreadSafe(bool cancelling);
+
     // Updates source and target language codes (thread-safe)
     void SetLanguages(std::wstring_view src_code, std::wstring_view tgt_code);
 
@@ -68,6 +76,12 @@ public:
 
     static constexpr UINT WM_BADGE_SET_STATUS = WM_USER + 201;
     static constexpr UINT WM_BADGE_SET_LANGS  = WM_USER + 202;
+    // 261121_0002 (T4 badge progress): WM_USER+203/204 verified free across
+    // src/ (grep WM_USER + 20x hits only the two ids above; main.cpp has none).
+    // SET_PROGRESS carries MAKELONG(index, total); a (0,0) payload clears the
+    // numbers. SET_CANCELLING carries the bool in wParam (0/1).
+    static constexpr UINT WM_BADGE_SET_PROGRESS   = WM_USER + 203;
+    static constexpr UINT WM_BADGE_SET_CANCELLING = WM_USER + 204;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -109,6 +123,13 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE hInstance_ = nullptr;
     BadgeStatus status_ = BadgeStatus::Active;
+    // 261121_0002 (T4 badge progress): chunk progress numbers + cancel
+    // overlay flag. Guarded by data_mutex_ like status_/src_code_/tgt_code_;
+    // read by Render() for the Translating arm only. (0,0) means "no progress
+    // to show" and keeps short/single-chunk labels byte-identical.
+    std::size_t progress_index_ = 0;
+    std::size_t progress_total_ = 0;
+    bool cancelling_ = false;
     std::wstring src_code_ = L"Auto";
     std::wstring tgt_code_ = L"EN";
     bool visible_ = true;

@@ -7,8 +7,10 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -505,6 +507,20 @@ constexpr bool EnterEngineFailureSurfacesModal(bool strict_local_status,
            consecutive_engine_failures >= kEnterEngineFailureStreakThreshold;
 }
 
+// 261121_0002 (T5, design-pick.md "Worker" §Enter suppression): a
+// USER-INITIATED cancel HOLDS the intercepted Enter. The untranslated
+// original stays in the target input for edit/re-send and is never submitted
+// under auto_send - unlike the engine-failure path, which deliberately
+// forwards the original (a failed engine must not swallow the user's text).
+// The manager reports TranslationStatus::Canceled for a user cancel on every
+// leg (local first attempt / retry / both cloud seams / the fallback block),
+// so treating exactly this status keeps failure and cancel disjoint. One
+// definition shared by worker.cpp and the unit tests (same pure-predicate
+// discipline as SelectionReleaseRequired / EmptyCaptureNeedsHold).
+constexpr bool CancelOutcomeSuppressesEnter(TranslationStatus s) {
+    return s == TranslationStatus::Canceled;
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);
@@ -608,9 +624,53 @@ public:
         engine_unavailable_cb_ = std::move(cb);
     }
 
+    // 261121_0002 (multi-chunk PROGRESS + CANCEL UI, T5): GUI-thread cancel
+    // request for the task currently in flight. main.cpp's badge single-click
+    // branches on IsBusy() - the ONE busy contract, no second notion of
+    // "in flight" is introduced - and calls this when a task is running.
+    //   * In flight (the per-task token exists): set the flag with a RELEASE
+    //     store (the chunk loops poll it with ACQUIRE through
+    //     ChunkLoopCancelRequested) and arm the badge's "Cancelling..." label
+    //     for immediate click feedback. The engine manager reports
+    //     TranslationStatus::Canceled once the current chunk / pipe request
+    //     returns (an in-flight request is NOT abortable - design-pick
+    //     "Honest limitations"), so the feedback is bounded but not instant.
+    //   * Idle: no-op. The token is created per task and cleared when the
+    //     task finishes, so a click can never cancel a later task.
+    // Thread-safety: callable from the GUI thread; cancel_mutex_ guards only
+    // the pointer handoff (std::shared_ptr is not atomic), the flag itself is
+    // the atomic the workers poll.
+    void RequestCancelTranslation();
+
+    // 261121_0002 (T5): called (on the worker thread) exactly once per
+    // CANCELED task - the engine manager maps a user cancel on every leg to
+    // TranslationStatus::Canceled. Same contract as the other SetXxxCallback
+    // seams: registered once at startup BEFORE Start(), read-only afterwards,
+    // so the worker thread reads it without a lock. main.cpp registers a
+    // TooltipWindow::ShowMessageThreadSafe wrapper surfacing the localized
+    // StringId::TooltipTranslationCancelled notice.
+    void SetTranslationCancelledCallback(std::function<void()> cb) {
+        translation_cancelled_cb_ = std::move(cb);
+    }
+
+    // 261121_0002 (T5): called (on the worker thread) at most ONCE per worker
+    // lifetime: the first time a translation reports a genuine multi-chunk
+    // plan (ShowChunkProgress) the process surfaces the
+    // StringId::TooltipCancelHint notice, so the user learns the badge
+    // single-click cancels a long run. Same registration contract as the
+    // seams above; the one-shot latch is a plain bool because only the worker
+    // thread reads/writes it.
+    void SetFirstMultiChunkHintCallback(std::function<void()> cb) {
+        first_multichunk_hint_cb_ = std::move(cb);
+    }
+
 private:
     void WorkerLoop(std::stop_token stop_token);
     void ExecuteTask(const PipelineTask& task);
+    // 261121_0002 (T5): worker-thread one-shot evaluator for the multi-chunk
+    // hint above (called from the TranslationTaskContext on_chunk slot; no-op
+    // for single-chunk plans and after the first firing).
+    void OnFirstMultiChunkTick(std::size_t total);
 
     AppConfig& config_;
     TranslationManager& engine_;
@@ -641,6 +701,25 @@ private:
 
     // 261108_0002 (WS3): single-worker-thread read inside ExecuteTask.
     BackTranslateCallback back_translate_cb_;
+
+    // 261121_0002 (T5): the per-task cancel token. Created in ExecuteTask
+    // immediately before the engine call and cleared on every exit (the RAII
+    // guard plus the explicit clear right after the call), so a stale token
+    // can never cancel a later task. cancel_mutex_ guards the POINTER handoff
+    // only (RequestCancelTranslation runs on the GUI thread and std::shared_ptr
+    // is not atomic); the flag itself is the atomic the chunk loops poll.
+    std::mutex cancel_mutex_;
+    std::shared_ptr<std::atomic_bool> cancel_token_;
+
+    // 261121_0002 (T5): set once at startup via the two SetXxxCallback seams
+    // above. Single-worker-thread reads inside ExecuteTask.
+    std::function<void()> translation_cancelled_cb_;
+    std::function<void()> first_multichunk_hint_cb_;
+
+    // 261121_0002 (T5): the one-shot latch for the multi-chunk hint. Only the
+    // pipeline worker thread touches it (the on_chunk slot), so a plain bool
+    // is the whole synchronization story - same discipline as the ledger.
+    bool first_multichunk_hint_fired_ = false;
 
     // REQ-051 (symptom A-2): consecutive dropped-chord captures on the Enter
     // path (EnterCaptureResult::CopyChordDropped verdicts that took the loud

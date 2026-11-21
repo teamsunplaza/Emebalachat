@@ -509,7 +509,8 @@ bool GoogleTranslate::IsCloudBlockedForTesting() {
 std::wstring GoogleTranslate::Translate(
     std::wstring_view text,
     std::string_view src_code,
-    std::string_view tgt_code
+    std::string_view tgt_code,
+    const TranslationTaskContext& ctx
 ) {
     if (text.empty()) {
         return {};
@@ -561,6 +562,19 @@ std::wstring GoogleTranslate::Translate(
     size_t total_response_bytes = 0;
     for (size_t i = 0; i < chunks.size(); ++i) {
         const TranslationChunk& chunk = chunks[i];
+        // 261121_0002 T1 (design-pick §Plumbing, Google row): a user cancel is
+        // honored at the TOP of the iteration — BEFORE the loop-budget check,
+        // before the no-content fold, before any further I/O — so a long run
+        // unwinds within one chunk's request time (an in-flight synchronous
+        // WinHTTP call cannot be aborted; see the design's honest limits). {}
+        // is the EXISTING fail-closed arm; this function does not classify the
+        // outcome — the manager attributes Canceled vs EngineFailed (T3).
+        if (ChunkLoopCancelRequested(ctx.cancel)) {
+            DIAG_F("GOOGLE_T/Translate/008: cancel requested at chunk %zu/%zu; "
+                   "whole request unwinds (shape-only)\n",
+                   i + 1, chunks.size());
+            return {};
+        }
         if (!ChunkNeedsRequest(chunk.text)) {
             // Pure-delimiter chunk (and, since fix round 1 F-1, the
             // whitespace-only shape the chunker emits at a packing boundary):
@@ -578,6 +592,17 @@ std::wstring GoogleTranslate::Translate(
                    i + 1, chunks.size(),
                    static_cast<unsigned long long>(GoogleTranslate::kChunkLoopTotalBudgetMs));
             return {};
+        }
+        // 261121_0002 T1 (design-pick §Plumbing): the progress tick fires
+        // immediately BEFORE this chunk's request, once per chunk that actually
+        // issues one — the pure-delimiter fold above already skipped its
+        // iteration, so the reported index never advances without a request.
+        // TranslateChunkUtf8's internal primary -> gtx fallback is still ONE
+        // chunk request, so it never adds a second tick.
+        // ShowChunkProgress gates on total > 1, which keeps a single-chunk run
+        // byte-identical to the pre-feature build.
+        if (ShowChunkProgress(chunks.size()) && ctx.on_chunk) {
+            ctx.on_chunk(i + 1, chunks.size());
         }
         const std::wstring piece = TranslateChunkUtf8(chunk.text, sl, tl);
         if (piece.empty()) {

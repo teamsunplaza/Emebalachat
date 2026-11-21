@@ -9440,23 +9440,6 @@ void TestR6P5P6I18n() {
         I18n::SetLocale(UiLocale::English);
     }
 
-    // ---- 1b'') SEC-M1 (session 260911_0002, verify 235100 §5): the cloud
-    //           translation truncation notice resolves NON-EMPTY in all 37
-    //           locales (the EnumCount loop above forces it; this pins the
-    //           key explicitly with a per-key failure message, same pattern
-    //           as the T2 pins). Truncation must never be silent for the
-    //           public release.
-    {
-        int notice_ok = 0;
-        for (const UiLocale loc : kCompleteLocales) {
-            I18n::SetLocale(loc);
-            if (!I18n::Get(StringId::TranslateTruncatedNotice).empty()) ++notice_ok;
-        }
-        TEST_CHECK(notice_ok == kSelectedCount,
-                   "M1: TranslateTruncatedNotice non-empty in every selectable locale");
-        I18n::SetLocale(UiLocale::English);
-    }
-
     // ---- 1c) REQ-206 (session 260911_0002 T4): the Cheat Sheet dialog
     //         assembly (main.cpp on_show_cheat_sheet) appends the config-path
     //         line after a '\n' separator onto CheatSheetBody. The logic
@@ -18067,6 +18050,15 @@ void TestR107PeerIdentityGate() {
 // per the end-of-file pattern.
 #include "translation_chunker_tests.inc" // v0.10.9 U-A (C1/C3): chunker + budget suite
 
+// 261121_0002 (v0.10.9 leftover, T5): the multi-chunk translation PROGRESS +
+// CANCEL UI, worker half — the pure seam/predicate pins, the
+// kLocalProgressChunkUnits parity with the engine repo's chunk cap, and the
+// structural pins over worker.hpp/.cpp, engine.cpp, both cloud loops and the
+// badge label arms. Staged as an .inc next to this runner (the end-of-file
+// pattern: it uses ResolveRepoFile, defined above). Registered at the end of
+// main() after the v0.10.9 U-A chunker suite it complements.
+#include "translation_progress_tests.inc"
+
 // 261108_0002 (v0.10.6) WS4 — Chat installer upgrade-safety pins (G1/G2/G3/
 // G4/G6/G9) against installer/setup.iss, plus the frozen contracts the other
 // installer gates own (G5 non-owned slot). Staged as an .inc next to this
@@ -18190,7 +18182,15 @@ struct Req044LstrMirror {
     // ENUM ids also sit before MenuSearchLangs - same Get() switch rule.
     // 261121_0001 U-C (v0.10.9): the 4 reasoning/back-trans section strings appended
     // after back_translate_reference (199 -> 203), same Get() switch mapping rule.
-    const wchar_t* f[203];
+    // 261121_0002: the dead SEC-M1 TranslateTruncatedNotice was removed
+    // (203 -> 202: one X-macro field + one initializer in every table).
+    // 261121_0002 progress+cancel unit: the 5 progress/cancel strings
+    // inserted right after back_trans_section_original (202 -> 207:
+    // badge_translating_progress/badge_translating_chunks/badge_cancelling/
+    // tooltip_translation_cancelled/tooltip_cancel_hint), while their ENUM
+    // ids sit right after BackTransSectionOriginal - same Get() switch
+    // mapping rule.
+    const wchar_t* f[207];
 };
 
 } // namespace
@@ -18203,9 +18203,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 203
-    static_assert(kExpectedFieldCount == 203,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 207
+    static_assert(kExpectedFieldCount == 207,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18213,11 +18213,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 203,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C: LocalizedStrings field count is 203 "
+    TEST_CHECK(observed_field_count == 207,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002: LocalizedStrings field count is 207 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 203,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C: StringId::EnumCount is 203 (struct fields == switch cases; 157 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids)");
+    TEST_CHECK(observed_enum_count == 207,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002: StringId::EnumCount is 207 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -18316,9 +18316,11 @@ void TestReq044I18nFieldOrder() {
         const int element_count = static_cast<int>(elements);
         TEST_CHECK(element_count == static_cast<int>(StringId::EnumCount),
                    "REQ-044 (c1): kStringsEnglish has one initializer per LocalizedStrings "
-                   "member (positional tail aligned; 157 X-macro + 4 theme + 5 back-translation "
+                   "member (positional tail aligned; 156 X-macro + 4 theme + 5 back-translation "
                    "+ 3 user-model + 2 language-picker + 1 P6a search-row + 1 P7 count phrase "
-                   "+ 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string)");
+                   "+ 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string - "
+                   "the 1 dead 261121_0002 SEC-M1 string + the 5 261121_0002 progress/cancel "
+                   "strings)");
 
         // (c2) The four theme slots and the four WS3 slots must hold their own
         // strings. Before the FIX-R1 alignment, MenuUiTheme returned
@@ -25207,6 +25209,11 @@ int main() {
     // pattern.
     int translation_chunker_failures = 0;
     RunTranslationChunkerTests(translation_chunker_failures);
+    // 261121_0002 (v0.10.9 leftover, T5): the multi-chunk PROGRESS + CANCEL UI
+    // worker suite — pure seam predicates, the local chunk-cap parity, and the
+    // structural pins over the worker / manager / cloud-loop / badge shapes.
+    // Registered last, per the end-of-file pattern.
+    TestTranslationProgressCancel();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -5,6 +5,11 @@
 #include "openai_compatible_client.hpp" // REQ-045 P4-3: OpenAI Compatible cloud engine
 #include "unicode_utils.hpp"
 #include "engine_core/translation_common.hpp" // REQ-043: LocalInferenceEngine (M6 T1 move; M6 T5: consumed by the worker exe only)
+// 261121_0002 (T3): SplitTextIntoTranslationChunks — the shared 4-tier chunker
+// lives in the engine repo's src/ (include path). translation_common.hpp above
+// already pulls it in transitively; this direct include pins the new
+// dependency so a header reorganization cannot silently drop it.
+#include "translation_chunker.hpp"
 // REQ-057: served-vs-expected model-id diagnosis at the local-host seam.
 #include "engine_host_registry.hpp"      // ResolveBundledModelId (the bundled registry id)
 #include "engine_host_config_reader.hpp" // LoadUserModelIdFromConfigLive (the C1-gated live user pin)
@@ -36,18 +41,44 @@ namespace emebalachat {
 // only (CMake T5) and carries no llama symbol.
 //
 // TruncateHeadTailWindow's definition deliberately STAYS in this file
-// (Emebalachat_core): google_translate.cpp (a permanent core member serving
-// the Chat exe's cloud path) calls it, so moving it would pin the Chat exe
-// to engine_core. BuildPrompt/LocalPairReliable stay in config.cpp per
-// translation_common.hpp's own header contract.
+// (Emebalachat_core): its real consumer is the SHARED ENGINE repo's
+// engine_core/translation_common.cpp per-chunk head+tail shrink
+// (translation_common.cpp, the TruncateHeadTailWindow(cur, target_len/2)
+// call inside the chunk loop), which resolves this header through the
+// Emebalachat_core include dir. Keeping the definition here means the Chat
+// exe gains NO engine_core link edge. BuildPrompt/LocalPairReliable stay in
+// config.cpp per translation_common.hpp's own header contract.
+
+// 261121_0002 (T3, design-pick.md "Plumbing — Manager"): the LOCAL leg's
+// predicted chunk-plan unit budget. This MUST equal the engine repo's
+// kV109LocalChunkMaxUtf16Units (Emebala_engine/src/engine_core/
+// translation_common.hpp) — the local worker splits its decode ladder at
+// that cap, so the manager's client-side plan (used only for the badge's
+// 0/n chunk-count tick) predicts the same chunk count.
+// PIN OBLIGATION (lands with the WORKER unit's tests/translation_progress_
+// tests.inc per the task split): the equality is pinned there as a source
+// pin over this file — the literal 1200 below, the constant name
+// kLocalProgressChunkUnits, and the use site
+// "SplitTextIntoTranslationChunks(ToUtf8(text), kLocalProgressChunkUnits)"
+// are the pinned substrings. kV109LocalChunkMaxUtf16Units itself is already
+// static_assert-pinned to 1200 by the v107 / s260930 suites in the engine
+// repo's consumers.
+// Honest limitation (design-pick "Honest limitations"): the server gates its
+// chunked path on a TOKEN count a llama-free client cannot evaluate, so a
+// rare mismatch makes the count cosmetic-wrong for one request.
+namespace {
+constexpr std::size_t kLocalProgressChunkUnits = 1200;
+} // namespace
 
 // REQ-R01 (Batch D1): pure, model-independent head+tail sliding-window truncation.
 // Keeps the first and last `keep_per_side` UTF-16 code units joined by "\n...\n"
 // (U+2026 ellipsis). Cut points are adjusted so a UTF-16 surrogate pair is never
 // split - a lone surrogate would corrupt the UTF-8 conversion and the tokenizer.
 // Returns the text unchanged when it already fits (text.size() <= 2*keep_per_side).
-// Unit-testable without any model; retained verbatim (REQ-R01) so the cloud
-// path and the config-side budget seams keep their proven helper.
+// Unit-testable without any model; retained verbatim (REQ-R01) because the shared
+// engine repo's engine_core per-chunk budget shrink drives it via a token-count
+// binary search (the chat-side cloud path no longer truncates: v0.10.9 chunks the
+// full text through SplitTextIntoTranslationChunks).
 std::wstring TruncateHeadTailWindow(std::wstring_view text, size_t keep_per_side) {
     if (text.empty()) {
         return {};
@@ -592,7 +623,8 @@ std::wstring TranslationManager::Translate(
     std::wstring_view text,
     std::string_view src_code_or_name,
     std::string_view tgt_code_or_name,
-    TranslationStatus* out_status
+    TranslationStatus* out_status,
+    const TranslationTaskContext& ctx
 ) {
     // R1-11 (session 261029_0001, v0.10.4 sweep; code review mimoflash F-02):
     // TWO locks, two jobs. translate_mutex_ spans the whole request (that is
@@ -655,7 +687,12 @@ std::wstring TranslationManager::Translate(
     if (preferred == EngineType::LocalLlama && !HostCouldServeFor(host_cfg)) {
         // REQ-R16 latch outranks this guard: an exit-intent must surface as
         // Canceled, never as an audible failure.
-        if (cancel_requested_.load(std::memory_order_acquire)) {
+        // 261121_0002 (F2): the per-request user token joins the latch —
+        // a user-cancelled task queued on translate_mutex_ must classify as
+        // Canceled (no tone, no modal, the Enter held), never as
+        // LocalModelMissing; mirrors the retry-warrant OR below.
+        if (cancel_requested_.load(std::memory_order_acquire) ||
+            ChunkLoopCancelRequested(ctx.cancel)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
@@ -707,7 +744,18 @@ std::wstring TranslationManager::Translate(
     // Single cloud seam: records EngineFailed when the request itself produced
     // nothing (network error, 403, malformed response), Ok otherwise.
     auto cloud_call = [&]() -> std::wstring {
-        std::wstring res = GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name);
+        std::wstring res = GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name, ctx);
+        // 261121_0002 (T3): the cloud legs unwind with {} on cancel carrying
+        // NO client-side failure distinction (F8: that is the legs' code
+        // contract — the load-bearing fact; the T1/T2 unit verified the
+        // behavior only with throwaway runtime probes, evidence in its
+        // report, while the durable coverage in tests/ is the source pins),
+        // so the user token is consulted BEFORE the empty test would
+        // promote the result to EngineFailed.
+        if (res.empty() && ChunkLoopCancelRequested(ctx.cancel)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
         set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
         return res;
     };
@@ -728,7 +776,15 @@ std::wstring TranslationManager::Translate(
         std::string openai_error_detail;
         std::wstring res = OpenAiCompatibleClient::ChatCompletion(
             openai_cfg, src_code_or_name, tgt_code_or_name, text,
-            &openai_error_detail);
+            &openai_error_detail, ctx);
+        // 261121_0002 (T3): cancel-first attribution, the same rule as the
+        // google seam above — the OpenAI cancel path leaves NO failure detail
+        // by design, so a user cancel must neither surface the /045b "openai
+        // leg failed" DIAG line nor promote the result to EngineFailed.
+        if (res.empty() && ChunkLoopCancelRequested(ctx.cancel)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
         if (res.empty()) {
             DIAG_F("ENGINE/Translate/045b: openai leg failed (detail_len=%zu)\n",
                    openai_error_detail.size());
@@ -788,6 +844,41 @@ std::wstring TranslationManager::Translate(
         DIAG_F("ENGINE/Translate/060: local seam request model_id resolved (pin_len=%zu)\n",
                request_model_id.size());
         const auto t_local_attempt = std::chrono::steady_clock::now();
+        // 261121_0002 (design-pick "Plumbing — Manager"): the local leg's
+        // predicted chunk plan, split with the SAME 1200-UTF-16-unit cap the
+        // engine repo's local worker splits its decode ladder with
+        // (kV109LocalChunkMaxUtf16Units — pinned equal by the worker unit's
+        // translation_progress_tests.inc; see kLocalProgressChunkUnits'
+        // comment above). The plan feeds ONLY the badge's chunk-count label;
+        // the pipe request itself still ships the full text (server-side
+        // chunking behind the frozen protocol), so a prediction mismatch is
+        // cosmetic, never a behavior change.
+        // 261121_0002 (F7): the plan feeds ONLY the badge's chunk-count label
+        // through ctx.on_chunk; the default-ctx callers (back-translate, drag,
+        // re-translate, double-Ctrl+C) carry no observer and discard it, so
+        // the split is skipped entirely when on_chunk is empty — the tick
+        // check below (`ShowChunkProgress(plan.size()) && ctx.on_chunk`)
+        // already requires an observer, and gating the computation on the
+        // same predicate keeps the two consistent (empty plan -> no tick).
+        const auto plan = ctx.on_chunk
+                              ? SplitTextIntoTranslationChunks(ToUtf8(text), kLocalProgressChunkUnits)
+                              : std::vector<TranslationChunk>{};
+        // The plan-known tick: (0 completed, n total) immediately BEFORE the
+        // pipe request — the badge renders it as the chunk-count label. Only
+        // genuine multi-chunk plans tick (ShowChunkProgress), so short local
+        // requests keep the byte-identical pre-feature badge behavior.
+        if (ShowChunkProgress(plan.size()) && ctx.on_chunk) {
+            ctx.on_chunk(0, plan.size());
+        }
+        // 261121_0002: a cancel posted after the plan tick but before the
+        // pipe request skips the request entirely — the user's text is never
+        // transmitted for a task the user already aborted (the REQ-R16 latch
+        // above covers the shutdown intent; this check is the per-request
+        // user token).
+        if (ChunkLoopCancelRequested(ctx.cancel)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
         // R1-11: the seam reads the request SNAPSHOT's config copy, so the
         // whole pipe call runs with no state lock held and a concurrent
         // SetEngineHostConfig cannot mutate the block mid-request.
@@ -800,6 +891,16 @@ std::wstring TranslationManager::Translate(
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
                                       host_out, host_err, served_model)) {
+            // 261121_0002: the user token outranks a completed pipe response
+            // — a cancel posted while the request was in flight DISCARDS
+            // host_out and reports Canceled BEFORE NoteHostSuccess / the
+            // REQ-057 diagnosis (mirroring the REQ-R16 latch's treatment of
+            // an in-flight decode; the synchronous pipe cannot be aborted
+            // mid-request — design-pick "Honest limitations").
+            if (ChunkLoopCancelRequested(ctx.cancel)) {
+                set_status(TranslationStatus::Canceled);
+                return {};
+            }
             NoteHostSuccess();      // §V2-8.6: success clears the repair signal
             set_status(TranslationStatus::Ok);
             // REQ-057: served-vs-expected model id (diagnostic log only).
@@ -819,17 +920,21 @@ std::wstring TranslationManager::Translate(
         // the first attempt failed inside the fast-failure ceiling (so the
         // pair stays inside the established request-time envelope - a 30 s
         // cold-load timeout converges to the honest modal instead of a
-        // second half-minute wait), and no REQ-R16 cancel intent. The retry
-        // re-runs ONLY the local leg: the consent gates below are untouched,
-        // so under a strict-local pick with cloud_fallback_enabled=false the
-        // text still never leaves the device, and under Auto / explicit
-        // consent the already-consented cloud leg is reached exactly as
-        // before, only delayed by ~400 ms of local-first recovery.
+        // second half-minute wait), and no REQ-R16 cancel intent.
+        // 261121_0002: the per-request user token joins the latch inside this
+        // guard, so a cancelled task never starts the retry pipe request
+        // either. The retry re-runs ONLY the local leg: the consent gates
+        // below are untouched, so under a strict-local pick with
+        // cloud_fallback_enabled=false the text still never leaves the
+        // device, and under Auto / explicit consent the already-consented
+        // cloud leg is reached exactly as before, only delayed by ~400 ms of
+        // local-first recovery.
         const uint64_t first_attempt_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t_local_attempt).count());
         if (EngineHostTransientRetryWarranted(host_err, /*retries_so_far=*/0,
                                               first_attempt_ms,
-                                              cancel_requested_.load(std::memory_order_acquire))) {
+                                              cancel_requested_.load(std::memory_order_acquire) ||
+                                                  ChunkLoopCancelRequested(ctx.cancel))) {
             DIAG_F("ENGINE/Translate/046: transient local failure (code=%s, first attempt %llums); retrying the identical input once after %ums\n",
                    host_err.c_str(), static_cast<unsigned long long>(first_attempt_ms),
                    static_cast<unsigned int>(kEngineHostTransientRetryBackoffMs));
@@ -841,10 +946,24 @@ std::wstring TranslationManager::Translate(
                 set_status(TranslationStatus::Canceled);
                 return {};
             }
+            // 261121_0002: the per-request user token gets the same
+            // between-the-gap check — a cancel posted during the backoff
+            // sleep must not start the retry pipe request either.
+            if (ChunkLoopCancelRequested(ctx.cancel)) {
+                set_status(TranslationStatus::Canceled);
+                return {};
+            }
             if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
                                           host_out, host_err, served_model)) {
+                // 261121_0002: same discard rule as the first attempt — a
+                // user cancel posted while the retry was in flight discards
+                // the result BEFORE NoteHostSuccess / the REQ-057 diagnosis.
+                if (ChunkLoopCancelRequested(ctx.cancel)) {
+                    set_status(TranslationStatus::Canceled);
+                    return {};
+                }
                 NoteHostSuccess();  // the retry recovered the service
                 set_status(TranslationStatus::Ok);
                 // REQ-057: served-vs-expected model id (diagnostic log only).
@@ -859,6 +978,17 @@ std::wstring TranslationManager::Translate(
             // line still logs the post-convergence streak.
             DIAG_F("ENGINE/Translate/047: transient retry failed (code=%s, fail_streak=%d); converging the §V2-8.6 UX chain\n",
                    host_err.c_str(), fail_streak);
+        }
+        // 261121_0002 (design-pick "Plumbing — Manager"): a user cancel owns
+        // the local leg's empty result — the cloud fallback must NOT start
+        // (neither the Auto contract leg below nor the consented explicit-
+        // local leg): report Canceled exactly like the REQ-R16 latch does at
+        // the pre-flight gates. Without this guard a cancel landing during a
+        // FAILED local pipe request would still transmit the user's text to
+        // the cloud for a task the user already aborted.
+        if (ChunkLoopCancelRequested(ctx.cancel)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
         }
         // Local serving failed. Auto: seamless cloud fallback - the consented
         // contract above.
