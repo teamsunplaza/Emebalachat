@@ -44,32 +44,70 @@ constexpr WORD kBtnCls    = 0x0080;
 constexpr WORD kComboCls  = 0x0085;
 constexpr WORD kListboxCls = 0x0083;
 
-// REQ-050: geometry matches BuildOpenAiTemplate exactly (262x130 dialog pre-
-// P9c-1b; 262x174 after it; 262x190 after 261121_0001 U-H); labels w=56;
-// edits x=68 w=186; combo x=68 w=118; fetch x=190 w=64; masked label w=240;
-// REQ-051 delete x=8 y=70->154 (P9c-1b moved the action row) w=64 h=13;
-// OK x=110 w=64; Cancel x=182 w=64 — all h/y per spec. P9c-1b appends the
-// declaration checklist: title y=66 h=9, list y=77 h=52, hint y=132 h=18 (all
-// x=8 w=240). 261121_0001 U-H appends the reasoning row BELOW the action row
-// (label y=172 h=9, closed combo y=171 w=186 h=64) and moves nothing else, so
-// every expectation above keeps its pre-U-H geometry.
+// 261122_0001 B-U3 (design-pick.md items 5 + 8a): the production shell is
+// 396x208 DLU after the OFFLINE 89-locale measurement widened the design
+// 300x208 start (label column 78 -> 114, edit column x=90 w=202 -> x=130
+// w=258); every width below is worst-locale-string + margin — see
+// BuildOpenAiTemplate's header comment and TestOpenAiLabelFits (the per-build
+// GDI pin). Geometry summary: label column x=8 w=114; edit column x=130
+// (w=258 for the full-width edits/reasoning combo); content right edge 388;
+// masked label + declaration section span x=8 w=380; the profile-row and
+// model-row buttons are right-aligned; the action row sits at y=186.
+constexpr short kOpenAiShellW = 396;
+constexpr short kOpenAiShellH = 208;
+constexpr short kOpenAiLabelX = 8;
+constexpr short kOpenAiLabelW = 114;
+constexpr short kOpenAiEditX  = 130;
+constexpr short kOpenAiEditW  = 258;
+constexpr short kOpenAiFullX  = 8;
+constexpr short kOpenAiFullW  = 380;
+constexpr short kOpenAiRight  = 388; // shell - 8 (content right edge)
+
+// REQ-050-era geometry note (kept for history): the dialog was 262 wide
+// (labels w=56, edits x=68 w=186) before the 261122_0001 B-U3 rebuild.
+
+// 261122_0001 B-U3 (design-pick.md item 5): the binding B1 creation order —
+// profile row -> 기본 URL -> API 키 -> masked 라벨 -> 모델 + 가져오기 ->
+// 추론강도 -> 언어 선언 섹션 (타이틀/리스트/힌트) -> 액션 행. The profile
+// ids are NEW (appended after the existing 100..113; the REQ-048 byte pin
+// never renumbers): 114 = IDC_PROFILE_LABEL, 115 = IDC_PROFILE_COMBO,
+// 116 = IDC_PROFILE_SAVE_BTN, 117 = IDC_PROFILE_DEL_BTN.
+constexpr WORD kB1Order[] = {
+    114, 115, 116, 117,                    // B1 row 1: 프로필 (label/combo/저장/삭제)
+    100, 101,                              // B1 row 2: 기본 URL (label + edit)
+    102, 103,                              // B1 row 3: API 키 (label + edit)
+    107,                                   // B1 row 4: masked 라벨
+    104, 105, 106,                         // B1 row 5: 모델 + [모델 목록 가져오기]
+    112, 113,                              // B1 row 6: 추론강도 (label + closed combo)
+    109, 110, 111,                         // B1 row 7: 언어 선언 섹션 (타이틀/리스트/힌트)
+    108, IDOK, IDCANCEL,                   // B1 row 8: 액션 행
+};
+
+// 261122_0001 B-U3: the expected production item set in B1 order. Captions on
+// the i18n labels/buttons are locale-dependent, so only the compile-time
+// captions (OK/Cancel) pin a title; the rest are checked for non-empty by
+// TestOpenAiLabelFits in every locale.
 const ItemExpectation kExpected[] = {
-    {100, kStaticCls, false, L"",   8,   6, 56,  9},  // IDC_STATIC_BASE
-    {101, kEditCls,   true,  L"",   68,  5, 186, 12}, // IDC_BASE_URL
-    {102, kStaticCls, false, L"",   8,   22, 56,  9}, // IDC_STATIC_KEY
-    {103, kEditCls,   true,  L"",   68,  21, 186, 12},// IDC_API_KEY
-    {104, kStaticCls, false, L"",   8,   38, 56,  9}, // IDC_STATIC_MODEL
-    {105, kComboCls,  true,  L"",   68,  37, 118, 64},// IDC_MODEL_COMBO
-    {106, kBtnCls,    false, L"",   190, 37, 64,  12},// IDC_FETCH_BTN (i18n title)
-    {107, kStaticCls, true,  L"",   8,   54, 240, 9}, // IDC_MASKED_LABEL
-    {109, kStaticCls, false, L"",   8,   66, 240, 9}, // P9c-1b IDC_DECLARE_TITLE (i18n title)
-    {110, kListboxCls,true,  L"",   8,   77, 240, 52},// P9c-1b IDC_DECLARE_LIST (empty title)
-    {111, kStaticCls, false, L"",   8,   132, 240, 18},// P9c-1b IDC_DECLARE_HINT (i18n title)
-    {108, kBtnCls,    false, L"",   8,   154, 64, 13},// REQ-051 IDC_DELETE_BTN (i18n title)
-    {IDOK,     kBtnCls, true, L"OK",     110, 154, 64, 13},
-    {IDCANCEL, kBtnCls, true, L"Cancel", 182, 154, 64, 13},
-    {112, kStaticCls, false, L"",   8,   172, 56,  9},// U-H IDC_REASONING_LABEL (i18n title)
-    {113, kComboCls,  true,  L"",   68,  171, 186, 64},// U-H IDC_REASONING_COMBO (empty title)
+    {114, kStaticCls, false, L"",   8,   6, 114, 9},  // B-U3 IDC_PROFILE_LABEL (i18n)
+    {115, kComboCls,  true,  L"",   130, 5, 108, 64}, // B-U3 IDC_PROFILE_COMBO (closed)
+    {116, kBtnCls,    false, L"",   242, 5, 74,  12}, // B-U3 IDC_PROFILE_SAVE_BTN (i18n)
+    {117, kBtnCls,    false, L"",   320, 5, 68,  12}, // B-U3 IDC_PROFILE_DEL_BTN (i18n)
+    {100, kStaticCls, false, L"",   8,   22, 114, 9},  // IDC_STATIC_BASE
+    {101, kEditCls,   true,  L"",   130, 21, 258, 12}, // IDC_BASE_URL
+    {102, kStaticCls, false, L"",   8,   38, 114, 9},  // IDC_STATIC_KEY
+    {103, kEditCls,   true,  L"",   130, 37, 258, 12}, // IDC_API_KEY
+    {107, kStaticCls, true,  L"",   8,   54, 380, 9},  // IDC_MASKED_LABEL (INITDIALOG text)
+    {104, kStaticCls, false, L"",   8,   70, 114, 9},  // IDC_STATIC_MODEL
+    {105, kComboCls,  true,  L"",   130, 69, 128, 64}, // IDC_MODEL_COMBO
+    {106, kBtnCls,    false, L"",   262, 69, 126, 12}, // IDC_FETCH_BTN (i18n title)
+    {112, kStaticCls, false, L"",   8,   86, 114, 9},  // U-H IDC_REASONING_LABEL (i18n title)
+    {113, kComboCls,  true,  L"",   130, 85, 258, 64}, // U-H IDC_REASONING_COMBO
+    {109, kStaticCls, false, L"",   8,   98, 380, 9},  // P9c-1b IDC_DECLARE_TITLE (i18n title)
+    {110, kListboxCls,true,  L"",   8,   109, 380, 52},// P9c-1b IDC_DECLARE_LIST
+    {111, kStaticCls, false, L"",   8,   164, 380, 18},// P9c-1b IDC_DECLARE_HINT (i18n title)
+    {108, kBtnCls,    false, L"",   8,   186, 142, 13},// REQ-051 IDC_DELETE_BTN (i18n title)
+    {IDOK,     kBtnCls, true, L"OK",     250, 186, 64, 13},
+    {IDCANCEL, kBtnCls, true, L"Cancel", 318, 186, 70, 13},
 };
 
 // Little-endian WORD/DWORD readers over the raw template buffer.
@@ -121,8 +159,11 @@ void TestReq048OpenAiTemplateSerialization() {
     {
         TemplateBuilder tb;
         // P9c-1b: probe carries the production geometry (262 x 174);
-        // 261121_0001 U-H grew the shell to 262 x 190 for the reasoning row.
-        tb.Begin(L"probe", 262, 190, /*itemCount=*/7);
+        // 261121_0001 U-H grew the shell to 262 x 190 for the reasoning row;
+        // 261122_0001 B-U3 (design-pick.md items 5 + 8a) rebuilt the template
+        // in the B1 order with the profile row and the OFFLINE-measured
+        // 89-locale geometry, shell 396 x 208.
+        tb.Begin(L"probe", 396, 208, /*itemCount=*/7);
         const auto* base = reinterpret_cast<const BYTE*>(tb.Get());
         TEST_CHECK(base != nullptr, "REQ-048 P2 (a): Begin() returns a template");
         if (base) {
@@ -138,10 +179,10 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (a): byte offset 10 == x (0)");
             TEST_CHECK(req048_detail::ReadWord(base, 12) == 0,
                        "REQ-048 P2 (a): byte offset 12 == y (0)");
-            TEST_CHECK(req048_detail::ReadWord(base, 14) == 262,
-                       "REQ-048 P2 (a): byte offset 14 == cx (262)");
-            TEST_CHECK(req048_detail::ReadWord(base, 16) == 190,
-                       "REQ-048 P2 (a): byte offset 16 == cy (190, U-H shell height)");
+            TEST_CHECK(req048_detail::ReadWord(base, 14) == 396,
+                       "REQ-048 P2 (a): byte offset 14 == cx (396, B-U3 shell width)");
+            TEST_CHECK(req048_detail::ReadWord(base, 16) == 208,
+                       "REQ-048 P2 (a): byte offset 16 == cy (208, B-U3 shell height)");
         }
     }
 
@@ -166,25 +207,46 @@ void TestReq048OpenAiTemplateSerialization() {
     {
         using namespace req048_detail;
         TemplateBuilder tb;
-        // REQ-050: production dialog is 262 wide. Item history: the 10-control
-        // REQ-048 P2 template -> REQ-051 added IDC_DELETE_BTN -> 261116_0003
-        // P9c-1b added the 3-control declaration checklist (title + list +
-        // hint), shell 262x130 -> 262x174 -> 261121_0001 U-H added the
-        // reasoning-effort row (label + closed combo) BELOW the action row,
-        // 14 -> 16 items and shell 262x174 -> 262x190.
-        tb.Begin(L"production", 262, 190, /*itemCount=*/16);
+        // Item history: the 10-control REQ-048 P2 template (262x130) ->
+        // REQ-051 added IDC_DELETE_BTN -> 261116_0003 P9c-1b added the
+        // 3-control declaration checklist (262x174) -> 261121_0001 U-H added
+        // the 2-control reasoning row (262x190, 16 items) -> 261122_0001 B-U3
+        // rebuilt the template in the B1 row order with the 4-control profile
+        // row on top: 16 -> 20 items, shell 262x190 -> 396x208 DLU (the
+        // OFFLINE-measured 89-locale geometry, design-pick.md items 5 + 8a).
+        tb.Begin(L"production", kOpenAiShellW, kOpenAiShellH, /*itemCount=*/20);
         BuildOpenAiTemplate(tb);
         const BYTE* base = reinterpret_cast<const BYTE*>(tb.Get());
         const size_t tpl_base = 0; // buffer origin == template origin for a fresh builder
         TEST_CHECK(base != nullptr, "REQ-048 P2 (b): production template buffer non-null");
         if (!base) return;
 
+        // 261122_0001 B-U3 (design-pick.md item 5): the binding B1 ORDER pin —
+        // the expectation table itself must be the B1 sequence before the
+        // byte-walk proves the TEMPLATE emits it (the walk compares item i
+        // against kExpected[i], so this guards the table against an
+        // accidental reorder).
+        TEST_CHECK(std::size(kExpected) == std::size(kB1Order),
+                   "B-U3 (B1): the expectation table and the B1 order have the "
+                   "same item count");
+        {
+            bool b1_order_ok = true;
+            for (std::size_t i = 0; i < std::size(kExpected); ++i) {
+                if (kExpected[i].id != kB1Order[i]) b1_order_ok = false;
+            }
+            TEST_CHECK(b1_order_ok,
+                       "B-U3 (B1): kExpected is in the B1 sequence — profile row "
+                       "-> URL -> key -> masked -> model + fetch -> reasoning -> "
+                       "declaration section (title/list/hint) -> delete/OK/cancel");
+        }
+
         // Header: style, exstyle, cdit, x, y, cx, cy (18 bytes).
         size_t off = 18;
         const WORD cdit = ReadWord(base, 8);
-        TEST_CHECK(cdit == 16,
-                   "REQ-048 P2 (b): header cdit == 16 (9 controls + 3 declaration "
-                   "checklist controls + 2 reasoning controls + OK + Cancel)");
+        TEST_CHECK(cdit == 20,
+                   "REQ-048 P2 (b): header cdit == 20 (4 profile-row controls + "
+                   "9 app controls + 2 reasoning controls + 3 declaration "
+                   "checklist controls + OK + Cancel)");
         // menu (WORD 0), windowClass (WORD 0), title string, pointsize, font.
         TEST_CHECK(ReadWord(base, off) == 0, "REQ-048 P2 (b): menu == 0 (none)");
         off += 2;
@@ -213,14 +275,16 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (b): item start is 4-byte aligned");
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18.
             const WORD id = ReadWord(base, off + 16);
-            TEST_CHECK(i < 16, "REQ-048 P2 (b): item index within expectation table");
-            if (i >= 16) break;
+            TEST_CHECK(i < 20, "REQ-048 P2 (b): item index within expectation table");
+            if (i >= 20) break;
             const ItemExpectation& exp = kExpected[i];
             TEST_CHECK(id == exp.id, "REQ-048 P2 (b): item id matches production constant");
-            // REQ-050: geometry pin — x/y/cx/cy must match the production
-            // AddItem coordinates exactly (labels w=56, edits x=68 w=186,
-            // fetch x=190 w=64, REQ-051 delete x=8 y=154, P9c-1b checklist
-            // x=8 w=240, OK x=110 w=64, Cancel x=182 w=64).
+            // REQ-050-era geometry pin (coordinates refreshed by 261122_0001
+            // B-U3): x/y/cx/cy must match the production AddItem coordinates
+            // exactly — label column x=8 w=114, edits x=130 w=258, fetch
+            // right-aligned w=126, profile save/del right-aligned w=74/68,
+            // REQ-051 delete x=8 y=186 w=142, checklist spans x=8 w=380,
+            // OK x=250 w=64, Cancel x=318 w=70.
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18,
             // so x/y/cx/cy live at off+8..off+15 (id is off+16).
             TEST_CHECK(ReadWord(base, off + 8) == static_cast<WORD>(exp.x) &&
@@ -257,10 +321,13 @@ void TestReq048OpenAiTemplateSerialization() {
             // (HTTP 400). Styles:
             // WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000,
             // +CBS_DROPDOWNLIST (0x0003) = 0x50810003 (CBS_DROPDOWN absent).
-            if (exp.id == 113) {
+            if (exp.id == 113 || exp.id == 115) {
                 TEST_CHECK(ReadDword(base, off) == 0x50810003u,
-                           "U-H: the reasoning combo carries CBS_DROPDOWNLIST "
-                           "(closed pick list, no free-text leg)");
+                           exp.id == 113
+                               ? "U-H: the reasoning combo carries CBS_DROPDOWNLIST "
+                                 "(closed pick list, no free-text leg)"
+                               : "B-U3: the profile combo carries CBS_DROPDOWNLIST "
+                                 "(a profile is picked from the library, never typed)");
             }
             off += 18;
             // Class array: 0xFFFF prefix WORD + ordinal WORD.
@@ -1135,5 +1202,183 @@ void TestReq048OpenAiTemplateSerialization() {
     I18n::SetLocale(req050_initial_locale); // REQ-050: restore pre-test locale
 
     std::cout << "[DONE] REQ-048 P2 checks: " << (g_test_count - failures_before)
+              << ", failures: " << (g_failed_count - failures_before) << std::endl;
+}
+
+
+// ---------------------------------------------------------------------------
+// 261122_0001 B-U3 (design-pick.md item 8b): TestOpenAiLabelFits — the
+// per-build GDI label-fit pin. For EVERY locale the selector exposes (all 89
+// authored UI-locale tables), under the template's dialog font (DS_SETFONT
+// 9 pt "Segoe UI"), the measured width of every label/button string the
+// template renders must fit its control (labels/statics: width - 4 DLU;
+// buttons: width - 8 DLU), the reasoning combo's widest ITEM (the localized
+// server-default label) must fit the combo, the declaration hint must
+// greedily wrap to at most the two lines cy=18 holds, and every control
+// rect must lie inside the 396x208 shell. Headless: a memory DC + font are
+// created and released; no window ever exists (AGENTS.md §10).
+//
+// This is the RUNTIME side of the offline measurement that fixed the
+// geometry (tools_tmp_261122_bu3/measure_labels.cpp): the control widths
+// below are the same constants kExpected pins, so a string-table edit that
+// would clip anywhere fails HERE on the next build, before the U6
+// hidden-window probe ever runs.
+// ---------------------------------------------------------------------------
+void TestOpenAiLabelFits() {
+    std::cout << "[RUN] Testing 261122_0001 B-U3 OpenAI label fit (89 locales, GDI)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    HDC screen = ::GetDC(nullptr);
+    TEST_CHECK(screen != nullptr, "B-U3: a screen DC is available for the font measure");
+    if (!screen) return;
+    const int px = -::MulDiv(9, ::GetDeviceCaps(screen, LOGPIXELSY), 72);
+    HFONT font = ::CreateFontW(px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                               DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HDC dc = font ? ::CreateCompatibleDC(screen) : nullptr;
+    TEST_CHECK(font != nullptr && dc != nullptr,
+               "B-U3: the 9pt Segoe UI dialog font + memory DC are created");
+    if (!dc || !font) {
+        if (dc) ::DeleteDC(dc);
+        if (font) ::DeleteObject(font);
+        ::ReleaseDC(nullptr, screen);
+        return;
+    }
+    HGDIOBJ old_font = ::SelectObject(dc, font);
+    TEXTMETRICW tm{};
+    ::GetTextMetricsW(dc, &tm);
+    const int base_x = tm.tmAveCharWidth; // horizontal DLU base (DS_SETFONT rule)
+    TEST_CHECK(base_x > 0, "B-U3: the dialog font reports a positive average char width");
+
+    const auto width_dlu = [&](const std::wstring& s) -> int {
+        if (s.empty()) return 0;
+        SIZE sz{};
+        if (!::GetTextExtentPoint32W(dc, s.c_str(), static_cast<int>(s.size()), &sz)) {
+            return 1 << 20; // a measure failure must never read as "fits"
+        }
+        return static_cast<int>((sz.cx * 4 + base_x - 1) / base_x); // ceil
+    };
+
+    // StringId + the control width it renders in + the margin. The widths
+    // mirror the production AddItem calls (and kExpected above): statics
+    // carry a 4-DLU pin margin, push buttons 8 DLU ("every button text + 8
+    // DLU fits its button"), and the reasoning combo's widest ITEM (the
+    // localized server-default label) is pinned against the combo width.
+    struct Fit {
+        StringId id;
+        short control_w;
+        int margin;
+        const char* name;
+    };
+    const Fit kFit[] = {
+        {StringId::OpenAiProfileLabel, req048_detail::kOpenAiLabelW, 4,
+         "OpenAiProfileLabel"},
+        {StringId::OpenAiBaseUrlLabel, req048_detail::kOpenAiLabelW, 4,
+         "OpenAiBaseUrlLabel"},
+        {StringId::OpenAiApiKeyLabel, req048_detail::kOpenAiLabelW, 4,
+         "OpenAiApiKeyLabel"},
+        {StringId::OpenAiModelLabel, req048_detail::kOpenAiLabelW, 4,
+         "OpenAiModelLabel"},
+        {StringId::OpenAiReasoningLabel, req048_detail::kOpenAiLabelW, 4,
+         "OpenAiReasoningLabel"},
+        {StringId::OpenAiKeyMasked, req048_detail::kOpenAiFullW, 4, "OpenAiKeyMasked"},
+        {StringId::OpenAiDeclaredTitle, req048_detail::kOpenAiFullW, 4,
+         "OpenAiDeclaredTitle"},
+        {StringId::OpenAiReasoningServerDefault, req048_detail::kOpenAiEditW, 4,
+         "OpenAiReasoningServerDefault (combo item)"},
+        {StringId::OpenAiProfileSave, 74, 8, "OpenAiProfileSave (button)"},
+        {StringId::OpenAiProfileDelete, 68, 8, "OpenAiProfileDelete (button)"},
+        {StringId::OpenAiFetchModels, 126, 8, "OpenAiFetchModels (button)"},
+        {StringId::OpenAiDeleteSettings, 142, 8, "OpenAiDeleteSettings (button)"},
+        {StringId::DialogOk, 64, 8, "DialogOk (button)"},
+        {StringId::DialogCancel, 70, 8, "DialogCancel (button)"},
+    };
+
+    // The hint is a wrapping static: a single-extent check is meaningless,
+    // so it is pinned by the greedy word-wrap leg below instead of kFit.
+    const UiLocale fit_initial_locale = I18n::GetCurrentLocale();
+    const auto& fit_locales = GetSupportedUiLocales();
+    int fit_checked = 0;
+    for (const UiLocaleEntry& entry : fit_locales) {
+        I18n::SetLocale(entry.locale);
+        const std::string code = I18n::LocaleToString(entry.locale);
+        for (const Fit& f : kFit) {
+            const std::wstring s = I18n::Get(f.id);
+            const int need = width_dlu(s);
+            const std::string what = "B-U3 fit: " + code + " " + f.name + " (" +
+                                     std::to_string(need) + " DLU vs control " +
+                                     std::to_string(f.control_w) + ")";
+            TEST_CHECK(!s.empty() && need <= f.control_w - f.margin, what.c_str());
+            ++fit_checked;
+        }
+        // The hint wraps into the 380-DLU static: greedy word-wrap at the pin
+        // margin must need at most 2 lines (cy=18 holds two 8-DLU-vertical
+        // lines) and no single word may exceed the usable width.
+        {
+            const std::wstring hint = I18n::Get(StringId::OpenAiDeclaredHint);
+            const int usable = req048_detail::kOpenAiFullW - 4;
+            int lines = 1;
+            int line_w = 0;
+            std::wstring word;
+            bool word_overflow = false;
+            const auto flush_word = [&]() {
+                if (word.empty()) return;
+                const int ww = width_dlu(word);
+                if (ww > usable) word_overflow = true;
+                const int add = line_w == 0 ? ww : line_w + 1 + ww;
+                if (line_w > 0 && add > usable) {
+                    ++lines;
+                    line_w = ww;
+                } else {
+                    line_w = add;
+                }
+                word.clear();
+            };
+            for (const wchar_t ch : hint) {
+                if (ch == L' ') {
+                    flush_word();
+                } else {
+                    word += ch;
+                }
+            }
+            flush_word();
+            const std::string what = "B-U3 hint wrap: " + code + " (" +
+                                     std::to_string(lines) + " lines)";
+            TEST_CHECK(!hint.empty() && !word_overflow && lines <= 2, what.c_str());
+        }
+    }
+    // The sweep really ran over every locale the selector exposes.
+    TEST_CHECK(fit_checked == static_cast<int>(fit_locales.size() * std::size(kFit)),
+               "B-U3: the fit pin swept every locale (count derived from "
+               "GetSupportedUiLocales, not hardcoded)");
+
+    // Every production control rect lies inside the shell (mirrors kExpected;
+    // the U6 hidden-window probe re-runs the same sweep against a live
+    // dialog).
+    for (const req048_detail::ItemExpectation& exp : req048_detail::kExpected) {
+        TEST_CHECK(exp.x >= 0 && exp.y >= 0 &&
+                       static_cast<int>(exp.x) + exp.cx <=
+                           req048_detail::kOpenAiShellW &&
+                       static_cast<int>(exp.y) + exp.cy <=
+                           req048_detail::kOpenAiShellH,
+                   "B-U3: every control rect is inside the shell");
+        TEST_CHECK(exp.cx > 0 && exp.cy > 0, "B-U3: every control has a positive extent");
+    }
+    // The action row is the widest cluster: [설정 삭제] (x=8 w=142) must not
+    // touch OK (x=250), and OK/Cancel right-align to the content edge (388).
+    TEST_CHECK(8 + 142 <= 250 && 250 + 64 <= 318 &&
+                   318 + 70 == req048_detail::kOpenAiRight,
+               "B-U3: the action-row buttons keep their gaps and right-align to "
+               "the content edge");
+
+    I18n::SetLocale(fit_initial_locale); // suite-state hygiene
+    ::SelectObject(dc, old_font);
+    ::DeleteDC(dc);
+    ::DeleteObject(font);
+    ::ReleaseDC(nullptr, screen);
+
+    std::cout << "[DONE] B-U3 label-fit checks: " << (g_test_count - failures_before)
               << ", failures: " << (g_failed_count - failures_before) << std::endl;
 }

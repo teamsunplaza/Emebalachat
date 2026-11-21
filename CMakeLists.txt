@@ -341,6 +341,11 @@ target_link_libraries(run_tests PRIVATE
     # REQ-043 (M6 T3): TestWorkerManagerStateMachine drives the seam-injected
     # WorkerManager state machine — link its library.
     Emebalachat_host_v2
+    # 261122_0001 B-U3 (design-pick.md item 8b): TestOpenAiLabelFits measures
+    # every template label/button under the dialog font with GDI
+    # (CreateFontW/GetTextExtentPoint32W) — gdi32 was never linked before
+    # (the app renders with D2D; this is the first GDI consumer).
+    gdi32
 )
 
 if (MSVC)

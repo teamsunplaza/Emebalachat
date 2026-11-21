@@ -231,6 +231,15 @@ enum : WORD {
     // (server-advertised when available, the standard list otherwise).
     IDC_REASONING_LABEL,
     IDC_REASONING_COMBO,
+    // 261122_0001 B-U3 (design-pick.md item 5): the profile row — a closed
+    // profile picker plus the [저장]/[삭제] upsert/delete buttons that act on
+    // the library copy (BEHAVIOR lands in U4; this unit owns ids + template
+    // geometry only). Appended AFTER the existing ids: the REQ-048 byte pin
+    // and every existing numeric id stay untouched.
+    IDC_PROFILE_LABEL,
+    IDC_PROFILE_COMBO,     // CBS_DROPDOWNLIST (a profile is picked, not typed)
+    IDC_PROFILE_SAVE_BTN,
+    IDC_PROFILE_DEL_BTN,
 };
 
 // 261121_0001 U-H (contract C4): the by-value payload of the model fetch — the
@@ -339,7 +348,7 @@ bool IsMaskedPlaceholder(std::string_view keyUtf8) {
 
 // REQ-050 (auto-fetch): debounce timer for the model-list auto-fetch. The
 // timer id lives in the Win32 timer namespace (no clash with the control IDs
-// 100..113 above). Re-arming an existing id via SetTimer is a silent
+// 100..117 above). Re-arming an existing id via SetTimer is a silent
 // kill+restart, which is exactly the debounce semantics the EN_CHANGE
 // handler wants.
 constexpr UINT_PTR kFetchTimerId = 101;
@@ -683,10 +692,10 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // guarantee).
         DrainOpenAiFetchQueue();
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
-        // template itself is proven-good (16 controls incl. OK/Cancel, the
-        // REQ-051 delete button, the 261116_0003 P9c-1b declaration
-        // checklist section, and the 261121_0001 U-H reasoning-effort row),
-        // but
+        // template itself is proven-good (20 controls incl. the 261122_0001
+        // B-U3 profile row, OK/Cancel, the REQ-051 delete button, the
+        // 261116_0003 P9c-1b declaration checklist section, and the
+        // 261121_0001 U-H reasoning-effort row), but
         // if any edit/combo control failed to materialize the dialog would
         // look like the
         // reported "API input field missing" symptom. Surface a distinct log
@@ -1233,10 +1242,33 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // ShowOpenAiSettingsDialog so the unit suite serializes the exact bytes the
 // dialog hands to DialogBoxIndirectParamW. The control IDs (IDC_*) live in
 // the anonymous namespace above; a namespace-scope definition in this same
-// TU can reference them. itemCount must match the AddItem calls below:
-// 9 app controls + 3 declaration-checklist controls (261116_0003 P9c-1b) +
-// 2 reasoning-effort controls (261121_0001 U-H) + IDOK + IDCANCEL = 16
-// (REQ-051 added the delete button).
+// TU can reference them. itemCount must match the AddItem calls below.
+// 261122_0001 B-U3 (design-pick.md items 5 + 8a): the template is REBUILT in
+// the binding B1 row order — profile row (NEW, top) -> 기본 URL -> API 키 ->
+// masked 라벨 -> 모델 + [모델 목록 가져오기] -> 추론강도 -> 언어 선언 섹션
+// (타이틀/리스트/힌트) -> 액션 행 ([설정 삭제]/OK/Cancel) — 16 -> 20 items
+// (the 4 profile-row controls), shell 262x190 -> 396x208 DLU.
+// GEOMETRY (design item 8a, OFFLINE measurement — runtime measured placement
+// stays forbidden; the fixed DLU coords are the house invariant): the
+// tools_tmp_261122_bu3/measure_labels utility walked ALL 89 UI-locale tables
+// through the REAL I18n::Get strings under the template's dialog font (9 pt
+// Segoe UI, GetTextExtentPoint32W, DLU = px*4/tmAveCharWidth) and the shell /
+// columns are sized to the worst offender + margin in every locale:
+//   * label column x=8 w=114 — worst label = OpenAiReasoningLabel @ ta 110
+//     DLU (fits w-4);
+//   * edit column x=130 w=258 — worst combo item =
+//     OpenAiReasoningServerDefault @ bg 194 DLU (fits w-4);
+//   * fetch button w=126 — OpenAiFetchModels @ ml 118 DLU (+8 margin);
+//   * profile save/delete buttons w=74/68 — OpenAiProfileSave @ ml 66 /
+//     OpenAiProfileDelete @ ml 60 (+8 margin);
+//   * [설정 삭제] w=142 — OpenAiDeleteSettings @ ml 134 (+8 margin);
+//   * OK w=64 (DialogOk @ ru 47 +8), Cancel w=70 (DialogCancel @ si 61 +8);
+//   * masked label / declaration title / hint span x=8 w=380 (full width;
+//     the hint greedily wraps to <= 2 lines at 376 DLU — worst vi — and
+//     2 lines fit cy=18).
+// The per-build GDI pin lives in tests/req048_template_tests.inc
+// (TestOpenAiLabelFits), and the 89-locale hidden-window probe (U6)
+// re-verifies the same numbers against a live dialog.
 void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
@@ -1244,6 +1276,8 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // 261121_0001 U-H: the reasoning picker is a CLOSED list (CBS_DROPDOWNLIST):
     // every item comes from PlanReasoningEffortItems, so a free-text leg could
     // only produce a value the model does not accept (a hard HTTP 400).
+    // 261122_0001 B-U3: the profile picker is the same closed idiom — a
+    // profile is PICKED from the library, never typed (U4 wires the list).
     // Styles: WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP = 0x50810000,
     // +CBS_DROPDOWNLIST (0x0003) = 0x50810003 (same idiom as the REQ-060 mode
     // combo).
@@ -1267,65 +1301,82 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const WORD COMBO_CLS  = 0x0085;  // "COMBOBOX"
     const WORD LISTBOX_CLS = 0x0083; // "LISTBOX" (261116_0003 P9c-1b)
 
-    // REQ-050: dialog widened 210->262 DLU and the label/edit columns
-    // realigned (labels 44->56, edits 148->186) so the fetch button label
-    // ("모델 목록 가져오기" / "Fetch model list") no longer clips in any
-    // locale; OK/Cancel moved right and widened 50->64 to match.
-    tb.AddItem(LBL, 8, 6, 56, 9, IDC_STATIC_BASE, STATIC_CLS,
+    // 261122_0001 B-U3 (B1 row 1): the profile row — label, closed picker,
+    // [저장], [삭제]. The buttons are right-aligned to the content edge
+    // (388 = shell 396 - 8) and the combo fills the gap; U4 gives the
+    // buttons their behavior, the captions are i18n NOW.
+    tb.AddItem(LBL, 8, 6, 114, 9, IDC_PROFILE_LABEL, STATIC_CLS,
+               I18n::Get(StringId::OpenAiProfileLabel));
+    // h=64 is the dropdown extent (the closed box is ~12 DLU), the same
+    // convention as IDC_MODEL_COMBO; the popup list is its own window, so it
+    // opens upward when the dialog edge leaves no room below.
+    tb.AddItem(COMBO_LIST, 130, 5, 108, 64, IDC_PROFILE_COMBO, COMBO_CLS, L"");
+    tb.AddItem(BTN, 242, 5, 74, 12, IDC_PROFILE_SAVE_BTN, BTN_CLS,
+               I18n::Get(StringId::OpenAiProfileSave));
+    tb.AddItem(BTN, 320, 5, 68, 12, IDC_PROFILE_DEL_BTN, BTN_CLS,
+               I18n::Get(StringId::OpenAiProfileDelete));
+
+    // B1 row 2: 기본 URL.
+    tb.AddItem(LBL, 8, 22, 114, 9, IDC_STATIC_BASE, STATIC_CLS,
                I18n::Get(StringId::OpenAiBaseUrlLabel));
     // REQ-050 (single-line edit limits): single-line EDITs without
     // ES_AUTOHSCROLL reject input beyond their visible width (device-confirmed
     // on the HF add dialog's URL edit, same latent hazard here) — base URLs
-    // and API keys are routinely longer than the 186-DLU edit, so both scroll.
-    tb.AddItem(EDT | ES_AUTOHSCROLL, 68, 5, 186, 12, IDC_BASE_URL, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 22, 56, 9, IDC_STATIC_KEY, STATIC_CLS,
+    // and API keys are routinely longer than the edit, so both scroll.
+    tb.AddItem(EDT | ES_AUTOHSCROLL, 130, 21, 258, 12, IDC_BASE_URL, EDIT_CLS, L"");
+
+    // B1 row 3: API 키.
+    tb.AddItem(LBL, 8, 38, 114, 9, IDC_STATIC_KEY, STATIC_CLS,
                I18n::Get(StringId::OpenAiApiKeyLabel));
-    tb.AddItem(EDT | ES_AUTOHSCROLL | ES_PASSWORD, 68, 21, 186, 12, IDC_API_KEY,
+    tb.AddItem(EDT | ES_AUTOHSCROLL | ES_PASSWORD, 130, 37, 258, 12, IDC_API_KEY,
                EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 38, 56, 9, IDC_STATIC_MODEL, STATIC_CLS,
+
+    // B1 row 4: the masked-read-back 라벨. Set at WM_INITDIALOG from
+    // StringId::OpenAiKeyMasked (the key itself lands in the password edit
+    // above); spans the full content width like the declaration lines below.
+    tb.AddItem(LBL, 8, 54, 380, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
+
+    // B1 row 5: 모델 + [모델 목록 가져오기]. The fetch button is right-aligned
+    // (w=126 = the widest locale, ml, + 8) and the combo fills the gap; a
+    // hand-typed id longer than the combo scrolls (CBS_DROPDOWN's edit leg).
+    tb.AddItem(LBL, 8, 70, 114, 9, IDC_STATIC_MODEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiModelLabel));
-    tb.AddItem(COMBO, 68, 37, 118, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
-    tb.AddItem(BTN, 190, 37, 64, 12, IDC_FETCH_BTN, BTN_CLS,
+    tb.AddItem(COMBO, 130, 69, 128, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
+    tb.AddItem(BTN, 262, 69, 126, 12, IDC_FETCH_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiFetchModels));
-    tb.AddItem(LBL, 8, 54, 240, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
-    // 261116_0003 P9c-1b: the declaration checklist section — the title, ONE
-    // multi-select LISTBOX of every OpenAI-capable language (display name),
-    // and the fail-open hint line. Sits between the masked-label row and the
-    // action row; the action row moved 70 -> 154 DLU and the shell grew
-    // 130 -> 174 DLU to fit it.
-    tb.AddItem(LBL, 8, 66, 240, 9, IDC_DECLARE_TITLE, STATIC_CLS,
-               I18n::Get(StringId::OpenAiDeclaredTitle));
-    tb.AddItem(LIST, 8, 77, 240, 52, IDC_DECLARE_LIST, LISTBOX_CLS, L"");
-    tb.AddItem(LBL, 8, 132, 240, 18, IDC_DECLARE_HINT, STATIC_CLS,
-               I18n::Get(StringId::OpenAiDeclaredHint));
-    // REQ-051 (Symptom D): the [설정 삭제] button owns the bottom-LEFT corner
-    // of the action row, far from OK/Cancel — a destructive action gets its
-    // own corner so it cannot be hit by muscle memory aiming at OK. The
-    // 262x174 DLU shell (261116_0003 P9c-1b grew it from 262x130) is
-    // unchanged by that change; 261121_0001 U-H later appended the reasoning
-    // row below this action row (shell 262x190). i18n caption (all 37 locales).
-    tb.AddItem(BTN, 8, 154, 64, 13, IDC_DELETE_BTN, BTN_CLS,
-               I18n::Get(StringId::OpenAiDeleteSettings));
-    // REQ-050: OK/Cancel are real i18n strings now (StringId::DialogOk /
-    // DialogCancel), not hardcoded English — the 37-locale tables carry the
-    // conventional native button label for each locale.
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 110, 154, 64, 13, IDOK, BTN_CLS,
-               I18n::Get(StringId::DialogOk));
-    tb.AddItem(BTN, 182, 154, 64, 13, IDCANCEL, BTN_CLS,
-               I18n::Get(StringId::DialogCancel));
-    // 261121_0001 U-H (contracts C2/C4): the reasoning-effort row. It is
-    // APPENDED into the 16 DLU the shell grew (174 -> 190) instead of being
-    // inserted next to the model combo, so EVERY control above keeps its exact
-    // pre-U-H position and size — the req048 byte-walk pins prove that, and no
-    // existing row had to be re-validated for one new setting. Geometry
-    // mirrors the other rows: label x=8 w=56, field x=68 w=186 (the full edit
-    // width, which fits the longest localized server-default label).
-    tb.AddItem(LBL, 8, 172, 56, 9, IDC_REASONING_LABEL, STATIC_CLS,
+
+    // B1 row 6: 추론강도. The combo is a CLOSED list whose widest ITEM is the
+    // localized server-default label (bg 194 DLU < 258-4), so no locale
+    // clips the closed box.
+    tb.AddItem(LBL, 8, 86, 114, 9, IDC_REASONING_LABEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiReasoningLabel));
-    // h=64 is the dropdown extent (the closed box is ~12 DLU), the same
-    // convention as IDC_MODEL_COMBO; the popup list is its own window, so it
-    // opens upward when the dialog edge leaves no room below.
-    tb.AddItem(COMBO_LIST, 68, 171, 186, 64, IDC_REASONING_COMBO, COMBO_CLS, L"");
+    tb.AddItem(COMBO_LIST, 130, 85, 258, 64, IDC_REASONING_COMBO, COMBO_CLS, L"");
+
+    // B1 row 7: the 언어 선언 섹션 (261116_0003 P9c-1b) — the title, ONE
+    // multi-select LISTBOX of every OpenAI-capable language (display name),
+    // and the fail-open hint line. The hint wraps to at most two lines in
+    // every locale (offline-measured; worst vi fills the 376-DLU usable
+    // width exactly) and two lines fit cy=18.
+    tb.AddItem(LBL, 8, 98, 380, 9, IDC_DECLARE_TITLE, STATIC_CLS,
+               I18n::Get(StringId::OpenAiDeclaredTitle));
+    tb.AddItem(LIST, 8, 109, 380, 52, IDC_DECLARE_LIST, LISTBOX_CLS, L"");
+    tb.AddItem(LBL, 8, 164, 380, 18, IDC_DECLARE_HINT, STATIC_CLS,
+               I18n::Get(StringId::OpenAiDeclaredHint));
+
+    // B1 row 8: the 액션 행. REQ-051 (Symptom D): the [설정 삭제] button owns
+    // the bottom-LEFT corner, far from OK/Cancel — a destructive action gets
+    // its own corner so it cannot be hit by muscle memory aiming at OK.
+    // w=142 = the widest locale (ml 134) + 8; OK/Cancel are right-aligned
+    // (Cancel w=70 = si 61 + 8; OK keeps 64).
+    tb.AddItem(BTN, 8, 186, 142, 13, IDC_DELETE_BTN, BTN_CLS,
+               I18n::Get(StringId::OpenAiDeleteSettings));
+    // REQ-050: OK/Cancel are real i18n strings (StringId::DialogOk /
+    // DialogCancel), not hardcoded English — the locale tables carry the
+    // conventional native button label for each locale.
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 250, 186, 64, 13, IDOK, BTN_CLS,
+               I18n::Get(StringId::DialogOk));
+    tb.AddItem(BTN, 318, 186, 70, 13, IDCANCEL, BTN_CLS,
+               I18n::Get(StringId::DialogCancel));
 }
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
@@ -1343,7 +1394,11 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // REQ-048 P2 template, 261116_0003 P9c-1b added the 3-control declaration
     // checklist section (shell 262x130 -> 262x174 DLU), and 261121_0001 U-H
     // added the 2-control reasoning-effort row (shell 262x174 -> 262x190 DLU).
-    tb.Begin(title, 262, 190, /*itemCount=*/16);
+    // 261122_0001 B-U3 (design-pick.md items 5 + 8a): the template is rebuilt
+    // in the B1 row order with the 4-control profile row on top (16 -> 20
+    // items), and the OFFLINE-measured 89-locale geometry (worst offender +
+    // margin) grows the shell to 396x208 DLU — see BuildOpenAiTemplate.
+    tb.Begin(title, 396, 208, /*itemCount=*/20);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(

@@ -24932,6 +24932,10 @@ int main() {
     // REQ-048 P2: OpenAI settings template serialization byte-walk (Windows
     // parser contract) — registered after the P1 suite.
     TestReq048OpenAiTemplateSerialization();
+    // 261122_0001 B-U3 (design-pick.md item 8b): the per-build GDI label-fit
+    // pin — every label/button string fits its control under the dialog font
+    // in all 89 UI locales, headless — registered right after the byte-walk.
+    TestOpenAiLabelFits();
     // REQ-048 P3: cloud failure must record EngineFailed, never a silent
     // identity success — registered after the P2 suite.
     TestReq048CloudFailureSignaling();
