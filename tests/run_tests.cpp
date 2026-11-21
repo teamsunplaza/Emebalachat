@@ -25288,6 +25288,16 @@ int main() {
     // re-save; never-set still omits the key). Registered last, per the
     // end-of-file pattern.
     openai_profile_tests::TestOpenAiProfileFixA1();
+    // 261122_0001 fix-A2 (builder draw 12; fix-list-round1 row R1-01 — the
+    // verifier-CONFIRMED credential resurrection): the identity-scoped library
+    // prune both REQ-051 [설정 삭제] persist sites run before saving, the
+    // re-protect-stable digest identity (with the keyless-identity fallback),
+    // the pre-B2 round trip that proves no blob/digest survives the delete at
+    // either site, unrelated-profile preservation, and the main.cpp pins that
+    // the kDeleted seam prunes before its save and no direct member assignment
+    // remains (R1-02 caller half). Registered last, per the end-of-file
+    // pattern.
+    openai_profile_tests::TestOpenAiProfileFixA2();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

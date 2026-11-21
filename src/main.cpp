@@ -1079,7 +1079,11 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // 261122_0001 B-U5 (design-pick item 4): the staged profile fold is
         // deliberately NOT applied on this branch — REQ-051 [설정 삭제]
         // preserves the stored profile library (the dialog reports the fold
-        // unedited here, and this branch never names it).
+        // unedited here, and this branch never names it). 261122_0001 fix-A2
+        // (R1-01) carve-out, applied inside the seam: entries that MIRROR the
+        // deleted block (same key pair, or the synthesizer's base_url/model
+        // identity when the block is keyless) are retired with it, so the
+        // credential cannot be re-adopted from the library.
         DIAG_F("MAIN/on_select_engine/004: openai settings deleted; engine selection unchanged\n");
         if (g_apply_openai_deleted) {
             g_apply_openai_deleted(edited);
@@ -2866,8 +2870,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // 261122_0001 B-U5 (design-pick item 4): adopt the staged profile
         // library on the LIVE config BEFORE the single save below (nullptr on
         // Cancel and never on kDeleted, so the stored library survives both).
+        // 261122_0001 fix-A2 (R1-02 caller half): through the locked verb
+        // (SetOpenAiProfiles), never a direct member write — an off-thread
+        // SaveToFile iterates this vector under mutex_.
         if (profiles && profiles->edited) {
-            config.openai_profiles = std::move(profiles->profiles);
+            config.SetOpenAiProfiles(std::move(profiles->profiles));
         }
         engine.SetOpenAiConfig(config.openai);
         engine.SetEngineType(emebalachat::EngineType::OpenAi);
@@ -2894,8 +2901,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // the runtime engine's openai block, persist, refresh the tray.
     // engine_type / the engine selection is deliberately NOT touched here —
     // the user-frozen scope is "settings only" (decisions.md 260921 17:08).
+    // 261122_0001 fix-A2 (R1-01): this is the SECOND persist site the verifier
+    // named. On a pre-B2 config the startup migration synthesized a library
+    // entry that is a verbatim mirror of the block being deleted, and this save
+    // would re-emit it (the dialog's own save cannot cover it — the two are
+    // independent copies of the library). Prune every entry carrying the
+    // retired credential with the dialog's helper, through the locked verb, so
+    // unrelated profiles survive and the pair is gone from both writes.
     emebalachat::g_apply_openai_deleted = [&](const emebalachat::OpenAiConfig& edited) {
+        // Capture the identity BEFORE the mirror assignment below: `edited` is
+        // already cleared (the dialog ends on kDeleted with an empty block).
+        const emebalachat::OpenAiConfig retired = config.openai;
         config.openai = edited;
+        std::vector<emebalachat::OpenAiProfile> kept_profiles = config.openai_profiles;
+        if (emebalachat::EraseOpenAiProfileMatchingKey(kept_profiles, retired) > 0) {
+            config.SetOpenAiProfiles(std::move(kept_profiles));
+        }
         engine.SetOpenAiConfig(config.openai);
         config.SaveToFile();
         refresh_tray();
@@ -3194,6 +3215,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // 261122_0001 B-U5 (design-pick item 4): seed the deferred open with
             // the profile library snapshot too — a COPY, so the AppConfig vector
             // never aliases the fold the handler will hand the dialog.
+            // 261122_0001 fix-A2 (R1-01) trace: this read stays unfiltered on
+            // purpose. It is not a persist site — the kDeleted branch applies no
+            // fold, and the delete's own prune runs on the live library in
+            // g_apply_openai_deleted before that branch's save, so the copy
+            // seeded here can never carry a retired credential back to the file
+            // (the next open seeds the already-pruned library).
             emebalachat::s_pending_openai_profiles = config.openai_profiles;
             if (::PostMessageW(emebalachat::g_hControllerWnd,
                                emebalachat::kMsgOpenOpenAiSettings, 0, 0) == FALSE) {

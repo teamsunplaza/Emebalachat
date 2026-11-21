@@ -2071,21 +2071,22 @@ void TestOpenAiProfileCallerWiring() {
             apply_end > apply_at) {
             const std::string body = main_src.substr(apply_at, apply_end - apply_at);
             const std::size_t adopt_at =
-                body.find("config.openai_profiles = std::move(profiles->profiles);");
+                body.find("config.SetOpenAiProfiles(std::move(profiles->profiles));");
             const std::size_t save_at = body.find("config.SaveToFile();");
             TEST_CHECK(adopt_at != std::string::npos && save_at != std::string::npos &&
                            adopt_at < save_at,
                        "B-U5 (a): the staged library is adopted on the LIVE config BEFORE the "
                        "lambda's single save (P9c-1c single-writer: the emitted config.json "
-                       "carries exactly the library the dialog staged)");
+                       "carries exactly the library the dialog staged) — and through the "
+                       "locked verb since fix-A2 (R1-02 caller half)");
             TEST_CHECK(body.find("if (profiles && profiles->edited)") != std::string::npos,
                        "B-U5 (a): the adoption is gated on the fold pointer AND the edited "
                        "flag (a Cancel nullptr and an unedited fold both skip it)");
             TEST_CHECK(count_in(body, "config.SaveToFile();") == 1,
                        "B-U5 (d): the apply lambda holds exactly ONE persist site — a second "
                        "SaveToFile here would double-write the staged library");
-            TEST_CHECK(count_in(body, "openai_profiles") == 1,
-                       "B-U5 (d): the apply lambda names the library exactly once (the "
+            TEST_CHECK(count_in(body, "SetOpenAiProfiles(") == 1,
+                       "B-U5 (d): the apply lambda names the library verb exactly once (the "
                        "adoption) — a second site would mean a second writer");
         }
     }
@@ -2144,22 +2145,22 @@ void TestOpenAiProfileCallerWiring() {
                        "B-U5 (b): kCancelled passes nullptr for the fold (double-guard)");
         }
 
-        // (b) kDeleted: the fold is deliberately NOT applied (design item 4).
+        // (b) kDeleted: the fold is deliberately NOT applied (design item 4);
+        // the credential-scoped prune travels through the seam (fix-A2 R1-01).
         const std::size_t del_at = handler.find("MAIN/on_select_engine/004");
         TEST_CHECK(del_at != std::string::npos,
                    "B-U5 (b): the kDeleted reconcile branch is locatable");
         if (del_at != std::string::npos) {
             const std::string deleted_branch = handler.substr(del_at);
-            TEST_CHECK(deleted_branch.find("openai_profiles") == std::string::npos &&
-                           deleted_branch.find("SaveToFile") == std::string::npos &&
+            TEST_CHECK(deleted_branch.find("SaveToFile") == std::string::npos &&
                            deleted_branch.find("profiles_fold") == std::string::npos,
                        "B-U5 (b): kDeleted (REQ-051 [설정 삭제]) applies NO fold and "
-                       "persists nothing — the stored profile library is preserved "
-                       "(design-pick item 4)");
+                       "persists nothing itself — the stored profile library is preserved "
+                       "as staged (design-pick item 4) and the seed copy is never adopted");
             TEST_CHECK(deleted_branch.find("g_apply_openai_deleted(edited);") !=
                            std::string::npos,
-                       "B-U5 (b): kDeleted reconciles only the cleared openai block "
-                       "through its own seam (engine selection untouched)");
+                       "B-U5 (b): kDeleted reconciles the cleared openai block through its "
+                       "own seam (engine selection untouched)");
         }
 
         // (d) negative control: the handler itself never persists.
@@ -2172,19 +2173,570 @@ void TestOpenAiProfileCallerWiring() {
                    "apply lambda (this handler cannot name the AppConfig)");
     }
 
-    // ---- (d) whole-file negative control: exactly ONE assignment to the
-    // library on the owning config anywhere in main.cpp (the apply-lambda
-    // adoption). A second mutation site introduced near this path fires here.
-    TEST_CHECK(count_in(main_src, "config.openai_profiles =") == 1,
-               "B-U5 (d): main.cpp assigns config.openai_profiles exactly once (the "
-               "apply-lambda adoption) — a second assignment would mean a second "
-               "profiles writer near this path");
+    // ---- (d) whole-file negative control (fix-A2 R1-01/R1-02): NO direct
+    // assignment to the library survives in main.cpp, and every write goes
+    // through the locked verb — exactly two call sites: the apply-lambda
+    // adoption (a [저장] fold) and the kDeleted credential prune. A third
+    // would mean a new writer near this path.
+    TEST_CHECK(count_in(main_src, "config.openai_profiles =") == 0,
+               "fix-A2 (b): main.cpp holds NO direct config.openai_profiles assignment — "
+               "the R1-02 write rule is enforced on the owning config (the member stays "
+               "public only for the load path and startup seeding)");
+    TEST_CHECK(count_in(main_src, "config.SetOpenAiProfiles(") == 2,
+               "fix-A2 (b): main.cpp writes the library only through the locked verb, at "
+               "exactly two sites — the apply-lambda adoption and the kDeleted prune");
 
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261122_0001 B-U5 OpenAI profile caller wiring pins passed."
                   << std::endl;
     } else {
         std::cout << "[FAIL] 261122_0001 B-U5 OpenAI profile caller wiring pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ===========================================================================
+// 261122_0001 fix-A2 (builder draw 12; fix-list-round1 row R1-01, CONFIRMED
+// HIGH by the verifier trace in security-reviewer-report-verify.md): the
+// [설정 삭제] credential RESURRECTION kill on BOTH persist sites, plus the
+// R1-02 caller-side verb migration.
+//
+// Why the delete leaked: the delete path's own fresh LoadFromFile runs
+// config.cpp's absent-key migration synthesis, so on a pre-B2 config the
+// library it is about to save is a verbatim mirror of the block being cleared
+// (full DPAPI pair). Clearing only the block left the pair in
+// "openai_profiles", one profile-pick away from re-adoption (the pick alone
+// re-arms the authenticated model fetch). main.cpp's kDeleted reconcile then
+// saved the same library a second time, so either site alone left the
+// credential behind.
+//
+//   (A) EraseOpenAiProfileMatchingKey identity matrix (pure): digest first
+//       (stable across re-protects, unlike the DPAPI blob), the blob second,
+//       the synthesizer's (base_url ASCII-case-insensitive, model
+//       case-sensitive) identity for a KEYLESS deleted block — and nothing at
+//       all for an identity-less block.
+//   (B) round trip: a pre-B2 document through the DIALOG's own statement
+//       sequence, then through the kDeleted sequence on an independent
+//       instance — the persisted JSON carries neither the digest nor the blob,
+//       and an unrelated profile survives both.
+//   (C) source pins for both sites and the "no direct member assignment" rule
+//       (R1-02 caller half).
+//
+// Zero network, zero UI.
+// ===========================================================================
+void TestOpenAiProfileFixA2() {
+    std::cout << "[RUN] Testing 261122_0001 fix-A2 (R1-01 delete resurrection)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    const std::string kDigestA(64, 'a');
+    const std::string kDigestB(64, 'b');
+    const std::string kDigestC(64, 'c');
+
+    // ---- (A) the identity matrix -----------------------------------------
+    {
+        auto make_entry = [](const std::string& name, const std::string& base_url,
+                             const std::string& model, const std::string& dpapi,
+                             const std::string& digest) {
+            OpenAiProfile entry;
+            entry.name = name;
+            entry.cfg.base_url = base_url;
+            entry.cfg.model = model;
+            entry.cfg.api_key_dpapi = dpapi;
+            entry.cfg.api_key_sha256 = digest;
+            return entry;
+        };
+        auto make_deleted = [](const std::string& base_url, const std::string& model,
+                               const std::string& dpapi, const std::string& digest) {
+            OpenAiConfig cfg;
+            cfg.base_url = base_url;
+            cfg.model = model;
+            cfg.api_key_dpapi = dpapi;
+            cfg.api_key_sha256 = digest;
+            return cfg;
+        };
+        const std::vector<OpenAiProfile> kLibrary = {
+            make_entry("openai / gpt-4o-mini", "https://api.openai.com", "gpt-4o-mini",
+                       "blob-v1", kDigestA),
+            make_entry("other / other-model", "https://api.other.example", "other-model",
+                       "blob-x", kDigestB),
+            make_entry("openai / gpt-4o-mini (2)", "https://api.openai.com", "gpt-4o-mini",
+                       "blob-c", kDigestC),
+        };
+
+        // (A1) DIGEST FIRST: the same key re-protected yields a different blob
+        // but the same digest, so the mirror must still be found.
+        {
+            std::vector<OpenAiProfile> library = kLibrary;
+            const std::size_t removed = EraseOpenAiProfileMatchingKey(
+                library, make_deleted("https://api.openai.com", "gpt-4o-mini",
+                                      "blob-v2-reprotected", kDigestA));
+            TEST_CHECK(removed == 1 && library.size() == 2,
+                       "fix-A2 (A1): a re-protected pair (new blob, same digest) still "
+                       "identifies the mirror — exactly one entry removed");
+            TEST_CHECK(library.size() == 2 && library[0].name == "other / other-model" &&
+                           library[1].name == "openai / gpt-4o-mini (2)",
+                       "fix-A2 (A1): the unrelated entry AND the different-key entry at the "
+                       "same endpoint both survive");
+        }
+        // (A2) digest-only deleted block (half pair, blob wiped).
+        {
+            std::vector<OpenAiProfile> library = kLibrary;
+            TEST_CHECK(EraseOpenAiProfileMatchingKey(
+                           library, make_deleted("", "", "", kDigestA)) == 1 &&
+                           library.size() == 2 && library[0].name == "other / other-model",
+                       "fix-A2 (A2): a digest-only deleted block (half pair) still matches");
+        }
+        // (A3) blob-only deleted block (digest wiped).
+        {
+            std::vector<OpenAiProfile> library = kLibrary;
+            TEST_CHECK(EraseOpenAiProfileMatchingKey(
+                           library, make_deleted("", "", "blob-x", "")) == 1 &&
+                           library.size() == 2 &&
+                           library[0].name == "openai / gpt-4o-mini",
+                       "fix-A2 (A3): a blob-only deleted block (half pair) still matches — "
+                       "the stored blob is the second identity");
+        }
+        // (A4) KEYLESS fallback: the synthesizer's (base_url, model) identity,
+        // restricted to keyless entries so a keyed profile for the same
+        // endpoint survives.
+        {
+            std::vector<OpenAiProfile> library = {
+                make_entry("openai / gpt-4o-mini", "https://api.openai.com", "gpt-4o-mini",
+                           "", ""),
+                make_entry("openai / gpt-4o-mini (2)", "https://api.openai.com",
+                           "gpt-4o-mini", "blob-c", kDigestC),
+                make_entry("keyless / other-model", "https://api.other.example",
+                           "other-model", "", ""),
+            };
+            const std::size_t removed = EraseOpenAiProfileMatchingKey(
+                library, make_deleted("https://api.openai.com", "gpt-4o-mini", "", ""));
+            TEST_CHECK(removed == 1 && library.size() == 2,
+                       "fix-A2 (A4): a keyless delete removes exactly the identity-matching "
+                       "keyless (synthesized) entry");
+            TEST_CHECK(library.size() == 2 && library[0].name == "openai / gpt-4o-mini (2)" &&
+                           library[1].name == "keyless / other-model",
+                       "fix-A2 (A4): the DIFFERENT-key profile at the same endpoint and the "
+                       "unrelated keyless profile both survive");
+        }
+        // (A5) the fallback's base_url compare is ASCII-case-insensitive (the
+        // PlanOpenAiProfileUpsert storage identity), model stays exact.
+        {
+            std::vector<OpenAiProfile> library = {
+                make_entry("openai / gpt-4o-mini", "https://api.openai.com", "gpt-4o-mini",
+                           "", ""),
+            };
+            std::vector<OpenAiProfile> same = library;
+            TEST_CHECK(EraseOpenAiProfileMatchingKey(
+                           same, make_deleted("HTTPS://Api.OpenAI.com", "gpt-4o-mini", "",
+                                              "")) == 1 &&
+                           same.empty(),
+                       "fix-A2 (A5): the keyless fallback compares base_url "
+                       "case-insensitively (hosts are case-insensitive)");
+            std::vector<OpenAiProfile> cased = library;
+            TEST_CHECK(EraseOpenAiProfileMatchingKey(
+                           cased, make_deleted("https://api.openai.com", "GPT-4o-mini", "",
+                                              "")) == 0 &&
+                           cased.size() == 1,
+                       "fix-A2 (A5): ... and the model stays case-SENSITIVE (model ids are "
+                       "opaque tokens, not hosts)");
+        }
+        // (A6) an identity-less deleted block matches NOTHING (no blanket wipe).
+        {
+            std::vector<OpenAiProfile> library = kLibrary;
+            const std::size_t removed =
+                EraseOpenAiProfileMatchingKey(library, OpenAiConfig{});
+            TEST_CHECK(removed == 0 && library.size() == kLibrary.size(),
+                       "fix-A2 (A6): a block with no key and no endpoint removes nothing");
+        }
+        // (A7) a KEYED delete never touches a keyless entry at the same
+        // identity (the digest is the identity, the endpoint is only the
+        // keyless fallback).
+        {
+            std::vector<OpenAiProfile> library = {
+                make_entry("keyless mirror", "https://api.openai.com", "gpt-4o-mini", "", ""),
+                make_entry("openai / gpt-4o-mini", "https://api.openai.com", "gpt-4o-mini",
+                           "blob-v1", kDigestA),
+            };
+            TEST_CHECK(EraseOpenAiProfileMatchingKey(
+                           library, make_deleted("https://api.openai.com", "gpt-4o-mini",
+                                                 "blob-c", kDigestC)) == 0 &&
+                           library.size() == 2,
+                       "fix-A2 (A7): deleting a key whose digest matches no entry leaves the "
+                       "keyless entry at the same endpoint untouched (digest first)");
+        }
+    }
+
+    // ---- (B) round trip: the migration mirror cannot outlive the delete ----
+    {
+        std::string plaintext = "sk-live-fix-a2-0123456789";
+        std::string digest;
+        TEST_CHECK(OpenAiSha256Hex(plaintext, digest) && digest.size() == 64,
+                   "fix-A2 (B): the reference digest is computable");
+        std::string blob1;
+        std::string edit1 = plaintext;
+        TEST_CHECK(ProtectOpenAiApiKey(edit1, blob1) && !blob1.empty(),
+                   "fix-A2 (B): the reference DPAPI pair is protectable");
+        std::string blob2;
+        std::string edit2 = plaintext;
+        TEST_CHECK(ProtectOpenAiApiKey(edit2, blob2) && blob2 != blob1,
+                   "fix-A2 (B): a RE-PROTECT of the same key yields a different blob — the "
+                   "reason the helper matches the digest first");
+
+        const std::filesystem::path temp_dir = std::filesystem::temp_directory_path();
+        const std::filesystem::path dialog_file =
+            temp_dir / "emebala_fixa2_dialog_delete.json";
+        const std::filesystem::path main_file = temp_dir / "emebala_fixa2_main_delete.json";
+        const std::filesystem::path unrelated_file =
+            temp_dir / "emebala_fixa2_unrelated_delete.json";
+
+        auto write_file = [](const std::filesystem::path& path, const std::string& text) {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out) return false;
+            out << text;
+            return out.good();
+        };
+        auto read_file = [](const std::filesystem::path& path) {
+            std::ifstream in(path, std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        };
+        // The pre-B2 document the verifier's exploit scenario starts from: a
+        // populated "openai" block, NO "openai_profiles" key.
+        const std::string pre_b2 =
+            "{\n"
+            "  \"engine_type\": \"openai\",\n"
+            "  \"openai\": {\n"
+            "    \"base_url\": \"https://api.openai.com\",\n"
+            "    \"model\": \"gpt-4o-mini\",\n"
+            "    \"reasoning_effort\": \"low\",\n"
+            "    \"api_key_dpapi\": \"" + blob1 + "\",\n"
+            "    \"api_key_sha256\": \"" + digest + "\",\n"
+            "    \"http_consent_given\": true\n"
+            "  }\n"
+            "}\n";
+        TEST_CHECK(write_file(dialog_file, pre_b2) && write_file(main_file, pre_b2),
+                   "fix-A2 (B): the pre-B2 fixtures are written (temp dir)");
+
+        // (B1) the DIALOG's delete sequence, statement for statement.
+        {
+            AppConfig persisted;
+            TEST_CHECK(persisted.LoadFromFile(dialog_file),
+                       "fix-A2 (B1): the delete path's own fresh load succeeds");
+            TEST_CHECK(persisted.openai_profiles.size() == 1 &&
+                           persisted.openai_profiles[0].cfg.api_key_sha256 == digest &&
+                           !persisted.openai_profiles[0].cfg.api_key_dpapi.empty(),
+                       "fix-A2 (B1): that load re-synthesized the migration mirror WITH the "
+                       "key pair — the leak's precondition, reproduced");
+            const OpenAiConfig retired = persisted.openai;
+            TEST_CHECK(retired.api_key_sha256 == digest,
+                       "fix-A2 (B1): the identity is captured BEFORE the clear");
+            ClearOpenAiSettings(persisted.openai);
+            std::vector<OpenAiProfile> kept_profiles = persisted.openai_profiles;
+            const std::size_t retired_count =
+                EraseOpenAiProfileMatchingKey(kept_profiles, retired);
+            TEST_CHECK(retired_count == 1 && kept_profiles.empty(),
+                       "fix-A2 (B1): the mirror carrying the retired key is removed");
+            if (retired_count > 0) {
+                persisted.SetOpenAiProfiles(std::move(kept_profiles));
+            }
+            TEST_CHECK(persisted.SaveToFile(dialog_file),
+                       "fix-A2 (B1): the delete's own save succeeds");
+
+            const std::string document = read_file(dialog_file);
+            TEST_CHECK(!document.empty(), "fix-A2 (B1): the persisted document is readable");
+            TEST_CHECK(document.find(digest) == std::string::npos,
+                       "fix-A2 (B1): no digest of the retired key anywhere in the persisted "
+                       "JSON (whole-document scan)");
+            TEST_CHECK(document.find(blob1) == std::string::npos,
+                       "fix-A2 (B1): no DPAPI blob of the retired key anywhere in the "
+                       "persisted JSON (whole-document scan)");
+            TEST_CHECK(document.find("\"api_key_dpapi\": \"\"") != std::string::npos,
+                       "fix-A2 (B1): the active block's pair fields persist EMPTY (the "
+                       "field names stay — REQ-051 clears the values, not the schema)");
+            TEST_CHECK(document.find(plaintext) == std::string::npos,
+                       "fix-A2 (B1): nor the cleartext");
+
+            // R1-12 interplay: the prune went through the verb, so an emptied
+            // library persists as an explicit [] and the next load cannot
+            // re-run the migration synthesis.
+            TEST_CHECK(document.find("\"openai_profiles\": []") != std::string::npos,
+                       "fix-A2 (B1): the emptied library persists as an explicit [] (the "
+                       "fold-touched record), so the migration cannot re-synthesize");
+            AppConfig reloaded;
+            TEST_CHECK(reloaded.FromJsonString(document) &&
+                           reloaded.openai_profiles.empty() && reloaded.openai.base_url.empty(),
+                       "fix-A2 (B1): a reload of the delete's output carries no profile");
+        }
+
+        // (B2) main.cpp's kDeleted sequence on an INDEPENDENT instance: the
+        // second persist site closes the leak by itself.
+        {
+            AppConfig owning;
+            TEST_CHECK(owning.LoadFromFile(main_file),
+                       "fix-A2 (B2): the owning config loads the same pre-B2 document");
+            TEST_CHECK(owning.openai_profiles.size() == 1,
+                       "fix-A2 (B2): the startup synthesis is the second site's precondition");
+            const OpenAiConfig retired = owning.openai;
+            owning.openai = OpenAiConfig{};
+            std::vector<OpenAiProfile> kept_profiles = owning.openai_profiles;
+            if (EraseOpenAiProfileMatchingKey(kept_profiles, retired) > 0) {
+                owning.SetOpenAiProfiles(std::move(kept_profiles));
+            }
+            TEST_CHECK(owning.SaveToFile(main_file),
+                       "fix-A2 (B2): the kDeleted reconcile save succeeds");
+            const std::string document = read_file(main_file);
+            TEST_CHECK(!document.empty() && document.find(digest) == std::string::npos &&
+                           document.find(blob1) == std::string::npos,
+                       "fix-A2 (B2): the second persist site alone also writes no trace of "
+                       "the retired credential (this is the site the dialog's save cannot "
+                       "cover)");
+        }
+
+        // (B3) an unrelated pre-existing profile survives both sites.
+        {
+            std::string unrelated_digest;
+            std::string unrelated_plaintext = "sk-other-account-987654321";
+            std::string unrelated_blob;
+            std::string unrelated_edit = unrelated_plaintext;
+            TEST_CHECK(ProtectOpenAiApiKey(unrelated_edit, unrelated_blob) &&
+                           OpenAiSha256Hex(unrelated_plaintext, unrelated_digest) &&
+                           unrelated_digest.size() == 64,
+                       "fix-A2 (B3): the unrelated profile's pair is protectable");
+            const std::string with_unrelated =
+                "{\n"
+                "  \"openai\": {\n"
+                "    \"base_url\": \"https://api.openai.com\",\n"
+                "    \"model\": \"gpt-4o-mini\",\n"
+                "    \"api_key_dpapi\": \"" + blob1 + "\",\n"
+                "    \"api_key_sha256\": \"" + digest + "\"\n"
+                "  },\n"
+                "  \"openai_profiles\": [\n"
+                "    {\n"
+                "      \"name\": \"openai / gpt-4o-mini\",\n"
+                "      \"base_url\": \"https://api.openai.com\",\n"
+                "      \"model\": \"gpt-4o-mini\",\n"
+                "      \"api_key_dpapi\": \"" + blob1 + "\",\n"
+                "      \"api_key_sha256\": \"" + digest + "\"\n"
+                "    },\n"
+                "    {\n"
+                "      \"name\": \"other / other-model\",\n"
+                "      \"base_url\": \"https://api.other.example\",\n"
+                "      \"model\": \"other-model\",\n"
+                "      \"api_key_dpapi\": \"" + unrelated_blob + "\",\n"
+                "      \"api_key_sha256\": \"" + unrelated_digest + "\"\n"
+                "    }\n"
+                "  ]\n"
+                "}\n";
+            TEST_CHECK(write_file(unrelated_file, with_unrelated),
+                       "fix-A2 (B3): the two-profile fixture is written");
+            AppConfig persisted;
+            TEST_CHECK(persisted.LoadFromFile(unrelated_file) &&
+                           persisted.openai_profiles.size() == 2,
+                       "fix-A2 (B3): the present-key library loads authoritatively");
+            const OpenAiConfig retired = persisted.openai;
+            ClearOpenAiSettings(persisted.openai);
+            std::vector<OpenAiProfile> kept_profiles = persisted.openai_profiles;
+            if (EraseOpenAiProfileMatchingKey(kept_profiles, retired) > 0) {
+                persisted.SetOpenAiProfiles(std::move(kept_profiles));
+            }
+            TEST_CHECK(persisted.SaveToFile(unrelated_file),
+                       "fix-A2 (B3): the delete's save succeeds");
+            const std::string document = read_file(unrelated_file);
+            TEST_CHECK(document.find(digest) == std::string::npos &&
+                           document.find(blob1) == std::string::npos,
+                       "fix-A2 (B3): the mirror's credential is gone");
+            TEST_CHECK(document.find("other / other-model") != std::string::npos &&
+                           document.find(unrelated_digest) != std::string::npos,
+                       "fix-A2 (B3): the unrelated profile and its pair survive the delete");
+            AppConfig reloaded;
+            TEST_CHECK(reloaded.FromJsonString(document) &&
+                           reloaded.openai_profiles.size() == 1 &&
+                           reloaded.openai_profiles[0].name == "other / other-model",
+                       "fix-A2 (B3): a reload shows exactly the unrelated profile");
+        }
+
+        // (B4) negative: a KEYLESS active block removes only the keyless
+        // identity-matching profile; a differently-keyed profile at the same
+        // endpoint stays.
+        {
+            const std::filesystem::path keyless_file =
+                temp_dir / "emebala_fixa2_keyless_delete.json";
+            const std::string keyless_doc =
+                "{\n"
+                "  \"openai\": {\n"
+                "    \"base_url\": \"https://api.openai.com\",\n"
+                "    \"model\": \"gpt-4o-mini\"\n"
+                "  },\n"
+                "  \"openai_profiles\": [\n"
+                "    {\n"
+                "      \"name\": \"openai / gpt-4o-mini\",\n"
+                "      \"base_url\": \"https://api.openai.com\",\n"
+                "      \"model\": \"gpt-4o-mini\"\n"
+                "    },\n"
+                "    {\n"
+                "      \"name\": \"other key\",\n"
+                "      \"base_url\": \"https://api.openai.com\",\n"
+                "      \"model\": \"gpt-4o-mini\",\n"
+                "      \"api_key_dpapi\": \"" + blob2 + "\",\n"
+                "      \"api_key_sha256\": \"" + digest + "\"\n"
+                "    }\n"
+                "  ]\n"
+                "}\n";
+            TEST_CHECK(write_file(keyless_file, keyless_doc),
+                       "fix-A2 (B4): the keyless fixture is written");
+            AppConfig persisted;
+            TEST_CHECK(persisted.LoadFromFile(keyless_file) &&
+                           persisted.openai_profiles.size() == 2,
+                       "fix-A2 (B4): the fixture's two profiles load");
+            const OpenAiConfig retired = persisted.openai;
+            TEST_CHECK(retired.api_key_dpapi.empty() && retired.api_key_sha256.empty(),
+                       "fix-A2 (B4): the deleted block carries no key pair (the fallback "
+                       "path)");
+            ClearOpenAiSettings(persisted.openai);
+            std::vector<OpenAiProfile> kept_profiles = persisted.openai_profiles;
+            const std::size_t removed =
+                EraseOpenAiProfileMatchingKey(kept_profiles, retired);
+            TEST_CHECK(removed == 1 && kept_profiles.size() == 1 &&
+                           kept_profiles[0].name == "other key",
+                       "fix-A2 (B4): a keyless delete removes only the keyless "
+                       "identity-matching profile; the same-endpoint profile with a "
+                       "DIFFERENT key is left untouched");
+            std::filesystem::remove(keyless_file);
+        }
+
+        std::filesystem::remove(dialog_file);
+        std::filesystem::remove(main_file);
+        std::filesystem::remove(unrelated_file);
+    }
+
+    // ---- (C) source pins: both persist sites + the write rule -------------
+    {
+        auto read_norm = [](const wchar_t* relative, std::string& out) {
+            const std::filesystem::path path = ResolveRepoFile(relative);
+            if (path.empty()) return false;
+            std::ifstream in(path, std::ios::binary);
+            if (!in) return false;
+            const std::string raw((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            std::string norm;
+            norm.reserve(raw.size());
+            for (std::size_t i = 0; i < raw.size(); ++i) {
+                if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') continue;
+                norm.push_back(raw[i]);
+            }
+            out.swap(norm);
+            return true;
+        };
+        std::string dialog_src;
+        std::string main_src;
+        const bool dialog_ok = read_norm(L"src\\ui\\openai_settings_window.cpp", dialog_src);
+        const bool main_ok = read_norm(L"src\\main.cpp", main_src);
+        TEST_CHECK(dialog_ok && main_ok,
+                   "fix-A2 (C): both persist-site sources resolve (R1-07 lesson: a source "
+                   "pin never passes over zero assertions)");
+
+        // (C1) the dialog's delete branch order: capture -> clear -> prune -> save.
+        if (dialog_ok) {
+            const std::size_t del_at = dialog_src.find("case IDC_DELETE_BTN: {");
+            const std::size_t next_case = dialog_src.find("case IDC_PROFILE_SAVE_BTN", del_at);
+            const std::string branch =
+                del_at == std::string::npos
+                    ? std::string()
+                    : dialog_src.substr(del_at, next_case == std::string::npos
+                                                    ? std::string::npos
+                                                    : next_case - del_at);
+            TEST_CHECK(!branch.empty(), "fix-A2 (C1): the delete branch is locatable");
+            const std::size_t capture = branch.find("const OpenAiConfig retired = persisted.openai;");
+            const std::size_t clear =
+                branch.find("ClearOpenAiSettings(persisted.openai)");
+            const std::size_t prune = branch.find("EraseOpenAiProfileMatchingKey(");
+            const std::size_t write = branch.find("persisted.SetOpenAiProfiles(");
+            const std::size_t save = branch.find("persisted.SaveToFile()");
+            TEST_CHECK(capture != std::string::npos && clear != std::string::npos &&
+                           prune != std::string::npos && write != std::string::npos &&
+                           save != std::string::npos,
+                       "fix-A2 (C1): capture / clear / prune / verb / save are all present "
+                       "in the delete branch");
+            TEST_CHECK(capture < clear && clear < prune && prune < write && write < save,
+                       "fix-A2 (C1): the identity is captured BEFORE the clear, the prune "
+                       "runs before the verb and the verb before the save — the "
+                       "resurrection order is closed");
+        }
+
+        // (C2) the helper matches the digest first and only then falls back to
+        // (base_url, model) for a keyless block.
+        if (dialog_ok) {
+            const std::size_t helper_at =
+                dialog_src.find("std::size_t EraseOpenAiProfileMatchingKey(");
+            const std::string helper =
+                helper_at == std::string::npos ? std::string() : dialog_src.substr(helper_at, 3000);
+            TEST_CHECK(!helper.empty(), "fix-A2 (C2): the helper definition is locatable");
+            const std::size_t digest_at = helper.find("profile.cfg.api_key_sha256 ==");
+            const std::size_t blob_at = helper.find("profile.cfg.api_key_dpapi ==");
+            const std::size_t fallback_at = helper.find("EqualsIgnoreCaseAscii<char>(");
+            TEST_CHECK(digest_at != std::string::npos && blob_at != std::string::npos &&
+                           fallback_at != std::string::npos,
+                       "fix-A2 (C2): the helper names the digest, the blob and the keyless "
+                       "fallback");
+            TEST_CHECK(digest_at < blob_at && blob_at < fallback_at,
+                       "fix-A2 (C2): DIGEST first, the blob second, the (base_url, model) "
+                       "fallback last — the stable identity wins");
+            TEST_CHECK(helper.find("deleted.base_url.empty() && deleted.model.empty()") !=
+                               std::string::npos &&
+                           helper.find("profile.cfg.api_key_dpapi.empty() &&") !=
+                               std::string::npos,
+                       "fix-A2 (C2): an identity-less block removes nothing, and the "
+                       "fallback only matches keyless entries");
+        }
+
+        // (C3) main.cpp's kDeleted seam: capture -> prune -> verb -> save, and
+        // no direct member assignment anywhere (R1-02 caller half).
+        if (main_ok) {
+            const std::size_t seam_at =
+                main_src.find("g_apply_openai_deleted = [&](const emebalachat::OpenAiConfig& edited) {");
+            const std::size_t seam_end = main_src.find("REQ-048 R2-D", seam_at);
+            const std::string seam =
+                seam_at == std::string::npos
+                    ? std::string()
+                    : main_src.substr(seam_at, seam_end == std::string::npos
+                                                    ? std::string::npos
+                                                    : seam_end - seam_at);
+            TEST_CHECK(!seam.empty(), "fix-A2 (C3): the kDeleted seam body is locatable");
+            const std::size_t capture = seam.find("const emebalachat::OpenAiConfig retired = config.openai;");
+            const std::size_t mirror = seam.find("config.openai = edited;");
+            const std::size_t prune = seam.find("EraseOpenAiProfileMatchingKey(");
+            const std::size_t write = seam.find("config.SetOpenAiProfiles(");
+            const std::size_t save = seam.find("config.SaveToFile();");
+            TEST_CHECK(capture != std::string::npos && mirror != std::string::npos &&
+                           prune != std::string::npos && write != std::string::npos &&
+                           save != std::string::npos,
+                       "fix-A2 (C3): the kDeleted seam captures the retired identity, "
+                       "prunes, writes through the verb and saves");
+            TEST_CHECK(capture < mirror && mirror < prune && prune < write && write < save,
+                       "fix-A2 (C3): capture precedes the clear, and the prune + verb precede "
+                       "the seam's SaveToFile (the second persist site is closed)");
+            TEST_CHECK(seam.find("openai_profiles =") == std::string::npos,
+                       "fix-A2 (C3): the seam never assigns the library member directly");
+            std::size_t direct_assigns = 0;
+            for (std::size_t pos = main_src.find("config.openai_profiles =");
+                 pos != std::string::npos;
+                 pos = main_src.find("config.openai_profiles =", pos + 1)) {
+                ++direct_assigns;
+            }
+            TEST_CHECK(direct_assigns == 0,
+                       "fix-A2 (C3): NO direct config.openai_profiles assignment survives in "
+                       "main.cpp — every write routes through SetOpenAiProfiles (R1-02)");
+            TEST_CHECK(main_src.find("emebalachat::s_pending_openai_profiles = "
+                                     "config.openai_profiles;") != std::string::npos,
+                       "fix-A2 (C3): the deferred-open seed stays a read COPY (not a "
+                       "persist site: the kDeleted branch never applies the fold)");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261122_0001 fix-A2 delete resurrection suite passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261122_0001 fix-A2 delete resurrection suite: "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

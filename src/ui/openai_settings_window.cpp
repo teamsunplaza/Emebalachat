@@ -406,6 +406,46 @@ bool PlanOpenAiProfileSave(const std::vector<OpenAiProfile>& library,
     return true;
 }
 
+// 261122_0001 fix-A2 (R1-01): identity-scoped REMOVAL for the REQ-051 [설정
+// 삭제] control (declaration + identity rule in openai_settings_window.hpp).
+// Why it exists: the delete branch's own fresh load runs config.cpp's
+// absent-key migration synthesis, so on a pre-B2 config its library is a
+// verbatim mirror of the very block being cleared — clear-then-save would
+// persist the retired DPAPI pair and one profile-pick would re-adopt it
+// (authenticated fetch included). Both persist sites (the dialog's
+// read-modify-write and main.cpp's kDeleted reconcile) therefore prune the
+// credential before saving, while every unrelated profile stays.
+// DIGEST FIRST is the point: the digest is stable across re-protects, the blob
+// is not. The keyless fallback mirrors the synthesizer field for field
+// (base_url/model), restricted to keyless entries so a keyed profile for the
+// same endpoint survives a delete of a keyless block.
+std::size_t EraseOpenAiProfileMatchingKey(std::vector<OpenAiProfile>& profiles,
+                                          const OpenAiConfig& deleted) {
+    const bool keyless = deleted.api_key_dpapi.empty() && deleted.api_key_sha256.empty();
+    if (keyless && deleted.base_url.empty() && deleted.model.empty()) {
+        return 0; // no identity at all: never a blanket wipe
+    }
+    const std::size_t before = profiles.size();
+    profiles.erase(
+        std::remove_if(profiles.begin(), profiles.end(),
+                       [&](const OpenAiProfile& profile) {
+                           if (!keyless) {
+                               return (!deleted.api_key_sha256.empty() &&
+                                       profile.cfg.api_key_sha256 ==
+                                           deleted.api_key_sha256) ||
+                                      (!deleted.api_key_dpapi.empty() &&
+                                       profile.cfg.api_key_dpapi == deleted.api_key_dpapi);
+                           }
+                           return profile.cfg.api_key_dpapi.empty() &&
+                                  profile.cfg.api_key_sha256.empty() &&
+                                  EqualsIgnoreCaseAscii<char>(profile.cfg.base_url,
+                                                              deleted.base_url) &&
+                                  profile.cfg.model == deleted.model;
+                       }),
+        profiles.end());
+    return before - profiles.size();
+}
+
 // The cap notice's `{n}` substitution (design item 9.4). The StringId carries
 // one token; the cap lives in code (kMaxOpenAiProfiles), so the number can
 // never drift from the reader's own bound. Every occurrence is replaced (a
@@ -1419,21 +1459,40 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // keeps its stored library — only the ACTIVE block's settings are
             // deleted here, and a half-applied profile stage can never leak out
             // through this path.
+            // 261122_0001 fix-A2 (R1-01): the STORED library is pruned instead
+            // — identity-scoped, never wholesale. The load above just
+            // re-synthesized this block's migration mirror (config.cpp's
+            // absent-key synthesis), so clearing only the block and saving
+            // would persist the very key pair this button exists to destroy,
+            // one profile-pick away from re-adoption. Capture the identity
+            // BEFORE the clear, then drop every entry carrying it.
             AppConfig persisted;
             if (!persisted.LoadFromFile()) {
                 DIAG_F("UI/OpenAiSettings/005: delete requested but config load failed; "
                        "settings left intact\n");
                 return TRUE;
             }
+            const OpenAiConfig retired = persisted.openai;
             ClearOpenAiSettings(persisted.openai);
+            std::vector<OpenAiProfile> kept_profiles = persisted.openai_profiles;
+            const std::size_t retired_count =
+                EraseOpenAiProfileMatchingKey(kept_profiles, retired);
+            if (retired_count > 0) {
+                // The locked verb, never a direct member write (R1-02): it also
+                // marks the fold touched, so an emptied library persists as an
+                // explicit [] and the migration cannot re-synthesize later.
+                persisted.SetOpenAiProfiles(std::move(kept_profiles));
+            }
             if (!persisted.SaveToFile()) {
                 DIAG_F("UI/OpenAiSettings/006: delete requested but config save failed; "
                        "settings left intact\n");
                 return TRUE;
             }
             DIAG_F("UI/OpenAiSettings/007: saved OpenAI settings deleted "
-                   "(base_url/model/reasoning effort/key pair/consent cleared; engine "
-                   "selection untouched)\n");
+                   "(base_url/model/reasoning effort/key pair/consent cleared; "
+                   "%zu stored profile(s) carrying the retired key removed; engine "
+                   "selection untouched)\n",
+                   retired_count);
             *st->cfg = OpenAiConfig{};
             st->deleted = true;
             ::EndDialog(dlg, IDC_DELETE_BTN);

@@ -158,6 +158,30 @@ OpenAiComboSelection PlanOpenAiComboSelection(
 // from the referenced struct; unit-tested headlessly.
 void ClearOpenAiSettings(OpenAiConfig& cfg);
 
+// 261122_0001 fix-A2 (R1-01; security-reviewer-report-verify §"Minimal correct
+// fix" item 1): the credential-scoped library prune both REQ-051 [설정 삭제]
+// persist sites need. Erases from `profiles` every entry that carries the
+// credential of the block being deleted and returns how many were removed (0 =
+// nothing matched; the caller then leaves the library — and its "fold touched"
+// record — alone). Identity rule, in that order:
+//   * deleted block WITH a key pair: match on the pair, DIGEST FIRST
+//     (api_key_sha256 is the stable identity — a re-protect of the same
+//     cleartext yields a different DPAPI blob, so a blob-only match would miss
+//     the re-saved copy) and on the DPAPI blob second (a half pair whose digest
+//     was wiped still identifies its entry);
+//   * deleted block WITHOUT a key pair: fall back to the migration
+//     synthesizer's identity — base_url ASCII case-insensitive + model
+//     case-sensitive, the PlanOpenAiProfileUpsert storage identity — because
+//     that is exactly the entry config.cpp synthesizes when the
+//     "openai_profiles" key is absent. The fallback only matches a KEYLESS
+//     entry: a keyed entry at the same endpoint is a credential the user did
+//     not ask to destroy.
+// A block with no identity at all (no key, no base_url, no model) matches
+// nothing. Pure: no I/O, no DPAPI, no threads. main.cpp consumes the same
+// helper from its kDeleted reconcile (the second persist site).
+std::size_t EraseOpenAiProfileMatchingKey(std::vector<OpenAiProfile>& profiles,
+                                          const OpenAiConfig& deleted);
+
 // REQ-048 P2: emits the production OpenAI-settings item set into `tb` (Begin
 // must already have been called with the matching item count). Split out of
 // ShowOpenAiSettingsDialog so the unit suite can serialize the exact

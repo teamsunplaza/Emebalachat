@@ -354,10 +354,15 @@ void TestReq051OpenAiDialogStructuralPins() {
         TEST_CHECK(del_pos != std::string::npos,
                    "REQ-051 D pin: the delete branch exists");
         if (del_pos != std::string::npos) {
-            // The branch body ends at the closing "        }" of the case;
-            // the next top-level "case " label (there is none after it)
-            // bounds it — take a generous window and pin within it.
-            const std::string branch = osw_src.substr(del_pos, 3500);
+            // The branch body ends at the NEXT case label (IDC_PROFILE_SAVE_BTN).
+            // 261122_0001 fix-A2 (R1-01) grew this branch, so the old
+            // fixed 3500-character window silently truncated the pins past
+            // persisted.SaveToFile(); bound it by the label instead.
+            const size_t next_case = osw_src.find("case IDC_PROFILE_SAVE_BTN", del_pos);
+            const std::string branch =
+                osw_src.substr(del_pos, next_case == std::string::npos
+                                            ? std::string::npos
+                                            : next_case - del_pos);
             TEST_CHECK(branch.find("AppConfig persisted;") != std::string::npos,
                        "REQ-051 D pin: the delete persists through an AppConfig instance");
             TEST_CHECK(branch.find("persisted.LoadFromFile()") != std::string::npos,
