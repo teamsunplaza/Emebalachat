@@ -1395,4 +1395,192 @@ void TestOpenAiProfileDialogBehavior() {
     }
 }
 
+// ===========================================================================
+// 261122_0001 B-U5 (builder draw 9; design-pick items 4 + 10): the main.cpp
+// CALLER wiring for the profile fold — the snapshot seed chain, the 4-arg
+// library-aware dialog entry, the outcome branch matrix, and the single-writer
+// persist contract.
+//
+// Boundary, stated honestly (the SEC-B5 note in main.cpp itself): main.cpp is
+// the GUI entrypoint TU and is deliberately NOT linked into run_tests.exe, so
+// the wiring is pinned at SOURCE-TEXT level — the established raw-read +
+// CRLF-normalize idiom this file already uses for the dialog pins (the U4
+// suite above). Layer note: the dialog-side fold semantics are pinned by the
+// U4 suite; this suite pins only the caller half.
+// ===========================================================================
+void TestOpenAiProfileCallerWiring() {
+    std::cout << "[TEST] 261122_0001 B-U5: OpenAI profile caller wiring (main.cpp)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (0) main.cpp resolves (raw read + CRLF normalize) ---------------
+    std::string main_src;
+    {
+        const char* candidates[] = {"src/main.cpp", "../src/main.cpp", "../../src/main.cpp"};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (!in) continue;
+            std::string raw((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+            std::string norm;
+            norm.reserve(raw.size());
+            for (std::size_t i = 0; i < raw.size(); ++i) {
+                if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') {
+                    continue;
+                }
+                norm.push_back(raw[i]);
+            }
+            main_src.swap(norm);
+            break;
+        }
+    }
+    const auto count_in = [](const std::string& hay, const std::string& needle) {
+        std::size_t n = 0;
+        for (std::size_t p = hay.find(needle); p != std::string::npos;
+             p = hay.find(needle, p + needle.size())) {
+            ++n;
+        }
+        return n;
+    };
+
+    if (main_src.empty()) {
+        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; the B-U5 "
+                     "caller-wiring pins are skipped."
+                  << std::endl;
+        if (g_failed_count == failures_before) {
+            std::cout << "[PASS] 261122_0001 B-U5 OpenAI profile caller wiring pins completed."
+                      << std::endl;
+        }
+        return;
+    }
+
+    // ---- (a)+(d) the apply lambda: adoption BEFORE the single save --------
+    {
+        const std::size_t apply_at = main_src.find("g_apply_openai_settings = [&]");
+        const std::size_t apply_end = main_src.find("g_apply_openai_deleted = [&]", apply_at);
+        TEST_CHECK(apply_at != std::string::npos && apply_end != std::string::npos &&
+                       apply_end > apply_at,
+                   "B-U5 (a): the apply lambda is locatable");
+        if (apply_at != std::string::npos && apply_end != std::string::npos &&
+            apply_end > apply_at) {
+            const std::string body = main_src.substr(apply_at, apply_end - apply_at);
+            const std::size_t adopt_at =
+                body.find("config.openai_profiles = std::move(profiles->profiles);");
+            const std::size_t save_at = body.find("config.SaveToFile();");
+            TEST_CHECK(adopt_at != std::string::npos && save_at != std::string::npos &&
+                           adopt_at < save_at,
+                       "B-U5 (a): the staged library is adopted on the LIVE config BEFORE the "
+                       "lambda's single save (P9c-1c single-writer: the emitted config.json "
+                       "carries exactly the library the dialog staged)");
+            TEST_CHECK(body.find("if (profiles && profiles->edited)") != std::string::npos,
+                       "B-U5 (a): the adoption is gated on the fold pointer AND the edited "
+                       "flag (a Cancel nullptr and an unedited fold both skip it)");
+            TEST_CHECK(count_in(body, "config.SaveToFile();") == 1,
+                       "B-U5 (d): the apply lambda holds exactly ONE persist site — a second "
+                       "SaveToFile here would double-write the staged library");
+            TEST_CHECK(count_in(body, "openai_profiles") == 1,
+                       "B-U5 (d): the apply lambda names the library exactly once (the "
+                       "adoption) — a second site would mean a second writer");
+        }
+    }
+
+    // ---- (b)+(c)+(d) the deferred handler: seed, 4-arg call, branches -----
+    const std::size_t handler_at = main_src.find("if (msg == kMsgOpenOpenAiSettings) {");
+    TEST_CHECK(handler_at != std::string::npos,
+               "B-U5 (b): the deferred kMsgOpenOpenAiSettings handler is locatable");
+    if (handler_at != std::string::npos) {
+        const std::size_t handler_end =
+            main_src.find("if (msg == kMsgOpenGgufManager)", handler_at);
+        const std::string handler =
+            main_src.substr(handler_at, handler_end == std::string::npos
+                                            ? std::string::npos
+                                            : handler_end - handler_at);
+
+        // (c) the dialog opens through the library-aware 4-arg entry, fed by
+        // the snapshot seed chain (tray copy -> handler move -> dialog copy).
+        TEST_CHECK(handler.find("emebalachat::ShowOpenAiSettingsDialogEx(") !=
+                       std::string::npos &&
+                       handler.find("/*parent=*/emebalachat::g_hControllerWnd, edited, "
+                                    "declaration, profiles_fold);") != std::string::npos,
+                   "B-U5 (c): the dialog is invoked with the 4-arg library-aware overload "
+                   "(parent, edited cfg, declaration fold, profile fold)");
+        TEST_CHECK(handler.find("profiles_fold.profiles = std::move(*emebalachat::"
+                                "s_pending_openai_profiles);") != std::string::npos &&
+                       handler.find("emebalachat::s_pending_openai_profiles.reset();") !=
+                           std::string::npos,
+                   "B-U5 (c): the handler seeds the fold input from the deferred snapshot "
+                   "(a move — the fold owns its deep copy; the dialog then takes its own "
+                   "working copy from the fold input)");
+        TEST_CHECK(main_src.find("emebalachat::s_pending_openai_profiles = "
+                                 "config.openai_profiles;") != std::string::npos,
+                   "B-U5 (c): the tray dispatch snapshots the library next to the openai "
+                   "block (a copy — the AppConfig vector never aliases the fold)");
+        TEST_CHECK(count_in(main_src, "s_pending_openai_profiles.reset();") == 2,
+                   "B-U5 (c): the snapshot slot is dropped at BOTH consumption sites (the "
+                   "handler + the PostMessage-failure rollback), never left armed");
+
+        // (b) kCancelled: nothing adopted, nothing persisted.
+        const std::size_t cancel_at = handler.find("OpenAiSettingsOutcome::kCancelled");
+        const std::size_t saved_at = handler.find("OpenAiSettingsOutcome::kSaved");
+        TEST_CHECK(cancel_at != std::string::npos && saved_at != std::string::npos &&
+                       cancel_at < saved_at,
+                   "B-U5 (b): the Cancel branch precedes the Save branch");
+        if (cancel_at != std::string::npos && saved_at != std::string::npos &&
+            cancel_at < saved_at) {
+            const std::string cancel_branch = handler.substr(cancel_at, saved_at - cancel_at);
+            TEST_CHECK(cancel_branch.find("openai_profiles") == std::string::npos &&
+                           cancel_branch.find("SaveToFile") == std::string::npos,
+                       "B-U5 (b): kCancelled mutates neither the stored library nor the "
+                       "file (the dialog reported the fold unedited, and this branch "
+                       "passes nullptr for it)");
+            TEST_CHECK(cancel_branch.find("g_apply_openai_settings(edited, /*saved=*/false, "
+                                          "nullptr, nullptr);") != std::string::npos,
+                       "B-U5 (b): kCancelled passes nullptr for the fold (double-guard)");
+        }
+
+        // (b) kDeleted: the fold is deliberately NOT applied (design item 4).
+        const std::size_t del_at = handler.find("MAIN/on_select_engine/004");
+        TEST_CHECK(del_at != std::string::npos,
+                   "B-U5 (b): the kDeleted reconcile branch is locatable");
+        if (del_at != std::string::npos) {
+            const std::string deleted_branch = handler.substr(del_at);
+            TEST_CHECK(deleted_branch.find("openai_profiles") == std::string::npos &&
+                           deleted_branch.find("SaveToFile") == std::string::npos &&
+                           deleted_branch.find("profiles_fold") == std::string::npos,
+                       "B-U5 (b): kDeleted (REQ-051 [설정 삭제]) applies NO fold and "
+                       "persists nothing — the stored profile library is preserved "
+                       "(design-pick item 4)");
+            TEST_CHECK(deleted_branch.find("g_apply_openai_deleted(edited);") !=
+                           std::string::npos,
+                       "B-U5 (b): kDeleted reconciles only the cleared openai block "
+                       "through its own seam (engine selection untouched)");
+        }
+
+        // (d) negative control: the handler itself never persists.
+        TEST_CHECK(handler.find("SaveToFile") == std::string::npos,
+                   "B-U5 (d): the WndProc handler contains NO SaveToFile — a persist "
+                   "added here would be a second writer racing the apply lambda's save");
+        TEST_CHECK(handler.find("config.openai_profiles") == std::string::npos,
+                   "B-U5 (d): the WndProc handler never names the owning library member "
+                   "directly — adoption travels only through the fold and the wWinMain "
+                   "apply lambda (this handler cannot name the AppConfig)");
+    }
+
+    // ---- (d) whole-file negative control: exactly ONE assignment to the
+    // library on the owning config anywhere in main.cpp (the apply-lambda
+    // adoption). A second mutation site introduced near this path fires here.
+    TEST_CHECK(count_in(main_src, "config.openai_profiles =") == 1,
+               "B-U5 (d): main.cpp assigns config.openai_profiles exactly once (the "
+               "apply-lambda adoption) — a second assignment would mean a second "
+               "profiles writer near this path");
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261122_0001 B-U5 OpenAI profile caller wiring pins passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261122_0001 B-U5 OpenAI profile caller wiring pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 } // namespace openai_profile_tests

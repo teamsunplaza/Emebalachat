@@ -464,10 +464,18 @@ std::function<void()> g_drain_user_language_probes;
 // this run writes carries the declaration the dialog just folded. nullptr on
 // Cancel (nothing was folded; a live declaration must survive a cancel), and
 // never on kDeleted (that seam is g_apply_openai_deleted).
+// 261122_0001 B-U5 (design-pick item 4): the fourth argument is the dialog's
+// PROFILE LIBRARY fold — non-null ONLY on the Save path, where the body adopts
+// the staged library on the LIVE config (config.openai_profiles, moved) BEFORE
+// its save, so the file this run writes carries the library the dialog staged.
+// The dialog performs no config file I/O for profiles (P9c-1c single-writer),
+// so this save is the one persist site. nullptr on Cancel and never on
+// kDeleted — the [설정 삭제] path preserves the stored library.
 // Cleared at shutdown with g_apply_language_change so a late posted
 // kMsgOpenOpenAiSettings can never call into destroyed state.
 std::function<bool(const OpenAiConfig&, bool saved,
-                   const std::vector<std::string>* declared)>
+                   const std::vector<std::string>* declared,
+                   OpenAiProfilesFold* profiles)>
     g_apply_openai_settings;
 // REQ-051 (Symptom D): the [삭제] kDeleted seam — invoked on the GUI thread
 // with the dialog-cleared openai block when the user deleted the settings
@@ -524,6 +532,14 @@ std::function<void()> g_open_user_lang_manager;
 // edits in/out.
 bool s_openai_dialog_pending = false;
 std::optional<OpenAiConfig> s_pending_openai_cfg;
+// 261122_0001 B-U5 (design-pick item 4): the profile LIBRARY snapshot rides
+// the same deferred-open store as the openai block snapshot above. The tray
+// dispatch (engine_idx == 2, the only producer) seeds it from
+// config.openai_profiles by copy; the kMsgOpenOpenAiSettings handler moves it
+// into the dialog's fold input. Same GUI-thread-only, latch-guarded contract
+// as s_pending_openai_cfg — set ONLY while s_openai_dialog_pending is latched,
+// consumed when the latch releases.
+std::optional<std::vector<OpenAiProfile>> s_pending_openai_profiles;
 // ---- SEC-B5: value-queue transport (replaces the LPARAM pointer contract) ----
 // Producers (hook thread, REQ-R06 double-Ctrl+C worker, drag worker) emplace
 // under the mutex, then PostMessageW the wake trigger. The sole consumer is
@@ -997,6 +1013,17 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                                                         // re-post during the dialog is legal
         OpenAiConfig edited = emebalachat::s_pending_openai_cfg.value_or(OpenAiConfig{});
         emebalachat::s_pending_openai_cfg.reset();
+        // 261122_0001 B-U5 (design-pick item 4): consume the profile library
+        // snapshot the tray dispatch seeded next to the openai block. The move
+        // gives the fold its own deep copy: the pending slot is single-use and
+        // the tray site already copied the vector out of the AppConfig, so no
+        // alias to the live library survives. The dialog then takes its own
+        // working copy from this fold input.
+        emebalachat::OpenAiProfilesFold profiles_fold;
+        if (emebalachat::s_pending_openai_profiles.has_value()) {
+            profiles_fold.profiles = std::move(*emebalachat::s_pending_openai_profiles);
+        }
+        emebalachat::s_pending_openai_profiles.reset();
         // REQ-051 (Symptom D): the tri-state dialog — kCancelled/kSaved keep
         // the pre-REQ-051 wrapper's byte-identical behavior (the bool wrapper
         // still maps kDeleted -> false for any remaining caller); kDeleted is
@@ -1005,17 +1032,25 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // checklist fold out (declaration); it is adopted on the owning config
         // by g_apply_openai_settings, never persisted here — this handler
         // cannot name the app's AppConfig.
+        // 261122_0001 B-U5: the library-aware entry also hands the profile
+        // fold out (profiles_fold); the identical single-writer contract — the
+        // staged library is adopted on the owning config by
+        // g_apply_openai_settings BEFORE its save, never persisted here.
         emebalachat::OpenAiDeclaredLanguagesFold declaration;
         const emebalachat::OpenAiSettingsOutcome openai_outcome =
             emebalachat::ShowOpenAiSettingsDialogEx(
-                /*parent=*/emebalachat::g_hControllerWnd, edited, declaration);
+                /*parent=*/emebalachat::g_hControllerWnd, edited, declaration, profiles_fold);
         if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kCancelled) {
             // Cancel: engine untouched, refresh the tray check mark back.
             // No declaration is adopted (declaration.edited is false): the
             // user's live declaration must survive a cancelled dialog.
+            // 261122_0001 B-U5: no profile library is adopted either — the
+            // seam receives nullptr for the fold (double-guard: the dialog
+            // also reported it unedited), so the stored library survives a
+            // cancelled dialog untouched.
             DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
             if (g_apply_openai_settings) {
-                g_apply_openai_settings(edited, /*saved=*/false, nullptr);
+                g_apply_openai_settings(edited, /*saved=*/false, nullptr, nullptr);
             }
             return 0;
         }
@@ -1025,9 +1060,13 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 // user cleared the declaration, which must remove the key
                 // from the file) so the owning config applies it before it
                 // saves. `edited` guards the "nothing was folded" contract.
+                // 261122_0001 B-U5: pass the profile fold the same way — the
+                // owning config adopts the staged library (only when the
+                // dialog actually staged one) before the SAME single save.
                 g_apply_openai_settings(
                     edited, /*saved=*/true,
-                    declaration.edited ? &declaration.declared_languages : nullptr);
+                    declaration.edited ? &declaration.declared_languages : nullptr,
+                    &profiles_fold);
             }
             return 0;
         }
@@ -1037,6 +1076,10 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // config + runtime engine so the unconditional exit save cannot
         // resurrect the deleted settings; NO engine switch (the frozen
         // user scope: settings only, engine selection unchanged).
+        // 261122_0001 B-U5 (design-pick item 4): the staged profile fold is
+        // deliberately NOT applied on this branch — REQ-051 [설정 삭제]
+        // preserves the stored profile library (the dialog reports the fold
+        // unedited here, and this branch never names it).
         DIAG_F("MAIN/on_select_engine/004: openai settings deleted; engine selection unchanged\n");
         if (g_apply_openai_deleted) {
             g_apply_openai_deleted(edited);
@@ -2806,14 +2849,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // The dialog itself performs no config file I/O for the declaration any
     // more, so this is the single apply path and the in-memory instance can
     // never be reverted by a stale re-emission.
+    // 261122_0001 B-U5 (design-pick item 4): `profiles` is the dialog's
+    // profile LIBRARY fold, non-null only on the save path. The staged library
+    // is adopted HERE, on this owning AppConfig, BEFORE the single save below
+    // — the dialog performs no config file I/O for profiles either, so this
+    // SaveToFile is the one persist site (P9c-1c single-writer).
     emebalachat::g_apply_openai_settings = [&](const emebalachat::OpenAiConfig& edited,
                                                bool saved,
-                                               const std::vector<std::string>* declared) -> bool {
+                                               const std::vector<std::string>* declared,
+                                               emebalachat::OpenAiProfilesFold* profiles) -> bool {
         if (!saved) {
             refresh_tray();
             return false;
         }
         config.openai = edited;
+        // 261122_0001 B-U5 (design-pick item 4): adopt the staged profile
+        // library on the LIVE config BEFORE the single save below (nullptr on
+        // Cancel and never on kDeleted, so the stored library survives both).
+        if (profiles && profiles->edited) {
+            config.openai_profiles = std::move(profiles->profiles);
+        }
         engine.SetOpenAiConfig(config.openai);
         engine.SetEngineType(emebalachat::EngineType::OpenAi);
         // REQ-051 U-2: leaving the user-model route clears its display stem.
@@ -3136,12 +3191,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
             emebalachat::s_openai_dialog_pending = true;
             emebalachat::s_pending_openai_cfg = config.openai;
+            // 261122_0001 B-U5 (design-pick item 4): seed the deferred open with
+            // the profile library snapshot too — a COPY, so the AppConfig vector
+            // never aliases the fold the handler will hand the dialog.
+            emebalachat::s_pending_openai_profiles = config.openai_profiles;
             if (::PostMessageW(emebalachat::g_hControllerWnd,
                                emebalachat::kMsgOpenOpenAiSettings, 0, 0) == FALSE) {
                 // Post failed: roll the latch back so the user can retry; the
                 // pending snapshot is dropped with it.
                 emebalachat::s_openai_dialog_pending = false;
                 emebalachat::s_pending_openai_cfg.reset();
+                emebalachat::s_pending_openai_profiles.reset();
                 DIAG_F("MAIN/on_select_engine/008: PostMessage openai-settings open failed (GLE %lu)\n",
                        ::GetLastError());
                 return;

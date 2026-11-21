@@ -25268,6 +25268,15 @@ int main() {
     // the proc wiring and the IDOK / IDCANCEL / kDeleted fold semantics.
     // Registered last, per the end-of-file pattern.
     openai_profile_tests::TestOpenAiProfileDialogBehavior();
+    // 261122_0001 B-U5 (builder draw 9): the main.cpp CALLER wiring for the
+    // profile fold — the snapshot seed chain (tray copy -> handler move ->
+    // dialog working copy), the 4-arg library-aware entry, the outcome branch
+    // matrix (kSaved adopts before the single SaveToFile; kCancelled/kDeleted
+    // never mutate the library), and the negative-control pins against a
+    // second profiles persist site. main.cpp is not linked into run_tests.exe
+    // (the SEC-B5 note), so these are source-structure pins. Registered last,
+    // per the end-of-file pattern.
+    openai_profile_tests::TestOpenAiProfileCallerWiring();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

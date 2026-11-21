@@ -841,15 +841,18 @@ void TestReq048OpenAiTemplateSerialization() {
                                "declaration.edited ? &declaration.declared_languages : nullptr") !=
                                    std::string::npos &&
                                main_src.find(
-                                   "/*parent=*/emebalachat::g_hControllerWnd, edited, declaration)") !=
+                                   "/*parent=*/emebalachat::g_hControllerWnd, edited, declaration, profiles_fold);") !=
                                    std::string::npos,
                            "P9c-1c (a): the WndProc passes the folded set into the seam on the Save "
-                           "outcome (and only when the dialog actually folded it)");
+                           "outcome (and only when the dialog actually folded it) — 261122_0001 "
+                           "B-U5: through the library-aware 4-arg entry, which also hands the "
+                           "profile fold out");
                 TEST_CHECK(main_src.find(
-                               "g_apply_openai_settings(edited, /*saved=*/false, nullptr);") !=
+                               "g_apply_openai_settings(edited, /*saved=*/false, nullptr, nullptr);") !=
                                std::string::npos,
                            "P9c-1c (a): Cancel passes nullptr - a cancelled dialog never adopts a "
-                           "declaration, so the user's live set survives");
+                           "declaration, so the user's live set survives (261122_0001 B-U5: the "
+                           "profile fold rides the same nullptr)");
             }
 
             // -- (b) the fold is the set the verb stores ----------------------
