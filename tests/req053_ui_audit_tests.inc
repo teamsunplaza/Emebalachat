@@ -616,8 +616,8 @@ void TestReq053OpenAiButtonDisablePins() {
     // section ids; 261121_0002 removed the 1 dead SEC-M1
     // translate_truncated_notice id and added the 5 progress/cancel ids).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 207,
-               "REQ-053 pin: StringId::EnumCount is 207 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 4 261121_0001 v0.10.9 U-C reasoning/back-trans section ids + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language ids + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids; A6 added no strings, FIX-WS3B added one)");
+    TEST_CHECK(enum_count == 213,
+               "REQ-053 pin: StringId::EnumCount is 213 (the tracked REQ-060 total + the v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation ids + the 4 261121_0001 v0.10.9 U-C reasoning/back-trans section ids + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language ids + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids; A6 added no strings, FIX-WS3B added one)");
     TEST_CHECK(Req053Count(osw, "260922_0001 A6") >= 4,
                "REQ-053 pin: the A6 tag annotates the busy-feedback sites");
 

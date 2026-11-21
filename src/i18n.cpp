@@ -229,14 +229,34 @@ struct LocalizedStrings {
     const wchar_t* openai_reasoning_server_default = L"Server default (unset)";
     const wchar_t* back_trans_section_back = L"Back-translation";
     const wchar_t* back_trans_section_original = L"Original text";
-    // 261121_0002 (v0.10.9 leftover, progress+cancel design): the multi-chunk
-    // translation progress + cancel copy. Trailing defaults like the blocks
+    // 261122_0001 B-U2 (OpenAI 설정 창 프로필 재설계, design-pick.md item 6):
+    // the OpenAI profile row's six strings. Trailing defaults like the blocks
     // above (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount
     // stays 156 after the 261121_0002 SEC-M1 removal): every one of the 88
     // designated locale tables carries its own designator right after
     // back_trans_section_original, and the English POSITIONAL table carries
-    // the five literals in the same slot (right after "Original text"). The
-    // enum ids sit mid-enum after BackTransSectionOriginal; the Get() switch
+    // the six literals in the same slot (right after "Original text"). The
+    // enum ids sit mid-enum right after BackTransSectionOriginal; the Get()
+    // switch is the mapping. "{h}"/"{m}" are the host-abbrev / model-id
+    // tokens of the display-name template and "{n}" is the profile cap
+    // (badge label token convention: substitution stays at the call site,
+    // this TU has no format layer).
+    const wchar_t* openai_profile_label = L"Profile";
+    const wchar_t* openai_profile_save = L"Save";
+    const wchar_t* openai_profile_delete = L"Delete";
+    const wchar_t* openai_profile_name_template = L"{h} / {m}";
+    const wchar_t* openai_profile_delete_confirm =
+        L"Delete this profile? The stored API key will be removed too.";
+    const wchar_t* openai_profile_limit =
+        L"You can save up to {n} profiles. Delete unused profiles to add more.";
+    // 261121_0002 (v0.10.9 leftover, progress+cancel design): the multi-chunk
+    // translation progress + cancel copy. Trailing defaults like the blocks
+    // above (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount
+    // stays 156 after the 261121_0002 SEC-M1 removal): every one of the 88
+    // designated locale tables carries its own designator right after the
+    // 261122_0001 B-U2 profile block, and the English POSITIONAL table carries
+    // the five literals in the same slot (right after the profile literals).
+    // The enum ids sit mid-enum after the profile block; the Get() switch
     // is the mapping. "{c}"/"{t}" are the completed/total chunk tokens and
     // "{n}" is the predicted chunk count (badge label token convention).
     const wchar_t* badge_translating_progress = L"Translating… {c}/{t}";
@@ -394,22 +414,25 @@ static_assert(kLocalizedStringsFieldCount == 156,
 
 // 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
 // above is generated from the same X-macro that generates the struct, so it can
-// never notice the 51 trailing NON-X-macro members (4 theme + 5 back-translation
+// never notice the 57 trailing NON-X-macro members (4 theme + 5 back-translation
 // + 4 v0.10.9 reasoning/back-trans section strings (261121_0001 U-C) +
+// 6 261122_0001 B-U2 OpenAI profile strings (label/save/delete/name template/
+// delete confirm/limit) +
 // 5 261121_0002 progress/cancel strings (badge_translating_progress/
 // badge_translating_chunks/badge_cancelling/tooltip_translation_cancelled/
 // tooltip_cancel_hint) +
 // 3 user-model + 2 language-picker + 1 search row + 1 count phrase +
 // 23 user-language + 2 OpenAI declaration checklist + 1 picker AUTO chip;
-// 261121_0002 progress+cancel: 51 now = the previous 46 + the five
-// progress/cancel strings listed above; before that 40 at P9c-1b and 39 at
-// P9b-1, each later session appended its own trailing block) - and the test-side mirror in
+// 261122_0001 B-U2: 57 now = the previous 51 + the six profile strings above;
+// before that 51 at 261121_0002, 46 at 261121_0001 U-C, 40 at P9c-1b and 39
+// at P9b-1, each later session appended or inserted its own trailing block) -
+// and the test-side mirror in
 // tests/run_tests.cpp is a hand-kept copy that
 // catches drift only after someone remembers to update it. This one compares the
 // actual struct layout against StringId::EnumCount (the Get() switch's case
 // count, i18n.hpp): one member per pointer-sized slot means
 // sizeof / sizeof(const wchar_t*) IS the member count. Every LocalizedStrings
-// member is a const wchar_t* (X-macro fields + the 51 trailing), so the divisor
+// member is a const wchar_t* (X-macro fields + the 57 trailing), so the divisor
 // is exact; adding a member of another type would change the quotient and trip
 // this assert, which is the intended signal to revisit both sides.
 // Fires when: a member is added/removed without a StringId, or a StringId is
@@ -638,6 +661,13 @@ const LocalizedStrings kStringsKorean = {
     .openai_reasoning_server_default = L"서버 기본값 (미지정)",
     .back_trans_section_back = L"역번역",
     .back_trans_section_original = L"원문",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"프로필",
+    .openai_profile_save = L"저장",
+    .openai_profile_delete = L"삭제",
+    .openai_profile_name_template = L"{h}의 {m} 모델",
+    .openai_profile_delete_confirm = L"이 프로필을 삭제할까요? 저장된 API 키도 함께 삭제됩니다.",
+    .openai_profile_limit = L"프로필은 최대 {n}개까지 저장할 수 있습니다. 사용하지 않는 프로필을 삭제해 주세요.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"번역 중… {c}/{t}",
     .badge_translating_chunks = L"번역 중 ({n}개 청크)",
@@ -907,6 +937,13 @@ const LocalizedStrings kStringsJapanese = {
     .openai_reasoning_server_default = L"サーバーのデフォルト（未設定）",
     .back_trans_section_back = L"逆翻訳",
     .back_trans_section_original = L"原文",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"プロフィール",
+    .openai_profile_save = L"保存",
+    .openai_profile_delete = L"削除",
+    .openai_profile_name_template = L"{h}の{m}モデル",
+    .openai_profile_delete_confirm = L"このプロフィールを削除しますか? 保存された API キーも削除されます。",
+    .openai_profile_limit = L"プロフィールは最大 {n} 件まで保存できます。使わないプロフィールを削除してください。",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"翻訳中... {c}/{t}",
     .badge_translating_chunks = L"翻訳中... ({n} チャンク)",
@@ -1171,6 +1208,13 @@ const LocalizedStrings kStringsChineseSimp = {
     .openai_reasoning_server_default = L"服务器默认（未设置）",
     .back_trans_section_back = L"回译",
     .back_trans_section_original = L"原文",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"配置",
+    .openai_profile_save = L"保存",
+    .openai_profile_delete = L"删除",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"要删除此配置吗? 已保存的 API 密钥也会一并删除。",
+    .openai_profile_limit = L"最多可保存 {n} 个配置。请删除不再使用的配置。",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"翻译中... {c}/{t}",
     .badge_translating_chunks = L"翻译中... ({n} 个块)",
@@ -1435,6 +1479,13 @@ const LocalizedStrings kStringsChineseTrad = {
     .openai_reasoning_server_default = L"伺服器預設值（未設定）",
     .back_trans_section_back = L"回譯",
     .back_trans_section_original = L"原文",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"設定檔",
+    .openai_profile_save = L"儲存",
+    .openai_profile_delete = L"刪除",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"要刪除此設定檔嗎? 已儲存的 API 金鑰也會一併刪除。",
+    .openai_profile_limit = L"最多可儲存 {n} 個設定檔。請刪除不再使用的設定檔。",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"翻譯中... {c}/{t}",
     .badge_translating_chunks = L"翻譯中... ({n} 個區塊)",
@@ -1699,6 +1750,13 @@ const LocalizedStrings kStringsVietnamese = {
     .openai_reasoning_server_default = L"Mặc định của máy chủ (chưa đặt)",
     .back_trans_section_back = L"Dịch ngược",
     .back_trans_section_original = L"Văn bản gốc",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Hồ sơ",
+    .openai_profile_save = L"Lưu",
+    .openai_profile_delete = L"Xóa",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Xóa hồ sơ này? API Key đã lưu cũng sẽ bị xóa.",
+    .openai_profile_limit = L"Bạn có thể lưu tối đa {n} hồ sơ. Hãy xóa những hồ sơ không dùng để thêm hồ sơ mới.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Đang dịch... {c}/{t}",
     .badge_translating_chunks = L"Đang dịch... ({n} phần)",
@@ -1960,6 +2018,13 @@ const LocalizedStrings kStringsSpanish = {
     .openai_reasoning_server_default = L"Predeterminado del servidor (sin definir)",
     .back_trans_section_back = L"Retrotraducción",
     .back_trans_section_original = L"Texto original",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Perfil",
+    .openai_profile_save = L"Guardar",
+    .openai_profile_delete = L"Eliminar",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"¿Eliminar este perfil? También se eliminará la clave de API guardada.",
+    .openai_profile_limit = L"Puedes guardar hasta {n} perfiles. Elimina los que no uses para añadir más.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traduciendo... {c}/{t}",
     .badge_translating_chunks = L"Traduciendo... ({n} fragmentos)",
@@ -2215,22 +2280,32 @@ const LocalizedStrings kStringsEnglish = {
     //   [1..156]   EMEBALA_LSTR_FIELDS X-macro (kLocalizedStringsFieldCount;
     //              was 157 until 261121_0002 removed the dead SEC-M1
     //              translate_truncated_notice field)
-    //   [158..161] menu_ui_theme / theme_fluent / theme_editorial / theme_monolith
-    //   [162..165] menu_back_translation / back_translate_header /
+    //   [157..160] menu_ui_theme / theme_fluent / theme_editorial / theme_monolith
+    //   [161..164] menu_back_translation / back_translate_header /
     //              back_translate_match_exact / back_translate_match_check
-    //   [166]      back_translate_reference  (261108_0002 FIX-WS3B)
-    //   [167..169] gguf_invalid_model_body / gguf_manager_active_suffix /
+    //   [165]      back_translate_reference  (261108_0002 FIX-WS3B)
+    //   [166..169] openai_reasoning_label / openai_reasoning_server_default /
+    //              back_trans_section_back / back_trans_section_original
+    //              (261121_0001 U-C, v0.10.9)
+    //   [170..175] openai_profile_label / openai_profile_save /
+    //              openai_profile_delete / openai_profile_name_template /
+    //              openai_profile_delete_confirm / openai_profile_limit
+    //              (261122_0001 B-U2, the OpenAI profile row)
+    //   [176..180] badge_translating_progress / badge_translating_chunks /
+    //              badge_cancelling / tooltip_translation_cancelled /
+    //              tooltip_cancel_hint  (261121_0002 progress+cancel)
+    //   [181..183] gguf_invalid_model_body / gguf_manager_active_suffix /
     //              gguf_manager_activated  (261111_0001 U6, v0.10.7)
-    //   [170..171] language_search_cue / language_search_no_match
+    //   [184..185] language_search_cue / language_search_no_match
     //              (261116_0003 P5, language-menu redesign)
-    //   [172]      menu_search_langs  (261116_0003 P6, the flat menus'
+    //   [186]      menu_search_langs  (261116_0003 P6, the flat menus'
     //              "검색…" row label, placed BEFORE the P5 ids in the enum to
     //              keep the P5 suite's sentinel-1 tail-order pin green)
-    //   [173]      language_search_count  (261116_0003 P7, the picker header's
+    //   [187]      language_search_count  (261116_0003 P7, the picker header's
     //              "{n} languages" count phrase; also enum-inserted before the
     //              P5 pair, so the STRUCT tail order and the ENUM order differ
     //              on purpose and the Get() switch is the mapping)
-    //   [174..196] the 23 user-language surface strings (261116_0003 P9b-1,
+    //   [188..210] the 23 user-language surface strings (261116_0003 P9b-1,
     //              language-menu redesign plan §4 Phase 3 + D5/D6), in the order
     //              user_langs_group, the 7 add-dialog strings, the no-code
     //              notice, the 3 probe badge states, the evidence label, the
@@ -2240,20 +2315,21 @@ const LocalizedStrings kStringsEnglish = {
     //              P5 sentinel pin owns the enum tail), so struct and enum
     //              orders differ for this block too; the Get() switch maps them
     //              and TestP9b1UserLanguageStrings pins the contract.
-    //   [197..198] openai_declared_title / openai_declared_hint
+    //   [211..212] openai_declared_title / openai_declared_hint
     //              (261116_0003 P9c-1b, the OpenAI settings declaration
     //              checklist's section title + fail-open hint); their ENUM ids
     //              also sit before MenuSearchLangs, same mapping rule. They
     //              take the slots AHEAD of the AUTO chip because the struct
     //              member language_search_auto_chip closes the tail (below).
-    //   [199]      language_search_auto_chip (261116_0003 P9b-3 U5, the picker
+    //   [213]      language_search_auto_chip (261116_0003 P9b-3 U5, the picker
     //              AUTO chip's dedicated label per CEO decision 1.b); its ENUM
     //              id also sits before MenuSearchLangs, same mapping rule.
-    // = 199 initializers for 199 members. Before the FIX-R1 fix the four theme
-    // slots were skipped, so the WS3 strings took 158..161 and the EN tray theme
-    // submenu rendered "🔄 Back-Translation" while the WS3 fields silently kept
-    // their struct defaults. The four theme values below are the struct defaults
-    // spelled out (this is the English table, so they ARE the English strings).
+    // = 213 initializers for 213 members. Before the FIX-R1 fix the four theme
+    // slots were skipped, so the WS3 strings took the wrong tail slots and the
+    // EN tray theme submenu rendered "🔄 Back-Translation" while the WS3 fields
+    // silently kept their struct defaults. The four theme values below are the
+    // struct defaults spelled out (this is the English table, so they ARE the
+    // English strings).
     // Drift is now caught in three places: the sizeof static_assert next to
     // kLocalizedStringsFieldCount, the English element-count/alignment pins in
     // tests/run_tests.cpp, and MSVC itself for any wrong tail order.
@@ -2262,51 +2338,59 @@ const LocalizedStrings kStringsEnglish = {
     L"Warm Editorial",
     L"Refined Monolith",
     // 261108_0002 (WS3, v0.10.6): floating back-translation card + tray toggle,
-    // on struct slots 162..165.
+    // on struct slots 161..164.
     L"Floating Back-Translation",
     L"🔄 Back-Translation",
     L"✓ Meaning Matched",
     L"⚡ Check Nuance",
-    // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label, slot 166.
+    // 261108_0002 (FIX-WS3B, v0.10.6): the card's reference-line label, slot 165.
     L"↳ Original: ",
-    // 261121_0001 (v0.10.9, U-C contract C5): the four literals after the
-    // FIX-WS3B reference label — the OpenAI settings dialog's reasoning-
-    // effort label + server-default entry and the redesigned
-    // back-translation card's two section headers (positional, same MSVC
-    // C7556 rule as every other tail block).
+    // 261121_0001 (v0.10.9, U-C contract C5): slots 166..169 - the OpenAI
+    // settings dialog's reasoning-effort label + server-default entry and the
+    // redesigned back-translation card's two section headers (positional, same
+    // MSVC C7556 rule as every other tail block).
     L"Reasoning effort",
     L"Server default (unset)",
     L"Back-translation",
     L"Original text",
-    // 261121_0002 (v0.10.9 leftover, progress+cancel design): the five
-    // progress/cancel literals right after the back-trans section headers
-    // (positional, same MSVC C7556 rule as every other tail block). Every
-    // downstream tail block's slot comment shifted by +5.
+    // 261122_0001 B-U2 (design-pick.md item 6): slots 170..175 - the OpenAI
+    // profile row (label / save / delete / name-derivation template / delete
+    // confirmation / cap notice), positional, same MSVC C7556 rule. Every
+    // downstream tail block's slot comment shifted by +6.
+    L"Profile",
+    L"Save",
+    L"Delete",
+    L"{h} / {m}",
+    L"Delete this profile? The stored API key will be removed too.",
+    L"You can save up to {n} profiles. Delete unused profiles to add more.",
+    // 261121_0002 (v0.10.9 leftover, progress+cancel design): slots 176..180 -
+    // the five progress/cancel literals after the profile block (positional,
+    // same MSVC C7556 rule as every other tail block).
     L"Translating… {c}/{t}",
     L"Translating ({n} chunks)",
     L"Cancelling…",
     L"Translation cancelled.",
     L"Long translation in progress. Click the badge to cancel.",
-    // 261111_0001 U6 (v0.10.7, R1 P1): slots 172..174 — the registration-gate
+    // 261111_0001 U6 (v0.10.7, R1 P1): slots 181..183 - the registration-gate
     // rejection body, the active-binding list marker, and the activation
     // notice (designated-initializer spellings forbidden here: MSVC C7556).
     L"Not a valid GGUF model file; it was not registered.",
     L"(in use)",
     L"This model is now in use.",
-    // 261116_0003 P5 (language-menu redesign): slots 175..176 — the searchable
+    // 261116_0003 P5 (language-menu redesign): slots 184..185 - the searchable
     // picker's cue banner + no-match line (positional: MSVC C7556 forbids mixing
     // designs in this aggregate).
     L"Search languages…",
     L"No matching language",
-    // 261116_0003 P6 (language-menu redesign): slot 177 — the flat menus'
+    // 261116_0003 P6 (language-menu redesign): slot 186 - the flat menus'
     // "검색…" row label (positional, same C7556 rule).
     L"Search…",
-    // 261116_0003 P7 (language-menu redesign): slot 178 is the picker header's
+    // 261116_0003 P7 (language-menu redesign): slot 187 is the picker header's
     // count phrase. "{n}" is the runtime number token (positional, same C7556
     // rule).
     L"{n} languages",
     // 261116_0003 P9b-1 (language-menu redesign, plan §4 Phase 3 + D5/D6):
-    // slots 179..201 - the user-language surface's 23 strings (positional,
+    // slots 188..210 - the user-language surface's 23 strings (positional,
     // same MSVC C7556 rule as every other tail block in this table).
     L"My languages",
     L"Add my language",
@@ -2332,10 +2416,10 @@ const LocalizedStrings kStringsEnglish = {
     L"Script matches",
     L"Not detected",
     // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
-    // decisions.md:540): slot 204 is the picker AUTO-view chip's dedicated
+    // decisions.md:540): slot 213 is the picker AUTO-view chip's dedicated
     // label (positional, same MSVC C7556 rule as every other tail block).
     // 261116_0003 P9c-1b (language-menu redesign, plan Phase 3 / P9c): slots
-    // 202..203 - the OpenAI settings declaration checklist's title + fail-open
+    // 211..212 - the OpenAI settings declaration checklist's title + fail-open
     // hint (positional, same MSVC C7556 rule as every other tail block). They
     // sit BEFORE the AUTO chip slot on purpose: language_search_auto_chip is
     // the struct member that closes the tail, so the AUTO chip label stays
@@ -2576,6 +2660,13 @@ const LocalizedStrings kStringsFrench = {
     .openai_reasoning_server_default = L"Valeur par défaut du serveur (non définie)",
     .back_trans_section_back = L"Rétrotraduction",
     .back_trans_section_original = L"Texte original",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Enregistrer",
+    .openai_profile_delete = L"Supprimer",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Supprimer ce profil ? La clé API enregistrée sera aussi supprimée.",
+    .openai_profile_limit = L"Tu peux enregistrer jusqu'à {n} profils. Supprime ceux que tu n'utilises pas pour en ajouter d'autres.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traduction... {c}/{t}",
     .badge_translating_chunks = L"Traduction... ({n} segments)",
@@ -2840,6 +2931,13 @@ const LocalizedStrings kStringsGerman = {
     .openai_reasoning_server_default = L"Server-Standard (nicht gesetzt)",
     .back_trans_section_back = L"Rückübersetzung",
     .back_trans_section_original = L"Originaltext",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Speichern",
+    .openai_profile_delete = L"Löschen",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Dieses Profil löschen? Der gespeicherte API-Schlüssel wird ebenfalls entfernt.",
+    .openai_profile_limit = L"Du kannst bis zu {n} Profile speichern. Lösche ungenutzte Profile, um weitere hinzuzufügen.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Übersetze... {c}/{t}",
     .badge_translating_chunks = L"Übersetze... ({n} Abschnitte)",
@@ -3104,6 +3202,13 @@ const LocalizedStrings kStringsRussian = {
     .openai_reasoning_server_default = L"Значение сервера по умолчанию (не задано)",
     .back_trans_section_back = L"Обратный перевод",
     .back_trans_section_original = L"Оригинальный текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профиль",
+    .openai_profile_save = L"Сохранить",
+    .openai_profile_delete = L"Удалить",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Удалить этот профиль? Сохранённый API-ключ тоже будет удалён.",
+    .openai_profile_limit = L"Можно сохранить до {n} профилей. Удалите неиспользуемые профили, чтобы добавить новые.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Перевод... {c}/{t}",
     .badge_translating_chunks = L"Перевод... ({n} частей)",
@@ -3368,6 +3473,13 @@ const LocalizedStrings kStringsPortuguese = {
     .openai_reasoning_server_default = L"Padrão do servidor (não definido)",
     .back_trans_section_back = L"Retrotradução",
     .back_trans_section_original = L"Texto original",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Perfil",
+    .openai_profile_save = L"Guardar",
+    .openai_profile_delete = L"Eliminar",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Eliminar este perfil? A chave de API guardada também será eliminada.",
+    .openai_profile_limit = L"Pode guardar até {n} perfis. Elimine os perfis que não usa para adicionar mais.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traduzindo... {c}/{t}",
     .badge_translating_chunks = L"Traduzindo... ({n} segmentos)",
@@ -3632,6 +3744,13 @@ const LocalizedStrings kStringsItalian = {
     .openai_reasoning_server_default = L"Predefinito del server (non impostato)",
     .back_trans_section_back = L"Retrotraduzione",
     .back_trans_section_original = L"Testo originale",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profilo",
+    .openai_profile_save = L"Salva",
+    .openai_profile_delete = L"Elimina",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Eliminare questo profilo? Anche la chiave API salvata verrà eliminata.",
+    .openai_profile_limit = L"Puoi salvare fino a {n} profili. Elimina quelli che non usi per aggiungerne altri.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traduzione... {c}/{t}",
     .badge_translating_chunks = L"Traduzione... ({n} blocchi)",
@@ -3896,6 +4015,13 @@ const LocalizedStrings kStringsDutch = {
     .openai_reasoning_server_default = L"Serverstandaard (niet ingesteld)",
     .back_trans_section_back = L"Terugvertaling",
     .back_trans_section_original = L"Originele tekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profiel",
+    .openai_profile_save = L"Opslaan",
+    .openai_profile_delete = L"Verwijderen",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Dit profiel verwijderen? De opgeslagen API-sleutel wordt ook verwijderd.",
+    .openai_profile_limit = L"Je kunt maximaal {n} profielen opslaan. Verwijder ongebruikte profielen om er meer toe te voegen.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Vertalen... {c}/{t}",
     .badge_translating_chunks = L"Vertalen... ({n} delen)",
@@ -4160,6 +4286,13 @@ const LocalizedStrings kStringsPolish = {
     .openai_reasoning_server_default = L"Domyślne serwera (nieustawione)",
     .back_trans_section_back = L"Tłumaczenie zwrotne",
     .back_trans_section_original = L"Tekst oryginalny",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Zapisz",
+    .openai_profile_delete = L"Usuń",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Usunąć ten profil? Zapisany klucz API również zostanie usunięty.",
+    .openai_profile_limit = L"Możesz zapisać maksymalnie {n} profili. Usuń nieużywane profile, aby dodać kolejne.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tłumaczenie... {c}/{t}",
     .badge_translating_chunks = L"Tłumaczenie... ({n} części)",
@@ -4424,6 +4557,13 @@ const LocalizedStrings kStringsCzech = {
     .openai_reasoning_server_default = L"Výchozí hodnota serveru (nenastaveno)",
     .back_trans_section_back = L"Zpětný překlad",
     .back_trans_section_original = L"Originální text",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Uložit",
+    .openai_profile_delete = L"Odstranit",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Odstranit tento profil? Uložený klíč API bude také odstraněn.",
+    .openai_profile_limit = L"Můžete uložit až {n} profilů. Odstraňte nepoužívané profily, abyste mohli přidat další.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Překládám... {c}/{t}",
     .badge_translating_chunks = L"Překládám... ({n} částí)",
@@ -4688,6 +4828,13 @@ const LocalizedStrings kStringsHungarian = {
     .openai_reasoning_server_default = L"Kiszolgálóalapértelmezett (nincs beállítva)",
     .back_trans_section_back = L"Visszafordítás",
     .back_trans_section_original = L"Eredeti szöveg",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Mentés",
+    .openai_profile_delete = L"Törlés",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Törli ezt a profilt? A mentett API-kulcs is törlődik.",
+    .openai_profile_limit = L"Legfeljebb {n} profil menthető. A továbbiakhoz törölje a nem használt profilokat.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Fordítás... {c}/{t}",
     .badge_translating_chunks = L"Fordítás... ({n} rész)",
@@ -4952,6 +5099,13 @@ const LocalizedStrings kStringsRomanian = {
     .openai_reasoning_server_default = L"Implicit server (nedefinit)",
     .back_trans_section_back = L"Traducere inversă",
     .back_trans_section_original = L"Text original",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Salvează",
+    .openai_profile_delete = L"Șterge",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ștergeți acest profil? Cheia API salvată va fi ștearsă și ea.",
+    .openai_profile_limit = L"Puteți salva până la {n} profiluri. Ștergeți profilurile nefolosite pentru a adăuga altele.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Se traduce... {c}/{t}",
     .badge_translating_chunks = L"Se traduce... ({n} segmente)",
@@ -5216,6 +5370,13 @@ const LocalizedStrings kStringsSwedish = {
     .openai_reasoning_server_default = L"Serverstandard (ej angiven)",
     .back_trans_section_back = L"Återöversättning",
     .back_trans_section_original = L"Originaltext",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Spara",
+    .openai_profile_delete = L"Ta bort",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ta bort den här profilen? Den sparade API-nyckeln tas också bort.",
+    .openai_profile_limit = L"Du kan spara upp till {n} profiler. Ta bort oanvända profiler för att lägga till fler.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Översätter... {c}/{t}",
     .badge_translating_chunks = L"Översätter... ({n} delar)",
@@ -5480,6 +5641,13 @@ const LocalizedStrings kStringsDanish = {
     .openai_reasoning_server_default = L"Serverstandard (ikke angivet)",
     .back_trans_section_back = L"Tilbagetranslation",
     .back_trans_section_original = L"Originaltekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Gem",
+    .openai_profile_delete = L"Slet",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Slet denne profil? Den gemte API-nøgle slettes også.",
+    .openai_profile_limit = L"Du kan gemme op til {n} profiler. Slet ubrugte profiler for at tilføje flere.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Oversætter... {c}/{t}",
     .badge_translating_chunks = L"Oversætter... ({n} dele)",
@@ -5744,6 +5912,13 @@ const LocalizedStrings kStringsFinnish = {
     .openai_reasoning_server_default = L"Palvelimen oletus (ei asetettu)",
     .back_trans_section_back = L"Takaisinkäännös",
     .back_trans_section_original = L"Alkuperäinen teksti",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profiili",
+    .openai_profile_save = L"Tallenna",
+    .openai_profile_delete = L"Poista",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Poistetaanko tämä profiili? Myös tallennettu API-avain poistetaan.",
+    .openai_profile_limit = L"Voit tallentaa enintään {n} profiilia. Poista käyttämättömät profiilit, jos haluat lisätä uusia.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Kääntää... {c}/{t}",
     .badge_translating_chunks = L"Kääntää... ({n} osaa)",
@@ -6008,6 +6183,13 @@ const LocalizedStrings kStringsNorwegian = {
     .openai_reasoning_server_default = L"Serverstandard (ikke angitt)",
     .back_trans_section_back = L"Tilbakeoversettelse",
     .back_trans_section_original = L"Originaltekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Lagre",
+    .openai_profile_delete = L"Slett",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Slette denne profilen? Den lagrede API-nøkkelen slettes også.",
+    .openai_profile_limit = L"Du kan lagre opptil {n} profiler. Slett ubrukte profiler for å legge til flere.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Oversetter... {c}/{t}",
     .badge_translating_chunks = L"Oversetter... ({n} deler)",
@@ -6272,6 +6454,13 @@ const LocalizedStrings kStringsGreek = {
     .openai_reasoning_server_default = L"Προεπιλογή διακομιστή (μη ορισμένη)",
     .back_trans_section_back = L"Αντίστροφη μετάφραση",
     .back_trans_section_original = L"Πρωτότυπο κείμενο",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Προφίλ",
+    .openai_profile_save = L"Αποθήκευση",
+    .openai_profile_delete = L"Διαγραφή",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Διαγραφή αυτού του προφίλ; Το αποθηκευμένο κλειδί API θα διαγραφεί επίσης.",
+    .openai_profile_limit = L"Μπορείτε να αποθηκεύσετε έως {n} προφίλ. Διαγράψτε τα προφίλ που δεν χρησιμοποιείτε για να προσθέσετε περισσότερα.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Μετάφραση... {c}/{t}",
     .badge_translating_chunks = L"Μετάφραση... ({n} τμήματα)",
@@ -6536,6 +6725,13 @@ const LocalizedStrings kStringsTurkish = {
     .openai_reasoning_server_default = L"Sunucu varsayılanı (ayarlanmadı)",
     .back_trans_section_back = L"Geri çeviri",
     .back_trans_section_original = L"Orijinal metin",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Kaydet",
+    .openai_profile_delete = L"Sil",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Bu profil silinsin mi? Kayıtlı API anahtarı da silinir.",
+    .openai_profile_limit = L"En fazla {n} profil kaydedebilirsiniz. Yeni eklemek için kullanmadığınız profilleri silin.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Çevriliyor... {c}/{t}",
     .badge_translating_chunks = L"Çevriliyor... ({n} parça)",
@@ -6800,6 +6996,13 @@ const LocalizedStrings kStringsUkrainian = {
     .openai_reasoning_server_default = L"За замовчуванням сервера (не встановлено)",
     .back_trans_section_back = L"Зворотний переклад",
     .back_trans_section_original = L"Оригінальний текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профіль",
+    .openai_profile_save = L"Зберегти",
+    .openai_profile_delete = L"Видалити",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Видалити цей профіль? Збережений ключ API також буде видалено.",
+    .openai_profile_limit = L"Можна зберегти до {n} профілів. Видаліть невикористані профілі, щоб додати нові.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Переклад... {c}/{t}",
     .badge_translating_chunks = L"Переклад... ({n} частин)",
@@ -7064,6 +7267,13 @@ const LocalizedStrings kStringsThai = {
     .openai_reasoning_server_default = L"ค่าเริ่มต้นของเซิร์ฟเวอร์ (ยังไม่ได้ตั้งค่า)",
     .back_trans_section_back = L"การแปลย้อนกลับ",
     .back_trans_section_original = L"ข้อความต้นฉบับ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"โปรไฟล์",
+    .openai_profile_save = L"บันทึก",
+    .openai_profile_delete = L"ลบ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ลบโปรไฟล์นี้หรือไม่ คีย์ API ที่บันทึกไว้จะถูกลบด้วย",
+    .openai_profile_limit = L"บันทึกโปรไฟล์ได้สูงสุด {n} โปรไฟล์ ลบโปรไฟล์ที่ไม่ได้ใช้เพื่อเพิ่มโปรไฟล์ใหม่",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"กำลังแปล... {c}/{t}",
     .badge_translating_chunks = L"กำลังแปล... ({n} ส่วน)",
@@ -7328,6 +7538,13 @@ const LocalizedStrings kStringsIndonesian = {
     .openai_reasoning_server_default = L"Bawaan server (belum diatur)",
     .back_trans_section_back = L"Terjemahan balik",
     .back_trans_section_original = L"Teks asli",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Simpan",
+    .openai_profile_delete = L"Hapus",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Hapus profil ini? Kunci API yang tersimpan juga akan dihapus.",
+    .openai_profile_limit = L"Anda dapat menyimpan hingga {n} profil. Hapus profil yang tidak dipakai untuk menambah profil lain.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Menerjemahkan... {c}/{t}",
     .badge_translating_chunks = L"Menerjemahkan... ({n} bagian)",
@@ -7592,6 +7809,13 @@ const LocalizedStrings kStringsMalay = {
     .openai_reasoning_server_default = L"Lalai pelayan (belum ditetapkan)",
     .back_trans_section_back = L"Terjemahan balik",
     .back_trans_section_original = L"Teks asal",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Simpan",
+    .openai_profile_delete = L"Padam",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Padamkan profil ini? Kunci API yang disimpan juga akan dipadamkan.",
+    .openai_profile_limit = L"Anda boleh menyimpan sehingga {n} profil. Padam profil yang tidak digunakan untuk menambah lagi.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Menterjemah... {c}/{t}",
     .badge_translating_chunks = L"Menterjemah... ({n} bahagian)",
@@ -7858,6 +8082,13 @@ const LocalizedStrings kStringsFilipino = {
     .openai_reasoning_server_default = L"Pamantayan ng server (hindi itinakda)",
     .back_trans_section_back = L"Pabalik na salin",
     .back_trans_section_original = L"Orihinal na teksto",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profile",
+    .openai_profile_save = L"I-save",
+    .openai_profile_delete = L"Tanggalin",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Tanggalin ang profile na ito? Tatanggalin din ang naka-save na API key.",
+    .openai_profile_limit = L"Puwedeng mag-save ng hanggang {n} profile. Tanggalin ang mga hindi ginagamit para makapagdagdag pa.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Nagsasalin... {c}/{t}",
     .badge_translating_chunks = L"Nagsasalin... ({n} bahagi)",
@@ -8122,6 +8353,13 @@ const LocalizedStrings kStringsHindi = {
     .openai_reasoning_server_default = L"सर्वर डिफ़ॉल्ट (अनसेट)",
     .back_trans_section_back = L"पश्च-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"प्रोफ़ाइल",
+    .openai_profile_save = L"सहेजें",
+    .openai_profile_delete = L"हटाएं",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"यह प्रोफ़ाइल हटाई जाए? सहेजी गई API कुंजी भी हटा दी जाएगी।",
+    .openai_profile_limit = L"आप अधिकतम {n} प्रोफ़ाइल सहेज सकते हैं। और जोड़ने के लिए अप्रयुक्त प्रोफ़ाइल हटाएं।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"अनुवाद हो रहा... {c}/{t}",
     .badge_translating_chunks = L"अनुवाद हो रहा... ({n} हिस्से)",
@@ -8386,6 +8624,13 @@ const LocalizedStrings kStringsBengali = {
     .openai_reasoning_server_default = L"সার্ভার ডিফল্ট (অসেট)",
     .back_trans_section_back = L"ব্যাক-অনুবাদ",
     .back_trans_section_original = L"মূল পাঠ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"প্রোফাইল",
+    .openai_profile_save = L"সংরক্ষণ করুন",
+    .openai_profile_delete = L"মুছুন",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"এই প্রোফাইলটি মুছবেন? সংরক্ষিত API কী-ও মুছে যাবে।",
+    .openai_profile_limit = L"আপনি সর্বাধিক {n}টি প্রোফাইল সংরক্ষণ করতে পারেন। আরও যোগ করতে অব্যবহৃত প্রোফাইল মুছুন।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"অনুবাদ হচ্ছে... {c}/{t}",
     .badge_translating_chunks = L"অনুবাদ হচ্ছে... ({n}টি অংশ)",
@@ -8651,6 +8896,13 @@ const LocalizedStrings kStringsArabic = {
     .openai_reasoning_server_default = L"الافتراضي من الخادم (غير محدد)",
     .back_trans_section_back = L"الترجمة العكسية",
     .back_trans_section_original = L"النص الأصلي",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ملف التعريف",
+    .openai_profile_save = L"حفظ",
+    .openai_profile_delete = L"حذف",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"هل تريد حذف ملف التعريف هذا؟ سيتم حذف مفتاح API المحفوظ أيضًا.",
+    .openai_profile_limit = L"يمكنك حفظ ما يصل إلى {n} من ملفات التعريف. احذف ملفات التعريف غير المستخدمة لإضافة المزيد.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"جارٍ الترجمة... {c}/{t}",
     .badge_translating_chunks = L"جارٍ الترجمة... ({n} أجزاء)",
@@ -8915,6 +9167,13 @@ const LocalizedStrings kStringsPersian = {
     .openai_reasoning_server_default = L"پیش‌فرض سرور (تنظیم نشده)",
     .back_trans_section_back = L"ترجمهٔ معکوس",
     .back_trans_section_original = L"متن اصلی",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"پروفایل",
+    .openai_profile_save = L"ذخیره",
+    .openai_profile_delete = L"حذف",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"این پروفایل حذف شود؟ کلید API ذخیره‌شده نیز حذف می‌شود.",
+    .openai_profile_limit = L"می‌توانید حداکثر {n} پروفایل ذخیره کنید. برای افزودن بیشتر، پروفایل‌های بدون استفاده را حذف کنید.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"در حال ترجمه... {c}/{t}",
     .badge_translating_chunks = L"در حال ترجمه... ({n} بخش)",
@@ -9179,6 +9438,13 @@ const LocalizedStrings kStringsUrdu = {
     .openai_reasoning_server_default = L"سرور ڈیفالٹ (غیر مقرر)",
     .back_trans_section_back = L"معکوس ترجمہ",
     .back_trans_section_original = L"اصلی متن",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"پروفائل",
+    .openai_profile_save = L"محفوظ کریں",
+    .openai_profile_delete = L"حذف کریں",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"کیا یہ پروفائل حذف کریں؟ محفوظ شدہ API کلید بھی حذف ہو جائے گی۔",
+    .openai_profile_limit = L"آپ زیادہ سے زیادہ {n} پروفائل محفوظ کر سکتے ہیں۔ مزید شامل کرنے کے لیے غیر استعمال شدہ پروفائل حذف کریں۔",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ترجمہ جاری... {c}/{t}",
     .badge_translating_chunks = L"ترجمہ جاری... ({n} حصے)",
@@ -9443,6 +9709,13 @@ const LocalizedStrings kStringsHebrew = {
     .openai_reasoning_server_default = L"ברירת מחדל של השרת (לא נקבע)",
     .back_trans_section_back = L"תרגום חוזר",
     .back_trans_section_original = L"טקסט מקורי",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"פרופיל",
+    .openai_profile_save = L"שמור",
+    .openai_profile_delete = L"מחיקה",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"למחוק את הפרופיל הזה? גם מפתח ה-API השמור יימחק.",
+    .openai_profile_limit = L"אפשר לשמור עד {n} פרופילים. מחק פרופילים שאינם בשימוש כדי להוסיף עוד.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"מתרגם... {c}/{t}",
     .badge_translating_chunks = L"מתרגם... ({n} קטעים)",
@@ -9707,6 +9980,13 @@ const LocalizedStrings kStringsKhmer = {
     .openai_reasoning_server_default = L"លំនាំដើមម៉ាស៊ីនមេ (មិនបានកំណត់)",
     .back_trans_section_back = L"ការបកប្រែត្រឡប់",
     .back_trans_section_original = L"អត្ថបទដើម",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ទម្រង់",
+    .openai_profile_save = L"រក្សាទុក",
+    .openai_profile_delete = L"លុប",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"លុបទម្រង់នេះ? កូនសោ API ដែលបានរក្សាទុកក៏នឹងត្រូវលុបដែរ។",
+    .openai_profile_limit = L"អ្នកអាចរក្សាទុកបានរហូតដល់ {n} ទម្រង់។ សូមលុបទម្រង់ដែលមិនប្រើដើម្បីបន្ថែមទៀត។",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"កំពុងបកប្រែ... {c}/{t}",
     .badge_translating_chunks = L"កំពុងបកប្រែ... ({n} ផ្នែក)",
@@ -9971,6 +10251,13 @@ const LocalizedStrings kStringsLao = {
     .openai_reasoning_server_default = L"ຄ່າເລີ່ມຕົ້ນຂອງເຊີບເວີ (ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ)",
     .back_trans_section_back = L"ການແປຍ້ອນກັບ",
     .back_trans_section_original = L"ຂໍ້ຄວາມຕົ້ນສະບັບ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ໂປຣໄຟລ໌",
+    .openai_profile_save = L"ບັນທຶກ",
+    .openai_profile_delete = L"ລົບ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ລົບໂປຣໄຟລ໌ນີ້ບໍ? ລະຫັດ API ທີ່ບັນທຶກໄວ້ຈະຖືກລົບນຳ.",
+    .openai_profile_limit = L"ທ່ານສາມາດບັນທຶກໄດ້ສູງສຸດ {n} ໂປຣໄຟລ໌. ລົບໂປຣໄຟລ໌ທີ່ບໍ່ໄດ້ໃຊ້ເພື່ອເພີ່ມເຕີມ.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ກຳລັງແປ... {c}/{t}",
     .badge_translating_chunks = L"ກຳລັງແປ... ({n} ສ່ວນ)",
@@ -10235,6 +10522,13 @@ const LocalizedStrings kStringsBurmese = {
     .openai_reasoning_server_default = L"ဆားဗားပုံသေ (မသတ်မှတ်ရသေးပါ)",
     .back_trans_section_back = L"ပြန်လည်ဘာသာပြန်",
     .back_trans_section_original = L"မူရင်းစာသား",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ပရိုဖိုင်",
+    .openai_profile_save = L"သိမ်းဆည်းပါ",
+    .openai_profile_delete = L"ဖျက်ပါ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ဤပရိုဖိုင်ကို ဖျက်မလား? သိမ်းထားသော API ကီးကိုလည်း ဖျက်ပါမည်။",
+    .openai_profile_limit = L"ပရိုဖိုင် {n} ခုအထိ သိမ်းဆည်းနိုင်သည်။ နောက်ထပ်ထည့်ရန် အသုံးမပြုသော ပရိုဖိုင်များကို ဖျက်ပါ။",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ပြန်ဆိုနေ... {c}/{t}",
     .badge_translating_chunks = L"ပြန်ဆိုနေ... ({n} အပိုင်း)",
@@ -10475,6 +10769,13 @@ const LocalizedStrings kStringsGujarati = {
     .openai_reasoning_server_default = L"સર્વર ડિફૉલ્ટ (સેટ નથી)",
     .back_trans_section_back = L"બેક-ટ્રાન્સલેશન",
     .back_trans_section_original = L"મૂળ ટેક્સ્ટ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"પ્રોફાઇલ",
+    .openai_profile_save = L"સાચવો",
+    .openai_profile_delete = L"ડિલીટ કરો",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"આ પ્રોફાઇલ ડિલીટ કરવી છે? સાચવેલી API કી પણ ડિલીટ થશે.",
+    .openai_profile_limit = L"તમે વધુમાં વધુ {n} પ્રોફાઇલ સાચવી શકો છો. વધુ ઉમેરવા માટે ન વપરાયેલી પ્રોફાઇલ ડિલીટ કરો.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"અનુવાદ થઈ રહ્યો છે... {c}/{t}",
     .badge_translating_chunks = L"અનુવાદ થઈ રહ્યો છે... ({n} ભાગો)",
@@ -10711,6 +11012,13 @@ const LocalizedStrings kStringsTelugu = {
     .openai_reasoning_server_default = L"సర్వర్ డిఫాల్ట్ (సెట్ చేయలేదు)",
     .back_trans_section_back = L"బ్యాక్-ట్రాన్స్‌లేషన్",
     .back_trans_section_original = L"అసలు పాఠ్యం",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ప్రొఫైల్",
+    .openai_profile_save = L"సేవ్ చేయి",
+    .openai_profile_delete = L"తొలగించు",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ఈ ప్రొఫైల్ తొలగించాలా? సేవ్ చేసిన API కీ కూడా తొలగించబడుతుంది.",
+    .openai_profile_limit = L"మీరు గరిష్ఠంగా {n} ప్రొఫైల్‌లను సేవ్ చేయవచ్చు. మరిన్ని జోడించడానికి ఉపయోగించని ప్రొఫైల్‌లను తొలగించండి.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"అనువదిస్తోంది... {c}/{t}",
     .badge_translating_chunks = L"అనువదిస్తోంది... ({n} భాగాలు)",
@@ -10947,6 +11255,13 @@ const LocalizedStrings kStringsMarathi = {
     .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट नाही)",
     .back_trans_section_back = L"बॅक-ट्रान्सलेशन",
     .back_trans_section_original = L"मूळ मजकूर",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"प्रोफाइल",
+    .openai_profile_save = L"सेव्ह करा",
+    .openai_profile_delete = L"डिलीट करा",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"हे प्रोफाइल डिलीट करायचे? सेव्ह केलेली API की सुद्धा डिलीट होईल.",
+    .openai_profile_limit = L"तुम्ही जास्तीत जास्त {n} प्रोफाइल सेव्ह करू शकता. अजून जोडण्यासाठी न वापरलेली प्रोफाइल डिलीट करा.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"भाषांतर होत आहे... {c}/{t}",
     .badge_translating_chunks = L"भाषांतर होत आहे... ({n} भाग)",
@@ -11183,6 +11498,13 @@ const LocalizedStrings kStringsTamil = {
     .openai_reasoning_server_default = L"சர்வர் இயல்புநிலை (அமைக்கப்படவில்லை)",
     .back_trans_section_back = L"பின்-மொழிபெயர்ப்பு",
     .back_trans_section_original = L"அசல் உரை",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"சுயவிவரம்",
+    .openai_profile_save = L"சேமி",
+    .openai_profile_delete = L"நீக்கு",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"இந்த சுயவிவரத்தை நீக்கவா? சேமித்த API விசையும் நீக்கப்படும்.",
+    .openai_profile_limit = L"அதிகபட்சம் {n} சுயவிவரங்களைச் சேமிக்கலாம். மேலும் சேர்க்க பயன்படுத்தாத சுயவிவரங்களை நீக்கவும்.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"மொழிபெயர்க்கிறது... {c}/{t}",
     .badge_translating_chunks = L"மொழிபெயர்க்கிறது... ({n} பகுதிகள்)",
@@ -11419,6 +11741,13 @@ const LocalizedStrings kStringsTibetan = {
     .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
     .back_trans_section_back = L"ཕྱིར་སྒྱུར།",
     .back_trans_section_original = L"མ་ཡིག",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ངོ་ཐོ",
+    .openai_profile_save = L"ཉར་ཚགས",
+    .openai_profile_delete = L"སུབ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ངོ་ཐོ་འདི་སུབ་གམ? ཉར་ཚགས་བྱས་པའི་ API ལྡེ་མིག་ཀྱང་སུབ་རྒྱུ་ཡིན།",
+    .openai_profile_limit = L"ངོ་ཐོ་ {n} ཡི་བར་ཉར་ཚགས་བྱེད་ཐུབ། མང་དུ་གཏོང་བར་བེད་མི་སྤྱོད་པའི་ངོ་ཐོ་སུབ་རོགས།",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"སྐད་སྒྱུར་བྱེད་བཞིན།... {c}/{t}",
     .badge_translating_chunks = L"སྐད་སྒྱུར་བྱེད་བཞིན།... ({n} ཆ་ཤས།)",
@@ -11654,6 +11983,13 @@ const LocalizedStrings kStringsKazakh = {
     .openai_reasoning_server_default = L"Сервер әдепкісі (орнатылмаған)",
     .back_trans_section_back = L"Кері аударма",
     .back_trans_section_original = L"Түпнұсқа мәтін",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профиль",
+    .openai_profile_save = L"Сақтау",
+    .openai_profile_delete = L"Жою",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Осы профильді жою керек пе? Сақталған API кілті де жойылады.",
+    .openai_profile_limit = L"{n} профильге дейін сақтауға болады. Тағы қосу үшін пайдаланылмайтын профильдерді жойыңыз.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Аударылуда... {c}/{t}",
     .badge_translating_chunks = L"Аударылуда... ({n} бөлік)",
@@ -11890,6 +12226,13 @@ const LocalizedStrings kStringsMongolian = {
     .openai_reasoning_server_default = L"Серверийн өгөгдмөл (тохируулаагүй)",
     .back_trans_section_back = L"Буцах орчуулга",
     .back_trans_section_original = L"Эх текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профайл",
+    .openai_profile_save = L"Хадгалах",
+    .openai_profile_delete = L"Устгах",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Энэ профайлыг устгах уу? Хадгалсан API түлхүүр ч бас устана.",
+    .openai_profile_limit = L"Та хамгийн ихдээ {n} профайл хадгалах боломжтой. Нэмэхийн тулд ашиглагдаагүй профайлыг устгана уу.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Орчуулж байна... {c}/{t}",
     .badge_translating_chunks = L"Орчуулж байна... ({n} хэсэг)",
@@ -12126,6 +12469,13 @@ const LocalizedStrings kStringsUyghur = {
     .openai_reasoning_server_default = L"مۇلازىمېتىر كۆڭۈلدىكى (تەڭشەلمىگەن)",
     .back_trans_section_back = L"قايتا تەرجىمە",
     .back_trans_section_original = L"ئەسلى تېكىست",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ئارخىپ",
+    .openai_profile_save = L"ساقلاش",
+    .openai_profile_delete = L"ئۆچۈرۈش",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"بۇ ئارخىپنى ئۆچۈرەمسىز؟ ساقلانغان API ئاچقۇچىمۇ ئۆچۈرۈلىدۇ.",
+    .openai_profile_limit = L"ئەڭ كۆپ بولغاندا {n} ئارخىپ ساقلىيالايسىز. يەنە قوشۇش ئۈچۈن ئىشلىتىلمىگەن ئارخىپلارنى ئۆچۈرۈڭ.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"تەرجىمە قىلىنىۋاتىدۇ... {c}/{t}",
     .badge_translating_chunks = L"تەرجىمە قىلىنىۋاتىدۇ... ({n} بۆلەك)",
@@ -12362,6 +12712,13 @@ const LocalizedStrings kStringsCantonese = {
     .openai_reasoning_server_default = L"伺服器預設（未設定）",
     .back_trans_section_back = L"回譯",
     .back_trans_section_original = L"原文",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"設定檔",
+    .openai_profile_save = L"儲存",
+    .openai_profile_delete = L"刪除",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"刪除呢個設定檔？儲存咗嘅 API 金鑰都會一齊刪除。",
+    .openai_profile_limit = L"最多可以儲存 {n} 個設定檔。請刪除唔用嘅設定檔以新增更多。",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"翻譯中... {c}/{t}",
     .badge_translating_chunks = L"翻譯中... ({n} 個區塊)",
@@ -12598,6 +12955,13 @@ const LocalizedStrings kStringsBosnian = {
     .openai_reasoning_server_default = L"Zadano na serveru (nije postavljeno)",
     .back_trans_section_back = L"Povratni prevod",
     .back_trans_section_original = L"Originalni tekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Sačuvaj",
+    .openai_profile_delete = L"Izbriši",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Izbrisati ovaj profil? Sačuvani API ključ će također biti uklonjen.",
+    .openai_profile_limit = L"Možete sačuvati do {n} profila. Izbrišite neiskorištene profile da biste dodali nove.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Prevođenje... {c}/{t}",
     .badge_translating_chunks = L"Prevođenje... ({n} dijela)",
@@ -12834,6 +13198,13 @@ const LocalizedStrings kStringsSerbian = {
     .openai_reasoning_server_default = L"Подразумевано на серверу (није подешено)",
     .back_trans_section_back = L"Повратни превод",
     .back_trans_section_original = L"Оригинални текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профил",
+    .openai_profile_save = L"Сачувај",
+    .openai_profile_delete = L"Обриши",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Обрисати овај профил? Сачувани API кључ ће такође бити уклоњен.",
+    .openai_profile_limit = L"Можете сачувати до {n} профила. Обришите неискоришћене профиле да бисте додали нове.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Превођење... {c}/{t}",
     .badge_translating_chunks = L"Превођење... ({n} делова)",
@@ -13070,6 +13441,13 @@ const LocalizedStrings kStringsCroatian = {
     .openai_reasoning_server_default = L"Zadano na poslužitelju (nije postavljeno)",
     .back_trans_section_back = L"Povratni prijevod",
     .back_trans_section_original = L"Originalni tekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Spremi",
+    .openai_profile_delete = L"Izbriši",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Izbrisati ovaj profil? Spremljeni API ključ također će biti uklonjen.",
+    .openai_profile_limit = L"Možete spremiti do {n} profila. Izbrišite neiskorištene profile da biste dodali nove.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Prevođenje... {c}/{t}",
     .badge_translating_chunks = L"Prevođenje... ({n} dijelova)",
@@ -13306,6 +13684,13 @@ const LocalizedStrings kStringsSlovenian = {
     .openai_reasoning_server_default = L"Privzeto na strežniku (ni nastavljeno)",
     .back_trans_section_back = L"Povratni prevod",
     .back_trans_section_original = L"Izvirno besedilo",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Shrani",
+    .openai_profile_delete = L"Izbriši",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Izbrisati ta profil? Shranjeni ključ API bo prav tako odstranjen.",
+    .openai_profile_limit = L"Shranite lahko do {n} profilov. Izbrišite neuporabljene profile, da dodate nove.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Prevajanje... {c}/{t}",
     .badge_translating_chunks = L"Prevajanje... ({n} delov)",
@@ -13542,6 +13927,13 @@ const LocalizedStrings kStringsSlovak = {
     .openai_reasoning_server_default = L"Predvolené servera (nenastavené)",
     .back_trans_section_back = L"Spätný preklad",
     .back_trans_section_original = L"Originálny text",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Uložiť",
+    .openai_profile_delete = L"Odstrániť",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Odstrániť tento profil? Uložený kľúč API bude tiež odstránený.",
+    .openai_profile_limit = L"Môžete uložiť až {n} profilov. Odstráňte nepoužívané profily, aby ste mohli pridať ďalšie.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Prekladá sa... {c}/{t}",
     .badge_translating_chunks = L"Prekladá sa... ({n} častí)",
@@ -13778,6 +14170,13 @@ const LocalizedStrings kStringsBulgarian = {
     .openai_reasoning_server_default = L"Сървърна стойност по подразбиране (не е зададена)",
     .back_trans_section_back = L"Обратен превод",
     .back_trans_section_original = L"Оригинален текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профил",
+    .openai_profile_save = L"Запази",
+    .openai_profile_delete = L"Изтрий",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Да се изтрие ли този профил? Запазеният API ключ също ще бъде премахнат.",
+    .openai_profile_limit = L"Можете да запазите до {n} профила. Изтрийте неизползваните профили, за да добавите още.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Превежда се... {c}/{t}",
     .badge_translating_chunks = L"Превежда се... ({n} части)",
@@ -14014,6 +14413,13 @@ const LocalizedStrings kStringsLithuanian = {
     .openai_reasoning_server_default = L"Serverio numatytasis (nenustatytas)",
     .back_trans_section_back = L"Atgalinis vertimas",
     .back_trans_section_original = L"Originalus tekstas",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profilis",
+    .openai_profile_save = L"Išsaugoti",
+    .openai_profile_delete = L"Ištrinti",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ištrinti šį profilį? Išsaugotas API raktas taip pat bus pašalintas.",
+    .openai_profile_limit = L"Galite išsaugoti iki {n} profilių. Ištrinkite nenaudojamus profilius, kad galėtumėte pridėti daugiau.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Verčiama... {c}/{t}",
     .badge_translating_chunks = L"Verčiama... ({n} dalys)",
@@ -14250,6 +14656,13 @@ const LocalizedStrings kStringsLatvian = {
     .openai_reasoning_server_default = L"Servera noklusējums (nav iestatīts)",
     .back_trans_section_back = L"Atpakaļtulkojums",
     .back_trans_section_original = L"Oriģinālais teksts",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profils",
+    .openai_profile_save = L"Saglabāt",
+    .openai_profile_delete = L"Dzēst",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Dzēst šo profilu? Saglabātā API atslēga arī tiks noņemta.",
+    .openai_profile_limit = L"Varat saglabāt līdz {n} profiliem. Dzēsiet neizmantotos profilus, lai pievienotu jaunus.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tulko... {c}/{t}",
     .badge_translating_chunks = L"Tulko... ({n} daļas)",
@@ -14486,6 +14899,13 @@ const LocalizedStrings kStringsEstonian = {
     .openai_reasoning_server_default = L"Serveri vaikeväärtus (määramata)",
     .back_trans_section_back = L"Tagasitõlge",
     .back_trans_section_original = L"Originaaltekst",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profiil",
+    .openai_profile_save = L"Salvesta",
+    .openai_profile_delete = L"Kustuta",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Kas kustutada see profiil? Salvestatud API võti eemaldatakse samuti.",
+    .openai_profile_limit = L"Saate salvestada kuni {n} profiili. Uute lisamiseks kustutage kasutamata profiilid.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tõlgib... {c}/{t}",
     .badge_translating_chunks = L"Tõlgib... ({n} osa)",
@@ -14722,6 +15142,13 @@ const LocalizedStrings kStringsAfrikaans = {
     .openai_reasoning_server_default = L"Bedienerstandaard (ongestel)",
     .back_trans_section_back = L"Terugvertaling",
     .back_trans_section_original = L"Oorspronklike teks",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profiel",
+    .openai_profile_save = L"Stoor",
+    .openai_profile_delete = L"Verwyder",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Verwyder hierdie profiel? Die gestoorde API-sleutel word ook verwyder.",
+    .openai_profile_limit = L"Jy kan tot {n} profiele stoor. Verwyder ongebruikte profiele om meer by te voeg.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Vertaal... {c}/{t}",
     .badge_translating_chunks = L"Vertaal... ({n} dele)",
@@ -14958,6 +15385,13 @@ const LocalizedStrings kStringsCatalan = {
     .openai_reasoning_server_default = L"Per defecte del servidor (no establert)",
     .back_trans_section_back = L"Retrotraducció",
     .back_trans_section_original = L"Text original",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Perfil",
+    .openai_profile_save = L"Desa",
+    .openai_profile_delete = L"Elimina",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Vols eliminar aquest perfil? La clau API desada també s'eliminarà.",
+    .openai_profile_limit = L"Pots desar fins a {n} perfils. Elimina els que no facis servir per afegir-ne més.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traduint... {c}/{t}",
     .badge_translating_chunks = L"Traduint... ({n} fragments)",
@@ -15194,6 +15628,13 @@ const LocalizedStrings kStringsIcelandic = {
     .openai_reasoning_server_default = L"Sjálfgefið af þjóni (ekki stillt)",
     .back_trans_section_back = L"Bakþýðing",
     .back_trans_section_original = L"Upprunalegur texti",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Prófíll",
+    .openai_profile_save = L"Vista",
+    .openai_profile_delete = L"Eyða",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Eyða þessum prófíl? Vistaði API-lykillinn verður einnig fjarlægður.",
+    .openai_profile_limit = L"Þú getur vistað allt að {n} prófíla. Eyða ónotuðum prófílum til að bæta við fleirum.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Þýðir... {c}/{t}",
     .badge_translating_chunks = L"Þýðir... ({n} hluta)",
@@ -15430,6 +15871,13 @@ const LocalizedStrings kStringsAlbanian = {
     .openai_reasoning_server_default = L"Parazgjedhja e serverit (e pacaktuar)",
     .back_trans_section_back = L"Përkthim i kthyer",
     .back_trans_section_original = L"Teksti origjinal",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profili",
+    .openai_profile_save = L"Ruaj",
+    .openai_profile_delete = L"Fshi",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Të fshihet ky profil? Edhe çelësi API i ruajtur do të hiqet.",
+    .openai_profile_limit = L"Mund të ruani deri në {n} profile. Fshini profilet e papërdorura për të shtuar të tjera.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Duke përkthyer... {c}/{t}",
     .badge_translating_chunks = L"Duke përkthyer... ({n} pjesë)",
@@ -15666,6 +16114,13 @@ const LocalizedStrings kStringsMacedonian = {
     .openai_reasoning_server_default = L"Стандардно од сервер (не е поставено)",
     .back_trans_section_back = L"Обратен превод",
     .back_trans_section_original = L"Оригинален текст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профил",
+    .openai_profile_save = L"Зачувај",
+    .openai_profile_delete = L"Избриши",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Да се избрише овој профил? Зачуваниот API клуч исто така ќе биде отстранет.",
+    .openai_profile_limit = L"Можете да зачувате до {n} профили. Избришете ги неискористените профили за да додадете нови.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Преведува... {c}/{t}",
     .badge_translating_chunks = L"Преведува... ({n} делови)",
@@ -15902,6 +16357,13 @@ const LocalizedStrings kStringsWelsh = {
     .openai_reasoning_server_default = L"Rhagosodiad gweinydd (heb ei osod)",
     .back_trans_section_back = L"Ôl-gyfieithu",
     .back_trans_section_original = L"Testun gwreiddiol",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Proffil",
+    .openai_profile_save = L"Cadw",
+    .openai_profile_delete = L"Dileu",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Dileu'r proffil hwn? Bydd yr allwedd API a gadwyd hefyd yn cael ei dileu.",
+    .openai_profile_limit = L"Gallwch gadw hyd at {n} proffil. Dilewch broffiliau nad ydych yn eu defnyddio i ychwanegu rhagor.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Yn cyfieithu... {c}/{t}",
     .badge_translating_chunks = L"Yn cyfieithu... ({n} darn)",
@@ -16138,6 +16600,13 @@ const LocalizedStrings kStringsIrish = {
     .openai_reasoning_server_default = L"Réamhshocrú freastalaí (gan socrú)",
     .back_trans_section_back = L"Ais-aistriúchán",
     .back_trans_section_original = L"Téacs bunaidh",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Próifíl",
+    .openai_profile_save = L"Sábháil",
+    .openai_profile_delete = L"Scrios",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Scrios an phróifíl seo? Bainfear an eochair API shábháilte freisin.",
+    .openai_profile_limit = L"Is féidir leat suas le {n} próifíl a shábháil. Scrios próifílí nach n-úsáideann tú chun tuilleadh a chur leis.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Ag aistriú... {c}/{t}",
     .badge_translating_chunks = L"Ag aistriú... ({n} cuid)",
@@ -16374,6 +16843,13 @@ const LocalizedStrings kStringsBasque = {
     .openai_reasoning_server_default = L"Zerbitzariaren lehenetsia (ez dago ezarrita)",
     .back_trans_section_back = L"Atzera-itzulpena",
     .back_trans_section_original = L"Jatorrizko testua",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profila",
+    .openai_profile_save = L"Gorde",
+    .openai_profile_delete = L"Ezabatu",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Profil hau ezabatu? Gordetako API gakoa ere ezabatuko da.",
+    .openai_profile_limit = L"Gehienez {n} profil gorde ditzakezu. Gehiago gehitzeko, ezabatu erabiltzen ez dituzun profilak.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Itzultzen... {c}/{t}",
     .badge_translating_chunks = L"Itzultzen... ({n} zati)",
@@ -16610,6 +17086,13 @@ const LocalizedStrings kStringsGalician = {
     .openai_reasoning_server_default = L"Predeterminado do servidor (non definido)",
     .back_trans_section_back = L"Retrotradución",
     .back_trans_section_original = L"Texto orixinal",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Perfil",
+    .openai_profile_save = L"Gardar",
+    .openai_profile_delete = L"Eliminar",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Eliminar este perfil? A chave da API gardada tamén se eliminará.",
+    .openai_profile_limit = L"Podes gardar ata {n} perfís. Elimina os que non uses para engadir máis.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Traducindo... {c}/{t}",
     .badge_translating_chunks = L"Traducindo... ({n} fragmentos)",
@@ -16846,6 +17329,13 @@ const LocalizedStrings kStringsSwahili = {
     .openai_reasoning_server_default = L"Chaguozo la seva (hajawekwa)",
     .back_trans_section_back = L"Tafsiri ya kurudi",
     .back_trans_section_original = L"Maandishi ya asili",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Wasifu",
+    .openai_profile_save = L"Hifadhi",
+    .openai_profile_delete = L"Futa",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Futa wasifu huu? Ufunguo wa API uliohifadhiwa pia utaondolewa.",
+    .openai_profile_limit = L"Unaweza kuhifadhi hadi {n} wasifu. Futa wasifu ambao hutumiki ili kuongeza zaidi.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Inatafsiri... {c}/{t}",
     .badge_translating_chunks = L"Inatafsiri... ({n} sehemu)",
@@ -17082,6 +17572,13 @@ const LocalizedStrings kStringsHaitianCreole = {
     .openai_reasoning_server_default = L"Default sèvè (pa etabli)",
     .back_trans_section_back = L"Retradiksyon",
     .back_trans_section_original = L"Tèks orijinal",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Pwofil",
+    .openai_profile_save = L"Sove",
+    .openai_profile_delete = L"Efase",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Efase pwofil sa a? Kle API ki sove a ap efase tou.",
+    .openai_profile_limit = L"Ou ka sove jiska {n} pwofil. Efase pwofil ou pa itilize yo pou w ajoute plis.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Ap tradui... {c}/{t}",
     .badge_translating_chunks = L"Ap tradui... ({n} moso)",
@@ -17318,6 +17815,13 @@ const LocalizedStrings kStringsUzbek = {
     .openai_reasoning_server_default = L"Server standarti (o'rnatilmagan)",
     .back_trans_section_back = L"Teskari tarjima",
     .back_trans_section_original = L"Asl matn",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Saqlash",
+    .openai_profile_delete = L"Oʻchirish",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Bu profil oʻchirilsinmi? Saqlangan API kaliti ham oʻchiriladi.",
+    .openai_profile_limit = L"{n} tagacha profil saqlashingiz mumkin. Yana qoʻshish uchun ishlatilmayotgan profillarni oʻchiring.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tarjima qilinmoqda... {c}/{t}",
     .badge_translating_chunks = L"Tarjima qilinmoqda... ({n} qism)",
@@ -17554,6 +18058,13 @@ const LocalizedStrings kStringsAzerbaijani = {
     .openai_reasoning_server_default = L"Server defoltu (quraşdırılmayıb)",
     .back_trans_section_back = L"Əks tərcümə",
     .back_trans_section_original = L"Orijinal mətn",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profil",
+    .openai_profile_save = L"Yadda saxla",
+    .openai_profile_delete = L"Sil",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Bu profil silinsin? Yadda saxlanılan API açarı da silinəcək.",
+    .openai_profile_limit = L"Maksimum {n} profil saxlaya bilərsiniz. Daha çox əlavə etmək üçün istifadə olunmayan profilləri silin.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tərcümə olunur... {c}/{t}",
     .badge_translating_chunks = L"Tərcümə olunur... ({n} hissə)",
@@ -17790,6 +18301,13 @@ const LocalizedStrings kStringsBelarusian = {
     .openai_reasoning_server_default = L"Прадвызначана серверам (не ўстаноўлена)",
     .back_trans_section_back = L"Зваротны пераклад",
     .back_trans_section_original = L"Арыгінальны тэкст",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профіль",
+    .openai_profile_save = L"Захаваць",
+    .openai_profile_delete = L"Выдаліць",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Выдаліць гэты профіль? Захаваны ключ API таксама будзе выдалены.",
+    .openai_profile_limit = L"Можна захаваць да {n} профіляў. Выдаліце невыкарыстаныя профілі, каб дадаць новыя.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Перакладаецца... {c}/{t}",
     .badge_translating_chunks = L"Перакладаецца... ({n} частак)",
@@ -18026,6 +18544,13 @@ const LocalizedStrings kStringsKyrgyz = {
     .openai_reasoning_server_default = L"Сервердин баштапкы абалы (коюлбаган)",
     .back_trans_section_back = L"Кайра которуу",
     .back_trans_section_original = L"Түп нусканын тексти",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профиль",
+    .openai_profile_save = L"Сактоо",
+    .openai_profile_delete = L"Жок кылуу",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Бул профилди жок кылуу керекпи? Сакталган API ачкычы да жок кылынат.",
+    .openai_profile_limit = L"{n} профилге чейин сактоого болот. Дагы кошуу үчүн колдонулбаган профилдерди жок кылыңыз.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Которулуп жатат... {c}/{t}",
     .badge_translating_chunks = L"Которулуп жатат... ({n} бөлүк)",
@@ -18262,6 +18787,13 @@ const LocalizedStrings kStringsTajik = {
     .openai_reasoning_server_default = L"Пешфарзи сервер (танзим нашудааст)",
     .back_trans_section_back = L"Тарҷумаи пасипарда",
     .back_trans_section_original = L"Матни аслӣ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Профил",
+    .openai_profile_save = L"Нигоҳ доштан",
+    .openai_profile_delete = L"Нест кардан",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ин профил нест карда шавад? Калиди API-и нигоҳдошташуда низ нест карда мешавад.",
+    .openai_profile_limit = L"Метавонед то {n} профил нигоҳ доред. Барои иловаи бештар профилҳои истифоданашударо нест кунед.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Дар ҳоли тарҷума... {c}/{t}",
     .badge_translating_chunks = L"Дар ҳоли тарҷума... ({n} қисм)",
@@ -18498,6 +19030,13 @@ const LocalizedStrings kStringsEsperanto = {
     .openai_reasoning_server_default = L"Servila defaŭlto (ne agordita)",
     .back_trans_section_back = L"Re-traduko",
     .back_trans_section_original = L"Originala teksto",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Profilo",
+    .openai_profile_save = L"Konservi",
+    .openai_profile_delete = L"Forigi",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ĉu forigi ĉi tiun profilon? La konservita API-ŝlosilo ankaŭ estos forigita.",
+    .openai_profile_limit = L"Vi povas konservi ĝis {n} profilojn. Forigu neuzatajn profilojn por aldoni pli.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Tradukas... {c}/{t}",
     .badge_translating_chunks = L"Tradukas... ({n} partoj)",
@@ -18734,6 +19273,13 @@ const LocalizedStrings kStringsArmenian = {
     .openai_reasoning_server_default = L"Սերվերի կանխադրված (չնշված)",
     .back_trans_section_back = L"Հետթարգմանություն",
     .back_trans_section_original = L"Բնօրինակ տեքստ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"Պրոֆիլ",
+    .openai_profile_save = L"Պահել",
+    .openai_profile_delete = L"Ջնջել",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"Ջնջե՞լ այս պրոֆիլը. Պահված API բանալին նույնպես կհեռացվի.",
+    .openai_profile_limit = L"Կարող եք պահել մինչև {n} պրոֆիլ. Ավելացնելու համար ջնջեք չօգտագործվող պրոֆիլները.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"Թարգմանվում է... {c}/{t}",
     .badge_translating_chunks = L"Թարգմանվում է... ({n} մաս)",
@@ -18970,6 +19516,13 @@ const LocalizedStrings kStringsGeorgian = {
     .openai_reasoning_server_default = L"სერვერის ნაგულისხმები (დაუყენებელი)",
     .back_trans_section_back = L"უკუთარგმანი",
     .back_trans_section_original = L"ორიგინალი ტექსტი",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"პროფილი",
+    .openai_profile_save = L"შენახვა",
+    .openai_profile_delete = L"წაშლა",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"წავშალოთ ეს პროფილი? შენახული API გასაღებიც წაიშლება.",
+    .openai_profile_limit = L"შეგიძლიათ შეინახოთ მაქსიმუმ {n} პროფილი. მეტის დასამატებლად წაშალეთ გამოუყენებელი პროფილები.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ითარგმნება... {c}/{t}",
     .badge_translating_chunks = L"ითარგმნება... ({n} ნაწილი)",
@@ -19206,6 +19759,13 @@ const LocalizedStrings kStringsSinhala = {
     .openai_reasoning_server_default = L"සේවාදායක පෙරනිමි (සකසා නැත)",
     .back_trans_section_back = L"ආපසු පරිවර්තනය",
     .back_trans_section_original = L"මුල් පෙළ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"පැතිකඩ",
+    .openai_profile_save = L"සුරකින්න",
+    .openai_profile_delete = L"මකන්න",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"මෙම පැතිකඩ මකන්නද? සුරකින ලද API යතුර ද මකා දැමේ.",
+    .openai_profile_limit = L"ඔබට උපරිම {n} පැතිකඩක් සුරකින්න පුළුවන්. තවත් එකතු කිරීමට භාවිත නොකරන පැතිකඩ මකන්න.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"පරිවර්තනය වෙමින්... {c}/{t}",
     .badge_translating_chunks = L"පරිවර්තනය වෙමින්... ({n} කොටස්)",
@@ -19442,6 +20002,13 @@ const LocalizedStrings kStringsMalayalam = {
     .openai_reasoning_server_default = L"സെർവർ ഡിഫോൾട്ട് (സെറ്റ് ചെയ്തിട്ടില്ല)",
     .back_trans_section_back = L"ബാക്ക്-ട്രാൻസലേഷൻ",
     .back_trans_section_original = L"അസൽ എഴുത്ത്",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"പ്രൊഫൈൽ",
+    .openai_profile_save = L"സംരക്ഷിക്കുക",
+    .openai_profile_delete = L"ഇല്ലാതാക്കുക",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ഈ പ്രൊഫൈൽ ഇല്ലാതാക്കണോ? സംരക്ഷിച്ച API കീയും നീക്കം ചെയ്യും.",
+    .openai_profile_limit = L"നിങ്ങൾക്ക് പരമാവധി {n} പ്രൊഫൈലുകൾ സംരക്ഷിക്കാം. കൂടുതൽ ചേർക്കാൻ ഉപയോഗിക്കാത്ത പ്രൊഫൈലുകൾ ഇല്ലാതാക്കുക.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"വിവർത്തനം ചെയ്യുന്നു... {c}/{t}",
     .badge_translating_chunks = L"വിവർത്തനം ചെയ്യുന്നു... ({n} ഭാഗങ്ങൾ)",
@@ -19688,6 +20255,13 @@ const LocalizedStrings kStringsKannada = {
     .openai_reasoning_server_default = L"ಸರ್ವರ್ ಡೀಫಾಲ್ಟ್ (ಹೊಂದಿಸಲಾಗಿಲ್ಲ)",
     .back_trans_section_back = L"ಹಿಂಅನುವಾದ",
     .back_trans_section_original = L"ಮೂಲ ಪಠ್ಯ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ಪ್ರೊಫೈಲ್",
+    .openai_profile_save = L"ಉಳಿಸು",
+    .openai_profile_delete = L"ಅಳಿಸು",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ಈ ಪ್ರೊಫೈಲ್ ಅಳಿಸಬೇಕೇ? ಉಳಿಸಿದ API ಕೀ ಸಹ ತೆಗೆದುಹಾಕಲಾಗುತ್ತದೆ.",
+    .openai_profile_limit = L"ನೀವು ಗರಿಷ್ಠ {n} ಪ್ರೊಫೈಲ್‌ಗಳನ್ನು ಉಳಿಸಬಹುದು. ಇನ್ನಷ್ಟು ಸೇರಿಸಲು ಬಳಸದ ಪ್ರೊಫೈಲ್‌ಗಳನ್ನು ಅಳಿಸಿ.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ಅನುವಾದಿಸುತ್ತಿದೆ... {c}/{t}",
     .badge_translating_chunks = L"ಅನುವಾದಿಸುತ್ತಿದೆ... ({n} ಭಾಗಗಳು)",
@@ -19935,6 +20509,13 @@ const LocalizedStrings kStringsPunjabi = {
     .openai_reasoning_server_default = L"ਸਰਵਰ ਡਿਫੌਲਟ (ਸੈੱਟ ਨਹੀਂ)",
     .back_trans_section_back = L"ਬੈਕ-ਅਨੁਵਾਦ",
     .back_trans_section_original = L"ਮੂਲ ਟੈਕਸਟ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ਪ੍ਰੋਫਾਈਲ",
+    .openai_profile_save = L"ਸੰਭਾਲੋ",
+    .openai_profile_delete = L"ਮਿਟਾਓ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ਇਹ ਪ੍ਰੋਫਾਈਲ ਮਿਟਾਉਣੀ ਹੈ? ਸੰਭਾਲੀ API ਕੀ ਵੀ ਮਿਟਾ ਦਿੱਤੀ ਜਾਵੇਗੀ।",
+    .openai_profile_limit = L"ਤੁਸੀਂ ਵੱਧ ਤੋਂ ਵੱਧ {n} ਪ੍ਰੋਫਾਈਲ ਸੰਭਾਲ ਸਕਦੇ ਹੋ। ਹੋਰ ਜੋੜਨ ਲਈ ਵਰਤੋਂ ਨਾ ਕੀਤੀਆਂ ਪ੍ਰੋਫਾਈਲਾਂ ਮਿਟਾਓ।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ... {c}/{t}",
     .badge_translating_chunks = L"ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ... ({n} ਹਿੱਸੇ)",
@@ -20182,6 +20763,13 @@ const LocalizedStrings kStringsOdia = {
     .openai_reasoning_server_default = L"ସର୍ଭର ଡିଫଲ୍ଟ (ସେଟ୍ ହୋଇନାହିଁ)",
     .back_trans_section_back = L"ପଛ-ଅନୁବାଦ",
     .back_trans_section_original = L"ମୂଳ ପାଠ୍ୟ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ପ୍ରୋଫାଇଲ୍",
+    .openai_profile_save = L"ସେଭ୍ କରନ୍ତୁ",
+    .openai_profile_delete = L"ଡିଲିଟ୍ କରନ୍ତୁ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ଏହି ପ୍ରୋଫାଇଲ୍ ଡିଲିଟ୍ କରିବେ? ସେଭ୍ ହୋଇଥିବା API କୀ ମଧ୍ୟ ଡିଲିଟ୍ ହେବ।",
+    .openai_profile_limit = L"ଆପଣ ସର୍ବାଧିକ {n} ପ୍ରୋଫାଇଲ୍ ସେଭ୍ କରିପାରିବେ। ଅଧିକ ଯୋଡିବା ପାଇଁ ବ୍ୟବହାର ନହୋଇଥିବା ପ୍ରୋଫାଇଲ୍ ଡିଲିଟ୍ କରନ୍ତୁ।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ଅନୁବାଦ ହେଉଛି... {c}/{t}",
     .badge_translating_chunks = L"ଅନୁବାଦ ହେଉଛି... ({n} ଅଂଶ)",
@@ -20429,6 +21017,13 @@ const LocalizedStrings kStringsAmharic = {
     .openai_reasoning_server_default = L"የአገልጋይ ነባሪ (ያልተወሰነ)",
     .back_trans_section_back = L"የኋላ-ትርጉም",
     .back_trans_section_original = L"ዋናው ጽሑፍ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"መገለጫ",
+    .openai_profile_save = L"አስቀምጥ",
+    .openai_profile_delete = L"ሰርዝ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ይህን መገለጫ ይሰረዝ? የተቀመጠው API ቁልፍም ይወገዳል።",
+    .openai_profile_limit = L"እስከ {n} መገለጫዎች ማስቀመጥ ይችላሉ። ተጨማሪ ለመጨመር ጥቅም ላይ ያልዋሉ መገለጫዎችን ይሰርዙ።",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"በመተርጎም ላይ... {c}/{t}",
     .badge_translating_chunks = L"በመተርጎም ላይ... ({n} ክፍሎች)",
@@ -20676,6 +21271,13 @@ const LocalizedStrings kStringsTigrinya = {
     .openai_reasoning_server_default = L"ናይ ሰርቨር ነባሪ (ዘይተዋህደ)",
     .back_trans_section_back = L"ተመሊሱ ትርጉም",
     .back_trans_section_original = L"ኦሪጅናል ጽሑፍ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"መግለጺ",
+    .openai_profile_save = L"ኣስቀምጥ",
+    .openai_profile_delete = L"ሰርዝ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"እዚ መግለጺ ይሰረዝ? እቲ ዝተቐመጠ API ቁልፊ እውን ክውገድ እዩ።",
+    .openai_profile_limit = L"ክሳብ {n} መግለጺታት ከተቐምጡ ትኽእሉ። ተወሳኺ ንምውሳኽ ዘይተጠቕሙ መግለጺታት ሰርዙ።",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ይትርጎም ኣሎ... {c}/{t}",
     .badge_translating_chunks = L"ይትርጎም ኣሎ... ({n} ክፍልታት)",
@@ -20923,6 +21525,13 @@ const LocalizedStrings kStringsPashto = {
     .openai_reasoning_server_default = L"د سیرور ډیفالټ (ټاکل شوی نه دی)",
     .back_trans_section_back = L"بیرته ژباړه",
     .back_trans_section_original = L"اصلي متن",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"پروفایل",
+    .openai_profile_save = L"خوندي کړئ",
+    .openai_profile_delete = L"حذف کړئ",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"دا پروفایل حذف کړو؟ خوندي شوی API کیلي به هم لرې شي.",
+    .openai_profile_limit = L"تاسو کولی شئ تر {n} پروفایلونو پورې خوندي کړئ. د نورو اضافه کولو لپاره نه کارول شوي پروفایلونه حذف کړئ.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ژباړه روانه ده... {c}/{t}",
     .badge_translating_chunks = L"ژباړه روانه ده... ({n} برخې)",
@@ -21170,6 +21779,13 @@ const LocalizedStrings kStringsSindhi = {
     .openai_reasoning_server_default = L"سرور ڊفالٽ (سيٽ ناهي)",
     .back_trans_section_back = L"واپسي ترجمو",
     .back_trans_section_original = L"اصل متن",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"پروفائل",
+    .openai_profile_save = L"محفوظ ڪريو",
+    .openai_profile_delete = L"ڊاهيو",
+    .openai_profile_name_template = L"{m} / {h}",
+    .openai_profile_delete_confirm = L"هي پروفائل ڊاهڻو آهي؟ محفوظ ٿيل API ڪي پڻ هٽائي ويندي.",
+    .openai_profile_limit = L"توهان وڌ ۾ وڌ {n} پروفائل محفوظ ڪري سگهو ٿا. وڌيڪ شامل ڪرڻ لاءِ غير استعمال ٿيل پروفائل ڊاهيو.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"ترجمو ٿي رهيو آهي... {c}/{t}",
     .badge_translating_chunks = L"ترجمو ٿي رهيو آهي... ({n} حصا)",
@@ -21417,6 +22033,13 @@ const LocalizedStrings kStringsNepali = {
     .openai_reasoning_server_default = L"सर्वर पूर्वनिर्धारित (सेट छैन)",
     .back_trans_section_back = L"पुनः-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"प्रोफाइल",
+    .openai_profile_save = L"सुरक्षित गर्नुहोस्",
+    .openai_profile_delete = L"मेट्नुहोस्",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"यो प्रोफाइल मेट्ने हो? सुरक्षित गरिएको API कुञ्जी पनि मेटिनेछ।",
+    .openai_profile_limit = L"तपाईं बढीमा {n} प्रोफाइल सुरक्षित गर्न सक्नुहुन्छ। थप गर्न प्रयोग नगरिएका प्रोफाइल मेट्नुहोस्।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"अनुवाद हुँदैछ... {c}/{t}",
     .badge_translating_chunks = L"अनुवाद हुँदैछ... ({n} खण्डहरू)",
@@ -21664,6 +22287,13 @@ const LocalizedStrings kStringsAssamese = {
     .openai_reasoning_server_default = L"চাৰ্ভাৰ ডিফ’ল্ট (ছেট কৰা হোৱা নাই)",
     .back_trans_section_back = L"পুনৰ-অনুবাদ",
     .back_trans_section_original = L"মূল পাঠ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"প্ৰফাইল",
+    .openai_profile_save = L"সংৰক্ষণ কৰক",
+    .openai_profile_delete = L"মচক",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"এই প্ৰফাইলটো মচিমনে? সংৰক্ষিত API কি-ও মচা হ'ব।",
+    .openai_profile_limit = L"আপুনি সৰ্বাধিক {n} টা প্ৰফাইল সংৰক্ষণ কৰিব পাৰে। অধিক যোগ কৰিবলৈ অব্যৱহৃত প্ৰফাইল মচক।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"অনুবাদ চলি আছে... {c}/{t}",
     .badge_translating_chunks = L"অনুবাদ চলি আছে... ({n} খণ্ড)",
@@ -21911,6 +22541,13 @@ const LocalizedStrings kStringsDzongkha = {
     .openai_reasoning_server_default = L"ཞབས་ཞུ་བའི་སྔོན་ཐོག (མ་བཀོད་པ།)",
     .back_trans_section_back = L"རྒྱབ་བསྒྱུར",
     .back_trans_section_original = L"མ་གཞིའི་ཡིག་ཚིག",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"ངོ་ཐོ",
+    .openai_profile_save = L"ཉར་ཚགས",
+    .openai_profile_delete = L"བསུབ",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ངོ་ཐོ་འདི་བསུབ་དགོས་སམ? ཉར་ཚགས་བྱས་པའི་ API ལྡེ་མིག་ཡང་བསུབ་རྒྱུ་ཨིན།",
+    .openai_profile_limit = L"ངོ་ཐོ་ {n} ཚུན་ཚོད་ཉར་ཚགས་བྱེད་ཐུབ། ལེ་ཤ་ཁ་སྣོན་བྱེད་པར་བེད་མི་སྤྱོད་པའི་ངོ་ཐོ་བསུབ།",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"བསྒྱུར་བཞིན་པ... {c}/{t}",
     .badge_translating_chunks = L"བསྒྱུར་བཞིན་པ... ({n} ཆ་ཤས།)",
@@ -22158,6 +22795,13 @@ const LocalizedStrings kStringsSanskrit = {
     .openai_reasoning_server_default = L"सर्वरमूल्यं (न विहितम्)",
     .back_trans_section_back = L"पुनरनुवादः",
     .back_trans_section_original = L"मूलपाठः",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"स्वरूपम्",
+    .openai_profile_save = L"रक्षतु",
+    .openai_profile_delete = L"अपनयतु",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"एतत् स्वरूपं अपनयाम? रक्षितः API कुञ्जी अपि अपनेष्यते।",
+    .openai_profile_limit = L"अधिकतमं {n} स्वरूपाणि रक्षितुं शक्यन्ते। अधिकं योजयितुं अप्रयुक्तानि स्वरूपाणि अपनयतु।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"अनुवदति... {c}/{t}",
     .badge_translating_chunks = L"अनुवदति... ({n} खण्डाः)",
@@ -22405,6 +23049,13 @@ const LocalizedStrings kStringsMaithili = {
     .openai_reasoning_server_default = L"सर्वर डिफॉल्ट (सेट अछि नहि)",
     .back_trans_section_back = L"पुनः-अनुवाद",
     .back_trans_section_original = L"मूल पाठ",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"प्रोफाइल",
+    .openai_profile_save = L"सहेजू",
+    .openai_profile_delete = L"मेटाबू",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"ई प्रोफाइल मेटाबऽ? सहेजल API कुंजी सेहो मेटा जाएत।",
+    .openai_profile_limit = L"अहाँ अधिकतम {n} प्रोफाइल सहेजि सकैत छी। आओर जोड़बाक लेल अप्रयुक्त प्रोफाइल मेटाबू।",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"अनुवाद भऽ रहल अछि... {c}/{t}",
     .badge_translating_chunks = L"अनुवाद भऽ रहल अछि... ({n} हिस्सा)",
@@ -22652,6 +23303,13 @@ const LocalizedStrings kStringsKonkaniGoan = {
     .openai_reasoning_server_default = L"सर्व्हर डीफॉल्ट (सेट केल्लें ना)",
     .back_trans_section_back = L"परतून-अणकार",
     .back_trans_section_original = L"मूळ मजकूर",
+    // 261122_0001 B-U2: OpenAI profile row.
+    .openai_profile_label = L"प्रोफायल",
+    .openai_profile_save = L"सांभाळ",
+    .openai_profile_delete = L"काडून उडय",
+    .openai_profile_name_template = L"{h} / {m}",
+    .openai_profile_delete_confirm = L"हो प्रोफायल काडून उडयचो? सांभाळिल्ली API किल्ली पूण काडून उडयतात.",
+    .openai_profile_limit = L"तुमी चडांत चड {n} प्रोफायल सांभाळू शकतात. आनीक जोडपाक वापर नाशिल्लीं प्रोफायलां काडून उडयात.",
     // 261121_0002 (progress+cancel design): the multi-chunk progress/cancel copy.
     .badge_translating_progress = L"अणकार जाता... {c}/{t}",
     .badge_translating_chunks = L"अणकार जाता... ({n} हिस्से)",
@@ -23237,6 +23895,18 @@ std::wstring I18n::Get(StringId id) {
         case StringId::OpenAiReasoningServerDefault: return s.openai_reasoning_server_default;
         case StringId::BackTransSectionBack:         return s.back_trans_section_back;
         case StringId::BackTransSectionOriginal:     return s.back_trans_section_original;
+
+        // 261122_0001 B-U2 (design-pick.md item 6): the OpenAI profile row's
+        // six strings. The enum ids sit immediately after
+        // BackTransSectionOriginal (before the 261121_0002 progress/cancel run);
+        // the struct slots are the matching mid-struct block; the switch is the
+        // mapping.
+        case StringId::OpenAiProfileLabel:           return s.openai_profile_label;
+        case StringId::OpenAiProfileSave:            return s.openai_profile_save;
+        case StringId::OpenAiProfileDelete:          return s.openai_profile_delete;
+        case StringId::OpenAiProfileNameTemplate:    return s.openai_profile_name_template;
+        case StringId::OpenAiProfileDeleteConfirm:   return s.openai_profile_delete_confirm;
+        case StringId::OpenAiProfileLimit:           return s.openai_profile_limit;
 
         // 261121_0002 (progress+cancel): the multi-chunk progress/cancel copy.
         // The enum ids sit mid-enum right after BackTransSectionOriginal;

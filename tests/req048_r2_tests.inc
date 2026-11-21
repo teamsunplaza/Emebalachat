@@ -158,7 +158,9 @@ namespace req048_r2d_detail {
 // 261121_0002 removed the dead SEC-M1 translate_truncated_notice field:
 // 203 -> 202;
 // 261121_0002 progress+cancel unit appended the 5 progress/cancel strings
-// right after back_trans_section_original: 202 -> 207)
+// right after back_trans_section_original: 202 -> 207;
+// 261122_0001 B-U2 inserted the 6 OpenAI profile strings immediately after
+// back_trans_section_original, ahead of the progress/cancel run: 207 -> 213)
 // (156 X-macro + the 4 v0.10.5 theme strings: MenuUiTheme/ThemeFluent/
 // ThemeEditorial/ThemeMonolith + the 5 261108_0002 WS3 back-translation
 // strings, the fifth being FIX-WS3B's BackTranslateReference). 261108_0002
@@ -170,8 +172,10 @@ namespace req048_r2d_detail {
 struct Req048R2LstrMirror {
     // 261121_0002: 203 -> 202 (the dead SEC-M1 translate_truncated_notice
     // field removed); 261121_0002 progress+cancel unit: 202 -> 207 (the 5
-    // progress/cancel strings after back_trans_section_original).
-    const wchar_t* f[207];
+    // progress/cancel strings after back_trans_section_original);
+    // 261122_0001 B-U2: 207 -> 213 (the 6 OpenAI profile strings inserted
+    // immediately after back_trans_section_original, ahead of that run).
+    const wchar_t* f[213];
 };
 
 } // namespace req048_r2d_detail
@@ -185,26 +189,27 @@ void TestReq048R2GgufManager() {
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 207
-    static_assert(kR2dFieldCount == 207,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002: LocalizedStrings field count is 207 "
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 213
+    static_assert(kR2dFieldCount == 213,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count is 213 "
                   "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings - 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + 5 261121_0002 progress/cancel strings) - update the i18n.cpp X-macro, "
                   "all 89 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 207,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 207");
-    TEST_CHECK(observed_enum_count == 207,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 207 (struct fields == "
+    TEST_CHECK(observed_field_count == 213,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 213");
+    TEST_CHECK(observed_enum_count == 213,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 213 (struct fields == "
                "switch cases, through the REQ-060 load-mode/policy block, the v0.10.5 theme "
                "strings, the 261108_0002 WS3 back-translation ids, the 4 261121_0001 v0.10.9 "
                "U-C reasoning/back-trans section ids, the 261111_0001 U6 user-model ids, "
                "the 261116_0003 P5/P6a/P7 language-menu ids, the 23 P9b-1 user-language ids, "
                "the 2 P9c-1b OpenAI declaration checklist ids and "
                "the 1 P9b-3 U5 picker AUTO chip id, minus the 1 dead 261121_0002 SEC-M1 "
-               "translate_truncated_notice id, plus the 5 261121_0002 progress/cancel ids)");
+               "translate_truncated_notice id, plus the 5 261121_0002 progress/cancel ids, "
+               "plus the 6 261122_0001 B-U2 OpenAI profile ids)");
 
     // ---- (b) functional: validation + rename/delete round-trips ---------
     // Registry doc: one bundled (never listed/renamed/deleted) + two users.

@@ -456,19 +456,39 @@ enum class StringId {
     BackTransSectionBack,         // "역번역" / "Back-translation"
     BackTransSectionOriginal,     // "원문" / "Original text"
 
+    // 261122_0001 B-U2 (OpenAI 설정 창 프로필 재설계, design-pick.md item 6):
+    // the OpenAI profile row's six strings: the row label, the upsert and
+    // delete buttons, the display-name derivation template ("{h}" = host
+    // abbreviation, "{m}" = model id; the tokens stay verbatim, the word order
+    // is per-locale), the MB_YESNO delete confirmation (it MUST keep saying
+    // that the stored API key goes too), and the profile-cap notice ("{n}").
+    // Inserted IMMEDIATELY AFTER BackTransSectionOriginal (the 261121_0002
+    // boundary): the six ids sit between BackTransSectionOriginal and the
+    // 261121_0002 progress/cancel run, so every later enum value shifts by +6
+    // TOGETHER, all relative adjacency pins stay valid, and EnumCount absorbs
+    // +6 (207 -> 213). The struct slots are trailing defaults in the same
+    // relative position (src/i18n.cpp, right after
+    // back_trans_section_original); the Get() switch is the mapping.
+    OpenAiProfileLabel,          // "프로필" / "Profile"
+    OpenAiProfileSave,           // "저장" / "Save"
+    OpenAiProfileDelete,         // "삭제" / "Delete"
+    OpenAiProfileNameTemplate,   // "{h}의 {m} 모델" / "{h} / {m}"
+    OpenAiProfileDeleteConfirm,  // delete confirmation incl. the API-key loss
+    OpenAiProfileLimit,          // profile-cap notice ("{n}")
+
     // 261121_0002 (v0.10.9 leftover, session 261121_0002 progress+cancel
     // design): the multi-chunk translation PROGRESS + CANCEL UI copy (badge
     // progress label, chunk-count plan label, cancelling feedback, the
-    // post-cancel notice, and the one-shot cancel hint). Inserted right AFTER
-    // BackTransSectionOriginal per the binding design-pick.md: every later
-    // enum value shifts by +5 TOGETHER, so all relative adjacency pins (the
-    // P6a/P7 MenuSearchLangs..LanguageSearchNoMatch run, the P5
-    // "EnumCount - 1 == LanguageSearchNoMatch" sentinel, the P9c-1b
-    // declaration-checklist run) stay valid, and EnumCount absorbs +5
-    // (202 -> 207). The struct fields are trailing defaults in the same
-    // relative position (src/i18n.cpp, right after
-    // back_trans_section_original); the Get() switch is the mapping.
-    // "{c}"/"{t}"/"{n}" are runtime-substituted number tokens.
+    // post-cancel notice, and the one-shot cancel hint). This run was appended
+    // at the same boundary per the binding design-pick.md and now follows the
+    // 261122_0001 B-U2 profile block: every later enum value shifts TOGETHER,
+    // so all relative adjacency pins (the P6a/P7 MenuSearchLangs..
+    // LanguageSearchNoMatch run, the P5 "EnumCount - 1 ==
+    // LanguageSearchNoMatch" sentinel, the P9c-1b declaration-checklist run)
+    // stay valid. The struct fields are trailing defaults in the matching
+    // relative position (src/i18n.cpp, right after the profile block); the
+    // Get() switch is the mapping. "{c}"/"{t}"/"{n}" are runtime-substituted
+    // number tokens.
     BadgeTranslatingProgress,    // "번역 중… {c}/{t}" / "Translating… {c}/{t}"
     BadgeTranslatingChunks,      // "번역 중 ({n}개 청크)" / "Translating ({n} chunks)"
     BadgeCancelling,             // "취소 중…" / "Cancelling…"

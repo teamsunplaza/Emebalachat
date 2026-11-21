@@ -398,4 +398,262 @@ void TestOpenAiProfileConfigSchema() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 261122_0001 B-U2 (builder draw 6): the OpenAI profile row's six StringIds.
+//
+// The completeness loop in TestR6P5P6I18n already enforces non-empty for every
+// StringId below EnumCount in every authored locale (and Get()'s `default:
+// return L""` is what makes a missing switch case fail it), so this suite does
+// NOT repeat that whole loop. It owns what the shared loop cannot see:
+//   (a) the EnumCount total at this unit's boundary (207 -> 213);
+//   (b) the insertion order: the six ids sit IMMEDIATELY after
+//       BackTransSectionOriginal and immediately before the 261121_0002
+//       progress/cancel run, so every later relative adjacency pin (the
+//       P6a/P7 run, the P9c-1b run, the P5 EnumCount sentinel) still holds;
+//   (c) a targeted non-empty cross-check of exactly these six ids per locale;
+//   (d) the English-copy scan over ALL authored tables for the five TEXT ids
+//       (the template is excluded: " / " shapes legitimately repeat). A
+//       dropped designated initializer keeps the English struct default, which
+//       the shared non-empty loop cannot see. An exact "Save"/"Delete"
+//       loanword must be whitelisted per locale below, never blanket-allowed;
+//   (e) the token pins: exactly one {h} and one {m} in every table's template
+//       and exactly one {n} in every table's cap notice. A second token would
+//       render literally because the call site substitutes the FIRST
+//       occurrence only (the P7 PR7-06 lesson).
+// ---------------------------------------------------------------------------
+void TestOpenAiProfileI18nStrings() {
+    std::cout << "[TEST] 261122_0001 B-U2: OpenAI profile row strings (89 locales)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+    const UiLocale initial = I18n::GetCurrentLocale();
+    const auto& locales = GetSupportedUiLocales();
+    TEST_CHECK(static_cast<int>(locales.size()) == AuthoredUiLocaleCount(),
+               "B-U2: the profile strings are authored for every authored UI locale (count derived)");
+
+    const StringId kIds[] = {
+        StringId::OpenAiProfileLabel,
+        StringId::OpenAiProfileSave,
+        StringId::OpenAiProfileDelete,
+        StringId::OpenAiProfileNameTemplate,
+        StringId::OpenAiProfileDeleteConfirm,
+        StringId::OpenAiProfileLimit,
+    };
+    const wchar_t* kEn[] = {
+        L"Profile",
+        L"Save",
+        L"Delete",
+        L"{h} / {m}",
+        L"Delete this profile? The stored API key will be removed too.",
+        L"You can save up to {n} profiles. Delete unused profiles to add more.",
+    };
+    const wchar_t* kKo[] = {
+        L"프로필",
+        L"저장",
+        L"삭제",
+        L"{h}의 {m} 모델",
+        L"이 프로필을 삭제할까요? 저장된 API 키도 함께 삭제됩니다.",
+        L"프로필은 최대 {n}개까지 저장할 수 있습니다. 사용하지 않는 프로필을 삭제해 주세요.",
+    };
+    // volatile keeps the comparisons non-constant under /W4 (C4127 discipline).
+    volatile std::size_t kIdCount = sizeof(kIds) / sizeof(kIds[0]);
+    volatile std::size_t kEnCount = sizeof(kEn) / sizeof(kEn[0]);
+    volatile std::size_t kKoCount = sizeof(kKo) / sizeof(kKo[0]);
+    TEST_CHECK(kIdCount == 6 && kEnCount == kIdCount && kKoCount == kIdCount,
+               "B-U2: the inventory is the six profile ids with one English and one Korean expectation each");
+
+    // ---- (a) EnumCount: 207 -> 213 at this unit's boundary -----------------
+    volatile int enum_count = static_cast<int>(StringId::EnumCount);
+    TEST_CHECK(enum_count == 213,
+               "B-U2: StringId::EnumCount is 213 (207 + the six OpenAI profile ids)");
+
+    // ---- (b) insertion order ----------------------------------------------
+    // BackTransSectionOriginal + 1 == the first profile id, the six ids are a
+    // contiguous run, and the run ENDS where the pre-existing progress/cancel
+    // run begins. The P5 tail sentinel is the witness that every later id
+    // shifted by the same +6 instead of drifting.
+    volatile int back_original = static_cast<int>(StringId::BackTransSectionOriginal);
+    volatile int profile_label = static_cast<int>(StringId::OpenAiProfileLabel);
+    volatile int profile_save = static_cast<int>(StringId::OpenAiProfileSave);
+    volatile int profile_delete = static_cast<int>(StringId::OpenAiProfileDelete);
+    volatile int profile_template = static_cast<int>(StringId::OpenAiProfileNameTemplate);
+    volatile int profile_confirm = static_cast<int>(StringId::OpenAiProfileDeleteConfirm);
+    volatile int profile_limit = static_cast<int>(StringId::OpenAiProfileLimit);
+    volatile int progress_after = static_cast<int>(StringId::BadgeTranslatingProgress);
+    volatile int p5_sentinel = static_cast<int>(StringId::LanguageSearchNoMatch);
+    TEST_CHECK(profile_label == back_original + 1 &&
+                   profile_save == profile_label + 1 &&
+                   profile_delete == profile_save + 1 &&
+                   profile_template == profile_delete + 1 &&
+                   profile_confirm == profile_template + 1 &&
+                   profile_limit == profile_confirm + 1 &&
+                   progress_after == profile_limit + 1 &&
+                   p5_sentinel == enum_count - 1,
+               "B-U2: the six profile ids are contiguous right after "
+               "BackTransSectionOriginal and right before the 261121_0002 "
+               "progress/cancel run, so the P5 tail sentinel and every relative "
+               "adjacency pin still hold");
+
+    // ---- (c) the designed English and Korean values, verbatim --------------
+    I18n::SetLocale(UiLocale::English);
+    int en_mismatch = 0;
+    for (std::size_t i = 0; i < kIdCount; ++i) {
+        if (I18n::Get(kIds[i]) != kEn[i]) {
+            ++en_mismatch;
+        }
+    }
+    TEST_CHECK(en_mismatch == 0,
+               "B-U2 en: all six values are the authored English literals (the "
+               "positional table landed on the six matching struct slots)");
+    I18n::SetLocale(UiLocale::Korean);
+    int ko_mismatch = 0;
+    for (std::size_t i = 0; i < kIdCount; ++i) {
+        if (I18n::Get(kIds[i]) != kKo[i]) {
+            ++ko_mismatch;
+        }
+    }
+    TEST_CHECK(ko_mismatch == 0,
+               "B-U2 ko: all six Korean values match the authored literals verbatim");
+
+    // ---- (d) English-copy scan + (e) token pins, one pass over 89 tables ---
+    struct LoanwordWhitelist {
+        UiLocale locale;
+        StringId id;
+    };
+    const LoanwordWhitelist kWhitelist[] = {
+        // Filipino (Taglish table: "I-download", "naka-install", "Modelo"):
+        // "profile" IS the borrowed English word here, so this one exact match
+        // is authored, not a missed translation. No other locale is allowed an
+        // exact English copy of any text-bearing profile id.
+        {UiLocale::Filipino, StringId::OpenAiProfileLabel},
+    };
+    const int kTextIds[] = {0, 1, 2, 4, 5};
+    int non_empty = 0;
+    int english_copy = 0;
+    int whitelist_hits = 0;
+    int token_bad = 0;
+    for (const UiLocaleEntry& entry : locales) {
+        I18n::SetLocale(entry.locale);
+        bool all_non_empty = true;
+        for (std::size_t i = 0; i < kIdCount; ++i) {
+            if (I18n::Get(kIds[i]).empty()) {
+                all_non_empty = false;
+            }
+        }
+        if (all_non_empty) {
+            ++non_empty;
+        }
+        for (int i : kTextIds) {
+            const std::wstring value = I18n::Get(kIds[i]);
+            if (entry.locale == UiLocale::English || value != kEn[i]) {
+                continue;
+            }
+            bool whitelisted = false;
+            for (const LoanwordWhitelist& allow : kWhitelist) {
+                if (allow.locale == entry.locale && allow.id == kIds[i]) {
+                    whitelisted = true;
+                }
+            }
+            if (whitelisted) {
+                ++whitelist_hits;
+            } else {
+                ++english_copy;
+            }
+        }
+        const std::wstring name_template = I18n::Get(StringId::OpenAiProfileNameTemplate);
+        const std::wstring cap_notice = I18n::Get(StringId::OpenAiProfileLimit);
+        const auto exactly_one = [](const std::wstring& hay, const wchar_t* token) {
+            const std::size_t first = hay.find(token);
+            return first != std::wstring::npos &&
+                   hay.find(token, first + std::wstring(token).size()) == std::wstring::npos;
+        };
+        if (!exactly_one(name_template, L"{h}") || !exactly_one(name_template, L"{m}") ||
+            !exactly_one(cap_notice, L"{n}")) {
+            ++token_bad;
+        }
+    }
+    I18n::SetLocale(initial); // suite-state hygiene
+    TEST_CHECK(non_empty == static_cast<int>(locales.size()),
+               "B-U2: the six profile ids resolve non-empty in every authored locale "
+               "(on top of the shared EnumCount completeness loop)");
+    TEST_CHECK(english_copy == 0,
+               "B-U2: no authored table falls back to the English profile text (the one "
+               "whitelisted Taglish loanword excepted; a placeholder copy fails here)");
+    TEST_CHECK(static_cast<int>(whitelist_hits) ==
+                   static_cast<int>(sizeof(kWhitelist) / sizeof(kWhitelist[0])),
+               "B-U2: every loanword whitelist entry is still a LIVE exact match (a stale "
+               "entry would silently re-open the fallback hole)");
+    TEST_CHECK(token_bad == 0,
+               "B-U2: every table keeps exactly one {h} and one {m} in the name template "
+               "and exactly one {n} in the cap notice");
+
+    // ---- (f) designator presence + the English positional slot -------------
+    std::string i18n_src;
+    if (!ReadRepoSrc(L"src\\i18n.cpp", i18n_src)) {
+        TEST_CHECK(false, "B-U2: src/i18n.cpp must be readable for the designator-presence pin");
+    } else {
+        const char* kFields[] = {
+            "openai_profile_label",
+            "openai_profile_save",
+            "openai_profile_delete",
+            "openai_profile_name_template",
+            "openai_profile_delete_confirm",
+            "openai_profile_limit",
+        };
+        const std::size_t kExpectedDesignators =
+            static_cast<std::size_t>(AuthoredUiLocaleCount() - 1);
+        int field_short = 0;
+        for (const char* field : kFields) {
+            const std::string designator = std::string("    .") + field + " = ";
+            std::size_t count = 0;
+            for (std::size_t at = i18n_src.find(designator); at != std::string::npos;
+                 at = i18n_src.find(designator, at + 1)) {
+                ++count;
+            }
+            if (count != kExpectedDesignators) {
+                ++field_short;
+            }
+        }
+        TEST_CHECK(field_short == 0,
+                   "B-U2: each of the six fields is designated in exactly one table per "
+                   "authored locale (the positional English one excepted) - no locale "
+                   "inherits the English default (count derived from the gate)");
+
+        const std::string table_open = "const LocalizedStrings kStringsEnglish = {";
+        const std::size_t table_at = i18n_src.find(table_open);
+        TEST_CHECK(table_at != std::string::npos,
+                   "B-U2: the English positional table is locatable");
+        if (table_at != std::string::npos) {
+            const std::size_t table_end = i18n_src.find("\n};", table_at);
+            const std::string body = i18n_src.substr(table_at, table_end - table_at);
+            const std::size_t p_original = body.find("L\"Original text\",");
+            const std::size_t p_label = body.find("L\"Profile\",");
+            const std::size_t p_save = body.find("L\"Save\",");
+            const std::size_t p_delete = body.find("L\"Delete\",");
+            const std::size_t p_template = body.find("L\"{h} / {m}\",");
+            const std::size_t p_confirm =
+                body.find("L\"Delete this profile? The stored API key will be removed too.\",");
+            const std::size_t p_limit = body.find(
+                "L\"You can save up to {n} profiles. Delete unused profiles to add more.\",");
+            const std::size_t p_progress = body.find("{c}/{t}");
+            TEST_CHECK(p_original != std::string::npos && p_label != std::string::npos &&
+                           p_save != std::string::npos && p_delete != std::string::npos &&
+                           p_template != std::string::npos && p_confirm != std::string::npos &&
+                           p_limit != std::string::npos && p_progress != std::string::npos &&
+                           p_original < p_label && p_label < p_save && p_save < p_delete &&
+                           p_delete < p_template && p_template < p_confirm &&
+                           p_confirm < p_limit && p_limit < p_progress,
+                       "B-U2 en: the six literals sit between \"Original text\" and the "
+                       "progress/cancel run in the positional table (slot-for-slot with "
+                       "the struct block)");
+        }
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261122_0001 B-U2 OpenAI profile i18n pins passed." << std::endl;
+    } else {
+        std::cout << "[FAIL] 261122_0001 B-U2 OpenAI profile i18n pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 } // namespace openai_profile_tests

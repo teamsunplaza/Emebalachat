@@ -18210,7 +18210,12 @@ struct Req044LstrMirror {
     // tooltip_translation_cancelled/tooltip_cancel_hint), while their ENUM
     // ids sit right after BackTransSectionOriginal - same Get() switch
     // mapping rule.
-    const wchar_t* f[207];
+    // 261122_0001 B-U2 (builder draw 6): the 6 OpenAI profile strings
+    // inserted IMMEDIATELY after back_trans_section_original, ahead of the
+    // progress/cancel run (207 -> 213: openai_profile_label/save/delete/
+    // name_template/delete_confirm/limit), with their ENUM ids in the same
+    // slot - same Get() switch mapping rule.
+    const wchar_t* f[213];
 };
 
 } // namespace
@@ -18223,9 +18228,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 207
-    static_assert(kExpectedFieldCount == 207,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 213
+    static_assert(kExpectedFieldCount == 213,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18233,11 +18238,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 207,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002: LocalizedStrings field count is 207 "
+    TEST_CHECK(observed_field_count == 213,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count is 213 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 207,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002: StringId::EnumCount is 207 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids)");
+    TEST_CHECK(observed_enum_count == 213,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: StringId::EnumCount is 213 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -25245,6 +25250,13 @@ int main() {
     // upsert identity planner, and the key-material emission pin. Registered
     // last, per the end-of-file pattern.
     openai_profile_tests::TestOpenAiProfileConfigSchema();
+    // 261122_0001 B-U2 (builder draw 6): the OpenAI profile row's six StringIds
+    // across all 89 authored tables - the EnumCount pin (207 -> 213), the
+    // insertion-order pin, the per-locale non-empty cross-check, the
+    // English-copy scan with its loanword whitelist, the token pins, and the
+    // designator/positional-slot source pins. Registered last, per the
+    // end-of-file pattern.
+    openai_profile_tests::TestOpenAiProfileI18nStrings();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

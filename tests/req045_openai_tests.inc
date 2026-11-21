@@ -674,13 +674,15 @@ void TestReq045OpenAiI18nPresent() {
     // (199 -> 203) for the 261121_0001 v0.10.9 U-C strings (the 2 OpenAI
     // reasoning-effort strings + the 2 back-translation section headers),
     // and down by 1 (203 -> 202) in 261121_0002 (the dead SEC-M1
-    // TranslateTruncatedNotice was removed: no production consumer left).
+    // TranslateTruncatedNotice was removed: no production consumer left),
+    // and up by 6 (207 -> 213) in 261122_0001 B-U2 (the OpenAI profile row
+    // strings, inserted immediately after BackTransSectionOriginal).
     // Read
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 207,
-                "StringId::EnumCount is 207 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + the 5 261121_0002 progress/cancel strings");
+    TEST_CHECK(enum_count == 213,
+                "StringId::EnumCount is 213 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + the 5 261121_0002 progress/cancel strings + the 6 261122_0001 B-U2 OpenAI profile strings");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
